@@ -115,14 +115,19 @@ describe("GET /today — onWatch (Task 8)", () => {
     expect(onWatchOf((await getToday()).body, b.workoutId)).toBe(false);
   });
 
-  it("a day with no sent session costs nothing more: no extra read of the jobs, switch on or off", async () => {
+  it("a day with no sent session reads nothing for onWatch: the switch on adds one statement, Today's review offers (Task 9)", async () => {
     const workoutId = await seedSlot(db, userId, programId, DAY);
     await buildToday(db, userId, prefs, workoutId);
-    const jobReads = async (env: Env) => {
+    const read = async (env: Env) => {
       sqls.length = 0;
-      const { d1 } = await getToday(env);
-      return { jobs: sqls.filter((q) => q.includes('from "coros_write_jobs"')).length, d1 };
+      await getToday(env);
+      return [...sqls];
     };
-    expect(await jobReads(switchOn())).toEqual(await jobReads(makeEnv()));
+    const off = await read(makeEnv());
+    const on = await read(switchOn());
+    expect(on.length).toBe(off.length + 1);
+    const extra = on.filter((q) => !off.includes(q));
+    expect(extra).toHaveLength(1);
+    expect(extra[0]).toContain('"workout_completion_matches"');
   });
 });

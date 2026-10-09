@@ -7,7 +7,9 @@ import type {
   GardenEvent,
   GardenWeatherState,
   LiftingPlan,
+  PerformedEntry,
   PerformedSessionWire,
+  PerformedSet,
   PlanBrief,
   ReadinessVerdict,
   SessionLead,
@@ -211,6 +213,12 @@ export interface TodayResponse {
      */
     onWatch?: boolean;
   }>;
+  /**
+   * "Log your session" (Phase 3): today's and yesterday's sessions done on the watch whose quick review is offered —
+   * the program's name, the session's day, how long the watch session ran. Empty while the switch is off; absent from a
+   * payload cached before Phase 3.
+   */
+  watchReviews?: Array<{ workoutId: string; title: string; date: string; seconds: number }>;
   /** The condition chips: switched-on profiles with today's reading; empty without an active program. */
   conditions: Array<ConditionViewDto & { today: { value: number | null; feelingOff: boolean } | null }>;
   unresolved: WorkoutDto[];
@@ -1111,6 +1119,37 @@ export interface WatchPreviewDto {
   digest: string;
 }
 
+/** One move of the quick review, prefilled: what the watch logged, else the build's targets (not done). */
+export interface WatchReviewEntryDto {
+  exerciseId: string;
+  perSide: boolean;
+  format: PerformedEntry["format"];
+  implement: string | null;
+  sets: Array<PerformedSet & { from: "watch" | "target" }>;
+}
+
+/** `GET /api/sessions/:workoutId/watch-review`. */
+export interface WatchReviewBasisDto {
+  workoutId: string;
+  buildId: string;
+  activityId: string;
+  /** The COROS activity id: the save's `sourceRef`. */
+  sourceRef: string;
+  /** The session's day: the save's `localDate`. */
+  localDate: string;
+  startedAt: string;
+  endedAt: string | null;
+  seconds: number;
+  newMove: string | null;
+  entries: Array<WatchReviewEntryDto & { name: string }>;
+  /** The post-check's grid. */
+  profiles: ConditionViewDto[];
+  /** The session's pre-check, per profile, as it was built with ("Before 1"). */
+  before: Record<string, { pre: number | null; feelingOff: boolean }>;
+  /** The athlete's weight unit, for a weight typed where the watch logged none. */
+  unit: "lb" | "kg";
+}
+
 /** A switched-on condition profile as the UI labels it: its check's label and scale, and its care label. */
 export interface ConditionViewDto {
   profileId: string;
@@ -1584,6 +1623,12 @@ export const api = {
   unstartSession: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/unstart`, {}),
   /** The steps as the watch will hold them (Phase 3). 404 while the switch is off; 409 `{error: reason}`. */
   watchPreview: (workoutId: string) => get<WatchPreviewDto>(`/api/sessions/${encodeURIComponent(workoutId)}/watch-preview`),
+  /**
+   * The quick review after a watch session (Phase 3): the watch's logged sets paired with the locked build, the
+   * activity's times and the post-check's profiles. 404 while the switch is off, and whenever it is not offered. The
+   * save is `savePerformed` with `source: "watch_review"`, through the outbox.
+   */
+  watchReview: (workoutId: string) => get<WatchReviewBasisDto>(`/api/sessions/${encodeURIComponent(workoutId)}/watch-review`),
   /**
    * Send the previewed build to the watch: the build locks (the slot stays built) and its push is queued. `digest` is
    * the shown preview's (`WatchPreviewDto.digest`). 409 `{error: reason}` (`WatchUnavailableReason`), `{error: "stale",

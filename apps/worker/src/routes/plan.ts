@@ -74,6 +74,7 @@ import { isLoosePlan } from "../services/coach-plans.js";
 import { repairPlannedWorkoutFidelity } from "../services/plan-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { todayConditions } from "../services/condition-views.js";
+import { watchReviewOffers } from "../services/session-watch-review.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -760,6 +761,8 @@ planRoutes.get("/today", async (c) => {
   ]);
   const todaySessionRows = groupTodaySessions(todayRows, today);
   const onWatch = await sessionsOnWatch(db, c.env, userId, todaySessionRows);
+  // "Log your session" (Phase 3, spec §5): today's and yesterday's watch sessions to review — none while the switch is off.
+  const watchReviews = watchPushEnabled(c.env) ? await watchReviewOffers(db, userId, today) : [];
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
 
@@ -779,6 +782,7 @@ planRoutes.get("/today", async (c) => {
       build: t.build,
       onWatch: onWatch.has(t.row.id),
     })),
+    watchReviews,
     conditions,
     unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),
     needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),

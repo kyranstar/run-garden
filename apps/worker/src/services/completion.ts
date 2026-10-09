@@ -249,13 +249,13 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
   return [...affected].sort();
 }
 
-/** Does the app's own performed session of this activity exist (any state)?
- * Then the app named the row's title and discipline, and they stand. */
+/** Does the app's own performed session of this activity exist (any state) — its save, or a watch review of it
+ * (Phase 3)? Then the app named the row's title and discipline, and they stand. */
 async function appSessionOwns(db: Db, activityId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: performedSessions.id })
     .from(performedSessions)
-    .where(and(eq(performedSessions.activityId, activityId), eq(performedSessions.source, "app")))
+    .where(and(eq(performedSessions.activityId, activityId), inArray(performedSessions.source, ["app", "watch_review"])))
     .limit(1);
   return row !== undefined;
 }
