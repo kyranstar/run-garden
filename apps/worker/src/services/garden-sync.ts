@@ -675,6 +675,10 @@ export interface GardenAdvanceOptions {
    * catch-up steps. Defaults to UPGRADE_RESIM_MAX_DAYS / CATCH_UP_MAX_DAYS;
    * tests set it low to exercise resumption. */
   maxResimDays?: number;
+  /** Per-invocation day cap for the plain walk forward. Uncapped by default (a garden read walks to today); the
+   * hourly cron sets it so one invocation never walks weeks (cron reliability, part 2). A capped walk persists the
+   * day it stopped at, and the next call walks on from there (`resimPending`). */
+  maxWalkDays?: number;
 }
 
 /**
@@ -913,10 +917,25 @@ export async function advanceGarden(
 
   const today = todayInZone(prefs.timezone, now);
   const nowIso = nowInstant(now);
-  const { snapshot, simulatedDays, eventsEmitted } = await walkForward(db, userId, prefs, startSnapshot, today, nowIso);
+  const { snapshot, simulatedDays, eventsEmitted, capped } = await walkForward(
+    db,
+    userId,
+    prefs,
+    startSnapshot,
+    today,
+    nowIso,
+    opts?.maxWalkDays !== undefined ? { maxDays: opts.maxWalkDays } : {},
+  );
 
+  // A capped walk persists where it stopped — the same state the walk had reached day by day — and the next
+  // call walks on from there.
   await persistSnapshot(db, userId, snapshot);
-  return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
+  return {
+    simulatedDays,
+    eventsEmitted,
+    lastSimulatedDate: snapshot.state.lastSimulatedDate,
+    ...(capped && opts?.maxWalkDays !== undefined ? { resimPending: true } : {}),
+  };
 }
 
 /**

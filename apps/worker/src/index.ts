@@ -182,6 +182,15 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
   await purgeExpiredStates(db);
 }
 
+/**
+ * How many days the hourly cron's garden step may simulate in one invocation — the plain walk forward, a restore's
+ * catch-up step and a version upgrade's rebuild alike (cron reliability, part 2). A day costs ~0.8 ms of CPU in node
+ * and ~11 D1 statements; a garden 45 days behind cost one invocation 36 ms and 480 statements on a realistic account,
+ * several times what the free plan lets an invocation spend. The daily case walks one day; anything longer finishes
+ * over the next runs, each persisting where it stopped (and a garden read walks the rest at once, before it renders).
+ */
+export const CRON_GARDEN_MAX_DAYS = 3;
+
 /** Thrown between steps of a per-user cron loop when a restore began for
  * that account while the loop was working on it (ruling B9). */
 class RestoreBegan extends Error {}
@@ -218,7 +227,10 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       await stillOurs();
       const rec = await reconcileCompletionStates(db, userId, prefs);
       await stillOurs();
-      const garden = await advanceGarden(db, userId, prefs);
+      const garden = await advanceGarden(db, userId, prefs, new Date(), {
+        maxWalkDays: CRON_GARDEN_MAX_DAYS,
+        maxResimDays: CRON_GARDEN_MAX_DAYS,
+      });
       await stillOurs();
       await healLegacySyncState(db, userId);
       await stillOurs();
