@@ -1031,3 +1031,42 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     expect(body()).not.toContain("Garden program — 2026-10-05");
   });
 });
+
+describe("with the switch off, the sheet is as it was before the watch (audit 3-B UI-13, UI-2)", () => {
+  for (const watch of ["null", "absent"] as const) {
+    it(`a locked build still built (a Start whose two writes split; sent before the switch went off), watch ${watch}: read-only, no foot`, async () => {
+      features.player = true;
+      const s = session({ locked: true, contentState: "built", ...(watch === "null" ? { watch: null } : {}) } as Partial<SessionDto>);
+      if (watch === "absent") delete (s as { watch?: unknown }).watch;
+      mount(s);
+      await until(() => body().includes("Supported row"), "the moves");
+      expect(document.querySelector(".sheet-foot")).toBeNull();
+      expect(button("Start · 30 min")).toBeUndefined();
+      expect(button("Move")).toBeUndefined();
+      expect(button("Skip")).toBeUndefined();
+      expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    });
+
+    it(`watch ${watch}: the foot's action row sits straight in the foot, with no wrapper`, async () => {
+      features.player = true;
+      const s = session(watch === "null" ? ({ watch: null } as Partial<SessionDto>) : {});
+      if (watch === "absent") delete (s as { watch?: unknown }).watch;
+      mount(s);
+      await until(() => !!button("Start · 30 min"), "Start");
+      expect(document.querySelector(".session-foot")).toBeNull();
+      const row = document.querySelector(".sheet-foot > .btn-row");
+      expect([...(row?.querySelectorAll("button") ?? [])].map((b) => b.textContent)).toEqual(["Start · 30 min", "Move", "Skip"]);
+    });
+  }
+
+  it("a locked build still built and SENT (the watch says so): Start, Move and Skip stay", async () => {
+    features.player = true;
+    for (const state of ["sending", "on_watch", "failed"] as const) {
+      mount(session({ locked: true, contentState: "built", watch: { state } } as Partial<SessionDto>));
+      await until(() => body().includes("Supported row"), "the moves");
+      expect([button("Start · 30 min"), button("Move"), button("Skip")].every(Boolean)).toBe(true);
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+});

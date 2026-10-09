@@ -71,6 +71,8 @@ const PICKER_TITLE: Record<Picker, string> = { mode: "Mode", theme: "Theme", min
 const START_BASIS_WAIT_MS = 1_500;
 /** How often the sheet reads the session again while it is "Sending…" (the drain, or the hourly lane, runs the push). */
 const WATCH_POLL_MS = 4_000;
+/** The watch states of a SENT build (its push queued, running, failed or verified). */
+const SENT_STATES: ReadonlyArray<string> = ["sending", "on_watch", "failed", "off_watch"];
 
 /** The program's name: the row's title without the theme a build appends. */
 function withoutTheme(title: string, theme: string | null | undefined): string {
@@ -348,9 +350,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const canContinue = features.player && !skipped && s?.contentState === "started" && continuable(s.build?.date ?? date, today);
   // SENT TO THE WATCH (Phase 3): Send locks the build and the slot stays built. The build is the watch's, so nothing
   // rebuilds it — but the session is still today's to do: Start plays that very build, Move takes it off the watch,
-  // Skip leaves the watch alone.
-  const sentHere = !!s && s.locked && s.contentState === "built";
+  // Skip leaves the watch alone. Sent is what the session's watch says, never the lock alone (audit 3-B UI-13): a
+  // locked build still built is also a Start whose two writes split, or one sent before the switch went off — and
+  // that sheet stays read-only, as it was before the watch.
   const watch = s?.watch ?? null;
+  const sentHere = !!s && s.locked && s.contentState === "built" && !!watch && SENT_STATES.includes(watch.state);
   // Nothing about the watch on a skipped session (2a-R15: Un-skip and nothing else) or a done one (its copy is the
   // session the athlete did, and stays).
   const watchShown = !!s && !!watch && !skipped && s.contentState !== "done" && w.completionState !== "completed";
@@ -485,7 +489,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   }
   if (actions.length > 0) footRows.push(<div key="actions" className="btn-row">{actions}</div>);
   // One column, top to bottom as drawn: the sheet's foot stacks its children in reverse (styles.css `.sheet-foot`).
-  const footer = footRows.length > 0 ? <div className="session-foot">{footRows}</div> : null;
+  // Without the watch in it, the action row sits straight in the foot, as it did before the watch (audit 3-B UI-2).
+  const footer = watchRow || offersSend ? <div className="session-foot">{footRows}</div> : (footRows[0] ?? null);
 
   let body: React.ReactNode;
   if (session.isLoading) body = <Spinner label="Loading the session" />;
