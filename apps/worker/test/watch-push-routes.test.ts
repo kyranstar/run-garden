@@ -3,7 +3,7 @@
  * 3-R4, 3-R5).
  *
  *   GET  /api/sessions/:workoutId/watch-preview   the steps as the watch will hold them, read off the wire program
- *   POST /api/sessions/:workoutId/send-to-watch   {buildId} → lock the build (content stays `built`), queue push:<buildId>
+ *   POST /api/sessions/:workoutId/send-to-watch   {buildId, digest} → lock the build (content stays `built`), queue push:<buildId>
  *   POST /api/sessions/:workoutId/take-off-watch  supersede a queued push, or queue unpush:<buildId> for a pushed one
  *
  * The switch (`WATCH_PUSH_ENABLED`, a Worker var, only "1" is on) off: every watch route is 404 and every session
@@ -76,8 +76,15 @@ const call = async (method: "GET" | "POST", path: string, opts: { env?: Env; bod
     opts.env ?? switchOn(),
   );
 };
-const send = (workoutId: string, buildId: string, opts: { env?: Env; who?: string } = {}) =>
-  call("POST", `${workoutId}/send-to-watch`, { ...opts, body: { buildId } });
+/**
+ * Send as the sheet does: with the digest of the preview it showed (audit W-2 / W-8). A preview that is refused has
+ * none; Send is then asked with a placeholder, and answers its own refusal first.
+ */
+const send = async (workoutId: string, buildId: string, opts: { env?: Env; who?: string } = {}) => {
+  const preview = await call("GET", `${workoutId}/watch-preview`, opts);
+  const digest = preview.status === 200 ? ((await preview.json()) as { digest: string }).digest : "no-preview";
+  return call("POST", `${workoutId}/send-to-watch`, { ...opts, body: { buildId, digest } });
+};
 const takeOff = (workoutId: string, opts: { env?: Env } = {}) => call("POST", `${workoutId}/take-off-watch`, { ...opts, body: {} });
 
 const jobsOf = (workoutId: string) => db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId));

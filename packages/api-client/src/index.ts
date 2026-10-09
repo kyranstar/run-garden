@@ -1063,7 +1063,9 @@ export type WatchUnavailableReason =
   | "not_connected"
   | "too_long"
   | "empty"
-  | "taking_off";
+  | "taking_off"
+  /** Send's 409 only: this build's copy is on the watch already (its removal failed or was neutralised) — Take off. */
+  | "already_sent";
 
 /**
  * `ready` → Send to watch; `sending` → "Sending…"; `on_watch` → "On your watch" with Take off watch; `failed` →
@@ -1097,6 +1099,8 @@ export interface WatchPreviewDto {
   freeText: number;
   /** Set: no Send ("Too long for the watch"), and no steps. */
   refusal: "empty" | "too_long" | null;
+  /** The digest of the payload this preview rendered: Send carries it back, so what is sent is what was shown. */
+  digest: string;
 }
 
 /** A switched-on condition profile as the UI labels it: its check's label and scale, and its care label. */
@@ -1573,11 +1577,13 @@ export const api = {
   /** The steps as the watch will hold them (Phase 3). 404 while the switch is off; 409 `{error: reason}`. */
   watchPreview: (workoutId: string) => get<WatchPreviewDto>(`/api/sessions/${encodeURIComponent(workoutId)}/watch-preview`),
   /**
-   * Send the previewed build to the watch: the build locks (the slot stays built) and its push is queued. 409
-   * `{error: reason}` (`WatchUnavailableReason`) or `{error: "stale", session}` (show `session`, preview again).
+   * Send the previewed build to the watch: the build locks (the slot stays built) and its push is queued. `digest` is
+   * the shown preview's (`WatchPreviewDto.digest`). 409 `{error: reason}` (`WatchUnavailableReason`), `{error: "stale",
+   * session}` (show `session`, preview again) or `{error: "stale_preview", preview}` (the payload is not the one shown:
+   * nothing was sent — swap `preview` in, and Send again with its digest).
    */
-  sendToWatch: (workoutId: string, buildId: string) =>
-    post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/send-to-watch`, { buildId }),
+  sendToWatch: (workoutId: string, buildId: string, digest: string) =>
+    post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/send-to-watch`, { buildId, digest }),
   /** Take the sent session off the watch (or stop it reaching it); idempotent. */
   takeOffWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/take-off-watch`, {}),
   /**

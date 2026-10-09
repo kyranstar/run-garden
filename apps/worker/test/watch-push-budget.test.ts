@@ -92,11 +92,12 @@ async function builtSlot(id?: string) {
 const report = (what: string, m: { d1: number; fetches: number; total: number }) =>
   console.info(`[budget] ${what}: ${m.d1} D1 + ${m.fetches} COROS = ${m.total}`);
 
+const digestOf = async (workoutId: string) => ((await (await invoke("GET", `${workoutId}/watch-preview`)).res.json()) as { digest: string }).digest;
+
 describe("Send", () => {
   it("validates, locks and enqueues within the budget, and runs no lane of its own", async () => {
     const { workoutId, buildId } = await builtSlot();
-    const preview = (await (await invoke("GET", `${workoutId}/watch-preview`)).res.json()) as { digest?: string };
-    const m = await invoke("POST", `${workoutId}/send-to-watch`, { buildId, ...(preview.digest ? { digest: preview.digest } : {}) });
+    const m = await invoke("POST", `${workoutId}/send-to-watch`, { buildId, digest: await digestOf(workoutId) });
     report("Send", m);
     expect(m.res.status).toBe(200);
     expect(await m.res.json()).toMatchObject({ locked: true, watch: { state: "sending" } });
@@ -120,6 +121,26 @@ describe("the preview", () => {
     expect(sent.res.status).toBe(200);
     expect(sent.total).toBeLessThanOrEqual(BUDGET);
   });
+
+  it("the digest path: a failed push's preview (what Retry sends), Retry with its digest, and a stale_preview refusal", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    const failed = await invoke("GET", `${workoutId}/watch-preview`);
+    report("preview (failed push: what Retry sends)", failed);
+    expect(failed.res.status).toBe(200);
+    expect(failed.total).toBeLessThanOrEqual(BUDGET);
+    const stale = await invoke("POST", `${workoutId}/send-to-watch`, { buildId, digest: "0".repeat(64) });
+    report("Send refused stale_preview (with the fresh preview)", stale);
+    expect(stale.res.status).toBe(409);
+    expect(stale.total).toBeLessThanOrEqual(BUDGET);
+    const { digest } = (await failed.res.json()) as { digest: string };
+    const retry = await invoke("POST", `${workoutId}/send-to-watch`, { buildId, digest });
+    report("Retry (with the failed push's preview digest)", retry);
+    expect(retry.res.status).toBe(200);
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
+    expect(retry.total).toBeLessThanOrEqual(BUDGET);
+  });
 });
 
 describe("Take off", () => {
@@ -133,6 +154,19 @@ describe("Take off", () => {
     expect(m.res.status).toBe(200);
     expect(m.waitUntil).toBe(0);
     expect(m.fetches).toBe(0);
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it("of a copy left on the watch (its unpush neutralised by a restore): requeues it within the budget", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    await invoke("POST", `${workoutId}/take-off-watch`, {});
+    await db.update(corosWriteJobs).set({ status: "restored" }).where(eq(corosWriteJobs.id, `unpush:${buildId}`));
+    const m = await invoke("POST", `${workoutId}/take-off-watch`, {});
+    report("Take off (a copy left on the watch)", m);
+    expect(m.res.status).toBe(200);
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
     expect(m.total).toBeLessThanOrEqual(BUDGET);
   });

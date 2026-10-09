@@ -17,7 +17,7 @@ import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, loadSession, startSession, unstartSession, type BuildPayload } from "../src/services/session-build.js";
 import { InvalidSaveError, savePerformedSession } from "../src/services/session-save.js";
-import { sendToWatch } from "../src/services/watch-push.js";
+import { sendToWatch, takeOffWatch, unpushBuild } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
 import { DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 
@@ -141,6 +141,36 @@ describe("removing a sent session", () => {
     const unpush = (await jobsOf(workoutId)).find((j) => j.kind === "coach_delete_workout");
     expect(unpush).toMatchObject({ status: "queued" });
     expect(unpush!.payload).toMatchObject({ name: (push!.payload as { name: string }).name, idInPlan: "91", happenDay: DAY });
+  });
+});
+
+describe("a done session's copy stays on the watch (audit 3-A life U-1)", () => {
+  // The copy is the session the athlete did (or the record a watch review pairs with): nothing takes it off.
+  const unpushes = async (workoutId: string) => (await jobsOf(workoutId)).filter((j) => j.kind === "coach_delete_workout");
+
+  it("Take off of a done slot queues nothing", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    await db.update(plannedWorkouts).set({ contentState: "done", completionState: "completed" }).where(eq(plannedWorkouts.id, workoutId));
+    await takeOffWatch(db, userId, workoutId, ctx());
+    expect(await unpushes(workoutId)).toEqual([]);
+    expect((await jobsOf(workoutId)).find((j) => j.id === `push:${buildId}`)!.status).toBe("verified");
+  });
+
+  it("a completed slot moved to another day queues nothing", async () => {
+    const { workoutId } = await sentSlot({ verified: true });
+    await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, workoutId));
+    await applyMove(db, { userId, workoutId, toDate: TOMORROW, toTime: "18:00", source: "app", corosWritesEnabled: true });
+    expect(await unpushes(workoutId)).toEqual([]);
+  });
+
+  it("a done slot moved while writes are off owes nothing either", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    await db.update(plannedWorkouts).set({ contentState: "done", completionState: "completed" }).where(eq(plannedWorkouts.id, workoutId));
+    await applyMove(db, { userId, workoutId, toDate: TOMORROW, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    const build = (await buildRows(workoutId)).find((b) => b.id === buildId)!;
+    expect((build.payload as { unpushOwedAt?: string }).unpushOwedAt).toBeUndefined();
+    await unpushBuild(db, userId, await rowOf(db, workoutId), buildId, NOON, { corosWritesEnabled: true });
+    expect(await unpushes(workoutId)).toEqual([]);
   });
 });
 
