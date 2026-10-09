@@ -193,3 +193,35 @@ describe("the program session heading the card", () => {
     expect(open?.className).not.toContain("btn-primary");
   });
 });
+
+describe("a sent session on Today (Phase 3 Task 8; approved mocks §2 'Today · a sent session')", () => {
+  const sentPayload = (onWatch: boolean | undefined) => {
+    const p = todayPayload(slot());
+    return { ...p, todaySessions: p.todaySessions.map((s) => ({ ...s, ...(onWatch === undefined ? {} : { onWatch }) })) };
+  };
+
+  it("heading the card: On your watch beside Start", async () => {
+    const { card } = await renderCard(sentPayload(true));
+    const actions = card.querySelector(".today-actions")!;
+    expect(actions.querySelector(".today-play")?.textContent).toBe("Start");
+    expect(actions.querySelector(".today-on-watch")?.textContent).toBe("On your watch");
+  });
+
+  it("under the day's run: On your watch under its line", async () => {
+    const run = { ...slot({ id: "run-1", title: "Easy Run", category: "easy", sport: "run", origin: null, contentState: null, programId: null, effectiveTime: "07:00" }) };
+    const payload = { ...todayPayload(run), todaySessions: [{ workout: run, build: null }, { workout: slot(), build: null, onWatch: true }] };
+    const { card } = await renderCard(payload);
+    const line = card.querySelector(".today-session")!;
+    expect(line.querySelector(".today-session-text .today-on-watch")?.textContent).toBe("On your watch");
+  });
+
+  it("not on the watch, or the switch off (false, or a payload from before Phase 3): nothing about the watch", async () => {
+    for (const onWatch of [false, undefined]) {
+      const { card } = await renderCard(sentPayload(onWatch));
+      expect(card.querySelector(".today-on-watch")).toBeNull();
+      expect(card.textContent).not.toContain("On your watch");
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+});

@@ -205,6 +205,11 @@ export interface TodayResponse {
       place?: string;
       lead?: SessionLead;
     } | null;
+    /**
+     * The session's sent build is on the watch (Phase 3): its push verified and the row holding the copy's address.
+     * Today marks it "On your watch". False while the switch is off; absent from a payload cached before Phase 3.
+     */
+    onWatch?: boolean;
   }>;
   /** The condition chips: switched-on profiles with today's reading; empty without an active program. */
   conditions: Array<ConditionViewDto & { today: { value: number | null; feelingOff: boolean } | null }>;
@@ -1097,7 +1102,10 @@ export interface WatchPreviewDto {
   stamp: string;
   steps: WatchPreviewStepDto[];
   freeText: number;
-  /** Set: no Send ("Too long for the watch"), and no steps. */
+  /**
+   * Set: no Send. `too_long` ("Too long for the watch" at the preview's foot) still lists every step; `empty` lists
+   * none.
+   */
   refusal: "empty" | "too_long" | null;
   /** The digest of the payload this preview rendered: Send carries it back, so what is sent is what was shown. */
   digest: string;

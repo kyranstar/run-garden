@@ -5,6 +5,11 @@
 #   bash apps/web/e2e/fixture-stack.sh          # start, wait until healthy
 #   bash apps/web/e2e/fixture-stack.sh stop     # stop both and remove the state
 #
+# RG_E2E_WATCH=1 turns the watch switch on (WATCH_PUSH_ENABLED, Phase 3; off by
+# default, as in production): watch.spec.ts's journeys need it. The fixture's
+# COROS connection holds no credentials, so a queued push stays queued — no
+# call ever leaves the machine.
+#
 # wrangler needs Node >= 22; the caller puts it on PATH. The migrations and
 # `wrangler dev` share one --persist-to directory, otherwise they resolve to
 # different sqlite files. apps/worker/.dev.vars must exist (dummy values are
@@ -62,7 +67,7 @@ supervise_worker() {
   while :; do
     npx wrangler dev --port "$API_PORT" --persist-to "$STATE" \
       --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 --var AI_GATEWAY_BASE_URL:http://127.0.0.1:9 \
-      --var "APP_URL:http://localhost:$WEB_PORT" >>"$STATE/worker.log" 2>&1 &
+      --var "APP_URL:http://localhost:$WEB_PORT" --var "WATCH_PUSH_ENABLED:${RG_E2E_WATCH:-0}" >>"$STATE/worker.log" 2>&1 &
     child=$!
     wait "$child"; rc=$?
     if [ "$rc" -gt 128 ]; then rc="$rc (signal $((rc - 128)))"; fi

@@ -13,6 +13,7 @@ import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import { addDays, type SessionLead } from "@rg/domain";
 import { CategoryDot, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
+import { IconWatch } from "../icons.js";
 import { chimes } from "../player/audio.js";
 import { offlineDb } from "../offline/idb.js";
 import { outboxEntries } from "../offline/outbox.js";
@@ -147,6 +148,16 @@ export function usePendingSaves(enabled: boolean): Readonly<Record<string, Pendi
   return out;
 }
 
+/** A sent session on the watch (Phase 3; approved mocks §2 "Today · a sent session"). */
+function OnYourWatch() {
+  return (
+    <span className="today-on-watch">
+      <IconWatch size={16} />
+      On your watch
+    </span>
+  );
+}
+
 /** The program session as the card's title: a program day. */
 export function TodayProgramLead({ session, today, pending = null }: { session: TodaySession; today: string; pending?: PendingSave | null }) {
   const w = session.workout;
@@ -178,6 +189,7 @@ export function TodayProgramLead({ session, today, pending = null }: { session: 
             {play}
           </Link>
         ) : null}
+        {!done && !skipped && session.onWatch ? <OnYourWatch /> : null}
         {/* Start already opens the sheet. */}
         {play === "Start" ? null : (
           <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
@@ -202,6 +214,7 @@ export function TodayProgramLine({ session, today, pending = null }: { session: 
       <div className="today-session-text">
         <span className="today-session-name">{programName(session)}</span>
         <span className="today-session-meta">{meta}</span>
+        {!pending && !sessionDone(w) && !sessionSkipped(w) && session.onWatch ? <OnYourWatch /> : null}
       </div>
       {pending ? (
         <span className="today-session-done">Done · will sync</span>

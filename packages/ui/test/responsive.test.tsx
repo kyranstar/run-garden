@@ -700,3 +700,20 @@ describe("the no-plan state", () => {
     expect(gardenSrc).toContain("const dockPanelOpen = (dockOpen || cardAlwaysOpen) && planActive;");
   });
 });
+
+describe("the watch's surfaces exist at every width (Phase 3 Tasks 8 and 10)", () => {
+  // The session sheet's foot, the preview of what the watch will show and Today's "On your watch": phone-first rules
+  // in the base layer, nothing a width query adds or takes away.
+  const WATCH_CLASSES = [".session-foot", ".btn-row--split", ".watch-state", ".watch-state-label", ".wsteps", ".wstep", ".wstep-free", ".today-on-watch"];
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+
+  it("every one is styled in the base layer", () => {
+    for (const cls of WATCH_CLASSES) expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>]`));
+  });
+
+  it("no width query touches any of them", () => {
+    for (const block of widthBlocks) {
+      for (const cls of WATCH_CLASSES) expect(block.body, `${block.condition} ${cls}`).not.toMatch(new RegExp(`${esc(cls)}(?![\\w-])`));
+    }
+  });
+});

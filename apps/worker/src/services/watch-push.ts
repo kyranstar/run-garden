@@ -531,6 +531,25 @@ async function previewOf(
 ): Promise<WatchPreviewDto> {
   const freeText = payload.session.steps.filter((s) => s.originId === FREE_TEXT_ORIGIN_ID).length;
   const head = { buildId: payload.buildId, stamp: payload.name, freeText, digest: await pushDigest(payload) };
+  if (refusal === "too_long") {
+    // NO WIRE PROGRAM CAN HOLD IT (more than WATCH_MAX_STEPS), so nothing is built and nothing can be sent — but the
+    // preview still lists every step as the watch would have had it (owner call 8, 2026-10-08: "Too long for the
+    // watch" takes Send's place at the preview's foot, under the steps). Each step reads as `previewOfProgram` reads
+    // it off a wire program: a catalog step by its English name, a free-text one by its own.
+    const steps = payload.session.steps.map((s) => {
+      const free = s.originId === FREE_TEXT_ORIGIN_ID;
+      return {
+        name: free ? s.name : (COROS_EXERCISE_NAMES[s.name] ?? s.name),
+        freeText: free,
+        target: s.target,
+        grams: s.grams,
+        overview: s.overview,
+        restSeconds: s.restSeconds,
+        load: loadOf(s.grams, unit),
+      };
+    });
+    return { ...head, steps, refusal };
+  }
   if (refusal) return { ...head, steps: [], refusal };
   const program = buildProgramWatchProgram(
     { happenDay: String(localDateToCorosDay(payload.happenDay)), name: payload.name, session: payload.session },
@@ -543,7 +562,7 @@ async function previewOf(
 /**
  * `GET /api/sessions/:workoutId/watch-preview`: the steps as the watch will hold them, read off the very program the
  * push would write (the preview IS the wire), the stamp it would carry, and the digest Send carries back. A build the
- * watch cannot take says why in `refusal`, with no steps. Throws `SessionNotFoundError`, `WatchUnavailableError`
+ * watch cannot take says why in `refusal`: too long, with its steps still listed; empty, with none. Throws `SessionNotFoundError`, `WatchUnavailableError`
  * (Send would be refused for that reason).
  *
  * WHICH PAYLOAD (audit W-2 / W-8). A push queued, running or verified previews its own payload, against a catalog

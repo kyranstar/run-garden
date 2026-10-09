@@ -52,6 +52,7 @@ import {
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
+import { watchPushEnabled, type Env } from "../env.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -511,6 +512,8 @@ function groupTodaySessions(
 ): Array<{
   row: typeof plannedWorkouts.$inferSelect;
   build: { mode: string; theme: string | null; minutes: number; place?: string; lead?: SessionLead } | null;
+  /** The slot's locked build — Start's, or Send's (Phase 3): the one a push can name. */
+  lockedBuildId: string | null;
 }> {
   const byId = new Map<string, { row: typeof plannedWorkouts.$inferSelect; builds: TodayBuildFields[] }>();
   for (const { w, ...b } of rows) {
@@ -525,6 +528,7 @@ function groupTodaySessions(
       sorted.find((b) => Number(b.buildVersion) > 0 && b.buildDate === today);
     return {
       row,
+      lockedBuildId: sorted.find((b) => b.buildLockedAt !== null)?.buildId ?? null,
       build:
         current && current.mode !== null && current.minutes !== null
           ? {
@@ -540,11 +544,44 @@ function groupTodaySessions(
 }
 
 /**
+ * TODAY'S SESSIONS ON THE WATCH (Phase 3; approved mocks §2 "Today · a sent session"): the slots whose locked build's
+ * push verified and whose row holds the copy's address — the sheet's `on_watch`. Nothing while the switch is off, and
+ * no read at all unless a slot of the day has a locked build and an address: then one read of the jobs, by id.
+ */
+async function sessionsOnWatch(
+  db: Db,
+  env: Env,
+  userId: string,
+  sessions: ReadonlyArray<{ row: typeof plannedWorkouts.$inferSelect; lockedBuildId: string | null }>,
+): Promise<Set<string>> {
+  if (!watchPushEnabled(env)) return new Set();
+  const addressed = sessions.filter((s) => s.lockedBuildId !== null && watchAddressOf(s.row) !== null);
+  if (addressed.length === 0) return new Set();
+  const verified = new Set<string>();
+  for (const ids of chunkIds(addressed.map((s) => `push:${s.lockedBuildId}`))) {
+    const rows = await db
+      .select({ id: corosWriteJobs.id })
+      .from(corosWriteJobs)
+      .where(
+        and(
+          eq(corosWriteJobs.userId, userId),
+          inArray(corosWriteJobs.id, ids),
+          eq(corosWriteJobs.kind, "program_session_push"),
+          eq(corosWriteJobs.status, "verified"),
+        ),
+      );
+    for (const r of rows) verified.add(r.id);
+  }
+  return new Set(addressed.filter((s) => verified.has(`push:${s.lockedBuildId}`)).map((s) => s.row.id));
+}
+
+/**
  * What Today reads of each build (audit M6): the version, the lock, the day it was built for, and the view fields it
  * shows (mode, theme, minutes, place, and the line of moves the build stored as `view.lead`) — taken from the stored
  * payload in SQL, never the payload itself (100+ KB a build).
  */
 const todayBuildFields = {
+  buildId: sessionBuilds.id,
   buildVersion: sessionBuilds.version,
   buildLockedAt: sessionBuilds.lockedAt,
   buildDate: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')`,
@@ -555,6 +592,7 @@ const todayBuildFields = {
   lead: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.lead')`,
 };
 type TodayBuildFields = {
+  buildId: string | null;
   buildVersion: number | null;
   buildLockedAt: string | null;
   buildDate: string | null;
@@ -721,6 +759,7 @@ planRoutes.get("/today", async (c) => {
     todayConditions(db, userId, today),
   ]);
   const todaySessionRows = groupTodaySessions(todayRows, today);
+  const onWatch = await sessionsOnWatch(db, c.env, userId, todaySessionRows);
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
 
@@ -738,6 +777,7 @@ planRoutes.get("/today", async (c) => {
     todaySessions: todaySessionRows.map((t) => ({
       workout: workoutDto(t.row, syncViews.get(t.row.id), catalog, undefined, prefs.weightUnit),
       build: t.build,
+      onWatch: onWatch.has(t.row.id),
     })),
     conditions,
     unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),
