@@ -48,6 +48,7 @@ import type { PaceIntensity } from "@rg/domain";
 import {
   corosDayToLocalDate,
   corosProgramFingerprint,
+  corosStructureFingerprint,
   localDateToCorosDay,
   programTextFingerprint,
   type RawCorosEntity,
@@ -174,6 +175,12 @@ export interface CreateResult {
    * fingerprint, so the import can tell a step renamed in COROS (Phase 3).
    */
   wireTextFingerprint?: string;
+  /**
+   * `corosStructureFingerprint` of the same program — the wire fingerprint without the program's name. A sent
+   * program session records it beside the other two, so the import can tell the copy the athlete renamed in the
+   * COROS app from another workout at its recycled address (audit 3-B S-1).
+   */
+  wireStructureFingerprint?: string;
   error?: string;
 }
 
@@ -1734,6 +1741,7 @@ export async function createWorkout(
             ? {
                 wireFingerprint: corosProgramFingerprint(existing.program),
                 wireTextFingerprint: programTextFingerprint(existing.program),
+                wireStructureFingerprint: corosStructureFingerprint(existing.program),
               }
             : {}),
         };
@@ -1900,6 +1908,7 @@ export async function createWorkout(
         ...owed,
         wireFingerprint: observed ?? wireFingerprint,
         wireTextFingerprint: programTextFingerprint(found.program ?? program),
+        wireStructureFingerprint: corosStructureFingerprint(found.program ?? program),
       };
     }
     if (elsewhere) {

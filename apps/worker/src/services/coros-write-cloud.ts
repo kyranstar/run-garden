@@ -579,7 +579,13 @@ export async function executeCloudJobs(
           // import compares the next read with exactly these (Review Focus 5).
           const observed =
             result.wireFingerprint && result.wireTextFingerprint
-              ? { observed: { wire: result.wireFingerprint, text: result.wireTextFingerprint } }
+              ? {
+                  observed: {
+                    wire: result.wireFingerprint,
+                    text: result.wireTextFingerprint,
+                    ...(result.wireStructureFingerprint ? { structure: result.wireStructureFingerprint } : {}),
+                  },
+                }
               : {};
           const { attempts: _attempts, observed: _old, ...kept } = spec;
           await db

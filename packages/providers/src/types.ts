@@ -29,6 +29,12 @@ export interface SourcePlannedWorkout {
    * with what the push observed (Phase 3, spec §4.5).
    */
   textFingerprint?: string;
+  /**
+   * COROS only: `corosStructureFingerprint` of the RAW program — `contentFingerprint` without the program's name. A
+   * sent copy the athlete renamed in the COROS app keeps it; anything else at a recycled address does not (audit 3-B
+   * S-1). Rides the normalized shape for the same reason as `textFingerprint`.
+   */
+  structureFingerprint?: string;
   /** COROS only: the entity's `planProgramId`, the third id of a delete's triple (survives the `raw` strip too). */
   planProgramId?: string;
   isRestDay: boolean;

@@ -25,7 +25,8 @@
  *
  * THE WATCH (Phase 3, spec §4, §6). Every session response carries `watch` — null while the switch
  * (`WATCH_PUSH_ENABLED`) is off, so nothing about the watch renders — through one helper, `withWatch`. Off, the three
- * watch routes answer 404. Send answers 409 with the reason it is not offered (`not_today`, `not_built`, `done`,
+ * watch routes answer 404, and a PUT of a watch review (`source: "watch_review"`) answers 422, as every session but the
+ * app's own did before Phase 3 (audit 3-B S-5). Send answers 409 with the reason it is not offered (`not_today`, `not_built`, `done`,
  * `precheck`, `writes_off`, `not_connected`, `too_long`, `empty`, `taking_off`, `already_sent`), `stale` with the
  * fresh session, or `stale_preview` with the fresh preview (the payload is not the one the athlete was shown).
  */
@@ -371,7 +372,11 @@ sessionRoutes.put("/performed/:id", async (c) => {
   }
   const prefs = await loadPreferences(db, userId);
   try {
-    const outcome = await savePerformedSession(db, userId, c.req.param("id"), body, { now: nowInstant(), prefs });
+    const outcome = await savePerformedSession(db, userId, c.req.param("id"), body, {
+      now: nowInstant(),
+      prefs,
+      watchReviews: watchPushEnabled(c.env),
+    });
     if (outcome.status === "conflict") return c.json({ error: "conflict" }, 409);
     if (outcome.status === "slot_done") return c.json({ error: "slot_done" }, 409);
     if (outcome.status === "busy") return c.json({ error: "busy" }, 503);

@@ -23,7 +23,7 @@
  * records the garden's replay in its own transaction and leaves the walk to the next garden read (the record is the
  * guarantee, ruling 2b-R7): a strength review changes no day input, and a mobility one only its activity's sport.
  */
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import {
   activities,
   conditionChecks,
@@ -31,6 +31,7 @@ import {
   performedSessions,
   performedSets,
   plannedWorkouts,
+  programBlocks,
   programs,
   sessionBuilds,
   workoutCompletionMatches,
@@ -39,6 +40,7 @@ import {
   addDays,
   isLocalDate,
   SESSION_FORMATS,
+  sessionModeSchema,
   type PerformedSessionWire,
   type PerformedSet,
   type SessionFormat,
@@ -49,6 +51,7 @@ import { activeProfileIds, conditionView, type ConditionView } from "./condition
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { exerciseDisplayName } from "./logged-sets.js";
 import { gardenChangeStatement } from "./garden-sync.js";
+import { corosKeyOf, libraryIdsByKey } from "./coros-exercise-map.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { pushJobId, SessionNotFoundError, SETTLED_PUSH, type BuildPayload } from "./session-build.js";
 import {
@@ -130,16 +133,32 @@ function buildEntries(build: BuildPayload): Array<{ exerciseId: string; perSide:
 }
 
 /**
+ * A build move whose laps come back from the watch under its OWN library id: it reaches the watch by its T-code, and
+ * that T-code resolves back to it (`libraryIdsByKey`, the derivation's own map). Such a move never comes back as a
+ * `coros:` entry — skipped on the watch, it simply has no laps.
+ */
+export function mappedOnWatch(exerciseId: string): boolean {
+  const key = corosKeyOf(exerciseId);
+  return key !== null && libraryIdsByKey().get(key) === exerciseId;
+}
+
+/**
  * RULING 3-R7. The watch's entries paired with the build's: by library id first; then, for what is left, by order —
- * only when the build's entries left and the watch's UNMAPPED entries left (`coros:<T-code>`: a free-text step's laps)
- * number the same. A mapped watch entry the build does not hold is a move added on the watch: never paired by order,
+ * only when the build's FREE-TEXT entries left and the watch's UNMAPPED entries left (`coros:<T-code>`: a free-text
+ * step's laps) number the same. A mapped build move left over was skipped on the watch (it could only have come back
+ * under its own id), so it takes no part in the count: one skipped mapped move no longer un-pairs every free-text move
+ * (audit 3-B S-7). A mapped watch entry the build does not hold is a move added on the watch: never paired by order,
  * kept as its own entry. A paired entry shows what the watch logged — one lap per set, or per side of a one-sided move
  * (left, right, alternating), each pair answering one build set — and only where the watch logged fewer, the build's
  * remaining targets (not done). An entry with nothing logged shows its targets, not done (a skipped move).
  *
  * Order: the paired entries in the build's order, then the watch's own, then the build's with nothing logged.
  */
-export function pairWatchSets(build: BuildPayload, watch: ReadonlyArray<WatchEntry>): WatchReviewEntry[] {
+export function pairWatchSets(
+  build: BuildPayload,
+  watch: ReadonlyArray<WatchEntry>,
+  mapped: (exerciseId: string) => boolean = mappedOnWatch,
+): WatchReviewEntry[] {
   const entries = buildEntries(build);
   const pairedWith = new Map<number, number>();
   const used = new Set<number>();
@@ -150,7 +169,7 @@ export function pairWatchSets(build: BuildPayload, watch: ReadonlyArray<WatchEnt
       used.add(w);
     }
   });
-  const buildLeft = entries.map((_, b) => b).filter((b) => !pairedWith.has(b));
+  const buildLeft = entries.map((_, b) => b).filter((b) => !pairedWith.has(b) && !mapped(entries[b]!.exerciseId));
   const watchLeft = watch.map((_, w) => w).filter((w) => !used.has(w) && unmapped(watch[w]!.exerciseId));
   if (buildLeft.length > 0 && buildLeft.length === watchLeft.length) {
     buildLeft.forEach((b, i) => {
@@ -285,8 +304,12 @@ async function sessionDays(db: Db, r: Reviewed): Promise<string[]> {
 
 const within = (date: string, days: readonly string[]): boolean => days.some((d) => date >= d && date <= addDays(d, 1));
 
-/** Another session of the slot — or of its watch activity — is the app's own or a review already (3-R8): none to offer. */
-async function claimedAlready(db: Db, userId: string, slotId: string, activityId: string): Promise<boolean> {
+/**
+ * Another session of the slot — or of its watch activity — is the app's own or a review already (3-R8): none to offer,
+ * and none to save. The save asks it too, with its own id left out (audit 3-B S-3): asking the slot alone let an
+ * outbox review land on an activity another slot's app session had joined — one physical session counted twice.
+ */
+async function claimedAlready(db: Db, userId: string, slotId: string, activityId: string, except?: string): Promise<boolean> {
   const [row] = await db
     .select({ id: performedSessions.id })
     .from(performedSessions)
@@ -296,11 +319,15 @@ async function claimedAlready(db: Db, userId: string, slotId: string, activityId
         or(eq(performedSessions.workoutId, slotId), eq(performedSessions.activityId, activityId)),
         inArray(performedSessions.source, ["app", "watch_review"]),
         ne(performedSessions.payloadHash, PENDING_HASH),
+        ...(except !== undefined ? [ne(performedSessions.id, except)] : []),
       ),
     )
     .limit(1);
   return row !== undefined;
 }
+
+/** A non-negative number read out of a stored payload, rounded whole; null for anything else. */
+const wholeOrNull = (n: unknown): number | null => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.round(n) : null);
 
 /** A UTC instant as the save's wire takes it. */
 const instant = (iso: string): string => new Date(iso).toISOString();
@@ -499,7 +526,7 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
     if (!merge) return { status: "busy" };
     try {
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
-      if (await savedByAnother(db, userId, slot.id, p.id)) return { status: "slot_done" };
+      if (await claimedAlready(db, userId, slot.id, r.activity.id, p.id)) return { status: "slot_done" };
       await runAtomically(db, await reviewStatements(db, userId, p, hash, r, ctx.now));
     } finally {
       await releaseMergeLocks(db, userId, merge);
@@ -510,6 +537,46 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
   return { status: "saved", performedId: p.id, activityId: r.activity.id, matched: true, notes: [] };
 }
 
+/** The most JSON one set statement binds: well inside D1's 100 KB statement and 2 MB value limits, however counted. */
+const SET_JSON_BYTES = 60_000;
+
+/**
+ * THE SETS IN AS FEW STATEMENTS AS FIT (audit 3-B S-4): `INSERT … SELECT … FROM json_each(?)` over exactly the rows
+ * `setRows` makes for the app save, each value through its column's own driver mapping (a boolean as 0/1, the flags
+ * as JSON text). Five sets per plain INSERT under D1's 100 bound variables put a 75-set review at the 45-statement
+ * ceiling and 100 sets past it. Now one bound variable per statement and one statement per `SET_JSON_BYTES` of rows:
+ * a real review (UUID ids, library ids) is one statement even at the schema's 300-set limit; the largest payload the
+ * schema admits is a handful.
+ */
+function setStatements(db: Db, rows: ReturnType<typeof setRows>): AtomicStatement[] {
+  // Every column, in the table's order (`insert … select` fills them so; performed_sets has no generated column).
+  const columns = Object.entries(getTableColumns(performedSets));
+  const picks = sql.join(columns.map((_, i) => sql.raw(`json_extract(value, '$[${i}]')`)), sql`, `);
+  const insert = (chunk: string[]) => db.insert(performedSets).select(sql`select ${picks} from json_each(${`[${chunk.join(",")}]`})`);
+  const encoder = new TextEncoder();
+  const out: AtomicStatement[] = [];
+  let chunk: string[] = [];
+  let bytes = 0;
+  for (const row of rows) {
+    const json = JSON.stringify(
+      columns.map(([key, col]) => {
+        const v = (row as Record<string, unknown>)[key];
+        return v === null || v === undefined ? null : col.mapToDriverValue(v);
+      }),
+    );
+    const size = encoder.encode(json).length + 1;
+    if (chunk.length > 0 && bytes + size > SET_JSON_BYTES) {
+      out.push(insert(chunk));
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push(json);
+    bytes += size;
+  }
+  if (chunk.length > 0) out.push(insert(chunk));
+  return out;
+}
+
 /**
  * The save's one transaction: the session (`pending` first), its sets and checks, the watch's derived session gone,
  * the activity named by the slot and the build's discipline, the slot done, the new move's first day, the garden's
@@ -517,14 +584,26 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
  */
 async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire, hash: string, r: Reviewed, now: string): Promise<AtomicStatement[]> {
   // §9.2 from the locked build: a core lift → strength, else yoga (the watch files a mobility session as Strength).
-  const [core] = await db
+  // And in the same read, what the session WAS, from the locked build the review is of — never from the client, whose
+  // sheet has none of it (audit 3-B S-6): the engine reads mode (the 48-hour rule), theme (the rotation) and block
+  // (block awards) from history, and a watch build-day stored null proposed `build` again the next day.
+  const built = (path: string) => sql`json_extract(${sessionBuilds.payload}, ${path})`;
+  const [locked] = await db
     .select({
       core: sql<number>`exists (select 1 from json_each(${sessionBuilds.payload}, '$.build.items') where json_extract(value, '$.block') = 'core')`,
+      mode: sql<string | null>`${built("$.build.mode")}`,
+      theme: sql<string | null>`${built("$.build.theme")}`,
+      minutes: sql<number | null>`${built("$.build.minutes")}`,
+      plannedSeconds: sql<number | null>`${built("$.build.plannedSeconds")}`,
+      locationId: sql<string | null>`${built("$.build.locationId")}`,
+      blockRef: sql<string | null>`${built("$.build.blockRef")}`,
+      blockNumber: sql<number | null>`(select ${programBlocks.number} from ${programBlocks} where ${programBlocks.id} = ${built("$.build.blockRef")})`,
     })
     .from(sessionBuilds)
     .where(eq(sessionBuilds.id, r.build.id))
     .limit(1);
-  const discipline = core?.core ? "strength" : "yoga";
+  const discipline = locked?.core ? "strength" : "yoga";
+  const mode = sessionModeSchema.safeParse(locked?.mode);
   const prefs = await prefStatements(db, userId, p, now);
   const statements: AtomicStatement[] = [];
   const row = {
@@ -539,13 +618,13 @@ async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire,
     startedAt: p.startedAt,
     endedAt: p.endedAt,
     seconds: p.seconds,
-    plannedSeconds: p.plannedSeconds,
-    minutes: p.minutes,
-    mode: p.mode,
-    theme: p.theme,
-    locationId: p.locationId,
-    blockRef: p.blockRef,
-    blockNumber: p.blockNumber,
+    plannedSeconds: wholeOrNull(locked?.plannedSeconds),
+    minutes: wholeOrNull(locked?.minutes),
+    mode: mode.success ? mode.data : null,
+    theme: locked?.theme ?? null,
+    locationId: locked?.locationId ?? null,
+    blockRef: locked?.blockRef ?? null,
+    blockNumber: locked?.blockRef ? wholeOrNull(locked.blockNumber) : null,
     completed: p.completed,
     stepsTotal: p.stepsTotal,
     stepsDone: p.stepsDone,
@@ -561,7 +640,7 @@ async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire,
   // Its sets and checks — a retry clears what an earlier attempt left first.
   statements.push(db.delete(performedSets).where(eq(performedSets.performedSessionId, p.id)));
   statements.push(db.delete(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.performedSessionId, p.id))));
-  for (const batch of insertBatches(setRows(p.id, p))) statements.push(db.insert(performedSets).values(batch));
+  statements.push(...setStatements(db, setRows(p.id, p)));
   const checks = p.checks.map((c) => ({
     id: `${p.id}:${c.kind}:${c.profileId}`,
     userId,

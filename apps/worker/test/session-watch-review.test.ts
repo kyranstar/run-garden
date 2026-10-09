@@ -14,7 +14,10 @@ import { and, eq, isNull } from "drizzle-orm";
 import { schema } from "@rg/database";
 import {
   adaptiveConfigSchema,
+  addDays,
   canonicalJson,
+  PERFORMED_LIMITS,
+  performedSessionSaveSchema,
   type PerformedSessionWireInput,
   type PerformedSet,
   type SourceActivity,
@@ -30,8 +33,8 @@ import { sessionRoutes } from "../src/routes/sessions.js";
 import { ingestActivities } from "../src/services/completion.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
 import { buildDayInput } from "../src/services/garden-sync.js";
-import { pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
-import { savePerformedSession } from "../src/services/session-save.js";
+import { buildSession, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
+import { savePerformedSession, setRows } from "../src/services/session-save.js";
 import { pairWatchSets, watchReviewBasis } from "../src/services/session-watch-review.js";
 import { upsertWatchSession } from "../src/services/watch-sets.js";
 import { sendToWatch } from "../src/services/watch-push.js";
@@ -217,7 +220,8 @@ async function reviewBody(workoutId: string, over: Partial<PerformedSessionWireI
   };
 }
 
-const save = (body: PerformedSessionWireInput, now = AFTER) => savePerformedSession(db, userId, body.id, body, { now, prefs });
+/** The save as the route makes it with the switch on. */
+const save = (body: PerformedSessionWireInput, now = AFTER) => savePerformedSession(db, userId, body.id, body, { now, prefs, watchReviews: true });
 
 // ── 1. Pairing (Review Focus 4; ruling 3-R7) ──────────────────────────────────────────────────────────────────────
 
@@ -346,6 +350,40 @@ describe("pairWatchSets (ruling 3-R7)", () => {
     const build = miniBuild([{ id: "goblet", sets: 2 }]);
     const [goblet] = pairWatchSets(build, [{ exerciseId: "goblet", sets: watchSets(3) }]);
     expect(goblet!.sets.map((s) => s.from)).toEqual(["watch", "watch", "watch"]);
+  });
+
+  it("a MAPPED move skipped on the watch leaves the free-text moves pairing by order (audit 3-B S-7)", () => {
+    // `goblet` reaches the watch by its T-code: it only ever comes back under its own id, never as a `coros:` entry.
+    const build = miniBuild([{ id: "goblet", sets: 2 }, { id: "freeA", sets: 2 }, { id: "freeB", sets: 2 }]);
+    const entries = pairWatchSets(
+      build,
+      [
+        { exerciseId: "coros:T9001", sets: watchSets(2, { reps: 11 }) },
+        { exerciseId: "coros:T9002", sets: watchSets(2, { reps: 12 }) },
+      ],
+      (id) => id === "goblet",
+    );
+    expect(entries.map((e) => [e.exerciseId, e.sets.map((s) => [s.from, s.reps])])).toEqual([
+      ["freeA", [["watch", 11], ["watch", 11]]],
+      ["freeB", [["watch", 12], ["watch", 12]]],
+      ["goblet", [["target", 8], ["target", 8]]],
+    ]);
+  });
+
+  it("the real sent build: its one mapped move skipped, every free-text move still prefills from the watch (audit 3-B S-7)", async () => {
+    const s = await sentSlot();
+    const mapped = mappedItems(s.build);
+    const free = s.build.items.filter((i) => !corosKeyOf(i.exerciseId));
+    expect(mapped.length).toBeGreaterThan(0);
+    expect(free.length).toBeGreaterThan(1);
+    const sets3 = (reps: number) => watchSets(3, { reps });
+    const entries = pairWatchSets(s.build, [
+      ...mapped.slice(1).map((m) => ({ exerciseId: m.exerciseId, sets: sets3(8) })),
+      ...free.map((_, k) => ({ exerciseId: `coros:T90${10 + k}`, sets: sets3(11) })),
+    ]);
+    expect(entries.filter((e) => e.exerciseId.startsWith("coros:"))).toEqual([]);
+    const freeIds = new Set(free.map((f) => f.exerciseId));
+    expect(entries.filter((e) => freeIds.has(e.exerciseId) && e.sets[0]!.from === "watch")).toHaveLength(free.length);
   });
 });
 
@@ -584,6 +622,35 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     expect(await save(body)).toEqual({ status: "slot_done" });
   });
 
+  it("an app session of ANOTHER slot already on the watch activity → slot_done: one activity, one session (audit 3-B S-3)", async () => {
+    const s = await sentSlot();
+    const { activityId } = await watchDone(s);
+    const body = await reviewBody(s.workoutId); // the sheet opened while the review was offered: an outbox entry
+    // Slot B (on demand, same day), manually matched elsewhere: its app save joins the watch's activity X.
+    await db.insert(plannedWorkouts).values({
+      id: "slot-b", userId, planId: PROGRAM, sourceWorkoutId: "slot-b", title: "Extra lift", category: "strength", sport: "strength",
+      originalPlanDate: DAY, lastVerifiedCorosDate: "", effectiveDate: DAY, effectiveTime: "18:30", sourceContentFingerprint: "program",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "completed", origin: "on_demand", contentState: "outline", createdAt: NOON, updatedAt: NOON,
+    });
+    await db.insert(activities).values({
+      id: "act-y", userId, corosActivityId: null, source: "coros", startTime: `${DAY}T15:00:00Z`, sport: "strength", durationSeconds: 900,
+      sourceMergeConfidence: 1, createdAt: NOON, updatedAt: NOON,
+    });
+    await db.insert(workoutCompletionMatches).values({ id: "m-y", workoutId: "slot-b", activityId: "act-y", confidence: 1, method: "manual", matchedAt: NOON });
+    await db.update(activities).set({ completionMatchId: "m-y" }).where(eq(activities.id, "act-y"));
+    const appB: PerformedSessionWireInput = {
+      id: "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b", source: "app", sourceRef: null, workoutId: "slot-b", buildId: null,
+      localDate: DAY, startedAt: STARTED, endedAt: `${DAY}T19:37:00.000Z`, seconds: 1920, plannedSeconds: null, minutes: null, mode: null,
+      theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null, stepsDone: null, movesDone: [],
+      note: null, newMove: null, entries: [], checks: [], review: {},
+    };
+    expect(await save(appB)).toMatchObject({ status: "saved", activityId, matched: false });
+    expect(await save(body)).toEqual({ status: "slot_done" });
+    const onX = await db.select({ source: performedSessions.source }).from(performedSessions).where(eq(performedSessions.activityId, activityId));
+    expect(onX.filter((r) => r.source !== "watch")).toEqual([{ source: "app" }]);
+  });
+
   it("a later refresh of the activity: the watch copy stays gone, and the slot's title and the build's sport stay", async () => {
     const s = await sentSlot();
     const { activityId } = await watchDone(s);
@@ -621,6 +688,59 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     expect(await db.select().from(performedSets)).toHaveLength(300);
   });
 
+  it("the save's statements do not grow with its sets: 300 sets through the route stay within the budget, rows as the app's (audit 3-B S-4)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    const body = await reviewBody(s.workoutId);
+    const many = Array.from({ length: 6 }, (_, k) => ({
+      exerciseId: k === 0 ? body.entries![0]!.exerciseId : `coros:T90${10 + k}`,
+      implement: k === 1 ? "dumbbell" : null,
+      format: k === 2 ? ("straight" as const) : null,
+      perSide: k === 3,
+      sets: Array.from({ length: 50 }, (_, i) => ({
+        setIndex: i,
+        side: k === 3 ? (i % 2 === 0 ? ("left" as const) : ("right" as const)) : null,
+        reps: i % 7 === 0 ? null : 5 + (i % 4),
+        seconds: i % 7 === 0 ? 45 : null,
+        load: i % 5 === 0 ? null : i % 2 === 0 ? { v: 22.5, u: "lb" as const } : { v: 20, u: "kg" as const },
+        done: i % 9 !== 0,
+        flags: i % 11 === 0 ? ["clench"] : [],
+      })),
+    }));
+    const big = { ...body, entries: many };
+    const { res, d1 } = await call("PUT", `performed/${big.id}`, { body: big });
+    expect(await res.json()).toMatchObject({ status: "saved" });
+    console.info(`[budget] PUT performed (watch_review, 300 sets): ${d1} D1 + 0 COROS = ${d1}`);
+    expect(d1).toBeLessThanOrEqual(BUDGET);
+    // Row for row what the app save's own inserts write (`setRows`).
+    const expected = setRows(big.id, performedSessionSaveSchema.parse(big)).map((r) => ({ ...r, flags: [...r.flags] }));
+    const stored = await db.select().from(performedSets).where(eq(performedSets.performedSessionId, big.id));
+    const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+    expect(stored.sort(byId)).toEqual(expected.sort(byId));
+  });
+
+  it("the largest sets the schema admits (300, longest ids, every flag) still save within the budget (audit 3-B S-4)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    const body = await reviewBody(s.workoutId);
+    const flags = Array.from({ length: PERFORMED_LIMITS.flags }, (_, f) => `${f}`.padEnd(60, "f"));
+    const many = Array.from({ length: PERFORMED_LIMITS.sets / PERFORMED_LIMITS.setsPerEntry }, (_, k) => ({
+      exerciseId: `coros:${k}`.padEnd(200, "x"),
+      implement: "i".repeat(60),
+      format: null,
+      perSide: false,
+      sets: Array.from({ length: PERFORMED_LIMITS.setsPerEntry }, (_, i) => ({
+        setIndex: i, side: null, reps: 5, seconds: null, load: { v: 20, u: "kg" as const }, done: true, flags,
+      })),
+    }));
+    const big = { ...body, entries: many };
+    const { res, d1 } = await call("PUT", `performed/${big.id}`, { body: big });
+    expect(await res.json()).toMatchObject({ status: "saved" });
+    console.info(`[budget] PUT performed (watch_review, 300 sets, the schema's longest): ${d1} D1 + 0 COROS = ${d1}`);
+    expect(d1).toBeLessThanOrEqual(BUDGET);
+    expect(await db.select().from(performedSets).where(eq(performedSets.performedSessionId, big.id))).toHaveLength(300);
+  });
+
   it("422: a sourceRef that is not the slot's matched activity, or a build that is not the locked one", async () => {
     const s = await sentSlot();
     await watchDone(s);
@@ -643,6 +763,69 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     // The client's own hash is the one kept (the outbox keys by it).
     const [row] = await db.select().from(performedSessions);
     expect(row!.payloadHash).toBe(await sha256Hex(canonicalJson(body)));
+  });
+
+  it("records mode, theme, minutes, location and block from the LOCKED BUILD, whatever the client sent (audit 3-B S-6)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    // The sheet sends them all null (the basis carries none); a hand-made PUT could send anything.
+    const body = await reviewBody(s.workoutId, { mode: "recovery", theme: "not-a-theme", minutes: 5, blockRef: "blk-x", blockNumber: 9 });
+    expect((await save(body)).status).toBe("saved");
+    const [row] = await db.select().from(performedSessions).where(eq(performedSessions.id, body.id));
+    const [block] = await db.select().from(schema.programBlocks).where(eq(schema.programBlocks.id, s.build.blockRef ?? ""));
+    expect(s.build.blockRef).not.toBeNull();
+    expect(row).toMatchObject({
+      mode: s.build.mode,
+      theme: s.build.theme,
+      minutes: s.build.minutes,
+      plannedSeconds: s.build.plannedSeconds,
+      locationId: s.build.locationId,
+      blockRef: s.build.blockRef,
+      blockNumber: block!.number,
+    });
+  });
+
+  it("a build-mode session done on the watch and reviewed: the next day's build gives it 48 hours, as after an app save (audit 3-B S-6)", async () => {
+    // Three earlier sessions this week (so the weekly gate passes), none of them build.
+    for (const [i, d] of [[1, addDays(DAY, -1)], [2, addDays(DAY, -2)], [3, addDays(DAY, -3)]] as const) {
+      await db.insert(performedSessions).values({
+        id: `prior-${i}`, userId, workoutId: null, activityId: null, buildId: null, source: "import", sourceRef: null, localDate: d,
+        startedAt: `${d}T18:00:00.000Z`, endedAt: null, seconds: 1800, mode: "consistent", theme: null, completed: true,
+        movesDone: [], payloadHash: `h-${i}`, createdAt: NOON, updatedAt: NOON,
+      });
+    }
+    const workoutId = await seedSlot(DAY);
+    const at = { today: DAY, now: NOON, prefs };
+    const built = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } }, overrides: { mode: "build" } }, at);
+    expect(built.build!.mode).toBe("build");
+    await sendToWatch(db, switchOn(), userId, workoutId, built.build!.buildId, at);
+    const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, built.build!.buildId));
+    await watchDone({ workoutId, build: { ...(b!.payload as { build: BuildPayload }).build, buildId: b!.id } });
+    expect((await save(await reviewBody(workoutId))).status).toBe("saved");
+
+    vi.setSystemTime(new Date(`${TOMORROW}T19:00:00.000Z`));
+    const next = await buildSession(
+      db, userId, await seedSlot(TOMORROW), { checks: { tmj: { pre: 2, feelingOff: false } } },
+      { today: TOMORROW, now: `${TOMORROW}T19:00:00.000Z`, prefs },
+    );
+    expect(next.build!.mode).not.toBe("build");
+    expect(next.build!.modeReasons.join(" ")).toMatch(/48 hours/);
+  });
+
+  it("switch OFF: the PUT answers 422 as before Phase 3 and writes nothing; on again, the same entry saves (audit 3-B S-5)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    const body = await reviewBody(s.workoutId); // an outbox entry made while the switch was on
+    const off = await call("PUT", `performed/${body.id}`, { body, env: makeEnv() });
+    expect(off.res.status).toBe(422);
+    expect(await off.res.json()).toMatchObject({ error: "invalid_save", issues: [{ path: ["source"] }] });
+    expect(await db.select().from(performedSessions).where(eq(performedSessions.source, "watch_review"))).toEqual([]);
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, s.workoutId)))[0]!.contentState).not.toBe("done");
+    // The outbox keeps a 422 (flagged, Retry): once the switch is back on, the same PUT lands — and answers the same after.
+    const on = await call("PUT", `performed/${body.id}`, { body });
+    expect(await on.res.json()).toMatchObject({ status: "saved" });
+    const again = await call("PUT", `performed/${body.id}`, { body, env: makeEnv() });
+    expect(await again.res.json()).toEqual({ status: "same_payload" });
   });
 
   it("a review whose push job never existed but whose build was sent then failed still pairs with the locked build", async () => {

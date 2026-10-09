@@ -105,6 +105,11 @@ export class InvalidSaveError extends Error {
 export interface SaveCtx {
   now: string;
   prefs: UserPreferences;
+  /**
+   * The watch switch (`WATCH_PUSH_ENABLED`) is on: a watch review (`source: "watch_review"`) may be saved. Off — or
+   * absent — it is refused 422 as before Phase 3 (audit 3-B S-5); the outbox keeps the entry (Retry) for when it is on.
+   */
+  watchReviews?: boolean;
 }
 
 type SlotRow = typeof plannedWorkouts.$inferSelect;
@@ -423,8 +428,13 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   };
   const early = settled(await stored());
   if (early) return early;
-  // The quick review after a watch session (Phase 3, spec §5): a session on the watch's own activity.
-  if (p.source === "watch_review") return saveWatchReview(db, userId, p, hash, { ...ctx, today });
+  // The quick review after a watch session (Phase 3, spec §5): a session on the watch's own activity. While the switch
+  // is off, refused as every non-app session was before Phase 3 (audit 3-B S-5) — after the settled check, so a
+  // review saved while on still answers `same_payload` to its own retry.
+  if (p.source === "watch_review") {
+    if (!ctx.watchReviews) throw new InvalidSaveError([{ message: "only the app's own sessions are saved here", path: ["source"] }]);
+    return saveWatchReview(db, userId, p, hash, { ...ctx, today });
+  }
 
   const [slot] = await db
     .select()
