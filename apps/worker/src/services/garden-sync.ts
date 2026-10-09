@@ -675,12 +675,12 @@ export interface GardenAdvanceOptions {
   /** Per-invocation day cap for version-upgrade rebuilds, post-restore
    * catch-up steps and replays (`resimulateFrom`, and a replay on record that
    * an earlier call left unfinished). Defaults to UPGRADE_RESIM_MAX_DAYS /
-   * CATCH_UP_MAX_DAYS; a replay is uncapped by default. The crons set it so
-   * one invocation never replays weeks; tests set it low to exercise
-   * resumption. */
+   * CATCH_UP_MAX_DAYS; a replay is uncapped by default. The crons and every
+   * request (REQUEST_GARDEN_STEP) set it so one invocation never replays
+   * weeks; tests set it low to exercise resumption. */
   maxResimDays?: number;
-  /** Per-invocation day cap for the plain walk forward. Uncapped by default (a garden read walks to today); the
-   * hourly cron sets it so one invocation never walks weeks (cron reliability, part 2). A capped walk persists the
+  /** Per-invocation day cap for the plain walk forward. Uncapped by default; the crons (cron reliability, part 2) and
+   * every request (REQUEST_GARDEN_STEP, part 4) set it so one invocation never walks weeks. A capped walk persists the
    * day it stopped at, and the next call walks on from there (`resimPending`). */
   maxWalkDays?: number;
 }
