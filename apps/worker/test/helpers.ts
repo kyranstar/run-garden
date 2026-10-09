@@ -101,6 +101,8 @@ function installStatementHook(
   onStatement: (sql: string) => void,
   /** How many rows each read handed back to the application (what a Worker maps, and pays CPU for). */
   onRows?: (sql: string, rows: number) => void,
+  /** How long SQLite itself took to run each statement — D1's own work, which is not the Worker's CPU. */
+  onExec?: (sql: string, ms: number) => void,
 ): void {
   const prepare = sqlite.prepare.bind(sqlite);
   (sqlite as unknown as { prepare: unknown }).prepare = (...args: unknown[]) => {
@@ -112,7 +114,9 @@ function installStatementHook(
       const bound = (original as (...a: unknown[]) => unknown).bind(stmt);
       stmt[method] = (...params: unknown[]) => {
         onStatement(text);
+        const started = onExec ? performance.now() : 0;
         const out = bound(...params);
+        if (onExec) onExec(text, performance.now() - started);
         if (onRows && method === "all") onRows(text, Array.isArray(out) ? out.length : 0);
         if (onRows && method === "get") onRows(text, out === undefined ? 0 : 1);
         return out;
@@ -133,7 +137,12 @@ export const isWrite = (sql: string): boolean => /^\s*(insert|update|delete|repl
  * statement the application runs (migrations are not reported).
  */
 export function makeTestDb(
-  opts: { boundVariableCap?: number; onStatement?: (sql: string) => void; onRows?: (sql: string, rows: number) => void } = {},
+  opts: {
+    boundVariableCap?: number;
+    onStatement?: (sql: string) => void;
+    onRows?: (sql: string, rows: number) => void;
+    onExec?: (sql: string, ms: number) => void;
+  } = {},
 ): Db {
   const sqlite = new Database(":memory:");
   for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort()) {
@@ -150,7 +159,9 @@ export function makeTestDb(
     // A test as strict as D1 about binds is as strict about compound SELECTs.
     installCompoundSelectCap(sqlite, D1_COMPOUND_SELECT_LIMIT);
   }
-  if (opts.onStatement || opts.onRows) installStatementHook(sqlite, opts.onStatement ?? (() => undefined), opts.onRows);
+  if (opts.onStatement || opts.onRows || opts.onExec) {
+    installStatementHook(sqlite, opts.onStatement ?? (() => undefined), opts.onRows, opts.onExec);
+  }
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
 

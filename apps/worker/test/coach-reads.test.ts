@@ -168,7 +168,7 @@ describe("processCoachReads", () => {
     await enqueueCoachReads(db, userId, today);
     const { fetchImpl, calls } = scriptedFetch([GOOD]);
     const res = await processCoachReads(db, makeEnv(), userId, prefs, { fetchImpl });
-    expect(res).toEqual({ processed: 1, skipped: null });
+    expect(res).toEqual({ processed: 1, attempted: 1, skipped: null });
     expect(calls()).toBe(1);
     const [row] = await readRows(db, userId);
     expect(row!.status).toBe("done");
@@ -249,6 +249,63 @@ describe("processCoachReads", () => {
     expect(calls()).toBe(0);
     const [row] = await readRows(db, userId);
     expect(row!.status).toBe("queued");
+  });
+
+  it("reads only the rows it could claim, never the ledger of done reads (cron reliability, part 2)", async () => {
+    // The ledger keeps one row per activity forever, and every drain (twice an hour from the crons, after every
+    // ingest) asked for all of them — each with its full body — once per loop turn, to pick one queued row.
+    let ledgerRows = 0;
+    const db = makeTestDb({
+      onRows: (sql, n) => {
+        if (/from "coach_reads"/i.test(sql)) ledgerRows += n;
+      },
+    });
+    const { userId, prefs } = await makeTestUser(db);
+    const old = nowInstant();
+    for (let i = 0; i < 150; i++) {
+      await db.insert(coachReads).values({
+        id: newId(), userId, activityId: `done-${i}`, status: "done", attempt: 1, nextAttemptAt: old, claimToken: null,
+        claimedAt: null, glance: "Steady.", body: "A steady effort. ".repeat(40), flags: [], model: "m", createdAt: old, completedAt: old,
+      });
+    }
+    const { fetchImpl, calls } = scriptedFetch([GOOD]);
+
+    ledgerRows = 0;
+    expect(await processCoachReads(db, makeEnv(), userId, prefs, { fetchImpl })).toEqual({ processed: 0, attempted: 0, skipped: null });
+    expect(ledgerRows).toBe(0);
+
+    await seedActivity(db, userId, 1, prefs.timezone, { id: "fresh-act" });
+    await enqueueCoachReads(db, userId, todayInZone(prefs.timezone));
+    ledgerRows = 0;
+    expect((await processCoachReads(db, makeEnv(), userId, prefs, { fetchImpl })).processed).toBe(1);
+    expect(calls()).toBe(1);
+    // The backlog count, the pick, the claim's and the completion's own re-reads: one row each.
+    expect(ledgerRows).toBeLessThanOrEqual(4);
+  });
+
+  it("recovers a read whose claim went stale before any queued one, and leaves a live claim alone", async () => {
+    const { db, userId, prefs } = await setup();
+    const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    const row = (activityId: string, status: string, createdMinutesAgo: number, claimedMinutesAgo: number | null) => ({
+      id: newId(), userId, activityId, status, attempt: claimedMinutesAgo === null ? 0 : 1, nextAttemptAt: at(60),
+      claimToken: claimedMinutesAgo === null ? null : "dead", claimedAt: claimedMinutesAgo === null ? null : at(claimedMinutesAgo),
+      glance: null, body: null, flags: [] as string[], model: null, createdAt: at(createdMinutesAgo), completedAt: null,
+    });
+    await seedActivity(db, userId, 1, prefs.timezone, { id: "queued-act" });
+    await seedActivity(db, userId, 2, prefs.timezone, { id: "stale-act" });
+    await seedActivity(db, userId, 3, prefs.timezone, { id: "live-act" });
+    await db.insert(coachReads).values([
+      row("queued-act", "queued", 50, null),
+      row("stale-act", "running", 40, 30),
+      row("live-act", "running", 45, 2),
+    ]);
+    const { fetchImpl } = scriptedFetch([GOOD], { repeatLast: true });
+    await processCoachReads(db, makeEnv(), userId, prefs, { fetchImpl, cap: 1 });
+    const byActivity = new Map((await readRows(db, userId)).map((r) => [r.activityId, r]));
+    expect(byActivity.get("stale-act")!.status).toBe("done");
+    expect(byActivity.get("queued-act")!.status).toBe("queued");
+    expect(byActivity.get("live-act")!.status).toBe("running");
+    expect(byActivity.get("live-act")!.claimToken).toBe("dead");
   });
 
   it("recovers from invalid JSON with one repair round-trip", async () => {

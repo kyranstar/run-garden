@@ -288,7 +288,7 @@ describe("every writer is a no-op while a restore is replacing the account", () 
     );
     expect(control.length).toBeGreaterThan(0);
     expect(marked).toEqual([]);
-    expect(result).toEqual({ processed: 0, skipped: "restoring" });
+    expect(result).toEqual({ processed: 0, attempted: 0, skipped: "restoring" });
   });
 
   it("coach wakes — a message and an automatic one — do not think, spend or write", async () => {
