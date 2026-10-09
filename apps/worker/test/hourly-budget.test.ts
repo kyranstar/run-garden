@@ -113,7 +113,11 @@ vi.mock("../src/services/reconcile-daily.js", async (orig) => {
 });
 vi.mock("../src/services/garden-sync.js", async (orig) => {
   const real = await orig<typeof import("../src/services/garden-sync.js")>();
-  return { ...real, advanceGarden: meter.wrap("advanceGarden", real.advanceGarden) };
+  return {
+    ...real,
+    advanceGarden: meter.wrap("advanceGarden", real.advanceGarden),
+    resimulateFrom: meter.wrap("resimulateFrom", real.resimulateFrom),
+  };
 });
 vi.mock("../src/services/heal-legacy-sync.js", async (orig) => {
   const real = await orig<typeof import("../src/services/heal-legacy-sync.js")>();
@@ -129,14 +133,33 @@ vi.mock("../src/routes/coach.js", async (orig) => {
 });
 vi.mock("../src/services/coach-reads.js", async (orig) => {
   const real = await orig<typeof import("../src/services/coach-reads.js")>();
-  return { ...real, processCoachReads: meter.wrap("processCoachReads", real.processCoachReads) };
+  return {
+    ...real,
+    processCoachReads: meter.wrap("processCoachReads", real.processCoachReads),
+    enqueueCoachReads: meter.wrap("enqueueCoachReads", real.enqueueCoachReads),
+  };
 });
 vi.mock("../src/services/coros-write-cloud.js", async (orig) => {
   const real = await orig<typeof import("../src/services/coros-write-cloud.js")>();
   return { ...real, executeCloudJobs: meter.wrap("executeCloudJobs", real.executeCloudJobs) };
 });
 
+vi.mock("../src/services/completion.js", async (orig) => {
+  const real = await orig<typeof import("../src/services/completion.js")>();
+  return { ...real, ingestActivities: meter.wrap("ingestActivities", real.ingestActivities) };
+});
+vi.mock("../src/services/import-plan.js", async (orig) => {
+  const real = await orig<typeof import("../src/services/import-plan.js")>();
+  return { ...real, importPlanSnapshot: meter.wrap("importPlanSnapshot", real.importPlanSnapshot) };
+});
+vi.mock("../src/services/health-ingest.js", async (orig) => {
+  const real = await orig<typeof import("../src/services/health-ingest.js")>();
+  return { ...real, ingestDailyHealth: meter.wrap("ingestDailyHealth", real.ingestDailyHealth) };
+});
+
 import { hourly } from "../src/index.js";
+import { corosReadSweep } from "../src/services/coros-read.js";
+import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -145,7 +168,12 @@ afterEach(() => {
 
 const f = (n: number, d = 1) => n.toFixed(d).padStart(8);
 
-function table(title: string, steps: StepRecord[], total: StepRecord): string {
+function table(
+  title: string,
+  steps: StepRecord[],
+  total: StepRecord,
+  labels: { rest: string; total: string } = { rest: "(loop: runs, prefs, marker)", total: "TOTAL hourly()" },
+): string {
   const head = `${"step".padEnd(28)} ${"cpu ms".padStart(8)} ${"sql ms".padStart(8)} ${"js ms".padStart(8)} ${"wall".padStart(8)} ${"stmts".padStart(6)} ${"writes".padStart(6)} ${"rows".padStart(7)} ${"fetch".padStart(5)} ${"heap MB".padStart(8)}`;
   const line = (s: StepRecord) =>
     `${s.name.padEnd(28)} ${f(s.cpuMs)} ${f(s.sqliteMs)} ${f(s.cpuMs - s.sqliteMs)} ${f(s.wallMs)} ${String(s.statements).padStart(6)} ${String(s.writes).padStart(6)} ${String(s.rows).padStart(7)} ${String(s.fetches).padStart(5)} ${f(s.heapMb)}`;
@@ -154,7 +182,7 @@ function table(title: string, steps: StepRecord[], total: StepRecord): string {
     { name: "", cpuMs: 0, sqliteMs: 0, wallMs: 0, statements: 0, writes: 0, rows: 0, fetches: 0, heapMb: 0 },
   );
   const rest: StepRecord = {
-    name: "(loop: runs, prefs, marker)",
+    name: labels.rest,
     cpuMs: total.cpuMs - accounted.cpuMs,
     sqliteMs: total.sqliteMs - accounted.sqliteMs,
     wallMs: total.wallMs - accounted.wallMs,
@@ -164,8 +192,10 @@ function table(title: string, steps: StepRecord[], total: StepRecord): string {
     fetches: total.fetches - accounted.fetches,
     heapMb: 0,
   };
-  return [title, head, ...steps.map(line), line(rest), line({ ...total, name: "TOTAL hourly()" })].join("\n");
+  return [title, head, ...steps.map(line), line(rest), line({ ...total, name: labels.total })].join("\n");
 }
+
+const SWEEP_LABELS = { rest: "(rest: client, wire, parse)", total: "TOTAL corosReadSweep()" };
 
 async function measureHourly(run: () => Promise<void>): Promise<{ steps: StepRecord[]; total: StepRecord }> {
   meter.steps = [];
@@ -300,5 +330,29 @@ describe("hourly() per step on a realistic account", () => {
     );
     expect(runs.every((r) => r.status === "ok")).toBe(true);
     expect(acct.newActivityIds.length).toBe(2);
+  });
+
+  it("prints what the half-hourly COROS sweep spends when it ingests new activities (it runs after the calendar run row is closed)", { timeout: 120_000 }, async () => {
+    // Warm every path on a first account, then measure a second. The mock's activities (a run with its detail, a
+    // ride, a strength session) land on the Tuesday of last week — inside the read's 14-day window.
+    const lastMonday = addDays(startOfIsoWeek(todayInZone("America/Los_Angeles")), -7);
+    let measured: Awaited<ReturnType<typeof measureHourly>> | null = null;
+    let cold: Awaited<ReturnType<typeof measureHourly>> | null = null;
+    for (const pass of ["cold", "warm"] as const) {
+      const db = hookedDb();
+      const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday });
+      vi.stubGlobal("fetch", acct.fetchImpl);
+      meter.fetches = () => acct.fetches.coros + acct.fetches.llm;
+      const m = await measureHourly(() => corosReadSweep(db, acct.env));
+      if (pass === "cold") cold = m;
+      else measured = m;
+    }
+    console.log(
+      [
+        table("── corosReadSweep ingesting the mock's new activities, COLD ──", cold!.steps, cold!.total, SWEEP_LABELS),
+        table("── corosReadSweep ingesting the mock's new activities, warm ──", measured!.steps, measured!.total, SWEEP_LABELS),
+      ].join("\n\n"),
+    );
+    expect(measured!.total.statements).toBeGreaterThan(0);
   });
 });

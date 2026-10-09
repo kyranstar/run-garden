@@ -131,7 +131,14 @@ const kmLaps = (n: number, pace: number) =>
  */
 export async function seedRealisticAccount(
   db: Db,
-  opts: { historyDays?: number; gardenDays?: number; newActivities?: boolean; gardenBehindDays?: number } = {},
+  opts: {
+    historyDays?: number;
+    gardenDays?: number;
+    newActivities?: boolean;
+    gardenBehindDays?: number;
+    /** The mock COROS account's week (its activities land on its Tuesday); next week's by default. */
+    corosBaseMonday?: string;
+  } = {},
 ): Promise<RealisticAccount> {
   const historyDays = opts.historyDays ?? 180;
   const gardenDays = opts.gardenDays ?? 120;
@@ -260,7 +267,7 @@ export async function seedRealisticAccount(
   await advanceGarden(db, userId, prefs, new Date(Date.now() - Math.max(0, (opts.gardenBehindDays ?? 3) - 2) * 86_400_000));
 
   // A cloud COROS connection on the mock server; every fetch from here on goes through the counting router.
-  const server = mockCorosServer();
+  const server = mockCorosServer(opts.corosBaseMonday ? { baseMonday: opts.corosBaseMonday } : {});
   await db.delete(schema.providerConnections).where(eq(schema.providerConnections.userId, userId));
   const pwdMd5 = createHash("md5").update(server.password, "utf8").digest("hex");
   const connected = await connectCoros(db, env, userId, { email: server.email, pwdMd5, region: "us" }, server.fetchImpl);
