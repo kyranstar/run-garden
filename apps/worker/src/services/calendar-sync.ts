@@ -506,16 +506,34 @@ async function executeOneOp(
             : op.resource;
         await client.patchEvent(calendarId, op.eventId, resource);
         const fp = eventContentFingerprint(resource);
+        // AN UNLINKED EVENT OF OURS IS ADOPTED HERE (re-review C-2b). A run killed between Google's insert and the
+        // link's insert leaves an event that carries this workout's id and no link; the reconcile reads it as ours
+        // and patches it. The link write used to be an UPDATE, which matched no row — so the event stayed unlinked
+        // and was patched again on every run, for ever. One statement either way: the link is written if missing.
         await db
-          .update(calendarEventLinks)
-          .set({
+          .insert(calendarEventLinks)
+          .values({
+            id: newId(),
+            workoutId: op.workoutId,
+            calendarId,
+            eventId: op.eventId,
+            state: "synced",
             lastWrittenFingerprint: fp,
             lastWrittenAt: now,
-            state: "synced",
-            userNotes: op.op === "preserve_notes_update" ? op.userNotes : undefined,
+            userNotes: op.op === "preserve_notes_update" ? op.userNotes : null,
+            createdAt: now,
             updatedAt: now,
           })
-          .where(eq(calendarEventLinks.workoutId, op.workoutId));
+          .onConflictDoUpdate({
+            target: calendarEventLinks.workoutId,
+            set: {
+              lastWrittenFingerprint: fp,
+              lastWrittenAt: now,
+              state: "synced",
+              userNotes: op.op === "preserve_notes_update" ? op.userNotes : undefined,
+              updatedAt: now,
+            },
+          });
         await db
           .update(plannedWorkouts)
           .set({ calendarSyncState: "synced", updatedAt: now })
