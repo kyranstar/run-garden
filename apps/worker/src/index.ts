@@ -1,9 +1,10 @@
 import { Hono, type Handler, type MiddlewareHandler } from "hono";
-import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, ne } from "drizzle-orm";
 import {
   activities,
   gardenEvents,
   plannedWorkouts,
+  providerConnections,
   syncRuns,
   users,
   workoutCompletionMatches,
@@ -32,14 +33,14 @@ import { importRoutes } from "./routes/imports.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
-import { CRON_GARDEN_MAX_DAYS } from "./services/cron-limits.js";
+import { CRON_GARDEN_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./services/cron-limits.js";
 import { runBackfillChunkCloud, sweepStaleBackfills } from "./services/backfill.js";
 import { closeStrandedSyncRuns, sweepStaleSuppressions, reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { evaluateTriggers } from "./services/coach-triggers.js";
 import { processCoachReads } from "./services/coach-reads.js";
-import { corosReadSweep } from "./services/coros-read.js";
+import { corosSweepAccount } from "./services/coros-read.js";
 import { corosMcpSleepSweep } from "./services/coros-mcp.js";
 import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
@@ -176,21 +177,10 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
       await finishSyncRun(db, runId, "error", { message: String(e).slice(0, 200) });
     }
   }
-  // Cloud-direct COROS pull (spec §3): replaces bridge snapshots for
-  // connected users; the bridge's own payloads stay accepted (idempotent
-  // ingest) during the transition.
-  await corosReadSweep(db, env).catch((e: unknown) =>
-    console.error(`coros read sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
-  );
-  // Official-MCP sleep pull (sleep/recovery phase 2) — throttled per user
-  // inside; wake-date-keyed data needs at most one pull a night.
-  await corosMcpSleepSweep(db, env, async (userId) => (await loadPreferences(db, userId)).timezone).catch(
-    (e: unknown) => console.error(`coros mcp sleep sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
-  );
-  // Cloud backfill: one 90-day chunk per tick per user with an active walk.
+  // The COROS half — the cloud read, the sleep pull, the backfill chunk — account by account, each account's under
+  // its own run row (cron reliability, part 3).
   for (const userId of await allUserIds(db)) {
-    const prefs = await loadPreferences(db, userId);
-    await runBackfillChunkCloud(db, env, userId, prefs).catch(() => undefined);
+    await corosHalfHour(db, env, userId);
   }
   // A backfill with no progress for 12h stops saying "queued"/"running" and
   // says so. Before the purges so an earlier throw can't skip it; a broken
@@ -200,6 +190,48 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
   );
   await purgeExpiredSessions(db);
   await purgeExpiredStates(db);
+}
+
+/**
+ * One account's COROS half of the half-hourly cron, under its own `coros_read` run row (cron reliability, part 3):
+ * the cloud read (spec §3, the forced pull that replaced bridge snapshots: the six-hourly full schedule import, the
+ * ingest, the garden's replay, then the coach-read drain), the official-MCP sleep pull (sleep/recovery phase 2,
+ * throttled inside — wake-date-keyed data needs at most one pull a night) and the cloud backfill's one 90-day chunk.
+ * The calendar's run row used to be the only one, closed before any of this, so an invocation killed here left no
+ * trace; this row is opened first and finished last, so a killed one stays `running` and the hourly's stranded-run
+ * sweeper closes it like any other. An account with no COROS connection gets no row (each step finds nothing to do by
+ * itself); a restore that began meanwhile takes the row away with it (m7), as the hourly's and the weekly's loops do.
+ */
+async function corosHalfHour(db: Db, env: Env, userId: string): Promise<void> {
+  const connections = await db
+    .select({ provider: providerConnections.provider, status: providerConnections.status })
+    .from(providerConnections)
+    .where(
+      and(
+        eq(providerConnections.userId, userId),
+        inArray(providerConnections.provider, ["coros", "coros_mcp"]),
+        ne(providerConnections.status, "disconnected"),
+      ),
+    );
+  const runId = connections.length > 0 ? await startSyncRun(db, "coros_read", userId) : null;
+  try {
+    const prefs = await loadPreferences(db, userId);
+    const read = connections.some((c) => c.provider === "coros" && c.status === "connected")
+      ? await corosSweepAccount(db, env, userId, prefs)
+      : null;
+    const sleep = await corosMcpSleepSweep(db, env, async () => prefs.timezone, undefined, userId).catch((e: unknown) => {
+      console.error(`coros mcp sleep sweep failed: ${e instanceof Error ? e.message : "unknown"}`);
+      return 0;
+    });
+    const backfill = await runBackfillChunkCloud(db, env, userId, prefs, undefined, {
+      resimMaxDays: SWEEP_REPLAY_MAX_DAYS,
+    }).catch(() => ({ ran: false }));
+    if (runId === null) return;
+    if (await restoreInProgress(db, userId)) await dropSyncRun(db, runId);
+    else await finishSyncRun(db, runId, "ok", { ...(read ?? { read: null }), sleep: sleep > 0, backfill: backfill.ran });
+  } catch (e) {
+    if (runId !== null) await finishSyncRun(db, runId, "error", { message: String(e).slice(0, 200) });
+  }
 }
 
 /** The step an hourly run spent its budget on, in its run row's stats (`heavyStep`); null when none had work. */
