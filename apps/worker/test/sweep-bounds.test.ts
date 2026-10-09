@@ -34,7 +34,7 @@ beforeEach(() => {
 import { halfHourly, hourly } from "../src/index.js";
 import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import { corosReadNow } from "../src/services/coros-read.js";
-import { loadGarden, resimulateFrom } from "../src/services/garden-sync.js";
+import { advanceGarden, loadGarden, resimulateFrom } from "../src/services/garden-sync.js";
 import { closeStrandedSyncRuns } from "../src/services/reconcile-daily.js";
 import { makeTestDb } from "./helpers.js";
 import { gardenTimeline, replayMarker } from "./garden-compare.js";
@@ -244,6 +244,39 @@ describe("the sweep's work is bounded per invocation", () => {
     const landed = await gardenTimeline(db, acct.userId, { mondayCheckpointsOnly: true });
     await resimulateFrom(db, acct.userId, tuesday, acct.prefs);
     expect(await gardenTimeline(db, acct.userId, { mondayCheckpointsOnly: true })).toEqual(landed);
+  });
+
+  it("a sweep that ingests nothing and walks nothing runs at most one coach read too, however deep the backlog (part 4)", { timeout: 60_000 }, async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday() });
+    vi.stubGlobal("fetch", acct.fetchImpl);
+    await halfHourly(db, acct.env); // the sweep that ingests the mock's activities
+    await advanceGarden(db, acct.userId, acct.prefs); // the replay it left on record, finished
+    expect(await replayMarker(db, acct.userId)).toBeNull();
+    // A deep backlog: six more efforts waiting for their read (a connect's, a backfill digest's).
+    const done = await db
+      .select({ id: schema.coachReads.id })
+      .from(schema.coachReads)
+      .where(and(eq(schema.coachReads.userId, acct.userId), eq(schema.coachReads.status, "done")))
+      .limit(6);
+    for (const r of done) {
+      await db.update(schema.coachReads).set({ status: "queued", attempt: 0, completedAt: null }).where(eq(schema.coachReads.id, r.id));
+    }
+    const queued = async () =>
+      (await db.select().from(schema.coachReads).where(eq(schema.coachReads.userId, acct.userId))).filter((r) => r.status === "queued").length;
+    const backlog = await queued();
+    expect(backlog).toBeGreaterThanOrEqual(6);
+
+    const llm = acct.fetches.llm;
+    await halfHourly(db, acct.env);
+    const latest = corosRunsSync(db, acct.userId).sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0)).at(-1)!;
+    const stats = latest.stats as { ingested: number; garden: { simulatedDays: number } | null; coachReads: number };
+    // Nothing ingested, nothing walked: the drain alone — one read (~3.5 ms node each, measured; six were ~29 ms).
+    expect(stats.ingested).toBe(0);
+    expect(stats.garden?.simulatedDays ?? 0).toBe(0);
+    expect(stats.coachReads).toBe(1);
+    expect(acct.fetches.llm - llm).toBeLessThanOrEqual(2); // its call, and at most one repair
+    expect(await queued()).toBe(backlog - 1);
   });
 
   it("a read that runs the six-hourly full schedule import replays at most the sweep's cap; one that does not, at most a request's (part 4)", { timeout: 60_000 }, async () => {
