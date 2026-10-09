@@ -981,3 +981,52 @@ describe("#4 placement", () => {
     expect(new Set(first.values()).size).toBe(3);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. The dedupe keeps the copy COROS still serves
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * TWO "Rest" ROWS ON ONE DAY, ONE OF THEM GOING (cron reliability part 3's report; the realistic fixture's seeded
+ * plan beside the mock's schedule). The older row sits at an address COROS no longer serves; the read brings the same
+ * session at a new address. The dedupe kept the OLDEST — the row the read had just missed — and archived the one
+ * COROS serves; the next read archived the keeper by absence (both gone: the day lost its session), and the read
+ * after healed the other. Three changes of the day's plan, each a calendar write and a garden input changing under
+ * the walk. Among equally resolved twins, a row this very read could have served and did not never keeps.
+ */
+describe("#5 the dedupe keeps the copy the read serves", () => {
+  const rest = (sourceWorkoutId: string, date: string) =>
+    wire({ sourceWorkoutId, date, title: "Rest", isRestDay: true, estimatedDurationSeconds: undefined });
+  const liveRests = async (date: string) =>
+    (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.effectiveDate, date)))
+      .filter((r) => r.title === "Rest" && !r.archivedAt)
+      .map((r) => r.id);
+
+  it("an older Rest row COROS stopped serving and the same Rest at a new address: the served one keeps, from the first read on", async () => {
+    const day = addDays(today, -2);
+    await seedRow({
+      id: "rest-old", sourceWorkoutId: `${RUN_PLAN}:10-b4`, planId: "local-run-plan", date: day, title: "Rest", category: "rest",
+      sport: "run", createdAt: `${addDays(today, -60)}T00:00:00.000Z`,
+    });
+    const reads: string[][] = [];
+    for (let i = 0; i < 4; i++) {
+      await importWire([rest(`${RUN_PLAN}:10`, day)]);
+      reads.push(await liveRests(day));
+    }
+    const served = reads[0]![0]!;
+    expect(served).not.toBe("rest-old");
+    expect(reads).toEqual([[served], [served], [served], [served]]);
+    expect(await rowById("rest-old")).toMatchObject({ archiveReason: "duplicate_mirror" });
+  });
+
+  it("two Rest workouts COROS serves on one day: the same one keeps every read", async () => {
+    const day = addDays(today, 3);
+    const reads: string[][] = [];
+    for (let i = 0; i < 4; i++) {
+      await importWire([rest(`${RUN_PLAN}:20`, day), rest(`${LIFT_PLAN}:20`, day)]);
+      reads.push(await liveRests(day));
+    }
+    expect(reads[0]).toHaveLength(1);
+    expect(reads).toEqual([reads[0], reads[0], reads[0], reads[0]]);
+  });
+});

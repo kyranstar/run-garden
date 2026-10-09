@@ -7,30 +7,15 @@
  * cost ~55 ms of node CPU when it ingested new activities: the heaviest invocation in the cron system, and the
  * invisible one. These pin its run row and its bounds.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, startOfIsoWeek, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 
-/**
- * The schedule import runs on the account's first read only. On this fixture the seeded plan and the mock's
- * schedule leave two "Rest" rows on one day, and every later import flips which of them is archived (import-plan's
- * own behaviour, reported, not this suite's subject): the garden's inputs on that day change under the walk from
- * one sweep to the next, and "lands where one uncapped replay lands" needs tables that hold still.
- */
-const imports = vi.hoisted(() => ({ calls: 0 }));
-vi.mock("../src/services/import-plan.js", async (orig) => {
-  const real = await orig<typeof import("../src/services/import-plan.js")>();
-  return {
-    ...real,
-    importPlanSnapshot: async (...args: Parameters<typeof real.importPlanSnapshot>) =>
-      imports.calls++ === 0 ? real.importPlanSnapshot(...args) : (undefined as unknown as Awaited<ReturnType<typeof real.importPlanSnapshot>>),
-  };
-});
-beforeEach(() => {
-  imports.calls = 0;
-});
+// The schedule import runs on every read, as in production. (It used to be stubbed out after the seed: on this
+// fixture two "Rest" rows on one day changed under the walk for three reads — the dedupe kept the row the read had
+// just missed. It keeps the one the read serves now; import-defects.test.ts #5.)
 import { halfHourly, hourly } from "../src/index.js";
 import { SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import { corosReadNow } from "../src/services/coros-read.js";
@@ -248,7 +233,6 @@ describe("the sweep's work is bounded per invocation", () => {
 
   it("a read that runs the six-hourly full schedule import never replays uncapped in the same invocation; one that does not replays as before", { timeout: 60_000 }, async () => {
     for (const fullDue of [true, false]) {
-      imports.calls = 0;
       const db = makeTestDb({ boundVariableCap: 100 });
       const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday() });
       vi.stubGlobal("fetch", acct.fetchImpl);

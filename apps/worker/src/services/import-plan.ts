@@ -1327,7 +1327,13 @@ export async function importPlanSnapshot(
   }
   // Resolution outranks scheduling: a completed/skipped/missed row is the
   // day's truth, and a scheduled mirror twin beside it is pure noise (it
-  // would even re-ask "did this run happen?"). Among equals, oldest wins.
+  // would even re-ask "did this run happen?"). Among equals, the copy this
+  // read SERVED beats one it could have served and did not — rule 8's own
+  // test of absence, so a row on its way out is never the keeper. Keeping the
+  // oldest regardless kept exactly that row: the next read archived it by
+  // absence (the day lost its session), the read after healed the twin — the
+  // day's plan changed three times, a calendar write each (cron reliability
+  // part 3: two "Rest" rows on one day). Then oldest wins.
   const RESOLUTION_RANK: Record<string, number> = {
     completed: 0,
     skipped: 2,
@@ -1335,11 +1341,22 @@ export async function importPlanSnapshot(
     unresolved: 4,
     scheduled: 5,
   };
+  const missedByThisRead = (w: StoredWorkout): number =>
+    w.completionState === "scheduled" &&
+    !seenSourceIds.has(w.sourceWorkoutId) &&
+    w.sourceWorkoutId !== w.id &&
+    w.lastVerifiedCorosDate !== "" &&
+    w.lastVerifiedCorosDate >= input.rangeStart &&
+    w.lastVerifiedCorosDate <= input.rangeEnd
+      ? 1
+      : 0;
   for (const copies of byMirrorKey.values()) {
     if (copies.length < 2) continue;
     const sorted = [...copies].sort((a, b) => {
       const rank = (RESOLUTION_RANK[a.completionState] ?? 9) - (RESOLUTION_RANK[b.completionState] ?? 9);
       if (rank !== 0) return rank;
+      const missed = missedByThisRead(a) - missedByThisRead(b);
+      if (missed !== 0) return missed;
       return a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt);
     });
     const keeper = sorted[0]!;
