@@ -428,6 +428,63 @@ describe("(h) Take off watch, then Send again", () => {
 });
 
 /**
+ * TAKE OFF WHILE "SENDING…" (owner decision 2026-10-09: the sheet offers Take off on Sending… too). Whatever stage the
+ * push is at when the athlete taps it, nothing is left on the watch and the slot ends `ready`: a queued push is
+ * superseded at once; one claimed by a lane that has not written yet is superseded when it runs (its build is no longer
+ * the sent one), with no wire call; one whose write is in flight lands, and its unpush is queued as it verifies — the
+ * next drain takes the copy off.
+ */
+describe("Take off while Sending…", () => {
+  beforeEach(() => setup());
+
+  it("a queued push: superseded at once, no COROS write, the slot ready", async () => {
+    const { workoutId, buildId } = await pushed({ run: false });
+    await takeOffWatch(db, userId, workoutId, ctx());
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
+    const writes = server.counts.scheduleWrites;
+    await lane();
+    expect(server.counts.scheduleWrites).toBe(writes);
+    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+  });
+
+  it("a push claimed by a lane that has not written yet: superseded when it runs, no COROS write", async () => {
+    const { workoutId, buildId } = await pushed({ run: false });
+    await db.update(corosWriteJobs).set({ status: "claimed" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    await takeOffWatch(db, userId, workoutId, ctx());
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("claimed");
+    // The claiming invocation died; the stranded sweep hands it back to the lane.
+    await db.update(corosWriteJobs).set({ status: "queued" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    const writes = server.counts.scheduleWrites;
+    await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
+    expect(server.counts.scheduleWrites).toBe(writes);
+    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+  });
+
+  it("a push whose write is in flight: the copy lands, its unpush is queued as it verifies, the next drain takes it off", async () => {
+    const { workoutId, buildId, stamp } = await pushed({ run: false });
+    let tapped = false;
+    const tapDuringWrite = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!tapped && url.includes("/training/schedule/update")) {
+        tapped = true;
+        await takeOffWatch(db, userId, workoutId, ctx());
+      }
+      return server.fetchImpl(input, init);
+    }) as typeof fetch;
+    // One drain with room for both: the push verifies with its build no longer sent, queues its unpush, and the same
+    // drain runs it (a drain without room leaves it queued for the next).
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: tapDuringWrite });
+    expect(tapped).toBe(true);
+    expect((await jobOf(`unpush:${buildId}`))!).toMatchObject({ status: "verified", payload: expect.objectContaining({ name: stamp }) });
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
+    expect(programOn(stamp)).toBeUndefined();
+    expect(await rowOf(db, workoutId)).toMatchObject({ sourceWorkoutId: workoutId, sourceIdInPlan: null, lastVerifiedCorosDate: "" });
+    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+  });
+});
+
+/**
  * WHICH STAMPS ARE STILL OURS (audit 3-A life L-1(a), V1b, L-7). Only a push that may still hold a copy names one —
  * queued, claimed, in progress, verifying, verified, failed or needing attention; never one superseded (its copy was
  * proven gone), cancelled, or neutralised by a restore. A row of the athlete's or the coach's keeps a workout its own
