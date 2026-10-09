@@ -97,6 +97,7 @@ import {
   rowToNormalized,
 } from "../services/completion.js";
 import { gardenSeesSql, resimulateFrom } from "../services/garden-sync.js";
+import { findGardenHoles } from "../services/garden-holes.js";
 import { performedByActivity } from "../services/logged-sets.js";
 import { loadProgress } from "../services/progress.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
@@ -1428,6 +1429,22 @@ settingsRoutes.put("/", async (c) => {
   // Buffer/time changes flow into the calendar mirror.
   await syncCalendar(db, c.env, userId).catch(() => undefined);
   return c.json({ ok: true, prefs: parsed.data });
+});
+
+/**
+ * Has the garden lost credit it was owed? (cron reliability, part 3; services/garden-holes.ts). Read-only, the
+ * signed-in account only, counts and dates only. `?fold=1` also folds the stored inputs from genesis (one simulated
+ * day per day — the only check that sees a replay killed as it persisted); `?from=YYYY-MM-DD` narrows the per-day
+ * checks. `replayFrom` is the day a replay must start from to heal what it found.
+ */
+settingsRoutes.get("/diagnostics/garden", async (c) => {
+  const from = c.req.query("from");
+  if (from !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(from)) return c.json({ error: "bad_from" }, 400);
+  const report = await findGardenHoles(c.get("db"), c.get("userId"), {
+    fold: c.req.query("fold") === "1",
+    ...(from !== undefined ? { from } : {}),
+  });
+  return c.json(report);
 });
 
 settingsRoutes.get("/diagnostics", async (c) => {
