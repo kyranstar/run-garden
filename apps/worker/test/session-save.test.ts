@@ -25,7 +25,8 @@ import { buildSession, pushJobId, startSession, unstartSession, type BuildPayloa
 import { loadProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
 import { ingestActivities } from "../src/services/completion.js";
-import { advanceGarden, buildDayInput, ensureGarden } from "../src/services/garden-sync.js";
+import { advanceGarden, buildDayInput, ensureGarden, recordReplayFrom } from "../src/services/garden-sync.js";
+import { REQUEST_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import { savePerformedSession } from "../src/services/session-save.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -714,7 +715,7 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
     expect((await dayInput(AFTER))!.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
   });
 
-  it("an old session replays through the capped catch-up: the save stays inside D1's query budget, and the next garden reads finish the walk (ruling 2b-R7, audit 2b-A I-4)", async () => {
+  it("an old session replays a request's step at a time: the save stays inside its budget, the garden it shows is never rewound, and the next garden reads finish the walk (ruling 2b-R7, audit 2b-A I-4; cron reliability, part 4)", async () => {
     // A tablet that saved it offline the week the player went live, and only came online five months later.
     const OLD = "2026-10-12"; // a Monday
     const ONLINE = "2027-03-17T16:00:00.000Z";
@@ -722,6 +723,7 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
     const s = await started("build");
     const old = await seedSlot(OLD);
     await advanceGarden(db, userId, prefs, new Date(ONLINE));
+    const [shown] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
     const body = payload(s, {
       workoutId: old,
       buildId: null,
@@ -731,13 +733,17 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
     });
     statements.length = 0;
     expect(await save(body, body.id, { now: ONLINE })).toMatchObject({ status: "saved", matched: true });
-    console.log(`[save] a 156-day-old session: ${statements.length} statements, save and capped replay together`);
-    expect(statements.length).toBeLessThan(800);
+    const days = statements.filter((q) => /^insert into "garden_day_inputs"/.test(q)).length;
+    console.log(`[save] a 156-day-old session: ${statements.length} statements, save and its replay step (${days} days) together`);
+    expect(days).toBeLessThanOrEqual(REQUEST_REPLAY_MAX_DAYS);
+    expect(statements.length).toBeLessThan(200);
+    // A plain replay on record, not the post-restore catch-up: the save's step walked one request's worth from the
+    // garden's first day, and the garden still shows the day — and the garden — it showed before (C21).
     const [account] = await db.select().from(accountState).where(eq(accountState.userId, userId));
-    expect(account!.gardenCatchUpPending).toBe(true);
-    // The save's own step walked a month from the garden's first day, no more.
+    expect(account!.gardenCatchUpPending).toBe(false);
+    expect(account!.gardenChangedFrom).not.toBeNull();
     const [state] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
-    expect(state!.lastSimulatedDate < "2026-11-13").toBe(true);
+    expect(state).toEqual(shown);
 
     let steps = 0;
     let result: Awaited<ReturnType<typeof advanceGarden>>;
@@ -751,6 +757,37 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
     expect((await db.select().from(accountState).where(eq(accountState.userId, userId)))[0]).toMatchObject({ gardenCatchUpPending: false, gardenChangedFrom: null });
     // Five months of garden walked twice: ~3 s here, half a minute on a loaded runner.
   }, 120_000);
+
+  it("a save while a long replay is on record walks one request's step and never rewinds the garden (cron reliability, part 4)", async () => {
+    // A garden from August, a 75-day replay on record (what the owner's rebuild of the stored snapshots looks like),
+    // then the athlete saves today's session.
+    await ensureGarden(db, userId, prefs, "2026-08-01");
+    const s = await started("build", AFTER);
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    await recordReplayFrom(db, userId, "2026-08-03");
+    const [shown] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
+    expect(shown!.lastSimulatedDate).toBe("2026-10-16");
+
+    const body = afterEpoch(s);
+    statements.length = 0;
+    expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved", matched: true });
+    expect(statements.filter((q) => /^insert into "garden_day_inputs"/.test(q)).length).toBeLessThanOrEqual(REQUEST_REPLAY_MAX_DAYS);
+    // The garden it showed — not August's.
+    const [state] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
+    expect(state).toEqual(shown);
+    const [account] = await db.select().from(accountState).where(eq(accountState.userId, userId));
+    expect(account).toMatchObject({ gardenCatchUpPending: false });
+    expect(account!.gardenChangedFrom! < AFTER).toBe(true);
+
+    // The next requests and crons walk it on, a step at a time; the session is credited once the walk reaches it.
+    for (let i = 0; i < 20 && (await db.select().from(accountState).where(eq(accountState.userId, userId)))[0]!.gardenChangedFrom !== null; i++) {
+      await advanceGarden(db, userId, prefs, new Date(LATE), { maxWalkDays: REQUEST_REPLAY_MAX_DAYS, maxResimDays: REQUEST_REPLAY_MAX_DAYS });
+      const [now] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
+      expect(now!.lastSimulatedDate >= shown!.lastSimulatedDate).toBe(true);
+    }
+    expect((await db.select().from(accountState).where(eq(accountState.userId, userId)))[0]!.gardenChangedFrom).toBeNull();
+    expect((await dayInput(AFTER))!.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
+  });
 });
 
 describe("ruling 2b-R7 as amended: the session's day is its locked build's, else its slot's (audit 2b-A I-4)", () => {

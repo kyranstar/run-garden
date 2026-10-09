@@ -1006,23 +1006,29 @@ async function recordGardenChange(db: Db, userId: string, date: LocalDate): Prom
 }
 
 /**
- * `recordGardenChange` as a statement a caller runs in its own transaction, and an upsert: it lands for an account
- * that has no `account_state` row yet, and with the caller's writes or not at all. The app's save (session-save.ts)
- * records the day its replay must start from together with the session, so a replay killed after the commit is not
- * lost (audit 2b-A M-5): the catch-up stays pending, and the next garden read or hourly cron walks it, capped
- * (ruling 2b-R7). Nothing is recorded while a restore runs.
+ * `recordReplayFrom` as a statement a caller runs in its own transaction: it lands with the caller's writes or not at
+ * all, and as an upsert for an account that has no `account_state` row yet. The app's save (session-save.ts) and the
+ * watch session's review (session-watch-review.ts) record the day their replay must start from together with the
+ * session, so a replay killed after the commit is not lost (audit 2b-A M-5): the next garden read or cron replays from
+ * it, a capped step at a time (ruling 2b-R7). Nothing is recorded while a restore runs.
+ *
+ * A plain replay on record — never the post-restore catch-up flag (cron reliability, part 4). It used to set the flag,
+ * from before a plain replay could be on record (part 3); but a catch-up step restarts from the checkpoint before the
+ * EARLIEST day on record, purges every derived row after it and persists garden_state where its capped walk stops:
+ * behind where it was. With a long replay on record (the owner's rebuild from 2026-08-01) one session saved in the app
+ * rewound the rendered garden to August. The plain replay (replayStep) is just as durable and resumable, and never
+ * moves garden_state back. A restore's own catch-up still honours this record: its step reads the same column.
  */
 export function gardenChangeStatement(db: Db, userId: string, date: LocalDate) {
   const now = nowInstant();
   return db
     .insert(accountState)
-    .values({ userId, gardenChangedFrom: date, gardenChangedSeq: 1, gardenCatchUpPending: true, updatedAt: now })
+    .values({ userId, gardenChangedFrom: date, gardenChangedSeq: 1, updatedAt: now })
     .onConflictDoUpdate({
       target: accountState.userId,
       set: {
         gardenChangedFrom: sql`CASE WHEN ${accountState.gardenChangedFrom} IS NULL OR ${accountState.gardenChangedFrom} > ${date} THEN ${date} ELSE ${accountState.gardenChangedFrom} END`,
         gardenChangedSeq: sql`${accountState.gardenChangedSeq} + 1`,
-        gardenCatchUpPending: true,
         updatedAt: now,
       },
       setWhere: isNull(accountState.restoreId),
