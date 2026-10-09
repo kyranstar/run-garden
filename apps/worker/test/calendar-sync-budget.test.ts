@@ -285,8 +285,14 @@ describe("a calendar sync's work per run (cron reliability)", () => {
       construct: (target, args) => ((built += 1), Reflect.construct(target, args)),
       apply: (target, self, args) => ((built += 1), Reflect.apply(target, self, args)),
     });
-    vi.spyOn(Intl, "DateTimeFormat", "get").mockReturnValue(counting);
-    const stats = await syncCalendar(db, env, userId);
+    const intl = Intl as { DateTimeFormat: typeof Intl.DateTimeFormat };
+    intl.DateTimeFormat = counting;
+    let stats: Awaited<ReturnType<typeof syncCalendar>>;
+    try {
+      stats = await syncCalendar(db, env, userId);
+    } finally {
+      intl.DateTimeFormat = Real;
+    }
     expect(stats.userMovesAccepted).toBe(12);
     // The run's own date work (today in the athlete's zone, the moves' local clock) — never one per move.
     expect(built).toBeLessThanOrEqual(3);
