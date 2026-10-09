@@ -16,6 +16,8 @@ import {
   adaptiveConfigSchema,
   addDays,
   canonicalJson,
+  PERFORMED_LIMITS,
+  performedSessionSaveSchema,
   type PerformedSessionWireInput,
   type PerformedSet,
   type SourceActivity,
@@ -32,7 +34,7 @@ import { ingestActivities } from "../src/services/completion.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
 import { buildDayInput } from "../src/services/garden-sync.js";
 import { buildSession, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
-import { savePerformedSession } from "../src/services/session-save.js";
+import { savePerformedSession, setRows } from "../src/services/session-save.js";
 import { pairWatchSets, watchReviewBasis } from "../src/services/session-watch-review.js";
 import { upsertWatchSession } from "../src/services/watch-sets.js";
 import { sendToWatch } from "../src/services/watch-push.js";
@@ -684,6 +686,59 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     }));
     expect((await save({ ...body, entries: many })).status).toBe("saved");
     expect(await db.select().from(performedSets)).toHaveLength(300);
+  });
+
+  it("the save's statements do not grow with its sets: 300 sets through the route stay within the budget, rows as the app's (audit 3-B S-4)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    const body = await reviewBody(s.workoutId);
+    const many = Array.from({ length: 6 }, (_, k) => ({
+      exerciseId: k === 0 ? body.entries![0]!.exerciseId : `coros:T90${10 + k}`,
+      implement: k === 1 ? "dumbbell" : null,
+      format: k === 2 ? ("straight" as const) : null,
+      perSide: k === 3,
+      sets: Array.from({ length: 50 }, (_, i) => ({
+        setIndex: i,
+        side: k === 3 ? (i % 2 === 0 ? ("left" as const) : ("right" as const)) : null,
+        reps: i % 7 === 0 ? null : 5 + (i % 4),
+        seconds: i % 7 === 0 ? 45 : null,
+        load: i % 5 === 0 ? null : i % 2 === 0 ? { v: 22.5, u: "lb" as const } : { v: 20, u: "kg" as const },
+        done: i % 9 !== 0,
+        flags: i % 11 === 0 ? ["clench"] : [],
+      })),
+    }));
+    const big = { ...body, entries: many };
+    const { res, d1 } = await call("PUT", `performed/${big.id}`, { body: big });
+    expect(await res.json()).toMatchObject({ status: "saved" });
+    console.info(`[budget] PUT performed (watch_review, 300 sets): ${d1} D1 + 0 COROS = ${d1}`);
+    expect(d1).toBeLessThanOrEqual(BUDGET);
+    // Row for row what the app save's own inserts write (`setRows`).
+    const expected = setRows(big.id, performedSessionSaveSchema.parse(big)).map((r) => ({ ...r, flags: [...r.flags] }));
+    const stored = await db.select().from(performedSets).where(eq(performedSets.performedSessionId, big.id));
+    const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+    expect(stored.sort(byId)).toEqual(expected.sort(byId));
+  });
+
+  it("the largest sets the schema admits (300, longest ids, every flag) still save within the budget (audit 3-B S-4)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    const body = await reviewBody(s.workoutId);
+    const flags = Array.from({ length: PERFORMED_LIMITS.flags }, (_, f) => `${f}`.padEnd(60, "f"));
+    const many = Array.from({ length: PERFORMED_LIMITS.sets / PERFORMED_LIMITS.setsPerEntry }, (_, k) => ({
+      exerciseId: `coros:${k}`.padEnd(200, "x"),
+      implement: "i".repeat(60),
+      format: null,
+      perSide: false,
+      sets: Array.from({ length: PERFORMED_LIMITS.setsPerEntry }, (_, i) => ({
+        setIndex: i, side: null, reps: 5, seconds: null, load: { v: 20, u: "kg" as const }, done: true, flags,
+      })),
+    }));
+    const big = { ...body, entries: many };
+    const { res, d1 } = await call("PUT", `performed/${big.id}`, { body: big });
+    expect(await res.json()).toMatchObject({ status: "saved" });
+    console.info(`[budget] PUT performed (watch_review, 300 sets, the schema's longest): ${d1} D1 + 0 COROS = ${d1}`);
+    expect(d1).toBeLessThanOrEqual(BUDGET);
+    expect(await db.select().from(performedSets).where(eq(performedSets.performedSessionId, big.id))).toHaveLength(300);
   });
 
   it("422: a sourceRef that is not the slot's matched activity, or a build that is not the locked one", async () => {

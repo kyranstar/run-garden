@@ -23,7 +23,7 @@
  * records the garden's replay in its own transaction and leaves the walk to the next garden read (the record is the
  * guarantee, ruling 2b-R7): a strength review changes no day input, and a mobility one only its activity's sport.
  */
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import {
   activities,
   conditionChecks,
@@ -537,6 +537,46 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
   return { status: "saved", performedId: p.id, activityId: r.activity.id, matched: true, notes: [] };
 }
 
+/** The most JSON one set statement binds: well inside D1's 100 KB statement and 2 MB value limits, however counted. */
+const SET_JSON_BYTES = 60_000;
+
+/**
+ * THE SETS IN AS FEW STATEMENTS AS FIT (audit 3-B S-4): `INSERT … SELECT … FROM json_each(?)` over exactly the rows
+ * `setRows` makes for the app save, each value through its column's own driver mapping (a boolean as 0/1, the flags
+ * as JSON text). Five sets per plain INSERT under D1's 100 bound variables put a 75-set review at the 45-statement
+ * ceiling and 100 sets past it. Now one bound variable per statement and one statement per `SET_JSON_BYTES` of rows:
+ * a real review (UUID ids, library ids) is one statement even at the schema's 300-set limit; the largest payload the
+ * schema admits is a handful.
+ */
+function setStatements(db: Db, rows: ReturnType<typeof setRows>): AtomicStatement[] {
+  // Every column, in the table's order (`insert … select` fills them so; performed_sets has no generated column).
+  const columns = Object.entries(getTableColumns(performedSets));
+  const picks = sql.join(columns.map((_, i) => sql.raw(`json_extract(value, '$[${i}]')`)), sql`, `);
+  const insert = (chunk: string[]) => db.insert(performedSets).select(sql`select ${picks} from json_each(${`[${chunk.join(",")}]`})`);
+  const encoder = new TextEncoder();
+  const out: AtomicStatement[] = [];
+  let chunk: string[] = [];
+  let bytes = 0;
+  for (const row of rows) {
+    const json = JSON.stringify(
+      columns.map(([key, col]) => {
+        const v = (row as Record<string, unknown>)[key];
+        return v === null || v === undefined ? null : col.mapToDriverValue(v);
+      }),
+    );
+    const size = encoder.encode(json).length + 1;
+    if (chunk.length > 0 && bytes + size > SET_JSON_BYTES) {
+      out.push(insert(chunk));
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push(json);
+    bytes += size;
+  }
+  if (chunk.length > 0) out.push(insert(chunk));
+  return out;
+}
+
 /**
  * The save's one transaction: the session (`pending` first), its sets and checks, the watch's derived session gone,
  * the activity named by the slot and the build's discipline, the slot done, the new move's first day, the garden's
@@ -600,7 +640,7 @@ async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire,
   // Its sets and checks — a retry clears what an earlier attempt left first.
   statements.push(db.delete(performedSets).where(eq(performedSets.performedSessionId, p.id)));
   statements.push(db.delete(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.performedSessionId, p.id))));
-  for (const batch of insertBatches(setRows(p.id, p))) statements.push(db.insert(performedSets).values(batch));
+  statements.push(...setStatements(db, setRows(p.id, p)));
   const checks = p.checks.map((c) => ({
     id: `${p.id}:${c.kind}:${c.profileId}`,
     userId,
