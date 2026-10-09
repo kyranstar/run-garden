@@ -13,12 +13,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
+import { adaptiveConfigSchema, newId, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { savePreferences } from "../src/services/calendar-sync.js";
+import { savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
 import { programStamp } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import {
@@ -191,6 +191,23 @@ describe("POST send-to-watch — refusals write nothing", () => {
     expect(body.session.build.buildId).not.toBe(buildId);
     expect(body.session.watch).toMatchObject({ state: "ready" });
     await nothingWritten(workoutId);
+  });
+
+  // Re-review B-N2 (ruling 3-R11): a whole-account calendar sync handed to the 409's waitUntil ran in Send's own
+  // invocation — 45 combined with the calendar settled, 69 with this half-hour's inserts pending. The fresh build's
+  // block is the half-hourly reconcile's (the link's fingerprint no longer matches), as any build's is.
+  it("409 stale when the fresh build changes the calendar block: no calendar sync in Send's invocation", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    const preview = (await (await call("GET", `${workoutId}/watch-preview`)).json()) as { digest: string };
+    const blockBefore = (await rowOf(db, workoutId)).calendarBlockDurationSeconds;
+    // A longer default since the build: the day's build is now a different length — a new calendar block.
+    await db.update(schema.programs).set({ config: adaptiveConfigSchema.parse({ defaultMinutes: 60 }) }).where(eq(schema.programs.id, programId));
+    vi.mocked(syncCalendar).mockClear();
+    const res = await call("POST", `${workoutId}/send-to-watch`, { body: { buildId, digest: preview.digest } });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe("stale");
+    expect((await rowOf(db, workoutId)).calendarBlockDurationSeconds).not.toBe(blockBefore);
+    expect(vi.mocked(syncCalendar).mock.calls.length).toBe(0);
   });
 
   it("409 too_long for a build of more than 200 steps", async () => {
