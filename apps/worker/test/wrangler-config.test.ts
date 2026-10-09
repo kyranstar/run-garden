@@ -17,8 +17,10 @@ describe("wrangler staging env", () => {
     expect(staging).toContain('FIXTURE_MODE = "0"');
     expect(staging).toContain('AI_DEFAULT_ENABLED = "0"');
   });
-  it("leaves the watch switch absent from every vars block until the owner-approved first push (Phase 3 §6, plan Task 12)", () => {
-    expect(toml).not.toMatch(/^\s*WATCH_PUSH_ENABLED\s*=/m);
+  it("turns the watch switch on in production only, as the owner approved on 2026-10-09 (Phase 3 §6, plan Task 12)", () => {
+    const production = toml.slice(0, toml.indexOf("[env.staging]"));
+    expect(production.match(/^\s*WATCH_PUSH_ENABLED\s*=.*$/gm)).toEqual(['WATCH_PUSH_ENABLED = "1"']);
+    expect(staging).not.toMatch(/^\s*WATCH_PUSH_ENABLED\s*=/m);
   });
   it("has its own database", () => {
     expect(staging).toContain('database_name = "run-garden-db-staging"');
