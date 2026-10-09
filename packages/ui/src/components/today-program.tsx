@@ -158,6 +158,22 @@ export function usePendingSaves(enabled: boolean): Readonly<Record<string, Pendi
   return out;
 }
 
+/**
+ * The quick reviews this device saved that the server refused because the slot was saved first (409 `slot_done`: the
+ * outbox's conflict, in Settings → Data), by slot. Today offers "Log your session" for none of them, whatever its last
+ * answer said (audit 3-B UI-5) — the offer would open a review the server no longer has. Same read as `usePendingSaves`.
+ */
+export function useRefusedReviews(enabled: boolean): ReadonlySet<string> {
+  const userId = useSignedInUserId();
+  const outbox = useQuery({ queryKey: ["outbox"], queryFn: async () => outboxEntries(await offlineDb()), enabled, retry: false });
+  const out = new Set<string>();
+  for (const e of outbox.data ?? []) {
+    if (userId && e.userId !== userId) continue;
+    if (e.state === "conflict" && e.payload.source === "watch_review" && e.payload.workoutId) out.add(e.payload.workoutId);
+  }
+  return out;
+}
+
 /** "Log your session": opens the quick review's sheet (a sheet, not the full-screen review — owner call 11). */
 export function LogYourSession({ offer, small = false }: { offer: WatchReviewOffer; small?: boolean }) {
   const [open, setOpen] = useState(false);

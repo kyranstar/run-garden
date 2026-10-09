@@ -11,10 +11,11 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@rg/api-client";
 import { initialSnapshot } from "@rg/garden-engine";
 import { GardenScreen } from "../src/screens/garden.js";
 import { features } from "../src/features.js";
-import { discardEntry, enqueue, outboxEntries } from "../src/offline/outbox.js";
+import { discardEntry, drain, enqueue, outboxEntries } from "../src/offline/outbox.js";
 import { offlineDb } from "../src/offline/idb.js";
 
 vi.mock("@rg/garden-renderer", () => ({ GardenScene: () => null }));
@@ -291,6 +292,35 @@ describe("Log your session (Phase 3 Task 10; approved mocks §3)", () => {
     }
     expect(card.textContent).toContain("will sync");
     expect(card.textContent).not.toContain("Log your session");
+  });
+
+  it("refused because the slot was saved first (409 slot_done — the conflict in Settings → Data): no Log your session for it (audit 3-B UI-5)", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const db = await offlineDb();
+    const yesterday = "2026-10-07";
+    const wire = (id: string, workoutId: string, localDate: string) => ({
+      id, source: "watch_review" as const, sourceRef: `lbl-${id}`, workoutId, buildId: "b1", localDate,
+      startedAt: `${localDate}T18:00:00.000Z`, endedAt: `${localDate}T18:32:00.000Z`, seconds: 1920, plannedSeconds: null, minutes: null,
+      mode: null, theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null,
+      stepsDone: null, movesDone: [], note: null, newMove: null, entries: [], checks: [],
+    });
+    await enqueue(db, wire("44444444-4444-4444-8444-444444444444", SLOT, TODAY), "user-1");
+    await enqueue(db, wire("55555555-5555-4555-8555-555555555555", "slot-p1-2026-10-07", yesterday), "user-1");
+    await drain(db, { savePerformed: async () => Promise.reject(new ApiError(409, { error: "slot_done" })) }, { userId: "user-1" });
+    expect((await outboxEntries(db)).map((e) => e.state)).toEqual(["conflict", "conflict"]);
+    const { card } = await renderCard({
+      ...todayPayload(done),
+      watchReviews: [offer(), offer({ workoutId: "slot-p1-2026-10-07", date: yesterday })],
+    });
+    for (let i = 0; i < 100 && card.textContent?.includes("Log your session"); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+    expect(card.textContent).not.toContain("Log your session");
+    // Today's says Done (the session the server has); yesterday's own line is gone.
+    expect([...card.querySelector(".today-actions")!.children].map((c) => c.textContent?.trim())).toEqual(["Done", "Open"]);
+    expect(card.textContent).not.toContain("Yesterday");
   });
 
   it("Log your session opens the sheet (not the full-screen review)", async () => {

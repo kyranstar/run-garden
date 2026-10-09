@@ -18,12 +18,14 @@ import { Prog } from "@rg/session-engine";
 import { Banner, formatDayLong, Sheet, Spinner } from "../components.js";
 import { offlineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
+import { outboxEntries } from "../offline/outbox.js";
 import { saveSession, type SaveResult } from "../player/save.js";
 import { CheckScale, checkWord } from "./condition-check-sheet.js";
 import { afterDrain, SAVED_SESSION_QUERIES } from "./outbox-sync.js";
 import { Stepper } from "./set-steppers.js";
 
 type Entry = Omit<WatchReviewBasisDto["entries"][number], "sets"> & { sets: PerformedSet[] };
+export type ReviewSaveResult = SaveResult | "conflict";
 
 /** One set as its line reads: "30 lb × 6", "8", "45 s", "20 kg · 30 s". */
 function setText(s: PerformedSet): string {
@@ -50,8 +52,11 @@ export function WatchReviewSheet({
   /** The program's name, on the sheet's first line. */
   title: string;
   onClose: () => void;
-  /** Saved: "saved" when the server took it, "pending" when it waits in the outbox ("will sync"). */
-  onSaved: (result: SaveResult) => void;
+  /**
+   * Saved: "saved" when the server took it, "pending" when it waits in the outbox ("will sync"), "conflict" when the
+   * server refused it because the slot was saved first (409 `slot_done`; the conflict row in Settings → Data).
+   */
+  onSaved: (result: ReviewSaveResult) => void;
   /** How long Save waits for the first send (tests). */
   saveWaitMs?: number;
 }) {
@@ -121,7 +126,7 @@ export function WatchReviewSheet({
       review: { ratings: {}, excluded: {}, graduations: [] },
     };
     try {
-      let result: SaveResult;
+      let result: ReviewSaveResult;
       try {
         const db = await offlineDb();
         const userId = qc.getQueryData<MeResponse>(["me"])?.userId ?? (await meWithOfflineFallback().catch(() => null))?.userId ?? null;
@@ -130,6 +135,11 @@ export function WatchReviewSheet({
           waitMs: saveWaitMs,
           onDrained: (r) => afterDrain(qc, r),
         });
+        // Still in the outbox is not always "will sync": refused because the slot was saved first (409 `slot_done`),
+        // it is the conflict in Settings → Data — closed as that, and Today no longer offers it (audit 3-B UI-5).
+        if (result === "pending" && (await outboxEntries(db)).some((e) => e.performedId === wire.id && e.state === "conflict")) {
+          result = "conflict";
+        }
       } catch (e) {
         // No IndexedDB here (a private window): straight to the server, or not at all.
         if (e instanceof Error && e.message === "no signed-in account to save for") throw e;
@@ -137,7 +147,8 @@ export function WatchReviewSheet({
         result = "saved";
       }
       void qc.invalidateQueries({ queryKey: ["outbox"] });
-      if (result === "saved") for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
+      // Saved — or saved first by another session: Today, Plan and the garden show the slot done either way.
+      if (result !== "pending") for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
       onSaved(result);
     } catch {
       setFailed(true);

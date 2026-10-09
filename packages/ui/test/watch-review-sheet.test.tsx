@@ -123,7 +123,7 @@ function mount(opts: { put?: () => Response | Promise<Response> } = {}) {
       ),
     );
   });
-  return { puts, onClose, onSaved };
+  return { puts, onClose, onSaved, qc };
 }
 
 async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
@@ -237,6 +237,16 @@ describe("Log your session — the sheet", () => {
     await until(() => onSaved.mock.calls.length === 1, "onSaved");
     await until(async () => (await entries())[0]?.state === "conflict", "the conflict");
     expect((await entries())[0]).toMatchObject({ state: "conflict", lastError: "slot_done" });
+  });
+
+  it("409 slot_done closes the review as a conflict — not as waiting to sync — and Today is read again (audit 3-B UI-5)", async () => {
+    const { onSaved, qc } = mount({ put: () => json({ error: "slot_done" }, 409) });
+    qc.setQueryData(["today"], { today: "2026-10-08" });
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    await click("Save");
+    await until(() => onSaved.mock.calls.length === 1, "onSaved");
+    expect(onSaved).toHaveBeenCalledWith("conflict");
+    expect(qc.getQueryState(["today"])?.isInvalidated).toBe(true);
   });
 
   it("each move's row is named by what it shows — the move and the values to check (audit 3-B UI-10; WCAG 2.5.3)", async () => {
