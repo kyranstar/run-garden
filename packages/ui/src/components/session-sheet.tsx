@@ -82,6 +82,15 @@ export const WATCH_POLL_S: readonly number[] = [4, 4, 8, 15, 30, 60, 60, 60, 60]
 /** The read the drain goes before: the fourth, ≈31 s in. */
 const WATCH_DRAIN_READ = 3;
 
+/**
+ * The clock the "Sending…" reads run on: the page's own timers. Tests drive a clock of their own here — faking the
+ * global timers for minutes of fake time would also fire the test runner's own RPC timeouts.
+ */
+export const sendingPollClock = {
+  set: (run: () => void, ms: number): unknown => setTimeout(run, ms),
+  clear: (id: unknown): void => clearTimeout(id as ReturnType<typeof setTimeout>),
+};
+
 /** While `sending`: `read` on the backoff above, the drain before the fourth read; restarted each time it starts sending. */
 function useSendingPoll(sending: boolean, read: () => void, drain: () => Promise<unknown>): void {
   const latest = useRef({ read, drain });
@@ -89,7 +98,7 @@ function useSendingPoll(sending: boolean, read: () => void, drain: () => Promise
   useEffect(() => {
     if (!sending) return;
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: unknown;
     const tick = async (i: number) => {
       // Hidden: no read, as React Query's own interval would not; the page coming back reads once.
       if (document.visibilityState !== "hidden") {
@@ -97,12 +106,12 @@ function useSendingPoll(sending: boolean, read: () => void, drain: () => Promise
         if (stopped) return;
         latest.current.read();
       }
-      if (!stopped && i + 1 < WATCH_POLL_S.length) timer = setTimeout(() => void tick(i + 1), WATCH_POLL_S[i + 1]! * 1_000);
+      if (!stopped && i + 1 < WATCH_POLL_S.length) timer = sendingPollClock.set(() => void tick(i + 1), WATCH_POLL_S[i + 1]! * 1_000);
     };
-    timer = setTimeout(() => void tick(0), WATCH_POLL_S[0]! * 1_000);
+    timer = sendingPollClock.set(() => void tick(0), WATCH_POLL_S[0]! * 1_000);
     return () => {
       stopped = true;
-      clearTimeout(timer);
+      sendingPollClock.clear(timer);
     };
   }, [sending]);
 }

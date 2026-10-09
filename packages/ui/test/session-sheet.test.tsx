@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { SessionSheet } from "../src/components/session-sheet.js";
+import { SessionSheet, sendingPollClock } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
@@ -1190,40 +1190,69 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
 });
 
 describe("while Sending…, the sheet reads again on a backoff and then stops (audit 3-B UI-1)", () => {
-  // Every timer is fake here (React Query's included): the clock is driven second by second.
-  const flush = async (ms: number) =>
-    act(async () => {
-      await vi.advanceTimersByTimeAsync(ms);
-    });
+  // The poll's own clock (`sendingPollClock`) is driven here, second by second; every other timer is the real one (a
+  // global fake advanced by minutes also fires the test runner's own RPC timeouts).
+  const clock = { now: 0, seq: 0, due: [] as Array<{ at: number; id: number; run: () => void }> };
+  const real = { ...sendingPollClock };
+  beforeEach(() => {
+    clock.now = 0;
+    clock.due = [];
+    sendingPollClock.set = (run, ms) => {
+      clock.seq += 1;
+      clock.due.push({ at: clock.now + ms, id: clock.seq, run });
+      return clock.seq;
+    };
+    sendingPollClock.clear = (id) => {
+      clock.due = clock.due.filter((t) => t.id !== id);
+    };
+  });
+  afterEach(() => Object.assign(sendingPollClock, real));
+  /** Let what a tick started (the drain, the read, React's render) land. */
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 2));
+      });
+    }
+  };
+  const advance = async (ms: number) => {
+    const end = clock.now + ms;
+    for (;;) {
+      clock.due.sort((a, b) => a.at - b.at);
+      const next = clock.due[0];
+      if (!next || next.at > end) break;
+      clock.due.shift();
+      clock.now = next.at;
+      next.run();
+      await settle();
+    }
+    clock.now = end;
+  };
   const reads = (calls: Call[]) => calls.filter((c) => c.method === "GET" && c.path === `/api/sessions/${SLOT}`).length;
   const drains = (calls: Call[]) => calls.filter((c) => c.path === "/api/sessions/watch/drain").length;
   const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
   /** The drain runs nothing (COROS unreachable, the job backing off): the push stays queued. */
   const stuck = (c: Call): Response | undefined => (c.path === "/api/sessions/watch/drain" ? json({ executed: 0 }) : undefined);
 
-  beforeEach(() => {
-    vi.useRealTimers();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    vi.setSystemTime(new Date(`${TODAY}T12:00:00`));
-  });
-
   async function loaded(what: string) {
-    for (let i = 0; i < 100 && !body().includes(what); i += 1) await flush(10);
-    expect(body()).toContain(what);
+    await until(() => body().includes(what), what);
+    await settle();
   }
 
-  /** Seconds after `t0` of each read and each drain, over `seconds`. */
-  async function timeline(calls: Call[], seconds: number, t0 = Date.now()) {
+  /** Seconds after `t0` (on the poll's clock) of each read and each drain, over `seconds`. */
+  async function timeline(calls: Call[], seconds: number, t0 = clock.now) {
     const out = { reads: [] as number[], drains: [] as number[] };
     let r = reads(calls);
     let d = drains(calls);
     for (let s = 0; s < seconds; s += 1) {
-      await flush(1_000);
-      for (; reads(calls) > r; r += 1) out.reads.push(Math.round((Date.now() - t0) / 1_000));
-      for (; drains(calls) > d; d += 1) out.drains.push(Math.round((Date.now() - t0) / 1_000));
+      await advance(1_000);
+      for (; reads(calls) > r; r += 1) out.reads.push(Math.round((clock.now - t0) / 1_000));
+      for (; drains(calls) > d; d += 1) out.drains.push(Math.round((clock.now - t0) / 1_000));
     }
     return out;
   }
+  /** The page's clock moves on too (React Query's staleness reads `Date`). */
+  const later = (ms: number) => vi.setSystemTime(new Date(Date.now() + ms));
 
   it("opened on Sending…: reads at 4, 8, 16, 31, 61 s and each minute to about five minutes — one drain, ≈30 s in — then none", async () => {
     features.player = true;
@@ -1252,10 +1281,11 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
     const { calls } = mount(session({ watch: { state: "ready" } }), { route: routes });
     await loaded("Send to watch");
     await click(/Send to watch/);
-    for (let i = 0; i < 100 && !button("Send"); i += 1) await flush(10);
-    const t0 = Date.now();
+    await until(() => !!button("Send"), "the preview");
+    const t0 = clock.now;
     expect(drains(calls)).toBe(0);
     await click("Send");
+    await settle();
     // The drain at once (in Send's own tap), and its read.
     expect(drains(calls)).toBe(1);
     const seen = await timeline(calls, 15 * 60, t0);
@@ -1308,11 +1338,12 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
     const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck, queries: app });
     await loaded("Sending…");
     await timeline(calls, 10 * 60);
+    later(10 * 60_000);
     const before = reads(calls);
     await act(async () => {
       window.dispatchEvent(new Event("visibilitychange"));
     });
-    await flush(100);
+    await settle();
     expect(reads(calls)).toBe(before + 1);
     act(() => root?.unmount());
     host?.remove();
@@ -1321,12 +1352,12 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
     for (const watch of [null, { state: "on_watch" }]) {
       const other = mount(session({ locked: true, watch } as Partial<SessionDto>), { route: stuck, queries: app });
       await loaded("Supported row");
-      await flush(60_000);
+      later(60_000);
       const was = reads(other.calls);
       await act(async () => {
         window.dispatchEvent(new Event("visibilitychange"));
       });
-      await flush(100);
+      await settle();
       expect(reads(other.calls)).toBe(was);
       act(() => root?.unmount());
       host?.remove();
