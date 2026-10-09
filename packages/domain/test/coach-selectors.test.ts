@@ -10,9 +10,21 @@
 import { describe, expect, it } from "vitest";
 import { expandSelectors, describeSelector } from "../src/coach-selectors.js";
 import { coachAuthoredOpSchema } from "../src/coach.js";
-import type { GuardrailWorkout } from "../src/coach-guardrails.js";
+import { validateOps, type GuardrailCtx, type GuardrailWorkout } from "../src/coach-guardrails.js";
 
 const TODAY = "2026-09-20";
+
+/** The rest of a guardrail context, for the few tests that run the resolved ops through `validateOps`. */
+const guardCtx: GuardrailCtx = {
+  today: TODAY,
+  workouts: [],
+  weeklyMinutesByDiscipline: { run: [200, 200, 200, 200], strength: [90, 90, 90, 90], yoga: [40, 40, 40, 40] },
+  raceDates: [],
+  firmHorizonEnd: "2026-11-30",
+  rules: [],
+  coachPlanIds: [],
+  datedEvents: [],
+};
 
 /** Mon 21st lift, Tue 22nd easy run, Thu 24th lift, Sat 26th long run. */
 function calendar(over: Partial<GuardrailWorkout>[] = []): GuardrailWorkout[] {
@@ -236,6 +248,67 @@ describe("expandSelectors · adjustEach", () => {
     );
     expect(out.ops).toEqual([]);
     expect(out.empty).toHaveLength(1);
+  });
+});
+
+/*
+ * Rule 2 against ruling 3-R13 (re-review NEW-1). A programme or on-demand session may be moved, skipped or removed
+ * but never eased or re-timed (`app_built_session`, fatal). "Take 30% off everything next week" over a week that holds
+ * one must reach the coach's and the imported sessions only — resolving onto the programme session made the whole
+ * proposal fatal, for every athlete with a programme, most weeks.
+ */
+describe("expandSelectors · a programme session is not the coach's to re-time", () => {
+  const withAppBuilt = (): GuardrailWorkout[] =>
+    calendar([
+      { id: "p1", date: "2026-09-23", title: "Strength program", category: "strength", completionState: "scheduled", durationMinutes: 30, discipline: "strength", origin: "program" },
+      { id: "o1", date: "2026-09-25", title: "On demand", category: "yoga", completionState: "scheduled", durationMinutes: 20, discipline: "yoga", origin: "on_demand" },
+    ]);
+
+  it("an adjustEach over the week skips the programme and on-demand sessions, so the proposal survives validateOps", () => {
+    const { ops, empty } = expandSelectors(
+      [{ kind: "adjustEach", select: { by: "match", from: TODAY, to: "2026-09-27" }, durationScale: 0.7 }],
+      withAppBuilt(),
+      TODAY,
+    );
+    expect(empty).toEqual([]);
+    expect(ops.map((o) => ("workoutId" in o ? o.workoutId : o.kind))).toEqual(["l1", "r1", "l2", "r2"]);
+    const v = validateOps(ops, { ...guardCtx, workouts: withAppBuilt() }, { empty });
+    expect(v.fatal.map((f) => `${f.rule}@${f.opIndex}`)).toEqual([]);
+  });
+
+  it("an adjustEach that names programme sessions by id resolves onto none of them, and says why", () => {
+    const { ops, empty } = expandSelectors(
+      [{ kind: "adjustEach", select: { by: "ids", ids: ["p1", "o1"] }, durationDeltaMinutes: -10 }],
+      withAppBuilt(),
+      TODAY,
+    );
+    expect(ops).toEqual([]);
+    expect(empty).toHaveLength(1);
+    expect(empty[0]!.detail).toMatch(/programme/);
+  });
+
+  it("move, skip and remove selectors still reach them — those ops are legal on a programme session", () => {
+    const range = { by: "match" as const, from: "2026-09-23", to: "2026-09-25" };
+    const { ops, empty } = expandSelectors(
+      [
+        { kind: "moveEach", select: range, shiftDays: 7 },
+        { kind: "skipEach", select: range, reason: "away" },
+        { kind: "removeEach", select: range },
+      ],
+      withAppBuilt(),
+      TODAY,
+    );
+    expect(empty).toEqual([]);
+    expect(ops.map((o) => `${o.kind}:${"workoutId" in o ? o.workoutId : ""}`)).toEqual([
+      "move:p1", "move:l2", "move:o1",
+      "skip:p1", "skip:l2", "skip:o1",
+      "remove:p1", "remove:l2", "remove:o1",
+    ]);
+  });
+
+  it("an adjust that names a programme session DIRECTLY is still refused (app_built_session)", () => {
+    const v = validateOps([{ kind: "adjust", workoutId: "p1", durationMinutes: 20 }], { ...guardCtx, workouts: withAppBuilt() });
+    expect(v.fatal.map((f) => f.rule)).toEqual(["app_built_session"]);
   });
 });
 

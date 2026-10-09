@@ -290,10 +290,10 @@ sessionRoutes.post("/:workoutId/send-to-watch", async (c) => {
   } catch (e) {
     if (e instanceof WatchUnavailableError) return c.json({ error: e.reason }, 409);
     if (e instanceof StalePreviewError) return c.json({ error: "stale_preview", preview: e.preview }, 409);
-    if (e instanceof StaleBuildError) {
-      if (e.calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
-      return c.json({ error: "stale", session: await withWatch(c, e.session) }, 409);
-    }
+    // No calendar sync here, even when the fresh build changed the slot's block (re-review B-N2, ruling 3-R11): a
+    // whole-account sync in Send's own invocation took it to 45 combined with the calendar settled and 69 with this
+    // half-hour's inserts pending. The block's change is the half-hourly reconcile's, like any build's.
+    if (e instanceof StaleBuildError) return c.json({ error: "stale", session: await withWatch(c, e.session) }, 409);
     if (e instanceof RestoringError) return c.json({ error: "restore_in_progress" }, 423);
     return refusal(c, e);
   }

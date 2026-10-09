@@ -150,6 +150,7 @@ function build(opts: {
         completionState: r.completionState,
         durationMinutes: r.durationMinutes,
         discipline: r.discipline,
+        origin: r.origin ?? null,
       })),
       weeklyMinutesByDiscipline: opts.weekly,
       raceDates: (opts.raceDates ?? []).map((d) => addDays(A, d)),
@@ -294,4 +295,70 @@ export function athletes(): AthleteState[] {
       rules: [{ id: "mem-rule-long-sat", kind: "anchor_day", category: "long", weekday: 6 }],
     }),
   ];
+}
+
+/**
+ * THE SAME ATHLETE WITH A PROGRAMME RUNNING ALONGSIDE (re-review NEW-1, ruling 3-R13).
+ *
+ * The states above were written before programmes existed, so none of them held a row the coach may move, skip or
+ * remove but never ease or re-time — and the instrument could not see a selector resolving onto one. This adds what
+ * an athlete with an adaptive programme actually has: a programme strength session on Monday and Thursday of every
+ * week the calendar spans, and one on-demand mobility session in the first week. Trailing minutes grow by what the
+ * programme implies, so no rule fires because the fixture was rigged.
+ */
+export function withAppBuiltSessions(s: AthleteState): AthleteState {
+  const last = s.rows.reduce((m, r) => (r.date > m ? r.date : m), s.A);
+  const extra: SeedRow[] = [];
+  for (let week = 0; addDays(s.A, week * 7) <= last; week++) {
+    for (const day of [0, 3]) {
+      const date = addDays(s.A, week * 7 + day);
+      extra.push({
+        id: `${s.key}-prog-${date}`,
+        planId: "prog-strength",
+        date,
+        category: "strength",
+        completionState: "scheduled",
+        durationMinutes: 30,
+        discipline: "strength",
+        title: "Strength program",
+        origin: "program",
+      });
+    }
+  }
+  extra.push({
+    id: `${s.key}-od-${addDays(s.A, 2)}`,
+    planId: "on-demand",
+    date: addDays(s.A, 2),
+    category: "mobility",
+    completionState: "scheduled",
+    durationMinutes: 20,
+    discipline: "yoga",
+    title: "On-demand mobility",
+    origin: "on_demand",
+  });
+  const rows = [...s.rows, ...extra];
+  const strength = s.ctx.weeklyMinutesByDiscipline.strength ?? [0, 0, 0, 0];
+  return {
+    ...s,
+    key: `${s.key}+programme`,
+    label: `${s.label}, with a strength programme and an on-demand session`,
+    rows,
+    ctx: {
+      ...s.ctx,
+      workouts: [
+        ...s.ctx.workouts,
+        ...extra.map((r) => ({
+          id: r.id,
+          date: r.date,
+          title: r.title,
+          category: r.category,
+          completionState: r.completionState,
+          durationMinutes: r.durationMinutes,
+          discipline: r.discipline,
+          origin: r.origin ?? null,
+        })),
+      ],
+      weeklyMinutesByDiscipline: { ...s.ctx.weeklyMinutesByDiscipline, strength: strength.map((m) => m + 60) },
+    },
+  };
 }

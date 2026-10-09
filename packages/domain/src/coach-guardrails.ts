@@ -134,6 +134,16 @@ export type GuardrailRule =
 export type RuleClass = "fatal" | "advisory";
 
 /**
+ * The ops a programme (or on-demand) session refuses (ruling 3-R13): its content is its build's, so it is never eased
+ * or re-timed. ONE PREDICATE for both sides of selector rule 2 — `validateOps` raises `app_built_session` for exactly
+ * these, and `expandSelectors` never resolves a selector into one of them on such a row (re-review NEW-1), so a
+ * selector can never produce the fatal it would then be binned for.
+ */
+export function refusedOnAppBuilt(kind: CoachOp["kind"]): boolean {
+  return kind === "ease" || kind === "adjust";
+}
+
+/**
  * THE SPLIT, with the defence of each placement.
  *
  * The test for FATAL is not "is this dangerous" — the athlete is looking at an
@@ -1004,7 +1014,7 @@ export function validateOps(
           `${humanDate(targeted.date)} has already been and gone — the past can't be rewritten`,
         );
       }
-      if ((op.kind === "ease" || op.kind === "adjust") && appAuthoredRow({ origin: targeted.origin ?? null })) {
+      if (refusedOnAppBuilt(op.kind) && appAuthoredRow({ origin: targeted.origin ?? null })) {
         found(
           "app_built_session",
           i,

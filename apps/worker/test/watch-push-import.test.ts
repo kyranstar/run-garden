@@ -591,15 +591,38 @@ describe("two COROS workouts carrying one stamp", () => {
   const LATER = addDays(DAY, 3);
   const rowsAt = async (address: string) =>
     (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.sourceWorkoutId === address);
-  /** The athlete copies the sent session to `LATER` in the COROS app: a new workout (its own program id), same name. */
-  function athleteCopies(stamp: string): string {
+  /** The athlete copies the sent session to `day` in the COROS app: a new workout (its own program id), same name. */
+  function athleteCopies(stamp: string, day = LATER): string {
     const original = programOn(stamp)!;
     server.state.schedule.programs!.push({ ...structuredClone(original), idInPlan: "99", id: "9999" });
     server.state.schedule.entities!.push({
-      ...structuredClone(entityOf(original)), idInPlan: "99", planProgramId: "99", happenDay: Number(localDateToCorosDay(LATER)),
+      ...structuredClone(entityOf(original)), idInPlan: "99", planProgramId: "99", happenDay: Number(localDateToCorosDay(day)),
     });
     return `${server.state.schedule.id}:99`;
   }
+
+  // The copy on the SAME day (re-review A-3): the unpush deletes only the copy at the address the slot recorded.
+  it("a same-day copy survives Take off: only the slot's recorded copy comes off", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const theirs = athleteCopies(stamp, DAY);
+    await readNow();
+    await takeOffWatch(db, userId, workoutId, ctx());
+    await lane();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(programsNamed(stamp).map((p) => String(p.idInPlan))).toEqual(["99"]);
+    for (let i = 0; i < 2; i++) await readNow();
+    expect(await rowsAt(theirs)).toEqual([expect.objectContaining({ origin: null, effectiveDate: DAY, archivedAt: null })]);
+  });
+
+  it("a same-day copy survives an app move of the slot", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    athleteCopies(stamp, DAY);
+    await readNow();
+    await applyMove(db, { userId, workoutId, toDate: TOMORROW, toTime: "18:00", source: "app", corosWritesEnabled: true });
+    await lane();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(programsNamed(stamp).map((p) => String(p.idInPlan))).toEqual(["99"]);
+  });
 
   it("the slot keeps its recorded copy, the second is the athlete's, and it survives an app move", async () => {
     const { workoutId, buildId, stamp } = await pushed();

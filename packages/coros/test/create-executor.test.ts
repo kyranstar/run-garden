@@ -813,6 +813,44 @@ describe("deleteWorkout — guarded, triple-addressed removal", () => {
     expect(server.state.schedule.entities).toHaveLength(before - 1);
   });
 
+  // Audit 3-A life L-3: the athlete duplicated the session in the COROS app — same name, same day, its own address.
+  it("two same-day workouts carry the stamp: deletes only the one at the recorded address, never the other", async () => {
+    const { server, client } = await setup();
+    seedPushed(server, { idInPlan: "21", date, name: NAME });
+    seedPushed(server, { idInPlan: "99", date, name: NAME });
+
+    const result = await deleteWorkout(client, target(), { today: TODAY });
+
+    expect(result.ok).toBe(true);
+    expect(server.entityByIdInPlan("21")).toBeUndefined();
+    expect(server.entityByIdInPlan("99")).toBeDefined();
+  });
+
+  it("…the same with the athlete's copy at the recorded address' neighbour: the recorded one goes, whichever was first", async () => {
+    const { server, client } = await setup();
+    seedPushed(server, { idInPlan: "99", date, name: NAME });
+    seedPushed(server, { idInPlan: "21", date, name: NAME });
+
+    const result = await deleteWorkout(client, target(), { today: TODAY });
+
+    expect(result.ok).toBe(true);
+    expect(server.entityByIdInPlan("21")).toBeUndefined();
+    expect(server.entityByIdInPlan("99")).toBeDefined();
+  });
+
+  it("two same-day carriers and neither at the recorded address: refused as ambiguous, nothing sent", async () => {
+    const { server, client } = await setup();
+    seedPushed(server, { idInPlan: "98", date, name: NAME });
+    seedPushed(server, { idInPlan: "99", date, name: NAME });
+    const writesBefore = server.counts.scheduleWrites;
+
+    const result = await deleteWorkout(client, target(), { today: TODAY });
+
+    expect(result).toMatchObject({ ok: false, refused: "ambiguous" });
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+    expect([server.entityByIdInPlan("98"), server.entityByIdInPlan("99")].every(Boolean)).toBe(true);
+  });
+
   it("refuses with not_found when nothing carries the stamp", async () => {
     const { server, client } = await setup();
     const writesBefore = server.counts.scheduleWrites;

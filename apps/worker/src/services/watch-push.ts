@@ -115,6 +115,9 @@ export function cutAtWord(text: string, max: number, maxBytes = Number.POSITIVE_
     hard += ch;
     bytes += b;
   }
+  // THE FIRST CHARACTER ALONE IS WIDER THAN THE ROOM (re-review C-1a: a ZWJ family emoji is one 25-byte character):
+  // the cut would be empty. It is dropped and the rest cut instead — empty only when nothing at all fits.
+  if (hard === "") return chars.length > 1 ? cutAtWord(chars.slice(1).join(""), max, maxBytes) : "";
   // A space right after the hard cut means every word in it is whole; else cut back to the last space inside it.
   const space = /^\s/u.test(chars[n] ?? "") ? hard.length : hard.lastIndexOf(" ");
   const cut = (space > 0 ? hard.slice(0, space) : hard).replace(TRAILING_SEPARATOR, "");
@@ -237,9 +240,14 @@ export function programStamp(programName: string, date: string, taken: ReadonlyS
   return freeStamp((suffix) => {
     const room = WATCH_STAMP_MAX - STAMP_SEPARATOR.length - date.length - suffix.length;
     const roomBytes = WATCH_STAMP_MAX_BYTES - utf8.encode(`${STAMP_SEPARATOR}${date}${suffix}`).length;
-    return `${stampName(cutAtWord(programName, room, roomBytes), date)}${suffix}`;
+    // Never a nameless " — <date>" (re-review C-1a): COROS may trim the leading space, and then the stamp it hands
+    // back matches nothing the lane or the import looks for.
+    return `${stampName(cutAtWord(programName, room, roomBytes) || NAMELESS_PROGRAM, date)}${suffix}`;
   }, taken);
 }
+
+/** The stamp's name when not one character of the program's fits (a name of emoji wider than the room). */
+const NAMELESS_PROGRAM = "Program";
 
 // ── The service part ─────────────────────────────────────────────────────────────────────────────────────────
 

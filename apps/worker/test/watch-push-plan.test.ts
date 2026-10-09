@@ -271,6 +271,24 @@ describe("programStamp", () => {
     expect(second.length).toBeLessThanOrEqual(WATCH_STAMP_MAX);
     expect(second.endsWith(" — 2026-10-09 (2)")).toBe(true);
   });
+
+  // Re-review C-1a: a ZWJ family emoji is ONE 25-byte character, wider than the base stamp's 23-byte room. The cut was
+  // empty and the stamp " — 2026-10-09": no name on the watch, and a leading space COROS may trim on the way back.
+  it("a name whose first character alone is wider than the room still names the program, with no leading space", () => {
+    const family = "👨‍👩‍👧‍👦";
+    expect(new TextEncoder().encode(family).length).toBe(25);
+    const taken = new Set<string>();
+    for (const suffix of ["", " (2)"]) {
+      const stamp = programStamp(`${family} Family strength`, "2026-10-09", taken);
+      expect(stamp).toBe(`Family strength — 2026-10-09${suffix}`);
+      taken.add(stamp);
+    }
+  });
+
+  it("a name with nothing that fits drops it cleanly: a plain word, never an empty name", () => {
+    const stamp = programStamp("👨‍👩‍👧‍👦👨‍👩‍👧‍👦", "2026-10-09", new Set());
+    expect(stamp).toBe("Program — 2026-10-09");
+  });
 });
 
 describe("cuts never leave half a character (audit W-3, lane L-6, lane U-4)", () => {
