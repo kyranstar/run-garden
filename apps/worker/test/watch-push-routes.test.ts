@@ -224,9 +224,18 @@ describe("POST send-to-watch — refusals write nothing", () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: "too_long" });
     await nothingWritten(workoutId);
-    // The preview says so, and lists nothing to send.
-    const preview = (await (await call("GET", `${workoutId}/watch-preview`)).json()) as { refusal: string; steps: unknown[] };
-    expect(preview).toMatchObject({ refusal: "too_long", steps: [] });
+    // The preview says so — and still lists every step, as the watch would have had them (owner call 8, 2026-10-08:
+    // "Too long for the watch" takes Send's place at the preview's foot, under the steps).
+    const preview = (await (await call("GET", `${workoutId}/watch-preview`)).json()) as {
+      refusal: string;
+      steps: Array<{ name: string; freeText: boolean; target: unknown; overview: string; restSeconds: number }>;
+    };
+    expect(preview.refusal).toBe("too_long");
+    expect(preview.steps.length).toBeGreaterThan(200);
+    for (const step of preview.steps) {
+      expect(step).toMatchObject({ name: expect.any(String), freeText: expect.any(Boolean), overview: expect.any(String) });
+      expect(step.name.length).toBeGreaterThan(0);
+    }
   });
 
   it("404 for another user's slot", async () => {

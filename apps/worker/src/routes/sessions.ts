@@ -13,7 +13,9 @@
  *   GET    /api/sessions/:workoutId/watch-preview   the steps as the watch will hold them (Phase 3)
  *   POST   /api/sessions/:workoutId/send-to-watch   {buildId, digest} → lock the build (it stays `built`), queue its push
  *   POST   /api/sessions/:workoutId/take-off-watch  supersede a queued push, or queue the unpush of a pushed one
- *   PUT    /api/sessions/performed/:id       a performed session from the player's outbox, saved exactly once
+ *   GET    /api/sessions/:workoutId/watch-review    the quick review after a watch session: its basis (Phase 3)
+ *   PUT    /api/sessions/performed/:id       a performed session from the player's outbox, saved exactly once (the app's,
+ *                                            or a watch review — `source: "watch_review"`)
  *   POST   /api/conditions/checks            {profileId, value, feelingOff} → the day's check
  *
  * 404 for a slot that is not this user's live program / on-demand row; 409 `not_today` (a day gone, or Start on a
@@ -58,6 +60,7 @@ import { sendToWatch, StalePreviewError, takeOffWatch, watchPreview, watchStateO
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { InvalidSaveError, savePerformedSession } from "../services/session-save.js";
 import { reviewBasis } from "../services/session-review-basis.js";
+import { watchReviewBasis } from "../services/session-watch-review.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
 export const sessionRoutes = new Hono<AppContext>();
@@ -312,6 +315,23 @@ sessionRoutes.post("/:workoutId/take-off-watch", async (c) => {
   try {
     const session = await takeOffWatch(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
     return c.json(await withWatch(c, session));
+  } catch (e) {
+    return refusal(c, e);
+  }
+});
+
+/**
+ * The quick review after a watch session (Task 9, spec §5): the watch's logged sets paired with the locked build, the
+ * activity's times, the post-check's profiles. 404 while the switch is off, and whenever the review is not offered.
+ */
+sessionRoutes.get("/:workoutId/watch-review", async (c) => {
+  const off = switchedOff(c);
+  if (off) return off;
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  try {
+    return c.json(await watchReviewBasis(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), unit: prefs.weightUnit }));
   } catch (e) {
     return refusal(c, e);
   }

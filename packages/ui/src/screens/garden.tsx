@@ -1187,7 +1187,9 @@ export function GardenScreen() {
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   // Sessions saved on this device and not yet taken by the server (Phase 2b) — read only on a day with an app session.
-  const pendingSaves = usePendingSaves((today.data?.todaySessions ?? []).some((s) => isAppSession(s.workout)));
+  const pendingSaves = usePendingSaves(
+    (today.data?.todaySessions ?? []).some((s) => isAppSession(s.workout)) || (today.data?.watchReviews?.length ?? 0) > 0,
+  );
   const signedIn = useSignedInUserId();
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const [openSpeciesId, setOpenSpeciesId] = useState<string | null>(null);
@@ -1778,6 +1780,8 @@ export function GardenScreen() {
   // A program session heading the card that is skipped, done or saved here is not today's to-do (2a UI re-review U6):
   // no pacing clause for it, no "Finishing it grows…".
   const leadPending = lead && todayLayout.title?.kind === "program" ? (pendingSaves[lead.id] ?? null) : null;
+  // Its quick review, when the watch did it and the review is offered (Phase 3).
+  const leadOffer = lead && todayLayout.title?.kind === "program" ? (d?.watchReviews?.find((o) => o.workoutId === lead.id) ?? null) : null;
   const leadSettled =
     todayLayout.title?.kind === "program" && !!lead && (sessionSkipped(lead) || sessionDone(lead) || leadPending !== null);
   const toggleBalanceKey = (k: DisciplineKey) =>
@@ -2213,7 +2217,12 @@ export function GardenScreen() {
               </span>
             </div>
             {todayLayout.title?.kind === "program" ? (
-              <TodayProgramLead session={todayLayout.title.session} today={d!.today} pending={leadPending} />
+              <TodayProgramLead
+                session={todayLayout.title.session}
+                today={d!.today}
+                pending={leadPending}
+                offer={leadOffer}
+              />
             ) : w.category === "rest" ? (
               <>
                 <h3 className="today-title">Rest day</h3>
@@ -2245,7 +2254,13 @@ export function GardenScreen() {
                 ) : null}
               </>
             )}
-            <TodayProgramLines sessions={todayLayout.lines} today={d!.today} pending={pendingSaves} />
+            <TodayProgramLines
+              sessions={todayLayout.lines}
+              today={d!.today}
+              pending={pendingSaves}
+              offers={d?.watchReviews ?? []}
+              leadId={todayLayout.title?.kind === "program" ? todayLayout.title.session.workout.id : null}
+            />
             {(() => {
               const clause = leadSettled ? null : coachClause(verdict?.level, w.category);
               if (!d?.focus && !clause) return null;

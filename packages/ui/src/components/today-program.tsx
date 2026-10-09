@@ -6,19 +6,30 @@
  * the program session takes the title, with what was built for it in one line. Start and Continue belong to the
  * player (`features.player`); until it exists, Open leads to the session sheet. Start opens the sheet (its pre-check,
  * a fresh build and the Start that locks it, online — ruling 2b-R1); Continue opens the player.
+ *
+ * AFTER A WATCH SESSION (Phase 3 Task 10; approved mocks §3): a session the watch did whose quick review is offered
+ * (`today.watchReviews`, today's and yesterday's) offers "Log your session" — beside Done when it heads the card, in
+ * place of Done on its line, and on a line of its own the next morning — which opens the review's sheet. Saved here
+ * and waiting for the server, it says so instead.
  */
+import { useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import { addDays, type SessionLead } from "@rg/domain";
-import { CategoryDot, formatMinutes, formatTime } from "../components.js";
+import { CategoryDot, formatDayShort, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
+import { IconWatch } from "../icons.js";
 import { chimes } from "../player/audio.js";
 import { offlineDb } from "../offline/idb.js";
 import { outboxEntries } from "../offline/outbox.js";
 import { useSignedInUserId } from "./outbox-sync.js";
+import { WatchReviewSheet } from "./watch-review-sheet.js";
 
 export type TodaySession = TodayResponse["todaySessions"][number];
+/** A session the watch did whose quick review is offered (Phase 3). */
+export type WatchReviewOffer = NonNullable<TodayResponse["watchReviews"]>[number];
 
 export type TodayCardTitle = { kind: "run"; workout: WorkoutDto } | { kind: "program"; session: TodaySession };
 
@@ -147,8 +158,49 @@ export function usePendingSaves(enabled: boolean): Readonly<Record<string, Pendi
   return out;
 }
 
+/** "Log your session": opens the quick review's sheet (a sheet, not the full-screen review — owner call 11). */
+export function LogYourSession({ offer, small = false }: { offer: WatchReviewOffer; small?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className={`btn btn-primary${small ? " btn-small" : ""}`} onClick={() => setOpen(true)}>
+        Log your session
+      </button>
+      {/* Into the page's body: the card it is tapped on is the garden dock's panel from lg, whose box would hold a
+          fixed sheet inside it. */}
+      {open
+        ? createPortal(
+            <WatchReviewSheet workoutId={offer.workoutId} title={offer.title} onClose={() => setOpen(false)} onSaved={() => setOpen(false)} />,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+/** A sent session on the watch (Phase 3; approved mocks §2 "Today · a sent session"). */
+function OnYourWatch() {
+  return (
+    <span className="today-on-watch">
+      <IconWatch size={16} />
+      On your watch
+    </span>
+  );
+}
+
 /** The program session as the card's title: a program day. */
-export function TodayProgramLead({ session, today, pending = null }: { session: TodaySession; today: string; pending?: PendingSave | null }) {
+export function TodayProgramLead({
+  session,
+  today,
+  pending = null,
+  offer = null,
+}: {
+  session: TodaySession;
+  today: string;
+  pending?: PendingSave | null;
+  /** Its quick review, when offered (Phase 3). */
+  offer?: WatchReviewOffer | null;
+}) {
   const w = session.workout;
   const b = session.build;
   // Saved here and waiting for the server: done, as far as the athlete is concerned.
@@ -173,11 +225,13 @@ export function TodayProgramLead({ session, today, pending = null }: { session: 
       <div className="btn-row today-actions">
         {done && !pending ? <span className="today-session-done">Done</span> : null}
         {skipped ? <span className="today-session-skipped">Skipped</span> : null}
+        {offer && !pending ? <LogYourSession offer={offer} /> : null}
         {play ? (
           <Link className="btn btn-primary today-play" to={playHref(w, play)} onClick={play === "Continue" ? unlockAudio : undefined}>
             {play}
           </Link>
         ) : null}
+        {!done && !skipped && session.onWatch ? <OnYourWatch /> : null}
         {/* Start already opens the sheet. */}
         {play === "Start" ? null : (
           <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
@@ -190,7 +244,17 @@ export function TodayProgramLead({ session, today, pending = null }: { session: 
 }
 
 /** A program session as one line under the day's run. */
-export function TodayProgramLine({ session, today, pending = null }: { session: TodaySession; today: string; pending?: PendingSave | null }) {
+export function TodayProgramLine({
+  session,
+  today,
+  pending = null,
+  offer = null,
+}: {
+  session: TodaySession;
+  today: string;
+  pending?: PendingSave | null;
+  offer?: WatchReviewOffer | null;
+}) {
   const w = session.workout;
   const b = session.build;
   const play = pending ? null : playAction(w, today);
@@ -202,9 +266,12 @@ export function TodayProgramLine({ session, today, pending = null }: { session: 
       <div className="today-session-text">
         <span className="today-session-name">{programName(session)}</span>
         <span className="today-session-meta">{meta}</span>
+        {!pending && !sessionDone(w) && !sessionSkipped(w) && session.onWatch ? <OnYourWatch /> : null}
       </div>
       {pending ? (
         <span className="today-session-done">Done · will sync</span>
+      ) : offer ? (
+        <LogYourSession offer={offer} small />
       ) : sessionDone(w) ? (
         <span className="today-session-done">Done</span>
       ) : sessionSkipped(w) ? (
@@ -228,21 +295,49 @@ export function TodayProgramLine({ session, today, pending = null }: { session: 
   );
 }
 
-/** The day's program sessions under its run. */
+/** Yesterday's session the watch did, the next morning: its program, the day and how long it ran, and Log your session. */
+function WatchReviewLine({ offer, today, pending }: { offer: WatchReviewOffer; today: string; pending: PendingSave | null }) {
+  const day = offer.date === today ? "Today" : offer.date === addDays(today, -1) ? "Yesterday" : formatDayShort(offer.date);
+  return (
+    <div className="today-session">
+      <CategoryDot category={offer.category} />
+      <div className="today-session-text">
+        <span className="today-session-name">{offer.title}</span>
+        <span className="today-session-meta">
+          {day} · {Math.max(1, Math.round(offer.seconds / 60))} min
+        </span>
+      </div>
+      {pending ? <span className="today-session-done">Done · will sync</span> : <LogYourSession offer={offer} small />}
+    </div>
+  );
+}
+
+/** The day's program sessions under its run — and a session of yesterday's the watch did, whose review is offered. */
 export function TodayProgramLines({
   sessions,
   today,
   pending = {},
+  offers = [],
+  leadId = null,
 }: {
   sessions: readonly TodaySession[];
   today: string;
   pending?: Readonly<Record<string, PendingSave>>;
+  /** The quick reviews offered (Phase 3): each on its session's line, or a line of its own. */
+  offers?: readonly WatchReviewOffer[];
+  /** The session heading the card: its review is offered there, not here. */
+  leadId?: string | null;
 }) {
-  if (sessions.length === 0) return null;
+  const offerOf = (id: string) => offers.find((o) => o.workoutId === id) ?? null;
+  const own = offers.filter((o) => o.workoutId !== leadId && !sessions.some((s) => s.workout.id === o.workoutId));
+  if (sessions.length === 0 && own.length === 0) return null;
   return (
     <div className="today-sessions">
       {sessions.map((s) => (
-        <TodayProgramLine key={s.workout.id} session={s} today={today} pending={pending[s.workout.id] ?? null} />
+        <TodayProgramLine key={s.workout.id} session={s} today={today} pending={pending[s.workout.id] ?? null} offer={offerOf(s.workout.id)} />
+      ))}
+      {own.map((o) => (
+        <WatchReviewLine key={o.workoutId} offer={o} today={today} pending={pending[o.workoutId] ?? null} />
       ))}
     </div>
   );

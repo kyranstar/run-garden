@@ -153,6 +153,13 @@ export interface StrengthSetStats {
     weightOverIntensity: Record<RatioBucket, number>;
     weightSteps: WeightSteps;
     exerciseId: { present: number; absent: number; distinct: number };
+    /**
+     * Phase 3 (the live gate, plan Task 12 Step 8): what each item's `exerciseNameKey` looks like — a catalog T-code
+     * ("T1041"), any other non-empty key, or none (a free-text step's lap may carry none) — counts only.
+     */
+    exerciseNameKeyShape: { tcode: number; other: number; empty: number };
+    /** Whether items carry `programExerciseIndex` (does it index the pushed program's steps?), and how many distinct. */
+    programExerciseIndex: { present: number; absent: number; distinct: number };
   };
   summary: {
     /** Activities whose detail had a summary object. */
@@ -501,6 +508,10 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
   const exerciseIds = new Set<string>();
   let exercisePresent = 0;
   let exerciseAbsent = 0;
+  const keyShape = { tcode: 0, other: 0, empty: 0 };
+  const programIndexes = new Set<string>();
+  let programIndexPresent = 0;
+  let programIndexAbsent = 0;
   let activitiesWithLapItems = 0;
   let lapListsWithItems = 0;
   let total = 0;
@@ -551,6 +562,18 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
           else scale.other += 1;
         }
 
+        const key = item.exerciseNameKey;
+        if (typeof key === "string" && /^T\d+$/.test(key.trim())) keyShape.tcode += 1;
+        else if (key === undefined || key === null || (typeof key === "string" && key.trim() === "")) keyShape.empty += 1;
+        else keyShape.other += 1;
+        const programIndex = item.programExerciseIndex;
+        if (programIndex === undefined || programIndex === null || (typeof programIndex === "string" && programIndex.trim() === "")) {
+          programIndexAbsent += 1;
+        } else {
+          programIndexPresent += 1;
+          programIndexes.add(typeof programIndex === "string" ? programIndex : JSON.stringify(programIndex));
+        }
+
         const id = item.exerciseId;
         if (id === undefined || id === null || (typeof id === "string" && id.trim() === "")) {
           exerciseAbsent += 1;
@@ -591,6 +614,8 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
       weightOverIntensity: ratios,
       weightSteps: steps,
       exerciseId: { present: exercisePresent, absent: exerciseAbsent, distinct: exerciseIds.size },
+      exerciseNameKeyShape: keyShape,
+      programExerciseIndex: { present: programIndexPresent, absent: programIndexAbsent, distinct: programIndexes.size },
     },
     summary: { present: summaries, totalWeight, totalReps, totalWeightVsSets: totals },
   };
@@ -628,6 +653,8 @@ export async function probeStrengthSetStats(
   prefs: UserPreferences,
   days: number,
   fetchImpl: typeof fetch = fetch,
+  /** Narrow the probe to this one COROS activity (its labelId) — never echoed back. */
+  providerActivityId?: string,
 ): Promise<StrengthSetProbeResult> {
   // Fixture mode never talks to real providers (repo-wide convention).
   if (fixtureModeEnabled(env)) return { status: "fixture_mode" };
@@ -644,6 +671,7 @@ export async function probeStrengthSetStats(
     const items = await client.getActivities(addDays(today, -days), today);
     const strength = items
       .filter((item) => sportIdForCorosCode(item.sportType) === "strength")
+      .filter((item) => providerActivityId === undefined || String(item.labelId) === providerActivityId)
       .sort((a, b) => (b.startTime ?? 0) - (a.startTime ?? 0) || b.date - a.date);
     const details: RawCorosActivityDetail[] = [];
     let detailFailures = 0;

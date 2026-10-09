@@ -25,6 +25,9 @@ import {
 } from "../services/coros-unmapped-spike.js";
 import { fixtureModeEnabled } from "../env.js";
 import { backfillWatchSets, parseWatchCursor } from "../services/watch-sets.js";
+import { NoPushError, programReadback, ReadbackNotConnectedError } from "../services/watch-readback.js";
+import { isRuntimeLimit } from "../services/runtime-limit.js";
+import { CorosApiError } from "@rg/coros";
 
 /**
  * Cloud COROS connection surface (cloud-direct spec §1). The password's MD5
@@ -122,6 +125,11 @@ const strengthSetQuery = z.object({
     .regex(/^-?\d{1,9}$/)
     .optional()
     .transform((s) => clampWindowDays(s === undefined ? STRENGTH_SET_DEFAULT_DAYS : Number(s))),
+  /** One activity only (Phase 3 Task 11): a COROS labelId's characters, never echoed back. */
+  providerActivityId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,100}$/)
+    .optional(),
 });
 
 /**
@@ -130,12 +138,12 @@ const strengthSetQuery = z.object({
  * items — never a value, id, name or date. Read-only.
  */
 corosRoutes.get("/debug/strength-set-stats", async (c) => {
-  const parsed = strengthSetQuery.safeParse({ days: c.req.query("days") });
+  const parsed = strengthSetQuery.safeParse({ days: c.req.query("days"), providerActivityId: c.req.query("providerActivityId") });
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  const result = await probeStrengthSetStats(db, c.env, userId, prefs, parsed.data.days);
+  const result = await probeStrengthSetStats(db, c.env, userId, prefs, parsed.data.days, fetch, parsed.data.providerActivityId);
   switch (result.status) {
     case "fixture_mode":
       return c.json({ error: "not_found" }, 404);
@@ -149,6 +157,25 @@ corosRoutes.get("/debug/strength-set-stats", async (c) => {
       return c.json({ error: "probe_error" }, 500);
     case "ok":
       return c.json(result.body);
+  }
+});
+
+/**
+ * The read-back for the live gate (Phase 3 Task 11; plan Task 12 Step 5): the slot's stamped program read straight
+ * from COROS (never the cached read-now) — found on its day or not, its own steps, each against the preview the push
+ * was built from, and its text fingerprint against the push's. Read-only. 404 in fixture mode and for a slot never
+ * sent; 409 without a COROS connection.
+ */
+corosRoutes.get("/debug/program-readback/:workoutId", async (c) => {
+  if (fixtureModeEnabled(c.env)) return c.json({ error: "not_found" }, 404);
+  try {
+    return c.json(await programReadback(c.get("db"), c.env, c.get("userId"), c.req.param("workoutId")));
+  } catch (e) {
+    if (e instanceof NoPushError) return c.json({ error: "not_found" }, 404);
+    if (e instanceof ReadbackNotConnectedError) return c.json({ error: "not_connected" }, 409);
+    if (isRuntimeLimit(e)) return c.json({ error: "runtime_limit" }, 503);
+    if (e instanceof CorosApiError) return c.json({ error: "coros_error", ...(e.resultCode ? { code: e.resultCode } : {}) }, 502);
+    throw e;
   }
 });
 

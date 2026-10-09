@@ -649,11 +649,25 @@ export async function importPlanSnapshot(
     // athlete's copy stays theirs even after the original is gone.
     const pushed = pushByStamp.get(src.title);
     const atAddress = existingByAddress.get(src.sourceWorkoutId) ?? [];
+    // A SENT COPY RENAMED IN THE COROS APP (audit 3-A life L-5) carries no stamp of ours, so by the rule above no slot
+    // would claim it: it read as an ordinary COROS workout — the session twice that day — while its slot, the stamp
+    // gone, posted "Removed from your watch". It is the slot's copy when no workout of this read carries the slot's
+    // stamp and this one sits at the slot's RECORDED address, on its recorded day, under its recorded program id, and
+    // is no sport of another kind (a recycled slot holds something else). Then the slot claims it as it is.
+    const renamedCopyOf =
+      pushed === undefined
+        ? atAddress.find((w) => {
+            const push = appAuthoredRow(w) && !w.archivedAt ? verifiedPushOf.get(w.id) : undefined;
+            if (!push || stampCarriers.has(push.payload.name)) return false;
+            const programId = src.planProgramId ?? src.sourceIdInPlan ?? "";
+            return w.lastVerifiedCorosDate === src.date && !!w.sourceProgramId && w.sourceProgramId === programId && !sportFlipped(w, src.sport);
+          })
+        : undefined;
     const recordedHere =
       pushed !== undefined && atAddress.some((w) => appAuthoredRow(w) && verifiedPushOf.get(w.id)?.payload.name === src.title);
     const ours = pushed !== undefined && !recordedHere && stampCarriers.get(src.title) === 1 ? pushed : undefined;
     const stampIsOurs = recordedHere || ours !== undefined;
-    const claimants = atAddress.filter((w) =>
+    const claimants = renamedCopyOf ? [renamedCopyOf] : atAddress.filter((w) =>
       appAuthoredRow(w)
         ? verifiedPushOf.get(w.id)?.payload.name === src.title
         : !stampIsOurs ||
@@ -668,6 +682,17 @@ export async function importPlanSnapshot(
     });
     const programRow = current !== undefined && appAuthoredRow(current);
     if (programRow) seenProgramRows.add(current.id);
+    if (renamedCopyOf && current === renamedCopyOf) {
+      // Its new name, on record for the unpush (it is no stamp: nothing is ever claimed by it).
+      const push = verifiedPushOf.get(current.id)!;
+      if (push.payload.renamed !== src.title) {
+        push.payload = { ...push.payload, renamed: src.title };
+        await db
+          .update(corosWriteJobs)
+          .set({ payload: push.payload as unknown as Record<string, unknown>, updatedAt: now })
+          .where(eq(corosWriteJobs.id, push.jobId));
+      }
+    }
 
     // A row whose CONTENT the app claims and COROS has not got is
     // `calendar_only`, whatever the DATES say (2026-08-17). `ease` writes

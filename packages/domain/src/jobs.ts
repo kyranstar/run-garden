@@ -227,6 +227,12 @@ export const programSessionPushJobSchema = z
      * so one change is one note, however many reads see it.
      */
     noticed: z.object({ wire: z.string(), text: z.string() }).strict().optional(),
+    /**
+     * Written by the import (audit 3-A life L-5): the name COROS holds the copy under after the athlete renamed it in
+     * the COROS app — found at the slot's recorded address, day and program id with no workout carrying the stamp.
+     * Never a stamp (nothing is claimed by it): only the unpush addresses the renamed copy by it.
+     */
+    renamed: z.string().min(1).max(200).optional(),
   })
   .strict();
 export type ProgramSessionPushJob = z.infer<typeof programSessionPushJobSchema>;

@@ -7,7 +7,9 @@
  *     hash the outbox keys its entry by, never this server's re-parse, audit 2b-A M-6): the same id with the same
  *     hash → `same_payload`, nothing written; with another hash →
  *     `conflict`, nothing written. Only the app's own saves come here (`source = 'app'`), always for a slot of this
- *     user's (an app session always has a row: on-demand sessions have one too).
+ *     user's (an app session always has a row: on-demand sessions have one too) — and the quick review after a watch
+ *     session (`source = 'watch_review'`, Phase 3), which takes the same idempotency and is saved by
+ *     session-watch-review.ts on the watch's own activity.
  *  2. Everything is read and decided first; then every write lands in ONE transaction (D1's batch; audit 2b-A M-3):
  *     `performed_sessions` marked `pending`, `performed_sets` (weights as typed + kg) and the session's checks (`post`,
  *     and a `pre` the sheet has not already recorded for the slot and day), everything below, and the real hash last
@@ -75,6 +77,7 @@ import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
 import { gardenChangeStatement, resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { engineDataFor, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
+import { saveWatchReview } from "./session-watch-review.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
 
 /**
@@ -108,7 +111,7 @@ type SlotRow = typeof plannedWorkouts.$inferSelect;
 type ActivityRow = typeof activities.$inferSelect;
 
 /** A UTC instant as activity rows store it (`2026-10-06T19:05:00Z`), and the athlete's wall clock then. */
-function startOf(p: PerformedSessionWire, timezone: string): { startTime: string; startTimeLocal: string; elapsedSeconds: number | null } {
+export function startOf(p: PerformedSessionWire, timezone: string): { startTime: string; startTimeLocal: string; elapsedSeconds: number | null } {
   const started = p.startedAt
     ? DateTime.fromISO(p.startedAt, { zone: "utc" })
     : p.endedAt
@@ -143,12 +146,12 @@ async function startedBuilds(db: Db, userId: string, workoutId: string): Promise
 }
 
 /**
- * Ruling 2b-R18: a slot holds at most one app session. Another one of it already saved — played on another device (a
+ * Ruling 2b-R18, extended by 3-R8: a slot holds at most one app session or watch review. Another one of it already saved — played on another device (a
  * device's own outbox holds one save per slot) — refuses this one: never a second performed session and activity for
  * one slot. Read under the merge locks every save of this user takes, so two devices' saves cannot both pass it. A
  * watch's or an import's session of the slot is not the app's, and leaves it to the save (ruling 2b-R3).
  */
-async function savedByAnother(db: Db, userId: string, workoutId: string, performedId: string): Promise<boolean> {
+export async function savedByAnother(db: Db, userId: string, workoutId: string, performedId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: performedSessions.id })
     .from(performedSessions)
@@ -156,7 +159,7 @@ async function savedByAnother(db: Db, userId: string, workoutId: string, perform
       and(
         eq(performedSessions.userId, userId),
         eq(performedSessions.workoutId, workoutId),
-        eq(performedSessions.source, "app"),
+        inArray(performedSessions.source, ["app", "watch_review"]),
         ne(performedSessions.id, performedId),
         ne(performedSessions.payloadHash, PENDING_HASH),
       ),
@@ -250,7 +253,7 @@ async function watchCopy(
 }
 
 /** The session's sets as `performed_sets` rows: weights exactly as typed plus kg. */
-function setRows(performedId: string, p: PerformedSessionWire) {
+export function setRows(performedId: string, p: PerformedSessionWire) {
   return p.entries.flatMap((e, entryIndex) =>
     e.sets.map((s, i) => ({
       id: `${performedId}:${entryIndex}:${i}`,
@@ -279,7 +282,7 @@ let libraryIds: Set<string> | undefined;
  * The review's preferences: each touched exercise's row as it will be (ratings, "not for me", the new move's first
  * day), upserted whole so one statement serves every field. Read now; the statements run with the rest of the save.
  */
-async function prefStatements(db: Db, userId: string, p: PerformedSessionWire, now: string): Promise<AtomicStatement[]> {
+export async function prefStatements(db: Db, userId: string, p: PerformedSessionWire, now: string): Promise<AtomicStatement[]> {
   // Only the library's exercises: a key it does not have is junk (a bug, a hand-made PUT), never a row (audit 2b-A M-4).
   libraryIds ??= new Set(EXERCISES.map((e) => e.id));
   const ids = [...new Set([...Object.keys(p.review.ratings), ...Object.keys(p.review.excluded), ...(p.newMove ? [p.newMove] : [])])]
@@ -366,7 +369,7 @@ async function graduationStatements(
  */
 const MERGE_LOCKS = { read: { kind: "coros_read", staleMinutes: 5 }, backfill: { kind: "coros_backfill", staleMinutes: 15 } } as const;
 
-async function claimMergeLocks(
+export async function claimMergeLocks(
   db: Db,
   userId: string,
   localDate: string,
@@ -386,7 +389,7 @@ async function claimMergeLocks(
   return held;
 }
 
-async function releaseMergeLocks(db: Db, userId: string, held: ReadonlyArray<{ kind: string; token: string }>): Promise<void> {
+export async function releaseMergeLocks(db: Db, userId: string, held: ReadonlyArray<{ kind: string; token: string }>): Promise<void> {
   for (const { kind, token } of held) await releaseUserLock(db, userId, kind, token).catch(() => undefined);
 }
 
@@ -396,7 +399,7 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   if (!parsed.success) throw new InvalidSaveError(parsed.error.issues);
   const p = parsed.data;
   if (p.id !== performedId) throw new InvalidSaveError([{ message: "the payload's id is not the address's", path: ["id"] }]);
-  if (p.source !== "app") throw new InvalidSaveError([{ message: "only the app's own sessions are saved here", path: ["source"] }]);
+  if (p.source === "import") throw new InvalidSaveError([{ message: "an import is not saved here", path: ["source"] }]);
   if (p.workoutId === null) throw new InvalidSaveError([{ message: "an app session names its slot", path: ["workoutId"] }]);
   // The client's own hash: over the body as sent (the client sends its fully parsed payload), never over this server's
   // re-parse of it — a deploy that adds a defaulted field must not turn a retry of a committed save into a conflict
@@ -420,6 +423,8 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   };
   const early = settled(await stored());
   if (early) return early;
+  // The quick review after a watch session (Phase 3, spec §5): a session on the watch's own activity.
+  if (p.source === "watch_review") return saveWatchReview(db, userId, p, hash, { ...ctx, today });
 
   const [slot] = await db
     .select()

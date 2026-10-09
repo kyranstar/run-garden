@@ -143,6 +143,14 @@ export const IconSwap = ({ size }: IconProps) => (
   </svg>
 );
 
+/** A watch face on its strap — Send to watch, On your watch (Phase 3; approved mocks). */
+export const IconWatch = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <rect x="5.6" y="6" width="12.8" height="12" rx="3.4" />
+    <path d="M8.6 6V2.6h6.8V6M8.6 18v3.4h6.8V18M12 9.5V12l1.6 1.5" />
+  </svg>
+);
+
 /** ⓘ — how to do a move. */
 export const IconInfo = ({ size }: IconProps) => (
   <svg {...base(size)}>

@@ -248,6 +248,8 @@ function mount(
     getStatus?: number;
     /** What `GET …/review-basis` answers: a basis, or "hang" (it never answers). By default a 404. */
     basis?: ReviewBasisDto | "hang";
+    /** Asked first (the watch routes): an answer, or undefined to fall through. `set` changes what the GET answers. */
+    route?: (call: Call, set: (next: SessionDto) => void) => Response | undefined;
   } = {},
 ) {
   const calls: Call[] = [];
@@ -260,6 +262,8 @@ function mount(
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
       const method = init?.method ?? "GET";
       calls.push({ method, path, body });
+      const routed = opts.route?.({ method, path, body }, (next) => (current = next));
+      if (routed) return routed;
       if (path === `/api/sessions/${SLOT}` && method === "GET") {
         return opts.getStatus ? json({ error: opts.getStatus === 404 ? "not_found" : "internal" }, opts.getStatus) : json(current);
       }
@@ -869,5 +873,161 @@ describe("WorkoutDetail branches on origin", () => {
     const { calls } = mount(session(), { detail: true, w: run });
     await until(() => body().includes("Threshold 5x5"), "the workout sheet");
     expect(calls.some((c) => c.path.startsWith("/api/sessions/"))).toBe(false);
+  });
+});
+
+// ── The watch (Phase 3 Task 8; approved mocks §1–2) ─────────────────────────
+
+describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
+  const PREVIEW = {
+    buildId: "b1",
+    stamp: "Garden program — 2026-10-05",
+    steps: [
+      { name: "Goblet Squat", freeText: false, target: { kind: "reps", reps: 6 }, grams: 13608, load: { v: 30, u: "lb" }, overview: "Knees track over your toes.", restSeconds: 0 },
+      { name: "Supported row", freeText: true, target: { kind: "reps", reps: 10 }, grams: 9072, load: { v: 20, u: "lb" }, overview: "left side", restSeconds: 0 },
+      { name: "Supported row", freeText: true, target: { kind: "reps", reps: 10 }, grams: 9072, load: { v: 20, u: "lb" }, overview: "right side", restSeconds: 75 },
+    ],
+    freeText: 2,
+    refusal: null,
+    digest: "d-first",
+  };
+  const answer = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+  const watchCalls = (calls: Call[]) => calls.filter((c) => /watch/.test(c.path)).map((c) => `${c.method} ${c.path.replace(`/api/sessions/${SLOT}`, "…")}`);
+
+  /** The watch routes as the worker answers them: Send queues (sending), the drain runs it, the GET shows the result. */
+  function watchRoutes(
+    opts: { preview?: unknown; afterSend?: SessionDto; afterDrain?: SessionDto; afterTakeOff?: SessionDto; send?: (c: Call) => Response | undefined } = {},
+  ) {
+    return (c: Call, set: (next: SessionDto) => void): Response | undefined => {
+      if (c.path === `/api/sessions/${SLOT}/watch-preview`) return answer(opts.preview ?? PREVIEW);
+      if (c.path === `/api/sessions/${SLOT}/send-to-watch`) {
+        const own = opts.send?.(c);
+        if (own) return own;
+        const next = opts.afterSend ?? session({ locked: true, watch: { state: "sending" } });
+        set(next);
+        return answer(next);
+      }
+      if (c.path === "/api/sessions/watch/drain") {
+        if (opts.afterDrain) set(opts.afterDrain);
+        return answer({ executed: 1 });
+      }
+      if (c.path === `/api/sessions/${SLOT}/take-off-watch`) {
+        const next = opts.afterTakeOff ?? session({ watch: { state: "ready" } });
+        set(next);
+        return answer(next);
+      }
+      return undefined;
+    };
+  }
+
+  it("watch: null (the switch off): nothing about the watch", async () => {
+    features.player = true;
+    mount(session({ watch: null }));
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(button(/Send to watch/)).toBeUndefined();
+    expect(document.querySelector(".watch-state")).toBeNull();
+  });
+
+  it("ready: Send to watch sits beside Start; it opens the preview, and Send posts {buildId, digest} then asks for the drain", async () => {
+    features.player = true;
+    const { calls } = mount(session({ watch: { state: "ready" } }), {
+      route: watchRoutes({ afterDrain: session({ locked: true, watch: { state: "on_watch" } }) }),
+    });
+    await until(() => !!button(/Send to watch/), "Send to watch");
+    // Start stays the primary; Send to watch is a plain button beside it, Move and Skip on the row below.
+    const rows = [...document.querySelectorAll(".sheet-foot .btn-row")].map((r) =>
+      [...r.querySelectorAll("button")].map((b) => b.textContent?.replace(/\s+/g, " ").trim()),
+    );
+    expect(rows).toEqual([
+      ["Start · 30 min", "Send to watch"],
+      ["Move", "Skip"],
+    ]);
+    expect(button(/Send to watch/)!.className).toBe("btn");
+    await click(/Send to watch/);
+    await until(() => body().includes("Garden program — 2026-10-05"), "the preview");
+    await click("Send");
+    await until(() => body().includes("On your watch"), "the state after the drain");
+    expect(calls.find((c) => c.path.endsWith("/send-to-watch"))!.body).toEqual({ buildId: "b1", digest: "d-first" });
+    expect(watchCalls(calls)).toEqual(["GET …/watch-preview", "POST …/send-to-watch", "POST /api/sessions/watch/drain"]);
+    // The preview closed with the send.
+    expect(body()).not.toContain("Garden program — 2026-10-05");
+  });
+
+  it("sending: Sending… in the foot — and a sent session keeps Start, Move and Skip", async () => {
+    features.player = true;
+    mount(session({ locked: true, watch: { state: "sending" } }));
+    await until(() => body().includes("Sending…"), "Sending…");
+    expect(button("Start · 30 min")).toBeTruthy();
+    expect(button("Move")).toBeTruthy();
+    expect(button("Skip")).toBeTruthy();
+    expect(button(/Send to watch/)).toBeUndefined();
+    // Its build is the watch's: no chip rebuilds it.
+    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+  });
+
+  it("failed: Couldn't send + Retry; Retry previews first and posts that preview's digest", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "failed" } }), {
+      route: watchRoutes({ preview: { ...PREVIEW, digest: "d-retry" } }),
+    });
+    await until(() => body().includes("Couldn't send"), "Couldn't send");
+    await click("Retry");
+    await until(() => body().includes("Garden program — 2026-10-05"), "the preview");
+    expect(calls.some((c) => c.path.endsWith("/send-to-watch"))).toBe(false);
+    await click("Send");
+    await until(() => calls.some((c) => c.path.endsWith("/send-to-watch")), "the send");
+    expect(calls.find((c) => c.path.endsWith("/send-to-watch"))!.body).toEqual({ buildId: "b1", digest: "d-retry" });
+  });
+
+  it("on_watch: On your watch + Take off watch, which asks first; then the drain", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), { route: watchRoutes() });
+    await until(() => body().includes("On your watch"), "On your watch");
+    await click("Take off watch");
+    expect(body()).toContain("Take this session off your watch?");
+    expect(body()).toContain("It stays in the app.");
+    expect(calls.some((c) => c.path.endsWith("/take-off-watch"))).toBe(false);
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Take off watch")!;
+    await act(async () => confirm.click());
+    await until(() => !!button(/Send to watch/), "ready again");
+    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+  });
+
+  it("off_watch and any other unavailable reason: nothing about the watch", async () => {
+    features.player = true;
+    for (const watch of [{ state: "off_watch" }, { state: "unavailable", reason: "precheck" }, { state: "unavailable", reason: "writes_off" }]) {
+      mount(session({ watch } as Partial<SessionDto>));
+      await until(() => body().includes("Supported row"), "the moves");
+      expect(button(/Send to watch/)).toBeUndefined();
+      expect(document.querySelector(".watch-state")).toBeNull();
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+
+  it("too long: Send to watch opens the preview, whose foot says Too long for the watch — no Send", async () => {
+    features.player = true;
+    const tooLong = { ...PREVIEW, refusal: "too_long" };
+    const { calls } = mount(session({ watch: { state: "unavailable", reason: "too_long" } }), { route: watchRoutes({ preview: tooLong }) });
+    await until(() => !!button(/Send to watch/), "Send to watch");
+    await click(/Send to watch/);
+    await until(() => body().includes("Too long for the watch"), "the refusal");
+    expect(button("Send")).toBeUndefined();
+    expect(body()).toContain("Goblet Squat");
+    expect(calls.some((c) => c.path.endsWith("/send-to-watch"))).toBe(false);
+  });
+
+  it("409 stale: the fresh session replaces the sheet's, as Start's does", async () => {
+    features.player = true;
+    const fresh = session({ build: { ...session().build!, buildId: "b2" }, watch: { state: "ready" } });
+    mount(session({ watch: { state: "ready" } }), {
+      route: watchRoutes({ send: () => answer({ error: "stale", session: { ...fresh, view: { ...fresh.view!, minutes: 45 } } }, 409) }),
+    });
+    await until(() => !!button(/Send to watch/), "Send to watch");
+    await click(/Send to watch/);
+    await until(() => !!button("Send"), "the preview");
+    await click("Send");
+    await until(() => !!button("Start · 45 min"), "the fresh session");
+    expect(body()).not.toContain("Garden program — 2026-10-05");
   });
 });

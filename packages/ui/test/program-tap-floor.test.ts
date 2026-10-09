@@ -143,6 +143,50 @@ describe("the player's Settings at every width (ruling 2b-R8)", () => {
   });
 });
 
+describe("the watch's controls (Phase 3 Task 8)", () => {
+  it("Send to watch, Send, Take off watch are full-size buttons: a 44px box of their own", () => {
+    // They are plain `.btn`s (session-sheet.tsx, watch-preview-sheet.tsx): the box itself takes the floor.
+    expect(rule(".btn")["min-height"]).toBe("var(--tap)");
+    for (const src of ["../src/components/session-sheet.tsx", "../src/components/watch-preview-sheet.tsx"]) {
+      const code = readFileSync(fileURLToPath(new URL(src, import.meta.url)), "utf8");
+      for (const label of ["Send to watch", "Take off watch", "Send"]) {
+        const at = code.search(new RegExp(`>\\s*(?:<IconWatch size=\\{16\\} />\\s*)?${label}\\s*<\\/button>`));
+        if (at < 0) continue;
+        const open = code.lastIndexOf("<button", at);
+        expect(code.slice(open, at), label).not.toContain("btn-small");
+      }
+    }
+  });
+
+  it("Retry, a small button in the warn band, takes the floor as a pad, and the band is tall enough to hold it", () => {
+    // `.btn-small` is in all three lists of the touch-floor contract; the band is at least --tap tall and centres it, so
+    // the pad's (44 − 36) / 2 = 4px reach above and below stays inside the band — nothing else is there to take it.
+    const { relative, after, coarse } = lists();
+    expect(relative).toContain(".btn-small");
+    expect(after).toContain(".btn-small::after");
+    expect(coarse).toContain(".btn-small");
+    const band = rule(".watch-state");
+    expect(band["min-height"]).toBe("var(--tap)");
+    expect(band["align-items"]).toBe("center");
+  });
+
+  it("Log your session's sheet (Task 10): each move's row, its steppers, Done and the note take the floor themselves", () => {
+    // ("N more" is the player's review's own row, measured with it.)
+    expect(rule(".review-move-name")["min-height"]).toBe("var(--tap)");
+    expect(rule(".player-stepper button")["min-height"]).toBe("var(--tap)");
+    expect(rule(".player-stepper input")["min-height"]).toBe("var(--tap)");
+    const chip = rule(".review-rate .chipbtn,\n.review-sets .chipbtn,\n.review-card .chipbtn");
+    expect(chip["min-height"]).toBe("var(--tap)");
+    expect(chip["min-width"]).toBe("var(--tap)");
+    expect(rule(".review-note")["min-height"]).toBe("var(--tap)");
+  });
+
+  it("the session sheet's foot rows are at least a pad's reach apart", () => {
+    const reach = (TAP - px(rule(".btn-small")["--tap-own"]!)) / 2;
+    expect(px(rule(".session-foot").gap!)).toBeGreaterThanOrEqual(reach);
+  });
+});
+
 describe("the swap list's Use, on the player and on the session sheet (audit 2b-B I-1)", () => {
   it("is a 44px box of its own, both ways — not a small button whose 36px box takes the floor only as a pad", () => {
     // Measured on a phone at 390: "Use" 53×36 on the player's ⇄ sheet, used at arm's length mid-session.
