@@ -671,9 +671,12 @@ export interface GardenSimResult {
 }
 
 export interface GardenAdvanceOptions {
-  /** Per-invocation day cap for version-upgrade rebuilds and post-restore
-   * catch-up steps. Defaults to UPGRADE_RESIM_MAX_DAYS / CATCH_UP_MAX_DAYS;
-   * tests set it low to exercise resumption. */
+  /** Per-invocation day cap for version-upgrade rebuilds, post-restore
+   * catch-up steps and replays (`resimulateFrom`, and a replay on record that
+   * an earlier call left unfinished). Defaults to UPGRADE_RESIM_MAX_DAYS /
+   * CATCH_UP_MAX_DAYS; a replay is uncapped by default. The crons set it so
+   * one invocation never replays weeks; tests set it low to exercise
+   * resumption. */
   maxResimDays?: number;
   /** Per-invocation day cap for the plain walk forward. Uncapped by default (a garden read walks to today); the
    * hourly cron sets it so one invocation never walks weeks (cron reliability, part 2). A capped walk persists the
@@ -733,10 +736,11 @@ interface WalkLimits {
  * (idempotent — `onConflictDoNothing`/`onConflictDoUpdate` throughout). On
  * the version-upgrade path the rebuild is guaranteed (the stale durable
  * version re-fires the full resim on the next read). On the plain
- * resimulateFrom path the next advanceGarden starts PAST the purged range,
- * so the timeline/event-log hole persists until some later resim covers it —
- * the garden itself renders correctly throughout; only those secondary
- * views read truncated in the interim.
+ * resimulateFrom path the replay's start day is on record
+ * (`account_state.garden_changed_from`) before anything is purged, and the
+ * next advanceGarden replays from it (cron reliability, part 3) — before,
+ * that walk started PAST the purged range, so the purged days stayed missing
+ * and the changed day's credit (a late activity's) was never simulated.
  */
 async function walkForward(
   db: Db,
@@ -746,7 +750,7 @@ async function walkForward(
   today: LocalDate,
   nowIso: string,
   limits: WalkLimits = {},
-): Promise<{ snapshot: GardenSnapshot; simulatedDays: number; eventsEmitted: number; capped: boolean }> {
+): Promise<{ snapshot: GardenSnapshot; simulatedDays: number; eventsEmitted: number; capped: boolean; halted: boolean }> {
   const { maxDays, checkpointAtCap = false } = limits;
   let snapshot = startSnapshot;
   let simulated = 0;
@@ -865,7 +869,7 @@ async function walkForward(
       .onConflictDoNothing();
   }
 
-  return { snapshot, simulatedDays: simulated, eventsEmitted, capped };
+  return { snapshot, simulatedDays: simulated, eventsEmitted, capped, halted };
 }
 
 /** While a restore is replacing the account nothing is simulated (B2). */
@@ -915,6 +919,24 @@ export async function advanceGarden(
     }
   }
 
+  // A replay is on record and not finished (cron reliability, part 3): an input changed on a day already
+  // simulated, and the walk that replays it was capped, or killed. It goes first — a plain walk from
+  // garden_state would start past the changed day.
+  if (account?.gardenChangedFrom != null) {
+    return replayStep(db, userId, prefs, now, startSnapshot, opts);
+  }
+  return walkOn(db, userId, prefs, now, startSnapshot, opts);
+}
+
+/** The plain walk forward from garden_state, persisted where it stops. */
+async function walkOn(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+  now: Date,
+  startSnapshot: GardenSnapshot,
+  opts?: GardenAdvanceOptions,
+): Promise<GardenSimResult> {
   const today = todayInZone(prefs.timezone, now);
   const nowIso = nowInstant(now);
   const { snapshot, simulatedDays, eventsEmitted, capped } = await walkForward(
@@ -1259,7 +1281,10 @@ async function catchUpResimulate(
   }
 }
 
-/** The replay itself: outside a post-restore catch-up, uncapped. */
+/**
+ * The plain replay (outside a post-restore catch-up). Anything to replay goes on record first — durably, before a
+ * single row is purged — and `replayStep` does the walking.
+ */
 async function resimulate(
   db: Db,
   userId: string,
@@ -1273,58 +1298,151 @@ async function resimulate(
     return advanceGarden(db, userId, prefs, now, opts);
   }
 
+  await recordReplayFrom(db, userId, affectedDate);
+
   // P3d: a pending version upgrade owns the whole timeline — fold this input
   // change into the (capped, resumable) full rebuild instead of walking from
   // an old-version checkpoint, which would persist a mixed-version fold only
-  // for the stale stored version to re-fire the full resim anyway.
+  // for the stale stored version to re-fire the full resim anyway. The record
+  // stays: once the rebuild lands, the next walk replays from it once more —
+  // a rebuild step that died before its purge may have resumed past the day.
   if ((current.version ?? 1) < SIMULATION_VERSION) {
     return upgradeResimulate(db, userId, current, prefs, now, opts, affectedDate);
   }
+  return replayStep(db, userId, prefs, now, current, opts);
+}
 
-  const checkpoints = await db
-    .select()
-    .from(gardenSnapshots)
-    .where(and(eq(gardenSnapshots.userId, userId), lte(gardenSnapshots.date, addDays(affectedDate, -1))))
-    .orderBy(asc(gardenSnapshots.date));
-  const checkpoint = checkpoints[checkpoints.length - 1];
+/**
+ * Put a replay on record (cron reliability, part 3): `account_state.garden_changed_from` — the earliest day whose
+ * inputs changed under days already simulated — and a bump of `garden_changed_seq`. An upsert (an account may have
+ * no `account_state` row yet); the earliest day wins; the post-restore catch-up flag is left alone (its step honours
+ * the same record); nothing is recorded while a restore runs (NEW-B: the change belongs to the account being
+ * replaced). One statement, written before the replay purges anything: an invocation killed at any point after it
+ * leaves the record, and whatever walks the garden next replays from it.
+ */
+export async function recordReplayFrom(db: Db, userId: string, date: LocalDate): Promise<void> {
+  const now = nowInstant();
+  await db
+    .insert(accountState)
+    .values({ userId, gardenChangedFrom: date, gardenChangedSeq: 1, updatedAt: now })
+    .onConflictDoUpdate({
+      target: accountState.userId,
+      set: {
+        gardenChangedFrom: sql`CASE WHEN ${accountState.gardenChangedFrom} IS NULL OR ${accountState.gardenChangedFrom} > ${date} THEN ${date} ELSE ${accountState.gardenChangedFrom} END`,
+        gardenChangedSeq: sql`${accountState.gardenChangedSeq} + 1`,
+        updatedAt: now,
+      },
+      setWhere: isNull(accountState.restoreId),
+    });
+}
 
-  let startSnapshot: GardenSnapshot;
-  let restartAfter: LocalDate;
-  if (checkpoint) {
-    startSnapshot = checkpoint.snapshot as unknown as GardenSnapshot;
-    restartAfter = checkpoint.date;
-  } else {
-    startSnapshot = initialSnapshot(current.state.createdDate);
-    restartAfter = startSnapshot.state.lastSimulatedDate;
+/**
+ * Move or clear the replay record — only if nothing was recorded since `seq` was read (a change that landed meanwhile
+ * may be one this walk read too early, so its record stands), only while one is on record (a restore's begin clears
+ * it, and a late walk must not bring it back) and never during a restore.
+ */
+async function settleReplayFrom(db: Db, userId: string, seq: number, next: LocalDate | null): Promise<void> {
+  await db
+    .update(accountState)
+    .set({ gardenChangedFrom: next, updatedAt: nowInstant() })
+    .where(
+      and(
+        eq(accountState.userId, userId),
+        eq(accountState.gardenChangedSeq, seq),
+        not(isNull(accountState.gardenChangedFrom)),
+        isNull(accountState.restoreId),
+      ),
+    );
+}
+
+/** Delete the derived rows dated after `after` (through `through`, when given): events, day inputs, checkpoints. */
+async function purgeDerived(db: Db, userId: string, after: LocalDate, through: LocalDate | null): Promise<void> {
+  const range = (col: typeof gardenEvents.date | typeof gardenDayInputs.date | typeof gardenSnapshots.date) =>
+    through === null ? gt(col, after) : and(gt(col, after), lte(col, through));
+  await db.delete(gardenEvents).where(and(eq(gardenEvents.userId, userId), range(gardenEvents.date)));
+  await db.delete(gardenDayInputs).where(and(eq(gardenDayInputs.userId, userId), range(gardenDayInputs.date)));
+  await db.delete(gardenSnapshots).where(and(eq(gardenSnapshots.userId, userId), range(gardenSnapshots.date)));
+}
+
+/**
+ * One step of a replay on record (cron reliability, part 3): restart from the newest checkpoint before the recorded
+ * day — or from genesis when there is none — rebuild the inputs from the database, and walk forward. Deterministic,
+ * so the result converges, however many steps it takes and wherever an earlier one died.
+ *
+ * Uncapped (a garden read, a request): the old replay exactly — every derived row after the checkpoint purged, the
+ * walk to today, garden_state persisted, the record cleared.
+ *
+ * Capped at `maxResimDays` (the crons): only the days this step will walk are purged first, and
+ *  - stopped before the day garden_state shows: garden_state is NOT moved — the rendered garden keeps what it showed
+ *    (never rewound, the C21 promise) — a checkpoint is written at the stop day and the record moves to the day
+ *    after it, so the next step resumes there (`resimPending`). The old timeline after the stop stays readable until
+ *    a step reaches it.
+ *  - reached or passed it: the rest of the old timeline is purged (what the uncapped replay purged up front),
+ *    garden_state persisted where the walk stopped and the record cleared; a plain walk goes on from there.
+ * Either way the garden lands where one uncapped replay lands; the capped one also leaves its stop-day checkpoints,
+ * pure folds like the version upgrade's cursor rows.
+ *
+ * A record past the last simulated day needs no replay: the walk forward reads that day fresh.
+ */
+async function replayStep(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+  now: Date,
+  current: GardenSnapshot,
+  opts?: GardenAdvanceOptions,
+): Promise<GardenSimResult> {
+  const account = await loadAccountState(db, userId);
+  if (isRestoring(account)) return standDown(db, userId, prefs, now);
+  const recorded = account?.gardenChangedFrom ?? null;
+  const seq = account?.gardenChangedSeq ?? 0;
+  const shown = current.state.lastSimulatedDate;
+  if (recorded === null || recorded > shown) {
+    if (recorded !== null) await settleReplayFrom(db, userId, seq, null);
+    return walkOn(db, userId, prefs, now, current, opts);
   }
 
-  // Drop events/inputs/checkpoints after the restart point; they'll be
-  // rebuilt by walkForward below. Safe to do even though nothing has been
-  // persisted to garden_state yet: on a mid-walk crash the rendered garden
-  // (garden_state, still un-touched below) keeps showing its last known-good
-  // value, and any successful resim afterwards rebuilds this range fully.
-  await db
-    .delete(gardenEvents)
-    .where(and(eq(gardenEvents.userId, userId), gte(gardenEvents.date, addDays(restartAfter, 1))));
-  await db
-    .delete(gardenDayInputs)
-    .where(and(eq(gardenDayInputs.userId, userId), gte(gardenDayInputs.date, addDays(restartAfter, 1))));
-  await db
-    .delete(gardenSnapshots)
-    .where(and(eq(gardenSnapshots.userId, userId), gte(gardenSnapshots.date, addDays(restartAfter, 1))));
+  // The newest checkpoint before the recorded day (one row, not every checkpoint's snapshot).
+  const [checkpoint] = await db
+    .select()
+    .from(gardenSnapshots)
+    .where(and(eq(gardenSnapshots.userId, userId), lte(gardenSnapshots.date, addDays(recorded, -1))))
+    .orderBy(desc(gardenSnapshots.date))
+    .limit(1);
+  const startSnapshot = checkpoint
+    ? (checkpoint.snapshot as unknown as GardenSnapshot)
+    : initialSnapshot(current.state.createdDate);
+  const restartAfter = checkpoint ? checkpoint.date : startSnapshot.state.lastSimulatedDate;
+  const maxDays = opts?.maxResimDays;
 
-  const today = todayInZone(prefs.timezone, now);
-  const nowIso = nowInstant(now);
-  const { snapshot, simulatedDays, eventsEmitted } = await walkForward(db, userId, prefs, startSnapshot, today, nowIso);
+  // Drop the derived rows the walk will rebuild. Safe without a transaction: garden_state is untouched until the
+  // walk below has passed the day it shows, and the record (written before this) brings the next walk back here.
+  await purgeDerived(db, userId, restartAfter, maxDays === undefined ? null : addDays(restartAfter, maxDays));
 
-  // Only now — once the FULL walk has succeeded — does the durable garden
-  // pointer move. If walkForward throws above, execution never reaches this
-  // line: garden_state (and its simulationVersion) stays exactly as it was
-  // before this resim attempt, so the next advanceGarden call sees the same
-  // "needs resim" signal and retries cleanly instead of finding a genesis
-  // stub already stamped at the current SIMULATION_VERSION.
-  await persistSnapshot(db, userId, snapshot);
-  return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
+  const walk = await walkForward(
+    db,
+    userId,
+    prefs,
+    startSnapshot,
+    todayInZone(prefs.timezone, now),
+    nowInstant(now),
+    maxDays === undefined ? {} : { maxDays, checkpointAtCap: true },
+  );
+  const stop = walk.snapshot.state.lastSimulatedDate;
+  const result = { simulatedDays: walk.simulatedDays, eventsEmitted: walk.eventsEmitted, lastSimulatedDate: stop };
+  // A restore began during the walk: it owns the account now (persist refuses; the record is its to clear).
+  if (walk.halted) return { ...result, resimPending: true };
+  if (walk.capped && stop < shown) {
+    await settleReplayFrom(db, userId, seq, addDays(stop, 1));
+    return { ...result, resimPending: true };
+  }
+  if (maxDays !== undefined) await purgeDerived(db, userId, stop, null);
+  // Only now — once the walk has passed the day garden_state shows — does the durable garden pointer move. If the
+  // walk throws above, garden_state (and its simulationVersion) stays exactly as it was (C21), and the record brings
+  // the next walk back to the checkpoint before the changed day.
+  await persistSnapshot(db, userId, walk.snapshot);
+  await settleReplayFrom(db, userId, seq, null);
+  return walk.capped ? { ...result, resimPending: true } : result;
 }
 
 /** Recent garden events for the UI (most recent first). P3b: ORDER BY +

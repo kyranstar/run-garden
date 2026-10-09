@@ -11,7 +11,7 @@ import { ingestDailyHealth, upsertAthleteZones } from "./health-ingest.js";
 import { importPlanSnapshot } from "./import-plan.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { resimulateFrom } from "./garden-sync.js";
+import { recordReplayFrom, resimulateFrom } from "./garden-sync.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "./exercise-catalog.js";
@@ -203,6 +203,14 @@ export async function corosReadNow(
     let ingested = 0;
     let garden: ReadNowResult["garden"];
     if (snapshot.activities.length > 0) {
+      // The new activities' earliest day goes on record BEFORE they are stored (cron reliability, part 3): an
+      // invocation killed between the ingest and the replay below left them stored, seen by every later read, and
+      // never credited — their days were already simulated. The next walk replays from the record instead.
+      const firstNewDay = snapshot.activities
+        .filter((a) => !seen.has(a.providerActivityId))
+        .map((a) => (a.startTimeLocal ?? a.startTime).slice(0, 10))
+        .sort()[0];
+      if (firstNewDay !== undefined) await recordReplayFrom(db, userId, firstNewDay);
       const stats = await ingestActivities(db, {
         userId,
         sources: snapshot.activities,

@@ -154,6 +154,12 @@ export function makeTestDb(
   }
   // Installed after the migrations: DDL binds nothing, and the cap should only
   // ever police application queries.
+  return instrumented(sqlite, opts);
+}
+
+type TestDbOptions = Parameters<typeof makeTestDb>[0];
+
+function instrumented(sqlite: Database.Database, opts: NonNullable<TestDbOptions>): Db {
   if (opts.boundVariableCap !== undefined) {
     installBoundVariableCap(sqlite, opts.boundVariableCap);
     // A test as strict as D1 about binds is as strict about compound SELECTs.
@@ -163,6 +169,16 @@ export function makeTestDb(
     installStatementHook(sqlite, opts.onStatement ?? (() => undefined), opts.onRows, opts.onExec);
   }
   return drizzle(sqlite, { schema }) as unknown as Db;
+}
+
+/**
+ * A copy of a test database as it stands, with its own options — for running two paths from one starting state
+ * (an interrupted replay and an uninterrupted one) and comparing where each lands. Ids, clocks and every row are
+ * the source's.
+ */
+export function cloneTestDb(db: Db, opts: TestDbOptions = {}): Db {
+  const source = (db as unknown as { $client: Database.Database }).$client;
+  return instrumented(new Database(source.serialize()), opts ?? {});
 }
 
 export async function makeTestUser(
