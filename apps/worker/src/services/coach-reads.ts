@@ -1,4 +1,4 @@
-import { and, desc, eq, lte } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, lte, or } from "drizzle-orm";
 import { activities, coachReads } from "@rg/database";
 import { addDays, newId, nowInstant, type LocalDate, type UserPreferences } from "@rg/domain";
 import { z } from "zod";
@@ -360,12 +360,24 @@ export async function processCoachReads(
   let processed = 0;
   for (let i = 0; i < cap; i++) {
     const now = nowInstant();
+    const staleBefore = new Date(Date.parse(now) - READ_RECLAIM_MINUTES * 60_000).toISOString();
+    // Only rows this drain could claim: queued, or running on a claim gone stale. The ledger keeps every done
+    // read forever, full bodies and all, and asking for every due row read all of them on each turn of this loop
+    // — twice an hour from the crons and after every ingest (cron reliability, part 2).
     const due = await db
       .select()
       .from(coachReads)
-      .where(and(eq(coachReads.userId, userId), lte(coachReads.nextAttemptAt, now)))
+      .where(
+        and(
+          eq(coachReads.userId, userId),
+          lte(coachReads.nextAttemptAt, now),
+          or(
+            eq(coachReads.status, "queued"),
+            and(eq(coachReads.status, "running"), or(isNull(coachReads.claimedAt), lt(coachReads.claimedAt, staleBefore))),
+          ),
+        ),
+      )
       .orderBy(coachReads.createdAt);
-    const staleBefore = new Date(Date.parse(now) - READ_RECLAIM_MINUTES * 60_000).toISOString();
     // Stale-running rows FIRST, explicitly — a read that died mid-LLM-call
     // used to recover last by accident of index order (audit finding 14).
     const candidate =
