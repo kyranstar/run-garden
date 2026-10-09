@@ -218,7 +218,8 @@ async function reviewBody(workoutId: string, over: Partial<PerformedSessionWireI
   };
 }
 
-const save = (body: PerformedSessionWireInput, now = AFTER) => savePerformedSession(db, userId, body.id, body, { now, prefs });
+/** The save as the route makes it with the switch on. */
+const save = (body: PerformedSessionWireInput, now = AFTER) => savePerformedSession(db, userId, body.id, body, { now, prefs, watchReviews: true });
 
 // ── 1. Pairing (Review Focus 4; ruling 3-R7) ──────────────────────────────────────────────────────────────────────
 
@@ -754,6 +755,22 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     );
     expect(next.build!.mode).not.toBe("build");
     expect(next.build!.modeReasons.join(" ")).toMatch(/48 hours/);
+  });
+
+  it("switch OFF: the PUT answers 422 as before Phase 3 and writes nothing; on again, the same entry saves (audit 3-B S-5)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    const body = await reviewBody(s.workoutId); // an outbox entry made while the switch was on
+    const off = await call("PUT", `performed/${body.id}`, { body, env: makeEnv() });
+    expect(off.res.status).toBe(422);
+    expect(await off.res.json()).toMatchObject({ error: "invalid_save", issues: [{ path: ["source"] }] });
+    expect(await db.select().from(performedSessions).where(eq(performedSessions.source, "watch_review"))).toEqual([]);
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, s.workoutId)))[0]!.contentState).not.toBe("done");
+    // The outbox keeps a 422 (flagged, Retry): once the switch is back on, the same PUT lands — and answers the same after.
+    const on = await call("PUT", `performed/${body.id}`, { body });
+    expect(await on.res.json()).toMatchObject({ status: "saved" });
+    const again = await call("PUT", `performed/${body.id}`, { body, env: makeEnv() });
+    expect(await again.res.json()).toEqual({ status: "same_payload" });
   });
 
   it("a review whose push job never existed but whose build was sent then failed still pairs with the locked build", async () => {
