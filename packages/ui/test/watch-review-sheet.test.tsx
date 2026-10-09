@@ -93,13 +93,13 @@ afterEach(() => {
 
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
-function mount(opts: { put?: () => Response | Promise<Response> } = {}) {
+function mount(opts: { put?: () => Response | Promise<Response>; basis?: unknown } = {}) {
   const puts: unknown[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const path = url.replace(/\?.*$/, "");
-      if (path === `/api/sessions/${SLOT}/watch-review`) return json(BASIS);
+      if (path === `/api/sessions/${SLOT}/watch-review`) return json(opts.basis ?? BASIS);
       if (path.startsWith("/api/sessions/performed/") && init?.method === "PUT") {
         puts.push(JSON.parse(String(init.body)));
         return opts.put ? opts.put() : json({ status: "saved", performedId: "x", activityId: "act-1", matched: true, notes: [] });
@@ -256,6 +256,45 @@ describe("Log your session — the sheet", () => {
     expect(row.hasAttribute("aria-label")).toBe(false);
     expect(text(row)).toBe("Goblet squat 30 lb × 6 · 30 lb × 6 · 30 lb × 5");
     expect(row.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  const typeNote = async (value: string) => {
+    const note = document.querySelector<HTMLTextAreaElement>("textarea.review-note")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, value);
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    return note;
+  };
+
+  it("the note holds at most what the server takes (2,000 characters): a long one still saves through the outbox, offline too (audit 3-B UI-7)", async () => {
+    const { onSaved, puts } = mount({ put: () => Promise.reject(new TypeError("Failed to fetch")) });
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    const note = await typeNote("x".repeat(2_500));
+    expect(note.maxLength).toBe(2_000);
+    expect(note.value).toHaveLength(2_000);
+    await click("Save");
+    await until(() => onSaved.mock.calls.length === 1, "onSaved");
+    expect(onSaved).toHaveBeenCalledWith("pending");
+    const waiting = await entries();
+    expect(waiting).toHaveLength(1);
+    expect((waiting[0]!.payload as { note: string }).note).toHaveLength(2_000);
+    // The one PUT is the outbox's own try (offline), never a save around it.
+    expect(puts).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("Couldn't save");
+  });
+
+  it("a save the outbox refuses never goes around it, straight to the server (audit 3-B UI-7)", async () => {
+    const goblet = (BASIS as unknown as { entries: Array<{ sets: unknown[] }> }).entries[0]!;
+    const tooMany = { ...goblet, sets: Array.from({ length: 51 }, (_, i) => ({ ...(goblet.sets[0] as object), setIndex: i })) };
+    const basis = { ...(BASIS as object), entries: [tooMany] };
+    const { onSaved, puts } = mount({ basis });
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    await click("Save");
+    await until(() => document.body.textContent?.includes("Couldn't save on this device. Try again.") ?? false, "the failure");
+    expect(puts).toEqual([]);
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(await entries()).toEqual([]);
   });
 
   it("Not now closes and keeps nothing", async () => {

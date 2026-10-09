@@ -13,7 +13,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type MeResponse, type WatchReviewBasisDto } from "@rg/api-client";
-import { formatWeight, parseWeight, type PerformedSessionWire, type PerformedSet, type Weight, type WeightUnit } from "@rg/domain";
+import {
+  formatWeight,
+  parseWeight,
+  PERFORMED_LIMITS,
+  type PerformedSessionWire,
+  type PerformedSet,
+  type Weight,
+  type WeightUnit,
+} from "@rg/domain";
 import { Prog } from "@rg/session-engine";
 import { Banner, formatDayLong, Sheet, Spinner } from "../components.js";
 import { offlineDb } from "../offline/idb.js";
@@ -127,8 +135,10 @@ export function WatchReviewSheet({
     };
     try {
       let result: ReviewSaveResult;
-      try {
-        const db = await offlineDb();
+      // No IndexedDB here (a private window): straight to the server, or not at all. ONLY then — a save the outbox
+      // refuses (its schema) never goes around it (audit 3-B UI-7): it would fail offline with nothing kept.
+      const db = await offlineDb().catch(() => null);
+      if (db) {
         const userId = qc.getQueryData<MeResponse>(["me"])?.userId ?? (await meWithOfflineFallback().catch(() => null))?.userId ?? null;
         if (!userId) throw new Error("no signed-in account to save for");
         result = await saveSession(db, wire, { savePerformed: api.savePerformed }, userId, {
@@ -140,9 +150,7 @@ export function WatchReviewSheet({
         if (result === "pending" && (await outboxEntries(db)).some((e) => e.performedId === wire.id && e.state === "conflict")) {
           result = "conflict";
         }
-      } catch (e) {
-        // No IndexedDB here (a private window): straight to the server, or not at all.
-        if (e instanceof Error && e.message === "no signed-in account to save for") throw e;
+      } else {
         await api.savePerformed(wire.id, wire);
         result = "saved";
       }
@@ -232,7 +240,16 @@ export function WatchReviewSheet({
             ) : null}
           </section>
         ) : null}
-        <textarea className="review-note" aria-label="Note" placeholder="Note" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        {/* At most what the server takes (audit 3-B UI-7): a longer note could not be kept, offline or not. */}
+        <textarea
+          className="review-note"
+          aria-label="Note"
+          placeholder="Note"
+          rows={2}
+          maxLength={PERFORMED_LIMITS.note}
+          value={note}
+          onChange={(e) => setNote(e.target.value.slice(0, PERFORMED_LIMITS.note))}
+        />
         {failed ? <p className="review-meta">Couldn't save on this device. Try again.</p> : null}
       </>
     );
