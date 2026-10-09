@@ -1062,11 +1062,20 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
       },
     });
     await until(() => body().includes("On your watch"), "On your watch");
+    // The press pinned the confirm's frame (below lg its height is held): the line is brought into view in its body.
+    const shown: Element[] = [];
+    Element.prototype.scrollIntoView = function (this: Element) {
+      shown.push(this);
+    };
     await click("Take off watch");
     await confirmTakeOff();
-    await until(() => body().includes("Couldn't take it off — try again in a moment."), "the failure");
+    await until(() => body().includes("Couldn't take it off — try again."), "the failure");
     expect(body()).toContain("Take this session off your watch?");
+    // In the explanation's place: one line in one line's room (the press held the frame).
+    expect(body()).not.toContain("It stays in the app.");
     expect(document.querySelector(".confirm-error")?.getAttribute("role")).toBe("alert");
+    expect(shown).toContain(document.querySelector(".confirm-error"));
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
     // Tried again, it goes through: the confirm closes, Send is offered again.
     offline = false;
     await confirmTakeOff();

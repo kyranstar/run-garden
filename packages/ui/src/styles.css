@@ -2387,6 +2387,11 @@ button.session-chip {
 .watch-state--solo {
   padding: var(--space-4) var(--space-5);
 }
+/* A confirm's "couldn't" line (Take off watch, audit 3-B UI-3), in the explanation's place: the AA warn ink (UI-8). */
+.confirm-error {
+  color: var(--warn-ink);
+  font-weight: var(--weight-medium);
+}
 /* Send to watch offered: the state's status region is kept, empty and out of the way, so what Send leads to is
    announced (audit 3-B UI-10). */
 .watch-state.visually-hidden {

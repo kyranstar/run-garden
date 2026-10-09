@@ -684,7 +684,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         confirmLabel="Take off watch"
         busy={takeOff.isPending}
         onConfirm={() => takeOff.mutate()}
-        error={takeOff.isError ? "Couldn't take it off — try again in a moment." : null}
+        error={takeOff.isError ? "Couldn't take it off — try again." : null}
       >
         It stays in the app.
       </ConfirmDialog>

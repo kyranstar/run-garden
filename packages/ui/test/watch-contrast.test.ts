@@ -52,6 +52,20 @@ function colours(selector: string): { color: string; background: string } {
   throw new Error(`no rule for ${selector} with a token colour and background`);
 }
 
+describe("the Take off confirm's \"Couldn't take it off\" (audit 3-B UI-3)", () => {
+  const rule = /\}\s*\.confirm-error\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  it("is written in the AA warn ink", () => expect(rule).toMatch(/color:\s*var\(--warn-ink\)/));
+  for (const [theme, t] of [
+    ["light", light],
+    ["dark (system)", { ...light, ...darkMedia }],
+    ["dark (chosen)", { ...light, ...darkForced }],
+  ] as const) {
+    it(`${theme}: on the dialog (--bg-raised) at least 4.5:1`, () => {
+      expect(ratio(t["--warn-ink"]!, t["--bg-raised"]!)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+});
+
 describe("the watch's warn band (Couldn't send, Too long for the watch)", () => {
   const { color, background } = colours(".watch-state--warn");
   for (const [theme, t] of [
