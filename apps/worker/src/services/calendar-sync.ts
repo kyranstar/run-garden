@@ -129,12 +129,38 @@ export const CALENDAR_OPS_PER_RUN = 20;
  * The ops a run executes: all of them within the budget; past it, the sessions still ahead first (soonest first),
  * then the past ones (latest first) — a first sync or a token reset books the coming weeks before the two behind.
  */
-function opsThisRun(ops: ReconcileOp[], dateOf: Map<string, string>, today: string): ReconcileOp[] {
+function opsThisRun(
+  ops: ReconcileOp[],
+  dateOf: Map<string, string>,
+  today: string,
+  failedLastRun: ReadonlySet<string>,
+): ReconcileOp[] {
   if (ops.length <= CALENDAR_OPS_PER_RUN) return ops;
   const date = (op: ReconcileOp) => dateOf.get(op.workoutId) ?? "";
-  const ahead = ops.filter((op) => date(op) >= today).sort((a, b) => date(a).localeCompare(date(b)));
-  const behind = ops.filter((op) => date(op) < today).sort((a, b) => date(b).localeCompare(date(a)));
-  return [...ahead, ...behind].slice(0, CALENDAR_OPS_PER_RUN);
+  const ordered = (list: ReconcileOp[]) => [
+    ...list.filter((op) => date(op) >= today).sort((a, b) => date(a).localeCompare(date(b))),
+    ...list.filter((op) => date(op) < today).sort((a, b) => date(b).localeCompare(date(a))),
+  ];
+  // AN OP THAT FAILED LAST RUN WAITS BEHIND THE REST (re-review C-2a). One Google refuses every run (a 403'd event)
+  // was otherwise re-picked first every run, and CALENDAR_OPS_PER_RUN of them starved everything behind them — the
+  // "one poisoned op wedges the mirror" hole executeOps' catch closed, reopened by the cap. They are still retried,
+  // with whatever room the rest leave.
+  const fresh = ops.filter((op) => !failedLastRun.has(op.workoutId));
+  const failed = ops.filter((op) => failedLastRun.has(op.workoutId));
+  return [...ordered(fresh), ...ordered(failed)].slice(0, CALENDAR_OPS_PER_RUN);
+}
+
+/** The workouts whose op failed on the last run that reached them — `opsThisRun` puts them last. */
+const FAILED_OPS_CURSOR_KEY = (calendarId: string) => `failed_ops:${calendarId}`;
+
+function parseFailedOps(value: string | undefined): Set<string> {
+  if (!value) return new Set();
+  try {
+    const ids: unknown = JSON.parse(value);
+    return new Set(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
 }
 
 export async function syncCalendar(
@@ -184,11 +210,15 @@ export async function syncCalendar(
 
   // ── Actual state (incremental sync with fallback to windowed read) ───────
   const cursorId = `${userId}:google_calendar:events_sync_token:${calendarId}`;
-  const cursorRows = await db
+  const failedOpsId = `${userId}:google_calendar:${FAILED_OPS_CURSOR_KEY(calendarId)}`;
+  // One read for both: the sync token, and the ops that failed last run.
+  const cursorBoth = await db
     .select()
     .from(providerCursorState)
-    .where(eq(providerCursorState.id, cursorId))
-    .limit(1);
+    .where(inArray(providerCursorState.id, [cursorId, failedOpsId]));
+  const cursorRows = cursorBoth.filter((r) => r.id === cursorId);
+  const failedOpsRow = cursorBoth.find((r) => r.id === failedOpsId);
+  const failedLastRun = parseFailedOps(failedOpsRow?.value);
   // After a restore the stored token (if any) predates the file: the one-shot
   // reconcile needs the whole window, so every sync reads it in full until
   // the reconcile is done.
@@ -360,11 +390,29 @@ export async function syncCalendar(
     removedWorkoutIds,
   });
 
-  const runNow = opsThisRun(ops, new Map(workouts.map((w) => [w.id, w.effectiveDate])), today);
-  await executeOps(db, env, userId, client, calendarId, runNow, prefs, stats);
+  const runNow = opsThisRun(ops, new Map(workouts.map((w) => [w.id, w.effectiveDate])), today, failedLastRun);
+  const failedNow = await executeOps(db, env, userId, client, calendarId, runNow, prefs, stats);
   if (ops.length > runNow.length) {
     stats.capped = true;
     stats.deferred = ops.length - runNow.length;
+  }
+  // What failed this run, plus what failed before and did not get a turn — written only when it changed.
+  const ranNow = new Set(runNow.map((op) => op.workoutId));
+  const deferredIds = new Set(ops.map((op) => op.workoutId).filter((id) => !ranNow.has(id)));
+  const failedNext = [...failedNow, ...[...failedLastRun].filter((id) => deferredIds.has(id))].sort();
+  if (failedNext.join("\n") !== [...failedLastRun].sort().join("\n")) {
+    const now = nowInstant();
+    await db
+      .insert(providerCursorState)
+      .values({
+        id: failedOpsId,
+        userId,
+        provider: "google_calendar",
+        cursorKey: FAILED_OPS_CURSOR_KEY(calendarId),
+        value: JSON.stringify(failedNext),
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({ target: providerCursorState.id, set: { value: JSON.stringify(failedNext), updatedAt: now } });
   }
 
   // ── One-shot post-restore reconcile, part 2: the orphan sweep (B6 c) ────
@@ -422,12 +470,15 @@ async function executeOps(
   ops: ReconcileOp[],
   prefs: UserPreferences,
   stats: CalendarSyncStats,
-): Promise<void> {
+): Promise<Set<string>> {
   const now = nowInstant();
+  // The workouts whose op did not land this run (`opsThisRun` puts them behind the rest next time).
+  const failed = new Set<string>();
   for (const op of ops) {
     try {
       await executeOneOp(db, userId, client, calendarId, op, prefs, stats, now);
     } catch (e) {
+      failed.add(op.workoutId);
       // A rejected RACE move deserves a visible note, not a swallowed warn
       // (audit#2 #3): the user dragged the race event believing it worked,
       // and the mirror kept claiming "synced" while diverging permanently.
@@ -463,6 +514,7 @@ async function executeOps(
       );
     }
   }
+  return failed;
 }
 
 async function executeOneOp(

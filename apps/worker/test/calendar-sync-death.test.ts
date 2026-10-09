@@ -9,6 +9,7 @@
  * it again and again or inserting a second.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
@@ -211,5 +212,45 @@ describe("a calendar run killed part-way", () => {
     const writesBefore = google.writes.length;
     for (let i = 0; i < 2; i++) await syncCalendar(db, env, userId);
     expect(google.writes.slice(writesBefore)).toEqual([]);
+  });
+});
+
+/*
+ * A POISONED OP DOES NOT WEDGE THE MIRROR BEHIND THE CAP (re-review C-2a). An op Google refuses every run (a 403'd
+ * event — what executeOps' own catch exists for) used to be re-picked first every run: with CALENDAR_OPS_PER_RUN of
+ * them, nothing else ever ran. The ops that failed last run now wait behind the rest.
+ */
+describe("ops that fail every run", () => {
+  it("twenty poisoned ops ahead no longer starve a session behind: it is booked on the next run", async () => {
+    const ahead = await seedWorkouts(CALENDAR_OPS_PER_RUN);
+    for (let i = 0; i < 3; i++) await syncCalendar(db, env, userId);
+    // Every ahead session changes content, and Google refuses every write to its event (403), run after run.
+    for (const e of google.events.values()) google.forbidden.add(e.id);
+    for (const id of ahead) {
+      await db.update(schema.plannedWorkouts).set({ title: "Easy + strides" }).where(eq(schema.plannedWorkouts.id, id));
+    }
+    // A session two days ago (inside the mirror's window) with no event yet.
+    const date = addDays(today, -2);
+    await db.insert(schema.plannedWorkouts).values({
+      id: "w-behind", userId, planId: "p", sourceWorkoutId: "src-w-behind", title: "Easy", category: "easy", sport: "run",
+      originalPlanDate: date, lastVerifiedCorosDate: date, effectiveDate: date, effectiveTime: "07:00",
+      completionState: "scheduled", calendarSyncState: "pending", sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    const first = await syncCalendar(db, env, userId);
+    expect(first).toMatchObject({ capped: true, opErrors: CALENDAR_OPS_PER_RUN, created: 0 });
+    const second = await syncCalendar(db, env, userId);
+    expect(google.writes).toContain("insert:w-behind");
+    expect(second.created).toBe(1);
+    // The poisoned ops are still retried every run — behind the rest, not instead of them.
+    expect(second.opErrors).toBe(CALENDAR_OPS_PER_RUN - 1);
+    // Once Google takes the writes again, the mirror converges and goes quiet.
+    google.forbidden.clear();
+    for (let i = 0; i < 2; i++) await syncCalendar(db, env, userId);
+    const quiet = await syncCalendar(db, env, userId);
+    expect({ updated: quiet.updated, created: quiet.created, opErrors: quiet.opErrors, capped: quiet.capped }).toEqual({
+      updated: 0, created: 0, opErrors: undefined, capped: undefined,
+    });
+    expect(await db.select().from(schema.calendarEventLinks)).toHaveLength(CALENDAR_OPS_PER_RUN + 1);
   });
 });
