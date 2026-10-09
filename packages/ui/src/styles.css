@@ -2393,6 +2393,33 @@ button.session-chip {
   min-height: 0;
   padding: 0;
 }
+/* FROM LG, AS DRAWN (approved mocks "Desktop · 1280"; audit 3-B UI-11): the session sheet's foot is ONE row — Start ·
+   Send to watch · Move · Skip — with the watch's state, when there is one, on a row of its own above it; a split row's
+   buttons keep their own width rather than stretching across the sheet (the phone's two stretched rows stay below
+   lg); the preview's Send is at least 240px and the review's Save at least 200px. */
+@media (min-width: 1024px) {
+  .session-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-5) var(--space-4);
+  }
+  .session-foot > .watch-state {
+    flex: 1 1 100%;
+  }
+  .session-foot > .btn-row {
+    display: contents;
+  }
+  .btn-row--split > .btn {
+    flex: 0 1 auto;
+  }
+  .watch-send {
+    min-width: 240px;
+  }
+  .review-save {
+    min-width: 200px;
+  }
+}
 .watch-spin {
   width: 16px;
   height: 16px;

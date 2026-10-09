@@ -102,7 +102,7 @@ export function WatchPreviewSheet({
   } else if (canSend) {
     foot = (
       <div className="btn-row btn-row--split">
-        <button ref={sendRef} type="button" className="btn btn-primary" disabled={send.isPending} onClick={() => send.mutate(preview!)}>
+        <button ref={sendRef} type="button" className="btn btn-primary watch-send" disabled={send.isPending} onClick={() => send.mutate(preview!)}>
           Send
         </button>
       </div>

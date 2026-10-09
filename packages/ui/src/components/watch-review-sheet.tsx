@@ -227,7 +227,7 @@ export function WatchReviewSheet({
 
   const foot = (
     <div className="btn-row btn-row--split">
-      <button type="button" className="btn btn-primary" disabled={busy || !entries} onClick={() => void save()}>
+      <button type="button" className="btn btn-primary review-save" disabled={busy || !entries} onClick={() => void save()}>
         Save
       </button>
       <button type="button" className="btn" disabled={busy} onClick={onClose}>

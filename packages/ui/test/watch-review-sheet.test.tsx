@@ -259,6 +259,8 @@ describe("Log your session — the sheet", () => {
     expect(row.hasAttribute("aria-label")).toBe(false);
     expect(text(row)).toBe("Goblet squat 30 lb × 6 · 30 lb × 6 · 30 lb × 5");
     expect(row.getAttribute("aria-expanded")).toBe("false");
+    // From lg, Save keeps at least 200px beside Not now (styles.css `.review-save`; audit 3-B UI-11).
+    expect(button("Save")!.classList.contains("review-save")).toBe(true);
   });
 
   const typeNote = async (value: string) => {
