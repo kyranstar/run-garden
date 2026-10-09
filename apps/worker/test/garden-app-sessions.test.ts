@@ -591,6 +591,9 @@ describe("a post-epoch app session grows its own axis, once (spec §2d; programm
       updatedAt: PLAYED_NOON,
     });
     await ensureGarden(db, userId, prefs, "2026-10-05");
+    // The garden walked up to the session's day, as the crons and garden reads keep it: the save's own replay is then
+    // that day, inside the one step a request walks (REQUEST_REPLAY_MAX_DAYS; cron reliability, part 4).
+    await advanceGarden(db, userId, prefs, new Date(PLAYED_NOON));
     return { db, userId, prefs, workoutId };
   }
 

@@ -89,6 +89,8 @@ export interface RealisticAccount {
   /** The global-fetch stand-in: the COROS mock for COROS, a streamed read for the gateway. Counts every call. */
   fetchImpl: typeof fetch;
   fetches: { coros: number; llm: number };
+  /** The mock COROS account behind `fetchImpl` (its `state` is live: what the next read lists). */
+  coros: ReturnType<typeof mockCorosServer>;
   /** The new activities' ids (each with a queued coach read). */
   newActivityIds: string[];
 }
@@ -284,5 +286,5 @@ export async function seedRealisticAccount(
     return server.fetchImpl(input as never, init);
   }) as typeof fetch;
 
-  return { userId, prefs: await loadPreferences(db, userId), env, fetchImpl, fetches, newActivityIds };
+  return { userId, prefs: await loadPreferences(db, userId), env, fetchImpl, fetches, newActivityIds, coros: server };
 }

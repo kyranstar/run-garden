@@ -30,6 +30,7 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 }));
 
 const { coachRoutes } = await import("../src/routes/coach.js");
+const { REQUEST_GARDEN_STEP } = await import("../src/services/garden-sync.js");
 
 function makeEnv(): Env {
   return {
@@ -106,7 +107,15 @@ describe("approve: the garden and the calendar follow the plan", () => {
 
     expect(res.status).toBe(200);
     expect(spies.resimulateFrom).toHaveBeenCalledTimes(1);
-    expect(spies.resimulateFrom).toHaveBeenCalledWith(db, userId, today, expect.objectContaining({ timezone: prefs.timezone }));
+    // One request's step of garden, never the uncapped default (cron reliability, part 4).
+    expect(spies.resimulateFrom).toHaveBeenCalledWith(
+      db,
+      userId,
+      today,
+      expect.objectContaining({ timezone: prefs.timezone }),
+      expect.any(Date),
+      REQUEST_GARDEN_STEP,
+    );
     expect(spies.syncCalendar).toHaveBeenCalledTimes(1);
     expect(spies.syncCalendar).toHaveBeenCalledWith(db, expect.anything(), userId);
   });

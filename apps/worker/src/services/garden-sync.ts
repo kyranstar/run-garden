@@ -78,6 +78,7 @@ import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } f
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import { AUTO_MISS_DAYS } from "./reconcile-daily.js";
+import { REQUEST_REPLAY_MAX_DAYS } from "./cron-limits.js";
 import {
   VISITOR_HINTS,
   VISITOR_LINES,
@@ -674,15 +675,27 @@ export interface GardenAdvanceOptions {
   /** Per-invocation day cap for version-upgrade rebuilds, post-restore
    * catch-up steps and replays (`resimulateFrom`, and a replay on record that
    * an earlier call left unfinished). Defaults to UPGRADE_RESIM_MAX_DAYS /
-   * CATCH_UP_MAX_DAYS; a replay is uncapped by default. The crons set it so
-   * one invocation never replays weeks; tests set it low to exercise
-   * resumption. */
+   * CATCH_UP_MAX_DAYS; a replay is uncapped by default. The crons and every
+   * request (REQUEST_GARDEN_STEP) set it so one invocation never replays
+   * weeks; tests set it low to exercise resumption. */
   maxResimDays?: number;
-  /** Per-invocation day cap for the plain walk forward. Uncapped by default (a garden read walks to today); the
-   * hourly cron sets it so one invocation never walks weeks (cron reliability, part 2). A capped walk persists the
+  /** Per-invocation day cap for the plain walk forward. Uncapped by default; the crons (cron reliability, part 2) and
+   * every request (REQUEST_GARDEN_STEP, part 4) set it so one invocation never walks weeks. A capped walk persists the
    * day it stopped at, and the next call walks on from there (`resimPending`). */
   maxWalkDays?: number;
 }
+
+/**
+ * The caps every REQUEST passes when it walks the garden (cron reliability, part 4): the garden page, every route that
+ * replays after a change, the app's session save, a request's COROS read and backfill chunk. Both caps, always — a
+ * replay asked for from a day the garden has not reached yet is a plain walk forward (`resimulate` hands it to
+ * advanceGarden), and a pending version upgrade or post-restore catch-up takes `maxResimDays` too. A capped call
+ * leaves the rest on record and the rendered garden where it was (see replayStep); the next request or cron walks on.
+ */
+export const REQUEST_GARDEN_STEP: Readonly<GardenAdvanceOptions> = Object.freeze({
+  maxWalkDays: REQUEST_REPLAY_MAX_DAYS,
+  maxResimDays: REQUEST_REPLAY_MAX_DAYS,
+});
 
 /**
  * P3d: how many days one version-upgrade rebuild invocation may simulate.
@@ -993,23 +1006,29 @@ async function recordGardenChange(db: Db, userId: string, date: LocalDate): Prom
 }
 
 /**
- * `recordGardenChange` as a statement a caller runs in its own transaction, and an upsert: it lands for an account
- * that has no `account_state` row yet, and with the caller's writes or not at all. The app's save (session-save.ts)
- * records the day its replay must start from together with the session, so a replay killed after the commit is not
- * lost (audit 2b-A M-5): the catch-up stays pending, and the next garden read or hourly cron walks it, capped
- * (ruling 2b-R7). Nothing is recorded while a restore runs.
+ * `recordReplayFrom` as a statement a caller runs in its own transaction: it lands with the caller's writes or not at
+ * all, and as an upsert for an account that has no `account_state` row yet. The app's save (session-save.ts) and the
+ * watch session's review (session-watch-review.ts) record the day their replay must start from together with the
+ * session, so a replay killed after the commit is not lost (audit 2b-A M-5): the next garden read or cron replays from
+ * it, a capped step at a time (ruling 2b-R7). Nothing is recorded while a restore runs.
+ *
+ * A plain replay on record — never the post-restore catch-up flag (cron reliability, part 4). It used to set the flag,
+ * from before a plain replay could be on record (part 3); but a catch-up step restarts from the checkpoint before the
+ * EARLIEST day on record, purges every derived row after it and persists garden_state where its capped walk stops:
+ * behind where it was. With a long replay on record (the owner's rebuild from 2026-08-01) one session saved in the app
+ * rewound the rendered garden to August. The plain replay (replayStep) is just as durable and resumable, and never
+ * moves garden_state back. A restore's own catch-up still honours this record: its step reads the same column.
  */
 export function gardenChangeStatement(db: Db, userId: string, date: LocalDate) {
   const now = nowInstant();
   return db
     .insert(accountState)
-    .values({ userId, gardenChangedFrom: date, gardenChangedSeq: 1, gardenCatchUpPending: true, updatedAt: now })
+    .values({ userId, gardenChangedFrom: date, gardenChangedSeq: 1, updatedAt: now })
     .onConflictDoUpdate({
       target: accountState.userId,
       set: {
         gardenChangedFrom: sql`CASE WHEN ${accountState.gardenChangedFrom} IS NULL OR ${accountState.gardenChangedFrom} > ${date} THEN ${date} ELSE ${accountState.gardenChangedFrom} END`,
         gardenChangedSeq: sql`${accountState.gardenChangedSeq} + 1`,
-        gardenCatchUpPending: true,
         updatedAt: now,
       },
       setWhere: isNull(accountState.restoreId),
@@ -1661,7 +1680,11 @@ export async function buildGardenView(
   // A restore is replacing the account (B2): the read still answers, from
   // whatever is there, but heals and ledgers nothing.
   const restoring = await restoreInProgress(db, userId);
-  await advanceGarden(db, userId, prefs).catch(() => undefined);
+  // One capped step (cron reliability, part 4): a garden read walked a pending replay, a version rebuild or a
+  // post-restore catch-up whole — weeks of days in one request. What it leaves stays on record for the next read or
+  // cron; what this read renders is garden_state, which a replay behind it does not move (and the preview below folds
+  // from it), so the page shows what it showed before the replay began until the walk has passed it.
+  await advanceGarden(db, userId, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   let snapshot = await ensureGarden(db, userId, prefs);
 
   // Fallback-only shield state, read pre-preview: used below solely when the

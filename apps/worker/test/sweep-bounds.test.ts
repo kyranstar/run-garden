@@ -17,9 +17,9 @@ import type { Db } from "../src/services/db.js";
 // fixture two "Rest" rows on one day changed under the walk for three reads — the dedupe kept the row the read had
 // just missed. It keeps the one the read serves now; import-defects.test.ts #5.)
 import { halfHourly, hourly } from "../src/index.js";
-import { SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
+import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import { corosReadNow } from "../src/services/coros-read.js";
-import { loadGarden, resimulateFrom } from "../src/services/garden-sync.js";
+import { advanceGarden, loadGarden, resimulateFrom } from "../src/services/garden-sync.js";
 import { closeStrandedSyncRuns } from "../src/services/reconcile-daily.js";
 import { makeTestDb } from "./helpers.js";
 import { gardenTimeline, replayMarker } from "./garden-compare.js";
@@ -231,7 +231,43 @@ describe("the sweep's work is bounded per invocation", () => {
     expect(await gardenTimeline(db, acct.userId, { mondayCheckpointsOnly: true })).toEqual(landed);
   });
 
-  it("a read that runs the six-hourly full schedule import never replays uncapped in the same invocation; one that does not replays as before", { timeout: 60_000 }, async () => {
+  it("a sweep that ingests nothing and walks nothing runs at most one coach read too, however deep the backlog (part 4)", { timeout: 60_000 }, async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday() });
+    vi.stubGlobal("fetch", acct.fetchImpl);
+    await halfHourly(db, acct.env); // the sweep that ingests the mock's activities
+    await advanceGarden(db, acct.userId, acct.prefs); // the replay it left on record, finished
+    expect(await replayMarker(db, acct.userId)).toBeNull();
+    // Nothing new on the watch from here on (a re-read of the same activities can still count as an ingest on some
+    // calendars — the fixture's own history merges with them — and this case is the sweep that ingests nothing).
+    acct.coros.state.activities = [];
+    // A deep backlog: six more efforts waiting for their read (a connect's, a backfill digest's).
+    const done = await db
+      .select({ id: schema.coachReads.id })
+      .from(schema.coachReads)
+      .where(and(eq(schema.coachReads.userId, acct.userId), eq(schema.coachReads.status, "done")))
+      .limit(6);
+    for (const r of done) {
+      await db.update(schema.coachReads).set({ status: "queued", attempt: 0, completedAt: null }).where(eq(schema.coachReads.id, r.id));
+    }
+    const queued = async () =>
+      (await db.select().from(schema.coachReads).where(eq(schema.coachReads.userId, acct.userId))).filter((r) => r.status === "queued").length;
+    const backlog = await queued();
+    expect(backlog).toBeGreaterThanOrEqual(6);
+
+    const llm = acct.fetches.llm;
+    await halfHourly(db, acct.env);
+    const latest = corosRunsSync(db, acct.userId).sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0)).at(-1)!;
+    const stats = latest.stats as { ingested: number; garden: { simulatedDays: number } | null; coachReads: number };
+    // Nothing ingested, nothing walked: the drain alone — one read (~3.5 ms node each, measured; six were ~29 ms).
+    expect(stats.ingested).toBe(0);
+    expect(stats.garden?.simulatedDays ?? 0).toBe(0);
+    expect(stats.coachReads).toBe(1);
+    expect(acct.fetches.llm - llm).toBeLessThanOrEqual(2); // its call, and at most one repair
+    expect(await queued()).toBe(backlog - 1);
+  });
+
+  it("a read that runs the six-hourly full schedule import replays at most the sweep's cap; one that does not, at most a request's (part 4)", { timeout: 60_000 }, async () => {
     for (const fullDue of [true, false]) {
       const db = makeTestDb({ boundVariableCap: 100 });
       const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday() });
@@ -243,12 +279,15 @@ describe("the sweep's work is bounded per invocation", () => {
           .set({ meta: { ...(conn!.meta as Record<string, unknown>), lastFullScheduleAt: new Date().toISOString() } })
           .where(eq(schema.providerConnections.id, conn!.id));
       }
-      // A request's read (Read now, opening the app): no cap of its own.
+      // A request's read (Read now, opening the app): no cap passed — it takes a request's step, never more.
       const read = await corosReadNow(db, acct.env, acct.userId, acct.prefs, { force: true });
       expect(read.status).toBe("ok");
       expect(read.fullSchedule === true).toBe(fullDue);
       if (fullDue) expect(read.garden).toEqual({ simulatedDays: SWEEP_REPLAY_MAX_DAYS, resimPending: true });
-      else expect(read.garden!.simulatedDays).toBeGreaterThan(SWEEP_REPLAY_MAX_DAYS);
+      else {
+        expect(read.garden!.simulatedDays).toBeGreaterThan(SWEEP_REPLAY_MAX_DAYS);
+        expect(read.garden!.simulatedDays).toBeLessThanOrEqual(REQUEST_REPLAY_MAX_DAYS);
+      }
     }
   });
 });

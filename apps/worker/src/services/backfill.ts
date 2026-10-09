@@ -21,6 +21,7 @@ import type { UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
 import { resimulateFrom } from "./garden-sync.js";
+import { REQUEST_REPLAY_MAX_DAYS } from "./cron-limits.js";
 import { CLAIM_TIMEOUT_MS } from "./jobs.js";
 
 /** Days of history per backfill chunk. */
@@ -208,7 +209,8 @@ export async function recordChunk(
   db: Db,
   userId: string,
   chunk: ChunkReport,
-  /** Cap on the garden replay's days in this invocation (the half-hourly cron's); the rest is on record. */
+  /** Cap on the garden replay's days in this invocation (the half-hourly cron's; REQUEST_REPLAY_MAX_DAYS without
+   * one); the rest is on record. */
   opts: { resimMaxDays?: number } = {},
 ): Promise<void> {
   const now = nowInstant();
@@ -246,14 +248,12 @@ export async function recordChunk(
 
   if (stats.affectedDates.length > 0) {
     const prefs = await loadPreferences(db, userId);
-    await resimulateFrom(
-      db,
-      userId,
-      stats.affectedDates[0]!,
-      prefs,
-      new Date(),
-      opts.resimMaxDays === undefined ? undefined : { maxResimDays: opts.resimMaxDays },
-    ).catch(() => undefined);
+    // Never uncapped (cron reliability, part 4): the cron passes its cap; the Backfill button's first chunk runs in
+    // its request's waitUntil, so it walks at most a request's step. The rest is on record for the next walk.
+    const cap = opts.resimMaxDays ?? REQUEST_REPLAY_MAX_DAYS;
+    await resimulateFrom(db, userId, stats.affectedDates[0]!, prefs, new Date(), { maxResimDays: cap, maxWalkDays: cap }).catch(
+      () => undefined,
+    );
   }
 }
 
@@ -331,7 +331,8 @@ export async function runBackfillChunkCloud(
   userId: string,
   prefs: UserPreferences,
   fetchImpl: typeof fetch = fetch,
-  /** The half-hourly cron caps the chunk's garden replay (cron reliability, part 3); the rest is on record. */
+  /** The half-hourly cron caps the chunk's garden replay (cron reliability, part 3); without it the replay walks at
+   * most a request's step (part 4). The rest is on record. */
   opts: { resimMaxDays?: number } = {},
 ): Promise<{ ran: boolean }> {
   // A restore is replacing the account (B2): no history walk meanwhile.

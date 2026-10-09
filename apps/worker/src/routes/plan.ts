@@ -60,7 +60,7 @@ import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } 
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { removeFromPlan, unskipWorkout } from "../services/plan-mutations.js";
-import { gardenSees, recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
+import { gardenSees, recentGardenEvents, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import {
   openContentIntentTargets,
   openMoveIntents,
@@ -1467,7 +1467,7 @@ planRoutes.post("/workouts/:id/skip", async (c) => {
     .update(plannedWorkouts)
     .set({ completionState: "skipped", resolutionDate: today, updatedAt: now })
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)));
-  await resimulateFrom(db, userId, today, prefs).catch(() => undefined);
+  await resimulateFrom(db, userId, today, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });
 
@@ -1486,7 +1486,7 @@ planRoutes.post("/workouts/:id/unskip", async (c) => {
   if (res.reason === "not_found") return c.json({ error: "not_found" }, 404);
   if (res.reason === "not_skipped") return c.json({ error: "not_skipped" }, 422);
   const prefs = await loadPreferences(db, userId);
-  await resimulateFrom(db, userId, res.resolvedOn!, prefs).catch(() => undefined);
+  await resimulateFrom(db, userId, res.resolvedOn!, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });
 
@@ -1557,7 +1557,7 @@ planRoutes.post("/workouts/:id/match", async (c) => {
     })
     .where(eq(plannedWorkouts.id, w.id));
   const prefs = await loadPreferences(db, userId);
-  await resimulateFrom(db, userId, (a.startTimeLocal ?? a.startTime).slice(0, 10), prefs).catch(
+  await resimulateFrom(db, userId, (a.startTimeLocal ?? a.startTime).slice(0, 10), prefs, new Date(), REQUEST_GARDEN_STEP).catch(
     () => undefined,
   );
   return c.json({ ok: true });
@@ -1615,7 +1615,7 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const resimFrom = w.effectiveDate < today ? w.effectiveDate : today;
-  await resimulateFrom(db, userId, resimFrom, prefs).catch(() => undefined);
+  await resimulateFrom(db, userId, resimFrom, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });
 
@@ -1646,7 +1646,7 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
   const today = todayInZone(prefs.timezone);
   // A removed past workout must stop counting against the garden.
   const resimFrom = removed.effectiveDate < today ? removed.effectiveDate : today;
-  await resimulateFrom(db, userId, resimFrom, prefs).catch(() => undefined);
+  await resimulateFrom(db, userId, resimFrom, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });
 

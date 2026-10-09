@@ -12,7 +12,7 @@ import { importPlanSnapshot } from "./import-plan.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { advanceGarden, firstDayToReplay, recordReplayFrom, replayPending, resimulateFrom } from "./garden-sync.js";
-import { SWEEP_REPLAY_MAX_DAYS } from "./cron-limits.js";
+import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./cron-limits.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "./exercise-catalog.js";
@@ -63,9 +63,9 @@ export async function corosReadNow(
   opts: {
     force?: boolean;
     fetchImpl?: typeof fetch;
-    /** Cap on the days the garden's replay may walk in this invocation (the half-hourly sweep's). A read that runs
-     * the six-hourly full schedule import is capped at SWEEP_REPLAY_MAX_DAYS regardless: the two never share an
-     * invocation uncapped. The rest is on record, and the next walk finishes it. */
+    /** Cap on the days the garden's replay may walk in this invocation (the half-hourly sweep's). Without it a read
+     * walks at most REQUEST_REPLAY_MAX_DAYS, and one that runs the six-hourly full schedule import at most
+     * SWEEP_REPLAY_MAX_DAYS: never uncapped. The rest is on record, and the next walk finishes it. */
     resimMaxDays?: number;
   } = {},
 ): Promise<ReadNowResult> {
@@ -233,8 +233,11 @@ export async function corosReadNow(
       // from that week's checkpoint — every half hour (and, capped, would keep a replay from ever finishing).
       const earliest = await firstDayToReplay(db, userId, stats.affectedDates, newDays, prefs);
       if (earliest) {
-        const maxResimDays = opts.resimMaxDays ?? (fullScheduleDue ? SWEEP_REPLAY_MAX_DAYS : undefined);
-        const sim = await resimulateFrom(db, userId, earliest, prefs, new Date(), maxResimDays === undefined ? undefined : { maxResimDays });
+        // Never uncapped (cron reliability, part 4): the sweep passes its own cap; any other read — a request's, or the
+        // verify read after a watch write — walks at most a request's step, and one that also ran the full schedule
+        // import at most the sweep's. Both caps: a day past the garden is a plain walk forward.
+        const cap = opts.resimMaxDays ?? (fullScheduleDue ? SWEEP_REPLAY_MAX_DAYS : REQUEST_REPLAY_MAX_DAYS);
+        const sim = await resimulateFrom(db, userId, earliest, prefs, new Date(), { maxResimDays: cap, maxWalkDays: cap });
         if (sim.simulatedDays > 0 || sim.resimPending) {
           garden = { simulatedDays: sim.simulatedDays, resimPending: sim.resimPending === true };
         }
@@ -306,8 +309,8 @@ export interface SweepAccountStats {
  * part 3). The sweep that ingested new activities was the heaviest invocation in the cron system (~55 ms node cold:
  * the full schedule import, the ingest, an uncapped replay of ~9 garden days, then three or more coach reads, each a
  * model call), so its replay walks at most SWEEP_REPLAY_MAX_DAYS (the rest is on record; the next walk finishes it)
- * and, when it ingested anything, it runs at most one coach read: the hourly drains one a run, and the next sweep
- * the rest. A sweep whose read replayed nothing walks a replay left on record on by the same cap.
+ * and it runs at most one coach read — whether it ingested anything or not (part 4): the hourly drains one a run, and
+ * the next sweeps the rest. A sweep whose read replayed nothing walks a replay left on record on by the same cap.
  */
 export async function corosSweepAccount(
   db: Db,
@@ -330,12 +333,12 @@ export async function corosSweepAccount(
       }).catch(() => null);
       if (step) garden = { simulatedDays: step.simulatedDays, resimPending: step.resimPending === true };
     }
-    // Drain on every sweep, ingesting or not — the backlog must not wait
-    // for the hourly cron (audit finding 14). One read when this sweep
-    // ingested anything or walked the garden: that already spent the
-    // invocation's share.
-    const heavy = (result.ingested ?? 0) > 0 || (garden !== null && garden.simulatedDays > 0);
-    const reads = await processCoachReads(db, env, userId, prefs, heavy ? { cap: 1 } : {}).catch(() => null);
+    // Drain on every sweep, ingesting or not — the backlog must not wait for the hourly cron (audit finding 14) —
+    // one read a sweep, always (cron reliability, part 4). The drain that ingested nothing ran the default cap,
+    // max(2, min(6, backlog)): six reads cost ~29 ms of node CPU on a busy runner (one ~5), several times what the
+    // free plan lets an invocation spend. A deep backlog (a connect's, a backfill digest's) drains one a half hour
+    // here and one an hour in the hourly cron.
+    const reads = await processCoachReads(db, env, userId, prefs, { cap: 1 }).catch(() => null);
     coachReads = reads?.attempted ?? 0;
   }
   return {

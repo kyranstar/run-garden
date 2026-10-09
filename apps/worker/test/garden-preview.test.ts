@@ -11,7 +11,7 @@ import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { initialSnapshot, type GardenSnapshot } from "@rg/garden-engine";
 import type { Db } from "../src/services/db.js";
-import { buildGardenView, ensureGarden, previewToday } from "../src/services/garden-sync.js";
+import { advanceGarden, buildGardenView, ensureGarden, previewToday } from "../src/services/garden-sync.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const { gardenState } = schema;
@@ -81,6 +81,8 @@ describe("same-day preview fold-forward", () => {
     // grace window — the durable sim stops at today-2.
     await insertWorkout(db, userId, addDays(today, -1), "scheduled");
     await insertCompletedRun(db, userId, today);
+    // The durable sim walked as far as it goes (a garden read itself walks at most REQUEST_REPLAY_MAX_DAYS).
+    await advanceGarden(db, userId, prefs);
 
     const view = await buildGardenView(db, userId, prefs);
     const snapshot = view.snapshot as unknown as GardenSnapshot;
@@ -166,6 +168,8 @@ describe("adventure shield across a multi-day preview fold (C11)", () => {
     // hike day, so `lastAdventureDate`/`adventureGraceDays` land in
     // gardenState with the bank still full.
     await insertWorkout(db, userId, unresolvedDate, "scheduled");
+    // The durable sim walked as far as it goes (a garden read itself walks at most REQUEST_REPLAY_MAX_DAYS).
+    await advanceGarden(db, userId, prefs);
 
     const view = await buildGardenView(db, userId, prefs);
     const snapshot = view.snapshot as unknown as GardenSnapshot;
@@ -225,6 +229,8 @@ describe("adventure shield across a multi-day preview fold (C11)", () => {
       createdAt: nowInstant(),
       updatedAt: nowInstant(),
     });
+    // The durable sim walked as far as it goes (a garden read itself walks at most REQUEST_REPLAY_MAX_DAYS).
+    await advanceGarden(db, userId, prefs);
 
     const view = await buildGardenView(db, userId, prefs);
 

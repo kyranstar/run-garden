@@ -30,8 +30,9 @@
  *  5. The review: ratings and "not for me" → `exercise_prefs`, the new move's first day; an accepted graduation →
  *     the block's lift (once: a retried save finds the lift already switched).
  *  6. The garden replays from the earliest day the save touched: the slot's, the session's, a displaced activity's
- *     or a reopened slot's. That day is recorded in the save's own transaction, and the replay is one capped catch-up
- *     step (ruling 2b-R7): a long walk finishes on later garden reads, and a replay killed after the commit is not
+ *     or a reopened slot's. That day is recorded in the save's own transaction, and the replay is one capped step of
+ *     a replay on record (ruling 2b-R7; at most REQUEST_REPLAY_MAX_DAYS, the rendered garden never rewound — cron
+ *     reliability, part 4): a long walk finishes on later garden reads, and a replay killed after the commit is not
  *     lost (audit 2b-A M-5). The session's day must be a started build's — the locked one, or one un-started since
  *     (ruling 2b-R19); the payload's own when it names one (re-review 2b-B2 M-2) — (the slot's, when none was ever
  *     started) or the next, and not after tomorrow (422); a slot moved after Start still saves.
@@ -74,7 +75,7 @@ import { restoreInProgress } from "./account-state.js";
 import { ROLLING_WINDOW_DAYS } from "./backfill.js";
 import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
-import { gardenChangeStatement, resimulateFrom } from "./garden-sync.js";
+import { gardenChangeStatement, REQUEST_GARDEN_STEP, resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { engineDataFor, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
 import { saveWatchReview } from "./session-watch-review.js";
@@ -492,12 +493,10 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     await releaseUserLock(db, userId, lockKind, token);
   }
   // The garden replays from the earliest day the save touched. That day went on record with the save (its
-  // transaction), so this is one capped catch-up step (ruling 2b-R7): a long walk stops at SAVE_REPLAY_MAX_DAYS and
-  // the next garden read or the hourly cron walks on; a step killed part-way leaves the record for the next one
-  // (audit 2b-A M-5). It stands down by itself while a restore runs.
-  await resimulateFrom(db, userId, written.replayFrom, ctx.prefs, new Date(ctx.now), { maxResimDays: SAVE_REPLAY_MAX_DAYS }).catch(
-    () => undefined,
-  );
+  // transaction), so this is one capped step of a replay on record (ruling 2b-R7; cron reliability, part 4): a long
+  // walk stops at a request's step and the next garden read or cron walks on, the rendered garden never rewound; a step
+  // killed part-way leaves the record for the next one (audit 2b-A M-5). It stands down by itself while a restore runs.
+  await resimulateFrom(db, userId, written.replayFrom, ctx.prefs, new Date(ctx.now), REQUEST_GARDEN_STEP).catch(() => undefined);
   return written.outcome;
 }
 
@@ -622,13 +621,6 @@ async function planMatch(db: Db, userId: string, slot: SlotRow, performedId: str
   );
   return { matched: true, notes: other || elsewhere ? ["superseded_auto_match"] : [], statements, alsoFrom };
 }
-
-/**
- * How many days the save's own garden step may walk. A day costs ~10–16 D1 statements: 30 keeps a save (~35) plus its
- * step well inside the 1,000-query budget of one invocation; a longer walk finishes on the next garden read or hourly
- * cron (the catch-up's own cap, 45 days a step).
- */
-const SAVE_REPLAY_MAX_DAYS = 30;
 
 /** What the write phase did, and the earliest day the garden must replay from. */
 interface Written {
