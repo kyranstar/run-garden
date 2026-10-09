@@ -78,6 +78,7 @@ import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } f
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import { AUTO_MISS_DAYS } from "./reconcile-daily.js";
+import { REQUEST_REPLAY_MAX_DAYS } from "./cron-limits.js";
 import {
   VISITOR_HINTS,
   VISITOR_LINES,
@@ -683,6 +684,18 @@ export interface GardenAdvanceOptions {
    * day it stopped at, and the next call walks on from there (`resimPending`). */
   maxWalkDays?: number;
 }
+
+/**
+ * The caps every REQUEST passes when it walks the garden (cron reliability, part 4): the garden page, every route that
+ * replays after a change, the app's session save, a request's COROS read and backfill chunk. Both caps, always — a
+ * replay asked for from a day the garden has not reached yet is a plain walk forward (`resimulate` hands it to
+ * advanceGarden), and a pending version upgrade or post-restore catch-up takes `maxResimDays` too. A capped call
+ * leaves the rest on record and the rendered garden where it was (see replayStep); the next request or cron walks on.
+ */
+export const REQUEST_GARDEN_STEP: Readonly<GardenAdvanceOptions> = Object.freeze({
+  maxWalkDays: REQUEST_REPLAY_MAX_DAYS,
+  maxResimDays: REQUEST_REPLAY_MAX_DAYS,
+});
 
 /**
  * P3d: how many days one version-upgrade rebuild invocation may simulate.
@@ -1661,7 +1674,11 @@ export async function buildGardenView(
   // A restore is replacing the account (B2): the read still answers, from
   // whatever is there, but heals and ledgers nothing.
   const restoring = await restoreInProgress(db, userId);
-  await advanceGarden(db, userId, prefs).catch(() => undefined);
+  // One capped step (cron reliability, part 4): a garden read walked a pending replay, a version rebuild or a
+  // post-restore catch-up whole — weeks of days in one request. What it leaves stays on record for the next read or
+  // cron; what this read renders is garden_state, which a replay behind it does not move (and the preview below folds
+  // from it), so the page shows what it showed before the replay began until the walk has passed it.
+  await advanceGarden(db, userId, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   let snapshot = await ensureGarden(db, userId, prefs);
 
   // Fallback-only shield state, read pre-preview: used below solely when the

@@ -96,7 +96,7 @@ import {
   repairTimestamps,
   rowToNormalized,
 } from "../services/completion.js";
-import { gardenSeesSql, resimulateFrom } from "../services/garden-sync.js";
+import { gardenSeesSql, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import { findGardenHoles } from "../services/garden-holes.js";
 import { performedByActivity } from "../services/logged-sets.js";
 import { loadProgress } from "../services/progress.js";
@@ -340,7 +340,7 @@ activityRoutes.post("/backfill", async (c) => {
   const repairedDates = await repairTimestamps(db, userId);
   const prefs = await loadPreferences(db, userId);
   if (repairedDates.length > 0) {
-    await resimulateFrom(db, userId, repairedDates[0]!, prefs).catch(() => undefined);
+    await resimulateFrom(db, userId, repairedDates[0]!, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   }
 
   const result = await enqueueBackfill(db, userId, todayInZone(prefs.timezone));

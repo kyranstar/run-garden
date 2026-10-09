@@ -32,7 +32,7 @@ beforeEach(() => {
   imports.calls = 0;
 });
 import { halfHourly, hourly } from "../src/index.js";
-import { SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
+import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import { corosReadNow } from "../src/services/coros-read.js";
 import { loadGarden, resimulateFrom } from "../src/services/garden-sync.js";
 import { closeStrandedSyncRuns } from "../src/services/reconcile-daily.js";
@@ -246,7 +246,7 @@ describe("the sweep's work is bounded per invocation", () => {
     expect(await gardenTimeline(db, acct.userId, { mondayCheckpointsOnly: true })).toEqual(landed);
   });
 
-  it("a read that runs the six-hourly full schedule import never replays uncapped in the same invocation; one that does not replays as before", { timeout: 60_000 }, async () => {
+  it("a read that runs the six-hourly full schedule import replays at most the sweep's cap; one that does not, at most a request's (part 4)", { timeout: 60_000 }, async () => {
     for (const fullDue of [true, false]) {
       imports.calls = 0;
       const db = makeTestDb({ boundVariableCap: 100 });
@@ -259,12 +259,15 @@ describe("the sweep's work is bounded per invocation", () => {
           .set({ meta: { ...(conn!.meta as Record<string, unknown>), lastFullScheduleAt: new Date().toISOString() } })
           .where(eq(schema.providerConnections.id, conn!.id));
       }
-      // A request's read (Read now, opening the app): no cap of its own.
+      // A request's read (Read now, opening the app): no cap passed — it takes a request's step, never more.
       const read = await corosReadNow(db, acct.env, acct.userId, acct.prefs, { force: true });
       expect(read.status).toBe("ok");
       expect(read.fullSchedule === true).toBe(fullDue);
       if (fullDue) expect(read.garden).toEqual({ simulatedDays: SWEEP_REPLAY_MAX_DAYS, resimPending: true });
-      else expect(read.garden!.simulatedDays).toBeGreaterThan(SWEEP_REPLAY_MAX_DAYS);
+      else {
+        expect(read.garden!.simulatedDays).toBeGreaterThan(SWEEP_REPLAY_MAX_DAYS);
+        expect(read.garden!.simulatedDays).toBeLessThanOrEqual(REQUEST_REPLAY_MAX_DAYS);
+      }
     }
   });
 });

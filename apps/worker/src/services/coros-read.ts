@@ -12,7 +12,7 @@ import { importPlanSnapshot } from "./import-plan.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { advanceGarden, firstDayToReplay, recordReplayFrom, replayPending, resimulateFrom } from "./garden-sync.js";
-import { SWEEP_REPLAY_MAX_DAYS } from "./cron-limits.js";
+import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./cron-limits.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "./exercise-catalog.js";
@@ -63,9 +63,9 @@ export async function corosReadNow(
   opts: {
     force?: boolean;
     fetchImpl?: typeof fetch;
-    /** Cap on the days the garden's replay may walk in this invocation (the half-hourly sweep's). A read that runs
-     * the six-hourly full schedule import is capped at SWEEP_REPLAY_MAX_DAYS regardless: the two never share an
-     * invocation uncapped. The rest is on record, and the next walk finishes it. */
+    /** Cap on the days the garden's replay may walk in this invocation (the half-hourly sweep's). Without it a read
+     * walks at most REQUEST_REPLAY_MAX_DAYS, and one that runs the six-hourly full schedule import at most
+     * SWEEP_REPLAY_MAX_DAYS: never uncapped. The rest is on record, and the next walk finishes it. */
     resimMaxDays?: number;
   } = {},
 ): Promise<ReadNowResult> {
@@ -233,8 +233,11 @@ export async function corosReadNow(
       // from that week's checkpoint — every half hour (and, capped, would keep a replay from ever finishing).
       const earliest = await firstDayToReplay(db, userId, stats.affectedDates, newDays, prefs);
       if (earliest) {
-        const maxResimDays = opts.resimMaxDays ?? (fullScheduleDue ? SWEEP_REPLAY_MAX_DAYS : undefined);
-        const sim = await resimulateFrom(db, userId, earliest, prefs, new Date(), maxResimDays === undefined ? undefined : { maxResimDays });
+        // Never uncapped (cron reliability, part 4): the sweep passes its own cap; any other read — a request's, or the
+        // verify read after a watch write — walks at most a request's step, and one that also ran the full schedule
+        // import at most the sweep's. Both caps: a day past the garden is a plain walk forward.
+        const cap = opts.resimMaxDays ?? (fullScheduleDue ? SWEEP_REPLAY_MAX_DAYS : REQUEST_REPLAY_MAX_DAYS);
+        const sim = await resimulateFrom(db, userId, earliest, prefs, new Date(), { maxResimDays: cap, maxWalkDays: cap });
         if (sim.simulatedDays > 0 || sim.resimPending) {
           garden = { simulatedDays: sim.simulatedDays, resimPending: sim.resimPending === true };
         }
