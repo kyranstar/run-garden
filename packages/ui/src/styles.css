@@ -2382,6 +2382,12 @@ button.session-chip {
 .watch-state--solo {
   padding: var(--space-4) var(--space-5);
 }
+/* Send to watch offered: the state's status region is kept, empty and out of the way, so what Send leads to is
+   announced (audit 3-B UI-10). */
+.watch-state.visually-hidden {
+  min-height: 0;
+  padding: 0;
+}
 .watch-spin {
   width: 16px;
   height: 16px;

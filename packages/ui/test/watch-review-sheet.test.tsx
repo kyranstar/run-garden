@@ -171,10 +171,10 @@ describe("Log your session — the sheet", () => {
   it("a row opens to its steppers, as the player's review does; an edit and Done go into the save", async () => {
     const { onSaved, puts } = mount();
     await until(() => !!document.querySelector(".review-move"), "the moves");
-    await click("Edit Goblet squat");
+    await click(/^Goblet squat/);
     expect(document.querySelectorAll(".review-set")).toHaveLength(3);
     await click(/^1 more/);
-    await click("Edit Supine twist");
+    await click(/^Supine twist/);
     await click("Done");
     await click("Save");
     await until(() => onSaved.mock.calls.length === 1, "onSaved");
@@ -237,6 +237,15 @@ describe("Log your session — the sheet", () => {
     await until(() => onSaved.mock.calls.length === 1, "onSaved");
     await until(async () => (await entries())[0]?.state === "conflict", "the conflict");
     expect((await entries())[0]).toMatchObject({ state: "conflict", lastError: "slot_done" });
+  });
+
+  it("each move's row is named by what it shows — the move and the values to check (audit 3-B UI-10; WCAG 2.5.3)", async () => {
+    mount();
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    const row = document.querySelector<HTMLButtonElement>(".review-move-name")!;
+    expect(row.hasAttribute("aria-label")).toBe(false);
+    expect(text(row)).toBe("Goblet squat 30 lb × 6 · 30 lb × 6 · 30 lb × 5");
+    expect(row.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("Not now closes and keeps nothing", async () => {

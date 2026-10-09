@@ -194,13 +194,9 @@ export function WatchReviewSheet({
             {visible.map(({ e, i }) => (
               <div key={`${e.exerciseId}-${i}`} className="review-move">
                 <div className="review-move-row">
-                  <button
-                    type="button"
-                    className="review-move-name"
-                    aria-expanded={open === i}
-                    aria-label={`Edit ${e.name}`}
-                    onClick={() => setOpen(open === i ? null : i)}
-                  >
+                  {/* Named by what it shows — the move and the values to check (audit 3-B UI-10); aria-expanded says it
+                      opens. */}
+                  <button type="button" className="review-move-name" aria-expanded={open === i} onClick={() => setOpen(open === i ? null : i)}>
                     <b>{e.name}</b>{" "}
                     <small className="num">{entryLine(e)}</small>
                   </button>

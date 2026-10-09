@@ -208,7 +208,15 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   // runs the job, and the sheet keeps "Sending…" (and reads again) until it has.
   const [previewing, setPreviewing] = useState(false);
   const [confirmingTakeOff, setConfirmingTakeOff] = useState(false);
+  /**
+   * After Send or Take off, the control that opened the dialog is gone — replaced by the new state's row — so the
+   * dialog's own focus restore lands nowhere (on <body>, outside the modal; audit 3-B UI-4). Once the sheet shows the
+   * state the write answered, focus goes to that state's control (Take off watch, Retry, Send to watch), else the sheet.
+   */
+  const refocusWatchOn = useRef<string | null>(null);
+  const watchControl = useRef<HTMLButtonElement>(null);
   const afterWatchWrite = (next: SessionDto) => {
+    refocusWatchOn.current = next.watch?.state ?? "none";
     qc.setQueryData(key, next);
     refreshPlan();
     void api
@@ -233,7 +241,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     setConfirmingTakeOff(true);
   };
   const takeOffButton = (
-    <button type="button" className="btn" disabled={takeOff.isPending} onClick={askTakeOff}>
+    <button ref={watchControl} type="button" className="btn" disabled={takeOff.isPending} onClick={askTakeOff}>
       Take off watch
     </button>
   );
@@ -328,6 +336,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     const el = body0.current;
     const target = el?.querySelector<HTMLElement>(".session-reading") ?? el?.closest<HTMLElement>('[role="dialog"]');
     target?.focus();
+  });
+  // After a watch write, once the sheet shows the state it answered (the closing dialog has restored focus by then).
+  const watchState = s?.watch?.state ?? "none";
+  useEffect(() => {
+    if (refocusWatchOn.current === null || refocusWatchOn.current !== watchState) return;
+    refocusWatchOn.current = null;
+    (watchControl.current ?? body0.current?.closest<HTMLElement>('[role="dialog"]'))?.focus();
   });
   // Done on the server while this device still holds the session in progress: it was played and saved on another
   // device (ruling 2b-R18). This device's copy is offered for Discard only — never Continue, whose save would be a
@@ -450,37 +465,45 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   // The watch's state, in the foot where Send to watch was tapped (owner call 7), each with its one action. "Sending…"
   // offers Take off too (owner, 2026-10-09): a push that cannot run for a while (COROS unreachable) is stopped there,
   // the queued push superseded — not only by Move.
+  //
+  // ONE STATUS REGION, KEPT (audit 3-B UI-10): from Send to watch through Sending… to On your watch or Couldn't send, the
+  // row and its `role="status"` label are the same nodes, so the outcome the athlete waits for is announced — a live
+  // region added with its words already in it often is not. While there is nothing to say (Send to watch offered) the
+  // row is there, empty and visually hidden. The action sits beside the label, outside the region.
+  const watchLive = watchShown && (offersSend || ["sending", "on_watch", "failed"].includes(watch!.state));
   let watchRow: React.ReactNode = null;
-  if (watchShown && watch!.state === "sending") {
-    watchRow = (
-      <div key="watch" className="watch-state" role="status">
-        <span className="watch-state-label watch-state-label--muted">
+  if (watchLive) {
+    const state = watch!.state;
+    const said =
+      state === "sending" ? (
+        <>
           <span className="watch-spin" aria-hidden="true" />
           Sending…
-        </span>
-        {takeOffButton}
-      </div>
-    );
-  } else if (watchShown && watch!.state === "on_watch") {
-    watchRow = (
-      <div key="watch" className="watch-state">
-        <span className="watch-state-label watch-state-label--ok">
+        </>
+      ) : state === "on_watch" ? (
+        <>
           <IconWatch size={16} />
           On your watch
-        </span>
-        {takeOffButton}
-      </div>
-    );
-  } else if (watchShown && watch!.state === "failed") {
-    watchRow = (
-      <div key="watch" className="watch-state watch-state--warn">
-        <span className="watch-state-label">
+        </>
+      ) : state === "failed" ? (
+        <>
           <IconAlert size={16} />
           Couldn't send
+        </>
+      ) : null;
+    const tone = state === "sending" ? " watch-state-label--muted" : state === "on_watch" ? " watch-state-label--ok" : "";
+    watchRow = (
+      <div key="watch" className={!said ? "watch-state visually-hidden" : state === "failed" ? "watch-state watch-state--warn" : "watch-state"}>
+        <span role="status" className={`watch-state-label${tone}`}>
+          {said}
         </span>
-        <button type="button" className="btn btn-small" onClick={() => setPreviewing(true)}>
-          Retry
-        </button>
+        {state === "sending" || state === "on_watch" ? (
+          takeOffButton
+        ) : state === "failed" ? (
+          <button ref={watchControl} type="button" className="btn btn-small" onClick={() => setPreviewing(true)}>
+            Retry
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -490,7 +513,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     footRows.push(
       <div key="send" className="btn-row btn-row--split">
         {startButton}
-        <button type="button" className="btn" onClick={() => setPreviewing(true)}>
+        <button ref={watchControl} type="button" className="btn" onClick={() => setPreviewing(true)}>
           <IconWatch size={16} />
           Send to watch
         </button>
@@ -500,7 +523,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   if (actions.length > 0) footRows.push(<div key="actions" className="btn-row">{actions}</div>);
   // One column, top to bottom as drawn: the sheet's foot stacks its children in reverse (styles.css `.sheet-foot`).
   // Without the watch in it, the action row sits straight in the foot, as it did before the watch (audit 3-B UI-2).
-  const footer = watchRow || offersSend ? <div className="session-foot">{footRows}</div> : (footRows[0] ?? null);
+  const footer = watchLive ? <div className="session-foot">{footRows}</div> : (footRows[0] ?? null);
 
   let body: React.ReactNode;
   if (session.isLoading) body = <Spinner label="Loading the session" />;

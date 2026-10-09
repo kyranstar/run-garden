@@ -1090,6 +1090,81 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
   });
 
+  const sheetDialog = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.textContent?.includes("Supported row"));
+
+  it("after Send, focus is in the sheet — on the new state's Take off watch, not lost to the page (audit 3-B UI-4)", async () => {
+    features.player = true;
+    mount(session({ watch: { state: "ready" } }), { route: watchRoutes() });
+    await until(() => !!button(/Send to watch/), "Send to watch");
+    const opener = button(/Send to watch/) as HTMLButtonElement;
+    opener.focus();
+    await act(async () => opener.click());
+    await until(() => document.activeElement === button("Send"), "Send focused");
+    await click("Send");
+    await until(() => body().includes("Sending…") && !body().includes("Garden program — 2026-10-05"), "Sending…");
+    await until(() => document.activeElement === button("Take off watch"), "focus on Take off watch");
+    expect(sheetDialog()!.contains(document.activeElement)).toBe(true);
+  });
+
+  it("after Take off, focus goes to Send to watch — or, with nothing about the watch left to act on, the sheet (audit 3-B UI-4)", async () => {
+    features.player = true;
+    mount(session({ locked: true, watch: { state: "on_watch" } }), { route: watchRoutes() });
+    await until(() => body().includes("On your watch"), "On your watch");
+    (button("Take off watch") as HTMLButtonElement).focus();
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => document.activeElement === button(/Send to watch/), "focus on Send to watch");
+    act(() => root?.unmount());
+    host?.remove();
+
+    mount(session({ locked: true, watch: { state: "on_watch" } }), {
+      route: watchRoutes({ afterTakeOff: session({ watch: { state: "unavailable", reason: "taking_off" } }) }),
+    });
+    await until(() => body().includes("On your watch"), "On your watch");
+    (button("Take off watch") as HTMLButtonElement).focus();
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => !body().includes("On your watch") && !body().includes("Take this session off"), "taken off");
+    await until(() => document.activeElement === sheetDialog(), "focus on the sheet");
+  });
+
+  it("the watch's state is announced: one status region in the foot, kept from Send to watch through Sending… to On your watch (audit 3-B UI-10)", async () => {
+    features.player = true;
+    // The drain answers when the test says so: "Sending…" first, then the push has run.
+    let release: () => void = () => undefined;
+    const routes = watchRoutes();
+    mount(session({ watch: { state: "ready" } }), {
+      route: (c, set) => {
+        if (c.path !== "/api/sessions/watch/drain") return routes(c, set);
+        return new Promise<Response>((resolve) => {
+          release = () => {
+            set(session({ locked: true, watch: { state: "on_watch" } }));
+            resolve(new Response(JSON.stringify({ executed: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+          };
+        }) as unknown as Response;
+      },
+    });
+    await until(() => !!button(/Send to watch/), "Send to watch");
+    const status = () => document.querySelectorAll('.sheet-foot [role="status"]');
+    expect(status()).toHaveLength(1);
+    const region = status()[0]!;
+    expect(region.textContent).toBe("");
+    // Nothing to see while there is nothing to say: the empty region takes no room.
+    expect(region.closest(".watch-state")!.classList.contains("visually-hidden")).toBe(true);
+    await click(/Send to watch/);
+    await until(() => !!button("Send"), "the preview");
+    await click("Send");
+    await until(() => body().includes("Sending…"), "Sending…");
+    expect(status()[0]).toBe(region);
+    expect(region.textContent).toBe("Sending…");
+    expect(region.contains(button("Take off watch")!)).toBe(false);
+    await act(async () => release());
+    await until(() => body().includes("On your watch"), "On your watch");
+    expect(status()).toHaveLength(1);
+    expect(status()[0]).toBe(region);
+    expect(region.textContent).toBe("On your watch");
+  });
+
   it("a skipped session not on the watch: nothing about the watch, as before (2a-R15)", async () => {
     features.player = true;
     for (const watch of [{ state: "ready" }, { state: "sending" }, { state: "failed" }]) {
