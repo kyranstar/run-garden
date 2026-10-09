@@ -250,6 +250,8 @@ function mount(
     basis?: ReviewBasisDto | "hang";
     /** Asked first (the watch routes): an answer, or undefined to fall through. `set` changes what the GET answers. */
     route?: (call: Call, set: (next: SessionDto) => void) => Response | undefined;
+    /** The query defaults, over `retry: false` (the app's own: `refetchOnWindowFocus: false`, `staleTime: 15_000`). */
+    queries?: Record<string, unknown>;
   } = {},
 ) {
   const calls: Call[] = [];
@@ -292,7 +294,7 @@ function mount(
   );
   host = document.createElement("div");
   document.body.appendChild(host);
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, ...opts.queries } } });
   const sheet = opts.detail
     ? createElement(WorkoutDetail, { w: opts.w ?? slot(), today: opts.today ?? TODAY, corosWritesEnabled: false, onClose: () => undefined })
     : createElement(SessionSheet, { w: opts.w ?? slot(), today: opts.today ?? TODAY, onClose: () => undefined });
@@ -1172,6 +1174,151 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
       await until(() => !!button("Un-skip") && body().includes("Supported row"), "the skipped sheet, loaded");
       expect(document.querySelector(".watch-state")).toBeNull();
       expect(button(/Send to watch|Take off watch|Retry/)).toBeUndefined();
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+});
+
+describe("while Sending…, the sheet reads again on a backoff and then stops (audit 3-B UI-1)", () => {
+  // Every timer is fake here (React Query's included): the clock is driven second by second.
+  const flush = async (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  const reads = (calls: Call[]) => calls.filter((c) => c.method === "GET" && c.path === `/api/sessions/${SLOT}`).length;
+  const drains = (calls: Call[]) => calls.filter((c) => c.path === "/api/sessions/watch/drain").length;
+  const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
+  /** The drain runs nothing (COROS unreachable, the job backing off): the push stays queued. */
+  const stuck = (c: Call): Response | undefined => (c.path === "/api/sessions/watch/drain" ? json({ executed: 0 }) : undefined);
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date(`${TODAY}T12:00:00`));
+  });
+
+  async function loaded(what: string) {
+    for (let i = 0; i < 100 && !body().includes(what); i += 1) await flush(10);
+    expect(body()).toContain(what);
+  }
+
+  /** Seconds after `t0` of each read and each drain, over `seconds`. */
+  async function timeline(calls: Call[], seconds: number, t0 = Date.now()) {
+    const out = { reads: [] as number[], drains: [] as number[] };
+    let r = reads(calls);
+    let d = drains(calls);
+    for (let s = 0; s < seconds; s += 1) {
+      await flush(1_000);
+      for (; reads(calls) > r; r += 1) out.reads.push(Math.round((Date.now() - t0) / 1_000));
+      for (; drains(calls) > d; d += 1) out.drains.push(Math.round((Date.now() - t0) / 1_000));
+    }
+    return out;
+  }
+
+  it("opened on Sending…: reads at 4, 8, 16, 31, 61 s and each minute to about five minutes — one drain, ≈30 s in — then none", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
+    await loaded("Sending…");
+    const seen = await timeline(calls, 15 * 60);
+    expect(seen.reads).toEqual([4, 8, 16, 31, 61, 121, 181, 241, 301]);
+    expect(seen.drains).toEqual([31]);
+    // Still Sending… (the hourly lane runs the push): it says so, and reads no more.
+    expect(body()).toContain("Sending…");
+  });
+
+  it("after Send: the drain at once, then the same backoff — two drains in all", async () => {
+    features.player = true;
+    const routes = (c: Call, set: (next: SessionDto) => void): Response | undefined => {
+      if (c.path.endsWith("/watch-preview")) {
+        return json({ buildId: "b1", stamp: "Garden program — 2026-10-05", steps: [], freeText: 0, refusal: null, digest: "d" });
+      }
+      if (c.path.endsWith("/send-to-watch")) {
+        const next = session({ locked: true, watch: { state: "sending" } });
+        set(next);
+        return json(next);
+      }
+      return stuck(c);
+    };
+    const { calls } = mount(session({ watch: { state: "ready" } }), { route: routes });
+    await loaded("Send to watch");
+    await click(/Send to watch/);
+    for (let i = 0; i < 100 && !button("Send"); i += 1) await flush(10);
+    const t0 = Date.now();
+    expect(drains(calls)).toBe(0);
+    await click("Send");
+    // The drain at once (in Send's own tap), and its read.
+    expect(drains(calls)).toBe(1);
+    const seen = await timeline(calls, 15 * 60, t0);
+    expect(seen.drains).toEqual([31]);
+    expect(seen.reads).toEqual([4, 8, 16, 31, 61, 121, 181, 241, 301]);
+    expect(drains(calls)).toBe(2);
+  });
+
+  it("stops at once when the state moves on", async () => {
+    features.player = true;
+    let n = 0;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), {
+      route: (c) => {
+        if (c.method === "GET" && c.path === `/api/sessions/${SLOT}` && (n += 1) >= 3) return json(session({ locked: true, watch: { state: "on_watch" } }));
+        return stuck(c);
+      },
+    });
+    await loaded("Sending…");
+    const seen = await timeline(calls, 10 * 60);
+    expect(seen.reads).toEqual([4, 8]);
+    expect(seen.drains).toEqual([]);
+    expect(body()).toContain("On your watch");
+  });
+
+  it("reads nothing while the page is hidden or after the sheet closes", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
+    await loaded("Sending…");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const hidden = await timeline(calls, 10 * 60);
+      expect(hidden).toEqual({ reads: [], drains: [] });
+    } finally {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+    }
+    act(() => root?.unmount());
+    host?.remove();
+
+    // Closed while Sending… (the sheet is unmounted): nothing more, from the first read on.
+    const again = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
+    await loaded("Sending…");
+    act(() => root?.unmount());
+    root = null;
+    expect(await timeline(again.calls, 10 * 60)).toEqual({ reads: [], drains: [] });
+  });
+
+  it("coming back to the page while still Sending… reads once (its poll may have stopped) — the app reads nothing on focus otherwise", async () => {
+    features.player = true;
+    const app = { refetchOnWindowFocus: false, staleTime: 15_000 };
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck, queries: app });
+    await loaded("Sending…");
+    await timeline(calls, 10 * 60);
+    const before = reads(calls);
+    await act(async () => {
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush(100);
+    expect(reads(calls)).toBe(before + 1);
+    act(() => root?.unmount());
+    host?.remove();
+
+    // Not sending (the switch off, or on the watch): the app's own rule — nothing read on coming back.
+    for (const watch of [null, { state: "on_watch" }]) {
+      const other = mount(session({ locked: true, watch } as Partial<SessionDto>), { route: stuck, queries: app });
+      await loaded("Supported row");
+      await flush(60_000);
+      const was = reads(other.calls);
+      await act(async () => {
+        window.dispatchEvent(new Event("visibilitychange"));
+      });
+      await flush(100);
+      expect(reads(other.calls)).toBe(was);
       act(() => root?.unmount());
       host?.remove();
     }
