@@ -20,7 +20,8 @@ import { describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { advanceGarden, ensureGarden, loadGarden, resimulateFrom, type GardenSimResult } from "../src/services/garden-sync.js";
+import { eq } from "drizzle-orm";
+import { advanceGarden, ensureGarden, firstDayToReplay, loadGarden, resimulateFrom, type GardenSimResult } from "../src/services/garden-sync.js";
 import { cloneTestDb, isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 import { gardenTimeline, replayMarker } from "./garden-compare.js";
 
@@ -185,6 +186,23 @@ describe("a replay killed part-way is resumed by whatever walks the garden next"
     await resimulateFrom(db, userId, earlier, prefs, NOW);
     expect(await gardenTimeline(db, userId)).toEqual(expected);
     expect(await replayMarker(db, userId)).toBeNull();
+  });
+
+  it("firstDayToReplay: a touched day is replayed only when the garden does not already hold it as the tables give it", async () => {
+    const { db, userId, prefs, lateId } = await seed();
+    const none = new Set<string>();
+    // The late lift is in the tables, not in the stored day input: replay from its day.
+    expect(await firstDayToReplay(db, userId, [addDays(GENESIS, 19), LATE_DAY], none, prefs)).toBe(LATE_DAY);
+    await resimulateFrom(db, userId, LATE_DAY, prefs, NOW);
+    // Held exactly: nothing to replay (what a re-read of an unchanged activity claims).
+    expect(await firstDayToReplay(db, userId, [LATE_DAY, addDays(GENESIS, 19)], none, prefs)).toBeNull();
+    expect(await firstDayToReplay(db, userId, [], none, prefs)).toBeNull();
+    // A new activity's day always replays; so does a day past the garden (the walk forward reads it).
+    expect(await firstDayToReplay(db, userId, [LATE_DAY], new Set([LATE_DAY]), prefs)).toBe(LATE_DAY);
+    expect(await firstDayToReplay(db, userId, [addDays(GENESIS, 24)], none, prefs)).toBe(addDays(GENESIS, 24));
+    // A re-read that changed what the garden reads of an activity (its start, here into the evening) replays.
+    await db.update(schema.activities).set({ startTimeLocal: `${LATE_DAY}T21:00:00` }).where(eq(schema.activities.id, lateId));
+    expect(await firstDayToReplay(db, userId, [addDays(GENESIS, 19), LATE_DAY], none, prefs)).toBe(LATE_DAY);
   });
 
   it("a record for a day the garden has not reached yet is cleared, and the walk forward reads that day fresh", async () => {

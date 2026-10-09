@@ -355,4 +355,58 @@ describe("hourly() per step on a realistic account", () => {
     );
     expect(measured!.total.statements).toBeGreaterThan(0);
   });
+
+  it("prints the sweep that ingests, and the two sweeps after it, as medians over several accounts (cron reliability, part 3)", { timeout: 120_000 }, async () => {
+    // Medians over warm accounts, with the runner's calibration printed: single runs on a busy machine swing 2x.
+    // The sweeps after the ingest re-read the mock's activities (their stored telemetry is list-grade, so every read
+    // heals them) — what a steady half hour costs while that is so.
+    const lastMonday = addDays(startOfIsoWeek(todayInZone("America/Los_Angeles")), -7);
+    const calibration = calibrationMs();
+    const runs: Array<Array<{ steps: StepRecord[]; total: StepRecord }>> = [];
+    for (let pass = 0; pass < 6; pass++) {
+      const db = hookedDb();
+      const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday });
+      vi.stubGlobal("fetch", acct.fetchImpl);
+      meter.fetches = () => acct.fetches.coros + acct.fetches.llm;
+      const sweeps = [];
+      for (let k = 0; k < 6; k++) sweeps.push(await measureHourly(() => corosReadSweep(db, acct.env)));
+      if (pass > 0) runs.push(sweeps); // the first account only warms every path
+    }
+    const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+    const medianTable = (k: number, title: string) => {
+      const names = [...new Set(runs.flatMap((r) => r[k]!.steps.map((s) => s.name)))];
+      const stepOf = (r: (typeof runs)[number], name: string): StepRecord => {
+        const hits = r[k]!.steps.filter((s) => s.name === name);
+        return hits.reduce(
+          (a, s) => ({ ...a, cpuMs: a.cpuMs + s.cpuMs, sqliteMs: a.sqliteMs + s.sqliteMs, wallMs: a.wallMs + s.wallMs, statements: a.statements + s.statements, writes: a.writes + s.writes, rows: a.rows + s.rows, fetches: a.fetches + s.fetches }),
+          { name, cpuMs: 0, sqliteMs: 0, wallMs: 0, statements: 0, writes: 0, rows: 0, fetches: 0, heapMb: 0 },
+        );
+      };
+      const med = (pick: (r: (typeof runs)[number]) => StepRecord): StepRecord => {
+        const xs = runs.map(pick);
+        return {
+          name: xs[0]!.name,
+          cpuMs: median(xs.map((x) => x.cpuMs)),
+          sqliteMs: median(xs.map((x) => x.sqliteMs)),
+          wallMs: median(xs.map((x) => x.wallMs)),
+          statements: median(xs.map((x) => x.statements)),
+          writes: median(xs.map((x) => x.writes)),
+          rows: median(xs.map((x) => x.rows)),
+          fetches: median(xs.map((x) => x.fetches)),
+          heapMb: 0,
+        };
+      };
+      return table(title, names.map((n) => med((r) => stepOf(r, n))), med((r) => r[k]!.total), SWEEP_LABELS);
+    };
+    console.log(
+      [
+        `runner: calibration ${calibration.toFixed(2)} ms (reference ${REFERENCE_CALIBRATION_MS} ms); medians of ${runs.length} warm accounts`,
+        medianTable(0, "── the sweep that ingests the mock's new activities (median) ──"),
+        medianTable(1, "── the next sweep (median) ──"),
+        medianTable(2, "── the sweep after that (median) ──"),
+        medianTable(5, "── the sixth sweep: the replay long finished (median) ──"),
+      ].join("\n\n"),
+    );
+    expect(runs.length).toBe(5);
+  });
 });

@@ -11,7 +11,8 @@ import { ingestDailyHealth, upsertAthleteZones } from "./health-ingest.js";
 import { importPlanSnapshot } from "./import-plan.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { recordReplayFrom, resimulateFrom } from "./garden-sync.js";
+import { advanceGarden, firstDayToReplay, recordReplayFrom, replayPending, resimulateFrom } from "./garden-sync.js";
+import { SWEEP_REPLAY_MAX_DAYS } from "./cron-limits.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "./exercise-catalog.js";
@@ -59,7 +60,14 @@ export async function corosReadNow(
   env: Env,
   userId: string,
   prefs: UserPreferences,
-  opts: { force?: boolean; fetchImpl?: typeof fetch } = {},
+  opts: {
+    force?: boolean;
+    fetchImpl?: typeof fetch;
+    /** Cap on the days the garden's replay may walk in this invocation (the half-hourly sweep's). A read that runs
+     * the six-hourly full schedule import is capped at SWEEP_REPLAY_MAX_DAYS regardless: the two never share an
+     * invocation uncapped. The rest is on record, and the next walk finishes it. */
+    resimMaxDays?: number;
+  } = {},
 ): Promise<ReadNowResult> {
   // Fixture mode never talks to real providers (repo-wide convention) — the
   // seeded connection reports "fresh" so the UI reads as healthy and silent.
@@ -206,10 +214,12 @@ export async function corosReadNow(
       // The new activities' earliest day goes on record BEFORE they are stored (cron reliability, part 3): an
       // invocation killed between the ingest and the replay below left them stored, seen by every later read, and
       // never credited — their days were already simulated. The next walk replays from the record instead.
-      const firstNewDay = snapshot.activities
-        .filter((a) => !seen.has(a.providerActivityId))
-        .map((a) => (a.startTimeLocal ?? a.startTime).slice(0, 10))
-        .sort()[0];
+      const newDays = new Set(
+        snapshot.activities
+          .filter((a) => !seen.has(a.providerActivityId))
+          .map((a) => (a.startTimeLocal ?? a.startTime).slice(0, 10)),
+      );
+      const firstNewDay = [...newDays].sort()[0];
       if (firstNewDay !== undefined) await recordReplayFrom(db, userId, firstNewDay);
       const stats = await ingestActivities(db, {
         userId,
@@ -218,9 +228,13 @@ export async function corosReadNow(
         strengthDetailsByProviderId: snapshot.strengthDetailsByProviderId,
       });
       ingested = stats.newActivities + stats.mergedPairs;
-      const earliest = stats.affectedDates[0];
+      // A re-read activity whose day the garden already holds exactly as the tables now give it needs no replay:
+      // the list-grade heal above re-ingests such activities on every read, and each claim used to replay the garden
+      // from that week's checkpoint — every half hour (and, capped, would keep a replay from ever finishing).
+      const earliest = await firstDayToReplay(db, userId, stats.affectedDates, newDays, prefs);
       if (earliest) {
-        const sim = await resimulateFrom(db, userId, earliest, prefs);
+        const maxResimDays = opts.resimMaxDays ?? (fullScheduleDue ? SWEEP_REPLAY_MAX_DAYS : undefined);
+        const sim = await resimulateFrom(db, userId, earliest, prefs, new Date(), maxResimDays === undefined ? undefined : { maxResimDays });
         if (sim.simulatedDays > 0 || sim.resimPending) {
           garden = { simulatedDays: sim.simulatedDays, resimPending: sim.resimPending === true };
         }
@@ -287,26 +301,48 @@ export interface SweepAccountStats {
   coachReads: number;
 }
 
-/** One connected account's turn of the sweep: a forced pull, then the coach-read drain. */
+/**
+ * One connected account's turn of the sweep: a forced pull, then the coach-read drain — bounded (cron reliability,
+ * part 3). The sweep that ingested new activities was the heaviest invocation in the cron system (~55 ms node cold:
+ * the full schedule import, the ingest, an uncapped replay of ~9 garden days, then three or more coach reads, each a
+ * model call), so its replay walks at most SWEEP_REPLAY_MAX_DAYS (the rest is on record; the next walk finishes it)
+ * and, when it ingested anything, it runs at most one coach read: the hourly drains one a run, and the next sweep
+ * the rest. A sweep whose read replayed nothing walks a replay left on record on by the same cap.
+ */
 export async function corosSweepAccount(
   db: Db,
   env: Env,
   userId: string,
   prefs: UserPreferences,
 ): Promise<SweepAccountStats> {
-  const result = await corosReadNow(db, env, userId, prefs, { force: true }).catch(() => null);
+  const result = await corosReadNow(db, env, userId, prefs, { force: true, resimMaxDays: SWEEP_REPLAY_MAX_DAYS }).catch(
+    () => null,
+  );
   let coachReads = 0;
+  let garden = result?.garden ?? null;
   if (result) {
+    // A replay an earlier invocation left on record (capped, or killed) walks on here too, capped like the read's
+    // own: the hourly is not the only run that finishes it.
+    if (garden === null && (await replayPending(db, userId))) {
+      const step = await advanceGarden(db, userId, prefs, new Date(), {
+        maxResimDays: SWEEP_REPLAY_MAX_DAYS,
+        maxWalkDays: SWEEP_REPLAY_MAX_DAYS,
+      }).catch(() => null);
+      if (step) garden = { simulatedDays: step.simulatedDays, resimPending: step.resimPending === true };
+    }
     // Drain on every sweep, ingesting or not — the backlog must not wait
-    // for the hourly cron (audit finding 14).
-    const reads = await processCoachReads(db, env, userId, prefs, {}).catch(() => null);
+    // for the hourly cron (audit finding 14). One read when this sweep
+    // ingested anything or walked the garden: that already spent the
+    // invocation's share.
+    const heavy = (result.ingested ?? 0) > 0 || (garden !== null && garden.simulatedDays > 0);
+    const reads = await processCoachReads(db, env, userId, prefs, heavy ? { cap: 1 } : {}).catch(() => null);
     coachReads = reads?.attempted ?? 0;
   }
   return {
     read: result?.status ?? "failed",
     ingested: result?.ingested ?? 0,
     fullSchedule: result?.fullSchedule === true,
-    garden: result?.garden ?? null,
+    garden,
     coachReads,
   };
 }

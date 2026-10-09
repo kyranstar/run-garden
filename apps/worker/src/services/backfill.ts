@@ -204,7 +204,13 @@ export interface ChunkReport {
  * ACTIVITIES ONLY — this must never call importPlan. See the file header on
  * services/coros-bridge/src/backfill.ts for what happens if it does.
  */
-export async function recordChunk(db: Db, userId: string, chunk: ChunkReport): Promise<void> {
+export async function recordChunk(
+  db: Db,
+  userId: string,
+  chunk: ChunkReport,
+  /** Cap on the garden replay's days in this invocation (the half-hourly cron's); the rest is on record. */
+  opts: { resimMaxDays?: number } = {},
+): Promise<void> {
   const now = nowInstant();
   const stats = await ingestActivities(db, {
     userId,
@@ -240,7 +246,14 @@ export async function recordChunk(db: Db, userId: string, chunk: ChunkReport): P
 
   if (stats.affectedDates.length > 0) {
     const prefs = await loadPreferences(db, userId);
-    await resimulateFrom(db, userId, stats.affectedDates[0]!, prefs).catch(() => undefined);
+    await resimulateFrom(
+      db,
+      userId,
+      stats.affectedDates[0]!,
+      prefs,
+      new Date(),
+      opts.resimMaxDays === undefined ? undefined : { maxResimDays: opts.resimMaxDays },
+    ).catch(() => undefined);
   }
 }
 
@@ -318,6 +331,8 @@ export async function runBackfillChunkCloud(
   userId: string,
   prefs: UserPreferences,
   fetchImpl: typeof fetch = fetch,
+  /** The half-hourly cron caps the chunk's garden replay (cron reliability, part 3); the rest is on record. */
+  opts: { resimMaxDays?: number } = {},
 ): Promise<{ ran: boolean }> {
   // A restore is replacing the account (B2): no history walk meanwhile.
   if (await restoreInProgress(db, userId)) return { ran: false };
@@ -366,7 +381,7 @@ export async function runBackfillChunkCloud(
       lapsByProviderId: chunk.lapsByProviderId as never,
       strengthDetailsByProviderId: chunk.strengthDetailsByProviderId,
       skippedSportTypes: chunk.skippedSportTypes,
-    });
+    }, opts);
     const now = nowInstant();
     await db
       .update(corosWriteJobs)

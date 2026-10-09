@@ -1336,6 +1336,52 @@ export async function recordReplayFrom(db: Db, userId: string, date: LocalDate):
     });
 }
 
+/** Is a replay on record and unfinished for this account (`recordReplayFrom`)? One indexed read. */
+export async function replayPending(db: Db, userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ from: accountState.gardenChangedFrom })
+    .from(accountState)
+    .where(eq(accountState.userId, userId))
+    .limit(1);
+  return (row?.from ?? null) !== null;
+}
+
+/**
+ * Of the days an ingest touched (sorted or not), the earliest the garden must replay from — or null when it holds
+ * every one of them exactly as the tables now give it (cron reliability, part 3). A day must be replayed when it is
+ * past the last simulated day (the walk forward reads it: resimulateFrom walks on), when `mustReplay` names it (a new
+ * activity's day), when it has no stored day input, or when its input rebuilt now differs from the stored one. Each
+ * day's input carries everything the garden reads of that day's activities and slots, so identical inputs on every
+ * touched day mean the replay would write back what is there. One rebuild per touched day, in date order, stopping
+ * at the first that differs.
+ */
+export async function firstDayToReplay(
+  db: Db,
+  userId: string,
+  touched: readonly LocalDate[],
+  mustReplay: ReadonlySet<LocalDate>,
+  prefs: UserPreferences,
+): Promise<LocalDate | null> {
+  if (touched.length === 0) return null;
+  const [state] = await db
+    .select({ last: gardenState.lastSimulatedDate })
+    .from(gardenState)
+    .where(eq(gardenState.userId, userId))
+    .limit(1);
+  for (const date of [...touched].sort()) {
+    if (!state || date > state.last || mustReplay.has(date)) return date;
+    const [stored] = await db
+      .select({ input: gardenDayInputs.input })
+      .from(gardenDayInputs)
+      .where(eq(gardenDayInputs.id, `${userId}:${date}`))
+      .limit(1);
+    if (!stored) return date;
+    const rebuilt = await buildDayInput(db, userId, date, prefs);
+    if (JSON.stringify(rebuilt) !== JSON.stringify(stored.input)) return date;
+  }
+  return null;
+}
+
 /**
  * Move or clear the replay record — only if nothing was recorded since `seq` was read (a change that landed meanwhile
  * may be one this walk read too early, so its record stands), only while one is on record (a restore's begin clears

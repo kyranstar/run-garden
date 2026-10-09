@@ -33,7 +33,7 @@ import { importRoutes } from "./routes/imports.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
-import { CRON_GARDEN_MAX_DAYS } from "./services/cron-limits.js";
+import { CRON_GARDEN_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./services/cron-limits.js";
 import { runBackfillChunkCloud, sweepStaleBackfills } from "./services/backfill.js";
 import { closeStrandedSyncRuns, sweepStaleSuppressions, reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
@@ -204,7 +204,9 @@ async function corosHalfHour(db: Db, env: Env, userId: string): Promise<void> {
       console.error(`coros mcp sleep sweep failed: ${e instanceof Error ? e.message : "unknown"}`);
       return 0;
     });
-    const backfill = await runBackfillChunkCloud(db, env, userId, prefs).catch(() => ({ ran: false }));
+    const backfill = await runBackfillChunkCloud(db, env, userId, prefs, undefined, {
+      resimMaxDays: SWEEP_REPLAY_MAX_DAYS,
+    }).catch(() => ({ ran: false }));
     if (runId === null) return;
     if (await restoreInProgress(db, userId)) await dropSyncRun(db, runId);
     else await finishSyncRun(db, runId, "ok", { ...(read ?? { read: null }), sleep: sleep > 0, backfill: backfill.ran });
