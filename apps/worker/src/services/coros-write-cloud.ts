@@ -1,5 +1,5 @@
 import { ZodError } from "zod";
-import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
   appAuthoredRow,
@@ -153,6 +153,13 @@ function contentRewriteRetryable(reason: UpdateContentReason | undefined): boole
  * else holds it: no other row records that address as verified, and no other job that may hold a copy carries the
  * stamp on that day. The same row's own coach jobs (a rewrite keeping its stamp) are its own history; another
  * build's push of the same slot is another holder.
+ *
+ * "ANOTHER" MEANS A LIVE IDENTITY OF ITS OWN (re-review A-1 NEW). A holder row is a live (not archived) row of another
+ * session: app-built (a program or on-demand slot) or one with a stamping job of its own (a coach session, an eased
+ * import). Not a holder: an archived row — COROS recycles `idInPlan`s, and an absence-archived row keeps the address
+ * it last held — nor the row the import made for THIS copy when a read ran between the lost response and the retry
+ * (same address, no app identity of its own). Counting either refused a create's own copy: the job failed for good
+ * and the copy was left on the watch with nothing to take it off.
  */
 async function heldByAnother(
   db: Db,
@@ -171,6 +178,23 @@ async function heldByAnother(
           eq(plannedWorkouts.sourceWorkoutId, `${result.serverPlanId}:${result.serverIdInPlan}`),
           ne(plannedWorkouts.id, job.workoutId),
           ne(plannedWorkouts.lastVerifiedCorosDate, ""),
+          isNull(plannedWorkouts.archivedAt),
+          or(
+            // `appAuthoredRow`, in SQL.
+            inArray(plannedWorkouts.origin, ["program", "on_demand"]),
+            exists(
+              db
+                .select({ one: sql`1` })
+                .from(corosWriteJobs)
+                .where(
+                  and(
+                    eq(corosWriteJobs.userId, userId),
+                    eq(corosWriteJobs.workoutId, plannedWorkouts.id),
+                    inArray(corosWriteJobs.kind, [...STAMPING_JOB_KINDS]),
+                  ),
+                ),
+            ),
+          ),
         ),
       )
       .limit(1);
