@@ -765,7 +765,9 @@ export async function unpushBuild(
     await queueUnpush(db, userId, buildId, {
       workoutId: row.id,
       happenDay: address.happenDay,
-      name: parsed.data.name,
+      // A copy the athlete renamed in the COROS app is held under its new name (audit 3-A life L-5): the delete's
+      // proof is the name COROS holds at the recorded address.
+      name: parsed.data.renamed ?? parsed.data.name,
       idInPlan: address.idInPlan,
       programId: address.programId,
       corosPlanId: address.corosPlanId,

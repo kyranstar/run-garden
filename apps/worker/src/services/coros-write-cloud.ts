@@ -44,7 +44,7 @@ import { exerciseNameMap } from "./exercise-catalog.js";
 import { openIntentFor, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
-import { recordedStampFor, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
+import { recordedStampFor, renamedCopyOfRow, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
 import { unlockSentBuild, unpushBuild } from "./watch-push.js";
 
 /**
@@ -889,7 +889,11 @@ export async function executeCloudJobs(
         // a later send replaced) the payload's address is the copy's, and the
         // row is left exactly as it is.
         const program = job.workout !== null && appAuthoredRow(job.workout);
-        const rowsCopy = !program || (await recordedStampFor(db, userId, spec.workoutId)) === spec.name;
+        const rowsCopy =
+          !program ||
+          (await recordedStampFor(db, userId, spec.workoutId)) === spec.name ||
+          // …or that copy under the name the athlete gave it in the COROS app (audit 3-A life L-5).
+          (await renamedCopyOfRow(db, userId, spec.workoutId)) === spec.name;
         // WHERE COROS HOLDS IT NOW, not where it stood when the unpush was
         // queued (audit 1, coach finding 1). A move that was already in flight
         // when the session was removed lands first — the lock serialises them —
@@ -955,7 +959,10 @@ export async function executeCloudJobs(
                   eq(corosWriteJobs.workoutId, spec.workoutId),
                   eq(corosWriteJobs.kind, "program_session_push"),
                   eq(corosWriteJobs.status, "verified"),
-                  sql`json_extract(${corosWriteJobs.payload}, '$.name') = ${spec.name}`,
+                  or(
+                    sql`json_extract(${corosWriteJobs.payload}, '$.name') = ${spec.name}`,
+                    sql`json_extract(${corosWriteJobs.payload}, '$.renamed') = ${spec.name}`,
+                  ),
                 ),
               );
           } else if (job.workout?.archivedAt) {

@@ -260,6 +260,28 @@ export async function recordedStampFor(
 }
 
 /**
+ * The name a program row's sent copy is held under after the athlete renamed it in the COROS app (audit 3-A life
+ * L-5): its newest verified push's `renamed`, which the import records; null when none was renamed.
+ */
+export async function renamedCopyOfRow(db: Db, userId: string, workoutId: string): Promise<string | null> {
+  const rows = await db
+    .select({ renamed: sql<string | null>`json_extract(${corosWriteJobs.payload}, '$.renamed')` })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, workoutId),
+        eq(corosWriteJobs.kind, "program_session_push"),
+        eq(corosWriteJobs.status, "verified"),
+      ),
+    )
+    .orderBy(desc(corosWriteJobs.verifiedAt), desc(corosWriteJobs.requestedAt))
+    .limit(1);
+  const renamed = rows[0]?.renamed;
+  return typeof renamed === "string" && renamed.length > 0 ? renamed : null;
+}
+
+/**
  * The athlete-facing title for a name COROS served back: the title we meant when
  * the name is provably a stamp of ours, and the wire's own name otherwise.
  * Total and idempotent — an already-stripped title is not in the map, so it
