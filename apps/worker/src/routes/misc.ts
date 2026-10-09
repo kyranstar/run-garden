@@ -1457,8 +1457,10 @@ settingsRoutes.get("/diagnostics", async (c) => {
     .limit(10);
   const garden = (await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1))[0];
   const budget = await llmBudgetStatus(db, userId);
-  // The connection's own stamp — sync_runs 'coros_read' has no writer since
-  // Phase C, and the limit-10 runs window made this read "never" anyway.
+  // The connection's own stamp, stamped by every successful pull. sync_runs
+  // 'coros_read' (written again by the half-hourly cron since cron
+  // reliability part 3) says the sweep RAN, not that a pull succeeded — and
+  // the limit-10 runs window would miss it anyway.
   const lastCorosRead = connections.find((p) => p.provider === "coros")?.lastSyncAt ?? null;
 
   return c.json({

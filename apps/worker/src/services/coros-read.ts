@@ -39,6 +39,10 @@ export interface ReadNowResult {
   /** The read ran out of Worker budget rather than failing at COROS. Reported so
    *  a caller can retry without treating the connection as unhealthy. */
   runtimeLimited?: boolean;
+  /** This read was the six-hourly full schedule import (90 days of COROS's calendar, not the next week). */
+  fullSchedule?: boolean;
+  /** What the garden's replay from the earliest ingested day did, when it walked any day or left some to walk. */
+  garden?: { simulatedDays: number; resimPending: boolean };
 }
 
 /** Cached per-isolate — the locale bundle is static reference data. */
@@ -197,6 +201,7 @@ export async function corosReadNow(
     }
 
     let ingested = 0;
+    let garden: ReadNowResult["garden"];
     if (snapshot.activities.length > 0) {
       const stats = await ingestActivities(db, {
         userId,
@@ -206,7 +211,12 @@ export async function corosReadNow(
       });
       ingested = stats.newActivities + stats.mergedPairs;
       const earliest = stats.affectedDates[0];
-      if (earliest) await resimulateFrom(db, userId, earliest, prefs);
+      if (earliest) {
+        const sim = await resimulateFrom(db, userId, earliest, prefs);
+        if (sim.simulatedDays > 0 || sim.resimPending) {
+          garden = { simulatedDays: sim.simulatedDays, resimPending: sim.resimPending === true };
+        }
+      }
       await enqueueCoachReads(db, userId, today);
     }
 
@@ -224,7 +234,7 @@ export async function corosReadNow(
         .where(eq(providerConnections.id, conn.id));
     }
     await touchCorosSync(db, userId);
-    return { status: "ok", ingested };
+    return { status: "ok", ingested, ...(fullScheduleDue ? { fullSchedule: true } : {}), ...(garden ? { garden } : {}) };
   } catch (e) {
     // WHAT ACTUALLY WENT WRONG, and whose fault it is.
     //
@@ -258,7 +268,43 @@ export async function corosReadNow(
   }
 }
 
-/** Cron sweep: one forced pull per connected user (replaces bridge snapshots). */
+/** What one account's turn of the half-hourly sweep did — its `coros_read` run row's stats. */
+export interface SweepAccountStats {
+  /** The read's outcome; "failed" when it threw past its own catch. */
+  read: ReadNowResult["status"] | "failed";
+  ingested: number;
+  fullSchedule: boolean;
+  garden: ReadNowResult["garden"] | null;
+  /** Coach reads this turn claimed and generated (each a model call). */
+  coachReads: number;
+}
+
+/** One connected account's turn of the sweep: a forced pull, then the coach-read drain. */
+export async function corosSweepAccount(
+  db: Db,
+  env: Env,
+  userId: string,
+  prefs: UserPreferences,
+): Promise<SweepAccountStats> {
+  const result = await corosReadNow(db, env, userId, prefs, { force: true }).catch(() => null);
+  let coachReads = 0;
+  if (result) {
+    // Drain on every sweep, ingesting or not — the backlog must not wait
+    // for the hourly cron (audit finding 14).
+    const reads = await processCoachReads(db, env, userId, prefs, {}).catch(() => null);
+    coachReads = reads?.attempted ?? 0;
+  }
+  return {
+    read: result?.status ?? "failed",
+    ingested: result?.ingested ?? 0,
+    fullSchedule: result?.fullSchedule === true,
+    garden: result?.garden ?? null,
+    coachReads,
+  };
+}
+
+/** Cron sweep: one forced pull per connected user (replaces bridge snapshots). The half-hourly cron runs each
+ * account's turn itself (`corosSweepAccount`), under that account's `coros_read` run row. */
 export async function corosReadSweep(db: Db, env: Env): Promise<void> {
   const rows = await db
     .select({ userId: providerConnections.userId })
@@ -267,11 +313,6 @@ export async function corosReadSweep(db: Db, env: Env): Promise<void> {
   for (const { userId } of rows) {
     if (await restoreInProgress(db, userId)) continue;
     const prefs = await loadPreferences(db, userId);
-    const result = await corosReadNow(db, env, userId, prefs, { force: true }).catch(() => null);
-    if (result) {
-      // Drain on every sweep, ingesting or not — the backlog must not wait
-      // for the hourly cron (audit finding 14).
-      await processCoachReads(db, env, userId, prefs, {}).catch(() => undefined);
-    }
+    await corosSweepAccount(db, env, userId, prefs);
   }
 }
