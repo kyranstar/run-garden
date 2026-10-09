@@ -12,7 +12,7 @@
  */
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { isWrite, makeTestDb } from "./helpers.js";
 import { seedRealisticAccount } from "./realistic-account.js";
@@ -247,6 +247,21 @@ describe("hourly() per step on a realistic account", () => {
     };
 
     const fresh = await measureHourly(() => hourly(db, acct.env));
+    // The runs after it, until nothing is left to do (what each one spent its heavy step on), then a steady one.
+    const nextHours: string[] = [];
+    let next = await measureHourly(() => hourly(db, acct.env));
+    for (let i = 0; i < 6; i++) {
+      const [run] = await db
+        .select()
+        .from(schema.syncRuns)
+        .where(eq(schema.syncRuns.kind, "reconcile"))
+        .orderBy(desc(schema.syncRuns.startedAt), desc(schema.syncRuns.id))
+        .limit(1);
+      const heavy = (run?.stats as { heavyStep?: string | null } | null)?.heavyStep;
+      nextHours.push(`${heavy ?? "none"} (${next.total.cpuMs.toFixed(1)} ms, ${next.total.statements} stmts, ${next.total.fetches} fetches)`);
+      if (heavy === null) break;
+      next = await measureHourly(() => hourly(db, acct.env));
+    }
     const steady = await measureHourly(() => hourly(db, acct.env));
 
     // Inside a coach read, warm: the package, and the streamed answer.
@@ -274,7 +289,8 @@ describe("hourly() per step on a realistic account", () => {
         `account: ${JSON.stringify(counts)} (seeded in ${seedMs.toFixed(0)} ms)`,
         table("── hourly() right after the new activities, COLD (first account: every path JIT-compiled here) ──", cold.steps, cold.total),
         table("── hourly() right after the new activities, warm (second account) ──", fresh.steps, fresh.total),
-        table("── hourly() an hour later (steady, warm) ──", steady.steps, steady.total),
+        `the runs after it (heavy step, warm): ${nextHours.join(" → ")}`,
+        table("── hourly() once nothing is left (steady, warm) ──", steady.steps, steady.total),
         table("── hourly() with the garden 45 days behind (warm) ──", weeksBehind.steps, weeksBehind.total),
         `inside one coach read (warm, median of 7): effort package ${effortMs.toFixed(2)} ms CPU (${effortText.length} chars); ` +
           `streamed answer (320 SSE events) ${streamMs.toFixed(2)} ms CPU`,

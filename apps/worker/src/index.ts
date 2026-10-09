@@ -191,6 +191,9 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
  */
 export const CRON_GARDEN_MAX_DAYS = 3;
 
+/** The step an hourly run spent its budget on, in its run row's stats (`heavyStep`); null when none had work. */
+export type HourlyHeavyStep = "garden" | "coach_read" | "coros_write";
+
 /** Thrown between steps of a per-user cron loop when a restore began for
  * that account while the loop was working on it (ruling B9). */
 class RestoreBegan extends Error {}
@@ -240,14 +243,25 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       await stillOurs();
       await sweepUserProposals(db, userId, prefs.timezone).catch(() => undefined);
       await stillOurs();
-      // Perception catch-up: drains reads a dropped waitUntil missed. Cap 2
-      // per tick keeps the per-user loop bounded (rework spec §1).
-      await processCoachReads(db, env, userId, prefs, {}).catch(() => undefined);
+      // ONE HEAVY STEP PER ACCOUNT PER INVOCATION (cron reliability, part 2): the garden's walk of more than a
+      // day, a coach read, a COROS write. Right after new activities all three used to land in one invocation —
+      // three to seven times a steady one's CPU, on the free plan's 10 ms — and a killed run did none of them, so
+      // the next did all three again. Now the rest waits for the next run: nothing is dropped, only deferred.
+      let heavyStep: HourlyHeavyStep | null = garden.simulatedDays > 1 ? "garden" : null;
+      if (heavyStep === null) {
+        // Perception catch-up: drains reads a dropped waitUntil missed — one a run. The half-hourly sweep drains
+        // the backlog after each ingest.
+        const reads = await processCoachReads(db, env, userId, prefs, { cap: 1 }).catch(() => null);
+        if (reads && reads.attempted > 0) heavyStep = "coach_read";
+      }
       await stillOurs();
-      // Cloud-direct writes (spec §4): queued watch updates execute here
-      // when a cloud connection exists — the Mac is no longer in the loop.
-      await executeCloudJobs(db, env, userId, prefs).catch(() => undefined);
-      await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
+      if (heavyStep === null) {
+        // Cloud-direct writes (spec §4): queued watch updates execute here when a cloud connection exists — the
+        // Mac is no longer in the loop. One a run; each route that queues one drains it in its own request.
+        const jobs = await executeCloudJobs(db, env, userId, prefs, { cap: 1 }).catch(() => null);
+        if (jobs && jobs.executed > 0) heavyStep = "coros_write";
+      }
+      await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep });
     } catch (e) {
       if (e instanceof RestoreBegan) await dropSyncRun(db, runId);
       else await finishSyncRun(db, runId, "error");

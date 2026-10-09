@@ -331,22 +331,24 @@ function gateReason(env: Env, prefs: UserPreferences): ReadGateReason | null {
   return null;
 }
 
-/** Ambient driver (post-ingest waitUntil + hourly cron). Cap keeps a cron
- * tick bounded; the queue drains across ticks. */
+/** Ambient driver (post-ingest waitUntil + the crons). Cap keeps a cron
+ * tick bounded; the queue drains across ticks. `attempted` counts the reads
+ * this call claimed and generated (each a model call, done or failed) — the
+ * hourly cron's measure of whether its heavy step ran. */
 export async function processCoachReads(
   db: Db,
   env: Env,
   userId: string,
   prefs: UserPreferences,
   opts: { cap?: number; fetchImpl?: typeof fetch } = {},
-): Promise<{ processed: number; skipped: ReadGateReason | "budget_reserve" | "restoring" | null }> {
+): Promise<{ processed: number; attempted: number; skipped: ReadGateReason | "budget_reserve" | "restoring" | null }> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   // A restore is replacing the account (B2): nothing is spent on the LLM.
-  if (await restoreInProgress(db, userId)) return { processed: 0, skipped: "restoring" };
+  if (await restoreInProgress(db, userId)) return { processed: 0, attempted: 0, skipped: "restoring" };
   const gate = gateReason(env, prefs);
-  if (gate) return { processed: 0, skipped: gate };
+  if (gate) return { processed: 0, attempted: 0, skipped: gate };
   const budget = await llmBudgetStatus(db, userId);
-  if (budget.spentMicros >= AUTO_READ_RESERVE_MICROS) return { processed: 0, skipped: "budget_reserve" };
+  if (budget.spentMicros >= AUTO_READ_RESERVE_MICROS) return { processed: 0, attempted: 0, skipped: "budget_reserve" };
 
   // The cap scales with the backlog (audit finding 14): a hard 2/hour made a
   // 12-read connect backlog take six hours. min(6, queued) keeps a single
@@ -358,6 +360,7 @@ export async function processCoachReads(
   const cap = opts.cap ?? Math.max(2, Math.min(6, backlog.length));
 
   let processed = 0;
+  let attempted = 0;
   for (let i = 0; i < cap; i++) {
     const now = nowInstant();
     const staleBefore = new Date(Date.parse(now) - READ_RECLAIM_MINUTES * 60_000).toISOString();
@@ -386,6 +389,7 @@ export async function processCoachReads(
     if (!candidate) break;
     const token = await claimRead(db, userId, candidate, now);
     if (!token) continue; // lost the race for this row — try the next
+    attempted += 1;
     const gen = await generateRead(db, env, userId, candidate.activityId, fetchImpl);
     // A restore that began during the model call wins (B9): nothing lands.
     if (await restoreInProgress(db, userId)) break;
@@ -396,7 +400,7 @@ export async function processCoachReads(
       await failRead(db, candidate.id, token, candidate.attempt + 1);
     }
   }
-  return { processed, skipped: null };
+  return { processed, attempted, skipped: null };
 }
 
 /** User-initiated read-through (the analyze route, rework spec §2): serve the

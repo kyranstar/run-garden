@@ -168,7 +168,7 @@ describe("processCoachReads", () => {
     await enqueueCoachReads(db, userId, today);
     const { fetchImpl, calls } = scriptedFetch([GOOD]);
     const res = await processCoachReads(db, makeEnv(), userId, prefs, { fetchImpl });
-    expect(res).toEqual({ processed: 1, skipped: null });
+    expect(res).toEqual({ processed: 1, attempted: 1, skipped: null });
     expect(calls()).toBe(1);
     const [row] = await readRows(db, userId);
     expect(row!.status).toBe("done");
@@ -271,7 +271,7 @@ describe("processCoachReads", () => {
     const { fetchImpl, calls } = scriptedFetch([GOOD]);
 
     ledgerRows = 0;
-    expect(await processCoachReads(db, makeEnv(), userId, prefs, { fetchImpl })).toEqual({ processed: 0, skipped: null });
+    expect(await processCoachReads(db, makeEnv(), userId, prefs, { fetchImpl })).toEqual({ processed: 0, attempted: 0, skipped: null });
     expect(ledgerRows).toBe(0);
 
     await seedActivity(db, userId, 1, prefs.timezone, { id: "fresh-act" });

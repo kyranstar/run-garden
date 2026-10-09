@@ -62,3 +62,47 @@ describe("the hourly garden step", () => {
     expect(JSON.stringify(await loadGarden(db, acct.userId))).toBe(capped);
   });
 });
+
+describe("one heavy step per account per invocation", () => {
+  it("right after new activities: the garden's walk, a coach read, a COROS write — never two in one run, and all of it lands", { timeout: 60_000 }, async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    // Two queued reads, the fixture's queued COROS create, and a garden six days behind (two runs of walking).
+    const acct = await seedRealisticAccount(db, { gardenBehindDays: 6 });
+    vi.stubGlobal("fetch", acct.fetchImpl);
+    const queuedJobs = async () =>
+      (await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, acct.userId))).filter(
+        (j) => j.status === "queued",
+      ).length;
+    expect(await queuedJobs()).toBe(1);
+
+    const runs: Array<{ heavyStep: string | null; days: number; llm: number; coros: number }> = [];
+    for (let i = 0; i < 7; i++) {
+      const before = { ...acct.fetches };
+      await hourly(db, acct.env);
+      const run = await lastReconcile(db, acct.userId);
+      expect(run.status).toBe("ok");
+      const stats = run.stats as { simulatedDays: number; heavyStep: string | null };
+      runs.push({
+        heavyStep: stats.heavyStep,
+        days: stats.simulatedDays,
+        llm: acct.fetches.llm - before.llm,
+        coros: acct.fetches.coros - before.coros,
+      });
+    }
+
+    for (const r of runs) {
+      // A walk of one day is the daily case and light; more is the run's heavy step.
+      expect([r.days > 1, r.llm > 0, r.coros > 0].filter(Boolean).length).toBeLessThanOrEqual(1);
+      expect(r.llm).toBeLessThanOrEqual(2); // one read: its call, and at most one repair
+    }
+    expect(runs.slice(0, 2).map((r) => r.heavyStep)).toEqual(["garden", "garden"]);
+    expect(runs.filter((r) => r.heavyStep === "coach_read")).toHaveLength(2);
+    expect(runs.filter((r) => r.heavyStep === "coros_write")).toHaveLength(1);
+    expect(runs.at(-1)!.heavyStep).toBeNull();
+
+    // Deferred, never dropped: both reads done, the write made, the garden caught up.
+    const reads = await db.select().from(schema.coachReads).where(eq(schema.coachReads.userId, acct.userId));
+    expect(reads.filter((r) => acct.newActivityIds.includes(r.activityId)).map((r) => r.status)).toEqual(["done", "done"]);
+    expect(await queuedJobs()).toBe(0);
+  });
+});
