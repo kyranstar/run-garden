@@ -102,13 +102,29 @@ test("(a) the switch off: nothing about the watch on the sheet or Today", async 
   expect((await context.request.get(`${baseURL}/api/sessions/${slot.id}/watch-preview`)).status()).toBe(404);
 });
 
+/**
+ * Reload once no /api request is in flight: Send and Take off drain and then read the session, Today and Plan, and
+ * WebKit reports a fetch a reload cuts off as a page error (the page-error guard then fails the test).
+ */
+function quietReload(page: Page): () => Promise<void> {
+  let inflight = 0;
+  const api = (r: { url(): string }) => new URL(r.url()).pathname.startsWith("/api/");
+  page.on("request", (r) => void (api(r) && (inflight += 1)));
+  for (const done of ["requestfinished", "requestfailed"] as const) page.on(done, (r) => void (api(r) && (inflight -= 1)));
+  return async () => {
+    await expect.poll(() => inflight, { timeout: 15_000 }).toBe(0);
+    await page.reload();
+  };
+}
+
 test("(b) Send to watch: the preview, Send, Sending… — and taken off, nothing about the watch remains", async ({ page, context, baseURL }) => {
   test.skip(!WATCH, "needs RG_E2E_WATCH=1 (the switch on)");
+  const reload = quietReload(page);
   const slot = await slotToDo(context.request, baseURL!);
   await openSheet(page, slot);
   await send(page);
   // Still queued: the fixture's COROS connection holds no credentials, so the drain runs nothing.
-  await page.reload();
+  await reload();
   await expect(page.getByText("Sending…")).toBeVisible({ timeout: 30_000 });
   // Take off watch, from Sending… (owner, 2026-10-09): it asks first, then the queued push is superseded.
   await page.getByRole("button", { name: "Take off watch" }).click();
@@ -118,7 +134,7 @@ test("(b) Send to watch: the preview, Send, Sending… — and taken off, nothin
   await expect(page.getByRole("button", { name: "Send to watch" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Sending…")).toHaveCount(0);
   // Read again from the server: the same.
-  await page.reload();
+  await reload();
   await expect(page.getByRole("button", { name: "Send to watch" })).toBeVisible({ timeout: 30_000 });
   // Nothing about the watch shows — its status region waits, empty and visually hidden (audit 3-B UI-10).
   await expect(page.locator(".watch-state:not(.visually-hidden)")).toHaveCount(0);
