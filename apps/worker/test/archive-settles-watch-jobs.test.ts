@@ -299,8 +299,10 @@ describe("the create executor re-reads the row it is about to put on the watch",
     expect(serverNames(server)).toContain(`Easy 25 — ${date}`);
 
     await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    // The copy is gone, so the removed session's create no longer holds its stamp (re-review C-4a): superseded, as a
+    // program push is once its copy's unpush verifies.
     expect(Object.fromEntries((await jobsFor(db, "wb")).map((j) => [j.id, j.status]))).toEqual({
-      "wb-push": "verified",
+      "wb-push": "superseded",
       "wb-unpush": "verified",
     });
     expect(serverNames(server)).not.toContain(`Easy 25 — ${date}`);

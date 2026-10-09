@@ -151,6 +151,43 @@ describe("two coach sessions of one title on one day (the pre-existing twin)", (
   });
 });
 
+/*
+ * A SESSION RE-CREATED ON ITS DAY DOES NOT PILE UP SUFFIXES (re-review C-4a). A coach create stayed `verified` after
+ * its copy's unpush verified, so the chooser counted its stamp as taken for ever: every remove + re-add (a reshape, a
+ * wind-down) put " (2)", then " (3)" … on the watch. Once the copy is provably gone, its stamp is free again.
+ */
+describe("a coach session removed, then the same session added again on its day", () => {
+  it("the old copy's unpush verified: the new session gets the plain stamp, and only its copy is on the watch", async () => {
+    const old = (await approve("p-1", [{ kind: "add", date: DAY, session: run30("Easy run") }])).applied.created[0]!;
+    expect(nameOf(await jobOf(`${old}-push`))).toBe(`Easy run — ${DAY}`);
+    await approve("p-2", [{ kind: "remove", workoutId: old }]);
+    expect((await jobOf(`${old}-unpush`)).status).toBe("verified");
+    expect(programsNamed(`Easy run — ${DAY}`)).toHaveLength(0);
+    for (const p of ["p-3", "p-5"]) {
+      const again = (await approve(p, [{ kind: "add", date: DAY, session: run30("Easy run") }])).applied.created[0]!;
+      expect(nameOf(await jobOf(`${again}-push`))).toBe(`Easy run — ${DAY}`);
+      expect((await jobOf(`${again}-push`)).status).toBe("verified");
+      expect(programsNamed(`Easy run — ${DAY}`)).toHaveLength(1);
+      await approve(`${p}-rm`, [{ kind: "remove", workoutId: again }]);
+      expect((await jobOf(`${again}-unpush`)).status).toBe("verified");
+    }
+  });
+
+  it("…while the old copy's unpush has not run yet, the new one still takes (2): its stamp is not free until then", async () => {
+    const old = (await approve("p-1", [{ kind: "add", date: DAY, session: run30("Easy run") }])).applied.created[0]!;
+    // The remove's lane runs later (no waitUntil lane here): the unpush is only queued.
+    await db.update(plannedWorkouts).set({ archivedAt: NOON }).where(eq(plannedWorkouts.id, old));
+    await db.insert(corosWriteJobs).values({
+      id: `${old}-unpush`, userId, workoutId: old, kind: "coach_delete_workout", expectedContentFingerprint: "", originalDate: DAY,
+      destinationDate: DAY, requestedAt: NOON, status: "queued", updatedAt: NOON,
+      payload: { workoutId: old, happenDay: DAY, name: `Easy run — ${DAY}`, idInPlan: "3", programId: "3", corosPlanId: String(server.state.schedule.id) },
+    });
+    const { applyOps } = await import("../src/services/coach-apply.js");
+    const again = (await applyOps(db, userId, prefs, "p-3", [{ kind: "add", date: DAY, session: run30("Easy run") } as never])).created[0]!;
+    expect(nameOf(await jobOf(`${again}-push`))).toBe(`Easy run — ${DAY} (2)`);
+  });
+});
+
 describe("the lane never adopts a copy another row or job holds", () => {
   it("a coach create carrying the sent program's stamp (a pre-fix queue): failed, nothing recorded, the copy stays the program's", async () => {
     const { workoutId, buildId } = await sendSlot();

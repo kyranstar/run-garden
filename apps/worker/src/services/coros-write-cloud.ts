@@ -4,6 +4,7 @@ import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
   appAuthoredRow,
   nowInstant,
+  COACH_STAMPING_JOB_KINDS,
   STAMPING_JOB_KINDS,
   todayInZone,
   watchAddressOf,
@@ -953,6 +954,24 @@ export async function executeCloudJobs(
                   eq(corosWriteJobs.userId, userId),
                   eq(corosWriteJobs.workoutId, spec.workoutId),
                   eq(corosWriteJobs.kind, "program_session_push"),
+                  eq(corosWriteJobs.status, "verified"),
+                  sql`json_extract(${corosWriteJobs.payload}, '$.name') = ${spec.name}`,
+                ),
+              );
+          } else if (job.workout?.archivedAt) {
+            // A REMOVED COACH SESSION'S STAMP IS FREE ONCE ITS COPY IS GONE (re-review C-4a). Its verified create (or
+            // rewrite) under this stamp kept holding the stamp for the one chooser, so every remove + re-add of the
+            // same session on its day — a reshape, a wind-down — put " (2)", " (3)" … on the watch. Only now, when the
+            // delete has verified, never at enqueue: until then the copy is on the watch and its stamp must stay taken.
+            // A live row keeps its jobs: its own re-create reuses its own stamp anyway.
+            await db
+              .update(corosWriteJobs)
+              .set({ status: "superseded", updatedAt: done })
+              .where(
+                and(
+                  eq(corosWriteJobs.userId, userId),
+                  eq(corosWriteJobs.workoutId, spec.workoutId),
+                  inArray(corosWriteJobs.kind, [...COACH_STAMPING_JOB_KINDS]),
                   eq(corosWriteJobs.status, "verified"),
                   sql`json_extract(${corosWriteJobs.payload}, '$.name') = ${spec.name}`,
                 ),
