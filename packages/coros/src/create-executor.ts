@@ -1972,7 +1972,25 @@ export async function deleteWorkout(
       };
     }
 
-    const matches = stampedPlacements(before, isOurs).filter((f) => f.date === date);
+    const sameDay = stampedPlacements(before, isOurs).filter((f) => f.date === date);
+    // TWO CARRIERS OF ONE STAMP ON ONE DAY (audit 3-A life L-3): the athlete duplicated the sent session in the COROS
+    // app, and the copy keeps its name and its day. Every same-day carrier used to be deleted — the athlete's own
+    // workout went with ours, unreported (the verify saw no stamped workout left and said ok). With more than one
+    // carrier the recorded address decides: only the workout AT it is deleted, the other is never actioned, and when
+    // none (or both) sits at it there is no telling which is ours — refused. One carrier is ours as before.
+    const atRecorded = (f: Located): boolean =>
+      String(f.entity.idInPlan) === target.idInPlan &&
+      String(f.entity.planProgramId ?? f.entity.idInPlan) === target.programId;
+    const matches = sameDay.length > 1 ? sameDay.filter(atRecorded) : sameDay;
+    if (sameDay.length > 1 && matches.length !== 1) {
+      return {
+        ok: false,
+        refused: "ambiguous",
+        error:
+          `${sameDay.length} workouts carry this stamp on ${date} and ${matches.length === 0 ? "none" : "more than one"}` +
+          ` sits at the recorded idInPlan ${target.idInPlan} — not actioned; remove it by hand in the COROS app`,
+      };
+    }
     if (matches.length === 0) {
       // Drift vs. already-gone: is the recorded address occupied by something?
       const atAddress = before.entities.find(
@@ -2026,12 +2044,24 @@ export async function deleteWorkout(
           " — check the COROS calendar",
       };
     }
+    const address = (f: Located): string => `${String(f.entity.idInPlan)}/${String(f.entity.planProgramId ?? f.entity.idInPlan)}`;
+    const deleted = new Set(matches.map(address));
     const still = stampedPlacements(after, isOurs).filter((f) => f.date === date);
-    if (still.length > 0) {
+    if (still.some((f) => deleted.has(address(f)))) {
       return {
         ok: false,
         code,
         error: `delete returned ${code ?? "-"} but the workout is still on ${date}`,
+      };
+    }
+    // The carriers left alone must still be there: a stamped workout is not a "foreign" one to the count above.
+    if (still.length < sameDay.length - matches.length) {
+      return {
+        ok: false,
+        code,
+        error:
+          `DELETE REMOVED ${sameDay.length - matches.length - still.length} OTHER WORKOUT(S) CARRYING THIS STAMP` +
+          " — check the COROS calendar",
       };
     }
     return { ok: true, code };
