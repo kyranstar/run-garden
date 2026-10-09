@@ -241,7 +241,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   });
   // The watch (Phase 3). Send (in the preview) and Take off only QUEUE (ruling 3-R11): the drain runs the job in a
   // request of its own, then the session says how it went. A drain that fails is no error to show — the hourly lane
-  // runs the job, and the sheet keeps "Sending…" (and reads again) until it has.
+  // runs the job, and the sheet keeps "Sending…" until it has (reading again on a backoff, `useSendingPoll`).
   const [previewing, setPreviewing] = useState(false);
   const [confirmingTakeOff, setConfirmingTakeOff] = useState(false);
   /**
