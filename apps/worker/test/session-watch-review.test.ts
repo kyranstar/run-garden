@@ -18,12 +18,14 @@ import {
   canonicalJson,
   PERFORMED_LIMITS,
   performedSessionSaveSchema,
+  programSessionPushJobSchema,
   type PerformedSessionWireInput,
   type PerformedSet,
+  type ProgramWatchStep,
   type SourceActivity,
   type UserPreferences,
 } from "@rg/domain";
-import type { RawCorosLapItem } from "@rg/providers";
+import { COROS_EXERCISE_NAMES, type RawCorosLapItem } from "@rg/providers";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sha256Hex } from "../src/auth/crypto.js";
@@ -35,9 +37,9 @@ import { corosKeyOf } from "../src/services/coros-exercise-map.js";
 import { buildDayInput } from "../src/services/garden-sync.js";
 import { buildSession, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
 import { savePerformedSession, setRows } from "../src/services/session-save.js";
-import { pairWatchSets, watchReviewBasis } from "../src/services/session-watch-review.js";
+import { mappedAsSent, movesAsSent, pairWatchSets, watchReviewBasis, type WatchReviewEntry } from "../src/services/session-watch-review.js";
 import { upsertWatchSession } from "../src/services/watch-sets.js";
-import { sendToWatch } from "../src/services/watch-push.js";
+import { sendToWatch, watchStepMoves } from "../src/services/watch-push.js";
 import { slotId } from "../src/services/program-slots.js";
 import { connectTestCoros, D1_BIND_LIMIT, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { buildToday, DAY, makeEnv, NOON, seedCatalog, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
@@ -370,20 +372,173 @@ describe("pairWatchSets (ruling 3-R7)", () => {
     ]);
   });
 
-  it("the real sent build: its one mapped move skipped, every free-text move still prefills from the watch (audit 3-B S-7)", async () => {
+  it("the real sent build, sent the OLD way: its one mapped move skipped, every free-text move still prefills from the watch (audit 3-B S-7)", async () => {
     const s = await sentSlot();
+    const old = await asOldStylePush(s.build.buildId);
     const mapped = mappedItems(s.build);
     const free = s.build.items.filter((i) => !corosKeyOf(i.exerciseId));
     expect(mapped.length).toBeGreaterThan(0);
     expect(free.length).toBeGreaterThan(1);
     const sets3 = (reps: number) => watchSets(3, { reps });
-    const entries = pairWatchSets(s.build, [
-      ...mapped.slice(1).map((m) => ({ exerciseId: m.exerciseId, sets: sets3(8) })),
-      ...free.map((_, k) => ({ exerciseId: `coros:T90${10 + k}`, sets: sets3(11) })),
-    ]);
+    const entries = pairWatchSets(
+      s.build,
+      [
+        ...mapped.slice(1).map((m) => ({ exerciseId: m.exerciseId, sets: sets3(8) })),
+        ...free.map((_, k) => ({ exerciseId: `coros:T90${10 + k}`, sets: sets3(11) })),
+      ],
+      mappedAsSent(s.build, old.session.steps),
+    );
     expect(entries.filter((e) => e.exerciseId.startsWith("coros:"))).toEqual([]);
     const freeIds = new Set(free.map((f) => f.exerciseId));
     expect(entries.filter((e) => freeIds.has(e.exerciseId) && e.sets[0]!.from === "watch")).toHaveLength(free.length);
+  });
+});
+
+// ── 1b. The pairing follows what the push SENT (owner, 2026-10-10) ────────────────────────────────────────────────
+
+/**
+ * The push's payload rewritten as the builder made it before 2026-10-10 — how the owner's live session went: the
+ * one-sided T1309 as its catalog step, no side labels in any name.
+ */
+async function asOldStylePush(buildId: string) {
+  const id = pushJobId(buildId);
+  const payload = programSessionPushJobSchema.parse((await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, id)))[0]!.payload);
+  const [row] = await db.select().from(schema.corosExercises).where(eq(schema.corosExercises.name, "T1309"));
+  payload.session.steps = payload.session.steps.map((s) => {
+    const name = s.name.replace(/ \((L|R)\)$/, "");
+    return name === COROS_EXERCISE_NAMES.T1309 ? { ...s, originId: row!.id, name: "T1309" } : { ...s, name };
+  });
+  await db.update(schema.corosWriteJobs).set({ payload }).where(eq(schema.corosWriteJobs.id, id));
+  return payload;
+}
+
+/**
+ * The watch's laps for a session done as its push SENT it: one entry per build move (`skip` left out), in build order.
+ * A move sent as its catalog step comes back under its T-code; a move sent as free text under a key of its own the
+ * library does not know (what a free-text step's laps carry is unproven — any such key is an unmapped `coros:`
+ * entry). Per set one data item, two for a one-sided set (one per side); a hold one timed item; each then its rest.
+ */
+async function lapsAsSent(build: BuildPayload, opts: { skip?: string } = {}): Promise<RawCorosLapItem[]> {
+  const job = (await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, pushJobId(build.buildId))))[0]!;
+  const sent = programSessionPushJobSchema.parse(job.payload).session.steps;
+  const viaCatalog = (id: string) => {
+    const key = corosKeyOf(id);
+    return key !== null && sent.some((s) => s.originId !== "0" && s.name === key) ? key : null;
+  };
+  const out: RawCorosLapItem[] = [];
+  build.items
+    .filter((i) => i.exerciseId !== opts.skip)
+    .forEach((it, exerciseIndex) => {
+      const exerciseNameKey = viaCatalog(it.exerciseId) ?? `T9${100 + exerciseIndex}`;
+      const unilateral = build.exercises[it.exerciseId]?.laterality === "unilateral";
+      let setIndex = 0;
+      for (const s of build.steps) {
+        if (s.kind === "rest" || s.slotKey !== it.slotKey || s.exerciseId !== it.exerciseId) continue;
+        const at = { exerciseIndex, setIndex: setIndex++, exerciseNameKey };
+        if (s.kind === "timed") {
+          out.push(item({ ...at, time: Math.round(s.seconds * 100) }));
+        } else {
+          out.push(item({ ...at, reps: 9, time: 4_000 }));
+          if (s.side === null && unilateral) out.push(item({ ...at, reps: 9, time: 4_000 }));
+        }
+        out.push(item({ ...at, time: 6_000 }));
+      }
+    });
+  return out.map((i, n) => ({ ...i, lapIndex: n + 1 }));
+}
+
+const ONE_SIDED_CATALOG_MOVE = "supportedRow"; // T1309 One Arm Dumbbell Row, the fixed-seed build's one catalog move
+
+describe("mappedAsSent: what each move went as, read off the push's own payload", () => {
+  // `supportedRow` is the library's T1309 (it maps back to itself); `gobletSquat` T1301; `freeA` maps to nothing.
+  const build = miniBuild([{ id: "freeA", sets: 2 }, { id: "supportedRow", sets: 2, unilateral: true }, { id: "gobletSquat", sets: 1 }]);
+  const step = (originId: string, name: string): ProgramWatchStep => ({ originId, name, target: { kind: "reps", reps: 8 }, grams: null, restSeconds: 0, overview: "", side: null });
+  /** The payload's steps for `build`, each move as `as` says: its catalog step (a T-code) or free text. */
+  const sent = (as: Record<string, string>) => watchStepMoves(build).map((id) => (as[id] ? step("4258276155475009999", as[id]!) : step("0", id)));
+
+  it("lines the payload up with the build: a one-sided set is two steps, both of its move", () => {
+    expect(watchStepMoves(build)).toEqual(["freeA", "freeA", "supportedRow", "supportedRow", "supportedRow", "supportedRow", "gobletSquat"]);
+    expect(movesAsSent(build, sent({ supportedRow: "T1309", gobletSquat: "T1301" }))).toEqual(
+      new Map([["freeA", "free_text"], ["supportedRow", "catalog"], ["gobletSquat", "catalog"]]),
+    );
+  });
+
+  it("a move sent as free text never counts as mapped — its T-code maps back to it, but its laps cannot carry that T-code", () => {
+    const mapped = mappedAsSent(build, sent({ gobletSquat: "T1301" }));
+    expect(["freeA", "supportedRow", "gobletSquat"].map(mapped)).toEqual([false, false, true]);
+  });
+
+  it("a move sent as its catalog step counts as mapped (when its T-code resolves back to it), whatever today's builder would do", () => {
+    const mapped = mappedAsSent(build, sent({ supportedRow: "T1309", gobletSquat: "T1301" }));
+    expect(["freeA", "supportedRow", "gobletSquat"].map(mapped)).toEqual([false, true, true]);
+    // A catalog step whose T-code the library does not resolve back to the move (two moves sharing it map to
+    // neither) comes back as an unmapped `coros:` entry: it pairs by order, not by id.
+    expect(mappedAsSent(build, sent({ freeA: "T1309", supportedRow: "T1309" }))("freeA")).toBe(false);
+  });
+
+  it("no push (a build started in the app), or a payload that does not line up with the build: as before, by the library's map", () => {
+    for (const mapped of [mappedAsSent(build, null), mappedAsSent(build, sent({}).slice(1))]) {
+      expect(["freeA", "supportedRow", "gobletSquat"].map(mapped)).toEqual([false, true, true]);
+    }
+    expect(movesAsSent(build, sent({}).slice(1))).toBeNull();
+  });
+});
+
+describe("the review pairs what the push SENT, never what today's builder would send (owner, 2026-10-10)", () => {
+  const fromWatch = (e: { sets: Array<{ from: string }> }) => e.sets.length > 0 && e.sets.every((x) => x.from === "watch");
+  const targetsOnly = (e: { sets: Array<{ from: string }> }) => e.sets.length > 0 && e.sets.every((x) => x.from === "target");
+  const entryOf = (entries: WatchReviewEntry[], id: string) => entries.find((e) => e.exerciseId === id)!;
+
+  it("a NEW-style push (the one-sided T1309 as free text, 'One Arm Dumbbell Row (L)'), done: every move prefills from the watch", async () => {
+    const s = await sentSlot();
+    const sent = programSessionPushJobSchema.parse((await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, pushJobId(s.build.buildId))))[0]!.payload);
+    expect(sent.session.steps.some((x) => x.name === "One Arm Dumbbell Row (L)" && x.originId === "0")).toBe(true);
+    expect(sent.session.steps.every((x) => x.originId === "0")).toBe(true);
+    await watchDone(s, { laps: await lapsAsSent(s.build) });
+    const { entries } = await watchReviewBasis(db, userId, s.workoutId, ctx());
+    for (const i of s.build.items) expect(fromWatch(entryOf(entries, i.exerciseId)), i.exerciseId).toBe(true);
+    expect(entries.filter((e) => e.exerciseId.startsWith("coros:"))).toEqual([]);
+    const row = entryOf(entries, ONE_SIDED_CATALOG_MOVE);
+    expect(row.perSide).toBe(true);
+    expect(row.sets.map((x) => x.side)).toEqual(row.sets.map((_, i) => (i % 2 === 0 ? "left" : "right")));
+  });
+
+  it("a NEW-style push, T1309 skipped on the watch: one free-text entry short, so nothing pairs by order (3-R7) — never a move paired with another's laps", async () => {
+    const s = await sentSlot();
+    await watchDone(s, { laps: await lapsAsSent(s.build, { skip: ONE_SIDED_CATALOG_MOVE }) });
+    const { entries } = await watchReviewBasis(db, userId, s.workoutId, ctx());
+    for (const i of s.build.items) expect(targetsOnly(entryOf(entries, i.exerciseId)), i.exerciseId).toBe(true);
+    expect(entries.filter((e) => e.exerciseId.startsWith("coros:")).length).toBe(s.build.items.length - 1);
+  });
+
+  it("a NEW-style push, another move skipped and T1309 done: never paired one move off", async () => {
+    const s = await sentSlot();
+    const first = s.build.items[0]!.exerciseId;
+    expect(first).not.toBe(ONE_SIDED_CATALOG_MOVE);
+    await watchDone(s, { laps: await lapsAsSent(s.build, { skip: first }) });
+    const { entries } = await watchReviewBasis(db, userId, s.workoutId, ctx());
+    for (const i of s.build.items) expect(targetsOnly(entryOf(entries, i.exerciseId)), i.exerciseId).toBe(true);
+  });
+
+  it("an OLD-style push (T1309 as its catalog step — today's live session), done: T1309 by its id, every free-text move by order", async () => {
+    const s = await sentSlot();
+    await asOldStylePush(s.build.buildId);
+    await watchDone(s, { laps: await lapsAsSent(s.build) });
+    const { entries } = await watchReviewBasis(db, userId, s.workoutId, ctx());
+    for (const i of s.build.items) expect(fromWatch(entryOf(entries, i.exerciseId)), i.exerciseId).toBe(true);
+    expect(entries.filter((e) => e.exerciseId.startsWith("coros:"))).toEqual([]);
+  });
+
+  it("an OLD-style push, T1309 skipped: the free-text moves still pair by order (audit 3-B S-7); T1309 shows its targets", async () => {
+    const s = await sentSlot();
+    await asOldStylePush(s.build.buildId);
+    await watchDone(s, { laps: await lapsAsSent(s.build, { skip: ONE_SIDED_CATALOG_MOVE }) });
+    const { entries } = await watchReviewBasis(db, userId, s.workoutId, ctx());
+    for (const i of s.build.items) {
+      const want = i.exerciseId === ONE_SIDED_CATALOG_MOVE ? targetsOnly : fromWatch;
+      expect(want(entryOf(entries, i.exerciseId)), i.exerciseId).toBe(true);
+    }
+    expect(entries.filter((e) => e.exerciseId.startsWith("coros:"))).toEqual([]);
   });
 });
 

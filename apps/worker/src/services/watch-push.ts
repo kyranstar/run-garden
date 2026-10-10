@@ -208,14 +208,42 @@ function sidesOf(s: Step, record: { laterality: string }): Array<Step["side"]> {
   return s.kind === "set" && s.side === null && record.laterality === "unilateral" ? ["Left", "Right"] : [s.side];
 }
 
+type BuildRecord = BuildPayload["exercises"][string];
+
+/** One stop of the build's walk to the watch: a rest, or one watch step — its build step, move and side. */
+type WalkStop = { rest: number } | { rest?: undefined; step: Step; exerciseId: string; record: BuildRecord; side: Step["side"] };
+
+/**
+ * THE ONE WALK from a build's steps to the watch's: a rest as it comes, each work step of a move the build carries as
+ * one watch step per side (`sidesOf`), in order. The steps (`watchStepsFromBuild`), the one-sided moves and each
+ * step's move (`watchStepMoves`) are all read off it, so a payload's step i is always `watchStepMoves`' move i.
+ */
+function* walkToWatch(build: BuildPayload): Generator<WalkStop> {
+  for (const s of build.steps) {
+    if (s.kind === "rest") {
+      yield { rest: s.seconds };
+      continue;
+    }
+    if (!s.exerciseId) continue;
+    const record = build.exercises[s.exerciseId];
+    if (!record) continue;
+    for (const side of sidesOf(s, record)) yield { step: s, exerciseId: s.exerciseId, record, side };
+  }
+}
+
+/**
+ * The move each of the build's watch steps is of, in the order `watchStepsFromBuild` lays them out: a payload sent
+ * for this build has step i of move i — whatever the builder of the day it was sent made of it (the review reads what
+ * each move went as off the push's own payload, owner 2026-10-10).
+ */
+export function watchStepMoves(build: BuildPayload): string[] {
+  return [...walkToWatch(build)].flatMap((w) => (w.rest === undefined ? [w.exerciseId] : []));
+}
+
 /** The build's moves any of whose watch steps has a side: their steps' names carry the side label. */
 function sidedMoves(build: BuildPayload): Set<string> {
   const out = new Set<string>();
-  for (const s of build.steps) {
-    if (s.kind === "rest" || !s.exerciseId) continue;
-    const record = build.exercises[s.exerciseId];
-    if (record && sidesOf(s, record).some((side) => side !== null)) out.add(s.exerciseId);
-  }
+  for (const w of walkToWatch(build)) if (w.rest === undefined && w.side !== null) out.add(w.exerciseId);
   return out;
 }
 
@@ -245,28 +273,24 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
   const steps: ProgramWatchStep[] = [];
   const sided = sidedMoves(build);
   const names = freeTextNames(build, deps, sided);
-  for (const s of build.steps) {
-    if (s.kind === "rest") {
+  for (const w of walkToWatch(build)) {
+    if (w.rest !== undefined) {
       const prev = steps.at(-1);
-      if (prev) prev.restSeconds = Math.min(MAX_REST_SECONDS, prev.restSeconds + Math.max(0, Math.round(s.seconds)));
+      if (prev) prev.restSeconds = Math.min(MAX_REST_SECONDS, prev.restSeconds + Math.max(0, Math.round(w.rest)));
       continue;
     }
-    if (!s.exerciseId) continue;
-    const record = build.exercises[s.exerciseId];
-    if (!record) continue;
-    const catalog = catalogStepOf(s.exerciseId, deps, sided);
-    const free = catalog ? null : names.get(s.exerciseId)!;
-    for (const side of sidesOf(s, record)) {
-      steps.push({
-        originId: catalog?.originId ?? FREE_TEXT_ORIGIN_ID,
-        name: catalog ? catalog.key : `${free!.name}${sideLabel(side)}`,
-        target: targetOf(s),
-        grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
-        restSeconds: 0,
-        overview: overviewOf(side, free?.qualifier ?? null, record.text.focus[0]),
-        side: side === "Left" ? "left" : side === "Right" ? "right" : null,
-      });
-    }
+    const { step: s, record, side } = w;
+    const catalog = catalogStepOf(w.exerciseId, deps, sided);
+    const free = catalog ? null : names.get(w.exerciseId)!;
+    steps.push({
+      originId: catalog?.originId ?? FREE_TEXT_ORIGIN_ID,
+      name: catalog ? catalog.key : `${free!.name}${sideLabel(side)}`,
+      target: targetOf(s),
+      grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
+      restSeconds: 0,
+      overview: overviewOf(side, free?.qualifier ?? null, record.text.focus[0]),
+      side: side === "Left" ? "left" : side === "Right" ? "right" : null,
+    });
   }
   const refusal: WatchRefusal | null =
     steps.length === 0 ? "empty" : steps.length > WATCH_MAX_STEPS ? "too_long" : null;
