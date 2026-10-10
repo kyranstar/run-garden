@@ -84,4 +84,11 @@ export const THEMES: readonly Theme[] = [
     emphasis: { patterns: { mobility: 2, rotate: 1 }, regions: { hips: 1.5, thoracic: 1.5, ankles: 1 } },
     formats: ["flow", "holds"], coreBias: [],
   },
+  {
+    // Never a recovery theme: its moves are plyometric, and condition profiles decide the days they may appear.
+    id: "plyoIntro", name: "Jumps and landings", blurb: "Land softly first, then add a little spring: small hops and stuck landings, with plenty of rest.",
+    modes: ["consistent", "build"],
+    emphasis: { patterns: { squat: 2, lunge: 1 }, regions: { calves: 1.5, ankles: 1.5, quads: 1, glutes: 1 }, tags: { landing: 3, elastic: 3, deceleration: 2 } },
+    formats: ["straight", "superset"], coreBias: ["squat", "hinge"],
+  },
 ];

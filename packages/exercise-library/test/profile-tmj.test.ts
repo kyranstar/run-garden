@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  FORMAT_IDS, MODE_IDS, PATTERNS, PROFILES, TMJ,
-  type Attrs, type CheckReading, type ExerciseRecord, type HistorySession, type Mode, type ProposalCtx,
+  EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, makeEngineData,
+  type Attrs, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type ProposalCtx,
 } from "../src/index.js";
 
 // The TMJ profile reproduces the standalone tool's thresholds and sentences exactly.
@@ -71,6 +71,18 @@ describe("TMJ profile — exercise rules", () => {
     }
   });
 
+  it("allowRecord: a plyometric move never in recovery, otherwise only with an answered pre-check of 2 or less", () => {
+    const rec = (contraction: string[]) => ({ contraction }) as unknown as ExerciseRecord;
+    for (const mode of MODE_IDS) {
+      for (const pre of [null, 0, 1, 2, 3, 4, 5]) {
+        const ok = mode !== "recovery" && pre != null && pre <= 2;
+        expect(TMJ.allowRecord!(rec(["plyometric"]), mode, reading(pre)), `${mode} ${pre}`).toBe(ok);
+        expect(TMJ.allowRecord!(rec(["eccentric", "plyometric"]), mode, reading(pre)), `${mode} ${pre} mixed`).toBe(ok);
+        for (const c of ["isometric", "isotonic", "eccentric", "passive"]) expect(TMJ.allowRecord!(rec([c]), mode, reading(pre))).toBe(true);
+      }
+    }
+  });
+
   it("coreCandidate: clench ≤ 2; flareSafe: clench ≤ 1, neck ≤ 1, not face down", () => {
     expect([0, 1, 2, 3].map(c => TMJ.coreCandidate(a(c)))).toEqual([true, true, true, false]);
     expect(TMJ.flareSafe(a(1, 1, false))).toBe(true);
@@ -90,6 +102,43 @@ describe("TMJ profile — exercise rules", () => {
     expect(TMJ.flareSafe({})).toBe(false);
     expect(TMJ.fitsMode({ clench: 0 }, "recovery")).toBe(false);
     expect(TMJ.coreCandidate({ clench: true })).toBe(false);
+  });
+});
+
+describe("TMJ profile — the plyometric gate through eligibility (Task 5)", () => {
+  const data = makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: EXERCISES });
+  const gym = LOCATION_PRESETS.find(l => l.id === "gym")!.equipment;
+  const plyometric = EXERCISES.filter(e => e.contraction.includes("plyometric"));
+  const checks = (pre: number | null) => ({ tmj: reading(pre) });
+
+  it("the library has a graded plyometric ladder to gate", () => {
+    expect(plyometric.length).toBeGreaterThanOrEqual(12);
+  });
+
+  it("no plyometric move is eligible in recovery, whatever the check, or on its calmest day", () => {
+    for (const ex of plyometric) {
+      expect(eligible(data, ex, { equipment: gym, mode: "recovery" }), ex.id).toBe(false);
+      for (const pre of [null, 0, 1, 2]) expect(eligible(data, ex, { equipment: gym, mode: "recovery", checks: checks(pre) }), `${ex.id} ${pre}`).toBe(false);
+    }
+  });
+
+  it("in consistent and build, only with an answered pre-check of 2 or less", () => {
+    for (const ex of plyometric) {
+      for (const mode of ["consistent", "build"] as const) {
+        const cap = data.modes[mode].maxDifficulty;
+        for (const pre of [null, 3, 4, 6]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(false);
+        for (const pre of [0, 1, 2]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(ex.difficulty <= cap);
+      }
+    }
+  });
+
+  it("a profile without the hook allows the record (the hook is optional; absent means allow)", () => {
+    const { allowRecord: _dropped, ...rest } = TMJ;
+    const hookless: ConditionProfile = rest;
+    const loose: EngineData = { ...data, profiles: { active: [hookless], care: [hookless] } };
+    const tuck = EXERCISES.find(e => e.id === "tuckJump")!;
+    expect(eligible(data, tuck, { equipment: gym, mode: "build", checks: checks(4) })).toBe(false);
+    expect(eligible(loose, tuck, { equipment: gym, mode: "build", checks: checks(4) })).toBe(true);
   });
 });
 

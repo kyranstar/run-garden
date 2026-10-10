@@ -103,6 +103,7 @@ export const EXTRA_STRENGTH = defineExercises([
     tags: ["ski"],
     themes: ["skiPrep"],
     providers: { coros: { key: "T1231", confidence: "exact", method: "curated" } }, // COROS: Wall Sit
+    harder: ["wallSitSingleLegShift"],
     text: {
       summary: "Back against a wall, slide down until the knees are bent, and hold while breathing slowly.",
       setup: [
@@ -182,6 +183,7 @@ export const EXTRA_STRENGTH = defineExercises([
     tags: [],
     themes: ["posteriorChain"],
     easier: ["bridge"],
+    harder: ["nordicCurlAssisted"],
     text: {
       summary: "Heels on a chair seat, press down and lift the hips into a bridge.",
       setup: [

@@ -370,6 +370,7 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "reps", range: [4, 6], sets: [2, 3], restSec: 45, secsPerRep: 6 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    easier: ["lateralLungeToBalance"],
     tags: ["lateral", "ski"],
     contraction: ["isotonic"],
     muscles: { primary: ["adductors", "quads", "glute-max"], secondary: ["hamstrings", "glute-med"] },

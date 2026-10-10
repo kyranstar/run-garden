@@ -97,6 +97,11 @@ export interface ConditionProfile {
   fitsMode(a: Attrs, mode: Mode): boolean;
   fitsFormat(a: Attrs, formatId: FormatId): boolean;
   allowPattern(pattern: Pattern, mode: Mode, today: CheckReading): boolean;
+  /**
+   * A rule on the whole record for today, beside `allowPattern` (optional; absent allows): for what one pattern can't
+   * say, e.g. "plyometric moves never in recovery, otherwise only with an answered, calm check".
+   */
+  allowRecord?(ex: ExerciseRecord, mode: Mode, today: CheckReading): boolean;
   coreCandidate(a: Attrs): boolean;
   blockAssignable(ex: ExerciseRecord): boolean;
   flareSafe(a: Attrs): boolean;

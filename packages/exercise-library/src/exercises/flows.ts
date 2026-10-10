@@ -1,0 +1,181 @@
+// Yoga flows: short sequences done as one continuous, breath-paced move, for mobility, warming up or winding down.
+import { defineExercises } from "../define.js";
+
+export const FLOWS = defineExercises([
+  {
+    id: "hipOpeningFlow",
+    name: "Hip-opening flow",
+    family: "hipFlow",
+    patterns: ["mobility"],
+    regions: ["hips", "glutes"],
+    roles: ["mobility", "warmup", "cooldown"],
+    equipment: { all: ["mat"] },
+    position: "quadruped",
+    laterality: "unilateral",
+    load: "none",
+    dose: { type: "time", range: [60, 90] },
+    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    difficulty: 1,
+    contraction: ["isotonic"],
+    muscles: { primary: ["hip-flexors", "adductors"], secondary: ["deep-hip-rotators", "glute-max"] },
+    purposes: ["mobility", "recovery"],
+    tags: ["hip-opening"],
+    themes: ["gentleMobility", "hipsPosture", "deskUnwind"],
+    harder: ["skiHipFlow"],
+    text: {
+      summary: "A slow loop from all fours into a low lunge and back, opening the front of the hip.",
+      setup: ["Start on all fours on a mat, with a cushion under the knees if you like."],
+      steps: [
+        "From all fours, step one foot forward beside the hand into a low lunge.",
+        "Ease the hips forward for a breath, then rock back to straighten the front leg a little.",
+        "Rock forward again and let the front knee fall open to the side for a breath.",
+        "Step back to all fours and flow through it again; the timer tells you when to change legs."
+      ],
+      focus: ["Move with the breath, never into pain.", "Let the hips sink rather than pushing them."],
+      mistakes: ["Forcing the depth.", "Holding the breath.", "Letting the low back arch in the lunge."],
+      breathing: "Breathe out as you sink in and in as you come back; one breath per position.",
+      conditions: { tmj: "Let the jaw hang soft and breathe through the nose; nothing here needs effort from the face." },
+      why: "Opens tight hip flexors and inner thighs after sitting, with gentle movement instead of long holds."
+    }
+  },
+  {
+    id: "thoracicFlow",
+    name: "Upper-back flow",
+    family: "thoracicFlow",
+    patterns: ["mobility", "rotate"],
+    regions: ["thoracic", "upper-back", "shoulders"],
+    roles: ["mobility", "warmup"],
+    equipment: { all: ["mat"] },
+    position: "quadruped",
+    laterality: "alternating",
+    load: "none",
+    dose: { type: "time", range: [90, 150] },
+    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    difficulty: 1,
+    contraction: ["isotonic"],
+    muscles: { primary: ["thoracic-extensors"], secondary: ["rhomboids", "obliques", "serratus-anterior", "lats"] },
+    purposes: ["mobility", "warmup"],
+    tags: ["desk-relief"],
+    themes: ["deskUnwind", "gentleMobility", "upperBackNeck"],
+    text: {
+      summary: "Cat-cow, thread the needle and an open reach, flowing slowly on all fours.",
+      setup: ["Start on all fours, hands under the shoulders and knees under the hips."],
+      steps: [
+        "Round and then arch the spine slowly a few times, starting each move from the upper back.",
+        "Slide one arm under the body and rest that shoulder and the side of the head down for a breath.",
+        "Sweep the same arm up toward the ceiling, following the hand with your eyes.",
+        "Alternate arms, flowing with the breath until the time is up."
+      ],
+      focus: ["The turn comes from the upper back, not the low back.", "The hips stay over the knees."],
+      mistakes: ["Swinging the hips to fake the turn.", "Cranking the neck to look further."],
+      breathing: "Breathe in as you open, out as you thread through.",
+      conditions: { tmj: "Let the side of the head rest heavily as you thread through; keep the teeth apart and the face soft." },
+      why: "Restores turning and extension through the upper back, which easy breathing and an easy neck depend on."
+    }
+  },
+  {
+    id: "downRegulationFlow",
+    name: "Wind-down flow",
+    family: "downRegulationFlow",
+    patterns: ["mobility"],
+    regions: ["core", "low-back", "hips"],
+    roles: ["cooldown", "downshift"],
+    equipment: { all: ["mat"] },
+    position: "kneeling",
+    laterality: "bilateral",
+    load: "none",
+    dose: { type: "time", range: [120, 180] },
+    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    difficulty: 1,
+    contraction: ["isotonic", "passive"],
+    muscles: { primary: ["diaphragm"], secondary: ["erector-spinae", "glute-max", "obliques"] },
+    purposes: ["recovery", "cooldown"],
+    tags: ["breath"],
+    themes: ["gentleMobility", "jawReset"],
+    text: {
+      summary: "Slow breaths in child's pose, a gentle cat-cow, then knees rocking on your back.",
+      setup: ["Kneel on a mat with the knees wide and the big toes together."],
+      steps: [
+        "Fold into child's pose and take five slow breaths, each breath out longer than the breath in.",
+        "Come onto all fours and move through a few slow cat-cows.",
+        "Roll onto your back with the feet flat and let the knees rock slowly from side to side.",
+        "Finish lying still, hands on the belly, for the last few breaths."
+      ],
+      focus: ["Slower each round.", "Long, easy breaths out."],
+      mistakes: ["Rushing to get through it.", "Forcing any position."],
+      breathing: "Breathe in through the nose for about four counts and out for about six.",
+      conditions: { tmj: "Lips closed, teeth apart, tongue resting on the roof of the mouth; let the jaw go heavy on every breath out." },
+      why: "Gentle movement and long breaths out settle the body after training or a tense day."
+    }
+  },
+  {
+    id: "skiHipFlow",
+    name: "Ski hip flow",
+    family: "hipFlow",
+    patterns: ["mobility"],
+    regions: ["hips", "glutes"],
+    roles: ["mobility", "warmup", "cooldown"],
+    equipment: { all: ["mat"] },
+    position: "half-kneeling",
+    laterality: "unilateral",
+    load: "none",
+    dose: { type: "time", range: [60, 90] },
+    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["hip-flexors", "deep-hip-rotators"], secondary: ["adductors", "glute-max", "glute-med"] },
+    purposes: ["mobility", "recovery"],
+    tags: ["ski", "hip-opening"],
+    themes: ["skiPrep", "hipsPosture", "gentleMobility"],
+    easier: ["hipOpeningFlow"],
+    text: {
+      summary: "Lizard, then pigeon, then 90/90: one slow flow through the hips for each leg.",
+      setup: ["Start on all fours on a mat, with a cushion or block nearby to sit on."],
+      steps: [
+        "Lizard: step one foot outside the hand and sink the hips toward the floor for two breaths.",
+        "Pigeon: slide the front knee down and out, the shin angled across the body, and sit tall over it for two breaths.",
+        "90/90: turn to sit with both knees bent at right angles, front shin across and back shin out to the side; sit tall for two breaths.",
+        "Come back to all fours and flow through it again; the timer tells you when to change legs."
+      ],
+      focus: ["Sit tall in pigeon rather than folding down.", "Put the cushion under the hip if it lifts well off the floor."],
+      mistakes: ["Forcing the front knee down in pigeon.", "Twisting the low back instead of turning at the hip.", "Pushing through knee pain; ease off and prop the hip instead."],
+      breathing: "Two slow breaths in each shape, longer out than in.",
+      conditions: { tmj: "Stay upright in pigeon rather than folding the face to the floor; keep the jaw soft and the breath slow." },
+      why: "Opens the hip flexors and rotators that a skier's crouch and turns tighten."
+    }
+  },
+  {
+    id: "morningMobilityFlow",
+    name: "Morning mobility flow",
+    family: "mobilityFlow",
+    patterns: ["mobility", "rotate"],
+    regions: ["full-body", "hips", "thoracic", "hamstrings"],
+    roles: ["warmup", "mobility"],
+    position: "standing",
+    laterality: "bilateral",
+    load: "none",
+    dose: { type: "time", range: [120, 180] },
+    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    difficulty: 1,
+    contraction: ["isotonic"],
+    muscles: { primary: ["hip-flexors", "thoracic-extensors", "hamstrings"], secondary: ["lats", "obliques", "soleus"] },
+    purposes: ["mobility", "warmup"],
+    tags: [],
+    themes: ["gentleMobility", "deskUnwind"],
+    text: {
+      summary: "Reach, fold, crouch and turn: a standing flow to wake the whole body up.",
+      setup: ["Stand with the feet hip-width apart and a little room around you."],
+      steps: [
+        "Reach both arms overhead, then lean gently from side to side.",
+        "Soften the knees and roll down into a forward fold, then roll back up.",
+        "Sink into a deep squat for a few breaths, elbows gently easing the knees apart.",
+        "Stand and swing the arms around you in easy turns; repeat the loop until the time is up."
+      ],
+      focus: ["Easy range, no forcing.", "Let the breath set the pace."],
+      mistakes: ["Bouncing in the fold.", "Locking the knees.", "Rushing."],
+      breathing: "Breathe in as you reach and rise, out as you fold and sink.",
+      conditions: { tmj: "Let the head hang heavy in the fold and keep the jaw loose throughout." },
+      why: "A few minutes of easy range through the hips, spine and shoulders helps the rest of the day move better."
+    }
+  },
+]);

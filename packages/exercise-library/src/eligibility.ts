@@ -19,7 +19,7 @@ export function hasEquipment(ex: ExerciseRecord, equipment: readonly string[] | 
 }
 
 /**
- * The mode's general limits plus every active profile's `never`, `fitsMode` and `allowPattern`.
+ * The mode's general limits plus every active profile's `never`, `fitsMode`, `allowPattern` and `allowRecord`.
  * With `checks`, the day's readings apply (an unanswered profile reads as unanswered); without them, the
  * question is whether the move fits this mode at all, judged on each profile's calmest day.
  * An active profile with no rating on the record fails closed.
@@ -35,6 +35,7 @@ export function fitsMode(data: EngineData, ex: ExerciseRecord, mode: Mode, check
     if (p.never(a) || !p.fitsMode(a, mode)) return false;
     const today = checks ? checks[p.id] ?? UNANSWERED : bestDay(p);
     if (!ex.patterns.every(pattern => p.allowPattern(pattern, mode, today))) return false;
+    if (p.allowRecord && !p.allowRecord(ex, mode, today)) return false;
   }
   return true;
 }

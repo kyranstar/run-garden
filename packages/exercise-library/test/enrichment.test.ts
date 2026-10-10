@@ -68,7 +68,92 @@ describe("themes for the new tags", () => {
     }
   });
 
-  test("plyoIntro waits for its moves (Task 5)", () => {
-    expect(THEMES.some(t => t.id === "plyoIntro")).toBe(false);
+  test("plyoIntro lands with its moves: never a recovery theme, and every move tagged with it is plyometric", () => {
+    const t = THEMES.find(x => x.id === "plyoIntro");
+    expect(t, "plyoIntro is missing").toBeTruthy();
+    expect(t!.modes).not.toContain("recovery");
+    const moves = EXERCISES.filter(e => e.themes.includes("plyoIntro"));
+    expect(moves.length).toBeGreaterThanOrEqual(3);
+    for (const e of moves) expect(e.contraction, e.id).toContain("plyometric");
+  });
+});
+
+// Task 5: a graded plyometric ladder, ski-specific moves and yoga flows.
+const byId = (id: string) => EXERCISES.find(e => e.id === id);
+const LADDER = [
+  "landingStick", "snapDown", "pogoHop", "lineHopForwardBack", "lineHopLateral", "skaterBoundLow", "skaterBoundStick",
+  "lateralHopStick", "broadJumpStick", "boxJumpStepDown", "dropLanding", "tuckJump",
+];
+const SKI = ["wallSitSingleLegShift", "singleLegBalanceReach", "nordicCurlAssisted", "lateralLungeToBalance", "skaterSquat", "pallofIsoHoldHalfKneel"];
+const FLOWS = ["hipOpeningFlow", "thoracicFlow", "downRegulationFlow", "skiHipFlow", "morningMobilityFlow"];
+
+describe("the plyometric ladder", () => {
+  const plyometric = EXERCISES.filter(e => e.contraction.includes("plyometric"));
+
+  test("every rung exists, and the only plyometric moves are the ladder's", () => {
+    for (const id of LADDER) expect(byId(id), id).toBeTruthy();
+    expect(plyometric.map(e => e.id).sort()).toEqual([...LADDER].sort());
+  });
+
+  test("difficulty rises up the ladder: the landing drills first, the tuck jump alone at the top", () => {
+    const d = LADDER.map(id => byId(id)!.difficulty);
+    for (let i = 1; i < d.length; i++) expect(d[i], LADDER[i]).toBeGreaterThanOrEqual(d[i - 1]!);
+    expect(byId("landingStick")!.difficulty).toBe(1);
+    expect(byId("tuckJump")!.difficulty).toBe(5);
+    expect(plyometric.filter(e => e.difficulty === 5).map(e => e.id)).toEqual(["tuckJump"]);
+  });
+
+  test("easier links point down and harder links up, so each family starts at its gentlest variant", () => {
+    for (const e of plyometric) {
+      for (const id of e.easier) expect(byId(id)!.difficulty, `${e.id} easier ${id}`).toBeLessThanOrEqual(e.difficulty);
+      for (const id of e.harder) expect(byId(id)!.difficulty, `${e.id} harder ${id}`).toBeGreaterThanOrEqual(e.difficulty);
+      const family = plyometric.filter(x => x.family === e.family);
+      const gentlest = Math.min(...family.map(x => x.difficulty));
+      if (e.difficulty > gentlest) expect(e.easier.some(id => family.some(x => x.id === id)), `${e.id} links down its family`).toBe(true);
+    }
+  });
+
+  test("accessory work only (recovery has no accessory block), dosed in contacts with generous rest", () => {
+    for (const e of plyometric) {
+      expect(e.roles, e.id).toEqual(["accessory"]);
+      expect(e.dose.type, e.id).toBe("reps");
+      expect(e.dose.restSec ?? 0, e.id).toBeGreaterThanOrEqual(60);
+      expect(e.load, e.id).toBe("bodyweight");
+    }
+  });
+
+  test("honest jaw ratings: every jump clenches at least a little, the tuck jump and drop landing most", () => {
+    for (const e of plyometric) {
+      const r = e.conditions.tmj as { clench: number; neckLoad: number; faceDown: boolean };
+      expect([1, 2], e.id).toContain(r.clench);
+      expect(r.faceDown, e.id).toBe(false);
+      expect(e.text.conditions.tmj, e.id).toMatch(/teeth apart, tongue up, soft landing/i);
+    }
+    expect(byId("tuckJump")!.conditions.tmj!.clench).toBe(2);
+    expect(byId("dropLanding")!.conditions.tmj!.clench).toBe(2);
+  });
+});
+
+describe("ski-specific moves and yoga flows", () => {
+  test("the new ski moves exist and extend the existing families rather than duplicating them", () => {
+    for (const id of SKI) expect(byId(id), id).toBeTruthy();
+    // Already in the library: the wall sit, the split-squat hold and the short-lever Copenhagen plank.
+    for (const id of ["isometricSplitSquatHold", "copenhagenPlankShort"]) expect(byId(id), id).toBeUndefined();
+    expect(byId("wallSit")!.harder).toContain("wallSitSingleLegShift");
+    expect(byId("wallSitSingleLegShift")!.family).toBe("wallSit");
+    expect(byId("pallofIsoHoldHalfKneel")!.family).toBe("pallof");
+    expect(byId("hamstringBridgeChair")!.harder).toContain("nordicCurlAssisted");
+    expect(byId("cossackSquat")!.easier).toContain("lateralLungeToBalance");
+  });
+
+  test("the flows move continuously, for mobility or recovery, with a quiet jaw", () => {
+    for (const id of FLOWS) {
+      const e = byId(id)!;
+      expect(e, id).toBeTruthy();
+      expect(e.contraction, id).toContain("isotonic");
+      expect(e.purposes.some(p => p === "mobility" || p === "recovery"), id).toBe(true);
+      expect(e.conditions.tmj, id).toEqual({ clench: 0, neckLoad: 0, faceDown: false });
+    }
+    expect(byId("skiHipFlow")!.text.steps.join(" ")).toMatch(/lizard[\s\S]*pigeon[\s\S]*90\/90/i);
   });
 });
