@@ -281,6 +281,12 @@ and it reasons, designs, reviews its own work and proposes. It is not a template
 - **Budget-aware**: tools return what fits; the loop has a step cap and a cost cap.
 
 ### 6.3 Context engineering
+- **Tools first; inject only what the agent must know.** The opening prompt carries only what every request needs
+  and the model could not sensibly decide to look up: the principles, the request and its scope, today's date and
+  time, the active conditions' hard rules, and a short index of what the tools can reach. Everything else —
+  history, soreness, feedback, objectives, the library, past workouts, the plan — the agent fetches by tool call
+  when it decides it needs it. A fact pasted "just in case" is a defect; a fact the agent needed and could not
+  reach is a missing tool.
 - **Minimal sufficient context**: a stable, cacheable prefix (principles, the athlete's profile summary, tool
   contracts) plus what the model retrieves. Large data is fetched by tools, not pasted.
 - **Unknowns are explicit**: what could not be read, stale data, missing measurements are stated as such.
@@ -426,6 +432,14 @@ garden-voice rules.
 Each stage ends with: finders on correctness, safety (conditions, privacy, budgets), and principle conformance
 against this document; verifiers; a fix wave; a re-review.
 
+**Scenario (user-journey) red-teams**, at design time and again against the built system: an agent imagines the
+athlete's common journeys and walks each one end to end through the design or the running app, asking at every step
+whether the system knows what it needs, can reach it by a tool, and produces something of high quality. Examples:
+opening the app wanting a quick jaw release; a recovery session for soreness (does the coach know *where* the
+athlete is sore?); planning the week (does it know where the athlete is, what they did recently, what they liked?);
+editing a workout; "something like that workout from last week". The red-team brainstorms many more, checks each
+thoroughly, and every gap it finds becomes a fix, a tool, a field or a recorded decision.
+
 At the end of the programme, additionally:
 1. **The request, verbatim**: separate agents audit the result against every theme and sentence of the owner's
    original request (kept in the private companion).
@@ -462,4 +476,5 @@ At the end of the programme, additionally:
 | 2026-10-10 | Keep the coach's memory and its other proven features, improved (§6.7, §6.8). |
 | 2026-10-10 | Extras in: **exercise feedback** after sessions, **plan my week**, **saved templates**. One simple coach control with a **scope** (default *now / later today*; this week; next N workouts) and settings for how many and when; multi-workout requests are **orchestrated by a main agent with sub-agents per workout** (§6.9); the coach **asks on its own judgement** wherever it helps, with worked examples (§6.10). |
 | 2026-10-10 | Overnight autonomy granted: build Stage 1 end to end, then the Studio (from the lead's own mocks — the owner reviews live in the morning), then Stage 3 **all the way, live against the real model within the weekly cap**, auditing and fixing as we go. Stage 1's additive schema changes may deploy once tests and audits pass; the profile/objectives seed and the workout-document backfill may run (dry run first, verified). Execution: subagents in batches + independent audits. |
+| 2026-10-10 | Scenario red-teams of the design and of the built system (§10); the coach gets context by **tool calls**, and the opening prompt carries only what it must know (§6.3). |
 | 2026-10-10 | "Every workout should be designed with intention and awareness of the possibilities … do not be overly prescriptive for the coach, but instead empower the coach." (§2.1, §2.2, §6.1) |
