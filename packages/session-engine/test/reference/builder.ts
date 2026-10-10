@@ -224,19 +224,37 @@ const unlocksBy = (ctx: Pick<Ctx, "stats" | "data">) => (id: string): boolean =>
 const jumpRule = (ex: ExerciseRecord, jumps: boolean, ctx: Pick<Ctx, "stats" | "data">): boolean =>
   jumps ? isPlyometric(ex) && onFrontier(ex, unlocksBy(ctx)) : !isPlyometric(ex);
 
+/** Whether the move's last logged exposure carried an active profile's flag: it rests until it is done cleanly. */
+const lastFlaggedBy = (ctx: Ctx) => (id: string): boolean => {
+  const last = Prog.historyFor(ctx.data, ctx.sessions, id)[0];
+  return Boolean(last && ctx.data.profiles.active.some(p => p.setFlag && last.flags.includes(p.setFlag.id)));
+};
+
 /**
- * The jumps block's order: the next rung first (a move not yet done, gentlest first), at most one new move a session;
- * then the hardest rungs already done (today's gate and the mode's cap have already ruled on every candidate), so a
- * walked ladder keeps its top rungs instead of falling back to the first. Ties keep the usual ranking.
+ * The jumps block's order:
+ *  1. the next rung: a move not yet done, gentlest first, at most one a session;
+ *  2. the rotation: among moves last done cleanly, the top two difficulty tiers, in the usual order, so novelty and
+ *     recent repetition rotate them (each slot ranks what is left, so a second slot reaches further down);
+ *  3. other moves last done cleanly, hardest first;
+ *  4. moves whose last logged exposure carried a profile's flag, hardest first: the rung below takes their place.
+ * Today's gate and the mode's cap have already ruled on every candidate. Ties keep the usual ranking.
  */
 function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx): Scored[] {
   const done = doneBy(ctx);
+  const flagged = lastFlaggedBy(ctx);
   const newPlaced = placed.some(it => !done(it.exercise.id));
-  const key = (ex: ExerciseRecord): number => (done(ex.id) ? 100 - ex.difficulty : ex.difficulty);
-  return ranked
-    .filter(r => !newPlaced || done(r.ex.id))
+  const pool = ranked.filter(r => !newPlaced || done(r.ex.id));
+  const clean = pool.filter(r => done(r.ex.id) && !flagged(r.ex.id)).map(r => r.ex);
+  const levels = [...new Set(clean.map(ex => ex.difficulty))].sort((a, b) => b - a);
+  const floor = levels[1] ?? levels[0] ?? Infinity;
+  const group = (ex: ExerciseRecord): number => (!done(ex.id) ? 0 : flagged(ex.id) ? 3 : ex.difficulty >= floor ? 1 : 2);
+  const key = (ex: ExerciseRecord): number => {
+    const g = group(ex);
+    return g === 0 ? ex.difficulty : g === 1 ? 0 : -ex.difficulty;
+  };
+  return pool
     .map((r, i) => ({ r, i }))
-    .sort((a, b) => Number(done(a.r.ex.id)) - Number(done(b.r.ex.id)) || key(a.r.ex) - key(b.r.ex) || a.i - b.i)
+    .sort((a, b) => group(a.r.ex) - group(b.r.ex) || key(a.r.ex) - key(b.r.ex) || a.i - b.i)
     .map(x => x.r);
 }
 

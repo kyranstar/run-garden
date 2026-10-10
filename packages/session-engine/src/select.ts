@@ -38,9 +38,48 @@ export interface SelectCtx {
   saved?: ReadonlySet<string>;
   /**
    * A build's cache of each move's slot-independent score parts (theme, debt, novelty, saves, rating, repetition,
-   * flags, tie-breaker): the same for every slot of one build, so worked out once. Only for one build's context.
+   * flags, tie-breaker): the same for every slot of one build, so worked out once. It answers only for the context it
+   * was filled under (see `ScoreMemo`): a context spread with another theme, history or prefs scores fresh.
    */
-  memo?: Map<string, ScoreBase>;
+  memo?: ScoreMemo;
+}
+
+/** Everything the cached parts read, by identity: a context that differs in any of them must not read the cache. */
+export interface ScoreDeps {
+  data: EngineData;
+  theme: SelectCtx["theme"];
+  debt: SelectCtx["debt"];
+  maxDebt: number;
+  coverageLast: SelectCtx["coverageLast"];
+  stats: SelectCtx["stats"];
+  prefs: SelectCtx["prefs"];
+  saved: SelectCtx["saved"];
+  today: string;
+  jitter: SelectCtx["jitter"];
+}
+
+/** The score cache and the context it was filled under. */
+export interface ScoreMemo {
+  deps: ScoreDeps | null;
+  map: Map<string, ScoreBase>;
+}
+
+/** The cache for this context, or null when it was filled under another one (or there is no fixed tie-breaker). */
+function memoFor(data: EngineData, ctx: SelectCtx): Map<string, ScoreBase> | null {
+  const memo = ctx.memo;
+  if (!memo || !ctx.jitter) return null;
+  const d = memo.deps;
+  if (!d) {
+    memo.deps = {
+      data, theme: ctx.theme, debt: ctx.debt, maxDebt: ctx.maxDebt, coverageLast: ctx.coverageLast, stats: ctx.stats,
+      prefs: ctx.prefs, saved: ctx.saved, today: ctx.today, jitter: ctx.jitter,
+    };
+    return memo.map;
+  }
+  const same = d.data === data && d.theme === ctx.theme && d.debt === ctx.debt && d.maxDebt === ctx.maxDebt &&
+    d.coverageLast === ctx.coverageLast && d.stats === ctx.stats && d.prefs === ctx.prefs && d.saved === ctx.saved &&
+    d.today === ctx.today && d.jitter === ctx.jitter;
+  return same ? memo.map : null;
 }
 
 /** The parts of a move's score that no slot changes (see `SelectCtx.memo`). */
@@ -153,7 +192,8 @@ function debtText(top: DebtTop | null, ctx: SelectCtx): string {
 
 /** The parts of a move's score no slot changes (memoised per build when the context carries a `memo`). */
 function baseOf(data: EngineData, ex: ExerciseRecord, ctx: SelectCtx): ScoreBase {
-  const cached = ctx.memo?.get(ex.id);
+  const memo = memoFor(data, ctx);
+  const cached = memo?.get(ex.id);
   if (cached) return cached;
   const st = (ctx.stats && ctx.stats.get(ex.id)) || { lastDate: null, recent: 0, logged: 0, flags: {} };
   const d = debtFit(ex, ctx);
@@ -177,7 +217,7 @@ function baseOf(data: EngineData, ex: ExerciseRecord, ctx: SelectCtx): ScoreBase
     // A fixed per-exercise tie-breaker (builder) can be kept; a plain rng is drawn per score, never cached.
     noise: ctx.jitter ? ctx.jitter(ex.id) : null,
   };
-  if (ctx.memo && ctx.jitter) ctx.memo.set(ex.id, base);
+  memo?.set(ex.id, base);
   return base;
 }
 

@@ -128,3 +128,19 @@ describe("beyond the standalone suite", () => {
     expect(Select.score(none, Lib.get(base, "hipB")!, c).total - Select.score(none, Lib.get(base, "hipA")!, c).total).toBeCloseTo(0, 10);
   });
 });
+
+test("the score cache never answers for another context: re-spread with another theme, a move scores fresh", () => {
+  const jitter = (id: string) => Rng.create(`j|${id}`)();
+  const desk = { id: "t", name: "Desk", blurb: "", modes: [], formats: [], coreBias: [], emphasis: { patterns: {}, regions: { thoracic: 2 }, tags: { "desk-relief": 2 } } };
+  const hips = { ...desk, id: "h", name: "Hips", emphasis: { patterns: {}, regions: { thoracic: 0, hips: 3 }, tags: { "desk-relief": 0 } } };
+  const cached: SelectCtx = ctx({ theme: desk, jitter, memo: { deps: null, map: new Map() } });
+  const [thoracic, hip] = byId(["thoracic", "hipA"]) as [ReturnType<typeof Lib.get> & object, ReturnType<typeof Lib.get> & object];
+  const fresh = (theme: typeof desk) => Select.score(base, hip, ctx({ theme, jitter }));
+  expect(Select.score(base, thoracic, cached)).toEqual(Select.score(base, thoracic, ctx({ theme: desk, jitter })));
+  expect(Select.score(base, hip, cached)).toEqual(fresh(desk));
+  // The same memo, spread into a context with another theme: no stale theme fit.
+  expect(Select.score(base, hip, { ...cached, theme: hips })).toEqual(fresh(hips));
+  expect(Select.score(base, hip, { ...cached, theme: hips }).total).toBeGreaterThan(fresh(desk).total);
+  // The original context still reads its own cache.
+  expect(Select.score(base, hip, cached)).toEqual(fresh(desk));
+});
