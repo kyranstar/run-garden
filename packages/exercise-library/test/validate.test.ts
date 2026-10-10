@@ -138,3 +138,25 @@ describe("condition ratings (Review Focus 1)", () => {
     expect(errors).toContain("sourcedCopy: sources are private and never part of the library");
   });
 });
+
+describe("curation fields", () => {
+  const base = get("bridge")!;
+  const check = (over: Record<string, unknown>) =>
+    validateLibrary(withExercises([...EXERCISES, { ...base, id: "curated", ...over } as ExerciseRecord]), { presets: [] });
+
+  test("a well-formed record passes", () => {
+    expect(check({ contraction: ["isotonic"], purposes: ["strength"], muscles: { primary: ["glute-max"], secondary: [] }, themes: [] })).toEqual([]);
+  });
+
+  test("bad values are named by record id and field", () => {
+    const errors = check({
+      contraction: [], purposes: ["flying"], muscles: { primary: [], secondary: ["toes"] }, themes: ["nope"], tags: ["nonsense"],
+    });
+    expect(errors).toContain("curated: contraction needs at least 1");
+    expect(errors).toContain('curated: purposes "flying" is not in the vocabulary');
+    expect(errors).toContain("curated: muscles.primary needs at least 1");
+    expect(errors).toContain('curated: muscles.secondary "toes" is not in the vocabulary');
+    expect(errors).toContain('curated: theme "nope" does not exist');
+    expect(errors).toContain('curated: tag "nonsense" is not in the vocabulary');
+  });
+});

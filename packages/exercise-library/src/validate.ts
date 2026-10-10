@@ -4,7 +4,7 @@ import { coreFamilyOf, eligible, flareSafe } from "./eligibility.js";
 import type { EngineData } from "./engine-data.js";
 import { LOCATION_PRESETS, type LocationPreset } from "./equipment.js";
 import {
-  DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOAD_IMPLEMENTS, LOADS, MODE_IDS, PATTERNS, POSITIONS, REGIONS, ROLES, type Mode,
+  CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOAD_IMPLEMENTS, LOADS, MODE_IDS, MUSCLES, PATTERNS, POSITIONS, PURPOSES, REGIONS, ROLES, TAGS, type Mode,
 } from "./vocab.js";
 
 // Every problem in the library, themes, formats and coverage as "<id>: <message>". Empty means valid.
@@ -51,6 +51,23 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     inVocab(id, "load", ex.load, LOADS);
     const gear: string[] = [...(ex.equipment?.all ?? []), ...(ex.equipment?.oneOf ?? [])];
     for (const i of gear) inVocab(id, "equipment", i, EQUIPMENT_IDS);
+
+    // Curation fields: checked only when a record has them (they become required once every record is curated).
+    const listOf = (field: string, value: unknown, vocab: readonly string[], min: number) => {
+      if (!Array.isArray(value) || value.length < min) err(id, `${field} needs at least ${min}`);
+      else for (const v of value) inVocab(id, field, v, vocab);
+    };
+    if (ex.contraction !== undefined) listOf("contraction", ex.contraction, CONTRACTIONS, 1);
+    if (ex.purposes !== undefined) listOf("purposes", ex.purposes, PURPOSES, 1);
+    if (ex.muscles !== undefined) {
+      listOf("muscles.primary", ex.muscles?.primary, MUSCLES, 1);
+      listOf("muscles.secondary", ex.muscles?.secondary, MUSCLES, 0);
+    }
+    if (ex.themes !== undefined) {
+      if (!Array.isArray(ex.themes)) err(id, "themes must be a list");
+      else for (const t of ex.themes) if (!data.themes.some(x => x.id === t)) err(id, `theme "${t}" does not exist`);
+    }
+    if (Array.isArray(ex.tags)) for (const t of ex.tags) inVocab(id, "tag", t, TAGS);
 
     const d = (ex.dose ?? {}) as { type?: unknown; range?: unknown; sets?: unknown };
     inVocab(id, "dose.type", d.type, DOSE_TYPES);

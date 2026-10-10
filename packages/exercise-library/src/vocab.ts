@@ -12,6 +12,43 @@ export const REGIONS = [
 ] as const;
 export type Region = (typeof REGIONS)[number];
 
+/** The muscles a record can name; each sits under one region (`MUSCLE_REGION`). */
+export const MUSCLES = [
+  "glute-max", "glute-med", "deep-hip-rotators", "hip-flexors", "adductors", "abductors", "hamstrings", "quads",
+  "calves", "tibialis", "feet-intrinsics", "rectus-abdominis", "obliques", "transverse-abdominis", "erector-spinae",
+  "quadratus-lumborum", "thoracic-extensors", "lats", "rhomboids", "lower-traps", "upper-traps", "rotator-cuff",
+  "deltoids", "pecs", "biceps", "triceps", "forearms", "deep-neck-flexors", "scalenes", "jaw-muscles", "diaphragm",
+] as const;
+export type MuscleId = (typeof MUSCLES)[number];
+
+/** Each muscle sits under one region (the anatomy view and region filters agree). */
+export const MUSCLE_REGION: Record<MuscleId, Region> = {
+  "glute-max": "glutes", "glute-med": "glutes", "deep-hip-rotators": "hips", "hip-flexors": "hips",
+  adductors: "hips", abductors: "hips", hamstrings: "hamstrings", quads: "quads", calves: "calves",
+  tibialis: "ankles", "feet-intrinsics": "feet", "rectus-abdominis": "core", obliques: "core",
+  "transverse-abdominis": "core", "erector-spinae": "low-back", "quadratus-lumborum": "low-back",
+  "thoracic-extensors": "thoracic", lats: "lats", rhomboids: "upper-back", "lower-traps": "upper-back",
+  "upper-traps": "upper-back", "rotator-cuff": "shoulders", deltoids: "shoulders", pecs: "chest", biceps: "arms",
+  triceps: "arms", forearms: "arms", "deep-neck-flexors": "neck", scalenes: "neck", "jaw-muscles": "jaw",
+  diaphragm: "core",
+};
+
+export const CONTRACTIONS = ["isometric", "isotonic", "eccentric", "plyometric"] as const;
+export type Contraction = (typeof CONTRACTIONS)[number];
+
+export const PURPOSES = [
+  "warmup", "activation", "strength", "power", "balance", "mobility", "stretch", "cooldown", "recovery",
+  "condition-care", "conditioning",
+] as const;
+export type Purpose = (typeof PURPOSES)[number];
+
+export const TAGS = [
+  "posture", "ski", "hip-opening", "glute-activation", "single-leg", "landing", "deceleration", "anti-rotation",
+  "desk-relief", "breath", "thoracic", "ankle", "balance", "rotational", "lateral", "grip", "core-stability",
+  "elastic", "eccentric-emphasis", "isometric-hold",
+] as const;
+export type Tag = (typeof TAGS)[number];
+
 export const ROLES = [
   "warmup", "activation", "core", "accessory", "finisher", "jaw-care", "mobility", "stretch", "downshift", "cooldown",
 ] as const;
@@ -83,6 +120,10 @@ export const positionGroup = (p: string): "standing" | "hanging" | "floor" =>
 export const Vocab = {
   patterns: PATTERNS,
   regions: REGIONS,
+  muscles: MUSCLES,
+  contractions: CONTRACTIONS,
+  purposes: PURPOSES,
+  tags: TAGS,
   roles: ROLES,
   positions: POSITIONS,
   laterality: LATERALITY,

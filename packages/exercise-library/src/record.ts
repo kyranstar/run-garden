@@ -1,5 +1,7 @@
 import type { Attrs } from "./conditions/types.js";
-import type { DoseType, EquipmentId, Laterality, Load, Pattern, Position, Region, Role } from "./vocab.js";
+import type {
+  Contraction, DoseType, EquipmentId, Laterality, Load, MuscleId, Pattern, Position, Purpose, Region, Role, Tag,
+} from "./vocab.js";
 
 // The exercise record (programme spec §5.1). Condition ratings and notes are keyed by profile id.
 
@@ -16,6 +18,7 @@ export interface Dose {
 }
 
 export interface ExerciseText {
+  /** The card line: plain words, at most 90 characters. */
   summary: string;
   setup: readonly string[];
   steps: readonly string[];
@@ -70,7 +73,15 @@ export interface ExerciseRecord {
   difficulty: number;
   easier: readonly string[];
   harder: readonly string[];
-  tags: readonly string[];
+  tags: readonly Tag[];
+  /** How the muscles work (at least one). Optional until every record is curated. */
+  contraction?: readonly Contraction[];
+  /** Muscles worked (primary at least one). Optional until every record is curated. */
+  muscles?: { primary: readonly MuscleId[]; secondary: readonly MuscleId[] };
+  /** What the move is for (at least one). Optional until every record is curated. */
+  purposes?: readonly Purpose[];
+  /** Theme ids from themes.ts (may be empty). Optional until every record is curated. */
+  themes?: readonly string[];
   text: ExerciseText;
   /** Ratings per condition profile, keyed by profile id; each profile's attribute specs say what's inside. */
   conditions: Readonly<Record<string, Attrs>>;
