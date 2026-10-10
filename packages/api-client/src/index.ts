@@ -865,6 +865,8 @@ export interface RetrySyncResponse {
   movesRetried: number;
   /** Studio plans (holding one or more failed rows) that were re-pushed. */
   studioRetried: number;
+  /** Failed coach watch writes queued again — only sessions still ahead. */
+  coachRetried: number;
 }
 
 /** Progress of the one-shot deep history backfill. */

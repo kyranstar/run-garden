@@ -310,7 +310,7 @@ describe("POST /api/sync/retry", () => {
     const res = await client().post("/api/sync/retry");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; movesRetried: number; studioRetried: number };
-    expect(body).toEqual({ ok: true, movesRetried: 1, studioRetried: 0 });
+    expect(body).toEqual({ ok: true, movesRetried: 1, studioRetried: 0, coachRetried: 0 });
 
     const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId));
     expect(jobs.find((j) => j.id === jobId)!.status).toBe("superseded");
@@ -419,7 +419,104 @@ describe("POST /api/sync/retry", () => {
   it("no-ops cleanly (movesRetried/studioRetried both 0) when nothing has failed", async () => {
     const res = await client().post("/api/sync/retry");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, movesRetried: 0, studioRetried: 0 });
+    expect(await res.json()).toEqual({ ok: true, movesRetried: 0, studioRetried: 0, coachRetried: 0 });
+  });
+});
+
+/**
+ * The coach arm of Retry (owner report 2026-10-09, "4 changes couldn't sync" never clears): it acts on EXACTLY the
+ * failed coach writes the banner counts — the same selection, from the same function — and so never on a past or
+ * resolved session's, whose watch copy can no longer be rewritten.
+ */
+describe("POST /api/sync/retry — failed coach writes", () => {
+  async function failedCoachWrite(
+    workoutId: string,
+    over: { kind?: "coach_create_workout" | "coach_update_workout"; status?: string; requestedAt?: string; suffix?: string } = {},
+  ): Promise<string> {
+    const kind = over.kind ?? "coach_update_workout";
+    const id = `${workoutId}-${kind}${over.suffix ?? ""}`;
+    const at = over.requestedAt ?? "2026-09-01T00:00:00.000Z";
+    await db.insert(corosWriteJobs).values({
+      id,
+      userId,
+      workoutId,
+      kind,
+      expectedContentFingerprint: "fp",
+      originalDate: "2026-09-05",
+      destinationDate: "2026-09-05",
+      requestedAt: at,
+      status: over.status ?? "failed",
+      lastErrorCategory: over.status && over.status !== "failed" ? null : "verification_failed",
+      payload: { workoutId, happenDay: "2026-09-05", attempts: 1 },
+      updatedAt: at,
+    });
+    return id;
+  }
+  const jobStatus = async (id: string) =>
+    (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, id)))[0]!;
+
+  it("revives the ones the banner counts, and leaves every past or resolved session's alone", async () => {
+    await connectTestCoros(db, userId);
+    // Pinned "today" is 2026-09-02 (America/New_York).
+    const ahead = await failedCoachWrite(await insertWorkout({ effectiveDate: "2026-09-05" }));
+    const past = await failedCoachWrite(await insertWorkout({ effectiveDate: "2026-09-01" }), { kind: "coach_create_workout" });
+    const doneId = await insertWorkout({ effectiveDate: "2026-09-02" });
+    await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, doneId));
+    const done = await failedCoachWrite(doneId);
+
+    expect((await computeSyncStatus(db, userId, await loadPreferences(db, userId))).issueCount).toBe(1);
+
+    const res = await client().post("/api/sync/retry");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, movesRetried: 0, studioRetried: 0, coachRetried: 1 });
+
+    const revived = await jobStatus(ahead);
+    expect([revived.status, revived.lastErrorCategory, revived.completedAt]).toEqual(["queued", null, null]);
+    expect((await jobStatus(past)).status, "a past session's write is never retried").toBe("failed");
+    expect((await jobStatus(done)).status, "nor a finished session's").toBe("failed");
+
+    const after = await computeSyncStatus(db, userId, await loadPreferences(db, userId));
+    expect(after.issueCount).toBe(0);
+    expect(after.pendingCount).toBe(1);
+  });
+
+  it("at the athlete's midnight a session stops being retried — in their timezone, not UTC's", async () => {
+    await connectTestCoros(db, userId);
+    const prefs0 = await loadPreferences(db, userId);
+    await savePreferences(db, userId, { ...prefs0, timezone: "America/Los_Angeles" });
+    const job = await failedCoachWrite(await insertWorkout({ effectiveDate: "2026-09-02" }));
+
+    // 00:01 on the 3rd in Los Angeles: the session is past.
+    vi.setSystemTime(new Date("2026-09-03T07:01:00Z"));
+    const late = await client().post("/api/sync/retry");
+    expect(((await late.json()) as { coachRetried: number }).coachRetried).toBe(0);
+    expect((await jobStatus(job)).status).toBe("failed");
+
+    // 23:59 on the 2nd in Los Angeles (already the 3rd in UTC): still the athlete's today.
+    vi.setSystemTime(new Date("2026-09-03T06:59:00Z"));
+    const inTime = await client().post("/api/sync/retry");
+    expect(((await inTime.json()) as { coachRetried: number }).coachRetried).toBe(1);
+    expect((await jobStatus(job)).status).toBe("queued");
+  });
+
+  it("a newer write for the same session still on its way is left to land — the old one is not revived over it", async () => {
+    await connectTestCoros(db, userId);
+    const w = await insertWorkout({ effectiveDate: "2026-09-05" });
+    const old = await failedCoachWrite(w, { requestedAt: "2026-09-01T00:00:00.000Z" });
+    await failedCoachWrite(w, { status: "queued", requestedAt: "2026-09-01T06:00:00.000Z", suffix: "-newer" });
+    const res = await client().post("/api/sync/retry");
+    expect(((await res.json()) as { coachRetried: number }).coachRetried).toBe(0);
+    expect((await jobStatus(old)).status).toBe("failed");
+  });
+
+  it("writes switched off: nothing is queued for the watch", async () => {
+    await connectTestCoros(db, userId);
+    const prefs0 = await loadPreferences(db, userId);
+    await savePreferences(db, userId, { ...prefs0, corosWritesEnabled: false });
+    const job = await failedCoachWrite(await insertWorkout({ effectiveDate: "2026-09-05" }));
+    const res = await client().post("/api/sync/retry");
+    expect(((await res.json()) as { coachRetried: number }).coachRetried).toBe(0);
+    expect((await jobStatus(job)).status).toBe("failed");
   });
 });
 

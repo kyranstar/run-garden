@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import {
   corosWriteJobs,
   plannedWorkouts,
@@ -6,7 +6,7 @@ import {
   studioPlanPushes,
   studioPlans,
 } from "@rg/database";
-import type { UserPreferences, WorkoutSyncView } from "@rg/domain";
+import { todayInZone, type LocalDate, type UserPreferences, type WorkoutSyncView } from "@rg/domain";
 import { openContentIntentTargets, openMoveIntents } from "./sync-intents.js";
 import type { Db } from "./db.js";
 
@@ -31,6 +31,82 @@ export async function cloudPresence(db: Db, userId: string): Promise<CloudPresen
     .limit(1);
   const online = row?.status === "connected";
   return { registered: online, online, writeCapable: online };
+}
+
+/** A session the athlete has settled: its watch copy is history, not a job. */
+const RESOLVED_COMPLETION_STATES = ["completed", "missed", "skipped"] as const;
+
+export interface OpenFailedCoachWrite {
+  id: string;
+  workoutId: string;
+  requestedAt: string;
+}
+
+/**
+ * THE FAILED COACH WRITES THAT ARE STILL AN ISSUE — what the banner's
+ * `issueCount` counts and exactly what POST /api/sync/retry revives. One
+ * function, so the number on the screen and the thing Retry does cannot drift.
+ *
+ * A terminally failed `coach_create_workout` / `coach_update_workout` counts
+ * only while ALL of these hold:
+ *
+ *  · its session is live (not archived);
+ *  · nothing newer for the same session verified since — job ids are
+ *    content-derived, so converging a session mints a new id and the old
+ *    attempt's row stays `failed` for ever (2026-08-18: "1 change couldn't
+ *    sync" about a watch already correct, the misleading no-op C15 removed);
+ *  · its session can still be WRITTEN: dated the athlete's today or later, in
+ *    their timezone, and not completed, missed or skipped.
+ *
+ * The last is the 2026-10-09 owner report. Four coach writes failed
+ * `verification_failed` on 2026-09-19..21 for sessions on 09-22, 09-23, 09-23
+ * and 09-30; weeks later all four were past and missed, none archived, nothing
+ * newer verified — and "4 changes couldn't sync" stood for ever. A past
+ * session's watch copy can never be rewritten and Retry has nothing to do for
+ * it, so it is not an issue; the same reasoning `openContentIntentTargets(…,
+ * { excludeCompleted: true })` applies to a finished session's stale copy.
+ */
+export async function openFailedCoachWrites(
+  db: Db,
+  userId: string,
+  today: LocalDate,
+): Promise<OpenFailedCoachWrite[]> {
+  const kinds = ["coach_create_workout", "coach_update_workout"];
+  const [failed, verified] = await Promise.all([
+    db
+      .select({ id: corosWriteJobs.id, workoutId: corosWriteJobs.workoutId, requestedAt: corosWriteJobs.requestedAt })
+      .from(corosWriteJobs)
+      .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
+      .where(
+        and(
+          eq(corosWriteJobs.userId, userId),
+          inArray(corosWriteJobs.kind, kinds),
+          eq(corosWriteJobs.status, "failed"),
+          isNull(plannedWorkouts.archivedAt),
+          gte(plannedWorkouts.effectiveDate, today),
+          notInArray(plannedWorkouts.completionState, [...RESOLVED_COMPLETION_STATES]),
+        ),
+      ),
+    db
+      .select({ workoutId: corosWriteJobs.workoutId, requestedAt: corosWriteJobs.requestedAt })
+      .from(corosWriteJobs)
+      .where(
+        and(
+          eq(corosWriteJobs.userId, userId),
+          inArray(corosWriteJobs.kind, kinds),
+          eq(corosWriteJobs.status, "verified"),
+        ),
+      ),
+  ]);
+  const settledAfter = new Map<string, string>();
+  for (const j of verified) {
+    const prev = settledAfter.get(j.workoutId);
+    if (prev === undefined || j.requestedAt > prev) settledAfter.set(j.workoutId, j.requestedAt);
+  }
+  return failed.filter((j) => {
+    const newerSuccess = settledAfter.get(j.workoutId);
+    return newerSuccess === undefined || newerSuccess < j.requestedAt;
+  });
 }
 
 export type SyncStatusState = "in_sync" | "syncing" | "not_synced" | "sync_issue";
@@ -69,8 +145,7 @@ export async function computeSyncStatus(
     failedJobs,
     openIntents,
     contentStaleTargets,
-    failedCoachCreateRows,
-    verifiedCoachWriteRows,
+    failedCoachWrites,
     studioPlanRows,
     corosConnRows,
   ] =
@@ -118,31 +193,10 @@ export async function computeSyncStatus(
       // the athlete's watch is holding a session the app has replaced, the
       // failure is terminal, and it is exactly the divergence they complained
       // about. Leaving it out would have made the one kind that closes that gap
-      // the one kind whose failure was silent.
-      db
-        .select({ id: corosWriteJobs.id, workoutId: corosWriteJobs.workoutId, requestedAt: corosWriteJobs.requestedAt })
-        .from(corosWriteJobs)
-        .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
-        .where(
-          and(
-            eq(corosWriteJobs.userId, userId),
-            inArray(corosWriteJobs.kind, ["coach_create_workout", "coach_update_workout"]),
-            eq(corosWriteJobs.status, "failed"),
-            isNull(plannedWorkouts.archivedAt),
-          ),
-        ),
-      // The successes, so a failure a later write superseded can be told apart
-      // from one that still stands. See `failedCoachCreates` below.
-      db
-        .select({ workoutId: corosWriteJobs.workoutId, requestedAt: corosWriteJobs.requestedAt })
-        .from(corosWriteJobs)
-        .where(
-          and(
-            eq(corosWriteJobs.userId, userId),
-            inArray(corosWriteJobs.kind, ["coach_create_workout", "coach_update_workout"]),
-            eq(corosWriteJobs.status, "verified"),
-          ),
-        ),
+      // the one kind whose failure was silent. Only while the session can still
+      // be written, and not once a later write superseded it — see
+      // `openFailedCoachWrites`, which POST /api/sync/retry acts on too.
+      openFailedCoachWrites(db, userId, todayInZone(prefs.timezone)),
       // Scoped to the NEWEST studio plan — the same predicate POST
       // /api/sync/retry acts on. Counting retired plans' failed rows (usually
       // failed deletes) inflates a badge the Retry button can never clear,
@@ -168,26 +222,7 @@ export async function computeSyncStatus(
   const failedMoveCount = new Set(
     failedJobs.map((j) => j.workoutId).filter((id) => openIntentTargets.has(id)),
   ).size;
-  /**
-   * A FAILED JOB THAT A LATER WRITE SUPERSEDED IS HISTORY, NOT AN ISSUE.
-   *
-   * Job ids are content-derived, so converging a session mints a NEW id and the
-   * old attempt's row stays `failed` for ever. Live, that left the athlete
-   * reading "1 change couldn't sync" about a session that had synced minutes
-   * earlier — a badge no Retry could clear, describing a watch that was already
-   * correct, which is exactly the misleading no-op C15 was fixed to remove.
-   *
-   * A failed row counts only when nothing newer for the same workout succeeded.
-   */
-  const settledAfter = new Map<string, string>();
-  for (const j of verifiedCoachWriteRows) {
-    const prev = settledAfter.get(j.workoutId);
-    if (prev === undefined || j.requestedAt > prev) settledAfter.set(j.workoutId, j.requestedAt);
-  }
-  const failedCoachCreates = failedCoachCreateRows.filter((j) => {
-    const newerSuccess = settledAfter.get(j.workoutId);
-    return newerSuccess === undefined || newerSuccess < j.requestedAt;
-  }).length;
+  const failedCoachCreates = failedCoachWrites.length;
   const currentStudioPlan = studioPlanRows[0];
   const [corosConn] = corosConnRows;
 

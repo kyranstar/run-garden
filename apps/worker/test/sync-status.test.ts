@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, nowInstant } from "@rg/domain";
+import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { applyJobResult, applyMove } from "../src/services/jobs.js";
 import { recordIntent } from "../src/services/sync-intents.js";
@@ -179,7 +179,8 @@ describe("computeSyncStatus", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
     await connectTestCoros(db, userId);
-    const workoutId = await insertWorkout(db, userId);
+    // A session still ahead: a past one is not an issue for a different reason (below).
+    const workoutId = await insertWorkout(db, userId, { effectiveDate: addDays(todayInZone(prefs.timezone), 3) });
     const base = {
       userId,
       workoutId,
@@ -203,7 +204,7 @@ describe("computeSyncStatus", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
     await connectTestCoros(db, userId);
-    const workoutId = await insertWorkout(db, userId);
+    const workoutId = await insertWorkout(db, userId, { effectiveDate: addDays(todayInZone(prefs.timezone), 3) });
     const base = {
       userId,
       workoutId,
@@ -268,6 +269,106 @@ describe("computeSyncStatus", () => {
     const status = await computeSyncStatus(db, userId, prefs);
     expect(status.state).toBe("in_sync");
     expect(status.pendingCount).toBe(0);
+  });
+});
+
+/**
+ * "4 CHANGES COULDN'T SYNC" NEVER CLEARED (owner report, 2026-10-09).
+ *
+ * Live: four coach writes failed `verification_failed` on 2026-09-19..21 for sessions on 09-22, 09-23, 09-23 and
+ * 09-30. Weeks later all four were past and missed, none archived, nothing newer verified — so the banner counted them
+ * for ever. A past session's watch copy can never be rewritten and Retry cannot act on it: a failed coach write is an
+ * issue only while its session can still be written — dated the athlete's today or later, and not completed, missed
+ * or skipped.
+ */
+describe("a failed coach write is an issue only while its session can still be written", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function failedCoachWrite(
+    db: Db,
+    userId: string,
+    workoutId: string,
+    kind: "coach_create_workout" | "coach_update_workout" = "coach_update_workout",
+  ): Promise<string> {
+    const id = `${workoutId}-${kind}`;
+    await db.insert(schema.corosWriteJobs).values({
+      id,
+      userId,
+      workoutId,
+      kind,
+      expectedContentFingerprint: "fp",
+      originalDate: "2026-09-20",
+      destinationDate: "2026-09-20",
+      requestedAt: "2026-09-20T00:00:00.000Z",
+      status: "failed",
+      lastErrorCategory: "verification_failed",
+      updatedAt: "2026-09-20T00:00:00.000Z",
+    });
+    return id;
+  }
+
+  async function setup(timezone = "America/New_York") {
+    const db = makeTestDb();
+    const user = await makeTestUser(db, { corosWritesEnabled: true, timezone });
+    await connectTestCoros(db, user.userId);
+    return { db, ...user };
+  }
+
+  it("the live shape: four failures for sessions now past and missed → no issue; the same four before → four", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-21T15:00:00Z"));
+    const { db, userId, prefs } = await setup();
+    for (const date of ["2026-09-22", "2026-09-23", "2026-09-23", "2026-09-30"]) {
+      const w = await insertWorkout(db, userId, { effectiveDate: date });
+      await failedCoachWrite(db, userId, w);
+    }
+    expect((await computeSyncStatus(db, userId, prefs)).issueCount, "all four still ahead").toBe(4);
+
+    vi.setSystemTime(new Date("2026-10-09T15:00:00Z"));
+    await db.update(schema.plannedWorkouts).set({ completionState: "missed" }).where(eq(schema.plannedWorkouts.userId, userId));
+    const status = await computeSyncStatus(db, userId, prefs);
+    expect(status.issueCount).toBe(0);
+    expect(status.state).toBe("in_sync");
+  });
+
+  it("past by date alone is enough — a session still `scheduled` yesterday does not count", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-21T15:00:00Z"));
+    const { db, userId, prefs } = await setup();
+    await failedCoachWrite(db, userId, await insertWorkout(db, userId, { effectiveDate: "2026-09-20" }));
+    await failedCoachWrite(db, userId, await insertWorkout(db, userId, { effectiveDate: "2026-09-21" }), "coach_create_workout");
+    await failedCoachWrite(db, userId, await insertWorkout(db, userId, { effectiveDate: "2026-09-24" }));
+    expect((await computeSyncStatus(db, userId, prefs)).issueCount, "today and later, not yesterday").toBe(2);
+  });
+
+  it("a resolved session does not count however far ahead it is dated — completed, missed or skipped", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-21T15:00:00Z"));
+    const { db, userId, prefs } = await setup();
+    for (const state of ["completed", "missed", "skipped"]) {
+      const w = await insertWorkout(db, userId, { effectiveDate: "2026-09-21" });
+      await db.update(schema.plannedWorkouts).set({ completionState: state }).where(eq(schema.plannedWorkouts.id, w));
+      await failedCoachWrite(db, userId, w);
+    }
+    expect((await computeSyncStatus(db, userId, prefs)).issueCount).toBe(0);
+    await failedCoachWrite(db, userId, await insertWorkout(db, userId, { effectiveDate: "2026-09-21" }));
+    expect((await computeSyncStatus(db, userId, prefs)).issueCount, "the scheduled one still counts").toBe(1);
+  });
+
+  it("becomes past at midnight in the ATHLETE'S timezone, not UTC's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { db, userId, prefs: tzPrefs } = await setup("America/Los_Angeles");
+    expect(tzPrefs.timezone).toBe("America/Los_Angeles");
+    await failedCoachWrite(db, userId, await insertWorkout(db, userId, { effectiveDate: "2026-10-09" }));
+
+    // 23:59 on the 9th in Los Angeles — already the 10th in UTC.
+    vi.setSystemTime(new Date("2026-10-10T06:59:00Z"));
+    expect((await computeSyncStatus(db, userId, tzPrefs)).issueCount, "still the athlete's today").toBe(1);
+    // 00:01 on the 10th in Los Angeles.
+    vi.setSystemTime(new Date("2026-10-10T07:01:00Z"));
+    expect((await computeSyncStatus(db, userId, tzPrefs)).issueCount, "past at the athlete's midnight").toBe(0);
   });
 });
 
