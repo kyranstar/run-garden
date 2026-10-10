@@ -56,6 +56,19 @@ describe("workoutDocSchema", () => {
     ["dose.max false", (d) => { d.parts[0].items[1].dose.max = false; }],
     ["zone index 7", (d) => { d.parts[1].items[0].target.zone.index = 7; }],
     ["21 equipment", (d) => { d.setting.equipment = Array.from({ length: 21 }, (_, i) => `e${i}`); }],
+    ["reps min > max", (d) => { d.parts[0].items[0].dose.reps = { min: 10, max: 8 }; }],
+    ["reps range over 200", (d) => { d.parts[0].items[0].dose.reps = { min: 5, max: 201 }; }],
+    ["fractional reps range", (d) => { d.parts[0].items[0].dose.reps = { min: 5.5, max: 8 }; }],
+    ["pace fast > slow", (d) => { d.parts[1].items[0].target.pace = { fastSecPerKm: 400, slowSecPerKm: 300 }; }],
+    ["pace under 120", (d) => { d.parts[1].items[0].target.pace = { fastSecPerKm: 60, slowSecPerKm: 300 }; }],
+    ["pace over 1800", (d) => { d.parts[1].items[0].target.pace = { fastSecPerKm: 300, slowSecPerKm: 2000 }; }],
+    ["pace infinite", (d) => { d.parts[1].items[0].target.pace = { fastSecPerKm: 300, slowSecPerKm: Infinity }; }],
+    ["hr low > high", (d) => { d.parts[1].items[0].target.hr = { low: 150, high: 120 }; }],
+    ["hr under 30", (d) => { d.parts[1].items[0].target.hr = { low: 20, high: 120 }; }],
+    ["hr over 230", (d) => { d.parts[1].items[0].target.hr = { low: 120, high: 300 }; }],
+    ["hr fractional", (d) => { d.parts[1].items[0].target.hr = { low: 120.5, high: 140 }; }],
+    ["open false", (d) => { d.parts[1].items[1].target = { open: false }; }],
+    ["open false beside a duration", (d) => { d.parts[1].items[1].target = { open: false, durationSec: 60 }; }],
     ["unknown basedOn kind", (d) => { d.basedOn.kind = "dream"; }],
   ];
   for (const [name, mutate] of bad) {
@@ -63,6 +76,13 @@ describe("workoutDocSchema", () => {
       const d = JSON.parse(JSON.stringify(valid()));
       mutate(d);
       expect(workoutDocSchema.safeParse(d).success).toBe(false);
+    });
+  }
+  for (const [name, target] of [["duration only", { durationSec: 600 }], ["distance only", { distanceM: 1000 }], ["open only", { open: true }]] as const) {
+    it(`accepts a run target with ${name}`, () => {
+      const d = valid();
+      d.parts[1]!.items[1] = { kind: "run", effort: "easy", target: target as any };
+      expect(workoutDocSchema.safeParse(d).success).toBe(true);
     });
   }
   it("strips unknown optional keys rather than rejecting", () => {
@@ -77,6 +97,18 @@ describe("parseStoredWorkoutDoc", () => {
     expect(parseStoredWorkoutDoc(null)).toBeNull();
     expect(parseStoredWorkoutDoc("not json")).toBeNull();
     expect(parseStoredWorkoutDoc({})).toBeNull();
+  });
+  it("returns null for undefined and a number", () => {
+    expect(parseStoredWorkoutDoc(undefined)).toBeNull();
+    expect(parseStoredWorkoutDoc(42)).toBeNull();
+  });
+  it("parses a double-encoded string", () => {
+    expect(parseStoredWorkoutDoc(JSON.stringify(JSON.stringify(valid())))?.title).toBe("Hips and a short run");
+    expect(parseStoredWorkoutDoc(JSON.stringify("not json"))).toBeNull();
+  });
+  it("strips an unknown key on the object path", () => {
+    const r = parseStoredWorkoutDoc({ ...valid(), future: 1 });
+    expect(r && "future" in r).toBe(false);
   });
   it("parses a JSON string and an object", () => {
     expect(parseStoredWorkoutDoc(JSON.stringify(valid()))?.title).toBe("Hips and a short run");

@@ -20,9 +20,10 @@ export const EFFORT_LEVELS = ["recover", "maintain", "develop", "peak"] as const
 export const DOC_SOURCES = ["engine", "coach", "studio", "coros_import", "standalone_import", "athlete", "template"] as const;
 export const BASED_ON_KINDS = ["workout", "template", "performed", "proposal"] as const;
 
+// An empty dose is deliberately NOT a schema error: a stored document must never vanish on parse for a soft problem. Task 8's validator warns on it.
 export const doseSchema = z.object({
   sets: z.number().int().min(1).max(20).optional(),
-  reps: z.union([z.number().int().min(1).max(200), z.object({ min: z.number().int().min(1), max: z.number().int().min(1) })]).optional(),
+  reps: z.union([z.number().int().min(1).max(200), z.object({ min: z.number().int().min(1).max(200), max: z.number().int().min(1).max(200) }).refine((r) => r.min <= r.max, "reps min must not exceed max")]).optional(),
   holdSec: z.number().min(1).max(3600).optional(),
   breaths: z.number().int().min(1).max(200).optional(),
   carryM: z.number().min(1).max(5000).optional(),
@@ -42,8 +43,14 @@ export const runTargetSchema = z
     typed: z.string().max(20).optional(),
     /** Open-ended segment ended by the lap button. */
     open: z.literal(true).optional(),
-    pace: z.object({ fastSecPerKm: z.number(), slowSecPerKm: z.number() }).optional(),
-    hr: z.object({ low: z.number(), high: z.number() }).optional(),
+    pace: z
+      .object({ fastSecPerKm: z.number().finite().min(120).max(1800), slowSecPerKm: z.number().finite().min(120).max(1800) })
+      .refine((p) => p.fastSecPerKm <= p.slowSecPerKm, "fast pace must not be slower than slow pace")
+      .optional(),
+    hr: z
+      .object({ low: z.number().int().min(30).max(230), high: z.number().int().min(30).max(230) })
+      .refine((h) => h.low <= h.high, "hr low must not exceed high")
+      .optional(),
     zone: z.object({ kind: z.enum(["pace", "hr"]), index: z.number().int().min(1).max(6) }).optional(),
   })
   .refine((t) => t.durationSec !== undefined || t.distanceM !== undefined || t.open === true, "a run segment needs a duration, a distance or open");
@@ -130,6 +137,14 @@ export function parseStoredWorkoutDoc(raw: unknown): WorkoutDoc | null {
       value = JSON.parse(raw);
     } catch {
       return null;
+    }
+    // A double-encoded column hands back a JSON string of a JSON string.
+    if (typeof value === "string") {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        return null;
+      }
     }
   }
   const r = workoutDocSchema.safeParse(value);
