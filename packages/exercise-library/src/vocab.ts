@@ -14,23 +14,26 @@ export type Region = (typeof REGIONS)[number];
 
 /** The muscles a record can name; each sits under one region (`MUSCLE_REGION`). */
 export const MUSCLES = [
-  "glute-max", "glute-med", "deep-hip-rotators", "hip-flexors", "adductors", "abductors", "hamstrings", "quads",
-  "calves", "tibialis", "feet-intrinsics", "rectus-abdominis", "obliques", "transverse-abdominis", "erector-spinae",
+  "glute-max", "glute-med", "deep-hip-rotators", "hip-flexors", "adductors", "glute-min-tfl", "hamstrings", "quads",
+  "gastrocnemius", "soleus", "tibialis", "peroneals", "feet-intrinsics", "rectus-abdominis", "obliques", "transverse-abdominis", "erector-spinae",
   "quadratus-lumborum", "thoracic-extensors", "lats", "rhomboids", "lower-traps", "upper-traps", "rotator-cuff",
-  "deltoids", "pecs", "biceps", "triceps", "forearms", "deep-neck-flexors", "scalenes", "jaw-muscles", "diaphragm",
+  "deltoids", "pecs", "biceps", "triceps", "forearms", "deep-neck-flexors", "scalenes", "masseter", "temporalis",
+  "pterygoids", "diaphragm", "suboccipitals", "sternocleidomastoid", "levator-scapulae", "serratus-anterior",
+  "middle-traps", "multifidus", "pelvic-floor",
 ] as const;
 export type MuscleId = (typeof MUSCLES)[number];
 
 /** Each muscle sits under one region (the anatomy view and region filters agree). */
 export const MUSCLE_REGION: Record<MuscleId, Region> = {
   "glute-max": "glutes", "glute-med": "glutes", "deep-hip-rotators": "hips", "hip-flexors": "hips",
-  adductors: "hips", abductors: "hips", hamstrings: "hamstrings", quads: "quads", calves: "calves",
-  tibialis: "ankles", "feet-intrinsics": "feet", "rectus-abdominis": "core", obliques: "core",
+  adductors: "hips", "glute-min-tfl": "hips", hamstrings: "hamstrings", quads: "quads", gastrocnemius: "calves",
+  soleus: "calves", tibialis: "ankles", peroneals: "ankles", "feet-intrinsics": "feet", "rectus-abdominis": "core", obliques: "core",
   "transverse-abdominis": "core", "erector-spinae": "low-back", "quadratus-lumborum": "low-back",
   "thoracic-extensors": "thoracic", lats: "lats", rhomboids: "upper-back", "lower-traps": "upper-back",
   "upper-traps": "upper-back", "rotator-cuff": "shoulders", deltoids: "shoulders", pecs: "chest", biceps: "arms",
-  triceps: "arms", forearms: "arms", "deep-neck-flexors": "neck", scalenes: "neck", "jaw-muscles": "jaw",
-  diaphragm: "core",
+  triceps: "arms", forearms: "arms", "deep-neck-flexors": "neck", scalenes: "neck", masseter: "jaw", temporalis: "jaw",
+  pterygoids: "jaw", diaphragm: "core", suboccipitals: "neck", sternocleidomastoid: "neck", "levator-scapulae": "neck",
+  "serratus-anterior": "shoulders", "middle-traps": "upper-back", multifidus: "low-back", "pelvic-floor": "core",
 };
 
 export const CONTRACTIONS = ["isometric", "isotonic", "eccentric", "plyometric"] as const;
@@ -42,6 +45,7 @@ export const PURPOSES = [
 ] as const;
 export type Purpose = (typeof PURPOSES)[number];
 
+/** A tag names what the other fields cannot; tags that echo a contraction, purpose or region (isometric-hold, eccentric-emphasis, balance, thoracic, ankle, core-stability) are used only when that quality is the defining point of the move. */
 export const TAGS = [
   "posture", "ski", "hip-opening", "glute-activation", "single-leg", "landing", "deceleration", "anti-rotation",
   "desk-relief", "breath", "thoracic", "ankle", "balance", "rotational", "lateral", "grip", "core-stability",
@@ -107,6 +111,16 @@ const LABELS: Record<string, string> = {
   "push-h": "Pushing", "push-v": "Overhead pressing", "pull-h": "Rows", "pull-v": "Vertical pulling",
   "anti-rotate": "Anti-rotation", "anti-extend": "Anti-extension", "anti-lateral": "Side-bend resistance",
   "upper-back": "Upper back", "low-back": "Low back", "full-body": "Full body",
+  "glute-max": "Glute max", "glute-med": "Glute med", "deep-hip-rotators": "Deep hip rotators", "hip-flexors": "Hip flexors",
+  "feet-intrinsics": "Foot muscles", "rectus-abdominis": "Rectus abdominis", "transverse-abdominis": "Deep abdominals",
+  "quadratus-lumborum": "Quadratus lumborum", "thoracic-extensors": "Upper-back extensors", "lower-traps": "Lower traps",
+  "upper-traps": "Upper traps", "middle-traps": "Middle traps", "rotator-cuff": "Rotator cuff",
+  "deep-neck-flexors": "Deep neck flexors", "glute-min-tfl": "Glute min & TFL", "serratus-anterior": "Serratus",
+  "pelvic-floor": "Pelvic floor", "levator-scapulae": "Levator scapulae", "erector-spinae": "Erector spinae",
+  warmup: "Warm-up", cooldown: "Cool-down", "condition-care": "Condition care",
+  "hip-opening": "Hip opening", "glute-activation": "Glute activation", "single-leg": "Single-leg",
+  "desk-relief": "Desk relief", "core-stability": "Core stability", "eccentric-emphasis": "Eccentric emphasis",
+  "isometric-hold": "Isometric hold", "anti-rotation": "Anti-rotation",
 };
 
 /** A readable label for a pattern or region key. */

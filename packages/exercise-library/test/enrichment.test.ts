@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { CONTRACTIONS, EXERCISES, MUSCLES, MUSCLE_REGION, PURPOSES, REGIONS, TAGS, THEMES } from "../src/index.js";
+import { CONTRACTIONS, label, EXERCISES, MUSCLES, MUSCLE_REGION, PURPOSES, REGIONS, TAGS, THEMES } from "../src/index.js";
 
 // The curation to-do list: one test per record, each failure naming the record id and field.
 
@@ -14,6 +14,16 @@ describe("vocabularies", () => {
 
   test("no vocabulary has duplicate ids", () => {
     for (const list of [MUSCLES, CONTRACTIONS, PURPOSES, TAGS]) expect(new Set(list).size).toBe(list.length);
+  });
+});
+
+describe("labels", () => {
+  test("every hyphenated vocabulary id has a hand-written label (single words read fine capitalised)", () => {
+    const fine = new Set(["single-leg", "anti-rotation"]); // read well as plain capitalisation
+    const naive = (k: string) => k.charAt(0).toUpperCase() + k.slice(1);
+    for (const id of new Set<string>([...MUSCLES, ...PURPOSES, ...TAGS, ...CONTRACTIONS])) {
+      if (id.includes("-") && !fine.has(id)) expect(label(id), `${id} reads as its raw id`).not.toBe(naive(id));
+    }
   });
 });
 
