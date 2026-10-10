@@ -19,7 +19,7 @@ import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { encryptSecret } from "../src/auth/crypto.js";
-import { CALENDAR_OPS_PER_RUN, loadPreferences, savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
+import { CALENDAR_OPS_PER_REQUEST, CALENDAR_OPS_PER_RUN, loadPreferences, savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
 import { loadAccountState } from "../src/services/account-state.js";
 import { halfHourly } from "../src/index.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -199,6 +199,20 @@ describe("a calendar sync's work per run (cron reliability)", () => {
     expect(google.writes.slice(CALENDAR_OPS_PER_RUN).sort()).toEqual(
       [...ahead.slice(CALENDAR_OPS_PER_RUN), ...behind].map((id) => `insert:${id}`).sort(),
     );
+  });
+
+  it("a sync run by a user's request books at most CALENDAR_OPS_PER_REQUEST, soonest first, and leaves the rest to the next run", async () => {
+    // The coach approve syncs in its own invocation (2026-10-10): the cron's cap of 20 on top of the approve's own
+    // work went past the free plan's 50.
+    const ahead = await seedWorkouts(CALENDAR_OPS_PER_REQUEST + 3);
+    const before = google.fetches;
+    const step = await syncCalendar(db, env, userId, { maxOps: CALENDAR_OPS_PER_REQUEST });
+    expect(step).toMatchObject({ created: CALENDAR_OPS_PER_REQUEST, capped: true, deferred: 3 });
+    expect(google.fetches - before).toBeLessThanOrEqual(CALENDAR_OPS_PER_REQUEST + 2);
+    expect(google.writes).toEqual(ahead.slice(0, CALENDAR_OPS_PER_REQUEST).map((id) => `insert:${id}`));
+    // The token was not saved: the next ordinary run finds the rest, once each.
+    expect((await syncCalendar(db, env, userId)).created).toBe(3);
+    expect([...google.writes].sort()).toEqual(ahead.map((id) => `insert:${id}`).sort());
   });
 
   it("the half-hourly cron records a capped sync as an ok run that says it was capped", async () => {

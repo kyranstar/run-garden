@@ -347,6 +347,11 @@ export async function claimNextJob(
      * queued coach job never takes the drain's one slot.
      */
     watchOnly?: boolean;
+    /**
+     * Only these kinds — the coach drain (`POST /api/coach/drain`): the writes an approve or a Retry queues, run one a
+     * request (ruling 3-R11). A queued read or a program push never takes its slot.
+     */
+    onlyKinds?: readonly string[];
   } = {},
 ): Promise<
   | (typeof corosWriteJobs.$inferSelect & {
@@ -379,6 +384,7 @@ export async function claimNextJob(
         eq(corosWriteJobs.userId, userId),
         eq(corosWriteJobs.status, "queued"),
         ...(opts.excludeKinds?.length ? [notInArray(corosWriteJobs.kind, [...opts.excludeKinds])] : []),
+        ...(opts.onlyKinds ? [inArray(corosWriteJobs.kind, [...opts.onlyKinds])] : []),
         ...(opts.watchOnly
           ? [
               or(

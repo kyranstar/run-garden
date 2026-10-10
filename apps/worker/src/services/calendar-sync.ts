@@ -109,7 +109,7 @@ export interface CalendarSyncStats {
   adopted?: number;
   recreated?: number;
   orphansDeleted?: number;
-  /** The run stopped at CALENDAR_OPS_PER_RUN ops; `deferred` more wait for the next run. */
+  /** The run stopped at its op cap (CALENDAR_OPS_PER_RUN, or a request's `maxOps`); `deferred` more wait for the next run. */
   capped?: true;
   deferred?: number;
 }
@@ -126,6 +126,14 @@ export interface CalendarSyncStats {
 export const CALENDAR_OPS_PER_RUN = 20;
 
 /**
+ * Most ops a sync run BY A USER'S REQUEST executes beside that request's own work (2026-10-10). The coach approve
+ * synced in its own invocation with the cron's whole cap of 20 — up to 20 Google calls and 40 D1 writes on top of
+ * the approve, past the free plan's 50 on any proposal that touches a week. A request books the few sessions it
+ * changed; anything past this waits, unsaved token and all, for the half-hourly run.
+ */
+export const CALENDAR_OPS_PER_REQUEST = 4;
+
+/**
  * The ops a run executes: all of them within the budget; past it, the sessions still ahead first (soonest first),
  * then the past ones (latest first) — a first sync or a token reset books the coming weeks before the two behind.
  */
@@ -134,8 +142,9 @@ function opsThisRun(
   dateOf: Map<string, string>,
   today: string,
   failedLastRun: ReadonlySet<string>,
+  cap: number = CALENDAR_OPS_PER_RUN,
 ): ReconcileOp[] {
-  if (ops.length <= CALENDAR_OPS_PER_RUN) return ops;
+  if (ops.length <= cap) return ops;
   const date = (op: ReconcileOp) => dateOf.get(op.workoutId) ?? "";
   const ordered = (list: ReconcileOp[]) => [
     ...list.filter((op) => date(op) >= today).sort((a, b) => date(a).localeCompare(date(b))),
@@ -147,7 +156,7 @@ function opsThisRun(
   // with whatever room the rest leave.
   const fresh = ops.filter((op) => !failedLastRun.has(op.workoutId));
   const failed = ops.filter((op) => failedLastRun.has(op.workoutId));
-  return [...ordered(fresh), ...ordered(failed)].slice(0, CALENDAR_OPS_PER_RUN);
+  return [...ordered(fresh), ...ordered(failed)].slice(0, cap);
 }
 
 /** The workouts whose op failed on the last run that reached them — `opsThisRun` puts them last. */
@@ -167,7 +176,11 @@ export async function syncCalendar(
   db: Db,
   env: Env,
   userId: string,
-  opts: { fullResync?: boolean } = {},
+  opts: {
+    fullResync?: boolean;
+    /** Most ops this run executes — `CALENDAR_OPS_PER_REQUEST` from a user's request; the cron's CALENDAR_OPS_PER_RUN by default. */
+    maxOps?: number;
+  } = {},
 ): Promise<CalendarSyncStats> {
   const stats: CalendarSyncStats = {
     created: 0,
@@ -390,7 +403,8 @@ export async function syncCalendar(
     removedWorkoutIds,
   });
 
-  const runNow = opsThisRun(ops, new Map(workouts.map((w) => [w.id, w.effectiveDate])), today, failedLastRun);
+  const cap = opts.maxOps ?? CALENDAR_OPS_PER_RUN;
+  const runNow = opsThisRun(ops, new Map(workouts.map((w) => [w.id, w.effectiveDate])), today, failedLastRun, cap);
   const failedNow = await executeOps(db, env, userId, client, calendarId, runNow, prefs, stats);
   if (ops.length > runNow.length) {
     stats.capped = true;
@@ -419,7 +433,7 @@ export async function syncCalendar(
   // Its deletions come out of the same per-run budget. A capped run leaves the
   // reconcile open (full reads go on) and its token unsaved, whatever it swept.
   if (postRestore && fullRead) {
-    const budget = Math.min(POST_RESTORE_DELETE_CAP, CALENDAR_OPS_PER_RUN - runNow.length);
+    const budget = Math.min(POST_RESTORE_DELETE_CAP, cap - runNow.length);
     const swept = postRestore.sweep
       ? budget > 0 &&
         (await sweepOrphans(db, client, calendarId, env.APP_URL, listResult.items as RawGoogleEvent[], stats, budget))

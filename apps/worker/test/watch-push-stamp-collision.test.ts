@@ -44,7 +44,7 @@ beforeEach(async () => {
   programId = await seedProgram(db, userId);
   server = mockCorosServer({ baseMonday: "2026-10-12" });
   await connectMock(db, userId, server);
-  // The approve route runs the lane in its own waitUntil, through the global fetch.
+  // The approve's coach drain runs the lane through the global fetch.
   vi.stubGlobal("fetch", server.fetchImpl);
 });
 afterEach(() => {
@@ -74,7 +74,13 @@ async function approve(proposalId: string, ops: unknown[], env = makeEnv()) {
   );
   await Promise.all(pending);
   expect(res.status).toBe(200);
-  return (await res.json()) as { applied: { created: string[] } };
+  const body = (await res.json()) as { applied: { created: string[] }; coachDrain?: boolean };
+  // The approve queues its watch writes and the client drains them, one a request (ruling 3-R11) — as the app does.
+  for (let i = 0; body.coachDrain && i < 8; i++) {
+    const drain = await mountRoutes(db, "/api/coach", coachRoutes).request("/api/coach/drain", { method: "POST", headers: { Cookie: cookie } }, env);
+    if (((await drain.json()) as { executed: number }).executed === 0) break;
+  }
+  return body;
 }
 
 const run30 = (title: string) => ({ category: "easy", title, durationMinutes: 30, run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] } });
@@ -113,7 +119,7 @@ describe("program first, then the coach (Review Focus 1, the reverse order)", ()
 
   it("the program push still queued when the coach create is enqueued: still two stamps, two copies", async () => {
     const { workoutId, buildId } = await sendSlot();
-    // The approve's own lane runs with the switch off: the coach create runs, the push waits.
+    // The approve's coach drain runs with the switch off: the coach create runs, the push waits.
     const add = await approve("p-add", [{ kind: "add", date: DAY, session: run30(PROGRAM_NAME) }]);
     const coachId = add.applied.created[0]!;
     expect((await jobOf(`push:${buildId}`)).status).toBe("queued");

@@ -31,6 +31,7 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 
 const { coachRoutes } = await import("../src/routes/coach.js");
 const { REQUEST_GARDEN_STEP } = await import("../src/services/garden-sync.js");
+const { CALENDAR_OPS_PER_REQUEST } = await import("../src/services/calendar-sync.js");
 
 function makeEnv(): Env {
   return {
@@ -117,7 +118,11 @@ describe("approve: the garden and the calendar follow the plan", () => {
       REQUEST_GARDEN_STEP,
     );
     expect(spies.syncCalendar).toHaveBeenCalledTimes(1);
-    expect(spies.syncCalendar).toHaveBeenCalledWith(db, expect.anything(), userId);
+    // One bounded step of the calendar in the approve's own invocation (2026-10-10); the half-hourly run books the rest.
+    // (Read argument by argument: a failed toHaveBeenCalledWith prints `db` whole, which runs the worker out of heap.)
+    const [calDb, , calUser, calOpts] = spies.syncCalendar.mock.calls[0] as unknown[];
+    expect(calDb === db && calUser === userId).toBe(true);
+    expect(calOpts).toEqual({ maxOps: CALENDAR_OPS_PER_REQUEST });
   });
 
   it("ops that reach no past day leave the garden alone, and still sync the calendar", async () => {
