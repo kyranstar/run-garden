@@ -27,8 +27,8 @@ export const ATHLETIC = defineExercises([
     text: {
       summary: "Step off a low step, land softly on both feet, and hold the landing still.",
       setup: [
-        "Stand on a low, stable step about ankle height, such as the bottom stair.",
-        "No step to hand? A small hop in place works the same way."
+        "Stand on a low, stable step no higher than the bottom stair of a staircase.",
+        "No step? Rise onto your toes, hop a few centimetres, and make the same quiet landing."
       ],
       steps: [
         "Step forward off the edge; don't jump.",
@@ -173,7 +173,7 @@ export const ATHLETIC = defineExercises([
     tags: ["elastic", "lateral", "ski"],
     themes: ["plyoIntro", "skiPrep", "athleticBase"],
     easier: ["lineHopForwardBack"],
-    harder: ["lateralHopStick"],
+    harder: ["skaterBoundLow"],
     text: {
       summary: "Quick two-footed hops sideways over a line and back, light and low.",
       setup: ["Stand beside a line on the floor, such as a floor seam or a rolled towel, feet together.", "Knees soft, arms relaxed."],
@@ -209,7 +209,7 @@ export const ATHLETIC = defineExercises([
     tags: ["lateral", "single-leg", "elastic", "ski"],
     themes: ["plyoIntro", "skiPrep", "athleticBase"],
     easier: ["lineHopLateral"],
-    harder: ["skaterBoundStick"],
+    harder: ["skaterBoundStick", "lateralHopStick"],
     text: {
       summary: "Small hops sideways from one foot to the other, landing softly each time.",
       setup: ["Stand on one foot, knee soft, the free foot lifted behind you.", "Leave room for a short stride either way."],
@@ -217,7 +217,7 @@ export const ATHLETIC = defineExercises([
         "Push off sideways and land softly on the free foot.",
         "Let the trailing foot swing behind; tap it down lightly if you need balance.",
         "Push straight back the way you came.",
-        "Keep the hops small and rhythmic; each landing is one contact."
+        "Keep the hops small and rhythmic; the reps count per leg."
       ],
       focus: ["Land through the whole foot with a bent knee.", "Hips back, chest over the landing knee."],
       mistakes: ["Hopping too far too soon.", "The knee falling inward on landing.", "Standing up tall between hops."],
@@ -279,7 +279,7 @@ export const ATHLETIC = defineExercises([
     purposes: ["power", "balance"],
     tags: ["lateral", "single-leg", "landing", "deceleration", "ski"],
     themes: ["skiPrep", "athleticBase"],
-    easier: ["lineHopLateral"],
+    easier: ["skaterBoundLow"],
     text: {
       summary: "Hop sideways on one leg, land on the same leg, and hold it still.",
       setup: ["Stand on one leg beside a line on the floor, knee soft.", "Hands on the hips or relaxed for balance."],
@@ -339,7 +339,6 @@ export const ATHLETIC = defineExercises([
     patterns: ["squat"],
     regions: ["quads", "glutes", "calves"],
     roles: ["accessory"],
-    equipment: { all: ["bench"] },
     position: "standing",
     laterality: "bilateral",
     load: "bodyweight",
@@ -357,7 +356,7 @@ export const ATHLETIC = defineExercises([
     text: {
       summary: "Jump up onto a sturdy box or bench, stand tall, then step down.",
       setup: [
-        "Use a box or bench that can't tip or slide, no higher than your knee; start low.",
+        "Use a sturdy box, an aerobic step or a stair that can't tip or slide, no higher than your knee; start low.",
         "Stand a short step away, feet hip-width apart."
       ],
       steps: [
@@ -380,7 +379,6 @@ export const ATHLETIC = defineExercises([
     patterns: ["squat"],
     regions: ["quads", "glutes", "calves"],
     roles: ["accessory"],
-    equipment: { all: ["bench"] },
     position: "standing",
     laterality: "bilateral",
     load: "bodyweight",
@@ -397,7 +395,7 @@ export const ATHLETIC = defineExercises([
     text: {
       summary: "Step off a low box, land on both feet, and absorb the landing quietly.",
       setup: [
-        "Stand on a sturdy low box or bench that can't tip; start around mid-shin height and stay below the knee.",
+        "Stand on a sturdy low box, a step or a stair that can't tip; start around mid-shin height and stay below the knee.",
         "Toes at the edge, feet hip-width apart."
       ],
       steps: [
@@ -614,12 +612,12 @@ export const ATHLETIC = defineExercises([
     dose: { type: "reps", range: [4, 8], sets: [2, 3], restSec: 60, secsPerRep: 5 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 4,
-    contraction: ["isotonic"],
+    contraction: ["isotonic", "eccentric"],
     muscles: { primary: ["quads", "glute-max"], secondary: ["glute-med", "adductors", "hamstrings"] },
     purposes: ["strength", "balance"],
     tags: ["single-leg", "ski"],
     themes: ["skiPrep", "athleticBase"],
-    easier: ["bwBulgarianSplitSquat"],
+    easier: ["stepDownHeelTap", "bwBulgarianSplitSquat"],
     text: {
       summary: "On one leg, lower until the back knee touches a cushion behind you, then stand.",
       setup: [
@@ -637,6 +635,45 @@ export const ATHLETIC = defineExercises([
       breathing: "Breathe in on the way down, and out as you stand.",
       conditions: { tmj: "Single-leg strength invites bracing; reach the arms forward for balance and keep the teeth apart." },
       why: "Builds single-leg strength and control for the deep, one-legged positions skiing asks for."
+    }
+  },
+  {
+    id: "stepDownHeelTap",
+    name: "Eccentric step-down · heel tap",
+    family: "singleLegSquat",
+    patterns: ["lunge"],
+    regions: ["quads", "glutes"],
+    roles: ["accessory"],
+    position: "standing",
+    laterality: "unilateral",
+    load: "bodyweight",
+    dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45, secsPerRep: 5 },
+    conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
+    difficulty: 3,
+    contraction: ["isotonic", "eccentric"],
+    muscles: { primary: ["quads", "glute-med"], secondary: ["glute-max", "soleus", "tibialis"] },
+    purposes: ["strength", "balance"],
+    tags: ["ski", "single-leg"],
+    themes: ["skiPrep", "athleticBase"],
+    easier: ["stepUp"],
+    harder: ["skaterSquat"],
+    text: {
+      summary: "On a low step, slowly lower the free heel to tap the floor, then stand tall.",
+      setup: [
+        "Stand on one leg on a low, stable step or the bottom stair, the other foot hanging just off the front edge.",
+        "Fingertips on a wall or rail for balance."
+      ],
+      steps: [
+        "Bend the standing knee and lower slowly, about three seconds, until the free heel lightly taps the floor.",
+        "Keep the standing knee over the middle toes and the hips level.",
+        "Press through the whole standing foot to stand tall again.",
+        "Finish the reps, then switch legs."
+      ],
+      focus: ["The slow lowering is the exercise.", "Tap, don't rest: no weight goes into the heel."],
+      mistakes: ["Dropping the last few centimetres.", "Letting the standing knee cave in.", "Pushing off the floor with the tapping heel."],
+      breathing: "Breathe in as you lower, and out as you stand.",
+      conditions: { tmj: "Slow single-leg lowering invites bracing; keep a hand on the wall so the jaw can stay soft." },
+      why: "Trains the knee to stay steady over the foot while the thigh brakes, the control skiing asks for on every turn."
     }
   },
   {

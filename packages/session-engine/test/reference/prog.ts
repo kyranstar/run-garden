@@ -122,7 +122,7 @@ const quietPhrase = (data: EngineData): string => active(data).map(p => p.quietP
 function harderFor(data: EngineData, ex: ExerciseRecord, ctx: ProgCtx): ExerciseRecord | null {
   for (const id of ex.harder || []) {
     const h = Lib.get(data, id);
-    if (h && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment))) return h;
+    if (h && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment)) && Lib.fitsMode(data, h, ctx.mode, ctx.checks)) return h;
   }
   return null;
 }

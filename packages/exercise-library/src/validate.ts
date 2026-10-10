@@ -152,6 +152,7 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     for (const p of Object.keys(th.emphasis.patterns ?? {})) if (!inList(PATTERNS, p)) errors.push(`${tid}: pattern "${p}" is not in the vocabulary`);
     for (const r of Object.keys(th.emphasis.regions ?? {})) if (!inList(REGIONS, r)) errors.push(`${tid}: region "${r}" is not in the vocabulary`);
     for (const t of Object.keys(th.emphasis.tags ?? {})) if (!inList(TAGS, t)) errors.push(`${tid}: tag "${t}" is not in the vocabulary`);
+    for (const c of Object.keys(th.emphasis.contractions ?? {})) if (!inList(CONTRACTIONS, c)) errors.push(`${tid}: contraction "${c}" is not in the vocabulary`);
     for (const f of th.formats) if (!formatIds.includes(f)) errors.push(`${tid}: unknown format "${f}"`);
     for (const c of th.coreBias ?? []) if (!data.coreFamilies.some(x => x.id === c)) errors.push(`${tid}: unknown core family "${c}"`);
     if (th.profile && !(th.profile in PROFILES)) errors.push(`${tid}: unknown condition profile "${th.profile}"`);

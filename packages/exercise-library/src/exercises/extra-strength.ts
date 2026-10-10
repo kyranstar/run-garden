@@ -183,7 +183,6 @@ export const EXTRA_STRENGTH = defineExercises([
     tags: [],
     themes: ["posteriorChain"],
     easier: ["bridge"],
-    harder: ["nordicCurlAssisted"],
     text: {
       summary: "Heels on a chair seat, press down and lift the hips into a bridge.",
       setup: [

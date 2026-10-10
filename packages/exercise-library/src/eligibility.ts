@@ -1,6 +1,7 @@
 import { UNANSWERED, type Attrs, type CheckReading, type ConditionProfile } from "./conditions/types.js";
 import type { EngineData } from "./engine-data.js";
 import type { ExerciseRecord } from "./record.js";
+import type { Theme } from "./themes.js";
 import type { Mode } from "./vocab.js";
 
 // Whether an exercise can appear: equipment, the mode's general limits, and every active condition
@@ -50,13 +51,37 @@ export interface EligibleOptions {
 export const eligible = (data: EngineData, ex: ExerciseRecord, { equipment, mode, excluded = [], checks }: EligibleOptions): boolean =>
   hasEquipment(ex, equipment) && fitsMode(data, ex, mode, checks) && !excluded.includes(ex.id);
 
+/** A profile's flare day: its highest check, the day its flare-safe rules exist for (a flare day is a recovery day). */
+export const flareDay = (profile: ConditionProfile): CheckReading => ({ pre: profile.check.max, post: null, feelingOff: false });
+
+/**
+ * One profile's flare-safe verdict on a whole record: its ratings are flare-safe and its record rule allows it in
+ * recovery on a flare day (so a low-clench jump is never "safe"). The one verdict eligibility and the library share.
+ */
+export function recordFlareSafe(profile: ConditionProfile, ex: ExerciseRecord): boolean {
+  const a = attrsOf(ex, profile);
+  return a != null && profile.flareSafe(a) && (profile.allowRecord?.(ex, "recovery", flareDay(profile)) ?? true);
+}
+
 /** Safe on a flare day for every active profile (true when no profile is active). */
 export function flareSafe(data: EngineData, ex: ExerciseRecord): boolean {
-  return data.profiles.active.every(p => {
-    const a = attrsOf(ex, p);
-    return a != null && p.flareSafe(a);
-  });
+  return data.profiles.active.every(p => recordFlareSafe(p, ex));
 }
+
+/** A jump, hop, bound or landing (validation requires `contraction` on every record; a hand-made one without it isn't). */
+export const isPlyometric = (ex: Pick<ExerciseRecord, "contraction">): boolean =>
+  Array.isArray(ex.contraction) && ex.contraction.includes("plyometric");
+
+/** A theme that emphasises plyometric work: the only days the programme places a plyometric move. */
+export const plyometricDay = (theme: Pick<Theme, "emphasis"> | null | undefined): boolean =>
+  ((theme?.emphasis.contractions ?? {}).plyometric ?? 0) > 0;
+
+/**
+ * A plyometric move is on the athlete's frontier when it has no easier variant or any easier variant has been done:
+ * a never-jumped athlete starts at the bottom rungs, and each move done unlocks the next. Other moves always are.
+ */
+export const onFrontier = (ex: ExerciseRecord, done: (id: string) => boolean): boolean =>
+  !isPlyometric(ex) || ex.easier.length === 0 || ex.easier.some(id => done(id));
 
 /** The core family a core-role exercise belongs to, by pattern. */
 export function coreFamilyOf(data: EngineData, ex: ExerciseRecord | null | undefined): string | null {

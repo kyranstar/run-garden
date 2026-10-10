@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { SessionSheet, sendingPollClock } from "../src/components/session-sheet.js";
+import { SessionSheet, blocksInPlayOrder, sendingPollClock } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
@@ -532,6 +532,15 @@ describe("a built session", () => {
 });
 
 // ── Start, and the days around today ────────────────────────────────────────
+
+describe("the blocks' order on the sheet", () => {
+  it("follows the order the player plays them: a jumping day's jumps (accessory) before the core lifts", () => {
+    const steps = (...blocks: string[]) => ({ steps: blocks.map((block) => ({ block })) });
+    expect(blocksInPlayOrder(steps("arrive", "prep", "core", "accessory", "care", "cooldown"))).toEqual(["arrive", "prep", "core", "accessory", "care", "cooldown"]);
+    expect(blocksInPlayOrder(steps("arrive", "prep", "prep", "accessory", "core", "core", "care", "cooldown"))).toEqual(["arrive", "prep", "accessory", "core", "care", "cooldown"]);
+    expect(blocksInPlayOrder(steps("arrive", "cooldown"))).toEqual(["arrive", "cooldown", "prep", "core", "accessory", "care"]);
+  });
+});
 
 describe("Start", () => {
   it("is hidden until the player ships", async () => {

@@ -11,6 +11,9 @@ const roundTrip = (b: BuildResult) => Payload.decode(JSON.parse(JSON.stringify(P
 /**
  * The payload of a 40-minute build may not grow past this: the largest of the four builds below measured
  * 387,294 bytes (the whole build object is 549–647 KB; before this payload, 399–462 KB went out), + 10%.
+ * What it protects: the bytes stored per build and sent to a phone, and the CPU to write and read them inside a
+ * request (Workers Free: 10 ms). Swap pools hold every move a slot may take, so library growth multiplied by every
+ * slot; since each distinct swap choice is stored once (Task 5), the four builds measure 163–180 KB with 150 moves.
  */
 const BUDGET_40_MIN_BYTES = 426_000;
 

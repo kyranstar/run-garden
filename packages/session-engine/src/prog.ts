@@ -120,10 +120,11 @@ function holdReason(data: EngineData, last: ProgEntry | null, ctx: ProgCtx): str
 /** "with a quiet …" for every active profile, or nothing. */
 const quietPhrase = (data: EngineData): string => active(data).map(p => p.quietPhrase).filter(Boolean).join(" and ");
 
+/** The harder variant to offer: one this place can do that today's mode and checks allow (its cap, every profile's rules). */
 function harderFor(data: EngineData, ex: ExerciseRecord, ctx: ProgCtx): ExerciseRecord | null {
   for (const id of ex.harder || []) {
     const h = Lib.get(data, id);
-    if (h && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment))) return h;
+    if (h && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment)) && Lib.fitsMode(data, h, ctx.mode, ctx.checks)) return h;
   }
   return null;
 }

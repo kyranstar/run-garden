@@ -36,6 +36,7 @@ import {
   LOCATION_PRESETS,
   MODE_IDS,
   profileById,
+  recordFlareSafe,
   searchLibrary,
   type LibraryFilters,
   type ConditionProfile,
@@ -182,9 +183,9 @@ export function safetyFor(profile: ConditionProfile, ex: ExerciseRecord): Safety
     (mode) => profile.fitsMode(a, mode) && ex.patterns.every((p) => profile.allowPattern(p, mode, calm)) && (profile.allowRecord?.(ex, mode, calm) ?? true),
   );
   if (!someMode) return "never";
-  // A move the record rule refuses on a flare day (recovery) is never "safe" however its ratings read.
-  const flareOk = profile.flareSafe(a) && (profile.allowRecord?.(ex, "recovery", { ...calm, pre: profile.check.max }) ?? true);
-  return flareOk ? "safe" : "care";
+  // The library's one flare-safe verdict: a move the record rule refuses on a flare day is never "safe", whatever its
+  // ratings read.
+  return recordFlareSafe(profile, ex) ? "safe" : "care";
 }
 
 const safetyOf = (profiles: readonly ConditionProfile[], ex: ExerciseRecord): Record<string, Safety> =>
@@ -243,8 +244,9 @@ async function doneStats(db: Db, userId: string, since: string): Promise<Map<str
       from ${performedSets} inner join ${performedSessions} on ${performedSessions.id} = ${performedSets.performedSessionId}
       where ${performedSessions.userId} = ${userId} and ${performedSessions.payloadHash} != ${PENDING_HASH} and ${performedSets.done} = 1
       union all
-      select json_extract(m.value, '$.exerciseId'), ${performedSessions.localDate}, ${performedSessions.id}
-      from ${performedSessions}, json_each(${performedSessions.movesDone}) as m
+      select case when m.type = 'object' then json_extract(m.value, '$.exerciseId') end, ${performedSessions.localDate}, ${performedSessions.id}
+      from ${performedSessions},
+        json_each(case when json_valid(${performedSessions.movesDone}) then ${performedSessions.movesDone} else '[]' end) as m
       where ${performedSessions.userId} = ${userId} and ${performedSessions.payloadHash} != ${PENDING_HASH}
     )
     where exercise_id is not null

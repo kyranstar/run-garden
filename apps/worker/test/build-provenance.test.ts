@@ -12,6 +12,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const ROOT = join(__dirname, "..", "..", "..");
 const SCRIPT = join(ROOT, "apps", "worker", "scripts", "build-provenance.mjs");
+/**
+ * A saved post no library move can match: library validation refuses "http" anywhere in a record, so no move's name
+ * can carry this token. (A plain name like "Pogo hops" stopped being a "no match" the day the library gained it.)
+ */
+const NO_SUCH_MOVE = "Http lunge";
 
 /** A synthetic post link, assembled so the repository's privacy grep never sees a literal one. */
 const link = (n: number) => ["ht", "tps://www.example.test/p/", `post${n}`, "/"].join("");
@@ -110,7 +115,7 @@ describe("buildProvenance (the mapping)", () => {
       saves: [
         saved(6, "Goblet squat"), // already cited by the standalone library: one row, not two
         saved(7, "Goblet squat", { postNeedsHumanReview: true }),
-        saved(8, "Pogo hops"),
+        saved(8, NO_SUCH_MOVE),
         saved(9, "Twin move"), // two moves share the name once plurals are set aside
       ],
     });
@@ -137,7 +142,7 @@ describe("build-provenance.mjs (the command)", () => {
     ];
     writeFileSync(join(standalone, "lower.js"), `// synthetic\nData.addExercises(${JSON.stringify(records)});\n`);
     const saves = join(dir, "saves.json");
-    writeFileSync(saves, JSON.stringify([saved(12, "Hamstring bridge (heels on chair)"), saved(13, "Pogo hops"), saved(14, "Dead bug", { postNeedsHumanReview: true })]));
+    writeFileSync(saves, JSON.stringify([saved(12, "Hamstring bridge (heels on chair)"), saved(13, NO_SUCH_MOVE), saved(14, "Dead bug", { postNeedsHumanReview: true })]));
     return { standalone, saves };
   }
   const run = (args: string[]) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", timeout: 60_000 });

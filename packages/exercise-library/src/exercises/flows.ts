@@ -16,8 +16,8 @@ export const FLOWS = defineExercises([
     dose: { type: "time", range: [60, 90] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    contraction: ["isotonic"],
-    muscles: { primary: ["hip-flexors", "adductors"], secondary: ["deep-hip-rotators", "glute-max"] },
+    contraction: ["isotonic", "passive"],
+    muscles: { primary: ["hip-flexors", "adductors"], secondary: ["deep-hip-rotators", "glute-max", "hamstrings"] },
     purposes: ["mobility", "recovery"],
     tags: ["hip-opening"],
     themes: ["gentleMobility", "hipsPosture", "deskUnwind"],
@@ -62,14 +62,14 @@ export const FLOWS = defineExercises([
       setup: ["Start on all fours, hands under the shoulders and knees under the hips."],
       steps: [
         "Round and then arch the spine slowly a few times, starting each move from the upper back.",
-        "Slide one arm under the body and rest that shoulder and the side of the head down for a breath.",
+        "Slide one arm under the body and rest that shoulder and your temple lightly on the mat for a breath; the jaw and cheek stay off the floor.",
         "Sweep the same arm up toward the ceiling, following the hand with your eyes.",
         "Alternate arms, flowing with the breath until the time is up."
       ],
       focus: ["The turn comes from the upper back, not the low back.", "The hips stay over the knees."],
       mistakes: ["Swinging the hips to fake the turn.", "Cranking the neck to look further."],
       breathing: "Breathe in as you open, out as you thread through.",
-      conditions: { tmj: "Let the side of the head rest heavily as you thread through; keep the teeth apart and the face soft." },
+      conditions: { tmj: "Rest the temple lightly as you thread through, never the jaw or cheek; keep the teeth apart and the face soft." },
       why: "Restores turning and extension through the upper back, which easy breathing and an easy neck depend on."
     }
   },
@@ -77,7 +77,7 @@ export const FLOWS = defineExercises([
     id: "downRegulationFlow",
     name: "Wind-down flow",
     family: "downRegulationFlow",
-    patterns: ["mobility"],
+    patterns: ["breathe", "mobility"],
     regions: ["core", "low-back", "hips"],
     roles: ["cooldown", "downshift"],
     equipment: { all: ["mat"] },
@@ -94,9 +94,9 @@ export const FLOWS = defineExercises([
     themes: ["gentleMobility", "jawReset"],
     text: {
       summary: "Slow breaths in child's pose, a gentle cat-cow, then knees rocking on your back.",
-      setup: ["Kneel on a mat with the knees wide and the big toes together."],
+      setup: ["Kneel on a mat with the knees wide and the big toes together.", "Keep a block or cushion nearby to rest your forehead on."],
       steps: [
-        "Fold into child's pose and take five slow breaths, each breath out longer than the breath in.",
+        "Fold into child's pose with the forehead resting on the block or your stacked hands, and take five slow breaths, each breath out longer than the breath in.",
         "Come onto all fours and move through a few slow cat-cows.",
         "Roll onto your back with the feet flat and let the knees rock slowly from side to side.",
         "Finish lying still, hands on the belly, for the last few breaths."
@@ -114,15 +114,15 @@ export const FLOWS = defineExercises([
     family: "hipFlow",
     patterns: ["mobility"],
     regions: ["hips", "glutes"],
-    roles: ["mobility", "warmup", "cooldown"],
+    roles: ["cooldown", "stretch"],
     equipment: { all: ["mat"] },
     position: "half-kneeling",
     laterality: "unilateral",
     load: "none",
-    dose: { type: "time", range: [60, 90] },
+    dose: { type: "time", range: [90, 150] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
-    contraction: ["isotonic"],
+    contraction: ["isotonic", "passive"],
     muscles: { primary: ["hip-flexors", "deep-hip-rotators"], secondary: ["adductors", "glute-max", "glute-med"] },
     purposes: ["mobility", "recovery"],
     tags: ["ski", "hip-opening"],
@@ -163,7 +163,7 @@ export const FLOWS = defineExercises([
     tags: [],
     themes: ["gentleMobility", "deskUnwind"],
     text: {
-      summary: "Reach, fold, crouch and turn: a standing flow to wake the whole body up.",
+      summary: "Reach, fold, squat and turn: a standing flow to wake the whole body up.",
       setup: ["Stand with the feet hip-width apart and a little room around you."],
       steps: [
         "Reach both arms overhead, then lean gently from side to side.",

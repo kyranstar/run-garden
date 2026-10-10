@@ -55,6 +55,12 @@ type Mode = keyof typeof MODE_LABEL;
 type Picker = "mode" | "theme" | "minutes" | "place";
 
 const BLOCK_ORDER = ["arrive", "prep", "core", "accessory", "care", "cooldown"] as const;
+type SheetBlock = (typeof BLOCK_ORDER)[number];
+/** The blocks in the order the player plays them (a jumping day's jumps come before the core lifts). */
+export function blocksInPlayOrder(build: { steps: ReadonlyArray<{ block: string }> }): SheetBlock[] {
+  const played = [...new Set(build.steps.map((s) => s.block))].filter((b): b is SheetBlock => (BLOCK_ORDER as readonly string[]).includes(b));
+  return [...played, ...BLOCK_ORDER.filter((b) => !played.includes(b))];
+}
 export const BLOCK_LABEL: Record<string, string> = {
   arrive: "Arrive",
   prep: "Prep",
@@ -838,7 +844,7 @@ function BuiltSession({
       </div>
       {view.modeReasons.length > 0 ? <p className="session-reason">{view.modeReasons.join(" ")}</p> : null}
       <div className="session-blocks">
-        {BLOCK_ORDER.map((blockId) => {
+        {blocksInPlayOrder(build).map((blockId) => {
           const items = build.items.filter((i) => i.block === blockId);
           if (items.length === 0) return null;
           const format = FORMAT_LABEL[items[0]!.format];

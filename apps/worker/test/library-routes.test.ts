@@ -5,7 +5,7 @@
  * go stale); the routes read no clock that matters to what they assert.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { adaptiveConfigSchema, addDays, newId, nowInstant } from "@rg/domain";
 import { EXERCISES, hasEquipment, TMJ } from "@rg/exercise-library";
@@ -164,7 +164,8 @@ describe("GET /api/library", () => {
     expect((await list("?q=SQUAT")).items.map((r) => r.id)).toEqual(
       expect.arrayContaining(["gobletSquat", "boxSquat", "tempoSquat", "bulgarianSplitSquat"]),
     );
-    expect((await list("?q=squat")).items.every((r) => /squat/i.test(`${r.name} ${r.id} ${r.family}`))).toBe(true);
+    // Search matches a move's name, id, family, card line and tags (searchLibrary's text tiers).
+    expect((await list("?q=squat")).items.every((r) => /squat/i.test([r.name, r.id, r.family, r.summary, ...r.tags].join(" ")))).toBe(true);
     expect((await list("?pattern=push-v")).items.map((r) => r.id)).toEqual(["halfKneelingPress"]);
     const jaw = (await list("?region=jaw")).items;
     expect(jaw.length).toBeGreaterThan(0);
@@ -427,12 +428,29 @@ describe("GET /api/library — the Studio's filters, ranking and history", () =>
     expect(safetyFor({ ...TMJ, allowRecord: (_ex, mode) => mode !== "recovery" }, chinTuck)).toBe("care");
   });
 
-  it("a plyometric move is never \"safe\" for the jaw profile (its gate refuses it in recovery), but is not ruled out", async () => {
+  it("no plyometric move is \"safe\" for the jaw profile (its gate refuses them in recovery), the low-clench ones included, but none is ruled out", async () => {
     await activateTmj();
-    const ply = EXERCISES.find((e) => e.contraction.includes("plyometric"))!;
-    const row = (await list()).items.find((r) => r.id === ply.id)!;
-    expect(row.safety.tmj).toBe("care");
-    expect((await list("?safe=1")).items.map((r) => r.id)).not.toContain(ply.id);
+    const plyometric = EXERCISES.filter((e) => e.contraction.includes("plyometric"));
+    expect(plyometric.filter((e) => TMJ.flareSafe(e.conditions.tmj!)).length).toBeGreaterThan(0); // the low-clench jumps
+    const rows = new Map((await list("?limit=200")).items.map((r) => [r.id, r]));
+    for (const e of plyometric) expect(rows.get(e.id)?.safety.tmj, e.id).toBe("care");
+    const safe = (await list("?safe=1&limit=200")).items.map((r) => r.id);
+    for (const e of plyometric) expect(safe, e.id).not.toContain(e.id);
+  });
+
+  it("one malformed moves_done row doesn't break the list: that row counts nothing, the others still count", async () => {
+    const { todayInZone, addDays: add } = await import("@rg/domain");
+    const today = todayInZone(prefs.timezone);
+    await settledSession(add(today, -2), { moves: ["catCow"] });
+    const broken = await settledSession(add(today, -1), { moves: ["legsUp"] });
+    await db.run(sql`update performed_sessions set moves_done = 'not json' where id = ${broken}`);
+    const odd = await settledSession(add(today, -1), { moves: ["legsUp"] });
+    await db.run(sql`update performed_sessions set moves_done = '["legsUp", 7, null]' where id = ${odd}`);
+    const res = await call("GET", "/api/library?limit=200");
+    expect(res.status).toBe(200);
+    const byId = new Map((await json<{ items: Array<{ id: string; lastDoneOn: string | null; timesDone30d: number }> }>(res)).items.map((r) => [r.id, r]));
+    expect(byId.get("catCow")).toMatchObject({ lastDoneOn: add(today, -2), timesDone30d: 1 });
+    expect(byId.get("legsUp")).toMatchObject({ lastDoneOn: null, timesDone30d: 0 });
   });
 
   it("the detail's history sets carry their flags", async () => {

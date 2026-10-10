@@ -20,7 +20,7 @@ describe("the real library (data.test.js)", () => {
 
   test("the library has about 70 exercises and keeps every pass-1 id", () => {
     expect(EXERCISES.length).toBeGreaterThanOrEqual(65);
-    expect(EXERCISES.length).toBe(149);
+    expect(EXERCISES.length).toBe(150);
     for (const id of PASS1_IDS) expect(get(id), `missing pass-1 id ${id}`).toBeTruthy();
   });
 
@@ -87,6 +87,11 @@ describe("validation (engine-validate.test.js)", () => {
     ]) {
       expect(errors.includes(expected), `missing: ${expected}\n---\n${errors}`).toBe(true);
     }
+  });
+
+  test("a theme emphasising a contraction outside the vocabulary is refused", () => {
+    const bad = { ...data, themes: [...data.themes, { ...data.themes[0]!, id: "badContractions", emphasis: { contractions: { bouncy: 1 } as never } }] };
+    expect(validateLibrary(bad, { presets: [] })).toContain('theme badContractions: contraction "bouncy" is not in the vocabulary');
   });
 
   test("a theme emphasising a tag outside the vocabulary is refused", () => {

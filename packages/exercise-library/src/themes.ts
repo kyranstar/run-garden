@@ -1,4 +1,4 @@
-import type { FormatId, Mode } from "./vocab.js";
+import type { Contraction, FormatId, Mode } from "./vocab.js";
 
 // Themed sessions: what a session emphasizes, which modes it suits, and its preferred formats.
 // A theme with `profile` belongs to that condition profile's care content: it is offered only when a
@@ -8,6 +8,11 @@ export interface ThemeEmphasis {
   patterns?: Readonly<Record<string, number>>;
   regions?: Readonly<Record<string, number>>;
   tags?: Readonly<Record<string, number>>;
+  /**
+   * Contraction types the theme is about. A theme that weights `plyometric` is a jumping day: the programme places
+   * plyometric moves on such days only (and condition profiles still decide whether today allows them).
+   */
+  contractions?: Readonly<Partial<Record<Contraction, number>>>;
 }
 
 export interface Theme {
@@ -93,7 +98,7 @@ export const THEMES: readonly Theme[] = [
     // Never a recovery theme: its moves are plyometric, and condition profiles decide the days they may appear.
     id: "plyoIntro", name: "Jumps and landings", blurb: "Land softly first, then add a little spring: small hops and stuck landings, with plenty of rest.",
     modes: ["consistent", "build"], inRotation: false,
-    emphasis: { patterns: { squat: 2, lunge: 1 }, regions: { calves: 1.5, ankles: 1.5, quads: 1, glutes: 1 }, tags: { landing: 3, elastic: 3, deceleration: 2 } },
+    emphasis: { regions: { calves: 1, ankles: 1 }, tags: { landing: 2, elastic: 2, deceleration: 1 }, contractions: { plyometric: 3 } },
     formats: ["straight", "superset"], coreBias: ["squat", "hinge"],
   },
 ];

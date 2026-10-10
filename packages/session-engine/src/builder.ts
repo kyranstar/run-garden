@@ -1,6 +1,6 @@
 import type { Weight, WeightUnit } from "@rg/domain";
 import {
-  attrsOf, modeSkeleton, positionGroup,
+  attrsOf, isPlyometric, modeSkeleton, onFrontier, plyometricDay, positionGroup,
   type BlockId, type CheckReading, type EngineData, type ExerciseRecord, type Format, type FormatId, type Mode, type ModeSkeleton, type Theme,
 } from "@rg/exercise-library";
 import { Blocks } from "./blocks.js";
@@ -18,6 +18,9 @@ import type { Block, BuildInput, BuildResult, Group, Item, Plan, Prefs, Step, Sw
 // comes from the active profiles, and today's checks decide what the day allows.
 // The plan is filled without swaps; swaps (`{ "<block>:<index>": { from: exId, to: exId } }`) are then applied to
 // it exactly, slot by slot, with the pure swap rules in swapping.ts (audit I1, I2, M4).
+// Plyometric moves (ruling b): only on a jumping day (a theme that emphasises plyometric work), only in the accessory
+// block, which then holds jumps alone, as straight sets or a superset, and plays after the warm-up and before the core
+// lifts; and only from the athlete's frontier (no easier variant, or one already done), the next rung first.
 
 const PREP_SECONDS = 8;
 const CHIME_SECONDS = 3;
@@ -25,6 +28,8 @@ const LOG_SECONDS = 10;
 const MAX_ITEMS_PER_BLOCK = 12;
 const NEW_MOVE = "New move this week";
 const SWAPPED = "Swapped in";
+/** The formats a plyometric block may take: straight sets or a superset, with real rest between sets. */
+const JUMP_FORMATS: readonly FormatId[] = ["straight", "superset"];
 
 interface Ctx extends SelectCtx {
   data: EngineData;
@@ -50,6 +55,10 @@ interface Ctx extends SelectCtx {
   skeleton: ModeSkeleton;
   /** The build's history index over `sessions`. */
   hist: HistIndex;
+  /** The day's theme emphasises plyometric work: the accessory block may become the jumps block. */
+  jumpDay: boolean;
+  /** While the jumps block is being filled: candidates are plyometric moves on the frontier, and only those. */
+  fillingJumps: boolean;
 }
 
 function fmt(data: EngineData, id: FormatId): Format {
@@ -200,11 +209,33 @@ function movesInPlan(ctx: Ctx): Set<string> {
   return keys;
 }
 
+/** Whether the athlete has done this move (on or before the build's day): what unlocks the next rung of a ladder. */
+const doneBy = (ctx: Pick<Ctx, "stats">) => (id: string): boolean => Boolean(ctx.stats.get(id)?.lastDate);
+
+/** A jumps slot takes plyometric moves on the frontier only; every other slot takes no plyometric move at all. */
+const jumpRule = (ex: ExerciseRecord, jumps: boolean, ctx: Pick<Ctx, "stats">): boolean =>
+  jumps ? isPlyometric(ex) && onFrontier(ex, doneBy(ctx)) : !isPlyometric(ex);
+
+/**
+ * The jumps block's order: the next rung first (a move not yet done, gentlest first), and at most one new move per
+ * session; after it, moves already done, gentlest first. Ties keep the usual ranking.
+ */
+function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx): Scored[] {
+  const done = doneBy(ctx);
+  const newPlaced = placed.some(it => !done(it.exercise.id));
+  return ranked
+    .filter(r => !newPlaced || done(r.ex.id))
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => Number(done(a.r.ex.id)) - Number(done(b.r.ex.id)) || a.r.ex.difficulty - b.r.ex.difficulty || a.i - b.i)
+    .map(x => x.r);
+}
+
 // The day's checks apply (Lib.eligible with checks): e.g. overhead pressing needs an answered, calm check.
 function candidates(block: BlockId, formatId: FormatId, ctx: Ctx): ExerciseRecord[] {
   const taken = movesInPlan(ctx);
   return Lib.all(ctx.data).filter(ex =>
     !taken.has(moveKey(ex)) &&
+    jumpRule(ex, ctx.fillingJumps, ctx) &&
     fitsBlock(ctx, ex, block) &&
     Lib.eligible(ctx.data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks }) &&
     !ctx.used.has(ex.id) &&
@@ -368,6 +399,8 @@ function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): 
     used: new Set(),
     newMoveWeek,
     newMoveOpen: newMoveWeek,
+    jumpDay: plyometricDay(input.theme),
+    fillingJumps: false,
     coreRegions: null,
     targets: new Map(),
     skeleton: modeSkeleton(data.skeleton, input.mode),
@@ -401,7 +434,7 @@ function buildPlan(data: EngineData, input: BuildInput, hist?: HistIndex): Plan 
   extend(groups, budget - spent, ctx);
   trim(groups, budget, ctx);
   ensureNewMove(groups, budget, ctx);
-  const ordered = ctx.skeleton.order.flatMap(b => groups[b]).filter(g => g.items.length);
+  const ordered = playOrder(ctx.skeleton.order, groups).flatMap(b => groups[b]).filter(g => g.items.length);
   const steps = ordered.flatMap(g => groupSteps(data, g));
   const items = ordered.flatMap(g => g.items);
   const newItem = items.find(it => it.isNew);
@@ -410,21 +443,43 @@ function buildPlan(data: EngineData, input: BuildInput, hist?: HistIndex): Plan 
 
 const emptyGroups = (): Record<BlockId, Group[]> => ({ arrive: [], prep: [], core: [], accessory: [], care: [], cooldown: [] });
 
+const isJumpsGroup = (g: Group): boolean => g.items.some(it => isPlyometric(it.exercise));
+
+/** The skeleton's play order; a jumps block plays after the warm-up and before the core lifts, while the legs are fresh. */
+function playOrder(order: readonly BlockId[], groups: Record<BlockId, Group[]>): readonly BlockId[] {
+  if (!groups.accessory.some(isJumpsGroup) || !order.includes("core")) return order;
+  const rest = order.filter(b => b !== "accessory");
+  const at = rest.indexOf("core");
+  return [...rest.slice(0, at), "accessory", ...rest.slice(at)];
+}
+
 function fillAccessory(budget: number, ctx: Ctx): { groups: Group[]; spent: number } {
   const modeFormats = ctx.data.modes[ctx.mode].formats;
   const allowed = (ctx.skeleton.blocks.accessory?.formats ?? []).filter(f => modeFormats.includes(f));
   if (!allowed.length || budget < 60) return { groups: [], spent: 0 };
   const themed = ctx.theme ? ctx.theme.formats.filter(f => allowed.includes(f)) : [];
-  const pool = themed.length ? themed : allowed;
-  const first = pool[Math.floor(ctx.rng() * pool.length)]!;
-  for (const formatId of [first, ...allowed.filter(f => f !== first)]) {
-    const group = tryFormat(formatId, budget, ctx);
-    if (!group) continue;
+  const take = (group: Group): { groups: Group[]; spent: number } => {
     for (const it of group.items) {
       ctx.used.add(it.exercise.id);
       if (it.isNew) ctx.newMoveOpen = false;
     }
     return { groups: [group], spent: costOf(groupSteps(ctx.data, group)) };
+  };
+  // A jumping day: the accessory block becomes the jumps block when today allows a jump; otherwise ordinary accessory work.
+  if (ctx.jumpDay) {
+    const jumpFormats = allowed.filter(f => JUMP_FORMATS.includes(f));
+    for (const formatId of [...themed.filter(f => jumpFormats.includes(f)), ...jumpFormats.filter(f => !themed.includes(f))]) {
+      ctx.fillingJumps = true;
+      const group = tryFormat(formatId, budget, ctx);
+      ctx.fillingJumps = false;
+      if (group) return take(group);
+    }
+  }
+  const pool = themed.length ? themed : allowed;
+  const first = pool[Math.floor(ctx.rng() * pool.length)]!;
+  for (const formatId of [first, ...allowed.filter(f => f !== first)]) {
+    const group = tryFormat(formatId, budget, ctx);
+    if (group) return take(group);
   }
   return { groups: [], spent: 0 };
 }
@@ -442,10 +497,17 @@ function tryFormat(formatId: FormatId, budget: number, ctx: Ctx): Group | null {
     const slotKey = `accessory:${i}`;
     const prevPosition = items.length ? items[items.length - 1]!.exercise.position : null;
     const newOpen = ctx.newMoveOpen && !items.some(it => it.isNew);
-    const choice = Select.rank(ctx.data, pool, { ...ctx, prevPosition, newMoveOpen: newOpen, coreRegions: null })[0]!;
+    const ranked = Select.rank(ctx.data, pool, { ...ctx, prevPosition, newMoveOpen: newOpen, coreRegions: null });
+    const choice = (ctx.fillingJumps ? rankJumps(ranked, items, ctx) : ranked)[0];
+    if (!choice) break;
     items.push(makeItem(choice, "accessory", slotKey, formatId, ctx));
   }
   if (items.length < minN) return null;
+  // Jumps play gentlest first.
+  if (ctx.fillingJumps) {
+    items.sort((a, b) => a.exercise.difficulty - b.exercise.difficulty);
+    items.forEach((it, i) => { it.slotKey = `accessory:${i}`; });
+  }
   items.forEach((it, i) => {
     it.sets = formatId === "ladder" ? f.rungs!.length
       : formatId === "circuit" ? 1
@@ -559,6 +621,8 @@ function ensureNewMove(groups: Record<BlockId, Group[]>, budget: number, ctx: Ct
   const blocks = (["accessory", "prep", "cooldown", "care", "arrive"] as const).filter(b => ctx.skeleton.order.includes(b));
   for (const block of blocks) {
     for (const g of groups[block]) {
+      // The jumps block keeps its own order (the next rung first); the weekly new move goes elsewhere.
+      if (isJumpsGroup(g)) continue;
       // Longest items first: swapping out a long item leaves the most room for the new one.
       const alone: FormatId = g.format === "superset" ? "straight" : g.format;   // a superset needs two items to cost
       const order = g.items.map((it, i) => ({ i, secs: costOf(groupSteps(ctx.data, { ...g, format: alone, items: [it] })) })).sort((a, b) => b.secs - a.secs || b.i - a.i);
@@ -624,7 +688,9 @@ function slotCandidates(ctx: Ctx, item: Item): ExerciseRecord[] {
     return Blocks.familyCandidates(ctx.data, item.coreFamily ?? "", { equipment: ctx.equipment, excluded: ctx.prefs.excluded })
       .filter(ex => Lib.coreFamilyOf(ctx.data, ex) === item.coreFamily && Lib.fitsMode(ctx.data, ex, ctx.mode, ctx.checks));
   }
+  const jumps = isPlyometric(item.exercise);
   return Lib.all(ctx.data).filter(ex =>
+    jumpRule(ex, jumps, ctx) &&
     fitsBlock(ctx, ex, item.block) &&
     Lib.eligible(ctx.data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks }) &&
     accepts(ctx.data, item.format, ex));
@@ -662,7 +728,7 @@ function prepare(data: EngineData, input: BuildInput, _k = 3, history?: HistInde
   const rank = (pool: readonly ExerciseRecord[]): Scored[] => pool.map(scoreOf).sort((a, b) => b.total - a.total || a.ex.id.localeCompare(b.ex.id));
   const ranked = new Map<string, Scored[]>();
   const rankedFor = (item: Item): Scored[] => {
-    const key = item.block === "core" ? `core|${item.coreFamily}` : `${item.block}|${item.format}`;
+    const key = item.block === "core" ? `core|${item.coreFamily}` : `${item.block}|${item.format}|${isPlyometric(item.exercise)}`;
     let list = ranked.get(key);
     if (!list) { list = rank(slotCandidates(ctx, item)); ranked.set(key, list); }
     return list;
@@ -735,4 +801,4 @@ function alternatives(data: EngineData, input: BuildInput, slotKey: string, k = 
   return Swapping.offered(built.swapState, built.steps, slotKey, k);
 }
 
-export const Builder = { build, prepare, finish, alternatives, groupSteps, costOf, PREP_SECONDS, CHIME_SECONDS };
+export const Builder = { build, prepare, finish, alternatives, groupSteps, costOf, windowSeconds, setSeconds, PREP_SECONDS, CHIME_SECONDS };

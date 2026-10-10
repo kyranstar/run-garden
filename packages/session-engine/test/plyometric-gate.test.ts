@@ -1,18 +1,26 @@
 import { addDays } from "@rg/domain";
-import { EXERCISES, THEMES, makeEngineData, type EngineData, type ExerciseRecord, type Mode, type Theme } from "@rg/exercise-library";
+import {
+  EXERCISES, THEMES, isPlyometric, makeEngineData,
+  type CheckReading, type EngineData, type ExerciseRecord, type Mode, type Theme,
+} from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
-import { Builder, type BuildResult, type HistorySession } from "../src/index.js";
-import { PLACES, block, data } from "./builder-fixtures.js";
+import { Builder, Prog, type BuildResult, type HistorySession, type ProgEntry } from "../src/index.js";
+import { PLACES, block, data, home } from "./builder-fixtures.js";
 
-// The plyometric gate at build level (Task 5). The jaw profile's `allowRecord` keeps every plyometric move (jumps,
-// hops, bounds, landings) out of recovery, and out of every other mode unless today's check is answered and calm.
-// Each case runs 200 seeded builds (date, minutes, place, theme and seed all vary) and looks everywhere a move can
-// reach the athlete: plan items, steps, offered alternatives and the offline swap pools.
+// Plyometric moves in the programme (Task 5, ruling b). Two layers keep them where they belong:
+//  - the condition profile's gate (`allowRecord`): the jaw profile never allows one in recovery, when feeling off, or
+//    without an answered, calm check;
+//  - the engine: a plyometric move is placed only on a jumping day (a theme that emphasises plyometric work), only
+//    from the athlete's frontier (no easier variant, or one already done), the next rung first, in one straight-set or
+//    superset block that plays after the warm-up and before the core lifts.
+// Each case runs 200 seeded builds (date, minutes, place, theme and seed vary) and looks everywhere a move can reach
+// the athlete: plan items, steps, offered alternatives and the offline swap pools.
 
-const PLYOMETRIC = EXERCISES.filter(e => e.contraction.includes("plyometric"));
+const PLYOMETRIC = EXERCISES.filter(isPlyometric);
+const byId = new Map(EXERCISES.map(e => [e.id, e]));
 const softId = (id: string) => `soft${id[0]!.toUpperCase()}${id.slice(1)}`;
-// A gentle twin of every plyometric move: rated 0 for the jaw, difficulty 1, unloaded, and allowed in every block
-// recovery fills. Nothing but the gate can keep a twin out of a recovery session.
+// A gentle twin of every plyometric move: rated 0 for the jaw, difficulty 1, unloaded, no easier variant, and allowed
+// in every block. Only the gate and the engine's jumping-day rules can keep a twin out.
 const twins: ExerciseRecord[] = PLYOMETRIC.map(e => ({
   ...e, id: softId(e.id), legacyIds: [], name: `Soft ${e.name}`, family: `soft-${e.family}`, easier: [], harder: [],
   roles: ["warmup", "activation", "mobility", "accessory", "cooldown", "stretch"], difficulty: 1, load: "none",
@@ -31,22 +39,32 @@ const doneEverythingElse = (today: string): HistorySession[] => [{
   done: EXERCISES.filter(e => !GATED.has(e.id)).map(e => ({ id: e.id, secs: 60 })), entries: [],
 }];
 
-// The mode's themes, the jumping theme asked for outright (whatever the mode), and no theme at all.
-const plyoIntro = THEMES.find(t => t.id === "plyoIntro") ?? null;
-const themesFor = (d: EngineData, mode: Mode): Array<Theme | null> => [...d.themes.filter(t => t.modes.includes(mode)), plyoIntro, null];
+const plyoIntro = THEMES.find(t => t.id === "plyoIntro")!;
+/** A made-up jumping day that prefers circuits and ladders: the plyometric block must still be straight sets or supersets. */
+const circuitJumps: Theme = { ...plyoIntro, id: "circuitJumps", formats: ["circuit", "ladder"] };
+const nonJumping = (d: EngineData, mode: Mode): Array<Theme | null> => [...d.themes.filter(t => t.modes.includes(mode) && t.id !== "plyoIntro"), null];
 
-interface Case { d: EngineData; mode: (i: number) => Mode; pre: (i: number) => number | null; stress: boolean }
+interface Case {
+  d: EngineData;
+  mode: (i: number) => Mode;
+  check: (i: number) => CheckReading;
+  themes: (d: EngineData, mode: Mode) => Array<Theme | null>;
+  stress: boolean;
+  sessions?: (today: string, i: number) => HistorySession[];
+}
 
-function builds({ d, mode, pre, stress }: Case): BuildResult[] {
+const calm: CheckReading = { pre: 1, post: null, feelingOff: false };
+
+function builds({ d, mode, check, themes, stress, sessions }: Case): BuildResult[] {
   const out: BuildResult[] = [];
   for (let i = 0; i < 200; i++) {
     const today = addDays("2026-10-05", i % 29);
     const m = mode(i);
-    const themes = themesFor(d, m);
+    const options = themes(d, m);
     out.push(Builder.build(d, {
-      today, mode: m, theme: themes[i % themes.length] ?? null, minutes: [15, 20, 30, 40, 60][i % 5]!, location: PLACES[i % PLACES.length]!,
-      unit: "lb", sessions: stress && i % 2 ? doneEverythingElse(today) : [], prefs: stress ? stressPrefs : {},
-      savedIds: stress ? [...GATED] : [], block, checks: { tmj: { pre: pre(i), post: null, feelingOff: false } }, swaps: {}, programId: `seed-${i}`,
+      today, mode: m, theme: options[i % options.length] ?? null, minutes: [15, 20, 30, 40, 60][i % 5]!, location: PLACES[i % PLACES.length]!,
+      unit: "lb", sessions: sessions ? sessions(today, i) : stress && i % 2 ? doneEverythingElse(today) : [], prefs: stress ? stressPrefs : {},
+      savedIds: stress ? [...GATED] : [], block, checks: { tmj: check(i) }, swaps: {}, programId: `seed-${i}`,
     }));
   }
   return out;
@@ -60,47 +78,164 @@ const reach = (plan: BuildResult): string[] => [
   ...Object.values(plan.swapState.slots).flatMap(slot => [slot.original, ...slot.pool].map(c => c.id)),
 ].filter(id => GATED.has(id));
 
-describe("the plyometric gate holds in every plan", () => {
-  test("recovery: none in 200 seeded builds, even on a calm, answered day and with every gated move rated 👍 and new", () => {
-    const plans = builds({ d: withTwins, mode: () => "recovery", pre: i => [0, 1, 2, null][i % 4]!, stress: true });
+const jumpingDay = (_d: EngineData, _m: Mode): Array<Theme | null> => [plyoIntro, circuitJumps];
+const everyTheme = (d: EngineData, m: Mode): Array<Theme | null> => [...nonJumping(d, m), plyoIntro, circuitJumps];
+const consistentOrBuild = (i: number): Mode => (i % 2 ? "build" : "consistent");
+
+describe("the gate holds in every plan, jumping day or not", () => {
+  test("recovery: none in 200 seeded builds, even on a calm, answered day, asked for a jumping day, with every gated move rated 👍 and new", () => {
+    const plans = builds({ d: withTwins, mode: () => "recovery", check: i => ({ ...calm, pre: [0, 1, 2, null][i % 4]! }), themes: everyTheme, stress: true });
     expect(plans.every(p => p.items.length > 0)).toBe(true);
     expect(plans.flatMap(reach)).toEqual([]);
   });
 
   test("a pre-check of 4: none in 200 seeded builds in consistent or build", () => {
-    const plans = builds({ d: withTwins, mode: i => (i % 2 ? "build" : "consistent"), pre: () => 4, stress: true });
-    expect(plans.flatMap(reach)).toEqual([]);
+    expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, pre: 4 }), themes: everyTheme, stress: true }).flatMap(reach)).toEqual([]);
   });
 
   test("an unanswered check: none in 200 seeded builds in consistent or build", () => {
-    const plans = builds({ d: withTwins, mode: i => (i % 2 ? "build" : "consistent"), pre: () => null, stress: true });
-    expect(plans.flatMap(reach)).toEqual([]);
+    expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, pre: null }), themes: everyTheme, stress: true }).flatMap(reach)).toEqual([]);
   });
 
-  test("the stress setup would reach them: a calm, answered check in build lets the gated moves through", () => {
-    const plans = builds({ d: withTwins, mode: () => "build", pre: () => 1, stress: true });
-    expect(plans.filter(p => p.items.some(i => GATED.has(i.exercise.id))).length).toBeGreaterThan(50);
+  test("feeling off: none in 200 seeded builds, even with a calm check on a jumping day", () => {
+    expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, feelingOff: true }), themes: jumpingDay, stress: true }).flatMap(reach)).toEqual([]);
   });
 });
 
-describe("a calm, answered check: plyometrics may appear", () => {
-  const chosenIn = (mode: Mode) => builds({ d: data, mode: () => mode, pre: () => 1, stress: false })
-    .flatMap(p => p.items.filter(i => GATED.has(i.exercise.id)).map(i => i.exercise));
-
-  test("in build they appear, the tuck jump included", () => {
-    const chosen = chosenIn("build");
-    expect(chosen.length).toBeGreaterThan(0);
-    expect(chosen.some(e => e.id === "tuckJump")).toBe(true);
+describe("only on a jumping day", () => {
+  test("any other theme (or none): no plyometric move anywhere in 200 seeded builds, even calm, rated 👍, saved, new and allowed in every block", () => {
+    expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => calm, themes: nonJumping, stress: true }).flatMap(reach)).toEqual([]);
   });
 
-  test("in consistent they appear, never above the mode's difficulty cap: the tuck jump is build only", () => {
-    const chosen = chosenIn("consistent");
-    expect(chosen.length).toBeGreaterThan(0);
-    expect(chosen.filter(e => e.difficulty > data.modes.consistent.maxDifficulty).map(e => e.id)).toEqual([]);
+  test("the jumping day reaches them: a calm check on plyoIntro places plyometric moves in most builds", () => {
+    const plans = builds({ d: withTwins, mode: consistentOrBuild, check: () => calm, themes: jumpingDay, stress: true });
+    expect(plans.filter(p => p.items.some(i => GATED.has(i.exercise.id))).length).toBeGreaterThan(100);
+  });
+});
+
+/** The plan's groups that hold plyometric moves. */
+const plyoGroups = (plan: BuildResult) => plan.groups.filter(g => g.items.some(i => GATED.has(i.exercise.id)));
+
+describe("the plyometric block on a jumping day", () => {
+  const plans = builds({ d: withTwins, mode: consistentOrBuild, check: () => calm, themes: jumpingDay, stress: true });
+
+  test("at most one block, holding only plyometric moves, as straight sets or a superset (even when the theme prefers circuits)", () => {
+    const bad: string[] = [];
+    for (const plan of plans) {
+      const groups = plyoGroups(plan);
+      if (groups.length > 1) bad.push(`${plan.seed}: ${groups.length} plyometric blocks`);
+      for (const g of groups) {
+        if (g.format !== "straight" && g.format !== "superset") bad.push(`${plan.seed}: ${g.format}`);
+        if (!g.items.every(i => GATED.has(i.exercise.id))) bad.push(`${plan.seed}: mixed block`);
+      }
+    }
+    expect(plans.some(p => p.theme?.id === "circuitJumps" && plyoGroups(p).length === 1)).toBe(true);
+    expect(bad).toEqual([]);
   });
 
-  // Not yet true: the accessory and prep blocks rank moves with no regard to difficulty, so with no jumping history a
-  // drop landing or a tuck jump can be the first plyometric move (measured in the Task 5 report). Holding a rung back
-  // until the one below it has been done needs the history, which only the engine has.
-  test.todo("with no jumping history, the first plyometric moves come from the low-difficulty end of the ladder");
+  test("it plays after the warm-up and before the first core lift, so the landings are fresh", () => {
+    const bad: string[] = [];
+    let withCore = 0;
+    for (const plan of plans) {
+      const steps = plan.steps.filter(s => s.kind !== "rest");
+      const firstPlyo = steps.findIndex(s => s.exerciseId && GATED.has(s.exerciseId));
+      if (firstPlyo < 0) continue;
+      const lastPrep = steps.map(s => s.block).lastIndexOf("prep");
+      const firstCore = steps.findIndex(s => s.block === "core");
+      const lastPlyo = steps.map(s => Boolean(s.exerciseId && GATED.has(s.exerciseId))).lastIndexOf(true);
+      if (lastPrep > firstPlyo) bad.push(`${plan.seed}: warm-up after the jumps`);
+      if (firstCore >= 0) {
+        withCore++;
+        if (firstCore < lastPlyo) bad.push(`${plan.seed}: a core lift before the jumps`);
+      }
+    }
+    expect(withCore).toBeGreaterThan(50);
+    expect(bad).toEqual([]);
+  });
+
+  test("swaps keep to the rules: the plyometric slot offers only plyometric moves, every other slot none", () => {
+    const bad: string[] = [];
+    for (const plan of plans) {
+      for (const item of plan.items) {
+        const slot = plan.swapState.slots[item.slotKey]!;
+        const offered = [...(plan.alternatives[item.slotKey] ?? []), ...slot.pool];
+        const plyoSlot = GATED.has(item.exercise.id);
+        for (const c of offered) if (GATED.has(c.id) !== plyoSlot) bad.push(`${plan.seed} ${item.slotKey}: ${c.id}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+});
+
+describe("the frontier: gentlest first, and the ladder unlocks as moves are done", () => {
+  test("with no jumping history, only the bottom rungs (no easier variant, difficulty 1), never the tuck jump", () => {
+    const plans = builds({ d: data, mode: consistentOrBuild, check: () => calm, themes: jumpingDay, stress: false });
+    const chosen = plans.flatMap(p => p.items.filter(i => isPlyometric(i.exercise)).map(i => i.exercise));
+    expect(chosen.length).toBeGreaterThan(100);
+    expect([...new Set(chosen.filter(e => e.easier.length > 0 || e.difficulty > 1).map(e => e.id))]).toEqual([]);
+  });
+
+  test("a season of jumping days walks the ladder: each day's new move is the gentlest unlocked one, and nothing is placed before an easier variant was done", () => {
+    for (const mode of ["consistent", "build"] as const) {
+      const sessions: HistorySession[] = [];
+      const done = new Set<string>();
+      const introduced: string[] = [];
+      const bad: string[] = [];
+      for (let day = 0; day < 40; day++) {
+        const today = addDays("2026-11-02", day * 2);
+        const plan = Builder.build(data, {
+          today, mode, theme: plyoIntro, minutes: 40, location: home, unit: "lb", sessions, prefs: {}, savedIds: [], block,
+          checks: { tmj: calm }, swaps: {}, programId: "season",
+        });
+        const jumps = plan.items.filter(i => isPlyometric(i.exercise)).map(i => i.exercise);
+        const fresh = jumps.filter(e => !done.has(e.id));
+        if (fresh.length > 1) bad.push(`${today}: ${fresh.length} new jumps in one session`);
+        for (const e of jumps) {
+          if (e.easier.length && !e.easier.some(id => done.has(id))) bad.push(`${today}: ${e.id} before any easier variant`);
+        }
+        for (const e of fresh) {
+          // The gentlest move unlocked and not yet done is the one introduced.
+          const unlocked = PLYOMETRIC.filter(x => !done.has(x.id) && x.difficulty <= data.modes[mode].maxDifficulty &&
+            (x.easier.length === 0 || x.easier.some(id => done.has(id))));
+          const gentlest = Math.min(...unlocked.map(x => x.difficulty));
+          if (e.difficulty !== gentlest) bad.push(`${today}: introduced ${e.id} (${e.difficulty}) while a difficulty ${gentlest} move was unlocked`);
+          introduced.push(e.id);
+        }
+        sessions.push({
+          id: `j${day}`, date: today, startedAt: `${today}T18:00:00`, mode, theme: "plyoIntro", blockNumber: 1,
+          checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: plan.items.map(i => ({ id: i.exercise.id, secs: 60 })), entries: [],
+        });
+        for (const i of plan.items) done.add(i.exercise.id);
+      }
+      expect(bad, mode).toEqual([]);
+      // Pogo hops and both line hops are reached, and the ladder climbs to the mode's cap.
+      expect(introduced, mode).toEqual(expect.arrayContaining(["pogoHop", "lineHopForwardBack", "lineHopLateral", "skaterBoundLow"]));
+      if (mode === "build") expect(introduced).toContain("tuckJump");
+      else expect(introduced).not.toContain("tuckJump");
+    }
+  });
+});
+
+describe("ready for the next: the harder variant only when today's gate and the mode's cap allow it", () => {
+  const broad = byId.get("broadJumpStick")!;
+  // Clean at the top of the range (5 contacts), last time on a calm day.
+  const topped = (pre: number): ProgEntry[] => [{
+    date: "2026-10-01", startedAt: "2026-10-01T18:00:00", sets: [{ w: null, reps: 5, secs: null }, { w: null, reps: 5, secs: null }],
+    flags: [], checks: { tmj: { pre, post: pre, feelingOff: false } }, mode: "build",
+  }];
+  const suggest = (mode: Mode, today: CheckReading, lastPre = 1) =>
+    Prog.suggest(data, broad, topped(lastPre), { mode, checks: { tmj: today }, implement: null, kbWeights: [], unit: "lb", equipment: home.equipment });
+
+  test("build with a calm check: the tuck jump is offered", () => {
+    expect(suggest("build", calm)).toMatchObject({ action: "graduate", graduate: "tuckJump" });
+  });
+
+  test("consistent caps difficulty at 4: no tuck jump (difficulty 5); a slower tempo instead", () => {
+    expect(suggest("consistent", calm)).toMatchObject({ action: "tempo", graduate: null });
+  });
+
+  test("a check of 4 or feeling off: the gate refuses the tuck jump, so it isn't offered", () => {
+    expect(suggest("build", { ...calm, pre: 4 }, 3)).toMatchObject({ action: "tempo", graduate: null });
+    expect(suggest("build", { ...calm, feelingOff: true })).toMatchObject({ action: "tempo", graduate: null });
+  });
 });

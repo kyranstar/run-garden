@@ -1,4 +1,4 @@
-import type { ExerciseRecord } from "../record.js";
+import { isPlyometric } from "../eligibility.js";
 import type { FormatId, Mode } from "../vocab.js";
 import type { Attrs, CheckReading, ConditionProfile, EntryFlags, HistorySession, ProposalCtx, SessionChecks } from "./types.js";
 
@@ -37,9 +37,6 @@ const MODE_CAPS: Record<Mode, { clench: number; neckLoad: number; faceDown: bool
 /** The most clenching each format tolerates. */
 const FORMAT_CAPS: Record<FormatId, number> = { straight: 2, superset: 2, circuit: 1, ladder: 1, flow: 1, holds: 2 };
 
-/** Library validation requires `contraction` on every record; a hand-made record without one isn't read as plyometric. */
-const plyometric = (ex: ExerciseRecord): boolean => Array.isArray(ex.contraction) && ex.contraction.includes("plyometric");
-
 const checkOf = (s: SessionChecks | null | undefined): CheckReading | null => (s && s.checks ? s.checks[ID] ?? null : null);
 const flagged = (e: EntryFlags | null | undefined): boolean => Boolean(e && Array.isArray(e.flags) && e.flags.includes(FLAG));
 const flaggedCount = (s: HistorySession): number => (s.entries || []).filter(e => flagged(e)).length;
@@ -77,8 +74,10 @@ export const TMJ: ConditionProfile = {
   fitsFormat: (a, formatId) => read(a).clench <= (FORMAT_CAPS[formatId] ?? -1),
   // Overhead pressing only in build, and only with an answered, calm check.
   allowPattern: (pattern, mode, today) => pattern !== "push-v" || (mode === "build" && today.pre != null && today.pre <= 2),
-  // Jumps, hops, bounds and landings never in recovery, and otherwise only with an answered, calm check.
-  allowRecord: (ex, mode, today) => !plyometric(ex) || (mode !== "recovery" && today.pre != null && today.pre <= 2),
+  // Jumps, hops, bounds and landings never in recovery, never when feeling off, and otherwise only with an answered,
+  // calm check.
+  allowRecord: (ex, mode, today) =>
+    !isPlyometric(ex) || (mode !== "recovery" && !today.feelingOff && today.pre != null && today.pre <= 2),
   coreCandidate: (a) => read(a).clench <= 2,
   blockAssignable: (ex) => !ex.patterns.includes("push-v"),
   flareSafe(a) {

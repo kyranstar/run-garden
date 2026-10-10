@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { CONTRACTIONS, label, EXERCISES, MUSCLES, MUSCLE_REGION, PURPOSES, REGIONS, TAGS, THEMES } from "../src/index.js";
+import { CONTRACTIONS, label, EXERCISES, MUSCLES, MUSCLE_REGION, PURPOSES, REGIONS, TAGS, THEMES, plyometricDay } from "../src/index.js";
 
 // The curation to-do list: one test per record, each failure naming the record id and field.
 
@@ -99,6 +99,9 @@ describe("themes for the new tags", () => {
     const moves = EXERCISES.filter(e => e.themes.includes("plyoIntro"));
     expect(moves.length).toBeGreaterThanOrEqual(3);
     for (const e of moves) expect(e.contraction, e.id).toContain("plyometric");
+    // The jumping day: the only theme that emphasises plyometric work, and it weights no movement pattern.
+    expect(THEMES.filter(x => plyometricDay(x)).map(x => x.id)).toEqual(["plyoIntro"]);
+    expect(t!.emphasis.patterns ?? {}).toEqual({});
   });
 });
 
@@ -108,7 +111,7 @@ const LADDER = [
   "landingStick", "snapDown", "pogoHop", "lineHopForwardBack", "lineHopLateral", "skaterBoundLow", "skaterBoundStick",
   "lateralHopStick", "broadJumpStick", "boxJumpStepDown", "dropLanding", "tuckJump",
 ];
-const SKI = ["wallSitSingleLegShift", "singleLegBalanceReach", "nordicCurlAssisted", "lateralLungeToBalance", "skaterSquat", "pallofIsoHoldHalfKneel"];
+const SKI = ["wallSitSingleLegShift", "singleLegBalanceReach", "nordicCurlAssisted", "lateralLungeToBalance", "skaterSquat", "stepDownHeelTap", "pallofIsoHoldHalfKneel"];
 const FLOWS = ["hipOpeningFlow", "thoracicFlow", "downRegulationFlow", "skiHipFlow", "morningMobilityFlow"];
 
 describe("the plyometric ladder", () => {
@@ -166,7 +169,17 @@ describe("ski-specific moves and yoga flows", () => {
     expect(byId("wallSit")!.harder).toContain("wallSitSingleLegShift");
     expect(byId("wallSitSingleLegShift")!.family).toBe("wallSit");
     expect(byId("pallofIsoHoldHalfKneel")!.family).toBe("pallof");
-    expect(byId("hamstringBridgeChair")!.harder).toContain("nordicCurlAssisted");
+    // The Nordic curl names the hamstring bridge as its easier move, but a core lift's "ready for the next" never
+    // jumps to an accessory the block can't take.
+    expect(byId("nordicCurlAssisted")!.easier).toContain("hamstringBridgeChair");
+    expect(byId("hamstringBridgeChair")!.harder).not.toContain("nordicCurlAssisted");
+    // The single-leg eccentric step-down leads into the skater squat.
+    const heelTap = byId("stepDownHeelTap")!;
+    expect(heelTap.family).toBe(byId("skaterSquat")!.family);
+    expect(heelTap.contraction).toEqual(["isotonic", "eccentric"]);
+    expect(heelTap.tags).toEqual(expect.arrayContaining(["ski", "single-leg"]));
+    expect(heelTap.harder).toContain("skaterSquat");
+    expect(byId("skaterSquat")!.easier).toContain("stepDownHeelTap");
     expect(byId("cossackSquat")!.easier).toContain("lateralLungeToBalance");
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, makeEngineData,
+  EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, flareSafe, makeEngineData, recordFlareSafe,
   type Attrs, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type ProposalCtx,
 } from "../src/index.js";
 
@@ -71,14 +71,17 @@ describe("TMJ profile — exercise rules", () => {
     }
   });
 
-  it("allowRecord: a plyometric move never in recovery, otherwise only with an answered pre-check of 2 or less", () => {
+  it("allowRecord: a plyometric move never in recovery, never when feeling off, otherwise only with an answered pre-check of 2 or less", () => {
     const rec = (contraction: string[]) => ({ contraction }) as unknown as ExerciseRecord;
     for (const mode of MODE_IDS) {
       for (const pre of [null, 0, 1, 2, 3, 4, 5]) {
-        const ok = mode !== "recovery" && pre != null && pre <= 2;
-        expect(TMJ.allowRecord!(rec(["plyometric"]), mode, reading(pre)), `${mode} ${pre}`).toBe(ok);
-        expect(TMJ.allowRecord!(rec(["eccentric", "plyometric"]), mode, reading(pre)), `${mode} ${pre} mixed`).toBe(ok);
-        for (const c of ["isometric", "isotonic", "eccentric", "passive"]) expect(TMJ.allowRecord!(rec([c]), mode, reading(pre))).toBe(true);
+        for (const feelingOff of [false, true]) {
+          const ok = mode !== "recovery" && !feelingOff && pre != null && pre <= 2;
+          const today = reading(pre, { feelingOff });
+          expect(TMJ.allowRecord!(rec(["plyometric"]), mode, today), `${mode} ${pre} ${feelingOff}`).toBe(ok);
+          expect(TMJ.allowRecord!(rec(["eccentric", "plyometric"]), mode, today), `${mode} ${pre} ${feelingOff} mixed`).toBe(ok);
+          for (const c of ["isometric", "isotonic", "eccentric", "passive"]) expect(TMJ.allowRecord!(rec([c]), mode, today)).toBe(true);
+        }
       }
     }
   });
@@ -130,6 +133,25 @@ describe("TMJ profile — the plyometric gate through eligibility (Task 5)", () 
         for (const pre of [0, 1, 2]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(ex.difficulty <= cap);
       }
     }
+  });
+
+  it("feeling off denies every plyometric move, even on a calm check", () => {
+    const feelingOff = { tmj: reading(1, { feelingOff: true }) };
+    for (const ex of plyometric) {
+      for (const mode of ["consistent", "build"] as const) expect(eligible(data, ex, { equipment: gym, mode, checks: feelingOff }), `${ex.id} ${mode}`).toBe(false);
+    }
+  });
+
+  it("no plyometric move reads flare-safe, the low-clench ones included; other flare-safe ratings still do", () => {
+    const lowClench = plyometric.filter(e => TMJ.flareSafe(e.conditions.tmj!));
+    expect(lowClench.map(e => e.id).sort()).toEqual(["landingStick", "lineHopForwardBack", "lineHopLateral", "pogoHop", "skaterBoundLow", "snapDown"]);
+    for (const ex of plyometric) {
+      expect(recordFlareSafe(TMJ, ex), ex.id).toBe(false);
+      expect(flareSafe(data, ex), ex.id).toBe(false);
+    }
+    const breath = EXERCISES.find(e => e.id === "breath")!;
+    expect(recordFlareSafe(TMJ, breath)).toBe(true);
+    expect(flareSafe(data, breath)).toBe(true);
   });
 
   it("a profile without the hook allows the record (the hook is optional; absent means allow)", () => {

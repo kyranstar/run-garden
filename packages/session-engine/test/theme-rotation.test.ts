@@ -1,8 +1,8 @@
 import { addDays } from "@rg/domain";
 import type { HistorySession, Mode } from "@rg/exercise-library";
 import { expect, test } from "vitest";
-import { Builder, Proposal } from "../src/index.js";
-import { data, makeInput } from "./builder-fixtures.js";
+import { Builder, Planner, Proposal, type DayState, type ProgramState } from "../src/index.js";
+import { data, home, makeInput } from "./builder-fixtures.js";
 
 // Themes marked `inRotation: false` (skiPrep, athleticBase, plyoIntro) are for the Studio and the coach: the day's
 // proposal never picks them, and the themes it does pick come out exactly as they did before those themes existed.
@@ -49,9 +49,20 @@ test("the day's proposal never picks an out-of-rotation theme, and the rest matc
   }
   // Were the new themes in the rotation they would take days from the others; the flag gives those days back.
   expect(Object.keys(tally(before)).some(id => hidden.includes(id))).toBe(true);
-  console.log("themes proposed, all in rotation:", JSON.stringify(tally(before)), "| flagged out:", JSON.stringify(tally(now)));
+  expect(Object.keys(tally(now)).some(id => hidden.includes(id))).toBe(false);
 });
 
-test("an out-of-rotation theme can still be chosen by hand", () => {
-  expect(data.themes.some(t => t.id === "skiPrep" && t.modes.includes("build"))).toBe(true);
+test("an out-of-rotation theme can still be chosen by hand: the day's override builds a plan with it", () => {
+  const program: ProgramState = {
+    settings: { unit: "lb", weeklyGoal: 4, blockWeeks: 5, defaultMinutes: 40, location: "home" },
+    locations: [home], prefs: { ratings: {}, excluded: [], pinned: [] }, savedIds: [], block: null, sessions: [],
+  };
+  const day: DayState = { date: "2026-03-02", checks: { tmj: { pre: 1, post: null, feelingOff: false } }, override: { mode: "build", theme: "skiPrep" }, swaps: {} };
+  const { view } = Planner.planToday(data, { today: "2026-03-02", day }, program);
+  expect(view.theme?.id).toBe("skiPrep");
+  expect(view.plan.theme?.id).toBe("skiPrep");
+  expect(view.plan.items.length).toBeGreaterThan(0);
+  // Left alone, the same day proposes an in-rotation theme.
+  const proposed = Planner.planToday(data, { today: "2026-03-02", day: { ...day, override: { mode: "build" } } }, program).view;
+  expect(hidden).not.toContain(proposed.theme?.id);
 });

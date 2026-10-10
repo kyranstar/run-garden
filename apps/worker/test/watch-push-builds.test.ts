@@ -4,7 +4,7 @@
  * preview are read off it — no hand-made step. Synthetic athlete, library names only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EXERCISES } from "@rg/exercise-library";
+import { EXERCISES, FORMATS, MODE_IDS, MODES, SKELETON, TMJ } from "@rg/exercise-library";
 import { adaptiveConfigSchema, programSessionPushJobSchema, type ProgramSessionPushJob, type UserPreferences } from "@rg/domain";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { eq } from "drizzle-orm";
@@ -57,6 +57,25 @@ async function seedProgramAs(id: string): Promise<string> {
 
 const lateralityOf = new Map(EXERCISES.map((e) => [e.id, e.laterality]));
 
+/**
+ * The most watch steps one build can hold under the engine's caps (the watch's real limit is 200): every timed item
+ * one-sided (a left and a right step) and every set one-sided (a pair). Per mode: the timed blocks' item caps and the
+ * care cap; the core lifts × the most sets any move takes; and the accessory block's widest format (two moves × sets
+ * or ladder rungs, one-sided; a circuit's moves × rounds, never one-sided). Build mode is the widest: 70.
+ */
+const CAP_BOUND = Math.max(
+  ...MODE_IDS.map((mode) => {
+    const maxSets = Math.max(...EXERCISES.map((e) => e.dose.sets?.[1] ?? 3));
+    const timedItems = (["arrive", "prep", "cooldown"] as const).reduce((n, b) => n + (SKELETON.max[mode][b] ?? 0), 0) + TMJ.care!.block.max[mode];
+    const core = MODES[mode].coreCount[1] * maxSets * 2;
+    const accessory = (SKELETON.shares[mode].accessory ?? 0) === 0 ? 0 : Math.max(
+      ...FORMATS.filter((f) => f.roles.includes("accessory") && MODES[mode].formats.includes(f.id)).map((f) =>
+        f.id === "circuit" ? f.count[1] * (f.rounds?.[1] ?? 1) : f.count[1] * (f.rungs?.length ?? maxSets) * 2),
+    );
+    return timedItems * 2 + core + accessory;
+  }),
+);
+
 /** A set the engine prices as both sides (`setSeconds` × 2) but leaves unsided: one watch step per side. */
 const oneSidedSets = (build: BuildPayload): Step[] =>
   build.steps.filter((s) => s.kind === "set" && s.side === null && s.exerciseId && lateralityOf.get(s.exerciseId) === "unilateral");
@@ -77,7 +96,9 @@ describe("weights on the watch are kg; the preview carries the athlete's pounds 
     expect(typed.every((w) => w.u === "lb")).toBe(true);
 
     const preview = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
-    const row = preview.steps.find((s) => s.grams === 11_340)!;
+    // The fixed-seed build's superset opens with a 25 lb suitcase deadlift (since the 150-move library), so the row
+    // this test is about, supportedRow's, is found by its catalog name rather than as the first 11,340 g row.
+    const row = preview.steps.find((s) => s.name === "One Arm Dumbbell Row (L)")!;
     // T1309, one-sided: free text under the catalog's English name, its side in the name (owner, 2026-10-10).
     expect(row).toMatchObject({ name: "One Arm Dumbbell Row (L)", freeText: true, grams: 11_340, load: { v: 25, u: "lb" } });
     const weighted = preview.steps.filter((s) => s.grams !== null);
@@ -182,8 +203,9 @@ describe("a one-sided set on the watch (W-1)", () => {
     expect(await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, `push:${build.buildId}`))).toEqual([]);
   });
 
-  it("across 200 real builds (40 programs × 20–90 minutes) the watch holds at most 39 steps, far under the 200 limit", async () => {
-    // Measured when the pairs went in: 22–39 steps, 2–6 one-sided sets a build; a 45+ minute session tops out at 39.
+  it(`across 200 real builds (40 programs × 20–90 minutes) the watch holds at most ${CAP_BOUND} steps (the engine's caps), far under the 200 limit`, async () => {
+    // Measured when the pairs went in: 22–39 steps; with the 150-move library (Task 5): up to 42. The bound below is not
+    // a measurement but what the engine's caps allow at most, so it holds whatever moves the library gains.
     const { deps } = await realDeps();
     let most = 0;
     let fewestOneSided = Infinity;
@@ -214,6 +236,7 @@ describe("a one-sided set on the watch (W-1)", () => {
       }
     }
     expect(fewestOneSided).toBeGreaterThanOrEqual(1); // every build carries the case W-1 is about
-    expect(most).toBeLessThanOrEqual(39);
+    expect(most).toBeLessThanOrEqual(CAP_BOUND);
+    expect(CAP_BOUND).toBeLessThan(200);
   });
 });
