@@ -75,6 +75,12 @@ export interface WatchPlanDeps {
   keyOf: (exerciseId: string) => string | null;
 }
 
+/**
+ * What the watch steps are read from: a build's steps and its moves' records. A stored build is one; so are the
+ * steps a workout document plays (`watchStepsFromDoc`, watch-doc.ts).
+ */
+export type WatchBuild = Pick<BuildPayload, "steps" | "exercises">;
+
 export type WatchRefusal = "empty" | "too_long";
 
 export interface WatchPlan {
@@ -177,7 +183,7 @@ const sideLabel = (side: Step["side"]): string => (side === "Left" ? WATCH_SIDE_
  * (`sided`) is cut to leave its label room, so name and label stay within WATCH_NAME_MAX. The same build gives the
  * same names.
  */
-function freeTextNames(build: BuildPayload, deps: WatchPlanDeps, sided: ReadonlySet<string>): Map<string, { name: string; qualifier: string | null }> {
+function freeTextNames(build: WatchBuild, deps: WatchPlanDeps, sided: ReadonlySet<string>): Map<string, { name: string; qualifier: string | null }> {
   const moves = [...new Set(build.steps.flatMap((s) => (s.kind !== "rest" && s.exerciseId && build.exercises[s.exerciseId] ? [s.exerciseId] : [])))];
   const taken = new Set(
     moves.flatMap((id) => {
@@ -218,7 +224,7 @@ type WalkStop = { rest: number } | { rest?: undefined; step: Step; exerciseId: s
  * one watch step per side (`sidesOf`), in order. The steps (`watchStepsFromBuild`), the one-sided moves and each
  * step's move (`watchStepMoves`) are all read off it, so a payload's step i is always `watchStepMoves`' move i.
  */
-function* walkToWatch(build: BuildPayload): Generator<WalkStop> {
+function* walkToWatch(build: WatchBuild): Generator<WalkStop> {
   for (const s of build.steps) {
     if (s.kind === "rest") {
       yield { rest: s.seconds };
@@ -236,12 +242,12 @@ function* walkToWatch(build: BuildPayload): Generator<WalkStop> {
  * for this build has step i of move i — whatever the builder of the day it was sent made of it (the review reads what
  * each move went as off the push's own payload, owner 2026-10-10).
  */
-export function watchStepMoves(build: BuildPayload): string[] {
+export function watchStepMoves(build: WatchBuild): string[] {
   return [...walkToWatch(build)].flatMap((w) => (w.rest === undefined ? [w.exerciseId] : []));
 }
 
 /** The build's moves any of whose watch steps has a side: their steps' names carry the side label. */
-function sidedMoves(build: BuildPayload): Set<string> {
+function sidedMoves(build: WatchBuild): Set<string> {
   const out = new Set<string>();
   for (const w of walkToWatch(build)) if (w.rest === undefined && w.side !== null) out.add(w.exerciseId);
   return out;
@@ -269,7 +275,7 @@ function freeTextNameOf(exerciseId: string, record: { name: string }, deps: Watc
 }
 
 /** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
-export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
+export function watchStepsFromBuild(build: WatchBuild, deps: WatchPlanDeps): WatchPlan {
   const steps: ProgramWatchStep[] = [];
   const sided = sidedMoves(build);
   const names = freeTextNames(build, deps, sided);

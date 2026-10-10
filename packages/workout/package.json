@@ -16,6 +16,7 @@
   "dependencies": {
     "@rg/domain": "workspace:*",
     "@rg/exercise-library": "workspace:*",
+    "@rg/session-engine": "workspace:*",
     "zod": "^3.24.1"
   },
   "devDependencies": {
