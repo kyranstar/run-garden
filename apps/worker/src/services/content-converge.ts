@@ -84,7 +84,9 @@ import {
   watchAddressOf,
   type CoachSession,
   type PaceIntensity,
+  type UserPreferences,
 } from "@rg/domain";
+import { RUN_PACE_WIRE } from "@rg/coros";
 import { chunkIds, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { enqueueContentConvergence, ownershipProofFor, watchPushable } from "./coach-apply.js";
@@ -256,6 +258,13 @@ export interface ConvergeOptions {
    * for explicitly is not evidence.
    */
   workoutIds?: string[];
+  /**
+   * Examine this evidence alone, and pay for no other signal's reads — the hourly pace heal asks for
+   * `pace_encoding_outdated` only. Omitted, every signal is examined.
+   */
+  only?: DivergenceEvidence;
+  /** Queue at most this many writes, soonest effective date first (the hourly heal: one a run). */
+  maxWrites?: number;
   /** The athlete's today, for `pace_encoding_outdated`; read from their preferences when omitted. */
   today?: string;
 }
@@ -346,33 +355,39 @@ export async function convergeDivergedContent(
   userId: string,
   opts: ConvergeOptions,
 ): Promise<ContentConvergeReport> {
+  const wants = (e: DivergenceEvidence): boolean => opts.only === undefined || opts.only === e;
+
   // ── Evidence (A): rows an approved ease claims and COROS was never told about.
   const claimedIds = new Set(
-    (
-      await db
-        .select({ targetId: syncIntents.targetId })
-        .from(syncIntents)
-        .where(
-          and(
-            eq(syncIntents.userId, userId),
-            eq(syncIntents.targetKind, "workout"),
-            eq(syncIntents.kind, "content"),
-            isNull(syncIntents.resolvedAt),
-            isNull(syncIntents.supersededBy),
-          ),
-        )
-    ).map((r) => r.targetId),
+    wants("open_content_intent")
+      ? (
+          await db
+            .select({ targetId: syncIntents.targetId })
+            .from(syncIntents)
+            .where(
+              and(
+                eq(syncIntents.userId, userId),
+                eq(syncIntents.targetKind, "workout"),
+                eq(syncIntents.kind, "content"),
+                isNull(syncIntents.resolvedAt),
+                isNull(syncIntents.supersededBy),
+              ),
+            )
+        ).map((r) => r.targetId)
+      : [],
   );
 
   // ── Evidence (B): pushes that told us they owed pace targets — but only once
   // the athlete HAS a threshold, because a rewrite with nothing newer to say
   // would write the same target-less program a second time.
-  const [threshold] = await db
-    .select({ v: dailyHealth.thresholdPaceSecPerKm })
-    .from(dailyHealth)
-    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
-    .orderBy(desc(dailyHealth.date))
-    .limit(1);
+  const [threshold] = wants("pace_targets_never_pushed")
+    ? await db
+        .select({ v: dailyHealth.thresholdPaceSecPerKm })
+        .from(dailyHealth)
+        .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+        .orderBy(desc(dailyHealth.date))
+        .limit(1)
+    : [];
   const thresholdPaceSecPerKm = threshold?.v ?? undefined;
   const paceDebtIds = new Set<string>();
   if (thresholdPaceSecPerKm) {
@@ -393,11 +408,13 @@ export async function convergeDivergedContent(
 
   // ── Evidence (C): upcoming runs on the watch with the old pace encoding (`outdatedPaceEncoding`), each with the
   // threshold its write carried — the rewrite's fallback when no reading is on file (the lane prefers the latest).
-  const outdatedPace = await outdatedPaceEncoding(
-    db,
-    userId,
-    opts.today ?? todayInZone((await loadPreferences(db, userId)).timezone),
-  );
+  const outdatedPace = wants("pace_encoding_outdated")
+    ? await outdatedPaceEncoding(
+        db,
+        userId,
+        opts.today ?? todayInZone((await loadPreferences(db, userId)).timezone),
+      )
+    : new Map<string, number>();
 
   const evidenceFor = (id: string): DivergenceEvidence[] => {
     const out: DivergenceEvidence[] = [];
@@ -441,6 +458,8 @@ export async function convergeDivergedContent(
   const toWrite: Array<{ row: WorkoutRow; session: CoachSession; report: ContentConvergeRowReport }> = [];
 
   for (const row of rows) {
+    // Soonest first (`rows` is in date order): the rest wait for the next run, and are not reported on this one.
+    if (opts.maxWrites !== undefined && toWrite.length >= opts.maxWrites) break;
     const stages = stagesByWorkout.get(row.id) ?? [];
     const session = sessionFromRow(row, stages);
     const base: ContentConvergeRowReport = {
@@ -615,6 +634,8 @@ export async function convergeDivergedContent(
       now,
       corosWritesEnabled: true,
       ...(anchor ? { thresholdPaceSecPerKm: anchor } : {}),
+      // The heal re-sends unchanged content, so its id needs its own tag (see `idTag`).
+      ...(outdatedPace.has(row.id) ? { idTag: `pace${RUN_PACE_WIRE}` } : {}),
     });
     if (outcome.jobId) {
       rowReport.jobId = outcome.jobId;
@@ -634,6 +655,32 @@ export async function convergeDivergedContent(
 
   report.backup = { auditEventId: backupId, kind: CONTENT_CONVERGE_BACKUP_KIND, table: "audit_events" };
   return report;
+}
+
+/**
+ * THE HOURLY PACE HEAL (owner-approved 2026-10-10): rewrite the coach runs on the watch with the old pace encoding,
+ * one a run, soonest first, until none are left.
+ *
+ * This is `convergeDivergedContent` for `pace_encoding_outdated` alone — the same backup-first path and the same
+ * enqueue the operator route runs, so the cron and the operator cannot heal two different ways. It QUEUES the
+ * rewrite; the hourly's COROS write step right after it executes one job, and that write is the run's one heavy step
+ * (cron reliability, part 2). When none are left it costs one read. Watch writes off, it does nothing at all.
+ *
+ * Returns the queued job's id, or null when nothing was queued.
+ */
+export async function healOutdatedPaceEncoding(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+): Promise<string | null> {
+  if (!prefs.corosWritesEnabled) return null;
+  const report = await convergeDivergedContent(db, userId, {
+    dryRun: false,
+    only: "pace_encoding_outdated",
+    maxWrites: 1,
+    today: todayInZone(prefs.timezone),
+  });
+  return report.rows.find((r) => r.jobId)?.jobId ?? null;
 }
 
 /**

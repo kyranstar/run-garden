@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, coachOpSchema, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, coachOpSchema, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { corosProgramFingerprint, normalizeCorosSchedule, type RawCorosProgram } from "@rg/providers";
 import { RUN_PACE_WIRE } from "@rg/coros";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
@@ -24,13 +24,16 @@ import { renormalizingCoros } from "../../../packages/coros/test/renormalizing-c
 import { connectCoros } from "../src/services/coros-connection.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { applyOps } from "../src/services/coach-apply.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { activeSyncNotes } from "../src/services/sync-notes.js";
 import { stampName } from "../src/services/coros-stamp.js";
 import {
   convergeDivergedContent,
   countDivergedContent,
+  healOutdatedPaceEncoding,
 } from "../src/services/content-converge.js";
+import { hourly } from "../src/index.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -227,6 +230,145 @@ describe("pace_encoding_outdated", () => {
       verifiedAt: new Date(Date.now() + 60_000).toISOString(), // after the create
     });
     expect((await countDivergedContent(ctx.db, ctx.userId)).candidates).toBe(0);
+  });
+});
+
+describe("the hourly heal", () => {
+  it("rewrites one row a run, soonest first, onto the new encoding — and stops when none are left", { timeout: 60_000 }, async () => {
+    const ctx = await setup();
+    vi.stubGlobal("fetch", ctx.server.fetchImpl);
+    // Pushed out of date order, so "soonest" cannot be insertion order.
+    const later = addDays(ctx.today, 5);
+    const sooner = addDays(ctx.today, 1);
+    const quality = await pushCoach(ctx, later, THRESHOLD_REPS);
+    const long = await pushCoach(ctx, sooner, LONG_RUN);
+    await asWrittenBeforeTheFix(ctx, quality, THRESHOLD_REPS.title, later);
+    await asWrittenBeforeTheFix(ctx, long, LONG_RUN.title, sooner);
+    expect(programOf(ctx, LONG_RUN.title, sooner)!.exercises![0]!.intensityMultiplier).toBe(0);
+    expect((await countDivergedContent(ctx.db, ctx.userId)).rewrites).toBe(2);
+
+    // Run 1: exactly one rewrite, the soonest, written and verified in the same run.
+    await hourly(ctx.db, makeEnv());
+    let jobs = await updateJobsOf(ctx.db, ctx.userId);
+    expect(jobs.map((j) => j.workoutId)).toEqual([long]);
+    expect(jobs[0]!.status, jobs[0]!.lastErrorCategory ?? "").toBe("verified");
+    expect((jobs[0]!.payload as { paceWire?: number }).paceWire).toBe(RUN_PACE_WIRE);
+    const step = programOf(ctx, LONG_RUN.title, sooner)!.exercises![0]!;
+    expect(step.intensityType).toBe(3);
+    expect(step.intensityMultiplier).toBe(1000);
+    expect(step.intensityDisplayUnit).toBe(2);
+    expect((await countDivergedContent(ctx.db, ctx.userId)).rewrites).toBe(1);
+
+    // Run 2: the other one.
+    await hourly(ctx.db, makeEnv());
+    jobs = await updateJobsOf(ctx.db, ctx.userId);
+    expect(jobs.map((j) => j.workoutId).sort()).toEqual([long, quality].sort());
+    expect(jobs.every((j) => j.status === "verified")).toBe(true);
+    const reps = programOf(ctx, THRESHOLD_REPS.title, later)!.exercises!.filter((e) => Number(e.intensityType) === 3);
+    expect(reps.length).toBeGreaterThan(0);
+    expect(reps.every((e) => e.intensityMultiplier === 1000 && e.intensityDisplayUnit === 2)).toBe(true);
+    expect((await countDivergedContent(ctx.db, ctx.userId)).candidates).toBe(0);
+
+    // Run 3: nothing left, nothing written.
+    await hourly(ctx.db, makeEnv());
+    expect(await updateJobsOf(ctx.db, ctx.userId)).toHaveLength(2);
+  });
+
+  it("never touches a past, completed or archived row, nor anything while COROS writes are off", async () => {
+    const ctx = await setup();
+    const days = [1, 2, 3, 4].map((n) => addDays(ctx.today, n));
+    const ids: string[] = [];
+    for (const d of days) {
+      const id = await pushCoach(ctx, d, { ...THRESHOLD_REPS, title: `Reps ${d}` });
+      await asWrittenBeforeTheFix(ctx, id, `Reps ${d}`, d);
+      ids.push(id);
+    }
+    const [past, completed, archived, open] = ids as [string, string, string, string];
+    const set = (id: string, v: Partial<typeof schema.plannedWorkouts.$inferInsert>) =>
+      ctx.db.update(schema.plannedWorkouts).set(v).where(eq(schema.plannedWorkouts.id, id));
+    await set(past, { effectiveDate: addDays(ctx.today, -1) });
+    await set(completed, { completionState: "completed" });
+    await set(archived, { archivedAt: nowInstant() });
+
+    // Writes off: the heal queues nothing at all, not even the open row's.
+    const off: UserPreferences = { ...ctx.prefs, corosWritesEnabled: false };
+    await savePreferences(ctx.db, ctx.userId, off);
+    expect(await healOutdatedPaceEncoding(ctx.db, ctx.userId, off)).toBeNull();
+    expect(await updateJobsOf(ctx.db, ctx.userId)).toHaveLength(0);
+
+    // Writes on: only the open row, and then nothing more.
+    expect(await healOutdatedPaceEncoding(ctx.db, ctx.userId, ctx.prefs)).not.toBeNull();
+    let jobs = await updateJobsOf(ctx.db, ctx.userId);
+    expect(jobs.map((j) => j.workoutId)).toEqual([open]);
+    // While its rewrite is in flight the row is not picked again (a second enqueue would supersede it).
+    expect(await healOutdatedPaceEncoding(ctx.db, ctx.userId, ctx.prefs)).toBeNull();
+    await executeCloudJobs(ctx.db, makeEnv(), ctx.userId, ctx.prefs, { fetchImpl: ctx.server.fetchImpl });
+    expect(await healOutdatedPaceEncoding(ctx.db, ctx.userId, ctx.prefs)).toBeNull();
+    jobs = await updateJobsOf(ctx.db, ctx.userId);
+    expect(jobs.map((j) => [j.workoutId, j.status])).toEqual([[open, "verified"]]);
+  });
+
+  it("a row whose latest write was an old-encoded REWRITE of the same content still gets a rewrite that runs", async () => {
+    const ctx = await setup();
+    const day = addDays(ctx.today, 2);
+    const id = await pushCoach(ctx, day, THRESHOLD_REPS);
+    await asWrittenBeforeTheFix(ctx, id, THRESHOLD_REPS.title, day);
+    const first = await healOutdatedPaceEncoding(ctx.db, ctx.userId, ctx.prefs);
+    const [queued] = await updateJobsOf(ctx.db, ctx.userId);
+    // History as prod holds it: that same rewrite verified BEFORE the lane stamped paceWire, under the untagged id
+    // the enqueue used to give it. Unchanged content keeps `from`/`to`, so an untagged heal would collide with it.
+    const { paceWire: _gone, ...old } = queued!.payload as Record<string, unknown>;
+    await ctx.db.delete(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, first!));
+    await ctx.db.insert(schema.corosWriteJobs).values({
+      ...queued!,
+      id: first!.replace(/-pace\d+$/, ""),
+      payload: old,
+      status: "verified",
+      verifiedAt: nowInstant(),
+      completedAt: nowInstant(),
+    });
+
+    const healed = await healOutdatedPaceEncoding(ctx.db, ctx.userId, ctx.prefs);
+    expect(healed).not.toBeNull();
+    await executeCloudJobs(ctx.db, makeEnv(), ctx.userId, ctx.prefs, { fetchImpl: ctx.server.fetchImpl });
+    const [job] = (await updateJobsOf(ctx.db, ctx.userId)).filter((j) => j.id === healed);
+    expect(job!.status, "the heal collided with the old rewrite and ran nothing").toBe("verified");
+    expect((job!.payload as { paceWire?: number }).paceWire).toBe(RUN_PACE_WIRE);
+    expect((await countDivergedContent(ctx.db, ctx.userId)).candidates).toBe(0);
+  });
+
+  it("stays inside the free plan's statement budget: one read when nothing is left, a bounded few when one is queued", async () => {
+    let counting = false;
+    let statements = 0;
+    const server = mockCorosServer();
+    const db = makeTestDb({ onStatement: () => (counting ? (statements += 1) : undefined) });
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const pwdMd5 = createHash("md5").update(server.password, "utf8").digest("hex");
+    await connectCoros(db, makeEnv(), userId, { email: server.email, pwdMd5, region: "us" }, server.fetchImpl);
+    const today = todayInZone(prefs.timezone);
+    await db.insert(schema.dailyHealth).values({
+      id: `${userId}:${today}`, userId, date: today, thresholdPaceSecPerKm: THRESHOLD, provider: "coros",
+      contentFingerprint: "test", updatedAt: nowInstant(),
+    });
+    const ctx: Ctx = { db, userId, prefs, server, today };
+    const day = addDays(today, 2);
+    const id = await pushCoach(ctx, day, THRESHOLD_REPS);
+
+    const measure = async () => {
+      statements = 0;
+      counting = true;
+      const out = await healOutdatedPaceEncoding(db, userId, prefs);
+      counting = false;
+      return { out, statements };
+    };
+    const none = await measure();
+    expect(none.out).toBeNull();
+    expect(none.statements).toBe(1);
+
+    await asWrittenBeforeTheFix(ctx, id, THRESHOLD_REPS.title, day);
+    const one = await measure();
+    expect(one.out).not.toBeNull();
+    expect(one.statements).toBeLessThanOrEqual(8);
   });
 });
 
