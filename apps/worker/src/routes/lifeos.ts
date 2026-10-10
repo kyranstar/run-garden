@@ -14,6 +14,7 @@ import { addDays, daysBetween, isLocalDate } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { sha256Hex } from "../auth/crypto.js";
 import { chunkIds } from "../services/db.js";
+import { restoreInProgress } from "../services/account-state.js";
 
 const { activities, plannedWorkouts, users, workoutCompletionMatches } = schema;
 
@@ -76,6 +77,9 @@ lifeosRoutes.get("/plan", async (c) => {
     .where(sql`lower(${users.email}) = ${c.env.ALLOWED_GOOGLE_EMAIL.trim().toLowerCase()}`)
     .get();
   if (!owner) return c.json({ error: "not_found" }, 404);
+  // A restore empties the plan and refills it page by page: an empty day then isn't a rest day (LifeOS would
+  // withdraw the habit's chance). LifeOS reads 5xx as "try again later".
+  if (await restoreInProgress(db, owner.id)) return c.json({ error: "restore_in_progress" }, 503);
 
   const rows = await db
     .select()

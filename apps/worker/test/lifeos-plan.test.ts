@@ -147,4 +147,12 @@ describe("GET /api/lifeos/plan", () => {
     expect(body.days[0]!.sessions).toEqual([]);
     expect(await db.select().from(users)).toHaveLength(2);
   });
+
+  it("answers 503 while a restore is replacing the plan, not an empty plan", async () => {
+    await seed("w-1", "2026-10-05");
+    await db.insert(schema.accountState).values({ userId, restoreId: "restore-1", restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
+    const res = await get("/api/lifeos/plan?from=2026-10-05&to=2026-10-05");
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "restore_in_progress" });
+  });
 });
