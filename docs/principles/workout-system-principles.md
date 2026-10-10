@@ -239,11 +239,15 @@ it on every design; nothing in it is ever copied into the repository.
   gently gamified (§2.10).
 
 ### 5.3 Check-ins
-- A **standardized question definition**: an id, plain wording, an answer type (0–10 scale, choice, yes/no), an
+- A **standardized question definition**: an id, plain wording, an answer type (0–10 scale, choice, yes/no, or
+  **areas** — several body areas or focus areas, each with an optional 0–10), an
   optional free-text answer **always** available, which areas or conditions it concerns, and how long an answer
   stays fresh.
 - **The coach decides what it needs to know**: it asks the two or three questions that matter for the decision in
   front of it, never a fixed form; an answer it already has is never asked again.
+- Soreness, tightness and pain are recorded **by area**, so the next design knows where; energy is its own
+  question; per-session feedback (a workout rating, a move that hurt, a move loved) is kept per session, never
+  overwritten.
 - Answers are data with timestamps; free text is the athlete's own words and is treated as data, never as
   instructions.
 
@@ -282,8 +286,11 @@ and it reasons, designs, reviews its own work and proposes. It is not a template
 
 ### 6.3 Context engineering
 - **Tools first; inject only what the agent must know.** The opening prompt carries only what every request needs
-  and the model could not sensibly decide to look up: the principles, the request and its scope, today's date and
-  time, the active conditions' hard rules, and a short index of what the tools can reach. Everything else —
+  and the model could not sensibly decide to look up: the principles; a short profile summary (goals, focus areas,
+  active objectives, default place); the request and its scope; today's date, weekday, time and timezone; units;
+  the active conditions' hard rules (generated from the profiles themselves) and today's reading or "none today";
+  one line of today's plan; dated events within the request's horizon; and an **availability index** — what the
+  tools can reach, how fresh it is, and what is not recorded (counts and dates, not contents). Everything else —
   history, soreness, feedback, objectives, the library, past workouts, the plan — the agent fetches by tool call
   when it decides it needs it. A fact pasted "just in case" is a defect; a fact the agent needed and could not
   reach is a missing tool.
@@ -476,5 +483,6 @@ At the end of the programme, additionally:
 | 2026-10-10 | Keep the coach's memory and its other proven features, improved (§6.7, §6.8). |
 | 2026-10-10 | Extras in: **exercise feedback** after sessions, **plan my week**, **saved templates**. One simple coach control with a **scope** (default *now / later today*; this week; next N workouts) and settings for how many and when; multi-workout requests are **orchestrated by a main agent with sub-agents per workout** (§6.9); the coach **asks on its own judgement** wherever it helps, with worked examples (§6.10). |
 | 2026-10-10 | Overnight autonomy granted: build Stage 1 end to end, then the Studio (from the lead's own mocks — the owner reviews live in the morning), then Stage 3 **all the way, live against the real model within the weekly cap**, auditing and fixing as we go. Stage 1's additive schema changes may deploy once tests and audits pass; the profile/objectives seed and the workout-document backfill may run (dry run first, verified). Execution: subagents in batches + independent audits. |
+| 2026-10-10 | The design red-team's findings are adopted (spec §3.11): soreness and feedback recorded by area and per session from Stage 1; every condition rule applies to every source; documents keep revisions; review always precedes a proposal, and quick relief is fast through one-tap quick-starts rather than a skipped review. |
 | 2026-10-10 | Scenario red-teams of the design and of the built system (§10); the coach gets context by **tool calls**, and the opening prompt carries only what it must know (§6.3). |
 | 2026-10-10 | "Every workout should be designed with intention and awareness of the possibilities … do not be overly prescriptive for the coach, but instead empower the coach." (§2.1, §2.2, §6.1) |

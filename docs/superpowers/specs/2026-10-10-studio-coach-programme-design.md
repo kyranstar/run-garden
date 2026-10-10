@@ -213,6 +213,54 @@ the engine exactly as everywhere else.
 - `GET/PUT /api/profile`, `GET/POST/PUT /api/objectives`, `GET /api/objectives/:id/progress`.
 All user-scoped, ≤ 45 D1 statements + fetches each (counting tests).
 
+### 3.11 Amendment A — the design scenario red-team (2026-10-10)
+
+A scenario red-team walked 61 everyday journeys through this design before Stage 1 code (quick condition relief,
+soreness, planning the week, editing, "something like last week's", feedback, objectives, flare days, out of credits,
+and more). Its Stage 1 findings are folded into the Stage 1 plan as "Amendment A" (validator parity with every
+condition rule; an answers table so soreness, tightness and pain are recorded by area; per-session feedback kept;
+document revisions; the document's cues, alternates, "to max" doses, run targets, setting and lineage decided in v1;
+balance derived from what was actually done; the profile's events, places and focus-area references; honest
+key-result measures; the watch adapter; the workouts list and read routes). Decisions for later stages:
+
+- **Execution path for a document-sourced workout.** An approved coach, Studio or template document for a day becomes
+  a `planned_workouts` row with an app origin and its document in `workout_doc`; it is played and pushed through a
+  `session_builds` row materialised from the document (payload from `playerStepsFromDoc`, `workout_doc` = the
+  snapshot), so Start re-gates and locks it, the performed session points at the exact document performed, and the
+  watch uses the app-built Send / Take off path. The coach may propose a **new revision** of a document-origin row,
+  never of a programme row, and never of a completed, skipped or missed one.
+- **Stage 2 (Studio):** edits write revisions (`athlete_edit`); resolved rows are read-only; an edited workout whose
+  watch copy is older offers "Send the new version". Added moves land by purpose (warmup to warmup, activation to
+  activation, strength to main, power to power, balance to accessory, mobility / stretch / recovery to cooldown,
+  condition-care to care, conditioning to conditioning), and the athlete can move them. Templates get their own table
+  and stamp `basedOn`; at another place the equipment check runs and alternates are offered. The player gets an
+  open-ended timer for `dose.max` that logs the actual seconds, and a mid-session swap offering the item's alternates.
+  **Instant quick-starts** (favourites, templates, a short condition-care routine) start in one tap without a coach
+  call.
+- **Stage 3 (coach):** tools for readiness (HRV, resting HR, sleep, load and the readiness verdict, with their
+  staleness), the profile with places and events, a workouts list and get (document + actuals + feedback), balance
+  over a range (from `derivePerformed`), answers (read and record), templates, past proposals, and the plan including
+  programme blocks and outline slots. `propose_workout` takes a target: a new workout (date, time) or a revision of a
+  workout at a base revision, with a computed diff; a stale base, a resolved row or a programme row is refused with a
+  reason the model can act on. Soreness, tightness or pain stated in a request is recorded as an answer (with one-tap
+  undo). The reviewer sees the request and scope, the deterministic issues and derived fields, and the designer's tool
+  results with their provenance, and may call read tools itself; sub-agents share one fact pack fetched by the main
+  agent. Two open questions at a time. Steps are driven by the client with resumable server state; a cron sweep
+  finishes or expires orphaned runs. Tool results mark untrusted text fields. The prompt's condition rules are
+  generated from the condition profile, so prompt and code cannot disagree. Several tool calls may run in one step
+  within the request budget; cost is measured per scope and an estimate is shown before planning a week.
+- **Review always precedes a proposal** (the owner's words: the coach "review[s] itself along multiple dimensions
+  before proposing"). Speed for quick relief comes from the instant quick-starts above, which do not call the coach;
+  for short care or recovery requests the coach's design and review are kept small, not skipped.
+- **When the AI is unavailable** (out of credits, over the weekly cap): the coach says so plainly and offers the day's
+  programme session, a liked workout, a template or an engine build.
+- **Stage 4 (check-ins and feedback):** a question registry with an `areas` answer type (several areas, each with an
+  optional 0-10); soreness and energy are separate questions; a pain question names an area and optionally an
+  exercise; each question sets its freshness. After a session: a one-tap workout rating ("loved it / fine / not
+  again"), optional per-move difficulty and "felt it where intended" / "hurt where?"; the watch's quick review gets the
+  same. Library cards show the athlete's feedback history from the answers table. The `checkin` and `test` key-result
+  measures read the answers and the test items.
+
 ### 3.8 Testing
 
 - Schema, validator, derivations, converters and adapters: unit tests (pure), including round-trip and parity over

@@ -30,6 +30,7 @@
 2. **A plyometric move on a high-symptom or recovery day** — the engine, the validator and (later) the coach must never place it; the gate is the TMJ profile rule keyed on the `plyometric` contraction. Tests in Tasks 5 and 8.
 3. **Weights typed in lb** — the document stores `{ typed, kg }`; converters from coach weights ("25 lb", "12kg", "bodyweight") and stages (`loadKg`, `loadBodyweight`) round-trip; display stays as typed. Test in Task 9.
 4. **The backfill killed mid-way or run twice** — resumable and idempotent; a second run writes nothing; no row's existing columns change. Test in Task 14.
+6. **A coach, Studio or template workout on a flare day, an unanswered check day or a future day**: every profile rule applies to every source (validator parity, Amendment A in Task 8); unanswered is not allowed; a future gated item needs a passing alternate. Tests in Task 8.
 5. **An empty or malformed `workout_doc` on read** (old rows, partial writes) — every reader of the column tolerates null and invalid JSON (falls back to the old format, reports via the parity diagnostic), never 500s. Tests in Tasks 6 (`parseStoredWorkoutDoc`) and 12 (parity).
 
 ---
@@ -106,6 +107,13 @@ Same rules as Task 2; mobility and stretches are usually `isotonic` (moving thro
 
 ### Task 4: Required fields, themes for the new tags, and the route filters
 
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- Slim rows gain `lastDoneOn: string | null` and `timesDone30d: number` from ONE grouped query over the athlete's performed work (find the performed-sets / moves-done tables in `packages/database/src/schema/performed.ts`; chunk ids; count statements).
+- `GET /api/library/:id`: each history set carries its `flags` (e.g. the clenched flag).
+- Extra filters `position`, `laterality`, `maxDifficulty`, `limit` (default 50, max 200); results ranked: exact name, then name prefix, then name/summary/tag contains, then the rest; ties by condition fit then name.
+- `validate.ts` (deferred from Task 1): reject a muscle listed in both `primary` and `secondary` and repeats in any list; enforce the muscle-region rule over primary AND secondary muscles (at least one of them sits in the record's `regions`), as ruled after the curation review.
+- The `plyoIntro` theme lands in Task 5 with its moves, not here.
+
 **Files:**
 - Modify: `packages/exercise-library/src/define.ts`, `record.ts` (fields required)
 - Modify: `packages/exercise-library/src/themes.ts` (new themes `skiPrep`, `athleticBase`, `plyoIntro` with emphasis on the new tags/patterns; modes as in the existing ones — `plyoIntro` is never a recovery theme)
@@ -119,6 +127,12 @@ Same rules as Task 2; mobility and stretches are usually `isotonic` (moving thro
 - [ ] **Step 5: Commit** `feat(library): the new fields are required; themes for ski prep, athletic base and plyometric intro; the library route filters by purpose, tag, theme, muscle and contraction`.
 
 ### Task 5: New moves — graded plyometrics, ski-specific, yoga flows — condition-gated
+
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- The plyometric rule lives in a new optional `ConditionProfile` hook `allowRecord?(ex: ExerciseRecord, mode: Mode, today: CheckReading): boolean` (default allow) in `conditions/types.ts`, called by `eligibility.ts` beside `allowPattern`; TMJ implements it. The validator (Task 8) calls the same hook.
+- `wallSit` already exists (curated in Task 2): extend existing records instead of duplicating; check every name first.
+- The `plyoIntro` theme lands here, never a recovery theme.
+- New records follow the curation rulings: `contraction` may be `passive` (no deliberate effort against resistance); the muscle-region rule is over primary and secondary.
 
 **Files:**
 - Create: `packages/exercise-library/src/exercises/athletic.ts` (plyometrics + ski-specific), `packages/exercise-library/src/exercises/flows.ts` (yoga flows)
@@ -146,6 +160,15 @@ Same rules as Task 2; mobility and stretches are usually `isotonic` (moving thro
 ## Batch 1B — the workout document (pure code)
 
 ### Task 6: The schema (`@rg/domain`)
+
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- **Exercise item** adds `cue?: string (max 160)`, `alternates?: Array<{ libraryId: string; why?: string (max 120) }> (max 3)`, `test?: { keyResultId?: string }`. **Free exercise** adds `cue?`.
+- **Dose** adds `max?: true` ("to max": `holdSec` / `reps` become a floor or target, not a cap).
+- **Run item**: `target` = `{ durationSec?, distanceM?, typed?: string (max 20, the distance as typed, e.g. "3 mi"), open?: true (lap button), pace?: { fastSecPerKm: number; slowSecPerKm: number }, hr?: { low: number; high: number }, zone?: { kind: "pace" | "hr"; index: number (1-6) } }`, refined to need a duration, a distance or `open`; plus `cue?`. `RUN_EFFORTS` = `easy, recovery, steady, long, tempo, threshold, interval, hills, strides, race, by_feel`.
+- `PART_FORMATS` adds `"holds"`.
+- **Document** adds `setting?: { placeId?: string; equipment?: string[] (max 20, ids checked by the validator); targetMinutes?: number }` and `basedOn?: { kind: "workout" | "template" | "performed" | "proposal"; id: string; rev?: number }` (lineage; `source` stays who wrote it).
+- A comment in `workout-doc.ts`: vocabulary (enum) additions after v1 require `version: 2` and a converter, because older cached clients parse strictly. Unknown optional keys are stripped, not rejected (zod default).
+- Rest-day rows carry no document.
 
 **Files:**
 - Create: `packages/domain/src/workout-doc.ts`; Modify: `packages/domain/src/index.ts` (export it)
@@ -211,6 +234,12 @@ export function parseStoredWorkoutDoc(raw: unknown): WorkoutDoc | null;
 
 ### Task 7: The `@rg/workout` package — derivations
 
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- `DocDerived` adds `category: "easy" | "long" | "quality" | "recovery" | "race" | "strength" | "yoga"` (a run part with threshold / interval / tempo / hills is quality; race is race; long, or easy for 75 min or more, is long; easy / recovery by effort; else strength when lift dominates; else yoga), `mode: Mode`, `equipment: { all: string[]; oneOf: string[][] }`, `disciplines: Array<"run" | "lift" | "yoga">` (every axis present, dominant first; `discipline` stays the dominant one).
+- Export `modeOfEffort(e)` (recover to recovery, maintain to consistent, develop or peak to build) and `effortOfMode(m)`.
+- Balance: `passive` items count toward no contraction (their seconds count as mobility only when their purpose is mobility or stretch, else recovery time).
+- Add `derivePerformed(input, library)`: the same balance / exposure / minutes / discipline rules applied to what was actually done. `input = { entries: Array<{ exerciseId; perSide; sets: Array<{ reps: number|null; seconds: number|null; loadKg: number|null; done: boolean; flags: readonly string[] }> }>; movesDone: Array<{ exerciseId; seconds }>; activity?: { sport; durationSeconds; distanceMeters: number|null } | null }`. Test: a session done exactly as prescribed derives the same balance as `deriveDoc` of its document.
+
 **Files:**
 - Create: `packages/workout/package.json` (name `@rg/workout`, deps `@rg/domain`, `@rg/exercise-library`, `zod`; scripts `test`, `typecheck` like the sibling packages), `tsconfig.json`, `vitest.config.ts` (copy a sibling package's), `src/index.ts`, `src/derive.ts`
 - Modify: root workspace config if packages are listed explicitly (check `pnpm-workspace.yaml`); `apps/worker/package.json` and `packages/ui/package.json` add `@rg/workout`
@@ -238,6 +267,12 @@ Rules (document them in `derive.ts`): minutes = Σ items (sets × (reps × secsP
 
 ### Task 8: Validation
 
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- The day is explicit: `validateWorkoutDoc(doc, ctx: { library; activeProfiles; day: DayContext | null /* null only for templates and library contexts */; excluded?: readonly string[]; equipment?: readonly string[] })` with `DayContext = { date: string; today: string; readings: Record<profileId, CheckReading | null>; recent?: { last: HistorySession | null; week: readonly HistorySession[] } }`.
+- Full condition-rule parity (principles §2.7: a profile's rules apply to every workout from every source). New codes: `condition_pattern` (error: `allowPattern` false), `condition_gate` (error: `allowRecord` false for today, or the reading is null: unanswered means not allowed), `condition_gate_pending` (warning: a future date and the item is gated; allowed only if it carries an alternate that passes in recovery mode, else error), `condition_mode` (warning: `fitsMode` false for `modeOfEffort(doc.intent.effort)`), `condition_format` (warning: `fitsFormat` false; doc formats map straight to straight, superset to superset, circuit to circuit, ladder to ladder, flow to flow, holds to holds, intervals to circuit, steady to straight), `condition_flare` (warning: `flare(reading)` and the item is not `flareSafe`), `mode_above_day` (warning: the doc's mode exceeds what the profile allows today; message = the profile's own `recoveryReason` / `buildChecks` words), `excluded_by_athlete` (warning), `equipment_unavailable` (warning). The validator never names a profile.
+- Circuit size outside 3-6 is a warning, not an error (engine builds must validate clean).
+- Tests: a push-v item in a consistent doc at reading 1 gives `condition_pattern`; a plyometric item with a null reading gives `condition_gate`; the same on a future date with no alternate is an error, with a flare-safe alternate a `condition_gate_pending` warning; a circuit holding a clench-2 move gives `condition_format`; a high reading with a develop doc gives `mode_above_day` carrying the profile's sentence. Mutation-check each.
+
 **Files:** Create `packages/workout/src/validate.ts`; Test `packages/workout/test/validate.test.ts`
 
 **Interfaces — Produces:**
@@ -251,6 +286,12 @@ Rules: every `exercise.libraryId` resolves (legacy ids accepted — report a `wa
 - [ ] **Step 5: Commit** `feat(workout): validate a document against the library and the condition profiles`.
 
 ### Task 9: Converters in, adapters out
+
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- A COROS `recovery` stage becomes a `run` item with effort `recovery` keeping its distance / duration (a jog is not a rest); pace / HR targets and zones carry into `target`; nested repeats go to `kept`.
+- Coach `note` becomes `cue`; an engine build's swap alternatives become `alternates` (max 3); the build's mode maps through `effortOfMode`.
+- Add `adapt/to-watch.ts`: `watchStepsFromDoc(doc, library, prefs)` via `playerStepsFromDoc` and the existing build-to-watch step function (search the worker and packages for the function that turns a build into watch steps); parity test over 50 seeded builds: the doc yields the same watch steps as today's builder (spec §3.3).
+- Test: `deriveDoc(docFromCoachSession(s)).category === s.category` for every coach fixture.
 
 **Files:** Create `packages/workout/src/convert/{from-stages,from-coach,from-studio,from-build}.ts`, `packages/workout/src/adapt/{to-stages,to-player}.ts`; Test `packages/workout/test/convert.test.ts`, `adapt.test.ts`
 
@@ -276,6 +317,48 @@ Mapping rules: stages — warmup → part `warmup`, work → `main` (runs: `run`
 ## Batch 1C — storage, dual-write, profile and objectives, APIs (schema change: owner-approved)
 
 ### Task 10: Migration and Drizzle schema
+
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+Add to migration 0028 (same file):
+```sql
+ALTER TABLE `planned_workouts` ADD `workout_doc_rev` integer;   -- bumped on every workout_doc write; NULL = no doc
+--> statement-breakpoint
+CREATE TABLE `workout_doc_revisions` (
+	`id` text PRIMARY KEY NOT NULL,     -- `<workout_id>:<rev>`
+	`user_id` text NOT NULL,
+	`workout_id` text NOT NULL,
+	`rev` integer NOT NULL,
+	`doc` text NOT NULL,
+	`source_kind` text NOT NULL,        -- DOC_SOURCES or 'athlete_edit'
+	`source_ref` text,
+	`created_at` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `workout_doc_revisions_workout_idx` ON `workout_doc_revisions` (`workout_id`, `rev`);
+--> statement-breakpoint
+CREATE TABLE `athlete_answers` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`question_id` text NOT NULL,      -- 'soreness' | 'tightness' | 'pain' | 'energy' | 'sleep_feel' | 'stress' | 'exercise_feedback' | 'workout_feedback' | ... (Stage 4 owns the registry)
+	`subject_kind` text,              -- 'region' | 'muscle' | 'focus_area' | 'exercise' | 'workout' | 'performed_session' | 'condition'
+	`subject_id` text,
+	`value_num` real,
+	`value_choice` text,
+	`text` text,                      -- the athlete's own words: data, never instructions
+	`source` text NOT NULL,           -- 'checkin' | 'ask_athlete' | 'request' | 'session_pre' | 'session_post' | 'review' | 'watch_review'
+	`local_date` text NOT NULL,
+	`at` text NOT NULL,
+	`workout_id` text,
+	`performed_session_id` text,
+	`proposal_id` text,
+	`expires_at` text
+);
+--> statement-breakpoint
+CREATE INDEX `athlete_answers_user_q_idx` ON `athlete_answers` (`user_id`, `question_id`, `local_date`);
+--> statement-breakpoint
+CREATE INDEX `athlete_answers_subject_idx` ON `athlete_answers` (`user_id`, `subject_kind`, `subject_id`);
+```
+One answer row per area ("sore: calves 6, hamstrings 3" is two rows sharing `at`). `athlete_profiles` adds `events text NOT NULL DEFAULT '[]'` (JSON `[{ id, label, kind: race|trip|ski|travel|other, start, end?, priority: A|B|C, taper: boolean }]`); `focus_areas` JSON is `[{ id: slug, label, refs: string[] /* at least 1 region or muscle id */, note? }]`; `preferences` holds only what no other table owns (`{ sessionMinutes?: { default; max? }, trainingDays?: number[], defaultPlaceId? }`). `objectives` adds `goal_ids text NOT NULL DEFAULT '[]'` and `sort integer NOT NULL DEFAULT 0`. Register `athlete_answers` and `workout_doc_revisions` in the account registry too.
 
 **Files:**
 - Create: `packages/database/migrations/0028_workout_documents_profile_objectives.sql`; update `packages/database/migrations/meta/_journal.json` only if the existing migrations are journaled (the programme noted 0017+ are hand-authored and unjournaled — follow what 0024–0027 did)
@@ -335,6 +418,10 @@ CREATE INDEX `key_results_objective_idx` ON `key_results` (`objective_id`);
 
 ### Task 11: Dual-write from every source
 
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- Every writer of `planned_workouts.workout_doc` also bumps `workout_doc_rev` and inserts a `workout_doc_revisions` row in the same batch; a row whose completion state is completed / skipped / missed never gets a new revision (one helper, tested). `session_builds.workout_doc` is a snapshot (no revisions).
+- Counting tests: +1 statement per writer at most, still within 45.
+
 **Files:** Modify the writers: session builds (`apps/worker/src/services/session-build.ts` — the build insert), coach creates/edits (`coach-apply.ts` — where `structured_json` is written), the COROS import (`import-plan.ts` — where stages are written), the standalone import (`standalone-import*.ts` — where performed/planned rows are written; grep), the old Studio push (`studio-push.ts` — planned rows). Create `apps/worker/src/services/workout-doc-store.ts` (one helper per source that converts and returns the JSON to write).
 
 **Interfaces — Produces:**
@@ -352,6 +439,10 @@ Each writer sets `workout_doc` in the SAME statement/batch that writes its exist
 
 ### Task 12: The parity diagnostic
 
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- Also ship the read routes: `GET /api/workouts/:id/doc` returns `{ doc, derived, rev }`, tolerant (`{ doc: null, reason: "missing" | "invalid" }`, never a 500); `GET /api/workouts?from=&to=&q=&limit=` returns `[{ id, date, title, intentSummary, category, completionState, docRev, minutes }]` (the list "like last week's" needs; `q` matches title / intent; user-scoped; within 45 statements).
+- The parity diagnostic exempts rest-day rows.
+
 **Files:** Create `apps/worker/src/services/workout-doc-parity.ts`; route `GET /api/settings/diagnostics/workout-docs` in `apps/worker/src/routes/misc.ts` (the diagnostics family, user-scoped, read-only); Test `apps/worker/test/workout-doc-parity.test.ts`
 
 **Produces:** `{ checked, withDoc, missing: number, invalid: number, mismatched: Array<{ id: string; field: "minutes" | "discipline" | "title" | "steps" }>, sample: string[] }` — counts and ids only, no titles; paginated (`?after=<id>&limit=100`); ≤ 45 statements.
@@ -360,6 +451,10 @@ Each writer sets `workout_doc` in the SAME statement/batch that writes its exist
 - [ ] **Step 5: Commit** `feat(workout): a read-only parity diagnostic between the document and the old formats`.
 
 ### Task 13: Profile and objectives — services, measures, routes
+
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- Profile: `GET /api/profile` returns `{ goals, focusAreas, events, preferences, units: { distance, weight, temperature } (read-only, from user_preferences), places: [{ id, name, equipment, implements, isDefault }], conditions: [{ profileId, active, since }] }`; `PUT /api/profile` accepts goals / focusAreas / events / preferences only (a test fails if it accepts units).
+- Measures: `hold_max` / `best_set` count a set as capacity evidence only when its item was a test (`dose.max`, via the build's or planned row's document) or the logged value exceeds the prescription; otherwise `evidence: "capped"`. Add `threshold_pace { windowDays }` (from the daily health table's threshold pace, per day) and `predicted_time { distanceM }` (the race hub's prediction, per day: find `racePrediction`); `run_best` labels each point `race | test | training` from the matched planned document's run effort. A key result's `target` is stored in the athlete's unit with `unit`; measures return canonical and display values.
 
 **Files:** Create `apps/worker/src/services/profile.ts`, `objectives.ts`, `key-result-measures.ts`; routes `apps/worker/src/routes/profile.ts` (mount `/api/profile`, `/api/objectives` in `apps/worker/src/index.ts` like the other routes); `packages/api-client/src/index.ts` (typed calls); `packages/domain/src/profile.ts` (zod schemas for profile, objective, key result, measure)
 Test: `apps/worker/test/profile.test.ts`, `objectives.test.ts`, `key-result-measures.test.ts`
@@ -386,6 +481,9 @@ Measure rules: `hold_max` — max `performed_sets` hold seconds for those exerci
 
 ### Task 14: The backfill
 
+**Amendment A (scenario red-team, 2026-10-10) — binding; where it differs from the text below, it wins:**
+- The backfill writes `workout_doc_rev = 1` and a revision row (`source_kind` from the row's origin) with each document; size the rows per call to stay within 45 statements.
+
 **Files:** Create `apps/worker/src/services/workout-doc-backfill.ts`; admin route `POST /api/admin/workout-docs/backfill?dryRun=1&limit=` (follow `routes/admin.ts`'s auth); a cron hook in `hourly()` only if needed (prefer the admin route driven by the lead, one bounded step per call); Test `apps/worker/test/workout-doc-backfill.test.ts`
 
 **Produces:** `{ dryRun, scanned, converted, failed: Array<{ id, code }>, nextAfter: string | null }`; converts planned workouts and session builds whose `workout_doc` IS NULL, ≤ 45 statements per call (≈ 15 rows per call), keyset by id, writes only `workout_doc` (no other column), idempotent.
@@ -393,6 +491,19 @@ Measure rules: `hold_max` — max `performed_sets` hold seconds for those exerci
 - [ ] **Step 1: Failing tests** (Review Focus 4): dry run writes nothing and reports; a real run converts N rows; killed after k writes (throw from the db after k) → the next call resumes and the end state equals one uninterrupted run; a second full run converts 0; no other column changes (snapshot every column before/after); budget per call.
 - [ ] **Step 2–4:** FAIL → implement → PASS.
 - [ ] **Step 5: Commit** `feat(workout): a resumable, bounded backfill of workout documents`.
+
+### Task 15: Keep per-session feedback (no UI)
+
+**Amendment A (scenario red-team):** today the session review's +1/-1 ratings overwrite `exercise_prefs.rating` (latest only), so per-session history is lost on every save. Run this task right after Task 11.
+
+**Files:** Modify `apps/worker/src/services/session-save.ts` (where `review.ratings` fold into exercise prefs) and `apps/worker/src/services/session-watch-review.ts`; the review's wire schema in `packages/domain` (find `review` / `ratings`); Test: the existing session-save and watch-review tests.
+
+- In the same batch, write each rating as an `athlete_answers` row (`question_id 'exercise_feedback'`, `subject_kind 'exercise'`, `subject_id` = library id, `value_num` +1/-1, `source 'review'` or `'watch_review'`, `performed_session_id`, `local_date`, `at`): one multi-row insert (chunked to 100 bound parameters); the prefs fold stays.
+- Accept an optional workout-level slot `review.session?: { rating?: 1|2|3|4|5; difficulty?: "too_easy" | "right" | "too_hard"; text?: string (max 500) }` as one `workout_feedback` row (`subject_kind 'performed_session'`); the wire stays backward compatible; Stage 4 adds the UI.
+
+- [ ] **Step 1: Failing tests**: a save with two ratings writes two answer rows linked to the session; a re-save (the idempotent save path) does not duplicate them; the watch review does the same; the workout-level slot writes one row; budgets still within 45 (update the counting tests by at most +1).
+- [ ] **Step 2-4:** FAIL, implement, PASS.
+- [ ] **Step 5: Commit** `feat(sessions): keep every session's exercise ratings, and an optional workout rating, as answers`.
 
 **Batch 1C end:** gates; audit (schema, account registry, privacy, budgets, Review Focus 4–5); fixes; re-review; **deploy with the migration** (owner-approved: additive; `npx wrangler d1 migrations apply run-garden-db --remote` is run by the Deploy workflow — confirm in `.github/workflows/deploy.yml`); verify prod health; then:
 1. **Seed** (owner-approved): from the private companion, build the profile JSON and the first objectives the companion names, each key result choosing the measure that fits (`hold_max`, `best_set`, `pace_at_hr` with the athlete's easy HR band read from their zones, `run_best`) and write them through the API from the signed-in browser if available, else with a single `wrangler d1 execute --remote` of parameter-free INSERTs generated in memory (never written to disk); verify with `GET /api/objectives`.
