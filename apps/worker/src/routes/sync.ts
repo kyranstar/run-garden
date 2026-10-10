@@ -30,6 +30,7 @@ import {
   restoreAuthoredSessions,
 } from "../services/push-absent.js";
 import { processCoachReads } from "../services/coach-reads.js";
+import { reviveFailedRewrites } from "../services/rewrite-retry.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
 /**
@@ -178,7 +179,11 @@ syncRoutes.post("/retry", async (c) => {
     }
   }
 
-  return c.json({ ok: true, movesRetried, studioRetried });
+  // Failed content rewrites (the coach arm of `issueCount`): the standing one per session still ahead is queued
+  // again — see `reviveFailedRewrites`. Queued only; the lane runs it.
+  const rewritesRetried = await reviveFailedRewrites(db, userId, { today, now: nowInstant() });
+
+  return c.json({ ok: true, movesRetried, studioRetried, rewritesRetried });
 });
 
 // ── GET /api/sync/notes ───────────────────────────────────────────────────────

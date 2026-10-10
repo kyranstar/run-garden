@@ -859,6 +859,8 @@ export interface RetrySyncResponse {
   movesRetried: number;
   /** Studio plans (holding one or more failed rows) that were re-pushed. */
   studioRetried: number;
+  /** Failed content rewrites of sessions still ahead, queued to run again. */
+  rewritesRetried?: number;
 }
 
 /** Progress of the one-shot deep history backfill. */

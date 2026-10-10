@@ -310,7 +310,7 @@ describe("POST /api/sync/retry", () => {
     const res = await client().post("/api/sync/retry");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; movesRetried: number; studioRetried: number };
-    expect(body).toEqual({ ok: true, movesRetried: 1, studioRetried: 0 });
+    expect(body).toEqual({ ok: true, movesRetried: 1, studioRetried: 0, rewritesRetried: 0 });
 
     const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId));
     expect(jobs.find((j) => j.id === jobId)!.status).toBe("superseded");
@@ -419,7 +419,7 @@ describe("POST /api/sync/retry", () => {
   it("no-ops cleanly (movesRetried/studioRetried both 0) when nothing has failed", async () => {
     const res = await client().post("/api/sync/retry");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, movesRetried: 0, studioRetried: 0 });
+    expect(await res.json()).toEqual({ ok: true, movesRetried: 0, studioRetried: 0, rewritesRetried: 0 });
   });
 });
 
