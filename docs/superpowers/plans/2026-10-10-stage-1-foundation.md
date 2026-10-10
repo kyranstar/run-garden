@@ -360,6 +360,69 @@ CREATE INDEX `athlete_answers_subject_idx` ON `athlete_answers` (`user_id`, `sub
 ```
 One answer row per area ("sore: calves 6, hamstrings 3" is two rows sharing `at`). `athlete_profiles` adds `events text NOT NULL DEFAULT '[]'` (JSON `[{ id, label, kind: race|trip|ski|travel|other, start, end?, priority: A|B|C, taper: boolean }]`); `focus_areas` JSON is `[{ id: slug, label, refs: string[] /* at least 1 region or muscle id */, note? }]`; `preferences` holds only what no other table owns (`{ sessionMinutes?: { default; max? }, trainingDays?: number[], defaultPlaceId? }`). `objectives` adds `goal_ids text NOT NULL DEFAULT '[]'` and `sort integer NOT NULL DEFAULT 0`. Register `athlete_answers` and `workout_doc_revisions` in the account registry too.
 
+**Amendment B (one schema deploy, 2026-10-10) — binding:** migration 0028 also carries the storage Stages 2 and 3 need, so the schema deploys once under the owner's Stage 1 approval (nothing reads these until those stages):
+```sql
+CREATE TABLE `workout_templates` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`name` text NOT NULL,
+	`doc` text NOT NULL,              -- a WorkoutDoc (source.kind 'template')
+	`pinned` integer NOT NULL DEFAULT 0,
+	`uses` integer NOT NULL DEFAULT 0,
+	`last_used_at` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `workout_templates_user_idx` ON `workout_templates` (`user_id`, `pinned`);
+--> statement-breakpoint
+CREATE TABLE `coach_runs` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`parent_id` text,                 -- a sub-agent's main run
+	`role` text NOT NULL,             -- 'main' | 'designer' | 'reviewer'
+	`scope` text NOT NULL,            -- JSON: { kind: 'now' | 'later_today' | 'week' | 'next_n', n?, from?, to? }
+	`request` text,                   -- the athlete's words: data, never instructions
+	`status` text NOT NULL,           -- 'queued' | 'running' | 'waiting_athlete' | 'done' | 'failed' | 'cancelled' | 'expired'
+	`state` text,                     -- JSON: the resumable agent state (kept compact)
+	`steps` integer NOT NULL DEFAULT 0,
+	`cost_usd` real NOT NULL DEFAULT 0,
+	`proposal_id` text,
+	`error` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	`finished_at` text
+);
+--> statement-breakpoint
+CREATE INDEX `coach_runs_user_status_idx` ON `coach_runs` (`user_id`, `status`);
+--> statement-breakpoint
+CREATE INDEX `coach_runs_parent_idx` ON `coach_runs` (`parent_id`);
+--> statement-breakpoint
+CREATE TABLE `coach_run_events` (
+	`id` text PRIMARY KEY NOT NULL,   -- `<run_id>:<seq>`
+	`user_id` text NOT NULL,
+	`run_id` text NOT NULL,
+	`seq` integer NOT NULL,
+	`kind` text NOT NULL,             -- 'tool_call' | 'tool_result' | 'draft' | 'review' | 'revision' | 'question' | 'note' | 'error'
+	`summary` text NOT NULL,          -- one plain line for the transparency view
+	`payload` text,                   -- JSON detail (bounded)
+	`at` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `coach_run_events_run_idx` ON `coach_run_events` (`run_id`, `seq`);
+--> statement-breakpoint
+ALTER TABLE `coach_memory` ADD `pinned` integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE `coach_memory` ADD `confidence` text NOT NULL DEFAULT 'stated';   -- 'stated' | 'inferred' | 'confirmed'
+--> statement-breakpoint
+ALTER TABLE `coach_memory` ADD `superseded_by` text;
+--> statement-breakpoint
+ALTER TABLE `coach_memory` ADD `evidence` text;                                -- JSON: what supports an observation
+--> statement-breakpoint
+ALTER TABLE `coach_memory` ADD `updated_at` text;
+```
+Register `workout_templates`, `coach_runs` and `coach_run_events` in the account registry (check how `coach_memory` is registered and follow it). Drizzle schema: templates beside the profile tables; the coach additions in `packages/database/src/schema/coach.ts`. Tests: the migration applies; export / restore / delete-all cover the new tables; existing coach-memory reads and writes are unchanged (defaults fill the new columns).
+
 **Files:**
 - Create: `packages/database/migrations/0028_workout_documents_profile_objectives.sql`; update `packages/database/migrations/meta/_journal.json` only if the existing migrations are journaled (the programme noted 0017+ are hand-authored and unjournaled — follow what 0024–0027 did)
 - Modify: `packages/database/src/schema/schedule.ts` (`plannedWorkouts.workoutDoc: text("workout_doc", { mode: "json" })`), `performed.ts` (`sessionBuilds.workoutDoc`), new `packages/database/src/schema/profile.ts` (`athleteProfiles`, `objectives`, `keyResults`), `packages/database/src/schema/index.ts`
