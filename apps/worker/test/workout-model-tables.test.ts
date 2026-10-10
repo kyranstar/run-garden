@@ -27,6 +27,19 @@ const NEW_TABLES: SQLiteTable[] = [
   schema.exerciseProvenance,
 ];
 
+/** Migration 0028's new tables: held to the same Drizzle/DDL parity as the 0024-0027 ones. */
+const TABLES_0028: SQLiteTable[] = [
+  schema.athleteProfiles,
+  schema.objectives,
+  schema.keyResults,
+  schema.workoutDocRevisions,
+  schema.athleteAnswers,
+  schema.workoutTemplates,
+  schema.coachRuns,
+  schema.coachRunEvents,
+];
+const PARITY_TABLES: SQLiteTable[] = [...NEW_TABLES, ...TABLES_0028];
+
 type Row = Record<string, unknown>;
 
 const rawAll = (db: Db, query: string): Row[] =>
@@ -43,7 +56,7 @@ function ddlDefault(value: unknown): string {
 describe("Drizzle matches the migrated DDL", () => {
   it("has the same columns, NOT NULL, primary key and defaults on every new table", () => {
     const db = makeTestDb();
-    for (const table of NEW_TABLES) {
+    for (const table of PARITY_TABLES) {
       const name = getTableName(table);
       const info = rawAll(db, `PRAGMA table_info(\`${name}\`)`);
       const columns = Object.values(getTableColumns(table));
@@ -58,9 +71,29 @@ describe("Drizzle matches the migrated DDL", () => {
     }
   });
 
+  it("0028's added columns on existing tables agree with the DDL (coach_memory's, planned_workouts', session_builds')", () => {
+    const db = makeTestDb();
+    const added: Array<[SQLiteTable, string[]]> = [
+      [schema.coachMemory, ["pinned", "confidence", "superseded_by", "evidence", "updated_at"]],
+      [schema.plannedWorkouts, ["workout_doc", "workout_doc_rev"]],
+      [schema.sessionBuilds, ["workout_doc"]],
+    ];
+    for (const [table, names] of added) {
+      const name = getTableName(table);
+      const info = rawAll(db, `PRAGMA table_info(\`${name}\`)`);
+      for (const colName of names) {
+        const col = Object.values(getTableColumns(table)).find((c) => c.name === colName)!;
+        const ddl = info.find((c) => c.name === colName)!;
+        const where = `${name}.${colName}`;
+        expect(Boolean(ddl.notnull), where).toBe(col.notNull);
+        expect(ddl.dflt_value ?? null, where).toBe(col.hasDefault ? ddlDefault(col.default) : null);
+      }
+    }
+  });
+
   it("has the same indexes, unique where Drizzle says unique", () => {
     const db = makeTestDb();
-    for (const table of NEW_TABLES) {
+    for (const table of PARITY_TABLES) {
       const name = getTableName(table);
       const ddl = rawAll(db, `PRAGMA index_list(\`${name}\`)`)
         .filter((i) => i.origin === "c")
@@ -206,7 +239,7 @@ describe("one fully populated row per new table round-trips (D1's 100-variable c
     const { userId } = await makeTestUser(db);
     await seedPlannedWorkout(db, userId, "pw-old");
     const [workout] = await db.select().from(schema.plannedWorkouts);
-    expect(workout).toMatchObject({ origin: null, contentState: null, sessionParams: null });
+    expect(workout).toMatchObject({ origin: null, contentState: null, sessionParams: null, workoutDoc: null, workoutDocRev: null });
   });
 });
 
@@ -243,6 +276,38 @@ describe("the DDL's own defaults", () => {
     expect(location).toMatchObject({ implements: {}, isDefault: false, equipment: [] });
     const [pref] = await db.select().from(schema.exercisePrefs);
     expect(pref).toMatchObject({ rating: null, excluded: false, pinned: false, introducedOn: null });
+  });
+
+  it("0028: a 0027-shaped coach_memory row reads the new columns as their defaults", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const run = (q: string) => (db as unknown as { run: (q: unknown) => unknown }).run(sql.raw(q));
+    run(
+      `INSERT INTO coach_memory (id, user_id, kind, body, provenance, learned_at)
+       VALUES ('m-d', '${userId}', 'fact', 'b', '{"source":"s","at":"t"}', 't')`,
+    );
+    const [memory] = await db.select().from(schema.coachMemory);
+    expect(memory).toMatchObject({
+      active: true, pinned: false, confidence: "stated", supersededBy: null, evidence: null, updatedAt: null,
+    });
+  });
+
+  it("0028: profile, objective, template and run rows written by plain SQL read their defaults", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const run = (q: string) => (db as unknown as { run: (q: unknown) => unknown }).run(sql.raw(q));
+    run(`INSERT INTO athlete_profiles (id, user_id, updated_at) VALUES ('${userId}', '${userId}', 't')`);
+    run(`INSERT INTO objectives (id, user_id, title, created_at, updated_at) VALUES ('o-d', '${userId}', 'T', 't', 't')`);
+    run(`INSERT INTO workout_templates (id, user_id, name, doc, created_at, updated_at) VALUES ('t-d', '${userId}', 'N', '{}', 't', 't')`);
+    run(`INSERT INTO coach_runs (id, user_id, role, scope, status, created_at, updated_at) VALUES ('r-d', '${userId}', 'main', '{}', 'queued', 't', 't')`);
+    const [profile] = await db.select().from(schema.athleteProfiles);
+    expect(profile).toMatchObject({ goals: [], focusAreas: [], events: [], preferences: {} });
+    const [objective] = await db.select().from(schema.objectives);
+    expect(objective).toMatchObject({ status: "active", goalIds: [], sort: 0, why: null });
+    const [template] = await db.select().from(schema.workoutTemplates);
+    expect(template).toMatchObject({ pinned: false, uses: 0, lastUsedAt: null });
+    const [runRow] = await db.select().from(schema.coachRuns);
+    expect(runRow).toMatchObject({ steps: 0, costUsd: 0, parentId: null, state: null, finishedAt: null });
   });
 });
 
