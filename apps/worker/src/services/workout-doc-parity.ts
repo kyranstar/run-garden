@@ -7,7 +7,7 @@
  * design and are exempt. Minutes differ only past max(3 min, 20 % of the row's minutes). Steps are compared as
  * multisets of library ids, canonicalised through `legacyIds` on both sides, so a renamed move is not a mismatch.
  */
-import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, gt, inArray, isNull, sql } from "drizzle-orm";
 import { plannedWorkouts, sessionBuilds } from "@rg/database";
 import { parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
@@ -22,6 +22,10 @@ export interface ParityReport {
   missing: number;
   invalid: number;
   exempt: number;
+  /** Rows with a document but no source or fallback estimate: minutes not compared. */
+  unestimated: number;
+  /** Rows whose chosen build predates the current document: steps not compared. */
+  stale: number;
   mismatched: Array<{ id: string; field: ParityField }>;
   /** Ids of rows with no usable document (missing or invalid), capped. */
   sample: string[];
@@ -48,13 +52,33 @@ function axisOfCategory(category: string): "run" | "strength" | "yoga" | null {
 
 const norm = (s: string): string => s.trim().replace(/\s+/g, " ").toLowerCase();
 
-export function rowMinutes(row: {
+/**
+ * planned_workouts' columns with the document read as RAW text. Drizzle's json mode parses on read and throws on a
+ * malformed column, which would fail a whole page; `parseStoredWorkoutDoc` takes the string and never throws.
+ */
+export function plannedWorkoutColumns() {
+  const { workoutDoc: _decoded, ...rest } = getTableColumns(plannedWorkouts);
+  return { ...rest, workoutDoc: sql<string | null>`${plannedWorkouts.workoutDoc}` };
+}
+
+interface DurationColumns {
   sourceEstimatedDurationSeconds: number | null;
   fallbackEstimatedDurationSeconds: number | null;
   calendarBlockDurationSeconds: number;
-}): number {
-  const sec = row.sourceEstimatedDurationSeconds ?? row.fallbackEstimatedDurationSeconds ?? row.calendarBlockDurationSeconds;
-  return Math.round(sec / 60);
+}
+
+/** The row's own estimate in minutes, or null when it has none (the calendar slot is not an estimate). */
+export function estimatedRowMinutes(row: DurationColumns): number | null {
+  const sec = row.sourceEstimatedDurationSeconds ?? row.fallbackEstimatedDurationSeconds;
+  return sec === null ? null : Math.round(sec / 60);
+}
+
+/**
+ * Minutes to SHOW for a row: the estimate, else the calendar slot. Display only (the list route); the parity check
+ * never compares against the slot, which carries buffer and is not what the row claims the session lasts.
+ */
+export function rowMinutes(row: DurationColumns): number {
+  return estimatedRowMinutes(row) ?? Math.round(row.calendarBlockDurationSeconds / 60);
 }
 
 export async function checkWorkoutDocParity(
@@ -65,7 +89,7 @@ export async function checkWorkoutDocParity(
 ): Promise<ParityReport> {
   const limit = Math.min(Math.max(Math.floor(opts.limit ?? PARITY_DEFAULT_LIMIT) || PARITY_DEFAULT_LIMIT, 1), PARITY_MAX_LIMIT);
   const rows = await db
-    .select()
+    .select(plannedWorkoutColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -79,7 +103,7 @@ export async function checkWorkoutDocParity(
   const page = rows.slice(0, limit);
   const next = rows.length > limit ? page[page.length - 1]!.id : null;
 
-  const report: ParityReport = { checked: 0, withDoc: 0, missing: 0, invalid: 0, exempt: 0, mismatched: [], sample: [], next };
+  const report: ParityReport = { checked: 0, withDoc: 0, missing: 0, invalid: 0, exempt: 0, unestimated: 0, stale: 0, mismatched: [], sample: [], next };
   const parsed = new Map<string, WorkoutDoc>();
   for (const row of page) {
     if (row.category === "rest") {
@@ -99,23 +123,33 @@ export async function checkWorkoutDocParity(
     if (report.sample.length < SAMPLE_CAP) report.sample.push(row.id);
   }
 
-  // The latest build of each row that has a document: one statement per chunk of ids.
-  const latestSteps = new Map<string, { version: number; ids: string[] }>();
+  // The build that was played (the locked one, highest version) if any, else the latest: one statement per chunk of ids.
+  // The version is tracked before the steps are read, so an older build's steps never stand in for a newer one's.
+  interface Chosen { locked: boolean; version: number; createdAt: string; buildDoc: unknown; steps: unknown }
+  const chosen = new Map<string, Chosen>();
   for (const ids of chunkIds([...parsed.keys()], 90)) {
     const builds = await db
-      .select({ workoutId: sessionBuilds.workoutId, version: sessionBuilds.version, payload: sessionBuilds.payload })
+      .select({
+        workoutId: sessionBuilds.workoutId,
+        version: sessionBuilds.version,
+        payload: sessionBuilds.payload,
+        workoutDoc: sql<string | null>`${sessionBuilds.workoutDoc}`,
+        lockedAt: sessionBuilds.lockedAt,
+        createdAt: sessionBuilds.createdAt,
+      })
       .from(sessionBuilds)
       .where(and(eq(sessionBuilds.userId, userId), inArray(sessionBuilds.workoutId, ids)));
     for (const b of builds) {
-      const seen = latestSteps.get(b.workoutId);
-      if (seen && seen.version >= b.version) continue;
-      const steps = (b.payload as { steps?: unknown } | null)?.steps;
-      if (!Array.isArray(steps)) continue;
-      const stepIds = steps.flatMap((s) => {
-        const id = (s as { exerciseId?: unknown } | null)?.exerciseId;
-        return typeof id === "string" ? [id] : [];
+      const locked = b.lockedAt !== null;
+      const seen = chosen.get(b.workoutId);
+      if (seen && (seen.locked !== locked ? seen.locked : seen.version >= b.version)) continue;
+      chosen.set(b.workoutId, {
+        locked,
+        version: b.version,
+        createdAt: b.createdAt,
+        buildDoc: b.workoutDoc,
+        steps: (b.payload as { steps?: unknown } | null)?.steps,
       });
-      latestSteps.set(b.workoutId, { version: b.version, ids: stepIds });
     }
   }
 
@@ -125,14 +159,28 @@ export async function checkWorkoutDocParity(
     const doc = parsed.get(row.id);
     if (!doc) continue;
     const derived = deriveDoc(doc, library);
-    if (minutesDiffer(derived.estimatedMinutes, rowMinutes(row))) report.mismatched.push({ id: row.id, field: "minutes" });
+    const rowMin = estimatedRowMinutes(row);
+    if (rowMin === null) report.unestimated++;
+    else if (minutesDiffer(derived.estimatedMinutes, rowMin)) report.mismatched.push({ id: row.id, field: "minutes" });
     const axis = axisOfCategory(row.category);
     if (axis !== null && axis !== derived.discipline) report.mismatched.push({ id: row.id, field: "discipline" });
     if (norm(doc.title) !== norm(row.title)) report.mismatched.push({ id: row.id, field: "title" });
-    const build = latestSteps.get(row.id);
-    if (build) {
+    const build = chosen.get(row.id);
+    if (build && Array.isArray(build.steps)) {
+      // A build made before the document last changed says nothing about it: counted, not compared. A build that
+      // stored the document it was made from is stale when that differs; one that did not, when it predates the row.
+      const builtFrom = parseStoredWorkoutDoc(build.buildDoc);
+      const stale = builtFrom ? JSON.stringify(builtFrom) !== JSON.stringify(doc) : build.createdAt < row.updatedAt;
+      if (stale) {
+        report.stale++;
+        continue;
+      }
+      const stepIds = build.steps.flatMap((s) => {
+        const id = (s as { exerciseId?: unknown } | null)?.exerciseId;
+        return typeof id === "string" ? [id] : [];
+      });
       const mine = playerStepsFromDoc(doc, library).flatMap((s) => (s.exerciseId ? [canon(s.exerciseId)] : [])).sort();
-      const old = build.ids.map(canon).sort();
+      const old = stepIds.map(canon).sort();
       if (mine.length !== old.length || mine.some((id, i) => id !== old[i])) report.mismatched.push({ id: row.id, field: "steps" });
     }
   }

@@ -541,7 +541,6 @@ export interface CoachPlanDto {
   };
 }
 
-/** One pickable week + the brief's facts (rework spec §4). */
 /** `GET /api/workouts/:id/doc`: a row's document and what is derived from it, or why there is none. */
 export type WorkoutDocResponse =
   | { doc: WorkoutDoc; derived: { estimatedMinutes: number; discipline: string; category: string; mode: string; watchStepCount: number } & Record<string, unknown>; rev: number | null }
@@ -566,11 +565,16 @@ export interface WorkoutDocParityReport {
   missing: number;
   invalid: number;
   exempt: number;
+  /** Rows with no source or fallback estimate: minutes not compared. */
+  unestimated: number;
+  /** Rows whose latest build predates the current document: steps not compared. */
+  stale: number;
   mismatched: Array<{ id: string; field: "minutes" | "discipline" | "title" | "steps" }>;
   sample: string[];
   next: string | null;
 }
 
+/** One pickable week + the brief's facts (rework spec §4). */
 export interface PlanWeekResponse {
   weekStart: string;
   days: Array<{ date: string; workouts: WorkoutDto[] }>;

@@ -244,3 +244,112 @@ describe("GET /api/workouts", () => {
     expect(statements.length).toBeLessThanOrEqual(45);
   });
 });
+
+describe("fix round 1", () => {
+  const ids = (r: { body: Array<{ id: string }> }) => r.body.map((x) => x.id);
+
+  it("q is trimmed and cut at 40 characters; an all-whitespace q is no filter", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await seed(db, userId, "long", { title: `${"a".repeat(40)}zzz` });
+    await seed(db, userId, "other", { title: "Something else" });
+    const c = await client(db, userId);
+    const res = await c.work(`?q=${"a".repeat(40)}${"b".repeat(160)}`);
+    expect(res.status).toBe(200);
+    expect(ids(res)).toEqual(["long"]);
+    expect(ids(await c.work("?q=%20%20%20")).sort()).toEqual(["long", "other"]);
+  });
+
+  it("q treats _ and \\ literally", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await seed(db, userId, "under", { title: "step_up" });
+    await seed(db, userId, "plain", { title: "stepXup" });
+    await seed(db, userId, "slash", { title: "a\\b" });
+    await seed(db, userId, "ab", { title: "ab" });
+    const c = await client(db, userId);
+    expect(ids(await c.work("?q=step_up"))).toEqual(["under"]);
+    expect(ids(await c.work(`?q=${encodeURIComponent("a\\b")}`))).toEqual(["slash"]);
+  });
+
+  it("a malformed document column does not fail the list, and an archived row's doc is a 404", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await seed(db, userId, "bad", { title: "Broken" });
+    await seed(db, userId, "arch", { title: "Gone", archivedAt: NOW, workoutDoc: docOf() as never });
+    (db as unknown as { $client: { prepare(s: string): { run(...a: unknown[]): void } } }).$client
+      .prepare("UPDATE planned_workouts SET workout_doc = ? WHERE id = ?")
+      .run("{not json", "bad");
+    const c = await client(db, userId);
+    const res = await c.work("?q=anything");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect((await c.work("/arch/doc")).status).toBe(404);
+    expect((await c.work("/bad/doc")).body).toEqual({ doc: null, reason: "invalid" });
+    expect((await c.diag()).body).toMatchObject({ checked: 1, invalid: 1, sample: ["bad"] });
+  });
+
+  it("no estimate: minutes are not compared against the calendar slot (counted unestimated); the list still shows the slot", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const doc = docOf();
+    await seed(db, userId, "noest", { workoutDoc: doc as never, sourceEstimatedDurationSeconds: null, fallbackEstimatedDurationSeconds: null, calendarBlockDurationSeconds: 9000 });
+    const c = await client(db, userId);
+    const { body } = await c.diag();
+    expect(body.unestimated).toBe(1);
+    expect(body.mismatched.filter((m: { field: string }) => m.field === "minutes")).toEqual([]);
+    expect((await c.work("")).body[0].minutes).toBe(150);
+  });
+
+  describe("steps use the played build and skip a stale one", () => {
+    const library: ExerciseRecord[] = [
+      { ...EXERCISES[0]!, id: "moveA", legacyIds: [] },
+      { ...EXERCISES[1]!, id: "moveB", legacyIds: [] },
+    ];
+    const mk = (libraryId: string) => docOf({ items: [{ kind: "exercise", libraryId, dose: { sets: 1, reps: 8 } }] });
+    const put = (db: Db, userId: string, workoutId: string, version: number, stepIds: string[], over: { lockedAt?: string | null; createdAt?: string; workoutDoc?: WorkoutDoc | null } = {}) =>
+      db.insert(sessionBuilds).values({
+        id: `b-${workoutId}-${version}`, userId, workoutId, version, engineVersion: "t", inputsHash: "h",
+        payload: { steps: stepIds.map((exerciseId) => ({ kind: "set", exerciseId })) }, workoutDoc: (over.workoutDoc ?? null) as never,
+        lockedAt: over.lockedAt ?? null, createdAt: over.createdAt ?? NOW,
+      });
+    const steps = (r: { mismatched: Array<{ id: string; field: string }> }) => r.mismatched.filter((m) => m.field === "steps");
+
+    it("the locked build is the one compared, even when a later version exists", async () => {
+      const db = makeTestDb();
+      const { userId } = await makeTestUser(db);
+      await seed(db, userId, "w", { workoutDoc: mk("moveA") as never, category: "strength" });
+      await put(db, userId, "w", 1, ["moveA"], { lockedAt: NOW });
+      await put(db, userId, "w", 2, ["moveB"]);
+      expect(steps(await checkWorkoutDocParity(db, userId, {}, library))).toEqual([]);
+    });
+
+    it("without a locked build the latest is compared, and an older build's steps never stand in", async () => {
+      const db = makeTestDb();
+      const { userId } = await makeTestUser(db);
+      await seed(db, userId, "w", { workoutDoc: mk("moveA") as never, category: "strength" });
+      await put(db, userId, "w", 1, ["moveA"]);
+      await put(db, userId, "w", 2, ["moveB"]);
+      expect(steps(await checkWorkoutDocParity(db, userId, {}, library))).toEqual([{ id: "w", field: "steps" }]);
+      // The newest build carries no steps array: nothing is compared, and v1 does not stand in.
+      await db.insert(sessionBuilds).values({
+        id: "b-w-3", userId, workoutId: "w", version: 3, engineVersion: "t", inputsHash: "h", payload: {}, workoutDoc: null, lockedAt: null, createdAt: NOW,
+      });
+      expect(steps(await checkWorkoutDocParity(db, userId, {}, library))).toEqual([]);
+    });
+
+    it("a build made from an earlier document, or before the row last changed, is stale: counted, not a mismatch", async () => {
+      const db = makeTestDb();
+      const { userId } = await makeTestUser(db);
+      // The doc was edited from moveB to moveA after the build was made from it.
+      await seed(db, userId, "edited", { workoutDoc: mk("moveA") as never, category: "strength" });
+      await put(db, userId, "edited", 1, ["moveB"], { workoutDoc: mk("moveB") });
+      // A build with no stored document that predates the row's last update.
+      await seed(db, userId, "older", { workoutDoc: mk("moveA") as never, category: "strength", updatedAt: "2026-10-09T00:00:00.000Z" });
+      await put(db, userId, "older", 1, ["moveB"]);
+      const report = await checkWorkoutDocParity(db, userId, {}, library);
+      expect(report.stale).toBe(2);
+      expect(steps(report)).toEqual([]);
+    });
+  });
+});
