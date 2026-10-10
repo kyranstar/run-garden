@@ -48,15 +48,12 @@
 
 **Interfaces — Produces:**
 ```ts
-export const MUSCLES = [
-  "glute-max", "glute-med", "deep-hip-rotators", "hip-flexors", "adductors", "abductors", "hamstrings", "quads",
-  "calves", "tibialis", "feet-intrinsics", "rectus-abdominis", "obliques", "transverse-abdominis", "erector-spinae",
-  "quadratus-lumborum", "thoracic-extensors", "lats", "rhomboids", "lower-traps", "upper-traps", "rotator-cuff",
-  "deltoids", "pecs", "biceps", "triceps", "forearms", "deep-neck-flexors", "scalenes", "jaw-muscles", "diaphragm",
-] as const;
+export const MUSCLES = [ /* as built in Task 1 (9512ac8) — the draft list was refined before curation:
+  jaw → masseter, temporalis, pterygoids; calves → gastrocnemius, soleus; abductors → glute-min-tfl; added suboccipitals,
+  sternocleidomastoid, levator-scapulae, peroneals, serratus-anterior, middle-traps, multifidus, pelvic-floor */ ] as const;
 export type MuscleId = (typeof MUSCLES)[number];
 /** Each muscle sits under one region (the anatomy view and region filters agree). */
-export const MUSCLE_REGION: Record<MuscleId, Region>;   // e.g. "glute-med" → "glutes", "deep-hip-rotators" → "hips", "jaw-muscles" → "jaw", "diaphragm" → "core"
+export const MUSCLE_REGION: Record<MuscleId, Region>;   // e.g. "glute-med" → "glutes", "deep-hip-rotators" → "hips", "masseter" → "jaw", "diaphragm" → "core"
 export const CONTRACTIONS = ["isometric", "isotonic", "eccentric", "plyometric"] as const;
 export type Contraction = (typeof CONTRACTIONS)[number];
 export const PURPOSES = ["warmup", "activation", "strength", "power", "balance", "mobility", "stretch", "cooldown",
@@ -102,7 +99,7 @@ tags: readonly Tag[];                                // was readonly string[]; n
 **Files:**
 - Modify: `packages/exercise-library/src/exercises/mobility.ts`, `extra-mobility.ts`, `jaw-neck.ts`, `extra-jaw-neck.ts`, `breath-downshift.ts`, `extra-pass-two.ts`
 
-Same rules as Task 2; mobility and stretches are usually `isotonic` (moving through range) or `isometric` (held stretches, loaded end-range holds); breathing → `isometric` is wrong — breathing drills are `isotonic` with purpose `recovery`/`condition-care` and muscle `diaphragm`; jaw-care moves carry `jaw-muscles` and purpose `condition-care`.
+Same rules as Task 2; mobility and stretches are usually `isotonic` (moving through range) or `isometric` (held stretches, loaded end-range holds); breathing → `isometric` is wrong — breathing drills are `isotonic` with purpose `recovery`/`condition-care` and muscle `diaphragm`; jaw-care moves carry the jaw muscles they work (`masseter`, `temporalis`, `pterygoids`) and purpose `condition-care`.
 
 - [ ] **Step 1–3:** as Task 2 for these files.
 - [ ] **Step 4: Commit** `feat(library): curate mobility, jaw, breath and second-pass moves`.
