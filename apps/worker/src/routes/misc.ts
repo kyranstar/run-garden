@@ -86,6 +86,7 @@ import { chunkIds, type Db } from "../services/db.js";
 import { buildTerrainReport } from "../services/terrain.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { requireUser } from "../auth/middleware.js";
+import { checkWorkoutDocParity } from "../services/workout-doc-parity.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { emitPendingWork } from "../services/jobs.js";
@@ -1450,6 +1451,21 @@ settingsRoutes.get("/diagnostics/garden", async (c) => {
     ...(from !== undefined ? { from } : {}),
   });
   return c.json(report);
+});
+
+/**
+ * Do the stored workout documents still agree with the old formats? (Task 12; services/workout-doc-parity.ts.)
+ * Read-only, the signed-in account only, counts and ids only. `?after=<id>&limit=100` pages through the rows.
+ */
+settingsRoutes.get("/diagnostics/workout-docs", async (c) => {
+  const limit = Number(c.req.query("limit"));
+  const after = c.req.query("after");
+  return c.json(
+    await checkWorkoutDocParity(c.get("db"), c.get("userId"), {
+      ...(after ? { after } : {}),
+      ...(Number.isFinite(limit) ? { limit } : {}),
+    }),
+  );
 });
 
 settingsRoutes.get("/diagnostics", async (c) => {

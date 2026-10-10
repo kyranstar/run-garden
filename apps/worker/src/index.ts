@@ -31,6 +31,7 @@ import { conditionSettingsRoutes } from "./routes/conditions.js";
 import { placeRoutes } from "./routes/places.js";
 import { importRoutes } from "./routes/imports.js";
 import { lifeosRoutes } from "./routes/lifeos.js";
+import { workoutRoutes } from "./routes/workouts.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
@@ -94,6 +95,7 @@ app.route("/api/conditions", conditionSettingsRoutes);
 app.route("/api/places", placeRoutes);
 app.route("/api/import", importRoutes);
 app.route("/api/library", libraryRoutes);
+app.route("/api/workouts", workoutRoutes);
 // LifeOS (the owner's habit app) reads the plan with a bearer token, never a cookie.
 app.route("/api/lifeos", lifeosRoutes);
 // The parity harness: 404 unless staging or PARITY_ENABLED, then requireUser.

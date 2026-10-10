@@ -18,6 +18,7 @@ import type {
   UserPreferences,
   WatchCoverageView,
   Weight,
+  WorkoutDoc,
   WorkoutSyncView,
 } from "@rg/domain";
 import type {
@@ -541,6 +542,35 @@ export interface CoachPlanDto {
 }
 
 /** One pickable week + the brief's facts (rework spec §4). */
+/** `GET /api/workouts/:id/doc`: a row's document and what is derived from it, or why there is none. */
+export type WorkoutDocResponse =
+  | { doc: WorkoutDoc; derived: { estimatedMinutes: number; discipline: string; category: string; mode: string; watchStepCount: number } & Record<string, unknown>; rev: number | null }
+  | { doc: null; reason: "missing" | "invalid" };
+
+/** One row of `GET /api/workouts`. */
+export interface WorkoutListItemDto {
+  id: string;
+  date: string;
+  title: string;
+  intentSummary: string | null;
+  category: string;
+  completionState: string;
+  docRev: number | null;
+  minutes: number;
+}
+
+/** `GET /api/settings/diagnostics/workout-docs`: counts and ids only. */
+export interface WorkoutDocParityReport {
+  checked: number;
+  withDoc: number;
+  missing: number;
+  invalid: number;
+  exempt: number;
+  mismatched: Array<{ id: string; field: "minutes" | "discipline" | "title" | "steps" }>;
+  sample: string[];
+  next: string | null;
+}
+
 export interface PlanWeekResponse {
   weekStart: string;
   days: Array<{ date: string; workouts: WorkoutDto[] }>;
@@ -1629,6 +1659,21 @@ export const api = {
   settings: () => get<SettingsResponse>("/api/settings"),
   updateSettings: (partial: Partial<UserPreferences>) => put<{ ok: true; prefs: UserPreferences }>("/api/settings", partial),
   diagnostics: () => get<Record<string, unknown>>("/api/settings/diagnostics"),
+  workoutDocParity: (opts: { after?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.after) qs.set("after", opts.after);
+    if (opts.limit) qs.set("limit", String(opts.limit));
+    return get<WorkoutDocParityReport>(`/api/settings/diagnostics/workout-docs${qs.size ? `?${qs}` : ""}`);
+  },
+  workoutDoc: (id: string) => get<WorkoutDocResponse>(`/api/workouts/${encodeURIComponent(id)}/doc`),
+  searchWorkouts: (opts: { from?: string; to?: string; q?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.from) qs.set("from", opts.from);
+    if (opts.to) qs.set("to", opts.to);
+    if (opts.q) qs.set("q", opts.q);
+    if (opts.limit) qs.set("limit", String(opts.limit));
+    return get<WorkoutListItemDto[]>(`/api/workouts${qs.size ? `?${qs}` : ""}`);
+  },
   deleteAll: () => post("/api/settings/delete-all", { confirm: "delete everything" }),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),
