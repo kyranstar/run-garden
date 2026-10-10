@@ -34,6 +34,7 @@ import {
 import { fixtureModeEnabled, type Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
+import { isOutOfCredits, loadOutOfCredits, noteGatewayOutcome, outOfCreditsWithin } from "./ai-credits.js";
 import { llmBudgetStatus } from "./llm.js";
 import {
   chatCompletion,
@@ -68,7 +69,9 @@ export type WakeCause =
   | { kind: "manual" }; // user-invoked check-in: never skipped, still budget-gated
 
 export interface WakeResult {
-  status: "ok" | "skipped" | "busy" | "resting" | "error";
+  /** `out_of_credits`: the AI gateway answered 402 — the account needs credits
+   * (ai-credits.ts). Nothing was retried; the athlete's words stay owed a reply. */
+  status: "ok" | "skipped" | "busy" | "resting" | "error" | "out_of_credits";
   coachMessageId?: string;
   proposalIds?: string[];
   /** Drafts that could not be applied and were kept as `rejected` rows so the
@@ -900,6 +903,12 @@ export async function openWakeIsFresh(
   triggers: ReadonlyArray<{ kind: CoachTriggerKind }>,
 ): Promise<boolean> {
   if (await recentWakeFailure(db, userId)) return true;
+  // The AI account out of credits counts as a failure in tier 1, with the same
+  // window: a 402 writes no receipt (the screen says it in its own line), so
+  // without this every visit with a reply owed would ask the gateway again. Past
+  // the window one visit asks once more — which is how a topped-up account gets
+  // its owed reply without anyone pressing anything.
+  if (outOfCreditsWithin(await loadOutOfCredits(db, userId), WAKE_FAILURE_BACKOFF_MINUTES)) return true;
   if (triggers.some((t) => t.kind === "unanswered_message")) return false;
   const quietMs =
     triggers.length > 0
@@ -1255,14 +1264,16 @@ export async function wake(
 
     const attemptParse = async (
       msgs: ChatMsg[],
-    ): Promise<{ out: WakeOutput | null; raw: string; issues: string }> => {
+    ): Promise<{ out: WakeOutput | null; raw: string; issues: string; outOfCredits?: boolean }> => {
       const chat =
         gateway.kind === "model"
           ? await chatCompletion(gateway.env, fetchImpl, model, MAX_OUTPUT_TOKENS_WAKE, msgs)
           : CANNED_WAKE_CHAT;
+      // A 402 records "out of credits"; any call that worked clears it.
+      if (gateway.kind === "model") await noteGatewayOutcome(db, userId, chat);
       if (!chat.ok) {
         console.error(`[coach-wake] gateway failure: ${chat.reason}`);
-        return { out: null, raw: "", issues: "" };
+        return { out: null, raw: "", issues: "", outOfCredits: isOutOfCredits(chat.reason) };
       }
       if (gateway.kind === "model") {
         await recordUsage(db, userId, "coach_wake", model, "strong", chat, `wake:${userId}:${nowInstant()}`);
@@ -1366,15 +1377,25 @@ export async function wake(
       return id;
     };
 
-    let { out, raw, issues } = await attemptParse(messages);
-    if (!out && !raw && timeForAnotherCall()) {
+    let first = await attemptParse(messages);
+    if (!first.out && !first.raw && !first.outOfCredits && timeForAnotherCall()) {
       // Gateway/transport failure (nothing came back) — transient more often
       // than not; one retry before giving up ("the coach never errors" work,
       // 2026-08-12). Budget-gated since 2026-08-17: a retry that starts with
       // no time left buys a second failure, not an answer.
+      // Never for a 402: the account is out of credits and will say so again.
       await new Promise((r) => setTimeout(r, 2_000));
-      ({ out, raw, issues } = await attemptParse(messages));
+      first = await attemptParse(messages);
     }
+    if (first.outOfCredits) {
+      // Nothing to land and nothing to retry. No "couldn't think" receipt
+      // either: the screen says "out of credits" in its own line, from the
+      // record the call just wrote. The triggers stay pending — a message is
+      // still owed its reply, and gets it from the first wake that works.
+      return { status: "out_of_credits" };
+    }
+    let out = first.out;
+    const { raw, issues } = first;
 
     // ── THE FLOOR: a wake never loses everything ───────────────────────
     //

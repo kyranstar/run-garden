@@ -33,6 +33,7 @@ import { UnsyncedSessions } from "../components/unsynced-sessions.js";
 import { forgetOfflineIdentity } from "../offline/me.js";
 import { PlaceSheet } from "../components/place-sheet.js";
 import { features } from "../features.js";
+import { OUT_OF_CREDITS_LINE } from "../ai-credits.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -1265,7 +1266,7 @@ function CorosSyncSection({ prefs }: { prefs: UserPreferences }) {
   );
 }
 
-function AiSection({ prefs }: { prefs: UserPreferences }) {
+export function AiSection({ prefs }: { prefs: UserPreferences }) {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const toggle = useMutation({
@@ -1288,6 +1289,7 @@ function AiSection({ prefs }: { prefs: UserPreferences }) {
           {prefs.aiEnabled ? "Disable AI" : "Enable AI"}
         </button>
       </div>
+      {llm?.outOfCreditsSince ? <p className="ai-credits ai-credits-note">{OUT_OF_CREDITS_LINE}</p> : null}
       {llm ? (
         <p className="muted" style={{ marginTop: "var(--space-4)" }}>
           Spend this week: ${llm.spentDollars.toFixed(2)} of ${llm.cutoffDollars.toFixed(0)} cutoff

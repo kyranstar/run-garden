@@ -15,6 +15,7 @@ import type {
   CoachQuestionDto,
 } from "@rg/api-client";
 import { describeOps, type CoachOp, type OpLine, type PlannedRef } from "@rg/domain";
+import { OUT_OF_CREDITS_LINE } from "../ai-credits.js";
 import {
   countNoun,
   formatDayLong,
@@ -1158,6 +1159,8 @@ export function CoachPanel({
   onDismiss,
   onCheckIn,
   onRetrySend,
+  outOfCredits,
+  onRetry,
   header,
   hideHead,
 }: {
@@ -1187,6 +1190,11 @@ export function CoachPanel({
   onCheckIn?: () => void;
   /** Resend a failed optimistic message (audit C16). */
   onRetrySend?: (localId: string, body: string) => void;
+  /** The AI account is out of credits and nothing is thinking: one line where
+   * "Coach is thinking…" would be, and a Retry (owner report 2026-10-09). */
+  outOfCredits?: boolean;
+  /** Ask the coach again — answers whatever it still owes. */
+  onRetry?: () => void;
   /** Extra header content (e.g. a close button on mobile). */
   header?: ReactNode;
   /** Skip the internal header (a wrapping Sheet already provides one). */
@@ -1285,6 +1293,20 @@ export function CoachPanel({
           </button>
         ) : null}
       </div>
+      {/* Pinned with the composer, never in the scroll: the thread keeps the
+          athlete's words, and this says why nothing has answered them. A wake
+          actually running (`busy`) wins — it is the call that finds out the
+          credits are back. */}
+      {outOfCredits && !busy ? (
+        <div className="ai-credits coach-credits" role="status">
+          <span>{OUT_OF_CREDITS_LINE}</span>
+          {onRetry ? (
+            <button type="button" className="btn btn-small" onClick={onRetry}>
+              Retry
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} onDismiss={onDismiss} busy={busy} />
     </section>
   );

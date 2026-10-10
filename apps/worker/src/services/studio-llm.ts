@@ -15,6 +15,7 @@ import {
 } from "@rg/domain";
 import { fixtureModeEnabled, type Env } from "../env.js";
 import { llmBudgetStatus } from "./llm.js";
+import { noteGatewayOutcome } from "./ai-credits.js";
 import type { Db } from "./db.js";
 
 /**
@@ -889,6 +890,7 @@ async function runFullPlanAttempt(
   maxTokens: number,
 ): Promise<AttemptResult> {
   const chat = await chatCompletion(env, fetchImpl, model, maxTokens, messages);
+  await noteGatewayOutcome(db, userId, chat); // a 402 is on record for Settings → AI; a working call clears it
   if (!chat.ok) return { kind: "transport_failure", reason: chat.reason };
   await recordUsage(db, userId, usageKind, model, "strong", chat, requestFingerprint);
 
@@ -948,6 +950,7 @@ async function runOpsEditAttempt(
   fetchImpl: typeof fetch,
 ): Promise<AttemptResult> {
   const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_EDIT, messages);
+  await noteGatewayOutcome(db, userId, chat); // a 402 is on record for Settings → AI; a working call clears it
   if (!chat.ok) return { kind: "transport_failure", reason: chat.reason };
   await recordUsage(db, userId, "studio_edit", model, "edit", chat, requestFingerprint);
 

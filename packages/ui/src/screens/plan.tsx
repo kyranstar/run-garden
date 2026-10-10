@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
-import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
+import { addDays, humanizeWorkoutTitle, startOfIsoWeek, type PlannedRef } from "@rg/domain";
 import { IconCoach } from "../icons.js";
 import {
   Banner,
@@ -478,7 +478,7 @@ const WAKE_BRIDGE_MS = 15_000;
  * the server says it's worth it (wakeAdvised) — quiet opens stay free, and
  * the server's single-flight lock makes racing tabs harmless.
  */
-function usePlanCoach() {
+export function usePlanCoach() {
   const qc = useQueryClient();
   // A wake we have just asked for, before the server has had the chance to
   // say it is thinking. The POST itself is fired and never waited on (see
@@ -513,9 +513,16 @@ function usePlanCoach() {
   });
   const thinking = (state.data?.coachThinking ?? false) || bridging;
   const invalidate = () => void qc.invalidateQueries({ queryKey: ["coach-state"] });
+  // The AI account is out of credits (a 402): the wake that heard it is OVER —
+  // it took a second — so the bridge has nothing left to cover. Ending it here
+  // is what makes the chat say why at once instead of "thinking" for 15s.
+  const endIfOutOfCredits = (status: string | undefined) => {
+    if (status === "out_of_credits") setBridging(false);
+  };
   const wakeMut = useMutation({
     mutationFn: (force: boolean) => api.coachWake(force),
     onMutate: fired,
+    onSuccess: (res) => endIfOutOfCredits(res.status),
     // Settles when the wake FINISHES (minutes), or never. Either is fine —
     // the poll has already carried the reply by then.
     onSettled: invalidate,
@@ -602,6 +609,9 @@ function usePlanCoach() {
         markSendFailed(v.localId, v.body);
         return;
       }
+      // Out of credits: the words ARE saved and still owed a reply — no retry
+      // mark on the echo; the panel's own line says why and offers Retry.
+      endIfOutOfCredits(res.status);
       invalidate();
     },
   });
@@ -636,6 +646,7 @@ function usePlanCoach() {
   const answer = useMutation({
     mutationFn: (v: { id: string; answer: string }) => api.coachAnswerQuestion(v.id, v.answer),
     onMutate: fired,
+    onSuccess: (res) => endIfOutOfCredits(res.wake?.status),
     onSettled: invalidate,
   });
   const dismissQuestion = useMutation({
@@ -648,6 +659,9 @@ function usePlanCoach() {
     // deadline, so one that never settles would disable the composer for
     // good. The server says when the coach is thinking, and stops saying it.
     busy: thinking,
+    /** The AI account is out of credits (a 402 is on record). The panel says
+     * so only while nothing is thinking. */
+    outOfCredits: !!state.data?.outOfCredits,
     acting: approve.isPending || decline.isPending,
     proposalErrors,
     send: (b: string) => send.mutate({ localId: `local-${newLocalId()}`, body: b }),
@@ -665,6 +679,41 @@ function usePlanCoach() {
     answer: (id: string, a: string) => answer.mutate({ id, answer: a }),
     dismissQuestion: (id: string) => dismissQuestion.mutate(id),
   };
+}
+
+/**
+ * ONE prop list for the panel's two mounts. They differ by `hideHead` and
+ * nothing else, and every prop added to the surface used to have to be added in
+ * both places or work at one width only. Undefined until the first state read.
+ */
+export function coachPanelProps(
+  coach: ReturnType<typeof usePlanCoach>,
+  planned: ReadonlyMap<string, PlannedRef>,
+) {
+  const data = coach.state.data;
+  return (
+    data && {
+      messages: data.messages,
+      proposals: data.pendingProposals,
+      settledProposals: data.settledProposals,
+      question: data.openQuestion,
+      busy: coach.busy,
+      acting: coach.acting,
+      proposalErrors: coach.proposalErrors,
+      planned,
+      onSend: coach.send,
+      onApprove: coach.approve,
+      onDecline: coach.decline,
+      onAnswer: coach.answer,
+      onDismiss: coach.dismissQuestion,
+      onCheckIn: coach.checkIn,
+      onRetrySend: coach.resend,
+      outOfCredits: coach.outOfCredits,
+      // A check-in: the wake's dossier carries every message still owed a
+      // reply, so asking again answers them once the credits are back.
+      onRetry: coach.checkIn,
+    }
+  );
 }
 
 /** Flash a proposal card (ghost tap). One CoachPanel mount now, so plain
@@ -989,26 +1038,7 @@ export function PlanScreen() {
   const coachUnavailableCopy = coach.state.isLoading
     ? "Reading your week…"
     : "The coach is unreachable — manual controls all work.";
-  // ONE prop list for the panel's two mounts. They differ by `hideHead` and
-  // nothing else, and every prop added to the surface used to have to be
-  // added in both places or work at one width only.
-  const coachProps = coach.state.data && {
-    messages: coach.state.data.messages,
-    proposals: coach.state.data.pendingProposals,
-    settledProposals: coach.state.data.settledProposals,
-    question: coach.state.data.openQuestion,
-    busy: coach.busy,
-    acting: coach.acting,
-    proposalErrors: coach.proposalErrors,
-    planned: plannedRefs,
-    onSend: coach.send,
-    onApprove: coach.approve,
-    onDecline: coach.decline,
-    onAnswer: coach.answer,
-    onDismiss: coach.dismissQuestion,
-    onCheckIn: coach.checkIn,
-    onRetrySend: coach.resend,
-  };
+  const coachProps = coachPanelProps(coach, plannedRefs);
   const coachPanelEl = coachProps ? (
     <CoachPanel {...coachProps} />
   ) : (

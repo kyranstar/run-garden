@@ -6301,6 +6301,39 @@ button.session-chip {
   gap: var(--space-4);
 }
 
+/* THE AI ACCOUNT IS OUT OF CREDITS (owner report 2026-10-09) — one line, said
+   the same way in the chat, an effort's read and Settings → AI. --warn-ink, not
+   --warn: on the soft band --warn is 4.00:1 in light mode, under AA for 14px
+   words (audit 3-B UI-8). */
+.ai-credits {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.ai-credits-note {
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4) 0 0;
+}
+/* First thing in an effort's read card: no gap above, its Try again below. */
+.coach-read .ai-credits-note {
+  margin: 0 0 var(--space-4);
+}
+/* In the chat it sits where "Coach is thinking…" would, pinned above the
+   composer like it, never in the scroll; its Retry wraps under the words at
+   phone width instead of squeezing them. */
+.coach-credits {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-top: 1px solid var(--border);
+  padding: var(--space-4) var(--space-5);
+}
+
 /* Pinned footer of the panel — never part of the scroll region. */
 .coach-composer { border-top: 1px solid var(--border); padding: var(--space-4) var(--space-5); flex: none; }
 .coach-input {
@@ -8205,6 +8238,7 @@ button.session-chip::after {
    nested inside one must name its own — which is why the 6px rows below are
    listed even though nothing in them currently reaches that far. */
 .card,
+.coach-credits,
 .coach-input,
 .coach-window,
 .row,
