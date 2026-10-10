@@ -18,6 +18,9 @@ import { restoreInProgress } from "../services/account-state.js";
 
 const { activities, plannedWorkouts, users, workoutCompletionMatches } = schema;
 
+/** A planned time, `HH:MM`. */
+const TIME = /^\d{2}:\d{2}$/;
+
 /** At most this many days per request. */
 export const LIFEOS_MAX_DAYS = 31;
 
@@ -104,7 +107,11 @@ lifeosRoutes.get("/plan", async (c) => {
       .innerJoin(activities, eq(activities.id, workoutCompletionMatches.activityId))
       .where(and(inArray(workoutCompletionMatches.workoutId, chunk), isNull(workoutCompletionMatches.undoneAt)))
       .all();
-    for (const m of matches) doneAt.set(m.workoutId, m.startTime);
+    // Two standing matches on one workout (nothing forbids it): the earlier start.
+    for (const m of matches) {
+      const seen = doneAt.get(m.workoutId);
+      if (seen === undefined || m.startTime < seen) doneAt.set(m.workoutId, m.startTime);
+    }
   }
 
   const days: LifeosDay[] = [];
@@ -115,7 +122,13 @@ lifeosRoutes.get("/plan", async (c) => {
       rest: today.some((r) => r.category === "rest"),
       sessions: today
         .filter((r) => r.category !== "rest")
-        .sort((a, b) => a.effectiveTime.localeCompare(b.effectiveTime) || a.id.localeCompare(b.id))
+        // Timed sessions first, by time; then untimed ones; then by id.
+        .sort((a, b) => {
+          const at = TIME.test(a.effectiveTime);
+          const bt = TIME.test(b.effectiveTime);
+          if (at !== bt) return at ? -1 : 1;
+          return a.effectiveTime.localeCompare(b.effectiveTime) || a.id.localeCompare(b.id);
+        })
         .map((r) => {
           const seconds = r.sourceEstimatedDurationSeconds ?? r.fallbackEstimatedDurationSeconds;
           return {
@@ -123,7 +136,7 @@ lifeosRoutes.get("/plan", async (c) => {
             title: r.title,
             sport: r.sport,
             category: r.category,
-            time: /^\d{2}:\d{2}$/.test(r.effectiveTime) ? r.effectiveTime : null,
+            time: TIME.test(r.effectiveTime) ? r.effectiveTime : null,
             minutes: seconds == null ? null : Math.round(seconds / 60),
             state: r.completionState,
             doneAt: doneAt.get(r.id) ?? null,

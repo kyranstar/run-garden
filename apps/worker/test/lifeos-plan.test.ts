@@ -155,4 +155,57 @@ describe("GET /api/lifeos/plan", () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: "restore_in_progress" });
   });
+
+  it("takes 31 days, not 32", async () => {
+    expect((await get("/api/lifeos/plan?from=2026-10-01&to=2026-10-31")).status).toBe(200);
+    expect((await get("/api/lifeos/plan?from=2026-10-01&to=2026-11-01")).status).toBe(400);
+  });
+
+  it("lists timed sessions first, by time, then untimed ones; a rest row beside a session", async () => {
+    await seed("w-late", "2026-10-05", { effectiveTime: "18:00", title: "Easy run" });
+    await seed("w-untimed", "2026-10-05", { effectiveTime: "", title: "Mobility" });
+    await seed("w-early", "2026-10-05", { effectiveTime: "07:00", title: "Strength" });
+    await seed("w-rest", "2026-10-05", { category: "rest", title: "Rest" });
+    const body = (await (await get("/api/lifeos/plan?from=2026-10-05&to=2026-10-05")).json()) as {
+      days: { rest: boolean; sessions: { id: string }[] }[];
+    };
+    expect(body.days[0]!.rest).toBe(true);
+    expect(body.days[0]!.sessions.map((x) => x.id)).toEqual(["w-early", "w-late", "w-untimed"]);
+  });
+
+  it("gives the earliest start when two matches stand on one workout", async () => {
+    await seed("w-1", "2026-10-05", { completionState: "completed" });
+    await db.insert(activities).values([
+      { id: "a-late", userId, startTime: "2026-10-06T02:00:00.000Z", sport: "run", durationSeconds: 2000, createdAt: nowInstant(), updatedAt: nowInstant() },
+      { id: "a-early", userId, startTime: "2026-10-06T01:00:00.000Z", sport: "run", durationSeconds: 2000, createdAt: nowInstant(), updatedAt: nowInstant() },
+    ]);
+    await db.insert(workoutCompletionMatches).values([
+      { id: "m-early", workoutId: "w-1", activityId: "a-early", confidence: 1, method: "manual", matchedAt: nowInstant() },
+      { id: "m-late", workoutId: "w-1", activityId: "a-late", confidence: 1, method: "manual", matchedAt: nowInstant() },
+    ]);
+    const body = (await (await get("/api/lifeos/plan?from=2026-10-05&to=2026-10-05")).json()) as {
+      days: { sessions: { doneAt: string | null }[] }[];
+    };
+    expect(body.days[0]!.sessions[0]!.doneAt).toBe("2026-10-06T01:00:00.000Z");
+  });
+
+  it("reads more workouts than one bound list holds", async () => {
+    const ids: string[] = [];
+    for (let n = 0; n < 95; n++) {
+      const day = `2026-10-${String(1 + (n % 31)).padStart(2, "0")}`;
+      const id = `w-${n}`;
+      ids.push(id);
+      await seed(id, day, { completionState: "completed", effectiveTime: `0${n % 10}:00`.slice(-5) });
+      await db.insert(activities).values({ id: `a-${n}`, userId, startTime: `${day}T12:00:00.000Z`, sport: "run", durationSeconds: 1800,
+        createdAt: nowInstant(), updatedAt: nowInstant() });
+      await db.insert(workoutCompletionMatches).values({ id: `m-${n}`, workoutId: id, activityId: `a-${n}`, confidence: 1, method: "manual",
+        matchedAt: nowInstant() });
+    }
+    const body = (await (await get("/api/lifeos/plan?from=2026-10-01&to=2026-10-31")).json()) as {
+      days: { sessions: { doneAt: string | null }[] }[];
+    };
+    const sessions = body.days.flatMap((d) => d.sessions);
+    expect(sessions).toHaveLength(95);
+    expect(sessions.every((x) => x.doneAt !== null)).toBe(true);
+  });
 });
