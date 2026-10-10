@@ -9,7 +9,9 @@
  *
  *  - `pairWatchSets` (pure): the watch's entries paired with the build's — by library id, then by order only when the
  *    unmapped ones left on each side number the same (3-R7). One watch lap per side (audit 3-A W-1): a one-sided move
- *    reaches the watch as a Left then a Right step per set, so its laps alternate left, right.
+ *    reaches the watch as a Left then a Right step per set, so its laps alternate left, right. Which moves went as
+ *    free text is read off the push's own payload (`mappedAsSent`): a one-sided catalog move went as its catalog step
+ *    before 2026-10-10 and as free text since, and a copy keeps the laps it was sent with.
  *  - `watchReviewBasis`: what the sheet opens with, offered only for a program or on-demand slot an ACTIVE
  *    `coros_plan_link` or `scored_auto` match gave a COROS activity, with a locked build, no app and no review session
  *    (of the slot, or of the activity), on the session's day or the next. The session's day is the build's — or, for a
@@ -39,13 +41,16 @@ import {
 import {
   addDays,
   isLocalDate,
+  programSessionPushJobSchema,
   SESSION_FORMATS,
   sessionModeSchema,
   type PerformedSessionWire,
   type PerformedSet,
+  type ProgramWatchStep,
   type SessionFormat,
   type WeightUnit,
 } from "@rg/domain";
+import { FREE_TEXT_ORIGIN_ID } from "@rg/coros";
 import { restoreInProgress } from "./account-state.js";
 import { activeProfileIds, conditionView, type ConditionView } from "./condition-views.js";
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
@@ -65,6 +70,7 @@ import {
   type SaveOutcome,
 } from "./session-save.js";
 import { PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
+import { watchStepMoves } from "./watch-push.js";
 
 export interface WatchReviewEntry {
   exerciseId: string;
@@ -140,6 +146,38 @@ function buildEntries(build: BuildPayload): Array<{ exerciseId: string; perSide:
 export function mappedOnWatch(exerciseId: string): boolean {
   const key = corosKeyOf(exerciseId);
   return key !== null && libraryIdsByKey().get(key) === exerciseId;
+}
+
+/**
+ * HOW EACH MOVE REACHED THE WATCH, read off the push's OWN payload — never off what today's builder would make of the
+ * build. Until 2026-10-10 a one-sided move the catalog holds (T1309) went as its catalog step; since then it goes as
+ * free text with its side in the name (owner). A copy sent before keeps its laps as they were sent, so its review must
+ * pair them as they were sent. The payload's step i is of the build's watch move i (`watchStepMoves`); a move went as
+ * free text when its steps did (`originId "0"`). Null when the payload does not line up with the build.
+ */
+export function movesAsSent(build: BuildPayload, sent: readonly ProgramWatchStep[]): Map<string, "free_text" | "catalog"> | null {
+  const moves = watchStepMoves(build);
+  if (moves.length !== sent.length) return null;
+  const out = new Map<string, "free_text" | "catalog">();
+  moves.forEach((id, i) => {
+    if (!out.has(id)) out.set(id, sent[i]!.originId === FREE_TEXT_ORIGIN_ID ? "free_text" : "catalog");
+  });
+  return out;
+}
+
+/**
+ * `pairWatchSets`' test for "this move's laps come back under its own library id", as the push SENT it: a move sent as
+ * free text comes back as an unmapped (`coros:`) entry and pairs by order; a move sent as its catalog step comes back
+ * under its own id when its T-code resolves back to it (`mappedOnWatch`). With no payload that lines up — a build that
+ * was started in the app, never pushed — `mappedOnWatch` as before.
+ */
+export function mappedAsSent(build: BuildPayload, sent: readonly ProgramWatchStep[] | null): (exerciseId: string) => boolean {
+  const ways = sent ? movesAsSent(build, sent) : null;
+  if (!ways) return mappedOnWatch;
+  return (exerciseId) => {
+    const way = ways.get(exerciseId);
+    return way === undefined ? mappedOnWatch(exerciseId) : way === "catalog" && mappedOnWatch(exerciseId);
+  };
 }
 
 /**
@@ -353,6 +391,13 @@ export async function watchReviewBasis(
   const [stored] = await db.select({ payload: sessionBuilds.payload }).from(sessionBuilds).where(eq(sessionBuilds.id, r.build.id)).limit(1);
   const build = (stored?.payload as { build?: BuildPayload } | undefined)?.build;
   if (!build) throw new SessionNotFoundError();
+  // What the build's push SENT, whatever its status: the pairing follows it (`mappedAsSent`), not today's builder.
+  const [push] = await db
+    .select({ payload: corosWriteJobs.payload })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.id, pushJobId(r.build.id)), eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.kind, "program_session_push")))
+    .limit(1);
+  const sent = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
   const rows = await db
     .select({
       entryIndex: performedSets.entryIndex,
@@ -407,7 +452,10 @@ export async function watchReviewBasis(
     endedAt: Number.isFinite(startMs) && span > 0 ? new Date(startMs + Math.round(span) * 1000).toISOString() : null,
     seconds: Math.max(0, Math.round(r.activity.durationSeconds)),
     newMove: build.newMove,
-    entries: pairWatchSets(build, watch).map((e) => ({ ...e, name: build.exercises[e.exerciseId]?.name ?? exerciseDisplayName(e.exerciseId) })),
+    entries: pairWatchSets(build, watch, mappedAsSent(build, sent?.success ? sent.data.session.steps : null)).map((e) => ({
+      ...e,
+      name: build.exercises[e.exerciseId]?.name ?? exerciseDisplayName(e.exerciseId),
+    })),
     profiles: (await activeProfileIds(db, userId)).map(conditionView),
     before: Object.fromEntries(
       Object.entries(build.params?.checks ?? {}).map(([id, c]) => [id, { pre: c?.pre ?? null, feelingOff: Boolean(c?.feelingOff) }]),

@@ -9,11 +9,15 @@
  *  - Every work step of the build is one watch step. A timed window is a hold;
  *    a set is its reps, else its seconds, else open. Per-side windows stay two
  *    steps, each overview naming its side, and a one-sided set (a unilateral
- *    move's set with no side) becomes such a Left/Right pair (audit W-1).
- *  - A move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's catalog holds
- *    goes as that catalog step; every other move goes as free text on
- *    `originId "0"` (spike outcome A), its name cut at a word to 30 characters
- *    (ruling 3-R6) so the preview stays exact if COROS has a limit.
+ *    move's set with no side) becomes such a Left/Right pair (audit W-1). A
+ *    step with a side carries it in its NAME too, " (L)" / " (R)" (owner,
+ *    2026-10-10: the watch's step screen shows no overview).
+ *  - A two-sided move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's
+ *    catalog holds goes as that catalog step; every other move goes as free
+ *    text on `originId "0"` (spike outcome A), its name cut at a word to 30
+ *    characters (ruling 3-R6) so the preview stays exact if COROS has a limit.
+ *    A one-sided move the catalog holds is free text under the catalog's
+ *    English name, so its steps can carry the side (owner, 2026-10-10).
  *  - Weights in grams (kg × 1000, the wire's only unit); none is bodyweight.
  *  - A rest adds onto the step before it (at most 900 s); a leading rest has no
  *    step to hang on and is dropped.
@@ -31,6 +35,7 @@ import {
   WATCH_MAX_STEPS,
   WATCH_NAME_MAX,
   WATCH_OVERVIEW_MAX,
+  WATCH_SIDE_LABEL,
   WATCH_STAMP_MAX,
   WATCH_STAMP_MAX_BYTES,
   type ProgramSessionPushJob,
@@ -143,44 +148,50 @@ function overviewOf(side: Step["side"], qualifier: string | null, cue: string | 
 }
 
 /**
- * A free-text move's name as the watch shows it, at most WATCH_NAME_MAX characters (ruling 3-R6, audit W-6). A longer
- * "<move> · <qualifier>" goes as the move, its qualifier leading the overview; any other long name is cut at a word,
- * never ending on a word like "on" or "with".
+ * A free-text move's name as the watch shows it, at most `max` characters — WATCH_NAME_MAX, or less to leave a one-sided
+ * move's step room for its side label (ruling 3-R6, audit W-6). A longer "<move> · <qualifier>" goes as the move, its
+ * qualifier leading the overview; any other long name is cut at a word, never ending on a word like "on" or "with".
  */
-export function watchNameOf(libraryName: string): { name: string; qualifier: string | null } {
+export function watchNameOf(libraryName: string, max: number = WATCH_NAME_MAX): { name: string; qualifier: string | null } {
   const t = libraryName.trim();
-  if (t.length <= WATCH_NAME_MAX) return { name: t, qualifier: null };
+  if (t.length <= max) return { name: t, qualifier: null };
   const at = t.indexOf(QUALIFIER);
   const head = at > 0 ? t.slice(0, at).trim() : "";
-  if (head && head.length <= WATCH_NAME_MAX) return { name: head, qualifier: t.slice(at + QUALIFIER.length).trim() || null };
-  let name = cutAtWord(t, WATCH_NAME_MAX);
+  if (head && head.length <= max) return { name: head, qualifier: t.slice(at + QUALIFIER.length).trim() || null };
+  let name = cutAtWord(t, max);
   while (DANGLING_WORD.test(name)) name = name.replace(DANGLING_WORD, "").replace(TRAILING_SEPARATOR, "");
   return { name, qualifier: null };
 }
 
+/** The room a one-sided move's name leaves for its side label (" (L)" / " (R)"). */
+const SIDE_LABEL_ROOM = Math.max(WATCH_SIDE_LABEL.left.length, WATCH_SIDE_LABEL.right.length);
+
+/** A watch step's side label: " (L)", " (R)", or none for a step of no side. */
+const sideLabel = (side: Step["side"]): string => (side === "Left" ? WATCH_SIDE_LABEL.left : side === "Right" ? WATCH_SIDE_LABEL.right : "");
+
 /**
- * Each free-text move's watch name and qualifier. Two different moves never share a watch name within one program
- * (audit W-6): a name a catalog step of the session already shows (its English name), or an earlier free-text move
- * holds (by first appearance in the build), gets " (2)", " (3)", cut to fit. The same build gives the same names.
+ * Each free-text move's watch name — before its side label — and qualifier. Two different moves never share a watch
+ * name within one program (audit W-6): a name a catalog step of the session already shows (its English name), or an
+ * earlier free-text move holds (by first appearance in the build), gets " (2)", " (3)", cut to fit. The names are made
+ * unique BEFORE the labels go on, so "X (L)" of one move and "X (L)" of another never meet. A one-sided move's name
+ * (`sided`) is cut to leave its label room, so name and label stay within WATCH_NAME_MAX. The same build gives the
+ * same names.
  */
-function freeTextNames(build: BuildPayload, deps: WatchPlanDeps): Map<string, { name: string; qualifier: string | null }> {
-  const catalogKey = (id: string): string | null => {
-    const key = deps.keyOf(id);
-    return key && deps.catalogIdByKey.has(key) ? key : null;
-  };
+function freeTextNames(build: BuildPayload, deps: WatchPlanDeps, sided: ReadonlySet<string>): Map<string, { name: string; qualifier: string | null }> {
   const moves = [...new Set(build.steps.flatMap((s) => (s.kind !== "rest" && s.exerciseId && build.exercises[s.exerciseId] ? [s.exerciseId] : [])))];
   const taken = new Set(
     moves.flatMap((id) => {
-      const key = catalogKey(id);
-      return key ? [(COROS_EXERCISE_NAMES[key] ?? key).toLowerCase()] : [];
+      const catalog = catalogStepOf(id, deps, sided);
+      return catalog ? [(COROS_EXERCISE_NAMES[catalog.key] ?? catalog.key).toLowerCase()] : [];
     }),
   );
   const out = new Map<string, { name: string; qualifier: string | null }>();
   for (const id of moves) {
-    if (catalogKey(id)) continue;
-    const { name, qualifier } = watchNameOf(build.exercises[id]!.name);
+    if (catalogStepOf(id, deps, sided)) continue;
+    const room = sided.has(id) ? WATCH_NAME_MAX - SIDE_LABEL_ROOM : WATCH_NAME_MAX;
+    const { name, qualifier } = watchNameOf(freeTextNameOf(id, build.exercises[id]!, deps), room);
     let unique = name;
-    for (let n = 2; taken.has(unique.toLowerCase()); n++) unique = `${cutAtWord(name, WATCH_NAME_MAX - ` (${n})`.length)} (${n})`;
+    for (let n = 2; taken.has(unique.toLowerCase()); n++) unique = `${cutAtWord(name, room - ` (${n})`.length)} (${n})`;
     taken.add(unique.toLowerCase());
     out.set(id, { name: unique, qualifier });
   }
@@ -197,33 +208,89 @@ function sidesOf(s: Step, record: { laterality: string }): Array<Step["side"]> {
   return s.kind === "set" && s.side === null && record.laterality === "unilateral" ? ["Left", "Right"] : [s.side];
 }
 
-/** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
-export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
-  const steps: ProgramWatchStep[] = [];
-  const names = freeTextNames(build, deps);
+type BuildRecord = BuildPayload["exercises"][string];
+
+/** One stop of the build's walk to the watch: a rest, or one watch step — its build step, move and side. */
+type WalkStop = { rest: number } | { rest?: undefined; step: Step; exerciseId: string; record: BuildRecord; side: Step["side"] };
+
+/**
+ * THE ONE WALK from a build's steps to the watch's: a rest as it comes, each work step of a move the build carries as
+ * one watch step per side (`sidesOf`), in order. The steps (`watchStepsFromBuild`), the one-sided moves and each
+ * step's move (`watchStepMoves`) are all read off it, so a payload's step i is always `watchStepMoves`' move i.
+ */
+function* walkToWatch(build: BuildPayload): Generator<WalkStop> {
   for (const s of build.steps) {
     if (s.kind === "rest") {
-      const prev = steps.at(-1);
-      if (prev) prev.restSeconds = Math.min(MAX_REST_SECONDS, prev.restSeconds + Math.max(0, Math.round(s.seconds)));
+      yield { rest: s.seconds };
       continue;
     }
     if (!s.exerciseId) continue;
     const record = build.exercises[s.exerciseId];
     if (!record) continue;
-    const key = deps.keyOf(s.exerciseId);
-    const originId = key ? deps.catalogIdByKey.get(key) : undefined;
-    const free = originId ? null : names.get(s.exerciseId)!;
-    for (const side of sidesOf(s, record)) {
-      steps.push({
-        originId: originId ?? FREE_TEXT_ORIGIN_ID,
-        name: originId ? key! : free!.name,
-        target: targetOf(s),
-        grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
-        restSeconds: 0,
-        overview: overviewOf(side, free?.qualifier ?? null, record.text.focus[0]),
-        side: side === "Left" ? "left" : side === "Right" ? "right" : null,
-      });
+    for (const side of sidesOf(s, record)) yield { step: s, exerciseId: s.exerciseId, record, side };
+  }
+}
+
+/**
+ * The move each of the build's watch steps is of, in the order `watchStepsFromBuild` lays them out: a payload sent
+ * for this build has step i of move i — whatever the builder of the day it was sent made of it (the review reads what
+ * each move went as off the push's own payload, owner 2026-10-10).
+ */
+export function watchStepMoves(build: BuildPayload): string[] {
+  return [...walkToWatch(build)].flatMap((w) => (w.rest === undefined ? [w.exerciseId] : []));
+}
+
+/** The build's moves any of whose watch steps has a side: their steps' names carry the side label. */
+function sidedMoves(build: BuildPayload): Set<string> {
+  const out = new Set<string>();
+  for (const w of walkToWatch(build)) if (w.rest === undefined && w.side !== null) out.add(w.exerciseId);
+  return out;
+}
+
+/**
+ * The catalog step a move goes to the watch as, or null for free text. A move whose T-code (`corosKeyOf`, ruling 3-R1)
+ * the athlete's catalog holds goes as that catalog step — unless it is one-sided (`sided`; owner, 2026-10-10): a
+ * catalog step's name is COROS's own and cannot carry the side, so a one-sided move goes as free text.
+ */
+function catalogStepOf(exerciseId: string, deps: WatchPlanDeps, sided: ReadonlySet<string>): { key: string; originId: string } | null {
+  if (sided.has(exerciseId)) return null;
+  const key = deps.keyOf(exerciseId);
+  const originId = key ? deps.catalogIdByKey.get(key) : undefined;
+  return key && originId ? { key, originId } : null;
+}
+
+/**
+ * A free-text move's name before any cut: for a move the athlete's catalog holds (a one-sided one, see
+ * `catalogStepOf`) the catalog's English name — what the watch would have shown it as — else the library's.
+ */
+function freeTextNameOf(exerciseId: string, record: { name: string }, deps: WatchPlanDeps): string {
+  const key = deps.keyOf(exerciseId);
+  return (key && deps.catalogIdByKey.has(key) && COROS_EXERCISE_NAMES[key]) || record.name;
+}
+
+/** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
+export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
+  const steps: ProgramWatchStep[] = [];
+  const sided = sidedMoves(build);
+  const names = freeTextNames(build, deps, sided);
+  for (const w of walkToWatch(build)) {
+    if (w.rest !== undefined) {
+      const prev = steps.at(-1);
+      if (prev) prev.restSeconds = Math.min(MAX_REST_SECONDS, prev.restSeconds + Math.max(0, Math.round(w.rest)));
+      continue;
     }
+    const { step: s, record, side } = w;
+    const catalog = catalogStepOf(w.exerciseId, deps, sided);
+    const free = catalog ? null : names.get(w.exerciseId)!;
+    steps.push({
+      originId: catalog?.originId ?? FREE_TEXT_ORIGIN_ID,
+      name: catalog ? catalog.key : `${free!.name}${sideLabel(side)}`,
+      target: targetOf(s),
+      grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
+      restSeconds: 0,
+      overview: overviewOf(side, free?.qualifier ?? null, record.text.focus[0]),
+      side: side === "Left" ? "left" : side === "Right" ? "right" : null,
+    });
   }
   const refusal: WatchRefusal | null =
     steps.length === 0 ? "empty" : steps.length > WATCH_MAX_STEPS ? "too_long" : null;

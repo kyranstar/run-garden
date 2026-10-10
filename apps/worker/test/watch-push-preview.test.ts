@@ -17,6 +17,7 @@ import type { Db } from "../src/services/db.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { exerciseNameMap, upsertExerciseCatalog } from "../src/services/exercise-catalog.js";
+import { libraryIdsByKey } from "../src/services/coros-exercise-map.js";
 import { pushDigest, sendToWatch, watchPreview, type WatchPreviewDto } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { buildToday, DAY, NOON, PROGRAM_NAME, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
@@ -70,16 +71,22 @@ async function builtSlot(id?: string): Promise<{ workoutId: string; buildId: str
   return { workoutId, buildId: session.build!.buildId };
 }
 
-/** A T-code the catalog maps once and the build uses, and its catalog id. */
+/**
+ * A T-code the catalog maps once and the build's steps are named by, and its catalog id: a catalog step's, or — since
+ * 2026-10-10 — a one-sided catalog move's, which goes as free text under the catalog's English name and its side
+ * (the build's one catalog move is usually One Arm Dumbbell Row, one-sided).
+ */
 async function aCatalogStep(workoutId: string): Promise<{ key: string; id: string }> {
-  const step = (await preview(workoutId)).steps.find((s) => !s.freeText);
-  expect(step).toBeDefined();
+  const names = new Set((await preview(workoutId)).steps.map((s) => s.name.replace(/ \((L|R)\)$/, "")));
   const catalog = await exerciseNameMap(db);
   const ids = (key: string) => [...catalog].filter(([, k]) => k === key).map(([id]) => id);
-  const key = Object.keys(COROS_EXERCISE_NAMES).find((k) => COROS_EXERCISE_NAMES[k] === step!.name && ids(k).length === 1)!;
+  const mapped = libraryIdsByKey();
+  const key = Object.keys(COROS_EXERCISE_NAMES).find((k) => mapped.has(k) && names.has(COROS_EXERCISE_NAMES[k]!) && ids(k).length === 1)!;
   expect(key).toBeDefined();
   return { key, id: ids(key)[0]! };
 }
+
+const namesOf = (p: WatchPreviewDto) => p.steps.map((s) => s.name);
 
 describe("the digest", () => {
   it("the preview carries one, and Send with it queues exactly the payload the preview rendered", async () => {
@@ -136,13 +143,14 @@ describe("409 stale_preview: the payload Send would queue is not the one preview
     const { workoutId, buildId } = await builtSlot();
     const before = await preview(workoutId);
     const { key } = await aCatalogStep(workoutId);
-    // COROS now lists a second id for that T-code: the move goes as free text.
+    // COROS now lists a second id for that T-code: the move goes as free text under the library's name.
     await upsertExerciseCatalog(db, [{ id: "4258276155475999999", name: key }]);
     const res = await send(workoutId, buildId, before.digest);
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string; preview: WatchPreviewDto };
     expect(body.error).toBe("stale_preview");
-    expect(body.preview.freeText).toBeGreaterThan(before.freeText);
+    expect(body.preview.freeText).toBeGreaterThanOrEqual(before.freeText);
+    expect(namesOf(body.preview)).not.toEqual(namesOf(before));
     expect(await jobOf(`push:${buildId}`)).toBeUndefined();
   });
 });
@@ -173,7 +181,8 @@ describe("a failed push previews what Retry will send", () => {
     const failedShown = await preview(workoutId);
     await upsertExerciseCatalog(db, [{ id: "4258276155475999999", name: key }]);
     const shown = await preview(workoutId);
-    expect(shown.freeText).toBeGreaterThan(failedShown.freeText);
+    expect(shown.freeText).toBeGreaterThanOrEqual(failedShown.freeText);
+    expect(namesOf(shown)).not.toEqual(namesOf(failedShown));
     const res = await send(workoutId, buildId, shown.digest);
     expect(res.status).toBe(200);
     expect(await pushDigest(await payloadOf(buildId))).toBe(shown.digest);

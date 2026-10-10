@@ -22,9 +22,9 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
+import { adaptiveConfigSchema, addDays, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
 import { COROS_LOCALE_URL, CorosClient, createWorkout } from "@rg/coros";
-import { corosProgramFingerprint, localDateToCorosDay, normalizeCorosSchedule, type RawCorosProgram } from "@rg/providers";
+import { COROS_EXERCISE_NAMES, corosProgramFingerprint, localDateToCorosDay, normalizeCorosSchedule, type RawCorosProgram } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
 import { corosReadNow, corosReadSweep } from "../src/services/coros-read.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
@@ -37,7 +37,7 @@ import { buildSession, loadSession } from "../src/services/session-build.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { syncRoutes } from "../src/routes/sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { sendToWatch, takeOffWatch, watchStateOf } from "../src/services/watch-push.js";
+import { sendToWatch, takeOffWatch, watchPreview, watchStateOf } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { renormalizingCoros } from "../../../packages/coros/test/renormalizing-coros.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -188,6 +188,58 @@ describe("(a) a COROS that re-encodes what it stores (Review Focus 5)", () => {
     expect(await contentOf(workoutId)).toEqual(before);
     expect(await rowsTitled(stamp)).toEqual([]);
     expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+  });
+
+  it("an OLD-style copy (T1309 as its catalog step, no side labels — how the live session went): unchanged, no note across three production reads, though today's builder sends other names", async () => {
+    // A fixed program id: its build holds the one-sided T1309 (supportedRow), which today's builder sends as free text.
+    const fixed = "prog-watch-review-0001";
+    await db.insert(schema.programs).values({
+      id: fixed, userId, kind: "adaptive", name: PROGRAM_NAME, status: "active", disciplines: ["strength", "yoga"], startDate: null,
+      endDate: null, raceDate: null, source: null, config: adaptiveConfigSchema.parse({ defaultMinutes: 30 }), createdAt: NOON, updatedAt: NOON, archivedAt: null,
+    });
+    const workoutId = await seedSlot(db, userId, fixed, DAY);
+    const { buildId, stamp } = await send(workoutId, DAY, { run: false });
+    const today = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload);
+    expect(today.session.steps.some((s) => s.name === "One Arm Dumbbell Row (L)" && s.originId === "0")).toBe(true);
+    // The push as the builder made it before 2026-10-10.
+    const [row] = await db.select().from(schema.corosExercises).where(eq(schema.corosExercises.name, "T1309"));
+    const old = {
+      ...today,
+      session: {
+        ...today.session,
+        steps: today.session.steps.map((s) => {
+          const name = s.name.replace(/ \((L|R)\)$/, "");
+          return name === COROS_EXERCISE_NAMES.T1309 ? { ...s, originId: row!.id, name: "T1309" } : { ...s, name };
+        }),
+      },
+    };
+    expect(old.session.steps.filter((s) => s.name === "T1309").length).toBeGreaterThanOrEqual(2);
+    await db.update(corosWriteJobs).set({ payload: old }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    await lane();
+    const verified = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload);
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+    expect(verified.observed?.structure).toBeDefined();
+    expect(programOn(stamp)!.exercises!.some((e) => e.name === "T1309")).toBe(true);
+
+    const before = await contentOf(workoutId);
+    await readNow();
+    await readNow("short");
+    await readNow();
+    expect(await notesOf(workoutId)).toEqual([]);
+    expect(await contentOf(workoutId)).toEqual(before);
+    expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+    // What the push recorded is still what it observed: the reads compared with it, never with a rebuild.
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).observed).toEqual(verified.observed);
+    // And the sent session's preview is still what was sent: T1309 by its English name, no labels.
+    const shown = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
+    expect(shown.steps.filter((s) => s.name === COROS_EXERCISE_NAMES.T1309 && !s.freeText).length).toBeGreaterThanOrEqual(2);
+    expect(shown.steps.some((s) => / \((L|R)\)$/.test(s.name))).toBe(false);
+
+    // The control: had the copy become what today's builder sends (T1309 as labelled free text), that IS a change.
+    const pairs = programOn(stamp)!.exercises!.filter((e) => e.name === "T1309");
+    pairs.forEach((e, i) => Object.assign(e, { originId: "0", name: `${COROS_EXERCISE_NAMES.T1309}${i % 2 === 0 ? " (L)" : " (R)"}` }));
+    await readNow();
+    expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
   });
 
   it("a step renamed in COROS: exactly one 'Changed in COROS' across three production reads", async () => {

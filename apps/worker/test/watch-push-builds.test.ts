@@ -5,7 +5,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EXERCISES } from "@rg/exercise-library";
-import { adaptiveConfigSchema, type UserPreferences } from "@rg/domain";
+import { adaptiveConfigSchema, programSessionPushJobSchema, type ProgramSessionPushJob, type UserPreferences } from "@rg/domain";
+import { COROS_EXERCISE_NAMES } from "@rg/providers";
+import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { buildProgramWatchProgram } from "@rg/coros";
 import type { Step } from "@rg/session-engine";
@@ -13,7 +15,7 @@ import type { Db } from "../src/services/db.js";
 import { buildSession, type BuildPayload } from "../src/services/session-build.js";
 import { exerciseNameMap } from "../src/services/exercise-catalog.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
-import { catalogIdsByKey, watchPreview, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
+import { catalogIdsByKey, pushDigest, sendToWatch, StalePreviewError, watchPreview, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
 import { buildToday, DAY, NOON, PROGRAM_NAME, seedCatalog, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
 
@@ -76,7 +78,8 @@ describe("weights on the watch are kg; the preview carries the athlete's pounds 
 
     const preview = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
     const row = preview.steps.find((s) => s.grams === 11_340)!;
-    expect(row).toMatchObject({ name: "One Arm Dumbbell Row", grams: 11_340, load: { v: 25, u: "lb" } });
+    // T1309, one-sided: free text under the catalog's English name, its side in the name (owner, 2026-10-10).
+    expect(row).toMatchObject({ name: "One Arm Dumbbell Row (L)", freeText: true, grams: 11_340, load: { v: 25, u: "lb" } });
     const weighted = preview.steps.filter((s) => s.grams !== null);
     expect(weighted.length).toBe(typed.length + oneSidedSets(build).filter((s) => s.target?.w).length); // a pair weighs twice
     for (const s of weighted) {
@@ -115,7 +118,12 @@ describe("a one-sided set on the watch (W-1)", () => {
     for (const i of lefts) {
       const [left, right] = [plan.steps[i]!, plan.steps[i + 1]!];
       expect(right.side).toBe("right");
-      expect({ ...right, side: "left", overview: "", restSeconds: 0 }).toEqual({ ...left, overview: "", restSeconds: 0 });
+      // The same move, target and weight; only the side differs — in the overview, and in a free-text step's name.
+      const same = (s: typeof left, label: RegExp) => ({ ...s, name: s.name.replace(label, ""), side: null, overview: "", restSeconds: 0 });
+      expect(same(right, / \(R\)$/)).toEqual(same(left, / \(L\)$/));
+      // Every one-sided step is free text, its side in its name — a catalog move's too (owner, 2026-10-10).
+      expect([left.originId, right.originId]).toEqual(["0", "0"]);
+      expect([left.name.endsWith(" (L)"), right.name.endsWith(" (R)")]).toEqual([true, true]);
       expect(left.overview.startsWith("left side")).toBe(true);
       expect(right.overview.startsWith("right side")).toBe(true);
     }
@@ -139,7 +147,39 @@ describe("a one-sided set on the watch (W-1)", () => {
       expect(preview.steps[i]!.overview.startsWith("left side")).toBe(true);
       expect(preview.steps[i]!.restSeconds).toBe(0);
       expect(preview.steps[i + 1]!.overview.startsWith("right side")).toBe(true);
+      // The row reads as the watch's step screen will: its side in the name (owner, 2026-10-10).
+      expect([preview.steps[i]!.name.endsWith(" (L)"), preview.steps[i + 1]!.name.endsWith(" (R)")]).toEqual([true, true]);
     }
+    expect(preview.steps.filter((s) => / \((L|R)\)$/.test(s.name))).toHaveLength(lefts.length * 2);
+
+    // One builder: Send with this preview's digest queues exactly these names.
+    await sendToWatch(db, switchOn(), userId, workoutId, build.buildId, { today: DAY, now: NOON, prefs }, { digest: preview.digest });
+    const [job] = await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, `push:${build.buildId}`));
+    const queued = programSessionPushJobSchema.parse(job!.payload);
+    expect(await pushDigest(queued)).toBe(preview.digest);
+    expect(queued.session.steps.map((s) => s.name)).toEqual(plan.steps.map((s) => s.name));
+    expect(preview.steps.map((s) => s.name)).toEqual(queued.session.steps.map((s) => (s.originId === "0" ? s.name : COROS_EXERCISE_NAMES[s.name])));
+  });
+
+  it("a preview shown before the side labels (the old builder's digest): Send is refused 409 stale_preview with the labelled one; nothing written", async () => {
+    const workoutId = await seedSlot(db, userId, programId, DAY);
+    const build = (await buildToday(db, userId, prefs, workoutId)).build!;
+    const fresh = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
+    // The payload as the builder made it before 2026-10-10: no labels, the one-sided T1309 as its catalog step.
+    const { catalog, deps } = await realDeps();
+    const rowId = [...catalog].find(([, key]) => key === "T1309")![0];
+    const oldSteps = watchStepsFromBuild(build, deps).steps.map((s) => {
+      const name = s.name.replace(/ \((L|R)\)$/, "");
+      return name === COROS_EXERCISE_NAMES.T1309 ? { ...s, originId: rowId, name: "T1309" } : { ...s, name };
+    });
+    const oldDigest = await pushDigest({
+      workoutId, buildId: build.buildId, happenDay: DAY, name: fresh.stamp, session: { kind: "program_watch", title: PROGRAM_NAME, steps: oldSteps },
+    } as ProgramSessionPushJob);
+    expect(oldDigest).not.toBe(fresh.digest);
+    const refused = await sendToWatch(db, switchOn(), userId, workoutId, build.buildId, { today: DAY, now: NOON, prefs }, { digest: oldDigest }).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(StalePreviewError);
+    expect((refused as StalePreviewError).preview).toEqual(fresh);
+    expect(await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, `push:${build.buildId}`))).toEqual([]);
   });
 
   it("across 200 real builds (40 programs × 20–90 minutes) the watch holds at most 39 steps, far under the 200 limit", async () => {
@@ -158,9 +198,19 @@ describe("a one-sided set on the watch (W-1)", () => {
         expect(plan.steps).toHaveLength(work.length + oneSidedSets(s.build!).length);
         most = Math.max(most, plan.steps.length);
         fewestOneSided = Math.min(fewestOneSided, oneSidedSets(s.build!).length);
-        // W-6: one watch name per move — as many distinct names as distinct moves.
-        const moves = new Set(work.map((x) => x.exerciseId));
-        expect(new Set(plan.steps.map((x) => x.name.toLowerCase())).size).toBe(moves.size);
+        // W-6: one watch name per move — its side label aside — and never one name for two moves.
+        const oneSided = new Set(oneSidedSets(s.build!));
+        const stepMoves = work.flatMap((x) => (oneSided.has(x) ? [x.exerciseId!, x.exerciseId!] : [x.exerciseId!]));
+        const movesOf = new Map<string, Set<string>>();
+        const namesOf = new Map<string, Set<string>>();
+        plan.steps.forEach((x, i) => {
+          const name = x.name.toLowerCase();
+          movesOf.set(name, (movesOf.get(name) ?? new Set()).add(stepMoves[i]!));
+          namesOf.set(stepMoves[i]!, (namesOf.get(stepMoves[i]!) ?? new Set()).add(name.replace(/ \((l|r)\)$/, "")));
+        });
+        expect([...movesOf.values()].every((m) => m.size === 1)).toBe(true);
+        expect([...namesOf.values()].every((n) => n.size === 1)).toBe(true);
+        expect(namesOf.size).toBe(new Set(work.map((x) => x.exerciseId)).size);
       }
     }
     expect(fewestOneSided).toBeGreaterThanOrEqual(1); // every build carries the case W-1 is about
