@@ -76,6 +76,7 @@ export function stored(plan: BuildResult): BuildPayload {
     modeReasons: [],
     themeReasons: [],
     minutes: plan.minutes,
+    plannedSeconds: plan.plannedSeconds,
     steps: plan.steps,
     items: plan.items.map((it) => ({
       slotKey: it.slotKey, block: it.block, exerciseId: it.exercise.id, format: it.format, sets: it.sets, group: it.group, why: it.why,

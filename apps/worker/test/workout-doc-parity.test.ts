@@ -111,6 +111,21 @@ describe("GET /api/settings/diagnostics/workout-docs", () => {
     expect(body.mismatched).toEqual([{ id: "far", field: "minutes" }]);
   });
 
+  it("compares the document's stated length (setting.targetMinutes) when it has one, the derived estimate only when it has none", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    // A coach lift: it states 30 minutes, and its few sets derive far fewer — the stated length is what the row says.
+    const lift = docOf({ items: [{ kind: "free_exercise", name: "Goblet squat", dose: { sets: 3, reps: 8, restSec: 90 } }] });
+    expect(deriveDoc(lift, EXERCISES).estimatedMinutes).toBeLessThan(10);
+    const stated = (targetMinutes: number) => workoutDocSchema.parse({ ...lift, setting: { targetMinutes } });
+    await seed(db, userId, "stated", { workoutDoc: stated(30) as never, category: "strength", sourceEstimatedDurationSeconds: 30 * 60 });
+    await seed(db, userId, "stated-far", { workoutDoc: stated(60) as never, category: "strength", sourceEstimatedDurationSeconds: 30 * 60 });
+    await seed(db, userId, "unstated", { workoutDoc: lift as never, category: "strength", sourceEstimatedDurationSeconds: 30 * 60 });
+    const { body } = await (await client(db, userId)).diag();
+    const mismatched = body.mismatched as Array<{ id: string; field: string }>;
+    expect(mismatched.filter((m) => m.field === "minutes").map((m) => m.id).sort()).toEqual(["stated-far", "unstated"]);
+  });
+
   it("flags a title and a discipline mismatch", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);

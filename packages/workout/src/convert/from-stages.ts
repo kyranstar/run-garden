@@ -15,6 +15,9 @@
  *   quality → its subtype (threshold, tempo, hills, intervals / vo2 → interval; else interval in a repeat, threshold
  *   out of one); with no category, `interval` in a repeat and `by_feel` out of one.
  * - The intent's effort: recovery → recover, quality → develop, race → peak, else maintain.
+ * - The planned workout's length, when the caller knows it (`meta.durationSeconds`: COROS's estimate, else the app's),
+ *   is the document's stated length, `setting.targetMinutes` (rounded; past 600 minutes clamped and kept). The
+ *   document's derived minutes stay its own bottom-up estimate.
  *
  * RULES — strength and yoga
  * - A repeat holding one move is that move with `sets` = the repeat's count; a bare move has no `sets`; consecutive
@@ -50,7 +53,10 @@ export interface StagesMeta {
   category?: string | null;
   /** `planned_workouts.quality_subtype`, when known. */
   qualitySubtype?: string | null;
-  /** The planned workout's length, when known: the stand-in's length when no stage can be held. */
+  /**
+   * The planned workout's length, when known: the document's stated length (`setting.targetMinutes`), and the
+   * stand-in's length when no stage can be held.
+   */
   durationSeconds?: number | null;
   /** `makeLibraryIndex(library)`: canonicalises legacy ids and names gone ones in free text. */
   library?: LibraryIndex;
@@ -86,20 +92,22 @@ export function docFromStages(stages: PlannedStage[], meta: StagesMeta): Convert
   const ctx: Ctx = { meta, kept, childrenOf, subtree };
   let parts = exercise ? exerciseParts(ctx) : runParts(ctx);
 
+  const known = meta.durationSeconds && meta.durationSeconds >= 1 ? Math.round(meta.durationSeconds) : undefined;
   if (parts.length === 0) {
     kept.push({ at: "workout", field: "stages", value: stages, why: "no stage the document can hold: an open block stands in" });
-    const known = meta.durationSeconds && meta.durationSeconds >= 1 ? Math.round(meta.durationSeconds) : undefined;
     parts = exercise
       ? [{ purpose: "main", format: meta.sport === "yoga" ? "flow" : "straight", items: [openBlock(OPEN_BLOCK_NAME, known ?? DEFAULT_SECONDS)] }]
       : [{ purpose: "run", format: "steady", items: [{ kind: "run", target: known && known <= 86400 ? { durationSec: known } : { open: true }, effort: workEffort(meta, false) }] }];
   }
   parts = fit(parts, kept);
+  if (known !== undefined && known > 600 * 60) kept.push({ at: "workout", field: "durationSeconds", value: meta.durationSeconds, why: "past the document's 600-minute setting" });
 
   return {
     doc: {
       version: 1,
       title: bounded(meta.title || "Workout", 80, kept, "workout", "title") || "Workout",
       intent: { summary: bounded(meta.title || "Workout", 200, kept, "workout", "summary") || "Workout", goals: [], focus: [], effort: effortOfCategory(meta.category) },
+      ...(known !== undefined ? { setting: { targetMinutes: Math.min(600, Math.max(1, Math.round(known / 60))) } } : {}),
       parts,
       source: { kind: "coros_import" },
     },

@@ -4,7 +4,9 @@
  * title, and the steps of its latest build. Counts and ids only; no title or personal text leaves this module.
  *
  * Rules: a null column is `missing`, an unparsable one `invalid` (never thrown). Rest-day rows carry no document by
- * design and are exempt. Minutes differ only past max(3 min, 20 % of the row's minutes). Steps are compared as
+ * design and are exempt. A document's minutes are its stated length (`setting.targetMinutes`: the coach's minutes, the
+ * planned row's estimate, the build's planned time) when it has one, else its derived estimate; they differ from the
+ * row's only past max(3 min, 20 % of the row's minutes). Steps are compared as
  * multisets of library ids, canonicalised through `legacyIds` on both sides, so a renamed move is not a mismatch.
  */
 import { and, asc, eq, getTableColumns, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -161,7 +163,7 @@ export async function checkWorkoutDocParity(
     const derived = deriveDoc(doc, library);
     const rowMin = estimatedRowMinutes(row);
     if (rowMin === null) report.unestimated++;
-    else if (minutesDiffer(derived.estimatedMinutes, rowMin)) report.mismatched.push({ id: row.id, field: "minutes" });
+    else if (minutesDiffer(doc.setting?.targetMinutes ?? derived.estimatedMinutes, rowMin)) report.mismatched.push({ id: row.id, field: "minutes" });
     const axis = axisOfCategory(row.category);
     if (axis !== null && axis !== derived.discipline) report.mismatched.push({ id: row.id, field: "discipline" });
     if (norm(doc.title) !== norm(row.title)) report.mismatched.push({ id: row.id, field: "title" });

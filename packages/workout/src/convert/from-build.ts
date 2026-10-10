@@ -30,7 +30,9 @@
  *   alternates kept; an alternate the library no longer has is left out and kept; one that is now the slot's own
  *   move, or a move already offered (two legacy ids of one move), is left out (the record's legacy ids keep it).
  * - Intent: the theme's name and blurb (else the mode's), the mode → effort (`effortOfMode`), the theme's emphasised
- *   regions → focus; the minutes and place → setting; the mode and theme reasons → notes.
+ *   regions → focus; the place → setting, and the build's stated length → `setting.targetMinutes`: its planned time
+ *   (`plannedSeconds`, what its steps add up to, rounded), else the minutes it was asked for; the mode and theme
+ *   reasons → notes.
  *
  * KNOWN GAPS: what the document cannot say of a build, and the build itself (stored beside it, dual-write) still
  * holds — slot keys, the new-move flag, a target's history (the last session's summary and date, the progression
@@ -68,6 +70,8 @@ export interface BuildPayload {
   modeReasons?: readonly string[];
   themeReasons?: readonly string[];
   minutes: number;
+  /** What the build's steps add up to (the worker's stored build has it): the document's stated length. */
+  plannedSeconds?: number;
   locationId?: string;
   /** The flat step list the player plays. */
   steps: readonly Step[];
@@ -124,7 +128,10 @@ export function docFromBuildWithKept(build: BuildPayload, meta: BuildMeta = {}):
       focus: regions.slice(0, 12),
       effort: effortOfMode(build.mode),
     },
-    setting: { ...(build.locationId ? { placeId: build.locationId } : {}), targetMinutes: Math.min(600, Math.max(1, build.minutes)) },
+    setting: {
+      ...(build.locationId ? { placeId: build.locationId } : {}),
+      targetMinutes: Math.min(600, Math.max(1, build.plannedSeconds ? Math.round(build.plannedSeconds / 60) : build.minutes)),
+    },
     parts: parts.length > 0 ? parts : [{ purpose: "main", format: "straight", items: [openBlock(OPEN_BLOCK_NAME, build.minutes * 60)] }],
     source: { kind: "engine" },
     ...(notes ? { notes: bounded(notes, 500, kept, "build", "notes") } : {}),

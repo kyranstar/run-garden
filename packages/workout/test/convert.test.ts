@@ -188,6 +188,15 @@ describe("docFromStages — COROS runs", () => {
     expect(kept).toContainEqual(expect.objectContaining({ at: "workout", field: "sport", value: "bike" }));
   });
 
+  it("the planned workout's own length is the document's stated length (setting.targetMinutes); unknown, it states none", () => {
+    const w = run("Threshold 5x5");
+    expect(docFromStages(w.stages, { title: w.title, sport: "run", corosKeyToLibraryId, durationSeconds: 3330 }).doc.setting).toEqual({ targetMinutes: 56 });
+    expect(docFromStages(w.stages, { title: w.title, sport: "run", corosKeyToLibraryId }).doc.setting).toBeUndefined();
+    const long = docFromStages(w.stages, { title: w.title, sport: "run", corosKeyToLibraryId, durationSeconds: 700 * 60 });
+    expect(long.doc.setting).toEqual({ targetMinutes: 600 });
+    expect(long.kept).toContainEqual(expect.objectContaining({ at: "workout", field: "durationSeconds", value: 42000 }));
+  });
+
   it("no stage the document can hold: the stand-in is the planned workout's own length when known", () => {
     const strength = docFromStages([], { title: "Gym", sport: "strength", corosKeyToLibraryId, durationSeconds: 2400 }).doc;
     expect(strength.parts[0]!.items).toEqual([{ kind: "free_exercise", name: "Your choice of movements", dose: { holdSec: 2400 } }]);
@@ -575,10 +584,17 @@ describe("docFromBuild", () => {
       expect(workoutDocSchema.safeParse(doc).success, label).toBe(true);
       expect(doc.source.kind, label).toBe("engine");
       expect(doc.intent.effort, label).toBe(plan.mode === "recovery" ? "recover" : plan.mode === "consistent" ? "maintain" : "develop");
-      expect(doc.setting?.targetMinutes, label).toBe(plan.minutes);
+      // The build's stated length is its planned time (what the engine's steps add up to), not the minutes asked for.
+      expect(doc.setting?.targetMinutes, label).toBe(Math.round(plan.plannedSeconds / 60));
       // Every move, in play order, by its own id.
       expect(exercisesOf(doc).map((i) => (i.kind === "exercise" ? i.libraryId : i.name)), label).toEqual(plan.items.map((it) => it.exercise.id));
     }
+  });
+
+  it("a build that does not say its planned time states the minutes it was asked for", () => {
+    const { plan } = builds[0]!;
+    const { plannedSeconds: _planned, ...unstated } = stored(plan);
+    expect(docFromBuild(unstated).setting?.targetMinutes).toBe(plan.minutes);
   });
 
   it("each block maps to its purpose; activation moves in prep go to an activation part", () => {

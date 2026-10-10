@@ -33,6 +33,7 @@ import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { deriveDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
 import { applyOps } from "../src/services/coach-apply.js";
+import { checkWorkoutDocParity } from "../src/services/workout-doc-parity.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { buildSession } from "../src/services/session-build.js";
 import { slotId } from "../src/services/program-slots.js";
@@ -147,7 +148,8 @@ describe("session builds: the build insert carries the document (a snapshot, no 
         const label = `${mode} ${minutes} min`;
         expect(doc.source.kind).toBe("engine");
         expect(doc.intent.effort).toBe(mode === "recovery" ? "recover" : mode === "consistent" ? "maintain" : "develop");
-        expect(doc.setting?.targetMinutes, label).toBe(res.build!.minutes);
+        // Its stated length is the build's planned time.
+        expect(doc.setting?.targetMinutes, label).toBe(Math.round(res.build!.plannedSeconds / 60));
         const d = derived(doc);
         const row = await rowOf(id);
         tally.builds += 1;
@@ -177,11 +179,13 @@ describe("session builds: the build insert carries the document (a snapshot, no 
     await buildSession(db, userId, id, { overrides: { minutes: 20 } }, ctx());
     const [first] = await buildsOf(id);
     expect(first!.version).toBe(0);
-    expect(docOf(first!).setting?.targetMinutes).toBe(20);
+    const planned = (b: { payload: unknown }) => Math.round((b.payload as { build: { plannedSeconds: number } }).build.plannedSeconds / 60);
+    expect(docOf(first!).setting?.targetMinutes).toBe(planned(first!));
     await buildSession(db, userId, id, { overrides: { minutes: 45 } }, ctx("2026-10-07T19:05:00.000Z"));
     const [again] = await buildsOf(id);
     expect(again!.id).toBe(first!.id);
-    expect(docOf(again!).setting?.targetMinutes).toBe(45);
+    expect(planned(again!)).toBeGreaterThan(planned(first!));
+    expect(docOf(again!).setting?.targetMinutes).toBe(planned(again!));
   });
 
   it("the cost: none — the document rides the build's own insert", async () => {
@@ -254,6 +258,12 @@ describe("the coach: an add and an ease write the document and its revision", ()
     // A run's minutes are its blocks: the document's derived minutes are the row's.
     const run = await rowOf(out.created[0]!);
     expect(derived(docOf(run)).estimatedMinutes).toBe(rowMinutes(run));
+    // The lift states 30 minutes and derives far fewer: the parity diagnostic compares the stated length, so none of the
+    // three rows is a minutes mismatch.
+    const liftRow = await rowOf(out.created[1]!);
+    expect(docOf(liftRow).setting?.targetMinutes).toBe(30);
+    expect(derived(docOf(liftRow)).estimatedMinutes).toBeLessThan(15);
+    expect((await checkWorkoutDocParity(db, userId)).mismatched.filter((m) => m.field === "minutes")).toEqual([]);
     // A stored load in the athlete's unit; a name the library lacks is free text.
     const lift = docOf(await rowOf(out.created[1]!));
     expect(lift.parts[0]!.items.map((i) => i.kind)).toEqual(["exercise", "free_exercise"]);
@@ -371,6 +381,8 @@ describe("the COROS import: where stages are written, the document is too", () =
       expect(doc.source.kind).toBe("coros_import");
       expect(derived(doc).category, row.title).toBe(row.category);
       if (row.sport === "run") expect(derived(doc).estimatedMinutes, row.title).toBe(rowMinutes(row));
+      // Its stated length is the planned row's own (COROS's estimate, else the app's).
+      expect(doc.setting?.targetMinutes, row.title).toBe(rowMinutes(row));
       expect(row.workoutDocRev).toBe(1);
       const revs = await revisionsOf(row.id);
       expect(revs.map((r) => [r.rev, r.sourceKind, r.sourceRef])).toEqual([[1, "coros_import", `fp-${n}`]]);
@@ -383,6 +395,7 @@ describe("the COROS import: where stages are written, the document is too", () =
     const rest = await bySource(4);
     expect([rest.category, rest.workoutDoc, rest.workoutDocRev]).toEqual(["rest", null, null]);
     expect(await revisionsOf(rest.id)).toEqual([]);
+    expect((await checkWorkoutDocParity(db, userId)).mismatched).toEqual([]);
   });
 
   it("an unchanged re-read writes nothing new; an upstream content change is the next revision", async () => {
