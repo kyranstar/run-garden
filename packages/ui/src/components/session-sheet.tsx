@@ -56,6 +56,13 @@ type Picker = "mode" | "theme" | "minutes" | "place";
 
 const BLOCK_ORDER = ["arrive", "prep", "core", "accessory", "care", "cooldown"] as const;
 type SheetBlock = (typeof BLOCK_ORDER)[number];
+/** A jumping day's accessory block holds jumps only and plays before the core lifts: it reads "Jumps". */
+export const JUMPS_LABEL = "Jumps";
+/** The name a block goes by: "Jumps" for an accessory block of plyometric moves, else the block's own label. */
+export function blockLabel(blockId: string, moves: ReadonlyArray<{ contraction?: readonly string[] } | undefined>): string {
+  if (blockId === "accessory" && moves.length > 0 && moves.every((m) => Boolean(m?.contraction?.includes("plyometric")))) return JUMPS_LABEL;
+  return BLOCK_LABEL[blockId] ?? blockId;
+}
 /** The blocks in the order the player plays them (a jumping day's jumps come before the core lifts). */
 export function blocksInPlayOrder(build: { steps: ReadonlyArray<{ block: string }> }): SheetBlock[] {
   const played = [...new Set(build.steps.map((s) => s.block))].filter((b): b is SheetBlock => (BLOCK_ORDER as readonly string[]).includes(b));
@@ -852,7 +859,7 @@ function BuiltSession({
             1,
             ...build.steps.filter((st) => st.block === blockId).map((st) => st.format.round ?? 1),
           );
-          const label = blockId === "care" ? careLabel : BLOCK_LABEL[blockId]!;
+          const label = blockId === "care" ? careLabel : blockLabel(blockId, items.map((i) => build.exercises[i.exerciseId]));
           return (
             <section key={blockId} className="session-block">
               <h3 className="session-block-head">

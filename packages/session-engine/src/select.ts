@@ -36,6 +36,24 @@ export interface SelectCtx {
   coreRegions?: readonly string[] | null;
   /** Exercise ids the person saved themselves. */
   saved?: ReadonlySet<string>;
+  /**
+   * A build's cache of each move's slot-independent score parts (theme, debt, novelty, saves, rating, repetition,
+   * flags, tie-breaker): the same for every slot of one build, so worked out once. Only for one build's context.
+   */
+  memo?: Map<string, ScoreBase>;
+}
+
+/** The parts of a move's score that no slot changes (see `SelectCtx.memo`). */
+export interface ScoreBase {
+  theme: { value: number; text: string };
+  debt: { value: number; text: string };
+  novelty: { value: number; text: string };
+  neverDone: boolean;
+  saved: boolean;
+  rating: { value: number; text: string };
+  repetition: number;
+  flags: number[];
+  noise: number | null;
 }
 
 export interface Scored {
@@ -133,33 +151,56 @@ function debtText(top: DebtTop | null, ctx: SelectCtx): string {
   return days >= 3 ? `${label(top.k)}: ${days} days since trained` : `${label(top.k)}: behind this week`;
 }
 
-function score(data: EngineData, ex: ExerciseRecord, ctx: SelectCtx): Scored {
+/** The parts of a move's score no slot changes (memoised per build when the context carries a `memo`). */
+function baseOf(data: EngineData, ex: ExerciseRecord, ctx: SelectCtx): ScoreBase {
+  const cached = ctx.memo?.get(ex.id);
+  if (cached) return cached;
   const st = (ctx.stats && ctx.stats.get(ex.id)) || { lastDate: null, recent: 0, logged: 0, flags: {} };
+  const d = debtFit(ex, ctx);
+  const days = st.lastDate ? Hist.daysBetween(st.lastDate, ctx.today) : null;
+  const rating = ((ctx.prefs || {}).ratings || {})[ex.id] || 0;
+  const flags: number[] = [];
+  if (st.logged) {
+    for (const p of data.profiles.active) {
+      if (p.setFlag) flags.push(-p.flagPenaltyWeight * ((st.flags[p.setFlag.id] || 0) / st.logged));
+    }
+  }
+  const base: ScoreBase = {
+    theme: { value: WEIGHTS.theme * themeFit(ex, ctx.theme), text: ctx.theme ? `Fits today's theme: ${ctx.theme.name}` : "" },
+    debt: { value: WEIGHTS.debt * d.value, text: debtText(d.top, ctx) },
+    novelty: { value: WEIGHTS.novelty * (days == null ? 1 : Math.min(1, days / 14)), text: days != null && days >= 10 ? `Not done in ${days} days` : "" },
+    neverDone: days == null,
+    saved: Boolean(ctx.saved && ctx.saved.has(ex.id)),
+    rating: { value: WEIGHTS.rating * rating, text: rating > 0 ? "You rated this 👍" : "" },
+    repetition: -WEIGHTS.repetition * st.recent,
+    flags,
+    // A fixed per-exercise tie-breaker (builder) can be kept; a plain rng is drawn per score, never cached.
+    noise: ctx.jitter ? ctx.jitter(ex.id) : null,
+  };
+  if (ctx.memo && ctx.jitter) ctx.memo.set(ex.id, base);
+  return base;
+}
+
+function score(data: EngineData, ex: ExerciseRecord, ctx: SelectCtx): Scored {
+  const base = baseOf(data, ex, ctx);
   const parts: Array<{ value: number; text: string }> = [];
   const add = (value: number, text = "") => parts.push({ value, text });
 
-  add(WEIGHTS.theme * themeFit(ex, ctx.theme), ctx.theme ? `Fits today's theme: ${ctx.theme.name}` : "");
-  const d = debtFit(ex, ctx);
-  add(WEIGHTS.debt * d.value, debtText(d.top, ctx));
-  const days = st.lastDate ? Hist.daysBetween(st.lastDate, ctx.today) : null;
-  add(WEIGHTS.novelty * (days == null ? 1 : Math.min(1, days / 14)), days != null && days >= 10 ? `Not done in ${days} days` : "");
-  const isNew = days == null && Boolean(ctx.newMoveOpen);
+  add(base.theme.value, base.theme.text);
+  add(base.debt.value, base.debt.text);
+  add(base.novelty.value, base.novelty.text);
+  const isNew = base.neverDone && Boolean(ctx.newMoveOpen);
   if (isNew) add(WEIGHTS.newMove, NEW_MOVE);
   // Moves the person saved come up a bit more, especially as the weekly new move.
-  if (ctx.saved && ctx.saved.has(ex.id)) add(WEIGHTS.saved * (isNew ? 2 : 1), "From your saves");
-  const rating = ((ctx.prefs || {}).ratings || {})[ex.id] || 0;
-  add(WEIGHTS.rating * rating, rating > 0 ? "You rated this 👍" : "");
+  if (base.saved) add(WEIGHTS.saved * (isNew ? 2 : 1), "From your saves");
+  add(base.rating.value, base.rating.text);
   if (ctx.prevPosition && positionGroup(ex.position) === positionGroup(ctx.prevPosition)) add(WEIGHTS.flow);
-  add(-WEIGHTS.repetition * st.recent);
-  if (st.logged) {
-    for (const p of data.profiles.active) {
-      if (p.setFlag) add(-p.flagPenaltyWeight * ((st.flags[p.setFlag.id] || 0) / st.logged));
-    }
-  }
+  add(base.repetition);
+  for (const f of base.flags) add(f);
   if (ctx.coreRegions && ex.regions.some(r => ctx.coreRegions!.includes(r))) add(WEIGHTS.prep, "Preps today's lifts");
 
   // A fixed per-exercise tie-breaker (builder) keeps one swap from reshuffling every other slot.
-  const noise = ctx.jitter ? ctx.jitter(ex.id) : ctx.rng();
+  const noise = base.noise ?? ctx.rng();
   const total = parts.reduce((sum, p) => sum + p.value, 0) + noise * WEIGHTS.jitter;
   let reasons = parts.filter(p => p.value > 0 && p.text).sort((a, b) => b.value - a.value).map(p => p.text);
   if (isNew) reasons = [NEW_MOVE, ...reasons.filter(r => r !== NEW_MOVE)];

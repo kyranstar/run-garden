@@ -339,6 +339,7 @@ export const ATHLETIC = defineExercises([
     patterns: ["squat"],
     regions: ["quads", "glutes", "calves"],
     roles: ["accessory"],
+    equipment: { oneOf: ["bench"] },
     position: "standing",
     laterality: "bilateral",
     load: "bodyweight",
@@ -354,9 +355,10 @@ export const ATHLETIC = defineExercises([
     easier: ["snapDown"],
     harder: ["tuckJump"],
     text: {
-      summary: "Jump up onto a sturdy box or bench, stand tall, then step down.",
+      summary: "Jump onto a sturdy box, aerobic step or stair, stand tall, then step down.",
       setup: [
         "Use a sturdy box, an aerobic step or a stair that can't tip or slide, no higher than your knee; start low.",
+        "A wide, stable bench works; never a narrow one, where a foot can land half on the edge and the bench can tip.",
         "Stand a short step away, feet hip-width apart."
       ],
       steps: [
@@ -379,6 +381,7 @@ export const ATHLETIC = defineExercises([
     patterns: ["squat"],
     regions: ["quads", "glutes", "calves"],
     roles: ["accessory"],
+    equipment: { oneOf: ["bench"] },
     position: "standing",
     laterality: "bilateral",
     load: "bodyweight",
@@ -395,7 +398,7 @@ export const ATHLETIC = defineExercises([
     text: {
       summary: "Step off a low box, land on both feet, and absorb the landing quietly.",
       setup: [
-        "Stand on a sturdy low box, a step or a stair that can't tip; start around mid-shin height and stay below the knee.",
+        "Stand on a sturdy low box, a step, a stair or a wide, stable bench that can't tip; start around mid-shin height and stay below the knee.",
         "Toes at the edge, feet hip-width apart."
       ],
       steps: [

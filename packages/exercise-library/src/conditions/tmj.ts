@@ -1,4 +1,4 @@
-import { isPlyometric } from "../eligibility.js";
+import { isPlyometric } from "../record.js";
 import type { FormatId, Mode } from "../vocab.js";
 import type { Attrs, CheckReading, ConditionProfile, EntryFlags, HistorySession, ProposalCtx, SessionChecks } from "./types.js";
 
@@ -11,6 +11,8 @@ const FLAG = "clenched";
 const SYMPTOM_RISE = 2;
 /** A check this high means the jaw is up today. */
 const HIGH_PRE = 5;
+/** Jumps need an answered check at or under this (the calm line overhead pressing also draws). */
+const JUMPS_MAX_PRE = 2;
 
 interface TmjAttrs {
   clench: number;
@@ -77,7 +79,15 @@ export const TMJ: ConditionProfile = {
   // Jumps, hops, bounds and landings never in recovery, never when feeling off, and otherwise only with an answered,
   // calm check.
   allowRecord: (ex, mode, today) =>
-    !isPlyometric(ex) || (mode !== "recovery" && !today.feelingOff && today.pre != null && today.pre <= 2),
+    !isPlyometric(ex) || (mode !== "recovery" && !today.feelingOff && today.pre != null && today.pre <= JUMPS_MAX_PRE),
+  recordReason(ex, mode, today) {
+    if (!isPlyometric(ex)) return null;
+    if (mode === "recovery") return "No jumps on a recovery day.";
+    if (today.feelingOff) return "No jumps while you're feeling off.";
+    if (today.pre == null) return "Jumps need a jaw check first.";
+    if (today.pre > JUMPS_MAX_PRE) return `Jumps need a calm jaw (${JUMPS_MAX_PRE} or less) — you're at ${today.pre}.`;
+    return null;
+  },
   coreCandidate: (a) => read(a).clench <= 2,
   blockAssignable: (ex) => !ex.patterns.includes("push-v"),
   flareSafe(a) {

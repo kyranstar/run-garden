@@ -1,6 +1,6 @@
 import { UNANSWERED, type Attrs, type CheckReading, type ConditionProfile } from "./conditions/types.js";
 import type { EngineData } from "./engine-data.js";
-import type { ExerciseRecord } from "./record.js";
+import { isPlyometric, type ExerciseRecord } from "./record.js";
 import type { Theme } from "./themes.js";
 import type { Mode } from "./vocab.js";
 
@@ -67,10 +67,6 @@ export function recordFlareSafe(profile: ConditionProfile, ex: ExerciseRecord): 
 export function flareSafe(data: EngineData, ex: ExerciseRecord): boolean {
   return data.profiles.active.every(p => recordFlareSafe(p, ex));
 }
-
-/** A jump, hop, bound or landing (validation requires `contraction` on every record; a hand-made one without it isn't). */
-export const isPlyometric = (ex: Pick<ExerciseRecord, "contraction">): boolean =>
-  Array.isArray(ex.contraction) && ex.contraction.includes("plyometric");
 
 /** A theme that emphasises plyometric work: the only days the programme places a plyometric move. */
 export const plyometricDay = (theme: Pick<Theme, "emphasis"> | null | undefined): boolean =>

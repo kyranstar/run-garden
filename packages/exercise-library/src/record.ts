@@ -87,3 +87,7 @@ export interface ExerciseRecord {
   conditions: Readonly<Record<string, Attrs>>;
   providers?: { coros?: CorosMapping };
 }
+
+/** A jump, hop, bound or landing (validation requires `contraction` on every record; a hand-made one without it isn't). */
+export const isPlyometric = (ex: Pick<ExerciseRecord, "contraction">): boolean =>
+  Array.isArray(ex.contraction) && ex.contraction.includes("plyometric");

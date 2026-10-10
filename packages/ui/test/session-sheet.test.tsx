@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { SessionSheet, blocksInPlayOrder, sendingPollClock } from "../src/components/session-sheet.js";
+import { SessionSheet, blockLabel, blocksInPlayOrder, sendingPollClock } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
@@ -539,6 +539,16 @@ describe("the blocks' order on the sheet", () => {
     expect(blocksInPlayOrder(steps("arrive", "prep", "core", "accessory", "care", "cooldown"))).toEqual(["arrive", "prep", "core", "accessory", "care", "cooldown"]);
     expect(blocksInPlayOrder(steps("arrive", "prep", "prep", "accessory", "core", "core", "care", "cooldown"))).toEqual(["arrive", "prep", "accessory", "core", "care", "cooldown"]);
     expect(blocksInPlayOrder(steps("arrive", "cooldown"))).toEqual(["arrive", "cooldown", "prep", "core", "accessory", "care"]);
+  });
+
+  it("a jumping day's accessory block of jumps reads \"Jumps\"; any other accessory block reads \"Accessory\"", () => {
+    const jump = { contraction: ["plyometric"] as const };
+    const row = { contraction: ["isotonic"] as const };
+    expect(blockLabel("accessory", [jump, jump])).toBe("Jumps");
+    expect(blockLabel("accessory", [row, row])).toBe("Accessory");
+    expect(blockLabel("accessory", [])).toBe("Accessory");
+    expect(blockLabel("core", [jump])).toBe("Core");
+    expect(blockLabel("prep", [undefined])).toBe("Prep");
   });
 });
 

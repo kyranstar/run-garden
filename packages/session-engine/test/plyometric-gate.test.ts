@@ -4,7 +4,7 @@ import {
   type CheckReading, type EngineData, type ExerciseRecord, type Mode, type Theme,
 } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
-import { Builder, Prog, type BuildResult, type HistorySession, type ProgEntry } from "../src/index.js";
+import { Builder, Planner, Prog, type BuildResult, type HistorySession, type ProgEntry, type ProgramState } from "../src/index.js";
 import { PLACES, block, data, home } from "./builder-fixtures.js";
 
 // Plyometric moves in the programme (Task 5, ruling b). Two layers keep them where they belong:
@@ -18,6 +18,7 @@ import { PLACES, block, data, home } from "./builder-fixtures.js";
 
 const PLYOMETRIC = EXERCISES.filter(isPlyometric);
 const byId = new Map(EXERCISES.map(e => [e.id, e]));
+const moveKey = (e: ExerciseRecord) => `${e.family}|${[...e.regions].sort().join(",")}`;
 const softId = (id: string) => `soft${id[0]!.toUpperCase()}${id.slice(1)}`;
 // A gentle twin of every plyometric move: rated 0 for the jaw, difficulty 1, unloaded, no easier variant, and allowed
 // in every block. Only the gate and the engine's jumping-day rules can keep a twin out.
@@ -181,6 +182,7 @@ describe("the frontier: gentlest first, and the ladder unlocks as moves are done
       const done = new Set<string>();
       const introduced: string[] = [];
       const bad: string[] = [];
+      let topDays = 0;
       for (let day = 0; day < 40; day++) {
         const today = addDays("2026-11-02", day * 2);
         const plan = Builder.build(data, {
@@ -193,13 +195,27 @@ describe("the frontier: gentlest first, and the ladder unlocks as moves are done
         for (const e of jumps) {
           if (e.easier.length && !e.easier.some(id => done.has(id))) bad.push(`${today}: ${e.id} before any easier variant`);
         }
+        const cap = data.modes[mode].maxDifficulty;
+        const unlocked = PLYOMETRIC.filter(x => !done.has(x.id) && x.difficulty <= cap && (x.easier.length === 0 || x.easier.some(id => done.has(id))));
         for (const e of fresh) {
           // The gentlest move unlocked and not yet done is the one introduced.
-          const unlocked = PLYOMETRIC.filter(x => !done.has(x.id) && x.difficulty <= data.modes[mode].maxDifficulty &&
-            (x.easier.length === 0 || x.easier.some(id => done.has(id))));
           const gentlest = Math.min(...unlocked.map(x => x.difficulty));
           if (e.difficulty !== gentlest) bad.push(`${today}: introduced ${e.id} (${e.difficulty}) while a difficulty ${gentlest} move was unlocked`);
           introduced.push(e.id);
+        }
+        // Beside the new rung, the block holds the hardest rungs already done: no harder done rung (a different move)
+        // is left out for an easier one.
+        for (const e of jumps.filter(x => done.has(x.id))) {
+          const others = jumps.filter(x => x !== e).map(moveKey);
+          const passedOver = PLYOMETRIC.filter(x => done.has(x.id) && !jumps.includes(x) && x.difficulty <= cap && x.difficulty > e.difficulty && !others.includes(moveKey(x)));
+          if (passedOver.length) bad.push(`${today}: ${e.id} (${e.difficulty}) while ${passedOver.map(x => x.id).join(", ")} was done`);
+        }
+        if (unlocked.length === 0 && done.size > 0) {
+          // The top is reached: the block keeps the top rungs, never the bottom ones.
+          topDays++;
+          const hardestDone = Math.max(...PLYOMETRIC.filter(x => done.has(x.id) && x.difficulty <= cap).map(x => x.difficulty));
+          if (Math.max(...jumps.map(x => x.difficulty)) !== hardestDone) bad.push(`${today}: the top reached, but the hardest jump is ${jumps.map(x => x.id).join(", ")}`);
+          if (jumps.some(x => x.difficulty === 1)) bad.push(`${today}: the top reached, but a bottom rung is back: ${jumps.map(x => x.id).join(", ")}`);
         }
         sessions.push({
           id: `j${day}`, date: today, startedAt: `${today}T18:00:00`, mode, theme: "plyoIntro", blockNumber: 1,
@@ -208,11 +224,64 @@ describe("the frontier: gentlest first, and the ladder unlocks as moves are done
         for (const i of plan.items) done.add(i.exercise.id);
       }
       expect(bad, mode).toEqual([]);
+      expect(topDays, `${mode}: days after the top was reached`).toBeGreaterThan(10);
       // Pogo hops and both line hops are reached, and the ladder climbs to the mode's cap.
       expect(introduced, mode).toEqual(expect.arrayContaining(["pogoHop", "lineHopForwardBack", "lineHopLateral", "skaterBoundLow"]));
       if (mode === "build") expect(introduced).toContain("tuckJump");
       else expect(introduced).not.toContain("tuckJump");
     }
+  });
+
+  test("a rung done with the profile's flag on it (clenched) doesn't unlock the next; done cleanly, it does", () => {
+    const session = (id: string, date: string, entries: HistorySession["entries"], done: string[] = entries.map(e => e.id)): HistorySession => ({
+      id, date, startedAt: `${date}T18:00:00`, mode: "build", theme: "plyoIntro", blockNumber: 1,
+      checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: done.map(x => ({ id: x, secs: 60 })), entries,
+    });
+    const entry = (id: string, flags: string[]) => ({ id, implement: null, perSide: false, format: "straight" as const, flags, sets: [{ w: null, reps: 6, secs: null }] });
+    // snapDown only ever done clenched; landingStick done cleanly.
+    const flagged = [session("f1", "2026-11-02", [entry("snapDown", ["clenched"]), entry("landingStick", [])]), session("f2", "2026-11-04", [entry("snapDown", ["clenched"])])];
+    const chosenWith = (sessions: HistorySession[]) => new Set(Array.from({ length: 30 }, (_, i) => Builder.build(data, {
+      today: addDays("2026-11-06", i % 10), mode: "build", theme: plyoIntro, minutes: [30, 40, 60][i % 3]!, location: home, unit: "lb", sessions,
+      prefs: {}, savedIds: [], block, checks: { tmj: calm }, swaps: {}, programId: `flag-${i}`,
+    })).flatMap(p => p.items.filter(it => isPlyometric(it.exercise)).map(it => it.exercise.id)));
+    const behindSnapDown = PLYOMETRIC.filter(e => e.easier.length > 0 && e.easier.every(id => id === "snapDown")).map(e => e.id);
+    expect(behindSnapDown).toEqual(expect.arrayContaining(["pogoHop", "broadJumpStick", "boxJumpStepDown"]));
+    const locked = chosenWith(flagged);
+    for (const id of behindSnapDown) expect(locked.has(id), `${id} unlocked by a clenched snap-down`).toBe(false);
+    expect(locked.has("dropLanding"), "the clean landing stick unlocks the drop landing").toBe(true);
+    // One clean snap-down unlocks the moves behind it: pogo hops, the gentlest, come next.
+    const unlocked = chosenWith([...flagged, session("c1", "2026-11-05", [entry("snapDown", [])])]);
+    expect(unlocked.has("pogoHop")).toBe(true);
+  });
+});
+
+describe("a jumping day the gate empties says why, in the profile's words", () => {
+  const program: ProgramState = {
+    settings: { unit: "lb", weeklyGoal: 4, blockWeeks: 5, defaultMinutes: 40, location: "home" },
+    locations: [home], prefs: { ratings: {}, excluded: [], pinned: [] }, savedIds: [], block: null, sessions: [],
+  };
+  const view = (check: CheckReading, theme = "plyoIntro") => Planner.planToday(data, {
+    today: "2026-11-02", day: { date: "2026-11-02", checks: { tmj: check }, override: { mode: "build", theme }, swaps: {} },
+  }, program).view;
+
+  test("a check of 4, no check, feeling off: no jumps, and the theme's reason line says why", () => {
+    for (const [check, why] of [
+      [{ ...calm, pre: 4 }, "Jumps need a calm jaw (2 or less) — you're at 4."],
+      [{ ...calm, pre: null }, "Jumps need a jaw check first."],
+      [{ ...calm, feelingOff: true }, "No jumps while you're feeling off."],
+    ] as const) {
+      const v = view(check);
+      expect(v.theme?.id).toBe("plyoIntro");
+      expect(v.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
+      expect(v.themeReasons).toEqual([why]);
+    }
+  });
+
+  test("a calm check: the jumps are there and no reason line is added; another theme never gets one", () => {
+    const calmDay = view(calm);
+    expect(calmDay.plan.items.some(i => isPlyometric(i.exercise))).toBe(true);
+    expect(calmDay.themeReasons).toEqual([]);
+    expect(view({ ...calm, pre: 4 }, "skiPrep").themeReasons).toEqual([]);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { WeightUnit } from "@rg/domain";
-import type { CheckReading, EngineData, HistorySession, Mode, Theme } from "@rg/exercise-library";
+import { UNANSWERED, isPlyometric, plyometricDay, type CheckReading, type EngineData, type HistorySession, type Mode, type Theme } from "@rg/exercise-library";
 import { Blocks } from "./blocks.js";
 import { Builder } from "./builder.js";
 import { Graduation, type GraduationOffer } from "./graduation.js";
@@ -87,6 +87,23 @@ export interface BlockUpdate {
 
 export type { GraduationOffer };
 
+/**
+ * A jumping day whose plan holds no jump because an active profile's record rule held them back: that profile's own
+ * words for why (its `recordReason`), as the theme's reason line. Nothing when the plan has its jumps.
+ */
+function heldBack(data: EngineData, theme: Theme | null, plan: BuildResult, input: BuildInput): string[] {
+  if (!plyometricDay(theme) || plan.items.some(it => isPlyometric(it.exercise))) return [];
+  const jumps = data.exercises.filter(ex => isPlyometric(ex) && Lib.hasEquipment(ex, input.location.equipment));
+  for (const p of data.profiles.active) {
+    const today = (input.checks || {})[p.id] ?? UNANSWERED;
+    for (const ex of jumps) {
+      const why = p.recordReason?.(ex, input.mode, today);
+      if (why) return [why];
+    }
+  }
+  return [];
+}
+
 const blankDay = (today: string): DayState => ({ date: today, checks: {}, feelingOff: false, override: {}, swaps: {} });
 
 /** The stored day if it is today's; otherwise a fresh one. */
@@ -135,7 +152,8 @@ function planToday(data: EngineData, input: PlanTodayInput, program: ProgramStat
     mode: c.mode, proposedMode: c.proposal.mode, modeReasons: c.proposal.reasons,
     modeOverridden: Boolean(c.t.override.mode && c.t.override.mode !== c.proposal.mode),
     theme: c.theme, proposedTheme: c.themeProposal.theme,
-    themeReasons: c.chosen ? [] : c.themeProposal.reasons, themeOverridden: Boolean(c.chosen),
+    themeReasons: [...(c.chosen ? [] : c.themeProposal.reasons), ...heldBack(data, c.theme, plan, c.buildInput)],
+    themeOverridden: Boolean(c.chosen),
     minutes: c.minutes, location: c.location,
     block: c.ensured.block, blockEvents: c.ensured.events, week: Blocks.weekOf(c.ensured.block, input.today),
     input: c.buildInput, plan,

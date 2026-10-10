@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, flareSafe, makeEngineData, recordFlareSafe,
@@ -84,6 +87,29 @@ describe("TMJ profile — exercise rules", () => {
         }
       }
     }
+  });
+
+  it("recordReason: the profile's words exactly when allowRecord holds a jump back, and nothing otherwise", () => {
+    const rec = (contraction: string[]) => ({ contraction }) as unknown as ExerciseRecord;
+    for (const mode of MODE_IDS) {
+      for (const pre of [null, 0, 1, 2, 3, 4, 5]) {
+        for (const feelingOff of [false, true]) {
+          const today = reading(pre, { feelingOff });
+          const why = TMJ.recordReason!(rec(["plyometric"]), mode, today);
+          expect(why === null, `${mode} ${pre} ${feelingOff}`).toBe(TMJ.allowRecord!(rec(["plyometric"]), mode, today));
+          expect(TMJ.recordReason!(rec(["isotonic"]), mode, today)).toBe(null);
+        }
+      }
+    }
+    expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(4))).toBe("Jumps need a calm jaw (2 or less) — you're at 4.");
+    expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(null))).toBe("Jumps need a jaw check first.");
+    expect(TMJ.recordReason!(rec(["plyometric"]), "consistent", reading(1, { feelingOff: true }))).toBe("No jumps while you're feeling off.");
+    expect(TMJ.recordReason!(rec(["plyometric"]), "recovery", reading(1))).toBe("No jumps on a recovery day.");
+  });
+
+  it("profiles read the record type, not eligibility (layering): no profile imports the eligibility rules", () => {
+    const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "conditions");
+    for (const f of readdirSync(dir)) expect(readFileSync(join(dir, f), "utf8"), f).not.toMatch(/from "\.\.\/eligibility/);
   });
 
   it("coreCandidate: clench ≤ 2; flareSafe: clench ≤ 1, neck ≤ 1, not face down", () => {

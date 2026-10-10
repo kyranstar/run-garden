@@ -59,6 +59,8 @@ interface Ctx extends SelectCtx {
   jumpDay: boolean;
   /** While the jumps block is being filled: candidates are plyometric moves on the frontier, and only those. */
   fillingJumps: boolean;
+  /** The moves eligible today (gear, mode, exclusions, checks): the same for every slot of one build, so judged once. */
+  eligibleIds: Set<string> | null;
 }
 
 function fmt(data: EngineData, id: FormatId): Format {
@@ -209,24 +211,45 @@ function movesInPlan(ctx: Ctx): Set<string> {
   return keys;
 }
 
-/** Whether the athlete has done this move (on or before the build's day): what unlocks the next rung of a ladder. */
+/** Whether a move is eligible today: `Lib.eligible` with the day's gear, mode, exclusions and checks, judged once a build. */
+function eligibleToday(ctx: Ctx, ex: ExerciseRecord): boolean {
+  if (!ctx.eligibleIds) {
+    ctx.eligibleIds = new Set(Lib.all(ctx.data).filter(x =>
+      Lib.eligible(ctx.data, x, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks })).map(x => x.id));
+  }
+  return ctx.eligibleIds.has(ex.id);
+}
+
+/** Whether the athlete has done this move (on or before the build's day). */
 const doneBy = (ctx: Pick<Ctx, "stats">) => (id: string): boolean => Boolean(ctx.stats.get(id)?.lastDate);
 
+/**
+ * Whether this move, done, unlocks the next rung: done, and not with an active profile's flag on it — never logged (no
+ * flag could be set), or logged at least once without each profile's flag (a flagged rung unlocks nothing).
+ */
+const unlocksBy = (ctx: Pick<Ctx, "stats" | "data">) => (id: string): boolean => {
+  const st = ctx.stats.get(id);
+  if (!st || !st.lastDate) return false;
+  return st.logged === 0 || ctx.data.profiles.active.every(p => !p.setFlag || (st.flags[p.setFlag.id] || 0) < st.logged);
+};
+
 /** A jumps slot takes plyometric moves on the frontier only; every other slot takes no plyometric move at all. */
-const jumpRule = (ex: ExerciseRecord, jumps: boolean, ctx: Pick<Ctx, "stats">): boolean =>
-  jumps ? isPlyometric(ex) && onFrontier(ex, doneBy(ctx)) : !isPlyometric(ex);
+const jumpRule = (ex: ExerciseRecord, jumps: boolean, ctx: Pick<Ctx, "stats" | "data">): boolean =>
+  jumps ? isPlyometric(ex) && onFrontier(ex, unlocksBy(ctx)) : !isPlyometric(ex);
 
 /**
- * The jumps block's order: the next rung first (a move not yet done, gentlest first), and at most one new move per
- * session; after it, moves already done, gentlest first. Ties keep the usual ranking.
+ * The jumps block's order: the next rung first (a move not yet done, gentlest first), at most one new move a session;
+ * then the hardest rungs already done (today's gate and the mode's cap have already ruled on every candidate), so a
+ * walked ladder keeps its top rungs instead of falling back to the first. Ties keep the usual ranking.
  */
 function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx): Scored[] {
   const done = doneBy(ctx);
   const newPlaced = placed.some(it => !done(it.exercise.id));
+  const key = (ex: ExerciseRecord): number => (done(ex.id) ? 100 - ex.difficulty : ex.difficulty);
   return ranked
     .filter(r => !newPlaced || done(r.ex.id))
     .map((r, i) => ({ r, i }))
-    .sort((a, b) => Number(done(a.r.ex.id)) - Number(done(b.r.ex.id)) || a.r.ex.difficulty - b.r.ex.difficulty || a.i - b.i)
+    .sort((a, b) => Number(done(a.r.ex.id)) - Number(done(b.r.ex.id)) || key(a.r.ex) - key(b.r.ex) || a.i - b.i)
     .map(x => x.r);
 }
 
@@ -237,7 +260,7 @@ function candidates(block: BlockId, formatId: FormatId, ctx: Ctx): ExerciseRecor
     !taken.has(moveKey(ex)) &&
     jumpRule(ex, ctx.fillingJumps, ctx) &&
     fitsBlock(ctx, ex, block) &&
-    Lib.eligible(ctx.data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks }) &&
+    eligibleToday(ctx, ex) &&
     !ctx.used.has(ex.id) &&
     accepts(ctx.data, formatId, ex));
 }
@@ -401,6 +424,8 @@ function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): 
     newMoveOpen: newMoveWeek,
     jumpDay: plyometricDay(input.theme),
     fillingJumps: false,
+    eligibleIds: null,
+    memo: new Map(),
     coreRegions: null,
     targets: new Map(),
     skeleton: modeSkeleton(data.skeleton, input.mode),
@@ -692,7 +717,7 @@ function slotCandidates(ctx: Ctx, item: Item): ExerciseRecord[] {
   return Lib.all(ctx.data).filter(ex =>
     jumpRule(ex, jumps, ctx) &&
     fitsBlock(ctx, ex, item.block) &&
-    Lib.eligible(ctx.data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks }) &&
+    eligibleToday(ctx, ex) &&
     accepts(ctx.data, item.format, ex));
 }
 

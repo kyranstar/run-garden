@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { CONTRACTIONS, label, EXERCISES, MUSCLES, MUSCLE_REGION, PURPOSES, REGIONS, TAGS, THEMES, plyometricDay } from "../src/index.js";
+import { CONTRACTIONS, label, EXERCISES, LOCATION_PRESETS, MUSCLES, MUSCLE_REGION, PURPOSES, REGIONS, TAGS, THEMES, hasEquipment, plyometricDay } from "../src/index.js";
 
 // The curation to-do list: one test per record, each failure naming the record id and field.
 
@@ -158,6 +158,20 @@ describe("the plyometric ladder", () => {
     }
     expect(byId("tuckJump")!.conditions.tmj!.clench).toBe(2);
     expect(byId("dropLanding")!.conditions.tmj!.clench).toBe(2);
+  });
+});
+
+describe("jumps from a raised surface", () => {
+  test("the box jump and the drop landing need something to step from: never placed at a bare-mat place", () => {
+    const at = (id: string) => LOCATION_PRESETS.find(l => l.id === id)!.equipment;
+    for (const id of ["boxJumpStepDown", "dropLanding"]) {
+      const e = byId(id)!;
+      expect(hasEquipment(e, at("mat")), `${id} at a bare mat`).toBe(false);
+      expect(hasEquipment(e, at("home")), `${id} at home`).toBe(true);
+      expect(hasEquipment(e, at("gym")), `${id} at the gym`).toBe(true);
+    }
+    expect(byId("boxJumpStepDown")!.text.summary).not.toMatch(/bench/i);
+    expect(byId("boxJumpStepDown")!.text.setup.join(" ")).toMatch(/narrow/i);
   });
 });
 
