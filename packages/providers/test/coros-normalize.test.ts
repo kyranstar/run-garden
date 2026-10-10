@@ -13,7 +13,7 @@ import {
   normalizeCorosSchedule,
   programTextFingerprint,
 } from "../src/coros/normalize.js";
-import type { RawCorosActivityListItem } from "../src/coros/raw-types.js";
+import type { RawCorosActivityListItem, RawCorosProgram } from "../src/coros/raw-types.js";
 import { fixtureRawSchedule, FIXTURE_PLAN_ID } from "../src/fixtures/coros-schedule.js";
 import { fixtureCorosCompletedThreshold } from "../src/fixtures/activities.js";
 
@@ -623,6 +623,152 @@ describe("comparing a program we sent with the one the server stored", () => {
     const delta = describeProgramDelta(sent, renamed);
     expect(delta).toContain("name differs");
     expect(delta).not.toContain("Marathon");
+  });
+});
+
+/**
+ * A STRENGTH PROGRAM COMES BACK RENORMALIZED (2026-10-10). The owner approved a
+ * rewrite of a strength session; COROS answered 0000 and stored it, and the
+ * read-after-write called it `verification_failed` over three things the server
+ * does to every strength/yoga program on save, none of them content we
+ * prescribe:
+ *
+ *  (a) it assigns its own ids, so a child's `groupId` (our container's id, 1/3/5)
+ *      comes back as the container's 18-digit server id;
+ *  (b) it recomputes a container's `targetValue` (the seconds-per-set
+ *      placeholder we send as 60 came back 78 / 62 / 196);
+ *  (c) it drops the `intensityValue` we send as "" for bodyweight.
+ *
+ * Shaped like that program: three straight-set blocks (container + child), the
+ * first two bodyweight, the third loaded. Ids below are synthetic.
+ */
+describe("a strength program COROS renormalized on save", () => {
+  const container = (id: number, sets: number) => ({
+    id,
+    exerciseType: 0,
+    isGroup: true,
+    groupId: "0",
+    sets,
+    targetType: 2,
+    targetValue: 60,
+    intensityType: 0,
+    intensityValue: 0,
+  });
+  const child = (id: number, groupId: number, reps: number, load: number | "") => ({
+    id,
+    exerciseType: 2,
+    isGroup: false,
+    groupId: String(groupId),
+    sets: 1,
+    targetType: 3,
+    targetValue: reps,
+    intensityType: 1,
+    intensityValue: load as number,
+    intensityCustom: load === "" ? 1 : 0,
+  });
+  const sent = {
+    idInPlan: 12,
+    name: "Strength A — 2026-10-14",
+    sportType: 4,
+    duration: 0,
+    exercises: [container(1, 3), child(2, 1, 10, ""), container(3, 3), child(4, 3, 12, ""), container(5, 4), child(6, 5, 8, 24000)],
+  };
+  const G = ["900000000000000751", "900000000000000752", "900000000000000753"] as const;
+  /** What COROS stored: its own ids, its own container targets, the bodyweight "" gone. */
+  const stored = () => {
+    const out = structuredClone(sent) as unknown as { exercises: Array<Record<string, unknown>> };
+    const ex = out.exercises;
+    const ids = [G[0], "900000000000000754", G[1], "900000000000000755", G[2], "900000000000000756"];
+    ex.forEach((e, i) => (e.id = ids[i]!));
+    ex[0]!.targetValue = 78;
+    ex[2]!.targetValue = 62;
+    ex[4]!.targetValue = 196;
+    ex[1]!.groupId = G[0];
+    ex[3]!.groupId = G[1];
+    ex[5]!.groupId = G[2];
+    delete ex[1]!.intensityValue;
+    delete ex[3]!.intensityValue;
+    return out;
+  };
+  const delta = (stored: unknown) => describeProgramDelta(sent, stored as RawCorosProgram);
+  const same = (stored: unknown) => sameProgramContent(sent, stored as RawCorosProgram);
+
+  it("is the SAME content: server group ids, server container targets, a dropped empty load", () => {
+    expect(delta(stored())).toBe(NO_PROGRAM_DELTA);
+    expect(same(stored())).toBe(true);
+  });
+
+  it("treats intensityValue \"\", absent and null alike — and never as 0 kg", () => {
+    const nulled = stored();
+    nulled.exercises[1]!.intensityValue = null;
+    expect(same(nulled)).toBe(true);
+    const zero = stored();
+    zero.exercises[1]!.intensityValue = 0;
+    expect(delta(zero)).toContain("ex[1].intensityValue absent→0");
+  });
+
+  it("still catches a changed child target, sets or load", () => {
+    const reps = stored();
+    reps.exercises[3]!.targetValue = 15;
+    expect(delta(reps)).toBe("ex[3].targetValue 12→15");
+    const sets = stored();
+    sets.exercises[4]!.sets = 2;
+    expect(delta(sets)).toBe("ex[4].sets 4→2");
+    const load = stored();
+    load.exercises[5]!.intensityValue = 20000;
+    expect(delta(load)).toBe("ex[5].intensityValue 24000→20000");
+  });
+
+  it("still catches a dropped step", () => {
+    const dropped = stored();
+    dropped.exercises.pop();
+    expect(delta(dropped)).toContain("exercises 6→5");
+  });
+
+  it("still catches a child moved into another container", () => {
+    const moved = stored();
+    moved.exercises[5]!.groupId = G[0];
+    expect(delta(moved)).toContain("ex[5].groupId");
+  });
+
+  it("still catches two children that swapped containers, a one-to-one renaming or not", () => {
+    const swapped = stored();
+    swapped.exercises[1]!.groupId = G[1];
+    swapped.exercises[3]!.groupId = G[0];
+    const found = delta(swapped);
+    expect(found).toContain("ex[1].groupId");
+    expect(found).toContain("ex[3].groupId");
+  });
+
+  it("keeps \"no group\" no group: a top-level step gaining one, or a child losing its own", () => {
+    const lost = stored();
+    lost.exercises[1]!.groupId = "0";
+    expect(delta(lost)).toContain("ex[1].groupId 1→0");
+    const gained = stored();
+    gained.exercises[2]!.groupId = G[0];
+    expect(delta(gained)).toContain("ex[2].groupId 0→");
+  });
+
+  it("matches groups one-to-one when the server's container ids are not its children's group ids", () => {
+    // Should COROS ever report a container under an id its children do not name,
+    // the mapping still has to be consistent: one sent group, one stored group.
+    const other = stored();
+    other.exercises[0]!.id = "900000000000000901";
+    other.exercises[2]!.id = "900000000000000902";
+    other.exercises[4]!.id = "900000000000000903";
+    expect(same(other)).toBe(true);
+    other.exercises[5]!.groupId = G[1];
+    expect(delta(other)).toContain("ex[5].groupId");
+  });
+
+  it("compares a container's targetValue nowhere else: a child's, and a step that is not a container", () => {
+    // The skip is for containers on BOTH sides. A step that stopped being one is
+    // reported as that, and its target with it.
+    const flipped = stored();
+    flipped.exercises[0]!.isGroup = false;
+    const found = delta(flipped);
+    expect(found).toContain("ex[0].isGroup true→false");
+    expect(found).toContain("ex[0].targetValue 60→78");
   });
 });
 

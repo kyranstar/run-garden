@@ -831,15 +831,11 @@ export async function updateWorkoutContent(
     // (renormalizing-coros.ts rule 4), and every step that decides them is still
     // compared. Read as differences, they refused every in-place rewrite against a
     // re-encoding COROS — the pace-encoding heal among them (2026-10-09).
-    if (
-      observedFingerprint === wireFingerprint ||
-      (now?.program &&
-        sameProgramContent(rewritten, {
-          ...now.program,
-          duration: rewritten.duration,
-          estimatedTime: rewritten.estimatedTime,
-        }))
-    ) {
+    // The server's own estimate, set aside: the verdict below and the refusal's named differences both read this.
+    const stored = now?.program
+      ? { ...now.program, duration: rewritten.duration, estimatedTime: rewritten.estimatedTime }
+      : undefined;
+    if (observedFingerprint === wireFingerprint || (stored && sameProgramContent(rewritten, stored))) {
       return {
         ok: true,
         code,
@@ -916,7 +912,7 @@ export async function updateWorkoutContent(
       reason: "verification_failed",
       error:
         `the rewrite returned 0000 but the program on ${date} is not what was sent —` +
-        ` ${now?.program ? describeProgramDelta(rewritten, now.program) : "nothing to compare"}`,
+        ` ${stored ? describeProgramDelta(rewritten, stored) : "nothing to compare"}`,
       ...observedIds,
       wireFingerprint,
       ...(observedFingerprint !== undefined ? { observedFingerprint } : {}),

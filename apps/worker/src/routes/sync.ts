@@ -224,7 +224,8 @@ syncRoutes.post("/retry", async (c) => {
     }
   }
 
-  return c.json({ ok: true, movesRetried, studioRetried, coachRetried });
+  // `rewritesRetried` is what the client reads to drain the queued writes in requests of their own (ruling 3-R11).
+  return c.json({ ok: true, movesRetried, studioRetried, coachRetried, rewritesRetried: coachRetried });
 });
 
 // ── GET /api/sync/notes ───────────────────────────────────────────────────────

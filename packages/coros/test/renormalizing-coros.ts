@@ -34,6 +34,16 @@
  *     never sent), so what we sent after `/program/calculate` is not what a read
  *     returns. Here: a deterministic sum over the steps, never the calculate
  *     endpoint's figure.
+ *  5. THE SERVER ISSUES THE STEP IDS — every stored step carries an 18-digit id
+ *     of COROS's own, and a child's `groupId` is its container's NEW id
+ *     (docs/reports/coros-inspect-2026-08-02.json: container 4793409533715910xx,
+ *     its child under that id). The owner's strength rewrite of 2026-10-10 came
+ *     back with our groups 1/3/5 under three fresh server ids. Each write here
+ *     issues fresh ones, as a rewrite does live.
+ *  6. A CONTAINER'S TARGET IS SERVER-COMPUTED — the same rewrite's containers,
+ *     sent at 60 seconds a set, came back 78, 62 and 196; the capture's run
+ *     containers hold the sum of their children (540 = 360 + 180). Here: the
+ *     children's work plus rest, plus an odd constant no client would send.
  */
 import type { RawCorosExercise, RawCorosProgram } from "@rg/providers";
 import { mockCorosServer, type MockCorosServer } from "./mock-coros-server.js";
@@ -79,7 +89,26 @@ function recalculatedDuration(exercises: RawCorosExercise[]): number {
   return seconds + 17; // never a round number a client could have sent
 }
 
-/** What real COROS stores for a program we write (the rules above). Pure; returns a copy. */
+/** Rule 6: a container's per-iteration seconds, as the server works it out from its children. */
+function containerTarget(container: RawCorosExercise, exercises: RawCorosExercise[]): number {
+  let seconds = 0;
+  for (const e of exercises) {
+    if (e.isGroup === true || String(e.groupId) !== String(container.id)) continue;
+    const tt = Number(e.targetType);
+    const tv = Number(e.targetValue ?? 0);
+    seconds += (tt === 2 ? tv : tt === 3 ? tv * 4 : 45) + (Number(e.restType) === 1 ? Number(e.restValue ?? 0) : 0);
+  }
+  return seconds + 7;
+}
+
+/** Rule 5: the server's step ids — 18 digits, fresh on every write. Synthetic. */
+let issued = 0;
+function serverStepId(): string {
+  issued += 1;
+  return String(900_000_000_000_000_000n + BigInt(issued));
+}
+
+/** What real COROS stores for a program we write (the rules above). Pure but for rule 5's counter; returns a copy. */
 export function reencodeProgram(sent: RawCorosProgram): RawCorosProgram {
   const program = structuredClone(sent) as RawCorosProgram & Record<string, unknown>;
   renumber(program);
@@ -89,6 +118,17 @@ export function reencodeProgram(sent: RawCorosProgram): RawCorosProgram {
     renumber(e);
     if (e.overview === "") delete e.overview;
     if (e.intensityValue === ("" as unknown) && Number(e.intensityCustom) === 1) delete e.intensityValue;
+  }
+  for (const e of exercises) if (e.isGroup === true) e.targetValue = containerTarget(e, exercises);
+  const reissued = new Map<string, string>();
+  for (const e of exercises) {
+    const id = serverStepId();
+    if (e.id !== undefined) reissued.set(String(e.id), id);
+    e.id = id;
+  }
+  for (const e of exercises) {
+    const group = reissued.get(String(e.groupId));
+    if (group !== undefined && String(e.groupId) !== "0") e.groupId = group;
   }
   const duration = recalculatedDuration(exercises);
   program.duration = duration;

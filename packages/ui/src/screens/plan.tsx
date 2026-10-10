@@ -4,6 +4,7 @@ import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } f
 import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek, type PlannedRef } from "@rg/domain";
 import { IconCoach } from "../icons.js";
+import { approveProposal } from "../coach-approve.js";
 import {
   Banner,
   CategoryDot,
@@ -624,7 +625,9 @@ export function usePlanCoach() {
       return next;
     });
   const approve = useMutation({
-    mutationFn: (id: string) => api.coachApprove(id),
+    // An applied proposal is never reported as a failure: a 409 that says `approved`, or a lost answer whose re-read
+    // says so, resolves as done (2026-10-10, see `approveProposal`).
+    mutationFn: (id: string) => approveProposal(id),
     onMutate: (id) => clearProposalError(id),
     // Audit C17: a 409 (proposal expired/resolved while the page sat open)
     // used to be swallowed by `onSettled: invalidate` alone — the refetch

@@ -36,6 +36,7 @@ import {
   type UpdateWorkoutContentOptions,
 } from "../src/content-executor.js";
 import { mockCorosServer, nextMonday, type MockCorosServer } from "./mock-coros-server.js";
+import { renormalizingCoros } from "./renormalizing-coros.js";
 
 import { createHash } from "node:crypto";
 
@@ -63,8 +64,10 @@ const corosDay = (iso: string): string => iso.replaceAll("-", "");
 const DATE = addDaysIso(TODAY, 20);
 const HAPPEN_DAY = corosDay(DATE);
 
-async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }> {
-  const server = mockCorosServer({ baseMonday: nextMonday() });
+async function setup(
+  make: (opts: { baseMonday: string }) => MockCorosServer = mockCorosServer,
+): Promise<{ server: MockCorosServer; client: CorosClient }> {
+  const server = make({ baseMonday: nextMonday() });
   const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
   await client.loginWithHash(
     server.email,
@@ -112,13 +115,14 @@ const pushSpec = (over: Partial<CreateWorkoutSpec> = {}): CreateWorkoutSpec => (
 /** Push a session for real, then hand back the address the server chose. */
 async function pushed(
   spec: CreateWorkoutSpec = pushSpec(),
+  make?: (opts: { baseMonday: string }) => MockCorosServer,
 ): Promise<{
   server: MockCorosServer;
   client: CorosClient;
   result: CreateResult;
   target: StampProvenTarget;
 }> {
-  const { server, client } = await setup();
+  const { server, client } = await setup(make);
   const result = await createWorkout(client, spec, { today: TODAY, catalog: CATALOG, log: noop });
   expect(result.ok, result.error).toBe(true);
   return {
@@ -426,6 +430,124 @@ describe("a lift session is rewritten with all four of its numbers", () => {
     expect(children.map((s) => s.durationSeconds)).toEqual([30, 30]);
     expect(children[0]!.loadBodyweight).toBe(true);
     expect(children[0]!.note).toBe("each side");
+  });
+});
+
+// ── 2b. Against a COROS that renormalizes what it stores ───────────────────
+//
+// The owner's approved rewrite of a strength session (2026-10-10) LANDED — 0000,
+// the program on the watch — and was marked `verification_failed` over the
+// server's own ids for our groups, its own container targets, and the bodyweight
+// "" it drops (`renormalizing-coros.ts` rules 3, 5, 6). Four strength/yoga
+// rewrites in September failed the same way. Every number the athlete was
+// prescribed had arrived.
+
+describe("a strength rewrite against a COROS that renormalizes on save", () => {
+  /** Shaped like the 2026-10-14 session: three straight-set blocks, two of them bodyweight. */
+  const before: CoachSession = {
+    category: "strength",
+    title: "Strength A",
+    durationMinutes: 35,
+    lift: {
+      exercises: [
+        { name: "Push-up", originId: BENCH_ID, sets: 3, reps: 10, weight: { type: "bodyweight" }, restSeconds: 60 },
+        { name: "Air squat", originId: SQUAT_ID, sets: 3, reps: 15, weight: { type: "bodyweight" }, restSeconds: 60 },
+        { name: "Goblet Squat", originId: SQUAT_ID, sets: 4, reps: 8, weight: { type: "kg", value: 20 }, restSeconds: 90 },
+      ],
+    },
+  } as CoachSession;
+  const after: CoachSession = {
+    ...before,
+    lift: {
+      exercises: [
+        { name: "Push-up", originId: BENCH_ID, sets: 3, reps: 12, weight: { type: "bodyweight" }, restSeconds: 60 },
+        { name: "Air squat", originId: SQUAT_ID, sets: 3, reps: 12, weight: { type: "bodyweight" }, restSeconds: 60 },
+        { name: "Goblet Squat", originId: SQUAT_ID, sets: 4, reps: 8, weight: { type: "kg", value: 24 }, restSeconds: 90 },
+      ],
+    },
+  } as CoachSession;
+  const liftSpec = pushSpec({ name: stamp("Strength A"), session: before, thresholdPaceSecPerKm: undefined });
+
+  it("verifies the rewrite that landed, and hands back what the next read returns", async () => {
+    const { server, client, target } = await pushed(liftSpec, renormalizingCoros);
+    const writesBefore = server.counts.scheduleWrites;
+
+    const update = await updateWorkoutContent(client, { target, session: after }, options());
+
+    expect(update.ok, update.error).toBe(true);
+    expect(update.reason).toBeUndefined();
+    expect(update.pathUsed).toBe("in_place_update");
+    expect(server.counts.scheduleWrites).toBe(writesBefore + 1); // in place: no delete, no create
+    const watch = await onTheWatch(client, liftSpec.name);
+    expect(update.wireFingerprint).toBe(watch!.contentFingerprint);
+    const work = watch!.stages.filter((s) => s.kind === "work");
+    expect(work.map((s) => s.reps)).toEqual([12, 12, 8]);
+    expect(work.map((s) => s.loadBodyweight ?? false)).toEqual([true, true, false]);
+    expect(work[2]!.loadKg).toBe(24);
+    // Each child still sits under its own container, by the server's ids.
+    const repeats = watch!.stages.filter((s) => s.kind === "repeat");
+    expect(work.map((s) => repeats.findIndex((r) => r.id === s.parentStageId))).toEqual([0, 1, 2]);
+  });
+
+  it("verifies a mobility circuit the same way", async () => {
+    const flow: CoachSession = {
+      category: "yoga",
+      title: "Hips",
+      durationMinutes: 15,
+      mobility: {
+        rounds: 2,
+        exercises: [
+          { name: "Couch stretch", originId: BENCH_ID, sets: 1, holdSeconds: 45, perSide: true, weight: { type: "bodyweight" }, restSeconds: 0 },
+          { name: "Deep squat", originId: SQUAT_ID, sets: 1, holdSeconds: 60, weight: { type: "bodyweight" }, restSeconds: 15 },
+        ],
+      },
+    } as CoachSession;
+    const longer = {
+      ...flow,
+      mobility: { ...flow.mobility!, rounds: 3 },
+    } as CoachSession;
+    const spec = pushSpec({ name: stamp("Hips"), session: flow, thresholdPaceSecPerKm: undefined });
+    const { client, target } = await pushed(spec, renormalizingCoros);
+
+    const update = await updateWorkoutContent(client, { target, session: longer }, options());
+
+    expect(update.ok, update.error).toBe(true);
+    expect((await onTheWatch(client, spec.name))!.stages.find((s) => s.kind === "repeat")!.repeatCount).toBe(3);
+  });
+
+  it("re-runs and verifies on a retry of the same rewrite (the job's Retry)", async () => {
+    const { client, target } = await pushed(liftSpec, renormalizingCoros);
+    const first = await updateWorkoutContent(client, { target, session: after }, options());
+    expect(first.ok, first.error).toBe(true);
+
+    const retry = await updateWorkoutContent(client, { target, session: after }, options());
+
+    expect(retry.ok, retry.error).toBe(true);
+    expect(retry.wireFingerprint).toBe((await onTheWatch(client, liftSpec.name))!.contentFingerprint);
+  });
+
+  it("still refuses when the server stored a different prescription than was sent", async () => {
+    const { server, target } = await pushed(liftSpec, renormalizingCoros);
+    // A server that keeps the old rep count on the second block's child: a genuine difference, named.
+    const inner = server.fetchImpl;
+    const altering: typeof fetch = async (input, init) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (href.includes("/training/schedule/update") && String(init?.body).includes('"status":2')) {
+        const body = JSON.parse(String(init!.body)) as { programs: Array<{ exercises: Array<Record<string, unknown>> }> };
+        body.programs[0]!.exercises[3]!.targetValue = 15;
+        return inner(input, { ...init, body: JSON.stringify(body) });
+      }
+      return inner(input, init);
+    };
+    const client = new CorosClient({ region: "us", fetchImpl: altering, logger: noop });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+
+    const update = await updateWorkoutContent(client, { target, session: after }, options());
+
+    expect(update.ok).toBe(false);
+    expect(update.reason).toBe("verification_failed");
+    // The genuine difference and nothing else — not COROS's ids, container targets or its own duration.
+    expect(update.error).toMatch(/ — ex\[3\]\.targetValue 12→15$/);
   });
 });
 

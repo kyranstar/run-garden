@@ -865,8 +865,10 @@ export interface RetrySyncResponse {
   movesRetried: number;
   /** Studio plans (holding one or more failed rows) that were re-pushed. */
   studioRetried: number;
-  /** Failed coach watch writes queued again — only sessions still ahead. */
+  /** Failed coach watch writes queued again — only sessions still ahead (the set the banner counts). */
   coachRetried: number;
+  /** The same count, under the name the client drains on. */
+  rewritesRetried?: number;
 }
 
 /** Progress of the one-shot deep history backfill. */
@@ -1486,6 +1488,22 @@ function drainedWatch<T extends { watchDrain?: boolean }>(res: T): T {
   return res;
 }
 
+/** Most coach drain requests one approve or Retry fires; the hourly lane runs whatever is left. */
+export const COACH_DRAIN_MAX = 8;
+
+/**
+ * Run the coach's queued watch writes — one a request (ruling 3-R11, 2026-10-10): an approve answers `coachDrain`,
+ * the banner's Retry `rewritesRetried`, and neither runs the writes itself any more (an approve that did measured 65
+ * against the free plan's 50 per invocation). Drains until a request runs nothing, at most COACH_DRAIN_MAX. Fired,
+ * never waited on.
+ */
+async function drainCoach(): Promise<void> {
+  for (let i = 0; i < COACH_DRAIN_MAX; i++) {
+    const { executed } = await post<{ executed: number }>("/api/coach/drain", {});
+    if (!executed) return;
+  }
+}
+
 export const api = {
   me: () => get<MeResponse>("/api/auth/me"),
   logout: () => post("/api/auth/logout"),
@@ -1532,8 +1550,14 @@ export const api = {
   /** A cached read or null — never generates, never spends (System 2). */
   coachReadPeek: (activityId: string) =>
     get<{ read: CoachAnalyzeResult["read"] | null }>(`/api/coach/analyze/${activityId}`),
-  coachApprove: (proposalId: string) =>
-    post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/approve`),
+  coachApprove: async (proposalId: string) => {
+    const res = await post<{ ok: boolean; coachDrain?: boolean }>(`/api/coach/proposals/${proposalId}/approve`);
+    if (res.coachDrain) void drainCoach().catch(() => undefined);
+    return res;
+  },
+  /** One proposal's status: what a tap whose answer never came back reads before it says anything. */
+  coachProposal: (proposalId: string) =>
+    get<{ id: string; status: CoachProposalDto["status"]; resolvedAt: string | null }>(`/api/coach/proposals/${proposalId}`),
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   coachAnswerQuestion: (questionId: string, answer: string) =>
@@ -1610,7 +1634,12 @@ export const api = {
   dismissSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/dismiss`),
   undoSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/undo`),
   readNow: () => post<ReadNowResponse>("/api/sync/read-now"),
-  retrySync: () => post<RetrySyncResponse>("/api/sync/retry"),
+  retrySync: async () => {
+    const res = await post<RetrySyncResponse>("/api/sync/retry");
+    // A failed rewrite the Retry queued again runs in the coach drain's own requests (ruling 3-R11).
+    if ((res.rewritesRetried ?? 0) > 0) void drainCoach().catch(() => undefined);
+    return res;
+  },
 
   // ── Programs (worker routes: apps/worker/src/routes/programs.ts) ─────────
   listPrograms: () => get<ProgramsResponse>("/api/programs"),

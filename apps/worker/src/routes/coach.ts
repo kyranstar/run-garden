@@ -32,12 +32,12 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { restoreInProgress } from "../services/account-state.js";
 import { loadOutOfCredits } from "../services/ai-credits.js";
-import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
+import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
 import { LLM_BUDGET } from "../services/llm.js";
-import { executeCloudJobs } from "../services/coros-write-cloud.js";
+import { COACH_DRAIN_KINDS, coachDrainQueued, executeCloudJobs } from "../services/coros-write-cloud.js";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
 import { loggedTopKgByWeek } from "../services/logged-sets.js";
@@ -447,18 +447,57 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
     .update(coachProposals)
     .set({ status: "approved", resolvedAt: nowInstant() })
     .where(eq(coachProposals.id, id));
+  // COMMITTED. From here on the answer is success whatever else goes wrong (2026-10-10): the owner's approve applied
+  // and the client was told it had failed, so the second tap met 409 not_pending. Nothing below may turn an applied
+  // proposal into an error.
+  //
   // The receipt tells the truth about what the apply could not do. An op that
   // promised a change and made none used to be invisible here: the athlete
   // read "✓ approved" and believed their plan had changed.
   const shortfall = applied.missed.length > 0 ? ` · ${applied.missed.join("; ")}` : "";
-  await receipt(db, userId, `✓ approved — ${p.title}${shortfall}`, p.id);
+  await receipt(db, userId, `✓ approved — ${p.title}${shortfall}`, p.id).catch((e: unknown) =>
+    console.error(`approve ${p.id}: applied, but the receipt failed: ${e instanceof Error ? e.message : String(e)}`),
+  );
   // Same aftermath as the athlete's own edits: the garden forgets what the
-  // ops resolved/archived/restored, and the calendar follows the plan.
+  // ops resolved/archived/restored, and the calendar follows the plan — one bounded step of it in this request
+  // (CALENDAR_OPS_PER_REQUEST); the half-hourly reconcile books whatever it left.
   if (applied.resimFrom) await resimulateFrom(db, userId, applied.resimFrom, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
-  waitUntilSafe(c, syncCalendar(db, c.env, userId).catch(() => undefined));
-  // Cloud-direct: any watch writes the approval enqueued execute now.
-  waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),);
-  return c.json({ ok: true, applied });
+  waitUntilSafe(c, syncCalendar(db, c.env, userId, { maxOps: CALENDAR_OPS_PER_REQUEST }).catch(() => undefined));
+  // THE WATCH WRITES RUN IN A REQUEST OF THEIR OWN (ruling 3-R11). This route used to run the whole cloud lane (cap 3)
+  // in its own invocation: one strength rewrite on top of the approve measured 65 D1 statements + fetches against the
+  // free plan's 50 per invocation. Now it answers `coachDrain` and the client drains (`POST /api/coach/drain`, one job
+  // a request); the hourly lane runs whatever no client drained.
+  const coachDrain = await coachDrainQueued(db, userId).catch(() => false);
+  return c.json({ ok: true, applied, ...(coachDrain ? { coachDrain: true } : {}) });
+});
+
+/**
+ * `POST /api/coach/drain`: run at most ONE queued coach watch write — a session's create, rewrite or unpush, or a
+ * coach move's COROS date move (`COACH_DRAIN_KINDS`) — in a request of its own (ruling 3-R11). The client calls it
+ * after an approve, or the sync banner's Retry, answers `coachDrain`, and again while it answers `executed: 1`.
+ * Reads and program pushes are left to the lanes that run them. `{executed}`.
+ */
+coachRoutes.post("/drain", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const { executed } = await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, onlyKinds: COACH_DRAIN_KINDS });
+  return c.json({ executed });
+});
+
+/**
+ * One proposal's status — what the card reads after a tap whose answer never came back (a dropped connection, a
+ * 5xx), before it says anything: the approve may well have applied. 404 `not_found`.
+ */
+coachRoutes.get("/proposals/:id", async (c) => {
+  const [p] = await c
+    .get("db")
+    .select({ id: coachProposals.id, status: coachProposals.status, resolvedAt: coachProposals.resolvedAt })
+    .from(coachProposals)
+    .where(and(eq(coachProposals.id, c.req.param("id")), eq(coachProposals.userId, c.get("userId"))))
+    .limit(1);
+  if (!p) return c.json({ error: "not_found" }, 404);
+  return c.json(p);
 });
 
 coachRoutes.post("/proposals/:id/decline", async (c) => {

@@ -4,6 +4,7 @@ import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
   appAuthoredRow,
   nowInstant,
+  COACH_JOB_KINDS,
   COACH_STAMPING_JOB_KINDS,
   STAMPING_JOB_KINDS,
   todayInZone,
@@ -262,6 +263,30 @@ function toStudioJob(job: { id: string; kind: string; payload: unknown }): Studi
   return undefined;
 }
 
+/**
+ * WHAT THE COACH DRAIN RUNS (ruling 3-R11, 2026-10-10): the watch writes a coach approve — or the banner's Retry —
+ * queues: a session's create, rewrite or unpush, and the COROS date move a coach `move` makes. One a request: the
+ * approve used to run the whole lane (cap 3) in its own invocation, and one strength rewrite on top of the approve
+ * measured 65 (D1 statements + fetches) against the free plan's 50.
+ */
+export const COACH_DRAIN_KINDS = ["move_scheduled_workout", ...COACH_JOB_KINDS] as const;
+
+/** Is any of this user's coach-drain work queued? One statement: the approve's answer says whether to drain. */
+export async function coachDrainQueued(db: Db, userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: corosWriteJobs.id })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.status, "queued"),
+        inArray(corosWriteJobs.kind, [...COACH_DRAIN_KINDS]),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 export async function executeCloudJobs(
   db: Db,
   env: Env,
@@ -272,6 +297,8 @@ export async function executeCloudJobs(
     fetchImpl?: typeof fetch;
     /** Claim only a program push or its unpush — the session sheet's targeted drain (ruling 3-R11). */
     watchOnly?: boolean;
+    /** Claim only these kinds — the coach drain (`COACH_DRAIN_KINDS`, ruling 3-R11). */
+    onlyKinds?: readonly string[];
   } = {},
 ): Promise<{ executed: number }> {
   const cap = opts.cap ?? 3;
@@ -302,6 +329,7 @@ export async function executeCloudJobs(
       const job = await claimNextJob(db, userId, CLOUD_DEVICE_ID, {
         excludeKinds: ["backfill", ...(watchPushEnabled(env) ? [] : ["program_session_push"])],
         ...(opts.watchOnly ? { watchOnly: true } : {}),
+        ...(opts.onlyKinds ? { onlyKinds: opts.onlyKinds } : {}),
       });
       if (!job) break;
 

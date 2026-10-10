@@ -321,9 +321,58 @@ export function programStepsInWireOrder(program: RawCorosProgram | undefined): R
  * the two cannot drift into disagreeing about what "content" means. Values are
  * numbers, ids and structural flags only — never a workout name — so this is
  * safe to persist and to show.
+ *
+ * WHAT IS OURS, NOT WHAT THE SERVER RE-ISSUES (2026-10-10). The fingerprint is a
+ * between-reads tool, where both sides are COROS's; across a write, three of its
+ * fields carry the server's figures on every strength/yoga program, and the
+ * owner's approved rewrite of a strength session — landed, 0000 — was marked
+ * failed over all three:
+ *
+ *  · `groupId` is an id, and COROS issues its own: a child sent under our
+ *    container `1` comes back under that container's 18-digit server id. What we
+ *    prescribe is the STRUCTURE — which container each child sits in — so a
+ *    group is compared by the container it resolves to (its index in its own
+ *    list), and where it resolves to none, by a consistent one-to-one mapping of
+ *    sent group to stored group. "0"/absent is "no group" on either side.
+ *  · a container's `targetValue` is server-computed (the seconds-per-set
+ *    placeholder we send as 60 came back 78, 62, 196) — skipped for a step that
+ *    is a container on both sides; its children's targets and its `sets` are
+ *    still compared.
+ *  · `intensityValue` "" is bodyweight's empty load, which COROS stores as no key
+ *    at all: "", absent and null are one value. A numeric 0 (an explicit 0 kg)
+ *    is not.
  */
 /** `describeProgramDelta`'s answer when the two programs agree. */
 export const NO_PROGRAM_DELTA = "no field in the fingerprint differs";
+
+/** "No group": COROS writes `"0"`, a hand-built step may say `0`, and a step may carry no key at all. */
+function noGroup(groupId: unknown): boolean {
+  return groupId === undefined || groupId === null || groupId === "" || String(groupId) === "0";
+}
+
+/** A repeat-group container — the step whose `sets` is a repeat count and whose `targetValue` COROS computes. */
+function isContainer(e: RawCorosExercise): boolean {
+  return e.isGroup === true;
+}
+
+/**
+ * What a step's `groupId` POINTS AT within its own program: `#<index>` of the container carrying that id, or the
+ * raw id (`=<id>`) when no container in the list carries it; `null` for no group.
+ */
+function groupResolver(exercises: RawCorosExercise[]): (groupId: unknown) => string | null {
+  const at = new Map<string, number>();
+  exercises.forEach((e, i) => {
+    if (isContainer(e) && !noGroup(e.id)) at.set(String(e.id), i);
+  });
+  return (groupId) => {
+    if (noGroup(groupId)) return null;
+    const index = at.get(String(groupId));
+    return index !== undefined ? `#${index}` : `=${String(groupId)}`;
+  };
+}
+
+/** Bodyweight's empty load: COROS stores the "" we send as no key. */
+const loadValue = (v: unknown): unknown => (v === "" ? undefined : v);
 
 export function describeProgramDelta(
   sent: RawCorosProgram,
@@ -331,6 +380,7 @@ export function describeProgramDelta(
   limit = 8,
 ): string {
   const diffs: string[] = [];
+  const show = (v: unknown): string => (v === undefined || v === null ? "absent" : String(v));
   /**
    * ENCODING IS NOT CONTENT. COROS declares `distance` as a "2dp string" and
    * `groupId` as `string | number`, and it re-encodes on save: a rewrite that
@@ -346,8 +396,26 @@ export function describeProgramDelta(
     if (typeof na === "number" && typeof nb === "number" && !Number.isNaN(na) && !Number.isNaN(nb)) {
       if (na === nb) return;
     }
-    const show = (v: unknown): string => (v === undefined || v === null ? "absent" : String(v));
+    if ((a === undefined || a === null) && (b === undefined || b === null)) return;
     diffs.push(`${field} ${show(a)}→${show(b)}`);
+  };
+  /**
+   * The same container on both sides. Two resolved containers must be the SAME position; otherwise the sent group
+   * and the stored group must map one-to-one, every time either is seen.
+   */
+  const sentGroup = groupResolver(sent.exercises ?? []);
+  const observedGroup = groupResolver(observed.exercises ?? []);
+  const sentToObserved = new Map<string, string>();
+  const observedToSent = new Map<string, string>();
+  const sameGroup = (s: string | null, o: string | null): boolean => {
+    if (s === null || o === null) return s === o;
+    if (s.startsWith("#") && o.startsWith("#") && s !== o) return false;
+    const forward = sentToObserved.get(s);
+    const back = observedToSent.get(o);
+    if ((forward !== undefined && forward !== o) || (back !== undefined && back !== s)) return false;
+    sentToObserved.set(s, o);
+    observedToSent.set(o, s);
+    return true;
   };
   // `name` is compared but never printed: a changed title matters, its text is
   // the athlete's and does not belong in an error column.
@@ -368,13 +436,15 @@ export function describeProgramDelta(
     }
     cmp(`ex[${i}].exerciseType`, x.exerciseType, y.exerciseType);
     cmp(`ex[${i}].targetType`, x.targetType, y.targetType);
-    cmp(`ex[${i}].targetValue`, x.targetValue, y.targetValue);
+    if (!(isContainer(x) && isContainer(y))) cmp(`ex[${i}].targetValue`, x.targetValue, y.targetValue);
     cmp(`ex[${i}].intensityType`, x.intensityType, y.intensityType);
-    cmp(`ex[${i}].intensityValue`, x.intensityValue, y.intensityValue);
+    cmp(`ex[${i}].intensityValue`, loadValue(x.intensityValue), loadValue(y.intensityValue));
     cmp(`ex[${i}].intensityValueExtend`, x.intensityValueExtend, y.intensityValueExtend);
     cmp(`ex[${i}].sets`, x.sets, y.sets);
     cmp(`ex[${i}].isGroup`, x.isGroup, y.isGroup);
-    cmp(`ex[${i}].groupId`, x.groupId, y.groupId);
+    if (!sameGroup(sentGroup(x.groupId), observedGroup(y.groupId))) {
+      diffs.push(`ex[${i}].groupId ${noGroup(x.groupId) ? "0" : String(x.groupId)}→${noGroup(y.groupId) ? "0" : String(y.groupId)}`);
+    }
   }
   if (diffs.length === 0) return NO_PROGRAM_DELTA;
   return diffs.length > limit
