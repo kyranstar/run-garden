@@ -314,7 +314,62 @@ and it reasons, designs, reviews its own work and proposes. It is not a template
   trip, after a missed week…) judged against the review rubric; regressions block a release.
 - **Cost per design** is measured and reported; a weekly cap is enforced; prompt caching is used.
 
-### 6.7 Platform realities for the agent
+### 6.7 Memory
+The coach remembers the athlete — durably, visibly, correctably.
+- **Kinds**: *facts* (who they are), *rules* (standing preferences), *notes* (time-boxed, with an expiry), and
+  *observations* (what the coach has learned from outcomes, with the evidence that supports it — e.g. "activation
+  before deadlifts: no low-back flags in 3 of 3 sessions").
+- **Provenance and confidence**: every memory says where it came from (the athlete's message, a check-in, a session,
+  the coach's inference) and when. **Inferred memories are marked as the coach's inference** and become firm only when
+  the athlete confirms them.
+- **Visible and correctable**: the athlete can see, edit, pin and delete every memory; a reply shows what it
+  remembered or used, with one-tap undo. Nothing the coach remembers is hidden.
+- **Retrieved, not dumped**: a small always-on core (pinned and recent facts and rules) rides in the cached context;
+  the rest is recalled by a tool when relevant.
+- **Freshness and conflict**: notes expire; an old inferred memory is re-confirmed gently before it drives a big
+  decision; a newer memory that contradicts an older one supersedes it, with history kept.
+- **Structured where it can be**: anything that has a home in the profile (goals, focus areas, equipment,
+  preferences) moves to the profile; memory keeps what does not fit a field.
+- Memory is personal data: database only, never the repository.
+
+### 6.8 Carried forward from the existing coach
+These proven features stay, upgraded rather than replaced: tap-to-approve proposals with the computed manifest and
+trade-off lines; receipts in the thread; evidence citations (now linking to the data they cite); the per-activity
+read; triggers (now showing why the coach spoke up); the weekly review and the week's focus line (now including
+objectives and the week's balance); questions with tappable answers (now `ask_athlete` with free text); spend tracking
+and the weekly cap (now with cost per design); fatal-versus-advisory validation with repair; the honesty, numbers and
+garden-voice rules.
+
+### 6.9 Orchestration: one main agent, sub-agents per workout
+- A request names a **scope**: *now* or *later today* by default, or *this week* / *the next N workouts*; how many and
+  when are settings with defaults, and every scope uses the same simple interface.
+- **A main agent** holds the general principles (§2) and the athlete's situation. For more than one workout it
+  **plans the set first**: what each workout is for, spacing for recovery, the balance of qualities across the set,
+  objectives coverage, fit around the existing plan (runs, rest days, events).
+- **Each workout is designed by its own sub-agent** — its own designer and its own independent reviewer (§6.4) —
+  with a context scoped to that workout and the main agent's brief for it.
+- The main agent **reviews the whole set** (balance, interference, progression from one workout to the next) and
+  proposes it as one proposal the athlete can approve in whole or in part.
+- Sub-agents are bounded (steps, cost); the orchestration runs one step per request (§6.10).
+
+### 6.10 Asking the athlete — autonomy, with examples
+- The coach may ask **whenever an answer would change what it designs** — before, during or after drafting — not at
+  prescribed points, and never for something it can already read. One or two questions at a time; tappable answers
+  and free text.
+- Worked examples of good asking (examples to reason from, not rules):
+  - *Ambiguous time or place*: "How long do you have, and at home or the gym?" — when the calendar and the request do
+    not settle it.
+  - *State of a relevant area*: "How are the hips today — tight, okay, loose?" — before a session built around them.
+  - *Conflicting goals*: "Ski legs or a fresh 10K effort this week — which matters more?" — when both cannot fit.
+  - *After a gap or a flare*: "Back to normal, or ease in?" — after missed sessions or a high symptom reading.
+  - *A named exercise with unclear intent*: "Wall sits for the hold, or for ski-specific endurance?"
+  - *Before an event*: "Is the trip on the 24th still happening?"
+- Worked examples of good workouts (archetypes to reason from, not templates): *activate then load* (glute
+  activation → hinge → hip opening); *power while fresh* (landing drills → low bounds → strength → mobility);
+  *recovery flow* (breath → gentle mobility → long holds → down-regulation); *ski-prep endurance* (isometric holds +
+  lateral control + eccentric hamstrings); *easy run + mobility* (easy aerobic → strides → hip and calf mobility).
+
+### 6.11 Platform realities for the agent
 - The Workers **Free** plan: each request stays within ~45 combined D1 statements + external fetches; an agent loop
   runs **one step per request** (state persisted between steps), which also makes each step a visible event.
 - Model: quality first (the strongest available model for design and review), with caching; the model id is
@@ -404,4 +459,6 @@ At the end of the programme, additionally:
 | 2026-10-10 | The Studio and its coach cover **everything**, runs included: one definition, one Studio, one coach. |
 | 2026-10-10 | Approach A: **one rich workout document**, versioned, read and written by every part of the system. |
 | 2026-10-10 | **Objectives and key results** (e.g. a hold time, a lift, a run time and running economy) are part of the foundation; an OKR-style, gently gamified dashboard comes with the coach stage. |
+| 2026-10-10 | Keep the coach's memory and its other proven features, improved (§6.7, §6.8). |
+| 2026-10-10 | Extras in: **exercise feedback** after sessions, **plan my week**, **saved templates**. One simple coach control with a **scope** (default *now / later today*; this week; next N workouts) and settings for how many and when; multi-workout requests are **orchestrated by a main agent with sub-agents per workout** (§6.9); the coach **asks on its own judgement** wherever it helps, with worked examples (§6.10). |
 | 2026-10-10 | "Every workout should be designed with intention and awareness of the possibilities … do not be overly prescriptive for the coach, but instead empower the coach." (§2.1, §2.2, §6.1) |
