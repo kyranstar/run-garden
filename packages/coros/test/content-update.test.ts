@@ -1082,6 +1082,27 @@ describe("a session COROS authored can be eased, proven by what the import recor
     expect((await watchOn(client, date)).find((w) => w.title === easedSession.title)).toBeDefined();
   });
 
+  it("a rewrite that LANDED but was recorded as failed: the retry finds its own content there and settles as already current", async () => {
+    // Live 2026-10-10: an approved coach rewrite of a strength session landed on COROS, but the read-back refused it
+    // (COROS's own group ids and container totals), so the row kept the PRE-rewrite import claim. The Retry then read
+    // the address, found content ≠ that claim and refused it as someone else's (`stamp_mismatch`) — though the address
+    // held exactly what the retry would write. Identical content is ours: settle, and stamp what is there.
+    const { server, client } = await setup();
+    const { target } = await imported(server, "Threshold 5x5");
+    const spec = { target, name: easedSession.title, session: easedSession, thresholdPaceSecPerKm: THRESHOLD };
+    const first = await updateWorkoutContent(client, spec, options({ today: TODAY }));
+    expect(first.ok, first.error).toBe(true);
+
+    // The retry still carries the OLD claim (the failed verification never re-stamped the row).
+    const writesBefore = server.counts.scheduleWrites;
+    const retry = await updateWorkoutContent(client, spec, options({ today: TODAY }));
+    expect(retry.ok, retry.error).toBe(true);
+    expect(retry.reason).toBe("already_current");
+    expect(server.counts.scheduleWrites, "nothing on the wire").toBe(writesBefore);
+    const there = server.programByIdInPlan(retry.serverIdInPlan ?? target.idInPlan)!;
+    expect(retry.observedFingerprint).toBe(corosProgramFingerprint(there));
+  });
+
   // ── The adversarial half ───────────────────────────────────────────────────
 
   it("REFUSES when the address holds different content than we imported", async () => {

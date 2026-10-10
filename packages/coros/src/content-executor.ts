@@ -613,6 +613,27 @@ export async function updateWorkoutContent(
           program: programsFor(before, atAddress)[0],
           date: corosDayToLocalDate(atAddress.happenDay),
         };
+        // A REWRITE THAT LANDED BUT WAS RECORDED AS FAILED (live 2026-10-10): its read-back was refused, so the row
+        // kept the pre-rewrite import claim, and every retry then found "content ≠ the claim" here and refused it as
+        // someone else's — though the address held exactly what the retry would write. Identical content (by value,
+        // COROS's own estimates set aside, as the verification below does; and the same pace ENCODING, which the
+        // fingerprint cannot see) is this app's own write: settle as already current and stamp what is there.
+        if (imported && occupant.program) {
+          const there = occupant.program;
+          const asIntended = { ...there, duration: built.duration, estimatedTime: built.estimatedTime };
+          if (sameProgramContent(built, asIntended) && paceEncodingOf(built) === paceEncodingOf(there)) {
+            log(`  the address already holds this rewrite (an earlier attempt landed) — no write`);
+            const thereFingerprint = corosProgramFingerprint(there);
+            return {
+              ok: true,
+              reason: "already_current",
+              ...addressOf(occupant, String(atAddress.planId ?? target.planId)),
+              wireFingerprint: thereFingerprint,
+              observedFingerprint: thereFingerprint,
+              ...owed,
+            };
+          }
+        }
         log(`  address occupied by ${describeForLog(occupant, verbose)} — NOT rewritten`);
         return {
           ok: false,
