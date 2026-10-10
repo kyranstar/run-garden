@@ -37,6 +37,7 @@ const {
   activities,
   activitySourceLinks,
   conditionChecks,
+  athleteAnswers,
   exercisePrefs,
   gardenDayInputs,
   performedSessions,
@@ -565,6 +566,78 @@ describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
     await expect(save(payload(s), "another-id")).rejects.toThrow("invalid_save");
     await expect(save(payload(s, { source: "import", sourceRef: "x" }))).rejects.toThrow("invalid_save");
     await expect(save({ id: "x" })).rejects.toThrow("invalid_save");
+  });
+});
+
+describe("the review's feedback is kept as answers (Stage 1, Task 15)", () => {
+  const answers = () => db.select().from(athleteAnswers).where(eq(athleteAnswers.userId, userId));
+
+  it("two ratings write two exercise_feedback rows linked to the session; a cleared rating writes none", async () => {
+    const s = await started("build");
+    const [a, b] = s.build.items.map((i) => i.exerciseId);
+    const body = payload(s, { review: { ratings: { [a!]: 1, [b!]: -1, "no-such-move": 1 } } });
+    await save(body);
+    const rows = (await answers()).sort((x, y) => x.subjectId!.localeCompare(y.subjectId!));
+    expect(rows.map((r) => [r.questionId, r.subjectKind, r.subjectId, r.valueNum, r.source, r.performedSessionId, r.workoutId, r.localDate, r.at])).toEqual(
+      [a!, b!].sort().map((id) => ["exercise_feedback", "exercise", id, id === a ? 1 : -1, "review", body.id, s.workoutId, PLAYED, SAVED]),
+    );
+    const cleared = payload(s, { id: "8d2f3b5c-6e7a-4b9c-8d1e-2f3a4b5c6d7e", review: { ratings: { [a!]: null } } });
+    await db.delete(athleteAnswers);
+    await db.update(performedSessions).set({ payloadHash: "pending" });
+    await save(cleared);
+    expect(await answers()).toEqual([]);
+  });
+
+  it("a re-save of the same session (a pending marker left behind) upserts: no duplicates, the newer value wins", async () => {
+    const s = await started("build");
+    const [a, b] = s.build.items.map((i) => i.exerciseId);
+    const body = payload(s, { review: { ratings: { [a!]: 1, [b!]: 1 }, session: { rating: 3 } } });
+    await save(body);
+    const first = await answers();
+    expect(first).toHaveLength(3);
+    await db.update(performedSessions).set({ payloadHash: "pending" }).where(eq(performedSessions.id, body.id));
+    await save({ ...body, review: { ratings: { [a!]: -1, [b!]: 1 }, session: { rating: 5 } } });
+    const after = await answers();
+    expect(after.map((r) => r.id).sort()).toEqual(first.map((r) => r.id).sort());
+    expect(after.find((r) => r.subjectId === a)!.valueNum).toBe(-1);
+    expect(after.find((r) => r.questionId === "workout_feedback")!.valueNum).toBe(5);
+  });
+
+  it("the workout-level slot writes one workout_feedback row; absent, none; text is kept as data", async () => {
+    const s = await started("build");
+    const body = payload(s, { review: { session: { rating: 4, difficulty: "too_hard", text: "legs were heavy" } } });
+    await save(body);
+    const [row, ...rest] = await answers();
+    expect(rest).toEqual([]);
+    expect(row).toMatchObject({
+      questionId: "workout_feedback", subjectKind: "performed_session", subjectId: body.id, valueNum: 4, valueChoice: "too_hard",
+      text: "legs were heavy", source: "review", performedSessionId: body.id, workoutId: s.workoutId, localDate: PLAYED, at: SAVED,
+    });
+    await db.delete(athleteAnswers);
+    await db.update(performedSessions).set({ payloadHash: "pending" });
+    await save(payload(s, { review: { session: {} } }));
+    expect(await answers()).toEqual([]);
+  });
+
+  it("an older client's save (no session slot, no ratings) succeeds and writes no answers", async () => {
+    const s = await started("build");
+    expect(await save(payload(s))).toMatchObject({ status: "saved" });
+    expect(await answers()).toEqual([]);
+  });
+
+  it("the rows ride the save's one batch, chunked under 100 bound variables", async () => {
+    const s = await started("build");
+    const { EXERCISES } = await import("@rg/exercise-library");
+    const ids = EXERCISES.slice(0, 40).map((e) => e.id);
+    const body = payload(s, {
+      movesPlanned: 40,
+      review: { ratings: Object.fromEntries(ids.map((id) => [id, 1 as const])), session: { rating: 2, text: "t" } },
+    });
+    await save(body);
+    expect(await answers()).toHaveLength(41);
+    const inserts = statements.filter((q) => /^insert into "athlete_answers"/.test(q));
+    expect(inserts.length).toBeGreaterThan(1);
+    for (const q of inserts) expect((q.match(/\?/g) ?? []).length).toBeLessThanOrEqual(100);
   });
 });
 

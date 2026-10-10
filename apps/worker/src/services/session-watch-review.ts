@@ -69,6 +69,7 @@ import {
   type SaveCtx,
   type SaveOutcome,
 } from "./session-save.js";
+import { sessionAnswerStatements } from "./session-answers.js";
 import { PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
 import { watchStepMoves } from "./watch-push.js";
 
@@ -717,7 +718,7 @@ async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire,
   statements.push(db.update(activities).set({ title: r.slot.title, sport: discipline, updatedAt: now }).where(eq(activities.id, r.activity.id)));
   // The slot is done (its match completed it already).
   statements.push(db.update(plannedWorkouts).set({ contentState: "done", updatedAt: now }).where(and(eq(plannedWorkouts.id, r.slot.id), eq(plannedWorkouts.userId, userId))));
-  statements.push(...prefs);
+  statements.push(...prefs, ...sessionAnswerStatements(db, userId, p.id, p, "watch_review", now));
   const activityDay = (r.activity.startTimeLocal ?? p.localDate).slice(0, 10);
   statements.push(gardenChangeStatement(db, userId, [r.slot.effectiveDate, p.localDate, activityDay].sort()[0]!));
   // Commit marker: everything above lands with it, or none of it does.

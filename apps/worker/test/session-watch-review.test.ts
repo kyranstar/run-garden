@@ -38,7 +38,8 @@ import { buildDayInput } from "../src/services/garden-sync.js";
 import { buildSession, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
 import { savePerformedSession, setRows } from "../src/services/session-save.js";
 import { mappedAsSent, movesAsSent, pairWatchSets, watchReviewBasis, type WatchReviewEntry } from "../src/services/session-watch-review.js";
-import { upsertWatchSession } from "../src/services/watch-sets.js";
+import { PENDING_HASH, upsertWatchSession } from "../src/services/watch-sets.js";
+import { EXERCISES } from "@rg/exercise-library";
 import { sendToWatch, watchStepMoves } from "../src/services/watch-push.js";
 import { slotId } from "../src/services/program-slots.js";
 import { connectTestCoros, D1_BIND_LIMIT, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -743,6 +744,31 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     const before = canonicalJson(await buildDayInput(db, userId, DAY, prefs));
     await save(await reviewBody(s.workoutId));
     expect(canonicalJson(await buildDayInput(db, userId, DAY, prefs))).toBe(before);
+  });
+
+  it("keeps each rating, and the workout-level slot, as answers on the review's session; a re-save upserts them (Task 15)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    const body = await reviewBody(s.workoutId);
+    const [a, b] = body.entries!.map((e) => e.exerciseId).filter((id) => EXERCISES.some((x) => x.id === id));
+    const review = { ratings: { [a!]: 1 as const, [b!]: -1 as const }, session: { difficulty: "right" as const, text: "ok" } };
+    const rated = { ...body, review };
+    expect((await save(rated)).status).toBe("saved");
+    const answers = async () => db.select().from(schema.athleteAnswers).where(eq(schema.athleteAnswers.userId, userId));
+    const first = await answers();
+    expect(first.map((r) => [r.questionId, r.subjectKind, r.source, r.performedSessionId]).sort()).toEqual(
+      [
+        ["exercise_feedback", "exercise", "watch_review", body.id],
+        ["exercise_feedback", "exercise", "watch_review", body.id],
+        ["workout_feedback", "performed_session", "watch_review", body.id],
+      ].sort(),
+    );
+    expect(first.find((r) => r.subjectId === a)).toMatchObject({ valueNum: 1, localDate: body.localDate });
+    await db.update(performedSessions).set({ payloadHash: PENDING_HASH }).where(eq(performedSessions.id, body.id));
+    expect((await save({ ...rated, review: { ...review, ratings: { [a!]: -1 as const, [b!]: -1 as const } } })).status).toBe("saved");
+    const after = await answers();
+    expect(after.map((r) => r.id).sort()).toEqual(first.map((r) => r.id).sort());
+    expect(after.find((r) => r.subjectId === a)!.valueNum).toBe(-1);
   });
 
   it("the same PUT again → same_payload; another payload for the same id → conflict", async () => {

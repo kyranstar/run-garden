@@ -78,6 +78,7 @@ import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
 import { gardenChangeStatement, REQUEST_GARDEN_STEP, resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { engineDataFor, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
+import { sessionAnswerStatements } from "./session-answers.js";
 import { saveWatchReview } from "./session-watch-review.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
 
@@ -824,7 +825,7 @@ async function write(
   );
 
   // 5. The review's decisions.
-  statements.push(...prefs, ...graduation.statements);
+  statements.push(...prefs, ...sessionAnswerStatements(db, userId, performedId, p, "review", now), ...graduation.statements);
 
   // 6. The garden's replay, on record with the save: whatever happens to the replay itself, the change is not lost.
   statements.push(gardenChangeStatement(db, userId, replayFrom));

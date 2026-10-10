@@ -111,6 +111,15 @@ export const reviewChangesSchema = z
       .array(z.object({ family: z.string().min(1).max(60), to: id }).strict())
       .max(PERFORMED_LIMITS.graduations)
       .default([]),
+    /** The whole workout, in the athlete's words: kept as an answer, never acted on (absent from older clients). */
+    session: z
+      .object({
+        rating: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
+        difficulty: z.enum(["too_easy", "right", "too_hard"]).optional(),
+        text: z.string().max(500).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type ReviewChanges = z.infer<typeof reviewChangesSchema>;
