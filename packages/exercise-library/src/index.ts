@@ -12,3 +12,4 @@ export * from "./eligibility.js";
 export * from "./validate.js";
 export { EXERCISES } from "./exercises/index.js";
 export * from "./search.js";
+export * from "./glossary.js";
