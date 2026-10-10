@@ -229,3 +229,65 @@ describe("pace_encoding_outdated", () => {
     expect((await countDivergedContent(ctx.db, ctx.userId)).candidates).toBe(0);
   });
 });
+
+describe("the rewrite puts the new encoding on the wire", () => {
+  it("even though the fingerprint cannot tell the old copy from the corrected one", async () => {
+    const ctx = await setup();
+    const day = addDays(ctx.today, 2);
+    const id = await pushCoach(ctx, day, THRESHOLD_REPS);
+    await asWrittenBeforeTheFix(ctx, id, THRESHOLD_REPS.title, day);
+    const old = programOf(ctx, THRESHOLD_REPS.title, day)!;
+    // The trap: the old copy hashes exactly like the corrected one, so "already current" would send nothing.
+    expect(corosProgramFingerprint(old)).toBe((await rowOf(ctx.db, id)).sourceContentFingerprint);
+
+    await convergeDivergedContent(ctx.db, ctx.userId, { dryRun: false });
+    await executeCloudJobs(ctx.db, makeEnv(), ctx.userId, ctx.prefs, { fetchImpl: ctx.server.fetchImpl });
+    const [job] = await updateJobsOf(ctx.db, ctx.userId);
+    expect(job!.status, job!.lastErrorCategory ?? "").toBe("verified");
+    const paced = programOf(ctx, THRESHOLD_REPS.title, day)!.exercises!.filter((e) => Number(e.intensityType) === 3);
+    expect(paced.length).toBeGreaterThan(0);
+    expect(paced.every((e) => e.intensityMultiplier === 1000 && e.intensityDisplayUnit === 2)).toBe(true);
+    expect((await countDivergedContent(ctx.db, ctx.userId)).candidates).toBe(0);
+  });
+
+  it("against a COROS that re-encodes what it stores: it verifies, and the next read sees no change in COROS", async () => {
+    const ctx = await setup(renormalizingCoros());
+    const day = addDays(ctx.today, 2);
+    const id = await pushCoach(ctx, day, THRESHOLD_REPS);
+    await asWrittenBeforeTheFix(ctx, id, THRESHOLD_REPS.title, day);
+
+    const report = await convergeDivergedContent(ctx.db, ctx.userId, { dryRun: false });
+    expect(report.rows.map((r) => [r.action, r.evidence])).toEqual([["rewrite", ["pace_encoding_outdated"]]]);
+    await executeCloudJobs(ctx.db, makeEnv(), ctx.userId, ctx.prefs, { fetchImpl: ctx.server.fetchImpl });
+    const [job] = await updateJobsOf(ctx.db, ctx.userId);
+    expect(job!.status, `${job!.lastErrorCategory ?? ""} ${job!.lastErrorDetail ?? ""}`).toBe("verified");
+    const program = programOf(ctx, THRESHOLD_REPS.title, day)!;
+    const paced = program.exercises!.filter((e) => Number(e.intensityType) === 3);
+    expect(paced.length).toBeGreaterThan(0);
+    expect(paced.every((e) => Number(e.intensityMultiplier) === 1000 && Number(e.intensityDisplayUnit) === 2)).toBe(true);
+    const before = await rowOf(ctx.db, id);
+    expect(before.sourceContentFingerprint).toBe(corosProgramFingerprint(program));
+
+    // The production import over what COROS now holds: no "Changed in COROS", nothing adopted, still synced.
+    const n = normalizeCorosSchedule(ctx.server.state.schedule);
+    await importPlanSnapshot(
+      ctx.db,
+      {
+        userId: ctx.userId,
+        plan: { sourcePlanId: n.planId, name: "Container" },
+        workouts: n.workouts,
+        rangeStart: addDays(ctx.today, -7),
+        rangeEnd: addDays(ctx.today, 30),
+        fullSchedule: true,
+        source: "fixture",
+      },
+      ctx.prefs,
+    );
+    expect((await activeSyncNotes(ctx.db, ctx.userId)).filter((note) => note.workoutId === id)).toEqual([]);
+    const after = await rowOf(ctx.db, id);
+    expect(after.corosSyncState).toBe("synced");
+    expect(after.sourceContentFingerprint).toBe(before.sourceContentFingerprint);
+    expect(after.stageSummary).toBe(before.stageSummary);
+    expect((await countDivergedContent(ctx.db, ctx.userId)).candidates).toBe(0);
+  });
+});

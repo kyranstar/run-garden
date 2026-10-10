@@ -376,6 +376,20 @@ export function rewriteProgramContent(
 }
 
 /**
+ * HOW EACH PACE STEP'S BOUNDS ARE ENCODED — the two fields `corosProgramFingerprint` does not cover. With
+ * intensityMultiplier 0 the watch reads ms/km bounds as seconds per km (live 2026-10-09, fixed in 2c1ee96); the
+ * idempotency gate compares this too, so an old copy is never taken for the corrected one. Values compared as
+ * numbers: COROS re-encodes on save.
+ */
+function paceEncodingOf(program: RawCorosProgram): string {
+  return JSON.stringify(
+    (program.exercises ?? []).map((e) =>
+      Number(e.intensityType) === 3 ? [Number(e.intensityMultiplier ?? 0), Number(e.intensityDisplayUnit ?? 0)] : null,
+    ),
+  );
+}
+
+/**
  * Rewrite one already-pushed workout's program in place, and prove the wire
  * now carries the new intent.
  *
@@ -721,7 +735,10 @@ export async function updateWorkoutContent(
     const wireFingerprint = corosProgramFingerprint(rewritten);
     const preFingerprint = corosProgramFingerprint(program);
     const ids = addressOf(found, planId);
-    if (wireFingerprint === preFingerprint) {
+    // The pace ENCODING is not in the fingerprint (intensityMultiplier and intensityDisplayUnit), so a copy written
+    // before 2c1ee96 — bounds the watch reads as seconds — hashes the same as the corrected program. Without this the
+    // pace heal "verified" as already current and left the nonsense on the watch.
+    if (wireFingerprint === preFingerprint && paceEncodingOf(rewritten) === paceEncodingOf(program)) {
       // The wire already IS the new intent — a retried job, or a session eased
       // back to what it was. Sending the write would be harmless; not sending
       // it is what makes this callable on every apply.
@@ -808,9 +825,20 @@ export async function updateWorkoutContent(
     // `"871.00"` distance as `871`) and a raw hash compare across a write
     // therefore reports a content change that never happened. Live, that refused
     // a rewrite which had landed perfectly and left the row in `sync_issue`.
+    //
+    // `duration` and `estimatedTime` are the SERVER'S estimate, not content we
+    // prescribe: COROS stores its own figure, not the calculate endpoint's we sent
+    // (renormalizing-coros.ts rule 4), and every step that decides them is still
+    // compared. Read as differences, they refused every in-place rewrite against a
+    // re-encoding COROS — the pace-encoding heal among them (2026-10-09).
     if (
       observedFingerprint === wireFingerprint ||
-      (now?.program && sameProgramContent(rewritten, now.program))
+      (now?.program &&
+        sameProgramContent(rewritten, {
+          ...now.program,
+          duration: rewritten.duration,
+          estimatedTime: rewritten.estimatedTime,
+        }))
     ) {
       return {
         ok: true,
