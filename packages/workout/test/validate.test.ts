@@ -36,6 +36,14 @@ const LIBRARY: ExerciseRecord[] = [
   HOP_DOWN_TO_BRIDGE,
 ];
 
+/** A made-up profile whose only rule holds the bridge back on a high reading — and lets an unanswered check through. */
+const LENIENT: ConditionProfile = {
+  ...TMJ, id: "testLenient", label: "Lenient", attributes: {}, check: { label: "Lenient", min: 0, max: 10 },
+  never: () => false, fitsMode: () => true, fitsFormat: () => true, allowPattern: () => true,
+  allowRecord: (rec, _mode, today) => rec.id !== "bridge" || (today.pre ?? 0) <= 4,
+  flareSafe: () => true, flare: () => false, recoveryReason: () => null, buildChecks: () => [],
+};
+
 const ex = (libraryId: string, dose: Over, extra: Over = {}): WorkoutItem => ({ kind: "exercise", libraryId, dose, ...extra }) as WorkoutItem;
 const alt = (...ids: string[]): Over => ({ alternates: ids.map((libraryId) => ({ libraryId })) });
 const part = (purpose: string, format: string, items: WorkoutItem[], extra: Over = {}): WorkoutPart => ({ purpose, format, items, ...extra }) as WorkoutPart;
@@ -80,14 +88,23 @@ describe("validateWorkoutDoc — a clean workout", () => {
       [
         "bounds", "condition_flare", "condition_format", "condition_gate", "condition_gate_pending", "condition_mode", "condition_never",
         "condition_pattern", "dose_mismatch", "equipment_unavailable", "excluded_by_athlete", "format_mismatch", "legacy_id", "mode_above_day",
-        "unknown_equipment", "unknown_exercise", "unknown_focus",
+        "mode_limits", "progression_jump", "unknown_equipment", "unknown_exercise", "unknown_focus",
       ].sort(),
     );
   });
 
   it("never names a profile: every condition rule is read through the profile contract", () => {
+    // Jumps are the library's own contraction (its frontier rule and its record helper), not a profile's.
     const src = readFileSync(new URL("../src/validate.ts", import.meta.url), "utf8");
-    expect(src).not.toMatch(/tmj|jaw|clench|neckLoad|faceDown|plyometric|push-v/i);
+    expect(src).not.toMatch(/tmj|jaw|clench|neckLoad|faceDown|push-v/i);
+  });
+
+  it("accepts anything as input: what does not parse is a bounds error, never a throw", () => {
+    for (const junk of [null, undefined, 42, "a workout", { title: "x" }, []]) {
+      const issues = validateWorkoutDoc(junk, { library: LIBRARY, activeProfiles: [TMJ], day: null });
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues.every((i) => i.code === "bounds" && i.severity === "error")).toBe(true);
+    }
   });
 });
 
@@ -99,6 +116,18 @@ describe("bounds", () => {
     const issues = check(bad);
     expect(issues.every((i) => i.code === "bounds" && i.severity === "error")).toBe(true);
     expect(issues.map((i) => i.path).sort()).toEqual([`${P0}.dose.sets`, "title"]);
+  });
+
+  it("says what is wrong in plain words, not the schema library's", () => {
+    const bad = docOf([part("main", "straight", [ex("bridge", { sets: 0, reps: 10, holdSec: 5000 })])], "maintain", { title: "" });
+    const issues = check({ ...bad, intent: { ...bad.intent, effort: "max" } } as unknown as WorkoutDoc);
+    const message = (path: string) => issues.find((i) => i.path === path)?.message;
+    expect(message("title")).toBe("The title can't be empty.");
+    expect(message(`${P0}.dose.sets`)).toBe("Sets must be at least 1.");
+    expect(message(`${P0}.dose.holdSec`)).toBe("Hold time (seconds) must be at most 3600.");
+    expect(message("intent.effort")).toBe("Effort must be one of: recover, maintain, develop, peak.");
+    expect(validateWorkoutDoc(null, { library: LIBRARY, activeProfiles: [], day: null })[0]!.message).toBe("The workout is missing.");
+    for (const i of issues) expect(i.message).not.toMatch(/String must|Number must|Expected|Invalid enum|Required/);
   });
 });
 
@@ -122,6 +151,8 @@ describe("unknown_exercise and legacy_id", () => {
       expect.objectContaining({ path: `${P0}.libraryId`, code: "legacy_id", severity: "warning", fix: "bridge" }),
       expect.objectContaining({ path: `${P0}.alternates[0].libraryId`, code: "legacy_id", severity: "warning", fix: "bridge" }),
     ]);
+    // The message names the move, not the old id.
+    expect(issues[0]!.message).toBe("Glute bridge is listed under an old id.");
   });
 });
 
@@ -155,7 +186,7 @@ describe("format_mismatch", () => {
 
   it("a circuit outside 3–6 moves is a warning (the engine's own circuits must stay clean)", () => {
     const station = (id: string) => ex(id, { sets: 1, holdSec: 40 });
-    const circuit = (n: number) => docOf([part("main", "circuit", ["bridge", "deadBug", "birdDog", "tempoSquat", "bwSplitSquat", "wallPushup", "chinTuck"].slice(0, n).map(station), { rounds: 2 })]);
+    const circuit = (n: number) => docOf([part("main", "circuit", ["bridge", "deadBug", "birdDog", "tempoSquat", "bwSplitSquat", "wallPushup", "chinTuck"].slice(0, n).map(station), { rounds: 2 })], "develop");
     expect(check(circuit(3))).toEqual([]);
     expect(check(circuit(6))).toEqual([]);
     expect(codes(check(circuit(2)))).toEqual(["warning:format_mismatch@parts[0].format"]);
@@ -165,8 +196,8 @@ describe("format_mismatch", () => {
   it("intervals need a run or a timed move (error otherwise)", () => {
     const run: WorkoutItem = { kind: "run", effort: "strides", target: { durationSec: 20 } } as WorkoutItem;
     expect(check(docOf([part("run", "intervals", [run, { kind: "rest", seconds: 40 }], { rounds: 4 })]))).toEqual([]);
-    expect(check(docOf([part("conditioning", "intervals", [ex("tempoSquat", { holdSec: 30 }), { kind: "rest", seconds: 30 }], { rounds: 4 })]))).toEqual([]);
-    expect(codes(check(docOf([part("conditioning", "intervals", [ex("tempoSquat", { reps: 10 }), dead], { rounds: 4 })])))).toEqual(["error:format_mismatch@parts[0].format"]);
+    expect(check(docOf([part("conditioning", "intervals", [ex("tempoSquat", { holdSec: 30 }), { kind: "rest", seconds: 30 }], { rounds: 4 })], "develop"))).toEqual([]);
+    expect(codes(check(docOf([part("conditioning", "intervals", [ex("tempoSquat", { reps: 10 }), dead], { rounds: 4 })], "develop")))).toEqual(["error:format_mismatch@parts[0].format"]);
   });
 });
 
@@ -266,19 +297,15 @@ describe("condition_gate", () => {
 
   it("unanswered means not allowed even when a profile's own rule would let an unanswered check through", () => {
     // A made-up profile whose record rule only refuses a high reading: unanswered, the validator still refuses.
-    const lenient: ConditionProfile = {
-      ...TMJ, id: "testLenient", label: "Lenient", attributes: {}, check: { label: "Lenient", min: 0, max: 10 },
-      never: () => false, fitsMode: () => true, fitsFormat: () => true, allowPattern: () => true,
-      allowRecord: (rec, _mode, today) => rec.id !== "bridge" || (today.pre ?? 0) <= 4,
-      flareSafe: () => true, flare: () => false, recoveryReason: () => null, buildChecks: () => [],
-    };
     const lib = LIBRARY.map((e) => ({ ...e, conditions: { ...e.conditions, testLenient: {} } }));
     const run = (r: CheckReading | null) =>
-      validateWorkoutDoc(one(ex("bridge", { sets: 2, reps: 10 })), { library: lib, activeProfiles: [lenient], day: dayOf(null, { readings: { testLenient: r } }) });
+      validateWorkoutDoc(one(ex("bridge", { sets: 2, reps: 10 })), { library: lib, activeProfiles: [LENIENT], day: dayOf(null, { readings: { testLenient: r } }) });
     expect(codes(run(null))).toEqual([`error:condition_gate@${P0}.libraryId`]);
     expect(run(null)[0]!.message).toBe("Glute bridge needs today's Lenient check answered first.");
     expect(run(reading(3))).toEqual([]);
     expect(codes(run(reading(6)))).toEqual([`error:condition_gate@${P0}.libraryId`]);
+    // A reading with no "before" number and no "feeling off" is unanswered too.
+    expect(codes(run({ pre: null, post: 2, feelingOff: false }))).toEqual([`error:condition_gate@${P0}.libraryId`]);
   });
 
   it("the fix is an alternate the day allows", () => {
@@ -292,6 +319,31 @@ describe("condition_gate_pending", () => {
 
   it("a gated item on a future date with no alternate is an error", () => {
     expect(codes(check(hop(), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
+  });
+
+  it("with no alternate or easier variant to offer, the fix is a library move for the same slot that passes in recovery and is no jump", () => {
+    const [issue] = check(hop(), FUTURE());
+    const fix = LIBRARY.find((e) => e.id === issue!.fix);
+    const hopRec = record("pogoHop");
+    expect(fix).toBeDefined();
+    expect(fix!.contraction).not.toContain("plyometric");
+    expect(TMJ.fitsMode(fix!.conditions.tmj!, "recovery")).toBe(true);
+    expect(fix!.difficulty).toBeLessThanOrEqual(2);
+    expect(fix!.load).not.toBe("external");
+    expect(fix!.patterns.some((p) => hopRec.patterns.includes(p)) || fix!.regions.some((r) => hopRec.regions.includes(r))).toBe(true);
+    // The athlete's set-aside moves and the place's gear are honoured.
+    const [aside] = check(hop(), FUTURE(), { excluded: [issue!.fix!] });
+    expect(aside!.fix).toBeDefined();
+    expect(aside!.fix).not.toBe(issue!.fix);
+  });
+
+  it("the library stand-in is never a jump, even where a profile would let one through in recovery", () => {
+    const jumpingBridge: ExerciseRecord = { ...BRIDGE, id: "testJumpingBridge", name: "Test jumping bridge", legacyIds: [], contraction: ["plyometric"], easier: [], harder: [] };
+    const lib = [jumpingBridge, ...LIBRARY].map((e) => ({ ...e, conditions: { ...e.conditions, testLenient: {} } }));
+    const [issue] = validateWorkoutDoc(one(ex("bridge", { sets: 2, reps: 10 })), { library: lib, activeProfiles: [LENIENT], day: FUTURE() });
+    expect(issue).toMatchObject({ code: "condition_gate_pending", severity: "error" });
+    expect(issue!.fix).toBeDefined();
+    expect(issue!.fix).not.toBe("testJumpingBridge");
   });
 
   it("with an alternate that passes in recovery mode it is a warning, the alternate its fix", () => {
@@ -316,9 +368,12 @@ describe("condition_gate_pending", () => {
 
 describe("condition_mode", () => {
   it("a move the profile caps out of the workout's mode is a warning", () => {
-    // Farmer carry is rated above what recovery allows; lying face down is out of recovery too.
-    expect(codes(check(one(ex("farmerCarry", { sets: 2, carryM: 40 }), "recover")))).toEqual([`warning:condition_mode@${P0}.libraryId`]);
-    expect(codes(check(one(ex("proneYTW", { sets: 2, reps: 8 }), "recover")))).toEqual([`warning:condition_mode@${P0}.libraryId`]);
+    // Lying face down is out of recovery; farmer carry is rated above what recovery allows (and is loaded: mode_limits).
+    expect(codes(check(one(ex("proneYTW", { sets: 2, reps: 8 }), "recover", "holds")))).toEqual([`warning:condition_mode@${P0}.libraryId`]);
+    expect(codes(check(one(ex("farmerCarry", { sets: 2, carryM: 40 }), "recover", "holds")))).toEqual([
+      `warning:condition_mode@${P0}.libraryId`,
+      `warning:mode_limits@${P0}.libraryId`,
+    ]);
     expect(check(one(ex("farmerCarry", { sets: 2, carryM: 40 }), "maintain"))).toEqual([]);
   });
 });
@@ -379,6 +434,8 @@ describe("excluded_by_athlete and equipment_unavailable", () => {
     const d = one(ex("bridge", { sets: 2, reps: 10 }, alt("singleLegBridge", "deadBug")));
     expect(check(d, dayOf(CALM), { excluded: ["bridge", "singleLegBridge"] })).toEqual([
       expect.objectContaining({ path: `${P0}.libraryId`, code: "excluded_by_athlete", severity: "warning", fix: "deadBug" }),
+      // An alternate set aside is a cost too.
+      expect.objectContaining({ path: `${P0}.alternates[0].libraryId`, code: "excluded_by_athlete", severity: "warning" }),
     ]);
     // A legacy id in the list still names the move.
     expect(only(check(d, dayOf(CALM), { excluded: ["oldBridge"] }), "excluded_by_athlete")).toHaveLength(1);
@@ -388,10 +445,129 @@ describe("excluded_by_athlete and equipment_unavailable", () => {
     const d = one(ex("gobletSquat", { sets: 3, reps: 8 }, alt("boxSquat", "tempoSquat")));
     expect(check(d, dayOf(CALM), { equipment: ["mat"] })).toEqual([
       expect.objectContaining({ path: `${P0}.libraryId`, code: "equipment_unavailable", severity: "warning", fix: "tempoSquat" }),
+      // The box squat alternate needs a bench or a chair.
+      expect.objectContaining({ path: `${P0}.alternates[0].libraryId`, code: "equipment_unavailable", severity: "warning" }),
     ]);
-    expect(check(d, dayOf(CALM), { equipment: ["mat", "kettlebell"] })).toEqual([]);
+    expect(codes(check(d, dayOf(CALM), { equipment: ["mat", "kettlebell"] }))).toEqual([`warning:equipment_unavailable@${P0}.alternates[0].libraryId`]);
+    expect(check(d, dayOf(CALM), { equipment: ["mat", "kettlebell", "chair"] })).toEqual([]);
     // No place given: nothing to check against.
     expect(check(d)).toEqual([]);
+  });
+});
+
+// ── Fix round 1: alternates, the mode's limits, the jump frontier, feeling off ─────────────────────────────────────
+
+describe("alternates meet the same rules as the move they stand in for", () => {
+  const withAlt = (id: string, effort: WorkoutDoc["intent"]["effort"] = "maintain", format = "straight") =>
+    one(ex("bridge", { sets: 2, reps: 10 }, alt(id)), effort, format);
+  const A0 = `${P0}.alternates[0].libraryId`;
+
+  it("a jump offered in a recovery workout is an error at the alternate", () => {
+    expect(codes(check(withAlt("pogoHop", "recover", "holds")))).toEqual([`error:condition_gate@${A0}`]);
+  });
+
+  it("an overhead press offered in a maintain workout is an error at the alternate", () => {
+    expect(codes(check(withAlt("halfKneelingPress")))).toEqual([`error:condition_pattern@${A0}`]);
+  });
+
+  it("a jump offered on an unanswered day is an error at the alternate; allowed on a calm, answered one", () => {
+    expect(codes(check(withAlt("pogoHop"), dayOf(null)))).toEqual([`error:condition_gate@${A0}`]);
+    expect(check(withAlt("pogoHop"), dayOf(CALM))).toEqual([]);
+  });
+
+  it("on a future day an alternate's gate adds nothing (the item's own pending rule covers the day)", () => {
+    expect(check(withAlt("pogoHop"), FUTURE())).toEqual([]);
+  });
+
+  it("the soft rules warn at the alternate: mode, format, the mode's limits", () => {
+    expect(codes(check(withAlt("farmerCarry", "recover", "holds")))).toEqual([`warning:condition_mode@${A0}`, `warning:mode_limits@${A0}`]);
+    const circuit = docOf([part("main", "circuit", [ex("bridge", { sets: 1, holdSec: 40 }, alt("nordicCurlAssisted")), ex("deadBug", { sets: 1, holdSec: 40 }), ex("birdDog", { sets: 1, holdSec: 40 })])], "develop");
+    expect(codes(check(circuit))).toEqual([`warning:condition_format@${A0}`]);
+  });
+});
+
+describe("mode_limits", () => {
+  const none = { activeProfiles: [] as ConditionProfile[] };
+
+  it("works with no active profile: a difficulty-5 move in a recovery workout is a warning", () => {
+    const [issue] = check(one(ex("tuckJump", { sets: 2, reps: 3 }), "recover", "holds"), dayOf(CALM), none);
+    expect(issue).toMatchObject({ path: `${P0}.libraryId`, code: "mode_limits", severity: "warning", message: "Tuck jump is harder than a recovery day takes." });
+  });
+
+  it("a loaded move in a recovery workout is a warning; the same move on a maintain day is not", () => {
+    expect(check(one(ex("gobletSquat", { sets: 2, reps: 8 }), "recover", "holds"), dayOf(CALM), none)).toEqual([
+      expect.objectContaining({ code: "mode_limits", message: "Goblet squat uses added weight, which a recovery day leaves out." }),
+    ]);
+    expect(check(one(ex("gobletSquat", { sets: 2, reps: 8 }), "maintain"), dayOf(CALM), none)).toEqual([]);
+  });
+
+  it("a part whose format the mode does not use is a warning — only when it holds exercises", () => {
+    const stations = (format: string, effort: WorkoutDoc["intent"]["effort"]) =>
+      docOf([part("main", format, ["bridge", "deadBug", "birdDog"].map((id) => ex(id, { sets: 1, holdSec: 40 })), { rounds: 2 })], effort);
+    expect(check(stations("circuit", "maintain"))).toEqual([
+      expect.objectContaining({ path: "parts[0].format", code: "mode_limits", severity: "warning", fix: "straight" }),
+    ]);
+    expect(codes(check(stations("intervals", "maintain")))).toEqual(["warning:mode_limits@parts[0].format"]);
+    expect(check(stations("circuit", "develop"))).toEqual([]);
+    expect(check(one(ex("bridge", { sets: 2, reps: 10 }), "recover"))).toEqual([expect.objectContaining({ path: "parts[0].format", code: "mode_limits", fix: "holds" })]);
+    const runIntervals = docOf([part("run", "intervals", [{ kind: "run", effort: "strides", target: { durationSec: 20 } } as WorkoutItem, { kind: "rest", seconds: 40 }], { rounds: 4 })]);
+    expect(check(runIntervals)).toEqual([]);
+  });
+
+  it("a loaded move never passes in recovery as a future day's alternate, nor is offered as a fix there", () => {
+    // Goblet carry suits the profile in recovery but is loaded.
+    expect(codes(check(one(ex("pogoHop", { sets: 3, reps: 10 }, alt("gobletCarry"))), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
+    const [issue] = check(one(ex("pogoHop", { sets: 3, reps: 10 }, alt("gobletCarry", "bridge")), "recover", "holds"));
+    expect(issue).toMatchObject({ code: "condition_gate", fix: "bridge" });
+  });
+});
+
+describe("progression_jump", () => {
+  const hop = (id: string, effort: WorkoutDoc["intent"]["effort"] = "maintain") => one(ex(id, { sets: 3, reps: 4 }), effort);
+  const done = (...ids: string[]) => dayOf(CALM, { done: new Set(ids) });
+
+  it("a jump past the athlete's frontier is a warning, the frontier move its fix", () => {
+    const [issue] = check(hop("pogoHop"), done());
+    expect(issue).toMatchObject({ path: `${P0}.libraryId`, code: "progression_jump", severity: "warning", fix: "snapDown" });
+    expect(issue!.message).toBe("Pogo hops is a step past the jumps you've done; Snap-down comes first.");
+    expect(check(hop("pogoHop"), done("snapDown"))).toEqual([]);
+  });
+
+  it("walks down to the first move on the frontier", () => {
+    expect(check(hop("tuckJump", "develop"), done())[0]).toMatchObject({ code: "progression_jump", fix: "snapDown" });
+    expect(check(hop("tuckJump", "develop"), done("snapDown"))[0]).toMatchObject({ code: "progression_jump", fix: "broadJumpStick" });
+    expect(check(hop("tuckJump", "develop"), done("broadJumpStick"))).toEqual([]);
+  });
+
+  it("reads a done move by any id it has gone by", () => {
+    const lib = LIBRARY.map((e) => (e.id === "snapDown" ? { ...e, legacyIds: [...e.legacyIds, "oldSnapDown"] } : e));
+    const issues = validateWorkoutDoc(hop("pogoHop"), { library: lib, activeProfiles: [TMJ], day: dayOf(CALM, { done: new Set(["oldSnapDown"]) }) });
+    expect(issues).toEqual([]);
+  });
+
+  it("is not checked without the athlete's done moves, and never for a move that is no jump", () => {
+    expect(check(hop("pogoHop"))).toEqual([]);
+    expect(check(one(ex("bwBulgarianSplitSquat", { sets: 3, reps: 8 })), done())).toEqual([]);
+  });
+});
+
+describe("feeling off, for the day", () => {
+  it("is seen with no active profile: a workout above recovery carries the warning", () => {
+    const issues = validateWorkoutDoc(one(ex("bridge", { sets: 2, reps: 10 })), { library: LIBRARY, activeProfiles: [], day: dayOf(null, { readings: {}, feelingOff: true }) });
+    expect(issues).toEqual([{ path: "intent.effort", code: "mode_above_day", message: "You said you're feeling off.", fix: "recover", severity: "warning" }]);
+    expect(validateWorkoutDoc(one(ex("bridge", { sets: 2, reps: 10 }), "recover", "holds"), { library: LIBRARY, activeProfiles: [], day: dayOf(null, { readings: {}, feelingOff: true }) })).toEqual([]);
+  });
+
+  it("applies to every profile's reading: a jump on a feeling-off day is an error, and the day's warning comes once", () => {
+    const issues = check(one(ex("pogoHop", { sets: 3, reps: 10 })), dayOf(CALM, { feelingOff: true }));
+    expect(codes(issues)).toEqual(["warning:mode_above_day@intent.effort", `error:condition_gate@${P0}.libraryId`]);
+    expect(issues[1]!.message).toBe("Pogo hops isn't allowed while you're feeling off.");
+  });
+});
+
+describe("condition_flare reads the shared flare-safe verdict", () => {
+  it("a jump rated gently is still not flare-safe: on a flare day it warns", () => {
+    expect(only(check(one(ex("pogoHop", { sets: 3, reps: 10 }), "recover", "holds"), dayOf(reading(6))), "condition_flare")).toHaveLength(1);
   });
 });
 
@@ -402,11 +578,13 @@ describe("the engine's own builds validate", () => {
     label: string;
     /** At the reading the engine built with. */
     issues: DocIssue[];
-    /** Item paths the engine's own eligibility (`fitsMode` with the day's checks) refuses on an unanswered day. */
+    /** Item and alternate paths the engine's own eligibility (`fitsMode` with the day's checks) refuses on an unanswered day. */
     engineRefusesUnanswered: string[];
-    /** The same day, unanswered: the items the validator refuses by a pattern or record rule. */
+    /** The same, items only. */
+    engineRefusesItems: string[];
+    /** The same day, unanswered: the items and alternates the validator refuses by a pattern or record rule. */
     validatorRefusesUnanswered: string[];
-    /** Two days ahead: the items the validator holds pending. */
+    /** Two days ahead: the items the validator holds pending (an alternate's gate adds nothing ahead). */
     pendingAhead: string[];
   }
 
@@ -454,11 +632,16 @@ describe("the engine's own builds validate", () => {
       const unanswered = validateWorkoutDoc(doc, { ...base, day: { date: today, today, readings: { tmj: null }, recent } });
       const ahead = validateWorkoutDoc(doc, { ...base, day: { date: addDays(today, 2), today, readings: { tmj: calm }, recent } });
       const engineRefusesUnanswered: string[] = [];
+      const engineRefusesItems: string[] = [];
+      const refuses = (id: string): boolean => !fitsMode(data, data.exercises.find((e) => e.id === id)!, plan.mode, { tmj: UNANSWERED });
       doc.parts.forEach((p, pi) =>
         p.items.forEach((it, ii) => {
           if (it.kind !== "exercise") return;
-          const rec = data.exercises.find((e) => e.id === it.libraryId)!;
-          if (!fitsMode(data, rec, plan.mode, { tmj: UNANSWERED })) engineRefusesUnanswered.push(`parts[${pi}].items[${ii}].libraryId`);
+          const at = `parts[${pi}].items[${ii}]`;
+          if (refuses(it.libraryId)) engineRefusesUnanswered.push(`${at}.libraryId`), engineRefusesItems.push(`${at}.libraryId`);
+          (it.alternates ?? []).forEach((a, ai) => {
+            if (refuses(a.libraryId)) engineRefusesUnanswered.push(`${at}.alternates[${ai}].libraryId`);
+          });
         }),
       );
       const pathsOf = (list: DocIssue[], keep: (i: DocIssue) => boolean): string[] => [...new Set(list.filter(keep).map((i) => i.path))];
@@ -466,6 +649,7 @@ describe("the engine's own builds validate", () => {
         label: `${mode} build ${i} (${override.theme ?? "no theme"}, ${today}, pre ${calm.pre}, ${place.id})`,
         issues,
         engineRefusesUnanswered,
+        engineRefusesItems,
         validatorRefusesUnanswered: pathsOf(unanswered, (i) => i.severity === "error" && (i.code === "condition_gate" || i.code === "condition_pattern")),
         pendingAhead: pathsOf(ahead, (i) => i.code === "condition_gate_pending"),
       });
@@ -483,13 +667,14 @@ describe("the engine's own builds validate", () => {
       const engineRules = new Set<string>(DOC_ISSUE_CODES.filter((c) => c !== "mode_above_day"));
       const disagreements = cases.flatMap((r) => r.issues.filter((i) => engineRules.has(i.code)).map((i) => `${r.label}: ${i.code} ${i.path} — ${i.message}`));
       expect(disagreements).toEqual([]);
-      // Unanswered, the validator refuses exactly what the engine's eligibility refuses; two days ahead, exactly those wait on the day.
+      // Unanswered, the validator refuses exactly what the engine's eligibility refuses, items and alternates alike; two
+      // days ahead, exactly the items wait on the day.
       for (const c of cases) {
         expect(c.validatorRefusesUnanswered, c.label).toEqual(c.engineRefusesUnanswered);
-        expect(c.pendingAhead, c.label).toEqual(c.engineRefusesUnanswered);
+        expect(c.pendingAhead, c.label).toEqual(c.engineRefusesItems);
       }
       // Not vacuous: the builds hold gated moves (jumps on plyometric days; overhead presses in build).
-      if (mode !== "recovery") expect(cases.reduce((n, c) => n + c.engineRefusesUnanswered.length, 0)).toBeGreaterThan(10);
+      if (mode !== "recovery") expect(cases.reduce((n, c) => n + c.engineRefusesItems.length, 0)).toBeGreaterThan(10);
     });
   }
 });

@@ -3,17 +3,22 @@
  * workout from every source (the engine, the coach, the Studio, templates, imports) passes through. Pure.
  *
  * RULES
- * - Schema first: a document outside `workoutDocSchema` returns only `bounds` errors (one per schema issue, at its
- *   path); nothing else can be read safely from it.
+ * - Schema first: the input is anything (`unknown`); what does not parse as `workoutDocSchema` returns only `bounds`
+ *   errors, one per schema issue at its path, in plain words; nothing else can be read safely from it.
  * - The day decides how the condition rules read (Amendment A): `day: null` (a template, a library context) judges every
  *   reading-dependent rule on each profile's calmest day — "does this fit the workout's mode at all"; a `day` whose
- *   `date` is after its `today` is a future day (that day's check is unknown); any other day uses `day.readings`, and
- *   a missing or null reading is unanswered — and unanswered means not allowed: a move a reading can close must pass
- *   both unanswered and at the profile's worst reading.
+ *   `date` is after its `today` is a future day (that day's check is unknown); any other day uses `day.readings`.
+ *   The day's own `feelingOff` joins every profile's reading. A reading with neither a "before" number nor "feeling
+ *   off" (null, absent, or only an "after") is unanswered — and unanswered means not allowed: a move a reading can
+ *   close must pass both unanswered and at the profile's worst reading.
  * - The workout's mode is `modeOfEffort(intent.effort)`. Every active profile is read through its contract only
- *   (`never`, `fitsMode`, `fitsFormat`, `allowPattern` per pattern, `allowRecord`, `flareSafe`, `flare`,
- *   `recoveryReason`, `buildChecks`) — this file never names a profile. A record with no rating for an active profile
- *   fails closed (as the engine's eligibility does).
+ *   (`never`, `fitsMode`, `fitsFormat`, `allowPattern` per pattern, `allowRecord`, `flare`, the library's shared
+ *   `recordFlareSafe`, `recoveryReason`, `buildChecks`) — this file never names a profile. A record with no rating for
+ *   an active profile fails closed (as the engine's eligibility does). The mode's general limits (the engine's
+ *   difficulty cap and load rule, `MODES`) apply with or without a profile.
+ * - Alternates meet the same rules as the item they stand in for (same part, same mode, same day): the hard ones are
+ *   errors at the alternate; the soft ones (mode, format, the mode's limits, set aside, gear) warnings. On a future day
+ *   an alternate's pending gate adds nothing — the item's own `condition_gate_pending` covers the day.
  * - Document format → the profile's format: straight, superset, circuit, ladder, flow and holds as themselves;
  *   intervals as circuit; steady as straight.
  * - Errors block a save, a proposal and a watch push; warnings are costs shown to the athlete.
@@ -26,18 +31,24 @@
  * - unknown_exercise (error): an item's or an alternate's library id resolves to nothing; `fix` is a library id whose
  *   spelling matches once case and separators are ignored.
  * - legacy_id (warning): an old id (resolved through `legacyIds`); `fix` is the current id.
- * - condition_never (error): a profile's `never`, or no rating for an active profile — items and alternates alike.
+ * - condition_never (error): a profile's `never`, or no rating for an active profile.
  * - condition_pattern (error): `allowPattern` refuses one of the record's patterns for this mode and the day.
  * - condition_gate (error): `allowRecord` refuses the record for this mode and the day.
  * - condition_gate_pending (warning, or error): a future day, and a pattern or record rule the day's reading could close;
- *   a warning only when the item carries an alternate that passes in recovery mode, unanswered and at the worst reading.
+ *   a warning only when the item carries an alternate that passes in recovery mode (the mode's limits and every
+ *   profile's rules, at the calmest, unanswered and worst readings).
  * - condition_mode (warning): `fitsMode` is false for the workout's mode.
  * - condition_format (warning): `fitsFormat` is false for the part's format.
- * - condition_flare (warning): today's reading is a flare (`flare`) and the move is not `flareSafe`.
- * - mode_above_day (warning, at intent.effort): on the day, a profile's `recoveryReason` (for a workout above recovery)
- *   or its first failed `buildChecks` line (for a build workout) — the profile's own words; `fix` is the effort it allows.
+ * - condition_flare (warning): today's reading is a flare (`flare`) and the move is not flare-safe (`recordFlareSafe`).
+ * - mode_limits (warning): the move is harder than the mode's difficulty cap or loaded where the mode takes no added
+ *   weight (at the item or alternate); or a part holding exercises uses a format the mode does not (at the part's format).
+ * - mode_above_day (warning, at intent.effort): on the day, the day's "feeling off" (the engine's own sentence), else a
+ *   profile's `recoveryReason` (for a workout above recovery) or its first failed `buildChecks` line (for a build
+ *   workout) — the profile's own words; `fix` is the effort it allows.
  * - excluded_by_athlete (warning): the athlete set the move aside (`excluded`, legacy ids honoured).
  * - equipment_unavailable (warning): the move needs gear `equipment` (the place's) lacks.
+ * - progression_jump (warning): with `day.done`, a jump past the athlete's frontier (the library's `onFrontier`: an
+ *   easier variant must have been done); `fix` is the first move down its easier variants that is on the frontier.
  * - format_mismatch: a superset needs exactly two exercises (error); a circuit holds 3–6 moves (warning: the engine's
  *   own builds must validate clean); intervals need a run or a timed move (error).
  * - dose_mismatch (warning): an exercise with no amount (none of reps, holdSec, breaths, carryM, max); reps on a timed
@@ -46,11 +57,14 @@
  * - unknown_equipment (warning): a `setting.equipment` id the library does not know.
  * Not checked here: `test.keyResultId` and `intent.objectiveIds` (opaque without the database).
  *
- * FIXES for the condition, athlete and place codes: the item's alternates first, then its easier variants (three steps
- * down), the first one that raises none of those issues here; for condition_gate_pending, the first that passes in
- * recovery mode.
+ * FIXES for the condition, mode, athlete and place codes: the item's alternates first, then its easier variants (three
+ * steps down), the first that raises none of those issues here. For condition_gate_pending: an alternate that passes
+ * in recovery mode (the warning); otherwise (the error) such a move among the easier variants, else the library's
+ * best move for the slot that passes in recovery, is no jump and fits here — sharing the item's patterns and regions,
+ * then its patterns, then its regions, in library order.
  */
-import { workoutDocSchema, type WorkoutDoc, type WorkoutDose, type WorkoutItem, type WorkoutPart } from "@rg/domain";
+import type { ZodIssue } from "zod";
+import { workoutDocSchema, type WorkoutDose, type WorkoutItem, type WorkoutPart } from "@rg/domain";
 import {
   EQUIPMENT,
   EQUIPMENT_IDS,
@@ -61,7 +75,10 @@ import {
   attrsOf,
   bestDay,
   hasEquipment,
+  isPlyometric,
   label,
+  onFrontier,
+  recordFlareSafe,
   type CheckReading,
   type ConditionProfile,
   type ExerciseRecord,
@@ -83,9 +100,11 @@ export const DOC_ISSUE_CODES = [
   "condition_mode",
   "condition_format",
   "condition_flare",
+  "mode_limits",
   "mode_above_day",
   "excluded_by_athlete",
   "equipment_unavailable",
+  "progression_jump",
   "format_mismatch",
   "dose_mismatch",
   "unknown_focus",
@@ -112,6 +131,10 @@ export interface DayContext {
   today: string;
   /** The day's check per profile id; null (or absent) is unanswered. */
   readings: Readonly<Record<string, CheckReading | null>>;
+  /** "I'm feeling off" for the whole day, whatever profiles are active: it joins every profile's reading. */
+  feelingOff?: boolean;
+  /** Library ids the athlete has done cleanly; given, a jump past their frontier is noted (`progression_jump`). */
+  done?: ReadonlySet<string>;
   /** Recent sessions, for the profiles' mode rules. */
   recent?: { last: HistorySession | null; week: readonly HistorySession[] };
 }
@@ -138,12 +161,18 @@ const FORMAT_RULE: Record<DocFormat, FormatId> = {
 const FORMAT_WORDS: Record<DocFormat, string> = {
   straight: "straight sets", superset: "a superset", circuit: "a circuit", flow: "a flow", intervals: "intervals", steady: "a steady effort", ladder: "a ladder", holds: "holds",
 };
+/** The format to offer when the mode leaves a part's out, in order of preference. */
+const FORMAT_PREFERENCE: readonly DocFormat[] = ["straight", "holds", "flow", "superset"];
 /** Formats whose work is a timed window: seconds of a counted move are their way, not a mismatch. */
 const TIMED_FORMATS = new Set<DocFormat>(["circuit", "intervals", "flow", "holds"]);
 const CIRCUIT_MIN = 3;
 const CIRCUIT_MAX = 6;
 /** How far down the easier variants a fix looks. */
 const EASIER_DEPTH = 3;
+/** How far down the easier variants the frontier is looked for. */
+const FRONTIER_DEPTH = 8;
+/** The day's "feeling off", in the engine's own words (its mode proposal). */
+const FEELING_OFF = "You said you're feeling off.";
 
 /** Case and separators ignored: "goblet-squat", "Goblet squat" and "gobletSquat" read alike. */
 const keyOf = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -167,6 +196,20 @@ const modeWord = (m: Mode): string => (MODES[m]?.label ?? m).toLowerCase();
 const worstDay = (p: ConditionProfile): CheckReading => ({ pre: p.check.max, post: p.check.max, feelingOff: true });
 const patternOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => rec.patterns.every((pt) => p.allowPattern(pt, mode, r));
 const recordOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => !p.allowRecord || p.allowRecord(rec, mode, r);
+/** A reading that says something: a "before" number, or "feeling off". */
+const answered = (r: CheckReading | null): r is CheckReading => r !== null && (r.pre != null || r.feelingOff);
+
+/** What the mode's general limits (the engine's difficulty cap and load rule) say against a move, or null. */
+function limitsAgainst(rec: ExerciseRecord, m: Mode): string | null {
+  const spec = MODES[m];
+  const loaded = !spec.allowExternalLoad && rec.load === "external";
+  const hard = rec.difficulty > spec.maxDifficulty;
+  const w = modeWord(m);
+  if (loaded && hard) return `${rec.name} uses added weight and is harder than a ${w} day takes.`;
+  if (loaded) return `${rec.name} uses added weight, which a ${w} day leaves out.`;
+  if (hard) return `${rec.name} is harder than a ${w} day takes.`;
+  return null;
+}
 
 function pathOf(segments: ReadonlyArray<string | number>): string {
   return segments.reduce<string>((acc, s) => (typeof s === "number" ? `${acc}[${s}]` : acc ? `${acc}.${s}` : s), "");
@@ -179,10 +222,19 @@ interface GateFail {
   why: "mode" | "today" | "pending";
 }
 
-export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssue[] {
+/** One rule's verdict against a move in a part (the item's or an alternate's). */
+interface Finding {
+  code: DocIssueCode;
+  severity: "error" | "warning";
+  message: string;
+  /** For condition_gate_pending: the profile whose check the day waits on. */
+  pending?: ConditionProfile;
+}
+
+export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[] {
   const parsed = workoutDocSchema.safeParse(input);
   if (!parsed.success) {
-    return parsed.error.issues.map((i) => ({ path: pathOf(i.path), code: "bounds", message: `This doesn't fit a workout: ${i.message}.`, severity: "error" }));
+    return parsed.error.issues.map((i) => ({ path: pathOf(i.path), code: "bounds", message: plainSchemaIssue(i), severity: "error" }));
   }
   const doc = parsed.data;
   const find = makeLibraryIndex(ctx.library);
@@ -190,8 +242,11 @@ export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssu
   const day = ctx.day;
   const phase: Phase = !day ? "any" : day.date > day.today ? "future" : "today";
   const mode = modeOfEffort(doc.intent.effort);
-  const excluded = new Set((ctx.excluded ?? []).map((id) => find(id)?.id ?? id));
+  const canonical = (id: string): string => find(id)?.id ?? id;
+  const excluded = new Set((ctx.excluded ?? []).map(canonical));
   const equipment = ctx.equipment;
+  const done = day?.done ? new Set([...day.done].map(canonical)) : null;
+  const isDone = (id: string): boolean => done !== null && done.has(canonical(id));
   const guessExercise = guesser(ctx.library.flatMap((e) => [[e.id, e.id], [e.name, e.id]] as const));
   const issues: DocIssue[] = [];
   /** Records an issue; a fix that came out undefined is left off. */
@@ -200,45 +255,79 @@ export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssu
     issues.push(fix === undefined ? rest : issue);
   };
 
-  /** Today's reading for a profile (null: unanswered); only on a day that is not in the future. */
-  const readingOf = (p: ConditionProfile): CheckReading | null => (phase === "today" ? day!.readings[p.id] ?? null : null);
-  const flareToday = (p: ConditionProfile): CheckReading | null => {
-    const r = readingOf(p);
-    return r && p.flare(r) ? r : null;
+  /** The day's reading for a profile, with the day's "feeling off" joined (null: none); never on a future day. */
+  const readingOf = (p: ConditionProfile): CheckReading | null => {
+    if (phase !== "today") return null;
+    const r = day!.readings[p.id] ?? null;
+    return day!.feelingOff ? { ...(r ?? UNANSWERED), feelingOff: true } : r;
   };
 
   /** A pattern or record rule that refuses the move here, for this profile. */
-  function gate(p: ConditionProfile, rec: ExerciseRecord, m: Mode): GateFail | null {
+  function gate(p: ConditionProfile, rec: ExerciseRecord): GateFail | null {
     const best = bestDay(p);
-    if (!patternOk(p, rec, m, best)) return { rule: "pattern", why: "mode" };
-    if (!recordOk(p, rec, m, best)) return { rule: "record", why: "mode" };
+    if (!patternOk(p, rec, mode, best)) return { rule: "pattern", why: "mode" };
+    if (!recordOk(p, rec, mode, best)) return { rule: "record", why: "mode" };
     if (phase === "any") return null;
     const r = readingOf(p);
     const why: GateFail["why"] = phase === "future" ? "pending" : "today";
-    for (const t of r ? [r] : [UNANSWERED, worstDay(p)]) {
-      if (!patternOk(p, rec, m, t)) return { rule: "pattern", why };
-      if (!recordOk(p, rec, m, t)) return { rule: "record", why };
+    for (const t of answered(r) ? [r] : [UNANSWERED, worstDay(p)]) {
+      if (!patternOk(p, rec, mode, t)) return { rule: "pattern", why };
+      if (!recordOk(p, rec, mode, t)) return { rule: "record", why };
     }
     return null;
   }
 
+  function gateMessage(p: ConditionProfile, name: string, g: GateFail): string {
+    const r = readingOf(p);
+    if (g.why === "mode") return `${name} isn't allowed on a ${modeWord(mode)} day with ${p.label}.`;
+    if (r?.feelingOff) return `${name} isn't allowed while you're feeling off.`;
+    if (r && r.pre != null) return `${name} isn't allowed with today's ${p.check.label} check at ${r.pre}.`;
+    return `${name} needs today's ${p.check.label} check answered first.`;
+  }
+
+  /** Every condition, mode, athlete and place rule against a move in a part of this format. */
+  function judge(rec: ExerciseRecord, format: DocFormat): Finding[] {
+    const out: Finding[] = [];
+    const name = rec.name;
+    for (const p of profiles) {
+      const a = attrsOf(rec, p);
+      if (!a) {
+        out.push({ code: "condition_never", severity: "error", message: `${name} has no ${p.label} rating yet, so it can't be placed.` });
+        continue;
+      }
+      if (p.never(a)) {
+        out.push({ code: "condition_never", severity: "error", message: `${name} is never allowed with ${p.label}.` });
+        continue;
+      }
+      if (!p.fitsMode(a, mode)) out.push({ code: "condition_mode", severity: "warning", message: `${name} is more than ${p.label} allows on a ${modeWord(mode)} day.` });
+      if (!p.fitsFormat(a, FORMAT_RULE[format])) out.push({ code: "condition_format", severity: "warning", message: `${name} doesn't suit ${FORMAT_WORDS[format]} with ${p.label}.` });
+      const g = gate(p, rec);
+      if (g?.why === "pending") out.push({ code: "condition_gate_pending", severity: "warning", message: "", pending: p });
+      else if (g) out.push({ code: g.rule === "pattern" ? "condition_pattern" : "condition_gate", severity: "error", message: gateMessage(p, name, g) });
+      const r = readingOf(p);
+      if (r && p.flare(r) && !recordFlareSafe(p, rec)) {
+        out.push({ code: "condition_flare", severity: "warning", message: `${name} isn't flare-safe, and today's ${p.check.label} check is a flare.` });
+      }
+    }
+    const limits = limitsAgainst(rec, mode);
+    if (limits) out.push({ code: "mode_limits", severity: "warning", message: limits });
+    if (excluded.has(rec.id)) out.push({ code: "excluded_by_athlete", severity: "warning", message: `You set ${name} aside as not for you.` });
+    if (equipment && !hasEquipment(rec, equipment)) {
+      out.push({ code: "equipment_unavailable", severity: "warning", message: `${name} needs ${missingGear(rec, equipment)}, which this place doesn't have.` });
+    }
+    return out;
+  }
+
+  /** Raises none of the condition, mode, athlete or place issues here: a fix to offer. */
+  const fitsHere = (rec: ExerciseRecord, format: DocFormat): boolean => judge(rec, format).length === 0;
+
   /** Passes in recovery mode whatever the day's check reads: what a future day's gated move needs as its alternate. */
   const passesRecovery = (rec: ExerciseRecord): boolean =>
+    limitsAgainst(rec, "recovery") === null &&
     profiles.every((p) => {
       const a = attrsOf(rec, p);
       if (!a || p.never(a) || !p.fitsMode(a, "recovery")) return false;
       return [bestDay(p), UNANSWERED, worstDay(p)].every((r) => patternOk(p, rec, "recovery", r) && recordOk(p, rec, "recovery", r));
-    });
-
-  /** Raises none of the condition, athlete or place issues here: a fix to offer. */
-  const fitsHere = (rec: ExerciseRecord, format: DocFormat): boolean =>
-    !excluded.has(rec.id) &&
-    (!equipment || hasEquipment(rec, equipment)) &&
-    profiles.every((p) => {
-      const a = attrsOf(rec, p);
-      if (!a || p.never(a) || !p.fitsMode(a, mode) || !p.fitsFormat(a, FORMAT_RULE[format])) return false;
-      if (gate(p, rec, mode)) return false;
-      return !flareToday(p) || p.flareSafe(a);
     });
 
   /** The item's alternates, then its easier variants: what a fix may offer. */
@@ -263,6 +352,38 @@ export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssu
   }
   const fixAmong = (list: readonly ExerciseRecord[], ok: (r: ExerciseRecord) => boolean): string | undefined => list.find(ok)?.id;
 
+  /** The library's best stand-in for a gated move that must hold on any day (see FIXES in the header). */
+  function recoverySubstitute(rec: ExerciseRecord, format: DocFormat): string | undefined {
+    let best: { id: string; score: number } | undefined;
+    for (const r of ctx.library) {
+      if (r.id === rec.id || isPlyometric(r)) continue;
+      const score = (r.patterns.some((pt) => rec.patterns.includes(pt)) ? 2 : 0) + (r.regions.some((g) => rec.regions.includes(g)) ? 1 : 0);
+      if (score === 0 || (best && score <= best.score)) continue;
+      if (!passesRecovery(r) || !fitsHere(r, format)) continue;
+      best = { id: r.id, score };
+      if (score === 3) break;
+    }
+    return best?.id;
+  }
+
+  /** The first move down a jump's easier variants that is on the athlete's frontier. */
+  function frontierStep(rec: ExerciseRecord): ExerciseRecord | undefined {
+    const seen = new Set([rec.id]);
+    let level = [...rec.easier];
+    for (let depth = 0; depth < FRONTIER_DEPTH && level.length; depth++) {
+      const next: string[] = [];
+      for (const id of level) {
+        const r = find(id);
+        if (!r || seen.has(r.id)) continue;
+        seen.add(r.id);
+        if (onFrontier(r, isDone)) return r;
+        next.push(...r.easier);
+      }
+      level = next;
+    }
+    return undefined;
+  }
+
   // ── Intent and setting ──
   doc.intent.focus.forEach((id, i) => {
     if (FOCUS_IDS.has(id)) return;
@@ -273,23 +394,27 @@ export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssu
     add({ path: `setting.equipment[${i}]`, code: "unknown_equipment", message: `"${id}" isn't equipment the library knows.`, fix: guessEquipment(id), severity: "warning" });
   });
 
-  // ── The day's mode, in each profile's own words ──
+  // ── The day's mode: the day's "feeling off", else each profile's own words ──
   if (phase === "today" && mode !== "recovery") {
-    const last = day!.recent?.last ?? null;
-    const week = day!.recent?.week ?? [];
-    const byId = new Map<string, HistorySession>();
-    for (const s of [...week, ...(last ? [last] : [])]) if (s.date <= day!.date) byId.set(s.id, s);
-    const past = [...byId.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-    for (const p of profiles) {
-      const pctx: ProposalCtx = { today: day!.date, reading: readingOf(p) ?? UNANSWERED, past, last, week };
-      const why = p.recoveryReason(pctx);
-      if (why) {
-        add({ path: "intent.effort", code: "mode_above_day", message: why, fix: "recover", severity: "warning" });
-        continue;
+    if (day!.feelingOff) {
+      add({ path: "intent.effort", code: "mode_above_day", message: FEELING_OFF, fix: "recover", severity: "warning" });
+    } else {
+      const last = day!.recent?.last ?? null;
+      const week = day!.recent?.week ?? [];
+      const byId = new Map<string, HistorySession>();
+      for (const s of [...week, ...(last ? [last] : [])]) if (s.date <= day!.date) byId.set(s.id, s);
+      const past = [...byId.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      for (const p of profiles) {
+        const pctx: ProposalCtx = { today: day!.date, reading: readingOf(p) ?? UNANSWERED, past, last, week };
+        const why = p.recoveryReason(pctx);
+        if (why) {
+          add({ path: "intent.effort", code: "mode_above_day", message: why, fix: "recover", severity: "warning" });
+          continue;
+        }
+        if (mode !== "build") continue;
+        const failed = p.buildChecks(pctx).find(([ok]) => !ok);
+        if (failed) add({ path: "intent.effort", code: "mode_above_day", message: failed[1], fix: "maintain", severity: "warning" });
       }
-      if (mode !== "build") continue;
-      const failed = p.buildChecks(pctx).find(([ok]) => !ok);
-      if (failed) add({ path: "intent.effort", code: "mode_above_day", message: failed[1], fix: "maintain", severity: "warning" });
     }
   }
 
@@ -324,6 +449,12 @@ export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssu
         add({ path, code: "format_mismatch", message: "Intervals need a run or a timed move; this part has neither.", fix: moves >= CIRCUIT_MIN && moves <= CIRCUIT_MAX ? "circuit" : "straight", severity: "error" });
       }
     }
+    // The mode's formats bind exercise work only (run intervals on a maintain day are a run's way).
+    const allowed = MODES[mode].formats;
+    if (moves > 0 && !allowed.includes(FORMAT_RULE[part.format])) {
+      const fix = FORMAT_PREFERENCE.find((f) => allowed.includes(FORMAT_RULE[f]));
+      add({ path, code: "mode_limits", message: `A ${modeWord(mode)} day doesn't use ${FORMAT_WORDS[part.format]}.`, fix, severity: "warning" });
+    }
   }
 
   function checkExercise(item: Exercise, part: Part, at: string): void {
@@ -334,57 +465,35 @@ export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssu
       if (!hasAmount(item.dose)) add({ path: `${at}.dose`, code: "dose_mismatch", message: `"${item.libraryId}" has no amount: give it reps, seconds, breaths or a distance.`, severity: "warning" });
       return;
     }
-    if (rec.id !== item.libraryId) add({ path: idAt, code: "legacy_id", message: `"${item.libraryId}" is an old id for ${rec.name}.`, fix: rec.id, severity: "warning" });
+    if (rec.id !== item.libraryId) add({ path: idAt, code: "legacy_id", message: `${rec.name} is listed under an old id.`, fix: rec.id, severity: "warning" });
 
     const name = rec.name;
     const options = candidates(rec, item);
     const alternates = (item.alternates ?? []).map((a) => find(a.libraryId)).filter((r): r is ExerciseRecord => r !== undefined && r.id !== rec.id);
     const better = (): string | undefined => fixAmong(options, (r) => fitsHere(r, part.format));
-    for (const p of profiles) {
-      const a = attrsOf(rec, p);
-      if (!a) {
-        add({ path: idAt, code: "condition_never", message: `${name} has no ${p.label} rating yet, so it can't be placed.`, fix: better(), severity: "error" });
+    for (const f of judge(rec, part.format)) {
+      if (!f.pending) {
+        add({ path: idAt, code: f.code, message: f.message, fix: better(), severity: f.severity });
         continue;
       }
-      if (p.never(a)) {
-        add({ path: idAt, code: "condition_never", message: `${name} is never allowed with ${p.label}.`, fix: better(), severity: "error" });
-        continue;
-      }
-      if (!p.fitsMode(a, mode)) {
-        add({ path: idAt, code: "condition_mode", message: `${name} is more than ${p.label} allows on a ${modeWord(mode)} day.`, fix: better(), severity: "warning" });
-      }
-      if (!p.fitsFormat(a, FORMAT_RULE[part.format])) {
-        add({ path: idAt, code: "condition_format", message: `${name} doesn't suit ${FORMAT_WORDS[part.format]} with ${p.label}.`, fix: better(), severity: "warning" });
-      }
-      const g = gate(p, rec, mode);
-      if (g && g.why === "pending") {
-        const alternate = fixAmong(alternates, passesRecovery);
-        if (alternate) {
-          const altName = find(alternate)!.name;
-          add({ path: idAt, code: "condition_gate_pending", message: `${name} depends on that day's ${p.check.label} check; if it isn't allowed then, swap in ${altName}.`, fix: alternate, severity: "warning" });
-        } else {
-          add({ path: idAt, code: "condition_gate_pending", message: `${name} depends on that day's ${p.check.label} check: add an alternate that suits a recovery day.`, fix: fixAmong(options, passesRecovery), severity: "error" });
-        }
-      } else if (g) {
-        const code = g.rule === "pattern" ? "condition_pattern" : "condition_gate";
-        const r = readingOf(p);
-        const message =
-          g.why === "mode" ? `${name} isn't allowed on a ${modeWord(mode)} day with ${p.label}.`
-          : r?.feelingOff ? `${name} isn't allowed while you're feeling off.`
-          : r && r.pre != null ? `${name} isn't allowed with today's ${p.check.label} check at ${r.pre}.`
-          : `${name} needs today's ${p.check.label} check answered first.`;
-        add({ path: idAt, code, message, fix: better(), severity: "error" });
-      }
-      const flare = flareToday(p);
-      if (flare && !p.flareSafe(a)) {
-        add({ path: idAt, code: "condition_flare", message: `${name} isn't flare-safe, and today's ${p.check.label} check is a flare.`, fix: better(), severity: "warning" });
+      const check = f.pending.check.label;
+      const alternate = alternates.find(passesRecovery);
+      if (alternate) {
+        add({ path: idAt, code: "condition_gate_pending", message: `${name} depends on that day's ${check} check; if it isn't allowed then, swap in ${alternate.name}.`, fix: alternate.id, severity: "warning" });
+      } else {
+        add({
+          path: idAt, code: "condition_gate_pending", message: `${name} depends on that day's ${check} check: add an alternate that suits a recovery day.`,
+          fix: fixAmong(options, passesRecovery) ?? recoverySubstitute(rec, part.format), severity: "error",
+        });
       }
     }
-    if (excluded.has(rec.id)) {
-      add({ path: idAt, code: "excluded_by_athlete", message: `You set ${name} aside as not for you.`, fix: better(), severity: "warning" });
-    }
-    if (equipment && !hasEquipment(rec, equipment)) {
-      add({ path: idAt, code: "equipment_unavailable", message: `${name} needs ${missingGear(rec, equipment)}, which this place doesn't have.`, fix: better(), severity: "warning" });
+    if (done && !onFrontier(rec, isDone)) {
+      const step = frontierStep(rec);
+      add({
+        path: idAt, code: "progression_jump",
+        message: step ? `${name} is a step past the jumps you've done; ${step.name} comes first.` : `${name} is a step past the jumps you've done.`,
+        fix: step?.id, severity: "warning",
+      });
     }
 
     checkDose(rec, item.dose, part.format, at);
@@ -396,11 +505,12 @@ export function validateWorkoutDoc(input: WorkoutDoc, ctx: ValidateCtx): DocIssu
         add({ path: altAt, code: "unknown_exercise", message: `There's no move "${alt.libraryId}" in the library.`, fix: guessExercise(alt.libraryId), severity: "error" });
         return;
       }
-      if (r.id !== alt.libraryId) add({ path: altAt, code: "legacy_id", message: `"${alt.libraryId}" is an old id for ${r.name}.`, fix: r.id, severity: "warning" });
-      for (const p of profiles) {
-        const a = attrsOf(r, p);
-        if (!a) add({ path: altAt, code: "condition_never", message: `${r.name} has no ${p.label} rating yet, so it can't be offered.`, severity: "error" });
-        else if (p.never(a)) add({ path: altAt, code: "condition_never", message: `${r.name} is never allowed with ${p.label}.`, severity: "error" });
+      if (r.id !== alt.libraryId) add({ path: altAt, code: "legacy_id", message: `${r.name} is listed under an old id.`, fix: r.id, severity: "warning" });
+      if (r.id === rec.id) return; // the item itself: already judged
+      for (const f of judge(r, part.format)) {
+        // A future day's gate waits on the item's own pending rule; a flare is the item's cost, judged when swapped in.
+        if (f.pending || f.code === "condition_flare") continue;
+        add({ path: altAt, code: f.code, message: f.message, severity: f.severity });
       }
     });
   }
@@ -451,4 +561,64 @@ function missingGear(rec: ExerciseRecord, have: readonly string[]): string {
   const parts = rec.equipment.all.filter((id) => !got.has(id)).map(word);
   if (rec.equipment.oneOf.length && !rec.equipment.oneOf.some((id) => got.has(id))) parts.push(rec.equipment.oneOf.map(word).join(" or "));
   return parts.join(" and ");
+}
+
+// ── Schema issues in plain words ──
+
+const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The document's field names as the athlete would say them. */
+const FIELD_WORDS: Readonly<Record<string, string>> = {
+  title: "The title", summary: "The summary", notes: "The notes", why: "The why", cue: "The cue", progression: "The progression note",
+  name: "The name", typed: "The typed text", libraryId: "The move id", placeId: "The place", keyResultId: "The key result",
+  objectiveIds: "Objectives", holdSec: "Hold time (seconds)", restSec: "Rest (seconds)", restBetweenRoundsSec: "Rest between rounds (seconds)",
+  carryM: "Carry distance (metres)", durationSec: "Duration (seconds)", distanceM: "Distance (metres)", seconds: "Rest (seconds)",
+  targetMinutes: "Target minutes", eccentricSec: "Lowering time (seconds)", pauseSec: "Pause (seconds)", concentricSec: "Lifting time (seconds)",
+  fastSecPerKm: "The fast pace", slowSecPerKm: "The slow pace", kg: "The weight (kg)",
+};
+
+/** The schema's own refinements, said plainly. */
+const REFINE_WORDS: Readonly<Record<string, string>> = {
+  "reps min must not exceed max": "The fewest reps can't be more than the most.",
+  "a run segment needs a duration, a distance or open": "A run needs a time, a distance, or to be left open for the lap button.",
+  "fast pace must not be slower than slow pace": "The fast pace can't be slower than the slow pace.",
+  "hr low must not exceed high": "The low heart rate can't be above the high one.",
+};
+
+function fieldWords(path: ReadonlyArray<string | number>): string {
+  const last = path[path.length - 1];
+  if (last === undefined) return "The workout";
+  const words = (key: string): string => FIELD_WORDS[key] ?? capitalize(key.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase());
+  if (typeof last === "number") {
+    const key = [...path].reverse().find((s): s is string => typeof s === "string");
+    return key ? `An entry in ${words(key).replace(/^The /, "").toLowerCase()}` : "An entry";
+  }
+  return words(last);
+}
+
+function plainSchemaIssue(i: ZodIssue): string {
+  const what = fieldWords(i.path);
+  switch (i.code) {
+    case "invalid_type":
+      if (i.received === "undefined" || i.received === "null") return `${what} is missing.`;
+      return i.path.length === 0 ? "This isn't a workout." : `${what} isn't the right kind of value.`;
+    case "too_small":
+      if (i.type === "string") return Number(i.minimum) <= 1 ? `${what} can't be empty.` : `${what} needs at least ${String(i.minimum)} characters.`;
+      if (i.type === "array") return `${what} must have at least ${String(i.minimum)}.`;
+      return `${what} must be at least ${String(i.minimum)}.`;
+    case "too_big":
+      if (i.type === "string") return `${what} is too long (at most ${String(i.maximum)} characters).`;
+      if (i.type === "array") return `${what} can have at most ${String(i.maximum)}.`;
+      return `${what} must be at most ${String(i.maximum)}.`;
+    case "invalid_enum_value":
+      return `${what} must be one of: ${i.options.join(", ")}.`;
+    case "invalid_union_discriminator":
+      return `${what} must be one of: ${i.options.map(String).join(", ")}.`;
+    case "invalid_literal":
+      return `${what} must be ${JSON.stringify(i.expected)}.`;
+    case "custom":
+      return REFINE_WORDS[i.message] ?? `${capitalize(i.message)}.`;
+    default:
+      return `${what} isn't valid.`;
+  }
 }
