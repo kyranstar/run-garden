@@ -36,6 +36,8 @@ import {
   activityLaps,
   activitySourceLinks,
   activityStreamSummaries,
+  athleteAnswers,
+  athleteProfiles,
   athleteZones,
   auditEvents,
   backfillState,
@@ -49,6 +51,8 @@ import {
   coachProposals,
   coachQuestions,
   coachReads,
+  coachRunEvents,
+  coachRuns,
   coachTriggers,
   computedMetrics,
   conditionChecks,
@@ -71,10 +75,12 @@ import {
   gardenUnlocks,
   gardenVisitors,
   gardenWildlife,
+  keyResults,
   llmUsage,
   locations,
   motivationEvidence,
   oauthStates,
+  objectives,
   performedSessions,
   performedSets,
   plannedWorkouts,
@@ -102,6 +108,8 @@ import {
   users,
   weeklyReviews,
   workoutCompletionMatches,
+  workoutDocRevisions,
+  workoutTemplates,
 } from "@rg/database";
 import type { Db } from "./db.js";
 
@@ -191,6 +199,16 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [locations, USER],
   [exercisePrefs, USER],
   [exerciseProvenance, USER],
+  // the workout document's history, profile, objectives, answers, templates and coach runs (0028) — each
+  // carries its own user_id, so none needs a parent hop
+  [workoutDocRevisions, USER],
+  [athleteProfiles, USER],
+  [objectives, USER],
+  [keyResults, USER],
+  [athleteAnswers, USER],
+  [workoutTemplates, USER],
+  [coachRuns, USER],
+  [coachRunEvents, USER],
 
   // children — reached only through a parent's ids
   [trainingPlanVersions, child("training_plans", "plan_id")],

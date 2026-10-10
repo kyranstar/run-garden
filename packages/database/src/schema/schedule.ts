@@ -99,6 +99,10 @@ export const plannedWorkouts = sqliteTable(
     /** Minutes, focus, location, mode, theme, equipment exclusions, and the
      * day's overrides and swaps. */
     sessionParams: text("session_params", { mode: "json" }).$type<Record<string, unknown> | null>(),
+    /** The workout document (migration 0028; Stage 1) — a WorkoutDoc, validated by @rg/workout. NULL = none yet. */
+    workoutDoc: text("workout_doc", { mode: "json" }).$type<Record<string, unknown> | null>(),
+    /** Bumped on every workout_doc write; NULL = no doc. */
+    workoutDocRev: integer("workout_doc_rev"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

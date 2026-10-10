@@ -129,7 +129,8 @@ describe("one fully populated row per new table round-trips (D1's 100-variable c
         schema.sessionBuilds,
         {
           id: "sb-1", userId, workoutId: "pw-1", version: 1, engineVersion: "1", inputsHash: "h1",
-          payload: { steps: [{ kind: "rest", seconds: 30 }], alternatives: {} }, lockedAt: at, createdAt: at,
+          payload: { steps: [{ kind: "rest", seconds: 30 }], alternatives: {} }, workoutDoc: { v: 1, blocks: [] },
+          lockedAt: at, createdAt: at,
         },
       ],
       [

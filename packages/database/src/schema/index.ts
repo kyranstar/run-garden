@@ -9,3 +9,4 @@ export * from "./coach.js";
 export * from "./programs.js";
 export * from "./performed.js";
 export * from "./exercise-settings.js";
+export * from "./profile.js";

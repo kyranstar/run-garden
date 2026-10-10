@@ -46,6 +46,7 @@ function fillRow(entry: AccountTable, i: number, userId: string, tag: string, pa
  * garden_state, …); otherwise two, and SEED_PLANNED_WORKOUTS workouts. */
 function rowCount(entry: AccountTable): number {
   if (entry.name === "planned_workouts") return SEED_PLANNED_WORKOUTS;
+  if (entry.name === "athlete_profiles") return 1; // unique on user_id: one profile per account
   const pk = orderColumns(entry.table);
   return pk.length === 1 && pk[0]!.name === "user_id" ? 1 : 2;
 }

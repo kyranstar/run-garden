@@ -44,12 +44,13 @@ describe("migrations directory", () => {
  * or NOT NULL with a constant default; never a PRIMARY KEY or UNIQUE column,
  * which would need a table rebuild.
  */
-describe("Phase 1 migrations (0024–0027) are expand-only", () => {
+describe("Phase 1 migrations (0024–0028) are expand-only", () => {
   const phase1 = [
     "0024_programs.sql",
     "0025_planned_session_columns.sql",
     "0026_performed_sessions.sql",
     "0027_exercise_settings.sql",
+    "0028_workout_documents_profile_objectives.sql",
   ];
   const statements = (f: string): string[] =>
     readFileSync(join(dir, f), "utf8")

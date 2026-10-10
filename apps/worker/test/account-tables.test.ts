@@ -120,6 +120,30 @@ describe("ACCOUNT_TABLES — classification", () => {
     );
   });
 
+  it("registers the workout-document, profile, objective, template and coach-run tables (migration 0028)", () => {
+    for (const name of [
+      "athlete_profiles",
+      "objectives",
+      "key_results",
+      "athlete_answers",
+      "workout_doc_revisions",
+      "workout_templates",
+      "coach_runs",
+      "coach_run_events",
+    ]) {
+      // Every one carries its own user_id, so every one is user-scoped (key results and run events
+      // included: a child scope would need a parent hop the column makes unnecessary).
+      expect(accountTable(name).scope.kind, name).toBe("user");
+    }
+    expect(sqlColumnNames(accountTable("planned_workouts").table)).toEqual(
+      expect.arrayContaining(["workout_doc", "workout_doc_rev"]),
+    );
+    expect(sqlColumnNames(accountTable("session_builds").table)).toContain("workout_doc");
+    expect(sqlColumnNames(accountTable("coach_memory").table)).toEqual(
+      expect.arrayContaining(["pinned", "confidence", "superseded_by", "evidence", "updated_at"]),
+    );
+  });
+
   it("marks users as identity and keeps auth, catalogs and versioning out of any account", () => {
     expect(accountTable("users").scope.kind).toBe("identity");
     const excluded = ACCOUNT_TABLES.filter((t) => t.scope.kind === "excluded").map((t) => t.name);

@@ -17,6 +17,8 @@ export const sessionBuilds = sqliteTable(
     inputsHash: text("inputs_hash").notNull(),
     /** The build payload the player plays (steps, library slice, alternatives). */
     payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    /** The workout document this build was made from (migration 0028). */
+    workoutDoc: text("workout_doc", { mode: "json" }).$type<Record<string, unknown> | null>(),
     /** Set when the session starts; a locked build never changes. */
     lockedAt: text("locked_at"),
     createdAt: text("created_at").notNull(),

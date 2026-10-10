@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * The coach's substrate (spec: docs/superpowers/specs/2026-08-06-coach-
@@ -21,6 +21,14 @@ export const coachMemory = sqliteTable(
     learnedAt: text("learned_at").notNull(),
     expiresAt: text("expires_at"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
+    /** Memory v2 (migration 0028): pinned items are never pruned. */
+    pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
+    /** 'stated' | 'inferred' | 'confirmed' */
+    confidence: text("confidence").notNull().default("stated"),
+    supersededBy: text("superseded_by"),
+    /** What supports an observation. */
+    evidence: text("evidence", { mode: "json" }).$type<unknown>(),
+    updatedAt: text("updated_at"),
   },
   (t) => [index("coach_memory_user_idx").on(t.userId, t.active)],
 );
@@ -191,4 +199,52 @@ export const coachPlanWeeks = sqliteTable(
     } | null>(),
   },
   (t) => [uniqueIndex("coach_plan_weeks_unique").on(t.planId, t.weekStart)],
+);
+
+/**
+ * One coach-designer run (migration 0028; Stage 3 owns the reader/writer). A main run may spawn designer and
+ * reviewer sub-runs (`parentId`). `request` is the athlete's own words: data, never instructions.
+ */
+export const coachRuns = sqliteTable(
+  "coach_runs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    parentId: text("parent_id"),
+    role: text("role").notNull(), // 'main' | 'designer' | 'reviewer'
+    /** { kind: 'now' | 'later_today' | 'week' | 'next_n', n?, from?, to? } */
+    scope: text("scope", { mode: "json" }).notNull().$type<Record<string, unknown>>(),
+    request: text("request"),
+    /** 'queued' | 'running' | 'waiting_athlete' | 'done' | 'failed' | 'cancelled' | 'expired' */
+    status: text("status").notNull(),
+    /** The resumable agent state, kept compact. */
+    state: text("state", { mode: "json" }).$type<unknown>(),
+    steps: integer("steps").notNull().default(0),
+    costUsd: real("cost_usd").notNull().default(0),
+    proposalId: text("proposal_id"),
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (t) => [index("coach_runs_user_status_idx").on(t.userId, t.status), index("coach_runs_parent_idx").on(t.parentId)],
+);
+
+/** The transparency trail of a run. `id` is `<run_id>:<seq>`. */
+export const coachRunEvents = sqliteTable(
+  "coach_run_events",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    runId: text("run_id").notNull(),
+    seq: integer("seq").notNull(),
+    /** 'tool_call' | 'tool_result' | 'draft' | 'review' | 'revision' | 'question' | 'note' | 'error' */
+    kind: text("kind").notNull(),
+    /** One plain line for the transparency view. */
+    summary: text("summary").notNull(),
+    /** Bounded JSON detail. */
+    payload: text("payload", { mode: "json" }).$type<unknown>(),
+    at: text("at").notNull(),
+  },
+  (t) => [index("coach_run_events_run_idx").on(t.runId, t.seq)],
 );

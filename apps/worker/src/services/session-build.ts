@@ -1074,7 +1074,7 @@ async function commitBuild(
     const existing = builds.find((b) => b.version === 0);
     const written: BuildRow = existing
       ? { ...existing, engineVersion: version, inputsHash: recordedHash, payload, createdAt: ctx.now }
-      : { id: newId(), userId, workoutId, version: 0, engineVersion: version, inputsHash: recordedHash, payload, lockedAt: null, createdAt: ctx.now };
+      : { id: newId(), userId, workoutId, version: 0, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc: null, lockedAt: null, createdAt: ctx.now };
     if (existing) {
       await db
         .update(sessionBuilds)
@@ -1089,7 +1089,7 @@ async function commitBuild(
   }
 
   const next = Math.max(0, ...builds.map((b) => b.version)) + 1;
-  const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash: recordedHash, payload, lockedAt: null, createdAt: ctx.now };
+  const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc: null, lockedAt: null, createdAt: ctx.now };
   // A Start that landed while this build ran wins (audit M2): this build's version goes, and the request is refused
   // with the locked session, as any build after Start is.
   const refuse = async (): Promise<never> => {
