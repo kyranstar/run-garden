@@ -16,6 +16,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [5, 8], sets: [2, 4], restSec: 75, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "erector-spinae"] },
+    purposes: ["strength"],
+    tags: ["posture"],
+    themes: ["hipsPosture", "fullBody"],
     providers: { coros: { key: "T1301", confidence: "exact", method: "curated" } }, // COROS: Goblet Squat
     easier: ["boxSquat"],
     text: {
@@ -54,6 +59,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isotonic"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["hipsPosture"],
     providers: { coros: { key: "T1291", confidence: "close", method: "curated" } }, // COROS: Box Squat: the barbell lift; ours is bodyweight to a bench
     harder: ["tempoSquat"],
     text: {
@@ -85,6 +95,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [8, 15], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic", "eccentric"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["hipsPosture"],
     easier: ["boxSquat"],
     harder: ["bwSplitSquat"],
     text: {
@@ -117,6 +132,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
+    purposes: ["strength"],
+    tags: ["single-leg"],
+    themes: ["hipsPosture"],
     easier: ["bwSplitSquat"],
     text: {
       summary: "Staggered stance with a weight at your chest; lower straight down and rise.",
@@ -150,6 +170,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic", "eccentric"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
+    purposes: ["strength"],
+    tags: ["single-leg"],
+    themes: ["hipsPosture"],
     harder: ["splitSquat"],
     text: {
       summary: "Staggered stance, lower straight down slowly, then rise — support nearby for balance.",
@@ -181,6 +206,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic", "eccentric"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["glute-med"] },
+    purposes: ["strength"],
+    tags: ["single-leg", "ski"],
+    themes: ["hipsPosture"],
     providers: { coros: { key: "T1296", confidence: "exact", method: "curated" } }, // COROS: Step-Ups
     text: {
       summary: "Step up onto a bench or sturdy chair, driving through the top foot.",
@@ -212,6 +242,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 4], restSec: 75, startKg: 16 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["glute-max", "hamstrings"], secondary: ["erector-spinae", "lats"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["posteriorChain", "fullBody"],
     providers: { coros: { key: "T1067", confidence: "close", method: "curated" } }, // COROS: Deadlifts: the barbell lift; ours is a kettlebell or dumbbells
     harder: ["rdl"],
     text: {
@@ -246,6 +281,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 75, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["hamstrings", "glute-max"], secondary: ["erector-spinae"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["posteriorChain"],
     providers: { coros: { key: "T1305", confidence: "exact", method: "curated" } }, // COROS: Dumbbell Romanian Deadlift (T1287 is the barbell one)
     easier: ["deadlift"],
     text: {
@@ -277,6 +317,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["hamstrings", "glute-max"], secondary: ["glute-med", "erector-spinae", "peroneals"] },
+    purposes: ["strength", "balance"],
+    tags: ["single-leg"],
+    themes: ["posteriorChain"],
     providers: { coros: { key: "T1187", confidence: "close", method: "curated" } }, // COROS: Single Leg Deadlift: ours is an unloaded reach
     text: {
       summary: "Hinge on one leg as the other reaches back, then stand tall.",
@@ -307,6 +352,11 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["glute-max"], secondary: ["hamstrings", "glute-med"] },
+    purposes: ["activation", "strength"],
+    tags: ["single-leg", "glute-activation"],
+    themes: ["posteriorChain"],
     providers: { coros: { key: "T1219", confidence: "exact", method: "curated" } }, // COROS: Single-Leg Hip Bridge
     easier: ["bridge"],
     text: {

@@ -16,9 +16,14 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 45, startKg: 5 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["serratus-anterior", "deltoids", "glute-med"] },
+    purposes: ["strength"],
+    tags: ["anti-rotation"],
+    themes: ["carryDay"],
     easier: ["wallPallofHold"],
     text: {
-      summary: "Stand side-on to a cable at chest height, press the handle straight out, and don't let the torso turn.",
+      summary: "Side-on to a cable, press the handle straight out and don't let the torso turn.",
       setup: [
         "Set a cable at chest height and stand side-on to it, a step away so the cable is taut.",
         "Hold the handle with both hands at the middle of the chest, feet hip-width, knees soft."
@@ -50,6 +55,11 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["serratus-anterior", "deltoids", "glute-med"] },
+    purposes: ["activation", "strength"],
+    tags: ["anti-rotation"],
+    themes: ["carryDay"],
     easier: ["wallPallofHold"],
     text: {
       summary: "Anchor a band at chest height, stand side-on, and press it straight out without twisting.",
@@ -84,9 +94,14 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "time", range: [20, 30], sets: [2, 3], restSec: 20 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["serratus-anterior", "deltoids", "glute-med"] },
+    purposes: ["activation", "strength"],
+    tags: ["anti-rotation"],
+    themes: ["carryDay"],
     harder: ["bandPallofPress"],
     text: {
-      summary: "Side-on to a wall with the arms straight out in front, press the hands sideways into it and stay square.",
+      summary: "Side-on to a wall, press your straight arms sideways into it and stay square.",
       setup: [
         "Stand side-on to a wall, close enough that with the arms straight out in front of the chest and palms together, the back of the near hand touches it.",
         "Feet hip-width, knees soft."
@@ -118,6 +133,11 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "reps", range: [5, 10], sets: [2, 3], restSec: 30, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric", "isotonic"],
+    muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["forearms", "deltoids", "rotator-cuff"] },
+    purposes: ["strength"],
+    tags: ["anti-rotation"],
+    themes: ["carryDay"],
     text: {
       summary: "Pass a kettlebell around your waist from hand to hand, standing tall and still.",
       setup: ["Stand tall, feet hip-width, knees soft.", "Hold a light kettlebell by the handle in front of the hips."],
@@ -148,10 +168,15 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "time", range: [15, 30], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    contraction: ["isometric"],
+    muscles: { primary: ["adductors", "obliques"], secondary: ["quadratus-lumborum", "glute-med"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["carryDay"],
     providers: { coros: { key: "T1368", confidence: "close", method: "curated" } }, // COROS: Copenhagen Plank: ours is the short lever
     easier: ["sidePlank"],
     text: {
-      summary: "Side plank with the top knee resting on a bench or chair seat, lifting the hips with the inner thigh.",
+      summary: "Side plank with the top knee on a bench, lifting the hips with the inner thigh.",
       setup: [
         "Lie on your side next to a bench or sturdy chair, forearm under the shoulder.",
         "Rest the inside of the top knee on the seat; the bottom leg stays bent underneath."
@@ -185,9 +210,14 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "time", range: [20, 40], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "quadratus-lumborum"], secondary: ["glute-med", "transverse-abdominis", "serratus-anterior"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["carryDay"],
     harder: ["sidePlankKnees"],
     text: {
-      summary: "Lean your forearm on a wall with the feet stepped out, and hold the body in a straight line.",
+      summary: "Forearm on a wall, feet stepped out, hold the body in a straight line.",
       setup: [
         "Stand side-on to a wall and place the forearm on it at shoulder height, elbow under the shoulder.",
         "Step the feet out from the wall, together, so the body leans into the forearm."
@@ -218,11 +248,16 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "time", range: [20, 40], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "quadratus-lumborum"], secondary: ["glute-med", "transverse-abdominis", "serratus-anterior"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["carryDay"],
     providers: { coros: { key: "T1185", confidence: "exact", method: "curated" } }, // COROS: Side Plank
     easier: ["sidePlankKnees"],
     harder: ["copenhagenPlank"],
     text: {
-      summary: "On your side with the legs straight, lift the hips into a line from head to heels and hold.",
+      summary: "On your side with straight legs, lift the hips into a line from head to heels.",
       setup: [
         "Lie on your side, elbow under the shoulder, legs straight and stacked (or the top foot in front for balance).",
         "Rest the free hand on the hip."
@@ -254,6 +289,11 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "carry", range: [30, 60], sets: [2, 3], restSec: 45, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isometric"],
+    muscles: { primary: ["transverse-abdominis", "biceps"], secondary: ["forearms", "erector-spinae", "upper-traps"] },
+    purposes: ["strength"],
+    tags: ["posture"],
+    themes: ["carryDay"],
     harder: ["rackCarry"],
     text: {
       summary: "Hold a weight at your chest and walk tall with short, even steps.",
@@ -290,6 +330,11 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "carry", range: [30, 45], sets: [2, 3], restSec: 60, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "deltoids"], secondary: ["quadratus-lumborum", "upper-traps", "forearms", "glute-med"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["carryDay"],
     easier: ["gobletCarry"],
     text: {
       summary: "Hold one weight at the shoulder in the rack position and walk tall without leaning.",
@@ -325,9 +370,14 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "reps", range: [8, 10], sets: [2, 3], restSec: 30, secsPerRep: 4 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic", "isometric"],
+    muscles: { primary: ["transverse-abdominis", "rectus-abdominis"], secondary: ["obliques", "glute-max", "serratus-anterior"] },
+    purposes: ["activation", "strength"],
+    tags: ["core-stability"],
+    themes: [],
     easier: ["inclinePlank"],
     text: {
-      summary: "In a forearm plank, slowly tuck and untuck the pelvis while the ribs and shoulders stay still.",
+      summary: "In a forearm plank, slowly tuck and untuck the pelvis while the upper body stays still.",
       setup: [
         "Set up in a forearm plank, elbows under the shoulders (knees down to make it easier).",
         "Head in line with the spine, eyes on the floor."

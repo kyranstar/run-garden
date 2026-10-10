@@ -16,6 +16,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [10, 15], secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isotonic", "isometric"],
+    muscles: { primary: ["glute-max"], secondary: ["hamstrings", "adductors", "glute-med"] },
+    purposes: ["activation", "strength"],
+    tags: ["glute-activation"],
+    themes: ["posteriorChain", "hipsPosture"],
     providers: { coros: { key: "T1132", confidence: "close", method: "curated" } }, // COROS: Lie on Your Back Glute Bridge; ours squeezes a block
     harder: ["singleLegBridge"],
     text: {
@@ -47,6 +52,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [10, 15], secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isotonic"],
+    muscles: { primary: ["glute-max"], secondary: ["hamstrings", "glute-med"] },
+    purposes: ["activation", "strength"],
+    tags: ["glute-activation"],
+    themes: ["posteriorChain"],
     providers: { coros: { key: "T1132", confidence: "exact", method: "curated" } }, // COROS: Lie on Your Back Glute Bridge (the name computes to Hip Thrust through an alias)
     harder: ["singleLegBridge"],
     text: {
@@ -79,6 +89,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "time", range: [20, 45] },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isometric"],
+    muscles: { primary: ["transverse-abdominis", "rectus-abdominis"], secondary: ["obliques", "serratus-anterior", "deltoids"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     text: {
       summary: "Hands on a yoga block, body in one long line, breathing slowly.",
       setup: ["Place the block on its tallest setting.", "Hands on the block under the shoulders, feet back."],
@@ -109,6 +124,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "time", range: [20, 45] },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isometric"],
+    muscles: { primary: ["transverse-abdominis", "rectus-abdominis"], secondary: ["obliques", "serratus-anterior", "deltoids"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     text: {
       summary: "Hands on a bench or sturdy chair, body in one long line, breathing slowly.",
       setup: ["Brace the chair against a wall so it can't slide.", "Hands on the edge under the shoulders."],
@@ -138,6 +158,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "time", range: [20, 40], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "quadratus-lumborum"], secondary: ["glute-med", "transverse-abdominis", "serratus-anterior"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["carryDay"],
     providers: { coros: { key: "T1185", confidence: "close", method: "curated" } }, // COROS: Side Plank: ours is the short lever
     text: {
       summary: "On your side with knees bent, lift the hips into a straight line and hold.",
@@ -168,6 +193,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 30, secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric", "isotonic"],
+    muscles: { primary: ["transverse-abdominis", "rectus-abdominis"], secondary: ["obliques", "hip-flexors"] },
+    purposes: ["strength"],
+    tags: ["core-stability"],
+    themes: [],
     providers: { coros: { key: "T1243", confidence: "exact", method: "curated" } }, // COROS: Dead Bug
     text: {
       summary: "On your back, slowly lower opposite arm and leg while the low back stays heavy.",
@@ -198,6 +228,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 30, secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isometric", "isotonic"],
+    muscles: { primary: ["multifidus", "transverse-abdominis"], secondary: ["erector-spinae", "glute-max", "obliques", "deltoids"] },
+    purposes: ["activation", "strength"],
+    tags: ["core-stability"],
+    themes: [],
     providers: { coros: { key: "T1150", confidence: "exact", method: "curated" } }, // COROS: Bird Dog
     text: {
       summary: "On hands and knees, reach one arm and the opposite leg long without twisting.",
@@ -229,6 +264,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "carry", range: [30, 60], sets: [2, 3], restSec: 60, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric"],
+    muscles: { primary: ["obliques", "quadratus-lumborum"], secondary: ["upper-traps", "forearms", "glute-med", "rotator-cuff"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["carryDay"],
     providers: { coros: { key: "T1310", confidence: "close", method: "curated" } }, // COROS: Farmer's Walk: ours is one-sided
     text: {
       summary: "Walk slowly with a weight in one hand, standing tall without leaning.",
@@ -260,6 +300,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "carry", range: [30, 45], sets: [2, 3], restSec: 60, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric", "isotonic"],
+    muscles: { primary: ["obliques", "quadratus-lumborum"], secondary: ["hip-flexors", "glute-med", "forearms"] },
+    purposes: ["strength", "balance"],
+    tags: ["single-leg"],
+    themes: ["carryDay"],
     text: {
       summary: "March in place with a weight in one hand, moving slowly enough to stay level.",
       setup: ["Hold a weight at your side, arm long.", "Stand tall near a wall if you want a balance reference."],
@@ -290,6 +335,11 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "carry", range: [30, 60], sets: [2, 3], restSec: 60, startKg: 16 },
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric"],
+    muscles: { primary: ["forearms", "upper-traps", "obliques"], secondary: ["erector-spinae", "glute-med", "rotator-cuff"] },
+    purposes: ["strength"],
+    tags: ["grip", "posture"],
+    themes: ["carryDay", "fullBody"],
     providers: { coros: { key: "T1310", confidence: "exact", method: "curated" } }, // COROS: Farmer's Walk
     text: {
       summary: "Walk tall holding a dumbbell in each hand, shoulders down and back.",

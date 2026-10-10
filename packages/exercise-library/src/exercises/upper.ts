@@ -16,8 +16,12 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
-    providers: { coros: { key: "T1309", confidence: "exact", method: "curated" } }, // COROS: One Arm Dumbbell Row
+    contraction: ["isotonic"],
+    muscles: { primary: ["lats", "rhomboids", "middle-traps"], secondary: ["biceps", "deltoids"] },
+    purposes: ["strength"],
     tags: ["desk-relief"],
+    themes: ["upperBackNeck", "deskUnwind", "fullBody"],
+    providers: { coros: { key: "T1309", confidence: "exact", method: "curated" } }, // COROS: One Arm Dumbbell Row
     text: {
       summary: "One hand supported on a bench or chair, row the weight toward your hip.",
       setup: [
@@ -51,7 +55,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60, startKg: 10 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["biceps", "deltoids"] },
+    purposes: ["strength"],
     tags: ["desk-relief"],
+    themes: ["upperBackNeck", "deskUnwind"],
     text: {
       summary: "Lie chest-down on an incline bench and row two dumbbells toward your hips.",
       setup: [
@@ -85,6 +93,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60, startKg: 20 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "erector-spinae"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["upperBackNeck"],
     providers: { coros: { key: "T1053", confidence: "exact", method: "curated" } }, // COROS: Seated Cable Row
     text: {
       summary: "Sit tall at a cable row and pull the handle to your lower ribs.",
@@ -115,7 +128,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [5, 10], sets: [2, 3], restSec: 30, secsPerRep: 6 },
     conditions: { tmj: { clench: 0, neckLoad: 1, faceDown: true } },
     difficulty: 1,
-    tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["lower-traps", "middle-traps"], secondary: ["rhomboids", "deltoids", "rotator-cuff"] },
+    purposes: ["activation", "strength"],
+    tags: ["desk-relief", "posture"],
+    themes: ["upperBackNeck", "deskUnwind"],
     text: {
       summary: "Face down, lift the arms into a Y, then a T, then a W — that's one rep.",
       setup: ["Lie face down with the forehead on a folded towel.", "Arms overhead in a Y, thumbs up."],
@@ -148,7 +165,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [12, 20], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["middle-traps", "rhomboids"], secondary: ["deltoids", "rotator-cuff", "lower-traps"] },
+    purposes: ["activation"],
+    tags: ["desk-relief", "posture"],
+    themes: ["upperBackNeck", "deskUnwind"],
     text: {
       summary: "Hold a band at shoulder height and pull it apart until it touches your chest.",
       setup: ["Stand tall holding a light band with both hands, shoulder-width, arms straight in front.", "Shoulders down."],
@@ -179,8 +200,12 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [12, 15], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isotonic"],
+    muscles: { primary: ["rotator-cuff", "middle-traps"], secondary: ["deltoids", "lower-traps", "rhomboids"] },
+    purposes: ["activation", "strength"],
+    tags: ["desk-relief", "posture"],
+    themes: ["upperBackNeck", "deskUnwind"],
     providers: { coros: { key: "T1352", confidence: "close", method: "curated" } }, // COROS: Face Pull: the cable lift; ours is a band
-    tags: ["desk-relief"],
     text: {
       summary: "Anchor a band at head height and pull it toward your face, elbows high.",
       setup: ["Anchor the band at about head height (door anchor or post).", "Hold the ends with palms facing down."],
@@ -211,8 +236,12 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [12, 15], sets: [2, 3], restSec: 45, startKg: 7 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["rotator-cuff", "middle-traps"], secondary: ["deltoids", "lower-traps", "rhomboids"] },
+    purposes: ["activation", "strength"],
+    tags: ["desk-relief", "posture"],
+    themes: ["upperBackNeck", "deskUnwind"],
     providers: { coros: { key: "T1352", confidence: "exact", method: "curated" } }, // COROS: Face Pull
-    tags: ["desk-relief"],
     text: {
       summary: "Rope on a high cable, pull toward your face with the elbows high and wide.",
       setup: ["Set a rope attachment at about head height.", "Step back until the arms are straight in front."],
@@ -243,6 +272,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "triceps"], secondary: ["deltoids", "serratus-anterior"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     providers: { coros: { key: "T1316", confidence: "close", method: "curated" } }, // COROS: Floor Press: implement unknown; ours is one arm at a time
     text: {
       summary: "Lying on your back, press the weight up with one arm; the floor limits the range.",
@@ -277,6 +311,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [8, 15], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "triceps"], secondary: ["deltoids", "serratus-anterior"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     harder: ["inclinePushup"],
     text: {
       summary: "Hands on a wall, lower the chest toward it with a straight body and press away.",
@@ -308,6 +347,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [6, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "triceps"], secondary: ["deltoids", "serratus-anterior", "rectus-abdominis"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     providers: { coros: { key: "T1241", confidence: "exact", method: "curated" } }, // COROS: Incline Push-Up
     easier: ["wallPushup"],
     harder: ["pushup"],
@@ -335,6 +379,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [5, 12], sets: [2, 3], restSec: 60 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "triceps"], secondary: ["deltoids", "serratus-anterior", "rectus-abdominis"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["fullBody"],
     providers: { coros: { key: "T1004", confidence: "exact", method: "curated" } }, // COROS: Push-ups
     easier: ["inclinePushup"],
     text: {
@@ -362,6 +411,11 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [5, 8], sets: [2, 3], restSec: 60, startKg: 8 },
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["deltoids", "triceps"], secondary: ["serratus-anterior", "upper-traps", "obliques", "glute-max"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     text: {
       summary: "Kneeling on one knee, press the weight overhead with the arm on the down-knee side.",
       setup: [

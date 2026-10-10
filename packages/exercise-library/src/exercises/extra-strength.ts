@@ -16,10 +16,15 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 75, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 4,
+    contraction: ["isotonic"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
+    purposes: ["strength"],
+    tags: ["single-leg"],
+    themes: ["hipsPosture"],
     providers: { coros: { key: "T1164", confidence: "exact", method: "curated" } }, // COROS: Split Bench Squat
     easier: ["bwBulgarianSplitSquat"],
     text: {
-      summary: "Back foot on a bench, weight at your chest or sides; lower straight down on the front leg and drive up.",
+      summary: "Back foot on a bench, lower straight down on the front leg and drive up.",
       setup: [
         "Stand a long stride in front of a bench and rest the top of the back foot on it.",
         "Hold a kettlebell at the chest, or a dumbbell in each hand at your sides (log the weight per hand)."
@@ -51,6 +56,11 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
+    purposes: ["strength"],
+    tags: ["single-leg"],
+    themes: ["hipsPosture"],
     providers: { coros: { key: "T1164", confidence: "close", method: "curated" } }, // COROS: Split Bench Squat; the loaded one holds the exact key
     easier: ["bwSplitSquat"],
     harder: ["bulgarianSplitSquat"],
@@ -87,6 +97,11 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "time", range: [30, 60], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric"],
+    muscles: { primary: ["quads"], secondary: ["glute-max", "adductors"] },
+    purposes: ["strength"],
+    tags: ["ski"],
+    themes: [],
     providers: { coros: { key: "T1231", confidence: "exact", method: "curated" } }, // COROS: Wall Sit
     text: {
       summary: "Back against a wall, slide down until the knees are bent, and hold while breathing slowly.",
@@ -120,6 +135,11 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "time", range: [20, 40], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isometric"],
+    muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
+    purposes: ["strength"],
+    tags: ["single-leg", "ski"],
+    themes: ["hipsPosture"],
     harder: ["bwSplitSquat"],
     text: {
       summary: "Step into a split stance, lower until the back knee hovers, and hold still.",
@@ -156,9 +176,14 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 45, secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["hamstrings", "glute-max"], secondary: ["erector-spinae"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["posteriorChain"],
     easier: ["bridge"],
     text: {
-      summary: "Lying on your back with heels on a chair seat, press down through the heels and lift the hips.",
+      summary: "Heels on a chair seat, press down and lift the hips into a bridge.",
       setup: [
         "Lie on your back with your heels on a chair seat or bench, knees slightly bent; set the chair against a wall so it can't slide.",
         "Arms by your sides, head resting on the floor or a folded towel."
@@ -189,9 +214,14 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45, secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["hamstrings", "glute-max"], secondary: ["glute-med", "hip-flexors", "erector-spinae", "peroneals"] },
+    purposes: ["strength", "balance"],
+    tags: ["single-leg"],
+    themes: ["posteriorChain"],
     easier: ["slRdlReach"],
     text: {
-      summary: "Hinge forward on one leg as the other reaches back, then stand and drive that knee up to hip height.",
+      summary: "Hinge on one leg, reach the other back, then stand and drive that knee up.",
       setup: ["Stand on one leg with a soft knee; keep a wall or chair within reach.", "Arms relaxed by your sides."],
       steps: [
         "Hinge forward from the hip as the free leg reaches straight back, until you feel the standing hamstring load.",
@@ -222,6 +252,11 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["glute-max", "hamstrings"], secondary: ["obliques", "quadratus-lumborum", "erector-spinae", "forearms"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["posteriorChain", "carryDay"],
     text: {
       summary: "Deadlift a single weight held at one side, standing tall without leaning toward it.",
       setup: [
@@ -255,8 +290,12 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    harder: ["towelDoorRow"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    purposes: ["strength"],
     tags: ["desk-relief"],
+    themes: ["upperBackNeck", "deskUnwind"],
+    harder: ["towelDoorRow"],
     text: {
       summary: "Hold a door frame with one hand, lean back, and row your chest toward it.",
       setup: [
@@ -290,11 +329,15 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    purposes: ["strength"],
+    tags: ["desk-relief"],
+    themes: ["upperBackNeck", "deskUnwind"],
     easier: ["doorframeRow"],
     harder: ["tableRow"],
-    tags: ["desk-relief"],
     text: {
-      summary: "Loop a towel around both handles of an open door, lean back, and row your chest to the door's edge.",
+      summary: "Loop a towel round an open door's handles, lean back and row to the door.",
       setup: [
         "Open a solid door and loop a strong towel around both handles so it wraps the door's edge.",
         "Stand facing the edge with a foot on each side of the door and hold one end of the towel in each hand."
@@ -326,9 +369,14 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [5, 10], sets: [2, 3], restSec: 60 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: ["upperBackNeck"],
     easier: ["towelDoorRow"],
     text: {
-      summary: "Lie under a sturdy table, grip its edge, and pull your chest up toward it with the body straight.",
+      summary: "Lie under a sturdy table, grip its edge and pull your chest up to it.",
       setup: [
         "Use a heavy, stable table that can't tip — test it first — or at the gym a bar set about hip height in a rack.",
         "Lie underneath with the edge above your chest and grip it shoulder-width; knees bent and feet flat to start."
@@ -360,10 +408,14 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "time", range: [30, 40], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    harder: ["towelDoorRow"],
+    contraction: ["isometric"],
+    muscles: { primary: ["rhomboids", "middle-traps"], secondary: ["lats", "lower-traps", "biceps"] },
+    purposes: ["activation", "strength"],
     tags: ["desk-relief"],
+    themes: ["upperBackNeck", "deskUnwind"],
+    harder: ["towelDoorRow"],
     text: {
-      summary: "Sit with a towel around your feet and row against it, holding a steady squeeze in the upper back.",
+      summary: "Sit with a towel around your feet and row against it, squeezing the upper back.",
       setup: [
         "Sit on the floor with the legs out in front (knees bent if the hamstrings are tight).",
         "Loop a towel around the soles of both feet and hold one end in each hand."
@@ -397,8 +449,12 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [10, 15], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    harder: ["supportedRow"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    purposes: ["strength"],
     tags: ["desk-relief"],
+    themes: ["upperBackNeck", "deskUnwind"],
+    harder: ["supportedRow"],
     text: {
       summary: "Seated with a band around your feet, row the ends back to your ribs and return slowly.",
       setup: [
@@ -431,6 +487,11 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "triceps"], secondary: ["deltoids", "serratus-anterior", "rectus-abdominis"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     providers: { coros: { key: "T1184", confidence: "exact", method: "curated" } }, // COROS: Kneeling Push-Ups
     easier: ["wallPushup"],
     harder: ["pushup"],
@@ -467,6 +528,11 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "triceps"], secondary: ["deltoids", "serratus-anterior", "obliques"] },
+    purposes: ["strength"],
+    tags: [],
+    themes: [],
     providers: { coros: { key: "T1302", confidence: "close", method: "curated" } }, // COROS: Dumbbell Bench Press: ours is one arm
     easier: ["floorPress"],
     text: {
