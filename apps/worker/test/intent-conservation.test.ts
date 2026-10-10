@@ -327,6 +327,9 @@ const NOT_SESSION_DECIDED = new Set([
   "sanctionedBy",
   "archivedAt",
   "archiveReason",
+  // How many documents the row has held (Stage 1, Amendment A): an eased row is at its next revision, a fresh one at
+  // its first. The document itself (`workoutDoc`) is the session's and is compared.
+  "workoutDocRev",
   "createdAt",
   "updatedAt",
 ]);

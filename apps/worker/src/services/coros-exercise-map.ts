@@ -55,8 +55,17 @@ function keysByName(): Map<string, string | null> {
 
 /** The unique T-code whose English name normalizes to the record's name; null for none or several. */
 export function computedCorosKey(record: Pick<ExerciseRecord, "name">): string | null {
-  const name = strictExerciseKey(record.name ?? "");
-  return name ? (keysByName().get(name) ?? null) : null;
+  return corosKeyOfName(record.name ?? "");
+}
+
+/**
+ * The unique strength T-code COROS gives this English name (strict key, the computed tier's own rule); null for a name
+ * two T-codes share ("Jumping Lunges", "Plank Jacks") or none. A stored stage keeps only this name — the import
+ * resolves its T-code to it — so this is the way back.
+ */
+export function corosKeyOfName(name: string): string | null {
+  const key = strictExerciseKey(name);
+  return key ? (keysByName().get(key) ?? null) : null;
 }
 
 /** A record's key: its curated mapping when it has one (`exact` only), else the computed key. */

@@ -526,6 +526,26 @@ describe("ruling: with the library, a legacy id is the move it now is; an id the
     expect(r.kept).toContainEqual(expect.objectContaining({ at: `slot ${it.slotKey}`, field: "alternative", value: alts2[1]!.id }));
   });
 
+  it("engine builds: an alternate that canonicalises to the slot's own move, or to an alternate already taken, is left out", () => {
+    const { plan } = seededBuilds(8).find(({ plan: p }) => p.items.some((it) => (p.alternatives[it.slotKey] ?? []).length >= 3))!;
+    const it = plan.items.find((x) => (plan.alternatives[x.slotKey] ?? []).length >= 3)!;
+    const [ownAlt, keptAlt, dupAlt] = plan.alternatives[it.slotKey]!;
+    const record = (id: string) => LIBRARY.find((e) => e.id === id)!;
+    const own = record(it.exercise.id);
+    // The first alternative is now a legacy id of the slot's own move; the second and third merged into one move.
+    const library = makeLibraryIndex([
+      ...LIBRARY.filter((e) => ![own.id, ownAlt!.id, keptAlt!.id, dupAlt!.id].includes(e.id)),
+      { ...own, legacyIds: [...own.legacyIds, ownAlt!.id] },
+      { ...record(keptAlt!.id), id: `${keptAlt!.id}Merged`, legacyIds: [keptAlt!.id, dupAlt!.id] },
+    ]);
+    const { doc } = docFromBuildWithKept(stored(plan), { library });
+    valid(doc);
+    const item = exercisesOf(doc)[plan.items.indexOf(it)]!;
+    if (item.kind !== "exercise") throw new Error("a live slot stays a library move");
+    expect(item.libraryId).toBe(own.id);
+    expect(item.alternates!.map((a) => a.libraryId)).toEqual([`${keptAlt!.id}Merged`]);
+  });
+
   it("without the library, ids are as given", () => {
     const { doc } = docFromStages(lift.stages, { title: "Ski legs", sport: "strength", corosKeyToLibraryId });
     expect(exercisesOf(doc)[0]).toMatchObject({ kind: "exercise", libraryId: GOBLET });

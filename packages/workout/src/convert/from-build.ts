@@ -23,10 +23,12 @@
  * - Ladder: `rounds` = the rungs, each move one set of the rungs' rep range (the rungs step evenly from its low to its
  *   high), the rest between rungs `restBetweenRoundsSec`.
  * - Reasons: a slot's reasons → `why` (joined with "; "; cut to the document's 160 characters, the whole list kept),
- *   its progression note → `progression`, its offered swaps → `alternates` (the first 3, each with its reasons).
+ *   its progression note → `progression`, its offered swaps → `alternates` (the first 3 distinct moves, each with its
+ *   reasons).
  * - Given the library (`meta.library`): a legacy id — the slot's move or an alternate — is the move's id now; a slot
  *   whose move the library no longer has is a free-text item by the move's name, its id, progression note and
- *   alternates kept; an alternate the library no longer has is left out and kept.
+ *   alternates kept; an alternate the library no longer has is left out and kept; one that is now the slot's own
+ *   move, or a move already offered (two legacy ids of one move), is left out (the record's legacy ids keep it).
  * - Intent: the theme's name and blurb (else the mode's), the mode → effort (`effortOfMode`), the theme's emphasised
  *   regions → focus; the minutes and place → setting; the mode and theme reasons → notes.
  *
@@ -276,9 +278,9 @@ function moveItem(build: BuildPayload, slot: Slot, dose: WorkoutDose, kept: Kept
   const first = slot.work[0];
   const reasons = first?.why ?? slot.item.why;
   const note = first?.target?.note;
-  const offered = alternativesOf(build, slot, kept, at, library);
   const why = reasons.length ? joined(reasons, 160, kept, at, "why") : "";
   const id = currentId(slot.item.exerciseId, library, kept, at, "exerciseId");
+  const offered = alternativesOf(build, slot, id, kept, at, library);
   if (id === null) {
     // The library no longer has the move: free text by its name, and what only a library move can hold is kept.
     if (note) kept.push({ at, field: "progression", value: note, why: "a free-text move holds no progression" });
@@ -300,13 +302,27 @@ function moveItem(build: BuildPayload, slot: Slot, dose: WorkoutDose, kept: Kept
   };
 }
 
-/** The slot's offered swaps the document can name: the first three the library still has; a gone one is kept. */
-function alternativesOf(build: BuildPayload, slot: Slot, kept: KeptEntry[], at: string, library: LibraryIndex | undefined): Array<{ id: string; reasons: readonly string[] }> {
+/**
+ * The slot's offered swaps the document can name: the first three distinct moves the library still has; a gone one is
+ * kept. Distinct after canonicalising: an alternate that is now the slot's own move (`own`, its current id) or a move
+ * already taken (two legacy ids of one move) is left out — nothing is lost, the record's legacy ids keep the old id.
+ */
+function alternativesOf(
+  build: BuildPayload,
+  slot: Slot,
+  own: string | null,
+  kept: KeptEntry[],
+  at: string,
+  library: LibraryIndex | undefined,
+): Array<{ id: string; reasons: readonly string[] }> {
   const out: Array<{ id: string; reasons: readonly string[] }> = [];
+  const taken = new Set(own === null ? [] : [own]);
   for (const a of build.alternatives?.[slot.item.slotKey] ?? []) {
     if (out.length >= 3) break;
     const id = currentId(a.id, library, kept, at, "alternative");
-    if (id !== null) out.push({ id, reasons: a.reasons });
+    if (id === null || taken.has(id)) continue;
+    taken.add(id);
+    out.push({ id, reasons: a.reasons });
   }
   return out;
 }

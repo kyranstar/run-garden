@@ -28,7 +28,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, runAtomically, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
@@ -41,6 +41,7 @@ import {
 } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
+import { docForCoachSession, newRowDocColumns, revisionInsert, updateDocColumns } from "./workout-doc-store.js";
 
 /**
  * Approval → deterministic mutations (spec §7). No LLM here, ever. All row
@@ -355,7 +356,7 @@ async function insertSession(
   date: string,
   session: CoachSession,
   now: string,
-  opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences; thresholdPaceSecPerKm?: number } = {},
+  opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences; thresholdPaceSecPerKm?: number; proposalId?: string } = {},
 ): Promise<void> {
   // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15) — and
   // in the SAME slot the importer would have chosen, from the one shared
@@ -367,32 +368,40 @@ async function insertSession(
   const effectiveTime = opts.prefs
     ? windowTimeFor({ category: session.category, date }, opts.prefs)
     : "07:00";
-  await db
-    .insert(plannedWorkouts)
-    .values({
-      id,
-      userId,
-      planId,
-      sourceWorkoutId: id,
-      originalPlanDate: date,
-      // "" = COROS has never verified this row (audit#2 #1): the absence
-      // sweep must skip it and the sync pill must not read "synced". The
-      // create's verify stamps the real date.
-      lastVerifiedCorosDate: "",
-      effectiveDate: date,
-      effectiveTime,
-      completionState: "scheduled",
-      createdAt: now,
-      updatedAt: now,
-      // Everything the SESSION decides — the same writer `ease` uses.
-      ...sessionColumns(session),
-      // The SEED for a column that is otherwise only ever written by something
-      // that has observed COROS. A brand-new row has no upstream copy, so the
-      // app's own hash is the only honest placeholder; the create's verify
-      // replaces it with the wire's fingerprint as soon as there is one.
-      sourceContentFingerprint: fingerprint(session),
-    })
-    .onConflictDoNothing();
+  // The session's workout document, at revision 1, and its revision in the same batch (Stage 1 dual-write; a rest
+  // day has none, and a conversion that fails is NULL — never a failed apply). A re-apply inserts nothing, so it
+  // revises nothing: the revision's id is the row's own.
+  const doc = docForCoachSession(session, { weightUnit: opts.prefs?.weightUnit });
+  await runAtomically(db, [
+    db
+      .insert(plannedWorkouts)
+      .values({
+        id,
+        userId,
+        planId,
+        sourceWorkoutId: id,
+        originalPlanDate: date,
+        // "" = COROS has never verified this row (audit#2 #1): the absence
+        // sweep must skip it and the sync pill must not read "synced". The
+        // create's verify stamps the real date.
+        lastVerifiedCorosDate: "",
+        effectiveDate: date,
+        effectiveTime,
+        completionState: "scheduled",
+        createdAt: now,
+        updatedAt: now,
+        // Everything the SESSION decides — the same writer `ease` uses.
+        ...sessionColumns(session),
+        // The SEED for a column that is otherwise only ever written by something
+        // that has observed COROS. A brand-new row has no upstream copy, so the
+        // app's own hash is the only honest placeholder; the create's verify
+        // replaces it with the wire's fingerprint as soon as there is one.
+        sourceContentFingerprint: fingerprint(session),
+        ...newRowDocColumns(doc),
+      })
+      .onConflictDoNothing(),
+    ...(doc ? [revisionInsert(db, { userId, workoutId: id, sourceKind: "coach", sourceRef: opts.proposalId ?? null, now })] : []),
+  ]);
 
   await writeStages(db, id, session, opts.thresholdPaceSecPerKm);
 
@@ -1081,11 +1090,18 @@ export async function applyOps(
         }
         const target = found.row;
         // An ease REPLACES the session, so it writes exactly what a fresh
-        // insert writes — one writer, no parallel column list to fall behind.
-        await db
-          .update(plannedWorkouts)
-          .set({ ...sessionColumns(op.session), updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        // insert writes — one writer, no parallel column list to fall behind —
+        // and its workout document as the row's next revision, in the same
+        // batch (Stage 1 dual-write; `updateDocColumns` keeps a row resolved
+        // meanwhile as it was).
+        const doc = docForCoachSession(op.session, { weightUnit: prefs.weightUnit });
+        await runAtomically(db, [
+          db
+            .update(plannedWorkouts)
+            .set({ ...sessionColumns(op.session), ...updateDocColumns(doc), updatedAt: now })
+            .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId))),
+          ...(doc ? [revisionInsert(db, { userId, workoutId: op.workoutId, sourceKind: "coach", sourceRef: proposalId, now })] : []),
+        ]);
         // The body, too: a run eased into a lift loses the run's stage rows,
         // and a lift eased into a run loses the lift's exercise list.
         await writeStages(db, op.workoutId, op.session, thresholdPaceSecPerKm);
@@ -1358,6 +1374,7 @@ export async function applyOps(
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
             thresholdPaceSecPerKm,
+            proposalId,
           });
           touchedDates.add(date);
           out.created.push(id);
@@ -1372,6 +1389,7 @@ export async function applyOps(
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
             thresholdPaceSecPerKm,
+            proposalId,
           });
           touchedDates.add(s.date);
           out.created.push(id);
@@ -1385,6 +1403,7 @@ export async function applyOps(
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
             thresholdPaceSecPerKm,
+            proposalId,
           });
           touchedDates.add(s.date);
           out.created.push(id);
@@ -1435,6 +1454,7 @@ export async function applyOps(
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
             thresholdPaceSecPerKm,
+            proposalId,
           });
           touchedDates.add(s.date);
           out.created.push(id);
@@ -1465,6 +1485,7 @@ export async function applyOps(
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
             thresholdPaceSecPerKm,
+            proposalId,
           });
           touchedDates.add(s.date);
           out.created.push(id);

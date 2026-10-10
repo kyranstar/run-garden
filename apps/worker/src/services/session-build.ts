@@ -77,6 +77,7 @@ import {
 } from "./engine-inputs.js";
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 import type { WatchState } from "./watch-push.js";
+import { docForBuild } from "./workout-doc-store.js";
 
 /**
  * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
@@ -1065,6 +1066,9 @@ async function commitBuild(
     build: { engineVersion: version, inputsHash: recordedHash, builtAt: ctx.now, blockRef, ...composed.build },
     view: composed.view,
   };
+  // The build's workout document, in the same statement as the build (Stage 1 dual-write): a snapshot of this build,
+  // no revisions. A conversion that fails is logged by its code and stored as NULL — never a failed build.
+  const workoutDoc = docForBuild(stored.build) as Record<string, unknown> | null;
 
   // The response is made from what this writes (ruling 2a-R8), never read back: the row as updated, and the build as
   // stored — after the prune, the only unlocked build left.
@@ -1073,12 +1077,12 @@ async function commitBuild(
   if (preview) {
     const existing = builds.find((b) => b.version === 0);
     const written: BuildRow = existing
-      ? { ...existing, engineVersion: version, inputsHash: recordedHash, payload, createdAt: ctx.now }
-      : { id: newId(), userId, workoutId, version: 0, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc: null, lockedAt: null, createdAt: ctx.now };
+      ? { ...existing, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, createdAt: ctx.now }
+      : { id: newId(), userId, workoutId, version: 0, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, lockedAt: null, createdAt: ctx.now };
     if (existing) {
       await db
         .update(sessionBuilds)
-        .set({ engineVersion: version, inputsHash: recordedHash, payload, createdAt: ctx.now })
+        .set({ engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, createdAt: ctx.now })
         .where(eq(sessionBuilds.id, existing.id));
     } else {
       await db.insert(sessionBuilds).values(written);
@@ -1089,7 +1093,7 @@ async function commitBuild(
   }
 
   const next = Math.max(0, ...builds.map((b) => b.version)) + 1;
-  const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc: null, lockedAt: null, createdAt: ctx.now };
+  const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, lockedAt: null, createdAt: ctx.now };
   // A Start that landed while this build ran wins (audit M2): this build's version goes, and the request is refused
   // with the locked session, as any build after Start is.
   const refuse = async (): Promise<never> => {

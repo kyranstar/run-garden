@@ -23,11 +23,12 @@ import {
   type ProgramSessionPushJob,
   type PlannedStage,
   type UserPreferences,
+  type WorkoutDoc,
 } from "@rg/domain";
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { isSpikeStamp } from "@rg/coros";
-import { chunkedInsert, type Db } from "./db.js";
+import { chunkedInsert, runAtomically, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
@@ -35,6 +36,7 @@ import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
 import { queueUnpush, unpushJobId } from "./watch-push.js";
+import { docForStages, newRowDocColumns, revisionInsert, updateDocColumns } from "./workout-doc-store.js";
 
 /**
  * Plan import + COROS reconciliation (rules 1–11 of the sync spec, see
@@ -639,6 +641,20 @@ export async function importPlanSnapshot(
       bufferAfterMinutes: prefs.bufferAfterMinutes,
     });
     const stageSummary = src.stages.length > 0 ? summarizeStages(src.stages) : undefined;
+    // The workout document of these stages (Stage 1 dual-write), for the branch below that writes them (at most one):
+    // the row's own category, subtype and length set its efforts and the stand-in's length. A rest day has none; a
+    // conversion that fails is NULL (logged by code) — never a failed import. Made only there: most reads write none.
+    const docOfStages = (rowCategory: string): WorkoutDoc | null =>
+      docForStages(src.stages, {
+        title,
+        sport: src.sport,
+        category: rowCategory,
+        qualitySubtype: classification.qualitySubtype ?? null,
+        durationSeconds: src.estimatedDurationSeconds ?? estimate.workoutSeconds,
+      });
+    /** The revision of a document just written, for the same batch; none when there is no document to revise. */
+    const revision = (workoutId: string, doc: WorkoutDoc | null) =>
+      doc ? [revisionInsert(db, { userId: input.userId, workoutId, sourceKind: "coros_import", sourceRef: src.contentFingerprint, now })] : [];
 
     // RULING 3-R9. A program row claims a wire workout only when the workout
     // carries that row's recorded stamp: an address is a claim, and COROS
@@ -755,41 +771,47 @@ export async function importPlanSnapshot(
       // for the whole snapshot by `separateDayCollisions` below, which can see
       // the coach's rows as well as the wire's.
       const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
-      await db
-        .update(plannedWorkouts)
-        .set({
-          title,
-          category,
-          qualitySubtype: classification.qualitySubtype ?? null,
-          sport: src.sport,
-          originalPlanDate: src.date,
-          lastVerifiedCorosDate: src.date,
-          effectiveDate: src.date,
-          effectiveTime,
-          sourceProgramId: src.sourceProgramId ?? null,
-          sourceContentFingerprint: src.contentFingerprint,
-          sourceVersion: src.sourceVersion ?? null,
-          sourceEstimatedDurationSeconds: src.estimatedDurationSeconds ?? null,
-          fallbackEstimatedDurationSeconds:
-            estimate.source === "coros_native" ? null : estimate.workoutSeconds,
-          calendarBlockDurationSeconds: estimate.calendarSeconds,
-          durationEstimate: estimate as unknown as Record<string, unknown>,
-          expectedDistanceMeters: src.estimatedDistanceMeters ?? null,
-          stageSummary: stageSummary ?? null,
-          calendarSyncState:
-            current.calendarSyncState === "user_deleted"
-              ? "user_deleted"
-              : category === "rest"
-                ? "not_created"
-                : "pending",
-          corosSyncState: "synced",
-          completionState: "scheduled",
-          archivedAt: null,
-          archiveReason: null,
-          missingReads: 0,
-          updatedAt: now,
-        })
-        .where(eq(plannedWorkouts.id, current.id));
+      const doc = docOfStages(category);
+      await runAtomically(db, [
+        db
+          .update(plannedWorkouts)
+          .set({
+            title,
+            category,
+            qualitySubtype: classification.qualitySubtype ?? null,
+            sport: src.sport,
+            originalPlanDate: src.date,
+            lastVerifiedCorosDate: src.date,
+            effectiveDate: src.date,
+            effectiveTime,
+            sourceProgramId: src.sourceProgramId ?? null,
+            sourceContentFingerprint: src.contentFingerprint,
+            sourceVersion: src.sourceVersion ?? null,
+            sourceEstimatedDurationSeconds: src.estimatedDurationSeconds ?? null,
+            fallbackEstimatedDurationSeconds:
+              estimate.source === "coros_native" ? null : estimate.workoutSeconds,
+            calendarBlockDurationSeconds: estimate.calendarSeconds,
+            durationEstimate: estimate as unknown as Record<string, unknown>,
+            expectedDistanceMeters: src.estimatedDistanceMeters ?? null,
+            stageSummary: stageSummary ?? null,
+            calendarSyncState:
+              current.calendarSyncState === "user_deleted"
+                ? "user_deleted"
+                : category === "rest"
+                  ? "not_created"
+                  : "pending",
+            corosSyncState: "synced",
+            completionState: "scheduled",
+            archivedAt: null,
+            archiveReason: null,
+            missingReads: 0,
+            // A skipped or missed row recycled as another workout is that workout now: its document follows.
+            ...updateDocColumns(doc, { reopens: true }),
+            updatedAt: now,
+          })
+          .where(eq(plannedWorkouts.id, current.id)),
+        ...revision(current.id, doc),
+      ]);
       await replaceStages(db, current.id, src);
       stats.replacedRecycled += 1;
       continue;
@@ -877,39 +899,44 @@ export async function importPlanSnapshot(
       // for the whole snapshot by `separateDayCollisions` below, which can see
       // the coach's rows as well as the wire's.
       const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
-      await db.insert(plannedWorkouts).values({
-        id,
-        userId: input.userId,
-        planId: planRowsBySourceId.get(src.sourcePlanId)!.id,
-        sourceWorkoutId: src.sourceWorkoutId,
-        sourceProgramId: src.sourceProgramId ?? null,
-        sourceIdInPlan: src.sourceIdInPlan ?? null,
-        title,
-        category,
-        qualitySubtype: classification.qualitySubtype ?? null,
-        sport: src.sport,
-        originalPlanDate: src.date,
-        lastVerifiedCorosDate: src.date,
-        effectiveDate: src.date,
-        effectiveTime,
-        sourceContentFingerprint: src.contentFingerprint,
-        sourceVersion: src.sourceVersion ?? null,
-        sourceEstimatedDurationSeconds: src.estimatedDurationSeconds ?? null,
-        fallbackEstimatedDurationSeconds:
-          estimate.source === "coros_native" ? null : estimate.workoutSeconds,
-        calendarBlockDurationSeconds: estimate.calendarSeconds,
-        durationEstimate: estimate as unknown as Record<string, unknown>,
-        expectedDistanceMeters: src.estimatedDistanceMeters ?? null,
-        stageSummary: stageSummary ?? null,
-        calendarSyncState: category === "rest" ? "not_created" : "pending",
-        // We just read this workout's date FROM COROS, so by construction the
-        // two sides agree. `calendar_only` is reserved for a local date change
-        // that couldn't be written back — never for freshly imported rows.
-        corosSyncState: "synced",
-        completionState: "scheduled",
-        createdAt: now,
-        updatedAt: now,
-      });
+      const doc = docOfStages(category);
+      await runAtomically(db, [
+        db.insert(plannedWorkouts).values({
+          id,
+          userId: input.userId,
+          planId: planRowsBySourceId.get(src.sourcePlanId)!.id,
+          sourceWorkoutId: src.sourceWorkoutId,
+          sourceProgramId: src.sourceProgramId ?? null,
+          sourceIdInPlan: src.sourceIdInPlan ?? null,
+          title,
+          category,
+          qualitySubtype: classification.qualitySubtype ?? null,
+          sport: src.sport,
+          originalPlanDate: src.date,
+          lastVerifiedCorosDate: src.date,
+          effectiveDate: src.date,
+          effectiveTime,
+          sourceContentFingerprint: src.contentFingerprint,
+          sourceVersion: src.sourceVersion ?? null,
+          sourceEstimatedDurationSeconds: src.estimatedDurationSeconds ?? null,
+          fallbackEstimatedDurationSeconds:
+            estimate.source === "coros_native" ? null : estimate.workoutSeconds,
+          calendarBlockDurationSeconds: estimate.calendarSeconds,
+          durationEstimate: estimate as unknown as Record<string, unknown>,
+          expectedDistanceMeters: src.estimatedDistanceMeters ?? null,
+          stageSummary: stageSummary ?? null,
+          calendarSyncState: category === "rest" ? "not_created" : "pending",
+          // We just read this workout's date FROM COROS, so by construction the
+          // two sides agree. `calendar_only` is reserved for a local date change
+          // that couldn't be written back — never for freshly imported rows.
+          corosSyncState: "synced",
+          completionState: "scheduled",
+          ...newRowDocColumns(doc),
+          createdAt: now,
+          updatedAt: now,
+        }),
+        ...revision(id, doc),
+      ]);
       await replaceStages(db, id, src);
       stats.created += 1;
       continue;
@@ -931,6 +958,8 @@ export async function importPlanSnapshot(
 
     const updates: Record<string, unknown> = {};
     let touched = false;
+    /** Rule 7 rewrote the stages: the update carries their document, and its revision rides the same batch. */
+    let revised: WorkoutDoc | null = null;
 
     // Reset absence counter — it's present in this read.
     if (current.missingReads > 0) {
@@ -1141,6 +1170,8 @@ export async function importPlanSnapshot(
       updates.durationEstimate = estimate as unknown as Record<string, unknown>;
       updates.expectedDistanceMeters = src.estimatedDistanceMeters ?? null;
       updates.stageSummary = stageSummary ?? null;
+      revised = docOfStages(updates.category as string);
+      Object.assign(updates, updateDocColumns(revised));
       if (current.calendarSyncState === "synced") updates.calendarSyncState = "pending";
       await replaceStages(db, current.id, src);
       stats.updatedContent += 1;
@@ -1185,7 +1216,9 @@ export async function importPlanSnapshot(
 
     if (touched) {
       updates.updatedAt = now;
-      await db.update(plannedWorkouts).set(updates).where(eq(plannedWorkouts.id, current.id));
+      const update = db.update(plannedWorkouts).set(updates).where(eq(plannedWorkouts.id, current.id));
+      if (revised) await runAtomically(db, [update, ...revision(current.id, revised)]);
+      else await update;
     } else {
       stats.unchanged += 1;
     }
