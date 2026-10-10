@@ -531,6 +531,11 @@ export function buildRunProgram(spec: {
             intensityType: 3, // PACE
             intensityValue: band.fastSecPerKm * 1000,
             intensityValueExtend: band.slowSecPerKm * 1000,
+            // The watch reads the bounds as milliseconds only with intensityMultiplier 1000 (COROS's own pace steps
+            // carry it, with intensityDisplayUnit 2). With the metadata's 0 it took them as SECONDS per km, and the
+            // per-mile conversion wrapped at 16 bits: threshold reps showed "78'59 – 722'43" (live, 2026-10-09).
+            intensityMultiplier: 1000,
+            intensityDisplayUnit: 2,
           }
         : { intensityType: 5, intensityValue: 0 }), // none
       sets: 1,

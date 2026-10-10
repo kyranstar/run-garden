@@ -22,6 +22,20 @@ const session: CoachSession = {
 };
 
 describe("buildRunProgram pace targets", () => {
+  it("tells the watch the bounds are milliseconds: intensityMultiplier 1000 and the pace display unit, as COROS's own plans do", () => {
+    // Live 2026-10-09: with intensityMultiplier 0 the watch read 288000 as SECONDS per km, converted to per mile and
+    // wrapped at 16 bits — the threshold reps showed "78'59 – 722'43" and the easy blocks "596'04 – 20'52" (each one
+    // reproduced exactly: (v × 1.609344) mod 65536). COROS's own pace steps (docs/reports/coros-inspect-2026-08-02.json)
+    // carry intensityMultiplier 1000 and intensityDisplayUnit 2 with the same millisecond values.
+    const p = buildRunProgram({ happenDay: "20261024", name: "Threshold 3×10 — 2026-10-24", session, thresholdPaceSecPerKm: 289 });
+    const [warmup, work, rest] = p.exercises as Array<Record<string, unknown>>;
+    for (const paced of [warmup, work]) {
+      expect(paced).toMatchObject({ intensityType: 3, intensityMultiplier: 1000, intensityDisplayUnit: 2 });
+    }
+    // A block with no pace target keeps the metadata defaults.
+    expect(rest).toMatchObject({ intensityType: 5, intensityMultiplier: 0 });
+  });
+
   it("emits ms/km bounds per block from the athlete's threshold", () => {
     const p = buildRunProgram({
       happenDay: "20261024",
