@@ -674,6 +674,12 @@ export async function enqueueContentConvergence(
     now: string;
     corosWritesEnabled: boolean;
     thresholdPaceSecPerKm?: number;
+    /**
+     * Appended to the rewrite's job id: a rewrite whose CONTENT is unchanged (the pace heal re-sends the same session
+     * so the wire gains the new encoding) has the same `from`/`to` as an earlier rewrite of that content, and would
+     * collide with that VERIFIED row — a no-op that reports a job queued while nothing runs, forever.
+     */
+    idTag?: string;
   },
 ): Promise<ConvergeOutcome> {
   if (!v.corosWritesEnabled) return { refused: "writes_disabled" };
@@ -749,7 +755,7 @@ export async function enqueueContentConvergence(
     return { jobId, kind: "coach_delete_workout" };
   }
 
-  const jobId = `${v.workout.id}-content-${from}-${to}`;
+  const jobId = `${v.workout.id}-content-${from}-${to}${v.idTag ? `-${v.idTag}` : ""}`;
   // A coach-created session's new stamp comes from the one chooser (ruling 3-R12), its own row's jobs left out: a
   // rewrite that keeps its title keeps the stamp it already carries, " (n)" included.
   let name = v.session.title;

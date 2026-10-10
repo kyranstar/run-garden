@@ -457,6 +457,15 @@ export function runBlockRoles(
 }
 
 /**
+ * THE VERSION OF THE PACE ENCODING `buildRunProgram` WRITES. 2 = bounds in ms/km with intensityMultiplier 1000 and
+ * intensityDisplayUnit 2 (2c1ee96). Version 1 — unrecorded, by definition — sent the same bounds with multiplier 0,
+ * which the watch read as SECONDS per km. The program fingerprint covers neither field, so nothing on the wire tells
+ * the two apart: the write lane stamps this on every run build it verifies (`paceWire`), and a verified paced write
+ * without it is the old encoding (`pace_encoding_outdated`). Bump it with any change to how pace reaches the wire.
+ */
+export const RUN_PACE_WIRE = 2;
+
+/**
  * Build a structured RUN program (sportType 1) from one coach session —
  * Bundle A Task A10, the coach-era generalization of the safety core.
  *

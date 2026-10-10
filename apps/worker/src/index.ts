@@ -44,6 +44,7 @@ import { processCoachReads } from "./services/coach-reads.js";
 import { corosSweepAccount } from "./services/coros-read.js";
 import { corosMcpSleepSweep } from "./services/coros-mcp.js";
 import { executeCloudJobs } from "./services/coros-write-cloud.js";
+import { healOutdatedPaceEncoding } from "./services/content-converge.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -302,6 +303,13 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       }
       await stillOurs();
       if (heavyStep === null) {
+        // The coach runs on the watch with the old pace encoding (owner-approved 2026-10-10): one rewrite QUEUED a
+        // run, soonest first, until none are left — one read when none are. The write step below executes one job,
+        // and that write is this run's heavy step.
+        await healOutdatedPaceEncoding(db, userId, prefs).catch((e: unknown) =>
+          console.error(`pace heal failed: ${e instanceof Error ? e.message : "unknown"}`),
+        );
+        await stillOurs();
         // Cloud-direct writes (spec §4): queued watch updates execute here when a cloud connection exists — the
         // Mac is no longer in the loop. One a run; each route that queues one drains it in its own request.
         const jobs = await executeCloudJobs(db, env, userId, prefs, { cap: 1 }).catch(() => null);
