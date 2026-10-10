@@ -1,5 +1,8 @@
 import type { ExerciseRecord } from "./record.js";
 
+// One collator so the server and the offline Studio order names identically whatever the device's locale.
+const byName = new Intl.Collator("en");
+
 // Library search: the pure filter and ranking the library route and the Studio share (server and offline client rank
 // identically). No storage in here: what depends on the athlete (condition fit, a place's gear) comes in through `ctx`.
 
@@ -66,6 +69,6 @@ export function searchLibrary(records: readonly ExerciseRecord[], query: string,
     if (tier === null || !matchesFilters(ex, filters) || (ctx.accepts && !ctx.accepts(ex))) continue;
     scored.push({ ex, tier, fit: ctx.fit ? ctx.fit(ex) : 0 });
   }
-  scored.sort((a, b) => a.tier - b.tier || a.fit - b.fit || a.ex.name.localeCompare(b.ex.name) || a.ex.id.localeCompare(b.ex.id));
+  scored.sort((a, b) => a.tier - b.tier || a.fit - b.fit || byName.compare(a.ex.name, b.ex.name) || (a.ex.id < b.ex.id ? -1 : a.ex.id > b.ex.id ? 1 : 0));
   return scored.map(s => s.ex);
 }

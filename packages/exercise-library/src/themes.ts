@@ -21,6 +21,11 @@ export interface Theme {
   coreBias: readonly string[];
   /** The condition profile whose care this theme belongs to. */
   profile?: string;
+  /**
+   * Whether the adaptive programme may propose this theme on its own (default true). A theme with `false` is still
+   * offered by the Studio filter, the coach's tools and a manual pick; the day's proposal never chooses it.
+   */
+  inRotation?: boolean;
 }
 
 export const THEMES: readonly Theme[] = [
@@ -62,14 +67,14 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: "skiPrep", name: "Ski prep", blurb: "Strong, springy legs for the slopes: quads, glutes, and steady single-leg work.",
-    modes: ["consistent", "build"],
+    modes: ["consistent", "build"], inRotation: false,
     emphasis: { patterns: { squat: 1.5, lunge: 2, "anti-lateral": 1 }, regions: { quads: 1.5, glutes: 1, hips: 0.5 }, tags: { ski: 3, landing: 2, deceleration: 2, "single-leg": 1.5, lateral: 1 } },
     formats: ["superset", "circuit", "ladder"], coreBias: ["squat", "hinge"],
   },
   {
-    id: "athleticBase", name: "Athletic base", blurb: "Balance, single-leg strength and a braced trunk to move well in any sport.",
-    modes: ["consistent", "build"],
-    emphasis: { patterns: { lunge: 2, "anti-rotate": 1.5, rotate: 1, carry: 0.5 }, regions: { core: 1.5, hips: 1, quads: 0.5 }, tags: { "single-leg": 1, rotational: 1.5, balance: 1, elastic: 1.5, "core-stability": 1 } },
+    id: "athleticBase", name: "Athletic base", blurb: "Single-leg strength and a braced trunk to move well in any sport.",
+    modes: ["consistent", "build"], inRotation: false,
+    emphasis: { patterns: { lunge: 2, "anti-rotate": 1.5, "anti-extend": 0.5 }, regions: { core: 1.5, hips: 0.5 }, tags: { "single-leg": 2, "anti-rotation": 1.5, "core-stability": 1, balance: 1 } },
     formats: ["superset", "circuit", "ladder"], coreBias: ["hinge", "squat"],
   },
   {
@@ -87,7 +92,7 @@ export const THEMES: readonly Theme[] = [
   {
     // Never a recovery theme: its moves are plyometric, and condition profiles decide the days they may appear.
     id: "plyoIntro", name: "Jumps and landings", blurb: "Land softly first, then add a little spring: small hops and stuck landings, with plenty of rest.",
-    modes: ["consistent", "build"],
+    modes: ["consistent", "build"], inRotation: false,
     emphasis: { patterns: { squat: 2, lunge: 1 }, regions: { calves: 1.5, ankles: 1.5, quads: 1, glutes: 1 }, tags: { landing: 3, elastic: 3, deceleration: 2 } },
     formats: ["straight", "superset"], coreBias: ["squat", "hinge"],
   },

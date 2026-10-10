@@ -232,7 +232,7 @@ export const CORE_CARRY = defineExercises([
     muscles: { primary: ["multifidus", "transverse-abdominis"], secondary: ["erector-spinae", "glute-max", "obliques", "deltoids"] },
     purposes: ["activation", "strength"],
     tags: ["core-stability"],
-    themes: [],
+    themes: ["athleticBase"],
     providers: { coros: { key: "T1150", confidence: "exact", method: "curated" } }, // COROS: Bird Dog
     text: {
       summary: "On hands and knees, reach one arm and the opposite leg long without twisting.",

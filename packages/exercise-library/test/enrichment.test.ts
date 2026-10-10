@@ -68,6 +68,30 @@ describe("themes for the new tags", () => {
     }
   });
 
+  test("every tag a theme emphasises is a real tag that some record carries", () => {
+    const carried = new Set<string>(EXERCISES.flatMap(e => e.tags));
+    for (const t of THEMES) {
+      for (const tag of Object.keys(t.emphasis.tags ?? {})) {
+        expect(TAGS as readonly string[], `${t.id}: ${tag} is not a tag`).toContain(tag);
+        expect(carried.has(tag), `${t.id}: no record carries "${tag}"`).toBe(true);
+      }
+    }
+  });
+
+  test("the themes the day's proposal must not pick are marked out of the rotation", () => {
+    const studioOnly = ["skiPrep", "athleticBase", "plyoIntro"];
+    for (const id of studioOnly) expect(THEMES.find(t => t.id === id)!.inRotation, id).toBe(false);
+    for (const t of THEMES.filter(x => !studioOnly.includes(x.id))) expect(t.inRotation, t.id).not.toBe(false);
+  });
+
+  test("athleticBase is single-leg strength and a braced trunk, with no rotation work", () => {
+    const t = THEMES.find(x => x.id === "athleticBase")!;
+    expect(Object.keys(t.emphasis.patterns ?? {})).not.toContain("rotate");
+    for (const id of ["pallofIsoHoldHalfKneel", "cablePallofPress", "bandPallofPress", "wallPallofHold", "birdDog", "slRdlReach", "slRdlKneeDrive"]) {
+      expect(EXERCISES.find(e => e.id === id)!.themes, id).toContain("athleticBase");
+    }
+  });
+
   test("plyoIntro lands with its moves: never a recovery theme, and every move tagged with it is plyometric", () => {
     const t = THEMES.find(x => x.id === "plyoIntro");
     expect(t, "plyoIntro is missing").toBeTruthy();

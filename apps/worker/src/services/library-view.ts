@@ -1,10 +1,14 @@
 /**
  * THE EXERCISE LIBRARY AS THE ATHLETE BROWSES IT (Phase 2 spec §2c "Library API"; plan Task 1).
  *
- *   listLibrary      slim rows with filters: text, movement, body area, role, gear, a place's gear, and "safe for every
- *                    switched-on profile"; each row with its safety per switched-on profile, the athlete's rating,
- *                    "not for me", pin, whether it came from their saves, and the gear the default place lacks for it;
- *                    plus what each wishlist item would unlock at the default place
+ *   listLibrary      slim rows, filtered and ranked by `searchLibrary` (the package's pure search, shared with the
+ *                    Studio): text, movement, body area, role, gear, purpose, tag, theme, muscle, contraction,
+ *                    position, laterality, difficulty, a place's gear, and "safe for every switched-on profile", best
+ *                    match first, cut to `limit`. Each row carries the card line, purposes, contraction, tags, primary
+ *                    muscles, the day the athlete last did it and how many sessions did it in 30 days (logged sets and
+ *                    played-only moves alike), its safety per switched-on profile, the athlete's rating, "not for
+ *                    me", pin, whether it came from their saves, and the gear the default place lacks for it; plus
+ *                    what each wishlist item would unlock at the default place
  *   libraryItem      one record whole (how-to, dose, notes for switched-on profiles, easier/harder by name, where a
  *                    saved move came from) with the athlete's last five entries and best set
  *   setExercisePrefs `{rating?, excluded?, pinned?}` → `exercise_prefs`, the row the review save writes
@@ -15,6 +19,8 @@
  *
  * Safety, per switched-on profile: `never` when the profile allows the move in no mode even on its calmest day,
  * `safe` when it is also safe on a flare day (`flareSafe`), else `care` (allowed with limits — a mode, a calm check).
+ * The profile's whole-record rule (`allowRecord`, e.g. the jaw profile's plyometric gate) counts: a move it refuses in
+ * every mode reads `never`; one it allows only on a calm, answered check reads `care`, never `safe`.
  * "Unlocks": a move the default place's gear cannot do now, that the gear would make doable, that the athlete has not
  * set aside and that no switched-on profile rules out.
  */
@@ -172,9 +178,13 @@ export function safetyFor(profile: ConditionProfile, ex: ExerciseRecord): Safety
   const a = ex.conditions[profile.id];
   if (!a || profile.never(a)) return "never";
   const calm = bestDay(profile);
-  const someMode = MODE_IDS.some((mode) => profile.fitsMode(a, mode) && ex.patterns.every((p) => profile.allowPattern(p, mode, calm)));
+  const someMode = MODE_IDS.some(
+    (mode) => profile.fitsMode(a, mode) && ex.patterns.every((p) => profile.allowPattern(p, mode, calm)) && (profile.allowRecord?.(ex, mode, calm) ?? true),
+  );
   if (!someMode) return "never";
-  return profile.flareSafe(a) ? "safe" : "care";
+  // A move the record rule refuses on a flare day (recovery) is never "safe" however its ratings read.
+  const flareOk = profile.flareSafe(a) && (profile.allowRecord?.(ex, "recovery", { ...calm, pre: profile.check.max }) ?? true);
+  return flareOk ? "safe" : "care";
 }
 
 const safetyOf = (profiles: readonly ConditionProfile[], ex: ExerciseRecord): Record<string, Safety> =>
@@ -220,18 +230,25 @@ const ratingOf = (v: number | null | undefined): 1 | -1 | null => (v == null || 
 
 const SAFETY_RANK: Record<Safety, number> = { safe: 0, care: 1, never: 2 };
 
-/** Per move: the latest settled day and the sessions in the last 30 days, from ONE grouped read of the performed sets. */
+/**
+ * Per move: the latest settled day and the sessions in the last 30 days, from ONE compound read: the logged sets (done
+ * ones) and the moves a session reached (`moves_done`, which also holds played-only moves such as mobility and
+ * breathing). A move logged and played in one session counts once.
+ */
 async function doneStats(db: Db, userId: string, since: string): Promise<Map<string, { last: string; n30: number }>> {
-  const rows = await db
-    .select({
-      exerciseId: performedSets.exerciseId,
-      last: sql<string>`max(${performedSessions.localDate})`,
-      n30: sql<number>`count(distinct case when ${performedSessions.localDate} >= ${since} then ${performedSessions.id} end)`,
-    })
-    .from(performedSets)
-    .innerJoin(performedSessions, eq(performedSessions.id, performedSets.performedSessionId))
-    .where(and(eq(performedSessions.userId, userId), ne(performedSessions.payloadHash, PENDING_HASH), eq(performedSets.done, true)))
-    .groupBy(performedSets.exerciseId);
+  const rows = (await db.all(sql`
+    select exercise_id as exerciseId, max(day) as last, count(distinct case when day >= ${since} then sid end) as n30
+    from (
+      select ${performedSets.exerciseId} as exercise_id, ${performedSessions.localDate} as day, ${performedSessions.id} as sid
+      from ${performedSets} inner join ${performedSessions} on ${performedSessions.id} = ${performedSets.performedSessionId}
+      where ${performedSessions.userId} = ${userId} and ${performedSessions.payloadHash} != ${PENDING_HASH} and ${performedSets.done} = 1
+      union all
+      select json_extract(m.value, '$.exerciseId'), ${performedSessions.localDate}, ${performedSessions.id}
+      from ${performedSessions}, json_each(${performedSessions.movesDone}) as m
+      where ${performedSessions.userId} = ${userId} and ${performedSessions.payloadHash} != ${PENDING_HASH}
+    )
+    where exercise_id is not null
+    group by exercise_id`)) as Array<{ exerciseId: string; last: string; n30: number }>;
   const out = new Map<string, { last: string; n30: number }>();
   for (const r of rows) {
     const id = canonicalId.get(r.exerciseId) ?? r.exerciseId;

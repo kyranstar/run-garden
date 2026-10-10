@@ -66,7 +66,8 @@ export interface ThemeProposal {
 }
 
 function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null }: ThemeArgs): ThemeProposal {
-  const options = data.themes.filter(t => t.modes.includes(m));
+  // Same rule as the live engine: out-of-rotation themes (inRotation: false) are never proposed.
+  const options = data.themes.filter(t => t.modes.includes(m) && t.inRotation !== false);
   if (!options.length) return { theme: null, reasons: [] };
   const debt = Coverage.debt(data, sessions, today);
   const rng = Rng.create(`${today}|${m}|theme`);

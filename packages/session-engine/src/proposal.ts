@@ -66,7 +66,8 @@ export interface ThemeProposal {
 }
 
 function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null }: ThemeArgs, hist?: HistIndex): ThemeProposal {
-  const options = data.themes.filter(t => t.modes.includes(m));
+  // Themes marked `inRotation: false` are for the Studio and the coach; the day's proposal never picks them.
+  const options = data.themes.filter(t => t.modes.includes(m) && t.inRotation !== false);
   if (!options.length) return { theme: null, reasons: [] };
   const h = HistIndex.for(data, sessions, hist);
   const debt = Coverage.debtIn(h, today);

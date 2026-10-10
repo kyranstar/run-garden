@@ -12,7 +12,7 @@ import { EXERCISES, hasEquipment, TMJ } from "@rg/exercise-library";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { libraryRoutes } from "../src/routes/library.js";
-import { setExercisePrefs } from "../src/services/library-view.js";
+import { safetyFor, setExercisePrefs } from "../src/services/library-view.js";
 import { RestoreInProgressError } from "../src/services/programs.js";
 import { buildSession } from "../src/services/session-build.js";
 import { saveProgramState } from "../src/services/engine-inputs.js";
@@ -136,7 +136,7 @@ describe("GET /api/library", () => {
     expect(JSON.stringify(body)).not.toMatch(/providers|originId|"text"/);
     // In name order, so the same library always reads the same way.
     const names = body.items.map((r) => r.name);
-    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, "en")));
   });
 
   it("carries this user's ratings, set-asides, pins and saves — never another user's", async () => {
@@ -219,7 +219,10 @@ describe("GET /api/library", () => {
     const safe = (await list("?safe=1")).items.map((r) => r.id);
     expect(safe).not.toContain("halfKneelingPress");
     expect(safe).toContain("chinTuck");
-    expect(safe.sort()).toEqual(EXERCISES.filter((e) => TMJ.flareSafe(e.conditions.tmj!)).map((e) => e.id).sort());
+    // ...and the profile's record rule counts: a plyometric move is refused in recovery, so it is never "safe".
+    expect(safe.sort()).toEqual(
+      EXERCISES.filter((e) => TMJ.flareSafe(e.conditions.tmj!) && !e.contraction.includes("plyometric")).map((e) => e.id).sort(),
+    );
 
     // A profile switched off rates nothing.
     await db.update(userConditions).set({ active: false }).where(eq(userConditions.userId, userId));
@@ -266,20 +269,20 @@ describe("GET /api/library — the Studio's filters, ranking and history", () =>
   const sorted = (xs: string[]) => [...xs].sort();
   const worked = (e: (typeof EXERCISES)[number]) => [...e.muscles!.primary, ...e.muscles!.secondary];
 
-  const settledSession = async (date: string, o: { owner?: string; hash?: string } = {}) => {
+  const settledSession = async (date: string, o: { owner?: string; hash?: string; moves?: string[] } = {}) => {
     const sid = newId();
     await db.insert(performedSessions).values({
       id: sid, userId: o.owner ?? userId, workoutId: null, activityId: null, buildId: null, source: "import", sourceRef: sid,
       localDate: date, startedAt: `${date}T18:00:00Z`, endedAt: null, seconds: 600, plannedSeconds: null, minutes: 10, mode: "build",
       theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null, stepsDone: null,
-      movesDone: [], note: null, newMove: null, payloadHash: o.hash ?? "h", createdAt: NOW, updatedAt: NOW,
+      movesDone: (o.moves ?? []).map((exerciseId) => ({ exerciseId, seconds: 30 })), note: null, newMove: null, payloadHash: o.hash ?? "h", createdAt: NOW, updatedAt: NOW,
     });
     return sid;
   };
-  const setRows = (sid: string, exerciseId: string, flags: string[][]) =>
+  const setRows = (sid: string, exerciseId: string, flags: string[][], done = true) =>
     flags.map((f, i) => ({
       id: newId(), performedSessionId: sid, entryIndex: 0, exerciseId, implement: null, format: "straight", perSide: false, setIndex: i,
-      side: null, reps: 8, seconds: null, loadValue: null, loadUnit: null, loadKg: null, done: true, flags: f,
+      side: null, reps: 8, seconds: null, loadValue: null, loadUnit: null, loadKg: null, done, flags: f,
     }));
 
   it("filters by purpose, contraction, muscle (primary or secondary), tag and theme, and combines them", async () => {
@@ -342,7 +345,7 @@ describe("GET /api/library — the Studio's filters, ranking and history", () =>
     expect(new Set(tiers).size).toBeGreaterThan(1);
     for (const t of [1, 2, 3]) {
       const names = rows.filter((r) => tier(r) === t).map((r) => r.name);
-      expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+      expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, "en")));
     }
   });
 
@@ -381,6 +384,32 @@ describe("GET /api/library — the Studio's filters, ranking and history", () =>
     expect(byId.get("deadlift")).toMatchObject({ lastDoneOn: null, timesDone30d: 0 });
   });
 
+  it("counts a played-only move (in moves_done, no sets), once per session even when it was also logged; unfinished sets never count", async () => {
+    const { todayInZone, addDays: add } = await import("@rg/domain");
+    const today = todayInZone(prefs.timezone);
+    await settledSession(add(today, -3), { moves: ["catCow"] });
+    const both = await settledSession(add(today, -5), { moves: ["gobletSquat", "catCow"] });
+    await db.insert(performedSets).values(setRows(both, "gobletSquat", [[], []]));
+    const skipped = await settledSession(add(today, -1), { moves: [] });
+    await db.insert(performedSets).values(setRows(skipped, "deadlift", [[]], false));
+    await settledSession(add(today, -1), { moves: ["legsUp"], hash: "pending" });
+    const byId = new Map((await list()).items.map((r) => [r.id, r]));
+    expect(byId.get("catCow")).toMatchObject({ lastDoneOn: add(today, -3), timesDone30d: 2 });
+    expect(byId.get("gobletSquat")).toMatchObject({ lastDoneOn: add(today, -5), timesDone30d: 1 });
+    expect(byId.get("deadlift")).toMatchObject({ lastDoneOn: null, timesDone30d: 0 });
+    expect(byId.get("legsUp")).toMatchObject({ lastDoneOn: null, timesDone30d: 0 });
+  });
+
+  it("the 30-day window includes day -29 and excludes day -30 from the count (the last-done day still shows)", async () => {
+    const { todayInZone, addDays: add } = await import("@rg/domain");
+    const today = todayInZone(prefs.timezone);
+    await settledSession(add(today, -29), { moves: ["catCow"] });
+    await settledSession(add(today, -30), { moves: ["catCow", "legsUp"] });
+    const byId = new Map((await list()).items.map((r) => [r.id, r]));
+    expect(byId.get("catCow")).toMatchObject({ lastDoneOn: add(today, -29), timesDone30d: 1 });
+    expect(byId.get("legsUp")).toMatchObject({ lastDoneOn: add(today, -30), timesDone30d: 0 });
+  });
+
   it("stays within 45 statements, reading the performed work in ONE statement", async () => {
     await activateTmj();
     statements.length = 0;
@@ -388,6 +417,22 @@ describe("GET /api/library — the Studio's filters, ranking and history", () =>
     expect(statements.length).toBeLessThanOrEqual(45);
     expect(statements.filter(isWrite)).toEqual([]);
     expect(statements.filter((s) => /performed_sets/i.test(s))).toHaveLength(1);
+    expect(statements.filter((s) => /moves_done/i.test(s))).toHaveLength(1);
+  });
+
+  it("safetyFor asks the profile's whole-record rule: refused in every mode reads never; refused only on a flare day reads care", () => {
+    const chinTuck = EXERCISES.find((e) => e.id === "chinTuck")!;
+    expect(safetyFor(TMJ, chinTuck)).toBe("safe");
+    expect(safetyFor({ ...TMJ, allowRecord: () => false }, chinTuck)).toBe("never");
+    expect(safetyFor({ ...TMJ, allowRecord: (_ex, mode) => mode !== "recovery" }, chinTuck)).toBe("care");
+  });
+
+  it("a plyometric move is never \"safe\" for the jaw profile (its gate refuses it in recovery), but is not ruled out", async () => {
+    await activateTmj();
+    const ply = EXERCISES.find((e) => e.contraction.includes("plyometric"))!;
+    const row = (await list()).items.find((r) => r.id === ply.id)!;
+    expect(row.safety.tmj).toBe("care");
+    expect((await list("?safe=1")).items.map((r) => r.id)).not.toContain(ply.id);
   });
 
   it("the detail's history sets carry their flags", async () => {

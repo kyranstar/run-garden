@@ -27,8 +27,10 @@ describe("searchLibrary", () => {
   });
 
   test("accepts narrows without disturbing the order", () => {
+    const everything = searchLibrary(EXERCISES, "");
     const some = searchLibrary(EXERCISES, "", {}, { accepts: e => e.difficulty === 1 });
     expect(some.length).toBeGreaterThan(0);
-    expect(some.every(e => e.difficulty === 1)).toBe(true);
+    expect(some.length).toBeLessThan(everything.length);
+    expect(some.map(e => e.id)).toEqual(everything.filter(e => e.difficulty === 1).map(e => e.id));
   });
 });

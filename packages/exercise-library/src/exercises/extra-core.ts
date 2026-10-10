@@ -20,7 +20,7 @@ export const EXTRA_CORE = defineExercises([
     muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["serratus-anterior", "deltoids", "glute-med"] },
     purposes: ["strength"],
     tags: ["anti-rotation"],
-    themes: ["carryDay"],
+    themes: ["carryDay", "athleticBase"],
     easier: ["wallPallofHold"],
     text: {
       summary: "Side-on to a cable, press the handle straight out and don't let the torso turn.",
@@ -59,7 +59,7 @@ export const EXTRA_CORE = defineExercises([
     muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["serratus-anterior", "deltoids", "glute-med"] },
     purposes: ["activation", "strength"],
     tags: ["anti-rotation"],
-    themes: ["carryDay"],
+    themes: ["carryDay", "athleticBase"],
     easier: ["wallPallofHold"],
     text: {
       summary: "Anchor a band at chest height, stand side-on, and press it straight out without twisting.",
@@ -98,7 +98,7 @@ export const EXTRA_CORE = defineExercises([
     muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["serratus-anterior", "deltoids", "glute-med"] },
     purposes: ["activation", "strength"],
     tags: ["anti-rotation"],
-    themes: ["carryDay"],
+    themes: ["carryDay", "athleticBase"],
     harder: ["bandPallofPress"],
     text: {
       summary: "Side-on to a wall, press your straight arms sideways into it and stay square.",

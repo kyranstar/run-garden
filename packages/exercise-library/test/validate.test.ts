@@ -89,6 +89,11 @@ describe("validation (engine-validate.test.js)", () => {
     }
   });
 
+  test("a theme emphasising a tag outside the vocabulary is refused", () => {
+    const bad = { ...data, themes: [...data.themes, { ...data.themes[0]!, id: "badTags", emphasis: { tags: { bogusTag: 1 } } }] };
+    expect(validateLibrary(bad, { presets: [] })).toContain('theme badTags: tag "bogusTag" is not in the vocabulary');
+  });
+
   test("the real formats, themes, and location presets are valid", () => {
     const errors = validateLibrary(data).filter(e => e.startsWith("theme ") || e.startsWith("format "));
     expect(errors).toEqual([]);
