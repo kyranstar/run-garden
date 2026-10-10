@@ -24,7 +24,7 @@
  *   x 1 (primary) or x 0.5 (secondary). `perSide` does not double sets here.
  * - Discipline uses the garden's axis names, "run" | "strength" | "yoga". Per item, work + rest seconds go to run (run
  *   items), strength (records with a strength, power, activation, conditioning or balance purpose; free exercises in a
- *   main, power, accessory, conditioning or activation part) or yoga (the rest). Dominant = run when run is at least
+ *   main, power, accessory, conditioning or activation part that is not a flow) or yoga (the rest). Dominant = run when run is at least
  *   half of all seconds (or the only axis present), else strength when it is at least yoga, else yoga. `disciplines` lists
  *   every axis present, dominant first, then by seconds.
  * - Category: race / tempo / threshold / interval / hills (never strides) make race / quality only when the run axis is dominant or those
@@ -278,7 +278,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
         const rec = free ? undefined : find(item.libraryId);
         const perSide = item.dose.perSide === true && (free || item.side === undefined);
         const w = itemWork(rec, item.dose, perSide, rounds);
-        const axis: WorkoutAxis = rec ? axisOfRecord(rec) : STRENGTH_PART_PURPOSES.has(part.purpose) ? "strength" : "yoga";
+        const axis: WorkoutAxis = rec ? axisOfRecord(rec) : STRENGTH_PART_PURPOSES.has(part.purpose) && part.format !== "flow" ? "strength" : "yoga";
         addWork(t, rec, w, axis);
         steps += (item.dose.sets ?? rec?.dose.sets?.[0] ?? 1) * rounds * (perSide ? 2 : 1);
         if (rec) {

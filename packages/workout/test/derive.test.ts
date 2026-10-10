@@ -165,6 +165,12 @@ describe("deriveDoc: library resolution", () => {
     expect(d.estimatedMinutes).toBe(2);
     expect(d.watchStepCount).toBe(4);
   });
+  it("a free-text move in a flow is yoga, in straight sets strength (a mobility session's unknown moves are not lifting)", () => {
+    const free: WorkoutItem = { kind: "free_exercise", name: "Ankle rocks", dose: { sets: 2, holdSec: 60 } };
+    expect(deriveDoc(doc([part("main", "flow", [free])]), LIB).discipline).toBe("yoga");
+    expect(deriveDoc(doc([part("main", "straight", [free])]), LIB).discipline).toBe("strength");
+    expect(deriveDoc(doc([part("cooldown", "straight", [free])]), LIB).discipline).toBe("yoga");
+  });
   it("converts mode and effort both ways", () => {
     expect(modeOfEffort("recover")).toBe("recovery");
     expect(modeOfEffort("maintain")).toBe("consistent");
