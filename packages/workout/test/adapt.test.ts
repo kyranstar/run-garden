@@ -11,12 +11,23 @@ import type { Step } from "@rg/session-engine";
 import { docFromBuild, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
 import { LIBRARY, seededBuilds, stored } from "./seeded-builds.js";
 
-/** What a step plays: everything but its slot key (the document numbers slots by play order) and the new-move flag. */
+/** A circuit station: it plays the circuit's work window, whatever hold its move's target suggests. */
+const circuitStation = (s: Step): boolean => s.kind === "timed" && s.format.id === "circuit";
+
+/**
+ * What a step plays: everything but its slot key (the document numbers slots by play order), the new-move flag, the
+ * target's history (the last session's summary and date, the progression action, the move it graduates to), and a
+ * circuit station's suggested hold — the document's known gaps (from-build.ts), the last pinned on its own below.
+ */
 function played(s: Step) {
   return {
     kind: s.kind, block: s.block, exerciseId: s.exerciseId, side: s.side, setIndex: s.setIndex, setCount: s.setCount,
     seconds: s.seconds, prepGap: s.prepGap, log: s.log, format: s.format, why: s.why,
-    target: s.target === null ? null : { reps: s.target.reps ?? null, w: s.target.w ?? null, ...(s.kind === "set" ? { secs: s.target.secs ?? null } : {}) },
+    target: s.target === null ? null : {
+      lo: s.target.lo ?? null, hi: s.target.hi ?? null, type: s.target.type ?? null,
+      reps: s.target.reps ?? null, w: s.target.w ?? null, note: s.target.note ?? "",
+      ...(circuitStation(s) ? {} : { secs: s.target.secs ?? null }),
+    },
   };
 }
 
@@ -38,6 +49,21 @@ describe("playerStepsFromDoc(docFromBuild(b)) is the build's own steps — 50 se
     expect(steps.some((s) => s.kind === "rest")).toBe(true);
     expect(new Set(steps.flatMap((s) => (s.target?.w ? [s.target.w.u] : [])))).toEqual(new Set(["lb", "kg"]));
     expect(builds.some((b) => b.label.includes("swap"))).toBe(true);
+  });
+
+  it("the one target the document cannot give back: a held move's suggested hold in a circuit, which plays the window", () => {
+    // The part has no work window of its own, so a station's hold is the window the circuit plays (what the athlete
+    // does); the hold the move's progression suggested, which the circuit does not play, has no place in the document.
+    let differ = 0;
+    for (const { plan } of builds) {
+      const mine = playerStepsFromDoc(docFromBuild(stored(plan)), LIBRARY);
+      plan.steps.forEach((s, i) => {
+        if ((s.target?.secs ?? null) === (mine[i]!.target?.secs ?? null)) return;
+        differ += 1;
+        expect([circuitStation(s), s.target?.type, mine[i]!.target?.secs]).toEqual([true, "time", s.seconds]);
+      });
+    }
+    expect(differ).toBeGreaterThan(0);
   });
 
   it("a slot's steps keep play order slot keys within each block", () => {
@@ -75,6 +101,40 @@ describe("playerStepsFromDoc — any document", () => {
     expect(steps.map((s) => [s.kind, s.exerciseId, s.seconds])).toEqual([["set", "gobletSquat", 8 * 3 + 10], ["rest", null, 90], ["set", "gobletSquat", 34]]);
     // Review Focus 3: the weight comes back as typed.
     expect(steps[0]!.target).toMatchObject({ reps: 8, w: { v: 35, u: "lb" } });
+  });
+
+  it("a load typed in words no unit reads plays as its kilograms (\"2 x 20kg\", \"20kg each\", …)", () => {
+    const typed: Array<[string, number]> = [["2 x 20kg", 20], ["20kg each", 20], ["20 kg per hand", 20], ["16kg kettlebell", 16], ["35 lb", 15.88]];
+    const steps = playerStepsFromDoc(doc([{ purpose: "main", format: "straight", items: typed.map(([t, kg]) => (
+      { kind: "exercise" as const, libraryId: "gobletSquat", dose: { sets: 1, reps: 8, load: { typed: t, kg }, restSec: 0 } }
+    )) }]), LIB);
+    // What a unit reads stays as typed ("35 lb"); the rest is the load's own kilograms.
+    expect(steps.map((s) => s.target?.w)).toEqual([{ v: 20, u: "kg" }, { v: 20, u: "kg" }, { v: 20, u: "kg" }, { v: 16, u: "kg" }, { v: 35, u: "lb" }]);
+  });
+
+  it("seconds with no hold are the engine's own, read from the document's reps, tempo and sides", () => {
+    const steps = playerStepsFromDoc(doc([
+      { purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, reps: 8, tempo: { eccentricSec: 3, pauseSec: 1, concentricSec: 1 }, perSide: true, restSec: 0 } },
+      ] },
+      { purpose: "accessory", format: "holds", items: [
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, reps: 15 } },
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1 } },
+      ] },
+    ]), LIB);
+    // A set: 8 reps x 5 s (the tempo) x 2 sides + 10 s to log. A window: 15 reps x 4 s; with no reps, the record's 10.
+    expect(steps.map((s) => [s.kind, s.seconds])).toEqual([["set", 90], ["timed", 60], ["timed", 40]]);
+  });
+
+  it("a timed window's target holds seconds only for a move held by time: a reps move's window is the format's", () => {
+    const steps = playerStepsFromDoc(doc([{ purpose: "main", format: "holds", items: [
+      { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, holdSec: 40, load: { typed: "16 kg", kg: 16 } } },
+      { kind: "exercise", libraryId: "sidePlank", dose: { sets: 1, holdSec: 30, perSide: true, load: "bodyweight" } },
+      { kind: "free_exercise", name: "Wall sit", dose: { sets: 1, holdSec: 45, load: "bodyweight" } },
+    ] }]), LIB);
+    expect(steps.map((s) => [s.exerciseId, s.seconds, s.target?.secs])).toEqual([
+      ["gobletSquat", 40, null], ["sidePlank", 30, 30], ["sidePlank", 30, 30], [null, 45, 45],
+    ]);
   });
 
   it("a per-side hold plays a left and a right window; a free-text move and a run segment play with no move id", () => {

@@ -7,12 +7,14 @@
  * - Blocks: arrive → arrive, warmup and activation → prep, main, power and run → core, accessory and conditioning →
  *   accessory, care → care, cooldown → cooldown. Slots are numbered in play order within a block ("core:0", …).
  * - A move with `holdSec` (or `carryM`, a 1 m/s walk) plays timed windows of that many seconds: per side (`perSide`
- *   with no fixed side) a Left then a Right window. A move with neither plays self-paced sets of its reps (a range's
- *   low, else breaths, else the record's low) x seconds per rep (the tempo's sum, else the record's, else 3) x sides,
- *   plus 10 s to log. A window's lead-in is 3 s in a flow or circuit, else 8 s. A window is logged (the last side's)
- *   when the move takes a load; a set always is.
+ *   with no fixed side) a Left then a Right window. A move with neither plays self-paced sets. The seconds of a window
+ *   with no hold and of a set are the engine's own (`Builder.windowSeconds`, `Builder.setSeconds`), reading the
+ *   document's numbers in place of the record's: its reps (a range's low) or breaths, its tempo's sum as the seconds
+ *   per rep, its sides; a free-text move is a 3-second-a-rep move. A window's lead-in is 3 s in a flow or circuit, else
+ *   8 s. A window is logged (the last side's) when the move takes a load; a set always is.
  * - A step's target is null unless the item states a load, a number of reps or a progression note (then: reps, the
- *   load as typed, the hold, the note, the record's range); a ladder rung always has one.
+ *   load as typed — or its kilograms when no unit reads the text — the note, the record's range and dose type, and the
+ *   hold, for a move held by time: a reps move's window is the format's, not its target); a ladder rung always has one.
  * - holds, flow (and any other format): each move's sets of windows, in order; rest items as rests.
  * - straight (and steady): each move's sets, a rest after every set but the last of the part (the item's `restSec`,
  *   else the record's, else 60; zero means none).
@@ -33,8 +35,6 @@ import { makeLibraryIndex } from "../derive.js";
 import { WHY_SEPARATOR } from "../convert/from-build.js";
 import { weightOfLoad } from "../convert/shared.js";
 
-/** The engine's planning estimate for logging one set (`builder.ts` LOG_SECONDS). */
-const LOG_SECONDS = 10;
 const DEFAULT_REST_SECONDS = 60;
 const DEFAULT_SECS_PER_REP = 3;
 const DEFAULT_RUN_SECS_PER_KM = 360;
@@ -66,8 +66,6 @@ interface Ctx {
   fid: FormatId;
 }
 
-const round5 = (n: number): number => Math.max(5, Math.round(n / 5) * 5);
-const mid = (r: readonly [number, number]): number => (r[0] + r[1]) / 2;
 const isMove = (s: Slot): s is Slot & { item: Move } => s.item.kind !== "run";
 
 export function playerStepsFromDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): Step[] {
@@ -276,38 +274,48 @@ function targetOf(slot: Slot & { item: Move }, rungReps?: number): Partial<Targe
   const reps = rungReps ?? (typeof d.reps === "number" ? d.reps : null);
   const progression = slot.item.kind === "exercise" ? slot.item.progression : undefined;
   if (d.load === undefined && reps === null && progression === undefined && rungReps === undefined) return null;
+  const heldByTime = !slot.rec || slot.rec.dose.type === "time" || slot.rec.dose.type === "carry";
   return {
     ...(slot.rec ? { lo: slot.rec.dose.range[0], hi: slot.rec.dose.range[1], type: slot.rec.dose.type } : {}),
     reps,
-    secs: d.holdSec ?? null,
+    secs: heldByTime ? (d.holdSec ?? null) : null,
     w: weightOfLoad(d.load),
     note: progression ?? "",
   };
 }
 
-/** A timed window's seconds: the hold, a carry at 1 m/s, else what the engine would give the move. */
+const repsOf = (d: WorkoutDose): number | undefined => (typeof d.reps === "number" ? d.reps : d.reps?.min);
+
+/**
+ * A free-text move as the engine's arithmetic sees one: bilateral, by reps, 3 s a rep. The engine reads only a
+ * record's `dose` and `laterality`.
+ */
+const standIn = (reps: number): ExerciseRecord =>
+  ({ laterality: "bilateral", dose: { type: "reps", range: [reps, reps], secsPerRep: DEFAULT_SECS_PER_REP } }) as unknown as ExerciseRecord;
+
+/** A timed window's seconds: the hold, a carry at 1 m/s, else the engine's own window with the document's reps or breaths. */
 function windowSeconds(slot: Slot & { item: Move }): number {
   const d = slot.item.dose;
   if (d.holdSec !== undefined) return d.holdSec;
   if (d.carryM !== undefined) return d.carryM;
-  const r = slot.rec?.dose;
-  const reps = typeof d.reps === "number" ? d.reps : d.reps?.min;
-  if (!r) return Math.max(30, round5((reps ?? d.breaths ?? 0) * DEFAULT_SECS_PER_REP));
-  if (r.type === "time") return round5(mid(r.range));
-  if (r.type === "carry") return r.range[1];
-  if (r.type === "breaths") return round5((d.breaths ?? mid(r.range)) * 6);
-  const n = reps ?? Math.round(mid(r.range));
-  return Math.max(30, round5(n * (slot.rec!.laterality === "alternating" ? 2 : 1) * (r.secsPerRep || 4)));
+  const rec = slot.rec ?? standIn(repsOf(d) ?? d.breaths ?? 0);
+  const type = rec.dose.type;
+  const n = type === "time" || type === "carry" ? undefined : type === "breaths" ? d.breaths : repsOf(d);
+  return Builder.windowSeconds(n === undefined ? rec : { ...rec, dose: { ...rec.dose, range: [n, n] } }, null);
 }
 
-/** A self-paced set's planning estimate. */
+/** A self-paced set's planning estimate: the engine's own, with the document's reps, tempo and sides. */
 function setSeconds(slot: Slot & { item: Move }, target: Partial<Target> | null): number {
   const d = slot.item.dose;
-  const reps = (target && target.reps) || (typeof d.reps === "number" ? d.reps : d.reps?.min) || d.breaths || slot.rec?.dose.range[0] || 0;
+  const rec = slot.rec ?? standIn(0);
+  const low = repsOf(d) || d.breaths || rec.dose.range[0] || 0;
   const t = d.tempo;
   const tempo = t ? (t.eccentricSec ?? 0) + (t.pauseSec ?? 0) + (t.concentricSec ?? 0) : 0;
-  const perRep = tempo > 0 ? tempo : slot.rec?.dose.secsPerRep || DEFAULT_SECS_PER_REP;
-  return reps * perRep * (d.perSide ? 2 : 1) + LOG_SECONDS;
+  return Builder.setSeconds({
+    ...rec,
+    laterality: d.perSide ? "unilateral" : "bilateral",
+    dose: { ...rec.dose, range: [low, Math.max(low, rec.dose.range[1])], ...(tempo > 0 ? { secsPerRep: tempo } : {}) },
+  }, target);
 }
 
 /** The rest after a set: the item's, else the record's, else 60 (zero stated means none). */

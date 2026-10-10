@@ -5,27 +5,31 @@
  * - A rest day carries no document (null): the document holds a workout, and a rest day is the absence of one.
  * - Run blocks → run items with their efforts as given (easy, steady, threshold, interval; none → by feel). A timed
  *   "rest" block (the coach's walk / stand) is a rest item; a distance one a recovery segment (kept). The block roles
- *   are the wire's (`runBlockRoles` in @rg/coros, pinned equal by the worker's test): an easy block opening a session
- *   with harder work (steady, threshold or interval) is the warm-up part, an easy block closing one the cool-down
- *   part; the rest is the run part
- *   (intervals when it holds a rest or more than one hard block, else steady). No blocks → one run segment of the
- *   session's length at the category's effort.
+ *   are the wire's own (`runBlockRoles`, imported from @rg/coros): a block's declared role, else an easy block
+ *   opening a session with harder work (steady, threshold or interval) is the warm-up part, an easy block closing one
+ *   the cool-down part; work and recovery are the run part (intervals when it holds a rest or more than one hard
+ *   block, else steady). No blocks → one run segment of the session's length at the category's effort.
  * - Lift → a main part, straight (circuit with `rounds`); mobility → a main part, flow (with `rounds` when given).
  *   No exercises → an open block of the session's length.
  * - An exercise: its name through `resolveName` → a library item; else a free-text item. sets, reps, holdSeconds →
  *   holdSec, perSide, eccentricSeconds → tempo, restSeconds → restSec, note → cue. The catalog id (`originId`) is
- *   kept: the document names moves by the library.
+ *   kept: the document names moves by the library. Given the library (`meta.library`), a legacy id is the move's id
+ *   now, and an id the library no longer has is a free-text item by the coach's name, the id kept.
  * - Load (Review Focus 3): with the coach's own words (`meta.raw`, the session as the model wrote it) a typed load
  *   stays as typed — "25 lb" → { typed: "25 lb", kg: 11.34 }, "2×20kg" → { typed: "2×20kg", kg: 20 }, a bare number
  *   is kilos — and a word that is no load ("heavy") is kept with no load; absent or null is bodyweight. Without them,
- *   the stored kilos (the schema keeps a tenth) are typed as kilos, and bodyweight is bodyweight.
+ *   the stored kilos (the schema keeps a tenth) stay the load's kilos, typed in the athlete's unit (`meta.weightUnit`,
+ *   ruling: pounds to the nearest half — 11.3 kg is "25 lb" — kilos exact; kilos when the unit is unknown), and
+ *   bodyweight is bodyweight.
  * - The coach's category is kept (the document derives its own); its minutes → `setting.targetMinutes`; its title →
  *   the title and the intent's summary; effort: recovery → recover, quality → develop, race → peak, else maintain.
  */
-import type { CoachExercise, CoachRunBlock, CoachSession, WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
-import { parseWeight, toKg } from "@rg/domain";
+import type { CoachExercise, CoachRunBlock, CoachSession, WeightUnit, WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
+import { formatWeightIn, parseWeight, toKg } from "@rg/domain";
+import { runBlockRoles } from "@rg/coros";
 import {
-  bounded, kg2, loadOfKg, MAX_LOAD_KG, MAX_TYPED, openBlock, OPEN_BLOCK_NAME, within, type Converted, type KeptEntry,
+  bounded, currentId, kg2, loadOfKg, MAX_LOAD_KG, MAX_TYPED, openBlock, OPEN_BLOCK_NAME, within,
+  type Converted, type KeptEntry, type LibraryIndex,
 } from "./shared.js";
 
 export interface CoachMeta {
@@ -33,13 +37,15 @@ export interface CoachMeta {
   resolveName: (name: string) => string | null;
   /** The session as the model wrote it, before the schema read it: the loads as typed. */
   raw?: unknown;
+  /** The athlete's weight unit: how a stored load is typed when the coach's own words are not known. */
+  weightUnit?: WeightUnit;
+  /** `makeLibraryIndex(library)`: canonicalises legacy ids and names gone ones in free text. */
+  library?: LibraryIndex;
 }
 
 type RunEffort = Extract<WorkoutItem, { kind: "run" }>["effort"];
 /** Hard work, for a run part's format: more than one of these (or a rest) makes it intervals. */
 const HARD = new Set(["threshold", "interval"]);
-/** Harder than easy, for the block roles: the wire's own set (`HARD_INTENSITIES` in create-executor.ts). */
-const HARDER_THAN_EASY = new Set(["steady", "threshold", "interval"]);
 
 export function docFromCoachSession(session: CoachSession, meta: CoachMeta): Converted<WorkoutDoc> | null {
   if (session.category === "rest") return null;
@@ -60,7 +66,8 @@ export function docFromCoachSession(session: CoachSession, meta: CoachMeta): Con
       items.push(openBlock(OPEN_BLOCK_NAME, seconds));
     }
     const format: WorkoutPart["format"] = mobility ? "flow" : body.rounds ? "circuit" : "straight";
-    parts = [{ purpose: "main", format, ...(body.rounds ? { rounds: body.rounds } : {}), items: items.slice(0, 60) }];
+    // The coach names at most 30 exercises (MAX_EXERCISES), inside the document's 60 items: every one fits.
+    parts = [{ purpose: "main", format, ...(body.rounds ? { rounds: body.rounds } : {}), items }];
   } else {
     // No body: the category is the only evidence there is.
     kept.push({ at: "session", field: "body", value: null, why: "no body: an open block of the session's length stands in" });
@@ -92,27 +99,12 @@ function effortOfCategory(category: CoachSession["category"]): RunEffort {
   return category === "long" ? "long" : category === "recovery" ? "recovery" : category === "race" ? "race" : category === "easy" ? "easy" : "by_feel";
 }
 
-/**
- * The wire's block roles (`runBlockRoles`, packages/coros create-executor.ts): a "rest" block is recovery; an easy
- * block opening a session with hard work is the warm-up, closing one the cool-down; everything else is work.
- */
-export function coachBlockRoles(blocks: ReadonlyArray<{ intensity?: string | undefined }>): Array<"warmup" | "work" | "recovery" | "cooldown"> {
-  const hard = blocks.map((b) => b.intensity !== undefined && HARDER_THAN_EASY.has(b.intensity));
-  return blocks.map((b, i) => {
-    if (b.intensity === "rest") return "recovery";
-    if (b.intensity !== "easy" || blocks.length < 2) return "work";
-    if (i === 0 && hard.slice(1).some(Boolean)) return "warmup";
-    if (i === blocks.length - 1 && hard.slice(0, i).some(Boolean)) return "cooldown";
-    return "work";
-  });
-}
-
 function runParts(blocks: readonly CoachRunBlock[], session: CoachSession, kept: KeptEntry[], seconds: number): WorkoutPart[] {
   if (blocks.length === 0) {
     kept.push({ at: "session", field: "run", value: { blocks: [] }, why: "no blocks: one segment of the session's length stands in" });
     return [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: seconds }, effort: effortOfCategory(session.category) }] }];
   }
-  const roles = coachBlockRoles(blocks);
+  const roles = runBlockRoles(blocks);
   const parts: WorkoutPart[] = [];
   blocks.forEach((b, i) => {
     const purpose: WorkoutPart["purpose"] = roles[i] === "warmup" ? "warmup" : roles[i] === "cooldown" ? "cooldown" : "run";
@@ -160,19 +152,20 @@ function exerciseItem(e: CoachExercise, i: number, meta: CoachMeta, raw: unknown
   if (e.eccentricSeconds !== undefined && e.eccentricSeconds !== null) {
     dose.tempo = { eccentricSec: within(e.eccentricSeconds, 0, 20, kept, at, "eccentricSeconds", "seconds") };
   }
-  const load = loadOf(e, raw, at, kept);
+  const load = loadOf(e, raw, meta.weightUnit, at, kept);
   if (load !== undefined) dose.load = load;
   dose.restSec = within(e.restSeconds, 0, 900, kept, at, "restSeconds", "seconds");
   if (e.originId) kept.push({ at, field: "originId", value: e.originId, why: "the document names moves by the library, not the athlete's COROS catalog" });
 
   const cue = e.note ? bounded(e.note, 160, kept, at, "note") : undefined;
-  const libraryId = meta.resolveName(e.name);
+  const resolved = meta.resolveName(e.name);
+  const libraryId = resolved ? currentId(resolved, meta.library, kept, at, "libraryId") : null;
   if (libraryId) return { kind: "exercise", libraryId, dose, ...(cue ? { cue } : {}) };
   return { kind: "free_exercise", name: bounded(e.name, 80, kept, at, "name"), dose, ...(cue ? { cue } : {}) };
 }
 
-/** The load: as typed when the coach's words are known, else the stored kilos. */
-function loadOf(e: CoachExercise, raw: unknown, at: string, kept: KeptEntry[]): WorkoutDose["load"] {
+/** The load: as typed when the coach's words are known, else the stored kilos typed in the athlete's unit. */
+function loadOf(e: CoachExercise, raw: unknown, unit: WeightUnit | undefined, at: string, kept: KeptEntry[]): WorkoutDose["load"] {
   const typed = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).weight : undefined;
   if (typeof typed === "string" && typed.trim() !== "") {
     const text = typed.trim();
@@ -198,5 +191,6 @@ function loadOf(e: CoachExercise, raw: unknown, at: string, kept: KeptEntry[]): 
   }
   if (typeof typed === "number" && e.weight.type === "kg") return loadOfKg(e.weight.value);
   if (e.weight.type === "bodyweight") return "bodyweight";
-  return loadOfKg(e.weight.value);
+  if (!unit) return loadOfKg(e.weight.value);
+  return { typed: formatWeightIn({ v: e.weight.value, u: "kg" }, unit), kg: kg2(e.weight.value) };
 }

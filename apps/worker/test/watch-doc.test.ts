@@ -94,6 +94,17 @@ describe("watchStepsFromDoc(docFromBuild(b)) equals today's watchStepsFromBuild(
     for (const { label, build } of cases) expect(watchStepsFromDoc(docFromBuild(build), EXERCISES, noCatalog), label).toEqual(watchStepsFromBuild(build, noCatalog));
   });
 
+  it("a load typed in words no unit reads goes to the watch as its kilograms (\"2 x 20kg\", \"20kg each\", …)", () => {
+    const typed: Array<[string, number]> = [["2 x 20kg", 20], ["20kg each", 20], ["20 kg per hand", 20], ["16kg kettlebell", 16], ["25 lb", 11.34]];
+    const doc = workoutDocSchema.parse({
+      version: 1, title: "Loads", intent: { summary: "Loads", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
+      parts: [{ purpose: "main", format: "straight", items: typed.map(([t, kg]) => ({ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, reps: 8, load: { typed: t, kg }, restSec: 0 } })) }],
+    });
+    for (const d of [deps, noCatalog]) {
+      expect(watchStepsFromDoc(doc, EXERCISES, d).steps.map((s) => s.grams)).toEqual([20000, 20000, 20000, 16000, 11340]);
+    }
+  });
+
   it("the builds reach every format, both sides, catalog and free-text steps, weights, rests and swaps", () => {
     const steps = cases.flatMap((c) => c.build.steps);
     expect(new Set(steps.map((s) => s.format.id))).toEqual(new Set(["straight", "superset", "circuit", "ladder", "flow", "holds"]));

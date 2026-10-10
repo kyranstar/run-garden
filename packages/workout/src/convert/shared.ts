@@ -7,6 +7,7 @@
  * why the document cannot hold it. A clipped text keeps its whole original in `kept`.
  */
 import { formatWeight, parseWeight, toKg, type Weight, type WorkoutDose, type WorkoutItem } from "@rg/domain";
+import type { ExerciseRecord } from "@rg/exercise-library";
 
 /** Something a source carried that the document cannot say, kept beside it. */
 export interface KeptEntry {
@@ -56,10 +57,29 @@ export function loadOfWeight(w: Weight): Exclude<WorkoutDose["load"], undefined 
   return { typed: formatWeight(w), kg: kg2(toKg(w)) };
 }
 
-/** The weight a load was typed as ("25 lb" → { v: 25, u: "lb" }); null for bodyweight or a typed text no unit reads. */
+/**
+ * The weight a load was typed as ("25 lb" → { v: 25, u: "lb" }); when no unit reads the typed text ("2 x 20kg",
+ * "20kg each", "16kg kettlebell"), its own kilograms. Null for bodyweight and no load.
+ */
 export function weightOfLoad(load: WorkoutDose["load"]): Weight | null {
   if (load === undefined || load === "bodyweight") return null;
-  return parseWeight(load.typed, "kg");
+  return parseWeight(load.typed, "kg") ?? { v: load.kg, u: "kg" };
+}
+
+/** `makeLibraryIndex(library)`: any id the library has held → the record it is now. */
+export type LibraryIndex = (id: string) => ExerciseRecord | undefined;
+
+/**
+ * A library id as the document holds it, when the caller gives the library: a legacy id becomes the id its move has
+ * now (nothing is lost — the record's legacy ids keep the old one); an id the library no longer has is null, the
+ * caller names the move in free text, and the id is kept. Without a library, the id as given.
+ */
+export function currentId(id: string, library: LibraryIndex | undefined, kept: KeptEntry[], at: string, field: string): string | null {
+  if (!library) return id;
+  const record = library(id);
+  if (record) return record.id;
+  kept.push({ at, field, value: id, why: "the library no longer has this move: it is free text by its name" });
+  return null;
 }
 
 /** The document's ceiling on a load. */

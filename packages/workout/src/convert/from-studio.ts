@@ -6,16 +6,19 @@
  * - An exercise: its COROS catalog id through `originIdToLibraryId` (exact mappings only) → a library item; else a
  *   free-text item by its name. sets, reps, restSeconds → restSec, note → cue; kilos → a load typed in kilos,
  *   bodyweight → bodyweight. Every catalog id is kept (the document names moves by the library, and the push needs
- *   the athlete's catalog id).
+ *   the athlete's catalog id). Given the library (`meta.library`), a legacy id is the move's id now, and an id the
+ *   library no longer has is a free-text item by its name, the id kept.
  * - The weekday is kept (the planned workout's date is the schedule); the title is the title and the intent's
  *   summary; the source is the Studio, effort maintain. No exercises → an open block of 45 minutes, kept.
  */
 import type { StudioSession, WorkoutDoc, WorkoutDose, WorkoutItem } from "@rg/domain";
-import { bounded, loadOfKg, openBlock, OPEN_BLOCK_NAME, type Converted, type KeptEntry } from "./shared.js";
+import { bounded, currentId, loadOfKg, openBlock, OPEN_BLOCK_NAME, type Converted, type KeptEntry, type LibraryIndex } from "./shared.js";
 
 export interface StudioMeta {
   /** The athlete's COROS catalog id → a library id where the mapping is exact, else null. */
   originIdToLibraryId: (id: string) => string | null;
+  /** `makeLibraryIndex(library)`: canonicalises legacy ids and names gone ones in free text. */
+  library?: LibraryIndex;
 }
 
 /** An old Studio session's length when it names nothing (the Studio's own default brief). */
@@ -33,7 +36,8 @@ export function docFromStudioSession(session: StudioSession, meta: StudioMeta): 
       restSec: e.restSeconds,
     };
     const cue = e.note ? bounded(e.note, 160, kept, at, "note") : undefined;
-    const libraryId = meta.originIdToLibraryId(e.originId);
+    const mapped = meta.originIdToLibraryId(e.originId);
+    const libraryId = mapped ? currentId(mapped, meta.library, kept, at, "libraryId") : null;
     if (libraryId) return { kind: "exercise", libraryId, dose, ...(cue ? { cue } : {}) };
     return { kind: "free_exercise", name: bounded(e.name, 80, kept, at, "name"), dose, ...(cue ? { cue } : {}) };
   });

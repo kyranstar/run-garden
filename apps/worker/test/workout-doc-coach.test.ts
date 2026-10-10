@@ -10,10 +10,10 @@
  *  - the converter's run-block roles are the wire's (`runBlockRoles`), over the corpus and every short sequence.
  */
 import { describe, expect, it } from "vitest";
-import { workoutDocSchema, type CoachExercise, type WorkoutItem } from "@rg/domain";
+import { workoutDocSchema, type CoachExercise, type CoachRunBlock, type CoachSession, type WorkoutItem } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { runBlockRoles } from "@rg/coros";
-import { coachBlockRoles, deriveDoc, docFromCoachSession, playerStepsFromDoc, stagesFromDoc, type KeptEntry } from "@rg/workout";
+import { deriveDoc, docFromCoachSession, playerStepsFromDoc, stagesFromDoc, type KeptEntry } from "@rg/workout";
 import { strictExerciseKey } from "../src/services/exercise-catalog.js";
 import { FIXTURES } from "./intent-corpus.js";
 
@@ -120,17 +120,47 @@ describe("every exercise field lands in the document or in kept", () => {
   });
 });
 
-describe("the converter's run-block roles are the wire's", () => {
+/** The part each block of a run session landed in: a warm-up, a cool-down, else the run part (work and recovery). */
+function partOfEachBlock(session: CoachSession): string[] {
+  const { doc } = docFromCoachSession(session, { resolveName })!;
+  return doc.parts.flatMap((p) => p.items.map(() => p.purpose));
+}
+const PART_OF_ROLE: Record<string, string> = { warmup: "warmup", cooldown: "cooldown", work: "run", recovery: "run" };
+const wire = (blocks: readonly CoachRunBlock[]) => runBlockRoles(blocks).map((r) => PART_OF_ROLE[r]);
+const runSession = (blocks: CoachRunBlock[]): CoachSession =>
+  ({ category: "quality", title: "Run", durationMinutes: 40, run: { blocks } }) as CoachSession;
+
+describe("the converter's run-block roles are the wire's (runBlockRoles, imported — not a copy)", () => {
   it("over the corpus", () => {
-    for (const f of FIXTURES) if (f.session.run) expect(coachBlockRoles(f.session.run.blocks), f.name).toEqual(runBlockRoles(f.session.run.blocks));
+    for (const f of FIXTURES) if (f.session.run?.blocks.length) expect(partOfEachBlock(f.session), f.name).toEqual(wire(f.session.run.blocks));
   });
 
   it("over every sequence of up to four blocks", () => {
     const states = ["easy", "steady", "threshold", "interval", "rest", undefined] as const;
-    let seqs: Array<Array<{ intensity?: (typeof states)[number] }>> = [[]];
+    let seqs: CoachRunBlock[][] = [[]];
     for (let n = 1; n <= 4; n++) {
-      seqs = seqs.flatMap((s) => states.map((i) => [...s, i === undefined ? {} : { intensity: i }]));
-      for (const blocks of seqs) expect(coachBlockRoles(blocks)).toEqual(runBlockRoles(blocks));
+      seqs = seqs.flatMap((s) => states.map((i): CoachRunBlock[] => [...s, { kind: "duration", value: 5, ...(i === undefined ? {} : { intensity: i }) }]));
+      for (const blocks of seqs) expect(partOfEachBlock(runSession(blocks))).toEqual(wire(blocks));
+    }
+  });
+
+  it("a block's declared role wins, as it does on the wire", () => {
+    // The schema strips `role` today (create-executor.ts: dormant until the coach vocabulary grows it); a block that
+    // carries one lands where the wire puts it.
+    const block = (intensity: CoachRunBlock["intensity"], role?: string): CoachRunBlock =>
+      ({ kind: "duration", value: 10, ...(intensity ? { intensity } : {}), ...(role ? { role } : {}) }) as CoachRunBlock;
+    const cases: CoachRunBlock[][] = [
+      [block("easy", "work"), block("threshold"), block("easy")],
+      [block("easy"), block("threshold"), block("easy", "Warm up")],
+      [block("threshold", "cool-down"), block("easy")],
+      [block("easy", "recovery"), block("interval"), block("easy", "cooldown")],
+    ];
+    for (const blocks of cases) {
+      const roles = wire(blocks);
+      expect(partOfEachBlock(runSession(blocks))).toEqual(roles);
+      // The declaration really changed something: without it the parts would differ.
+      const undeclared = blocks.map(({ role: _r, ...b }: CoachRunBlock & { role?: string }) => b as CoachRunBlock);
+      expect(wire(undeclared)).not.toEqual(roles);
     }
   });
 });

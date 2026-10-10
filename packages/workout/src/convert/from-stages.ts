@@ -19,10 +19,14 @@
  * RULES — strength and yoga
  * - A repeat holding one move is that move with `sets` = the repeat's count; a bare move has no `sets`; consecutive
  *   moves share a main part (straight; flow for yoga). A repeat holding several moves is its own main part (circuit;
- *   flow for yoga) with `rounds`. Warm-up and cool-down stages are their own parts.
+ *   flow for yoga) with `rounds`. Warm-up and cool-down stages are their own parts; one inside a repeat is a move of
+ *   the repeat's part, its kind kept (as on the run path).
  * - A move's identity: its label through `corosKeyToLibraryId` (the import resolves a step's T-code to COROS's English
  *   name; that name is the key a stored stage keeps) → a library item, its COROS name kept; else a free-text item by
- *   its label ("Exercise" when it has none, kept).
+ *   its label ("Exercise" when it has none, kept). Given the library (`meta.library`), a legacy id is the move's id now,
+ *   and an id the library no longer has is a free-text item by its label, the id kept.
+ * - No stage the document can hold: an open block (strength, yoga) or segment (runs) of the planned workout's length
+ *   (`meta.durationSeconds`), else a half-hour block or an open segment.
  * - Its dose: reps → `reps`; time → `holdSec`; distance → `carryM`; open → nothing; loadKg → a load typed in kg (0 is
  *   a load of 0 kg); loadBodyweight → bodyweight; restSeconds → `restSec`. The note is the cue, and — the only carrier
  *   of either — "each side" makes it `perSide` and "<n>s down" its eccentric tempo.
@@ -32,7 +36,8 @@
 import type { PlannedStage, WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 import { RUN_EFFORTS } from "@rg/domain";
 import {
-  bounded, ECCENTRIC_WORDS, loadOfKg, MAX_LOAD_KG, openBlock, OPEN_BLOCK_NAME, PER_SIDE_WORDS, within, type Converted, type KeptEntry,
+  bounded, currentId, ECCENTRIC_WORDS, loadOfKg, MAX_LOAD_KG, openBlock, OPEN_BLOCK_NAME, PER_SIDE_WORDS, within,
+  type Converted, type KeptEntry, type LibraryIndex,
 } from "./shared.js";
 
 export interface StagesMeta {
@@ -45,7 +50,14 @@ export interface StagesMeta {
   category?: string | null;
   /** `planned_workouts.quality_subtype`, when known. */
   qualitySubtype?: string | null;
+  /** The planned workout's length, when known: the stand-in's length when no stage can be held. */
+  durationSeconds?: number | null;
+  /** `makeLibraryIndex(library)`: canonicalises legacy ids and names gone ones in free text. */
+  library?: LibraryIndex;
 }
+
+/** The stand-in block's length when the planned workout's own is unknown. */
+const DEFAULT_SECONDS = 1800;
 
 type RunEffort = (typeof RUN_EFFORTS)[number];
 type Effort = WorkoutDoc["intent"]["effort"];
@@ -76,9 +88,10 @@ export function docFromStages(stages: PlannedStage[], meta: StagesMeta): Convert
 
   if (parts.length === 0) {
     kept.push({ at: "workout", field: "stages", value: stages, why: "no stage the document can hold: an open block stands in" });
+    const known = meta.durationSeconds && meta.durationSeconds >= 1 ? Math.round(meta.durationSeconds) : undefined;
     parts = exercise
-      ? [{ purpose: "main", format: meta.sport === "yoga" ? "flow" : "straight", items: [openBlock(OPEN_BLOCK_NAME, 1800)] }]
-      : [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { open: true }, effort: workEffort(meta, false) }] }];
+      ? [{ purpose: "main", format: meta.sport === "yoga" ? "flow" : "straight", items: [openBlock(OPEN_BLOCK_NAME, known ?? DEFAULT_SECONDS)] }]
+      : [{ purpose: "run", format: "steady", items: [{ kind: "run", target: known && known <= 86400 ? { durationSec: known } : { open: true }, effort: workEffort(meta, false) }] }];
   }
   parts = fit(parts, kept);
 
@@ -313,6 +326,8 @@ function childItem(ctx: Ctx, s: PlannedStage): WorkoutItem {
   }
   if (!isMoveStage(s)) keep(ctx, s, "kind", "a pause the document can only hold as a move");
   if (s.kind === "open") keep(ctx, s, "kind", "an open stage reads back as work");
+  // Only a repeat's children get here as warm-ups or cool-downs (top-level ones are their own parts).
+  if (s.kind === "warmup" || s.kind === "cooldown") keep(ctx, s, "kind", "a warm-up or cool-down inside a repeat");
   return moveItem(ctx, s, undefined);
 }
 
@@ -365,7 +380,8 @@ function moveItem(ctx: Ctx, s: PlannedStage, sets: number | undefined): WorkoutI
     if (s[f] !== undefined) keep(ctx, s, f, "a run field on a move");
   }
 
-  const libraryId = s.label ? ctx.meta.corosKeyToLibraryId(s.label) : null;
+  const mapped = s.label ? ctx.meta.corosKeyToLibraryId(s.label) : null;
+  const libraryId = mapped ? currentId(mapped, ctx.meta.library, ctx.kept, at(s), "libraryId") : null;
   const cue = s.note !== undefined ? bounded(s.note, 160, ctx.kept, at(s), "note") : undefined;
   if (libraryId) {
     keep(ctx, s, "label", "a mapped move is named by the library; this is COROS's name for it");

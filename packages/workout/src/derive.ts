@@ -24,7 +24,7 @@
  *   x 1 (primary) or x 0.5 (secondary). `perSide` does not double sets here.
  * - Discipline uses the garden's axis names, "run" | "strength" | "yoga". Per item, work + rest seconds go to run (run
  *   items), strength (records with a strength, power, activation, conditioning or balance purpose; free exercises in a
- *   main, power, accessory, conditioning or activation part that is not a flow) or yoga (the rest). Dominant = run when run is at least
+ *   main, power, accessory, conditioning or activation part, except a main part's flow) or yoga (the rest). Dominant = run when run is at least
  *   half of all seconds (or the only axis present), else strength when it is at least yoga, else yoga. `disciplines` lists
  *   every axis present, dominant first, then by seconds.
  * - Category: race / tempo / threshold / interval / hills (never strides) make race / quality only when the run axis is dominant or those
@@ -37,7 +37,7 @@
  *   an `all` entry, members sorted.
  * - Condition maxima: for each profile, each attribute's highest rating among the resolved items (a flag counts 1 or 0).
  */
-import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
+import type { WorkoutDoc, WorkoutItem, WorkoutPart } from "@rg/domain";
 import type { ExerciseRecord, Mode } from "@rg/exercise-library";
 
 export type WorkoutAxis = "run" | "strength" | "yoga";
@@ -116,6 +116,8 @@ const OPEN_RUN_SECONDS = 600;
 const LONG_RUN_SECONDS = 75 * 60;
 const STRENGTH_PURPOSES = new Set(["strength", "power", "activation", "conditioning", "balance"]);
 const STRENGTH_PART_PURPOSES = new Set(["main", "power", "accessory", "conditioning", "activation"]);
+/** A main part's flow is a mobility session's: its free-text moves are not lifting. A flow of other work is that work. */
+const mobilityFlow = (part: WorkoutPart): boolean => part.purpose === "main" && part.format === "flow";
 const QUALITY_EFFORTS = new Set(["tempo", "threshold", "interval", "hills"]);
 
 /** Resolve a library id (current or legacy). */
@@ -278,7 +280,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
         const rec = free ? undefined : find(item.libraryId);
         const perSide = item.dose.perSide === true && (free || item.side === undefined);
         const w = itemWork(rec, item.dose, perSide, rounds);
-        const axis: WorkoutAxis = rec ? axisOfRecord(rec) : STRENGTH_PART_PURPOSES.has(part.purpose) && part.format !== "flow" ? "strength" : "yoga";
+        const axis: WorkoutAxis = rec ? axisOfRecord(rec) : STRENGTH_PART_PURPOSES.has(part.purpose) && !mobilityFlow(part) ? "strength" : "yoga";
         addWork(t, rec, w, axis);
         steps += (item.dose.sets ?? rec?.dose.sets?.[0] ?? 1) * rounds * (perSide ? 2 : 1);
         if (rec) {

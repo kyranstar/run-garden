@@ -1,9 +1,10 @@
 /**
  * An engine build → the workout document (programme spec §3.3).
  *
- * The build read is the one the worker stores (`session_builds.payload`, made by `composeBuild` from the engine's
- * plan): its steps are what the player plays, its items say which slots there are and how each is run. The document
- * is read back to exactly those steps by `playerStepsFromDoc` (the round-trip test holds it for 50 seeded builds).
+ * The build read is the one the worker stores: `session_builds.payload.build` (the stored payload is `{ build, view }`;
+ * `build` is made by `composeBuild` from the engine's plan). Its steps are what the player plays, its items say which
+ * slots there are and how each is run. The document is read back to exactly those steps by `playerStepsFromDoc` (the
+ * round-trip test holds it for 50 seeded builds).
  *
  * RULES
  * - Groups: consecutive items of one block and format are one group, except that two straight items are one group
@@ -21,20 +22,27 @@
  * - Circuit: `rounds` and the round rest; each station one set of its window, the rest between stations a rest item.
  * - Ladder: `rounds` = the rungs, each move one set of the rungs' rep range (the rungs step evenly from its low to its
  *   high), the rest between rungs `restBetweenRoundsSec`.
- * - Reasons: a slot's reasons → `why` (joined with "; "), its progression note → `progression`, its offered swaps →
- *   `alternates` (the first 3, each with its reasons).
+ * - Reasons: a slot's reasons → `why` (joined with "; "; cut to the document's 160 characters, the whole list kept),
+ *   its progression note → `progression`, its offered swaps → `alternates` (the first 3, each with its reasons).
+ * - Given the library (`meta.library`): a legacy id — the slot's move or an alternate — is the move's id now; a slot
+ *   whose move the library no longer has is a free-text item by the move's name, its id, progression note and
+ *   alternates kept; an alternate the library no longer has is left out and kept.
  * - Intent: the theme's name and blurb (else the mode's), the mode → effort (`effortOfMode`), the theme's emphasised
  *   regions → focus; the minutes and place → setting; the mode and theme reasons → notes.
  *
- * Nothing is kept beside the document: the build itself stays stored beside it (dual-write), and what the document
- * cannot say of it — slot keys, the new-move flag, a target's range and last-session summary, the swap pools past
- * three — the player derives or the build still holds.
+ * KNOWN GAPS: what the document cannot say of a build, and the build itself (stored beside it, dual-write) still
+ * holds — slot keys, the new-move flag, a target's history (the last session's summary and date, the progression
+ * action, and `graduate`, the move a topped-out target graduates to), the swap pools past three, and the hold a time
+ * move's progression suggests when it stands in a circuit (the circuit plays its own work window, which is the
+ * station's `holdSec`; a part has no work window of its own to hold it apart). A target's range and dose type are not
+ * gaps: the player reads them from the move's record. `kept` holds only what the build's own text or ids lose in the
+ * document (cut texts, gone moves); `docFromBuild` is the document alone.
  */
 import type { WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 import { MODES, THEMES, type BlockId, type ExerciseRecord, type FormatId, type Mode } from "@rg/exercise-library";
 import type { Step } from "@rg/session-engine";
 import { effortOfMode } from "../derive.js";
-import { bounded, loadOfWeight, openBlock, OPEN_BLOCK_NAME, type KeptEntry } from "./shared.js";
+import { bounded, currentId, loadOfWeight, openBlock, OPEN_BLOCK_NAME, type Converted, type KeptEntry, type LibraryIndex } from "./shared.js";
 
 /** One slot of a stored build. */
 export interface BuildItemSource {
@@ -62,8 +70,8 @@ export interface BuildPayload {
   /** The flat step list the player plays. */
   steps: readonly Step[];
   items: readonly BuildItemSource[];
-  /** Every move in the plan: its laterality, roles and dose decide what the steps cannot show. */
-  exercises: Readonly<Record<string, Pick<ExerciseRecord, "laterality" | "roles" | "dose">>>;
+  /** Every move in the plan: its laterality, roles and dose decide what the steps cannot show; its name names it. */
+  exercises: Readonly<Record<string, Pick<ExerciseRecord, "name" | "laterality" | "roles" | "dose">>>;
   /** Per slot key: the swaps the slot offers. */
   alternatives?: Readonly<Record<string, ReadonlyArray<{ id: string; reasons: readonly string[] }>>>;
 }
@@ -75,7 +83,12 @@ const PURPOSE_OF_BLOCK: Record<BlockId, WorkoutPart["purpose"]> = {
 /** A reason list as one line, and back (`whyOf` in the player adapter splits on the same separator). */
 export const WHY_SEPARATOR = "; ";
 
-type Exercise = Extract<WorkoutItem, { kind: "exercise" }>;
+type Move = Extract<WorkoutItem, { kind: "exercise" | "free_exercise" }>;
+
+export interface BuildMeta {
+  /** `makeLibraryIndex(library)`: canonicalises legacy ids and names gone ones in free text. */
+  library?: LibraryIndex;
+}
 
 interface Slot {
   item: BuildItemSource;
@@ -85,18 +98,22 @@ interface Slot {
   rests: Step[];
 }
 
-export function docFromBuild(build: BuildPayload): WorkoutDoc {
-  // Nothing of a build is kept (see the header); the ledger is only for bounded texts, which the build still holds.
+/** The build's document (what `docFromBuildWithKept` makes, without its ledger). */
+export function docFromBuild(build: BuildPayload, meta: BuildMeta = {}): WorkoutDoc {
+  return docFromBuildWithKept(build, meta).doc;
+}
+
+export function docFromBuildWithKept(build: BuildPayload, meta: BuildMeta = {}): Converted<WorkoutDoc> {
   const kept: KeptEntry[] = [];
   const slots = slotsOf(build);
   const parts: WorkoutPart[] = [];
-  for (const group of groupsOf(build, slots)) parts.push(...partsOf(build, group, kept));
+  for (const group of groupsOf(build, slots)) parts.push(...partsOf(build, group, kept, meta.library));
 
   const theme = build.theme ? THEMES.find((t) => t.id === build.theme) : undefined;
   const modeLabel = MODES[build.mode]?.label ?? build.mode;
   const regions = theme ? Object.entries(theme.emphasis.regions ?? {}).filter(([, w]) => w > 0).sort((a, b) => b[1] - a[1]).map(([r]) => r) : [];
   const notes = [...(build.modeReasons ?? []), ...(build.themeReasons ?? [])].join(" ").trim();
-  return {
+  const doc: WorkoutDoc = {
     version: 1,
     title: bounded(theme?.name ?? `${modeLabel} session`, 80, kept, "build", "title"),
     intent: {
@@ -110,6 +127,7 @@ export function docFromBuild(build: BuildPayload): WorkoutDoc {
     source: { kind: "engine" },
     ...(notes ? { notes: bounded(notes, 500, kept, "build", "notes") } : {}),
   };
+  return { doc, kept };
 }
 
 function slotsOf(build: BuildPayload): Slot[] {
@@ -149,11 +167,11 @@ function isActivation(build: BuildPayload, id: string): boolean {
   return roles.includes("activation") && !roles.includes("warmup");
 }
 
-function partsOf(build: BuildPayload, group: Slot[], kept: KeptEntry[]): WorkoutPart[] {
+function partsOf(build: BuildPayload, group: Slot[], kept: KeptEntry[], library: LibraryIndex | undefined): WorkoutPart[] {
   const first = group[0]!.item;
   const format = first.format;
   const purpose = PURPOSE_OF_BLOCK[first.block];
-  const item = (slot: Slot, dose: WorkoutDose): Exercise => exerciseItem(build, slot, dose, kept);
+  const item = (slot: Slot, dose: WorkoutDose): Move => moveItem(build, slot, dose, kept, library);
 
   if (format === "holds" || format === "flow") {
     const items = group.map((slot) => ({ slot, it: item(slot, windowDose(slot)) }));
@@ -253,21 +271,50 @@ function restOf(slot: Slot): Pick<WorkoutDose, "restSec"> {
   return rest !== undefined ? { restSec: rest } : {};
 }
 
-function exerciseItem(build: BuildPayload, slot: Slot, dose: WorkoutDose, kept: KeptEntry[]): Exercise {
+function moveItem(build: BuildPayload, slot: Slot, dose: WorkoutDose, kept: KeptEntry[], library: LibraryIndex | undefined): Move {
   const at = `slot ${slot.item.slotKey}`;
   const first = slot.work[0];
   const reasons = first?.why ?? slot.item.why;
   const note = first?.target?.note;
-  const alternates = (build.alternatives?.[slot.item.slotKey] ?? []).slice(0, 3).map((a) => {
-    const why = a.reasons.join(WHY_SEPARATOR);
-    return { libraryId: a.id, ...(why ? { why: bounded(why, 120, kept, at, "alternative reasons") } : {}) };
+  const offered = alternativesOf(build, slot, kept, at, library);
+  const why = reasons.length ? joined(reasons, 160, kept, at, "why") : "";
+  const id = currentId(slot.item.exerciseId, library, kept, at, "exerciseId");
+  if (id === null) {
+    // The library no longer has the move: free text by its name, and what only a library move can hold is kept.
+    if (note) kept.push({ at, field: "progression", value: note, why: "a free-text move holds no progression" });
+    if (offered.length) kept.push({ at, field: "alternatives", value: offered, why: "a free-text move holds no alternates" });
+    const name = build.exercises[slot.item.exerciseId]?.name ?? slot.item.exerciseId;
+    return { kind: "free_exercise", name: bounded(name, 80, kept, at, "name"), dose, ...(why ? { why } : {}) };
+  }
+  const alternates = offered.map((a) => {
+    const line = joined(a.reasons, 120, kept, at, "alternative reasons");
+    return { libraryId: a.id, ...(line ? { why: line } : {}) };
   });
   return {
     kind: "exercise",
-    libraryId: slot.item.exerciseId,
+    libraryId: id,
     dose,
-    ...(reasons.length ? { why: bounded(reasons.join(WHY_SEPARATOR), 160, kept, at, "why") } : {}),
+    ...(why ? { why } : {}),
     ...(note ? { progression: bounded(note, 120, kept, at, "progression") } : {}),
     ...(alternates.length ? { alternates } : {}),
   };
+}
+
+/** The slot's offered swaps the document can name: the first three the library still has; a gone one is kept. */
+function alternativesOf(build: BuildPayload, slot: Slot, kept: KeptEntry[], at: string, library: LibraryIndex | undefined): Array<{ id: string; reasons: readonly string[] }> {
+  const out: Array<{ id: string; reasons: readonly string[] }> = [];
+  for (const a of build.alternatives?.[slot.item.slotKey] ?? []) {
+    if (out.length >= 3) break;
+    const id = currentId(a.id, library, kept, at, "alternative");
+    if (id !== null) out.push({ id, reasons: a.reasons });
+  }
+  return out;
+}
+
+/** Reasons as one line within `max` characters; when cut, the whole list is kept. */
+function joined(reasons: readonly string[], max: number, kept: KeptEntry[], at: string, field: string): string {
+  const line = reasons.join(WHY_SEPARATOR).trim();
+  if (line.length <= max) return line;
+  kept.push({ at, field, value: [...reasons], why: `longer than the document's ${max} characters` });
+  return `${line.slice(0, max - 1).trimEnd()}…`;
 }

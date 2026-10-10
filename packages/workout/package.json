@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@rg/coros": "workspace:*",
     "@rg/domain": "workspace:*",
     "@rg/exercise-library": "workspace:*",
     "@rg/session-engine": "workspace:*",

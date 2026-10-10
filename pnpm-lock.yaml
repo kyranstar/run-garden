@@ -427,6 +427,9 @@ importers:
 
   packages/workout:
     dependencies:
+      '@rg/coros':
+        specifier: workspace:*
+        version: link:../coros
       '@rg/domain':
         specifier: workspace:*
         version: link:../domain
