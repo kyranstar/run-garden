@@ -6,3 +6,4 @@ export * from "./convert/from-studio.js";
 export * from "./convert/from-build.js";
 export * from "./adapt/to-stages.js";
 export * from "./adapt/to-player.js";
+export * from "./validate.js";
