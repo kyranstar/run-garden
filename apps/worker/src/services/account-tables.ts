@@ -255,6 +255,13 @@ export function accountTable(name: string): AccountTable {
   return entry;
 }
 
+/**
+ * Tables whose `id` IS the account's id though their key column is not `user_id`: one row per account, held by a
+ * unique `user_id`. A restore into another account re-keys that id to the signed-in account (the source account may
+ * still hold its own row under it), and the file's row wins the account's one row — as a table keyed by `user_id`.
+ */
+export const ID_IS_ACCOUNT_ID: readonly string[] = ["athlete_profiles"];
+
 /** Columns that hold credentials: exported as null, never restored, scrubbed
  * on any copy. SQL names. */
 const SECRETS: Readonly<Record<string, readonly string[]>> = {

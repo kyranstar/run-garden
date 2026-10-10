@@ -59,6 +59,7 @@ import {
   canonicalJson,
   columnBySqlName,
   columnKey,
+  ID_IS_ACCOUNT_ID,
   orderColumns,
   PAGE_BYTE_BUDGET,
   scopeWhere,
@@ -701,6 +702,7 @@ async function restoreRowsInto(
   const columns = Object.entries(getTableColumns(entry.table));
   const secretKeys = new Set(secretColumns(entry.name).map((c) => columnKey(entry.table, c)));
   const nowIso = nowInstant(now);
+  const idIsAccountId = ID_IS_ACCOUNT_ID.includes(entry.name);
 
   let rows: Array<{ index: number; row: Row }> = (raw as Row[]).map((src, index) => {
     const row: Row = {};
@@ -709,6 +711,8 @@ async function restoreRowsInto(
       if (source !== null && typeof value === "string" && value.startsWith(`${source}:`)) {
         value = `${userId}:${value.slice(source.length + 1)}`;
       }
+      // A row whose id IS the account's id (the profile) is the signed-in account's row.
+      if (source !== null && idIsAccountId && col.name === "id" && value === source) value = userId;
       if (col.name === "user_id") value = userId;
       if (secretKeys.has(key)) value = null;
       row[key] = value;
@@ -721,9 +725,11 @@ async function restoreRowsInto(
   const pk = pkColumn(entry);
   const pkKey = columnKey(entry.table, pk.name);
   // A table keyed by user_id holds one row per account (preferences, the
-  // garden, the backfill checkpoint): the FILE must win it, even over a row
-  // some writer slipped in before the marker was seen.
-  const singleton = pk.name === "user_id";
+  // garden, the backfill checkpoint), and so does one whose id IS the
+  // account's id (the profile, held by its unique user_id): the FILE must win
+  // it, even over a row some writer slipped in before the marker was seen.
+  const oneRowOn = pk.name === "user_id" ? pk : idIsAccountId ? columnBySqlName(entry.table, "user_id") : null;
+  const singleton = oneRowOn !== null;
   const perInsert = singleton ? 1 : Math.max(1, Math.floor(100 / columns.length));
   const tableColumns = getTableColumns(entry.table) as Record<string, SQLiteColumn>;
   const winsOn = FILE_WINS_ON[entry.name];
@@ -738,10 +744,10 @@ async function restoreRowsInto(
   const insert = (batch: Row[]) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const q = db.insert(entry.table as any).values(batch as any);
-    if (singleton) {
-      const { [pkKey]: _pk, ...set } = batch[0]!;
+    if (oneRowOn) {
+      const { [columnKey(entry.table, oneRowOn.name)]: _key, ...set } = batch[0]!;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return q.onConflictDoUpdate({ target: pk as any, set: set as any });
+      return q.onConflictDoUpdate({ target: oneRowOn as any, set: set as any });
     }
     if (winsOn && fromFile) {
       return q.onConflictDoUpdate({

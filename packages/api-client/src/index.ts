@@ -7,10 +7,16 @@ import type {
   GardenEvent,
   GardenWeatherState,
   LiftingPlan,
+  ObjectiveCreate,
+  ObjectiveDto,
+  ObjectiveProgressDto,
+  ObjectiveUpdate,
   PerformedEntry,
   PerformedSessionWire,
   PerformedSet,
   PlanBrief,
+  ProfileDto,
+  ProfileUpdate,
   ReadinessVerdict,
   SessionLead,
   SessionMode,
@@ -1813,6 +1819,21 @@ export const api = {
   /** Rate, set aside ("not for me") or pin one move; only what is sent changes. */
   setExercisePrefs: (id: string, patch: ExercisePrefsPatch) =>
     put<{ prefs: ExercisePrefsDto }>(`/api/library/${encodeURIComponent(id)}/prefs`, patch),
+
+  // ── Profile and objectives (worker routes: apps/worker/src/routes/profile.ts) ───────────────────────────────────
+  /** Goals, focus areas, events, preferences; units, timezone, race, places and conditions read-only. */
+  getProfile: () => get<ProfileDto>("/api/profile"),
+  /** Each part sent is replaced whole; nothing else is accepted. 422 `invalid_profile` with the issues; 423 while restoring. */
+  updateProfile: (body: ProfileUpdate) => put<ProfileDto>("/api/profile", body),
+  /** Board order: `sort`, then oldest first. */
+  listObjectives: () => get<{ objectives: ObjectiveDto[] }>("/api/objectives"),
+  /** 422 `invalid_objective` with the issues; 423 while restoring. */
+  createObjective: (body: ObjectiveCreate) => post<{ objective: ObjectiveDto }>("/api/objectives", body),
+  /** What is sent changes; `keyResults` is the whole list (one left out is deleted). 404 for another account's. */
+  updateObjective: (id: string, patch: ObjectiveUpdate) =>
+    put<{ objective: ObjectiveDto }>(`/api/objectives/${encodeURIComponent(id)}`, patch),
+  /** Every key result measured from logged data, in its own unit too. 404 for another account's. */
+  objectiveProgress: (id: string) => get<ObjectiveProgressDto>(`/api/objectives/${encodeURIComponent(id)}/progress`),
 };
 
 /** Exact shape of `GET /api/sessions/:workoutId/review-basis` (services/session-review-basis.ts). */
