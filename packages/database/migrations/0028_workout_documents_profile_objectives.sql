@@ -34,7 +34,7 @@ CREATE TABLE `objectives` (
 --> statement-breakpoint
 CREATE INDEX `objectives_user_idx` ON `objectives` (`user_id`, `status`);
 --> statement-breakpoint
--- measure: JSON KeyResultMeasure. direction: up | down.
+-- measure: JSON KeyResultMeasure. direction: up | down. position: the athlete's order within the objective.
 CREATE TABLE `key_results` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
@@ -46,6 +46,7 @@ CREATE TABLE `key_results` (
 	`target` real,
 	`unit` text NOT NULL,
 	`due_date` text,
+	`position` integer NOT NULL DEFAULT 0,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL
 );

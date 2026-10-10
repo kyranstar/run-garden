@@ -70,6 +70,9 @@ describe("POST /api/objectives", () => {
       ["10K time", "down", "s", 3000],
       ["Easy pace at 140-150", "down", "s/mi", null],
     ]);
+    // The order is the list's, by position; creation stamps are real (the batch shares its moment).
+    expect(objective.keyResults.map((k) => k.position)).toEqual([0, 1, 2, 3]);
+    expect(new Set(objective.keyResults.map((k) => k.createdAt)).size).toBe(1);
     // Measures are stored with their defaults, as parsed.
     expect(objective.keyResults[1]!.measure).toEqual({ kind: "hold_max", libraryIds: ["wallSit"], windowDays: 90 });
     expect(objective.keyResults[3]!.measure).toEqual({ kind: "pace_at_hr", hrLow: 140, hrHigh: 150, minDurationSec: 1200, windowDays: 90 });
@@ -159,11 +162,26 @@ describe("PUT /api/objectives/:id", () => {
     });
     expect(res.status).toBe(200);
     const body = ((await res.json()) as { objective: ObjectiveDto }).objective;
-    expect(body.keyResults.map((k) => k.label).sort()).toEqual(["10K time", "Squat estimated max"]);
+    expect(body.keyResults.map((k) => k.label)).toEqual(["Squat estimated max", "10K time"]);
     const kept = body.keyResults.find((k) => k.id === squat!.id)!;
     expect(kept).toMatchObject({ target: 110, createdAt: squat!.createdAt });
     expect(body.keyResults.some((k) => k.id === wallSit!.id)).toBe(false);
     expect(await db.select({ id: keyResults.id }).from(keyResults).where(eq(keyResults.id, wallSit!.id))).toEqual([]);
+  });
+
+  it("keeps the order sent: a new key result before a kept one stays before it, and a reorder sticks", async () => {
+    const objective = await created({ title: "Order", keyResults: [WALL_SIT_KR] });
+    const wallSit = objective.keyResults[0]!;
+    const first = await call("PUT", `/api/objectives/${objective.id}`, { keyResults: [SQUAT_KR, { ...WALL_SIT_KR, id: wallSit.id }] });
+    const afterInsert = ((await first.json()) as { objective: ObjectiveDto }).objective;
+    expect(afterInsert.keyResults.map((k) => k.label)).toEqual(["Squat estimated max", "Wall sit"]);
+    expect(afterInsert.keyResults.map((k) => k.position)).toEqual([0, 1]);
+
+    const [squat, kept] = afterInsert.keyResults;
+    const second = await call("PUT", `/api/objectives/${objective.id}`, { keyResults: [{ ...WALL_SIT_KR, id: kept!.id }, TEN_K_KR, { ...SQUAT_KR, id: squat!.id }] });
+    const reordered = ((await second.json()) as { objective: ObjectiveDto }).objective;
+    expect(reordered.keyResults.map((k) => k.label)).toEqual(["Wall sit", "10K time", "Squat estimated max"]);
+    expect((await listObjectives(db, userId))[0]!.keyResults.map((k) => k.label)).toEqual(["Wall sit", "10K time", "Squat estimated max"]);
   });
 
   it("a kept key result sent without a unit keeps the unit its target is in after the athlete's unit changed; a new one takes the new unit", async () => {

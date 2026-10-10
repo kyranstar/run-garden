@@ -4,32 +4,42 @@
  * Every measure reads only what it needs, scoped to the account, in its window (today and the `windowDays − 1` days
  * before it, by the athlete's local date), and answers `KeyResultProgress`: the current value, the series, how many
  * points, and how far the current value can be trusted (`evidence`). Many measures are read together
- * (`measureKeyResults`): one read per source for all of them, so an objective's progress costs the same few
- * statements however many key results it holds.
+ * (`measureKeyResults`): one read per source for all of them, each reaching its rows through the window itself (a
+ * subquery) or one bound JSON list — so an objective's progress costs the same few statements however many key
+ * results it holds and however many sessions its windows hold.
  *
  * RULES
  * - hold_max: the longest done set (`performed_sets.seconds`) of the moves, app and watch sessions alike. best_set:
- *   per done, loaded set — `e1rm` = kg × (1 + reps / 30) (Epley; a single is its own load), `load_at_reps` = the
- *   heaviest kg lifted for at least `reps`, `reps_at_load` = the most reps at `loadKg` or more (within 0.05 kg). Logs
- *   use `load_kg`, so sets typed in lb and kg compare. One point per day: the day's best.
+ *   per done, loaded set — `e1rm` = kg × (1 + reps / 30) (Epley; a single is its own load; a set of more than 12 reps
+ *   is no estimate and is left out), `load_at_reps` = the heaviest kg lifted for at least `reps`, `reps_at_load` = the
+ *   most reps at `loadKg` or more (within 0.05 kg). Logs use `load_kg`, so sets typed in lb and kg compare. One point
+ *   per day: the day's best.
  * - CAPACITY. The player stops a timed hold at its prescription and a set done exactly as prescribed is no max, so a
- *   set shows capacity only when its item was a test (`dose.max` in the session's document) or the logged value went
- *   past the prescription (seconds past `holdSec`; reps past the reps, or load past the load by more than 0.05 kg).
+ *   set shows capacity only when its item was a test or the logged value went past the prescription ON THE MEASURE'S
+ *   OWN DIMENSION:
+ *     - a test is an item with `dose.max` or a key-result `test` marker. A test hold logged within a second of its
+ *       window (`holdSec`) stays capped — the timer stopped it; shorter is a true max (the athlete stopped), longer by
+ *       two seconds or more beat the window. A test set (reps or load) is capacity;
+ *     - otherwise: a hold at least two seconds past `holdSec` (a watch lap rounds by up to a second); for `e1rm`, more
+ *       reps than prescribed or more load (by more than 0.05 kg); for `load_at_reps`, more load only; for
+ *       `reps_at_load`, more reps only.
  *   The prescription is the session's document — its build's (`session_builds.workout_doc`), else its planned row's
  *   (`planned_workouts.workout_doc`) — and for a move the document does not hold, the build's own steps
  *   (`payload.build.steps`: a timed step's seconds, a set step's target reps and weight). An app session's build is
- *   its `build_id`; a watch session's is its workout's latest locked build (the one sent). A set whose prescription
- *   is unknown is not capacity — nothing says it was a max. `current` is the best of every set (each is at least what
- *   the athlete can do); evidence is `capped` when no capacity set reaches it, else `measured` (three or more days
- *   with capacity) or `sparse`.
+ *   its `build_id`; a watch session's is its workout's latest locked build (the one sent). SQLite reads just the
+ *   moves' items and steps out of the documents and payloads; the Worker never parses either whole. A set whose
+ *   prescription is unknown is not capacity — nothing says it was a max. `current` is the best of every set (each is
+ *   at least what the athlete can do); evidence is `capped` when no capacity set reaches it, else `measured` (three or
+ *   more days with capacity) or `sparse`.
  * - One physical session counts once: an activity's sessions go through `sessionPerActivity` (the athlete's own
  *   record over the watch's copy); a session still being written (`PENDING_HASH`) is not there yet.
  * - run_best: COROS runs (`sport = run`) at least `distanceM` long and at most 10 % longer, each one's time
  *   (`duration_seconds`) scaled to exactly `distanceM`; a longer run is skipped (its pace over the distance is not
  *   its pace at it). A point per run; the current is the fastest. Each point is labelled from the planned workout it
- *   completed (`workout_completion_matches`): a run item at race effort in its document is a `race` on a race day (a
- *   profile event of kind race, or the race hub's race date) and a `test` (a time trial) on any other; a run on a race
- *   day with no document is the race; the rest is `training`.
+ *   completed (`workout_completion_matches`): a run item at race effort in its document makes it a `race` on a race
+ *   day (a profile event of kind race, or the race hub's race date) and, on any other day, a `test` (a time trial) —
+ *   but only when a race-effort item covers the distance (within 1 %); a run on a race day with no document is the
+ *   race; the rest is `training`.
  * - pace_at_hr: runs at least `minDurationSec` long whose average heart rate is in [hrLow, hrHigh], their pace
  *   (`avg_pace_sec_per_km`, else time over distance) per run; the current is the median of the latest three.
  * - threshold_pace: the watch's threshold pace per day (`daily_health`); predicted_time: the race hub's prediction
@@ -38,7 +48,8 @@
  * - checkin and test: not measured until Stage 4 adds the questions and the tests.
  * - Runs, threshold days: three or more points are `measured`, one or two `sparse`, none `none` with a `missing` note.
  */
-import { and, asc, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import {
   activities,
   athleteProfiles,
@@ -53,7 +64,6 @@ import {
   addDays,
   canonicalUnitOf,
   displayValue,
-  parseStoredWorkoutDoc,
   profileEventSchema,
   racePrediction,
   SAME_WEIGHT_KG,
@@ -64,11 +74,9 @@ import {
   type KeyResultPoint,
   type KeyResultProgress,
   type KeyResultUnit,
-  type WorkoutDoc,
 } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { loadPreferences } from "./calendar-sync.js";
-import { chunkIds, type Db } from "./db.js";
+import type { Db } from "./db.js";
 import { sessionPerActivity } from "./logged-sets.js";
 import { PENDING_HASH } from "./watch-sets.js";
 
@@ -76,20 +84,24 @@ import { PENDING_HASH } from "./watch-sets.js";
 export const MEASURED_MIN_POINTS = 3;
 /** How much longer than the distance a run may be and still be scaled to it. */
 export const RUN_OVER_DISTANCE_MAX = 0.1;
+/** A hold within this many seconds of its window is where the timer (or a rounded watch lap) left it. */
+export const HOLD_WINDOW_SEC = 1;
+/** Epley's estimate holds up to this many reps; a longer set is left out of e1RM. */
+export const E1RM_MAX_REPS = 12;
+/** How far short of the distance a race-effort item may be and still cover it (a typed distance's rounding). */
+const COVER_TOLERANCE = 0.01;
 /** The latest runs whose median pace is pace_at_hr's current value. */
 const CURRENT_PACE_RUNS = 3;
 /** Paces outside this (s/km) are a broken record, not a run. */
 const PACE_BOUNDS = { fast: 120, slow: 1800 } as const;
 /** Days a race event spreads over at most when labelling runs (a stage race, a ski week). */
 const MAX_EVENT_DAYS = 21;
-/** IN-list chunk for the sets read: its window subquery binds four more. */
-const SET_ID_CHUNK = 80;
 
 export interface MeasureContext {
   /** The athlete's today (LocalDate): every window ends on it. */
   today: string;
-  /** Race days for run_best's labels; read from the profile's race events and the race hub's date when absent. */
-  raceDays?: readonly string[];
+  /** The race hub's race date (the user's preferences), for run_best's labels; the caller has read it already. */
+  raceDate?: string | null;
 }
 
 export interface MeasureRequest {
@@ -112,7 +124,7 @@ export function libraryMove(id: string): ExerciseRecord | undefined {
 }
 const canonicalId = (id: string): string => libraryMove(id)?.id ?? id;
 
-/** Every id a logged set of these moves may carry: each move's id and the ids it had. */
+/** Every id a logged set (or a document's item) of these moves may carry: each move's id and the ids it had. */
 function loggedIdsOf(libraryIds: readonly string[]): string[] {
   const out = new Set<string>();
   for (const id of libraryIds) {
@@ -131,8 +143,20 @@ function loggedIdsOf(libraryIds: readonly string[]): string[] {
 const DECIMALS: Record<CanonicalUnit, number> = { s: 0, kg: 1, reps: 0, "s/km": 0, score: 1 };
 const rounded = (unit: CanonicalUnit, v: number): number => Math.round(v * 10 ** DECIMALS[unit]) / 10 ** DECIMALS[unit];
 const windowStart = (today: string, windowDays: number): string => addDays(today, -(windowDays - 1));
-const unique = <T>(xs: readonly (T | null | undefined)[]): T[] => [...new Set(xs.filter((x): x is T => x !== null && x !== undefined))];
-const flat = async <T>(parts: Array<Promise<T[]>>): Promise<T[]> => (await Promise.all(parts)).flat();
+
+/** A list bound as ONE JSON text and read back as rows: an IN list of any length under D1's 100-variable cap. */
+const jsonList = (values: readonly string[]): SQL => sql`(select value from json_each(${JSON.stringify(values)}))`;
+
+/** A JSON array column read by SQLite; null when absent, [] when unreadable. */
+function parsedList<T>(text: string | null | undefined, ok: (x: unknown) => x is T): T[] | null {
+  if (text === null || text === undefined) return null;
+  try {
+    const value: unknown = JSON.parse(text);
+    return Array.isArray(value) ? value.filter(ok) : [];
+  } catch {
+    return [];
+  }
+}
 
 /** A local date from an activity's wall-clock start, else its UTC start. */
 const LOCAL_DATE = sql<string>`substr(coalesce(${activities.startTimeLocal}, ${activities.startTime}), 1, 10)`;
@@ -188,29 +212,29 @@ interface LoggedSet {
   kg: number | null;
   /** The hold shows capacity (see the module comment). */
   holdCapacity: boolean;
-  /** The reps × load show capacity. */
-  setCapacity: boolean;
+  /** Its item was a test. */
+  test: boolean;
+  /** More reps than prescribed. */
+  repsBeyond: boolean;
+  /** More load than prescribed (by more than 0.05 kg). */
+  loadBeyond: boolean;
 }
 
-interface SessionRow {
-  id: string;
-  activityId: string | null;
-  workoutId: string | null;
-  buildId: string | null;
-  source: string;
-  localDate: string;
-  createdAt: string;
-}
-
-/** A build step, as the steps column below reads it: [exerciseId, kind, seconds, target reps, target weight v, u]. */
+/** A document's item for one of the moves, as SQLite reads it: [libraryId, test (0|1), holdSec, reps (or range max), kg (bodyweight 0)]. */
+type CompactItem = [string, number, number | null, number | null, number | null];
+/** A build step, as SQLite reads it: [exerciseId, kind, seconds, target reps, target weight v, u]. */
 type CompactStep = [string | null, string | null, number | null, number | null, number | null, string | null];
 
+const isItem = (x: unknown): x is CompactItem => Array.isArray(x) && x.length === 5 && typeof x[0] === "string";
+const isStep = (x: unknown): x is CompactStep => Array.isArray(x) && x.length === 6;
+
 interface Prescribed {
-  doc: WorkoutDoc | null;
+  /** The moves' items in the session's document; null when the session has no document. */
+  items: CompactItem[] | null;
   steps: CompactStep[];
 }
 
-/** What a session asked of one move: a test, or the most it prescribed (undefined where it said nothing). */
+/** What a session asked of one move: whether it was a test, and the most it prescribed (undefined where it said nothing). */
 interface Prescription {
   test: boolean;
   holdSec?: number;
@@ -219,91 +243,34 @@ interface Prescription {
 }
 
 /**
- * The timed and set steps of a stored build, read by SQLite (the payload is 100+ KB of JSON: the Worker never parses
- * it). A payload that is not JSON reads as no steps.
+ * The exercise items for these moves in a stored document column, read by SQLite. Null when the column holds no
+ * readable v1 document; `[]` when it holds one without these moves.
  */
-const BUILD_STEPS = sql<string | null>`case when json_valid(${sessionBuilds.payload}) then (
-  select json_group_array(json_array(
-    json_extract(st.value, '$.exerciseId'), json_extract(st.value, '$.kind'), json_extract(st.value, '$.seconds'),
-    json_extract(st.value, '$.target.reps'), json_extract(st.value, '$.target.w.v'), json_extract(st.value, '$.target.w.u')))
-  from json_each(${sessionBuilds.payload}, '$.build.steps') st
-  where json_extract(st.value, '$.kind') in ('timed', 'set')
-) end`;
-
-const buildColumns = {
-  id: sessionBuilds.id,
-  workoutId: sessionBuilds.workoutId,
-  version: sessionBuilds.version,
-  // Raw text: a damaged document must read as none, not throw in the driver's JSON decode.
-  doc: sql<string | null>`${sessionBuilds.workoutDoc}`,
-  steps: BUILD_STEPS,
-};
-
-function parseSteps(text: string | null): CompactStep[] {
-  if (!text) return [];
-  try {
-    const value: unknown = JSON.parse(text);
-    return Array.isArray(value) ? value.filter((s): s is CompactStep => Array.isArray(s) && s.length === 6) : [];
-  } catch {
-    return [];
-  }
+function documentItems(doc: SQLiteColumn, moves: SQL): SQL<string | null> {
+  return sql<string | null>`case when json_valid(${doc}) and json_extract(${doc}, '$.version') = 1 then (
+    select json_group_array(json_array(
+      json_extract(di.value, '$.libraryId'),
+      coalesce(json_extract(di.value, '$.dose.max'), 0) or json_type(di.value, '$.test') is not null,
+      json_extract(di.value, '$.dose.holdSec'),
+      coalesce(json_extract(di.value, '$.dose.reps.max'), json_extract(di.value, '$.dose.reps')),
+      case when json_extract(di.value, '$.dose.load') = 'bodyweight' then 0 else json_extract(di.value, '$.dose.load.kg') end))
+    from json_each(${doc}, '$.parts') dp, json_each(dp.value, '$.items') di
+    where json_extract(di.value, '$.kind') = 'exercise' and json_extract(di.value, '$.libraryId') in ${moves}
+  ) end`;
 }
 
-/** Each planned workout's document (rows without one are not read). */
-async function plannedDocs(db: Db, userId: string, workoutIds: readonly string[]): Promise<Map<string, WorkoutDoc>> {
-  const rows = await flat(
-    chunkIds([...workoutIds]).map((ids) =>
-      db
-        .select({ id: plannedWorkouts.id, doc: sql<string | null>`${plannedWorkouts.workoutDoc}` })
-        .from(plannedWorkouts)
-        .where(and(eq(plannedWorkouts.userId, userId), inArray(plannedWorkouts.id, ids), isNotNull(plannedWorkouts.workoutDoc))),
-    ),
-  );
-  const out = new Map<string, WorkoutDoc>();
-  for (const r of rows) {
-    const doc = parseStoredWorkoutDoc(r.doc);
-    if (doc) out.set(r.id, doc);
-  }
-  return out;
+/** A stored build's timed and set steps for these moves, read by SQLite (the payload is 100+ KB of JSON). */
+function buildSteps(moves: SQL): SQL<string | null> {
+  return sql<string | null>`case when json_valid(${sessionBuilds.payload}) then (
+    select json_group_array(json_array(
+      json_extract(st.value, '$.exerciseId'), json_extract(st.value, '$.kind'), json_extract(st.value, '$.seconds'),
+      json_extract(st.value, '$.target.reps'), json_extract(st.value, '$.target.w.v'), json_extract(st.value, '$.target.w.u')))
+    from json_each(${sessionBuilds.payload}, '$.build.steps') st
+    where json_extract(st.value, '$.kind') in ('timed', 'set') and json_extract(st.value, '$.exerciseId') in ${moves}
+  ) end`;
 }
 
-/** What prescribed each session: its build's document and steps, else its planned row's document. */
-async function prescribedBy(db: Db, userId: string, sessions: readonly SessionRow[]): Promise<Map<string, Prescribed>> {
-  const buildIds = unique(sessions.map((s) => s.buildId));
-  const sentWorkouts = unique(sessions.map((s) => (s.buildId === null ? s.workoutId : null)));
-  const [byId, locked, planned] = await Promise.all([
-    flat(
-      chunkIds(buildIds).map((ids) =>
-        db.select(buildColumns).from(sessionBuilds).where(and(eq(sessionBuilds.userId, userId), inArray(sessionBuilds.id, ids))),
-      ),
-    ),
-    flat(
-      chunkIds(sentWorkouts).map((ids) =>
-        db
-          .select(buildColumns)
-          .from(sessionBuilds)
-          .where(and(eq(sessionBuilds.userId, userId), inArray(sessionBuilds.workoutId, ids), isNotNull(sessionBuilds.lockedAt))),
-      ),
-    ),
-    plannedDocs(db, userId, unique(sessions.map((s) => s.workoutId))),
-  ]);
-  const builds = new Map(byId.map((b) => [b.id, b]));
-  // A watch session played what was sent: its workout's latest locked build.
-  const sent = new Map<string, (typeof locked)[number]>();
-  for (const b of locked) {
-    const held = sent.get(b.workoutId);
-    if (!held || b.version > held.version) sent.set(b.workoutId, b);
-  }
-  const out = new Map<string, Prescribed>();
-  for (const s of sessions) {
-    const b = s.buildId !== null ? builds.get(s.buildId) : s.workoutId !== null ? sent.get(s.workoutId) : undefined;
-    const doc = parseStoredWorkoutDoc(b?.doc ?? null) ?? (s.workoutId !== null ? planned.get(s.workoutId) ?? null : null);
-    out.set(s.id, { doc, steps: parseSteps(b?.steps ?? null) });
-  }
-  return out;
-}
-
-const maxOf = (xs: readonly (number | undefined)[]): number | undefined => {
+const maxOf = (xs: readonly (number | null | undefined)[]): number | undefined => {
   const vs = xs.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
   return vs.length > 0 ? Math.max(...vs) : undefined;
 };
@@ -311,17 +278,11 @@ const maxOf = (xs: readonly (number | undefined)[]): number | undefined => {
 /** What the session asked of this move: its document's items for it, else its build's steps; null when neither says. */
 function prescriptionFor(p: Prescribed | undefined, exerciseId: string): Prescription | null {
   if (!p) return null;
-  const items = (p.doc?.parts ?? [])
-    .flatMap((part) => part.items)
-    .filter((i): i is Extract<typeof i, { kind: "exercise" }> => i.kind === "exercise" && canonicalId(i.libraryId) === exerciseId);
+  const items = (p.items ?? []).filter((i) => canonicalId(i[0]) === exerciseId);
   if (items.length > 0) {
-    if (items.some((i) => i.dose.max === true)) return { test: true };
-    return {
-      test: false,
-      holdSec: maxOf(items.map((i) => i.dose.holdSec)),
-      reps: maxOf(items.map((i) => (typeof i.dose.reps === "number" ? i.dose.reps : i.dose.reps?.max))),
-      kg: maxOf(items.map((i) => (i.dose.load === "bodyweight" ? 0 : i.dose.load?.kg))),
-    };
+    const tests = items.filter((i) => i[1] === 1);
+    if (tests.length > 0) return { test: true, holdSec: maxOf(tests.map((i) => i[2])) };
+    return { test: false, holdSec: maxOf(items.map((i) => i[2])), reps: maxOf(items.map((i) => i[3])), kg: maxOf(items.map((i) => i[4])) };
   }
   const steps = p.steps.filter((s) => typeof s[0] === "string" && canonicalId(s[0]) === exerciseId);
   if (steps.length === 0) return null;
@@ -329,23 +290,17 @@ function prescriptionFor(p: Prescribed | undefined, exerciseId: string): Prescri
     typeof s[4] === "number" && (s[5] === "kg" || s[5] === "lb") ? toKg({ v: s[4], u: s[5] }) : undefined;
   return {
     test: false,
-    holdSec: maxOf(steps.filter((s) => s[1] === "timed").map((s) => s[2] ?? undefined)),
-    reps: maxOf(steps.filter((s) => s[1] === "set").map((s) => s[3] ?? undefined)),
+    holdSec: maxOf(steps.filter((s) => s[1] === "timed").map((s) => s[2])),
+    reps: maxOf(steps.filter((s) => s[1] === "set").map((s) => s[3])),
     kg: maxOf(steps.filter((s) => s[1] === "set").map(weight)),
   };
 }
 
 function holdShowsCapacity(seconds: number | null, p: Prescription | null): boolean {
   if (!p || seconds === null) return false;
-  return p.test || (p.holdSec !== undefined && seconds > p.holdSec);
-}
-
-function setShowsCapacity(reps: number | null, kg: number | null, p: Prescription | null): boolean {
-  if (!p) return false;
-  if (p.test) return true;
-  const moreReps = reps !== null && p.reps !== undefined && reps > p.reps;
-  const moreLoad = kg !== null && p.kg !== undefined && kg > p.kg + SAME_WEIGHT_KG;
-  return moreReps || moreLoad;
+  // A test: at its window the timer stopped it; short of it, the athlete did; well past it, they beat it.
+  if (p.test) return p.holdSec === undefined || Math.abs(seconds - p.holdSec) > HOLD_WINDOW_SEC;
+  return p.holdSec !== undefined && seconds > p.holdSec + HOLD_WINDOW_SEC;
 }
 
 /** The done sets of these moves in [from, to], one physical session once, each judged against its prescription. */
@@ -357,7 +312,15 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
     // Mid-write: not there yet.
     ne(performedSessions.payloadHash, PENDING_HASH),
   );
-  const [sessionRows, setRows] = await Promise.all([
+  const moves = jsonList(exerciseIds);
+  /** The session (of the window) logged a done set of these moves. */
+  const loggedTheMoves = exists(
+    db
+      .select({ one: sql`1` })
+      .from(performedSets)
+      .where(and(eq(performedSets.performedSessionId, performedSessions.id), eq(performedSets.done, true), inArray(performedSets.exerciseId, moves))),
+  );
+  const [sessionRows, setRows, buildRows, plannedRows] = await Promise.all([
     db
       .select({
         id: performedSessions.id,
@@ -370,46 +333,117 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
       })
       .from(performedSessions)
       .where(inWindow),
-    flat(
-      chunkIds([...exerciseIds], SET_ID_CHUNK).map((ids) =>
-        db
-          .select({
-            sessionId: performedSets.performedSessionId,
-            exerciseId: performedSets.exerciseId,
-            reps: performedSets.reps,
-            seconds: performedSets.seconds,
-            kg: performedSets.loadKg,
-          })
-          .from(performedSets)
-          .where(
+    db
+      .select({
+        sessionId: performedSets.performedSessionId,
+        exerciseId: performedSets.exerciseId,
+        reps: performedSets.reps,
+        seconds: performedSets.seconds,
+        kg: performedSets.loadKg,
+      })
+      .from(performedSets)
+      .where(
+        and(
+          inArray(performedSets.exerciseId, moves),
+          eq(performedSets.done, true),
+          inArray(performedSets.performedSessionId, db.select({ id: performedSessions.id }).from(performedSessions).where(inWindow)),
+        ),
+      ),
+    // The builds those sessions played: an app session's own, a watch session's workout's locked ones.
+    db
+      .select({
+        id: sessionBuilds.id,
+        workoutId: sessionBuilds.workoutId,
+        version: sessionBuilds.version,
+        lockedAt: sessionBuilds.lockedAt,
+        items: documentItems(sessionBuilds.workoutDoc, moves),
+        steps: buildSteps(moves),
+      })
+      .from(sessionBuilds)
+      .where(
+        and(
+          eq(sessionBuilds.userId, userId),
+          or(
+            inArray(
+              sessionBuilds.id,
+              db
+                .select({ id: performedSessions.buildId })
+                .from(performedSessions)
+                .where(and(inWindow, isNotNull(performedSessions.buildId), loggedTheMoves)),
+            ),
             and(
-              inArray(performedSets.exerciseId, ids),
-              eq(performedSets.done, true),
-              inArray(performedSets.performedSessionId, db.select({ id: performedSessions.id }).from(performedSessions).where(inWindow)),
+              isNotNull(sessionBuilds.lockedAt),
+              inArray(
+                sessionBuilds.workoutId,
+                db
+                  .select({ id: performedSessions.workoutId })
+                  .from(performedSessions)
+                  .where(and(inWindow, isNull(performedSessions.buildId), isNotNull(performedSessions.workoutId), loggedTheMoves)),
+              ),
             ),
           ),
+        ),
       ),
-    ),
+    db
+      .select({ id: plannedWorkouts.id, items: documentItems(plannedWorkouts.workoutDoc, moves) })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          isNotNull(plannedWorkouts.workoutDoc),
+          inArray(
+            plannedWorkouts.id,
+            db
+              .select({ id: performedSessions.workoutId })
+              .from(performedSessions)
+              .where(and(inWindow, isNotNull(performedSessions.workoutId), loggedTheMoves)),
+          ),
+        ),
+      ),
   ]);
+
   // One physical session once: the activity's own record over the watch's copy (the feed's rule).
-  const chosen = new Map<string, SessionRow>(
+  const chosen = new Map(
     [...sessionPerActivity(sessionRows).values(), ...sessionRows.filter((s) => !s.activityId)].map((s) => [s.id, s]),
   );
-  const kept = setRows.filter((r) => chosen.has(r.sessionId));
-  const prescribed = await prescribedBy(db, userId, unique(kept.map((r) => r.sessionId)).map((id) => chosen.get(id)!));
-  return kept.map((r) => {
-    const exerciseId = canonicalId(r.exerciseId);
-    const p = prescriptionFor(prescribed.get(r.sessionId), exerciseId);
-    return {
-      date: chosen.get(r.sessionId)!.localDate,
-      exerciseId,
-      reps: r.reps,
-      seconds: r.seconds,
-      kg: r.kg,
-      holdCapacity: holdShowsCapacity(r.seconds, p),
-      setCapacity: setShowsCapacity(r.reps, r.kg, p),
-    };
-  });
+  const builds = new Map(buildRows.map((b) => [b.id, b]));
+  // A watch session played what was sent: its workout's latest locked build.
+  const sent = new Map<string, (typeof buildRows)[number]>();
+  for (const b of buildRows) {
+    if (b.lockedAt === null) continue;
+    const held = sent.get(b.workoutId);
+    if (!held || b.version > held.version) sent.set(b.workoutId, b);
+  }
+  const plannedItems = new Map(plannedRows.map((r) => [r.id, parsedList(r.items, isItem)]));
+  const prescribed = new Map<string, Prescribed>();
+  const prescribedFor = (sessionId: string): Prescribed => {
+    const held = prescribed.get(sessionId);
+    if (held) return held;
+    const s = chosen.get(sessionId)!;
+    const b = s.buildId !== null ? builds.get(s.buildId) : s.workoutId !== null ? sent.get(s.workoutId) : undefined;
+    const items = parsedList(b?.items, isItem) ?? (s.workoutId !== null ? (plannedItems.get(s.workoutId) ?? null) : null);
+    const p = { items, steps: parsedList(b?.steps, isStep) ?? [] };
+    prescribed.set(sessionId, p);
+    return p;
+  };
+
+  return setRows
+    .filter((r) => chosen.has(r.sessionId))
+    .map((r) => {
+      const exerciseId = canonicalId(r.exerciseId);
+      const p = prescriptionFor(prescribedFor(r.sessionId), exerciseId);
+      return {
+        date: chosen.get(r.sessionId)!.localDate,
+        exerciseId,
+        reps: r.reps,
+        seconds: r.seconds,
+        kg: r.kg,
+        holdCapacity: holdShowsCapacity(r.seconds, p),
+        test: p?.test ?? false,
+        repsBeyond: p !== null && r.reps !== null && p.reps !== undefined && r.reps > p.reps,
+        loadBeyond: p !== null && r.kg !== null && p.kg !== undefined && r.kg > p.kg + SAME_WEIGHT_KG,
+      };
+    });
 }
 
 type StrengthMeasure = Extract<KeyResultMeasure, { kind: "hold_max" | "best_set" }>;
@@ -422,12 +456,25 @@ function setValue(m: StrengthMeasure, s: LoggedSet): number | null {
   if (reps < 1) return null;
   switch (m.metric) {
     case "e1rm":
-      if (kg <= 0) return null;
+      if (kg <= 0 || reps > E1RM_MAX_REPS) return null;
       return reps === 1 ? kg : kg * (1 + reps / 30);
     case "load_at_reps":
       return kg > 0 && reps >= (m.reps ?? 1) ? kg : null;
     case "reps_at_load":
       return kg >= (m.loadKg ?? 0) - SAME_WEIGHT_KG ? reps : null;
+  }
+}
+
+/** The set shows capacity for this measure: a test, or past the prescription on the measure's own dimension. */
+function showsCapacity(m: StrengthMeasure, s: LoggedSet): boolean {
+  if (m.kind === "hold_max") return s.holdCapacity;
+  switch (m.metric) {
+    case "e1rm":
+      return s.test || s.repsBeyond || s.loadBeyond;
+    case "load_at_reps":
+      return s.test || s.loadBeyond;
+    case "reps_at_load":
+      return s.test || s.repsBeyond;
   }
 }
 
@@ -441,7 +488,7 @@ function measureStrength(m: StrengthMeasure, sets: readonly LoggedSet[], today: 
     if (value === null) continue;
     const day = days.get(s.date) ?? { best: -Infinity, capacity: -Infinity };
     day.best = Math.max(day.best, value);
-    if (m.kind === "hold_max" ? s.holdCapacity : s.setCapacity) day.capacity = Math.max(day.capacity, value);
+    if (showsCapacity(m, s)) day.capacity = Math.max(day.capacity, value);
     days.set(s.date, day);
   }
   if (days.size === 0) return none(`No logged sets of these moves in the last ${m.windowDays} days.`);
@@ -502,17 +549,14 @@ async function runsBetween(db: Db, userId: string, from: string, to: string): Pr
 }
 
 /** Days of the profile's race events (start to end, at most MAX_EVENT_DAYS) and the race hub's race date. */
-export async function raceDaysOf(db: Db, userId: string): Promise<string[]> {
-  const [[row], prefs] = await Promise.all([
-    db
-      .select({ events: sql<string | null>`${athleteProfiles.events}` })
-      .from(athleteProfiles)
-      .where(eq(athleteProfiles.userId, userId))
-      .limit(1),
-    loadPreferences(db, userId),
-  ]);
+export async function raceDaysOf(db: Db, userId: string, raceDate: string | null | undefined): Promise<Set<string>> {
+  const [row] = await db
+    .select({ events: sql<string | null>`${athleteProfiles.events}` })
+    .from(athleteProfiles)
+    .where(eq(athleteProfiles.userId, userId))
+    .limit(1);
   const days = new Set<string>();
-  if (prefs.raceDate) days.add(prefs.raceDate);
+  if (raceDate) days.add(raceDate);
   let events: unknown = null;
   try {
     events = row?.events ? JSON.parse(row.events) : null;
@@ -525,33 +569,54 @@ export async function raceDaysOf(db: Db, userId: string): Promise<string[]> {
     const end = e.data.end ?? e.data.start;
     for (let d = e.data.start, n = 0; d <= end && n < MAX_EVENT_DAYS; d = addDays(d, 1), n += 1) days.add(d);
   }
-  return [...days];
+  return days;
 }
 
-const hasRaceEffort = (doc: WorkoutDoc): boolean => doc.parts.some((p) => p.items.some((i) => i.kind === "run" && i.effort === "race"));
+/** What the planned workout a run completed says of it: whether it had a document, and the distances of that
+ * document's race-effort run items (0 where one has none). */
+interface RunFacts {
+  hasDoc: boolean;
+  raceDistances: number[];
+}
 
-/** race | test | training for each run, from the planned workout each one completed (see the module comment). */
-async function runLabels(db: Db, userId: string, runs: readonly RunRow[], raceDays: ReadonlySet<string>): Promise<Map<string, KeyResultPoint["label"]>> {
-  const matches = await flat(
-    chunkIds(runs.map((r) => r.id)).map((ids) =>
-      db
-        .select({ activityId: workoutCompletionMatches.activityId, workoutId: workoutCompletionMatches.workoutId })
-        .from(workoutCompletionMatches)
-        .where(and(inArray(workoutCompletionMatches.activityId, ids), isNull(workoutCompletionMatches.undoneAt))),
-    ),
+/** The distances of a stored document's race-effort run items, read by SQLite; null when it holds no readable v1 document. */
+const RACE_DISTANCES = sql<string | null>`case when json_valid(${plannedWorkouts.workoutDoc}) and json_extract(${plannedWorkouts.workoutDoc}, '$.version') = 1 then (
+  select json_group_array(coalesce(json_extract(ri.value, '$.target.distanceM'), 0))
+  from json_each(${plannedWorkouts.workoutDoc}, '$.parts') rp, json_each(rp.value, '$.items') ri
+  where json_extract(ri.value, '$.kind') = 'run' and json_extract(ri.value, '$.effort') = 'race'
+) end`;
+
+/** Each matched run's facts; a run with no match has none. */
+async function runFacts(db: Db, userId: string, runs: readonly RunRow[]): Promise<Map<string, RunFacts>> {
+  // The planned workouts these runs completed, scoped to this account: a match can only point at its own workouts.
+  const docs = await db
+    .select({ activityId: workoutCompletionMatches.activityId, races: RACE_DISTANCES })
+    .from(workoutCompletionMatches)
+    .innerJoin(plannedWorkouts, eq(plannedWorkouts.id, workoutCompletionMatches.workoutId))
+    .where(
+      and(
+        inArray(workoutCompletionMatches.activityId, jsonList(runs.map((r) => r.id))),
+        isNull(workoutCompletionMatches.undoneAt),
+        eq(plannedWorkouts.userId, userId),
+        isNotNull(plannedWorkouts.workoutDoc),
+      ),
+    );
+  return new Map(
+    docs.map((d) => {
+      const races = parsedList(d.races, (x): x is number => typeof x === "number");
+      return [d.activityId, { hasDoc: races !== null, raceDistances: races ?? [] }];
+    }),
   );
-  const workoutOf = new Map(matches.map((m) => [m.activityId, m.workoutId]));
-  // The planned rows are read scoped to this account: a match can only point at this account's workout.
-  const docs = await plannedDocs(db, userId, unique(matches.map((m) => m.workoutId)));
-  const out = new Map<string, KeyResultPoint["label"]>();
-  for (const r of runs) {
-    const workoutId = workoutOf.get(r.id);
-    const doc = workoutId !== undefined ? docs.get(workoutId) : undefined;
-    const raceDay = raceDays.has(r.date);
-    if (doc && hasRaceEffort(doc)) out.set(r.id, raceDay ? "race" : "test");
-    else out.set(r.id, !doc && raceDay ? "race" : "training");
+}
+
+function labelOf(f: RunFacts | undefined, raceDay: boolean, distanceM: number): NonNullable<KeyResultPoint["label"]> {
+  const races = f?.raceDistances ?? [];
+  if (races.length > 0) {
+    if (raceDay) return "race";
+    // A time trial only when a race-effort stretch covers the distance: a 5K effort inside a 10K run is no 10K test.
+    return races.some((d) => d >= distanceM * (1 - COVER_TOLERANCE)) ? "test" : "training";
   }
-  return out;
+  return !f?.hasDoc && raceDay ? "race" : "training";
 }
 
 const qualifiesFor = (m: Extract<KeyResultMeasure, { kind: "run_best" }>, r: RunRow): boolean =>
@@ -560,13 +625,17 @@ const qualifiesFor = (m: Extract<KeyResultMeasure, { kind: "run_best" }>, r: Run
 function measureRunBest(
   m: Extract<KeyResultMeasure, { kind: "run_best" }>,
   runs: readonly RunRow[],
-  labels: ReadonlyMap<string, KeyResultPoint["label"]>,
+  labels: { facts: ReadonlyMap<string, RunFacts>; raceDays: ReadonlySet<string> },
   today: string,
 ): Measured {
   const from = windowStart(today, m.windowDays);
   const points = runs
     .filter((r) => r.date >= from && qualifiesFor(m, r))
-    .map((r) => ({ date: r.date, value: Math.round((r.durationSec * m.distanceM) / r.distanceM!), label: labels.get(r.id) ?? ("training" as const) }));
+    .map((r) => ({
+      date: r.date,
+      value: Math.round((r.durationSec * m.distanceM) / r.distanceM!),
+      label: labelOf(labels.facts.get(r.id), labels.raceDays.has(r.date), m.distanceM),
+    }));
   if (points.length === 0) return none(`No run of this distance (or up to 10 % longer) in the last ${m.windowDays} days.`);
   return { points, current: Math.min(...points.map((p) => p.value)), evidence: byCount(points.length) };
 }
@@ -655,12 +724,12 @@ export async function measureKeyResults(
     threshold.length > 0 ? thresholdDays(db, userId, earliest(today, threshold), today) : [],
   ]);
 
-  let labels = new Map<string, KeyResultPoint["label"]>();
+  let labels = { facts: new Map<string, RunFacts>(), raceDays: new Set<string>() };
   if (bests.length > 0) {
     const candidates = runs.filter((r) => bests.some((m) => r.date >= windowStart(today, m.windowDays) && qualifiesFor(m, r)));
     if (candidates.length > 0) {
-      const raceDays = new Set(ctx.raceDays ?? (await raceDaysOf(db, userId)));
-      labels = await runLabels(db, userId, candidates, raceDays);
+      const [facts, raceDays] = await Promise.all([runFacts(db, userId, candidates), raceDaysOf(db, userId, ctx.raceDate)]);
+      labels = { facts, raceDays };
     }
   }
 

@@ -409,6 +409,8 @@ export interface KeyResultDto {
   target: number | null;
   unit: KeyResultUnit;
   dueDate: string | null;
+  /** The athlete's order within the objective: its index in the list last sent. */
+  position: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -422,7 +424,7 @@ export interface ObjectiveDto {
   sort: number;
   createdAt: string;
   updatedAt: string;
-  /** Oldest first. */
+  /** In the athlete's order (`position`). */
   keyResults: KeyResultDto[];
 }
 

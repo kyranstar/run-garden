@@ -45,7 +45,7 @@ beforeEach(async () => {
 });
 
 /** A measure as a key result would hold it (parsed: defaults filled), measured on TODAY. */
-const measure = (m: object, ctx: { unit?: KeyResultUnit; raceDays?: string[] } = {}) =>
+const measure = (m: object, ctx: { unit?: KeyResultUnit; raceDate?: string | null } = {}) =>
   measureKeyResult(db, userId, keyResultMeasureSchema.parse(m), { today: TODAY, ...ctx });
 
 // ── Seeding ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -179,6 +179,34 @@ describe("hold_max", () => {
     const p = await measure(WALL_SIT);
     expect(p).toMatchObject({ current: 52, evidence: "sparse", sampleSize: 1 });
     expect(p.series).toEqual([{ date: day(5), value: 52, display: 52 }]);
+  });
+
+  it("a hold one second past its prescription is still capped (watch laps round); two seconds past is capacity", async () => {
+    await sets(await appSession(day(6), { doc: doc([hold("wallSit", 45)]) }), "wallSit", [{ seconds: 46 }]);
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 46, evidence: "capped" });
+    await sets(await appSession(day(5), { doc: doc([hold("wallSit", 45)]) }), "wallSit", [{ seconds: 47 }]);
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 47, evidence: "sparse" });
+  });
+
+  it("a test hold logged at its window (within a second) stays capped — the timer stopped it; shorter is a true max, two seconds longer beat it", async () => {
+    for (const [n, secs] of [[9, 60], [8, 61], [7, 59]] as const) {
+      await sets(await appSession(day(n), { doc: doc([hold("wallSit", 60, true)]) }), "wallSit", [{ seconds: secs }]);
+    }
+    const capped = await measure(WALL_SIT);
+    expect(capped).toMatchObject({ current: 61, evidence: "capped" });
+    expect(capped.series.every((s) => s.capped === true)).toBe(true);
+
+    await sets(await appSession(day(6), { doc: doc([hold("wallSit", 60, true)]) }), "wallSit", [{ seconds: 45 }]);
+    await sets(await appSession(day(5), { doc: doc([hold("wallSit", 60, true)]) }), "wallSit", [{ seconds: 62 }]);
+    const p = await measure(WALL_SIT);
+    expect(p).toMatchObject({ current: 62, evidence: "sparse" });
+    expect(p.series.map((s) => [s.value, s.capped ?? false])).toEqual([[60, true], [61, true], [59, true], [45, false], [62, false]]);
+  });
+
+  it("an item marked as a key-result test counts as a test, as dose.max does", async () => {
+    const marked: WorkoutItem = { kind: "exercise", libraryId: "wallSit", dose: { sets: 1, holdSec: 90 }, test: { keyResultId: "kr-1" } };
+    await sets(await appSession(day(4), { doc: doc([marked]) }), "wallSit", [{ seconds: 75 }]);
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 75, evidence: "sparse" });
   });
 
   it("a later capped hold longer than every tested one is the current, and says capped", async () => {
@@ -315,6 +343,40 @@ describe("best_set", () => {
     expect(p).toMatchObject({ unit: "reps", current: 9, evidence: "sparse" });
   });
 
+  it("e1RM leaves out sets of more than 12 reps (Epley is no estimate there)", async () => {
+    const tested = { doc: doc([{ kind: "exercise", libraryId: "gobletSquat", dose: { reps: 5, max: true } } as WorkoutItem]) };
+    await sets(await appSession(day(6), tested), "gobletSquat", [{ reps: 20, value: 40, unit: "kg" }, { reps: 12, value: 45, unit: "kg" }]);
+    // 20 × 40 kg would read 66.7; 12 × 45 kg is 63.
+    expect(await measure(SQUAT)).toMatchObject({ current: 63 });
+  });
+
+  describe("past the prescription on the measure's own dimension", () => {
+    const PRESCRIBED = () => ({ doc: doc([lift("gobletSquat", 5, 100)]) }); // 5 @ 100 kg
+
+    it("reps at load: more load than prescribed is no more reps — capped; more reps is capacity", async () => {
+      for (const n of [7, 5, 3]) await sets(await appSession(day(n), PRESCRIBED()), "gobletSquat", [{ reps: 5, value: 105, unit: "kg" }]);
+      const REPS_AT_100 = { kind: "best_set", libraryIds: ["gobletSquat"], metric: "reps_at_load", loadKg: 100 };
+      expect(await measure(REPS_AT_100)).toMatchObject({ current: 5, evidence: "capped" });
+      await sets(await appSession(day(2), PRESCRIBED()), "gobletSquat", [{ reps: 7, value: 100, unit: "kg" }]);
+      expect(await measure(REPS_AT_100)).toMatchObject({ current: 7, evidence: "sparse" });
+    });
+
+    it("load at reps: more reps than prescribed is no more load — capped; more load is capacity", async () => {
+      for (const n of [7, 5, 3]) await sets(await appSession(day(n), PRESCRIBED()), "gobletSquat", [{ reps: 8, value: 100, unit: "kg" }]);
+      const LOAD_FOR_5 = { kind: "best_set", libraryIds: ["gobletSquat"], metric: "load_at_reps", reps: 5 };
+      expect(await measure(LOAD_FOR_5)).toMatchObject({ current: 100, evidence: "capped" });
+      await sets(await appSession(day(2), PRESCRIBED()), "gobletSquat", [{ reps: 5, value: 110, unit: "kg" }]);
+      expect(await measure(LOAD_FOR_5)).toMatchObject({ current: 110, evidence: "sparse" });
+    });
+
+    it("e1RM: past the prescription on either dimension is capacity", async () => {
+      await sets(await appSession(day(7), PRESCRIBED()), "gobletSquat", [{ reps: 5, value: 105, unit: "kg" }]);
+      await sets(await appSession(day(5), PRESCRIBED()), "gobletSquat", [{ reps: 7, value: 100, unit: "kg" }]);
+      await sets(await appSession(day(3), PRESCRIBED()), "gobletSquat", [{ reps: 6, value: 102.5, unit: "kg" }]);
+      expect(await measure(SQUAT)).toMatchObject({ evidence: "measured", sampleSize: 3, current: 123.3 });
+    });
+  });
+
   it("several moves count together", async () => {
     await sets(await appSession(day(6), null), "gobletSquat", [{ reps: 5, value: 60, unit: "kg" }]);
     await sets(await appSession(day(5), null), "boxSquat", [{ reps: 5, value: 66, unit: "kg" }]);
@@ -357,9 +419,20 @@ describe("run_best", () => {
     expect(p).toMatchObject({ current: 2935, evidence: "measured" }); // 2950 × 10000 / 10050
   });
 
-  it("a run on the race hub's race day with no document is the race", async () => {
+  it("a race-effort stretch shorter than the distance makes no time trial of the run", async () => {
+    const tempo = await run(day(30), 10000, 3100);
+    await matchRun(tempo, await planned(day(30), doc([runItem("easy", 5000), runItem("race", 5000)], "run")));
+    const trial = await run(day(20), 10000, 3050);
+    await matchRun(trial, await planned(day(20), doc([runItem("easy", 2000), runItem("race", 10000)], "run")));
+    const p = await measure(TEN_K);
+    expect(p.series.map((s) => [s.date, s.label])).toEqual([[day(30), "training"], [day(20), "test"]]);
+  });
+
+  it("a run on the race hub's race day (passed in, never re-read) with no document is the race", async () => {
     await run(day(8), 10000, 2990);
-    expect((await measure(TEN_K, { raceDays: [day(8)] })).series[0]).toMatchObject({ label: "race" });
+    statements.length = 0;
+    expect((await measure(TEN_K, { raceDate: day(8) })).series[0]).toMatchObject({ label: "race" });
+    expect(statements.some((s) => /user_preferences/.test(s))).toBe(false);
   });
 
   it("none, saying so, when no run qualifies", async () => {
@@ -474,6 +547,47 @@ describe("budget", () => {
     expect(statements.length).toBeLessThanOrEqual(20);
     expect(statements.filter(isWrite)).toEqual([]);
     expect(statements.some((s) => /select \*/i.test(s))).toBe(false);
+  });
+
+  it("a year of 600 sessions reads in the same statements as a month of 30: prescriptions come through the window, not id lists", async () => {
+    const seed = async (from: number, to: number): Promise<void> => {
+      for (let i = from; i < to; i += 1) {
+        const date = day(i % 365);
+        const workoutId = await planned(date, i % 3 === 0 ? doc([hold("wallSit", 30, true), lift("gobletSquat", 5, 60)]) : null);
+        if (i % 4 === 0) {
+          // A watch session: no build of its own; its workout's locked build was sent.
+          await build(workoutId, { steps: [{ kind: "timed", exerciseId: "wallSit", seconds: 30 }] });
+          const id = await session(date, { source: "watch", workoutId });
+          await sets(id, "wallSit", [{ seconds: 30 + (i % 9) }]);
+          continue;
+        }
+        const buildId = await build(workoutId, i % 2 === 0 ? { doc: doc([lift("gobletSquat", 5, 60)]) } : { steps: [{ kind: "set", exerciseId: "gobletSquat", reps: 5, w: { v: 60, u: "kg" } }] });
+        const id = await session(date, { buildId, workoutId });
+        await sets(id, "gobletSquat", [{ reps: 5 + (i % 4), value: 60, unit: "kg" }]);
+        await sets(id, "wallSit", [{ seconds: 40 }]);
+      }
+    };
+    const year = () =>
+      measureKeyResults(
+        db,
+        userId,
+        [
+          { measure: keyResultMeasureSchema.parse({ kind: "hold_max", libraryIds: ["wallSit"], windowDays: 365 }) },
+          { measure: keyResultMeasureSchema.parse({ kind: "best_set", libraryIds: ["gobletSquat"], metric: "e1rm", windowDays: 365 }) },
+        ],
+        { today: TODAY },
+      );
+    await seed(0, 30);
+    statements.length = 0;
+    await year();
+    const month = statements.length;
+    await seed(30, 600);
+    statements.length = 0;
+    const out = await year();
+    expect(statements.length).toBe(month);
+    expect(statements.length).toBeLessThanOrEqual(6);
+    expect(out[0]).toMatchObject({ evidence: "measured", current: 40 });
+    expect(out[1]).toMatchObject({ evidence: "measured", current: 76 });
   });
 
   it("ten measures of ten moves each (a hundred moves) read their sets under D1's bind cap", async () => {

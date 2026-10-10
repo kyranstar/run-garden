@@ -14,7 +14,7 @@ import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { profileRoutes } from "../src/routes/profile.js";
 import { loadProfile, updateProfile } from "../src/services/profile.js";
-import { createPlace } from "../src/services/places.js";
+import { createPlace, deletePlace } from "../src/services/places.js";
 import { setCondition } from "../src/services/user-conditions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -94,6 +94,15 @@ describe("GET /api/profile", () => {
     const body = (await (await call("GET")).json()) as ProfileDto;
     expect(body.goals).toEqual([]);
     expect((await loadProfile(db, other)).goals).toEqual(GOALS);
+  });
+
+  it("leaves out a default place that has since been deleted", async () => {
+    const gym = await createPlace(db, userId, { name: "Gym", equipment: [] }, T0);
+    await createPlace(db, userId, { name: "Home", equipment: [] }, T0);
+    await updateProfile(db, userId, { preferences: { defaultPlaceId: gym, trainingDays: [1] } }, T0);
+    await deletePlace(db, userId, gym);
+    const body = (await (await call("GET")).json()) as ProfileDto;
+    expect(body.preferences).toEqual({ trainingDays: [1] });
   });
 
   it("reads past a stored list that is no longer valid: the valid entries stay, the rest are left out, never a 500", async () => {
@@ -268,6 +277,21 @@ describe("restore", () => {
     const rows = await db.select({ id: athleteProfiles.id }).from(athleteProfiles).where(eq(athleteProfiles.userId, fresh));
     expect(rows).toEqual([{ id: fresh }]);
     expect((await loadProfile(db, fresh)).goals).toEqual(GOALS);
+  });
+
+  it("a file's profile whose id another account holds is counted lost, and the restore carries on", async () => {
+    // A row from an older writer: its id is not the account's id, so nothing re-keys it.
+    await db.insert(athleteProfiles).values({ id: "profile-older-writer", userId, goals: GOALS, updatedAt: T0 });
+    const file = await exportAll(db, userId);
+    await db.delete(athleteProfiles);
+    const { userId: holder } = await makeTestUser(db);
+    await db.insert(athleteProfiles).values({ id: "profile-older-writer", userId: holder, goals: [GOALS[1]!], updatedAt: T0 });
+
+    const { userId: fresh } = await makeTestUser(db);
+    const outcome = await restoreAll(db, fresh, file);
+    expect(outcome.lost).toBe(1);
+    expect(await db.select({ id: athleteProfiles.id }).from(athleteProfiles).where(eq(athleteProfiles.userId, fresh))).toEqual([]);
+    expect((await loadProfile(db, holder)).goals).toEqual([GOALS[1]]);
   });
 
   it("a same-account restore round-trips the profile exactly", async () => {

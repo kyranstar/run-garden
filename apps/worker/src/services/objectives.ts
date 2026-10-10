@@ -7,8 +7,8 @@
  * one is given — and its `direction` — the measure's own way unless the measure can go either (a check-in, a test).
  * Measures are stored as parsed (defaults filled) with each move's current library id.
  *
- * Key results are listed in the order they were added: a batch's `created_at` steps by a millisecond per entry, so
- * the order is the one sent and survives an export and restore.
+ * Key results are listed in the athlete's order: `position` is each one's index in the list last sent (POST, or a
+ * PUT's whole list), so a new one sent before a kept one stays before it and a reorder sticks.
  *
  * Every write is refused while a restore is replacing the account (ruling B2) and lands as one transaction.
  */
@@ -40,7 +40,7 @@ import {
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
-import { libraryMove, measureKeyResults, unreadableProgress } from "./key-result-measures.js";
+import { libraryMove, measureKeyResults, unreadableProgress, type MeasureContext } from "./key-result-measures.js";
 import { RestoreInProgressError } from "./programs.js";
 
 export class ObjectiveNotFoundError extends Error {
@@ -73,6 +73,7 @@ const keyResultColumns = {
   target: keyResults.target,
   unit: keyResults.unit,
   dueDate: keyResults.dueDate,
+  position: keyResults.position,
   createdAt: keyResults.createdAt,
   updatedAt: keyResults.updatedAt,
 };
@@ -98,6 +99,7 @@ interface KeyResultRow {
   target: number | null;
   unit: string;
   dueDate: string | null;
+  position: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -127,6 +129,7 @@ function keyResultDto(r: KeyResultRow): KeyResultDto {
     target: r.target,
     unit,
     dueDate: r.dueDate,
+    position: r.position,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -147,7 +150,8 @@ function objectiveDto(o: ObjectiveRow, krs: readonly KeyResultRow[]): ObjectiveD
   };
 }
 
-const krOrder = [asc(keyResults.createdAt), asc(keyResults.id)];
+/** The athlete's order; rows written before positions differed (or a restored file's ties) by age, then id. */
+const krOrder = [asc(keyResults.position), asc(keyResults.createdAt), asc(keyResults.id)];
 
 /** The account's objectives in board order (sort, then oldest first), each with its key results. */
 export async function listObjectives(db: Db, userId: string): Promise<ObjectiveDto[]> {
@@ -211,19 +215,17 @@ function withCurrentIds(m: KeyResultMeasure): KeyResultMeasure {
   return { ...m, libraryIds: [...new Set(m.libraryIds.map((id) => libraryMove(id)?.id ?? id))] };
 }
 
-/** `now` plus `ms` milliseconds: the creation stamps that keep a batch of key results in the order sent. */
-const stamped = (now: string, ms: number): string => new Date(Date.parse(now) + ms).toISOString();
-
 /**
- * A key result's row. Its unit: the one sent; else, for a key result that already exists, the unit it was kept in (its
- * target and baseline are in it) while the measure still fits it; else the athlete's unit for the measure.
+ * A key result's row at `stamps.position` in the list sent. Its unit: the one sent; else, for a key result that
+ * already exists, the unit it was kept in (its target and baseline are in it) while the measure still fits it; else
+ * the athlete's unit for the measure.
  */
 function keyResultRow(
   userId: string,
   objectiveId: string,
   kr: KeyResultInputParsed,
   prefs: Pick<UserPreferences, "weightUnit" | "units">,
-  stamps: { id: string; createdAt: string; updatedAt: string },
+  stamps: { id: string; position: number; createdAt: string; updatedAt: string },
   keptUnit?: KeyResultUnit,
 ): typeof keyResults.$inferInsert {
   const measure = withCurrentIds(kr.measure);
@@ -240,6 +242,7 @@ function keyResultRow(
     target: kr.target ?? null,
     unit,
     dueDate: kr.dueDate ?? null,
+    position: stamps.position,
     createdAt: stamps.createdAt,
     updatedAt: stamps.updatedAt,
   };
@@ -257,7 +260,7 @@ export async function createObjective(db: Db, userId: string, input: unknown, no
   const prefs = p.keyResults.length > 0 ? await loadPreferences(db, userId) : { weightUnit: "lb" as const, units: "km" as const };
 
   const id = newId();
-  const rows = p.keyResults.map((kr, i) => keyResultRow(userId, id, kr, prefs, { id: newId(), createdAt: stamped(now, i), updatedAt: now }));
+  const rows = p.keyResults.map((kr, i) => keyResultRow(userId, id, kr, prefs, { id: newId(), position: i, createdAt: now, updatedAt: now }));
   const statements: AtomicStatement[] = [
     db.insert(objectives).values({
       id,
@@ -277,9 +280,10 @@ export async function createObjective(db: Db, userId: string, input: unknown, no
 }
 
 /**
- * Change what is sent. `keyResults`, when sent, is the whole list: an entry with the id of one of this objective's key
- * results changes it (its creation stamp kept), one without is new, and one left out is deleted. An id that is not one
- * of this objective's is a ZodError — nothing is written.
+ * Change what is sent. `keyResults`, when sent, is the whole list in the athlete's order: an entry with the id of one
+ * of this objective's key results changes it (its creation stamp kept), one without is new, one left out is deleted,
+ * and each takes its index as its position. An id that is not one of this objective's is a ZodError — nothing is
+ * written.
  */
 export async function updateObjective(db: Db, userId: string, id: string, input: unknown, now: string): Promise<ObjectiveDto> {
   const p = objectiveUpdateSchema.parse(input);
@@ -314,12 +318,9 @@ export async function updateObjective(db: Db, userId: string, id: string, input:
     const keep = sent.map((kr) => kr.id).filter((k): k is string => k !== undefined);
     const mine = and(eq(keyResults.objectiveId, id), eq(keyResults.userId, userId));
     statements.push(db.delete(keyResults).where(keep.length > 0 ? and(mine, notInArray(keyResults.id, keep)) : mine));
-    let fresh = 0;
-    const rows = sent.map((kr) => {
+    const rows = sent.map((kr, position) => {
       const kept = kr.id !== undefined ? held.get(kr.id) : undefined;
-      const stamps = kept
-        ? { id: kept.id, createdAt: kept.createdAt, updatedAt: now }
-        : { id: newId(), createdAt: stamped(now, fresh++), updatedAt: now };
+      const stamps = { id: kept?.id ?? newId(), position, createdAt: kept?.createdAt ?? now, updatedAt: now };
       return keyResultRow(userId, id, kr, prefs, stamps, kept?.unit);
     });
     const fromRow = (col: string) => sql.raw(`excluded.${col}`);
@@ -338,6 +339,7 @@ export async function updateObjective(db: Db, userId: string, id: string, input:
               target: fromRow("target"),
               unit: fromRow("unit"),
               dueDate: fromRow("due_date"),
+              position: fromRow("position"),
               updatedAt: fromRow("updated_at"),
             },
             // Only ever this objective's own key result.
@@ -352,15 +354,18 @@ export async function updateObjective(db: Db, userId: string, id: string, input:
 
 // ── Progress ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Every key result of the objective measured from logged data, in one pass over each source. */
-export async function objectiveProgress(db: Db, userId: string, id: string, ctx: { today: string }): Promise<ObjectiveProgressDto> {
+/**
+ * Every key result of the objective measured from logged data, in one pass over each source. `ctx` carries what the
+ * caller has read of the user's preferences already: the athlete's today and the race hub's race date.
+ */
+export async function objectiveProgress(db: Db, userId: string, id: string, ctx: MeasureContext): Promise<ObjectiveProgressDto> {
   const objective = await getObjective(db, userId, id);
   const measurable = objective.keyResults.filter((k): k is KeyResultDto & { measure: KeyResultMeasure } => k.measure !== null);
   const measured = await measureKeyResults(
     db,
     userId,
     measurable.map((k) => ({ measure: k.measure, unit: k.unit })),
-    { today: ctx.today },
+    ctx,
   );
   const byId = new Map(measurable.map((k, i) => [k.id, measured[i]!]));
   return {

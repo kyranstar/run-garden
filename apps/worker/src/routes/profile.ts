@@ -77,7 +77,7 @@ objectiveRoutes.get("/:id/progress", async (c) => {
   const userId = c.get("userId");
   try {
     const prefs = await loadPreferences(db, userId);
-    return c.json(await objectiveProgress(db, userId, c.req.param("id"), { today: todayInZone(prefs.timezone) }));
+    return c.json(await objectiveProgress(db, userId, c.req.param("id"), { today: todayInZone(prefs.timezone), raceDate: prefs.raceDate }));
   } catch (e) {
     return refusal(c, e, "invalid_objective");
   }

@@ -89,11 +89,14 @@ export async function loadProfile(db: Db, userId: string): Promise<ProfileDto> {
     listPlaces(db, userId),
     listConditions(db, userId),
   ]);
+  const preferences = validPreferences(parsedJson(row?.preferences));
+  // A default place deleted since is no default: the places service never told the profile.
+  if (preferences.defaultPlaceId !== undefined && !places.some((p) => p.id === preferences.defaultPlaceId)) delete preferences.defaultPlaceId;
   return {
     goals: validEntries(parsedJson(row?.goals), profileGoalSchema),
     focusAreas: validEntries(parsedJson(row?.focusAreas), focusAreaSchema),
     events: validEntries(parsedJson(row?.events), profileEventSchema),
-    preferences: validPreferences(parsedJson(row?.preferences)),
+    preferences,
     units: { distance: prefs.units, weight: prefs.weightUnit, temperature: prefs.temperatureUnit },
     timezone: prefs.timezone,
     race: prefs.raceDate ? { date: prefs.raceDate, distanceKm: prefs.raceDistanceKm } : null,

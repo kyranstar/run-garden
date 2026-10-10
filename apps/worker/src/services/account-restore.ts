@@ -48,7 +48,7 @@
  *    account when the file came from a different one — that id is the one the
  *    check session signed, never one a later request names.
  */
-import { and, count, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, count, eq, getTableColumns, inArray, ne, sql } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { gardenState, SCHEMA_VERSION } from "@rg/database";
 import { isLocalDate, newId, nowInstant, userPreferencesSchema } from "@rg/domain";
@@ -762,8 +762,25 @@ async function restoreRowsInto(
     }
     return q.onConflictDoNothing();
   };
-  for (let i = 0; i < rows.length; i += perInsert) {
-    const batch = rows.slice(i, i + perInsert);
+  // The one-row upsert answers a clash on user_id; an id that ANOTHER account's row holds (a row an older writer keyed
+  // otherwise) would abort the restore instead. That row stays theirs, the file's is not written, and it is counted
+  // lost below like any other conflict.
+  let insertable = rows;
+  if (idIsAccountId) {
+    const theirs = new Set<string>();
+    const userCol = columnBySqlName(entry.table, "user_id");
+    for (const ids of chunkIds(rows.map((r) => String(r.row[pkKey])))) {
+      const held = await db
+        .select({ id: pk })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .from(entry.table as any)
+        .where(and(inArray(pk, ids), ne(userCol, userId)));
+      for (const h of held) theirs.add(String(h.id));
+    }
+    insertable = rows.filter((r) => !theirs.has(String(r.row[pkKey])));
+  }
+  for (let i = 0; i < insertable.length; i += perInsert) {
+    const batch = insertable.slice(i, i + perInsert);
     try {
       await insert(batch.map((b) => b.row));
     } catch {

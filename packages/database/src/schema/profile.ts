@@ -55,6 +55,8 @@ export const keyResults = sqliteTable(
     target: real("target"),
     unit: text("unit").notNull(),
     dueDate: text("due_date"),
+    /** The athlete's order within the objective: lower first. */
+    position: integer("position").notNull().default(0),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
