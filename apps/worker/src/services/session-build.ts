@@ -77,7 +77,7 @@ import {
 } from "./engine-inputs.js";
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 import type { WatchState } from "./watch-push.js";
-import { docForBuild } from "./workout-doc-store.js";
+import { docForBuild, storedDocText } from "./workout-doc-store.js";
 
 /**
  * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
@@ -1068,7 +1068,7 @@ async function commitBuild(
   };
   // The build's workout document, in the same statement as the build (Stage 1 dual-write): a snapshot of this build,
   // no revisions. A conversion that fails is logged by its code and stored as NULL — never a failed build.
-  const workoutDoc = docForBuild(stored.build) as Record<string, unknown> | null;
+  const workoutDoc = storedDocText(docForBuild(stored.build));
 
   // The response is made from what this writes (ruling 2a-R8), never read back: the row as updated, and the build as
   // stored — after the prune, the only unlocked build left.

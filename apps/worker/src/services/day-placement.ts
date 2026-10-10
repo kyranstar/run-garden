@@ -39,6 +39,7 @@ import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import { plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { isWeekend, type SchedulingPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
+import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 
 /**
  * The athlete's window for a session, ignoring everything else on the day —
@@ -211,7 +212,8 @@ export interface RetimedRow {
   to: string;
 }
 
-type WorkoutRow = typeof plannedWorkouts.$inferSelect;
+/** A planned row without its workout document: placement never reads one. */
+type WorkoutRow = PlannedRow;
 
 /** The span the calendar mirror books for a row — `calendar-sync.ts`'s own
  * `source ?? fallback ?? 45min`, so placement and the event agree. */
@@ -249,7 +251,7 @@ export async function separateDayCollisions(
   for (const batch of chunkIds(wanted, DATE_BIND_CHUNK)) {
     rows.push(
       ...(await db
-        .select()
+        .select(plannedRowColumns())
         .from(plannedWorkouts)
         .where(
           and(

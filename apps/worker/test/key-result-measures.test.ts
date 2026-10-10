@@ -73,7 +73,8 @@ async function planned(date: string, workoutDoc: WorkoutDoc | null = null, owner
     id, userId: owner, planId: "plan", sourceWorkoutId: id, title: "Synthetic", category: "strength", sport: "strength",
     originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "12:00", sourceContentFingerprint: "fp",
     calendarBlockDurationSeconds: 1800, createdAt: T0, updatedAt: T0,
-    workoutDoc: workoutDoc as unknown as Record<string, unknown> | null,
+    // The column is JSON text, as the writers store it.
+    workoutDoc: workoutDoc ? JSON.stringify(workoutDoc) : null,
   });
   return id;
 }
@@ -91,7 +92,7 @@ async function build(workoutId: string, opts: { doc?: WorkoutDoc; steps?: StepSe
   await db.insert(sessionBuilds).values({
     id, userId, workoutId, version: opts.version ?? 1, engineVersion: "test", inputsHash: "h",
     payload: { build: { steps, items: [], mode: "build", theme: null, minutes: 30 }, view: {} },
-    workoutDoc: (opts.doc ?? null) as unknown as Record<string, unknown> | null,
+    workoutDoc: opts.doc ? JSON.stringify(opts.doc) : null,
     lockedAt: opts.locked === false ? null : T0, createdAt: T0,
   });
   return id;

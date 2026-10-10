@@ -99,8 +99,13 @@ export const plannedWorkouts = sqliteTable(
     /** Minutes, focus, location, mode, theme, equipment exclusions, and the
      * day's overrides and swaps. */
     sessionParams: text("session_params", { mode: "json" }).$type<Record<string, unknown> | null>(),
-    /** The workout document (migration 0028; Stage 1) — a WorkoutDoc, validated by @rg/workout. NULL = none yet. */
-    workoutDoc: text("workout_doc", { mode: "json" }).$type<Record<string, unknown> | null>(),
+    /**
+     * The workout document (migration 0028; Stage 1) — a WorkoutDoc as JSON TEXT. NULL = none yet. Plain text, never
+     * Drizzle's json mode: that parses on every full-row read and throws on a malformed value. Writers store
+     * `JSON.stringify(doc)`; readers parse with `parseStoredWorkoutDoc` (never throws); a read that does not need the
+     * document leaves it out (`plannedRowColumns`).
+     */
+    workoutDoc: text("workout_doc"),
     /** Bumped on every workout_doc write; NULL = no doc. */
     workoutDocRev: integer("workout_doc_rev"),
     createdAt: text("created_at").notNull(),

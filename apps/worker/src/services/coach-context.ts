@@ -50,6 +50,7 @@ import { resolveCodesInText } from "./exercise-catalog.js";
 import { findRaceConflict } from "./race-conflict.js";
 import { buildRaceHub } from "./race-hub.js";
 import { buildReadiness } from "./readiness.js";
+import { plannedRowColumns } from "./planned-columns.js";
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
@@ -417,7 +418,7 @@ export async function buildDossier(
     ),
   );
   const upcoming = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -574,7 +575,7 @@ export async function buildDossier(
 
   // 4 · LAST 14 DAYS — planned vs actual, one line per session.
   const recentWorkouts = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt), gte(plannedWorkouts.effectiveDate, since14), lte(plannedWorkouts.effectiveDate, today)))
     .orderBy(plannedWorkouts.effectiveDate);

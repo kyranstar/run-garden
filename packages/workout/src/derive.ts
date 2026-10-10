@@ -10,7 +10,12 @@
  *   holdSec; breaths x 6 s; carryM x 1 s (a 1 m/s walk); reps x seconds-per-rep. When the dose gives none of these the
  *   record's own dose range midpoint stands in. Seconds-per-rep = the sum of the tempo's parts when given, else the
  *   record's `secsPerRep`, else 3. A rep range counts as its rounded midpoint. `perSide` (with no fixed `side`) doubles
- *   the work and the reps of every set. Rest between sets = (sets - 1) x (dose.restSec, else the record's, else 0).
+ *   the work and the reps of every set. Rest between sets = (sets - 1) x (dose.restSec, else the record's, else an
+ *   assumed rest: 60 s for a lift — a record with a strength or power purpose, or a free-text move that counts as
+ *   strength (below) — and 20 s for any other move). Every exercise item also costs a 15 s transition each time it
+ *   is played (x rounds): setting up, moving between stations. (Controller ruling 2026-10-10: a prescription that names
+ *   no rest still rests, and no session goes from one move to the next in zero seconds; without them a coach's lift
+ *   derived a fraction of its stated length.) Run segments and rest items have no transition.
  * - Parts: `rounds` multiplies every item (its sets, work, rests and watch steps); `restBetweenRoundsSec` is added
  *   (rounds - 1) times. A rest item adds its seconds to the minutes, to no balance, and is not a watch step.
  * - Run: duration, else distance at the middle of the pace band, else 6:00/km (rounded to whole seconds); an open
@@ -24,9 +29,12 @@
  *   x 1 (primary) or x 0.5 (secondary). `perSide` does not double sets here.
  * - Discipline uses the garden's axis names, "run" | "strength" | "yoga". Per item, work + rest seconds go to run (run
  *   items), strength (records with a strength, power, activation, conditioning or balance purpose; free exercises in a
- *   main, power, accessory, conditioning or activation part, except a main part's flow) or yoga (the rest). Dominant = run when run is at least
- *   half of all seconds (or the only axis present), else strength when it is at least yoga, else yoga. `disciplines` lists
- *   every axis present, dominant first, then by seconds.
+ *   main, power, accessory, conditioning or activation part, except a main part's flow) or yoga (the rest). Dominant =
+ *   run when run is at least half of all seconds (or the only axis present); else strength when a main or power part
+ *   holds a lift (a library move with a strength or power purpose), however many minutes of mobility surround it — the
+ *   programme's own rule, a session with a core lift is a strength session (controller ruling 2026-10-10); else
+ *   strength when the strength seconds are at least the yoga seconds (a session of free-text lifts, which no library
+ *   record can vouch for); else yoga. `disciplines` lists every axis present, dominant first, then by seconds.
  * - Category: race / tempo / threshold / interval / hills (never strides) make race / quality only when the run axis is dominant or those
  *   efforts are at least 25% of all seconds; otherwise the dominant discipline decides. Otherwise, for a run
  *   workout, long (a long effort, or 75 minutes or more of run) -> long; recovery effort (or a "recover" intent with only
@@ -114,6 +122,15 @@ const DEFAULT_RUN_SECS_PER_KM = 360;
 /** An open (lap-button) run segment counts a nominal 10 minutes. */
 const OPEN_RUN_SECONDS = 600;
 const LONG_RUN_SECONDS = 75 * 60;
+/** The rest between sets a dose that names none is assumed to take: a lift's, and any other move's. */
+const ASSUMED_LIFT_REST_SECONDS = 60;
+const ASSUMED_REST_SECONDS = 20;
+/** Setting up an exercise item, or moving to it, each time it is played. */
+const TRANSITION_SECONDS = 15;
+/** The purposes that make a library move a lift. */
+const LIFT_PURPOSES = new Set(["strength", "power"]);
+/** The parts a lift makes a strength session of. */
+const LIFT_PARTS = new Set(["main", "power"]);
 const STRENGTH_PURPOSES = new Set(["strength", "power", "activation", "conditioning", "balance"]);
 const STRENGTH_PART_PURPOSES = new Set(["main", "power", "accessory", "conditioning", "activation"]);
 /** A main part's flow is a mobility session's: its free-text moves are not lifting. A flow of other work is that work. */
@@ -178,10 +195,14 @@ function axisOfRecord(rec: ExerciseRecord): WorkoutAxis {
   return rec.purposes.some((p) => STRENGTH_PURPOSES.has(p)) ? "strength" : "yoga";
 }
 
-function dominance(t: Tally): { discipline: WorkoutAxis; disciplines: WorkoutAxis[] } {
+function dominance(t: Tally, lift: boolean): { discipline: WorkoutAxis; disciplines: WorkoutAxis[] } {
   const { run, strength, yoga } = t.axis;
   const discipline: WorkoutAxis =
-    run > 0 && (run * 2 >= t.totalSec || (strength === 0 && yoga === 0)) ? "run" : strength > 0 && strength >= yoga ? "strength" : "yoga";
+    run > 0 && (run * 2 >= t.totalSec || (strength === 0 && yoga === 0))
+      ? "run"
+      : lift || (strength > 0 && strength >= yoga)
+        ? "strength"
+        : "yoga";
   const order: WorkoutAxis[] = ["run", "strength", "yoga"];
   const rest = order.filter((a) => a !== discipline && t.axis[a] > 0).sort((a, b) => t.axis[b] - t.axis[a]);
   return { discipline, disciplines: [discipline, ...rest] };
@@ -211,8 +232,8 @@ function secsPerRep(rec: ExerciseRecord | undefined, dose: ExerciseDose): number
 
 const mid = (r: readonly [number, number]): number => Math.round((r[0] + r[1]) / 2);
 
-/** One exercise item's work for one round. */
-function itemWork(rec: ExerciseRecord | undefined, dose: ExerciseDose, perSide: boolean, rounds: number): Work {
+/** One exercise item's work over its rounds; `lift` decides the rest a dose that names none is assumed to take. */
+function itemWork(rec: ExerciseRecord | undefined, dose: ExerciseDose, perSide: boolean, rounds: number, lift: boolean): Work {
   const sets = dose.sets ?? rec?.dose.sets?.[0] ?? 1;
   const sides = perSide ? 2 : 1;
   let holdSec = dose.holdSec;
@@ -235,11 +256,11 @@ function itemWork(rec: ExerciseRecord | undefined, dose: ExerciseDose, perSide: 
     repsPerSet = reps ?? 0;
     perSetSec = repsPerSet * secsPerRep(rec, dose);
   }
-  const rest = dose.restSec ?? rec?.dose.restSec ?? 0;
+  const rest = dose.restSec ?? rec?.dose.restSec ?? (lift ? ASSUMED_LIFT_REST_SECONDS : ASSUMED_REST_SECONDS);
   return {
     sets: sets * rounds,
     workSec: sets * rounds * sides * perSetSec,
-    restSec: Math.max(sets - 1, 0) * rest * rounds,
+    restSec: Math.max(sets - 1, 0) * rest * rounds + TRANSITION_SECONDS * rounds,
     reps: repsPerSet === null ? null : sets * rounds * sides * repsPerSet,
   };
 }
@@ -253,6 +274,8 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
   let hardSec = 0;
   let runSec = 0;
   let longestRun = { sec: -1, effort: "" };
+  /** A main or power part holds a lift (the discipline rule). */
+  let lift = false;
   const all = new Set<string>();
   const groups = new Map<string, string[]>();
   const conditionMax: Record<string, Record<string, number>> = {};
@@ -279,8 +302,10 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
         const free = item.kind === "free_exercise";
         const rec = free ? undefined : find(item.libraryId);
         const perSide = item.dose.perSide === true && (free || item.side === undefined);
-        const w = itemWork(rec, item.dose, perSide, rounds);
         const axis: WorkoutAxis = rec ? axisOfRecord(rec) : STRENGTH_PART_PURPOSES.has(part.purpose) && !mobilityFlow(part) ? "strength" : "yoga";
+        const liftMove = rec ? rec.purposes.some((p) => LIFT_PURPOSES.has(p)) : axis === "strength";
+        if (rec && liftMove && LIFT_PARTS.has(part.purpose)) lift = true;
+        const w = itemWork(rec, item.dose, perSide, rounds, liftMove);
         addWork(t, rec, w, axis);
         steps += (item.dose.sets ?? rec?.dose.sets?.[0] ?? 1) * rounds * (perSide ? 2 : 1);
         if (rec) {
@@ -302,7 +327,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
     if (rounds > 1) t.totalSec += (rounds - 1) * (part.restBetweenRoundsSec ?? 0);
   }
 
-  const { discipline, disciplines } = dominance(t);
+  const { discipline, disciplines } = dominance(t, lift);
   const hasRun = runSec > 0;
   let category: WorkoutCategory;
   const hardCounts = hardEfforts.size > 0 && (discipline === "run" || hardSec * 4 >= t.totalSec);
@@ -334,15 +359,19 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
  * (else reps x seconds-per-rep) are its work; `perSide` entries count both sides per set. A timed move done in a flow
  * counts as one set of that many seconds. An activity adds aerobic seconds unless its sport is strength or yoga.
  * Flags and load are not read. Seconds-per-rep comes from the record (no tempo is logged); a sport other than strength / lift / yoga / mobility counts as aerobic run-axis work. Rests were not recorded, so `estimatedMinutes` is work only.
+ * Discipline: the document's rule; what was done has no parts, so a done set of any lift (a strength or power purpose)
+ * is the lift that makes it a strength session.
  */
 export function derivePerformed(input: PerformedInput, library: readonly ExerciseRecord[]): PerformedDerived {
   const find = makeLibraryIndex(library);
   const t = newTally();
+  let lift = false;
   for (const entry of input.entries) {
     const rec = find(entry.exerciseId);
     const sides = entry.perSide ? 2 : 1;
     for (const s of entry.sets) {
       if (!s.done) continue;
+      if (rec?.purposes.some((p) => LIFT_PURPOSES.has(p))) lift = true;
       const perSetSec = s.seconds ?? (s.reps ?? 0) * (rec?.dose.secsPerRep ?? DEFAULT_SECS_PER_REP);
       addWork(t, rec, { sets: 1, workSec: perSetSec * sides, restSec: 0, reps: s.reps !== null ? s.reps * sides : null }, rec ? axisOfRecord(rec) : "strength");
     }
@@ -361,6 +390,6 @@ export function derivePerformed(input: PerformedInput, library: readonly Exercis
       t.axis.run += a.durationSeconds;
     }
   }
-  const { discipline, disciplines } = dominance(t);
+  const { discipline, disciplines } = dominance(t, lift);
   return { estimatedMinutes: minutesOf(t.totalSec), balance: t.balance, ...exposure(t), discipline, disciplines };
 }

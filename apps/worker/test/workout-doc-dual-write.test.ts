@@ -135,7 +135,7 @@ describe("session builds: the build insert carries the document (a snapshot, no 
 
   it("today's build: the document of exactly the stored build, agreeing with the row the build wrote", async () => {
     const id = await seedSlot("2026-10-07");
-    const tally = { builds: 0, sameCategory: 0, strengthByLiftYogaBySeconds: 0, minutesNearPlanned: 0, minutesNearBooked: 0 };
+    const tally = { builds: 0, sameCategory: 0, minutesNearPlanned: 0, minutesNearBooked: 0 };
     let n = 0;
     for (const mode of ["recovery", "consistent", "build"] as const) {
       for (const minutes of [15, 30, 45, 60]) {
@@ -152,14 +152,9 @@ describe("session builds: the build insert carries the document (a snapshot, no 
         const row = await rowOf(id);
         tally.builds += 1;
         // Discipline. The row says strength when the build holds a core lift, else yoga (programme spec §9.2); the
-        // document derives the dominant axis by seconds (derive.ts). They agree, except that a build with one core
-        // lift among more minutes of mobility derives yoga — strength is then still one of its disciplines.
-        if (d.category === row.category) tally.sameCategory += 1;
-        else {
-          expect([row.category, d.category], label).toEqual(["strength", "yoga"]);
-          expect(d.disciplines, label).toContain("strength");
-          tally.strengthByLiftYogaBySeconds += 1;
-        }
+        // document says strength when its main part holds a lift (derive.ts, ruling 2026-10-10): they agree.
+        expect(d.category, `${label}: ${row.category}`).toBe(row.category);
+        tally.sameCategory += 1;
         // Minutes: the document counts work and rests, not the player's lead-ins and chimes (derive.ts), so it reads a
         // little under the engine's planned time — within the parity diagnostic's tolerance, max(3 min, 20 %). The
         // row's booked length rounds that planned time up, and can fall outside it (counted, not asserted: see the
@@ -174,7 +169,7 @@ describe("session builds: the build insert carries the document (a snapshot, no 
       }
     }
     console.log("build documents vs their rows:", JSON.stringify(tally));
-    expect(tally.sameCategory).toBeGreaterThan(0);
+    expect(tally.sameCategory).toBe(tally.builds);
   });
 
   it("a preview (a day ahead) carries one too, rewritten when the preview is", async () => {

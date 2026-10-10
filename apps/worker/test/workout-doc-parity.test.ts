@@ -50,6 +50,8 @@ async function seed(
     createdAt: NOW,
     updatedAt: NOW,
     ...over,
+    // The column is JSON text: a document given as an object is stored as its JSON, as the writers store it.
+    ...(over.workoutDoc != null && typeof over.workoutDoc !== "string" ? { workoutDoc: JSON.stringify(over.workoutDoc) } : {}),
   });
 }
 
@@ -310,7 +312,7 @@ describe("fix round 1", () => {
     const put = (db: Db, userId: string, workoutId: string, version: number, stepIds: string[], over: { lockedAt?: string | null; createdAt?: string; workoutDoc?: WorkoutDoc | null } = {}) =>
       db.insert(sessionBuilds).values({
         id: `b-${workoutId}-${version}`, userId, workoutId, version, engineVersion: "t", inputsHash: "h",
-        payload: { steps: stepIds.map((exerciseId) => ({ kind: "set", exerciseId })) }, workoutDoc: (over.workoutDoc ?? null) as never,
+        payload: { steps: stepIds.map((exerciseId) => ({ kind: "set", exerciseId })) }, workoutDoc: over.workoutDoc ? JSON.stringify(over.workoutDoc) : null,
         lockedAt: over.lockedAt ?? null, createdAt: over.createdAt ?? NOW,
       });
     const steps = (r: { mismatched: Array<{ id: string; field: string }> }) => r.mismatched.filter((m) => m.field === "steps");

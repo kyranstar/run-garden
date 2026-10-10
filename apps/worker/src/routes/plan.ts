@@ -76,6 +76,7 @@ import { repairPlannedWorkoutFidelity } from "../services/plan-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
+import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -148,7 +149,7 @@ interface WorkoutView {
  *  3. an open `content` intent — an approved ease rewrote a row COROS still
  *     holds in its old form. The row keeps its wire id; the content is ours.
  */
-function authoredHere(w: typeof plannedWorkouts.$inferSelect, contentRewritten: boolean): boolean {
+function authoredHere(w: PlannedRow, contentRewritten: boolean): boolean {
   return w.structuredJson !== null || w.sourceIdInPlan === null || contentRewritten;
 }
 
@@ -156,7 +157,7 @@ function authoredHere(w: typeof plannedWorkouts.$inferSelect, contentRewritten: 
  * RUN, where "is every block timed" and "which steps have no pace band" are
  * facts only `planned_workout_stages` holds. Lift/mobility answer from
  * `structuredJson`, and rest days are not sessions anyone expects on a watch. */
-function needsRunStages(w: typeof plannedWorkouts.$inferSelect, contentRewritten: boolean): boolean {
+function needsRunStages(w: PlannedRow, contentRewritten: boolean): boolean {
   return authoredHere(w, contentRewritten) && w.category !== "rest" && w.sport === "run";
 }
 
@@ -170,7 +171,7 @@ function needsRunStages(w: typeof plannedWorkouts.$inferSelect, contentRewritten
  * `null` = nothing to say: the content is COROS's own, or it is a rest day.
  */
 function watchShapeOfRow(
-  w: typeof plannedWorkouts.$inferSelect,
+  w: PlannedRow,
   contentRewritten: boolean,
   /** This row's stage rows, when loaded (see `needsRunStages`). */
   stages: ReadonlyArray<{ durationType: string; targetType: string | null; label: string | null }>,
@@ -223,7 +224,7 @@ function watchShapeOfRow(
  * Full coverage is rendered as silence — a normal synced run must not become
  * noisier than it was. */
 function watchCoverageOfRow(
-  w: typeof plannedWorkouts.$inferSelect,
+  w: PlannedRow,
   contentRewritten: boolean,
   stages: ReadonlyArray<{ durationType: string; targetType: string | null; label: string | null }>,
 ): WatchCoverageView | undefined {
@@ -243,7 +244,7 @@ function watchCoverageOfRow(
 async function loadWorkoutViews(
   db: Db,
   userId: string,
-  workouts: Array<typeof plannedWorkouts.$inferSelect>,
+  workouts: Array<PlannedRow>,
   prefs: UserPreferences,
   /** Callers that already computed presence for their own payload pass it in
    * so the providerConnections read isn't repeated (it never varies within a
@@ -382,7 +383,7 @@ async function loadWorkoutViews(
 }
 
 function workoutDto(
-  w: typeof plannedWorkouts.$inferSelect,
+  w: PlannedRow,
   view?: WorkoutView,
   catalog?: Map<string, string>,
   /**
@@ -509,15 +510,15 @@ function sleepDto(
  * are absent only for a stored build that lacks what they read.
  */
 function groupTodaySessions(
-  rows: Array<{ w: typeof plannedWorkouts.$inferSelect } & TodayBuildFields>,
+  rows: Array<{ w: PlannedRow } & TodayBuildFields>,
   today: string,
 ): Array<{
-  row: typeof plannedWorkouts.$inferSelect;
+  row: PlannedRow;
   build: { mode: string; theme: string | null; minutes: number; place?: string; lead?: SessionLead } | null;
   /** The slot's locked build — Start's, or Send's (Phase 3): the one a push can name. */
   lockedBuildId: string | null;
 }> {
-  const byId = new Map<string, { row: typeof plannedWorkouts.$inferSelect; builds: TodayBuildFields[] }>();
+  const byId = new Map<string, { row: PlannedRow; builds: TodayBuildFields[] }>();
   for (const { w, ...b } of rows) {
     const entry = byId.get(w.id) ?? { row: w, builds: [] };
     if (b.buildVersion !== null) entry.builds.push(b);
@@ -554,7 +555,7 @@ async function sessionsOnWatch(
   db: Db,
   env: Env,
   userId: string,
-  sessions: ReadonlyArray<{ row: typeof plannedWorkouts.$inferSelect; lockedBuildId: string | null }>,
+  sessions: ReadonlyArray<{ row: PlannedRow; lockedBuildId: string | null }>,
 ): Promise<Set<string>> {
   if (!watchPushEnabled(env)) return new Set();
   const addressed = sessions.filter((s) => s.lockedBuildId !== null && watchAddressOf(s.row) !== null);
@@ -636,7 +637,7 @@ planRoutes.get("/today", async (c) => {
   ] = await Promise.all([
     exerciseNameMap(db),
     db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -652,7 +653,7 @@ planRoutes.get("/today", async (c) => {
       .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime))
       .limit(8),
     db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -668,7 +669,7 @@ planRoutes.get("/today", async (c) => {
       .orderBy(desc(plannedWorkouts.effectiveDate))
       .limit(3),
     db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -702,7 +703,7 @@ planRoutes.get("/today", async (c) => {
     db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1),
     recentGardenEvents(db, userId, 6),
     db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -724,7 +725,7 @@ planRoutes.get("/today", async (c) => {
     // The streak band's 12 ISO weeks (homeConsistency) — all disciplines,
     // archived rows excluded like every other read here.
     db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -746,7 +747,7 @@ planRoutes.get("/today", async (c) => {
     // Today card lists them all, not only the next. Builds only exist for the
     // app's own rows, so any other row comes back with a null build.
     db
-      .select({ w: plannedWorkouts, ...todayBuildFields })
+      .select({ w: plannedRowColumns(), ...todayBuildFields })
       .from(plannedWorkouts)
       .leftJoin(sessionBuilds, and(eq(sessionBuilds.workoutId, plannedWorkouts.id), eq(sessionBuilds.userId, plannedWorkouts.userId)))
       .where(
@@ -770,7 +771,7 @@ planRoutes.get("/today", async (c) => {
   // One bulk load covers every workout shown on Today (next is always a
   // member of upcoming, included here via the same dedup-by-id map).
   // Presence was already fetched above — threaded through, not re-queried.
-  const syncViewSource = new Map<string, typeof plannedWorkouts.$inferSelect>();
+  const syncViewSource = new Map<string, PlannedRow>();
   for (const w of [...upcoming, ...unresolved, ...attention, ...todaySessionRows.map((t) => t.row)]) syncViewSource.set(w.id, w);
   const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence, today);
 

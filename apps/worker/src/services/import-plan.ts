@@ -37,6 +37,7 @@ import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
 import { queueUnpush, unpushJobId } from "./watch-push.js";
 import { docForStages, newRowDocColumns, revisionInsert, updateDocColumns } from "./workout-doc-store.js";
+import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 
 /**
  * Plan import + COROS reconciliation (rules 1–11 of the sync spec, see
@@ -88,7 +89,8 @@ export interface ImportStats {
   unchanged: number;
 }
 
-type StoredWorkout = typeof plannedWorkouts.$inferSelect;
+/** A planned row as the import reads it: without its workout document, which the import never reads. */
+type StoredWorkout = PlannedRow;
 
 /**
  * WHEN ARE TWO ROWS THE SAME SESSION? The one answer — used by the mirror
@@ -319,8 +321,9 @@ export async function importPlanSnapshot(
   }
   stats.planId = planRowsBySourceId.get(input.plan.sourcePlanId)!.id;
 
+  // Every row the account has, without its workout document (the hourly import never reads one).
   const existing = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(eq(plannedWorkouts.userId, input.userId));
 
@@ -1343,7 +1346,7 @@ export async function importPlanSnapshot(
   // and calendar event; newer copies are archived with a `duplicate_mirror`
   // suppression, which presence-healing respects until the keeper dies.
   const activeNow = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.userId, input.userId), isNull(plannedWorkouts.archivedAt)));
   const byMirrorKey = new Map<string, typeof activeNow>();

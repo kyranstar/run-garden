@@ -99,8 +99,9 @@ describe("deriveDoc: easy run with strides and mobility", () => {
 describe("deriveDoc: activation, hinge, power, hip-opening lift", () => {
   const d = deriveDoc(LIFT, LIB);
   it("adds the minutes up", () => {
-    // bridge 2 x 30 + 30 rest = 90; swing 3 x 24 + 120 = 192; wall sit 60 + 30 = 90; hops 3 x 5 + 60 = 75; nordic 2 x 24 = 48; 90/90 2 x 60 = 120
-    expect(d.estimatedMinutes).toBe(10); // 615 s
+    // bridge 2 x 30 + 30 rest = 90; swing 3 x 24 + 120 = 192; wall sit 60 + 30 = 90; hops 3 x 5 + 60 = 75; nordic 2 x 24
+    // + the 60 s a lift that names no rest is assumed to take = 108; 90/90 2 x 60 = 120; six items x 15 s transition = 90
+    expect(d.estimatedMinutes).toBe(13); // 765 s
   });
   it("counts every contraction the record lists", () => {
     expect(d.balance).toEqual({ ...ZERO, isometricSec: 60, isotonicReps: 20 + 36 + 12, eccentricReps: 12, plyoContacts: 15, mobilitySec: 120 });
@@ -128,8 +129,8 @@ describe("deriveDoc: a passive-heavy recovery flow", () => {
     // breathing 10 x 6 s = 60 recovery; per round cat-cow 30 + pigeon 2 x 45; two rounds -> mobility 2 x (30 + 90) = 240
     expect(d.balance).toEqual({ ...ZERO, recoverySec: 60, mobilitySec: 240 });
   });
-  it("adds the minutes: 60 + 240 + 20 between rounds + 30 rest", () => {
-    expect(d.estimatedMinutes).toBe(6); // 350 s
+  it("adds the minutes: 60 + 240 + 20 between rounds + 30 rest + 5 plays x 15 s transition", () => {
+    expect(d.estimatedMinutes).toBe(7); // 425 s
   });
   it("is yoga, recovery, with rounds multiplying the steps", () => {
     expect(d.discipline).toBe("yoga");
@@ -161,8 +162,9 @@ describe("deriveDoc: library resolution", () => {
     const d = deriveDoc(doc([part("main", "straight", [ex("oldName", { reps: 10 }), ex("unknown", { sets: 2, reps: 10 }), { kind: "free_exercise", name: "x", dose: { holdSec: 30 } } as WorkoutItem])]), LIB);
     expect(d.balance.isotonicReps).toBe(10);
     expect(d.regionExposure).toEqual({ glutes: 1 });
-    // 10 x 2 s + 2 x 10 x 3 s + 30 s = 110 s
-    expect(d.estimatedMinutes).toBe(2);
+    // 10 x 2 s + 2 x 10 x 3 s + 30 s = 110 s; the unknown move, two sets in main straight sets (a lift), rests an
+    // assumed 60 s; three items x 15 s transition: 215 s
+    expect(d.estimatedMinutes).toBe(4);
     expect(d.watchStepCount).toBe(4);
   });
   it("a free-text move in a main flow is yoga, in main straight sets strength (a mobility session's unknown moves are not lifting)", () => {
@@ -234,6 +236,60 @@ describe("derivePerformed", () => {
   });
 });
 
+describe("deriveDoc: rests a dose leaves out, and transitions (controller ruling 2026-10-10)", () => {
+  const minutes = (parts: WorkoutPart[]) => deriveDoc(doc(parts), LIB).estimatedMinutes;
+  it("a lift that names no rest rests 60 s between sets; any other move 20 s; a free-text move in a strength part is a lift", () => {
+    // nordic (strength): 3 x 6 x 4 s = 72 + 2 x 60 + 15 = 207 s -> 3 min
+    expect(minutes([part("main", "straight", [ex("nordic", { sets: 3, reps: 6 })])])).toBe(3);
+    // the same with its own rest of 10 s: 72 + 20 + 15 = 107 s -> 2 min
+    expect(minutes([part("main", "straight", [ex("nordic", { sets: 3, reps: 6, restSec: 10 })])])).toBe(2);
+    // cat-cow (mobility): 3 x 60 + 2 x 20 + 15 = 235 s -> 4 min
+    expect(minutes([part("warmup", "straight", [ex("catCow", { sets: 3, holdSec: 60 })])])).toBe(4);
+    // bridge (activation) keeps its record's 30 s: 3 x 10 x 3 = 90 + 2 x 30 + 15 = 165 s -> 3 min
+    expect(minutes([part("activation", "straight", [ex("bridge", { sets: 3, reps: 10 })])])).toBe(3);
+    // free text, 4 x 50 s: in main straight sets a lift (3 x 60 rest) = 395 s -> 7; in a main flow not (3 x 20) = 275 s -> 5
+    const free: WorkoutItem = { kind: "free_exercise", name: "x", dose: { sets: 4, holdSec: 50 } };
+    expect(minutes([part("main", "straight", [free])])).toBe(7);
+    expect(minutes([part("main", "flow", [free])])).toBe(5);
+  });
+  it("every play of an exercise item costs 15 s: rounds multiply it; runs and rest items have none", () => {
+    // a circuit of two 40 s stations, 3 rounds: 6 x 40 + 6 x 15 = 330 s -> 6 min (one set each: no rest between sets)
+    expect(minutes([part("main", "circuit", [ex("wallSit", { sets: 1, holdSec: 40 }), ex("catCow", { sets: 1, holdSec: 40 })], { rounds: 3 })])).toBe(6);
+    // a run and a rest item: 600 + 60 s, no transition -> 11 min
+    expect(minutes([part("run", "steady", [run("easy", { durationSec: 600 }), { kind: "rest", seconds: 60 }])])).toBe(11);
+  });
+});
+
+describe("deriveDoc: a lift makes a strength session (controller ruling 2026-10-10)", () => {
+  const d = (parts: WorkoutPart[]) => deriveDoc(doc(parts), LIB);
+  const mobility = part("cooldown", "flow", [ex("ninetyNinety", { holdSec: 600, perSide: true })]);
+  it("a main or power part holding a strength or power move is strength, however much mobility surrounds it", () => {
+    const x = d([part("warmup", "flow", [ex("catCow", { holdSec: 300 })]), part("main", "straight", [ex("nordic", { sets: 2, reps: 5, restSec: 60 })]), mobility]);
+    expect(x.discipline).toBe("strength");
+    expect(x.disciplines).toEqual(["strength", "yoga"]);
+    expect(x.category).toBe("strength");
+    expect(d([part("power", "straight", [ex("boxHop", { sets: 2, reps: 5 })]), mobility]).discipline).toBe("strength");
+  });
+  it("the same move in an accessory part, or a main part of non-lifts, is weighed by seconds", () => {
+    expect(d([part("accessory", "straight", [ex("nordic", { sets: 2, reps: 5, restSec: 60 })]), mobility]).discipline).toBe("yoga");
+    expect(d([part("main", "straight", [ex("bridge", { sets: 2, reps: 10 })]), mobility]).discipline).toBe("yoga");
+    expect(d([part("accessory", "straight", [ex("nordic", { sets: 6, reps: 8, restSec: 90 })])]).discipline).toBe("strength");
+  });
+  it("a run that is half the session stays a run, lift or not", () => {
+    const x = d([part("main", "straight", [ex("nordic", { sets: 2, reps: 5, restSec: 60 })]), part("run", "steady", [run("easy", { durationSec: 1800 })])]);
+    expect(x.discipline).toBe("run");
+    expect(x.disciplines).toEqual(["run", "strength"]);
+  });
+  it("what was done: a done set of a lift makes it strength, however many minutes of mobility were done", () => {
+    const p = derivePerformed(
+      { entries: [{ exerciseId: "nordic", perSide: false, sets: sets(1, { reps: 5 }) }], movesDone: [{ exerciseId: "ninetyNinety", seconds: 1200 }] },
+      LIB,
+    );
+    expect(p.discipline).toBe("strength");
+    expect(p.disciplines).toEqual(["strength", "yoga"]);
+  });
+});
+
 describe("deriveDoc: open runs and category breadth", () => {
   const d = (parts: WorkoutPart[]) => deriveDoc(doc(parts), LIB);
   it("counts an open run segment as 10 minutes of run", () => {
@@ -248,8 +304,8 @@ describe("deriveDoc: open runs and category breadth", () => {
     const x = d([part("run", "steady", [run("easy", { open: true })]), part("run", "intervals", [run("interval", { durationSec: 120 })], { rounds: 4 })]);
     expect(x.estimatedMinutes).toBe(18);
     expect(x.category).toBe("quality");
-    const y = d([part("run", "steady", [run("easy", { open: true })]), part("cooldown", "flow", [ex("ninetyNinety", { holdSec: 300, perSide: true })])]);
-    expect(y.discipline).toBe("run"); // 600 s of run against 600 s of mobility: run is half
+    const y = d([part("run", "steady", [run("easy", { open: true })]), part("cooldown", "flow", [ex("ninetyNinety", { holdSec: 585 })])]);
+    expect(y.discipline).toBe("run"); // 600 s of run against 585 s of mobility and its 15 s transition: run is half
   });
   it("keeps a strength session with a short tempo finisher strength", () => {
     const x = d([part("main", "straight", [ex("swing", { sets: 3, reps: 12, restSec: 60 }), ex("wallSit", { sets: 4, holdSec: 60, restSec: 60 })]), part("run", "steady", [run("tempo", { durationSec: 120 })])]);
@@ -258,7 +314,8 @@ describe("deriveDoc: open runs and category breadth", () => {
   });
   it("calls a run-led tempo session quality, and a strength session with a large race-pace segment race", () => {
     expect(d([part("run", "steady", [run("easy", { durationSec: 600 }), run("tempo", { durationSec: 1200 })])]).category).toBe("quality");
-    const x = d([part("main", "straight", [ex("wallSit", { sets: 4, holdSec: 60 })]), part("run", "steady", [run("race", { durationSec: 120 })])]);
+    // Wall sits 4 x 60 s, an assumed 3 x 60 s rest, a 15 s transition: 435 s; 200 s at race pace is a quarter of 635 s.
+    const x = d([part("main", "straight", [ex("wallSit", { sets: 4, holdSec: 60 })]), part("run", "steady", [run("race", { durationSec: 200 })])]);
     expect(x.discipline).toBe("strength");
     expect(x.category).toBe("race");
   });

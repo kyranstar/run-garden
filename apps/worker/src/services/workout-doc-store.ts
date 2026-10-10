@@ -155,9 +155,14 @@ export function docForStudioSession(session: StudioSession, ctx: { corosKeyOfOri
 
 const frozen = (): SQL => inArray(plannedWorkouts.completionState, [...FROZEN_STATES]);
 
+/** A document as its column stores it: JSON text (the columns are plain text; readers use `parseStoredWorkoutDoc`). */
+export function storedDocText(doc: WorkoutDoc | null): string | null {
+  return doc ? JSON.stringify(doc) : null;
+}
+
 /** A new planned row's document columns: the document at revision 1, or neither. */
-export function newRowDocColumns(doc: WorkoutDoc | null): { workoutDoc: Record<string, unknown> | null; workoutDocRev: number | null } {
-  return { workoutDoc: doc as Record<string, unknown> | null, workoutDocRev: doc ? 1 : null };
+export function newRowDocColumns(doc: WorkoutDoc | null): { workoutDoc: string | null; workoutDocRev: number | null } {
+  return { workoutDoc: storedDocText(doc), workoutDocRev: doc ? 1 : null };
 }
 
 /**
@@ -168,7 +173,7 @@ export function newRowDocColumns(doc: WorkoutDoc | null): { workoutDoc: Record<s
  * never reuses a completed row): it is no longer the workout that had its day, so its document follows it.
  */
 export function updateDocColumns(doc: WorkoutDoc | null, opts: { reopens?: boolean } = {}): { workoutDoc: SQL; workoutDocRev?: SQL } {
-  const text = doc ? JSON.stringify(doc) : null;
+  const text = storedDocText(doc);
   const kept = opts.reopens ? sql`0` : frozen();
   const workoutDoc = sql`case when ${kept} then ${plannedWorkouts.workoutDoc} else ${text} end`;
   if (text === null) return { workoutDoc };
