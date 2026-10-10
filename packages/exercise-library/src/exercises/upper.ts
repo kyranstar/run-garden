@@ -19,7 +19,7 @@ export const UPPER = defineExercises([
     contraction: ["isotonic"],
     muscles: { primary: ["lats", "rhomboids", "middle-traps"], secondary: ["biceps", "deltoids"] },
     purposes: ["strength"],
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "posture"],
     themes: ["upperBackNeck", "deskUnwind", "fullBody"],
     providers: { coros: { key: "T1309", confidence: "exact", method: "curated" } }, // COROS: One Arm Dumbbell Row
     text: {

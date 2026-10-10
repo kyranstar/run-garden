@@ -45,8 +45,8 @@ describe("every record is curated", () => {
       checkList("tags", e.tags, TAGS, 0);
       checkList("themes", e.themes, themeIds, 0);
       if (e.text.summary.length > 90) bad("text.summary", `is ${e.text.summary.length} chars (max 90)`);
-      if (e.muscles && !e.muscles.primary.some(m => (e.regions as readonly string[]).includes(MUSCLE_REGION[m]))) {
-        bad("muscles.primary", "no primary muscle sits in the record's regions");
+      if (e.muscles && ![...e.muscles.primary, ...e.muscles.secondary].some(m => (e.regions as readonly string[]).includes(MUSCLE_REGION[m]))) {
+        bad("muscles.primary", "no primary or secondary muscle sits in the record's regions");
       }
       expect(problems).toEqual([]);
     });

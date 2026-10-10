@@ -19,12 +19,12 @@ export const EXTRA_STRENGTH = defineExercises([
     contraction: ["isotonic"],
     muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
     purposes: ["strength"],
-    tags: ["single-leg"],
+    tags: ["single-leg", "ski"],
     themes: ["hipsPosture"],
     providers: { coros: { key: "T1164", confidence: "exact", method: "curated" } }, // COROS: Split Bench Squat
     easier: ["bwBulgarianSplitSquat"],
     text: {
-      summary: "Back foot on a bench, lower straight down on the front leg and drive up.",
+      summary: "Back foot on a bench, weight in hand; lower straight down on the front leg and drive up.",
       setup: [
         "Stand a long stride in front of a bench and rest the top of the back foot on it.",
         "Hold a kettlebell at the chest, or a dumbbell in each hand at your sides (log the weight per hand)."
@@ -291,9 +291,9 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
     purposes: ["strength"],
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "posture"],
     themes: ["upperBackNeck", "deskUnwind"],
     harder: ["towelDoorRow"],
     text: {
@@ -330,7 +330,7 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
     contraction: ["isotonic"],
-    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
     purposes: ["strength"],
     tags: ["desk-relief"],
     themes: ["upperBackNeck", "deskUnwind"],
@@ -370,7 +370,7 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
     contraction: ["isotonic"],
-    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
     purposes: ["strength"],
     tags: [],
     themes: ["upperBackNeck"],
@@ -415,7 +415,7 @@ export const EXTRA_STRENGTH = defineExercises([
     themes: ["upperBackNeck", "deskUnwind"],
     harder: ["towelDoorRow"],
     text: {
-      summary: "Sit with a towel around your feet and row against it, squeezing the upper back.",
+      summary: "Sit with a towel around your feet and row against it, holding a steady squeeze.",
       setup: [
         "Sit on the floor with the legs out in front (knees bent if the hamstrings are tight).",
         "Loop a towel around the soles of both feet and hold one end in each hand."
@@ -450,7 +450,7 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    muscles: { primary: ["lats", "rhomboids"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
     purposes: ["strength"],
     tags: ["desk-relief"],
     themes: ["upperBackNeck", "deskUnwind"],

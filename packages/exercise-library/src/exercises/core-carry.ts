@@ -336,7 +336,7 @@ export const CORE_CARRY = defineExercises([
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 2,
     contraction: ["isometric"],
-    muscles: { primary: ["forearms", "upper-traps", "obliques"], secondary: ["erector-spinae", "glute-med", "rotator-cuff"] },
+    muscles: { primary: ["forearms", "upper-traps"], secondary: ["erector-spinae", "transverse-abdominis", "obliques", "glute-med", "rotator-cuff"] },
     purposes: ["strength"],
     tags: ["grip", "posture"],
     themes: ["carryDay", "fullBody"],

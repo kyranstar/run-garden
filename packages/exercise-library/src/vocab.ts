@@ -19,7 +19,7 @@ export const MUSCLES = [
   "quadratus-lumborum", "thoracic-extensors", "lats", "rhomboids", "lower-traps", "upper-traps", "rotator-cuff",
   "deltoids", "pecs", "biceps", "triceps", "forearms", "deep-neck-flexors", "scalenes", "masseter", "temporalis",
   "pterygoids", "diaphragm", "suboccipitals", "sternocleidomastoid", "levator-scapulae", "serratus-anterior",
-  "middle-traps", "multifidus", "pelvic-floor",
+  "middle-traps", "multifidus", "pelvic-floor", "suprahyoids", "tongue",
 ] as const;
 export type MuscleId = (typeof MUSCLES)[number];
 
@@ -34,9 +34,11 @@ export const MUSCLE_REGION: Record<MuscleId, Region> = {
   triceps: "arms", forearms: "arms", "deep-neck-flexors": "neck", scalenes: "neck", masseter: "jaw", temporalis: "jaw",
   pterygoids: "jaw", diaphragm: "core", suboccipitals: "neck", sternocleidomastoid: "neck", "levator-scapulae": "neck",
   "serratus-anterior": "shoulders", "middle-traps": "upper-back", multifidus: "low-back", "pelvic-floor": "core",
+  suprahyoids: "jaw", tongue: "jaw",
 };
 
-export const CONTRACTIONS = ["isometric", "isotonic", "eccentric", "plyometric"] as const;
+/** `passive`: no deliberate effort against resistance: release, massage, rest, relaxed breathing, relaxed static stretch. */
+export const CONTRACTIONS = ["isometric", "isotonic", "eccentric", "plyometric", "passive"] as const;
 export type Contraction = (typeof CONTRACTIONS)[number];
 
 export const PURPOSES = [
@@ -116,7 +118,7 @@ const LABELS: Record<string, string> = {
   "quadratus-lumborum": "Quadratus lumborum", "thoracic-extensors": "Upper-back extensors", "lower-traps": "Lower traps",
   "upper-traps": "Upper traps", "middle-traps": "Middle traps", "rotator-cuff": "Rotator cuff",
   "deep-neck-flexors": "Deep neck flexors", "glute-min-tfl": "Glute min & TFL", "serratus-anterior": "Serratus",
-  "pelvic-floor": "Pelvic floor", "levator-scapulae": "Levator scapulae", "erector-spinae": "Erector spinae",
+  "pelvic-floor": "Pelvic floor", suprahyoids: "Jaw openers", "levator-scapulae": "Levator scapulae", "erector-spinae": "Erector spinae",
   warmup: "Warm-up", cooldown: "Cool-down", "condition-care": "Condition care",
   "hip-opening": "Hip opening", "glute-activation": "Glute activation", "single-leg": "Single-leg",
   "desk-relief": "Desk relief", "core-stability": "Core stability", "eccentric-emphasis": "Eccentric emphasis",
