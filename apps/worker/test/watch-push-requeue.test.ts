@@ -17,6 +17,8 @@ import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { upsertExerciseCatalog } from "../src/services/exercise-catalog.js";
+import { libraryIdsByKey } from "../src/services/coros-exercise-map.js";
+import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { sendToWatch, takeOffWatch, watchPreview } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -188,9 +190,15 @@ describe("Send answers 409 when it would queue nothing", () => {
       if (body.versionObjects?.[0]?.status !== 1) return;
       await takeOffWatch(db, userId, workoutId, ctx());
       // The catalog syncs meanwhile: a fresh payload would differ, but the push on its way is what the watch gets.
+      // The T-code a step depends on: a catalog step's, or a one-sided catalog move's — free text under the catalog's
+      // English name since 2026-10-10 (the fixture's builds rarely hold a two-sided catalog move).
       const payload = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload);
-      const key = payload.session.steps.find((s) => s.originId !== "0")!.name;
-      await upsertExerciseCatalog(db, [{ id: "4258276155475999999", name: key }]);
+      const english = new Set(payload.session.steps.map((s) => s.name.replace(/ \((L|R)\)$/, "")));
+      const key =
+        payload.session.steps.find((s) => s.originId !== "0")?.name ??
+        [...libraryIdsByKey().keys()].find((k) => english.has(COROS_EXERCISE_NAMES[k] ?? ""));
+      expect(key).toBeDefined();
+      await upsertExerciseCatalog(db, [{ id: "4258276155475999999", name: key! }]);
       const again = await watchPreview(db, switchOn(), userId, workoutId, ctx());
       expect(again.digest).toBe(shown.digest);
       answered = (await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx(), { digest: again.digest })).watch;
