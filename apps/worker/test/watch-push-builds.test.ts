@@ -76,7 +76,8 @@ describe("weights on the watch are kg; the preview carries the athlete's pounds 
 
     const preview = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
     const row = preview.steps.find((s) => s.grams === 11_340)!;
-    expect(row).toMatchObject({ name: "One Arm Dumbbell Row", grams: 11_340, load: { v: 25, u: "lb" } });
+    // T1309, one-sided: free text under the catalog's English name, its side in the name (owner, 2026-10-10).
+    expect(row).toMatchObject({ name: "One Arm Dumbbell Row (L)", freeText: true, grams: 11_340, load: { v: 25, u: "lb" } });
     const weighted = preview.steps.filter((s) => s.grams !== null);
     expect(weighted.length).toBe(typed.length + oneSidedSets(build).filter((s) => s.target?.w).length); // a pair weighs twice
     for (const s of weighted) {
@@ -118,7 +119,9 @@ describe("a one-sided set on the watch (W-1)", () => {
       // The same move, target and weight; only the side differs — in the overview, and in a free-text step's name.
       const same = (s: typeof left, label: RegExp) => ({ ...s, name: s.name.replace(label, ""), side: null, overview: "", restSeconds: 0 });
       expect(same(right, / \(R\)$/)).toEqual(same(left, / \(L\)$/));
-      if (left.originId === "0") expect([left.name.endsWith(" (L)"), right.name.endsWith(" (R)")]).toEqual([true, true]);
+      // Every one-sided step is free text, its side in its name — a catalog move's too (owner, 2026-10-10).
+      expect([left.originId, right.originId]).toEqual(["0", "0"]);
+      expect([left.name.endsWith(" (L)"), right.name.endsWith(" (R)")]).toEqual([true, true]);
       expect(left.overview.startsWith("left side")).toBe(true);
       expect(right.overview.startsWith("right side")).toBe(true);
     }

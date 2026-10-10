@@ -12,10 +12,12 @@
  *    move's set with no side) becomes such a Left/Right pair (audit W-1). A
  *    step with a side carries it in its NAME too, " (L)" / " (R)" (owner,
  *    2026-10-10: the watch's step screen shows no overview).
- *  - A move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's catalog holds
- *    goes as that catalog step; every other move goes as free text on
- *    `originId "0"` (spike outcome A), its name cut at a word to 30 characters
- *    (ruling 3-R6) so the preview stays exact if COROS has a limit.
+ *  - A two-sided move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's
+ *    catalog holds goes as that catalog step; every other move goes as free
+ *    text on `originId "0"` (spike outcome A), its name cut at a word to 30
+ *    characters (ruling 3-R6) so the preview stays exact if COROS has a limit.
+ *    A one-sided move the catalog holds is free text under the catalog's
+ *    English name, so its steps can carry the side (owner, 2026-10-10).
  *  - Weights in grams (kg × 1000, the wire's only unit); none is bodyweight.
  *  - A rest adds onto the step before it (at most 900 s); a leading rest has no
  *    step to hang on and is dropped.
@@ -176,22 +178,18 @@ const sideLabel = (side: Step["side"]): string => (side === "Left" ? WATCH_SIDE_
  * same names.
  */
 function freeTextNames(build: BuildPayload, deps: WatchPlanDeps, sided: ReadonlySet<string>): Map<string, { name: string; qualifier: string | null }> {
-  const catalogKey = (id: string): string | null => {
-    const key = deps.keyOf(id);
-    return key && deps.catalogIdByKey.has(key) ? key : null;
-  };
   const moves = [...new Set(build.steps.flatMap((s) => (s.kind !== "rest" && s.exerciseId && build.exercises[s.exerciseId] ? [s.exerciseId] : [])))];
   const taken = new Set(
     moves.flatMap((id) => {
-      const key = catalogKey(id);
-      return key ? [(COROS_EXERCISE_NAMES[key] ?? key).toLowerCase()] : [];
+      const catalog = catalogStepOf(id, deps, sided);
+      return catalog ? [(COROS_EXERCISE_NAMES[catalog.key] ?? catalog.key).toLowerCase()] : [];
     }),
   );
   const out = new Map<string, { name: string; qualifier: string | null }>();
   for (const id of moves) {
-    if (catalogKey(id)) continue;
+    if (catalogStepOf(id, deps, sided)) continue;
     const room = sided.has(id) ? WATCH_NAME_MAX - SIDE_LABEL_ROOM : WATCH_NAME_MAX;
-    const { name, qualifier } = watchNameOf(build.exercises[id]!.name, room);
+    const { name, qualifier } = watchNameOf(freeTextNameOf(id, build.exercises[id]!, deps), room);
     let unique = name;
     for (let n = 2; taken.has(unique.toLowerCase()); n++) unique = `${cutAtWord(name, room - ` (${n})`.length)} (${n})`;
     taken.add(unique.toLowerCase());
@@ -221,10 +219,32 @@ function sidedMoves(build: BuildPayload): Set<string> {
   return out;
 }
 
+/**
+ * The catalog step a move goes to the watch as, or null for free text. A move whose T-code (`corosKeyOf`, ruling 3-R1)
+ * the athlete's catalog holds goes as that catalog step — unless it is one-sided (`sided`; owner, 2026-10-10): a
+ * catalog step's name is COROS's own and cannot carry the side, so a one-sided move goes as free text.
+ */
+function catalogStepOf(exerciseId: string, deps: WatchPlanDeps, sided: ReadonlySet<string>): { key: string; originId: string } | null {
+  if (sided.has(exerciseId)) return null;
+  const key = deps.keyOf(exerciseId);
+  const originId = key ? deps.catalogIdByKey.get(key) : undefined;
+  return key && originId ? { key, originId } : null;
+}
+
+/**
+ * A free-text move's name before any cut: for a move the athlete's catalog holds (a one-sided one, see
+ * `catalogStepOf`) the catalog's English name — what the watch would have shown it as — else the library's.
+ */
+function freeTextNameOf(exerciseId: string, record: { name: string }, deps: WatchPlanDeps): string {
+  const key = deps.keyOf(exerciseId);
+  return (key && deps.catalogIdByKey.has(key) && COROS_EXERCISE_NAMES[key]) || record.name;
+}
+
 /** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
 export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
   const steps: ProgramWatchStep[] = [];
-  const names = freeTextNames(build, deps, sidedMoves(build));
+  const sided = sidedMoves(build);
+  const names = freeTextNames(build, deps, sided);
   for (const s of build.steps) {
     if (s.kind === "rest") {
       const prev = steps.at(-1);
@@ -234,13 +254,12 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
     if (!s.exerciseId) continue;
     const record = build.exercises[s.exerciseId];
     if (!record) continue;
-    const key = deps.keyOf(s.exerciseId);
-    const originId = key ? deps.catalogIdByKey.get(key) : undefined;
-    const free = originId ? null : names.get(s.exerciseId)!;
+    const catalog = catalogStepOf(s.exerciseId, deps, sided);
+    const free = catalog ? null : names.get(s.exerciseId)!;
     for (const side of sidesOf(s, record)) {
       steps.push({
-        originId: originId ?? FREE_TEXT_ORIGIN_ID,
-        name: originId ? key! : `${free!.name}${sideLabel(side)}`,
+        originId: catalog?.originId ?? FREE_TEXT_ORIGIN_ID,
+        name: catalog ? catalog.key : `${free!.name}${sideLabel(side)}`,
         target: targetOf(s),
         grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
         restSeconds: 0,

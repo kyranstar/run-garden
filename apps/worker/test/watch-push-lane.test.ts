@@ -221,10 +221,13 @@ describe("the catalog changed between send and run", () => {
 
   it("a catalog id that left coros_exercises: failed (error), nothing written", async () => {
     const { buildId } = await sent();
+    // The fixture's builds rarely hold a two-sided catalog move (their usual one, One Arm Dumbbell Row, is one-sided
+    // and goes as free text since 2026-10-10): the queued payload's first step is made the catalog's Goblet Squat.
+    const [goblet] = await db.select().from(schema.corosExercises).where(eq(schema.corosExercises.name, "T1301"));
     const payload = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload);
-    const catalogStep = payload.session.steps.find((s) => s.originId !== "0");
-    expect(catalogStep, "the build holds at least one catalog move").toBeDefined();
-    await db.delete(schema.corosExercises).where(eq(schema.corosExercises.id, catalogStep!.originId));
+    payload.session.steps[0] = { ...payload.session.steps[0]!, originId: goblet!.id, name: "T1301", side: null };
+    await db.update(schema.corosWriteJobs).set({ payload }).where(eq(schema.corosWriteJobs.id, `push:${buildId}`));
+    await db.delete(schema.corosExercises).where(eq(schema.corosExercises.id, goblet!.id));
     const fetches = counting(server);
     // One claim is enough: retrying cannot bring the catalog row back, so the job fails outright.
     await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: fetches.fetchImpl, cap: 1 });

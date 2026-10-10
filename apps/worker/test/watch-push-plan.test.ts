@@ -149,7 +149,7 @@ describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-
     ]);
   });
 
-  it("a bodyweight one-sided hold set is a pair too; a catalog move keeps its catalog id on both", () => {
+  it("a bodyweight one-sided hold set is a pair too; so is a one-sided set of a move the catalog holds", () => {
     const plan = watchStepsFromBuild(
       build([step({ exerciseId: "splitSquat", target: { secs: 30 } }), step({ exerciseId: "sidePlank", target: { reps: 5 } })]),
       { ...deps, catalogIdByKey: new Map([["T1185", "4258276155475001185"]]) },
@@ -157,10 +157,9 @@ describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-
     expect(plan.steps.map((s) => [s.name, s.side, s.target, s.grams])).toEqual([
       ["Split squat hold (L)", "left", { kind: "hold", seconds: 30 }, null],
       ["Split squat hold (R)", "right", { kind: "hold", seconds: 30 }, null],
-      ["T1185", "left", { kind: "reps", reps: 5 }, null],
-      ["T1185", "right", { kind: "reps", reps: 5 }, null],
+      ["Side Plank (L)", "left", { kind: "reps", reps: 5 }, null],
+      ["Side Plank (R)", "right", { kind: "reps", reps: 5 }, null],
     ]);
-    expect(plan.steps.slice(2).every((s) => s.originId === "4258276155475001185")).toBe(true);
   });
 
   it("stays one step: an alternating or bilateral move's set, a set that names its side, a timed window", () => {
@@ -302,6 +301,59 @@ describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10
       "Foot-up rotation (2) (L)",
       "Foot-up rotation (2) (R)",
     ]);
+  });
+
+  it("a ONE-SIDED move the athlete's catalog holds goes as free text, named with the catalog's English name and its side", () => {
+    // A catalog step's name is COROS's own and cannot carry a label, so a one-sided move leaves the catalog. Its name is
+    // the one the watch would have shown (COROS_EXERCISE_NAMES), not the library's.
+    const ROW_ID = "4258276155475001309";
+    const catalogDeps: WatchPlanDeps = {
+      catalogIdByKey: new Map([["T1301", GOBLET_CATALOG_ID], ["T1309", ROW_ID], ["T1185", "4258276155475001185"]]),
+      keyOf: (id) => ({ gobletSquat: "T1301", oneArmRow: "T1309", sidePlank: "T1185" })[id] ?? null,
+    };
+    const plan = watchStepsFromBuild(
+      build([
+        step({ target: { reps: 8 } }),
+        step({ exerciseId: "oneArmRow", target: { reps: 8, w: { v: 25, u: "lb" } } }),
+        rest(60),
+        step({ kind: "timed", exerciseId: "sidePlank", side: "Left", seconds: 30 }),
+        step({ kind: "timed", exerciseId: "sidePlank", side: "Right", seconds: 30 }),
+      ]),
+      catalogDeps,
+    );
+    expect(plan.steps.map((s) => [s.originId, s.name, s.side, s.grams, s.restSeconds])).toEqual([
+      [GOBLET_CATALOG_ID, "T1301", null, null, 0], // two-sided: stays the catalog step
+      ["0", "One Arm Dumbbell Row (L)", "left", 11_340, 0],
+      ["0", "One Arm Dumbbell Row (R)", "right", 11_340, 60],
+      ["0", "Side Plank (L)", "left", null, 0],
+      ["0", "Side Plank (R)", "right", null, 0],
+    ]);
+    expect(plan.steps[1]!.overview).toBe("left side · The shoulder blade moves.");
+    expect(plan.freeText).toBe(4);
+  });
+
+  it("a catalog move's long English name is cut like any other to leave room for the label", () => {
+    const plan = watchStepsFromBuild(build([step({ exerciseId: "oneArmRow", target: { reps: 8 } })]), {
+      catalogIdByKey: new Map([["T1023", "4258276155475001023"]]),
+      keyOf: (id) => (id === "oneArmRow" ? "T1023" : null), // "Seated Dumbbell Concentration Curls", 35 characters
+    });
+    expect(plan.steps.map((s) => s.name)).toEqual(["Seated Dumbbell (L)", "Seated Dumbbell (R)"]);
+  });
+
+  it("a one-sided move the catalog does NOT hold keeps the library's name", () => {
+    const plan = watchStepsFromBuild(build([step({ exerciseId: "oneArmRow", target: { reps: 8 } })]), {
+      catalogIdByKey: new Map(),
+      keyOf: (id) => (id === "oneArmRow" ? "T1309" : null),
+    });
+    expect(plan.steps.map((s) => s.name)).toEqual(["One-arm row (L)", "One-arm row (R)"]);
+  });
+
+  it("two moves never share a name: a one-sided catalog move named like a two-sided one the session shows gets (2)", () => {
+    const plan = watchStepsFromBuild(
+      build([step({ exerciseId: "oneArmRow", target: { reps: 8 } }), step({ target: { reps: 8 } })]),
+      { catalogIdByKey: new Map([["T1301", GOBLET_CATALOG_ID]]), keyOf: (id) => (id === "oneArmRow" || id === "gobletSquat" ? "T1301" : null) },
+    );
+    expect(plan.steps.map((s) => s.name)).toEqual(["Goblet Squat (2) (L)", "Goblet Squat (2) (R)", "T1301"]);
   });
 
   it("a set that names its side and a per-side window are labelled too; an alternating move is not", () => {
