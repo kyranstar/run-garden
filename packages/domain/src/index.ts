@@ -30,3 +30,4 @@ export * from "./program.js";
 export * from "./performed.js";
 export * from "./session-dose.js";
 export * from "./standalone-backup.js";
+export * from "./workout-doc.js";
