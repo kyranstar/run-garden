@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { SessionSheet, blockLabel, blocksInPlayOrder, sendingPollClock } from "../src/components/session-sheet.js";
+import { SessionSheet, blockLabel, blocksInPlayOrder, reasonLine, sendingPollClock } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
@@ -549,6 +549,21 @@ describe("the blocks' order on the sheet", () => {
     expect(blockLabel("accessory", [])).toBe("Accessory");
     expect(blockLabel("core", [jump])).toBe("Core");
     expect(blockLabel("prep", [undefined])).toBe("Prep");
+  });
+
+  it("a hand-picked jumping day the profile emptied says why on the reason line; a proposed theme's reasons stay off it", () => {
+    const why = "Jumps need a calm jaw (2 or less) — you're at 4.";
+    const base = { modeReasons: ["Jaw calm (1)."], theme: { id: "plyoIntro" }, proposedTheme: { id: "hipsPosture" } };
+    expect(reasonLine({ ...base, themeReasons: [why] })).toBe(`Jaw calm (1). ${why}`);
+    expect(reasonLine({ ...base, themeReasons: [] })).toBe("Jaw calm (1).");
+    expect(reasonLine({ ...base, theme: { id: "hipsPosture" }, themeReasons: ["Catches up on hips."] })).toBe("Jaw calm (1).");
+  });
+
+  it("the sheet shows that line", async () => {
+    const why = "Jumps need a calm jaw (2 or less) — you're at 4.";
+    const s = session();
+    mount({ ...s, view: { ...s.view!, theme: { id: "plyoIntro", name: "Jumps and landings" }, themeReasons: [why] } });
+    await until(() => body().includes(why), "the held-back line");
   });
 });
 

@@ -63,6 +63,20 @@ export function blockLabel(blockId: string, moves: ReadonlyArray<{ contraction?:
   if (blockId === "accessory" && moves.length > 0 && moves.every((m) => Boolean(m?.contraction?.includes("plyometric")))) return JUMPS_LABEL;
   return BLOCK_LABEL[blockId] ?? blockId;
 }
+/**
+ * The sheet's one reason line: the mode's reasons, then a hand-picked theme's own reasons. A theme picked by hand has
+ * none unless today held its moves back (a jumping day on an uncalm check), and then they say why.
+ */
+export function reasonLine(view: {
+  modeReasons: readonly string[];
+  themeReasons: readonly string[];
+  theme: { id: string } | null;
+  proposedTheme: { id: string } | null;
+}): string {
+  const handPicked = Boolean(view.theme) && view.theme?.id !== view.proposedTheme?.id;
+  return [...view.modeReasons, ...(handPicked ? view.themeReasons : [])].join(" ");
+}
+
 /** The blocks in the order the player plays them (a jumping day's jumps come before the core lifts). */
 export function blocksInPlayOrder(build: { steps: ReadonlyArray<{ block: string }> }): SheetBlock[] {
   const played = [...new Set(build.steps.map((s) => s.block))].filter((b): b is SheetBlock => (BLOCK_ORDER as readonly string[]).includes(b));
@@ -849,7 +863,7 @@ function BuiltSession({
           ),
         )}
       </div>
-      {view.modeReasons.length > 0 ? <p className="session-reason">{view.modeReasons.join(" ")}</p> : null}
+      {reasonLine(view) ? <p className="session-reason">{reasonLine(view)}</p> : null}
       <div className="session-blocks">
         {blocksInPlayOrder(build).map((blockId) => {
           const items = build.items.filter((i) => i.block === blockId);
