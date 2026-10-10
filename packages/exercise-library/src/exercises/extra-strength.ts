@@ -20,7 +20,7 @@ export const EXTRA_STRENGTH = defineExercises([
     muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
     purposes: ["strength"],
     tags: ["single-leg", "ski"],
-    themes: ["hipsPosture"],
+    themes: ["hipsPosture", "skiPrep", "athleticBase"],
     providers: { coros: { key: "T1164", confidence: "exact", method: "curated" } }, // COROS: Split Bench Squat
     easier: ["bwBulgarianSplitSquat"],
     text: {
@@ -101,7 +101,7 @@ export const EXTRA_STRENGTH = defineExercises([
     muscles: { primary: ["quads"], secondary: ["glute-max", "adductors"] },
     purposes: ["strength"],
     tags: ["ski"],
-    themes: [],
+    themes: ["skiPrep"],
     providers: { coros: { key: "T1231", confidence: "exact", method: "curated" } }, // COROS: Wall Sit
     text: {
       summary: "Back against a wall, slide down until the knees are bent, and hold while breathing slowly.",
@@ -139,7 +139,7 @@ export const EXTRA_STRENGTH = defineExercises([
     muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
     purposes: ["strength"],
     tags: ["single-leg", "ski"],
-    themes: ["hipsPosture"],
+    themes: ["hipsPosture", "skiPrep"],
     harder: ["bwSplitSquat"],
     text: {
       summary: "Step into a split stance, lower until the back knee hovers, and hold still.",
@@ -218,7 +218,7 @@ export const EXTRA_STRENGTH = defineExercises([
     muscles: { primary: ["hamstrings", "glute-max"], secondary: ["glute-med", "hip-flexors", "erector-spinae", "peroneals"] },
     purposes: ["strength", "balance"],
     tags: ["single-leg"],
-    themes: ["posteriorChain"],
+    themes: ["posteriorChain", "athleticBase"],
     easier: ["slRdlReach"],
     text: {
       summary: "Hinge on one leg, reach the other back, then stand and drive that knee up.",
@@ -291,7 +291,7 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["biceps", "deltoids"] },
     purposes: ["strength"],
     tags: ["desk-relief", "posture"],
     themes: ["upperBackNeck", "deskUnwind"],
@@ -330,7 +330,7 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
     contraction: ["isotonic"],
-    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["biceps", "deltoids"] },
     purposes: ["strength"],
     tags: ["desk-relief"],
     themes: ["upperBackNeck", "deskUnwind"],
@@ -370,7 +370,7 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
     contraction: ["isotonic"],
-    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["biceps", "deltoids"] },
     purposes: ["strength"],
     tags: [],
     themes: ["upperBackNeck"],
@@ -450,7 +450,7 @@ export const EXTRA_STRENGTH = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["middle-traps", "biceps", "deltoids"] },
+    muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["biceps", "deltoids"] },
     purposes: ["strength"],
     tags: ["desk-relief"],
     themes: ["upperBackNeck", "deskUnwind"],

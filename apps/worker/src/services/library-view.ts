@@ -18,9 +18,9 @@
  * "Unlocks": a move the default place's gear cannot do now, that the gear would make doable, that the athlete has not
  * set aside and that no switched-on profile rules out.
  */
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { exercisePrefs, exerciseProvenance, locations, performedSessions, performedSets } from "@rg/database";
-import { toKg, type Weight } from "@rg/domain";
+import { addDays, todayInZone, toKg, type Weight } from "@rg/domain";
 import {
   bestDay,
   EQUIPMENT,
@@ -30,6 +30,8 @@ import {
   LOCATION_PRESETS,
   MODE_IDS,
   profileById,
+  searchLibrary,
+  type LibraryFilters,
   type ConditionProfile,
   type EquipmentId,
   type ExerciseRecord,
@@ -43,17 +45,18 @@ import { PENDING_HASH } from "./watch-sets.js";
 
 export type Safety = "safe" | "care" | "never";
 
-export interface LibraryQuery {
+export interface LibraryQuery extends LibraryFilters {
   q?: string;
-  pattern?: string;
-  region?: string;
-  role?: string;
-  equipment?: string;
   /** A place id of this user's, or one of the library's presets. */
   location?: string;
   /** Only moves safe on a flare day for every switched-on profile. */
   safe?: boolean;
+  /** Rows to return (default 50, at most 200); `matched` on the list says how many matched. */
+  limit?: number;
 }
+
+export const DEFAULT_LIBRARY_LIMIT = 50;
+export const MAX_LIBRARY_LIMIT = 200;
 
 export interface LibraryRow {
   id: string;
@@ -64,6 +67,16 @@ export interface LibraryRow {
   roles: readonly string[];
   equipment: { all: readonly string[]; oneOf: readonly string[] };
   difficulty: number;
+  /** The card line. */
+  summary: string;
+  purposes: readonly string[];
+  contraction: readonly string[];
+  tags: readonly string[];
+  primaryMuscles: readonly string[];
+  /** The latest day this athlete did the move (settled sessions), or null. */
+  lastDoneOn: string | null;
+  /** Sessions with the move in the last 30 days. */
+  timesDone30d: number;
   safety: Record<string, Safety>;
   rating: 1 | -1 | null;
   excluded: boolean;
@@ -76,6 +89,8 @@ export interface LibraryRow {
 export interface LibraryList {
   /** Moves in the library (before filters). */
   total: number;
+  /** Moves that matched the filters (before the limit). */
+  matched: number;
   items: LibraryRow[];
   /** The place `unlocksWith` and the wishlist are judged at: the default place (the library's Home before any). */
   place: { id: string; name: string };
@@ -99,7 +114,7 @@ export interface HistoryEntryView {
   implement: string | null;
   perSide: boolean;
   format: string | null;
-  sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; side: string | null }>;
+  sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; side: string | null; flags: string[] }>;
 }
 
 export interface BestSet {
@@ -148,6 +163,8 @@ export class UnknownPlaceError extends Error {
 }
 
 const byId = new Map(EXERCISES.map((e) => [e.id, e]));
+/** Every id a move has gone by (renames keep history) → its current id. */
+const canonicalId = new Map(EXERCISES.flatMap((e) => [e.id, ...e.legacyIds].map((i) => [i, e.id] as const)));
 export const libraryHas = (id: string): boolean => byId.has(id);
 
 /** A profile's verdict on a move (see the header). An unrated move reads as `never`: it fails closed. */
@@ -201,11 +218,28 @@ function missingGear(ex: ExerciseRecord, have: readonly string[]): LibraryRow["u
 
 const ratingOf = (v: number | null | undefined): 1 | -1 | null => (v == null || v === 0 ? null : v > 0 ? 1 : -1);
 
-const matchesText = (ex: ExerciseRecord, q: string): boolean => {
-  const needle = q.trim().toLowerCase();
-  if (needle === "") return true;
-  return [ex.name, ex.id, ex.family, ...ex.tags].some((s) => s.toLowerCase().includes(needle));
-};
+const SAFETY_RANK: Record<Safety, number> = { safe: 0, care: 1, never: 2 };
+
+/** Per move: the latest settled day and the sessions in the last 30 days, from ONE grouped read of the performed sets. */
+async function doneStats(db: Db, userId: string, since: string): Promise<Map<string, { last: string; n30: number }>> {
+  const rows = await db
+    .select({
+      exerciseId: performedSets.exerciseId,
+      last: sql<string>`max(${performedSessions.localDate})`,
+      n30: sql<number>`count(distinct case when ${performedSessions.localDate} >= ${since} then ${performedSessions.id} end)`,
+    })
+    .from(performedSets)
+    .innerJoin(performedSessions, eq(performedSessions.id, performedSets.performedSessionId))
+    .where(and(eq(performedSessions.userId, userId), ne(performedSessions.payloadHash, PENDING_HASH), eq(performedSets.done, true)))
+    .groupBy(performedSets.exerciseId);
+  const out = new Map<string, { last: string; n30: number }>();
+  for (const r of rows) {
+    const id = canonicalId.get(r.exerciseId) ?? r.exerciseId;
+    const cur = out.get(id);
+    out.set(id, { last: cur && cur.last > r.last ? cur.last : r.last, n30: (cur?.n30 ?? 0) + Number(r.n30) });
+  }
+  return out;
+}
 
 export async function listLibrary(db: Db, userId: string, query: LibraryQuery): Promise<LibraryList> {
   const [active, prefRows, savedRows, place, userPrefs] = await Promise.all([
@@ -219,19 +253,19 @@ export async function listLibrary(db: Db, userId: string, query: LibraryQuery): 
   const profiles = active.map(profileById);
   const prefs = new Map(prefRows.map((r) => [r.exerciseId, r]));
   const saved = new Set(savedRows.map((r) => r.exerciseId));
+  const done = await doneStats(db, userId, addDays(todayInZone(userPrefs.timezone), -29));
 
-  const rows: LibraryRow[] = [];
-  for (const ex of EXERCISES) {
-    if (query.q && !matchesText(ex, query.q)) continue;
-    if (query.pattern && !ex.patterns.includes(query.pattern as never)) continue;
-    if (query.region && !ex.regions.includes(query.region as never)) continue;
-    if (query.role && !ex.roles.includes(query.role as never)) continue;
-    if (query.equipment && ![...ex.equipment.all, ...ex.equipment.oneOf].includes(query.equipment as EquipmentId)) continue;
-    if (at && !hasEquipment(ex, at)) continue;
-    const safety = safetyOf(profiles, ex);
-    if (query.safe && !Object.values(safety).every((s) => s === "safe")) continue;
+  const safeOf = new Map(EXERCISES.map((ex) => [ex.id, safetyOf(profiles, ex)]));
+  const { q, location: _location, safe, limit, ...filters } = query;
+  const matches = searchLibrary(EXERCISES, q ?? "", filters, {
+    accepts: (ex) => (!at || hasEquipment(ex, at)) && (!safe || Object.values(safeOf.get(ex.id)!).every((s) => s === "safe")),
+    fit: (ex) => Math.max(0, ...Object.values(safeOf.get(ex.id)!).map((s) => SAFETY_RANK[s])),
+  });
+
+  const rows: LibraryRow[] = matches.slice(0, Math.min(limit ?? DEFAULT_LIBRARY_LIMIT, MAX_LIBRARY_LIMIT)).map((ex) => {
     const p = prefs.get(ex.id);
-    rows.push({
+    const d = done.get(ex.id);
+    return {
       id: ex.id,
       name: ex.name,
       family: ex.family,
@@ -240,15 +274,21 @@ export async function listLibrary(db: Db, userId: string, query: LibraryQuery): 
       roles: ex.roles,
       equipment: { all: ex.equipment.all, oneOf: ex.equipment.oneOf },
       difficulty: ex.difficulty,
-      safety,
+      summary: ex.text.summary,
+      purposes: ex.purposes,
+      contraction: ex.contraction,
+      tags: ex.tags,
+      primaryMuscles: ex.muscles.primary,
+      lastDoneOn: d?.last ?? null,
+      timesDone30d: d?.n30 ?? 0,
+      safety: safeOf.get(ex.id)!,
       rating: ratingOf(p?.rating),
       excluded: p?.excluded ?? false,
       pinned: p?.pinned ?? false,
       saved: saved.has(ex.id),
       unlocksWith: missingGear(ex, place.equipment),
-    });
-  }
-  rows.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    };
+  });
 
   const known = new Set<string>(EQUIPMENT_IDS);
   const excluded = new Set(prefRows.filter((r) => r.excluded).map((r) => r.exerciseId));
@@ -268,6 +308,7 @@ export async function listLibrary(db: Db, userId: string, query: LibraryQuery): 
 
   return {
     total: EXERCISES.length,
+    matched: matches.length,
     items: rows,
     place: { id: place.id, name: place.name },
     profiles: profiles.map((p) => ({ profileId: p.id, label: p.label })),
@@ -321,6 +362,7 @@ async function entriesOf(db: Db, userId: string, ex: ExerciseRecord): Promise<Hi
             seconds: performedSets.seconds,
             loadValue: performedSets.loadValue,
             loadUnit: performedSets.loadUnit,
+            flags: performedSets.flags,
           })
           .from(performedSets)
           .innerJoin(performedSessions, eq(performedSessions.id, performedSets.performedSessionId))
@@ -349,7 +391,7 @@ async function entriesOf(db: Db, userId: string, ex: ExerciseRecord): Promise<Hi
     }
     const unit = r.loadUnit === "lb" || r.loadUnit === "kg" ? r.loadUnit : null;
     const w: Weight | null = r.loadValue !== null && r.loadValue > 0 && unit ? { v: r.loadValue, u: unit } : null;
-    g.sets.push({ i: r.setIndex, set: { w, reps: r.reps, secs: r.seconds, side: r.side } });
+    g.sets.push({ i: r.setIndex, set: { w, reps: r.reps, secs: r.seconds, side: r.side, flags: [...(r.flags ?? [])] } });
   }
   return [...groups.values()]
     .sort((a, b) => b.at.localeCompare(a.at))

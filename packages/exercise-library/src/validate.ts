@@ -4,7 +4,7 @@ import { coreFamilyOf, eligible, flareSafe } from "./eligibility.js";
 import type { EngineData } from "./engine-data.js";
 import { LOCATION_PRESETS, type LocationPreset } from "./equipment.js";
 import {
-  CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOAD_IMPLEMENTS, LOADS, MODE_IDS, MUSCLES, PATTERNS, POSITIONS, PURPOSES, REGIONS, ROLES, TAGS, type Mode,
+  CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOAD_IMPLEMENTS, LOADS, MODE_IDS, MUSCLES, MUSCLE_REGION, PATTERNS, POSITIONS, PURPOSES, REGIONS, ROLES, TAGS, type Mode, type MuscleId,
 } from "./vocab.js";
 
 // Every problem in the library, themes, formats and coverage as "<id>: <message>". Empty means valid.
@@ -52,22 +52,31 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     const gear: string[] = [...(ex.equipment?.all ?? []), ...(ex.equipment?.oneOf ?? [])];
     for (const i of gear) inVocab(id, "equipment", i, EQUIPMENT_IDS);
 
-    // Curation fields: checked only when a record has them (they become required once every record is curated).
+    // Curation fields: required on every record.
     const listOf = (field: string, value: unknown, vocab: readonly string[], min: number) => {
-      if (!Array.isArray(value) || value.length < min) err(id, `${field} needs at least ${min}`);
-      else for (const v of value) inVocab(id, field, v, vocab);
+      if (!Array.isArray(value) || value.length < min) { err(id, `${field} needs at least ${min}`); return; }
+      for (const v of value) inVocab(id, field, v, vocab);
+      for (const v of new Set(value)) if (value.filter(x => x === v).length > 1) err(id, `${field} repeats "${String(v)}"`);
     };
-    if (ex.contraction !== undefined) listOf("contraction", ex.contraction, CONTRACTIONS, 1);
-    if (ex.purposes !== undefined) listOf("purposes", ex.purposes, PURPOSES, 1);
-    if (ex.muscles !== undefined) {
-      listOf("muscles.primary", ex.muscles?.primary, MUSCLES, 1);
-      listOf("muscles.secondary", ex.muscles?.secondary, MUSCLES, 0);
+    listOf("contraction", ex.contraction, CONTRACTIONS, 1);
+    listOf("purposes", ex.purposes, PURPOSES, 1);
+    listOf("muscles.primary", ex.muscles?.primary, MUSCLES, 1);
+    listOf("muscles.secondary", ex.muscles?.secondary, MUSCLES, 0);
+    const primary: readonly unknown[] = Array.isArray(ex.muscles?.primary) ? ex.muscles.primary : [];
+    const secondary: readonly unknown[] = Array.isArray(ex.muscles?.secondary) ? ex.muscles.secondary : [];
+    for (const m of new Set(primary)) if (secondary.includes(m)) err(id, `muscle "${String(m)}" is in both primary and secondary`);
+    const regions: readonly unknown[] = Array.isArray(ex.regions) ? ex.regions : [];
+    const placed = [...primary, ...secondary].filter(m => typeof m === "string" && m in MUSCLE_REGION);
+    if (placed.length && !placed.some(m => regions.includes(MUSCLE_REGION[m as MuscleId]))) err(id, "no primary or secondary muscle sits in the record's regions");
+    if (!Array.isArray(ex.themes)) err(id, "themes must be a list");
+    else {
+      for (const t of ex.themes) if (!data.themes.some(x => x.id === t)) err(id, `theme "${t}" does not exist`);
+      for (const t of new Set(ex.themes)) if (ex.themes.filter(x => x === t).length > 1) err(id, `themes repeats "${t}"`);
     }
-    if (ex.themes !== undefined) {
-      if (!Array.isArray(ex.themes)) err(id, "themes must be a list");
-      else for (const t of ex.themes) if (!data.themes.some(x => x.id === t)) err(id, `theme "${t}" does not exist`);
+    if (Array.isArray(ex.tags)) {
+      for (const t of ex.tags) inVocab(id, "tag", t, TAGS);
+      for (const t of new Set(ex.tags)) if (ex.tags.filter(x => x === t).length > 1) err(id, `tags repeats "${t}"`);
     }
-    if (Array.isArray(ex.tags)) for (const t of ex.tags) inVocab(id, "tag", t, TAGS);
 
     const d = (ex.dose ?? {}) as { type?: unknown; range?: unknown; sets?: unknown };
     inVocab(id, "dose.type", d.type, DOSE_TYPES);

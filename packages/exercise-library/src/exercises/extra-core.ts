@@ -172,7 +172,7 @@ export const EXTRA_CORE = defineExercises([
     muscles: { primary: ["adductors", "obliques"], secondary: ["quadratus-lumborum", "glute-med"] },
     purposes: ["strength"],
     tags: ["ski"],
-    themes: ["carryDay"],
+    themes: ["carryDay", "skiPrep", "athleticBase"],
     providers: { coros: { key: "T1368", confidence: "close", method: "curated" } }, // COROS: Copenhagen Plank: ours is the short lever
     easier: ["sidePlank"],
     text: {

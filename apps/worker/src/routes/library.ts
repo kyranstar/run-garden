@@ -2,8 +2,10 @@
  * `/api/library` — the exercise library to browse, and the athlete's say on each move (Phase 2 spec §2c "Library
  * API"; services/library-view.ts).
  *
- *   GET  /?q=&pattern=&region=&role=&equipment=&location=&safe=   slim rows, the default place, the switched-on
- *                                                                  profiles and the wishlist's unlock counts
+ *   GET  /?q=&pattern=&region=&role=&equipment=&purpose=&tag=&theme=&muscle=&contraction=&position=&laterality=
+ *        &maxDifficulty=&location=&safe=&limit=   slim rows ranked by the match (limit default 50, max 200; `matched`
+ *                                                 counts them all), the default place, the switched-on profiles
+ *                                                 and the wishlist's unlock counts
  *   GET  /:id                                                      the whole record with the athlete's history for it
  *   PUT  /:id/prefs  {rating?: 1|-1|null, excluded?, pinned?}      → `{prefs}`; only what is sent changes
  *
@@ -14,11 +16,14 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { nowInstant } from "@rg/domain";
-import { EQUIPMENT_IDS, PATTERNS, REGIONS, ROLES } from "@rg/exercise-library";
+import {
+  CONTRACTIONS, EQUIPMENT_IDS, LATERALITY, MUSCLES, PATTERNS, POSITIONS, PURPOSES, REGIONS, ROLES, TAGS, THEMES,
+} from "@rg/exercise-library";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import {
   LibraryItemNotFoundError,
+  MAX_LIBRARY_LIMIT,
   libraryItem,
   listLibrary,
   setExercisePrefs,
@@ -36,6 +41,15 @@ const querySchema = z
     region: z.enum(REGIONS).optional(),
     role: z.enum(ROLES).optional(),
     equipment: z.enum(EQUIPMENT_IDS).optional(),
+    purpose: z.enum(PURPOSES).optional(),
+    tag: z.enum(TAGS).optional(),
+    theme: z.enum(THEMES.map((t) => t.id) as [string, ...string[]]).optional(),
+    muscle: z.enum(MUSCLES).optional(),
+    contraction: z.enum(CONTRACTIONS).optional(),
+    position: z.enum(POSITIONS).optional(),
+    laterality: z.enum(LATERALITY).optional(),
+    maxDifficulty: z.coerce.number().int().min(1).max(5).optional(),
+    limit: z.coerce.number().int().min(1).max(MAX_LIBRARY_LIMIT).optional(),
     location: z.string().min(1).max(200).optional(),
     safe: z
       .enum(["1", "0", "true", "false"])

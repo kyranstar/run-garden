@@ -61,6 +61,18 @@ export const THEMES: readonly Theme[] = [
     formats: ["superset", "ladder", "flow"], coreBias: ["hinge", "carry"],
   },
   {
+    id: "skiPrep", name: "Ski prep", blurb: "Strong, springy legs for the slopes: quads, glutes, and steady single-leg work.",
+    modes: ["consistent", "build"],
+    emphasis: { patterns: { squat: 1.5, lunge: 2, "anti-lateral": 1 }, regions: { quads: 1.5, glutes: 1, hips: 0.5 }, tags: { ski: 3, landing: 2, deceleration: 2, "single-leg": 1.5, lateral: 1 } },
+    formats: ["superset", "circuit", "ladder"], coreBias: ["squat", "hinge"],
+  },
+  {
+    id: "athleticBase", name: "Athletic base", blurb: "Balance, single-leg strength and a braced trunk to move well in any sport.",
+    modes: ["consistent", "build"],
+    emphasis: { patterns: { lunge: 2, "anti-rotate": 1.5, rotate: 1, carry: 0.5 }, regions: { core: 1.5, hips: 1, quads: 0.5 }, tags: { "single-leg": 1, rotational: 1.5, balance: 1, elastic: 1.5, "core-stability": 1 } },
+    formats: ["superset", "circuit", "ladder"], coreBias: ["hinge", "squat"],
+  },
+  {
     id: "jawReset", name: "Jaw reset + easy flow", blurb: "Down-regulate: jaw, neck, and breath first, gentle movement after.",
     modes: ["recovery"],
     emphasis: { patterns: { breathe: 2, release: 2, mobility: 1 }, regions: { jaw: 3, neck: 2 } },

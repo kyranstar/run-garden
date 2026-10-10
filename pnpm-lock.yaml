@@ -110,6 +110,9 @@ importers:
       '@rg/session-engine':
         specifier: workspace:*
         version: link:../../packages/session-engine
+      '@rg/workout':
+        specifier: workspace:*
+        version: link:../../packages/workout
       drizzle-orm:
         specifier: ^0.38.3
         version: 0.38.4(@cloudflare/workers-types@4.20260702.1)(@types/better-sqlite3@7.6.13)(@types/react@18.3.31)(better-sqlite3@11.10.0)(react@18.3.1)
@@ -387,6 +390,9 @@ importers:
       '@rg/session-engine':
         specifier: workspace:*
         version: link:../session-engine
+      '@rg/workout':
+        specifier: workspace:*
+        version: link:../workout
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.4(react@18.3.1)
@@ -412,6 +418,28 @@ importers:
       jsdom:
         specifier: 25.0.1
         version: 25.0.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.49.0)(tsx@4.23.1)
+
+  packages/workout:
+    dependencies:
+      '@rg/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@rg/exercise-library':
+        specifier: workspace:*
+        version: link:../exercise-library
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

@@ -304,7 +304,7 @@ export const CORE_CARRY = defineExercises([
     muscles: { primary: ["obliques", "quadratus-lumborum"], secondary: ["hip-flexors", "glute-med", "forearms"] },
     purposes: ["strength", "balance"],
     tags: ["single-leg"],
-    themes: ["carryDay"],
+    themes: ["carryDay", "athleticBase"],
     text: {
       summary: "March in place with a weight in one hand, moving slowly enough to stay level.",
       setup: ["Hold a weight at your side, arm long.", "Stand tall near a wall if you want a balance reference."],

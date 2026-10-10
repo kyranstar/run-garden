@@ -1316,6 +1316,17 @@ export interface LibraryQuery {
   location?: string;
   /** Only moves safe on a flare day for every switched-on profile. */
   safe?: boolean;
+  purpose?: string;
+  tag?: string;
+  theme?: string;
+  /** A muscle the move works, primary or secondary. */
+  muscle?: string;
+  contraction?: string;
+  position?: string;
+  laterality?: string;
+  maxDifficulty?: number;
+  /** Default 50, at most 200. */
+  limit?: number;
 }
 
 /** One move as the library list shows it (no how-to text). */
@@ -1328,6 +1339,16 @@ export interface LibraryRowDto {
   roles: string[];
   equipment: { all: string[]; oneOf: string[] };
   difficulty: number;
+  /** The card line. */
+  summary: string;
+  purposes: string[];
+  contraction: string[];
+  tags: string[];
+  primaryMuscles: string[];
+  /** The latest day this athlete did it, or null. */
+  lastDoneOn: string | null;
+  /** Sessions with it in the last 30 days. */
+  timesDone30d: number;
   /** Per switched-on profile id. */
   safety: Record<string, LibrarySafety>;
   rating: 1 | -1 | null;
@@ -1343,6 +1364,8 @@ export interface LibraryRowDto {
 export interface LibraryListDto {
   /** Moves in the library before filters. */
   total: number;
+  /** Moves that matched the filters, before the limit. */
+  matched: number;
   items: LibraryRowDto[];
   /** The place `unlocksWith` and the wishlist are judged at. */
   place: { id: string; name: string };
@@ -1399,7 +1422,7 @@ export interface LibraryItemDto {
       implement: string | null;
       perSide: boolean;
       format: string | null;
-      sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; side: string | null }>;
+      sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; side: string | null; flags: string[] }>;
     }>;
     best: { w: Weight | null; reps: number | null; secs: number | null } | null;
   };

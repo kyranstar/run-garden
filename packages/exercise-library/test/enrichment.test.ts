@@ -46,9 +46,29 @@ describe("every record is curated", () => {
       checkList("themes", e.themes, themeIds, 0);
       if (e.text.summary.length > 90) bad("text.summary", `is ${e.text.summary.length} chars (max 90)`);
       if (e.muscles && ![...e.muscles.primary, ...e.muscles.secondary].some(m => (e.regions as readonly string[]).includes(MUSCLE_REGION[m]))) {
-        bad("muscles.primary", "no primary or secondary muscle sits in the record's regions");
+        bad("muscles", "no primary or secondary muscle sits in the record's regions");
+      }
+      for (const m of e.muscles?.primary ?? []) if (e.muscles!.secondary.includes(m)) bad("muscles", `"${m}" is in both primary and secondary`);
+      for (const [field, list] of [["muscles.primary", e.muscles?.primary], ["muscles.secondary", e.muscles?.secondary], ["purposes", e.purposes], ["contraction", e.contraction], ["tags", e.tags], ["themes", e.themes]] as const) {
+        if (list && new Set(list).size !== list.length) bad(field, "repeats an entry");
       }
       expect(problems).toEqual([]);
     });
   }
+});
+
+describe("themes for the new tags", () => {
+  test("skiPrep and athleticBase exist, are never recovery themes, and have records to draw on", () => {
+    for (const id of ["skiPrep", "athleticBase"]) {
+      const t = THEMES.find(x => x.id === id);
+      expect(t, `${id} is missing`).toBeTruthy();
+      expect(t!.modes, `${id} must not be a recovery theme`).not.toContain("recovery");
+      expect(t!.modes.length).toBeGreaterThan(0);
+      expect(EXERCISES.filter(e => (e.themes ?? []).includes(id)).length, `${id} has no records tagged with it`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  test("plyoIntro waits for its moves (Task 5)", () => {
+    expect(THEMES.some(t => t.id === "plyoIntro")).toBe(false);
+  });
 });

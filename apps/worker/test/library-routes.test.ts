@@ -81,17 +81,26 @@ interface Row {
   pinned: boolean;
   saved: boolean;
   unlocksWith: { all: string[]; oneOf: string[] } | null;
+  summary: string;
+  purposes: string[];
+  contraction: string[];
+  tags: string[];
+  primaryMuscles: string[];
+  lastDoneOn: string | null;
+  timesDone30d: number;
 }
 interface ListBody {
   total: number;
+  matched: number;
   items: Row[];
   place: { id: string; name: string };
   profiles: Array<{ profileId: string; label: string }>;
   wishlist: Array<{ equipmentId: string; label: string; unlocks: number }>;
 }
 
-const list = async (query = ""): Promise<ListBody> => {
-  const res = await call("GET", `/api/library${query}`);
+const list = async (query = "", all = true): Promise<ListBody> => {
+  const q = all && !/[?&]limit=/.test(query) ? `${query}${query ? "&" : "?"}limit=200` : query;
+  const res = await call("GET", `/api/library${q}`);
   expect(res.status).toBe(200);
   return json<ListBody>(res);
 };
@@ -118,7 +127,10 @@ describe("GET /api/library", () => {
     expect(body.items.map((r) => r.id).sort()).toEqual(EXERCISES.map((e) => e.id).sort());
     const goblet = body.items.find((r) => r.id === "gobletSquat")!;
     expect(Object.keys(goblet).sort()).toEqual(
-      ["difficulty", "equipment", "excluded", "family", "id", "name", "patterns", "pinned", "rating", "regions", "roles", "safety", "saved", "unlocksWith"].sort(),
+      [
+        "contraction", "difficulty", "equipment", "excluded", "family", "id", "lastDoneOn", "name", "patterns", "pinned", "primaryMuscles",
+        "purposes", "rating", "regions", "roles", "safety", "saved", "summary", "tags", "timesDone30d", "unlocksWith",
+      ].sort(),
     );
     expect(goblet).toMatchObject({ name: "Goblet squat", rating: null, excluded: false, pinned: false, saved: false, safety: {} });
     expect(JSON.stringify(body)).not.toMatch(/providers|originId|"text"/);
@@ -167,7 +179,11 @@ describe("GET /api/library", () => {
   });
 
   it("refuses a filter outside the vocabulary (422) and an unknown place (422)", async () => {
-    for (const q of ["?pattern=juggling", "?region=elbow", "?role=hero", "?equipment=trampoline", "?safe=maybe", "?location=nowhere"]) {
+    for (const q of [
+      "?pattern=juggling", "?region=elbow", "?role=hero", "?equipment=trampoline", "?safe=maybe", "?location=nowhere",
+      "?purpose=fun", "?tag=nope", "?theme=nope", "?muscle=elbow", "?contraction=floppy", "?position=upside-down",
+      "?laterality=trilateral", "?maxDifficulty=9", "?maxDifficulty=x", "?limit=0", "?limit=201",
+    ]) {
       const res = await call("GET", `/api/library${q}`);
       expect(res.status, q).toBe(422);
       expect((await json<{ error: string }>(res)).error).toBe("invalid_query");
@@ -242,6 +258,143 @@ describe("GET /api/library", () => {
 
   it("401 without a session", async () => {
     expect((await call("GET", "/api/library", undefined, "")).status).toBe(401);
+  });
+});
+
+describe("GET /api/library — the Studio's filters, ranking and history", () => {
+  const ids = async (q: string) => (await list(q)).items.map((r) => r.id);
+  const sorted = (xs: string[]) => [...xs].sort();
+  const worked = (e: (typeof EXERCISES)[number]) => [...e.muscles!.primary, ...e.muscles!.secondary];
+
+  const settledSession = async (date: string, o: { owner?: string; hash?: string } = {}) => {
+    const sid = newId();
+    await db.insert(performedSessions).values({
+      id: sid, userId: o.owner ?? userId, workoutId: null, activityId: null, buildId: null, source: "import", sourceRef: sid,
+      localDate: date, startedAt: `${date}T18:00:00Z`, endedAt: null, seconds: 600, plannedSeconds: null, minutes: 10, mode: "build",
+      theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null, stepsDone: null,
+      movesDone: [], note: null, newMove: null, payloadHash: o.hash ?? "h", createdAt: NOW, updatedAt: NOW,
+    });
+    return sid;
+  };
+  const setRows = (sid: string, exerciseId: string, flags: string[][]) =>
+    flags.map((f, i) => ({
+      id: newId(), performedSessionId: sid, entryIndex: 0, exerciseId, implement: null, format: "straight", perSide: false, setIndex: i,
+      side: null, reps: 8, seconds: null, loadValue: null, loadUnit: null, loadKg: null, done: true, flags: f,
+    }));
+
+  it("filters by purpose, contraction, muscle (primary or secondary), tag and theme, and combines them", async () => {
+    const want = (f: (e: (typeof EXERCISES)[number]) => boolean) => sorted(EXERCISES.filter(f).map((e) => e.id));
+    expect(sorted(await ids("?purpose=activation"))).toEqual(want((e) => e.purposes!.includes("activation")));
+    expect(sorted(await ids("?contraction=plyometric"))).toEqual(want((e) => e.contraction!.includes("plyometric")));
+    expect(sorted(await ids("?muscle=glute-med"))).toEqual(want((e) => worked(e).includes("glute-med")));
+    expect(sorted(await ids("?tag=ski"))).toEqual(want((e) => e.tags.includes("ski")));
+    expect(sorted(await ids("?theme=hipsPosture"))).toEqual(want((e) => e.themes!.includes("hipsPosture")));
+    for (const q of ["?purpose=activation", "?tag=ski", "?theme=hipsPosture", "?muscle=glute-med"]) expect((await ids(q)).length, q).toBeGreaterThan(0);
+    const combo = want((e) => e.purposes!.includes("activation") && e.tags.includes("single-leg") && worked(e).includes("glute-med"));
+    expect(combo.length).toBeGreaterThan(0);
+    expect(sorted(await ids("?purpose=activation&tag=single-leg&muscle=glute-med"))).toEqual(combo);
+  });
+
+  it("the new themes are valid filters", async () => {
+    expect((await call("GET", "/api/library?theme=skiPrep")).status).toBe(200);
+    expect((await call("GET", "/api/library?theme=athleticBase")).status).toBe(200);
+  });
+
+  it("the slim rows carry the summary, purposes, contraction, tags and primary muscles", async () => {
+    const goblet = (await list()).items.find((r) => r.id === "gobletSquat")!;
+    const rec = EXERCISES.find((e) => e.id === "gobletSquat")!;
+    expect(goblet).toMatchObject({
+      summary: rec.text.summary, purposes: rec.purposes, contraction: rec.contraction, tags: rec.tags, primaryMuscles: rec.muscles!.primary,
+    });
+  });
+
+  it("filters by position, laterality and the hardest difficulty", async () => {
+    const pos = EXERCISES[0]!.position;
+    expect(sorted(await ids(`?position=${pos}`))).toEqual(sorted(EXERCISES.filter((e) => e.position === pos).map((e) => e.id)));
+    const lat = EXERCISES.find((e) => e.laterality !== "bilateral")!.laterality;
+    expect(sorted(await ids(`?laterality=${lat}`))).toEqual(sorted(EXERCISES.filter((e) => e.laterality === lat).map((e) => e.id)));
+    const easy = (await list("?maxDifficulty=2")).items;
+    expect(easy.length).toBeGreaterThan(0);
+    expect(easy.length).toBeLessThan(EXERCISES.length);
+    expect(easy.every((r) => r.difficulty <= 2)).toBe(true);
+  });
+
+  it("limits to 50 by default (max 200) and says how many matched", async () => {
+    const dflt = await list("", false);
+    expect(dflt.items).toHaveLength(50);
+    expect(dflt.matched).toBe(EXERCISES.length);
+    expect(dflt.total).toBe(EXERCISES.length);
+    expect((await list("?limit=3", false)).items).toHaveLength(3);
+  });
+
+  it("ranks an exact name, then a name prefix, then name/summary/tag contains, then the rest; ties by name", async () => {
+    expect((await list("?q=Goblet squat")).items[0]!.id).toBe("gobletSquat");
+    const prefix = (await list("?q=goblet")).items;
+    expect(prefix[0]!.name.toLowerCase().startsWith("goblet")).toBe(true);
+    const q = "split squat";
+    const rows = (await list(`?q=${q}`)).items;
+    const tier = (r: Row) => {
+      const n = r.name.toLowerCase();
+      return n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) || r.summary.toLowerCase().includes(q) || r.tags.some((t) => t.includes(q)) ? 2 : 3;
+    };
+    const tiers = rows.map(tier);
+    expect(tiers).toEqual([...tiers].sort((a, b) => a - b));
+    expect(new Set(tiers).size).toBeGreaterThan(1);
+    for (const t of [1, 2, 3]) {
+      const names = rows.filter((r) => tier(r) === t).map((r) => r.name);
+      expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    }
+  });
+
+  it("matches the summary text, not only the name", async () => {
+    const rec = EXERCISES.find((e) => /^[a-z]{7,} /i.test(e.text.summary) && !e.name.toLowerCase().includes(e.text.summary.split(" ")[0]!.toLowerCase()))!;
+    const word = rec.text.summary.split(" ")[0]!.toLowerCase();
+    expect(await ids(`?q=${word}`)).toContain(rec.id);
+  });
+
+  it("breaks ties by condition fit: safe moves before care moves before ruled-out ones", async () => {
+    await activateTmj();
+    const rows = (await list("?role=accessory")).items;
+    const rank = (r: Row) => {
+      const v = Object.values(r.safety);
+      return v.includes("never") ? 2 : v.includes("care") ? 1 : 0;
+    };
+    const ranks = rows.map(rank);
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+    expect(new Set(ranks).size).toBeGreaterThan(1);
+  });
+
+  it("gives each move the day it was last done and the sessions in the last 30 days — this user's, settled work only", async () => {
+    const { todayInZone, addDays: add } = await import("@rg/domain");
+    const today = todayInZone(prefs.timezone);
+    const seed = async (date: string, exerciseId: string, o: { owner?: string; hash?: string; sets?: number } = {}) => {
+      const sid = await settledSession(date, o);
+      await db.insert(performedSets).values(setRows(sid, exerciseId, Array.from({ length: o.sets ?? 2 }, () => [])));
+    };
+    await seed(add(today, -2), "gobletSquat");
+    await seed(add(today, -10), "gobletSquat", { sets: 3 });
+    await seed(add(today, -45), "gobletSquat");
+    await seed(add(today, -1), "gobletSquat", { hash: "pending" });
+    await seed(add(today, -1), "gobletSquat", { owner: (await makeTestUser(db)).userId });
+    const byId = new Map((await list()).items.map((r) => [r.id, r]));
+    expect(byId.get("gobletSquat")).toMatchObject({ lastDoneOn: add(today, -2), timesDone30d: 2 });
+    expect(byId.get("deadlift")).toMatchObject({ lastDoneOn: null, timesDone30d: 0 });
+  });
+
+  it("stays within 45 statements, reading the performed work in ONE statement", async () => {
+    await activateTmj();
+    statements.length = 0;
+    await list("?purpose=activation&tag=single-leg");
+    expect(statements.length).toBeLessThanOrEqual(45);
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect(statements.filter((s) => /performed_sets/i.test(s))).toHaveLength(1);
+  });
+
+  it("the detail's history sets carry their flags", async () => {
+    const sid = await settledSession("2026-09-01");
+    await db.insert(performedSets).values(setRows(sid, "gobletSquat", [["clenched"], []]));
+    const body = await json<{ history: { last: Array<{ sets: Array<{ flags: string[] }> }> } }>(await call("GET", "/api/library/gobletSquat"));
+    expect(body.history.last[0]!.sets.map((s) => s.flags)).toEqual([["clenched"], []]);
   });
 });
 
@@ -332,8 +485,8 @@ describe("GET /api/library/:id", () => {
     const body = await item("gobletSquat");
     expect(body.history.last.map((e) => e.date)).toEqual(["2026-09-11", "2026-09-09", "2026-09-07", "2026-09-05", "2026-09-03"]);
     expect(body.history.last[4]!.sets).toEqual([
-      { w: { v: 12, u: "kg" }, reps: 6, secs: null, side: null },
-      { w: { v: 12, u: "kg" }, reps: 8, secs: null, side: null },
+      { w: { v: 12, u: "kg" }, reps: 6, secs: null, side: null, flags: [] },
+      { w: { v: 12, u: "kg" }, reps: 8, secs: null, side: null, flags: [] },
     ]);
     // 25 lb (11.34 kg) is lighter than 12 kg: the best is 12 kg × 8; the ladder's 40 lb never counts.
     expect(body.history.best).toEqual({ w: { v: 12, u: "kg" }, reps: 8, secs: null });

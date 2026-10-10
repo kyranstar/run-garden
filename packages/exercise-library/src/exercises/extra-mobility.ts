@@ -332,7 +332,7 @@ export const EXTRA_MOBILITY = defineExercises([
     difficulty: 1,
     tags: [],
     contraction: ["isotonic", "isometric"],
-    muscles: { primary: ["glute-max", "hamstrings", "adductors"], secondary: ["glute-max", "erector-spinae"] },
+    muscles: { primary: ["glute-max", "hamstrings", "adductors"], secondary: ["erector-spinae"] },
     purposes: ["warmup", "mobility", "activation"],
     themes: ["posteriorChain", "hipsPosture"],
     text: {
@@ -374,7 +374,7 @@ export const EXTRA_MOBILITY = defineExercises([
     contraction: ["isotonic"],
     muscles: { primary: ["adductors", "quads", "glute-max"], secondary: ["hamstrings", "glute-med"] },
     purposes: ["mobility", "warmup", "strength"],
-    themes: ["hipsPosture"],
+    themes: ["hipsPosture", "skiPrep", "athleticBase"],
     text: {
       summary: "From a wide stance, sit into one leg with the other straight, then shift across.",
       setup: [
@@ -410,7 +410,7 @@ export const EXTRA_MOBILITY = defineExercises([
     difficulty: 1,
     tags: ["desk-relief"],
     contraction: ["isotonic"],
-    muscles: { primary: ["pecs", "lats", "deltoids"], secondary: ["lats", "lower-traps", "serratus-anterior"] },
+    muscles: { primary: ["pecs", "lats", "deltoids"], secondary: ["lower-traps", "serratus-anterior"] },
     purposes: ["warmup", "mobility"],
     themes: ["deskUnwind", "upperBackNeck"],
     text: {

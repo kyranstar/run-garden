@@ -103,6 +103,39 @@ describe("validation (engine-validate.test.js)", () => {
   });
 });
 
+describe("the curation fields are required and consistent", () => {
+  const base = get("gobletSquat")!;
+  const errorsFor = (patch: Record<string, unknown>) =>
+    validateLibrary(withExercises([{ ...base, id: "probe", ...patch } as ExerciseRecord]), { presets: [] }).filter(e => e.startsWith("probe:") && !e.includes(" link "));
+
+  test("a record missing any curation field is refused", () => {
+    for (const field of ["contraction", "muscles", "purposes", "themes"]) {
+      expect(errorsFor({ [field]: undefined }).length, field).toBeGreaterThan(0);
+    }
+    expect(errorsFor({ contraction: undefined })).toContain("probe: contraction needs at least 1");
+    expect(errorsFor({ muscles: undefined })).toContain("probe: muscles.primary needs at least 1");
+    expect(errorsFor({ purposes: undefined })).toContain("probe: purposes needs at least 1");
+    expect(errorsFor({ themes: undefined })).toContain("probe: themes must be a list");
+  });
+
+  test("a muscle in both primary and secondary, or a repeat in any list, is refused", () => {
+    expect(errorsFor({ muscles: { primary: ["quads"], secondary: ["quads", "glute-max"] } })).toContain('probe: muscle "quads" is in both primary and secondary');
+    expect(errorsFor({ muscles: { primary: ["quads", "quads"], secondary: [] } })).toContain('probe: muscles.primary repeats "quads"');
+    expect(errorsFor({ muscles: { primary: ["quads"], secondary: ["glute-max", "glute-max"] } })).toContain('probe: muscles.secondary repeats "glute-max"');
+    expect(errorsFor({ purposes: ["strength", "strength"] })).toContain('probe: purposes repeats "strength"');
+    expect(errorsFor({ contraction: ["isotonic", "isotonic"] })).toContain('probe: contraction repeats "isotonic"');
+    expect(errorsFor({ tags: ["ski", "ski"] })).toContain('probe: tags repeats "ski"');
+    expect(errorsFor({ themes: ["hipsPosture", "hipsPosture"] })).toContain('probe: themes repeats "hipsPosture"');
+  });
+
+  test("a record needs a primary or secondary muscle inside its regions", () => {
+    const only = errorsFor({ regions: ["jaw"], muscles: { primary: ["quads"], secondary: ["glute-max"] } });
+    expect(only).toContain("probe: no primary or secondary muscle sits in the record's regions");
+    expect(errorsFor({ regions: ["glutes"], muscles: { primary: ["quads"], secondary: ["glute-max"] } })).toEqual([]);
+    expect(errorsFor({})).toEqual([]);
+  });
+});
+
 describe("condition ratings (Review Focus 1)", () => {
   const base = get("gobletSquat")!;
 

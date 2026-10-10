@@ -17,6 +17,7 @@ export function ex(id: string, overrides: Overrides = {}): ExerciseInput {
     equipment: { all: [], oneOf: [] }, position: "standing", laterality: "bilateral", load: "none",
     dose: { type: "time", range: [30, 60] }, conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } }, difficulty: 1,
     easier: [], harder: [], text: TEXT, tags: [],
+    contraction: ["isotonic"], muscles: { primary: ["hip-flexors"], secondary: [] }, purposes: ["mobility"], themes: [],
     ...overrides,
   } as unknown as ExerciseInput;
 }
@@ -28,6 +29,7 @@ export function lifted(id: string, overrides: Overrides = {}): ExerciseInput {
     equipment: { all: [], oneOf: ["kettlebell", "dumbbells"] }, load: "external",
     dose: { type: "reps", range: [5, 8], sets: [2, 4], restSec: 60 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } }, difficulty: 2,
+    muscles: { primary: ["quads"], secondary: [] }, purposes: ["strength"],
     ...overrides,
   });
 }

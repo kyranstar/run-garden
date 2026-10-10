@@ -26,6 +26,7 @@
     "@rg/providers": "workspace:*",
     "@rg/scheduling": "workspace:*",
     "@rg/session-engine": "workspace:*",
+    "@rg/workout": "workspace:*",
     "drizzle-orm": "^0.38.3",
     "hono": "^4.6.14",
     "luxon": "^3.5.0",

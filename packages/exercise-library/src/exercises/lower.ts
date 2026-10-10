@@ -99,7 +99,7 @@ export const LOWER = defineExercises([
     muscles: { primary: ["quads", "glute-max"], secondary: ["adductors"] },
     purposes: ["strength"],
     tags: ["ski"],
-    themes: ["hipsPosture"],
+    themes: ["hipsPosture", "skiPrep"],
     easier: ["boxSquat"],
     harder: ["bwSplitSquat"],
     text: {
@@ -136,7 +136,7 @@ export const LOWER = defineExercises([
     muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
     purposes: ["strength"],
     tags: ["single-leg"],
-    themes: ["hipsPosture"],
+    themes: ["hipsPosture", "athleticBase"],
     easier: ["bwSplitSquat"],
     text: {
       summary: "Staggered stance with a weight at your chest; lower straight down and rise.",
@@ -174,7 +174,7 @@ export const LOWER = defineExercises([
     muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
     purposes: ["strength"],
     tags: ["single-leg"],
-    themes: ["hipsPosture"],
+    themes: ["hipsPosture", "athleticBase"],
     harder: ["splitSquat"],
     text: {
       summary: "Staggered stance, lower straight down slowly, then rise — support nearby for balance.",
@@ -210,7 +210,7 @@ export const LOWER = defineExercises([
     muscles: { primary: ["quads", "glute-max"], secondary: ["glute-med"] },
     purposes: ["strength"],
     tags: ["single-leg", "ski"],
-    themes: ["hipsPosture"],
+    themes: ["hipsPosture", "skiPrep", "athleticBase"],
     providers: { coros: { key: "T1296", confidence: "exact", method: "curated" } }, // COROS: Step-Ups
     text: {
       summary: "Step up onto a bench or sturdy chair, driving through the top foot.",
@@ -321,7 +321,7 @@ export const LOWER = defineExercises([
     muscles: { primary: ["hamstrings", "glute-max"], secondary: ["glute-med", "erector-spinae", "peroneals"] },
     purposes: ["strength", "balance"],
     tags: ["single-leg"],
-    themes: ["posteriorChain"],
+    themes: ["posteriorChain", "athleticBase"],
     providers: { coros: { key: "T1187", confidence: "close", method: "curated" } }, // COROS: Single Leg Deadlift: ours is an unloaded reach
     text: {
       summary: "Hinge on one leg as the other reaches back, then stand tall.",
@@ -356,7 +356,7 @@ export const LOWER = defineExercises([
     muscles: { primary: ["glute-max"], secondary: ["hamstrings", "glute-med"] },
     purposes: ["activation", "strength"],
     tags: ["single-leg", "glute-activation"],
-    themes: ["posteriorChain"],
+    themes: ["posteriorChain", "athleticBase"],
     providers: { coros: { key: "T1219", confidence: "exact", method: "curated" } }, // COROS: Single-Leg Hip Bridge
     easier: ["bridge"],
     text: {

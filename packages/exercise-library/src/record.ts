@@ -74,14 +74,14 @@ export interface ExerciseRecord {
   easier: readonly string[];
   harder: readonly string[];
   tags: readonly Tag[];
-  /** How the muscles work (at least one). Optional until every record is curated. */
-  contraction?: readonly Contraction[];
-  /** Muscles worked (primary at least one). Optional until every record is curated. */
-  muscles?: { primary: readonly MuscleId[]; secondary: readonly MuscleId[] };
-  /** What the move is for (at least one). Optional until every record is curated. */
-  purposes?: readonly Purpose[];
-  /** Theme ids from themes.ts (may be empty). Optional until every record is curated. */
-  themes?: readonly string[];
+  /** How the muscles work (at least one). */
+  contraction: readonly Contraction[];
+  /** Muscles worked (primary at least one; no muscle in both lists). */
+  muscles: { primary: readonly MuscleId[]; secondary: readonly MuscleId[] };
+  /** What the move is for (at least one). */
+  purposes: readonly Purpose[];
+  /** Theme ids from themes.ts (may be empty). */
+  themes: readonly string[];
   text: ExerciseText;
   /** Ratings per condition profile, keyed by profile id; each profile's attribute specs say what's inside. */
   conditions: Readonly<Record<string, Attrs>>;
