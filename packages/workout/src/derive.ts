@@ -13,9 +13,9 @@
  *   the work and the reps of every set. Rest between sets = (sets - 1) x (dose.restSec, else the record's, else 0).
  * - Parts: `rounds` multiplies every item (its sets, work, rests and watch steps); `restBetweenRoundsSec` is added
  *   (rounds - 1) times. A rest item adds its seconds to the minutes, to no balance, and is not a watch step.
- * - Run: duration, else distance at the middle of the pace band, else 6:00/km; an open segment counts as 0 s. Run
- *   seconds are aerobic seconds.
- * - Minutes = round(total seconds / 60).
+ * - Run: duration, else distance at the middle of the pace band, else 6:00/km (rounded to whole seconds); an open
+ *   segment counts a nominal 600 s. Run seconds are aerobic seconds, and any run item makes the run axis present.
+ * - Minutes = round(total seconds / 60), at least 1 when there is any time.
  * - Balance (an item counts toward every contraction its record lists): isometric = work seconds; isotonic and eccentric
  *   = reps (rep-dosed items only); plyometric = contacts (reps x sets); `passive` counts toward no contraction. Work
  *   seconds of an item whose purposes include mobility or stretch are mobility seconds; the work seconds of a passive
@@ -27,11 +27,12 @@
  *   main, power, accessory, conditioning or activation part) or yoga (the rest). Dominant = run when run is at least
  *   half of all seconds (or the only axis present), else strength when it is at least yoga, else yoga. `disciplines` lists
  *   every axis present, dominant first, then by seconds.
- * - Category: any race effort -> race; any tempo / threshold / interval / hills -> quality; otherwise, for a run
+ * - Category: race / tempo / threshold / interval / hills (never strides) make race / quality only when the run axis is dominant or those
+ *   efforts are at least 25% of all seconds; otherwise the dominant discipline decides. Otherwise, for a run
  *   workout, long (a long effort, or 75 minutes or more of run) -> long; recovery effort (or a "recover" intent with only
  *   recovery / easy runs) -> recovery; else easy. A strength workout is strength, a yoga one yoga. (planned_workouts
  *   already uses easy / long / quality / recovery / race / strength / yoga, so these map one to one.)
- * - Watch steps: sets x rounds x (perSide ? 2 : 1) per exercise or free-exercise item, rounds per run segment.
+ * - Watch steps count executions (the push's totalSets), not wire rows: sets x rounds x (perSide ? 2 : 1) per exercise or free-exercise item, rounds per run segment.
  * - Equipment: `all` = the union of the records' `all`; `oneOf` = each distinct one-of group not already satisfied by
  *   an `all` entry, members sorted.
  * - Condition maxima: for each profile, each attribute's highest rating among the resolved items (a flag counts 1 or 0).
@@ -95,6 +96,11 @@ export interface PerformedDerived {
   disciplines: WorkoutAxis[];
 }
 
+/** Whole minutes; any time at all is at least one. */
+function minutesOf(sec: number): number {
+  return sec > 0 ? Math.max(1, Math.round(sec / 60)) : 0;
+}
+
 export function modeOfEffort(e: Effort): Mode {
   return e === "recover" ? "recovery" : e === "maintain" ? "consistent" : "build";
 }
@@ -105,6 +111,8 @@ export function effortOfMode(m: Mode): Effort {
 const SECS_PER_BREATH = 6;
 const DEFAULT_SECS_PER_REP = 3;
 const DEFAULT_RUN_SECS_PER_KM = 360;
+/** An open (lap-button) run segment counts a nominal 10 minutes. */
+const OPEN_RUN_SECONDS = 600;
 const LONG_RUN_SECONDS = 75 * 60;
 const STRENGTH_PURPOSES = new Set(["strength", "power", "activation", "conditioning", "balance"]);
 const STRENGTH_PART_PURPOSES = new Set(["main", "power", "accessory", "conditioning", "activation"]);
@@ -186,9 +194,9 @@ function secondsOfRun(item: Extract<WorkoutItem, { kind: "run" }>): number {
   if (durationSec !== undefined) return durationSec;
   if (distanceM !== undefined) {
     const perKm = pace ? (pace.fastSecPerKm + pace.slowSecPerKm) / 2 : DEFAULT_RUN_SECS_PER_KM;
-    return (distanceM / 1000) * perKm;
+    return Math.round((distanceM / 1000) * perKm);
   }
-  return 0;
+  return OPEN_RUN_SECONDS;
 }
 
 type ExerciseDose = Extract<WorkoutItem, { kind: "exercise" }>["dose"];
@@ -240,6 +248,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
   let steps = 0;
   const efforts: string[] = [];
   const hardEfforts = new Set<string>();
+  let hardSec = 0;
   let runSec = 0;
   let longestRun = { sec: -1, effort: "" };
   const all = new Set<string>();
@@ -259,7 +268,10 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
         runSec += sec;
         steps += rounds;
         efforts.push(item.effort);
-        if (QUALITY_EFFORTS.has(item.effort) || item.effort === "race") hardEfforts.add(item.effort);
+        if (QUALITY_EFFORTS.has(item.effort) || item.effort === "race") {
+          hardEfforts.add(item.effort);
+          hardSec += sec;
+        }
         if (sec > longestRun.sec) longestRun = { sec, effort: item.effort };
       } else {
         const free = item.kind === "free_exercise";
@@ -291,8 +303,9 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
   const { discipline, disciplines } = dominance(t);
   const hasRun = runSec > 0;
   let category: WorkoutCategory;
-  if (hardEfforts.has("race")) category = "race";
-  else if (hardEfforts.size > 0) category = "quality";
+  const hardCounts = hardEfforts.size > 0 && (discipline === "run" || hardSec * 4 >= t.totalSec);
+  if (hardCounts && hardEfforts.has("race")) category = "race";
+  else if (hardCounts) category = "quality";
   else if (discipline === "run" && hasRun) {
     if (efforts.includes("long") || runSec >= LONG_RUN_SECONDS) category = "long";
     else if (longestRun.effort === "recovery" || (doc.intent.effort === "recover" && efforts.every((e) => e === "recovery" || e === "easy"))) category = "recovery";
@@ -301,7 +314,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
 
   const allList = [...all].sort();
   return {
-    estimatedMinutes: Math.round(t.totalSec / 60),
+    estimatedMinutes: minutesOf(t.totalSec),
     balance: t.balance,
     ...exposure(t),
     discipline,
@@ -318,7 +331,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
  * The same balance / exposure / minutes / discipline rules over what was done. Only done sets count; a set's seconds
  * (else reps x seconds-per-rep) are its work; `perSide` entries count both sides per set. A timed move done in a flow
  * counts as one set of that many seconds. An activity adds aerobic seconds unless its sport is strength or yoga.
- * Flags and load are not read. Rests were not recorded, so `estimatedMinutes` is work only.
+ * Flags and load are not read. Seconds-per-rep comes from the record (no tempo is logged); a sport other than strength / lift / yoga / mobility counts as aerobic run-axis work. Rests were not recorded, so `estimatedMinutes` is work only.
  */
 export function derivePerformed(input: PerformedInput, library: readonly ExerciseRecord[]): PerformedDerived {
   const find = makeLibraryIndex(library);
@@ -347,5 +360,5 @@ export function derivePerformed(input: PerformedInput, library: readonly Exercis
     }
   }
   const { discipline, disciplines } = dominance(t);
-  return { estimatedMinutes: Math.round(t.totalSec / 60), balance: t.balance, ...exposure(t), discipline, disciplines };
+  return { estimatedMinutes: minutesOf(t.totalSec), balance: t.balance, ...exposure(t), discipline, disciplines };
 }

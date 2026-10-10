@@ -222,3 +222,37 @@ describe("derivePerformed", () => {
     expect(p.estimatedMinutes).toBe(31); // 60 s of lifting + 1800 s
   });
 });
+
+describe("deriveDoc: open runs and category breadth", () => {
+  const d = (parts: WorkoutPart[]) => deriveDoc(doc(parts), LIB);
+  it("counts an open run segment as 10 minutes of run", () => {
+    const x = d([part("run", "steady", [run("easy", { open: true })])]);
+    expect(x.estimatedMinutes).toBe(10);
+    expect(x.discipline).toBe("run");
+    expect(x.category).toBe("easy");
+    expect(x.balance.aerobicSec).toBe(600);
+    expect(d([part("run", "steady", [run("tempo", { open: true })])]).category).toBe("quality");
+  });
+  it("handles an open warm-up with intervals and a run with mobility", () => {
+    const x = d([part("run", "steady", [run("easy", { open: true })]), part("run", "intervals", [run("interval", { durationSec: 120 })], { rounds: 4 })]);
+    expect(x.estimatedMinutes).toBe(18);
+    expect(x.category).toBe("quality");
+    const y = d([part("run", "steady", [run("easy", { open: true })]), part("cooldown", "flow", [ex("ninetyNinety", { holdSec: 300, perSide: true })])]);
+    expect(y.discipline).toBe("run"); // 600 s of run against 600 s of mobility: run is half
+  });
+  it("keeps a strength session with a short tempo finisher strength", () => {
+    const x = d([part("main", "straight", [ex("swing", { sets: 3, reps: 12, restSec: 60 }), ex("wallSit", { sets: 4, holdSec: 60, restSec: 60 })]), part("run", "steady", [run("tempo", { durationSec: 120 })])]);
+    expect(x.discipline).toBe("strength");
+    expect(x.category).toBe("strength");
+  });
+  it("calls a run-led tempo session quality, and a strength session with a large race-pace segment race", () => {
+    expect(d([part("run", "steady", [run("easy", { durationSec: 600 }), run("tempo", { durationSec: 1200 })])]).category).toBe("quality");
+    const x = d([part("main", "straight", [ex("wallSit", { sets: 4, holdSec: 60 })]), part("run", "steady", [run("race", { durationSec: 120 })])]);
+    expect(x.discipline).toBe("strength");
+    expect(x.category).toBe("race");
+  });
+  it("never counts strides as hard", () => {
+    const x = d([part("main", "straight", [ex("wallSit", { sets: 4, holdSec: 60 })]), part("run", "steady", [run("strides", { durationSec: 120 })])]);
+    expect(x.category).toBe("strength");
+  });
+});
