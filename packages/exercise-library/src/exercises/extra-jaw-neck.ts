@@ -15,9 +15,14 @@ export const EXTRA_JAW_NECK = defineExercises([
     dose: { type: "reps", range: [6, 8], secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["pterygoids"], secondary: ["masseter", "temporalis"] },
+    purposes: ["condition-care", "mobility"],
+    themes: ["jawReset"],
     easier: ["jawOpen"],
     text: {
-      summary: "Tongue up, one finger on the jaw joint and one on the chin; lower and lift the jaw slowly and evenly.",
+      summary: "Tongue up, fingers on joint and chin; lower and lift the jaw slowly and evenly.",
       setup: [
         "Sit tall with the tip of the tongue resting on the palate behind the front teeth.",
         "Rest one fingertip lightly just in front of one ear, over the jaw joint, and another on the chin."
@@ -48,6 +53,11 @@ export const EXTRA_JAW_NECK = defineExercises([
     dose: { type: "reps", range: [4, 6], secsPerRep: 8 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["pterygoids", "masseter"], secondary: ["temporalis"] },
+    purposes: ["condition-care"],
+    themes: ["jawReset"],
     easier: ["lateralExcursion"],
     text: {
       summary: "Press the jaw gently sideways into your hand, which doesn't let it move, and hold.",
@@ -84,9 +94,14 @@ export const EXTRA_JAW_NECK = defineExercises([
     dose: { type: "reps", range: [5, 8], secsPerRep: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["masseter", "temporalis"], secondary: ["pterygoids"] },
+    purposes: ["condition-care"],
+    themes: ["jawReset"],
     easier: ["jawOpen"],
     text: {
-      summary: "Close the mouth slowly against light finger pressure on the chin, stopping before the teeth meet.",
+      summary: "Close the mouth slowly against light finger pressure, stopping before the teeth meet.",
       setup: [
         "Sit tall with the tongue on the palate.",
         "Open the mouth slightly and rest two fingers on the front of the chin, just below the lower lip."
@@ -119,10 +134,14 @@ export const EXTRA_JAW_NECK = defineExercises([
     dose: { type: "reps", range: [5, 8], secsPerRep: 12 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: ["desk-relief", "posture"],
+    contraction: ["isometric"],
+    muscles: { primary: ["deep-neck-flexors"], secondary: ["scalenes"] },
+    purposes: ["activation", "condition-care"],
+    themes: ["upperBackNeck", "jawReset", "deskUnwind"],
     easier: ["chinTuck"],
-    tags: ["desk-relief"],
     text: {
-      summary: "Lying on your back, make a tiny 'yes' nod and hold it for 10 seconds to build deep neck endurance.",
+      summary: "Lying on your back, make a tiny 'yes' nod and hold it for 10 seconds.",
       setup: [
         "Lie on your back with knees bent and your head on the floor or a thin folded towel.",
         "Tongue on the palate, lips closed, teeth apart."
@@ -157,6 +176,10 @@ export const EXTRA_JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["sternocleidomastoid", "suboccipitals"], secondary: ["levator-scapulae", "scalenes"] },
+    purposes: ["warmup", "mobility", "condition-care"],
+    themes: ["deskUnwind", "upperBackNeck", "jawReset"],
     text: {
       summary: "Sit tall and slowly turn to look over each shoulder, keeping the chin level.",
       setup: [
@@ -190,8 +213,12 @@ export const EXTRA_JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isometric"],
+    muscles: { primary: ["scalenes"], secondary: ["upper-traps", "levator-scapulae"] },
+    purposes: ["stretch", "condition-care"],
+    themes: ["deskUnwind", "upperBackNeck", "jawReset"],
     text: {
-      summary: "Anchor one shoulder, tilt the head away, and lift the chin a touch to stretch low on the side of the neck.",
+      summary: "Anchor one shoulder, tilt the head away and lift the chin to stretch the side of the neck.",
       setup: [
         "Sit tall and hold the seat edge with one hand to keep that shoulder down.",
         "Tongue on the palate, teeth apart."
@@ -222,8 +249,13 @@ export const EXTRA_JAW_NECK = defineExercises([
     dose: { type: "time", range: [45, 60] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["sternocleidomastoid"], secondary: [] },
+    purposes: ["recovery", "condition-care"],
+    themes: ["jawReset"],
     text: {
-      summary: "Gently pinch the rope-like muscle on the side of the neck and hold light pressure until it eases.",
+      summary: "Gently pinch the rope-like muscle at the side of the neck and hold light pressure.",
       setup: [
         "Sit supported with the teeth apart.",
         "Turn your head away to find the SCM, the rope-like muscle from behind the ear to the collarbone; then face forward and tilt the head slightly toward it so it softens."
@@ -263,10 +295,14 @@ export const EXTRA_JAW_NECK = defineExercises([
     dose: { type: "reps", range: [8, 12], secsPerRep: 6 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: ["desk-relief", "posture"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["rotator-cuff", "rhomboids"], secondary: ["middle-traps", "lower-traps", "deltoids"] },
+    purposes: ["activation", "warmup", "mobility"],
+    themes: ["upperBackNeck", "deskUnwind"],
     harder: ["bandPullApart"],
-    tags: ["desk-relief"],
     text: {
-      summary: "Elbows at your sides, open the forearms out like doors, then add small shoulder-blade squeezes.",
+      summary: "Elbows at your sides, open the forearms like doors, then squeeze the shoulder blades.",
       setup: [
         "Stand tall with the elbows bent to 90° and tucked against your sides, palms up.",
         "Tongue on the palate, teeth apart."
@@ -302,6 +338,10 @@ export const EXTRA_JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "rhomboids"], secondary: ["middle-traps", "thoracic-extensors", "deltoids"] },
+    purposes: ["warmup", "mobility"],
+    themes: ["deskUnwind", "upperBackNeck"],
     text: {
       summary: "Seated, bring the elbows together in front of your face, then open them wide and back.",
       setup: [
@@ -335,6 +375,10 @@ export const EXTRA_JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "rhomboids"], secondary: ["middle-traps", "deltoids"] },
+    purposes: ["stretch", "mobility"],
+    themes: ["deskUnwind", "upperBackNeck"],
     text: {
       summary: "Seated, interlace the hands behind you, straighten the arms, and draw them back and down.",
       setup: [
@@ -368,9 +412,13 @@ export const EXTRA_JAW_NECK = defineExercises([
     dose: { type: "time", range: [45, 60] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "breath"],
+    contraction: ["isometric"],
+    muscles: { primary: ["thoracic-extensors"], secondary: ["diaphragm", "obliques", "rhomboids"] },
+    purposes: ["mobility", "stretch"],
+    themes: ["deskUnwind", "gentleMobility"],
     text: {
-      summary: "Foot on a chair, towel in the hip crease, turn gently and breathe into the space beside the shoulder blade.",
+      summary: "Foot on a chair, turn gently and breathe into the space beside the shoulder blade.",
       setup: [
         "Stand beside a sturdy chair, put one foot on the seat, and wedge a folded towel deep in the crease between that thigh and your lower ribs.",
         "Rest the same-side forearm on a desk, a counter, or the raised knee, and hold the chair seat with the other hand."
@@ -403,6 +451,10 @@ export const EXTRA_JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["thoracic-extensors"], secondary: ["pecs", "erector-spinae"] },
+    purposes: ["mobility", "warmup"],
+    themes: ["deskUnwind"],
     text: {
       summary: "Sit back against a chair and extend the upper back over the top of the backrest.",
       setup: [
@@ -440,6 +492,10 @@ export const EXTRA_JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isometric"],
+    muscles: { primary: ["pecs"], secondary: ["deltoids"] },
+    purposes: ["recovery", "cooldown"],
+    themes: ["deskUnwind", "upperBackNeck"],
     text: {
       summary: "Pin a massage ball between a wall and your chest muscle and ease it with small movements.",
       setup: [

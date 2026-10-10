@@ -15,9 +15,14 @@ export const EXTRA_PASS_TWO = defineExercises([
     dose: { type: "time", range: [15, 30], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["glute-max", "hamstrings"], secondary: ["erector-spinae", "triceps", "deltoids"] },
+    purposes: ["strength"],
+    themes: ["posteriorChain"],
     easier: ["bridge"],
     text: {
-      summary: "Sit with legs long and hands behind you, then lift the hips until the body is one straight line and hold.",
+      summary: "Sit with legs long and hands behind you, lift the hips into a straight line and hold.",
       setup: [
         "Sit with the legs out straight in front of you, feet together.",
         "Put the hands on the floor a little behind the hips, fingers toward the feet or out to the sides — whichever the wrists prefer."
@@ -51,8 +56,13 @@ export const EXTRA_PASS_TWO = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60 },
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 4,
+    tags: ["anti-rotation"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["obliques", "pecs"], secondary: ["transverse-abdominis", "triceps", "serratus-anterior", "deltoids"] },
+    purposes: ["strength"],
+    themes: ["fullBody", "carryDay"],
     text: {
-      summary: "From a high plank beside a weight, reach under your body and drag it across, then do a push-up.",
+      summary: "From a high plank beside a weight, drag it under you to the other side, then push up.",
       setup: [
         "Set a light kettlebell or dumbbell on the floor just beside one hand.",
         "Take a high plank with the hands under the shoulders and the feet a little wider than hip-width."
@@ -89,10 +99,14 @@ export const EXTRA_PASS_TWO = defineExercises([
     dose: { type: "reps", range: [8, 12], secsPerRep: 6 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    harder: ["hingeDrill"],
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["hamstrings"], secondary: ["glute-max", "erector-spinae"] },
+    purposes: ["warmup", "mobility"],
+    themes: ["deskUnwind", "hipsPosture"],
+    harder: ["hingeDrill"],
     text: {
-      summary: "Sit near the front of a chair, feet wide, and tip the chest forward from the hips with a long back.",
+      summary: "Sit near the front of a chair, feet wide, and tip the chest forward from the hips.",
       setup: [
         "Sit toward the front edge of a sturdy chair or bench with the feet wide and turned out a little.",
         "Cross the arms over the chest or rest the hands on the thighs."
@@ -123,8 +137,13 @@ export const EXTRA_PASS_TWO = defineExercises([
     dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["erector-spinae", "quadratus-lumborum"], secondary: ["glute-max"] },
+    purposes: ["cooldown", "recovery"],
+    themes: ["gentleMobility"],
     text: {
-      summary: "On your back, draw the knees toward the chest and let them sway in small circles or from side to side.",
+      summary: "On your back, draw the knees to the chest and sway them in small circles or side to side.",
       setup: [
         "Lie face up on a mat with the head resting; a folded towel under it is fine.",
         "Draw both knees toward the chest and hold them, a hand on each knee or the arms around the shins."
@@ -155,8 +174,13 @@ export const EXTRA_PASS_TWO = defineExercises([
     dose: { type: "time", range: [45, 90] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["deep-hip-rotators", "erector-spinae"], secondary: ["glute-max"] },
+    purposes: ["cooldown", "recovery"],
+    themes: ["gentleMobility"],
     text: {
-      summary: "On your back with hands under the base of the spine, let the arms jiggle the hips loose while the legs relax.",
+      summary: "On your back, hands under the base of the spine, let the arms jiggle the hips loose.",
       setup: [
         "Lie face up with the legs long, or the knees bent and the feet on the floor.",
         "Slide the hands, palms down, under the sacrum — the flat bone at the base of the spine."
@@ -187,8 +211,13 @@ export const EXTRA_PASS_TWO = defineExercises([
     dose: { type: "reps", range: [5, 8], secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    tags: ["glute-activation", "hip-opening"],
+    contraction: ["isotonic", "isometric"],
+    muscles: { primary: ["glute-max"], secondary: ["hamstrings", "erector-spinae", "deep-hip-rotators"] },
+    purposes: ["strength", "activation", "mobility"],
+    themes: ["hipsPosture", "posteriorChain"],
     text: {
-      summary: "In pigeon pose, lift the straight back leg a little off the floor, hold briefly, and lower.",
+      summary: "In pigeon pose, lift the straight back leg off the floor, hold briefly, and lower.",
       setup: [
         "From hands and knees, bring one knee forward behind the same-side wrist and lay the shin across; reach the other leg straight back.",
         "Stay up on the hands with the chest tall; a folded towel under the front hip helps if it floats."

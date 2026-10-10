@@ -16,6 +16,10 @@ export const BREATH_DOWNSHIFT = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["diaphragm", "masseter"], secondary: ["temporalis", "scalenes"] },
+    purposes: ["recovery", "condition-care"],
+    themes: ["jawReset"],
     text: {
       summary: "Settle the jaw into its rest position and slow the exhale.",
       setup: [
@@ -57,6 +61,11 @@ export const BREATH_DOWNSHIFT = defineExercises([
     dose: { type: "breaths", range: [5, 8] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["diaphragm", "scalenes"], secondary: ["sternocleidomastoid"] },
+    purposes: ["recovery", "condition-care"],
+    themes: ["jawReset"],
     text: {
       summary: "Two quick inhales through the nose, then one long, slow exhale.",
       setup: ["Sit or stand comfortably with your shoulders relaxed.", "Tongue resting on the palate, lips closed."],
@@ -89,6 +98,11 @@ export const BREATH_DOWNSHIFT = defineExercises([
     dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["diaphragm", "transverse-abdominis"], secondary: ["obliques", "pelvic-floor"] },
+    purposes: ["recovery", "activation"],
+    themes: ["jawReset", "gentleMobility"],
     text: {
       summary: "Lie with hips and knees at 90° on a chair or wall and breathe into your back ribs.",
       setup: [
@@ -125,6 +139,11 @@ export const BREATH_DOWNSHIFT = defineExercises([
     dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["erector-spinae", "hip-flexors"], secondary: ["diaphragm"] },
+    purposes: ["recovery", "cooldown"],
+    themes: ["gentleMobility", "jawReset"],
     text: {
       summary: "Lie back with knees bent or legs up and let the floor hold you.",
       setup: [
@@ -157,6 +176,11 @@ export const BREATH_DOWNSHIFT = defineExercises([
     dose: { type: "time", range: [45, 75] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["masseter", "temporalis"], secondary: ["diaphragm"] },
+    purposes: ["condition-care", "cooldown"],
+    themes: ["jawReset"],
     text: {
       summary: "Scan the face and jaw and lock in the resting position before you get up.",
       setup: ["Sit tall with support, or stay lying down.", "Close your eyes if that helps you notice tension."],

@@ -15,7 +15,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "reps", range: [8, 12], secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "posture"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["deep-neck-flexors"], secondary: ["sternocleidomastoid"] },
+    purposes: ["condition-care", "activation"],
+    themes: ["jawReset", "upperBackNeck", "deskUnwind"],
     text: {
       summary: "Slide your head straight back, as if making a double chin, then release.",
       setup: ["Sit tall with your back supported, eyes level.", "Rest the tongue on the palate, teeth apart."],
@@ -45,6 +49,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "reps", range: [6, 10], secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["pterygoids"], secondary: ["masseter", "temporalis"] },
+    purposes: ["condition-care", "mobility"],
+    themes: ["jawReset"],
     harder: ["jawIsoOpen"],
     text: {
       summary: "Open the mouth slowly with the tongue on the palate, only as far as it's smooth.",
@@ -82,6 +91,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "reps", range: [6, 10], secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["pterygoids", "masseter"], secondary: ["temporalis"] },
+    purposes: ["condition-care", "mobility"],
+    themes: ["jawReset"],
     text: {
       summary: "With teeth slightly apart, glide the lower jaw gently side to side.",
       setup: [
@@ -114,6 +128,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [45, 90] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["masseter", "temporalis"], secondary: ["pterygoids"] },
+    purposes: ["condition-care", "recovery"],
+    themes: ["jawReset"],
     text: {
       summary: "Practise the jaw's resting position: tongue on the palate, lips together, teeth apart.",
       setup: [
@@ -146,6 +165,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [120, 180] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic", "isometric"],
+    muscles: { primary: ["pterygoids", "deep-neck-flexors"], secondary: ["masseter", "temporalis", "suboccipitals"] },
+    purposes: ["condition-care", "mobility"],
+    themes: ["jawReset"],
     text: {
       summary: "Six gentle jaw and neck exercises, six reps each — a classic TMJ routine.",
       setup: ["Sit tall in front of a mirror if you have one.", "Move slowly; nothing should hurt."],
@@ -177,6 +201,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "reps", range: [5, 8], secsPerRep: 8 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["pterygoids"], secondary: [] },
+    purposes: ["condition-care"],
+    themes: ["jawReset"],
     easier: ["jawOpen"],
     text: {
       summary: "Open the mouth slightly against light finger pressure under the chin and hold.",
@@ -207,6 +236,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["masseter", "temporalis"], secondary: [] },
+    purposes: ["recovery", "condition-care"],
+    themes: ["jawReset"],
     text: {
       summary: "Light circles over the jaw muscles and temples, staying below pain.",
       setup: [
@@ -241,6 +275,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["suboccipitals"], secondary: ["levator-scapulae"] },
+    purposes: ["recovery", "condition-care"],
+    themes: ["jawReset", "deskUnwind"],
     text: {
       summary: "Lie back and let the base of your skull rest on your fingertips or a rolled towel.",
       setup: [
@@ -276,6 +315,10 @@ export const JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isometric"],
+    muscles: { primary: ["upper-traps", "levator-scapulae"], secondary: ["scalenes"] },
+    purposes: ["stretch", "condition-care"],
+    themes: ["deskUnwind", "upperBackNeck", "jawReset"],
     text: {
       summary: "Tilt the ear toward the shoulder while the other shoulder stays heavy.",
       setup: [
@@ -308,6 +351,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [30, 45] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["levator-scapulae"], secondary: ["upper-traps", "suboccipitals"] },
+    purposes: ["stretch", "condition-care"],
+    themes: ["deskUnwind", "upperBackNeck", "jawReset"],
     text: {
       summary: "Turn the nose toward the armpit and let the head drop gently forward.",
       setup: [
@@ -340,6 +388,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [30, 45] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["sternocleidomastoid"], secondary: ["scalenes"] },
+    purposes: ["stretch", "condition-care"],
+    themes: ["upperBackNeck", "jawReset"],
     text: {
       summary: "Tilt away, turn slightly back toward the stretched side, and lift the chin a touch.",
       setup: ["Sit tall with the shoulders relaxed.", "Place one hand flat on the collarbone on the side you're stretching."],
@@ -370,7 +423,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "reps", range: [6, 10], secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "posture"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["lower-traps", "serratus-anterior"], secondary: ["thoracic-extensors", "rotator-cuff", "deltoids"] },
+    purposes: ["activation", "mobility", "warmup"],
+    themes: ["deskUnwind", "upperBackNeck"],
     text: {
       summary: "Slide your arms up and down a wall while your back stays flat against it.",
       setup: [
@@ -405,6 +462,10 @@ export const JAW_NECK = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isometric"],
+    muscles: { primary: ["pecs"], secondary: ["deltoids"] },
+    purposes: ["stretch", "mobility"],
+    themes: ["deskUnwind", "upperBackNeck"],
     text: {
       summary: "Forearm on a door frame, step through, and let the chest open.",
       setup: [
@@ -438,6 +499,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [30, 45] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["upper-traps"], secondary: ["levator-scapulae", "rhomboids"] },
+    purposes: ["recovery", "condition-care"],
+    themes: ["upperBackNeck", "jawReset", "deskUnwind"],
     text: {
       summary: "Lean into a massage ball on a wall to release the upper traps and shoulder-blade area.",
       setup: [
@@ -471,6 +537,11 @@ export const JAW_NECK = defineExercises([
     dose: { type: "time", range: [30, 45] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["masseter"], secondary: ["temporalis"] },
+    purposes: ["recovery", "condition-care"],
+    themes: ["jawReset"],
     text: {
       summary: "Roll a soft massage ball over the masseter with light pressure from your palm.",
       setup: [

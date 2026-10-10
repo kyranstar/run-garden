@@ -15,8 +15,13 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "time", range: [20, 30] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    tags: ["hip-opening", "posture"],
+    contraction: ["isometric"],
+    muscles: { primary: ["deep-hip-rotators", "middle-traps"], secondary: ["glute-max", "rhomboids", "rotator-cuff"] },
+    purposes: ["stretch", "activation", "mobility"],
+    themes: ["hipsPosture", "deskUnwind"],
     text: {
-      summary: "Sit tall in pigeon pose and hold both arms out in a T to open the hip and wake up the upper back.",
+      summary: "Sit tall in pigeon with arms out in a T to open the hip and wake up the upper back.",
       setup: [
         "From hands and knees, slide one knee forward behind the same-side wrist and angle the shin across; stretch the other leg long behind.",
         "Square the hips; put a folded towel or block under the front hip if it floats."
@@ -52,10 +57,14 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "time", range: [45, 60] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    tags: ["desk-relief", "hip-opening"],
+    contraction: ["isometric"],
+    muscles: { primary: ["hip-flexors", "quads"], secondary: ["glute-max"] },
+    purposes: ["stretch", "mobility"],
+    themes: ["deskUnwind", "hipsPosture"],
     easier: ["lowLunge"],
-    tags: ["desk-relief"],
     text: {
-      summary: "Back shin up a chair, bench, or wall, front foot forward; bring the torso up to stretch the front hip and quad.",
+      summary: "Back shin up a chair or wall, front foot forward; lift the torso to stretch hip and quad.",
       setup: [
         "Pad the floor, then kneel with the back knee near the chair, bench, or wall and the top of that foot resting up against it.",
         "Step the other foot forward into a lunge; start with the hands on the front thigh."
@@ -90,7 +99,11 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "time", range: [30, 45] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "hip-opening"],
+    contraction: ["isometric"],
+    muscles: { primary: ["deep-hip-rotators", "glute-max"], secondary: ["glute-med"] },
+    purposes: ["stretch", "cooldown", "mobility"],
+    themes: ["deskUnwind", "hipsPosture", "gentleMobility"],
     text: {
       summary: "Lay one shin across a bench or chair seat and hinge forward to stretch the outer hip.",
       setup: [
@@ -126,6 +139,11 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: ["hip-opening"],
+    contraction: ["isometric"],
+    muscles: { primary: ["adductors"], secondary: ["deep-hip-rotators"] },
+    purposes: ["cooldown", "stretch", "recovery"],
+    themes: ["gentleMobility"],
     text: {
       summary: "Lie back with the soles together and let the knees fall open; rest and breathe.",
       setup: [
@@ -160,8 +178,12 @@ export const EXTRA_MOBILITY = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["thoracic-extensors"], secondary: ["obliques", "serratus-anterior"] },
+    purposes: ["warmup", "mobility"],
+    themes: ["deskUnwind", "gentleMobility"],
     text: {
-      summary: "Half-kneel side-on to a wall and turn the chest toward it and away from it while the hips stay still.",
+      summary: "Half-kneel beside a wall and turn the chest toward and away from it, hips still.",
       setup: [
         "Half-kneel side-on to a wall with the down knee nearest it, lightly touching the wall.",
         "Cross the arms over the chest, or rest the fingertips behind the head without pulling."
@@ -193,8 +215,12 @@ export const EXTRA_MOBILITY = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["thoracic-extensors", "rotator-cuff"], secondary: ["pecs", "obliques"] },
+    purposes: ["warmup", "mobility"],
+    themes: ["deskUnwind", "gentleMobility", "upperBackNeck"],
     text: {
-      summary: "On your side with knees bent, open the top arm like a book and turn the chest to the ceiling.",
+      summary: "On your side, knees bent, open the top arm like a book and turn the chest up.",
       setup: [
         "Lie on your side with hips and knees bent to about 90° and a folded towel or pillow under the head.",
         "Stretch both arms out in front at shoulder height, palms together."
@@ -225,9 +251,14 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "reps", range: [5, 8], secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    tags: [],
+    contraction: ["isotonic", "isometric"],
+    muscles: { primary: ["glute-min-tfl"], secondary: ["glute-med", "adductors"] },
+    purposes: ["strength", "activation", "mobility"],
+    themes: ["hipsPosture"],
     easier: ["hip9090"],
     text: {
-      summary: "In a 90/90 sit, turn the back thigh inward to lift the back shin off the floor, hold briefly, and lower.",
+      summary: "In a 90/90 sit, turn the back thigh inward to lift the shin off the floor, then lower.",
       setup: [
         "Sit with both knees bent about 90°, one leg in front and one out to the side behind you.",
         "Lean on your hands and sit as tall as you can."
@@ -261,8 +292,13 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "reps", range: [6, 8], secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["glute-min-tfl", "deep-hip-rotators"], secondary: ["hip-flexors"] },
+    purposes: ["warmup", "mobility"],
+    themes: ["hipsPosture"],
     text: {
-      summary: "In a split stance with the back shin against a wall, turn slowly toward the wall to rotate the front hip.",
+      summary: "Split stance, back shin on a wall: turn slowly toward the wall to rotate the front hip.",
       setup: [
         "Stand in a split stance right beside a wall, with the outside of the back leg against it.",
         "Bend the back knee toward 90° so the back shin rests on the wall; hands on the hips."
@@ -294,8 +330,13 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "reps", range: [2, 3], secsPerRep: 30 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isotonic"],
+    muscles: { primary: ["hamstrings", "adductors"], secondary: ["glute-max", "erector-spinae"] },
+    purposes: ["warmup", "mobility", "activation"],
+    themes: ["posteriorChain", "hipsPosture"],
     text: {
-      summary: "Hands on a chair back and a block between the thighs, hinge down in small steps, squeezing and breathing.",
+      summary: "Hands on a chair, block between the thighs: hinge back in small steps, squeezing.",
       setup: [
         "Place a yoga block, rolled towel, or foam roller between the upper thighs.",
         "Stand about a foot-length from the back of a sturdy chair, knees slightly bent, hands on the backrest with straight arms."
@@ -329,8 +370,13 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "reps", range: [4, 6], sets: [2, 3], restSec: 45, secsPerRep: 6 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    tags: ["lateral"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["adductors", "quads", "glute-max"], secondary: ["hamstrings", "glute-med"] },
+    purposes: ["mobility", "warmup", "strength"],
+    themes: ["hipsPosture"],
     text: {
-      summary: "From a wide stance, sit into one leg while the other stays straight, then shift across to the other side.",
+      summary: "From a wide stance, sit into one leg with the other straight, then shift across.",
       setup: [
         "Stand with the feet wide, toes turned slightly out.",
         "Clasp the hands in front of the chest, or hold a chair back for balance."
@@ -363,6 +409,10 @@ export const EXTRA_MOBILITY = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
+    contraction: ["isotonic"],
+    muscles: { primary: ["pecs", "deltoids"], secondary: ["lats", "lower-traps", "serratus-anterior"] },
+    purposes: ["warmup", "mobility"],
+    themes: ["deskUnwind", "upperBackNeck"],
     text: {
       summary: "Hold a towel or band wide and sweep it overhead and back with straight arms.",
       setup: [
@@ -396,8 +446,13 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "time", range: [30, 45] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["hamstrings"], secondary: ["gastrocnemius"] },
+    purposes: ["stretch", "cooldown"],
+    themes: [],
     text: {
-      summary: "On your back, loop a towel around one foot and raise the straight leg until the back of the thigh stretches.",
+      summary: "On your back, loop a towel round one foot and raise the straight leg to stretch.",
       setup: [
         "Lie on your back with one knee bent and that foot flat.",
         "Loop a towel around the arch of the other foot and hold an end in each hand."
@@ -429,6 +484,11 @@ export const EXTRA_MOBILITY = defineExercises([
     dose: { type: "time", range: [45, 60] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    tags: [],
+    contraction: ["isometric"],
+    muscles: { primary: ["glute-max", "deep-hip-rotators"], secondary: ["glute-med"] },
+    purposes: ["recovery", "cooldown"],
+    themes: ["deskUnwind"],
     text: {
       summary: "Sit on a massage ball under one glute and let tight spots ease with small movements.",
       setup: [
