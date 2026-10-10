@@ -168,6 +168,8 @@ describe("items", () => {
     expect(ids(s, 1)).toEqual(["b"]);
     s = run(s, { type: "moveItem", from: [0, 0], to: [2, 99] });
     expect(ids(s, 2)).toEqual(["a"]);
+    s = run(s, { type: "moveItem", from: [2, 0], to: [1, 0] }, { type: "moveItem", from: [0, 0], to: [1, -1] });
+    expect(ids(s, 1)).toEqual(["c", "a", "b"]);
     expect(edit(s, { type: "moveItem", from: [0, 9], to: [1, 0] }, lib)).toBe(s);
     expect(edit(s, { type: "moveItem", from: [0, 0], to: [9, 0] }, lib)).toBe(s);
   });
