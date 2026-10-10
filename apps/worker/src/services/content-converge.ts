@@ -63,7 +63,7 @@
  * `rewrite` and the backfill queues real jobs for them.
  */
 
-import { and, asc, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull } from "drizzle-orm";
 import {
   auditEvents,
   corosWriteJobs,
@@ -78,11 +78,15 @@ import {
   COACH_STAMPING_JOB_KINDS,
   newId,
   nowInstant,
+  paceBandFor,
   sessionSummaryLine,
+  todayInZone,
   watchAddressOf,
   type CoachSession,
+  type PaceIntensity,
 } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
+import { loadPreferences } from "./calendar-sync.js";
 import { enqueueContentConvergence, ownershipProofFor, watchPushable } from "./coach-apply.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */
@@ -97,7 +101,10 @@ export type DivergenceEvidence =
   | "open_content_intent"
   /** Its push recorded blocks that went to the watch with no pace band, and the
    *  athlete's threshold pace has since arrived. */
-  | "pace_targets_never_pushed";
+  | "pace_targets_never_pushed"
+  /** An upcoming run whose latest verified write carried pace targets in the encoding before 2c1ee96 — bounds the
+   *  watch reads as SECONDS per km ("78'59 – 722'43" per mile, live 2026-10-09). See `outdatedPaceEncoding`. */
+  | "pace_encoding_outdated";
 
 export interface ContentConvergeRowReport {
   workoutId: string;
@@ -249,6 +256,83 @@ export interface ConvergeOptions {
    * for explicitly is not evidence.
    */
   workoutIds?: string[];
+  /** The athlete's today, for `pace_encoding_outdated`; read from their preferences when omitted. */
+  today?: string;
+}
+
+/** A coach job that has not finished: a rewrite for its row is already on its way, or another write is in flight. */
+const OPEN_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
+
+/**
+ * EVIDENCE (C): THE COACH RUNS ON THE WATCH WITH THE OLD PACE ENCODING — each mapped to the threshold its write
+ * carried.
+ *
+ * Until 2c1ee96 `buildRunProgram` sent pace bounds in ms/km with intensityMultiplier 0, and the watch read them as
+ * SECONDS per km: threshold reps showed "78'59 – 722'43" per mile. The fix changed two fields the program fingerprint
+ * does not cover, so the import sees nothing on the old copies and they stay wrong until rewritten. Since the fix the
+ * lane stamps every run build it verifies with `paceWire` (`RUN_PACE_WIRE`, coros-write-cloud.ts), so this is exact:
+ *
+ *  - the row's LATEST verified coach write (a create, a rewrite, or an unpush — after an unpush the watch holds
+ *    nothing to fix) is a create or a rewrite with no `paceWire`;
+ *  - and it CARRIED PACE TARGETS: a numeric `thresholdPaceSecPerKm` and a run block that threshold gives a band. A run
+ *    with no targets, a lift and a mobility session have no pace on the wire to have encoded wrongly;
+ *  - and no coach write for the row is still open — one is already on its way, and a second enqueue would supersede
+ *    it (`enqueueContentConvergence` supersedes an open rewrite before inserting, and the id collides);
+ *  - and the row is UPCOMING: effective date on or after the athlete's today, and a run. Every coach run written
+ *    before the fix is old-encoded; a past one's watch copy is history, and counting it would flood the census and
+ *    hand the operator path sessions already run.
+ *
+ * One read, over the upcoming run rows' coach jobs only — the hourly heal pays exactly this when nothing is left.
+ */
+async function outdatedPaceEncoding(db: Db, userId: string, today: string): Promise<Map<string, number>> {
+  const jobs = await db
+    .select({
+      workoutId: corosWriteJobs.workoutId,
+      status: corosWriteJobs.status,
+      verifiedAt: corosWriteJobs.verifiedAt,
+      completedAt: corosWriteJobs.completedAt,
+      updatedAt: corosWriteJobs.updatedAt,
+      payload: corosWriteJobs.payload,
+    })
+    .from(corosWriteJobs)
+    .innerJoin(plannedWorkouts, eq(plannedWorkouts.id, corosWriteJobs.workoutId))
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.kind, [...COACH_STAMPING_JOB_KINDS, "coach_delete_workout"]),
+        inArray(corosWriteJobs.status, ["verified", ...OPEN_JOB_STATUSES]),
+        eq(plannedWorkouts.userId, userId),
+        eq(plannedWorkouts.sport, "run"),
+        gte(plannedWorkouts.effectiveDate, today),
+      ),
+    );
+  const open = new Set<string>();
+  const latest = new Map<string, (typeof jobs)[number]>();
+  const at = (j: (typeof jobs)[number]): string => j.verifiedAt ?? j.completedAt ?? j.updatedAt;
+  for (const j of jobs) {
+    if (j.status !== "verified") {
+      open.add(j.workoutId);
+      continue;
+    }
+    const seen = latest.get(j.workoutId);
+    if (!seen || at(j) > at(seen)) latest.set(j.workoutId, j);
+  }
+  const out = new Map<string, number>();
+  for (const [workoutId, j] of latest) {
+    // An unpush's payload carries no session and no threshold, so a row whose latest write took it off the watch
+    // falls out below.
+    if (open.has(workoutId)) continue;
+    const p = (j.payload ?? {}) as {
+      paceWire?: unknown;
+      thresholdPaceSecPerKm?: unknown;
+      session?: { run?: { blocks?: Array<{ intensity?: PaceIntensity }> } };
+    };
+    if (p.paceWire !== undefined || typeof p.thresholdPaceSecPerKm !== "number") continue;
+    const threshold = p.thresholdPaceSecPerKm;
+    if (!(p.session?.run?.blocks ?? []).some((b) => paceBandFor(b.intensity, threshold))) continue;
+    out.set(workoutId, threshold);
+  }
+  return out;
 }
 
 /**
@@ -307,18 +391,28 @@ export async function convergeDivergedContent(
     }
   }
 
+  // ── Evidence (C): upcoming runs on the watch with the old pace encoding (`outdatedPaceEncoding`), each with the
+  // threshold its write carried — the rewrite's fallback when no reading is on file (the lane prefers the latest).
+  const outdatedPace = await outdatedPaceEncoding(
+    db,
+    userId,
+    opts.today ?? todayInZone((await loadPreferences(db, userId)).timezone),
+  );
+
   const evidenceFor = (id: string): DivergenceEvidence[] => {
     const out: DivergenceEvidence[] = [];
     if (claimedIds.has(id)) out.push("open_content_intent");
     if (paceDebtIds.has(id)) out.push("pace_targets_never_pushed");
+    if (outdatedPace.has(id)) out.push("pace_encoding_outdated");
     return out;
   };
 
-  // Candidates: every row either signal names, narrowed to the caller's ids when
+  // Candidates: every row any signal names, narrowed to the caller's ids when
   // they gave any. Read whole — the reconstruction needs every session column.
+  const named = (id: string): boolean => claimedIds.has(id) || paceDebtIds.has(id) || outdatedPace.has(id);
   const candidateIds = opts.workoutIds
-    ? opts.workoutIds.filter((id) => claimedIds.has(id) || paceDebtIds.has(id))
-    : [...new Set([...claimedIds, ...paceDebtIds])];
+    ? opts.workoutIds.filter(named)
+    : [...new Set([...claimedIds, ...paceDebtIds, ...outdatedPace.keys()])];
   const rows: WorkoutRow[] = [];
   for (const ids of chunkIds(candidateIds)) {
     rows.push(
@@ -510,6 +604,7 @@ export async function convergeDivergedContent(
     // an approved one cannot be two different things. It re-derives the address
     // and the stamp itself; a refusal here means the row changed under us between
     // the plan and the write, and it is reported rather than forced.
+    const anchor = thresholdPaceSecPerKm ?? outdatedPace.get(row.id);
     const outcome = await enqueueContentConvergence(db, {
       // An operator asked for this run explicitly, so a job that failed before
       // is retried rather than silently colliding — see `reviveFailed`.
@@ -519,7 +614,7 @@ export async function convergeDivergedContent(
       session,
       now,
       corosWritesEnabled: true,
-      ...(thresholdPaceSecPerKm ? { thresholdPaceSecPerKm } : {}),
+      ...(anchor ? { thresholdPaceSecPerKm: anchor } : {}),
     });
     if (outcome.jobId) {
       rowReport.jobId = outcome.jobId;

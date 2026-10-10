@@ -18,6 +18,7 @@ import {
   deleteWorkout,
   executeMoveJob,
   executeStudioJob,
+  RUN_PACE_WIRE,
   updateWorkoutContent,
   type StudioJob,
   type UpdateContentReason,
@@ -74,6 +75,18 @@ export const CLOUD_DEVICE_ID = "cloud";
  * possible" is strictly more informed than "as early as possible", and it
  * costs one bounded single-row read per create.
  */
+/**
+ * A verified RUN build's job records the pace encoding the wire now holds (`RUN_PACE_WIRE`). The program fingerprint
+ * cannot tell the encodings apart, so this stamp is the only record of which one a copy on the watch carries: a
+ * verified paced coach run without it went out before 2c1ee96 and reads as nonsense on the watch
+ * (`pace_encoding_outdated`, content-converge.ts). The stored payload is kept whole — `attempts` included — and only
+ * gains the field; a lift or mobility build carries no pace and claims no encoding.
+ */
+function paceWireStamp(payload: unknown, session: CoachSession): { payload?: Record<string, unknown> } {
+  if (!session.run) return {};
+  return { payload: { ...((payload ?? {}) as Record<string, unknown>), paceWire: RUN_PACE_WIRE } };
+}
+
 async function latestThresholdPace(db: Db, userId: string): Promise<number | undefined> {
   const [row] = await db
     .select({ v: dailyHealth.thresholdPaceSecPerKm })
@@ -418,6 +431,7 @@ export async function executeCloudJobs(
               ...(result.paceTargetsOwed
                 ? { lastErrorCategory: "pace_targets_owed" }
                 : { lastErrorCategory: null }),
+              ...paceWireStamp(job.payload, spec.session),
             })
             .where(eq(corosWriteJobs.id, job.id));
           // REMOVED WHILE THE CREATE WAS IN FLIGHT. The remove found a claimed
@@ -816,6 +830,7 @@ export async function executeCloudJobs(
               ...(result.paceTargetsOwed
                 ? { lastErrorCategory: "pace_targets_owed" }
                 : { lastErrorCategory: null }),
+              ...paceWireStamp(job.payload, spec.session),
             })
             .where(eq(corosWriteJobs.id, job.id));
         } else {
