@@ -45,6 +45,8 @@ export interface Env {
   /** Optional official COROS MCP bearer token for cloud reads / capability probing. */
   COROS_MCP_URL?: string;
   COROS_MCP_TOKEN?: string;
+  /** SHA-256 (hex) of the token LifeOS reads the plan with (`/api/lifeos/plan`). Unset: the endpoint is off. Secret. */
+  LIFEOS_TOKEN_SHA256?: string;
 }
 
 export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";

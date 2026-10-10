@@ -100,6 +100,20 @@ payload = base64url(iv â€– ciphertext), fresh random 12-byte IV per encryption â
 - **Device revoke**: revoked devices fail signature auth permanently.
 - **Local erase**: the desktop "Erase credentials" action clears the Keychain.
 
+## LifeOS reads the plan (read-only token)
+
+`GET /api/lifeos/plan?from=&to=` lets LifeOS, the owner's habit app on their iPhone, read each day's planned
+sessions, rest days and which sessions were done (`apps/worker/src/routes/lifeos.ts`):
+
+- **Bearer token, not a cookie.** The token is 32 random bytes made on the owner's Mac by LifeOS's
+  `scripts/rungarden.sh connect`; it goes only to the phone (over the developer cable link, into its Keychain).
+  Cloudflare holds only its SHA-256, as the Worker secret `LIFEOS_TOKEN_SHA256`, compared in constant time.
+- **Off unless set.** Without the secret the route answers 404. Rotating is running `connect` again; turning it
+  off is `wrangler secret delete LIFEOS_TOKEN_SHA256`.
+- **Read-only and narrow.** GET only, the owner's (`ALLOWED_GOOGLE_EMAIL`) plan only, at most 31 days, fields
+  limited to a session's id, title, sport, category, time, planned minutes, state and the matched activity's start.
+  No health readings, no activities' telemetry, `Cache-Control: no-store`.
+
 ## One provider, no third-party egress
 
 COROS is the only external training-data source (README, "Why COROS is the
