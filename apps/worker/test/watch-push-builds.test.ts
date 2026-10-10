@@ -115,7 +115,10 @@ describe("a one-sided set on the watch (W-1)", () => {
     for (const i of lefts) {
       const [left, right] = [plan.steps[i]!, plan.steps[i + 1]!];
       expect(right.side).toBe("right");
-      expect({ ...right, side: "left", overview: "", restSeconds: 0 }).toEqual({ ...left, overview: "", restSeconds: 0 });
+      // The same move, target and weight; only the side differs — in the overview, and in a free-text step's name.
+      const same = (s: typeof left, label: RegExp) => ({ ...s, name: s.name.replace(label, ""), side: null, overview: "", restSeconds: 0 });
+      expect(same(right, / \(R\)$/)).toEqual(same(left, / \(L\)$/));
+      if (left.originId === "0") expect([left.name.endsWith(" (L)"), right.name.endsWith(" (R)")]).toEqual([true, true]);
       expect(left.overview.startsWith("left side")).toBe(true);
       expect(right.overview.startsWith("right side")).toBe(true);
     }
@@ -158,9 +161,19 @@ describe("a one-sided set on the watch (W-1)", () => {
         expect(plan.steps).toHaveLength(work.length + oneSidedSets(s.build!).length);
         most = Math.max(most, plan.steps.length);
         fewestOneSided = Math.min(fewestOneSided, oneSidedSets(s.build!).length);
-        // W-6: one watch name per move — as many distinct names as distinct moves.
-        const moves = new Set(work.map((x) => x.exerciseId));
-        expect(new Set(plan.steps.map((x) => x.name.toLowerCase())).size).toBe(moves.size);
+        // W-6: one watch name per move — its side label aside — and never one name for two moves.
+        const oneSided = new Set(oneSidedSets(s.build!));
+        const stepMoves = work.flatMap((x) => (oneSided.has(x) ? [x.exerciseId!, x.exerciseId!] : [x.exerciseId!]));
+        const movesOf = new Map<string, Set<string>>();
+        const namesOf = new Map<string, Set<string>>();
+        plan.steps.forEach((x, i) => {
+          const name = x.name.toLowerCase();
+          movesOf.set(name, (movesOf.get(name) ?? new Set()).add(stepMoves[i]!));
+          namesOf.set(stepMoves[i]!, (namesOf.get(stepMoves[i]!) ?? new Set()).add(name.replace(/ \((l|r)\)$/, "")));
+        });
+        expect([...movesOf.values()].every((m) => m.size === 1)).toBe(true);
+        expect([...namesOf.values()].every((n) => n.size === 1)).toBe(true);
+        expect(namesOf.size).toBe(new Set(work.map((x) => x.exerciseId)).size);
       }
     }
     expect(fewestOneSided).toBeGreaterThanOrEqual(1); // every build carries the case W-1 is about

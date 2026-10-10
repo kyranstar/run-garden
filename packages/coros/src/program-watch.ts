@@ -10,7 +10,8 @@
  *
  *  - every step in its own repeat container with `sets: 1`;
  *  - a per-side pair — a "left" step directly followed by its "right" step of
- *    the same move — shares one container, two children;
+ *    the same move ("X (L)" then "X (R)", or two "X" sent before the side
+ *    labels) — shares one container, two children;
  *  - reps → `targetType 3`, a hold → `targetType 2`, neither → open (`0`);
  *  - grams → `intensityValue`, null → the bodyweight encoding;
  *  - rest seconds → `restType 1`, none → `restType 3`.
@@ -25,6 +26,7 @@
  */
 import {
   programWatchSessionSchema,
+  WATCH_SIDE_LABEL,
   type ProgramWatchSession,
   type ProgramWatchStep,
   type StudioWeight,
@@ -46,13 +48,24 @@ const targetOf = (s: ProgramWatchStep): { holdSeconds?: number; reps?: number } 
 const weightOf = (grams: number | null): StudioWeight =>
   grams === null ? { type: "bodyweight" } : { type: "kg", value: grams / 1000 };
 
+/** A step's name without its side label: "Floor press (L)" → "Floor press". A pair sent before the labels has none. */
+const unlabelled = (name: string, label: string): string => (name.endsWith(label) ? name.slice(0, -label.length) : name);
+
+/**
+ * A left step and the right step after it are one move's pair: the same catalog id (or both free text) and the same
+ * name once each side's label is off — "Floor press (L)" and "Floor press (R)" share a container exactly as two
+ * "Floor press" steps did before the labels, so the side in the name changes the names and nothing else on the wire.
+ */
+const samePair = (left: ProgramWatchStep, right: ProgramWatchStep): boolean =>
+  right.originId === left.originId && unlabelled(right.name, WATCH_SIDE_LABEL.right) === unlabelled(left.name, WATCH_SIDE_LABEL.left);
+
 /** A left step directly followed by the right step of the same move: one container. */
 function groupsOf(steps: readonly ProgramWatchStep[]): ProgramWatchStep[][] {
   const groups: ProgramWatchStep[][] = [];
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]!;
     const next = steps[i + 1];
-    if (step.side === "left" && next?.side === "right" && next.originId === step.originId && next.name === step.name) {
+    if (step.side === "left" && next?.side === "right" && samePair(step, next)) {
       groups.push([step, next]);
       i += 1;
     } else {

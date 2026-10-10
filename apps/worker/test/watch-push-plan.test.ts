@@ -89,6 +89,8 @@ describe("watchStepsFromBuild — sides, rests and names", () => {
       deps,
     );
     expect(plan.steps.map((s) => s.side)).toEqual(["left", "right"]);
+    // The watch's step screen shows the name only (owner, 2026-10-10): the side is in it; the overview keeps it too.
+    expect(plan.steps.map((s) => s.name)).toEqual(["Side plank (L)", "Side plank (R)"]);
     expect(plan.steps[0]!.overview).toBe("left side · Hips high.");
     expect(plan.steps[1]!.overview).toBe("right side · Hips high.");
   });
@@ -114,10 +116,15 @@ describe("watchStepsFromBuild — sides, rests and names", () => {
     expect(plan.freeText).toBe(2);
   });
 
-  it("a free-text name is cut to 30 characters at a whole word; the overview to 80", () => {
+  it("a free-text name is cut to 30 characters at a whole word", () => {
+    const plan = watchStepsFromBuild(build([step({ exerciseId: "slRdl", target: { reps: 6 } })]), deps);
+    expect(plan.steps[0]!.name).toBe("Single-leg Romanian deadlift");
+  });
+
+  it("a one-sided step's name: the move's name cut at a word to leave room for ' (L)', then the label — at most 30", () => {
     const plan = watchStepsFromBuild(build([step({ exerciseId: "slRdl", side: "Left", target: { reps: 6 } })]), deps);
     const [s] = plan.steps;
-    expect(s!.name).toBe("Single-leg Romanian deadlift");
+    expect(s!.name).toBe("Single-leg Romanian (L)");
     expect(s!.name.length).toBeLessThanOrEqual(WATCH_NAME_MAX);
     expect(s!.overview.length).toBeLessThanOrEqual(WATCH_OVERVIEW_MAX);
     expect(s!.overview).toBe("left side · Hips stay square to the floor while the free leg reaches long behind");
@@ -135,10 +142,10 @@ describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-
   // timed window carries its side. One watch step would prescribe half the work — the coach lane's lesson (d52833e).
   it("a unilateral move's set with no side → left then right: same move, target and weight; the rest on the right", () => {
     const plan = watchStepsFromBuild(build([step({ exerciseId: "oneArmRow", target: { reps: 8, w: { v: 25, u: "lb" } } }), rest(75)]), deps);
-    const pair = { originId: "0", name: "One-arm row", target: { kind: "reps", reps: 8 }, grams: 11_340 };
+    const pair = { originId: "0", target: { kind: "reps", reps: 8 }, grams: 11_340 };
     expect(plan.steps).toEqual([
-      { ...pair, restSeconds: 0, overview: "left side · The shoulder blade moves.", side: "left" },
-      { ...pair, restSeconds: 75, overview: "right side · The shoulder blade moves.", side: "right" },
+      { ...pair, name: "One-arm row (L)", restSeconds: 0, overview: "left side · The shoulder blade moves.", side: "left" },
+      { ...pair, name: "One-arm row (R)", restSeconds: 75, overview: "right side · The shoulder blade moves.", side: "right" },
     ]);
   });
 
@@ -148,8 +155,8 @@ describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-
       { ...deps, catalogIdByKey: new Map([["T1185", "4258276155475001185"]]) },
     );
     expect(plan.steps.map((s) => [s.name, s.side, s.target, s.grams])).toEqual([
-      ["Split squat hold", "left", { kind: "hold", seconds: 30 }, null],
-      ["Split squat hold", "right", { kind: "hold", seconds: 30 }, null],
+      ["Split squat hold (L)", "left", { kind: "hold", seconds: 30 }, null],
+      ["Split squat hold (R)", "right", { kind: "hold", seconds: 30 }, null],
       ["T1185", "left", { kind: "reps", reps: 5 }, null],
       ["T1185", "right", { kind: "reps", reps: 5 }, null],
     ]);
@@ -196,8 +203,8 @@ describe("watchStepsFromBuild — a long name, and one watch name per move (audi
     );
     expect(plan.steps.map((s) => [s.name, s.overview])).toEqual([
       ["Child's pose", `forehead on stacked hands · ${CUE}`],
-      ["Supine hip shake", "left side · hands under sacrum · Tiny movements."],
-      ["Supine hip shake", "right side · hands under sacrum · Tiny movements."],
+      ["Supine hip shake (L)", "left side · hands under sacrum · Tiny movements."],
+      ["Supine hip shake (R)", "right side · hands under sacrum · Tiny movements."],
     ]);
   });
 
@@ -226,9 +233,87 @@ describe("watchStepsFromBuild — a long name, and one watch name per move (audi
       LIBRARY.map((e) => step({ exerciseId: e.id, target: { reps: 5 } })),
       Object.fromEntries(LIBRARY.map((e) => [e.id, e as unknown as ExerciseSlice])),
     );
-    const names = watchStepsFromBuild(every, { catalogIdByKey: new Map(), keyOf: () => null }).steps.filter((s) => s.side !== "right").map((s) => s.name.toLowerCase());
+    const steps = watchStepsFromBuild(every, { catalogIdByKey: new Map(), keyOf: () => null }).steps;
+    for (const s of steps) {
+      expect(s.name.length, s.name).toBeLessThanOrEqual(WATCH_NAME_MAX);
+      expect(s.name.endsWith(" (L)"), s.name).toBe(s.side === "left");
+      expect(s.name.endsWith(" (R)"), s.name).toBe(s.side === "right");
+    }
+    const names = steps.filter((s) => s.side !== "right").map((s) => s.name.toLowerCase());
     expect(names).toHaveLength(LIBRARY.length);
     expect(new Set(names).size).toBe(LIBRARY.length);
+  });
+});
+
+describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10)", () => {
+  // On the watch the step screen shows the name, never the overview: "Floor press" six times in a row told the owner
+  // nothing. Each one-sided step's name ends " (L)" or " (R)"; the move's name is cut first (at a word, whole
+  // characters, never on a dangling word) so name and label fit in 30.
+  const one = (id: string, name: string, laterality = "unilateral") => slice(id, name, "Cue.", laterality);
+  const SIDED: Record<string, ExerciseSlice> = {
+    ...EXERCISES,
+    footUp: one("footUp", "Foot-up rotation breathing"), // 26: exactly 30 with the label
+    hipFlexor: one("hipFlexor", "Half-kneeling hip flexor reach"), // 30: the move's name must give way
+    needle: one("needle", "Thread the needle under the bench"), // the cut would end on "under"
+    sideA: one("sideA", "Side-lying stretch · arm overhead long"),
+    sideB: one("sideB", "Side-lying stretch · knee bent forward"),
+    footA: one("footA", "Foot-up rotation breathing · slow"),
+    footB: one("footB", "Foot-up rotation breathing · fast"),
+    pigeonFlat: one("pigeonFlat", "Pigeon", "bilateral"),
+    pigeonSide: one("pigeonSide", "Pigeon · hips square to the front"),
+    lotus: one("lotus", "🧘🏽‍♀️".repeat(5)), // one 35-unit word of 7-unit graphemes
+  };
+  const namesOf = (ids: string[]) =>
+    watchStepsFromBuild(build(ids.map((id) => step({ exerciseId: id, target: { reps: 5 } })), SIDED), deps).steps.map((s) => s.name);
+
+  it("a name with room keeps it whole: 'Foot-up rotation breathing (L)' is 30", () => {
+    expect(namesOf(["footUp"])).toEqual(["Foot-up rotation breathing (L)", "Foot-up rotation breathing (R)"]);
+  });
+
+  it("a longer one is cut at a word first, never ending on a word like 'under'", () => {
+    expect(namesOf(["hipFlexor", "needle"])).toEqual([
+      "Half-kneeling hip flexor (L)",
+      "Half-kneeling hip flexor (R)",
+      "Thread the needle (L)",
+      "Thread the needle (R)",
+    ]);
+  });
+
+  it("whole characters only: a cut inside a run of emoji keeps whole emoji, then the label", () => {
+    const [left] = namesOf(["lotus"]);
+    expect(left).toBe(`${"🧘🏽‍♀️".repeat(3)} (L)`);
+    expect(left!.length).toBeLessThanOrEqual(WATCH_NAME_MAX);
+  });
+
+  it("two moves never share a watch name: the names are made one per move first, then labelled", () => {
+    expect(namesOf(["sideA", "sideB", "pigeonFlat", "pigeonSide"])).toEqual([
+      "Side-lying stretch (L)",
+      "Side-lying stretch (R)",
+      "Side-lying stretch (2) (L)",
+      "Side-lying stretch (2) (R)",
+      "Pigeon",
+      "Pigeon (2) (L)",
+      "Pigeon (2) (R)",
+    ]);
+    // A 26-character name with its " (2)" is cut again so the label still fits.
+    expect(namesOf(["footA", "footB"])).toEqual([
+      "Foot-up rotation breathing (L)",
+      "Foot-up rotation breathing (R)",
+      "Foot-up rotation (2) (L)",
+      "Foot-up rotation (2) (R)",
+    ]);
+  });
+
+  it("a set that names its side and a per-side window are labelled too; an alternating move is not", () => {
+    const plan = watchStepsFromBuild(
+      build([
+        step({ exerciseId: "deadBug", target: { reps: 10 } }),
+        step({ exerciseId: "oneArmRow", side: "Right", target: { reps: 8 } }),
+        step({ kind: "timed", exerciseId: "splitSquat", side: "Left", seconds: 30 }),
+      ]),
+      deps,
+    );
+    expect(plan.steps.map((s) => s.name)).toEqual(["Dead bug", "One-arm row (R)", "Split squat hold (L)"]);
   });
 });
 

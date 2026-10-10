@@ -9,7 +9,9 @@
  *  - Every work step of the build is one watch step. A timed window is a hold;
  *    a set is its reps, else its seconds, else open. Per-side windows stay two
  *    steps, each overview naming its side, and a one-sided set (a unilateral
- *    move's set with no side) becomes such a Left/Right pair (audit W-1).
+ *    move's set with no side) becomes such a Left/Right pair (audit W-1). A
+ *    step with a side carries it in its NAME too, " (L)" / " (R)" (owner,
+ *    2026-10-10: the watch's step screen shows no overview).
  *  - A move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's catalog holds
  *    goes as that catalog step; every other move goes as free text on
  *    `originId "0"` (spike outcome A), its name cut at a word to 30 characters
@@ -31,6 +33,7 @@ import {
   WATCH_MAX_STEPS,
   WATCH_NAME_MAX,
   WATCH_OVERVIEW_MAX,
+  WATCH_SIDE_LABEL,
   WATCH_STAMP_MAX,
   WATCH_STAMP_MAX_BYTES,
   type ProgramSessionPushJob,
@@ -143,27 +146,36 @@ function overviewOf(side: Step["side"], qualifier: string | null, cue: string | 
 }
 
 /**
- * A free-text move's name as the watch shows it, at most WATCH_NAME_MAX characters (ruling 3-R6, audit W-6). A longer
- * "<move> · <qualifier>" goes as the move, its qualifier leading the overview; any other long name is cut at a word,
- * never ending on a word like "on" or "with".
+ * A free-text move's name as the watch shows it, at most `max` characters — WATCH_NAME_MAX, or less to leave a one-sided
+ * move's step room for its side label (ruling 3-R6, audit W-6). A longer "<move> · <qualifier>" goes as the move, its
+ * qualifier leading the overview; any other long name is cut at a word, never ending on a word like "on" or "with".
  */
-export function watchNameOf(libraryName: string): { name: string; qualifier: string | null } {
+export function watchNameOf(libraryName: string, max: number = WATCH_NAME_MAX): { name: string; qualifier: string | null } {
   const t = libraryName.trim();
-  if (t.length <= WATCH_NAME_MAX) return { name: t, qualifier: null };
+  if (t.length <= max) return { name: t, qualifier: null };
   const at = t.indexOf(QUALIFIER);
   const head = at > 0 ? t.slice(0, at).trim() : "";
-  if (head && head.length <= WATCH_NAME_MAX) return { name: head, qualifier: t.slice(at + QUALIFIER.length).trim() || null };
-  let name = cutAtWord(t, WATCH_NAME_MAX);
+  if (head && head.length <= max) return { name: head, qualifier: t.slice(at + QUALIFIER.length).trim() || null };
+  let name = cutAtWord(t, max);
   while (DANGLING_WORD.test(name)) name = name.replace(DANGLING_WORD, "").replace(TRAILING_SEPARATOR, "");
   return { name, qualifier: null };
 }
 
+/** The room a one-sided move's name leaves for its side label (" (L)" / " (R)"). */
+const SIDE_LABEL_ROOM = Math.max(WATCH_SIDE_LABEL.left.length, WATCH_SIDE_LABEL.right.length);
+
+/** A watch step's side label: " (L)", " (R)", or none for a step of no side. */
+const sideLabel = (side: Step["side"]): string => (side === "Left" ? WATCH_SIDE_LABEL.left : side === "Right" ? WATCH_SIDE_LABEL.right : "");
+
 /**
- * Each free-text move's watch name and qualifier. Two different moves never share a watch name within one program
- * (audit W-6): a name a catalog step of the session already shows (its English name), or an earlier free-text move
- * holds (by first appearance in the build), gets " (2)", " (3)", cut to fit. The same build gives the same names.
+ * Each free-text move's watch name — before its side label — and qualifier. Two different moves never share a watch
+ * name within one program (audit W-6): a name a catalog step of the session already shows (its English name), or an
+ * earlier free-text move holds (by first appearance in the build), gets " (2)", " (3)", cut to fit. The names are made
+ * unique BEFORE the labels go on, so "X (L)" of one move and "X (L)" of another never meet. A one-sided move's name
+ * (`sided`) is cut to leave its label room, so name and label stay within WATCH_NAME_MAX. The same build gives the
+ * same names.
  */
-function freeTextNames(build: BuildPayload, deps: WatchPlanDeps): Map<string, { name: string; qualifier: string | null }> {
+function freeTextNames(build: BuildPayload, deps: WatchPlanDeps, sided: ReadonlySet<string>): Map<string, { name: string; qualifier: string | null }> {
   const catalogKey = (id: string): string | null => {
     const key = deps.keyOf(id);
     return key && deps.catalogIdByKey.has(key) ? key : null;
@@ -178,9 +190,10 @@ function freeTextNames(build: BuildPayload, deps: WatchPlanDeps): Map<string, { 
   const out = new Map<string, { name: string; qualifier: string | null }>();
   for (const id of moves) {
     if (catalogKey(id)) continue;
-    const { name, qualifier } = watchNameOf(build.exercises[id]!.name);
+    const room = sided.has(id) ? WATCH_NAME_MAX - SIDE_LABEL_ROOM : WATCH_NAME_MAX;
+    const { name, qualifier } = watchNameOf(build.exercises[id]!.name, room);
     let unique = name;
-    for (let n = 2; taken.has(unique.toLowerCase()); n++) unique = `${cutAtWord(name, WATCH_NAME_MAX - ` (${n})`.length)} (${n})`;
+    for (let n = 2; taken.has(unique.toLowerCase()); n++) unique = `${cutAtWord(name, room - ` (${n})`.length)} (${n})`;
     taken.add(unique.toLowerCase());
     out.set(id, { name: unique, qualifier });
   }
@@ -197,10 +210,21 @@ function sidesOf(s: Step, record: { laterality: string }): Array<Step["side"]> {
   return s.kind === "set" && s.side === null && record.laterality === "unilateral" ? ["Left", "Right"] : [s.side];
 }
 
+/** The build's moves any of whose watch steps has a side: their steps' names carry the side label. */
+function sidedMoves(build: BuildPayload): Set<string> {
+  const out = new Set<string>();
+  for (const s of build.steps) {
+    if (s.kind === "rest" || !s.exerciseId) continue;
+    const record = build.exercises[s.exerciseId];
+    if (record && sidesOf(s, record).some((side) => side !== null)) out.add(s.exerciseId);
+  }
+  return out;
+}
+
 /** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
 export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
   const steps: ProgramWatchStep[] = [];
-  const names = freeTextNames(build, deps);
+  const names = freeTextNames(build, deps, sidedMoves(build));
   for (const s of build.steps) {
     if (s.kind === "rest") {
       const prev = steps.at(-1);
@@ -216,7 +240,7 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
     for (const side of sidesOf(s, record)) {
       steps.push({
         originId: originId ?? FREE_TEXT_ORIGIN_ID,
-        name: originId ? key! : free!.name,
+        name: originId ? key! : `${free!.name}${sideLabel(side)}`,
         target: targetOf(s),
         grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
         restSeconds: 0,

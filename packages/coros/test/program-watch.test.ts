@@ -108,6 +108,23 @@ describe("buildProgramWatchProgram — the shape", () => {
     expect(shapeOf(ourGroup, ourPair)).toEqual(shapeOf(spikePairGroup, spikePair));
   });
 
+  it("a pair with its side in the names — 'X (L)' then 'X (R)' (owner, 2026-10-10) — still shares one container: only the names differ", () => {
+    const labelled = STEPS.map((s) => (s.side === "left" ? { ...s, name: `${s.name} (L)` } : s.side === "right" ? { ...s, name: `${s.name} (R)` } : s));
+    const nameless = (p: RawCorosProgram) => (p.exercises ?? []).map((e) => Object.fromEntries(Object.entries(wire(e)).filter(([k]) => k !== "name")));
+    const ours = buildProgramWatchProgram(spec(labelled), CATALOG);
+    expect(containers(ours)).toHaveLength(4);
+    expect(nameless(ours)).toEqual(nameless(program));
+    expect(children(ours).map((k) => k.name)).toEqual(["T1301", "Chin tuck hold", "Single-leg RDL reach (L)", "Single-leg RDL reach (R)", "T1150"]);
+  });
+
+  it("a left step and the right step of ANOTHER move never share a container, labelled or not", () => {
+    const left = step({ originId: FREE_TEXT_ORIGIN_ID, name: "Side plank (L)", side: "left" });
+    const otherRight = step({ originId: FREE_TEXT_ORIGIN_ID, name: "Suitcase march (R)", side: "right" });
+    expect(containers(buildProgramWatchProgram(spec([left, otherRight]), CATALOG))).toHaveLength(2);
+    const plainOther = step({ originId: FREE_TEXT_ORIGIN_ID, name: "Suitcase march", side: "right" });
+    expect(containers(buildProgramWatchProgram(spec([{ ...left, name: "Side plank" }, plainOther]), CATALOG))).toHaveLength(2);
+  });
+
   it("targets: reps → 3, hold → 2, open → 0", () => {
     const kids = children(program);
     expect([kids[0]!.targetType, kids[0]!.targetValue]).toEqual([3, 8]);

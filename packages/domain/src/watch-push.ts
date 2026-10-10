@@ -12,6 +12,11 @@ import { z } from "zod";
 
 /** A free-text step's name is cut at a word boundary to this many characters (ruling 3-R6). */
 export const WATCH_NAME_MAX = 30;
+/**
+ * What a one-sided step's name ends with (owner, 2026-10-10): the watch's step screen shows the name and never the
+ * overview, so "Floor press" six times in a row said nothing of the side. The move's name is cut to leave room.
+ */
+export const WATCH_SIDE_LABEL = { left: " (L)", right: " (R)" } as const;
 /** A step overview (the side and the first cue) is at most this long (ruling 3-R6). */
 export const WATCH_OVERVIEW_MAX = 80;
 /** The longest stamp proven to round-trip live (the spike's), ruling 3-R5. */
