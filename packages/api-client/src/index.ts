@@ -396,6 +396,8 @@ export interface SettingsResponse {
     maxDollars: number;
     warn: boolean;
     cutoff: boolean;
+    /** When the AI gateway started answering 402 (out of credits), or null. */
+    outOfCreditsSince?: string | null;
   };
 }
 
@@ -678,12 +680,16 @@ export interface CoachStateResponse {
   /** A wake is running (or a reply is still owed) server-side — survives
    * page navigation where the client's own mutation state cannot. */
   coachThinking?: boolean;
+  /** The AI gateway answered 402 — the account is out of credits — and no call
+   * has worked since (worker services/ai-credits.ts). Null when it is fine. */
+  outOfCredits?: { since: string; lastSeenAt: string } | null;
 }
 
 export interface CoachWakeResult {
   /** Arrives when the wake is FINISHED — minutes, possibly never (see
-   * `NO_DEADLINE`). Useful when it lands; nothing waits for it. */
-  status: "ok" | "skipped" | "busy" | "resting" | "error";
+   * `NO_DEADLINE`). Useful when it lands; nothing waits for it.
+   * `out_of_credits` arrives at once: the AI account needs credits. */
+  status: "ok" | "skipped" | "busy" | "resting" | "error" | "out_of_credits";
   coachMessageId?: string;
   proposalIds?: string[];
 }
@@ -859,6 +865,8 @@ export interface RetrySyncResponse {
   movesRetried: number;
   /** Studio plans (holding one or more failed rows) that were re-pushed. */
   studioRetried: number;
+  /** Failed coach watch writes queued again — only sessions still ahead. */
+  coachRetried: number;
 }
 
 /** Progress of the one-shot deep history backfill. */
@@ -1529,7 +1537,7 @@ export const api = {
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   coachAnswerQuestion: (questionId: string, answer: string) =>
-    post<{ ok: boolean }>(`/api/coach/questions/${questionId}/answer`, { answer }, NO_DEADLINE),
+    post<{ ok: boolean; wake?: CoachWakeResult }>(`/api/coach/questions/${questionId}/answer`, { answer }, NO_DEADLINE),
   coachDismissQuestion: (questionId: string) =>
     post<{ ok: boolean }>(`/api/coach/questions/${questionId}/dismiss`),
   coachMemoryList: () => get<{ memory: CoachMemoryItem[] }>("/api/coach/memory"),

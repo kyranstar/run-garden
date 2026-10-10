@@ -19,7 +19,7 @@ import { applyMove } from "../services/jobs.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { openMoveIntents } from "../services/sync-intents.js";
 import { activeSyncNotes, dismissSyncNote, DISMISS_ONLY_NOTE_KINDS } from "../services/sync-notes.js";
-import { computeSyncStatus } from "../services/sync-status.js";
+import { computeSyncStatus, openFailedCoachWrites } from "../services/sync-status.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
 import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
@@ -80,6 +80,9 @@ syncRoutes.get("/status", async (c) => {
 //    sync-status.ts:96-101): re-push the owning plan; `pushStudioPlan` is
 //    idempotent and re-plans every failed row (studio-push.ts:674-676's own
 //    doc comment), exactly what `/studio/push/retry` already does per-day.
+//  - failed coach watch writes (`issueCount`'s `failedCoachCreates`, the same
+//    `openFailedCoachWrites` selection — sessions still ahead and unresolved
+//    only): revived to `queued`, as a human re-request revives one.
 // Best-effort per item: one workout or plan that still can't retry (archived
 // mid-flight, a genuinely unsupported COROS state, …) must not block the rest
 // from clearing.
@@ -178,7 +181,50 @@ syncRoutes.post("/retry", async (c) => {
     }
   }
 
-  return c.json({ ok: true, movesRetried, studioRetried });
+  // Failed coach writes — EXACTLY the set `issueCount` counts, from the same
+  // function (`openFailedCoachWrites`), so Retry never touches a past or
+  // resolved session's write, whose watch copy can no longer be rewritten
+  // (owner report 2026-10-09: "4 changes couldn't sync" about four past,
+  // missed sessions). Each is revived the way a human re-request already
+  // revives one (`enqueueContentConvergence`'s `reviveFailed`): back to
+  // `queued`, its claim and error cleared; the next drain runs it. Best-effort
+  // per item: a session with another write still on its way is left to that
+  // write (the older content could land after it), and nothing is queued for
+  // the watch while COROS writes are switched off.
+  let coachRetried = 0;
+  if (prefs.corosWritesEnabled) {
+    for (const job of await openFailedCoachWrites(db, userId, today)) {
+      const [inFlight] = await db
+        .select({ id: corosWriteJobs.id })
+        .from(corosWriteJobs)
+        .where(
+          and(
+            eq(corosWriteJobs.userId, userId),
+            eq(corosWriteJobs.workoutId, job.workoutId),
+            inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+          ),
+        )
+        .limit(1);
+      if (inFlight) continue;
+      const now = nowInstant();
+      await db
+        .update(corosWriteJobs)
+        .set({
+          status: "queued",
+          claimedByDeviceId: null,
+          claimedAt: null,
+          lastErrorCategory: null,
+          lastErrorDetail: null,
+          completedAt: null,
+          requestedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(corosWriteJobs.id, job.id), eq(corosWriteJobs.status, "failed")));
+      coachRetried += 1;
+    }
+  }
+
+  return c.json({ ok: true, movesRetried, studioRetried, coachRetried });
 });
 
 // ── GET /api/sync/notes ───────────────────────────────────────────────────────

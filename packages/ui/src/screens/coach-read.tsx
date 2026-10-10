@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { api, ApiError, type CoachAnalyzeResult } from "@rg/api-client";
 import { Spinner } from "../components.js";
+import { OUT_OF_CREDITS_LINE } from "../ai-credits.js";
 
 /** How long to wait before re-asking when another surface is mid-generation. */
 const WORKING_POLL_MAX = 20; // ×4s ≈ 80s of patience
@@ -78,14 +79,19 @@ export function CoachRead({
     const status = analyze.error instanceof ApiError ? analyze.error.status : 0;
     const resting = status === 429;
     const disabled = status === 503;
+    // 402: the AI account is out of credits (owner report 2026-10-09). Its own
+    // words, and Try again stays — that tap is how the app hears they're back.
+    const noCredits = status === 402;
     return (
       <div className="coach-read">
-        <p className="muted">
-          {resting
-            ? "The coach is resting — weekly budget reached. Try again next week."
-            : disabled
-              ? "AI is turned off in Settings — the coach can't read efforts."
-              : "The coach couldn't read this effort just now."}
+        <p className={noCredits ? "ai-credits ai-credits-note" : "muted"}>
+          {noCredits
+            ? OUT_OF_CREDITS_LINE
+            : resting
+              ? "The coach is resting — weekly budget reached. Try again next week."
+              : disabled
+                ? "AI is turned off in Settings — the coach can't read efforts."
+                : "The coach couldn't read this effort just now."}
         </p>
         {!resting && !disabled ? (
           <button className="btn btn-small" onClick={() => analyze.mutate(false)}>

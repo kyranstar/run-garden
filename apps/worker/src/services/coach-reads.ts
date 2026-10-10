@@ -6,6 +6,7 @@ import type { Env } from "../env.js";
 import { fixtureModeEnabled } from "../env.js";
 import type { Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
+import { isOutOfCredits, loadOutOfCredits, noteGatewayOutcome } from "./ai-credits.js";
 import { llmBudgetStatus } from "./llm.js";
 import { chatCompletion, DEFAULT_MODEL_STRONG, extractJson, recordUsage } from "./studio-llm.js";
 import { buildEffortPackage } from "./coach-effort.js";
@@ -60,7 +61,8 @@ export interface ReadRow {
 }
 
 export interface ReadResult {
-  status: "done" | "working" | "resting" | "error" | "not_found" | "ai_disabled";
+  /** `out_of_credits`: the AI gateway answered 402 (ai-credits.ts). */
+  status: "done" | "working" | "resting" | "error" | "not_found" | "ai_disabled" | "out_of_credits";
   read?: ReadRow;
   cached?: boolean;
 }
@@ -233,6 +235,27 @@ async function failRead(db: Db, id: string, token: string, attempt: number): Pro
     .where(and(eq(coachReads.id, id), eq(coachReads.claimToken, token)));
 }
 
+/**
+ * A 402 is the ACCOUNT, not the read: the AI gateway is out of credits and will
+ * say so to every read until someone adds some. So the read goes back in the
+ * queue, due now, with the attempt its claim took given back — no backoff, and
+ * nothing burned towards READ_MAX_ATTEMPTS. Live, 2026-10-08: five attempts per
+ * read over a day of backoff, then `failed` with no reason, for every effort the
+ * athlete ran while the account was empty.
+ */
+async function returnUnread(db: Db, id: string, token: string, attemptBeforeClaim: number): Promise<void> {
+  await db
+    .update(coachReads)
+    .set({
+      status: "queued",
+      attempt: attemptBeforeClaim,
+      nextAttemptAt: nowInstant(),
+      claimToken: null,
+      claimedAt: null,
+    })
+    .where(and(eq(coachReads.id, id), eq(coachReads.claimToken, token)));
+}
+
 /** Deterministic history summary for a digest read — assembled from the
  * activities table, no per-activity LLM calls. */
 async function buildDigestPackage(db: Db, userId: string): Promise<string> {
@@ -273,6 +296,8 @@ async function buildDigestPackage(db: Db, userId: string): Promise<string> {
 interface GenerateOutcome {
   ok: boolean;
   out?: { glance: string; body: string; flags: string[] };
+  /** The gateway answered 402 — the account, not this read (ai-credits.ts). */
+  outOfCredits?: boolean;
 }
 
 /** One claimed read → one model call (plus one schema-repair round-trip). */
@@ -297,9 +322,12 @@ async function generateRead(
     { role: "user", content: packageText },
   ];
 
-  const attempt = async (msgs: ChatMsg[]) => {
+  const attempt = async (
+    msgs: ChatMsg[],
+  ): Promise<{ out: z.infer<typeof readOutputSchema> | null; raw: string; issues: string; outOfCredits?: boolean }> => {
     const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_READ, msgs);
-    if (!chat.ok) return { out: null, raw: "", issues: "" };
+    await noteGatewayOutcome(db, userId, chat);
+    if (!chat.ok) return { out: null, raw: "", issues: "", outOfCredits: isOutOfCredits(chat.reason) };
     await recordUsage(db, userId, "coach_read", model, "strong", chat, `read:${activityId}`);
     const parsed = readOutputSchema.safeParse(extractJson(chat.content));
     if (parsed.success) return { out: parsed.data, raw: chat.content, issues: "" };
@@ -310,7 +338,10 @@ async function generateRead(
     return { out: null, raw: chat.content, issues };
   };
 
-  let { out, raw, issues } = await attempt(messages);
+  const first = await attempt(messages);
+  if (first.outOfCredits) return { ok: false, outOfCredits: true };
+  let { out } = first;
+  const { raw, issues } = first;
   if (!out && raw) {
     ({ out } = await attempt([
       ...messages,
@@ -341,7 +372,11 @@ export async function processCoachReads(
   userId: string,
   prefs: UserPreferences,
   opts: { cap?: number; fetchImpl?: typeof fetch } = {},
-): Promise<{ processed: number; attempted: number; skipped: ReadGateReason | "budget_reserve" | "restoring" | null }> {
+): Promise<{
+  processed: number;
+  attempted: number;
+  skipped: ReadGateReason | "budget_reserve" | "restoring" | "out_of_credits" | null;
+}> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   // A restore is replacing the account (B2): nothing is spent on the LLM.
   if (await restoreInProgress(db, userId)) return { processed: 0, attempted: 0, skipped: "restoring" };
@@ -349,6 +384,12 @@ export async function processCoachReads(
   if (gate) return { processed: 0, attempted: 0, skipped: gate };
   const budget = await llmBudgetStatus(db, userId);
   if (budget.spentMicros >= AUTO_READ_RESERVE_MICROS) return { processed: 0, attempted: 0, skipped: "budget_reserve" };
+  // The AI account is out of credits (a 402 is on record, ai-credits.ts): the
+  // ambient drain does not ask again — no call, no claim, no attempt spent, and
+  // no cron heavy step used up on an answer that is already known. The first
+  // call that works (a tapped read, a message, Check in) clears the record, and
+  // the queue drains from there.
+  if (await loadOutOfCredits(db, userId)) return { processed: 0, attempted: 0, skipped: "out_of_credits" };
 
   // The cap scales with the backlog (audit finding 14): a hard 2/hour made a
   // 12-read connect backlog take six hours. min(6, queued) keeps a single
@@ -393,6 +434,11 @@ export async function processCoachReads(
     const gen = await generateRead(db, env, userId, candidate.activityId, fetchImpl);
     // A restore that began during the model call wins (B9): nothing lands.
     if (await restoreInProgress(db, userId)) break;
+    if (gen.outOfCredits) {
+      // Every read behind this one would hear the same 402: stop here.
+      await returnUnread(db, candidate.id, token, candidate.attempt);
+      break;
+    }
     if (gen.ok && gen.out) {
       const model = env.AI_COACH_READ_MODEL || env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
       if (await completeRead(db, candidate.id, token, gen.out, model)) processed += 1;
@@ -504,6 +550,10 @@ export async function ensureRead(
 
   const gen = await generateRead(db, env, userId, activityId, fetchImpl);
   if (await restoreInProgress(db, userId)) return { status: "error" };
+  if (gen.outOfCredits) {
+    await returnUnread(db, row.id, token, row.attempt);
+    return { status: "out_of_credits" };
+  }
   if (!gen.ok || !gen.out) {
     await failRead(db, row.id, token, row.attempt + 1);
     return { status: "error" };

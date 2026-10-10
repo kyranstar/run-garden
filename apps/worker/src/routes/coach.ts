@@ -31,6 +31,7 @@ import {
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { restoreInProgress } from "../services/account-state.js";
+import { loadOutOfCredits } from "../services/ai-credits.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -232,7 +233,14 @@ coachRoutes.get("/state", async (c) => {
   const pendingReply = triggers.some(
     (t) => t.kind === "unanswered_message" && Date.now() - Date.parse(t.firedAt) < 5 * 60_000,
   );
-  const coachThinking = lockFresh || pendingReply;
+  // THE AI ACCOUNT IS OUT OF CREDITS (owner report 2026-10-09). A 402 ends a
+  // wake in a second and leaves the reply owed, so `pendingReply` alone said
+  // "thinking" for five minutes about nothing — and the screen had nothing else
+  // to say. The record (ai-credits.ts) is what it says instead; a wake actually
+  // running (`lockFresh`) still reads as thinking, which is right while it is
+  // the call that finds out the credits are back.
+  const outOfCredits = await loadOutOfCredits(db, userId);
+  const coachThinking = lockFresh || (pendingReply && !outOfCredits);
 
   return c.json({
     messages: [...msgs].reverse(),
@@ -243,6 +251,7 @@ coachRoutes.get("/state", async (c) => {
     lastCoachAt: lastCoach?.at ?? null,
     wakeAdvised,
     coachThinking,
+    outOfCredits,
   });
 });
 
@@ -385,6 +394,7 @@ coachRoutes.post("/analyze/:activityId", async (c) => {
     return c.json({ error: "resting", detail: "Weekly coach budget reached — try next week." }, 429);
   }
   if (r.status === "ai_disabled") return c.json({ error: "ai_disabled" }, 503);
+  if (r.status === "out_of_credits") return c.json({ error: "out_of_credits" }, 402);
   if (r.status === "error" || !r.read) return c.json({ error: "llm_error" }, 502);
   return c.json({ read: r.read, cached: r.cached === true });
 });

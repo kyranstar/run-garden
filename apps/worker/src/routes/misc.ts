@@ -90,6 +90,7 @@ import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { emitPendingWork } from "../services/jobs.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
+import { loadOutOfCredits } from "../services/ai-credits.js";
 import {
   ingestActivities,
   repairDurations,
@@ -1396,6 +1397,7 @@ const KNOWN_GEAR: ReadonlySet<string> = new Set(EQUIPMENT_IDS);
 settingsRoutes.get("/", async (c) => {
   const prefs = await loadPreferences(c.get("db"), c.get("userId"));
   const budget = await llmBudgetStatus(c.get("db"), c.get("userId"));
+  const outOfCredits = await loadOutOfCredits(c.get("db"), c.get("userId"));
   return c.json({
     prefs,
     llm: {
@@ -1405,6 +1407,9 @@ settingsRoutes.get("/", async (c) => {
       maxDollars: LLM_BUDGET.absoluteMaxMicros / 1_000_000,
       warn: budget.warn,
       cutoff: budget.cutoff,
+      // The AI gateway answered 402 (out of credits) and nothing has worked
+      // since — when that started, or null (ai-credits.ts).
+      outOfCreditsSince: outOfCredits?.since ?? null,
     },
   });
 });
