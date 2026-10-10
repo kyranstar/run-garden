@@ -4,7 +4,7 @@ import {
   type CheckReading, type EngineData, type ExerciseRecord, type Mode, type Theme,
 } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
-import { Builder, Planner, Prog, type BuildResult, type HistorySession, type ProgEntry, type ProgramState } from "../src/index.js";
+import { Builder, Hist, Planner, Prog, type BuildResult, type HistorySession, type ProgEntry, type ProgramState } from "../src/index.js";
 import { PLACES, block, data, home } from "./builder-fixtures.js";
 
 // Plyometric moves in the programme (Task 5, ruling b). Two layers keep them where they belong:
@@ -55,6 +55,15 @@ interface Case {
 }
 
 const calm: CheckReading = { pre: 1, post: null, feelingOff: false };
+
+/** One logged jump (or other move), with the profile's flags it carried. */
+const entry = (id: string, flags: string[]): HistorySession["entries"][number] =>
+  ({ id, implement: null, perSide: false, format: "straight", flags, sets: [{ w: null, reps: 6, secs: null }] });
+/** A session on a jumping day (plyoIntro) that logged these entries. */
+const jumpSession = (id: string, date: string, entries: HistorySession["entries"], done: string[] = entries.map(e => e.id), mode: Mode = "build"): HistorySession => ({
+  id, date, startedAt: `${date}T18:00:00`, mode, theme: "plyoIntro", blockNumber: 1,
+  checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: done.map(x => ({ id: x, secs: 60 })), entries,
+});
 
 function builds({ d, mode, check, themes, stress, sessions }: Case): BuildResult[] {
   const out: BuildResult[] = [];
@@ -176,56 +185,98 @@ describe("the frontier: gentlest first, and the ladder unlocks as moves are done
     expect([...new Set(chosen.filter(e => e.easier.length > 0 || e.difficulty > 1).map(e => e.id))]).toEqual([]);
   });
 
-  /** The floor of the rotation: the top two difficulty tiers of these moves. */
-  const rotationFloor = (moves: readonly ExerciseRecord[]): number => {
-    const levels = [...new Set(moves.map(x => x.difficulty))].sort((a, b) => b - a);
-    return levels[1] ?? levels[0] ?? Infinity;
+  /**
+   * The rotation's floor, as the engine works it out once before the block's first slot: the top two difficulty tiers
+   * of the moves last done cleanly, widened a tier at a time while they hold no more moves than the block's two slots,
+   * never down to the lowest tier.
+   */
+  const rotationFloor = (clean: readonly ExerciseRecord[], slots = 2): number => {
+    const levels = [...new Set(clean.map(x => x.difficulty))].sort((a, b) => b - a);
+    if (!levels.length) return Infinity;
+    let k = Math.min(1, levels.length - 1);
+    while (k + 2 < levels.length && clean.filter(x => x.difficulty >= levels[k]!).length <= slots) k += 1;
+    return levels[k]!;
   };
 
-  interface SeasonDay { day: number; today: string; jumps: ExerciseRecord[]; done: Set<string>; lastFlagged: Set<string>; injected: boolean }
+  interface SeasonDay {
+    day: number;
+    today: string;
+    jumps: ExerciseRecord[];
+    /** As the day starts: the moves done, and each move whose last exposure was clenched, with the jumping days since. */
+    done: Set<string>;
+    restedFor: Map<string, number>;
+  }
 
   /**
-   * Forty jumping days, every jump logged; `flagged` is logged with the profile's flag every time it is placed, and
-   * `cleanAfter` jumping days after its first flagged exposure the athlete does it once cleanly (swapped in by hand).
+   * Forty jumping days two days apart, every jump logged; `clench(id, n)` says whether a move's n-th exposure (from 0)
+   * is logged with the profile's flag. Nothing is ever done by hand: every exposure is one the engine placed. Each day
+   * is also planned from the trimmed history and its summary (what the worker reads), which must plan the same.
    */
-  function season(mode: Mode, { flagged = null, cleanAfter = null, liked = [] }: { flagged?: string | null; cleanAfter?: number | null; liked?: string[] } = {}): SeasonDay[] {
-    const prefs = { ratings: Object.fromEntries(liked.map(id => [id, 1])), excluded: [], pinned: [] as string[] };
+  function season(mode: Mode, { d = data, clench = () => false }: { d?: EngineData; clench?: (id: string, n: number) => boolean } = {}): SeasonDay[] {
     const sessions: HistorySession[] = [];
     const done = new Set<string>();
-    const lastFlagged = new Set<string>();
+    const exposures = new Map<string, number>();
+    const clenchedOn = new Map<string, number>();   // a move whose last exposure was clenched → the day of that exposure
     const days: SeasonDay[] = [];
-    let injectOn: number | null = null;
-    let injected = false;
-    const log = (e: ExerciseRecord, flags: string[]) =>
-      ({ id: e.id, implement: null, perSide: false, format: "straight" as const, flags, sets: [{ w: null, reps: e.dose.range[0], secs: null }] });
     for (let day = 0; day < 40; day++) {
       const today = addDays("2026-11-02", day * 2);
-      if (flagged && injectOn === day) {
-        const date = addDays(today, -1);
-        sessions.push({
-          id: `clean${day}`, date, startedAt: `${date}T18:00:00`, mode, theme: "plyoIntro", blockNumber: 1,
-          checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: [{ id: flagged, secs: 60 }], entries: [log(byId.get(flagged)!, [])],
-        });
-        lastFlagged.delete(flagged);
-        injected = true;
-      }
-      const plan = Builder.build(data, {
-        today, mode, theme: plyoIntro, minutes: 40, location: home, unit: "lb", sessions, prefs, savedIds: [], block,
+      const input = {
+        today, mode, theme: plyoIntro, minutes: 40, location: home, unit: "lb" as const, prefs: {}, savedIds: [], block,
         checks: { tmj: calm }, swaps: {}, programId: "season",
-      });
+      };
+      const plan = Builder.build(d, { ...input, sessions });
+      const trimmed = Builder.build(d, { ...input, sessions: Hist.trim(sessions, today, block), summary: Hist.summarize(sessions, today) });
+      expect(trimmed.items.map(i => i.exercise.id), `${today}: the trimmed history plans the same`).toEqual(plan.items.map(i => i.exercise.id));
       const jumps = plan.items.filter(i => isPlyometric(i.exercise)).map(i => i.exercise);
-      days.push({ day, today, jumps, done: new Set(done), lastFlagged: new Set(lastFlagged), injected });
-      sessions.push({
-        id: `j${day}`, date: today, startedAt: `${today}T18:00:00`, mode, theme: "plyoIntro", blockNumber: 1,
-        checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: plan.items.map(i => ({ id: i.exercise.id, secs: 60 })),
-        entries: jumps.map(e => log(e, e.id === flagged ? ["clenched"] : [])),
-      });
+      days.push({ day, today, jumps, done: new Set(done), restedFor: new Map([...clenchedOn].map(([id, on]) => [id, day - on - 1])) });
+      const clenched = new Set(jumps.filter(e => clench(e.id, exposures.get(e.id) ?? 0)).map(e => e.id));
+      sessions.push(jumpSession(`j${day}`, today, jumps.map(e => entry(e.id, clenched.has(e.id) ? ["clenched"] : [])), plan.items.map(i => i.exercise.id), mode));
       for (const i of plan.items) done.add(i.exercise.id);
-      for (const e of jumps) (e.id === flagged ? lastFlagged.add(e.id) : lastFlagged.delete(e.id));
-      if (flagged && cleanAfter != null && injectOn === null && jumps.some(e => e.id === flagged)) injectOn = day + cleanAfter;
+      for (const e of jumps) {
+        exposures.set(e.id, (exposures.get(e.id) ?? 0) + 1);
+        if (clenched.has(e.id)) clenchedOn.set(e.id, day);
+        else clenchedOn.delete(e.id);
+      }
     }
     return days;
   }
+
+  /** A jump new to the athlete, or one retried after a clench: at most one a session. */
+  const freshIn = (d: SeasonDay): ExerciseRecord[] => d.jumps.filter(e => !d.done.has(e.id) || d.restedFor.has(e.id));
+
+  /**
+   * After each clenched exposure, the move sits out the next two jumping days and is back on the third, every time.
+   * (Every season day is a jumping day, so "jumping days since" counts jumping sessions.)
+   */
+  function restAndRetry(days: readonly SeasonDay[], id: string): string[] {
+    const bad: string[] = [];
+    for (const d of days) {
+      const rested = d.restedFor.get(id);
+      if (rested === undefined) continue;   // its last exposure was clean, or it was never done
+      const placed = d.jumps.some(e => e.id === id);
+      if (rested < 2 && placed) bad.push(`${d.today}: ${id} back after ${rested} jumping day(s) of rest`);
+      const cleanDone = (e: ExerciseRecord) => d.done.has(e.id) && !d.restedFor.has(e.id);
+      if (rested < 2 && PLYOMETRIC.some(cleanDone) && !d.jumps.some(cleanDone)) {
+        bad.push(`${d.today}: no rung last done cleanly took ${id}'s place: ${d.jumps.map(e => e.id).join(", ") || "no jumps"}`);
+      }
+      if (rested >= 2 && !placed) bad.push(`${d.today}: ${id} still resting after ${rested} jumping days`);
+    }
+    return bad;
+  }
+
+  /** The moves a season placed for the first time, in order. */
+  const introducedIn = (days: readonly SeasonDay[]): string[] => days.flatMap(d => d.jumps.filter(e => !d.done.has(e.id)).map(e => e.id));
+  /** Rungs whose only way up is through this one. */
+  const behind = (id: string): string[] => {
+    const out = new Set<string>();
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const e of PLYOMETRIC) {
+        if (!out.has(e.id) && e.easier.length > 0 && e.easier.every(x => x === id || out.has(x))) { out.add(e.id); grew = true; }
+      }
+    }
+    return [...out];
+  };
 
   test("a season of jumping days walks the ladder: the next rung is the gentlest unlocked one, never before an easier variant was done, and the rest of the block rotates through the top rungs", () => {
     for (const mode of ["consistent", "build"] as const) {
@@ -234,8 +285,9 @@ describe("the frontier: gentlest first, and the ladder unlocks as moves are done
       const introduced: string[] = [];
       const topRotation = new Set<string>();
       let topDays = 0;
-      for (const { today, jumps, done, lastFlagged } of season(mode)) {
-        const fresh = jumps.filter(e => !done.has(e.id));
+      for (const day of season(mode)) {
+        const { today, jumps, done } = day;
+        const fresh = freshIn(day);
         if (fresh.length > 1) bad.push(`${today}: ${fresh.length} new jumps in one session`);
         for (const e of jumps) {
           if (e.easier.length && !e.easier.some(id => done.has(id))) bad.push(`${today}: ${e.id} before any easier variant`);
@@ -246,13 +298,14 @@ describe("the frontier: gentlest first, and the ladder unlocks as moves are done
           if (e.difficulty !== gentlest) bad.push(`${today}: introduced ${e.id} (${e.difficulty}) while a difficulty ${gentlest} move was unlocked`);
           introduced.push(e.id);
         }
-        // Beside the new rung, the block's done rungs come from the rotation: the top two tiers of the rungs last done
-        // cleanly (of what the other slot leaves), never one below it.
-        for (const e of jumps.filter(x => done.has(x.id))) {
-          const others = jumps.filter(x => x !== e).map(moveKey);
-          const clean = PLYOMETRIC.filter(x => x === e || (done.has(x.id) && !lastFlagged.has(x.id) && x.difficulty <= cap && !others.includes(moveKey(x))));
-          const floor = rotationFloor(clean);
-          if (e.difficulty < floor) bad.push(`${today}: ${e.id} (${e.difficulty}) below the rotation (from ${floor})`);
+        // Beside the new rung, the block's done rungs come from the rotation: the top tiers of every rung last done
+        // cleanly, worked out once before the first slot. One below it only when no rung of the rotation could take the slot.
+        const clean = PLYOMETRIC.filter(x => done.has(x.id) && !day.restedFor.has(x.id) && x.difficulty <= cap);
+        const floor = rotationFloor(clean);
+        const keys = jumps.map(moveKey);
+        for (const e of jumps.filter(x => done.has(x.id) && !day.restedFor.has(x.id) && x.difficulty < floor)) {
+          const satOut = clean.filter(x => x.difficulty >= floor && !keys.includes(moveKey(x)));
+          if (satOut.length) bad.push(`${today}: ${e.id} (${e.difficulty}) below the rotation (from ${floor}) while ${satOut.map(x => x.id).join(", ")} sat out`);
         }
         if (unlocked.length === 0 && done.size > 0) {
           topDays++;
@@ -270,29 +323,115 @@ describe("the frontier: gentlest first, and the ladder unlocks as moves are done
     }
   });
 
-  test("a rung the athlete clenches on rests after a flagged exposure, the rung below takes its place, and a clean exposure brings it back", () => {
-    // Rated 👍, so the usual ranking alone would keep bringing it back: only the rule rests it.
-    const flagged = "dropLanding";
-    const days = season("consistent", { flagged, cleanAfter: 8, liked: [flagged] });
-    const first = days.findIndex(d => d.jumps.some(e => e.id === flagged));
-    expect(first, "the drop landing is reached").toBeGreaterThanOrEqual(0);
-    const cleanDay = days.findIndex(d => d.injected);
-    expect(cleanDay).toBe(first + 8);
-    for (const d of days.slice(first + 1, cleanDay)) {
-      expect(d.jumps.map(e => e.id), `${d.today}: rests after a clenched exposure`).not.toContain(flagged);
-      expect(d.jumps.some(e => d.done.has(e.id)), `${d.today}: another done rung takes its place`).toBe(true);
+  test("a rung clenched on its first exposure rests two jumping days, retries on the third as that day's one new-or-retry rung (before a new one), and done cleanly unlocks the branch above it", () => {
+    for (const mode of ["consistent", "build"] as const) {
+      const cap = data.modes[mode].maxDifficulty;
+      const days = season(mode, { clench: (id, n) => id === "pogoHop" && n === 0 });
+      const first = days.findIndex(d => d.jumps.some(e => e.id === "pogoHop"));
+      expect(first, `${mode}: pogo hops are reached`).toBeGreaterThanOrEqual(0);
+      expect(restAndRetry(days, "pogoHop"), mode).toEqual([]);
+      const retry = days[first + 3]!;
+      expect(retry.jumps.map(e => e.id), `${mode}: back on the third jumping day`).toContain("pogoHop");
+      // A new rung was open that day (the landing stick's branch), yet the retry took the day's one new-or-retry slot.
+      const open = PLYOMETRIC.filter(x => !retry.done.has(x.id) && x.difficulty <= cap && (x.easier.length === 0 || x.easier.some(id => retry.done.has(id) && !retry.restedFor.has(id))));
+      expect(open.length, `${mode}: a new rung was open on the retry day`).toBeGreaterThan(0);
+      expect(freshIn(retry).map(e => e.id), mode).toEqual(["pogoHop"]);
+      expect(days.filter(d => freshIn(d).length > 1).map(d => d.today), mode).toEqual([]);
+      // Done cleanly on the retry, it unlocks the lateral branch, which is walked within the season.
+      expect(behind("pogoHop")).toEqual(expect.arrayContaining(["lineHopForwardBack", "lineHopLateral", "skaterBoundLow", "skaterBoundStick", "lateralHopStick"]));
+      expect(introducedIn(days), mode).toEqual(expect.arrayContaining(behind("pogoHop").filter(id => byId.get(id)!.difficulty <= cap)));
     }
-    const back = days.slice(cleanDay).findIndex(d => d.jumps.some(e => e.id === flagged));
-    expect(back, "back after a clean exposure").toBeGreaterThanOrEqual(0);
-    expect(back, "back within a few jumping days").toBeLessThan(6);
+  });
+
+  test("a rung clenched every time keeps resting and retrying (two jumping days off, back on the third) and never holds back the rest of the ladder", () => {
+    for (const mode of ["consistent", "build"] as const) {
+      const cap = data.modes[mode].maxDifficulty;
+      const days = season(mode, { clench: id => id === "pogoHop" });
+      expect(restAndRetry(days, "pogoHop"), mode).toEqual([]);
+      expect(days.filter(d => d.jumps.some(e => e.id === "pogoHop")).length, `${mode}: retried again and again`).toBeGreaterThanOrEqual(8);
+      expect(days.filter(d => freshIn(d).length > 1).map(d => d.today), mode).toEqual([]);
+      // A clenched rung unlocks nothing; every other rung within the cap is still introduced.
+      const placed = new Set(days.flatMap(d => d.jumps.map(e => e.id)));
+      for (const id of behind("pogoHop")) expect(placed.has(id), `${mode}: ${id} behind a rung only ever clenched`).toBe(false);
+      const others = PLYOMETRIC.filter(e => e.id !== "pogoHop" && !behind("pogoHop").includes(e.id) && e.difficulty <= cap).map(e => e.id);
+      expect(introducedIn(days), mode).toEqual(expect.arrayContaining(others));
+    }
+  });
+
+  test("the rule alone rests a clenched rung: with no flag penalty in the score (same flag), the drop landing still sits out two jumping days after every clenched exposure", () => {
+    const profiles = data.profiles.active.map(p => ({ ...p, flagPenaltyWeight: 0 }));
+    const noPenalty: EngineData = { ...data, profiles: { active: profiles, care: data.profiles.care.map(c => profiles.find(p => p.id === c.id) ?? c) } };
+    expect(noPenalty.profiles.active.map(p => [p.setFlag?.id, p.flagPenaltyWeight])).toEqual([["clenched", 0]]);
+    const days = season("consistent", { d: noPenalty, clench: id => id === "dropLanding" });
+    expect(restAndRetry(days, "dropLanding")).toEqual([]);
+    expect(days.filter(d => d.restedFor.get("dropLanding")! < 2).length, "rest days to check").toBeGreaterThanOrEqual(10);
+  });
+
+  test("when every rung the block could hold is resting, the jumping day holds no jump, and it still counts: each rung retries on its third jumping day", () => {
+    const days = season("consistent", { clench: () => true });
+    const placed = [...new Set(days.flatMap(d => d.jumps.map(e => e.id)))].sort();
+    expect(placed, "a clenched rung unlocks nothing").toEqual(["landingStick", "snapDown"]);
+    for (const id of placed) expect(restAndRetry(days, id)).toEqual([]);
+    const empty = days.filter(d => d.jumps.length === 0);
+    expect(empty.length, "jumping days with every rung resting").toBeGreaterThanOrEqual(10);
+    expect(days.every(d => d.jumps.length <= 1)).toBe(true);
+  });
+
+  test("a rest counts jumping sessions: other days don't end it; jumping days (even empty) and sessions that logged a jump do; a rest older than 14 days is over", () => {
+    const T = "2026-11-30";
+    const clenchedBoth = (date: string) => jumpSession(`c-${date}`, date, [entry("landingStick", ["clenched"]), entry("snapDown", ["clenched"])]);
+    const other = (date: string) => ({ ...jumpSession(`o-${date}`, date, [], ["wallSit"]), theme: "skiPrep" });
+    const emptyJumpingDay = (date: string) => jumpSession(`e-${date}`, date, [], ["wallSit"]);
+    const jumpsWith = (sessions: HistorySession[]): string[] => {
+      const input = { today: T, mode: "build" as const, theme: plyoIntro, minutes: 40, location: home, unit: "lb" as const, prefs: {}, savedIds: [], block, checks: { tmj: calm }, swaps: {}, programId: "rest" };
+      const ids = (p: BuildResult) => p.items.filter(i => isPlyometric(i.exercise)).map(i => i.exercise.id);
+      const whole = ids(Builder.build(data, { ...input, sessions }));
+      expect(ids(Builder.build(data, { ...input, sessions: Hist.trim(sessions, T, block), summary: Hist.summarize(sessions, T) })), "trimmed").toEqual(whole);
+      return whole;
+    };
+    // Both bottom rungs clenched ten days ago, nothing since: both rest, nothing else is unlocked, so no jump today.
+    expect(jumpsWith([clenchedBoth(addDays(T, -10))])).toEqual([]);
+    // Two sessions since on other days (no jump, not a jumping day): still resting.
+    expect(jumpsWith([clenchedBoth(addDays(T, -10)), other(addDays(T, -6)), other(addDays(T, -3))])).toEqual([]);
+    // Two jumping days since that held no jump (everything was resting): they count, so one rung retries.
+    expect(jumpsWith([clenchedBoth(addDays(T, -10)), emptyJumpingDay(addDays(T, -6)), emptyJumpingDay(addDays(T, -3))])).toHaveLength(1);
+    // Clenched twenty days ago and no jumping day since: the rest is over, one rung retries.
+    expect(jumpsWith([clenchedBoth(addDays(T, -20)), other(addDays(T, -6)), other(addDays(T, -3))])).toHaveLength(1);
+    // Two sessions on other days that logged a jump (the snap-down, cleanly): they are jumping sessions too.
+    const landingClenched = jumpSession("lc", addDays(T, -10), [entry("landingStick", ["clenched"])]);
+    const snapOn = (date: string) => ({ ...jumpSession(`s-${date}`, date, [entry("snapDown", [])]), theme: null });
+    expect(jumpsWith([landingClenched, snapOn(addDays(T, -6))])).not.toContain("landingStick");
+    expect(jumpsWith([landingClenched, snapOn(addDays(T, -6)), snapOn(addDays(T, -3))])).toContain("landingStick");
+    // A jumping day dated before the last 14 days counts for nothing, even started after the rest began (a start may be
+    // a day off its date): a trimmed history no longer holds it, and both plan alike.
+    const atWindow = { ...clenchedBoth(addDays(T, -14)), startedAt: `${addDays(T, -14)}T06:00:00` };
+    const lateStart = (n: number) => ({ ...emptyJumpingDay(addDays(T, -15)), id: `late${n}`, startedAt: `${addDays(T, -14)}T1${n}:00:00` });
+    expect(jumpsWith([lateStart(1), lateStart(2), atWindow, other(addDays(T, -6)), other(addDays(T, -3)), other(addDays(T, -1))])).toEqual([]);
+  });
+
+  test("the rotation's floor is worked out once, before the first slot: with clean rungs at 4, 3 and 1 (none at 2), the second slot never falls to a bottom rung", () => {
+    const T = "2026-11-30";
+    // The bottom rungs done long ago (novel); the drop landing and the broad jump done in the last sessions (repeated),
+    // so the usual ranking alone would reach for a bottom rung. Pogo hops and the box jump (the other rungs the
+    // snap-down unlocks) are excluded and the tuck jump is over consistent's cap: no new rung is open.
+    const sessions = [
+      jumpSession("old", addDays(T, -30), [entry("landingStick", []), entry("snapDown", [])]),
+      { ...jumpSession("mid", addDays(T, -10), [], ["wallSit"]), theme: null },
+      jumpSession("r1", addDays(T, -4), [entry("broadJumpStick", [])]),
+      jumpSession("r2", addDays(T, -2), [entry("dropLanding", [])]),
+    ];
+    for (let i = 0; i < 12; i++) {
+      const plan = Builder.build(data, {
+        today: addDays(T, i % 3), mode: "consistent", theme: plyoIntro, minutes: [30, 40, 60][i % 3]!, location: home, unit: "lb", sessions,
+        prefs: { ratings: {}, excluded: ["pogoHop", "boxJumpStepDown"], pinned: [] }, savedIds: [], block, checks: { tmj: calm }, swaps: {}, programId: `floor-${i}`,
+      });
+      const jumps = plan.items.filter(it => isPlyometric(it.exercise)).map(it => it.exercise.id).sort();
+      expect(jumps, `${plan.seed}`).toEqual(["broadJumpStick", "dropLanding"]);
+    }
   });
 
   test("a rung done with the profile's flag on it (clenched) doesn't unlock the next; done cleanly, it does", () => {
-    const session = (id: string, date: string, entries: HistorySession["entries"], done: string[] = entries.map(e => e.id)): HistorySession => ({
-      id, date, startedAt: `${date}T18:00:00`, mode: "build", theme: "plyoIntro", blockNumber: 1,
-      checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: done.map(x => ({ id: x, secs: 60 })), entries,
-    });
-    const entry = (id: string, flags: string[]) => ({ id, implement: null, perSide: false, format: "straight" as const, flags, sets: [{ w: null, reps: 6, secs: null }] });
+    const session = (id: string, date: string, entries: HistorySession["entries"]): HistorySession => jumpSession(id, date, entries);
     // snapDown only ever done clenched; landingStick done cleanly.
     const flagged = [session("f1", "2026-11-02", [entry("snapDown", ["clenched"]), entry("landingStick", [])]), session("f2", "2026-11-04", [entry("snapDown", ["clenched"])])];
     const chosenWith = (sessions: HistorySession[]) => new Set(Array.from({ length: 30 }, (_, i) => Builder.build(data, {

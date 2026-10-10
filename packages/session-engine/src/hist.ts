@@ -302,6 +302,6 @@ function summarize(sessions: readonly HistorySession[], asOf: string): HistorySu
 const TRIM = { recentSessions: RECENT_SESSIONS, progressionEntries: PROGRESSION_ENTRIES, windowFrom } as const;
 
 export const Hist = {
-  sorted, idsIn, daysBetween, canonical, firstDone, newMoveThisWeek, lastFamilyDate, trim, summarize, TRIM,
+  sorted, idsIn, daysBetween, canonical, firstDone, newMoveThisWeek, lastFamilyDate, trim, summarize, TRIM, isProgression,
   firstDoneIn, newMoveThisWeekIn, lastFamilyDateIn,
 };

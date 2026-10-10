@@ -20,7 +20,8 @@ import type { Block, BuildInput, BuildResult, Group, Item, Plan, Prefs, Step, Sw
 // it exactly, slot by slot, with the pure swap rules in swapping.ts (audit I1, I2, M4).
 // Plyometric moves (ruling b): only on a jumping day (a theme that emphasises plyometric work), only in the accessory
 // block, which then holds jumps alone, as straight sets or a superset, and plays after the warm-up and before the core
-// lifts; and only from the athlete's frontier (no easier variant, or one already done), the next rung first.
+// lifts; and only from the athlete's frontier (no easier variant, or one already done cleanly), with one new-or-retry
+// rung a session: a move last done with a profile's set flag on it rests for two jumping sessions, then retries.
 
 const PREP_SECONDS = 8;
 const CHIME_SECONDS = 3;
@@ -237,33 +238,89 @@ const unlocksBy = (ctx: Pick<Ctx, "stats" | "data">) => (id: string): boolean =>
 const jumpRule = (ex: ExerciseRecord, jumps: boolean, ctx: Pick<Ctx, "stats" | "data">): boolean =>
   jumps ? isPlyometric(ex) && onFrontier(ex, unlocksBy(ctx)) : !isPlyometric(ex);
 
-/** Whether the move's last logged exposure carried an active profile's flag: it rests until it is done cleanly. */
+/** Whether the move's last logged exposure carried an active profile's flag: it rests, then retries (`restingBy`). */
 const lastFlaggedBy = (ctx: Ctx) => (id: string): boolean => {
   const last = Prog.historyForIn(ctx.hist, id)[0];
   return Boolean(last && ctx.data.profiles.active.some(p => p.setFlag && last.flags.includes(p.setFlag.id)));
 };
 
+/** How many jumping sessions a move rests after a flagged exposure before it retries. */
+const REST_SESSIONS = 2;
+
 /**
- * The jumps block's order:
- *  1. the next rung: a move not yet done, gentlest first, at most one a session;
- *  2. the rotation: among moves last done cleanly, the top two difficulty tiers, in the usual order, so novelty and
- *     recent repetition rotate them (each slot ranks what is left, so a second slot reaches further down);
- *  3. other moves last done cleanly, hardest first;
- *  4. moves whose last logged exposure carried a profile's flag, hardest first: the rung below takes their place.
- * Today's gate and the mode's cap have already ruled on every candidate. Ties keep the usual ranking.
+ * When each jumping session started (start time, else date), in the history's order: a session that logged a jump, or
+ * a jumping day (its theme emphasises plyometric work, whether or not it held a jump) of the last 14 days. Both are
+ * what a trimmed history still holds (`Hist.trim` keeps each move's two newest entries and the last 14 days), so a
+ * trimmed build counts exactly what a whole one does.
  */
-function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx): Scored[] {
+function jumpingSessions(ctx: Ctx): readonly string[] {
+  return ctx.hist.memo(`jumpingSessions|${ctx.today}`, () => {
+    const from = Hist.TRIM.windowFrom(ctx.today, null);
+    const days = new Set(ctx.data.themes.filter(t => plyometricDay(t)).map(t => t.id));
+    const starts: string[] = [];
+    for (const s of ctx.hist.sessions) {
+      const jumped = (s.entries || []).some(e => {
+        if (!Hist.isProgression(e)) return false;
+        const ex = ctx.hist.get(e.id);
+        return Boolean(ex && isPlyometric(ex));
+      });
+      if (jumped || (s.theme != null && days.has(s.theme) && !(s.date < from))) starts.push(String(s.startedAt || s.date));
+    }
+    return starts;
+  });
+}
+
+/**
+ * Whether a move whose last logged exposure was flagged is still resting: fewer than REST_SESSIONS jumping sessions
+ * since that exposure. A rest that began before the last 14 days is over (a trimmed history no longer shows the
+ * jumping days in between), so a rested move can't be locked out by sparse jumping days.
+ */
+const restingBy = (ctx: Ctx) => (id: string): boolean => {
+  const last = Prog.historyForIn(ctx.hist, id)[0];
+  if (!last || last.date < Hist.TRIM.windowFrom(ctx.today, null)) return false;
+  let since = 0;
+  for (const at of jumpingSessions(ctx)) if (at > last.startedAt) since += 1;
+  return since < REST_SESSIONS;
+};
+
+/**
+ * The rotation's floor, worked out once from every move the block's first slot could take: the top two difficulty
+ * tiers of the moves last done cleanly, widened a tier at a time while they hold no more moves than the block has
+ * slots (two moves in two slots can't rotate), but never down to the lowest tier.
+ */
+function rotationFloor(pool: readonly ExerciseRecord[], slots: number, ctx: Ctx): number {
   const done = doneBy(ctx);
   const flagged = lastFlaggedBy(ctx);
-  const newPlaced = placed.some(it => !done(it.exercise.id));
-  const pool = ranked.filter(r => !newPlaced || done(r.ex.id));
-  const clean = pool.filter(r => done(r.ex.id) && !flagged(r.ex.id)).map(r => r.ex);
+  const clean = pool.filter(ex => done(ex.id) && !flagged(ex.id));
   const levels = [...new Set(clean.map(ex => ex.difficulty))].sort((a, b) => b - a);
-  const floor = levels[1] ?? levels[0] ?? Infinity;
-  const group = (ex: ExerciseRecord): number => (!done(ex.id) ? 0 : flagged(ex.id) ? 3 : ex.difficulty >= floor ? 1 : 2);
+  if (!levels.length) return Infinity;
+  let k = Math.min(1, levels.length - 1);
+  while (k + 2 < levels.length && clean.filter(ex => ex.difficulty >= levels[k]!).length <= slots) k += 1;
+  return levels[k]!;
+}
+
+/**
+ * The jumps block's order:
+ *  1. the session's one new-or-retry rung: a move whose last logged exposure carried a profile's set flag rests
+ *     for REST_SESSIONS jumping sessions, then retries, gentlest first, before any new move (a physio retries a rested
+ *     move before adding one); else the next rung, a move not yet done, gentlest first. At most one a session; a
+ *     resting move is left out;
+ *  2. the rotation: among moves last done cleanly, the top difficulty tiers (`rotationFloor`, worked out once before
+ *     the block's first slot), in the usual order, so novelty and recent repetition rotate them;
+ *  3. other moves last done cleanly, hardest first.
+ * Today's gate and the mode's cap have already ruled on every candidate. Ties keep the usual ranking.
+ */
+function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx, floor: number): Scored[] {
+  const done = doneBy(ctx);
+  const flagged = lastFlaggedBy(ctx);
+  const resting = restingBy(ctx);
+  const fresh = (id: string): boolean => !done(id) || flagged(id);
+  const freshPlaced = placed.some(it => fresh(it.exercise.id));
+  const pool = ranked.filter(r => !fresh(r.ex.id) || (!freshPlaced && !(done(r.ex.id) && resting(r.ex.id))));
+  const group = (ex: ExerciseRecord): number => (flagged(ex.id) && done(ex.id) ? 0 : !done(ex.id) ? 1 : ex.difficulty >= floor ? 2 : 3);
   const key = (ex: ExerciseRecord): number => {
     const g = group(ex);
-    return g === 0 ? ex.difficulty : g === 1 ? 0 : -ex.difficulty;
+    return g <= 1 ? ex.difficulty : g === 2 ? 0 : -ex.difficulty;
   };
   return pool
     .map((r, i) => ({ r, i }))
@@ -532,16 +589,18 @@ function tryFormat(formatId: FormatId, budget: number, ctx: Ctx): Group | null {
   const f = fmt(ctx.data, formatId);
   const [minN, maxN] = f.count;
   const items: Item[] = [];
+  let floor: number | null = null;   // the jumps rotation's floor, from every move the first slot could take
   for (let i = 0; i < maxN; i++) {
     const pool = candidates("accessory", formatId, ctx)
       .filter(ex => !items.some(it => it.exercise.id === ex.id))
       .filter(ex => formatId !== "superset" || !items.length || pairable(items[0]!.exercise, ex));
     if (!pool.length) break;
+    if (ctx.fillingJumps && floor === null) floor = rotationFloor(pool, maxN, ctx);
     const slotKey = `accessory:${i}`;
     const prevPosition = items.length ? items[items.length - 1]!.exercise.position : null;
     const newOpen = ctx.newMoveOpen && !items.some(it => it.isNew);
     const ranked = Select.rank(ctx.data, pool, { ...ctx, prevPosition, newMoveOpen: newOpen, coreRegions: null });
-    const choice = (ctx.fillingJumps ? rankJumps(ranked, items, ctx) : ranked)[0];
+    const choice = (ctx.fillingJumps ? rankJumps(ranked, items, ctx, floor!) : ranked)[0];
     if (!choice) break;
     items.push(makeItem(choice, "accessory", slotKey, formatId, ctx));
   }
