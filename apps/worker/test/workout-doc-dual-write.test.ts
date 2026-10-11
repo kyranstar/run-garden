@@ -37,7 +37,7 @@ import { checkWorkoutDocParity } from "../src/services/workout-doc-parity.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { buildSession } from "../src/services/session-build.js";
 import { slotId } from "../src/services/program-slots.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 /** Converters throw while `boom.on`: the failure every writer must survive. */
 const boom = vi.hoisted(() => ({ on: false }));
@@ -70,9 +70,22 @@ let today: string;
 let statements: string[] = [];
 const revisionStatements = () => statements.filter((q) => /^insert into "workout_doc_revisions"/.test(q));
 
+/**
+ * An invocation that dies: armed with `after`, the `after`-th write throws and so does every statement after it (a
+ * Worker killed mid-request runs nothing more); inside an atomic batch the throw rolls the batch back, as D1 does.
+ */
+let dying: { after: number; writes: number; dead: boolean } | null = null;
+const hook = (q: string): void => {
+  statements.push(q);
+  if (!dying) return;
+  if (!dying.dead && isWrite(q) && ++dying.writes >= dying.after) dying.dead = true;
+  if (dying.dead) throw new Error("the invocation died");
+};
+
 beforeEach(async () => {
   statements = [];
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (q) => statements.push(q) });
+  dying = null;
+  db = makeTestDb({ boundVariableCap: 100, onStatement: hook });
   ({ userId, prefs } = await makeTestUser(db, { weightUnit: "lb" }));
   today = todayInZone(prefs.timezone);
 });
@@ -465,6 +478,88 @@ describe("the COROS import: where stages are written, the document is too", () =
     statements.length = 0;
     await snapshot(changed(src(2, { title: "Easy 45", contentFingerprint: "fp-2b", stages: easy })));
     expect(revisionStatements()).toHaveLength(1);
+  });
+
+  describe("the content batches: a row, its stages and its document land together", () => {
+    /** Twelve runs (two batches of ten and two), each `minutes` long, fingerprints tagged `tag`. */
+    const twelve = (tag: string, minutes: number) =>
+      Array.from({ length: 12 }, (_, i) =>
+        src(i + 1, { title: `Run ${i + 1}`, contentFingerprint: `${tag}-${i + 1}`, stages: [st({ id: "1", order: 0, kind: "work", durationType: "time", durationSeconds: minutes * 60 })] }),
+      );
+    /** Each row: its fingerprint's tag, its stages' seconds, its document's stated minutes and its revisions. */
+    const state = async () => {
+      const rows = await db
+        .select({ id: plannedWorkouts.id, fp: plannedWorkouts.sourceContentFingerprint, doc: plannedWorkouts.workoutDoc, rev: plannedWorkouts.workoutDocRev })
+        .from(plannedWorkouts)
+        .where(eq(plannedWorkouts.userId, userId));
+      return Promise.all(
+        rows.map(async (r) => {
+          const stages = await db.select({ sec: schema.plannedWorkoutStages.durationSeconds }).from(schema.plannedWorkoutStages).where(eq(schema.plannedWorkoutStages.workoutId, r.id));
+          const revs = await revisionsOf(r.id);
+          return { tag: r.fp.split("-")[0], stages: stages.map((x) => x.sec), minutes: parseStoredWorkoutDoc(r.doc)?.setting?.targetMinutes, rev: r.rev, revs: revs.map((x) => x.rev) };
+        }),
+      );
+    };
+
+    it("an invocation that dies at any write of the read leaves no row half-written, and the next read heals every row", { timeout: 120_000 }, async () => {
+      // How many writes a whole read of twelve changed runs makes.
+      await snapshot(twelve("old", 30));
+      dying = { after: Number.POSITIVE_INFINITY, writes: 0, dead: false };
+      await snapshot(twelve("new", 45));
+      const writes = dying.writes;
+      dying = null;
+      expect(writes).toBeGreaterThan(36);
+
+      for (let k = 1; k <= writes; k++) {
+        db = makeTestDb({ boundVariableCap: 100, onStatement: hook });
+        ({ userId, prefs } = await makeTestUser(db, { weightUnit: "lb" }));
+        await snapshot(twelve("old", 30));
+        dying = { after: k, writes: 0, dead: false };
+        await snapshot(twelve("new", 45)).catch(() => undefined);
+        dying = null;
+        for (const row of await state()) {
+          // Every row is wholly the old workout or wholly the new: never a new fingerprint over old or missing stages.
+          const whole =
+            (row.tag === "old" && row.stages.join() === "1800" && row.minutes === 30 && row.rev === 1 && row.revs.join() === "1") ||
+            (row.tag === "new" && row.stages.join() === "2700" && row.minutes === 45 && row.rev === 2 && row.revs.join() === "1,2");
+          expect(whole, `killed at write ${k}: ${JSON.stringify(row)}`).toBe(true);
+        }
+        // The next read heals: every row the new workout, its stages and its document at revision 2.
+        await snapshot(twelve("new", 45));
+        const healed = await state();
+        expect(healed).toHaveLength(12);
+        for (const row of healed) expect(row, `healed after a death at write ${k}`).toEqual({ tag: "new", stages: [2700], minutes: 45, rev: 2, revs: [1, 2] });
+      }
+    });
+
+    it("a row that cannot be written blocks only itself: the batch is retried row by row, the failure counted and logged by code", async () => {
+      const warn = silence();
+      await snapshot(twelve("old", 30));
+      // The fifth run comes back with two stages under one id (the stage table's key refuses the second): its batch fails.
+      const changed = twelve("new", 45).map((w, i) => (i === 4 ? { ...w, title: "Poison pill", stages: [w.stages[0]!, { ...w.stages[0]!, order: 1 }] } : w));
+      statements.length = 0;
+      const stats = await snapshot(changed);
+      expect(stats.failedWrites).toBe(1);
+      const rows = await state();
+      expect(rows.filter((r) => r.tag === "new")).toHaveLength(11);
+      // The failed row is still wholly its old self, and the next read will try it again.
+      expect(rows.filter((r) => r.tag === "old")).toEqual([{ tag: "old", stages: [1800], minutes: 30, rev: 1, revs: [1] }]);
+      const logged = warn.mock.calls.map((c) => c.join(" ")).filter((l) => l.startsWith("import row write failed"));
+      expect(logged).toEqual(["import row write failed: SqliteError:UNIQUE"]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("Poison");
+      // Two batches of ten and two. The first failed at the bad row, before its revision statement ran, and was
+      // retried row by row: nine rows landed, each with its own revision statement, and the bad row failed again
+      // before its own. The second batch landed with one.
+      expect(revisionStatements()).toHaveLength(9 + 1);
+    });
+
+    it("a clean read: one revision statement per batch of ten rows, each batch holding its rows' stages", async () => {
+      await snapshot(twelve("old", 30));
+      statements.length = 0;
+      await snapshot(twelve("new", 45));
+      expect(revisionStatements()).toHaveLength(2);
+      for (const row of await state()) expect(row).toEqual({ tag: "new", stages: [2700], minutes: 45, rev: 2, revs: [1, 2] });
+    });
   });
 
   it("a converter that throws: every workout still lands, its document NULL, no revision", async () => {

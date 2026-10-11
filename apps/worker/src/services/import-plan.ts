@@ -28,7 +28,7 @@ import {
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { isSpikeStamp } from "@rg/coros";
-import { chunkedInsert, runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
@@ -36,7 +36,7 @@ import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
 import { queueUnpush, unpushJobId } from "./watch-push.js";
-import { docForStages, newRowDocColumns, REVISION_CHUNK, revisionInserts, updateDocColumns } from "./workout-doc-store.js";
+import { docForStages, newRowDocColumns, revisionInserts, updateDocColumns } from "./workout-doc-store.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 
 /**
@@ -87,6 +87,8 @@ export interface ImportStats {
   /** Wire workouts whose stored address was claimed by more than one row. */
   contestedAddresses: number;
   unchanged: number;
+  /** Rows this read could not write (their content batch and their own retry failed); the next read tries again. */
+  failedWrites: number;
 }
 
 /** A planned row as the import reads it: without its workout document, which the import never reads. */
@@ -226,6 +228,7 @@ export async function importPlanSnapshot(
     separatedTimes: 0,
     contestedAddresses: 0,
     unchanged: 0,
+    failedWrites: 0,
   };
 
   // ── Foreign-plan filter ────────────────────────────────────────────────────
@@ -622,12 +625,15 @@ export async function importPlanSnapshot(
   }
 
   /**
-   * The rows this read writes WITH their workout document — a new workout, a recycled slot, rule 7's content change —
-   * written together after the loop, `REVISION_CHUNK` at a time, each batch with ONE revision statement in the same
-   * atomic batch (Stage 1 dual-write): the import adds one statement per batch, not one per workout. A new or recycled
-   * row's stages follow its batch; nothing in the loop reads these rows back.
+   * The rows whose content this read rewrites — a new workout, a recycled slot, rule 7's content change — written
+   * after the loop (nothing in the loop reads them back), `IMPORT_WRITE_BATCH` rows per atomic batch: each row's write
+   * (its document in the same statement) and its stages, then ONE revision statement for the batch's documents. A row
+   * and its stages land together or not at all, so no read can leave a row with a new fingerprint and old or no stages
+   * (the fingerprint would then match and nothing would ever heal it). A batch that fails is retried row by row: a
+   * row that cannot be written blocks only itself (counted in `failedWrites`, logged by code), and the next read,
+   * still seeing its old fingerprint, writes it again.
    */
-  const docWrites: Array<{ id: string; write: AtomicStatement; revise: boolean; stagesOf: SourcePlannedWorkout | null }> = [];
+  const contentWrites: Array<{ id: string; write: AtomicStatement; revise: boolean; stagesOf: SourcePlannedWorkout }> = [];
 
   for (const src of admitted) {
     seenSourceIds.add(src.sourceWorkoutId);
@@ -780,7 +786,7 @@ export async function importPlanSnapshot(
       // the coach's rows as well as the wire's.
       const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
       const doc = docOfStages(category);
-      docWrites.push({
+      contentWrites.push({
         id: current.id,
         revise: doc !== null,
         stagesOf: src,
@@ -909,7 +915,7 @@ export async function importPlanSnapshot(
       // the coach's rows as well as the wire's.
       const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
       const doc = docOfStages(category);
-      docWrites.push({
+      contentWrites.push({
         id,
         revise: doc !== null,
         stagesOf: src,
@@ -968,7 +974,8 @@ export async function importPlanSnapshot(
 
     const updates: Record<string, unknown> = {};
     let touched = false;
-    /** Rule 7 rewrote the stages: the update carries their document, and its revision rides the same batch. */
+    /** Rule 7 rewrote the content: the update, its stages and its document go in the content batch. */
+    let restaged = false;
     let revised: WorkoutDoc | null = null;
 
     // Reset absence counter — it's present in this read.
@@ -1183,7 +1190,7 @@ export async function importPlanSnapshot(
       revised = docOfStages(updates.category as string);
       Object.assign(updates, updateDocColumns(revised));
       if (current.calendarSyncState === "synced") updates.calendarSyncState = "pending";
-      await replaceStages(db, current.id, src);
+      restaged = true;
       stats.updatedContent += 1;
       touched = true;
     } else if (
@@ -1227,28 +1234,42 @@ export async function importPlanSnapshot(
     if (touched) {
       updates.updatedAt = now;
       const update = db.update(plannedWorkouts).set(updates).where(eq(plannedWorkouts.id, current.id));
-      if (revised) docWrites.push({ id: current.id, revise: true, stagesOf: null, write: update });
+      if (restaged) contentWrites.push({ id: current.id, revise: revised !== null, stagesOf: src, write: update });
       else await update;
     } else {
       stats.unchanged += 1;
     }
   }
 
-  // The rows with documents, and their revisions (each row's own upstream version, `source_content_fingerprint`, is
-  // its revision's source_ref) — before anything below reads planned rows back.
-  for (let i = 0; i < docWrites.length; i += REVISION_CHUNK) {
-    const batch = docWrites.slice(i, i + REVISION_CHUNK);
-    await runAtomically(db, [
-      ...batch.map((w) => w.write),
+  // The rewritten rows, their stages and their documents' revisions (each row's own upstream version,
+  // `source_content_fingerprint`, is its revision's source_ref) — before anything below reads planned rows back.
+  const writeContent = (rows: typeof contentWrites) =>
+    runAtomically(db, [
+      ...rows.flatMap((w) => [w.write, ...stageStatements(db, w.id, w.stagesOf)]),
       ...revisionInserts(db, {
         userId: input.userId,
-        workoutIds: batch.filter((w) => w.revise).map((w) => w.id),
+        workoutIds: rows.filter((w) => w.revise).map((w) => w.id),
         sourceKind: "coros_import",
         sourceRef: sql`${plannedWorkouts.sourceContentFingerprint}`,
         now,
       }),
     ]);
-    for (const w of batch) if (w.stagesOf) await replaceStages(db, w.id, w.stagesOf);
+  for (let i = 0; i < contentWrites.length; i += IMPORT_WRITE_BATCH) {
+    const batch = contentWrites.slice(i, i + IMPORT_WRITE_BATCH);
+    try {
+      await writeContent(batch);
+      continue;
+    } catch {
+      // One row can sink the batch: each is tried on its own below.
+    }
+    for (const row of batch) {
+      try {
+        await writeContent([row]);
+      } catch (e) {
+        stats.failedWrites += 1;
+        console.warn(`import row write failed: ${writeFailureCode(e)}`);
+      }
+    }
   }
 
   // A RENAMED COPY'S NAME HOLDS ONLY WHILE EACH READ FINDS THAT COPY AGAIN (audit 3-B S-2). The unpush deletes by
@@ -1512,9 +1533,20 @@ export async function importPlanSnapshot(
   return stats;
 }
 
-async function replaceStages(db: Db, workoutId: string, src: SourcePlannedWorkout): Promise<void> {
-  await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, workoutId));
-  if (src.stages.length === 0) return;
+/** How many rows one content batch writes (each with its stages: a few statements a row, inside D1's batch). */
+export const IMPORT_WRITE_BATCH = 10;
+
+/** Why a row could not be written, by code only: the error's class and, for a constraint, which kind — never a value. */
+function writeFailureCode(e: unknown): string {
+  const name = e instanceof Error && /^\w{1,40}$/.test(e.name) ? e.name : "unknown";
+  const constraint = e instanceof Error ? /\b(UNIQUE|NOT NULL|FOREIGN KEY|CHECK) constraint\b/.exec(e.message)?.[1] : undefined;
+  return constraint ? `${name}:${constraint.replace(" ", "_")}` : name;
+}
+
+/** A row's stages, replacing whatever it held, as statements for its content batch. */
+function stageStatements(db: Db, workoutId: string, src: SourcePlannedWorkout): AtomicStatement[] {
+  const remove = db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, workoutId));
+  if (src.stages.length === 0) return [remove];
   const stageRows = src.stages.map((s) => ({
     id: `${workoutId}:${s.id}`,
     workoutId,
@@ -1557,5 +1589,5 @@ async function replaceStages(db: Db, workoutId: string, src: SourcePlannedWorkou
     restSeconds: s.restSeconds ?? null,
     note: s.note ?? null,
   }));
-  await chunkedInsert(stageRows, (batch) => db.insert(plannedWorkoutStages).values(batch));
+  return [remove, ...insertBatches(stageRows).map((batch) => db.insert(plannedWorkoutStages).values(batch))];
 }

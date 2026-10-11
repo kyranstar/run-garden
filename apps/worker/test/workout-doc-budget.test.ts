@@ -146,6 +146,15 @@ async function proposal(ops: CoachOp[]): Promise<string> {
 /** What each case measured, for the task report. */
 const measured: Record<string, Cost> = {};
 
+/**
+ * The same requests before the documents: measured at `ca6c47e` (the commit before Task 11) in a git-archive snapshot
+ * of it, with this file's harness (task-11-report.md, fix round 1). All four were over the 45 budget already: a
+ * session's row, stages, watch write and calendar event, and a read's import and ingest, each cost statements — that
+ * overage is not the documents' to fix. The documents may add one revision statement per op, or per batch of ten
+ * rows a read writes; nothing else.
+ */
+const PRE_TASK = { createPlan7: 68, reshapeWeek4: 67, readNowFirst: 158, readNow7: 140 };
+
 describe("one revision statement per op or read, not per session", () => {
   it("a createPlan of 7 sessions, then a reshapeWeek of 4, through the approve route", { timeout: 60_000 }, async () => {
     const app = mountRoutes(db, "/api/coach", coachRoutes);
@@ -181,11 +190,9 @@ describe("one revision statement per op or read, not per session", () => {
       .from(schema.workoutDocRevisions)
       .where(and(eq(schema.workoutDocRevisions.userId, userId), eq(schema.workoutDocRevisions.sourceRef, reshape)));
     expect(revs).toHaveLength(4);
-    // Both ops were over the 45 budget before the documents (a session's row, stages, watch write and calendar event
-    // each cost statements: measured 68 and 67 before, see the task report). The documents add one statement, not one
-    // per session; the pre-existing overage is not this change's to fix.
-    expect(created.total).toBe(created.before + 1);
-    expect(reshaped.total).toBe(reshaped.before + 1);
+    // One statement more than before the documents, not one per session.
+    expect(created.total, JSON.stringify(created)).toBeLessThanOrEqual(PRE_TASK.createPlan7 + 1);
+    expect(reshaped.total, JSON.stringify(reshaped)).toBeLessThanOrEqual(PRE_TASK.reshapeWeek4 + 1);
   });
 
   it("a read-now that finds 7 workouts changed in COROS", { timeout: 60_000 }, async () => {
@@ -215,7 +222,10 @@ describe("one revision statement per op or read, not per session", () => {
       .where(and(eq(schema.workoutDocRevisions.userId, userId), eq(schema.workoutDocRevisions.rev, 2)));
     expect(revisedNow[0]!.n).toBe(open.length);
     expect(changed.revisions).toBe(1);
-    expect(changed.total).toBe(changed.before + 1);
+    expect(changed.total, JSON.stringify(changed)).toBeLessThanOrEqual(PRE_TASK.readNow7 + 1);
+    // The first read wrote eleven workouts: two batches (ten and one), a revision statement each.
+    expect(first.revisions).toBe(2);
+    expect(first.total, JSON.stringify(first)).toBeLessThanOrEqual(PRE_TASK.readNowFirst + 2);
     measured.readNow7 = changed;
     measured.readNowFirst = first;
   });
