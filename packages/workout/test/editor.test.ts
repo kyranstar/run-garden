@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { PART_PURPOSES, workoutDocSchema, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
 import { EXERCISES, PURPOSES, type ExerciseRecord } from "@rg/exercise-library";
-import { edit, newDoc, placementFor, redo, toProposable, undo, defaultDose, startEditing, type EditAction, type EditorState } from "../src/index.js";
+import { edit, tryEdit, newDoc, placementFor, redo, toProposable, undo, defaultDose, startEditing, type EditAction, type EditorState } from "../src/index.js";
 
 const byId = new Map(EXERCISES.map((e) => [e.id, e]));
 const rec = (id: string): ExerciseRecord => {
@@ -343,6 +343,86 @@ describe("a long editing session stays schema-valid apart from empty parts", () 
     }
   });
 });
+describe("tryEdit says why nothing happened", () => {
+  const rej = (s: EditorState, a: EditAction) => tryEdit(s, a, lib);
+  it("accepted: no reason, new state", () => {
+    const r = rej(fresh(), { type: "setTitle", title: "Fresh" });
+    expect(r.rejected).toBeUndefined();
+    expect(r.state.doc.title).toBe("Fresh");
+  });
+  it("unchanged", () => {
+    const s = fresh();
+    expect(rej(s, { type: "setTitle", title: "Hips and posture" })).toEqual({ state: s, rejected: "unchanged" });
+  });
+  it("missing: a part, item or record that is not there", () => {
+    const s = run(fresh(), { type: "addItem", item: ex("a"), part: 1 });
+    for (const a of [
+      { type: "removePart", part: 9 }, { type: "movePart", part: 9, to: 0 }, { type: "setPart", part: 9, patch: {} }, { type: "addItem", item: ex("a"), part: 9 },
+      { type: "removeItem", part: 1, item: 9 }, { type: "moveItem", from: [1, 9], to: [0, 0] }, { type: "setDose", part: 9, item: 0, dose: {} },
+      { type: "swapItem", part: 1, item: 0, libraryId: "nope" }, { type: "setCue", part: 1, item: 9, cue: "x" },
+    ] as EditAction[]) {
+      const r = rej(s, a);
+      expect(r.rejected, a.type).toBe("missing");
+      expect(r.state).toBe(s);
+    }
+  });
+  it("invalid: breaks the schema", () => {
+    const s = run(fresh(), { type: "addItem", item: ex("a"), part: 1 }, { type: "addItem", item: { kind: "rest", seconds: 5 }, part: 1 });
+    expect(rej(s, { type: "setTitle", title: " " }).rejected).toBe("invalid");
+    expect(rej(s, { type: "setIntent", intent: { summary: "" } }).rejected).toBe("invalid");
+    expect(rej(s, { type: "setDose", part: 1, item: 0, dose: { sets: 99 } }).rejected).toBe("invalid");
+    expect(rej(s, { type: "setDose", part: 1, item: 1, dose: { sets: 2 } }).rejected).toBe("invalid");
+    expect(rej(s, { type: "setPart", part: 1, patch: { rounds: 99 } }).rejected).toBe("invalid");
+    expect(rej(s, { type: "addItem", item: { kind: "rest", seconds: 0 } as never, part: 1 }).rejected).toBe("invalid");
+    expect(rej(s, { type: "setCue", part: 1, item: 1, cue: "x" }).rejected).toBe("invalid");
+    expect(rej(s, { type: "addPart", purpose: "nope" as never }).rejected).toBe("invalid");
+  });
+  it("full: 20 parts, 60 items", () => {
+    let s = fresh("blank");
+    for (let i = 0; i < 20; i++) s = run(s, { type: "addPart", purpose: "main", at: 0 });
+    expect(rej(s, { type: "addPart", purpose: "main" }).rejected).toBe("full");
+    expect(rej(s, { type: "addItem", item: { kind: "run", target: { open: true }, effort: "easy" } }).rejected).toBe("full");
+    for (let i = 0; i < 60; i++) s = run(s, { type: "addItem", item: ex("a"), part: 0 });
+    expect(rej(s, { type: "addItem", item: ex("a"), part: 0 }).rejected).toBe("full");
+    s = run(s, { type: "addItem", item: ex("b"), part: 1 });
+    expect(rej(s, { type: "moveItem", from: [1, 0], to: [0, 0] }).rejected).toBe("full");
+  });
+  it("edit is tryEdit's state", () => {
+    const s = fresh();
+    expect(edit(s, { type: "removePart", part: 9 }, lib)).toBe(s);
+  });
+});
+
+describe("hardening", () => {
+  it("newDoc with an empty or blank title falls back and trims like setTitle", () => {
+    expect(newDoc("blank", { ...meta, title: "" }).title).toBe("New workout");
+    expect(newDoc("blank", { ...meta, title: "   " }).title).toBe("New workout");
+    expect(newDoc("blank", { ...meta, title: "  Padded " }).title).toBe("Padded");
+    expect(newDoc("blank", { ...meta, title: "" }).intent.summary).toBe("New workout");
+    expect(newDoc("blank", { ...meta, title: "z".repeat(200) }).title).toHaveLength(80);
+  });
+  it("setIntent stores the parsed data (unknown keys stripped)", () => {
+    const s = run(fresh(), { type: "setIntent", intent: { effort: "develop", junk: 1 } as never });
+    expect(s.doc.intent).not.toHaveProperty("junk");
+  });
+  it("setCue keeps the item schema-valid", () => {
+    const s = run(fresh(), { type: "addItem", item: { kind: "free_exercise", name: "Plank", dose: { holdSec: 30 } }, part: 1 });
+    expect(edit(s, { type: "setCue", part: 1, item: 0, cue: "ok" }, lib).doc.parts[1]!.items[0]).toMatchObject({ cue: "ok" });
+  });
+  it("an edit never produces an invalid item, even from a stored doc that already had one", () => {
+    const bad = { ...newDoc("blank", meta), parts: [{ purpose: "main", format: "straight", items: [ex("a", { sets: 99 })] }] } as WorkoutDoc;
+    const s = startEditing(bad);
+    expect(tryEdit(s, { type: "setCue", part: 0, item: 0, cue: "ok" }, lib)).toEqual({ state: s, rejected: "invalid" });
+  });
+  it("a draft cannot stand in for a WorkoutDoc, but a stored doc can be opened", () => {
+    const d = newDoc("blank", meta);
+    const plain: WorkoutDoc = { ...d, parts: [{ purpose: "main", format: "straight", items: [{ kind: "rest", seconds: 5 }] }] };
+    // @ts-expect-error a plain WorkoutDoc is not a draft
+    toProposable(plain);
+    expect(startEditing(plain).doc.parts).toHaveLength(1);
+  });
+});
+
 function itemOf(e: ExerciseRecord): WorkoutItem {
   return { kind: "exercise", libraryId: e.id, dose: defaultDose(e) };
 }
