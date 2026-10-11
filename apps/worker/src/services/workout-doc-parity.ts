@@ -4,9 +4,13 @@
  * title, and the steps of its latest build. Counts and ids only; no title or personal text leaves this module.
  *
  * Rules: a null column is `missing`, an unparsable one `invalid` (never thrown). Rest-day rows carry no document by
- * design and are exempt. A document's minutes are its stated length (`setting.targetMinutes`: the coach's minutes, the
- * planned row's estimate, the build's planned time) when it has one, else its derived estimate; they differ from the
- * row's only past max(3 min, 20 % of the row's minutes). Steps are compared as
+ * design and are exempt. Minutes: a run's document is compared by its DERIVED minutes (a run derives exactly: its
+ * segments' durations, or their distances at their pace — so a stated length can never hide a wrong one); any other
+ * document by its stated length (`setting.targetMinutes`: the coach's minutes, the planned row's estimate, the build's
+ * planned time), else its derived estimate. They differ from the row's only past max(3 min, 20 % of the row's
+ * minutes). Where a document states a length its derived estimate is more than 50 % away from, it is counted
+ * `derivedFar` — visible, not a mismatch (a coach's lift states the whole session, its sets add up to less). Steps are
+ * compared as
  * multisets of library ids, canonicalised through `legacyIds` on both sides, so a renamed move is not a mismatch.
  */
 import { and, asc, eq, getTableColumns, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -26,6 +30,8 @@ export interface ParityReport {
   exempt: number;
   /** Rows with a document but no source or fallback estimate: minutes not compared. */
   unestimated: number;
+  /** Documents whose derived minutes are more than 50 % away from the length they state: counted, not a mismatch. */
+  derivedFar: number;
   /** Rows whose chosen build predates the current document: steps not compared. */
   stale: number;
   mismatched: Array<{ id: string; field: ParityField }>;
@@ -105,7 +111,7 @@ export async function checkWorkoutDocParity(
   const page = rows.slice(0, limit);
   const next = rows.length > limit ? page[page.length - 1]!.id : null;
 
-  const report: ParityReport = { checked: 0, withDoc: 0, missing: 0, invalid: 0, exempt: 0, unestimated: 0, stale: 0, mismatched: [], sample: [], next };
+  const report: ParityReport = { checked: 0, withDoc: 0, missing: 0, invalid: 0, exempt: 0, unestimated: 0, derivedFar: 0, stale: 0, mismatched: [], sample: [], next };
   const parsed = new Map<string, WorkoutDoc>();
   for (const row of page) {
     if (row.category === "rest") {
@@ -162,8 +168,11 @@ export async function checkWorkoutDocParity(
     if (!doc) continue;
     const derived = deriveDoc(doc, library);
     const rowMin = estimatedRowMinutes(row);
+    const stated = doc.setting?.targetMinutes;
+    const minutes = derived.discipline === "run" || stated === undefined ? derived.estimatedMinutes : stated;
     if (rowMin === null) report.unestimated++;
-    else if (minutesDiffer(doc.setting?.targetMinutes ?? derived.estimatedMinutes, rowMin)) report.mismatched.push({ id: row.id, field: "minutes" });
+    else if (minutesDiffer(minutes, rowMin)) report.mismatched.push({ id: row.id, field: "minutes" });
+    if (stated !== undefined && Math.abs(derived.estimatedMinutes - stated) > 0.5 * stated) report.derivedFar++;
     const axis = axisOfCategory(row.category);
     if (axis !== null && axis !== derived.discipline) report.mismatched.push({ id: row.id, field: "discipline" });
     if (norm(doc.title) !== norm(row.title)) report.mismatched.push({ id: row.id, field: "title" });

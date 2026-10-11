@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, lt, lte } from "drizzle-orm";
 import { calendarEventSuppressions, plannedWorkouts, syncErrors, syncRuns } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
+import { plannedRowColumns } from "./planned-columns.js";
 
 /**
  * Daily reconciliation of completion states:
@@ -40,7 +41,7 @@ export async function reconcileCompletionStates(
   // scheduled → unresolved once effectiveDate < today - grace.
   const unresolvedCutoff = addDays(today, -SYNC_GRACE_DAYS);
   const toAsk = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -64,7 +65,7 @@ export async function reconcileCompletionStates(
   // unresolved → missed after a week without an answer or a match.
   const missCutoff = addDays(today, -AUTO_MISS_DAYS);
   const toMiss = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(

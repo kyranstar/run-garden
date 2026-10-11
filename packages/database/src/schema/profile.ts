@@ -71,7 +71,9 @@ export const workoutDocRevisions = sqliteTable(
     userId: text("user_id").notNull(),
     workoutId: text("workout_id").notNull(),
     rev: integer("rev").notNull(),
-    doc: text("doc", { mode: "json" }).notNull().$type<Record<string, unknown>>(),
+    /** The document as JSON TEXT, copied from the row's own `workout_doc` — plain text like it (read with
+     *  `parseStoredWorkoutDoc`; Drizzle's json mode parses every read and throws on a malformed value). */
+    doc: text("doc").notNull(),
     sourceKind: text("source_kind").notNull(), // a DOC_SOURCES value or 'athlete_edit'
     sourceRef: text("source_ref"),
     createdAt: text("created_at").notNull(),

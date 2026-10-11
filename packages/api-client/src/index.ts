@@ -573,6 +573,8 @@ export interface WorkoutDocParityReport {
   exempt: number;
   /** Rows with no source or fallback estimate: minutes not compared. */
   unestimated: number;
+  /** Documents whose derived minutes are more than 50 % away from the length they state: counted, not a mismatch. */
+  derivedFar: number;
   /** Rows whose latest build predates the current document: steps not compared. */
   stale: number;
   mismatched: Array<{ id: string; field: "minutes" | "discipline" | "title" | "steps" }>;

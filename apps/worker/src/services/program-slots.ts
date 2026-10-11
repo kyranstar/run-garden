@@ -37,10 +37,12 @@ import { adaptiveConfigSchema, addDays, nowInstant, startOfIsoWeek, todayInZone,
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkedInsert, chunkIds, type Db } from "./db.js";
+import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { removeFromPlan } from "./plan-mutations.js";
 
-type WorkoutRow = typeof plannedWorkouts.$inferSelect;
+/** A planned row without its workout document: placement never reads one. */
+type WorkoutRow = PlannedRow;
 type ProgramRow = typeof programs.$inferSelect;
 
 export interface PlacementResult {
@@ -197,7 +199,7 @@ export async function placeSlots(
   // moved in from outside still holds its date). A program that wants no slots also reads every live slot past
   // the window: retiring retracts its flexible future slots wherever an earlier, wider window put them (M2).
   const rows = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(

@@ -17,7 +17,8 @@
  * REVISIONS (Amendment A). A planned workout's document has a revision counter (`workout_doc_rev`) and a history
  * (`workout_doc_revisions`, id `<workout_id>:<rev>`). A writer of `planned_workouts.workout_doc` writes its row with
  * `newRowDocColumns` (an insert) or `updateDocColumns` (an update) and runs `revisionInsert` right after it, in the
- * same batch (`runAtomically`) — one statement more than the write, and none when it has no document to revise. The
+ * same batch (`runAtomically`) — `revisionInserts` for many rows at once: one statement more per batch of writes
+ * (per 80 rows), and none when there is no document to revise. The
  * rules, in SQL so a state that changes under the write still holds:
  *  - a completed, skipped or missed row (`FROZEN_STATES`) keeps its document and its counter, and gets no revision;
  *  - the same document again is no new revision (a re-applied proposal, a re-read import);
@@ -48,7 +49,7 @@ import {
   type LibraryIndex,
   type StagesMeta,
 } from "@rg/workout";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 import { corosKeyOfName, libraryIdsByKey } from "./coros-exercise-map.js";
 import { strictExerciseKey } from "./exercise-catalog.js";
 
@@ -58,24 +59,21 @@ export type DocSourceKind = (typeof DOC_SOURCES)[number] | "athlete_edit";
 /** The completion states whose document never changes again: the workout has had its day. */
 export const FROZEN_STATES = ["completed", "skipped", "missed"] as const;
 
-export function isFrozen(state: string | null | undefined): boolean {
-  return (FROZEN_STATES as readonly string[]).includes(state ?? "");
-}
-
 let shippedIndex: LibraryIndex | null = null;
 /** The shipped library, by any id it has held. */
 const library = (): LibraryIndex => (shippedIndex ??= makeLibraryIndex(EXERCISES));
 
 let byName: Map<string, string | null> | null = null;
-/** A library move's own name (strict key) → its id; a name two moves share → null. */
-function libraryNames(): Map<string, string | null> {
-  if (byName) return byName;
+/** A library move's own name (strict key) → its id; a name two moves share → null. The shipped library's is kept. */
+function libraryNames(lib?: readonly ExerciseRecord[]): Map<string, string | null> {
+  if (!lib && byName) return byName;
   const out = new Map<string, string | null>();
-  for (const e of EXERCISES) {
+  for (const e of lib ?? EXERCISES) {
     const key = strictExerciseKey(e.name);
     if (key) out.set(key, out.has(key) ? null : e.id);
   }
-  return (byName = out);
+  if (!lib) byName = out;
+  return out;
 }
 
 /**
@@ -87,10 +85,14 @@ export function libraryIdOfCorosName(label: string, lib?: readonly ExerciseRecor
   return key ? (libraryIdsByKey(lib).get(key) ?? null) : null;
 }
 
-/** What the coach called a move → the library move: the library's own name first, then COROS's name for it. */
-export function resolveLibraryName(name: string): string | null {
-  const own = libraryNames().get(strictExerciseKey(name));
-  return own ?? libraryIdOfCorosName(name);
+/**
+ * What the coach called a move → the library move: the library's own name first, then COROS's name for it. A name the
+ * library holds decides, even one two moves share (then nothing): COROS's name for it is no tie-break.
+ */
+export function resolveLibraryName(name: string, lib?: readonly ExerciseRecord[]): string | null {
+  const key = strictExerciseKey(name);
+  const names = libraryNames(lib);
+  return names.has(key) ? (names.get(key) ?? null) : libraryIdOfCorosName(name, lib);
 }
 
 /** The source as the log names it. */
@@ -98,19 +100,18 @@ type LogSource = "engine" | "coach" | "coros_import" | "studio";
 
 /** A conversion that cannot fail the write: the schema-valid document, or null (logged by code). */
 function converted(source: LogSource, convert: () => WorkoutDoc | null): WorkoutDoc | null {
-  let doc: WorkoutDoc | null;
   try {
-    doc = convert();
+    const doc = convert();
+    if (doc === null) return null;
+    const parsed = workoutDocSchema.safeParse(doc);
+    if (parsed.success) return parsed.data;
+    const issue = parsed.error.issues[0];
+    failed(source, `invalid:${issue?.code ?? "unknown"}@${issue?.path.join(".") ?? ""}`);
+    return null;
   } catch (e) {
     failed(source, e instanceof Error && /^\w{1,40}$/.test(e.name) ? e.name : "unknown");
     return null;
   }
-  if (doc === null) return null;
-  const parsed = workoutDocSchema.safeParse(doc);
-  if (parsed.success) return parsed.data;
-  const issue = parsed.error.issues[0];
-  failed(source, `invalid:${issue?.code ?? "unknown"}@${issue?.path.join(".") ?? ""}`);
-  return null;
 }
 
 function failed(source: LogSource, code: string): void {
@@ -204,4 +205,34 @@ export function revisionInsert(
       )}`,
     )
     .onConflictDoNothing();
+}
+
+/** How many rows one revision statement covers (the ids are bound: 80 plus the statement's own stay under D1's 100). */
+export const REVISION_CHUNK = 80;
+
+/**
+ * The revisions of several rows' current documents, for the same batch as their writes — ONE statement per
+ * `REVISION_CHUNK` rows, so a writer of many rows (an op's sessions, an import's workouts) adds one statement, not one
+ * per row. The rules are `revisionInsert`'s. `sourceRef` may be a column of the row itself (the import's
+ * `source_content_fingerprint`: each row's own upstream version). No ids, no statement.
+ */
+export function revisionInserts(
+  db: Db,
+  r: { userId: string; workoutIds: readonly string[]; sourceKind: DocSourceKind; sourceRef: string | null | SQL; now: string },
+) {
+  const pw = plannedWorkouts;
+  return chunkIds([...new Set(r.workoutIds)], REVISION_CHUNK).map((ids) =>
+    db
+      .insert(workoutDocRevisions)
+      .select(
+        sql`select ${pw.id} || ':' || ${pw.workoutDocRev}, ${pw.userId}, ${pw.id}, ${pw.workoutDocRev}, ${pw.workoutDoc}, ${r.sourceKind}, ${r.sourceRef}, ${r.now} from ${pw} where ${and(
+          inArray(pw.id, ids),
+          eq(pw.userId, r.userId),
+          isNotNull(pw.workoutDoc),
+          isNotNull(pw.workoutDocRev),
+          notInArray(pw.completionState, [...FROZEN_STATES]),
+        )}`,
+      )
+      .onConflictDoNothing(),
+  );
 }

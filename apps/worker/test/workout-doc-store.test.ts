@@ -15,11 +15,11 @@ import {
   docForStages,
   docForStudioSession,
   FROZEN_STATES,
-  isFrozen,
   libraryIdOfCorosName,
   newRowDocColumns,
   resolveLibraryName,
   revisionInsert,
+  revisionInserts,
   updateDocColumns,
 } from "../src/services/workout-doc-store.js";
 import { corosKeyOfName } from "../src/services/coros-exercise-map.js";
@@ -55,10 +55,8 @@ afterEach(() => {
 });
 
 describe("the frozen rule", () => {
-  it("completed, skipped and missed are frozen; every other state is not", () => {
+  it("completed, skipped and missed are frozen (the SQL guards read this one list)", () => {
     expect([...FROZEN_STATES].sort()).toEqual(["completed", "missed", "skipped"]);
-    for (const s of FROZEN_STATES) expect(isFrozen(s)).toBe(true);
-    for (const s of ["scheduled", "planned", "unresolved", "started"]) expect(isFrozen(s)).toBe(false);
   });
 });
 
@@ -88,6 +86,18 @@ describe("names → library moves", () => {
     expect(resolveLibraryName("Lie on Your Back Glute Bridge")).toBe(libraryIdOfCorosName("Lie on Your Back Glute Bridge"));
     expect(resolveLibraryName("Jumping Lunges")).toBeNull();
     expect(resolveLibraryName("Something the coach made up")).toBeNull();
+  });
+
+  it("a name two library moves share is no library name, and never falls through to COROS's", () => {
+    const goblet = EXERCISES.find((e) => e.id === GOBLET)!;
+    // Two moves named "Goblet squat"; COROS's T1301 is mapped (exactly) by the first only.
+    const library = [
+      ...EXERCISES.filter((e) => e.id !== GOBLET),
+      { ...goblet, id: "gobletA", legacyIds: [] },
+      { ...goblet, id: "gobletB", legacyIds: [], providers: { coros: { key: "T1301", confidence: "close" as const, method: "curated" as const } } },
+    ];
+    expect(libraryIdOfCorosName("Goblet Squat", library)).toBe("gobletA");
+    expect(resolveLibraryName("Goblet squat", library)).toBeNull();
   });
 });
 
@@ -265,5 +275,33 @@ describe("revisions of a planned workout's document", () => {
     await insert("w1", doc("Easy"));
     await runAtomically(db, [revisionInsert(db, { userId: other.userId, workoutId: "w1", sourceKind: "coach", sourceRef: null, now: NOW })]);
     expect((await db.select().from(workoutDocRevisions).where(eq(workoutDocRevisions.userId, other.userId))).length).toBe(0);
+  });
+
+  it("many rows' revisions: one statement per 80 rows, the same rules, each row's own column as its source_ref", async () => {
+    const ids = Array.from({ length: 83 }, (_, i) => `m${String(i).padStart(2, "0")}`);
+    // Rows written without their revisions (the helper's test): 83 with documents, one of them done, one with none.
+    for (const id of ids) {
+      await db.insert(plannedWorkouts).values({
+        id, userId, planId: "p", sourceWorkoutId: id, title: "Run", category: "easy", sport: "run",
+        originalPlanDate: "2026-10-12", lastVerifiedCorosDate: "", effectiveDate: "2026-10-12", effectiveTime: "07:00",
+        completionState: id === "m01" ? "completed" : "scheduled", sourceContentFingerprint: `fp-${id}`, calendarBlockDurationSeconds: 1800,
+        createdAt: nowInstant(), updatedAt: nowInstant(), ...newRowDocColumns(id === "m02" ? null : doc("Easy")),
+      });
+    }
+    const statements = revisionInserts(db, { userId, workoutIds: [...ids, "m00"], sourceKind: "coros_import", sourceRef: sql`${plannedWorkouts.sourceContentFingerprint}`, now: NOW });
+    expect(statements).toHaveLength(2);
+    await runAtomically(db, statements);
+    const revs = await db.select({ workoutId: workoutDocRevisions.workoutId, sourceRef: workoutDocRevisions.sourceRef }).from(workoutDocRevisions).where(eq(workoutDocRevisions.userId, userId));
+    expect(revs).toHaveLength(81);
+    expect(revs.map((r) => r.workoutId)).not.toContain("m01");
+    expect(revs.map((r) => r.workoutId)).not.toContain("m02");
+    expect(revs.find((r) => r.workoutId === "m10")!.sourceRef).toBe("fp-m10");
+    // Idempotent; another account's ids revise nothing; no ids, no statement.
+    await runAtomically(db, revisionInserts(db, { userId, workoutIds: ids, sourceKind: "coros_import", sourceRef: null, now: NOW }));
+    expect(await db.select({ id: workoutDocRevisions.id }).from(workoutDocRevisions)).toHaveLength(81);
+    const other = await makeTestUser(db);
+    await runAtomically(db, revisionInserts(db, { userId: other.userId, workoutIds: ids, sourceKind: "coach", sourceRef: null, now: NOW }));
+    expect(await db.select({ id: workoutDocRevisions.id }).from(workoutDocRevisions)).toHaveLength(81);
+    expect(revisionInserts(db, { userId, workoutIds: [], sourceKind: "coach", sourceRef: null, now: NOW })).toEqual([]);
   });
 });

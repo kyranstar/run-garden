@@ -41,7 +41,7 @@ import {
 } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
-import { docForCoachSession, newRowDocColumns, revisionInsert, updateDocColumns } from "./workout-doc-store.js";
+import { docForCoachSession, newRowDocColumns, revisionInsert, revisionInserts, updateDocColumns } from "./workout-doc-store.js";
 
 /**
  * Approval → deterministic mutations (spec §7). No LLM here, ever. All row
@@ -348,32 +348,41 @@ function planDisciplineOf(session: CoachSession): "run" | "lift" | "mobility" {
   return "run";
 }
 
-async function insertSession(
+/** A coach session an op puts on the calendar: its row's id, plan and day. */
+interface NewSession {
+  id: string;
+  planId: string;
+  date: string;
+  session: CoachSession;
+}
+
+/**
+ * The op's new sessions: every row, with its workout document at revision 1, and the revisions of those documents —
+ * ONE batch, so the op costs one revision statement however many sessions it adds (Stage 1 dual-write; a rest day has
+ * no document, and a conversion that fails is NULL — never a failed apply). A re-apply inserts nothing, so it revises
+ * nothing: a revision's id is its row's own. Then each session's stages and its watch write, in order.
+ */
+async function insertSessions(
   db: Db,
   userId: string,
-  planId: string,
-  id: string,
-  date: string,
-  session: CoachSession,
+  sessions: readonly NewSession[],
   now: string,
   opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences; thresholdPaceSecPerKm?: number; proposalId?: string } = {},
 ): Promise<void> {
-  // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15) — and
-  // in the SAME slot the importer would have chosen, from the one shared
-  // window function (`day-placement.ts`), rather than a second hand-rolled copy
-  // of the rule. Whether this session can keep that slot, or has to queue up
-  // behind what already occupies the day, is settled by `separateDayCollisions`
-  // once the whole apply has landed: a coach add on top of a plan session is
-  // now the ordinary case, and two 09:00 appointments is not a day.
-  const effectiveTime = opts.prefs
-    ? windowTimeFor({ category: session.category, date }, opts.prefs)
-    : "07:00";
-  // The session's workout document, at revision 1, and its revision in the same batch (Stage 1 dual-write; a rest
-  // day has none, and a conversion that fails is NULL — never a failed apply). A re-apply inserts nothing, so it
-  // revises nothing: the revision's id is the row's own.
-  const doc = docForCoachSession(session, { weightUnit: opts.prefs?.weightUnit });
-  await runAtomically(db, [
-    db
+  if (sessions.length === 0) return;
+  const rows = sessions.map(({ id, planId, date, session }) => {
+    // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15) — and
+    // in the SAME slot the importer would have chosen, from the one shared
+    // window function (`day-placement.ts`), rather than a second hand-rolled copy
+    // of the rule. Whether this session can keep that slot, or has to queue up
+    // behind what already occupies the day, is settled by `separateDayCollisions`
+    // once the whole apply has landed: a coach add on top of a plan session is
+    // now the ordinary case, and two 09:00 appointments is not a day.
+    const effectiveTime = opts.prefs
+      ? windowTimeFor({ category: session.category, date }, opts.prefs)
+      : "07:00";
+    const doc = docForCoachSession(session, { weightUnit: opts.prefs?.weightUnit });
+    const insert = db
       .insert(plannedWorkouts)
       .values({
         id,
@@ -399,18 +408,29 @@ async function insertSession(
         sourceContentFingerprint: fingerprint(session),
         ...newRowDocColumns(doc),
       })
-      .onConflictDoNothing(),
-    ...(doc ? [revisionInsert(db, { userId, workoutId: id, sourceKind: "coach", sourceRef: opts.proposalId ?? null, now })] : []),
+      .onConflictDoNothing();
+    return { id, doc, insert };
+  });
+  await runAtomically(db, [
+    ...rows.map((r) => r.insert),
+    ...revisionInserts(db, {
+      userId,
+      workoutIds: rows.filter((r) => r.doc !== null).map((r) => r.id),
+      sourceKind: "coach",
+      sourceRef: opts.proposalId ?? null,
+      now,
+    }),
   ]);
 
-  await writeStages(db, id, session, opts.thresholdPaceSecPerKm);
-
-  // Coach adds reach the WATCH (user requirement 2026-08-12): duration-block
-  // run sessions ride the same verified create pipeline as studio pushes.
-  // The stored state stays calendar_only until the executor verifies; the
-  // pending job already renders as "syncing" through deriveWorkoutSync.
-  if (opts.corosWritesEnabled) {
-    await enqueueWatchCreate(db, userId, id, date, session, now, opts.thresholdPaceSecPerKm);
+  for (const { id, date, session } of sessions) {
+    await writeStages(db, id, session, opts.thresholdPaceSecPerKm);
+    // Coach adds reach the WATCH (user requirement 2026-08-12): duration-block
+    // run sessions ride the same verified create pipeline as studio pushes.
+    // The stored state stays calendar_only until the executor verifies; the
+    // pending job already renders as "syncing" through deriveWorkoutSync.
+    if (opts.corosWritesEnabled) {
+      await enqueueWatchCreate(db, userId, id, date, session, now, opts.thresholdPaceSecPerKm);
+    }
   }
 }
 
@@ -965,6 +985,8 @@ export async function applyOps(
     .orderBy(desc(dailyHealth.date))
     .limit(1);
   const thresholdPaceSecPerKm = thresholdRow?.v ?? undefined;
+  /** What every new session of this apply is written with. */
+  const sessionOpts = { corosWritesEnabled: prefs.corosWritesEnabled, prefs, thresholdPaceSecPerKm, proposalId };
   const out: ApplyResult = { created: [], updated: [], archived: [], missed: [], resimFrom: null };
   const noteResim = (date: string | null | undefined) => {
     if (date && date <= today && (out.resimFrom === null || date < out.resimFrom)) out.resimFrom = date;
@@ -1357,6 +1379,7 @@ export async function applyOps(
         // its own id, its own calendar block and its own watch write. The
         // vocabulary is what got cheaper; the sessions the athlete approves
         // are exactly the sessions they would have got from N separate adds.
+        const added: NewSession[] = [];
         for (const [n, date] of addOpDates(op).entries()) {
           const planId =
             (await activeCoachPlanId(db, userId, op.session, date)) ??
@@ -1370,44 +1393,34 @@ export async function applyOps(
           // October's one-offs landed in it.
           if (isLoosePlan({ id: planId })) await widenLoosePlan(db, planId, date, now);
           const id = opId(n);
-          await insertSession(db, userId, planId, id, date, op.session, now, {
-            corosWritesEnabled: prefs.corosWritesEnabled,
-            prefs,
-            thresholdPaceSecPerKm,
-            proposalId,
-          });
+          added.push({ id, planId, date, session: op.session });
           touchedDates.add(date);
           out.created.push(id);
         }
+        await insertSessions(db, userId, added, now, sessionOpts);
         break;
       }
       case "reshapeWeek": {
         out.archived.push(...(await archiveWeek(db, userId, op.planId, op.weekStart, now, prefs)));
+        const added: NewSession[] = [];
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
-            corosWritesEnabled: prefs.corosWritesEnabled,
-            prefs,
-            thresholdPaceSecPerKm,
-            proposalId,
-          });
+          added.push({ id, planId: op.planId, date: s.date, session: s.session });
           touchedDates.add(s.date);
           out.created.push(id);
         }
+        await insertSessions(db, userId, added, now, sessionOpts);
         break;
       }
       case "firmUp": {
+        const added: NewSession[] = [];
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
-            corosWritesEnabled: prefs.corosWritesEnabled,
-            prefs,
-            thresholdPaceSecPerKm,
-            proposalId,
-          });
+          added.push({ id, planId: op.planId, date: s.date, session: s.session });
           touchedDates.add(s.date);
           out.created.push(id);
         }
+        await insertSessions(db, userId, added, now, sessionOpts);
         await db
           .insert(coachPlanWeeks)
           .values({ id: opId("wk"), planId: op.planId, weekStart: op.weekStart, state: "firm", shape: null })
@@ -1448,17 +1461,14 @@ export async function applyOps(
         for (const monday of mondays) {
           out.archived.push(...(await archiveWeek(db, userId, op.planId, monday, now, prefs)));
         }
+        const added: NewSession[] = [];
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
-            corosWritesEnabled: prefs.corosWritesEnabled,
-            prefs,
-            thresholdPaceSecPerKm,
-            proposalId,
-          });
+          added.push({ id, planId: op.planId, date: s.date, session: s.session });
           touchedDates.add(s.date);
           out.created.push(id);
         }
+        await insertSessions(db, userId, added, now, sessionOpts);
         break;
       }
       case "createPlan": {
@@ -1479,17 +1489,14 @@ export async function applyOps(
             updatedAt: now,
           })
           .onConflictDoNothing();
+        const added: NewSession[] = [];
         for (const [n, s] of op.firmSessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, planId, id, s.date, s.session, now, {
-            corosWritesEnabled: prefs.corosWritesEnabled,
-            prefs,
-            thresholdPaceSecPerKm,
-            proposalId,
-          });
+          added.push({ id, planId, date: s.date, session: s.session });
           touchedDates.add(s.date);
           out.created.push(id);
         }
+        await insertSessions(db, userId, added, now, sessionOpts);
         for (const wk of op.shapeWeeks) {
           await db
             .insert(coachPlanWeeks)

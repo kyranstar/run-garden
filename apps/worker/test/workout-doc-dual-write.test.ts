@@ -91,8 +91,13 @@ const revisionsOf = async (id: string) =>
     (a, b) => a.rev - b.rev,
   );
 const titleOf = (raw: string) => parseStoredWorkoutDoc(raw)!.title;
-/** The row's stored document, parsed as every reader parses it. */
+/**
+ * The row's stored document, parsed as every reader parses it. The column holds the document's JSON once: its text
+ * parses to an object, never to a string of JSON (double-encoding, which `parseStoredWorkoutDoc` would quietly undo).
+ */
 const docOf = (row: { workoutDoc: unknown }): WorkoutDoc => {
+  expect(typeof row.workoutDoc).toBe("string");
+  expect(typeof JSON.parse(row.workoutDoc as string)).toBe("object");
   const doc = parseStoredWorkoutDoc(row.workoutDoc);
   expect(doc, "the stored document parses").not.toBeNull();
   return doc!;
@@ -136,7 +141,6 @@ describe("session builds: the build insert carries the document (a snapshot, no 
 
   it("today's build: the document of exactly the stored build, agreeing with the row the build wrote", async () => {
     const id = await seedSlot("2026-10-07");
-    const tally = { builds: 0, sameCategory: 0, minutesNearPlanned: 0, minutesNearBooked: 0 };
     let n = 0;
     for (const mode of ["recovery", "consistent", "build"] as const) {
       for (const minutes of [15, 30, 45, 60]) {
@@ -152,26 +156,19 @@ describe("session builds: the build insert carries the document (a snapshot, no 
         expect(doc.setting?.targetMinutes, label).toBe(Math.round(res.build!.plannedSeconds / 60));
         const d = derived(doc);
         const row = await rowOf(id);
-        tally.builds += 1;
         // Discipline. The row says strength when the build holds a core lift, else yoga (programme spec §9.2); the
         // document says strength when its main part holds a lift (derive.ts, ruling 2026-10-10): they agree.
         expect(d.category, `${label}: ${row.category}`).toBe(row.category);
-        tally.sameCategory += 1;
-        // Minutes: the document counts work and rests, not the player's lead-ins and chimes (derive.ts), so it reads a
-        // little under the engine's planned time — within the parity diagnostic's tolerance, max(3 min, 20 %). The
-        // row's booked length rounds that planned time up, and can fall outside it (counted, not asserted: see the
-        // task report).
+        // Minutes: the document's own estimate (derive.ts: work, rests, assumed rests and transitions — not the
+        // player's lead-ins and chimes) stays within the parity diagnostic's tolerance, max(3 min, 20 %), of the
+        // engine's planned time.
         const near = (m: number) => Math.abs(d.estimatedMinutes - m) <= Math.max(3, 0.2 * m);
         expect(near(Math.round(res.build!.plannedSeconds / 60)), `${label}: ${d.estimatedMinutes} vs planned ${res.build!.plannedSeconds}s`).toBe(true);
-        tally.minutesNearPlanned += 1;
-        if (near(rowMinutes(row))) tally.minutesNearBooked += 1;
         expect(await revisionsOf(id)).toEqual([]);
         // The planned row's document is not the build's: a programme row's content is its build (a snapshot).
         expect(row.workoutDoc).toBeNull();
       }
     }
-    console.log("build documents vs their rows:", JSON.stringify(tally));
-    expect(tally.sameCategory).toBe(tally.builds);
   });
 
   it("a preview (a day ahead) carries one too, rewritten when the preview is", async () => {
@@ -297,7 +294,7 @@ describe("the coach: an add and an ease write the document and its revision", ()
     expect((await revisionsOf(id!)).map((r) => r.rev)).toEqual([1]);
   });
 
-  it("the cost: one statement more per session written with a document (the revision), none without one", async () => {
+  it("the cost: one statement more per op that writes documents (the revisions of all its sessions), none without one", async () => {
     statements.length = 0;
     const out = await applyOps(db, userId, prefs, "p-cost", [add(addDays(today, 2), RUN), add(addDays(today, 3), { category: "rest", title: "Rest", durationMinutes: 0 })]);
     expect(out.created).toHaveLength(2);
@@ -307,6 +304,15 @@ describe("the coach: an add and an ease write the document and its revision", ()
     expect(revisionStatements()).toHaveLength(1);
     // The document rides the write's own statement: one write of the row, as before.
     expect(statements.filter((q) => /^update "planned_workouts" set "title"/.test(q))).toHaveLength(1);
+    // One op of five sessions (a recurring add): five rows, their five revisions in one statement.
+    statements.length = 0;
+    const five = await applyOps(db, userId, prefs, "p-cost-five", [
+      coachOpSchema.parse({ kind: "add", date: addDays(today, 5), dates: [6, 7, 8, 9].map((d) => addDays(today, d)), session: RUN }),
+    ]);
+    expect(five.created).toHaveLength(5);
+    expect(statements.filter((q) => /^insert into "planned_workouts"/.test(q))).toHaveLength(5);
+    expect(revisionStatements()).toHaveLength(1);
+    for (const id of five.created) expect((await revisionsOf(id)).map((r) => [r.rev, r.sourceRef])).toEqual([[1, "p-cost-five"]]);
   });
 
   it("a converter that throws: the add and the ease still land, the document NULL, no revision", async () => {
@@ -446,11 +452,12 @@ describe("the COROS import: where stages are written, the document is too", () =
     expect((await revisionsOf(row.id)).map((r) => [r.rev, titleOf(r.doc)])).toEqual([[1, "Easy 30"], [2, "Upper"]]);
   });
 
-  it("the cost: one statement more per workout written with a document, none for a rest day or an unchanged read", async () => {
+  it("the cost: one statement more per read that writes documents, none for an unchanged read", async () => {
     statements.length = 0;
     await snapshot(base());
-    // Three workouts and a rest day: three revisions; the rows' inserts carry their documents themselves.
-    expect(revisionStatements()).toHaveLength(3);
+    // Three workouts and a rest day: their three revisions in ONE statement (one per 80 rows); the rows' inserts
+    // carry their documents themselves.
+    expect(revisionStatements()).toHaveLength(1);
     expect(statements.filter((q) => /^insert into "planned_workouts"/.test(q))).toHaveLength(4);
     statements.length = 0;
     await snapshot(base());

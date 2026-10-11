@@ -111,7 +111,7 @@ describe("GET /api/settings/diagnostics/workout-docs", () => {
     expect(body.mismatched).toEqual([{ id: "far", field: "minutes" }]);
   });
 
-  it("compares the document's stated length (setting.targetMinutes) when it has one, the derived estimate only when it has none", async () => {
+  it("a non-run document is compared by its stated length (setting.targetMinutes), else by its derived minutes", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     // A coach lift: it states 30 minutes, and its few sets derive far fewer — the stated length is what the row says.
@@ -124,6 +124,25 @@ describe("GET /api/settings/diagnostics/workout-docs", () => {
     const { body } = await (await client(db, userId)).diag();
     const mismatched = body.mismatched as Array<{ id: string; field: string }>;
     expect(mismatched.filter((m) => m.field === "minutes").map((m) => m.id).sort()).toEqual(["stated-far", "unstated"]);
+    // Both stated documents derive less than half their stated length: counted, not mismatched for it.
+    expect(body.derivedFar).toBe(2);
+  });
+
+  it("a run is compared by its derived minutes (runs derive exactly), whatever length it states", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    // A 30-minute run (docOf's default) that states 70: compared by its 30, against rows of 30 and of 70.
+    const run = workoutDocSchema.parse({ ...docOf(), setting: { targetMinutes: 70 } });
+    expect(deriveDoc(run, EXERCISES).estimatedMinutes).toBe(30);
+    await seed(db, userId, "run-30", { workoutDoc: run as never, sourceEstimatedDurationSeconds: 30 * 60 });
+    await seed(db, userId, "run-70", { workoutDoc: run as never, sourceEstimatedDurationSeconds: 70 * 60 });
+    // Stated close to what it derives: no derivedFar.
+    await seed(db, userId, "run-close", { workoutDoc: workoutDocSchema.parse({ ...docOf(), setting: { targetMinutes: 32 } }) as never, sourceEstimatedDurationSeconds: 30 * 60 });
+    const { body } = await (await client(db, userId)).diag();
+    const mismatched = body.mismatched as Array<{ id: string; field: string }>;
+    expect(mismatched.filter((m) => m.field === "minutes").map((m) => m.id)).toEqual(["run-70"]);
+    // The two stating 70 derive 30, more than half away: counted (not a mismatch for it); 32 against 30 is not.
+    expect(body.derivedFar).toBe(2);
   });
 
   it("flags a title and a discipline mismatch", async () => {

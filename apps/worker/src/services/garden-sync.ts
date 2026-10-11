@@ -74,6 +74,7 @@ const DEW_EPOCH = "2026-08-19";
  * the athlete already watched. */
 export const APP_SESSION_EPOCH: LocalDate = "2026-10-07";
 import { chunkedInsert, chunkIds, type Db } from "./db.js";
+import { plannedRowColumns } from "./planned-columns.js";
 import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
@@ -236,7 +237,7 @@ export async function buildDayInput(
   prefs: UserPreferences,
 ): Promise<GardenDayInput> {
   const dayWorkouts = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -377,7 +378,7 @@ export async function buildDayInput(
   // their own effective day may already be simulated by then.
   const resolutionLandedOn = sql<string>`max(${plannedWorkouts.effectiveDate}, coalesce(${plannedWorkouts.resolutionDate}, ${plannedWorkouts.effectiveDate}))`;
   const resolvedHere = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -587,7 +588,7 @@ export async function buildDayInput(
     const weekStart = addDays(date, -7);
     const weekEnd = addDays(date, -1);
     const weekWorkouts = await db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(

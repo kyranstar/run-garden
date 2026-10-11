@@ -34,6 +34,7 @@ import {
 } from "@rg/calendar";
 import type { Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
+import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { googleCalendarClient, type GoogleCalendarClient } from "./google-calendar.js";
 import { activeSyncNotes, postSyncNote } from "./sync-notes.js";
 import { applyMove } from "./jobs.js";
@@ -211,7 +212,7 @@ export async function syncCalendar(
 
   // ── Desired state ────────────────────────────────────────────────────────
   const workouts = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -744,7 +745,7 @@ async function adoptAndRecreate(
     calendarId: string;
     appUrl: string;
     items: RawGoogleEvent[];
-    workouts: Array<typeof plannedWorkouts.$inferSelect>;
+    workouts: Array<PlannedRow>;
     links: Array<typeof calendarEventLinks.$inferSelect>;
     suppressions: Array<typeof calendarEventSuppressions.$inferSelect>;
     restoreFinishedAt: string | null;

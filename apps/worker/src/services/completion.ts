@@ -24,6 +24,7 @@ import {
   type RawCorosActivityDetail,
 } from "@rg/providers";
 import { chunkedInsert, type Db } from "./db.js";
+import { plannedRowColumns } from "./planned-columns.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { linkWatchSessionsToWorkouts, matchedWorkoutId, upsertWatchSession } from "./watch-sets.js";
 
@@ -669,7 +670,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     const minDate = addDays(dates.reduce((a, b) => (a < b ? a : b)), -1);
     const maxDate = addDays(dates.reduce((a, b) => (a > b ? a : b)), 1);
     const openWorkouts = await db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(

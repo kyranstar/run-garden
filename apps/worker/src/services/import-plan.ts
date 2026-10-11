@@ -28,7 +28,7 @@ import {
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { isSpikeStamp } from "@rg/coros";
-import { chunkedInsert, runAtomically, type Db } from "./db.js";
+import { chunkedInsert, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
@@ -36,7 +36,7 @@ import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
 import { queueUnpush, unpushJobId } from "./watch-push.js";
-import { docForStages, newRowDocColumns, revisionInsert, updateDocColumns } from "./workout-doc-store.js";
+import { docForStages, newRowDocColumns, REVISION_CHUNK, revisionInserts, updateDocColumns } from "./workout-doc-store.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 
 /**
@@ -621,6 +621,14 @@ export async function importPlanSnapshot(
     if (pushByStamp.has(src.title)) stampCarriers.set(src.title, (stampCarriers.get(src.title) ?? 0) + 1);
   }
 
+  /**
+   * The rows this read writes WITH their workout document — a new workout, a recycled slot, rule 7's content change —
+   * written together after the loop, `REVISION_CHUNK` at a time, each batch with ONE revision statement in the same
+   * atomic batch (Stage 1 dual-write): the import adds one statement per batch, not one per workout. A new or recycled
+   * row's stages follow its batch; nothing in the loop reads these rows back.
+   */
+  const docWrites: Array<{ id: string; write: AtomicStatement; revise: boolean; stagesOf: SourcePlannedWorkout | null }> = [];
+
   for (const src of admitted) {
     seenSourceIds.add(src.sourceWorkoutId);
     // The athlete-facing title for this wire workout: ours un-stamped, anyone
@@ -655,9 +663,6 @@ export async function importPlanSnapshot(
         qualitySubtype: classification.qualitySubtype ?? null,
         durationSeconds: src.estimatedDurationSeconds ?? estimate.workoutSeconds,
       });
-    /** The revision of a document just written, for the same batch; none when there is no document to revise. */
-    const revision = (workoutId: string, doc: WorkoutDoc | null) =>
-      doc ? [revisionInsert(db, { userId: input.userId, workoutId, sourceKind: "coros_import", sourceRef: src.contentFingerprint, now })] : [];
 
     // RULING 3-R9. A program row claims a wire workout only when the workout
     // carries that row's recorded stamp: an address is a claim, and COROS
@@ -775,8 +780,11 @@ export async function importPlanSnapshot(
       // the coach's rows as well as the wire's.
       const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
       const doc = docOfStages(category);
-      await runAtomically(db, [
-        db
+      docWrites.push({
+        id: current.id,
+        revise: doc !== null,
+        stagesOf: src,
+        write: db
           .update(plannedWorkouts)
           .set({
             title,
@@ -813,9 +821,7 @@ export async function importPlanSnapshot(
             updatedAt: now,
           })
           .where(eq(plannedWorkouts.id, current.id)),
-        ...revision(current.id, doc),
-      ]);
-      await replaceStages(db, current.id, src);
+      });
       stats.replacedRecycled += 1;
       continue;
     }
@@ -903,8 +909,11 @@ export async function importPlanSnapshot(
       // the coach's rows as well as the wire's.
       const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
       const doc = docOfStages(category);
-      await runAtomically(db, [
-        db.insert(plannedWorkouts).values({
+      docWrites.push({
+        id,
+        revise: doc !== null,
+        stagesOf: src,
+        write: db.insert(plannedWorkouts).values({
           id,
           userId: input.userId,
           planId: planRowsBySourceId.get(src.sourcePlanId)!.id,
@@ -938,9 +947,7 @@ export async function importPlanSnapshot(
           createdAt: now,
           updatedAt: now,
         }),
-        ...revision(id, doc),
-      ]);
-      await replaceStages(db, id, src);
+      });
       stats.created += 1;
       continue;
     }
@@ -1220,11 +1227,28 @@ export async function importPlanSnapshot(
     if (touched) {
       updates.updatedAt = now;
       const update = db.update(plannedWorkouts).set(updates).where(eq(plannedWorkouts.id, current.id));
-      if (revised) await runAtomically(db, [update, ...revision(current.id, revised)]);
+      if (revised) docWrites.push({ id: current.id, revise: true, stagesOf: null, write: update });
       else await update;
     } else {
       stats.unchanged += 1;
     }
+  }
+
+  // The rows with documents, and their revisions (each row's own upstream version, `source_content_fingerprint`, is
+  // its revision's source_ref) — before anything below reads planned rows back.
+  for (let i = 0; i < docWrites.length; i += REVISION_CHUNK) {
+    const batch = docWrites.slice(i, i + REVISION_CHUNK);
+    await runAtomically(db, [
+      ...batch.map((w) => w.write),
+      ...revisionInserts(db, {
+        userId: input.userId,
+        workoutIds: batch.filter((w) => w.revise).map((w) => w.id),
+        sourceKind: "coros_import",
+        sourceRef: sql`${plannedWorkouts.sourceContentFingerprint}`,
+        now,
+      }),
+    ]);
+    for (const w of batch) if (w.stagesOf) await replaceStages(db, w.id, w.stagesOf);
   }
 
   // A RENAMED COPY'S NAME HOLDS ONLY WHILE EACH READ FINDS THAT COPY AGAIN (audit 3-B S-2). The unpush deletes by

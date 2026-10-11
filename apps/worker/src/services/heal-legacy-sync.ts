@@ -9,6 +9,7 @@ import {
 import { appAuthoredRow, newId, nowInstant } from "@rg/domain";
 import { recordIntent } from "./sync-intents.js";
 import type { Db } from "./db.js";
+import { plannedRowColumns } from "./planned-columns.js";
 
 /**
  * One-shot migration of pre-ledger sync state (spec §1 "Migration & healing").
@@ -41,7 +42,7 @@ export async function healLegacySyncState(db: Db, userId: string): Promise<{ hea
 
   // 2. needs_attention rows whose dates already agree are provably fine.
   const flagged = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -74,7 +75,7 @@ export async function healLegacySyncState(db: Db, userId: string): Promise<{ hea
 
   // 4. archiveReason backfill.
   const archived = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(

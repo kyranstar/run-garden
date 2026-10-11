@@ -33,6 +33,7 @@ import {
 } from "@rg/domain";
 import { fixtureModeEnabled, type Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
+import { plannedRowColumns } from "./planned-columns.js";
 import { restoreInProgress } from "./account-state.js";
 import { isOutOfCredits, loadOutOfCredits, noteGatewayOutcome, outOfCreditsWithin } from "./ai-credits.js";
 import { llmBudgetStatus } from "./llm.js";
@@ -981,7 +982,7 @@ export async function guardrailCtx(
   // a week later" silently stopped two months out, in the middle of a block.
   const horizon = addDays(today, 180);
   const rows = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)));
   const workouts = rows
