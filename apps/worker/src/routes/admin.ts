@@ -7,6 +7,10 @@
  * A resimulation rewrites the garden's derived tables, so production can
  * only hash what it has: `resim: true` is refused (409) unless this is
  * staging.
+ *
+ * `/api/admin/workout-docs/backfill` (Stage 1 Task 14) lives behind the same
+ * switch and sign-in: one bounded step of the workout document backfill
+ * (services/workout-doc-backfill.ts), counts and ids only.
  */
 import { Hono, type Context, type ExecutionContext } from "hono";
 import type { Env } from "../env.js";
@@ -17,6 +21,7 @@ import { sha256Hex } from "../auth/crypto.js";
 import { canonicalJson } from "../services/account-tables.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { calendarHash, gardenHash, jobCounts, ParityRefused, tableHashes } from "../services/parity.js";
+import { BACKFILL_KINDS, backfillWorkoutDocs, type BackfillKind } from "../services/workout-doc-backfill.js";
 
 /** Hands a request to the app itself, in-process (index.ts passes `app.fetch`). */
 export type AppDispatch = (req: Request, env: Env, ctx?: ExecutionContext) => Response | Promise<Response>;
@@ -193,6 +198,40 @@ export function adminRoutes(dispatch: AppDispatch): Hono<AppContext> {
       out[path] = { status: res.status, sha256: await dtoDigest(new URL(path, BASE).pathname, body) };
     }
     return c.json(out);
+  });
+
+  /**
+   * One step of the workout document backfill, for the signed-in account:
+   * `?kind=planned|builds` (required), `dryRun=1` (the default — only
+   * `dryRun=0` writes), `limit` (rows, 15 by default, at most 20), `after`
+   * (the previous answer's `nextAfter`). Answers `{ dryRun, kind, scanned,
+   * converted, skipped, skippedBy, failed: [{ id, code }], nextAfter }`.
+   */
+  routes.post("/workout-docs/backfill", async (c) => {
+    const kind = c.req.query("kind");
+    if (!BACKFILL_KINDS.includes(kind as BackfillKind)) return c.json({ error: "bad_kind" }, 400);
+    const dryRun = c.req.query("dryRun");
+    if (dryRun !== undefined && dryRun !== "0" && dryRun !== "1") return c.json({ error: "bad_dry_run" }, 400);
+    const after = c.req.query("after");
+    if (after !== undefined && (after.length === 0 || after.length > 200)) return c.json({ error: "bad_after" }, 400);
+    const rawLimit = c.req.query("limit");
+    const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+    if (limit !== undefined && !Number.isInteger(limit)) return c.json({ error: "bad_limit" }, 400);
+    try {
+      return c.json(
+        await backfillWorkoutDocs(c.get("db"), c.get("userId"), {
+          kind: kind as BackfillKind,
+          dryRun: dryRun !== "0",
+          ...(after !== undefined ? { after } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        }),
+      );
+    } catch (e) {
+      // The kind only: an error's text can quote the data it failed on.
+      const name = e instanceof Error && /^\w{1,40}$/.test(e.name) ? e.name : "unknown";
+      console.error(`workout doc backfill failed: ${name}`);
+      return c.json({ error: "backfill_failed", name }, 500);
+    }
   });
 
   // The kind only, as the copier does (Audit 2 M6): Hono's default handler

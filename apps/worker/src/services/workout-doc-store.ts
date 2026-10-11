@@ -99,35 +99,43 @@ export function resolveLibraryName(name: string, lib?: readonly ExerciseRecord[]
 type LogSource = "engine" | "coach" | "coros_import" | "studio";
 
 /** A conversion that cannot fail the write: the schema-valid document, or null (logged by code). */
-function converted(source: LogSource, convert: () => WorkoutDoc | null): WorkoutDoc | null {
+function converted(source: LogSource, convert: () => WorkoutDoc | null, onFailed?: ConversionFailed): WorkoutDoc | null {
   try {
     const doc = convert();
     if (doc === null) return null;
     const parsed = workoutDocSchema.safeParse(doc);
     if (parsed.success) return parsed.data;
     const issue = parsed.error.issues[0];
-    failed(source, `invalid:${issue?.code ?? "unknown"}@${issue?.path.join(".") ?? ""}`);
+    failed(source, `invalid:${issue?.code ?? "unknown"}@${issue?.path.join(".") ?? ""}`, onFailed);
     return null;
   } catch (e) {
-    failed(source, e instanceof Error && /^\w{1,40}$/.test(e.name) ? e.name : "unknown");
+    failed(source, e instanceof Error && /^\w{1,40}$/.test(e.name) ? e.name : "unknown", onFailed);
     return null;
   }
 }
 
-function failed(source: LogSource, code: string): void {
+/**
+ * Told what the log says of a conversion that failed — `<source>/<code>`, never a message or a title — for a caller
+ * that reports it (the backfill's `failed`).
+ */
+export type ConversionFailed = (code: string) => void;
+
+function failed(source: LogSource, code: string, onFailed?: ConversionFailed): void {
   console.warn(`workout doc conversion failed: ${source}/${code}`);
+  onFailed?.(`${source}/${code}`);
 }
 
 /** An engine build (`session_builds.payload.build`) → its document. */
-export function docForBuild(build: BuildPayload): WorkoutDoc | null {
-  return converted("engine", () => docFromBuildWithKept(build, { library: library() }).doc);
+export function docForBuild(build: BuildPayload, onFailed?: ConversionFailed): WorkoutDoc | null {
+  return converted("engine", () => docFromBuildWithKept(build, { library: library() }).doc, onFailed);
 }
 
 /** A coach session → its document; a rest day has none. Stored loads are typed in the athlete's weight unit. */
-export function docForCoachSession(session: CoachSession, ctx: { weightUnit?: WeightUnit }): WorkoutDoc | null {
+export function docForCoachSession(session: CoachSession, ctx: { weightUnit?: WeightUnit }, onFailed?: ConversionFailed): WorkoutDoc | null {
   return converted(
     "coach",
     () => docFromCoachSession(session, { resolveName: resolveLibraryName, weightUnit: ctx.weightUnit, library: library() })?.doc ?? null,
+    onFailed,
   );
 }
 
@@ -135,11 +143,12 @@ export function docForCoachSession(session: CoachSession, ctx: { weightUnit?: We
 export type StagesRowMeta = Pick<StagesMeta, "title" | "sport" | "category" | "qualitySubtype" | "durationSeconds">;
 
 /** COROS stages → their document; a rest day (the row's category) has none. */
-export function docForStages(stages: PlannedStage[], meta: StagesRowMeta): WorkoutDoc | null {
+export function docForStages(stages: PlannedStage[], meta: StagesRowMeta, onFailed?: ConversionFailed): WorkoutDoc | null {
   if (meta.category === "rest") return null;
   return converted(
     "coros_import",
     () => docFromStages(stages, { ...meta, corosKeyToLibraryId: (label) => libraryIdOfCorosName(label), library: library() }).doc,
+    onFailed,
   );
 }
 
@@ -215,10 +224,13 @@ export const REVISION_CHUNK = 80;
  * `REVISION_CHUNK` rows, so a writer of many rows (an op's sessions, an import's workouts) adds one statement, not one
  * per row. The rules are `revisionInsert`'s. `sourceRef` may be a column of the row itself (the import's
  * `source_content_fingerprint`: each row's own upstream version). No ids, no statement.
+ *
+ * `recordsHistory` (the backfill only): the rows' FIRST documents, filled in where no writer ever wrote one. On a
+ * completed, skipped or missed row that is history being recorded, not an edit, so the frozen rule does not apply.
  */
 export function revisionInserts(
   db: Db,
-  r: { userId: string; workoutIds: readonly string[]; sourceKind: DocSourceKind; sourceRef: string | null | SQL; now: string },
+  r: { userId: string; workoutIds: readonly string[]; sourceKind: DocSourceKind; sourceRef: string | null | SQL; now: string; recordsHistory?: boolean },
 ) {
   const pw = plannedWorkouts;
   return chunkIds([...new Set(r.workoutIds)], REVISION_CHUNK).map((ids) =>
@@ -230,7 +242,7 @@ export function revisionInserts(
           eq(pw.userId, r.userId),
           isNotNull(pw.workoutDoc),
           isNotNull(pw.workoutDocRev),
-          notInArray(pw.completionState, [...FROZEN_STATES]),
+          ...(r.recordsHistory ? [] : [notInArray(pw.completionState, [...FROZEN_STATES])]),
         )}`,
       )
       .onConflictDoNothing(),
