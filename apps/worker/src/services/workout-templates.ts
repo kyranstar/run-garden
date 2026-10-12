@@ -52,11 +52,11 @@ export interface TemplateDto {
 }
 
 const t = workoutTemplates;
-/** A template's columns, its document as the raw text it is stored as (never parsed by the driver). */
+/** A template's columns: its document the plain JSON text it is stored as, parsed only by `parseStoredWorkoutDoc`. */
 const columns = {
   id: t.id,
   name: t.name,
-  doc: sql<string | null>`${t.doc}`,
+  doc: t.doc,
   pinned: t.pinned,
   uses: t.uses,
   lastUsedAt: t.lastUsedAt,
@@ -107,12 +107,12 @@ export async function createTemplate(
   now: string,
 ): Promise<{ template: TemplateDto; warnings: DocIssue[] }> {
   const { doc, warnings } = await validated(db, userId, input.doc);
-  const row = { id: newId(), userId, name: input.name, doc: doc as unknown as Record<string, unknown>, pinned: input.pinned ?? false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now };
+  const row = { id: newId(), userId, name: input.name, doc: JSON.stringify(doc), pinned: input.pinned ?? false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now };
   // The cap in the insert itself: a save that would pass it writes nothing.
   const inserted = await db
     .insert(t)
     .select(
-      sql`select ${row.id}, ${userId}, ${row.name}, ${JSON.stringify(doc)}, ${row.pinned ? 1 : 0}, 0, null, ${now}, ${now} where (select count(*) from ${t} where ${t.userId} = ${userId}) < ${MAX_TEMPLATES}`,
+      sql`select ${row.id}, ${userId}, ${row.name}, ${row.doc}, ${row.pinned ? 1 : 0}, 0, null, ${now}, ${now} where (select count(*) from ${t} where ${t.userId} = ${userId}) < ${MAX_TEMPLATES}`,
     )
     .returning({ id: t.id });
   if (inserted.length === 0) throw new TooManyTemplatesError();
@@ -132,7 +132,7 @@ export async function updateTemplate(
   const set = {
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.pinned !== undefined ? { pinned: patch.pinned } : {}),
-    ...(checked ? { doc: checked.doc as unknown as Record<string, unknown> } : {}),
+    ...(checked ? { doc: JSON.stringify(checked.doc) } : {}),
     updatedAt: now,
   };
   await db.update(t).set(set).where(and(eq(t.id, id), eq(t.userId, userId)));

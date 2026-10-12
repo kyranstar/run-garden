@@ -110,14 +110,18 @@ export const athleteAnswers = sqliteTable(
   ],
 );
 
-/** The Studio's saved workouts. `doc` is a WorkoutDoc with source.kind 'template'. */
+/**
+ * The Studio's saved workouts. `doc` is a WorkoutDoc with source.kind 'template', as JSON TEXT — plain text like the
+ * other document columns (no json mode: a malformed value must not throw on every row read): written as
+ * `JSON.stringify(doc)`, read with `parseStoredWorkoutDoc`.
+ */
 export const workoutTemplates = sqliteTable(
   "workout_templates",
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     name: text("name").notNull(),
-    doc: text("doc", { mode: "json" }).notNull().$type<Record<string, unknown>>(),
+    doc: text("doc").notNull(),
     pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
     uses: integer("uses").notNull().default(0),
     lastUsedAt: text("last_used_at"),

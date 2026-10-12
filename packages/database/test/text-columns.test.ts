@@ -5,13 +5,14 @@
  */
 import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import { describe, expect, it } from "vitest";
-import { coachMemory, coachRuns, plannedWorkouts, sessionBuilds } from "../src/index.js";
+import { coachMemory, coachRuns, plannedWorkouts, sessionBuilds, workoutTemplates } from "../src/index.js";
 
 const COLUMNS: ReadonlyArray<[string, SQLiteTable, string]> = [
   ["planned_workouts", plannedWorkouts, "workout_doc"],
   ["session_builds", sessionBuilds, "workout_doc"],
   ["coach_runs", coachRuns, "state"],
   ["coach_memory", coachMemory, "evidence"],
+  ["workout_templates", workoutTemplates, "doc"],
 ];
 
 describe("JSON columns a bad row must not break are plain text", () => {

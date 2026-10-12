@@ -129,7 +129,7 @@ describe("templates", () => {
   it("keeps at most 200 an account: the save past the cap is 409 too_many and writes nothing", async () => {
     for (let i = 0; i < MAX_TEMPLATES - 1; i++) {
       await db.insert(workoutTemplates).values({
-        id: `cap-${i}`, userId, name: `T${i}`, doc: calmDoc() as unknown as Record<string, unknown>, pinned: false, uses: 0,
+        id: `cap-${i}`, userId, name: `T${i}`, doc: JSON.stringify(calmDoc()), pinned: false, uses: 0,
         lastUsedAt: null, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z",
       });
     }
@@ -156,7 +156,7 @@ describe("templates", () => {
     await activateTmj(db, userId);
     for (let i = 0; i < 30; i++) {
       await db.insert(workoutTemplates).values({
-        id: `t-${i}`, userId, name: `Template ${i}`, doc: landingsDoc() as unknown as Record<string, unknown>, pinned: i % 5 === 0,
+        id: `t-${i}`, userId, name: `Template ${i}`, doc: JSON.stringify(landingsDoc()), pinned: i % 5 === 0,
         uses: i, lastUsedAt: null, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z",
       });
     }
