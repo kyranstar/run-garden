@@ -56,6 +56,12 @@ import { useMoveSay } from "./prefs.js";
 /** How far ahead the sheet looks for planned workouts to add to. */
 export const PLANNED_DAYS = 28;
 
+/**
+ * How long ✕ and Escape wait for a write under way before they may close the sheet anyway (the page then keeps the
+ * answer, "Still saving…" until it lands). An object so a test can shorten it.
+ */
+export const SAVE_PATIENCE = { ms: 8000 };
+
 export const TEMPLATES_QUERY = ["templates"] as const;
 const plannedQuery = (today: string) => ["plan", "studio-targets", today] as const;
 
@@ -65,10 +71,16 @@ export interface AddDone {
   text: string;
   /** Open: the builder on what the move went into. */
   href: string;
-  undo: () => Promise<void>;
+  /** Take it back; what the server says of the undone workout (its watch copy) comes back with it. */
+  undo: () => Promise<UndoDone | void>;
   /** What the server notes about the result as costs (its warnings), in its words. Never blocks. */
   notes: string[];
   /** A planned workout whose copy on the watch is now the older version: offer to send the new one. */
+  watch?: { workoutId: string; minutes: number };
+}
+
+/** What an Undo leaves to say: the watch still holds the copy with the move in it. */
+export interface UndoDone {
   watch?: { workoutId: string; minutes: number };
 }
 
@@ -175,8 +187,10 @@ export async function addTo(target: AddTarget, rec: ExerciseRecord, deps: AddDep
         notes: costs(done.saved.warnings),
         ...(done.saved.watchHasOlder ? { watch: { workoutId: target.id, minutes: done.saved.workout.minutes } } : {}),
         undo: async () => {
-          await api.reviseWorkoutDoc(target.id, original, done.saved.rev ?? 0);
+          const back = await api.reviseWorkoutDoc(target.id, original, done.saved.rev ?? 0);
           refresh();
+          // The watch may hold the copy with the move (sent after the Add): the line says so, with Send.
+          return back.watchHasOlder ? { watch: { workoutId: target.id, minutes: back.workout.minutes } } : {};
         },
       };
     }
@@ -217,13 +231,15 @@ export interface AddSheetProps {
   onAdded: (done: AddDone) => void;
   /** The device's draft store (a test passes its own). */
   drafts?: DraftStore;
+  /** The athlete closed the sheet while a write was still under way (past `SAVE_PATIENCE`): its answer, for the page. */
+  onLeaveWhileSaving?: (writing: Promise<AddDone>) => void;
 }
 
 /** The templates the sheet offers: those whose document reads, pinned first. */
 const usableTemplates = (ts: readonly TemplateDto[]): TemplateDto[] =>
   ts.filter((t) => t.doc !== null).sort((a, b) => Number(b.pinned) - Number(a.pinned));
 
-export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheetProps) {
+export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhileSaving }: AddSheetProps) {
   const qc = useQueryClient();
   const name = useId();
   const { draft, loaded, save, clear, load } = useStudioDraft(drafts);
@@ -237,13 +253,22 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheet
   const tpls = usableTemplates(templates.data?.templates ?? []);
   const { say, set: setSay, error: sayError } = useMoveSay(rec.id, ctx);
 
-  // The athlete's choice; until they make one, the workout being built if there is one, else a new workout — decided
-  // only once the draft has been read.
+  // The draft the sheet offers: the FIRST read's answer, for the sheet's lifetime, so the row never comes or goes once
+  // the list is drawn (what Add writes reads the device again at that moment).
+  const firstRead = useRef<{ draft: StudioDraft | null } | null>(null);
+  if (loaded && !firstRead.current) firstRead.current = { draft };
+  const offeredDraft = firstRead.current?.draft ?? null;
+
+  // The athlete's choice; until they make one, the workout being built if there is one, else a new workout.
   const [chosen, setChosen] = useState<AddTargetKind | null>(null);
   const [workoutId, setWorkoutId] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyNow = useRef(false);
+  /** The write under way, handed to the page if the athlete leaves before it answers. */
+  const inFlight = useRef<Promise<AddDone> | null>(null);
+  /** The write has run past `SAVE_PATIENCE.ms`: the sheet may close, the page keeps the answer. */
+  const [stuck, setStuck] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Mounted: an answer that lands after the sheet is gone is dropped. Set in the effect itself, not only cleared by its
   // cleanup — StrictMode mounts, unmounts and mounts again, and a ref only ever cleared would read "gone" for good.
@@ -255,14 +280,14 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheet
     };
   }, []);
 
-  const kind: AddTargetKind = chosen ?? (draft ? "draft" : "new");
+  const kind: AddTargetKind = chosen ?? (offeredDraft ? "draft" : "new");
   const wid = workoutId && workouts.some((w) => w.id === workoutId) ? workoutId : (workouts[0]?.id ?? null);
   const tid = templateId && tpls.some((t) => t.id === templateId) ? templateId : (tpls[0]?.id ?? null);
   // Nothing to add to until the draft has been read: the default (and so what Add would write) depends on it.
   const target: AddTarget | null = !loaded
     ? null
     : kind === "draft"
-      ? draft
+      ? offeredDraft
         ? { kind: "draft" }
         : null
       : kind === "workout"
@@ -279,17 +304,39 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheet
     if (!target || busyNow.current) return;
     busyNow.current = true;
     setBusy(true);
+    setStuck(false);
     setError(null);
+    const patience = setTimeout(() => {
+      if (live.current) setStuck(true);
+    }, SAVE_PATIENCE.ms);
+    const writing = addTo(target, rec, { drafts: { load, save, clear }, qc });
+    inFlight.current = writing;
     try {
-      const done = await addTo(target, rec, { drafts: { load, save, clear }, qc });
+      const done = await writing;
+      // Gone already (closed while saving): the page took the write over and shows its answer.
       if (live.current) onAdded(done);
     } catch (e) {
       if (live.current) setError(writeErrorText(e));
     } finally {
+      clearTimeout(patience);
       busyNow.current = false;
-      if (live.current) setBusy(false);
+      inFlight.current = null;
+      if (live.current) {
+        setBusy(false);
+        setStuck(false);
+      }
     }
   };
+
+  /** ✕ and Escape: wait while a write is under way — but not past `SAVE_PATIENCE.ms`; then close, the page keeping it. */
+  const close = () => {
+    if (!busyNow.current) return onClose();
+    if (!stuckNow.current || !inFlight.current) return;
+    onLeaveWhileSaving?.(inFlight.current);
+    onClose();
+  };
+  const stuckNow = useRef(false);
+  stuckNow.current = stuck;
 
   const pick = (k: AddTargetKind) => {
     setChosen(k);
@@ -312,10 +359,8 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheet
   return (
     <Sheet
       open
-      // While a write is under way the sheet waits for its answer: ✕ and Escape do nothing until then.
-      onClose={() => {
-        if (!busyNow.current) onClose();
-      }}
+      // While a write is under way the sheet waits for its answer — for a while (`close`).
+      onClose={close}
       title={`Add ${rec.name}`}
       footer={
         <div className="btn-row stu-add-actions">
@@ -334,7 +379,7 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheet
         <legend className="visually-hidden">Add it to</legend>
         {loaded ? (
           <>
-            {draft ? option("draft", "To the workout I'm building", held(`“${draft.doc.title}”`)) : null}
+            {offeredDraft ? option("draft", "To the workout I'm building", held(`“${offeredDraft.doc.title}”`)) : null}
             {option(
               "workout",
               "To a planned workout",
@@ -359,7 +404,7 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheet
               ),
               workouts.length > 0,
             )}
-            {option("new", "To a new workout", draft ? held(`Replaces “${draft.doc.title}”`) : undefined)}
+            {option("new", "To a new workout", offeredDraft ? held(`Replaces “${offeredDraft.doc.title}”`) : undefined)}
             {option(
               "template",
               "To a template",
@@ -392,6 +437,10 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts }: AddSheet
           {error ?? sayError}
         </p>
       ) : null}
+      {/* Past the wait: say it is still going, and that the sheet can go (the page keeps the answer). */}
+      <p className="stu-add-wait" role="status">
+        {stuck ? "Still saving… You can close this." : ""}
+      </p>
     </Sheet>
   );
 }
@@ -403,17 +452,34 @@ export interface Added extends AddDone {
   rec: ExerciseRecord;
   /** Where it was started: the move's detail, or a row of the list. */
   from: "detail" | "list";
-  phase: "done" | "undoing" | "undone";
-  /** The new version, once its Send was taken. */
+  /**
+   * saving — the sheet was closed while the write was still under way; failed — that write did not happen;
+   * done / undoing / undone — as they say.
+   */
+  phase: "saving" | "failed" | "done" | "undoing" | "undone";
+  /** The version on offer to the watch, once its Send was taken. */
   sent?: boolean;
   error?: string;
 }
 
+/** The words of the line, by phase — and, when the watch holds another copy, what it holds. */
+function lineWords(a: Added): string {
+  if (a.phase === "saving") return "Still saving…";
+  if (a.phase === "failed") return "";
+  if (a.phase === "undone") {
+    if (!a.watch) return "Undone.";
+    return a.sent ? "Undone. Sending this version to your watch." : `Undone. Your watch has the copy with ${a.rec.name}.`;
+  }
+  if (!a.watch) return a.text;
+  return `${a.text} ${a.sent ? "Sending the new version to your watch." : "Your watch has the older version."}`;
+}
+
 /**
- * The quiet confirmation line: where the move went, with Open and Undo — and, when the watch holds the workout's older
- * version, "Send the new version" (the session's own Send: its preview, then the push). Always mounted where it can show
- * (the page, the detail's foot) so its words are announced as they change; empty, it takes no room. A failed Undo is
- * an alert. After Undo it says so, and focus — whose button just went — rests on the line.
+ * The quiet confirmation line: where the move went, with Open and Undo — and, when the watch holds another copy of the
+ * workout, a Send (the session's own: its preview, then the push). Its words and the server's costs are one status
+ * region, always mounted where the line can show (the page, the detail's foot), so they are announced as they change;
+ * empty, it takes no room. A failure is an alert. After Undo, or once the new version is on its way, the button that
+ * was pressed is gone and focus rests on the line's words (only when it had nowhere else to be).
  */
 export function AddedLine({
   added,
@@ -424,31 +490,33 @@ export function AddedLine({
   added: Added | null;
   onUndo: () => void;
   onDismiss: () => void;
-  /** Open the watch preview for the workout, to send its new version. */
+  /** Open the watch preview for the workout, to send the version it now holds in the app. */
   onSendWatch?: (workoutId: string) => void;
 }) {
-  const text = useRef<HTMLParagraphElement>(null);
+  const said = useRef<HTMLDivElement>(null);
   const phase = added?.phase;
+  const sent = added?.sent;
   useEffect(() => {
-    // Undo's button went with the undo: focus rests on the line rather than falling to the page — and only then; focus
-    // the athlete moved elsewhere stays where they put it.
+    // The pressed button went (Undo, Send): focus rests on the line rather than falling to the page — and only then;
+    // focus the athlete moved elsewhere stays where they put it.
     const a = document.activeElement;
-    if (phase === "undone" && (!a || a === document.body)) text.current?.focus({ preventScroll: true });
-  }, [phase]);
-  const live = added && added.phase !== "undone";
-  const watch = live && added.watch ? added.watch : null;
+    if ((phase === "undone" || sent) && (!a || a === document.body)) said.current?.focus({ preventScroll: true });
+  }, [phase, sent]);
+  const acting = added && (added.phase === "done" || added.phase === "undoing");
+  const sendable = added && added.watch && !added.sent && (added.phase === "done" || added.phase === "undone") && onSendWatch;
   return (
     <div className={`stu-added${added ? " stu-added--on" : ""}`}>
-      <p ref={text} className="stu-added-text" role="status" tabIndex={-1}>
-        {added
-          ? added.phase === "undone"
-            ? "Undone."
-            : [added.text, watch ? (added.sent ? "Sending the new version to your watch." : "Your watch has the older version.") : null]
-                .filter(Boolean)
-                .join(" ")
-          : ""}
-      </p>
-      {live ? (
+      <div ref={said} className="stu-added-said" role="status" tabIndex={-1}>
+        <p className="stu-added-text">{added ? lineWords(added) : ""}</p>
+        {acting && added.notes.length ? (
+          <ul className="stu-added-notes">
+            {added.notes.map((n, i) => (
+              <li key={`${i}-${n}`}>{n}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+      {acting ? (
         <span className="stu-added-actions">
           <Link className="linklike tap-pad" to={added.href}>
             Open
@@ -459,22 +527,15 @@ export function AddedLine({
           </button>
         </span>
       ) : null}
-      {added ? (
+      {added && added.phase !== "saving" ? (
         <button type="button" className="stu-added-x tap-pad" aria-label="Dismiss" onClick={onDismiss}>
           <IconClose />
         </button>
       ) : null}
-      {watch && !added?.sent && onSendWatch ? (
-        <button type="button" className="btn btn-small stu-added-send" onClick={() => onSendWatch(watch.workoutId)}>
-          Send the new version
+      {sendable ? (
+        <button type="button" className="btn btn-small stu-added-send" onClick={() => onSendWatch(added.watch!.workoutId)}>
+          {added.phase === "undone" ? "Send this version" : "Send the new version"}
         </button>
-      ) : null}
-      {live && added.notes.length ? (
-        <ul className="stu-added-notes">
-          {added.notes.map((n, i) => (
-            <li key={`${i}-${n}`}>{n}</li>
-          ))}
-        </ul>
       ) : null}
       {added?.error ? (
         <span className="stu-added-error" role="alert">

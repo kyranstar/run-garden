@@ -9660,6 +9660,12 @@ button.stu-qs:hover {
   justify-content: space-between;
   align-items: center;
 }
+/* Empty, it is no height (and stays in the DOM, so "Still saving…" is heard). */
+.stu-add-wait {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
 .stu-add-pin svg {
   width: 16px;
   height: 16px;
@@ -9692,6 +9698,13 @@ button.stu-qs:hover {
   z-index: 20;
   box-shadow: var(--shadow-sm);
 }
+/* The words and the server's costs: one status region, the row's first column. */
+.stu-added-said {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
 .stu-added--on .stu-added-text {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -9704,9 +9717,8 @@ button.stu-qs:hover {
   gap: var(--space-6);
   font-size: var(--text-sm);
 }
-/* Under the one row, across it: the watch's Send, the costs, a failed Undo. */
+/* Under the one row, across it: the watch's Send, a failure. */
 .stu-added-send,
-.stu-added-notes,
 .stu-added-error {
   grid-column: 1 / -1;
 }
@@ -9716,6 +9728,7 @@ button.stu-qs:hover {
 .stu-added-notes {
   margin: 0;
   padding-left: var(--space-6);
+  overflow-wrap: anywhere;
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }

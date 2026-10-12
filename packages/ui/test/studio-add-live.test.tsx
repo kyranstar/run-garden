@@ -16,7 +16,7 @@ import type { WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, type DraftDoc } from "@rg/workout";
 import { StudioScreen } from "../src/screens/studio/screen.js";
-import { AddSheet, type AddDone } from "../src/screens/studio/add-sheet.js";
+import { AddSheet, SAVE_PATIENCE, type AddDone } from "../src/screens/studio/add-sheet.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { draftStore, type DraftStore, type StudioDraft } from "../src/studio-drafts.js";
 import { primedClient } from "./studio-fixtures.js";
@@ -38,7 +38,11 @@ afterEach(() => {
   host?.remove();
   root = null;
   vi.unstubAllGlobals();
+  SAVE_PATIENCE.ms = 8000;
 });
+
+/** Answers a revise the server is holding ("held"). */
+let releaseHeld: () => void = () => undefined;
 
 function Where() {
   const loc = useLocation();
@@ -116,7 +120,7 @@ interface Server {
   docs?: Array<{ doc: WorkoutDoc; rev: number }>;
   /** PUT /api/workouts/:id/doc answers, in turn (the last one repeats): a refusal, "hang" (never answers), or OK with
    * what the server says of it. */
-  revise?: Array<number | "hang" | { error: string; status: number } | { watchHasOlder?: boolean; warnings?: unknown[] }>;
+  revise?: Array<number | "hang" | "held" | { error: string; status: number } | { watchHasOlder?: boolean; warnings?: unknown[] }>;
 }
 
 function serve(s: Server = {}): Call[] {
@@ -146,6 +150,7 @@ function serve(s: Server = {}): Call[] {
       if (doc && method === "PUT") {
         const a = s.revise?.[Math.min(revised++, (s.revise?.length ?? 1) - 1)];
         if (a === "hang") return new Promise<Response>(() => undefined);
+        if (a === "held") return new Promise<Response>((r) => (releaseHeld = () => r(json({ workout: { ...planned({ id: doc[1]! }), date: "2026-10-15", time: "18:00", title: body.doc.title, intentSummary: "", docRev: body.baseRev + 1, minutes: 20 }, rev: body.baseRev + 1, watchHasOlder: false, warnings: [] }))));
         if (a && typeof a === "object" && "error" in a) return json({ error: a.error, rev: rev + 1 }, a.status);
         const said = a && typeof a === "object" ? a : {};
         const w = planned({ id: doc[1]! });
@@ -296,7 +301,7 @@ describe("to the workout being built", () => {
     await until(() => !!line(), "the confirmation line");
     expect(sheet()).toBeNull();
     expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Added to Main in “Hips & posture”.");
-    expect(line()!.querySelector(".stu-added-text")!.getAttribute("role")).toBe("status");
+    expect(line()!.querySelector(".stu-added-said")!.getAttribute("role")).toBe("status");
     expect(line()!.querySelector("a")!.getAttribute("href")).toBe("/studio/build/new");
     const after = (await draftStore().load())!.doc;
     expect(exerciseIds(after, "main")).toEqual(["gobletSquat"]);
@@ -308,7 +313,7 @@ describe("to the workout being built", () => {
     await until(() => line()?.textContent?.includes("Undone.") ?? false, "Undone");
     expect((await draftStore().load())!.doc).toEqual(before);
     // Undo's button went: focus rests on the line, not the page.
-    expect(document.activeElement).toBe(line()!.querySelector(".stu-added-text"));
+    expect(document.activeElement).toBe(line()!.querySelector(".stu-added-said"));
   });
 
   it("a full part refuses, says so in the sheet, and adds nothing — no confirmation", async () => {
@@ -485,11 +490,12 @@ function mountSheet(drafts: DraftStore, onAdded: (d: AddDone) => void = () => un
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
+  const client = primedClient();
   act(() => {
     root!.render(
       createElement(
         QueryClientProvider,
-        { client: primedClient() },
+        { client },
         createElement(
           MemoryRouter,
           null,
@@ -505,6 +511,7 @@ function mountSheet(drafts: DraftStore, onAdded: (d: AddDone) => void = () => un
       ),
     );
   });
+  return client;
 }
 
 /** A store whose first read answers only when the test says, and whose device holds `held` (changeable). */
@@ -611,7 +618,7 @@ describe("Undo and Open in reach of a keyboard (review)", () => {
     await openAdd("goblet", "Goblet squat");
     await click(addButton(), "Add");
     await until(() => !!line(), "the line");
-    const said = line()!.querySelector(".stu-added-text")!;
+    const said = line()!.querySelector(".stu-added-said")!;
     expect(document.activeElement).toBe(said);
     expect(said.getAttribute("role")).toBe("status");
     const after = [...line()!.querySelectorAll("a, button")].map((el) => el.textContent || el.getAttribute("aria-label"));
@@ -663,5 +670,94 @@ describe("a template's Undo (review)", () => {
     await until(() => !!line()!.querySelector('[role="alert"]'), "the refusal");
     expect(line()!.querySelector('[role="alert"]')!.textContent).toBe("That template changed since, so it can't be undone here.");
     expect(calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1")).toHaveLength(1);
+  });
+});
+
+// ── Fix round 2 ────────────────────────────────────────────────────────────
+
+describe("fix round 2: the watch, the line, the wait, the draft row", () => {
+  it("after Send the new version, focus rests on the line's words, not the page", async () => {
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    const send = [...line()!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Send the new version")!;
+    send.focus();
+    await click(send, "Send the new version");
+    await until(() => !!host!.querySelector(".watch-send"), "the watch preview");
+    await click(host!.querySelector(".watch-send"), "Send");
+    await until(() => line()?.textContent?.includes("Sending the new version") ?? false, "sending");
+    expect(document.activeElement).toBe(line()!.querySelector(".stu-added-said"));
+  });
+
+  it("the server's costs are inside the status region, so they are announced with the words", async () => {
+    const warning = { path: "parts[1]", code: "balance", message: "Two squats in a row load the knees twice.", severity: "warning" };
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ warnings: [warning] }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    expect(line()!.querySelector('[role="status"] .stu-added-notes')?.textContent).toBe("Two squats in a row load the knees twice.");
+  });
+
+  it("Undo of a planned workout carries what the server says of the watch: the copy there still has the move, with Send", async () => {
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [200, { watchHasOlder: true }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    expect(line()!.textContent).not.toContain("watch");
+    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
+    await until(() => line()?.textContent?.includes("Undone.") ?? false, "Undone");
+    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Undone. Your watch has the copy with Goblet squat.");
+    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Send this version")).toBe(true);
+  });
+
+  it("✕ and Escape wait for a write only so long: past the wait the sheet may close, and the page keeps the answer", async () => {
+    SAVE_PATIENCE.ms = 60;
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: ["held"] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    // Within the wait, Escape does nothing.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    expect(sheet()).not.toBeNull();
+    await until(() => sheet()?.textContent?.includes("Still saving…") ?? false, "Still saving");
+    expect(sheet()!.querySelector(".stu-add-wait")!.getAttribute("role")).toBe("status");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    expect(sheet()).toBeNull();
+    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Still saving…");
+    await act(async () => releaseHeld());
+    await until(() => line()?.textContent?.includes("Added to Main") ?? false, "the answer, on the page");
+    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Added to Main in “Strength day”.");
+    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Undo")).toBe(true);
+  });
+
+  it("the draft row is the first read's, for the sheet's life: a draft appearing later adds no row", async () => {
+    serve();
+    const held = { draft: null as StudioDraft | null };
+    const { store, answer } = lateStore(held);
+    const client = mountSheet(store);
+    await act(async () => answer());
+    await until(() => option("To a new workout")?.checked === true, "a new workout");
+    const before = [...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim());
+    await act(async () => {
+      client.setQueryData(["studio-draft"], { doc: draftDoc("Started in another tab"), updatedAt: 3 });
+    });
+    await settle(10);
+    expect([...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim())).toEqual(before);
+    expect(option("To a new workout")!.checked).toBe(true);
+    expect(sheet()!.textContent).not.toContain("Replaces");
   });
 });

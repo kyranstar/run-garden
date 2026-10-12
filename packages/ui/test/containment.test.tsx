@@ -582,8 +582,10 @@ describe("the Studio is honest about its bounds", () => {
     expect(ruleBody(".stu-added--on .stu-added-text")).toContain("overflow-wrap: anywhere");
     // Empty, it is no box at all: the box is only `--on`.
     expect(ruleBody(".stu-added-text")).not.toContain("padding");
-    // The watch's Send, the costs and a failed Undo go under the one row, across it.
-    expect(css).toMatch(/\n\.stu-added-send,\n\.stu-added-notes,\n\.stu-added-error \{\n {2}grid-column: 1 \/ -1;\n\}/);
+    // The watch's Send and a failure go under the one row, across it; the costs sit with the words, in their column.
+    expect(css).toMatch(/\n\.stu-added-send,\n\.stu-added-error \{\n {2}grid-column: 1 \/ -1;\n\}/);
+    expect(ruleBody(".stu-added-said")).toContain("min-width: 0");
+    expect(ruleBody(".stu-added-notes")).toContain("overflow-wrap: anywhere");
   });
 
   it("the Add sheet's list keeps its room while the draft is read, so it lands without a jump", () => {

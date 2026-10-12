@@ -9,7 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { StudioScreen } from "../src/screens/studio/screen.js";
+import { StudioScreen, URL_WRITE_MS } from "../src/screens/studio/screen.js";
 import { primedClient, type Primed } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -73,6 +73,19 @@ async function click(el: Element | null, what = "element") {
     (el as HTMLElement).click();
   });
   await settle();
+}
+
+/** Types into the search field, then waits past the pause after which the field writes the URL. */
+async function typeQuery(value: string) {
+  const el = host!.querySelector<HTMLInputElement>('input[type="search"]')!;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    set.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, URL_WRITE_MS + 40));
+  });
 }
 
 async function key(k: string) {
@@ -234,6 +247,34 @@ describe("your say, from the detail", () => {
     expect(pin().getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("a failed latest tap falls back to the newest answer that saved — not to the state before the first tap", async () => {
+    mount("/studio/move/gobletSquat");
+    let n = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string, init?: RequestInit) => {
+        if (init?.method === "PUT" && String(input) === "/api/library/gobletSquat/prefs") {
+          const patch = JSON.parse(String(init.body));
+          // The first tap saves; the second fails.
+          if (n++ === 1) return new Response(JSON.stringify({ error: "server" }), { status: 500 });
+          return new Response(JSON.stringify({ prefs: { exerciseId: "gobletSquat", rating: null, excluded: false, pinned: false, introducedOn: null, ...patch } }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+      }),
+    );
+    const pin = () => [...dialog()!.querySelectorAll<HTMLButtonElement>(".stu-say button")].find((b) => /Pin/.test(b.textContent ?? ""))!;
+    const first = pin();
+    // Both taps before either answers.
+    await act(async () => {
+      first.click();
+      first.click();
+    });
+    await settle();
+    await settle();
+    expect(pin().getAttribute("aria-pressed")).toBe("true");
+    expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe("Couldn't save that. Check your connection.");
+  });
+
   it("a write that fails puts the toggle back and says so", async () => {
     mount("/studio/move/gobletSquat");
     const pin = () => [...dialog()!.querySelectorAll<HTMLButtonElement>(".stu-say button")].find((b) => /Pin/.test(b.textContent ?? ""))!;
@@ -289,6 +330,58 @@ describe("from md: the pane beside the list", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it("the search cleared and retyped under the pane changes its entry in place: ✕ closes it, Back is the list before, no stale redirect", async () => {
+    mount("/studio?q=goblet", { wide: true, before: ["/studio"] });
+    await click(rowLink("Goblet squat"));
+    expect(where).toBe("/studio/move/gobletSquat?q=goblet");
+    await typeQuery("");
+    expect(where).toBe("/studio/move/gobletSquat");
+    await typeQuery("squat");
+    expect(where).toBe("/studio/move/gobletSquat?q=squat");
+    await click(pane()!.querySelector('[aria-label="Close"]'), "Close");
+    await settle();
+    expect(pane()).toBeNull();
+    expect(where).toBe("/studio?q=squat");
+    await act(async () => history.back());
+    await settle();
+    expect(where).toBe("/studio");
+    // Nothing armed: opening and closing a move again goes back to exactly where it came from.
+    await typeQuery("goblet");
+    await click(rowLink("Goblet squat"));
+    await click(pane()!.querySelector('[aria-label="Close"]'), "Close");
+    await settle();
+    expect(where).toBe("/studio?q=goblet");
+  });
+
+  it("a close whose Back lands on another move entry drops its redirect — the next close is not sent to a stale list", async () => {
+    viewport(true);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "offline" }), { status: 503 })));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    // History as an older build could leave it: a list, a move entry, then a move opened from a list that has changed.
+    const entries = [
+      { pathname: "/studio", search: "?q=goblet" },
+      { pathname: "/studio/move/gobletSquat", search: "?q=squat" },
+      { pathname: "/studio/move/gobletCarry", search: "?q=goblet", state: { moveDepth: 1, list: "q=old" } },
+    ];
+    act(() => {
+      root!.render(
+        createElement(
+          QueryClientProvider,
+          { client: primedClient() },
+          createElement(MemoryRouter, { initialEntries: entries, initialIndex: 2 }, createElement(StudioScreen), createElement(Where)),
+        ),
+      );
+    });
+    await click(pane()!.querySelector('[aria-label="Close"]'), "Close");
+    await settle();
+    expect(where).toBe("/studio/move/gobletSquat?q=squat");
+    await click(pane()!.querySelector('[aria-label="Close"]'), "Close");
+    await settle();
+    expect(where).toBe("/studio?q=squat");
   });
 
   it("Escape closes it, focus back on the row", async () => {

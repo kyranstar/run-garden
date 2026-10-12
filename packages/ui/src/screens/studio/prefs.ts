@@ -37,6 +37,8 @@ export function useMoveSay(id: string, ctx: StudioCtx): {
   const written = useQuery({ queryKey: sayQuery(id), queryFn: () => null as Say | null, enabled: false, staleTime: Infinity });
   const [pending, setPending] = useState<{ id: string; say: Say } | null>(null);
   const asked = useRef(0);
+  /** The newest tap whose success has been applied. */
+  const applied = useRef(0);
   const [error, setError] = useState<{ id: string; text: string } | null>(null);
   const known = ctx.prefs.get(id);
   const stored: Say =
@@ -45,14 +47,17 @@ export function useMoveSay(id: string, ctx: StudioCtx): {
 
   const set = (patch: ExercisePrefsPatch) => {
     const next: Say = { ...say, ...patch };
-    // Answers can arrive out of order: only the latest tap's answer is applied (an earlier one is already superseded).
+    // Answers can arrive out of order. The toggle shows the latest tap until that tap's own answer; underneath it, the
+    // server's word is the newest SUCCESS seen — so an earlier tap's late answer never undoes a later one, and a failed
+    // latest tap falls back to what last saved, not to the state before the first tap.
     const n = ++asked.current;
     setPending({ id, say: next });
     setError(null);
     api
       .setExercisePrefs(id, patch)
       .then(({ prefs }) => {
-        if (n !== asked.current) return;
+        if (n < applied.current) return;
+        applied.current = n;
         const saved: Say = { rating: prefs.rating, pinned: prefs.pinned, excluded: prefs.excluded };
         qc.setQueryData<Say>(sayQuery(id), saved);
         qc.setQueryData<LibraryItemDto>(libraryItemQuery(id), (old) => (old ? { ...old, prefs } : old));

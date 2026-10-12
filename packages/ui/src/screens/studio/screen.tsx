@@ -174,7 +174,13 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
       cancel();
       written.current = q;
       const next = studioSearch(q, filters, all);
-      const { search: now, state } = here.current;
+      const { search: now, state, openId } = here.current;
+      // A move is open: the list under it changes in place — the move's entry is replaced, never a new one pushed, so
+      // closing it backs out of exactly the entries opening it made.
+      if (openId) {
+        setParams(new URLSearchParams(next), { replace: true, state });
+        return;
+      }
       if (now === "") {
         if (next !== "") setParams(new URLSearchParams(next), { state: { ...state, fromHome: true } });
         return;
@@ -222,23 +228,25 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
     if (openId) focusNext.current = { to: "move", id: openId };
     if (state?.moveDepth) {
       // Back out of every move entry; the list as it is now then takes the place of the one they started from.
-      if (state.list !== search) relist.current = search;
+      relist.current = state.list !== search ? search : null;
       navigate(-state.moveDepth);
     } else navigate({ pathname: "/studio", search: search ? `?${search}` : "" }, { replace: true });
   }, [navigate]);
-  // The close's Back has landed: put the list as it now is in the entry it landed on — a step from the home when it
-  // landed on the home (so the home is there once, behind it), back to that home when the list is now empty and the
-  // entry came from one, else in the entry's place.
+  // The close's Back has landed (this runs on the entry it lands on — nothing in between changes what it reads): put
+  // the list as it now is in that entry — a step from the home when it landed on the home (so the home is there once,
+  // behind it), back to that home when the list is now empty and the entry came from one, else in the entry's place.
+  // Landed on a move after all: nothing to put, and the redirect is dropped — never left armed for a later close.
   useEffect(() => {
     const want = relist.current;
-    if (want === null || openId) return;
+    if (want === null) return;
     relist.current = null;
+    if (openId) return;
     if (want === search) return;
     const to = { pathname: "/studio", search: want ? `?${want}` : "" };
     if (search === "") navigate(to, { state: { fromHome: true } satisfies StudioHistory });
     else if (want === "" && state?.fromHome) navigate(-1);
     else navigate(to, { replace: true, state });
-  }, [openId, search, state, navigate]);
+  }, [openId, search, state, navigate, location.key]);
   const openHref = useCallback((id: string) => moveHref(id, search), [search]);
 
   // ── Add: the one small sheet, then the line ──
@@ -253,8 +261,9 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
     setAdded({ ...a, phase: "undoing", error: undefined });
     const settle = (next: Partial<Added>) => setAdded((cur) => (cur?.n === a.n ? { ...cur, ...next } : cur));
     try {
-      await a.undo();
-      settle({ phase: "undone", error: undefined });
+      const back = await a.undo();
+      // What the watch holds now is the server's word on the undone workout (the copy with the move, if it was sent).
+      settle({ phase: "undone", error: undefined, watch: back?.watch, sent: false });
     } catch (e) {
       settle({ phase: "done", error: writeErrorText(e, true) });
     }
@@ -304,8 +313,8 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
       target = rowOf(want.id)?.querySelector<HTMLElement>(".stu-move-open") ?? (listing ? heading.current : title.current);
       if (!target && listing) return;
     } else if (want.to === "line") {
-      // After an Add from the list: the line that says where it went, Open and Undo next in Tab order.
-      target = r.querySelector<HTMLElement>(":scope > .stu-added--on .stu-added-text");
+      // After an Add from the list: the line's words, Open and Undo the next Tab stops.
+      target = r.querySelector<HTMLElement>(".stu-added--on .stu-added-said");
       if (!target) return;
     } else if (want.to === "add") {
       target =
@@ -437,6 +446,17 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
             // the detail it sits right above the Add that focus returns to.)
             if (adding.from === "list") focusNext.current = { to: "line" };
           }}
+          onLeaveWhileSaving={(writing) => {
+            // Closed past the wait: the page keeps the write — "Still saving…", then where it went, or why not.
+            const { n, rec, from } = adding;
+            const base = { n, rec, from, text: "", href: "", notes: [], undo: async () => undefined };
+            setAdded({ ...base, phase: "saving" });
+            const settle = (next: Added) => setAdded((cur) => (cur?.n === n ? next : cur));
+            writing.then(
+              (done) => settle({ ...done, n, rec, from, phase: "done" }),
+              (e) => settle({ ...base, phase: "failed", error: writeErrorText(e) }),
+            );
+          }}
         />
       ) : null}
       <AddedLine added={inDetail ? null : added} onUndo={() => void undo()} onDismiss={dismiss} onSendWatch={sendWatch} />
@@ -448,6 +468,7 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
           onSent={() => {
             const { n, workoutId } = sendingWatch;
             setSendingWatch(null);
+            // Send's button goes with the send; the line puts focus on its words (`AddedLine`), never the page.
             setAdded((cur) => (cur?.n === n ? { ...cur, sent: true } : cur));
             // As the session sheet does after a Send: run the queued push, then read again what it changed.
             watchWritten(workoutId);
