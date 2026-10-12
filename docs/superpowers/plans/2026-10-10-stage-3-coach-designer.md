@@ -33,7 +33,7 @@
 ## Batch 3A — the agent (deterministic)
 
 ### Task 1: The Messages client
-**Files:** `apps/worker/src/services/llm-messages.ts`; `apps/worker/test/llm-messages.test.ts`; `scripts/probe-gateway-model.mjs` (the free schema probe: posts an invalid body with a junk key; 400 naming a field = parsed, 401 = dropped).
+**Files:** `apps/worker/src/services/llm-messages.ts`; `apps/worker/test/llm-messages.test.ts`; `apps/worker/scripts/probe-gateway-model.mjs` (the free schema probe: posts an invalid body with a junk key; 400 naming a field = parsed, 401 = dropped).
 **Produces:** `callMessages(env, { model, system: SystemBlock[], messages, tools, maxTokens, effort? }, fetchImpl?) → { content: ContentBlock[], stopReason, usage: { inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens }, costMicros }`; system blocks carry `cache_control: { type: "ephemeral" }` at the cache breakpoints; the base URL and model from env (`AI_GATEWAY_BASE_URL`, `AI_DESIGN_MODEL`, default the strongest Claude model id the probe confirms); the recorded-model fixture server (`FIXTURE_MODEL_URL`) supported like `coach-wake.ts`; a 402 maps to `out_of_credits` (reuse the existing marker); cost from the gateway's usage with the model's prices in one table.
 - [ ] Failing tests (request shape incl. tools and cache_control; usage → cost incl. cache reads; 402 → out_of_credits; 5xx → retryable error; no key → `no_key`) → implement → pass → commit.
 
@@ -95,7 +95,7 @@
 ## Batch 3C — live
 
 ### Task 12: Go live
-- Probe the gateway for the model id (`scripts/probe-gateway-model.mjs`), set `AI_DESIGN_MODEL`, deploy; one live "now" run from the browser as a smoke test; record cost and latency.
+- Probe the gateway for the model id (`apps/worker/scripts/probe-gateway-model.mjs`), set `AI_DESIGN_MODEL`, deploy; one live "now" run from the browser as a smoke test; record cost and latency.
 
 ### Task 13: The live scenario suite and the audits
 - Rehearsal runs (`rehearsal: true`, never shown in the app) for the scenario suite in spec §13 (≈ 12 scenarios, budget ≈ $8, checked against the weekly spend before each run); capture each run's context, tool calls, events, draft, review and proposal into the git-ignored ledger (personal data: never into the repo).
