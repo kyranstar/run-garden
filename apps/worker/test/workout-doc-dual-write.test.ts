@@ -560,17 +560,18 @@ describe("the COROS import: where stages are written, the document is too", () =
       expect(revisionStatements()).toHaveLength(9 + 1);
     });
 
-    it("an error every row of a batch hits fails the read — a schema drift, a runtime ceiling, a constraint on every row — and writes nothing", async () => {
+    const checkOnEveryRow = () => Object.assign(new Error("CHECK constraint failed: stage_kind"), { name: "SqliteError", code: "SQLITE_CONSTRAINT_CHECK" });
+    const rowFailuresLogged = (warn: ReturnType<typeof silence>) => warn.mock.calls.filter((c) => String(c[0]).startsWith("import row write failed"));
+
+    it("an error that is no constraint fails the read even when every row hits it — a schema drift, a runtime ceiling — never retried, nothing written", async () => {
       const warn = silence();
       const failures: Array<[string, () => Error]> = [
         ["no constraint", () => new Error("D1_ERROR: table planned_workout_stages has no column named note: SQLITE_ERROR")],
         ["a runtime ceiling", () => new Error("Too many API requests by single worker invocation.")],
-        ["a constraint every row hits", () => Object.assign(new Error("CHECK constraint failed: stage_kind"), { name: "SqliteError", code: "SQLITE_CONSTRAINT_CHECK" })],
       ];
       for (const [label, failure] of failures) {
         db = makeTestDb({ boundVariableCap: 100, onStatement: hook });
         ({ userId, prefs } = await makeTestUser(db, { weightUnit: "lb" }));
-        // Five runs: ONE batch, inside the retry cap — so only the every-row rule can fail the constraint case.
         await snapshot(twelve("old", 30, 5));
         stageFailure = failure;
         await expect(snapshot(twelve("new", 45, 5)), label).rejects.toThrow();
@@ -578,9 +579,33 @@ describe("the COROS import: where stages are written, the document is too", () =
         // Nothing of the read landed: every row wholly its old self.
         for (const row of await state()) expect(row, label).toEqual({ tag: "old", stages: [1800], minutes: 30, rev: 1, revs: [1] });
       }
-      // The constraint every row hit was retried row by row (logged each time) before the read failed; the others
-      // were never retried.
-      expect(warn.mock.calls.filter((c) => String(c[0]).startsWith("import row write failed"))).toHaveLength(5);
+      expect(rowFailuresLogged(warn)).toEqual([]);
+    });
+
+    it("a row's own constraint is isolated however many rows of the batch meet one: five bad rows of five, the read still resolves", async () => {
+      const warn = silence();
+      await snapshot(twelve("old", 30, 5));
+      // Five runs: ONE batch, inside the retry cap. Decided on the error, not the outcome: every row refused is
+      // still five rows' own constraints, never the read failing.
+      stageFailure = checkOnEveryRow;
+      const stats = await snapshot(twelve("new", 45, 5));
+      stageFailure = null;
+      expect([stats.failedWrites, stats.updatedContent]).toEqual([5, 0]);
+      for (const row of await state()) expect(row).toEqual({ tag: "old", stages: [1800], minutes: 30, rev: 1, revs: [1] });
+      expect(rowFailuresLogged(warn)).toHaveLength(5);
+      // The next read writes them.
+      expect((await snapshot(twelve("new", 45, 5))).updatedContent).toBe(5);
+    });
+
+    it("more than ten bad rows fail the read at the retry cap: a constraint on every row of twelve", async () => {
+      const warn = silence();
+      await snapshot(twelve("old", 30));
+      stageFailure = checkOnEveryRow;
+      await expect(snapshot(twelve("new", 45))).rejects.toThrow(/CHECK constraint failed/);
+      stageFailure = null;
+      for (const row of await state()) expect(row).toEqual({ tag: "old", stages: [1800], minutes: 30, rev: 1, revs: [1] });
+      // The first batch's ten were retried one by one; the second batch would pass the cap, and failed the read.
+      expect(rowFailuresLogged(warn)).toHaveLength(10);
     });
 
     it("past ten rows retried one by one, the read fails: a bad row in each of two batches", async () => {

@@ -634,10 +634,11 @@ export async function importPlanSnapshot(
    *
    * A batch refused by a ROW's constraint (one bad row: a key it collides with) is retried row by row, at most
    * `IMPORT_ROW_RETRIES` rows a read: a row that cannot be written blocks only itself — counted in `failedWrites`,
-   * logged by code — and the next read, still seeing its old fingerprint, writes it again. Anything else fails the
-   * read, as before: an error that is no constraint (a schema drift, the database gone), a runtime ceiling, a retry
-   * in which every row fails, or more retries than the cap. A row's count (`created`, `updatedContent`,
-   * `replacedRecycled`) moves only once it is written.
+   * logged by code — and the next read, still seeing its old fingerprint, writes it again. A row's constraint is
+   * isolated however many rows of the batch meet one (after a partial read the next queues only the bad row, so
+   * "every row failed" says nothing). Anything else fails the read, as before: an error that is no constraint (a
+   * schema drift, the database gone), a runtime ceiling, or more retries than the cap. A row's count (`created`,
+   * `updatedContent`, `replacedRecycled`) moves only once it is written.
    */
   const contentWrites: Array<{
     id: string;
@@ -1280,20 +1281,18 @@ export async function importPlanSnapshot(
       if (!rowConstraint(e) || isRuntimeLimit(e)) throw e;
       if (retries + batch.length > IMPORT_ROW_RETRIES) throw e;
       retries += batch.length;
-      let landed = 0;
       for (const row of batch) {
         try {
           await writeContent([row]);
           written([row]);
-          landed += 1;
         } catch (rowError) {
+          // Decided on the error, never on how many rows met it: a read that queues only the bad row (every read
+          // after the one that wrote its neighbours) must still be a read — activities, health and the garden run.
           if (!rowConstraint(rowError) || isRuntimeLimit(rowError)) throw rowError;
           stats.failedWrites += 1;
           console.warn(`import row write failed: ${writeFailureCode(rowError)}`);
         }
       }
-      // Every row refused: no row is the bad one — the read fails, as before.
-      if (landed === 0) throw e;
     }
   }
 

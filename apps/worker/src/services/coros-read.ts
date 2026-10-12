@@ -258,11 +258,11 @@ export async function corosReadNow(
       await upsertAthleteZones(db, userId, snapshot.zones).catch(() => undefined);
     }
 
+    // The connection's meta as this read leaves it: every write below spreads THIS, never the copy taken before the
+    // read (a partial full-schedule read spreading that copy un-did its own `lastFullScheduleAt`).
+    const nextMeta = fullScheduleDue ? { ...meta, lastFullScheduleAt: new Date().toISOString() } : meta;
     if (fullScheduleDue) {
-      await db
-        .update(providerConnections)
-        .set({ meta: { ...meta, lastFullScheduleAt: new Date().toISOString() } })
-        .where(eq(providerConnections.id, conn.id));
+      await db.update(providerConnections).set({ meta: nextMeta }).where(eq(providerConnections.id, conn.id));
     }
     await touchCorosSync(db, userId);
     if (failedWrites > 0) {
@@ -272,7 +272,7 @@ export async function corosReadNow(
         .update(providerConnections)
         .set({
           lastErrorCategory: "partial_import",
-          meta: { ...meta, lastErrorDetail: `${failedWrites} planned workout(s) could not be saved`, lastErrorAt: nowInstant() },
+          meta: { ...nextMeta, lastErrorDetail: `${failedWrites} planned workout(s) could not be saved`, lastErrorAt: nowInstant() },
         })
         .where(eq(providerConnections.id, conn.id));
     }
