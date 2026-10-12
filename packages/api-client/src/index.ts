@@ -1680,6 +1680,15 @@ async function drainCoach(): Promise<void> {
   }
 }
 
+/**
+ * A path with its query, when it has one. Reads the query's text, not `URLSearchParams.size`, which Safari before 17
+ * lacks (there it is undefined, so every query would be dropped).
+ */
+export function withQuery(path: string, qs: URLSearchParams): string {
+  const query = qs.toString();
+  return query ? `${path}?${query}` : path;
+}
+
 export const api = {
   me: () => get<MeResponse>("/api/auth/me"),
   logout: () => post("/api/auth/logout"),
@@ -1786,7 +1795,7 @@ export const api = {
     const qs = new URLSearchParams();
     if (opts.after) qs.set("after", opts.after);
     if (opts.limit) qs.set("limit", String(opts.limit));
-    return get<WorkoutDocParityReport>(`/api/settings/diagnostics/workout-docs${qs.size ? `?${qs}` : ""}`);
+    return get<WorkoutDocParityReport>(withQuery("/api/settings/diagnostics/workout-docs", qs));
   },
   workoutDoc: (id: string) => get<WorkoutDocResponse>(`/api/workouts/${encodeURIComponent(id)}/doc`),
   searchWorkouts: (opts: { from?: string; to?: string; q?: string; limit?: number } = {}) => {
@@ -1795,7 +1804,7 @@ export const api = {
     if (opts.to) qs.set("to", opts.to);
     if (opts.q) qs.set("q", opts.q);
     if (opts.limit) qs.set("limit", String(opts.limit));
-    return get<WorkoutListItemDto[]>(`/api/workouts${qs.size ? `?${qs}` : ""}`);
+    return get<WorkoutListItemDto[]>(withQuery("/api/workouts", qs));
   },
   /** Schedule a document workout (the Studio's Schedule and Start now). */
   createWorkout: (body: CreateDocWorkoutRequest) => post<CreateDocWorkoutResponse>("/api/workouts", body),
