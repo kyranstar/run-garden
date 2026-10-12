@@ -459,6 +459,11 @@ export interface Added extends AddDone {
   phase: "saving" | "failed" | "done" | "undoing" | "undone";
   /** The version on offer to the watch, once its Send was taken. */
   sent?: boolean;
+  /**
+   * After Undo: the Add's own version was sent to the watch before it was undone, so the watch holds the copy with the
+   * move. Only then does the line say so — the server's `watchHasOlder` compares revisions, not what is in them.
+   */
+  addSent?: boolean;
   error?: string;
 }
 
@@ -468,7 +473,9 @@ function lineWords(a: Added): string {
   if (a.phase === "failed") return "";
   if (a.phase === "undone") {
     if (!a.watch) return "Undone.";
-    return a.sent ? "Undone. Sending this version to your watch." : `Undone. Your watch has the copy with ${a.rec.name}.`;
+    if (a.sent) return "Undone. Sending this version to your watch.";
+    // Only what the line knows: the Add's version went to the watch — else just that the watch's copy is another one.
+    return a.addSent ? `Undone. Your watch has the copy with ${a.rec.name}.` : "Undone. Your watch has an older version.";
   }
   if (!a.watch) return a.text;
   return `${a.text} ${a.sent ? "Sending the new version to your watch." : "Your watch has the older version."}`;

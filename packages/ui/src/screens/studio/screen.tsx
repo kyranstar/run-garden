@@ -262,8 +262,9 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
     const settle = (next: Partial<Added>) => setAdded((cur) => (cur?.n === a.n ? { ...cur, ...next } : cur));
     try {
       const back = await a.undo();
-      // What the watch holds now is the server's word on the undone workout (the copy with the move, if it was sent).
-      settle({ phase: "undone", error: undefined, watch: back?.watch, sent: false });
+      // Whether the watch holds another copy is the server's word on the undone workout; that the copy has the move in
+      // it is known only when the Add's own version was sent (`a.sent`, kept as `addSent`).
+      settle({ phase: "undone", error: undefined, watch: back?.watch, sent: false, addSent: a.sent === true });
     } catch (e) {
       settle({ phase: "done", error: writeErrorText(e, true) });
     }
@@ -453,7 +454,16 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
             setAdded({ ...base, phase: "saving" });
             const settle = (next: Added) => setAdded((cur) => (cur?.n === n ? next : cur));
             writing.then(
-              (done) => settle({ ...done, n, rec, from, phase: "done" }),
+              (done) => {
+                // Open and Undo arrive now: if focus is still where the closed sheet left it (the row's ＋) — or nowhere —
+                // it moves to the line, as after any Add from the list.
+                const a = document.activeElement;
+                const plus = [...(root.current?.querySelectorAll<HTMLElement>(".stu-move") ?? [])]
+                  .find((el) => el.dataset.id === rec.id)
+                  ?.querySelector(".stu-move-add");
+                if (from === "list" && (!a || a === document.body || a === plus)) focusNext.current = { to: "line" };
+                settle({ ...done, n, rec, from, phase: "done" });
+              },
               (e) => settle({ ...base, phase: "failed", error: writeErrorText(e) }),
             );
           }}

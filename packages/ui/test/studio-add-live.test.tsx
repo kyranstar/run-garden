@@ -703,14 +703,32 @@ describe("fix round 2: the watch, the line, the wait, the draft row", () => {
     expect(line()!.querySelector('[role="status"] .stu-added-notes')?.textContent).toBe("Two squats in a row load the knees twice.");
   });
 
-  it("Undo of a planned workout carries what the server says of the watch: the copy there still has the move, with Send", async () => {
-    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [200, { watchHasOlder: true }] });
+  it("Undo carries what the server says of the watch — and claims the copy there has the move only when the Add's version was sent", async () => {
+    // Round 3: `watchHasOlder` compares revisions, not content — after an unsent Add it is true both ways.
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true }, { watchHasOlder: true }] });
     await openAdd("goblet", "Goblet squat");
     await until(() => !!offered("To a planned workout"), "the planned workout");
     await click(option("To a planned workout"), "the planned choice");
     await click(addButton(), "Add");
     await until(() => !!line(), "the line");
-    expect(line()!.textContent).not.toContain("watch");
+    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
+    await until(() => line()?.textContent?.includes("Undone.") ?? false, "Undone");
+    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Undone. Your watch has an older version.");
+    expect(line()!.textContent).not.toContain("copy with");
+    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Send this version")).toBe(true);
+  });
+
+  it("Undo after the Add's version went to the watch: the watch has the copy with the move, with Send", async () => {
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true }, { watchHasOlder: true }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Send the new version"), "Send the new version");
+    await until(() => !!host!.querySelector(".watch-send"), "the watch preview");
+    await click(host!.querySelector(".watch-send"), "Send");
+    await until(() => line()?.textContent?.includes("Sending the new version") ?? false, "sending");
     await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
     await until(() => line()?.textContent?.includes("Undone.") ?? false, "Undone");
     expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Undone. Your watch has the copy with Goblet squat.");
@@ -738,10 +756,34 @@ describe("fix round 2: the watch, the line, the wait, the draft row", () => {
     await settle();
     expect(sheet()).toBeNull();
     expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Still saving…");
+    // Focus is back on the row's ＋, where the closed sheet left it.
+    const plus = host!.querySelector<HTMLElement>('[aria-label="Add Goblet squat"]')!;
+    plus.focus();
     await act(async () => releaseHeld());
     await until(() => line()?.textContent?.includes("Added to Main") ?? false, "the answer, on the page");
     expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Added to Main in “Strength day”.");
     expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Undo")).toBe(true);
+    // The answer brings Open and Undo: focus moves to the line, so they are the next stops.
+    expect(document.activeElement).toBe(line()!.querySelector(".stu-added-said"));
+  });
+
+  it("a slow answer leaves focus alone when the athlete has moved on", async () => {
+    SAVE_PATIENCE.ms = 60;
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: ["held"] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => sheet()?.textContent?.includes("Still saving…") ?? false, "Still saving");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    const field = host!.querySelector<HTMLInputElement>('input[type="search"]')!;
+    field.focus();
+    await act(async () => releaseHeld());
+    await until(() => line()?.textContent?.includes("Added to Main") ?? false, "the answer");
+    expect(document.activeElement).toBe(field);
   });
 
   it("the draft row is the first read's, for the sheet's life: a draft appearing later adds no row", async () => {
