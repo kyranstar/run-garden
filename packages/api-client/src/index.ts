@@ -1208,6 +1208,8 @@ export interface SessionItemDto {
   coreFamily: string | null;
   isNew: boolean;
   why: string[];
+  /** The session's one new or retried jump (the engine's swap state): ⇄ offers no second one elsewhere. */
+  fresh?: true;
 }
 
 /** A library record as the sheet and player need it, offline. */

@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
+import { EXERCISES, isPlyometric } from "@rg/exercise-library";
 import {
   adaptiveConfigSchema,
   addDays,
@@ -345,6 +346,28 @@ describe("building today's session", () => {
     }
     expect(read.size).toBeGreaterThan(0);
     expect([...read].filter((k) => !(BUILD_CONFIG_KEYS as readonly string[]).includes(k))).toEqual([]);
+  });
+
+  it("a jumping day's new rung says so on its item, as the engine's swap state does — the player's ⇄ keeps one a session", async () => {
+    await activateTmj();
+    const context = await loadEngineContext(db, userId, programId, { prefs });
+    const old = addDays(TODAY, -30);
+    const logged = (id: string) => ({ id, implement: null, perSide: false, format: "straight" as const, flags: [], sets: [{ w: null, reps: 6, secs: null }] });
+    const history = [{
+      id: "bottom-rungs", date: old, startedAt: `${old}T18:00:00`, mode: "build" as const, theme: "plyoIntro", blockNumber: 1,
+      checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: [{ id: "snapDown", secs: 60 }, { id: "landingStick", secs: 60 }],
+      entries: [logged("snapDown"), logged("landingStick")],
+    }];
+    const { build } = composeBuild({
+      date: TODAY, programId, context, block: null, history, checks: { tmj: { pre: 1, feelingOff: false } },
+      overrides: { mode: "build", theme: "plyoIntro", minutes: 40 }, swaps: {},
+    });
+    const fresh = build.items.filter((it) => it.fresh);
+    expect(fresh).toHaveLength(1);
+    expect(isPlyometric(EXERCISES.find((e) => e.id === fresh[0]!.exerciseId)!)).toBe(true);
+    expect(["snapDown", "landingStick"]).not.toContain(fresh[0]!.exerciseId);
+    // Every other item leaves the field out (the stored build is unchanged for a day with no new rung).
+    for (const it of build.items.filter((x) => x !== fresh[0])) expect("fresh" in it, it.exerciseId).toBe(false);
   });
 
   it("an identical request returns the stored build — same version, nothing written", async () => {

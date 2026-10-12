@@ -8,7 +8,8 @@
  * the day's own swaps replaced it (`params.swaps`), and the alternatives the build offered, each with its steps.
  *
  * So after each swap ⇄ re-asks the engine's own rules (`Swapping.offered`) over that state and the plan as it now
- * stands. Every move offered fits the plan by the server's full state too, and applying it plays exactly its offered
+ * stands. A slot's move that is the session's new or retried jump says so (`fresh`, as the engine's swap state marks
+ * it), so the one-new-rung rule holds offline as it does on the server. Every move offered fits the plan by the server's full state too, and applying it plays exactly its offered
  * steps — the server's rebuild with the same swaps plays the same; a slot may offer fewer (or later-ranked) moves than
  * the server would list, since the moves the build did not offer are not on the device. Swaps apply in the order
  * made, as the server applies stored swaps.
@@ -49,6 +50,8 @@ export function swapStateOf(build: SessionBuildDto): { state: SwapState; steps: 
       steps: build.steps.filter((s) => s.kind !== "rest" && s.slotKey === item.slotKey),
       moveKey: Swapping.moveKeyOf(ex),
       pairing: Swapping.pairingOf(ex),
+      // The session's one new-or-retried jump, as the server's swap state marked it: no slot takes a second one.
+      ...(item.fresh ? { fresh: true as const } : {}),
     };
     // The item's planned alternates first, then the usual offers (a move listed twice is offered once, the first time).
     const doc = build.fromDoc?.slots?.[item.slotKey];

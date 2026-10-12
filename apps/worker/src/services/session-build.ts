@@ -165,6 +165,8 @@ export interface BuildItem {
   coreFamily: string | null;
   isNew: boolean;
   why: string[];
+  /** The session's one new or retried jump (the engine's swap state): the player's ⇄ offers no second one elsewhere. */
+  fresh?: true;
 }
 
 /** A library record as the player and how-to sheet need it, offline (never the provider mappings). */
@@ -592,6 +594,7 @@ export function composeBuild(input: ComposeInput): Composed {
         coreFamily: it.coreFamily,
         isNew: it.isNew,
         why: it.why,
+        ...(plan.swapState.current[it.slotKey]?.fresh ? { fresh: true as const } : {}),
       })),
       exercises,
       alternatives: plan.alternatives,

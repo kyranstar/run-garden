@@ -8,14 +8,14 @@
  * and compared with the server's rebuild with the same two swaps — the same move in B, the same steps, everywhere.
  */
 import { addDays } from "@rg/domain";
-import { EXERCISES, LOCATION_PRESETS, makeEngineData, type ExerciseRecord, type Mode } from "@rg/exercise-library";
+import { EXERCISES, LOCATION_PRESETS, THEMES, isPlyometric, makeEngineData, type ExerciseRecord, type Mode } from "@rg/exercise-library";
 import {
   Blocks, Builder, Planner, Proposal, Recorder, Rng, Swapping,
   type Block, type BuildInput, type BuildResult, type EngineLocation, type HistorySession,
 } from "@rg/session-engine";
 import type { SessionBuildDto, SessionExerciseDto } from "@rg/api-client";
 import { describe, expect, it } from "vitest";
-import { offeredNow, planAfter } from "../../src/player/swap.js";
+import { offeredNow, planAfter, swapStateOf } from "../../src/player/swap.js";
 import { beginPlayer, playerData, swapSlot } from "../../src/player/run.js";
 
 const data = makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: EXERCISES });
@@ -69,6 +69,8 @@ function stored(input: BuildInput, plan: BuildResult, swaps: BuildInput["swaps"]
     items: plan.items.map((it) => ({
       slotKey: it.slotKey, block: it.block, exerciseId: it.exercise.id, format: it.format, sets: it.sets, group: it.group,
       coreFamily: it.coreFamily, isNew: it.isNew, why: it.why,
+      // The session's one new-or-retried jump, as the engine's swap state marks the move each slot holds.
+      ...(plan.swapState.current[it.slotKey]?.fresh ? { fresh: true } : {}),
     })),
     exercises: Object.fromEntries([...ids].map((id) => [id, slice(id)])),
     alternatives: plan.alternatives,
@@ -214,5 +216,59 @@ describe("Review Focus 4 — a swap offered offline after an earlier swap", () =
     s = swapSlot(s, pd, bSlot!.slotKey, z, 0);
     expect(slotSteps(s.live.steps, bSlot!.slotKey)).toEqual(z.steps);
     expect(s.live.steps).toEqual(planAfter(b, s.swaps).steps);
+  });
+});
+
+describe("one new or retried jump a session, offline too (final review: the player's swaps did not know which rung is fresh)", () => {
+  /** Jumping days: the bottom rungs done cleanly a month before, so the jumps block holds a new rung beside a done one. */
+  const jumpDays: BuildInput[] = [0, 1, 2, 3, 4, 5].map((i) => {
+    const today = addDays("2026-11-30", i);
+    const old = addDays(today, -30);
+    const logged = (id: string) => ({ id, implement: null, perSide: false, format: "straight" as const, flags: [], sets: [{ w: null, reps: 6, secs: null }] });
+    const sessions: HistorySession[] = [{
+      id: `rungs-${i}`, date: old, startedAt: `${old}T18:00:00`, mode: "build", theme: "plyoIntro", blockNumber: 1,
+      checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: [{ id: "snapDown", secs: 60 }, { id: "landingStick", secs: 60 }],
+      entries: [logged("snapDown"), logged("landingStick")],
+    }];
+    const location = place(i % 2 ? "gym" : "home");
+    const block = Blocks.ensure(data, null, { today, equipment: location.equipment, prefs: {}, weeks: 5, sessions }).block;
+    return {
+      today, mode: i % 2 ? "build" : "consistent", theme: THEMES.find((t) => t.id === "plyoIntro")!, minutes: [30, 40, 45][i % 3]!, location,
+      unit: "lb", sessions, prefs: {}, savedIds: [], block, checks: { tmj: { pre: 1, post: null, feelingOff: false } }, swaps: {},
+    };
+  });
+
+  it("each slot's move is fresh offline exactly when the engine's swap state says so — the plan's new rung included", () => {
+    let fresh = 0;
+    for (const input of jumpDays) {
+      const plan = Builder.build(data, input);
+      const offline = swapStateOf(stored(input, plan)).state;
+      for (const it of plan.items) {
+        expect(Boolean(offline.current[it.slotKey]?.fresh), `${input.today} ${it.slotKey} ${it.exercise.id}`).toBe(Boolean(plan.swapState.current[it.slotKey]?.fresh));
+        if (offline.current[it.slotKey]?.fresh) fresh++;
+      }
+    }
+    expect(fresh).toBeGreaterThan(0);
+  });
+
+  it("while one slot holds the session's new rung, ⇄ never offers a second one elsewhere, as the server's judge would not", () => {
+    let checked = 0;
+    for (const input of jumpDays) {
+      const plan = Builder.build(data, input);
+      const held = plan.items.find((it) => plan.swapState.current[it.slotKey]?.fresh);
+      const other = plan.items.find((it) => it !== held && isPlyometric(it.exercise));
+      if (!held || !other) continue;
+      // A second new rung offered to the other slot (one the server's pool keeps from it while the first is held): its
+      // own move, the slot's own steps, so only the one-new-rung rule can keep it out.
+      const own = plan.swapState.current[other.slotKey]!;
+      const second = { ...own, id: "anotherNewRung", moveKey: "anotherNewRung|calves", fresh: true as const };
+      expect(Swapping.fits(plan.swapState, plan.steps, other.slotKey, second)).toBe(false);
+      expect(Swapping.fits(plan.swapState, plan.steps, other.slotKey, { ...second, fresh: undefined })).toBe(true);
+      const b = stored(input, plan);
+      const withRung = { ...b, alternatives: { ...b.alternatives, [other.slotKey]: [second] } } as SessionBuildDto;
+      expect(offeredNow(withRung, [], other.slotKey).map((c) => c.id)).not.toContain("anotherNewRung");
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });
