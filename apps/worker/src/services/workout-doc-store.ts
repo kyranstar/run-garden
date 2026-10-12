@@ -27,7 +27,7 @@
  *  - the revision row copies the row's own stored document and counter (INSERT … SELECT), so the two cannot differ.
  * `session_builds.workout_doc` is a snapshot of one build: no revisions.
  */
-import { and, eq, inArray, isNotNull, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { plannedWorkouts, workoutDocRevisions } from "@rg/database";
 import {
   workoutDocSchema,
@@ -218,6 +218,8 @@ export function revisionInsert(
 
 /** How many rows one revision statement covers (the ids are bound: 80 plus the statement's own stay under D1's 100). */
 export const REVISION_CHUNK = 80;
+/** The same with each row's written document bound beside its id (two values a row). */
+const WRITTEN_DOCS_CHUNK = 40;
 
 /**
  * The revisions of several rows' current documents, for the same batch as their writes — ONE statement per
@@ -227,18 +229,31 @@ export const REVISION_CHUNK = 80;
  *
  * `recordsHistory` (the backfill only): the rows' FIRST documents, filled in where no writer ever wrote one. On a
  * completed, skipped or missed row that is history being recorded, not an edit, so the frozen rule does not apply.
+ *
+ * `writtenDocs` (the backfill only): a row is recorded only while its document is exactly the text the caller wrote
+ * (id → text), so a document another writer put there first is never filed under this caller's source. Two bound
+ * values a row: `WRITTEN_DOCS_CHUNK` rows a statement.
  */
 export function revisionInserts(
   db: Db,
-  r: { userId: string; workoutIds: readonly string[]; sourceKind: DocSourceKind; sourceRef: string | null | SQL; now: string; recordsHistory?: boolean },
+  r: {
+    userId: string;
+    workoutIds: readonly string[];
+    sourceKind: DocSourceKind;
+    sourceRef: string | null | SQL;
+    now: string;
+    recordsHistory?: boolean;
+    writtenDocs?: ReadonlyMap<string, string>;
+  },
 ) {
   const pw = plannedWorkouts;
-  return chunkIds([...new Set(r.workoutIds)], REVISION_CHUNK).map((ids) =>
+  const written = r.writtenDocs;
+  return chunkIds([...new Set(r.workoutIds)], written ? WRITTEN_DOCS_CHUNK : REVISION_CHUNK).map((ids) =>
     db
       .insert(workoutDocRevisions)
       .select(
         sql`select ${pw.id} || ':' || ${pw.workoutDocRev}, ${pw.userId}, ${pw.id}, ${pw.workoutDocRev}, ${pw.workoutDoc}, ${r.sourceKind}, ${r.sourceRef}, ${r.now} from ${pw} where ${and(
-          inArray(pw.id, ids),
+          written ? or(...ids.map((id) => and(eq(pw.id, id), eq(pw.workoutDoc, written.get(id) ?? "")))) : inArray(pw.id, ids),
           eq(pw.userId, r.userId),
           isNotNull(pw.workoutDoc),
           isNotNull(pw.workoutDocRev),
