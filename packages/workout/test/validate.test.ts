@@ -11,7 +11,7 @@ import { EXERCISES, TMJ, UNANSWERED, fitsMode, type CheckReading, type Condition
 import { Planner, Rng, type DayState, type ProgramState } from "@rg/session-engine";
 import { LOCATIONS, seededHistory } from "../../session-engine/test/seeded-history.js";
 import { DOC_ISSUE_CODES, docFromBuild, validateWorkoutDoc, type DayContext, type DocIssue, type ValidateCtx } from "../src/index.js";
-import { WORLD, stored } from "./seeded-builds.js";
+import { WORLD, jumpDayBuilds, stored } from "./seeded-builds.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -87,8 +87,8 @@ describe("validateWorkoutDoc — a clean workout", () => {
     expect([...DOC_ISSUE_CODES].sort()).toEqual(
       [
         "bounds", "condition_flare", "condition_format", "condition_gate", "condition_gate_pending", "condition_mode", "condition_never",
-        "condition_pattern", "dose_mismatch", "equipment_unavailable", "excluded_by_athlete", "format_mismatch", "legacy_id", "mode_above_day",
-        "mode_limits", "progression_jump", "unknown_equipment", "unknown_exercise", "unknown_focus",
+        "condition_pattern", "dose_mismatch", "equipment_unavailable", "excluded_by_athlete", "format_mismatch", "jump_placement", "legacy_id",
+        "mode_above_day", "mode_limits", "progression_jump", "too_large", "unknown_equipment", "unknown_exercise", "unknown_focus",
       ].sort(),
     );
   });
@@ -238,6 +238,87 @@ describe("dose_mismatch", () => {
       const d = docOf([part("main", format, ["tempoSquat", "bridge", "deadBug"].map((id) => ex(id, { sets: 1, holdSec: 40 })), { rounds: 2 })]);
       expect(only(check(d), "dose_mismatch")).toEqual([]);
     }
+  });
+
+  it("reps on a carry (timed) or a breathing record (counted in breaths) are warnings, fixed to the record's own amount", () => {
+    const [carry] = only(check(one(ex("farmerCarry", { sets: 2, reps: 10 }))), "dose_mismatch");
+    expect(carry).toMatchObject({ path: `${P0}.dose`, code: "dose_mismatch", severity: "warning" });
+    expect(carry!.message).toMatch(/carried for time/);
+    expect(JSON.parse(carry!.fix!)).toEqual({ sets: 2, holdSec: 45 });
+    const [breaths] = only(check(one(ex("physiologicalSigh", { sets: 1, reps: 6 }), "recover", "holds")), "dose_mismatch");
+    expect(breaths).toMatchObject({ code: "dose_mismatch", severity: "warning" });
+    expect(breaths!.message).toMatch(/breaths/);
+    expect(JSON.parse(breaths!.fix!)).toEqual({ sets: 1, breaths: 7 });
+    // Their own amounts raise nothing.
+    expect(only(check(one(ex("farmerCarry", { sets: 2, holdSec: 40 }))), "dose_mismatch")).toEqual([]);
+    expect(only(check(one(ex("physiologicalSigh", { sets: 1, breaths: 6 }), "recover", "holds")), "dose_mismatch")).toEqual([]);
+  });
+});
+
+describe("jump_placement (final review I2): power while fresh — one jumps part, straight sets or a superset, before the lifting", () => {
+  const hop = (extra: Over = {}) => ex("snapDown", { sets: 2, reps: 5, restSec: 60 }, extra);
+  const stick = () => ex("landingStick", { sets: 2, reps: 5, restSec: 60 });
+  const squat = () => ex("gobletSquat", { sets: 3, reps: 8, restSec: 60 });
+  const warm = () => part("warmup", "flow", [ex("catCow", { reps: 8 })]);
+  const jumpIssues = (d: WorkoutDoc) => only(check(d), "jump_placement").map((i) => `${i.severity}@${i.path}`);
+
+  it("the engine's own shape raises nothing: a warm-up, then the jumps (straight or a superset), then the lifts", () => {
+    expect(jumpIssues(docOf([warm(), part("power", "straight", [hop(), stick()]), part("main", "straight", [squat()])], "develop"))).toEqual([]);
+    expect(jumpIssues(docOf([warm(), part("power", "superset", [hop(), stick()]), part("main", "straight", [squat()])], "develop"))).toEqual([]);
+    // Activation before the jumps is preparation, not lifting.
+    expect(jumpIssues(docOf([warm(), part("activation", "straight", [ex("bridge", { sets: 1, reps: 10 })]), part("power", "straight", [hop()]), part("main", "straight", [squat()])], "develop"))).toEqual([]);
+  });
+
+  it("a jump in a circuit, a ladder, a flow or holds is a warning at the part's format, fixed to straight sets", () => {
+    for (const format of ["circuit", "ladder", "flow", "holds"]) {
+      const d = docOf([warm(), part("power", format, [hop(), stick(), ex("catCow", { reps: 8 })], { rounds: 2 })], "develop");
+      const [issue] = only(check(d), "jump_placement");
+      expect(issue, format).toMatchObject({ path: "parts[1].format", severity: "warning", fix: "straight" });
+      expect(only(check(d), "jump_placement"), format).toHaveLength(1);
+    }
+  });
+
+  it("a jump after a part holding a lift is a warning at the jump: the legs are no longer fresh", () => {
+    const d = docOf([warm(), part("main", "straight", [squat()]), part("power", "straight", [hop()])], "develop");
+    expect(jumpIssues(d)).toEqual(["warning@parts[2].items[0].libraryId"]);
+    expect(only(check(d), "jump_placement")[0]!.message).toMatch(/fresh/);
+    // Jumps beside a lift in the same part play after it too.
+    expect(jumpIssues(docOf([warm(), part("main", "straight", [squat(), hop()])], "develop"))).toEqual(["warning@parts[1].items[1].libraryId"]);
+  });
+
+  it("a second jumps part is a warning at its jumps: the session's jumps live in one part", () => {
+    const d = docOf([warm(), part("power", "straight", [hop()]), part("accessory", "straight", [stick()])], "develop");
+    expect(jumpIssues(d)).toEqual(["warning@parts[2].items[0].libraryId"]);
+    expect(only(check(d), "jump_placement")[0]!.message).toMatch(/one part/);
+  });
+
+  it("jumping-day builds from the engine raise no placement warning", () => {
+    for (const { label, plan } of jumpDayBuilds(8)) {
+      const issues = validateWorkoutDoc(docFromBuild(stored(plan)), { library: WORLD.data.exercises, activeProfiles: WORLD.data.profiles.active, day: null });
+      expect(only(issues, "jump_placement"), label).toEqual([]);
+    }
+  });
+});
+
+describe("too_large (final review I4): a document a Worker cannot afford is refused before anything else is read", () => {
+  const huge = (parts: number, items: number): WorkoutDoc =>
+    docOf(Array.from({ length: parts }, () => part("main", "straight", Array.from({ length: items }, () => ex("gobletSquat", { sets: 20, reps: 8, perSide: true, restSec: 900 })), { rounds: 50 })));
+
+  it("1,200 items: one error, fast — no other rule runs on it", () => {
+    const started = Date.now();
+    const issues = check(huge(20, 60));
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(codes(issues)).toEqual(["error:too_large@parts"]);
+    expect(issues[0]!.message).toMatch(/too large/i);
+  });
+
+  it("more watch steps than a push holds, or more than 600 minutes, is an error; at the limits it is not", () => {
+    const steps = (rounds: number) => docOf([part("main", "circuit", ["tempoSquat", "bridge", "deadBug", "catCow", "birdDog"].map((id) => ex(id, { sets: 1, holdSec: 5 })), { rounds })], "develop");
+    expect(only(check(steps(40)), "too_large")).toEqual([]); // 200 steps
+    expect(codes(only(check(steps(41)), "too_large"))).toEqual(["error:too_large@parts"]);
+    const long = (sets: number) => docOf([part("main", "holds", [ex("wallSit", { sets, holdSec: 3600 })])]);
+    expect(only(check(long(9)), "too_large")).toEqual([]); // 540 minutes and a little
+    expect(codes(only(check(long(11)), "too_large"))).toEqual(["error:too_large@parts"]);
   });
 });
 

@@ -541,13 +541,16 @@ describe("the blocks' order on the sheet", () => {
     expect(blocksInPlayOrder(steps("arrive", "cooldown"))).toEqual(["arrive", "cooldown", "prep", "core", "accessory", "care"]);
   });
 
-  it("a jumping day's accessory block of jumps reads \"Jumps\"; any other accessory block reads \"Accessory\"", () => {
+  it("a block of jumps reads \"Jumps\" whatever block it plays as; any other block reads its own name", () => {
     const jump = { contraction: ["plyometric"] as const };
     const row = { contraction: ["isotonic"] as const };
     expect(blockLabel("accessory", [jump, jump])).toBe("Jumps");
     expect(blockLabel("accessory", [row, row])).toBe("Accessory");
+    expect(blockLabel("accessory", [jump, row])).toBe("Accessory");
     expect(blockLabel("accessory", [])).toBe("Accessory");
-    expect(blockLabel("core", [jump])).toBe("Core");
+    // A document's jumps built before a power part played as the accessory block (final review I1) still read "Jumps".
+    expect(blockLabel("core", [jump])).toBe("Jumps");
+    expect(blockLabel("core", [row])).toBe("Core");
     expect(blockLabel("prep", [undefined])).toBe("Prep");
   });
 

@@ -35,18 +35,26 @@
  *   programme's own rule, a session with a core lift is a strength session (controller ruling 2026-10-10); else
  *   strength when the strength seconds are at least the yoga seconds (a session of free-text lifts, which no library
  *   record can vouch for); else yoga. `disciplines` lists every axis present, dominant first, then by seconds.
- * - Category: race / tempo / threshold / interval / hills (never strides) make race / quality only when the run axis is dominant or those
- *   efforts are at least 25% of all seconds; otherwise the dominant discipline decides. Otherwise, for a run
+ * - Category: race / tempo / threshold / interval / hills (never strides) make race / quality only when the run axis is
+ *   dominant or those efforts are at least 25% of all seconds; otherwise the dominant discipline decides: for a run
  *   workout, long (a long effort, or 75 minutes or more of run) -> long; recovery effort (or a "recover" intent with only
  *   recovery / easy runs) -> recovery; else easy. A strength workout is strength, a yoga one yoga. (planned_workouts
  *   already uses easy / long / quality / recovery / race / strength / yoga, so these map one to one.)
  * - Watch steps count executions (the push's totalSets), not wire rows: sets x rounds x (perSide ? 2 : 1) per exercise or free-exercise item, rounds per run segment.
  * - Equipment: `all` = the union of the records' `all`; `oneOf` = each distinct one-of group not already satisfied by
- *   an `all` entry, members sorted.
+ *   an `all` entry, members sorted. Every sort here compares code units (`byCodeUnit`), never the locale: a server and a
+ *   phone in another language derive the same lists.
  * - Condition maxima: for each profile, each attribute's highest rating among the resolved items (a flag counts 1 or 0).
+ * - Size (`docTooLarge`): a document deriving more than DOC_MAX_MINUTES (600) minutes or more watch steps than a push
+ *   holds (`WATCH_MAX_STEPS`) is too large to build — read from the document's numbers alone, before any step exists.
+ *   The validator's `too_large` and the player's `DocTooLargeError` are this one bound.
+ *
+ * SHARED with the player's steps (`playerStepsFromDoc`) and the validator, exported once here: a move's assumed seconds
+ * per rep, a run's assumed pace and an open segment's nominal length (`secondsOfRun`), and how a part's format reads as
+ * the engine's (`FORMAT_OF_PART`).
  */
-import type { WorkoutDoc, WorkoutItem, WorkoutPart } from "@rg/domain";
-import type { ExerciseRecord, Mode } from "@rg/exercise-library";
+import { WATCH_MAX_STEPS, type WorkoutDoc, type WorkoutItem, type WorkoutPart } from "@rg/domain";
+import type { ExerciseRecord, FormatId, Mode } from "@rg/exercise-library";
 
 export type WorkoutAxis = "run" | "strength" | "yoga";
 export type WorkoutCategory = "easy" | "long" | "quality" | "recovery" | "race" | "strength" | "yoga";
@@ -117,10 +125,23 @@ export function effortOfMode(m: Mode): Effort {
 }
 
 const SECS_PER_BREATH = 6;
-const DEFAULT_SECS_PER_REP = 3;
-const DEFAULT_RUN_SECS_PER_KM = 360;
+/** A move's seconds per rep when neither its tempo nor its record says (and a free-text move's). */
+export const DEFAULT_SECS_PER_REP = 3;
+/** A run's pace when its segment names no band: 6:00 per km. */
+export const DEFAULT_RUN_SECS_PER_KM = 360;
 /** An open (lap-button) run segment counts a nominal 10 minutes. */
-const OPEN_RUN_SECONDS = 600;
+export const OPEN_RUN_SECONDS = 600;
+/** The longest document a Worker builds, in derived minutes (the schema's own cap on a stated length). */
+export const DOC_MAX_MINUTES = 600;
+
+/** A part's format as the engine's (and every condition profile's) format: intervals are a circuit, steady straight sets. */
+export const FORMAT_OF_PART: Readonly<Record<WorkoutPart["format"], FormatId>> = {
+  straight: "straight", superset: "superset", circuit: "circuit", ladder: "ladder", flow: "flow", holds: "holds",
+  intervals: "circuit", steady: "straight",
+};
+
+/** Code-unit order: the same on every device, whatever its locale. */
+export const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const LONG_RUN_SECONDS = 75 * 60;
 /** The rest between sets a dose that names none is assumed to take: a lift's, and any other move's. */
 const ASSUMED_LIFT_REST_SECONDS = 60;
@@ -212,7 +233,8 @@ function exposure(t: Tally): { regionExposure: Record<string, number>; muscleExp
   return { regionExposure: t.region, muscleExposure: t.muscle };
 }
 
-function secondsOfRun(item: Extract<WorkoutItem, { kind: "run" }>): number {
+/** A run segment's seconds: its duration, else its distance at the pace band's middle (else 6:00/km), else 600 for an open one. */
+export function secondsOfRun(item: Extract<WorkoutItem, { kind: "run" }>): number {
   const { durationSec, distanceM, pace } = item.target;
   if (durationSec !== undefined) return durationSec;
   if (distanceM !== undefined) {
@@ -311,7 +333,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
         if (rec) {
           for (const e of rec.equipment.all) all.add(e);
           if (rec.equipment.oneOf.length > 0) {
-            const g = [...rec.equipment.oneOf].sort();
+            const g = [...rec.equipment.oneOf].sort(byCodeUnit);
             groups.set(g.join("|"), g);
           }
           for (const [profile, attrs] of Object.entries(rec.conditions)) {
@@ -339,7 +361,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
     else category = "easy";
   } else category = discipline === "yoga" ? "yoga" : "strength";
 
-  const allList = [...all].sort();
+  const allList = [...all].sort(byCodeUnit);
   return {
     estimatedMinutes: minutesOf(t.totalSec),
     balance: t.balance,
@@ -348,10 +370,23 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
     disciplines,
     category,
     mode: modeOfEffort(doc.intent.effort),
-    equipment: { all: allList, oneOf: [...groups.values()].filter((g) => !g.some((e) => all.has(e))).sort((a, b) => a.join("|").localeCompare(b.join("|"))) },
+    equipment: { all: allList, oneOf: [...groups.values()].filter((g) => !g.some((e) => all.has(e))).sort((a, b) => byCodeUnit(a.join("|"), b.join("|"))) },
     conditionMax,
     watchStepCount: steps,
   };
+}
+
+/** Why a document is too large for a Worker to build, in plain words; null when it is within the bound. */
+export function docTooLarge(doc: WorkoutDoc, library: readonly ExerciseRecord[]): string | null {
+  const { estimatedMinutes, watchStepCount } = deriveDoc(doc, library);
+  if (estimatedMinutes > DOC_MAX_MINUTES) return `This workout is too large: about ${estimatedMinutes} minutes, and the most is ${DOC_MAX_MINUTES}.`;
+  if (watchStepCount > WATCH_MAX_STEPS) return `This workout is too large: ${watchStepCount} steps, and the most a watch takes is ${WATCH_MAX_STEPS}.`;
+  return null;
+}
+
+/** A document too large to build (`docTooLarge`): `playerStepsFromDoc` throws it before building a step. */
+export class DocTooLargeError extends Error {
+  override readonly name = "DocTooLargeError";
 }
 
 /**

@@ -10,8 +10,9 @@
  * - Groups: consecutive items of one block and format are one group, except that two straight items are one group
  *   only when a rest stands between them in the steps (the engine plays each core lift as its own group).
  * - Blocks → parts, one group to one part: arrive → arrive, prep → warmup (a run of activation moves — an activation
- *   role and no warm-up role — becomes an activation part), core → main, accessory → accessory, care → care,
- *   cooldown → cooldown. The group's format is the part's format.
+ *   role and no warm-up role — becomes an activation part), core → main, accessory → accessory (a jumping day's jumps
+ *   block — every move plyometric — is a power part, where every source puts jumps; the player plays it back as the
+ *   accessory block), care → care, cooldown → cooldown. The group's format is the part's format.
  * - Dose, from the steps (what plays), not from the library: sets = the item's sets; a timed window's seconds →
  *   `holdSec` (and a set's reps, when it has a target, → `reps`); a self-paced set's reps → `reps`, or, with no target,
  *   the move's own rep range; the target's weight → load as typed plus kg, a target with no weight → bodyweight, no
@@ -43,7 +44,7 @@
  * document (cut texts, gone moves); `docFromBuild` is the document alone.
  */
 import type { WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
-import { MODES, THEMES, type BlockId, type ExerciseRecord, type FormatId, type Mode } from "@rg/exercise-library";
+import { MODES, THEMES, isPlyometric, type BlockId, type ExerciseRecord, type FormatId, type Mode } from "@rg/exercise-library";
 import type { Step } from "@rg/session-engine";
 import { effortOfMode } from "../derive.js";
 import { bounded, currentId, loadOfWeight, openBlock, OPEN_BLOCK_NAME, type Converted, type KeptEntry, type LibraryIndex } from "./shared.js";
@@ -76,8 +77,11 @@ export interface BuildPayload {
   /** The flat step list the player plays. */
   steps: readonly Step[];
   items: readonly BuildItemSource[];
-  /** Every move in the plan: its laterality, roles and dose decide what the steps cannot show; its name names it. */
-  exercises: Readonly<Record<string, Pick<ExerciseRecord, "name" | "laterality" | "roles" | "dose">>>;
+  /**
+   * Every move in the plan: its laterality, roles and dose decide what the steps cannot show; its name names it; its
+   * contraction says a jump (absent, the library's record says).
+   */
+  exercises: Readonly<Record<string, Pick<ExerciseRecord, "name" | "laterality" | "roles" | "dose"> & Partial<Pick<ExerciseRecord, "contraction">>>>;
   /** Per slot key: the swaps the slot offers. */
   alternatives?: Readonly<Record<string, ReadonlyArray<{ id: string; reasons: readonly string[] }>>>;
 }
@@ -176,10 +180,17 @@ function isActivation(build: BuildPayload, id: string): boolean {
   return roles.includes("activation") && !roles.includes("warmup");
 }
 
+/** A plyometric move, by the build's own copy of its record, else the library's. */
+function isJump(build: BuildPayload, id: string, library: LibraryIndex | undefined): boolean {
+  const contraction = build.exercises[id]?.contraction ?? library?.(id)?.contraction;
+  return contraction !== undefined && isPlyometric({ contraction });
+}
+
 function partsOf(build: BuildPayload, group: Slot[], kept: KeptEntry[], library: LibraryIndex | undefined): WorkoutPart[] {
   const first = group[0]!.item;
   const format = first.format;
-  const purpose = PURPOSE_OF_BLOCK[first.block];
+  const jumps = first.block === "accessory" && group.every((slot) => isJump(build, slot.item.exerciseId, library));
+  const purpose = jumps ? "power" : PURPOSE_OF_BLOCK[first.block];
   const item = (slot: Slot, dose: WorkoutDose): Move => moveItem(build, slot, dose, kept, library);
 
   if (format === "holds" || format === "flow") {

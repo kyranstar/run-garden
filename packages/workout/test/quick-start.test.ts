@@ -12,8 +12,10 @@ import {
   deriveDoc,
   quickStartDoc,
   quickStartKinds,
+  resisted,
   validateWorkoutDoc,
   type DayContext,
+  type QuickStart,
   type QuickStartKind,
   type SuggestCtx,
 } from "../src/index.js";
@@ -35,7 +37,7 @@ const CTX: SuggestCtx = { activeProfiles: [TMJ], day: DAYS.calm!, focusRefs: ["h
 const KINDS: readonly QuickStartKind[] = ["condition_care", "desk_reset", "hip_opener"];
 const SEEDS = Array.from({ length: 20 }, (_, i) => i + 1);
 const make = (kind: QuickStartKind, seed: number, o: Partial<SuggestCtx> = {}): WorkoutDoc => {
-  const r = quickStartDoc(kind, EXERCISES, { ...CTX, ...o, seed });
+  const r: QuickStart = quickStartDoc(kind, EXERCISES, { ...CTX, ...o, seed });
   if (!("doc" in r)) throw new Error(r.reason);
   return r.doc;
 };
@@ -176,6 +178,17 @@ describe("what each one holds", () => {
         for (const i of p.items) if (i.kind === "exercise") expect(i.why!.startsWith(`${VERB[p.purpose]} `), `${p.purpose}: ${i.why}`).toBe(true);
       }
     }
+  });
+
+  it("unresisted means nothing to push against or brace into — an isometric hold, added weight or a band — whatever the load says", () => {
+    // A resisted jaw hold carries no load, yet it is worked against resistance: it earns no flare-day lean.
+    expect(rec("jawIsoOpen").load).toBe("none");
+    expect(resisted(rec("jawIsoOpen"))).toBe(true);
+    expect(resisted(rec("chinNodHold"))).toBe(true);
+    expect(resisted(rec("shoulderPassThrough"))).toBe(true); // a band
+    expect(resisted(rec("gobletSquat"))).toBe(true); // added weight
+    expect(resisted(rec("catCow"))).toBe(false);
+    expect(EXERCISES.filter((e) => !resisted(e)).every((e) => !e.contraction.includes("isometric") && e.load !== "external")).toBe(true);
   });
 
   it("on a flare day relaxation and unresisted moves lead; easier moves first", () => {

@@ -66,6 +66,45 @@ export function seededBuilds(n = 50): SeededBuild[] {
   return out;
 }
 
+/**
+ * Jumping-day builds (the plyoIntro theme, a calm jaw check, consistent and build): the bottom rungs done cleanly a
+ * month before, so each block holds a new rung beside a done one, as straight sets or a superset; swaps on every
+ * other build. Synthetic only.
+ */
+export function jumpDayBuilds(n = 12): SeededBuild[] {
+  const { data } = WORLD;
+  const out: SeededBuild[] = [];
+  for (let i = 0; i < n; i++) {
+    const today = addDays("2026-11-30", i % 5);
+    const old = addDays(today, -30);
+    const logged = (id: string) => ({ id, implement: null, perSide: false, format: "straight" as const, flags: [], sets: [{ w: null, reps: 6, secs: null }] });
+    const program: ProgramState = {
+      programId: "p-jumps",
+      settings: { unit: i % 2 ? "kg" : "lb", weeklyGoal: 4, blockWeeks: 5, defaultMinutes: [30, 40, 45, 60][i % 4]!, location: LOCATIONS[i % 2]!.id },
+      locations: LOCATIONS, prefs: { ratings: {}, excluded: [], pinned: [] }, savedIds: [], block: null,
+      sessions: [{
+        id: "bottom-rungs", date: old, startedAt: `${old}T18:00:00`, mode: "build", theme: "plyoIntro", blockNumber: 1,
+        checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: [{ id: "snapDown", secs: 60 }, { id: "landingStick", secs: 60 }],
+        entries: [logged("snapDown"), logged("landingStick")],
+      }],
+    };
+    const mode: Mode = i % 2 ? "build" : "consistent";
+    const day: DayState = { date: today, checks: { tmj: { pre: 1, post: null, feelingOff: false } }, feelingOff: false, override: { mode, theme: "plyoIntro" }, swaps: {} };
+    let plan = Planner.planToday(data, { today, day }, program).view.plan;
+    let label = `jump day ${i} (${mode}, ${today})`;
+    if (i % 2 === 1) {
+      const swaps: Record<string, { from: string; to: string }> = {};
+      for (const [slotKey, alts] of Object.entries(plan.alternatives).filter(([, a]) => a.length).slice(0, 2)) {
+        swaps[slotKey] = { from: plan.items.find((it) => it.slotKey === slotKey)!.exercise.id, to: alts[0]!.id };
+      }
+      plan = Planner.planToday(data, { today, day: { ...day, swaps } }, program).view.plan;
+      label += ` with ${Object.keys(swaps).length} swap(s)`;
+    }
+    out.push({ label, plan });
+  }
+  return out;
+}
+
 /** The build as the worker stores it (`composeBuild`): the fields `docFromBuild` reads. */
 export function stored(plan: BuildResult): BuildPayload {
   const exercises: Record<string, ExerciseRecord> = {};

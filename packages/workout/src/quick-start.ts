@@ -25,7 +25,8 @@
  * - Never a jump, a move set aside, gear the place lacks, two moves of one family, or a move that raises any issue in
  *   its part for the day (the same probe as the suggestions); so the document validates with no error.
  * - Order: fit, easier first (−0.5 per difficulty step above 1; −1 in recovery mode), on a flare day relaxation
- *   (passive, breathing or recovery moves, +1.5) and unresisted moves (+0.5) first, novelty (+2 when not in
+ *   (passive, breathing or recovery moves, +1.5) and unresisted moves (+0.5: no isometric hold, no added weight, no
+ *   band — a move with nothing to push against or brace into, whatever its load says) first, novelty (+2 when not in
  *   `ctx.recentIds`), pins (+1.5) and a seeded jitter in [0, 2.5) per move; ties by name. Filling: one move per part
  *   first, then round the parts in order, a move at a time, never past the length + 1 minute, until the length is
  *   reached; then the fallback moves the same way (desk reset); short of moves, a set is added to each move in turn
@@ -56,6 +57,12 @@ const OVER = 1;
 /** On a flare day: relaxation first, then moves against no resistance. */
 const RELAXED = 1.5;
 const UNRESISTED = 0.5;
+/**
+ * A move worked against resistance: an isometric hold (pressing or bracing into something), added weight, or a band. A
+ * move whose load is "none" can still be one (a resisted jaw or neck hold), so the load alone does not say.
+ */
+export const resisted = (r: ExerciseRecord): boolean =>
+  r.contraction.includes("isometric") || r.load === "external" || [...r.equipment.all, ...r.equipment.oneOf].includes("band");
 const OPENS = 3;
 const FOCUS = 1;
 /** What a hip opener's focus-area moves must serve: mobility, not lifting. */
@@ -247,7 +254,7 @@ function build(kind: QuickStartKind, effort: Effort, library: readonly ExerciseR
   const easier = mode === "recovery" ? 2 * EASIER : EASIER;
   const lean = (r: ExerciseRecord): number =>
     (jitter.get(r.id) ?? 0) - easier * (r.difficulty - 1) +
-    (flare ? (passiveOnly(r) || r.patterns.includes("breathe") || r.purposes.includes("recovery") ? RELAXED : 0) + (r.load === "none" ? UNRESISTED : 0) : 0);
+    (flare ? (passiveOnly(r) || r.patterns.includes("breathe") || r.purposes.includes("recovery") ? RELAXED : 0) + (resisted(r) ? 0 : UNRESISTED) : 0);
 
   // Each slot's candidates, clean in that part for the day, best first: the main pool, then the fallback pool.
   const claimed = new Set<string>();

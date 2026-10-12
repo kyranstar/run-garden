@@ -5,6 +5,9 @@
  * RULES
  * - Schema first: the input is anything (`unknown`); what does not parse as `workoutDocSchema` returns only `bounds`
  *   errors, one per schema issue at its path, in plain words; nothing else can be read safely from it.
+ * - Size second: a document too large to build (`docTooLarge`: past 600 derived minutes, or more watch steps than a
+ *   push holds) returns only its `too_large` error — read from the document's numbers before anything is built or
+ *   judged, so a hostile document costs a Worker one pass over its items.
  * - The day decides how the condition rules read (Amendment A): `day: null` (a template, a library context) judges every
  *   reading-dependent rule on each profile's calmest day — "does this fit the workout's mode at all"; a `day` whose
  *   `date` is after its `today` is a future day (that day's check is unknown); any other day uses `day.readings`.
@@ -48,11 +51,19 @@
  * - excluded_by_athlete (warning): the athlete set the move aside (`excluded`, legacy ids honoured).
  * - equipment_unavailable (warning): the move needs gear `equipment` (the place's) lacks.
  * - progression_jump (warning): with `day.done`, a jump past the athlete's frontier (the library's `onFrontier`: an
- *   easier variant must have been done); `fix` is the first move down its easier variants that is on the frontier.
+ *   easier variant must have been done cleanly); `fix` is the first move down its easier variants that is on the
+ *   frontier.
  * - format_mismatch: a superset needs exactly two exercises (error); a circuit holds 3–6 moves (warning: the engine's
  *   own builds must validate clean); intervals need a run or a timed move (error).
  * - dose_mismatch (warning): an exercise with no amount (none of reps, holdSec, breaths, carryM, max); reps on a timed
- *   move; seconds on a counted move outside a timed format (circuit, intervals, flow, holds). `fix` is the dose to use.
+ *   move or a carry (a library carry is timed) with no seconds, or on a breathing record with no breaths; seconds on a
+ *   counted move outside a timed format (circuit, intervals, flow, holds). `fix` is the dose to use.
+ * - jump_placement (warning): power while fresh (principles §2.1), where the engine puts jumps — at most one per jump:
+ *   a jump in a second part holding jumps (the session's jumps live in one part), else a jump after a lift (a library
+ *   move with a strength or power purpose that is no jump, in an earlier main, power, accessory or conditioning part, or
+ *   earlier in its own part), both at the item; and a part holding a jump in a format other than straight sets or a
+ *   superset, once at the part's format (`fix` straight). Free-text moves and alternates are not read.
+ * - too_large (error, at "parts", alone): see Size.
  * - unknown_focus (warning): a focus id that is neither a region nor a muscle.
  * - unknown_equipment (warning): a `setting.equipment` id the library does not know.
  * Not checked here: `test.keyResultId` and `intent.objectiveIds` (opaque without the database).
@@ -64,7 +75,7 @@
  * then its patterns, then its regions, in library order.
  */
 import type { ZodIssue } from "zod";
-import { workoutDocSchema, type WorkoutDose, type WorkoutItem, type WorkoutPart } from "@rg/domain";
+import { workoutDocSchema, type WorkoutDoc, type WorkoutDose, type WorkoutItem, type WorkoutPart } from "@rg/domain";
 import {
   EQUIPMENT,
   EQUIPMENT_IDS,
@@ -87,7 +98,7 @@ import {
   type Mode,
   type ProposalCtx,
 } from "@rg/exercise-library";
-import { makeLibraryIndex, modeOfEffort } from "./derive.js";
+import { FORMAT_OF_PART, docTooLarge, makeLibraryIndex, modeOfEffort } from "./derive.js";
 
 export const DOC_ISSUE_CODES = [
   "bounds",
@@ -107,6 +118,8 @@ export const DOC_ISSUE_CODES = [
   "progression_jump",
   "format_mismatch",
   "dose_mismatch",
+  "jump_placement",
+  "too_large",
   "unknown_focus",
   "unknown_equipment",
 ] as const;
@@ -133,7 +146,11 @@ export interface DayContext {
   readings: Readonly<Record<string, CheckReading | null>>;
   /** "I'm feeling off" for the whole day, whatever profiles are active: it joins every profile's reading. */
   feelingOff?: boolean;
-  /** Library ids the athlete has done cleanly; given, a jump past their frontier is noted (`progression_jump`). */
+  /**
+   * Library ids the athlete has done CLEANLY; given, a jump past their frontier is noted (`progression_jump`). Build it
+   * with the library's `isDoneCleanly` over each move's tally (legacy ids merged into the move), the engine's own unlock
+   * rule — never "done at all": a rung only ever done with a profile's flag on it unlocks nothing.
+   */
   done?: ReadonlySet<string>;
   /** Recent sessions, for the profiles' mode rules. */
   recent?: { last: HistorySession | null; week: readonly HistorySession[] };
@@ -155,9 +172,7 @@ type DocFormat = Part["format"];
 type Exercise = Extract<WorkoutItem, { kind: "exercise" }>;
 type Phase = "any" | "today" | "future";
 
-const FORMAT_RULE: Record<DocFormat, FormatId> = {
-  straight: "straight", superset: "superset", circuit: "circuit", flow: "flow", intervals: "circuit", steady: "straight", ladder: "ladder", holds: "holds",
-};
+const FORMAT_RULE: Readonly<Record<DocFormat, FormatId>> = FORMAT_OF_PART;
 const FORMAT_WORDS: Record<DocFormat, string> = {
   straight: "straight sets", superset: "a superset", circuit: "a circuit", flow: "a flow", intervals: "intervals", steady: "a steady effort", ladder: "a ladder", holds: "holds",
 };
@@ -165,6 +180,13 @@ const FORMAT_WORDS: Record<DocFormat, string> = {
 const FORMAT_PREFERENCE: readonly DocFormat[] = ["straight", "holds", "flow", "superset"];
 /** Formats whose work is a timed window: seconds of a counted move are their way, not a mismatch. */
 const TIMED_FORMATS = new Set<DocFormat>(["circuit", "intervals", "flow", "holds"]);
+/** The formats a part holding jumps takes: real rest between sets (the engine's jumps block). */
+const JUMP_FORMATS = new Set<DocFormat>(["straight", "superset"]);
+/** Parts whose lifts tire the legs before a jump: preparation (arrive, warm-up, activation), care and cool-down do not. */
+const LIFTING_PARTS = new Set<Part["purpose"]>(["main", "power", "accessory", "conditioning"]);
+const LIFT_PURPOSES = new Set<string>(["strength", "power"]);
+/** A lift that tires before a jump: a strength or power move that is no jump itself. */
+const isLift = (rec: ExerciseRecord): boolean => !isPlyometric(rec) && rec.purposes.some((p) => LIFT_PURPOSES.has(p));
 const CIRCUIT_MIN = 3;
 const CIRCUIT_MAX = 6;
 /** How far down the easier variants a fix looks. */
@@ -237,6 +259,8 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     return parsed.error.issues.map((i) => ({ path: pathOf(i.path), code: "bounds", message: plainSchemaIssue(i), severity: "error" }));
   }
   const doc = parsed.data;
+  const tooLarge = docTooLarge(doc, ctx.library);
+  if (tooLarge) return [{ path: "parts", code: "too_large", message: tooLarge, severity: "error" }];
   const find = makeLibraryIndex(ctx.library);
   const profiles = ctx.activeProfiles;
   const day = ctx.day;
@@ -431,6 +455,37 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     });
   });
 
+  // ── Jumps: one part, straight sets or a superset, before the lifting ──
+  checkJumps();
+
+  function checkJumps(): void {
+    let jumpsPart: number | null = null;
+    let lifted = false;
+    doc.parts.forEach((part, pi) => {
+      let jumpHere = false;
+      part.items.forEach((item, ii) => {
+        const rec = item.kind === "exercise" ? find(item.libraryId) : undefined;
+        if (!rec) return;
+        if (isPlyometric(rec)) {
+          jumpHere = true;
+          const path = `parts[${pi}].items[${ii}].libraryId`;
+          if (jumpsPart !== null && jumpsPart !== pi) {
+            add({ path, code: "jump_placement", message: `${rec.name} is in a second jumps part: keep the session's jumps together in one part.`, severity: "warning" });
+          } else if (lifted) {
+            add({ path, code: "jump_placement", message: `${rec.name} comes after lifting: jumps go first, while you're fresh.`, severity: "warning" });
+          }
+        } else if (LIFTING_PARTS.has(part.purpose) && isLift(rec)) {
+          lifted = true;
+        }
+      });
+      if (!jumpHere) return;
+      jumpsPart ??= pi;
+      if (!JUMP_FORMATS.has(part.format)) {
+        add({ path: `parts[${pi}].format`, code: "jump_placement", message: `Jumps go in straight sets or a superset, with real rest between sets, not ${FORMAT_WORDS[part.format]}.`, fix: "straight", severity: "warning" });
+      }
+    });
+  }
+
   function checkFormat(part: Part, at: string): void {
     const moves = part.items.filter((i) => i.kind === "exercise" || i.kind === "free_exercise").length;
     const runs = part.items.filter((i) => i.kind === "run").length;
@@ -525,6 +580,13 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     if (rec.dose.type === "time" && dose.reps !== undefined && dose.holdSec === undefined) {
       const { reps: _r, ...rest } = dose;
       add({ path, code: "dose_mismatch", message: `${name} is held for time, not counted in reps.`, fix: JSON.stringify({ ...rest, ...ownAmount(rec) }), severity: "warning" });
+    } else if (rec.dose.type === "carry" && dose.reps !== undefined && dose.holdSec === undefined && dose.carryM === undefined) {
+      // A library carry's range is seconds: a timed carry.
+      const { reps: _r, ...rest } = dose;
+      add({ path, code: "dose_mismatch", message: `${name} is carried for time, not counted in reps.`, fix: JSON.stringify({ ...rest, ...ownAmount(rec) }), severity: "warning" });
+    } else if (rec.dose.type === "breaths" && dose.reps !== undefined && dose.breaths === undefined) {
+      const { reps: _r, ...rest } = dose;
+      add({ path, code: "dose_mismatch", message: `${name} is counted in breaths, not reps.`, fix: JSON.stringify({ ...rest, ...ownAmount(rec) }), severity: "warning" });
     } else if (rec.dose.type === "reps" && dose.holdSec !== undefined && dose.reps === undefined && !TIMED_FORMATS.has(format)) {
       const { holdSec: _h, ...rest } = dose;
       add({ path, code: "dose_mismatch", message: `${name} is counted in reps, not held for time.`, fix: JSON.stringify({ ...rest, ...ownAmount(rec) }), severity: "warning" });
@@ -532,6 +594,23 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   }
 
   return issues;
+}
+
+/**
+ * Whether a jump added at the end of part `partIndex` raises no `jump_placement`: the part is straight sets or a
+ * superset, no other part holds a jump, and no lift plays before it (in an earlier lifting part, or in this one).
+ */
+export function jumpPlaceableIn(doc: Pick<WorkoutDoc, "parts">, partIndex: number, find: (id: string) => ExerciseRecord | undefined): boolean {
+  const part = doc.parts[partIndex];
+  if (!part || !JUMP_FORMATS.has(part.format)) return false;
+  return doc.parts.every((p, pi) =>
+    p.items.every((item) => {
+      const rec = item.kind === "exercise" ? find(item.libraryId) : undefined;
+      if (!rec) return true;
+      if (isPlyometric(rec)) return pi === partIndex;
+      return !(pi <= partIndex && LIFTING_PARTS.has(p.purpose) && isLift(rec));
+    }),
+  );
 }
 
 function hasAmount(dose: WorkoutDose): boolean {

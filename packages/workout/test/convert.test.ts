@@ -602,7 +602,8 @@ describe("docFromBuild", () => {
     for (const { plan } of builds) {
       const doc = docFromBuild(stored(plan));
       for (const p of doc.parts) purposes.add(p.purpose);
-      const want = { arrive: ["arrive"], prep: ["warmup", "activation"], core: ["main"], accessory: ["accessory"], care: ["care"], cooldown: ["cooldown"] };
+      // A jumping day's accessory block (jumps only) is a power part (final review I1).
+      const want = { arrive: ["arrive"], prep: ["warmup", "activation"], core: ["main"], accessory: ["accessory", "power"], care: ["care"], cooldown: ["cooldown"] };
       const blocksInOrder = [...new Set(plan.items.map((it) => it.block))];
       const docBlocks = [...new Set(doc.parts.map((p) => Object.entries(want).find(([, ps]) => ps.includes(p.purpose))![0]))];
       expect(docBlocks).toEqual(blocksInOrder);

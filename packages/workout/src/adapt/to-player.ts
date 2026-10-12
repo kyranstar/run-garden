@@ -4,8 +4,12 @@
  * it for 50 seeded builds); any other document plays by the same rules.
  *
  * RULES (the engine's `groupSteps`, read from the document's numbers)
- * - Blocks: arrive → arrive, warmup and activation → prep, main, power and run → core, accessory and conditioning →
- *   accessory, care → care, cooldown → cooldown. Slots are numbered in play order within a block ("core:0", …).
+ * - Size first: a document too large to build (`docTooLarge`: past 600 derived minutes or the watch's steps) is refused
+ *   with a `DocTooLargeError` before any step is made.
+ * - Blocks: arrive → arrive, warmup and activation → prep, main and run → core, power, accessory and conditioning →
+ *   accessory, care → care, cooldown → cooldown. A power part is the engine's jumps block, which plays as its accessory
+ *   block (before the core lifts on a jumping day): never the core block, which the worker reads as a core lift. Slots
+ *   are numbered in play order within a block ("core:0", …).
  * - A move with `holdSec` (or `carryM`, a 1 m/s walk) plays timed windows of that many seconds: per side (`perSide`
  *   with no fixed side) a Left then a Right window. A move with neither plays self-paced sets. The seconds of a window
  *   with no hold and of a set are the engine's own (`Builder.windowSeconds`, `Builder.setSeconds`), reading the
@@ -26,27 +30,21 @@
  *   order, `restBetweenRoundsSec` between rungs.
  * - Any other part with `rounds` plays its sequence that many times, `restBetweenRoundsSec` between.
  * - A free-text move or a run segment plays with no move id. A run segment of a duration is a timed window; one of a
- *   distance (at the pace band's middle, else 6:00/km) or an open one (a nominal 10 minutes) is a self-paced step.
+ *   distance or an open one is a self-paced step of the derived seconds (`secondsOfRun`: the pace band's middle, else
+ *   6:00/km; open, a nominal 10 minutes).
  */
 import type { WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 import type { BlockId, ExerciseRecord, FormatId } from "@rg/exercise-library";
 import { Builder, type Step, type Target } from "@rg/session-engine";
-import { makeLibraryIndex } from "../derive.js";
+import { DEFAULT_SECS_PER_REP, DocTooLargeError, FORMAT_OF_PART, docTooLarge, makeLibraryIndex, secondsOfRun } from "../derive.js";
 import { WHY_SEPARATOR } from "../convert/from-build.js";
 import { weightOfLoad } from "../convert/shared.js";
 
 const DEFAULT_REST_SECONDS = 60;
-const DEFAULT_SECS_PER_REP = 3;
-const DEFAULT_RUN_SECS_PER_KM = 360;
-const OPEN_RUN_SECONDS = 600;
 
 export const BLOCK_OF_PURPOSE: Record<WorkoutPart["purpose"], BlockId> = {
-  arrive: "arrive", warmup: "prep", activation: "prep", main: "core", power: "core", run: "core",
+  arrive: "arrive", warmup: "prep", activation: "prep", main: "core", power: "accessory", run: "core",
   accessory: "accessory", conditioning: "accessory", care: "care", cooldown: "cooldown",
-};
-const FORMAT_ID: Record<WorkoutPart["format"], FormatId> = {
-  straight: "straight", superset: "superset", circuit: "circuit", ladder: "ladder", flow: "flow", holds: "holds",
-  intervals: "circuit", steady: "straight",
 };
 
 type Move = Extract<WorkoutItem, { kind: "exercise" | "free_exercise" }>;
@@ -69,11 +67,13 @@ interface Ctx {
 const isMove = (s: Slot): s is Slot & { item: Move } => s.item.kind !== "run";
 
 export function playerStepsFromDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): Step[] {
+  const tooLarge = docTooLarge(doc, library);
+  if (tooLarge) throw new DocTooLargeError(tooLarge);
   const find = makeLibraryIndex(library);
   const next: Partial<Record<BlockId, number>> = {};
   const out: Step[] = [];
   for (const part of doc.parts) {
-    const ctx: Ctx = { block: BLOCK_OF_PURPOSE[part.purpose], fid: FORMAT_ID[part.format] };
+    const ctx: Ctx = { block: BLOCK_OF_PURPOSE[part.purpose], fid: FORMAT_OF_PART[part.format] };
     let letter = 0;
     const slots = part.items.map((item): Slot | null => {
       if (item.kind === "rest") return null;
@@ -325,10 +325,8 @@ function restSeconds(slot: Slot & { item: Move }): number {
 
 function runStep(slot: Slot, ctx: Ctx, round: number | null, extra: Partial<Step> = {}): Step {
   const run = slot.item as Run;
-  const t = run.target;
-  const timed = t.durationSec !== undefined;
-  const perKm = t.pace ? (t.pace.fastSecPerKm + t.pace.slowSecPerKm) / 2 : DEFAULT_RUN_SECS_PER_KM;
-  const seconds = timed ? t.durationSec! : t.distanceM !== undefined ? Math.round((t.distanceM / 1000) * perKm) : OPEN_RUN_SECONDS;
+  const timed = run.target.durationSec !== undefined;
+  const seconds = secondsOfRun(run);
   return {
     ...base(slot, ctx, extra),
     kind: timed ? "timed" : "set",

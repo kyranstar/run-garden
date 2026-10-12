@@ -16,7 +16,7 @@
  * entry (20 deep), and an empty title or summary is rejected, so a field cleared mid-typing would be refused.
  */
 import { PART_PURPOSES, doseSchema, itemSchema, partSchema, workoutDocSchema, type WorkoutDoc, type WorkoutDose, type WorkoutItem, type WorkoutPart } from "@rg/domain";
-import type { ExerciseRecord, Purpose } from "@rg/exercise-library";
+import { isPlyometric, type ExerciseRecord, type Purpose } from "@rg/exercise-library";
 import { makeLibraryIndex } from "./derive.js";
 
 type PartPurpose = WorkoutPart["purpose"];
@@ -74,8 +74,13 @@ const PART_OF_PURPOSE: Record<Purpose, PartPurpose> = {
   conditioning: "conditioning",
 };
 
-/** The part a library move belongs to (spec §7). A passive-contraction move (release, massage) is a cool-down move unless it is condition care. */
+/**
+ * The part a library move belongs to (spec §7). A jump (plyometric) is always a power move: the session's jumps live in
+ * one part, early, while fresh, whatever else the move is for. A passive-contraction move (release, massage) is a
+ * cool-down move unless it is condition care.
+ */
 export function placementFor(record: ExerciseRecord): PartPurpose {
+  if (isPlyometric(record)) return "power";
   if (record.contraction.includes("passive") && !record.purposes.includes("condition-care")) return "cooldown";
   for (const p of PURPOSE_PRIORITY) if (record.purposes.includes(p)) return PART_OF_PURPOSE[p];
   return "main";

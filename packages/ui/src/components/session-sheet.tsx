@@ -58,9 +58,9 @@ const BLOCK_ORDER = ["arrive", "prep", "core", "accessory", "care", "cooldown"] 
 type SheetBlock = (typeof BLOCK_ORDER)[number];
 /** A jumping day's accessory block holds jumps only and plays before the core lifts: it reads "Jumps". */
 export const JUMPS_LABEL = "Jumps";
-/** The name a block goes by: "Jumps" for an accessory block of plyometric moves, else the block's own label. */
+/** The name a block goes by: "Jumps" for a block of plyometric moves (whatever block it plays as), else the block's own label. */
 export function blockLabel(blockId: string, moves: ReadonlyArray<{ contraction?: readonly string[] } | undefined>): string {
-  if (blockId === "accessory" && moves.length > 0 && moves.every((m) => Boolean(m?.contraction?.includes("plyometric")))) return JUMPS_LABEL;
+  if (moves.length > 0 && moves.every((m) => Boolean(m?.contraction?.includes("plyometric")))) return JUMPS_LABEL;
   return BLOCK_LABEL[blockId] ?? blockId;
 }
 /**

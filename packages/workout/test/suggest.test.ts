@@ -167,6 +167,35 @@ describe("one part per move: it is offered where it fits best", () => {
       }
     }
   });
+
+  it("a move leaves a part only for a part that really lists it, so no part that has moves to offer is left empty", () => {
+    const works = [[], [ex("rdl")], [ex("gobletSquat"), ex("bwSplitSquat")], [ex("floorPress")], [ex("deadBug")]];
+    const shells: string[][] = [
+      ["arrive", "warmup", "activation", "main", "cooldown"], ["warmup", "main", "cooldown", "care"], ["arrive", "warmup", "cooldown"],
+      ["warmup", "activation", "main", "accessory", "cooldown"], ["activation", "main", "cooldown"], ["arrive", "cooldown", "care"],
+    ];
+    const format: Record<string, string> = { warmup: "flow", cooldown: "holds", arrive: "holds", care: "holds" };
+    let checked = 0;
+    const emptied: string[] = [];
+    for (const work of works) {
+      for (const shell of shells) {
+        const doc = docOf(shell.map((p) => part(p, format[p] ?? "straight", p === "main" ? work : [])));
+        for (const focusRefs of [[], ["hips", "thoracic"], ["jaw"]]) {
+          doc.parts.forEach((p, i) => {
+            if (p.purpose === "main") return;
+            // The part on its own, beside the work only: what it has to offer.
+            const alone = docOf(doc.parts.filter((q, j) => j === i || q.purpose === "main"));
+            const offered = suggest(alone, alone.parts.indexOf(p), { focusRefs });
+            if (!offered.length) return;
+            checked += 1;
+            if (!suggest(doc, i, { focusRefs }).length) emptied.push(`${shell.join(">")} ${p.purpose} [${work.map((w) => (w as { libraryId: string }).libraryId)}] ${focusRefs}`);
+          });
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(50);
+    expect(emptied).toEqual([]);
+  });
 });
 
 describe("a cool-down eases what the main part worked and the focus areas", () => {

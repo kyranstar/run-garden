@@ -5,11 +5,11 @@
  * reasons.
  */
 import { describe, expect, it } from "vitest";
-import { workoutDocSchema, type PlannedStage, type WorkoutDoc } from "@rg/domain";
-import type { ExerciseRecord } from "@rg/exercise-library";
+import { WATCH_MAX_STEPS, workoutDocSchema, type PlannedStage, type WorkoutDoc } from "@rg/domain";
+import { isPlyometric, type ExerciseRecord } from "@rg/exercise-library";
 import type { Step } from "@rg/session-engine";
-import { docFromBuild, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
-import { LIBRARY, seededBuilds, stored } from "./seeded-builds.js";
+import { DocTooLargeError, deriveDoc, docFromBuild, placementFor, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
+import { LIBRARY, jumpDayBuilds, seededBuilds, stored } from "./seeded-builds.js";
 
 /** A circuit station: it plays the circuit's work window, whatever hold its move's target suggests. */
 const circuitStation = (s: Step): boolean => s.kind === "timed" && s.format.id === "circuit";
@@ -71,6 +71,72 @@ describe("playerStepsFromDoc(docFromBuild(b)) is the build's own steps — 50 se
     const steps = playerStepsFromDoc(docFromBuild(stored(plan)), LIBRARY);
     const work = steps.filter((s) => s.kind !== "rest");
     for (const s of work) expect(s.slotKey.startsWith(`${s.block}:`)).toBe(true);
+  });
+});
+
+describe("jumps live in one place (final review I1): an engine jumping day → the document → the player", () => {
+  const builds = jumpDayBuilds(12);
+  const byId = new Map(LIBRARY.map((e) => [e.id, e]));
+  const jumpy = (id: string | null) => Boolean(id && byId.get(id) && isPlyometric(byId.get(id)!));
+
+  it("the jumps block is a power part in the document, and plays back as the build's own steps, in the accessory block", () => {
+    let withJumps = 0;
+    for (const { label, plan } of builds) {
+      const doc = docFromBuild(stored(plan));
+      expect(workoutDocSchema.safeParse(doc).success, label).toBe(true);
+      const jumpParts = doc.parts.filter((p) => p.items.some((i) => i.kind === "exercise" && jumpy(i.libraryId)));
+      if (plan.items.some((it) => isPlyometric(it.exercise))) {
+        withJumps += 1;
+        expect(jumpParts.map((p) => [p.purpose, p.format === "straight" || p.format === "superset"]), label).toEqual([["power", true]]);
+        // Only jumps in it, as the engine's block holds.
+        expect(jumpParts[0]!.items.every((i) => i.kind === "exercise" && jumpy(i.libraryId)), label).toBe(true);
+      }
+      const steps = playerStepsFromDoc(doc, LIBRARY);
+      expect(steps.map(played), label).toEqual(plan.steps.map(played));
+      // Never the core block: the worker counts any core block as a core lift.
+      expect(steps.filter((s) => jumpy(s.exerciseId)).every((s) => s.block === "accessory"), label).toBe(true);
+    }
+    expect(withJumps, "jumping days that held jumps").toBeGreaterThanOrEqual(8);
+  });
+
+  it("the Studio puts a jump in the power part too, whatever else it is for", () => {
+    for (const rec of LIBRARY.filter(isPlyometric)) expect(placementFor(rec), rec.id).toBe("power");
+    const jump = LIBRARY.find((e) => e.id === "pogoHop")!;
+    expect(placementFor({ ...jump, purposes: ["activation", "power"] })).toBe("power");
+  });
+});
+
+describe("a document's size is bounded (final review I4): it is refused before a step is built", () => {
+  const big = (parts: number, items: number): WorkoutDoc =>
+    workoutDocSchema.parse({
+      version: 1, title: "Huge", intent: { summary: "S", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
+      parts: Array.from({ length: parts }, () => ({
+        purpose: "main", format: "straight", rounds: 50,
+        items: Array.from({ length: items }, () => ({ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 20, reps: 8, perSide: true, restSec: 900 } })),
+      })),
+    });
+
+  it("1,200 items (20 parts of 60) are refused with a typed error, quickly", () => {
+    const doc = big(20, 60);
+    const started = Date.now();
+    expect(() => playerStepsFromDoc(doc, LIBRARY)).toThrow(DocTooLargeError);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("past the watch's steps or 600 minutes it is refused; at the limit it plays", () => {
+    const steps = (n: number): WorkoutDoc => workoutDocSchema.parse({
+      version: 1, title: "T", intent: { summary: "S", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
+      parts: [{ purpose: "main", format: "circuit", rounds: n / 5, items: Array.from({ length: 5 }, () => ({ kind: "exercise", libraryId: "deadBug", dose: { sets: 1, holdSec: 5 } })) }],
+    });
+    expect(deriveDoc(steps(WATCH_MAX_STEPS), LIBRARY).watchStepCount).toBe(WATCH_MAX_STEPS);
+    expect(playerStepsFromDoc(steps(WATCH_MAX_STEPS), LIBRARY).length).toBeGreaterThan(0);
+    expect(() => playerStepsFromDoc(steps(WATCH_MAX_STEPS + 5), LIBRARY)).toThrow(DocTooLargeError);
+    const long = workoutDocSchema.parse({
+      version: 1, title: "T", intent: { summary: "S", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
+      parts: [{ purpose: "main", format: "holds", items: [{ kind: "exercise", libraryId: "deadBug", dose: { sets: 11, holdSec: 3600 } }] }],
+    });
+    expect(deriveDoc(long, LIBRARY).estimatedMinutes).toBeGreaterThan(600);
+    expect(() => playerStepsFromDoc(long, LIBRARY)).toThrow(DocTooLargeError);
   });
 });
 

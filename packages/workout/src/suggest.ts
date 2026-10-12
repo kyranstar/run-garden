@@ -33,14 +33,18 @@
  *   Easier first in every part: −0.5 per difficulty step above 1 (a jump's gentlest rungs first; no hard eccentric
  *   leading an accessory part).
  * - One part per move: a move another part of the document wants more (a higher fit there; on a tie, the earlier part)
- *   is offered there, not here.
+ *   is offered there, not here — only when that part would really list it (its own top three, one per family, the
+ *   probe passed); and a part is never emptied so: when every move it could offer is listed elsewhere, it offers them
+ *   too.
  * - Never: a move already in the document (items or alternates), or of a family already in the part; set aside
  *   (`ctx.excluded`); needing gear the place lacks (`ctx.equipment`); raising any issue — error or warning — at the
  *   item in that part, for the day (`validateWorkoutDoc` with the day, the active profiles, the set-aside list and the
  *   gear): a suggestion is never a cost. A schema issue anywhere else in the probe is a programming error: it throws.
- *   A jump (plyometric) only in a power part, on a day that is the day itself (not a template or a future day), above
- *   recovery mode, not feeling off — the profiles' gates then decide through the validator — and on the athlete's
- *   frontier (`onFrontier` over `day.done`; with no record of what was done, the bottom rungs only).
+ *   A jump (plyometric) only in a power part where a jump raises no `jump_placement` (`jumpPlaceableIn`: straight sets
+ *   or a superset, no other part holding jumps, no lift before it), on a day that is the day itself (not a template or
+ *   a future day), above recovery mode, not feeling off — the profiles' gates then decide through the validator — and
+ *   on the athlete's frontier (`onFrontier` over `day.done`, the moves done cleanly; with no record of what was done,
+ *   the bottom rungs only).
  * - Rank: fit, + 2 when not in `ctx.recentIds` (novelty), + 1.5 when pinned; ties by a seeded order when `ctx.seed` is
  *   given (variety from day to day), else by name (Intl.Collator("en")), then id. Up to three, one per family, each
  *   with a different reason before any reason repeats (variety).
@@ -64,7 +68,7 @@ import {
 } from "@rg/exercise-library";
 import { Rng } from "@rg/session-engine";
 import { makeLibraryIndex, modeOfEffort } from "./derive.js";
-import { validateWorkoutDoc, type DayContext } from "./validate.js";
+import { jumpPlaceableIn, validateWorkoutDoc, type DayContext } from "./validate.js";
 
 export interface SuggestCtx {
   /** Condition profiles switched on: their rules apply, and their care moves are offered. */
@@ -333,15 +337,19 @@ function scorerFor(purpose: PartPurpose, work: Work, focus: readonly string[], c
   }
 }
 
-/** Whether a jump may be offered at all for this part on this day (the profiles' gates then decide, in the validator). */
-function jumpsOpen(purpose: PartPurpose, doc: WorkoutDoc, day: DayContext | null): boolean {
-  return purpose === "power" && day !== null && day.date <= day.today && !day.feelingOff && modeOfEffort(doc.intent.effort) !== "recovery";
+/** Whether a jump may be offered at all for part `pi` on this day (the profiles' gates then decide, in the validator). */
+function jumpsOpen(doc: WorkoutDoc, pi: number, day: DayContext | null, find: (id: string) => ExerciseRecord | undefined): boolean {
+  return doc.parts[pi]!.purpose === "power" && day !== null && day.date <= day.today && !day.feelingOff &&
+    modeOfEffort(doc.intent.effort) !== "recovery" && jumpPlaceableIn(doc, pi, find);
 }
 
 /**
  * The ids among `recs` that raise no issue at all as items of a part like `part`, on the day: one probe document per
- * chunk, holding only that part, so the rest of a draft (empty parts, a missing title) cannot get in the way. A schema
- * issue outside the probe's items means the part or the effort is malformed: a programming error, thrown.
+ * chunk, holding only that part, so the rest of a draft (empty parts, a missing title) cannot get in the way. Each probe
+ * item plays one set on one side (no rule reads the set count or the sides, and the probe stays within the size
+ * bound); where a jump sits among the probe's moves is the probe's own arrangement, not the athlete's, so placement is
+ * judged by the caller (`jumpPlaceableIn`). A schema issue outside the probe's items, or a probe too large, means the
+ * part or the effort is malformed: a programming error, thrown.
  */
 export function cleanInPart(recs: readonly ExerciseRecord[], part: Pick<WorkoutPart, "purpose" | "format">, effort: WorkoutDoc["intent"]["effort"], library: readonly ExerciseRecord[], ctx: SuggestCtx): Set<string> {
   const clean = new Set<string>();
@@ -349,22 +357,30 @@ export function cleanInPart(recs: readonly ExerciseRecord[], part: Pick<WorkoutP
     const chunk = recs.slice(i, i + PROBE_CHUNK);
     const probe: WorkoutDoc = {
       version: 1, title: "Probe", intent: { summary: "Probe.", goals: [], focus: [], effort },
-      parts: [{ purpose: part.purpose, format: part.format, items: chunk.map((r) => suggestedItem(r, part.purpose)) }],
+      parts: [{ purpose: part.purpose, format: part.format, items: chunk.map((r) => probeItem(r, part.purpose)) }],
       source: { kind: "studio" },
     };
     const issues = validateWorkoutDoc(probe, { library, activeProfiles: ctx.activeProfiles, day: ctx.day, excluded: ctx.excluded, equipment: ctx.equipment });
-    const malformed = issues.find((x) => x.code === "bounds" && !/^parts\[0\]\.items\[\d+\]/.test(x.path));
+    const malformed = issues.find((x) => (x.code === "bounds" && !/^parts\[0\]\.items\[\d+\]/.test(x.path)) || x.code === "too_large");
     if (malformed) throw new Error(`A suggestion probe is malformed at ${malformed.path}: ${malformed.message}`);
     const bad = new Set<number>();
     for (const x of issues) {
       const m = /^parts\[0\]\.items\[(\d+)\]/.exec(x.path);
-      if (m) bad.add(Number(m[1]));
+      if (m && x.code !== "jump_placement") bad.add(Number(m[1]));
     }
     chunk.forEach((r, k) => {
       if (!bad.has(k)) clean.add(r.id);
     });
   }
   return clean;
+}
+
+/** A move as one probe item: its suggested amount, one set, one side. */
+function probeItem(rec: ExerciseRecord, purpose: PartPurpose): WorkoutItem {
+  const item = suggestedItem(rec, purpose);
+  if (item.kind !== "exercise") return item;
+  const { perSide: _sides, ...dose } = item.dose;
+  return { ...item, dose: { ...dose, sets: 1 } };
 }
 
 /** Fit, novelty and pins; ties in a seeded order when `seed` is given, else by name; then id. */
@@ -403,34 +419,57 @@ export function suggestForPart(doc: WorkoutDoc, partIndex: number, library: read
   const familiesOf = doc.parts.map((p) => new Set(p.items.flatMap((i) => (i.kind === "exercise" ? [find(i.libraryId)?.family] : [])).filter((f): f is string => f !== undefined)));
   const done = ctx.day?.done ? new Set([...ctx.day.done].map(canonical)) : new Set<string>();
 
+  const jumpsOpenIn = new Map<number, boolean>();
   /** The move's fit in part `pi` of this document, or null when that part would not take it. */
   const fitIn = (rec: ExerciseRecord, pi: number): { fit: number; reason: string } | null => {
     const p = doc.parts[pi]!;
     const scorer = scorerOf(p.purpose);
     if (!scorer || familiesOf[pi]!.has(rec.family)) return null;
-    if (isPlyometric(rec) && !(jumpsOpen(p.purpose, doc, ctx.day) && onFrontier(rec, (id) => done.has(canonical(id))))) return null;
+    if (isPlyometric(rec)) {
+      if (!jumpsOpenIn.has(pi)) jumpsOpenIn.set(pi, jumpsOpen(doc, pi, ctx.day, find));
+      if (!(jumpsOpenIn.get(pi)! && onFrontier(rec, (id) => done.has(canonical(id))))) return null;
+    }
     const s = scorer(rec);
     return s ? { fit: s.fit - easierBy(rec), reason: s.reason } : null;
   };
-  /** Another part of a different kind wants the move more (or as much, and comes first). */
-  const belongsElsewhere = (rec: ExerciseRecord, fit: number): boolean =>
+
+  const recent = new Set(ctx.recentIds.map(canonical));
+  const pinned = new Set(ctx.pinned.map(canonical));
+  const memo = <T>(compute: (pi: number) => T): ((pi: number) => T) => {
+    const cache = new Map<number, T>();
+    return (pi) => {
+      if (!cache.has(pi)) cache.set(pi, compute(pi));
+      return cache.get(pi)!;
+    };
+  };
+  /** Every move part `pi` would take on its own, with its fit there and why. */
+  const candidatesOf = memo((pi): Scored[] => {
+    const out: Scored[] = [];
+    for (const rec of library) {
+      if (inDoc.has(rec.id) || excluded.has(rec.id) || !hasEquipment(rec, ctx.equipment)) continue;
+      const here = fitIn(rec, pi);
+      if (here) out.push({ rec, fit: here.fit, reason: here.reason.slice(0, REASON_MAX) });
+    }
+    return out;
+  });
+  const cleanOf = memo((pi) => cleanInPart(candidatesOf(pi).map((s) => s.rec), doc.parts[pi]!, doc.intent.effort, library, ctx));
+  /** What part `pi` lists, of the moves `keep` allows: clean for the day, ranked, varied, three at most. */
+  const listOf = (pi: number, keep: (s: Scored) => boolean = () => true): Scored[] =>
+    pickVaried(rankScored(candidatesOf(pi).filter((s) => cleanOf(pi).has(s.rec.id) && keep(s)), recent, pinned, { seed: ctx.seed }), MAX_SUGGESTIONS);
+  /** The moves part `qi` lists on its own (before this rule). */
+  const listedIn = memo((qi) => new Set(listOf(qi).map((s) => s.rec.id)));
+  /** Another part of a different kind wants the move more (or as much, and comes first), and lists it there. */
+  const belongsElsewhere = (s: Scored): boolean =>
     doc.parts.some((p, qi) => {
       if (qi === partIndex || p.purpose === part.purpose) return false;
-      const there = fitIn(rec, qi);
-      return there !== null && (there.fit > fit || (there.fit === fit && qi < partIndex));
+      const there = fitIn(s.rec, qi);
+      return there !== null && (there.fit > s.fit || (there.fit === s.fit && qi < partIndex)) && listedIn(qi).has(s.rec.id);
     });
 
-  const scored: Scored[] = [];
-  for (const rec of library) {
-    if (inDoc.has(rec.id) || excluded.has(rec.id) || !hasEquipment(rec, ctx.equipment)) continue;
-    const here = fitIn(rec, partIndex);
-    if (!here || belongsElsewhere(rec, here.fit)) continue;
-    scored.push({ rec, fit: here.fit, reason: here.reason.slice(0, REASON_MAX) });
-  }
-
-  const clean = cleanInPart(scored.map((s) => s.rec), part, doc.intent.effort, library, ctx);
-  const ranked = rankScored(scored.filter((s) => clean.has(s.rec.id)), new Set(ctx.recentIds.map(canonical)), new Set(ctx.pinned.map(canonical)), { seed: ctx.seed });
-  return pickVaried(ranked, MAX_SUGGESTIONS).map((s) => ({ libraryId: s.rec.id, reason: s.reason }));
+  const mine = listOf(partIndex, (s) => !belongsElsewhere(s));
+  // Never empty a part: when every move it could offer is listed elsewhere, it offers them too.
+  const picked = mine.length > 0 ? mine : listOf(partIndex);
+  return picked.map((s) => ({ libraryId: s.rec.id, reason: s.reason }));
 }
 
 /** Up to `n`, best first, one per family, each with a different reason before any reason repeats. */
