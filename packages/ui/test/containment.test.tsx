@@ -29,6 +29,8 @@ import { WeeklyBrief } from "../src/screens/plan-brief.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { FiltersSheet } from "../src/screens/studio/filters-sheet.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
+import { AddSheet } from "../src/screens/studio/add-sheet.js";
+import { EXERCISES } from "@rg/exercise-library";
 import { staticRouter } from "./studio-fixtures.js";
 
 const noop = () => undefined;
@@ -505,6 +507,81 @@ describe("the Studio is honest about its bounds", () => {
     expect(grid).toContain("gap: var(--space-3)");
     // 320 − 2 × 16px gutters = 288px for three tiles and two 6px gaps.
     expect(3 * min + 2 * 6).toBeLessThanOrEqual(288);
+  });
+
+  // ── Task 5: the move in full, the Add sheet, the line ──
+
+  it("a move open on a phone is a sheet with ONE scroll owner; the page's own scroller (the lg filter column) is unchanged", () => {
+    const html = renderAt("/studio/move/gobletSquat?q=squat", createElement(StudioScreen));
+    expect(html).toMatch(/role="dialog"/);
+    expect((html.match(/scroller/g) ?? []).length).toBe(2);
+    expect(html).toContain('class="stu-facets scroller"');
+    expect(html).toContain('class="sheet-body scroller"');
+    expect(html.indexOf('class="sheet-body scroller"')).toBeLessThan(html.indexOf('class="sheet-foot"'));
+  });
+
+  it("the pane (md) keeps to the screen: sticky, its body the one scroller, the name and Add pinned around it", () => {
+    const pane = ruleBody(".stu-detail");
+    expect(pane).toContain("position: sticky");
+    expect(pane).toContain("min-width: 0");
+    // The room from where it starts (never above the sticky gutter) to the bottom gutter, above the tab bar — which
+    // is still drawn at md — so Add is in view at once; from lg there is no tab bar to clear.
+    expect(pane).toContain(
+      "max-height: calc(100dvh - max(var(--pane-top, 0px), var(--space-6)) - var(--nav-height) - env(safe-area-inset-bottom, 0px) - var(--space-6))",
+    );
+    expect(ruleBody("  .stu-detail")).toContain("max-height: calc(100dvh - max(var(--pane-top, 0px), var(--space-6)) - var(--space-6))");
+    expect(ruleBody(".stu-detail-head")).toContain("flex: none");
+    expect(ruleBody(".stu-detail-foot")).toContain("flex: none");
+    expect(ruleBody(".stu-detail-body")).toContain("flex: 1 1 auto");
+    // A long name wraps rather than pushing the pane wider.
+    expect(ruleBody(".stu-detail-head h2")).toContain("overflow-wrap: anywhere");
+    expect(ruleBody(".stu--detail .stu-main")).toContain("minmax(0, 3fr) minmax(0, 2fr)");
+  });
+
+  it("the whole row opens the move: the link's box is stretched over the row, under the row's own buttons", () => {
+    expect(ruleBody(".stu-move")).toContain("position: relative");
+    const stretch = ruleBody(".stu-move-open::before");
+    expect(stretch).toContain("position: absolute");
+    expect(stretch).toContain("inset: 0");
+    // The ＋ and the terms are positioned too, and come later in the row: they paint above the stretched box.
+    expect(ruleBody(".stu-move-add")).toContain("position: relative");
+    expect(ruleBody(".term-wrap")).toContain("position: relative");
+    // The focus ring is the row's, drawn on the stretched box.
+    expect(ruleBody(".stu-move-open:focus-visible::before")).toContain("outline: 2px solid var(--focus)");
+  });
+
+  it("the Add sheet: one scroll owner, its actions pinned; nothing in a choice can push it wider", () => {
+    const html = renderAt(
+      "/studio",
+      createElement(AddSheet, { rec: EXERCISES.find((r) => r.id === "gobletSquat")!, ctx: emptyStudioCtx, today: "2026-10-11", onClose: noop, onAdded: noop }),
+    );
+    expect((html.match(/scroller/g) ?? []).length).toBe(1);
+    expect(html.indexOf('class="sheet-body scroller"')).toBeLessThan(html.indexOf('class="sheet-foot"'));
+    expect(html.slice(html.indexOf('class="sheet-foot"'))).toMatch(/Pin — keep it in my rotation[\s\S]*>Add<\/button>/);
+    // A fieldset's default min-width is its content's: it must be allowed to shrink.
+    expect(ruleBody(".stu-add-targets")).toContain("min-width: 0");
+    expect(ruleBody(".stu-add-opt")).toContain("flex-wrap: wrap");
+    const select = ruleBody(".stu-add-select");
+    expect(select).toContain("min-width: 0");
+    expect(select).toContain("max-width: 100%");
+    // 16px, so a phone never zooms into it.
+    expect(select).toContain("font-size: var(--text-md)");
+    expect(ruleBody(".stu-add-what")).toContain("overflow-wrap: anywhere");
+  });
+
+  it("the line after Add sticks above the tab bar, under the popovers and the tab bar itself, and wraps", () => {
+    const line = ruleBody(".stu > .stu-added--on");
+    expect(line).toContain("position: sticky");
+    expect(line).toContain("bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4))");
+    const z = (sel: string) => Number(/z-index:\s*(\d+)/.exec(ruleBody(sel))![1]);
+    expect(z(".stu > .stu-added--on")).toBeLessThan(z(".bottom-nav"));
+    expect(z(".stu > .stu-added--on")).toBeLessThan(z(".term-pop"));
+    // One row: the words take what is left and wrap in their own column; Open, Undo and ✕ keep theirs.
+    expect(ruleBody(".stu-added--on")).toContain("grid-template-columns: minmax(0, 1fr) auto auto");
+    expect(ruleBody(".stu-added--on .stu-added-text")).toContain("min-width: 0");
+    expect(ruleBody(".stu-added--on .stu-added-text")).toContain("overflow-wrap: anywhere");
+    // Empty, it is no box at all: the box is only `--on`.
+    expect(ruleBody(".stu-added-text")).not.toContain("padding");
   });
 
   it("a scroller at rest shows no shadow: each cover is solid past the shadow it hides", () => {

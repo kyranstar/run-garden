@@ -17,7 +17,7 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
-import { addDays, type SessionLead } from "@rg/domain";
+import { addDays, appAuthoredRow, type SessionLead } from "@rg/domain";
 import { CategoryDot, formatDayShort, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
 import { IconWatch } from "../icons.js";
@@ -40,9 +40,13 @@ export interface TodayCardLayout {
   lines: TodaySession[];
 }
 
-/** The app's own sessions — program slots and on-demand sessions — as opposed to a plan's runs. */
+/**
+ * The app's own sessions — program slots, on-demand sessions, and the Studio's document workouts (its own and a
+ * template's) — as opposed to a plan's runs: the server's one rule for an app-authored row (`appAuthoredRow`), so a
+ * Studio workout opens the session sheet on Plan and Today like any other app session.
+ */
 export function isAppSession(w: WorkoutDto): boolean {
-  return w.origin === "program" || w.origin === "on_demand";
+  return appAuthoredRow({ origin: w.origin ?? null });
 }
 
 export const MODE_LABEL: Record<"recovery" | "consistent" | "build", string> = {

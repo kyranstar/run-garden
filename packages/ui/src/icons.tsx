@@ -186,6 +186,13 @@ export const IconWatch = ({ size }: IconProps) => (
   </svg>
 );
 
+/** A pushpin — pin a move, keep it in the rotation (Stage 2). */
+export const IconPin = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M9 3.5h6M10 3.5v5.2L6.8 12.5h10.4L14 8.7V3.5M12 12.5V20.5" />
+  </svg>
+);
+
 /** ⓘ — how to do a move. */
 export const IconInfo = ({ size }: IconProps) => (
   <svg {...base(size)}>

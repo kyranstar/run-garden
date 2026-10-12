@@ -907,6 +907,17 @@ describe("WorkoutDetail branches on origin", () => {
     expect(calls.some((c) => c.path === `/api/plan/workouts/${SLOT}`)).toBe(false);
   });
 
+  it("a Studio workout, and a template's, open the session sheet too (the server's app-authored rule; Stage 2)", async () => {
+    for (const origin of ["studio", "template"]) {
+      if (root) act(() => root!.unmount());
+      host?.remove();
+      const { calls } = mount(session(), { detail: true, w: slot({ origin, programId: "studio-u1" }) });
+      await until(() => body().includes("Supported row"), `the session sheet (${origin})`);
+      expect(calls.some((c) => c.path === `/api/sessions/${SLOT}`), origin).toBe(true);
+      expect(calls.some((c) => c.path === `/api/plan/workouts/${SLOT}`), origin).toBe(false);
+    }
+  });
+
   it("a run keeps the workout sheet", async () => {
     const run = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null });
     const { calls } = mount(session(), { detail: true, w: run });

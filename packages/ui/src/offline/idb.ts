@@ -6,18 +6,25 @@
  *   live     workoutId → the session in progress (recorder state, step, timer anchor, paused)
  *   outbox   `${performedId}:${payloadHash}` → a saved session waiting for the server
  *   meta     small bookkeeping (the outbox's drain lock)
+ *   drafts   the Studio's workout being built, one at a time (`studio-drafts.ts`; version 2)
  *
  * Keys are given with each write (out-of-line). The schema is versioned: `UPGRADES[n]` takes a database from version n
  * to n + 1, so a later version adds a store without touching what is stored.
  */
 
 export const OFFLINE_DB_NAME = "rg-offline";
-export const OFFLINE_STORES = ["builds", "live", "outbox", "meta"] as const;
+export const OFFLINE_STORES = ["builds", "live", "outbox", "meta", "drafts"] as const;
 export type OfflineStore = (typeof OFFLINE_STORES)[number];
 
 const UPGRADES: ReadonlyArray<(db: IDBDatabase) => void> = [
+  // Version 1 (Phase 2b): the player's stores. Named here, not read from OFFLINE_STORES: a later store is made by its
+  // own step, and making it twice would fail the upgrade.
   (db) => {
-    for (const store of OFFLINE_STORES) db.createObjectStore(store);
+    for (const store of ["builds", "live", "outbox", "meta"]) db.createObjectStore(store);
+  },
+  // Version 2 (Stage 2): the Studio's draft.
+  (db) => {
+    db.createObjectStore("drafts");
   },
 ];
 export const OFFLINE_DB_VERSION = UPGRADES.length;

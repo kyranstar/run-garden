@@ -1,0 +1,100 @@
+/**
+ * ADD, PURE (Stage 2 spec §7). What the one small Add sheet decides that needs no React:
+ *
+ *   addMove           a move into a document: it lands in the part its purpose belongs to (`placementFor` — warm-up →
+ *                     warm-up, strength → main, balance → accessory, mobility and stretches → cool-down, condition care →
+ *                     care, …), the part made when the document has none; through the editor's `tryEdit`, so a full
+ *                     part or a document that would break says why and nothing changes.
+ *   editableWorkouts  the planned workouts the Studio may add to: document workouts (the Studio's own, a template's)
+ *                     still to be done — never a programme's session, which the engine builds (the sheet offers Pin
+ *                     for those), and never one done, skipped, missed or under way.
+ *   rejectionText     why an Add did nothing, in plain words.
+ *   addTargetHref     where Open goes: the builder, on the thing the move went into (spec §2's routes).
+ */
+import { docOriginRow, type WorkoutDoc } from "@rg/domain";
+import { label, type ExerciseRecord } from "@rg/exercise-library";
+import { itemFor, newDoc, placementFor, startEditing, tryEdit, type DraftDoc, type Rejection } from "@rg/workout";
+import type { WorkoutDto } from "@rg/api-client";
+
+export type AddTargetKind = "draft" | "workout" | "new" | "template";
+
+/** Where a move can go: the workout being built, a planned workout, a new workout, or a template. */
+export type AddTarget =
+  | { kind: "draft" }
+  | { kind: "workout"; id: string }
+  | { kind: "new" }
+  | { kind: "template"; id: string };
+
+type PartPurpose = WorkoutDoc["parts"][number]["purpose"];
+
+/**
+ * The move into the document, in the part its purpose belongs to — made if the document has none. A refusal
+ * (`full`, `invalid`, …) changes nothing: the caller shows `rejectionText` and keeps the sheet open.
+ */
+export function addMove(
+  doc: WorkoutDoc,
+  rec: ExerciseRecord,
+  library: readonly ExerciseRecord[],
+): { doc: DraftDoc; part: PartPurpose } | { rejected: Rejection } {
+  const r = tryEdit(startEditing(doc), { type: "addItem", item: itemFor(rec) }, library);
+  if (r.rejected) return { rejected: r.rejected };
+  return { doc: r.state.doc, part: placementFor(rec) };
+}
+
+/** A new workout to put the move into: warm-up, main and cool-down, as the builder starts one (spec §8). */
+export const freshDoc = (): DraftDoc => newDoc("structured", { title: "New workout", source: { kind: "studio" } });
+
+const FROZEN: readonly string[] = ["completed", "skipped", "missed"];
+const UNDER_WAY: readonly string[] = ["started", "done"];
+
+/**
+ * A planned workout the Studio may change: a document workout (`DOC_ORIGINS` — the Studio's, a template's), today or
+ * later, not done, skipped or missed, and not under way. The server's own rule for `PUT /api/workouts/:id/doc`; a
+ * programme's session is never one.
+ */
+export function editableWorkout(w: WorkoutDto, today: string): boolean {
+  return (
+    docOriginRow({ origin: w.origin ?? null }) &&
+    !w.archived &&
+    w.effectiveDate >= today &&
+    !FROZEN.includes(w.completionState) &&
+    !UNDER_WAY.includes(w.contentState ?? "")
+  );
+}
+
+/** The planned workouts the sheet offers, soonest first. */
+export function editableWorkouts(workouts: readonly WorkoutDto[], today: string): WorkoutDto[] {
+  return workouts
+    .filter((w) => editableWorkout(w, today))
+    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate) || a.effectiveTime.localeCompare(b.effectiveTime));
+}
+
+/** Why an Add did nothing, in plain words. */
+export function rejectionText(r: Rejection): string {
+  switch (r) {
+    case "full":
+      return "That part is full.";
+    case "invalid":
+      return "Fix this item first.";
+    case "missing":
+      return "That part is gone.";
+    case "unchanged":
+      return "Nothing to add.";
+  }
+}
+
+/** "Added to Main in “Hips & posture”." */
+export const addedText = (part: PartPurpose, title: string): string => `Added to ${label(part)} in “${title}”.`;
+
+/** Where Open goes: the builder on what the move went into (spec §2). */
+export function addTargetHref(t: AddTarget): string {
+  switch (t.kind) {
+    case "draft":
+    case "new":
+      return "/studio/build/new";
+    case "workout":
+      return `/studio/build/workout/${encodeURIComponent(t.id)}`;
+    case "template":
+      return `/studio/build/template/${encodeURIComponent(t.id)}`;
+  }
+}

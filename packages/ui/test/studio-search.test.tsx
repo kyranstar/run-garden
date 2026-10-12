@@ -250,7 +250,7 @@ describe("results, rendered", () => {
   it("a row names the gear only when the place's gear does not cover it", () => {
     const html = shown("/studio?q=squat&gear=any", { places: placesDto(["mat", "kettlebell"]) });
     const rowOf = (name: string) => {
-      const at = html.indexOf(`>${name}</h3>`);
+      const at = html.indexOf(`>${name}</a></h3>`);
       expect(at, name).toBeGreaterThan(-1);
       return text(html.slice(at, html.indexOf("</li>", at)));
     };
@@ -261,7 +261,7 @@ describe("results, rendered", () => {
   it("while the list is filtered to what fits today, a row says only what is not plain: care", () => {
     const calm = { library: libraryDto({ tmj: true }), today: todayDto({ value: 1 }) };
     const rowOf = (html: string, name: string) => {
-      const at = html.indexOf(`>${name}</h3>`);
+      const at = html.indexOf(`>${name}</a></h3>`);
       expect(at, name).toBeGreaterThan(-1);
       return text(html.slice(at, html.indexOf("</li>", at)));
     };

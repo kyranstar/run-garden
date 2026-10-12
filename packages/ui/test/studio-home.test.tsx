@@ -23,7 +23,8 @@ function section(html: string, title: string): string {
 describe("the Studio home", () => {
   it("is a page titled Studio with one labelled search field", () => {
     const html = home();
-    expect(html).toContain("<h1>Studio</h1>");
+    // The title takes focus when nothing nearer can (a closed detail over the home), so it is focusable, not tabbable.
+    expect(html).toContain('<h1 tabindex="-1">Studio</h1>');
     expect(html).toMatch(/<div class="search-field" role="search">/);
     expect(html).toMatch(/<input[^>]*type="search"/);
     expect(html).toContain('placeholder="Search moves, muscles, tags"');

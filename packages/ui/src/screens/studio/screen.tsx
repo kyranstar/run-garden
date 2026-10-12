@@ -1,9 +1,11 @@
 /**
- * THE STUDIO (Stage 2 spec §2–§5): one place to see every move, understand it quickly, and turn moves into workouts.
+ * THE STUDIO (Stage 2 spec §2–§7): one place to see every move, understand it quickly, and turn moves into workouts.
  *
  *   Studio
  *   [⌕ Search moves, muscles, tags        ] [Filters]
  *   the home (quick starts · browse · themes · tags)  — or, once there is a query or a filter, the moves
+ *   a move's detail (`/studio/move/:id`): a sheet over the list on a phone, the right-hand pane from md
+ *   Add: one small sheet; then a quiet line — where the move went, Open, Undo
  *
  * The URL is the state (`model.ts`), so Back leaves the results and a list can be returned to:
  *  - the first step from the home into a list is a new history entry (marked `fromHome`); every refinement after it
@@ -12,6 +14,9 @@
  *  - the field's text lives here and reaches the URL after a pause (`URL_WRITE_MS`): the list follows every keystroke
  *    at once, the address catches up, and a fast typist never meets WebKit's limit on history writes (~100 in 30 s).
  *    When the URL moves under the field (Back, a link), the field follows it.
+ *  - a move opened from the list is a new entry (`/studio/move/:id` with the list's own search, so the list stays
+ *    behind it); another row while one is open swaps it in place; Easier and Harder go one deeper. Closing goes back
+ *    as many entries as it went in — or, when the list changed under an open pane, replaces the entry with the list.
  *
  * Instant and offline by construction: the library is in the bundle and `studioResults` is a pure function over it.
  * The three reads (`GET /api/library` for the athlete's pins, ratings and history; today's readings; the default
@@ -20,14 +25,16 @@
  * later, and the home stays until the list is ready rather than flashing a wrong one.
  *
  * Focus never falls to <body> when the control that had it goes away: a removed chip hands it to the next chip (else
- * the list's heading), Clear to the field, a loosening or a browse tap to the list's heading.
+ * the list's heading), Clear to the field, a loosening or a browse tap to the list's heading; a closed detail to the
+ * row that opened it; a dismissed confirmation to the Add that made it.
  *
- * Widths: one column below lg, the filters in a sheet. From lg (wide treatment) the filters are a column beside the
- * list — the same `FilterControls` — placed by the grid; the list comes first in the DOM, so reading order and Tab
- * reach the moves before the facets. Task 5 adds the move's detail as the right-hand pane.
+ * Widths: one column below md, the detail a sheet, the filters a sheet. From md the detail is a pane beside the list
+ * or the home (`.stu--detail`); from lg (wide treatment) the filters are a column beside the list — the same
+ * `FilterControls` — placed by the grid. The list comes first in the DOM, so reading order and Tab reach the moves
+ * before the facets and the pane.
  */
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Navigate, useLocation, useMatch, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
@@ -35,6 +42,7 @@ import type { QuickStartKind } from "@rg/workout";
 import { localTodayGuess } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconFilters } from "../../icons.js";
+import { AddedLine, AddSheet, writeErrorText, type Added } from "./add-sheet.js";
 import { FilterControls, FiltersSheet } from "./filters-sheet.js";
 import { StudioHome } from "./home.js";
 import {
@@ -47,10 +55,39 @@ import {
   type StudioCtx,
   type StudioFilters,
 } from "./model.js";
+import { MoveDetail, type MoveLink } from "./move-detail.js";
 import { StudioResults } from "./search.js";
 
 /** How long the field waits before writing the query to the URL. */
 export const URL_WRITE_MS = 250;
+
+/** md: from here the detail is a pane beside the list rather than a sheet over it. */
+export const DETAIL_PANE_MIN_PX = 900;
+
+/** Whether the viewport is at least `px` wide, following it as it changes; false where there is no window to ask. */
+export function useMinWidth(px: number): boolean {
+  const query = `(min-width: ${px}px)`;
+  const read = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(query).matches;
+  const [on, setOn] = useState(read);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(query);
+    const change = () => setOn(mq.matches);
+    change();
+    mq.addEventListener?.("change", change);
+    return () => mq.removeEventListener?.("change", change);
+  }, [query]);
+  return on;
+}
+
+/** A move's address, carrying the list's own search so the list is still there behind it. */
+export const moveHref = (id: string, search: string): string => `/studio/move/${encodeURIComponent(id)}${search ? `?${search}` : ""}`;
+
+const byId = new Map<string, ExerciseRecord>();
+for (const r of EXERCISES) {
+  byId.set(r.id, r);
+  for (const old of r.legacyIds) if (!byId.has(old)) byId.set(old, r);
+}
 
 /**
  * The athlete's side of the Studio: profiles and today's readings, their say on each move, the place's gear.
@@ -66,28 +103,45 @@ export function useStudioCtx(): StudioCtx {
 }
 
 export interface StudioScreenProps {
-  /** A row's ＋ (Task 5: the Add sheet). Absent, rows draw no Add button. */
-  onAdd?: (rec: ExerciseRecord) => void;
-  /** A row's name (Task 5: the detail). Absent, the name is plain text. */
-  onOpen?: (rec: ExerciseRecord) => void;
   /** A quick start card (Task 7: the builder, pre-filled). Absent, the cards are not buttons. */
   onQuickStart?: (kind: QuickStartKind) => void;
 }
 
-/** Where focus goes once the next render lands: the field, the list's heading, or the chip now at an index. */
-type FocusTo = { to: "field" | "heading" | number; reveal?: boolean };
+/** What a history entry under the Studio carries: whether it came from the home, and how deep into moves it is. */
+interface StudioHistory {
+  fromHome?: boolean;
+  /** How many move entries were pushed since the list (closing goes back that many). */
+  moveDepth?: number;
+  /** The list's search when the first move was opened from it. */
+  list?: string;
+}
 
-export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps = {}) {
+/** Where focus goes once the next render lands. */
+type FocusTo =
+  | { to: "field" | "heading" | number; reveal?: boolean }
+  /** The row of a move whose detail closed. */
+  | { to: "move"; id: string }
+  /** The Add that made a dismissed confirmation. */
+  | { to: "add"; id: string; from: "detail" | "list" };
+
+export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
   const search = params.toString();
   const url = useMemo(() => readStudio(new URLSearchParams(search)), [search]);
   const ctx = useStudioCtx();
+  const wide = useMinWidth(DETAIL_PANE_MIN_PX);
   const [sheetOpen, setSheetOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const title = useRef<HTMLHeadingElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusNext = useRef<FocusTo | null>(null);
+
+  // ── The move open, from the path ──
+  const moveMatch = useMatch("/studio/move/:id");
+  const openId = moveMatch?.params.id ?? null;
+  const openRec = openId ? (byId.get(openId) ?? null) : null;
 
   // ── The field, and the URL it writes to ──
   const [text, setText] = useState(url.q);
@@ -106,8 +160,9 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
     setText(url.q);
   }, [url.q]);
 
-  const here = useRef({ search, state: location.state as { fromHome?: boolean } | null });
-  here.current = { search, state: location.state as { fromHome?: boolean } | null };
+  const state = location.state as StudioHistory | null;
+  const here = useRef({ search, state, openId });
+  here.current = { search, state, openId };
 
   /** Write a state to the URL: a new entry when it opens a list from the home, back to that home when it closes. */
   const write = useCallback(
@@ -117,7 +172,7 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
       const next = studioSearch(q, filters, all);
       const { search: now, state } = here.current;
       if (now === "") {
-        if (next !== "") setParams(new URLSearchParams(next), { state: { fromHome: true } });
+        if (next !== "") setParams(new URLSearchParams(next), { state: { ...state, fromHome: true } });
         return;
       }
       if (next === "" && state?.fromHome) {
@@ -139,6 +194,56 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
     }, URL_WRITE_MS);
   };
 
+  // ── A move's detail: opened, swapped, closed ──
+  const openMove = useCallback(
+    (rec: ExerciseRecord) => {
+      const { search, state, openId } = here.current;
+      // One open beside the list: swap it in place. Otherwise a new entry, so Back closes it.
+      if (openId) navigate(moveHref(rec.id, search), { replace: true, state });
+      else navigate(moveHref(rec.id, search), { state: { moveDepth: 1, list: search } satisfies StudioHistory });
+    },
+    [navigate],
+  );
+  const moveLink = useCallback(
+    (id: string): MoveLink => ({
+      to: moveHref(id, search),
+      state: { moveDepth: (state?.moveDepth ?? 0) + 1, list: state?.list ?? search } satisfies StudioHistory,
+    }),
+    [search, state],
+  );
+  const closeMove = useCallback(() => {
+    const { search, state, openId } = here.current;
+    if (openId) focusNext.current = { to: "move", id: openId };
+    if (state?.moveDepth && state.list === search) navigate(-state.moveDepth);
+    else navigate({ pathname: "/studio", search: search ? `?${search}` : "" }, { replace: true });
+  }, [navigate]);
+  const openHref = useCallback((id: string) => moveHref(id, search), [search]);
+
+  // ── Add: the one small sheet, then the line ──
+  const [adding, setAdding] = useState<{ rec: ExerciseRecord; from: Added["from"]; n: number } | null>(null);
+  const [added, setAdded] = useState<Added | null>(null);
+  const addCount = useRef(0);
+  const addFromList = useCallback((rec: ExerciseRecord) => setAdding({ rec, from: "list", n: ++addCount.current }), []);
+  const addFromDetail = useCallback((rec: ExerciseRecord) => setAdding({ rec, from: "detail", n: ++addCount.current }), []);
+  const undo = async () => {
+    const a = added;
+    if (!a || a.phase !== "done") return;
+    setAdded({ ...a, phase: "undoing", error: undefined });
+    const settle = (next: Partial<Added>) => setAdded((cur) => (cur?.n === a.n ? { ...cur, ...next } : cur));
+    try {
+      await a.undo();
+      settle({ phase: "undone", error: undefined });
+    } catch (e) {
+      settle({ phase: "done", error: writeErrorText(e, true) });
+    }
+  };
+  const dismiss = () => {
+    if (added) focusNext.current = { to: "add", id: added.rec.id, from: added.from };
+    setAdded(null);
+  };
+  // The line shows where the Add was made: in the detail's foot while that move is open, else on the page.
+  const inDetail = !!added && added.from === "detail" && openRec?.id === added.rec.id;
+
   // ── What shows: the whole view deferred, so the field never waits on the list ──
   const listing = text.trim() !== "" || url.all || Object.keys(url.filters).length > 0;
   const view = useMemo(() => ({ q: text, filters: url.filters, listing }), [text, url.filters, listing]);
@@ -159,15 +264,29 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
     const r = root.current;
     if (!want || !r) return;
     const field = r.querySelector<HTMLInputElement>(".search-field input");
-    const chip = typeof want.to === "number" ? r.querySelectorAll<HTMLElement>(".stu-chip-x")[want.to] : null;
-    // Decided from the NEW state (`listing`), not the deferred view: a list that is closing still draws its old
-    // chips and heading for a frame, and focusing one of them would leave focus on a node about to unmount.
-    const target = want.to === "field" || !listing ? field : (chip ?? heading.current);
-    // The list is on its way (the view is deferred): wait for the render that brings it.
-    if (!target && listing) return;
+    const rowOf = (id: string) => [...r.querySelectorAll<HTMLElement>(".stu-move")].find((el) => el.dataset.id === id) ?? null;
+    let target: HTMLElement | null;
+    if (want.to === "move") {
+      // Wait for the close to land (Back is asynchronous), then the row that opened it — else the list, else the page.
+      if (openId === want.id) return;
+      target = rowOf(want.id)?.querySelector<HTMLElement>(".stu-move-open") ?? (listing ? heading.current : title.current);
+      if (!target && listing) return;
+    } else if (want.to === "add") {
+      target =
+        (want.from === "detail" ? r.querySelector<HTMLElement>(".stu-detail-add") : rowOf(want.id)?.querySelector<HTMLElement>(".stu-move-add")) ??
+        (listing ? heading.current : title.current);
+    } else {
+      const chip = typeof want.to === "number" ? r.querySelectorAll<HTMLElement>(".stu-chip-x")[want.to] : null;
+      // Decided from the NEW state (`listing`), not the deferred view: a list that is closing still draws its old
+      // chips and heading for a frame, and focusing one of them would leave focus on a node about to unmount.
+      target = want.to === "field" || !listing ? field : (chip ?? heading.current);
+      // The list is on its way (the view is deferred): wait for the render that brings it.
+      if (!target && listing) return;
+      target ??= field;
+    }
     focusNext.current = null;
-    (target ?? field)?.focus({ preventScroll: true });
-    if (want.reveal && (r.getBoundingClientRect().top ?? 0) < 0) r.scrollIntoView?.({ block: "start" });
+    target?.focus({ preventScroll: true });
+    if ("reveal" in want && want.reveal && (r.getBoundingClientRect().top ?? 0) < 0) r.scrollIntoView?.({ block: "start" });
   });
 
   const browse = (f: StudioFilters | "all") => {
@@ -178,9 +297,26 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
 
   const set = setFilterCount(url.filters, ctx);
   const today = ctx.today ?? localTodayGuess();
+  // A move the library does not have (an old link): the list, without it.
+  if (openId && !openRec) return <Navigate to={{ pathname: "/studio", search: search ? `?${search}` : "" }} replace />;
+
+  const detail = openRec ? (
+    <MoveDetail
+      rec={openRec}
+      ctx={ctx}
+      today={today}
+      wide={wide}
+      onClose={closeMove}
+      onAdd={addFromDetail}
+      moveLink={moveLink}
+      added={<AddedLine added={inDetail ? added : null} onUndo={() => void undo()} onDismiss={dismiss} />}
+    />
+  ) : null;
   return (
-    <div ref={root} className={`stu${shown.listing ? " stu--results" : ""}`}>
-      <h1>Studio</h1>
+    <div ref={root} className={`stu${shown.listing ? " stu--results" : ""}${openRec && wide ? " stu--detail" : ""}`}>
+      <h1 ref={title} tabIndex={-1}>
+        Studio
+      </h1>
       <div className="stu-bar">
         <SearchField value={text} onChange={type} label="Search moves" placeholder="Search moves, muscles, tags" />
         <button type="button" className="btn stu-filters-btn" aria-haspopup="dialog" onClick={() => setSheetOpen(true)}>
@@ -196,40 +332,46 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
         </button>
       </div>
 
-      {shown.listing ? (
-        <div className="stu-results">
-          <StudioResults
-            q={text}
-            filters={url.filters}
-            listFilters={shown.filters}
-            ctx={ctx}
-            records={EXERCISES}
-            results={results}
-            today={today}
-            canClear={clearable(url.filters, url.all)}
-            headingRef={heading}
-            onRemove={(f, i) => {
-              focusNext.current = { to: i };
-              setFilters(f);
-            }}
-            onLoosen={(f) => {
-              focusNext.current = { to: "heading" };
-              setFilters(f);
-            }}
-            onClear={() => {
-              focusNext.current = { to: "field" };
-              write(text, {}, false);
-            }}
-            onAdd={onAdd}
-            onOpen={onOpen}
-          />
-          <aside className="stu-facets scroller" aria-label="Filters">
-            <FilterControls filters={url.filters} ctx={ctx} level={2} onChange={setFilters} />
-          </aside>
-        </div>
-      ) : (
-        <StudioHome ctx={ctx} onBrowse={browse} onQuickStart={onQuickStart} />
-      )}
+      <div className="stu-main">
+        {shown.listing ? (
+          <div className="stu-results">
+            <StudioResults
+              q={text}
+              filters={url.filters}
+              listFilters={shown.filters}
+              ctx={ctx}
+              records={EXERCISES}
+              results={results}
+              today={today}
+              canClear={clearable(url.filters, url.all)}
+              headingRef={heading}
+              onRemove={(f, i) => {
+                focusNext.current = { to: i };
+                setFilters(f);
+              }}
+              onLoosen={(f) => {
+                focusNext.current = { to: "heading" };
+                setFilters(f);
+              }}
+              onClear={() => {
+                focusNext.current = { to: "field" };
+                write(text, {}, false);
+              }}
+              onAdd={addFromList}
+              onOpen={openMove}
+              openHref={openHref}
+              openId={openRec?.id ?? null}
+            />
+            <aside className="stu-facets scroller" aria-label="Filters">
+              <FilterControls filters={url.filters} ctx={ctx} level={2} onChange={setFilters} />
+            </aside>
+          </div>
+        ) : (
+          <StudioHome ctx={ctx} onBrowse={browse} onQuickStart={onQuickStart} />
+        )}
+        {wide ? detail : null}
+      </div>
+      {wide ? null : detail}
 
       <FiltersSheet
         open={sheetOpen}
@@ -245,6 +387,20 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
           if (!listing) write(text, url.filters, true);
         }}
       />
+      {adding ? (
+        <AddSheet
+          key={adding.n}
+          rec={adding.rec}
+          ctx={ctx}
+          today={today}
+          onClose={() => setAdding(null)}
+          onAdded={(done) => {
+            setAdded({ ...done, n: adding.n, rec: adding.rec, from: adding.from, phase: "done" });
+            setAdding(null);
+          }}
+        />
+      ) : null}
+      <AddedLine added={inDetail ? null : added} onUndo={() => void undo()} onDismiss={dismiss} />
     </div>
   );
 }

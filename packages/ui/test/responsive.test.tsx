@@ -792,6 +792,25 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
     for (const cls of STUDIO_CLASSES) expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
   });
 
+  it("the move's detail, the Add sheet and the confirmation line are styled in the base layer too (Task 5)", () => {
+    for (const cls of [".stu-main", ".stu-detail", ".stu-detail-body", ".stu-detail-foot", ".stu-detail-content", ".stu-detail-sec",
+      ".stu-ladder", ".stu-add-targets", ".stu-add-opt", ".stu-add-choice", ".stu-add-select", ".stu-added--on", ".stu-added-actions"]) {
+      expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
+    }
+    // With a move open the main area is two columns — a state, not a width: the pane only exists from md.
+    expect(baseLayer).toMatch(/\.stu--detail \.stu-main \{[^}]*grid-template-columns: minmax\(0, 3fr\) minmax\(0, 2fr\)/);
+  });
+
+  it("the detail is a sheet below md and the pane from md: one component, the width deciding which home (Task 5)", () => {
+    const screen = read("../src/screens/studio/screen.tsx");
+    expect(screen).toMatch(/export const DETAIL_PANE_MIN_PX = 900;/);
+    expect(screen).toContain("const wide = useMinWidth(DETAIL_PANE_MIN_PX);");
+    // The same `detail` element, drawn beside the list when wide and after it (a sheet) when not.
+    expect(screen).toMatch(/\{wide \? detail : null\}\s*<\/div>\s*\{wide \? null : detail\}/);
+    const detail = read("../src/screens/studio/move-detail.tsx");
+    expect(detail).toMatch(/return wide \? \(\s*<DetailPane[\s\S]*\) : \(\s*<Sheet open/);
+  });
+
   it("width only re-lays it: a roomier row from sm; from lg the filter column beside the list, the button it replaces, and the themes wrapping", () => {
     const touched: string[] = [];
     for (const block of widthBlocks) {
@@ -808,6 +827,10 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
         "(min-width: 1024px) .stu-results",
         "(min-width: 1024px) .stu-results-main",
         "(min-width: 1024px) .stu-themes",
+        // Task 5: three columns with a move open, and no tab bar to clear for the pane and the line.
+        "(min-width: 1024px) .stu--detail .stu-results",
+        "(min-width: 1024px) .stu-detail",
+        "(min-width: 1024px) .stu > .stu-added--on",
       ].sort(),
     );
   });
@@ -818,7 +841,7 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
         if (!studioSel.test(m[1]!.trim())) continue;
         const props = [...m[2]!.matchAll(/([-a-z]+)\s*:/g)].map((p) => p[1]!);
         const allowed = ["display", "grid-template-columns", "grid-column", "grid-row", "align-items", "gap", "position", "top",
-          "max-height", "padding", "padding-right", "--scroll-surface", "flex-wrap", "overflow-x"];
+          "max-height", "padding", "padding-right", "--scroll-surface", "flex-wrap", "overflow-x", "bottom"];
         for (const p of props) expect(allowed, `${m[1]!.trim()} { ${p} }`).toContain(p);
       }
     }

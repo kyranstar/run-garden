@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
 import {
+  isAppSession,
   programName,
   todayCardLayout,
   TodayProgramLead,
@@ -124,6 +125,19 @@ afterEach(() => {
 });
 
 // ── Which session takes the title ──────────────────────────────────────────
+
+describe("isAppSession: the server's app-authored rule (Stage 2)", () => {
+  it("a programme slot, an on-demand session, a Studio workout and a template's are the app's own; a plan's run is not", () => {
+    for (const origin of ["program", "on_demand", "studio", "template"]) expect(isAppSession(workout({ origin })), origin).toBe(true);
+    for (const origin of [null, undefined, "coros", "coach"]) expect(isAppSession(workout({ origin })), String(origin)).toBe(false);
+  });
+
+  it("so a Studio workout today is a line under the run, like a programme session", () => {
+    const run = runSession();
+    const studio = outline({ id: "studio-w1", title: "Hips & posture", origin: "studio", programId: "studio-u1" });
+    expect(todayCardLayout(run.workout, [run, studio])).toEqual({ title: { kind: "run", workout: run.workout }, lines: [studio] });
+  });
+});
 
 describe("todayCardLayout", () => {
   it("an account with no program: the next workout is the title and there are no lines", () => {

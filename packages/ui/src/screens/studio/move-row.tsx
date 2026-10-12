@@ -14,10 +14,12 @@
  * Nothing said twice: a list browsed by a part does not repeat the part on every row (its chip says it once), and the
  * list hides "Fits today" while that filter is on (see `search.tsx`).
  *
- * Add and the detail (Task 5) are callbacks: a row draws them only when there is something for them to do, never
- * dead.
+ * Add and the detail are callbacks: a row draws them only when there is something for them to do, never dead. The
+ * whole row opens the detail — its name is the link (a real one: it can be opened in a new tab), and the link's box is
+ * stretched over the row, under the row's own buttons (＋, the terms, the fit), which sit above it in paint order.
  */
-import { Fragment, memo, type ReactNode } from "react";
+import { Fragment, memo, type MouseEvent, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { EQUIPMENT, GLOSSARY, hasEquipment, label, type ExerciseRecord, type Purpose } from "@rg/exercise-library";
 import { Tooltip } from "../../components/tooltip.js";
 import { IconAlert, IconCheck, IconClose, IconPlus } from "../../icons.js";
@@ -43,7 +45,7 @@ export function FitBadge({ fit }: { fit: Fit }) {
 }
 
 /** A vocabulary word, explained when the glossary has a sentence for it. */
-function Term({ id }: { id: string }) {
+export function Term({ id }: { id: string }) {
   const tip = GLOSSARY[id];
   return tip ? <Tooltip term={label(id)} tip={tip} /> : <span>{label(id)}</span>;
 }
@@ -55,7 +57,7 @@ const Sep = () => (
 );
 
 /** Items joined by a middle dot, empty ones dropped. */
-function dotted(items: ReadonlyArray<ReactNode | null>): ReactNode[] {
+export function dotted(items: ReadonlyArray<ReactNode | null>): ReactNode[] {
   const kept = items.filter((x): x is ReactNode => x !== null && x !== false);
   return kept.map((x, i) => (
     <Fragment key={i}>
@@ -64,6 +66,9 @@ function dotted(items: ReadonlyArray<ReactNode | null>): ReactNode[] {
     </Fragment>
   ));
 }
+
+/** A plain left click — not one asking for a new tab or window, which the link's own address serves. */
+const plainClick = (e: MouseEvent): boolean => e.button === 0 && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey);
 
 /** "Bench + Kettlebell or Dumbbells"; null for a move that needs nothing. */
 export function gearLine(rec: ExerciseRecord): string | null {
@@ -81,6 +86,8 @@ export const MoveRow = memo(function MoveRow({
   placeGear,
   onAdd,
   onOpen,
+  href,
+  current = false,
 }: {
   rec: ExerciseRecord;
   /** Today's condition fit; null with no profile on. */
@@ -94,18 +101,32 @@ export const MoveRow = memo(function MoveRow({
   /** The place's gear: a move it covers needs no gear named. Null or absent: not known, so the gear is named. */
   placeGear?: readonly string[] | null;
   onAdd?: (rec: ExerciseRecord) => void;
+  /** Open the detail (a plain click on the row; a modified click follows `href` — a new tab, say). */
   onOpen?: (rec: ExerciseRecord) => void;
+  /** The detail's address: with it, the row is a link to the move. */
+  href?: string;
+  /** This move is the one open beside the list. */
+  current?: boolean;
 }) {
   const purpose = browsedPart && rec.purposes.includes(browsedPart) ? null : rec.purposes[0];
   const muscles = rec.muscles.primary.slice(0, MUSCLES_SHOWN);
   const gear = placeGear && hasEquipment(rec, placeGear) ? null : gearLine(rec);
   return (
-    <li className="stu-move">
+    <li className={`stu-move${current ? " stu-move--open" : ""}`} data-id={rec.id}>
       <h3 className="stu-move-name">
-        {onOpen ? (
-          <button type="button" className="stu-move-open" onClick={() => onOpen(rec)}>
+        {href ? (
+          <Link
+            className="stu-move-open"
+            to={href}
+            aria-current={current ? "true" : undefined}
+            onClick={(e: MouseEvent<HTMLAnchorElement>) => {
+              if (!onOpen || plainClick(e) === false) return;
+              e.preventDefault();
+              onOpen(rec);
+            }}
+          >
             {rec.name}
-          </button>
+          </Link>
         ) : (
           rec.name
         )}

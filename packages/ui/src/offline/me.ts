@@ -15,8 +15,9 @@
  *    live session or the outbox: a sign-in that expired mid-session must not lose the workout; the session resumes and
  *    the outbox drains once the athlete signs in again, under the same account. A 401 that reaches the worker after its
  *    3 s timeout (the cached answer already served) purges both caches there too (apps/web/sw-routes.ts);
- *  - sign-out forgets the offline identity (`forgetOfflineIdentity`): both caches and the stored builds and live
- *    sessions; its unsynced saves stay, tagged with the account, for its next sign-in (outbox.ts);
+ *  - sign-out forgets the offline identity (`forgetOfflineIdentity`): both caches, the stored builds and live
+ *    sessions, and the Studio's draft; its unsynced saves stay, tagged with the account, for its next sign-in
+ *    (outbox.ts);
  *  - delete-all forgets the same, and drops that account's unsynced saves too.
  */
 import { api, ApiError, type MeResponse } from "@rg/api-client";
@@ -83,15 +84,21 @@ export async function forgetCachedAnswers(deps: Pick<OfflineDeps, "caches"> = {}
 
 /**
  * Sign-out and delete-all (ruling 2b-R6 as amended): forget what lets this device open the account offline — the
- * cached answers (`forgetCachedAnswers`) and the offline database's stored builds and live sessions. The outbox's
- * unsynced saves stay, tagged with their account, unless `dropOutboxOf` names it (delete-all: the account is gone).
- * The outbox's lock stays. Never throws.
+ * cached answers (`forgetCachedAnswers`) and the offline database's stored builds, live sessions and Studio draft. The
+ * outbox's unsynced saves stay, tagged with their account, unless `dropOutboxOf` names it (delete-all: the account is
+ * gone). The outbox's lock stays. Never throws.
  */
 export async function forgetOfflineIdentity(deps: OfflineDeps & { dropOutboxOf?: string } = {}): Promise<void> {
   await forgetCachedAnswers(deps);
   const clearStores = async () => {
     const db = await (deps.db ?? offlineDb)();
-    await Promise.all([db.clear("builds"), db.clear("live"), ...(deps.dropOutboxOf ? [discardAccountEntries(db, deps.dropOutboxOf)] : [])]);
+    await Promise.all([
+      db.clear("builds"),
+      db.clear("live"),
+      // The Studio's workout being built is the account's too (Stage 2).
+      db.clear("drafts"),
+      ...(deps.dropOutboxOf ? [discardAccountEntries(db, deps.dropOutboxOf)] : []),
+    ]);
   };
   let giveUp: ReturnType<typeof setTimeout> | undefined;
   try {

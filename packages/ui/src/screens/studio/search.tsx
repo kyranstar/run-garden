@@ -35,6 +35,8 @@ export function StudioResults({
   onClear,
   onAdd,
   onOpen,
+  openHref,
+  openId = null,
 }: {
   q: string;
   /** The filters in force now: the chips. */
@@ -56,7 +58,12 @@ export function StudioResults({
   onLoosen: (next: StudioFilters) => void;
   onClear: () => void;
   onAdd?: (rec: ExerciseRecord) => void;
+  /** A row's tap: the move's detail. */
   onOpen?: (rec: ExerciseRecord) => void;
+  /** The detail's address for a move (rows are links to it). */
+  openHref?: (id: string) => string;
+  /** The move open beside the list, if any. */
+  openId?: string | null;
 }) {
   const chips = activeChips(filters, ctx);
   const word = q.trim();
@@ -107,6 +114,8 @@ export function StudioResults({
               placeGear={placeGear}
               onAdd={onAdd}
               onOpen={onOpen}
+              href={openHref?.(rec.id)}
+              current={rec.id === openId}
             />
           ))}
         </ul>

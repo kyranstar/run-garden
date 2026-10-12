@@ -9190,6 +9190,7 @@ button.stu-qs:hover {
   box-shadow: var(--shadow);
 }
 .stu-move {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: var(--space-4);
@@ -9198,6 +9199,35 @@ button.stu-qs:hover {
 }
 .stu-move + .stu-move {
   border-top: 1px solid var(--border);
+}
+/* The whole row opens the move (spec §5): the name's link is stretched over
+   it. The row's own buttons — ＋, the terms, the fit — are positioned too and
+   come later in the DOM, so they paint above the stretched box and keep their
+   own taps; the summary's plain text does not, so a tap on it opens. (The row
+   is the stretched box's positioned ancestor: `.stu-move` above.) */
+.stu-move-open::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.stu-move-open:hover {
+  color: var(--green-ink);
+}
+.stu-move-open:focus-visible {
+  outline: none;
+}
+.stu-move-open:focus-visible::before {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.stu-move-add {
+  position: relative;
+}
+/* The move open in the pane beside the list: an edge mark, and the link says
+   so (`aria-current`). */
+.stu-move--open {
+  box-shadow: inset 3px 0 0 var(--green);
 }
 .stu-move-name {
   grid-column: 1;
@@ -9209,12 +9239,9 @@ button.stu-qs:hover {
   overflow-wrap: anywhere;
 }
 .stu-move-open {
-  padding: 0;
-  border: 0;
-  background: none;
   color: inherit;
   font: inherit;
-  text-align: left;
+  text-decoration: none;
   cursor: pointer;
 }
 .stu-move-add {
@@ -9377,6 +9404,306 @@ button.stu-qs:hover {
   color: var(--danger-ink);
 }
 
+/* ── A move in full (Stage 2 spec §6) ──
+   The content is one column of short sections — the sheet's body on a phone,
+   the pane's from md. The pane exists only from md (the screen draws it there
+   and a sheet below), so its rules need no width query: with a move open the
+   Studio's main area is two columns, the list (or the home) and the pane. */
+.stu-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-7);
+  min-width: 0;
+}
+.stu--detail .stu-main {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+/* Not modal: the list stays usable beside it. It keeps to the screen —
+   sticky, and no taller than the room from where it starts (`--pane-top`,
+   measured as the page scrolls, never above the sticky gutter) to the bottom
+   gutter, above the phone's tab bar (still drawn at md) — so Add is in view
+   from the first frame. Its body is the one scroll owner, the name and Add
+   pinned around it. */
+.stu-detail {
+  position: sticky;
+  top: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: calc(100dvh - max(var(--pane-top, 0px), var(--space-6)) - var(--nav-height) - env(safe-area-inset-bottom, 0px) - var(--space-6));
+  padding: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.stu-detail-head {
+  flex: none;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+.stu-detail-head h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stu-detail-body {
+  flex: 1 1 auto;
+  padding-right: var(--space-3);
+  margin-right: calc(var(--space-3) * -1);
+}
+.stu-detail-foot {
+  flex: none;
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.stu-detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.stu-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.stu-detail-sum {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--ink);
+}
+.stu-detail-content > .stu-meta {
+  margin: 0;
+}
+.stu-detail-content > .stu-detail-meta + .stu-detail-dose {
+  margin-top: calc(var(--space-4) * -1);
+}
+.stu-detail-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.stu-detail-sec p {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.stu-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-7);
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.stu-detail-list + .stu-detail-list {
+  margin-top: var(--space-3);
+}
+/* The condition's own words: marked off, and never by colour alone — the
+   profile's name is its heading. */
+.stu-detail-sec .stu-detail-note {
+  padding-left: var(--space-5);
+  border-left: 3px solid var(--green);
+}
+.stu-detail-sec .stu-detail-muscles {
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.stu-detail-muscles > span:first-child:not(.stu-meta-g) {
+  color: var(--ink-soft);
+}
+.stu-ladder {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stu-ladder li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.stu-ladder-way {
+  flex: none;
+  width: 4.5em;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.stu-ladder-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
+.stu-detail-history {
+  color: var(--ink);
+}
+.stu-say .chipbtn {
+  gap: var(--space-2);
+}
+.stu-say .chipbtn svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+/* Pressed: a check and (for the pin) a new word beside the colour. */
+.stu-say .chipbtn[aria-pressed="true"],
+.stu-add-pin[aria-pressed="true"] {
+  border-color: var(--green);
+  background: var(--green-soft);
+  color: var(--green-ink);
+}
+.stu-detail-error,
+.stu-add-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--danger-ink);
+}
+
+/* ── Add: one small sheet (spec §7) ── */
+.stu-add-targets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.stu-add-opt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+  min-width: 0;
+  padding: var(--space-2) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+/* The radio's own dot says which; the border only adds to it. */
+.stu-add-opt--on {
+  border-color: var(--green);
+}
+.stu-add-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex: 1 1 auto;
+  min-height: var(--tap);
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+  cursor: pointer;
+}
+.stu-add-choice input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--green);
+}
+.stu-add-what {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+/* 16px, so a phone never zooms into it. */
+.stu-add-select {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--tap);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-md);
+}
+.stu-add-actions {
+  justify-content: space-between;
+  align-items: center;
+}
+.stu-add-pin svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+/* ── After Add: a quiet line — where it went, Open, Undo ──
+   Always in the DOM where it can show (the page's foot, the detail's foot) so
+   a screen reader hears it change; empty, it is no box at all. On the page it
+   sticks above the tab bar while the list scrolls under it. */
+.stu-added-text {
+  margin: 0;
+}
+/* One row at every width — the words take what is left and wrap inside their
+   own column, so Open, Undo and ✕ never fall onto a line of their own. */
+.stu-added--on {
+  --tap-clear-y: var(--space-5);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.stu > .stu-added--on {
+  position: sticky;
+  bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+  z-index: 20;
+  box-shadow: var(--shadow-sm);
+}
+.stu-added--on .stu-added-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.stu-added-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  font-size: var(--text-sm);
+}
+.stu-added-error {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  font-size: var(--text-xs);
+  color: var(--danger-ink);
+}
+.stu-added-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-round);
+  background: none;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.stu-added-x svg {
+  width: 14px;
+  height: 14px;
+}
+
 @media (min-width: 640px) {
   .stu-move {
     padding: var(--space-5) var(--space-6);
@@ -9411,5 +9738,18 @@ button.stu-qs:hover {
   .stu-themes {
     flex-wrap: wrap;
     overflow-x: visible;
+  }
+  /* Three columns with a move open — filters · list · the move — so the
+     filter column gives up a little room. */
+  .stu--detail .stu-results {
+    grid-template-columns: minmax(11rem, 13rem) minmax(0, 1fr);
+    gap: var(--space-7);
+  }
+  /* No tab bar from lg: the pane and the line keep only the gutter. */
+  .stu-detail {
+    max-height: calc(100dvh - max(var(--pane-top, 0px), var(--space-6)) - var(--space-6));
+  }
+  .stu > .stu-added--on {
+    bottom: var(--space-6);
   }
 }
