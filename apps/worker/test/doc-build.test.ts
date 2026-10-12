@@ -216,6 +216,24 @@ describe("building a document workout", () => {
     expect((await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId })).status).toBe(200);
   });
 
+  it("a stored document too large to build answers 409 too_large with the issue — a build, a preview, Start's fresh build — never a 500", async () => {
+    // Twenty sets of an hour's hold: far past the 600 minutes a Worker builds. The validator refuses it when made or
+    // revised, so it is written as an older document would have been stored.
+    const huge = JSON.stringify({ ...calmDoc(), parts: [{ purpose: "main", format: "holds", items: [{ kind: "exercise", libraryId: "bridge", dose: { sets: 20, holdSec: 3600 } }] }] });
+    const tooLarge = { error: "too_large", issues: [expect.objectContaining({ path: "parts", code: "too_large", severity: "error" })] };
+    const todays = await create(calmDoc());
+    const built = await call("POST", `/api/sessions/${todays}/build`, {});
+    await db.update(plannedWorkouts).set({ workoutDoc: huge }).where(eq(plannedWorkouts.id, todays));
+    const started = await call("POST", `/api/sessions/${todays}/start`, { buildId: built.body.build.buildId });
+    expect(started).toEqual({ status: 409, body: tooLarge });
+    expect(await call("POST", `/api/sessions/${todays}/build`, {})).toEqual({ status: 409, body: tooLarge });
+    expect((await rowOf(todays)).contentState).toBe("built");
+    const ahead = await create(calmDoc({ title: "Ahead" }), addDays(today, 2));
+    await db.update(plannedWorkouts).set({ workoutDoc: huge }).where(eq(plannedWorkouts.id, ahead));
+    expect(await call("POST", `/api/sessions/${ahead}/build`, {})).toEqual({ status: 409, body: tooLarge });
+    expect(await db.select().from(sessionBuilds).where(eq(sessionBuilds.workoutId, ahead))).toEqual([]);
+  });
+
   it("409 no_document for a document row whose document cannot be read; 404 for another user's", async () => {
     const id = await create(calmDoc());
     await db.update(plannedWorkouts).set({ workoutDoc: "{not json" }).where(eq(plannedWorkouts.id, id));

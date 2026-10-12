@@ -509,7 +509,7 @@ async function buildRefusal(
     return "not_built";
   }
   if (profiles.some((p) => !checks[p])) return "precheck";
-  if (docOriginRow(row) && (await gatedSnapshot(db, row, build, profiles, checks))) return "gated";
+  if (docOriginRow(row) && (await gatedSnapshot(db, row, build.buildId, profiles, checks))) return "gated";
   const unpush = await jobById(db, unpushJobId(build.buildId));
   if (unpush && isInFlight(unpush.status)) return "taking_off";
   return watchStepsFromBuild(build, NO_CATALOG).refusal;
@@ -523,11 +523,11 @@ async function buildRefusal(
 async function gatedSnapshot(
   db: Db,
   row: WorkoutRow,
-  build: BuildPayload,
+  buildId: string,
   profiles: readonly string[],
   checks: Readonly<Record<string, CheckAnswer>>,
 ): Promise<boolean> {
-  const [stored] = await db.select({ doc: sessionBuilds.workoutDoc }).from(sessionBuilds).where(eq(sessionBuilds.id, build.buildId)).limit(1);
+  const [stored] = await db.select({ doc: sessionBuilds.workoutDoc }).from(sessionBuilds).where(eq(sessionBuilds.id, buildId)).limit(1);
   const snapshot = parseStoredWorkoutDoc(stored?.doc ?? null);
   if (!snapshot) return false;
   return snapshotErrors(snapshot, dayValidateCtx({ profiles, checks, date: row.effectiveDate, today: row.effectiveDate })).length > 0;
@@ -571,6 +571,12 @@ export async function watchStateOf(
   const sent = await sentBuildIdOf(db, row.id);
   if (sent) {
     const push = await jobById(db, pushJobId(sent));
+    // A document workout's failed push is offered Retry only while the day still allows what it holds: a reading
+    // that has since closed one of its moves makes it `gated` (Retry would be refused the same way).
+    const retry = push !== null && !isInFlight(push.status) && push.status !== "verified";
+    if (retry && docOriginRow(row) && (await gatedSnapshot(db, row, sent, session.profiles.map((p) => p.profileId), session.checks))) {
+      return { state: "unavailable", reason: "gated" };
+    }
     if (push) return stateOfPush(push.status, row);
   } else if (session.build && (await copyLeftOnWatch(db, session.build.buildId))) {
     return stateOfPush("verified", row);

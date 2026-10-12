@@ -168,15 +168,11 @@ describe("materializeDocBuild", () => {
     const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES });
     const steps = playerStepsFromDoc(doc, EXERCISES);
     expect(made.build.steps).toEqual(steps);
-    // One item per slot, in play order, as the adapter numbers and blocks them.
-    const work = steps.filter((s) => s.kind !== "rest");
-    const first = (key: string) => work.find((s) => s.slotKey === key)!;
-    expect(made.build.items).toEqual(
-      [...new Set(work.map((s) => s.slotKey))].map((slotKey) => ({
-        slotKey, block: first(slotKey).block, exerciseId: first(slotKey).exerciseId, format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [],
-      })),
-    );
-    expect(made.build.items.map((i) => i.exerciseId)).toEqual(["snapDown", "bwSplitSquat"]);
+    // One item per slot, in play order: the jumps (a power part) play as the accessory block, the lift as core.
+    expect(made.build.items).toEqual([
+      { slotKey: "accessory:0", block: "accessory", exerciseId: "snapDown", format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [] },
+      { slotKey: "core:0", block: "core", exerciseId: "bwSplitSquat", format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [] },
+    ]);
     expect(Object.keys(made.build.exercises).sort()).toEqual(["bwSplitSquat", "snapDown"]);
     expect(Object.values(made.build.exercises).every((e) => !("providers" in e))).toBe(true);
     expect(made.build).toMatchObject({ date: DAY, mode: "consistent", theme: null, alternatives: {}, targets: {}, newMove: null, weekOfBlock: null, locationId: "home" });
@@ -184,8 +180,8 @@ describe("materializeDocBuild", () => {
     expect(made.build.minutes).toBe(deriveDoc(doc, EXERCISES).estimatedMinutes);
     expect(made.view).toMatchObject({ mode: "consistent", proposedMode: "consistent", theme: null, block: null, newMove: null, location });
     const name = (id: string) => EXERCISES.find((e) => e.id === id)!.name;
-    expect(made.view.lead.more).toBe(0);
-    expect(made.view.lead.moves.map((m) => m.name).sort()).toEqual([name("snapDown"), name("bwSplitSquat")].sort());
+    // The lead names the core lift first, then the session's first moves.
+    expect(made.view.lead).toEqual({ moves: [expect.objectContaining({ name: name("bwSplitSquat") }), expect.objectContaining({ name: name("snapDown") })], more: 0 });
   });
 
   it("the mode is the effort's", () => {

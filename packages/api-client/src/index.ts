@@ -1195,7 +1195,8 @@ export interface SessionViewDto {
  * `{error: "not_today", date, today}`, `{error: "locked", session}`, `{error: "not_built"}`, and for a start
  * `{error: "stale", session}` (the fresh build to show); 422 `invalid_build`, `invalid_start` or `unknown_profile`.
  * A document workout's start (or send) also: 409 `{error: "gated", issues: DocIssueDto[]}` — the day's reading keeps a
- * move out that no alternate stands in for — and `{error: "no_document"}`.
+ * move out that no alternate stands in for — `{error: "no_document"}`, and (a build, a preview, or a start's fresh build)
+ * `{error: "too_large", issues: DocIssueDto[]}` for a stored document too large to build.
  */
 export interface SessionDto {
   workoutId: string;

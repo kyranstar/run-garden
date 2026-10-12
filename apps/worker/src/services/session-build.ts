@@ -93,7 +93,7 @@ import { conditionView, isAnswer, latestReading, type ConditionView } from "./co
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
 import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, snapshotErrors, type DocBuildInfo } from "./doc-build.js";
-import type { DocIssue, ValidateCtx } from "@rg/workout";
+import { DocTooLargeError, type DocIssue, type ValidateCtx } from "@rg/workout";
 
 /**
  * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
@@ -325,6 +325,20 @@ export class NoDocumentError extends Error {
     super("no_document");
   }
 }
+
+/**
+ * A document workout too large to build (`docTooLarge`: past 600 derived minutes or the watch's steps): nothing is
+ * materialised, and the build, a preview or Start's fresh build answers with the issue. The validator refuses such a
+ * document when it is made or revised, so only one stored before that bound (or grown by the day's swap) reaches here.
+ */
+export class DocTooLargeRefusal extends Error {
+  constructor(public readonly issues: DocIssue[]) {
+    super("too_large");
+  }
+}
+
+/** The one issue a too-large document answers with: the validator's own (`too_large`, at "parts"). */
+const tooLargeIssue = (message: string): DocIssue => ({ path: "parts", code: "too_large", message, severity: "error" });
 
 /** A write refused because a restore began while the request ran (the route's 423). */
 export class RestoringError extends Error {
@@ -1362,7 +1376,15 @@ async function commitDocBuild(
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return reuseStored(db, userId, s, previous, ctx);
 
   const gated = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, docValidateCtx(context, checks, date, ctx.today));
-  const made = materializeDocBuild(gated.doc, { date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: EXERCISES });
+  let made: ReturnType<typeof materializeDocBuild>;
+  try {
+    made = materializeDocBuild(gated.doc, { date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: EXERCISES });
+  } catch (e) {
+    // Too large to build (`playerStepsFromDoc` checks the bound before making a step) — today, ahead, or grown past it
+    // by the day's swap: refused with the issue, nothing materialised, never a 500.
+    if (e instanceof DocTooLargeError) throw new DocTooLargeRefusal([tooLargeIssue(e.message)]);
+    throw e;
+  }
   const refused = await beginWrite(db, userId, s, ctx);
   if (refused) return refused;
   const stored: StoredBuild = {
@@ -1461,7 +1483,7 @@ async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: B
 /**
  * `POST /api/sessions/:workoutId/build`, with what it means for the calendar. Throws `SessionNotFoundError`,
  * `SessionLockedError` (carrying the locked session), `NotTodayError`, `UnknownProfileError`, and for a document
- * workout `NoDocumentError`.
+ * workout `NoDocumentError` and `DocTooLargeRefusal`.
  */
 export async function buildSessionOutcome(
   db: Db,

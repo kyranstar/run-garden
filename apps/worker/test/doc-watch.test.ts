@@ -113,8 +113,17 @@ describe("a document workout's watch paths re-gate with the day's reading", () =
     const retry = await call("POST", `${workoutId}/send-to-watch`, { buildId, digest: "no-preview" });
     expect(retry).toEqual({ status: 409, body: { error: "gated" } });
     expect((await pushOf(buildId))!.status).toBe("failed");
-    // The sheet says why Send is not offered.
+    // The sheet says why Send is not offered: gated, not "Couldn't send" with a Retry that would be refused.
+    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "unavailable", reason: "gated" });
+  });
+
+  it("a failed push the day still allows is offered Retry, and Retry queues it", async () => {
+    const { workoutId, buildId } = await builtDoc();
+    expect((await send(workoutId, buildId)).status).toBe(200);
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
     expect((await call("GET", workoutId)).body.watch).toEqual({ state: "failed" });
+    expect((await send(workoutId, buildId)).status).toBe(200);
+    expect((await pushOf(buildId))!.status).toBe("queued");
   });
 
   it("Send after Start once the reading has risen: 409 gated, no push", async () => {
