@@ -1,6 +1,6 @@
 import { KG_TO_LB, SAME_WEIGHT_KG, formatWeight, sameWeight, toKg, type Weight, type WeightUnit } from "@rg/domain";
 import {
-  UNANSWERED, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type HistorySet, type Mode,
+  UNANSWERED, onFrontier, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type HistorySet, type Mode,
 } from "@rg/exercise-library";
 import { HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
@@ -120,11 +120,15 @@ function holdReason(data: EngineData, last: ProgEntry | null, ctx: ProgCtx): str
 /** "with a quiet …" for every active profile, or nothing. */
 const quietPhrase = (data: EngineData): string => active(data).map(p => p.quietPhrase).filter(Boolean).join(" and ");
 
-/** The harder variant to offer: one this place can do that today's mode and checks allow (its cap, every profile's rules). */
+/**
+ * The harder variant to offer: one this place can do that today's mode and checks allow (its cap, every profile's
+ * rules), and that is on the jump ladder's frontier from the move just topped out (done cleanly to get here): a jump
+ * whose easier rungs don't name this one is never a graduation from it.
+ */
 function harderFor(data: EngineData, ex: ExerciseRecord, ctx: ProgCtx): ExerciseRecord | null {
   for (const id of ex.harder || []) {
     const h = Lib.get(data, id);
-    if (h && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment)) && Lib.fitsMode(data, h, ctx.mode, ctx.checks)) return h;
+    if (h && onFrontier(h, done => done === ex.id) && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment)) && Lib.fitsMode(data, h, ctx.mode, ctx.checks)) return h;
   }
   return null;
 }
@@ -273,4 +277,44 @@ function historyForIn(h: HistIndex, exerciseId: string): ProgEntry[] {
 const historyFor = (data: EngineData, sessions: readonly HistorySession[], exerciseId: string): ProgEntry[] =>
   historyForIn(HistIndex.of(data, sessions), exerciseId);
 
-export const Prog = { suggest, historyFor, historyForIn, improved, stepWeight, startWeight, snap, topSet };
+/** One logged exposure of a move, in any format: when, the flags it carried, and whether progression reads it. */
+export interface Exposure {
+  date: string;
+  startedAt: string;
+  flags: readonly string[];
+  /** Not in a ladder or a circuit: an entry `historyForIn` reads. */
+  progression: boolean;
+}
+
+/**
+ * Every logged exposure of each exercise (an entry with a set), ladders and circuits included, newest first, by
+ * canonical id: what a flag on a move says, whatever the format it was done in (the jump ladder's rest and retry).
+ */
+function exposuresIn(h: HistIndex): Map<string, Exposure[]> {
+  return h.memo("exposures", () => {
+    const byId = new Map<string, Exposure[]>();
+    for (const s of h.sessions) {
+      for (const e of s.entries || []) {
+        if (!e || !e.id || !(e.sets || []).some(Boolean)) continue;
+        const ex = h.get(e.id);
+        const id = ex ? ex.id : e.id;
+        const exposure: Exposure = {
+          date: s.date, startedAt: s.startedAt || s.date, flags: e.flags || [], progression: e.format !== "ladder" && e.format !== "circuit",
+        };
+        const list = byId.get(id);
+        if (list) list.push(exposure);
+        else byId.set(id, [exposure]);
+      }
+    }
+    for (const list of byId.values()) list.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    return byId;
+  });
+}
+
+/** This exercise's logged exposures in every format, newest first (renamed ids resolve). Callers never change it. */
+function exposuresForIn(h: HistIndex, exerciseId: string): readonly Exposure[] {
+  const target = h.get(exerciseId);
+  return exposuresIn(h).get(target ? target.id : exerciseId) ?? [];
+}
+
+export const Prog = { suggest, historyFor, historyForIn, exposuresForIn, improved, stepWeight, startWeight, snap, topSet };

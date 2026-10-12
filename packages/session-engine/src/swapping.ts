@@ -3,8 +3,9 @@ import type { Step } from "./types.js";
 
 // Swaps as an exact, pure operation on a built plan (audit I1, I2, M4; re-review N1). A swap replaces one slot's
 // move and nothing else: the slot keeps its format, sets and rests; its own steps become the choice's steps.
-// Whether a swap is allowed depends only on the plan it lands in (no move twice, one version of a move, superset
-// partners that pair, the time budget plus a small slack), so a choice the plan offers is exactly what applying
+// Whether a swap is allowed depends only on the plan it lands in (no move twice, one version of a move, one new or
+// retried jump a session — a choice marked `fresh` — superset partners that pair, the time budget plus a small
+// slack), so a choice the plan offers is exactly what applying
 // it produces — before Start (the server applies the same functions) and mid-session (the player applies them
 // offline, with no library). The rules judge what swaps bring in: two slots that both still hold the plan's own
 // moves are never in conflict, even if the plan filled them with two versions of one move.
@@ -40,6 +41,8 @@ export interface SlotChoice {
   /** family|regions: a session holds one version of a move. */
   moveKey: string;
   pairing: Pairing;
+  /** A jump new to the athlete or retried after a flagged exposure: a session holds one (absent: not one). */
+  fresh?: true;
 }
 
 export interface SwapSlot {
@@ -106,11 +109,13 @@ function judge(state: SwapState, steps: readonly Step[], slotKey: string): (choi
   // For every id and move key held elsewhere: whether each slot holding it still holds the plan's own move.
   const ids = new Map<string, boolean>();
   const keys = new Map<string, boolean>();
+  let freshElsewhere = false;
   for (const [key, c] of Object.entries(state.current)) {
     if (key === slotKey) continue;
     const original = isOriginal(state, key, c);
     ids.set(c.id, (ids.get(c.id) ?? true) && original);
     keys.set(c.moveKey, (keys.get(c.moveKey) ?? true) && original);
+    if (c.fresh) freshElsewhere = true;
   }
   let others = 0;
   const sets = new Set<number | null>();
@@ -126,6 +131,7 @@ function judge(state: SwapState, steps: readonly Step[], slotKey: string): (choi
     const byId = ids.get(choice.id), byKey = keys.get(choice.moveKey);
     if (byId !== undefined && !(mine && byId)) return false;
     if (byKey !== undefined && !(mine && byKey)) return false;
+    if (choice.fresh && freshElsewhere) return false;
     if (partner && unpaired(state, slotKey, choice, partnerKey!, partner)) return false;
     return others + costOf(choice.steps.filter(x => sets.has(x.setIndex))) <= state.budget + state.slack;
   };
@@ -154,9 +160,10 @@ function offered(state: SwapState, steps: readonly Step[], slotKey: string, k = 
   return out;
 }
 
-/** Every rule at once, as `fits` judges each swap: no clash, partners that pair, within the budget and slack. */
+/** Every rule at once, as `fits` judges each swap: no clash, one new-or-retry jump, partners that pair, within the budget and slack. */
 function consistent(state: SwapState, steps: readonly Step[]): boolean {
   const current = Object.entries(state.current);
+  if (current.filter(([, c]) => c.fresh).length > 1) return false;
   for (let i = 0; i < current.length; i++) {
     for (let j = i + 1; j < current.length; j++) {
       if (clash(state, current[i]![0], current[i]![1], current[j]![0], current[j]![1])) return false;

@@ -1,6 +1,6 @@
 import { KG_TO_LB, SAME_WEIGHT_KG, formatWeight, sameWeight, toKg, type Weight, type WeightUnit } from "@rg/domain";
 import {
-  UNANSWERED, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type HistorySet, type Mode,
+  UNANSWERED, onFrontier, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type HistorySet, type Mode,
 } from "@rg/exercise-library";
 import { Lib } from "./lib.js";
 import type { Target } from "./types.js";
@@ -122,7 +122,7 @@ const quietPhrase = (data: EngineData): string => active(data).map(p => p.quietP
 function harderFor(data: EngineData, ex: ExerciseRecord, ctx: ProgCtx): ExerciseRecord | null {
   for (const id of ex.harder || []) {
     const h = Lib.get(data, id);
-    if (h && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment)) && Lib.fitsMode(data, h, ctx.mode, ctx.checks)) return h;
+    if (h && onFrontier(h, done => done === ex.id) && (!ctx.equipment || Lib.hasEquipment(h, ctx.equipment)) && Lib.fitsMode(data, h, ctx.mode, ctx.checks)) return h;
   }
   return null;
 }
@@ -255,4 +255,28 @@ function historyFor(data: EngineData, sessions: readonly HistorySession[], exerc
   return out.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
 }
 
-export const Prog = { suggest, historyFor, improved, stepWeight, startWeight, snap, topSet };
+/** One logged exposure of a move, in any format: when, the flags it carried, and whether progression reads it. */
+export interface Exposure {
+  date: string;
+  startedAt: string;
+  flags: readonly string[];
+  progression: boolean;
+}
+
+/** This exercise's logged exposures in every format (an entry with a set; ladders and circuits too), newest first. */
+function exposuresFor(data: EngineData, sessions: readonly HistorySession[], exerciseId: string): Exposure[] {
+  const target = Lib.get(data, exerciseId);
+  const id = target ? target.id : exerciseId;
+  const out: Exposure[] = [];
+  for (const s of sessions || []) {
+    for (const e of s.entries || []) {
+      if (!e || !e.id || !(e.sets || []).some(Boolean)) continue;
+      const ex = Lib.get(data, e.id);
+      if ((ex ? ex.id : e.id) !== id) continue;
+      out.push({ date: s.date, startedAt: s.startedAt || s.date, flags: e.flags || [], progression: e.format !== "ladder" && e.format !== "circuit" });
+    }
+  }
+  return out.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+}
+
+export const Prog = { suggest, historyFor, exposuresFor, improved, stepWeight, startWeight, snap, topSet };

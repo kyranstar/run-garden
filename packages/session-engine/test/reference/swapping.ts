@@ -26,6 +26,8 @@ export interface SlotChoice {
   /** family|regions: a session holds one version of a move. */
   moveKey: string;
   pairing: Pairing;
+  /** A jump new to the athlete or retried after a flagged exposure: a session holds one. */
+  fresh?: true;
 }
 
 export interface SwapSlot {
@@ -92,11 +94,13 @@ function judge(state: SwapState, steps: readonly Step[], slotKey: string): (choi
   // For every id and move key held elsewhere: whether each slot holding it still holds the plan's own move.
   const ids = new Map<string, boolean>();
   const keys = new Map<string, boolean>();
+  let freshElsewhere = false;
   for (const [key, c] of Object.entries(state.current)) {
     if (key === slotKey) continue;
     const original = isOriginal(state, key, c);
     ids.set(c.id, (ids.get(c.id) ?? true) && original);
     keys.set(c.moveKey, (keys.get(c.moveKey) ?? true) && original);
+    if (c.fresh) freshElsewhere = true;
   }
   let others = 0;
   const sets = new Set<number | null>();
@@ -112,6 +116,7 @@ function judge(state: SwapState, steps: readonly Step[], slotKey: string): (choi
     const byId = ids.get(choice.id), byKey = keys.get(choice.moveKey);
     if (byId !== undefined && !(mine && byId)) return false;
     if (byKey !== undefined && !(mine && byKey)) return false;
+    if (choice.fresh && freshElsewhere) return false;
     if (partner && unpaired(state, slotKey, choice, partnerKey!, partner)) return false;
     return others + costOf(choice.steps.filter(x => sets.has(x.setIndex))) <= state.budget + state.slack;
   };
@@ -143,6 +148,7 @@ function offered(state: SwapState, steps: readonly Step[], slotKey: string, k = 
 /** Every rule at once, as `fits` judges each swap: no clash, partners that pair, within the budget and slack. */
 function consistent(state: SwapState, steps: readonly Step[]): boolean {
   const current = Object.entries(state.current);
+  if (current.filter(([, c]) => c.fresh).length > 1) return false;
   for (let i = 0; i < current.length; i++) {
     for (let j = i + 1; j < current.length; j++) {
       if (clash(state, current[i]![0], current[i]![1], current[j]![0], current[j]![1])) return false;

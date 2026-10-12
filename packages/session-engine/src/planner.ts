@@ -137,10 +137,22 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   const location = locationOf(program.locations, t.override.location || program.settings.location);
   const buildInput: BuildInput = {
     today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
-    sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: t.checks, swaps: t.swaps,
+    sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: readingsOf(data, t), swaps: t.swaps,
     ...(program.summary ? { summary: program.summary } : {}),
   };
   return { t, ensured, proposal, mode, themeProposal, chosen, theme, minutes, location, buildInput, hist };
+}
+
+/**
+ * The readings a build rules with: the day's checks, with the day's own "feeling off" joined into every active
+ * profile's reading (an unanswered one reads as unanswered and feeling off) — as the validator reads a day — so a
+ * feeling-off day keeps every move its profiles hold back while feeling off, whatever mode was chosen.
+ */
+function readingsOf(data: EngineData, t: DayState): Readonly<Record<string, CheckReading>> {
+  if (!t.feelingOff) return t.checks;
+  const out: Record<string, CheckReading> = { ...t.checks };
+  for (const p of data.profiles.active) out[p.id] = { ...(t.checks[p.id] ?? UNANSWERED), feelingOff: true };
+  return out;
 }
 
 /** The day's proposal, the upkept block and the built plan. `blockUpdate` is null when the block didn't change. */

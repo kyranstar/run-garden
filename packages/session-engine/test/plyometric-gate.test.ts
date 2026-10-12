@@ -501,4 +501,127 @@ describe("ready for the next: the harder variant only when today's gate and the 
     expect(suggest("build", { ...calm, pre: 4 }, 3)).toMatchObject({ action: "tempo", graduate: null });
     expect(suggest("build", { ...calm, feelingOff: true })).toMatchObject({ action: "tempo", graduate: null });
   });
+
+  test("the harder variant is on the frontier from the move just topped out: a one-way link never skips the ladder", () => {
+    const toppedOut = (ex: ExerciseRecord): ProgEntry[] => [{
+      date: "2026-10-01", startedAt: "2026-10-01T18:00:00", sets: [{ w: null, reps: ex.dose.range[1], secs: null }],
+      flags: [], checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, mode: "build",
+    }];
+    const at = (d: EngineData) => Prog.suggest(d, d.exercises.find(e => e.id === "boxJumpStepDown")!, toppedOut(byId.get("boxJumpStepDown")!), {
+      mode: "build", checks: { tmj: calm }, implement: null, kbWeights: [], unit: "lb", equipment: home.equipment,
+    });
+    // The library's ladder mirrors: the box jump is one of the tuck jump's easier rungs, so it graduates to it.
+    expect(at(data)).toMatchObject({ action: "graduate", graduate: "tuckJump" });
+    // Had the tuck jump not named the box jump (the asymmetry the final review found), it is no graduation from it.
+    const oneWay = makeEngineData({
+      activeProfiles: ["tmj"], careProfiles: ["tmj"],
+      exercises: EXERCISES.map(e => (e.id === "tuckJump" ? { ...e, easier: e.easier.filter(id => id !== "boxJumpStepDown") } : e)),
+    });
+    expect(at(oneWay)).toMatchObject({ action: "tempo", graduate: null });
+  });
+});
+
+describe("final review: rest and retry read every logged jump, swaps keep the session's one new-or-retry rung, and a day's feeling off reaches the build", () => {
+  const T = "2026-11-30";
+  /** A logged jump in a format the athlete chose: circuits and ladders log what was done too. */
+  const logged = (id: string, flags: string[], format: HistorySession["entries"][number]["format"]): HistorySession["entries"][number] =>
+    ({ id, implement: null, perSide: false, format, flags, sets: [{ w: null, reps: 6, secs: null }] });
+  const input = (sessions: HistorySession[], over: Partial<Parameters<typeof Builder.build>[1]> = {}) => ({
+    today: T, mode: "build" as const, theme: plyoIntro, minutes: 40, location: home, unit: "lb" as const, prefs: {}, savedIds: [], block,
+    checks: { tmj: calm }, swaps: {}, programId: "final", sessions, ...over,
+  });
+  const jumpIds = (p: BuildResult) => p.items.filter(i => isPlyometric(i.exercise)).map(i => i.exercise.id);
+  /** Whole and trimmed histories plan alike (what the worker reads is the trimmed one). */
+  const jumpsWith = (sessions: HistorySession[]): string[] => {
+    const whole = jumpIds(Builder.build(data, input(sessions)));
+    const trimmed = jumpIds(Builder.build(data, input(Hist.trim(sessions, T, block), { summary: Hist.summarize(sessions, T) })));
+    expect(trimmed, "trimmed").toEqual(whole);
+    return whole;
+  };
+  const other = (date: string) => ({ ...jumpSession(`o-${date}`, date, [], ["wallSit"]), theme: "skiPrep" });
+
+  test("a clench logged in a circuit or a ladder rests the rung like one in straight sets", () => {
+    for (const format of ["circuit", "ladder"] as const) {
+      const clenched = jumpSession(`c-${format}`, addDays(T, -10), [logged("landingStick", ["clenched"], format), logged("snapDown", ["clenched"], format)]);
+      expect(jumpsWith([clenched]), format).toEqual([]);
+      expect(jumpsWith([clenched, other(addDays(T, -6)), other(addDays(T, -3))]), format).toEqual([]);
+    }
+  });
+
+  test("a session that logged a jump in a circuit is a jumping session: two of them end a rest", () => {
+    const landingClenched = jumpSession("lc", addDays(T, -10), [entry("landingStick", ["clenched"])]);
+    const circuitSnap = (date: string) => ({ ...jumpSession(`cs-${date}`, date, [logged("snapDown", [], "circuit")]), theme: null });
+    expect(jumpsWith([landingClenched, circuitSnap(addDays(T, -6))])).not.toContain("landingStick");
+    expect(jumpsWith([landingClenched, circuitSnap(addDays(T, -6)), circuitSnap(addDays(T, -3))])).toContain("landingStick");
+  });
+
+  /** Whether a move is new to the athlete or retried after a clench, as of these sessions (the engine's own rule). */
+  const freshBy = (sessions: HistorySession[]) => (id: string): boolean => {
+    const mine = sessions.flatMap(s => s.entries.filter(e => e.id === id).map(e => ({ at: String(s.startedAt), flags: e.flags })));
+    const done = sessions.some(s => s.done.some(d => d.id === id) || s.entries.some(e => e.id === id));
+    const last = mine.sort((a, b) => b.at.localeCompare(a.at))[0];
+    return !done || Boolean(last?.flags.includes("clenched"));
+  };
+
+  test("a slot's offered swaps never hold a resting rung", () => {
+    // The landing stick clenched four days ago, no jumping day since: it rests. The snap-down was done cleanly.
+    const sessions = [
+      jumpSession("old", addDays(T, -30), [entry("snapDown", []), entry("landingStick", [])]),
+      jumpSession("cl", addDays(T, -4), [entry("landingStick", ["clenched"])]),
+    ];
+    let checked = 0;
+    for (let i = 0; i < 12; i++) {
+      const plan = Builder.build(data, input(sessions, { today: addDays(T, i % 2), minutes: [30, 40, 60][i % 3]!, programId: `rest-${i}`, location: PLACES[i % PLACES.length]! }));
+      for (const item of plan.items.filter(it => isPlyometric(it.exercise))) {
+        const slot = plan.swapState.slots[item.slotKey]!;
+        const reach = [...(plan.alternatives[item.slotKey] ?? []), ...slot.pool].map(c => c.id);
+        expect(reach, `${plan.seed} ${item.slotKey}`).not.toContain("landingStick");
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  test("a slot beside the day's new rung is never offered a second new or retried rung, and a stored swap to one is left out", () => {
+    // Both bottom rungs done cleanly long ago: the rungs above them are new, and the block holds one of them.
+    const sessions = [jumpSession("old", addDays(T, -30), [entry("snapDown", []), entry("landingStick", [])])];
+    const fresh = freshBy(sessions);
+    let pairs = 0;
+    for (let i = 0; i < 12; i++) {
+      const base = input(sessions, { today: addDays(T, i % 3), minutes: [30, 40, 60][i % 3]!, programId: `fresh-${i}` });
+      const plan = Builder.build(data, base);
+      const jumps = plan.items.filter(it => isPlyometric(it.exercise));
+      const holder = jumps.find(it => fresh(it.exercise.id));
+      const beside = jumps.find(it => !fresh(it.exercise.id));
+      if (!holder || !beside) continue;
+      pairs += 1;
+      const offered = plan.alternatives[beside.slotKey] ?? [];
+      expect(offered.filter(c => fresh(c.id)).map(c => c.id), `${plan.seed}: offered beside ${holder.exercise.id}`).toEqual([]);
+      // The new rung's own slot may still trade it for another new rung: the session keeps one.
+      const swapTo = plan.swapState.slots[beside.slotKey]!.pool.find(c => fresh(c.id));
+      if (!swapTo) continue;
+      const swapped = Builder.build(data, { ...base, swaps: { [beside.slotKey]: { from: beside.exercise.id, to: swapTo.id } } });
+      expect(swapped.items.filter(it => isPlyometric(it.exercise) && fresh(it.exercise.id)).length, `${plan.seed}: after a stored swap`).toBe(1);
+    }
+    expect(pairs, "plans holding a new rung beside a clean one").toBeGreaterThan(3);
+  });
+
+  test("a day's own \"feeling off\" joins every profile's reading: no jumps on a calm check, and the build reads it", () => {
+    const program: ProgramState = {
+      settings: { unit: "lb", weeklyGoal: 4, blockWeeks: 5, defaultMinutes: 40, location: "home" },
+      locations: [home], prefs: { ratings: {}, excluded: [], pinned: [] }, savedIds: [], block: null, sessions: [],
+    };
+    const plan = (checks: Record<string, CheckReading>, feelingOff: boolean) => Planner.planToday(data, {
+      today: T, day: { date: T, checks, feelingOff, override: { mode: "build", theme: "plyoIntro" }, swaps: {} },
+    }, program).view;
+    expect(plan({ tmj: calm }, false).plan.items.some(i => isPlyometric(i.exercise))).toBe(true);
+    const off = plan({ tmj: calm }, true);
+    expect(off.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
+    expect(off.input.checks).toEqual({ tmj: { ...calm, feelingOff: true } });
+    expect(off.themeReasons).toEqual(["No jumps while you're feeling off."]);
+    // A profile with no check yet reads as unanswered and feeling off.
+    expect(plan({}, true).input.checks).toEqual({ tmj: { pre: null, post: null, feelingOff: true } });
+    // The day's own record is the day as the athlete left it.
+    expect(off.today.checks).toEqual({ tmj: calm });
+  });
 });

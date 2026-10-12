@@ -1,13 +1,13 @@
 import type { Weight, WeightUnit } from "@rg/domain";
 import {
-  attrsOf, isPlyometric, modeSkeleton, onFrontier, plyometricDay, positionGroup,
+  attrsOf, isDoneCleanly, isPlyometric, modeSkeleton, onFrontier, plyometricDay, positionGroup,
   type BlockId, type CheckReading, type EngineData, type ExerciseRecord, type Format, type FormatId, type Mode, type ModeSkeleton, type Theme,
 } from "@rg/exercise-library";
 import { Blocks } from "./blocks.js";
 import { Coverage } from "./coverage.js";
 import { Hist, HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
-import { Prog } from "./prog.js";
+import { Prog, type Exposure } from "./prog.js";
 import { Rng } from "./rng.js";
 import { Select, type Scored, type SelectCtx } from "./select.js";
 import { Swapping, type SlotChoice, type SwapSlot, type SwapState } from "./swapping.js";
@@ -20,8 +20,10 @@ import type { Block, BuildInput, BuildResult, Group, Item, Plan, Prefs, Step, Sw
 // it exactly, slot by slot, with the pure swap rules in swapping.ts (audit I1, I2, M4).
 // Plyometric moves (ruling b): only on a jumping day (a theme that emphasises plyometric work), only in the accessory
 // block, which then holds jumps alone, as straight sets or a superset, and plays after the warm-up and before the core
-// lifts; and only from the athlete's frontier (no easier variant, or one already done cleanly), with one new-or-retry
-// rung a session: a move last done with a profile's set flag on it rests for two jumping sessions, then retries.
+// lifts; and only from the athlete's frontier (no easier variant, or one already done cleanly — `isDoneCleanly`), with
+// one new-or-retry rung a session: a move last done (in any format) with a profile's set flag on it rests for two
+// jumping sessions, then retries. Swaps keep to the same: a jumps slot never offers a resting rung, and a new or
+// retried rung (`fresh`) only where no other slot holds one.
 
 const PREP_SECONDS = 8;
 const CHIME_SECONDS = 3;
@@ -225,33 +227,46 @@ function eligibleToday(ctx: Ctx, ex: ExerciseRecord): boolean {
 const doneBy = (ctx: Pick<Ctx, "stats">) => (id: string): boolean => Boolean(ctx.stats.get(id)?.lastDate);
 
 /**
- * Whether this move, done, unlocks the next rung: done, and not with an active profile's flag on it — never logged (no
- * flag could be set), or logged at least once without each profile's flag (a flagged rung unlocks nothing).
+ * Whether this move, done, unlocks the next rung: the library's one "done cleanly" rule (`isDoneCleanly`) over its
+ * history stats — done, and never logged (no flag could be set), or logged at least once without each profile's flag
+ * (a flagged rung unlocks nothing).
  */
-const unlocksBy = (ctx: Pick<Ctx, "stats" | "data">) => (id: string): boolean => {
-  const st = ctx.stats.get(id);
-  if (!st || !st.lastDate) return false;
-  return st.logged === 0 || ctx.data.profiles.active.every(p => !p.setFlag || (st.flags[p.setFlag.id] || 0) < st.logged);
-};
+const unlocksBy = (ctx: Pick<Ctx, "stats" | "data">) => (id: string): boolean => isDoneCleanly(ctx.stats.get(id), ctx.data.profiles.active);
 
 /** A jumps slot takes plyometric moves on the frontier only; every other slot takes no plyometric move at all. */
 const jumpRule = (ex: ExerciseRecord, jumps: boolean, ctx: Pick<Ctx, "stats" | "data">): boolean =>
   jumps ? isPlyometric(ex) && onFrontier(ex, unlocksBy(ctx)) : !isPlyometric(ex);
 
+/**
+ * The move's last logged exposure, in whatever format it was done: its newest progression entry (straight sets, a
+ * superset…), or a ladder or circuit entry newer than that from the last 14 days. A ladder or circuit entry older than
+ * that is not read: a trimmed history (`Hist.trim`, and the worker's own trim) keeps only each move's newest
+ * progression entries before its last 14 days, so the whole and the trimmed history read the same exposure — and a
+ * rest that began before then is over anyway (`restingBy`).
+ */
+const lastExposureBy = (ctx: Ctx) => {
+  const from = Hist.TRIM.windowFrom(ctx.today, null);
+  return (id: string): Exposure | undefined => Prog.exposuresForIn(ctx.hist, id).find(e => e.progression || !(e.date < from));
+};
+
 /** Whether the move's last logged exposure carried an active profile's flag: it rests, then retries (`restingBy`). */
-const lastFlaggedBy = (ctx: Ctx) => (id: string): boolean => {
-  const last = Prog.historyForIn(ctx.hist, id)[0];
-  return Boolean(last && ctx.data.profiles.active.some(p => p.setFlag && last.flags.includes(p.setFlag.id)));
+const lastFlaggedBy = (ctx: Ctx) => {
+  const lastOf = lastExposureBy(ctx);
+  return (id: string): boolean => {
+    const last = lastOf(id);
+    return Boolean(last && ctx.data.profiles.active.some(p => p.setFlag && last.flags.includes(p.setFlag.id)));
+  };
 };
 
 /** How many jumping sessions a move rests after a flagged exposure before it retries. */
 const REST_SESSIONS = 2;
 
 /**
- * When each jumping session started (start time, else date), in the history's order: a session that logged a jump, or
- * a jumping day (its theme emphasises plyometric work, whether or not it held a jump) of the last 14 days. Both are
- * what a trimmed history still holds (`Hist.trim` keeps each move's two newest entries and the last 14 days), so a
- * trimmed build counts exactly what a whole one does.
+ * When each jumping session started (start time, else date), in the history's order: a session that logged a jump in
+ * a progression format; or one of the last 14 days that logged a jump in any format (a circuit, a ladder) or was a
+ * jumping day (its theme emphasises plyometric work, whether or not it held a jump). All are what a trimmed history
+ * still holds (`Hist.trim` keeps each move's two newest progression entries and the last 14 days), so a trimmed build
+ * counts exactly what a whole one does.
  */
 function jumpingSessions(ctx: Ctx): readonly string[] {
   return ctx.hist.memo(`jumpingSessions|${ctx.today}`, () => {
@@ -259,28 +274,33 @@ function jumpingSessions(ctx: Ctx): readonly string[] {
     const days = new Set(ctx.data.themes.filter(t => plyometricDay(t)).map(t => t.id));
     const starts: string[] = [];
     for (const s of ctx.hist.sessions) {
+      const recent = !(s.date < from);
       const jumped = (s.entries || []).some(e => {
-        if (!Hist.isProgression(e)) return false;
+        if (!(recent ? Hist.isLogged(e) : Hist.isProgression(e))) return false;
         const ex = ctx.hist.get(e.id);
         return Boolean(ex && isPlyometric(ex));
       });
-      if (jumped || (s.theme != null && days.has(s.theme) && !(s.date < from))) starts.push(String(s.startedAt || s.date));
+      if (jumped || (recent && s.theme != null && days.has(s.theme))) starts.push(String(s.startedAt || s.date));
     }
     return starts;
   });
 }
 
 /**
- * Whether a move whose last logged exposure was flagged is still resting: fewer than REST_SESSIONS jumping sessions
- * since that exposure. A rest that began before the last 14 days is over (a trimmed history no longer shows the
- * jumping days in between), so a rested move can't be locked out by sparse jumping days.
+ * Whether a move whose last logged exposure (any format, `lastExposureBy`) was flagged is still resting: fewer than
+ * REST_SESSIONS jumping sessions since that exposure. A rest that began before the last 14 days is over (a trimmed
+ * history no longer shows the jumping days in between), so a rested move can't be locked out by sparse jumping days.
  */
-const restingBy = (ctx: Ctx) => (id: string): boolean => {
-  const last = Prog.historyForIn(ctx.hist, id)[0];
-  if (!last || last.date < Hist.TRIM.windowFrom(ctx.today, null)) return false;
-  let since = 0;
-  for (const at of jumpingSessions(ctx)) if (at > last.startedAt) since += 1;
-  return since < REST_SESSIONS;
+const restingBy = (ctx: Ctx) => {
+  const lastOf = lastExposureBy(ctx);
+  const from = Hist.TRIM.windowFrom(ctx.today, null);
+  return (id: string): boolean => {
+    const last = lastOf(id);
+    if (!last || last.date < from) return false;
+    let since = 0;
+    for (const at of jumpingSessions(ctx)) if (at > last.startedAt) since += 1;
+    return since < REST_SESSIONS;
+  };
 };
 
 /**
@@ -778,21 +798,39 @@ function slotSteps(data: EngineData, group: Group, it: Item): Step[] {
   return rungs.flatMap((reps, r) => oneSet(it, r, f, { setCount: rungs.length, target: { ...(it.target || {}), reps } }));
 }
 
-function choiceOf(ctx: Ctx, group: Group, item: Item, ex: ExerciseRecord, reasons: string[]): SlotChoice {
+/**
+ * A jump new to the athlete, or retried after a flagged exposure: the session's one new-or-retry rung (`rankJumps`).
+ * As a swap choice it carries `fresh`, so the swap rules keep one a session (`Swapping`).
+ */
+const freshRungBy = (ctx: Ctx) => {
+  const done = doneBy(ctx);
+  const flagged = lastFlaggedBy(ctx);
+  return (ex: ExerciseRecord): boolean => isPlyometric(ex) && (!done(ex.id) || flagged(ex.id));
+};
+
+function choiceOf(ctx: Ctx, group: Group, item: Item, ex: ExerciseRecord, reasons: string[], fresh: (ex: ExerciseRecord) => boolean): SlotChoice {
   const inSlot = ex.id === item.exercise.id ? item : swapItem(item, ex, ctx);
-  return { id: ex.id, name: ex.name, reasons, steps: slotSteps(ctx.data, group, inSlot), moveKey: moveKey(ex), pairing: pairingOf(ex) };
+  return {
+    id: ex.id, name: ex.name, reasons, steps: slotSteps(ctx.data, group, inSlot), moveKey: moveKey(ex), pairing: pairingOf(ex),
+    ...(fresh(ex) ? { fresh: true as const } : {}),
+  };
 }
 
 /** Every move this slot may take on its own terms: block, format, family, gear, mode and today's checks. */
 /** The same for every slot of one block and format (or one core family), so prepare works it out once per build. */
+/** A jumps slot never takes a resting rung (one whose last exposure was flagged, still within its rest). */
 function slotCandidates(ctx: Ctx, item: Item): ExerciseRecord[] {
   if (item.block === "core") {
     return Blocks.familyCandidates(ctx.data, item.coreFamily ?? "", { equipment: ctx.equipment, excluded: ctx.prefs.excluded })
       .filter(ex => Lib.coreFamilyOf(ctx.data, ex) === item.coreFamily && Lib.fitsMode(ctx.data, ex, ctx.mode, ctx.checks));
   }
   const jumps = isPlyometric(item.exercise);
+  const done = doneBy(ctx);
+  const flagged = lastFlaggedBy(ctx);
+  const resting = restingBy(ctx);
   return Lib.all(ctx.data).filter(ex =>
     jumpRule(ex, jumps, ctx) &&
+    !(jumps && done(ex.id) && flagged(ex.id) && resting(ex.id)) &&
     fitsBlock(ctx, ex, item.block) &&
     eligibleToday(ctx, ex) &&
     accepts(ctx.data, item.format, ex));
@@ -835,11 +873,12 @@ function prepare(data: EngineData, input: BuildInput, _k = 3, history?: HistInde
     if (!list) { list = rank(slotCandidates(ctx, item)); ranked.set(key, list); }
     return list;
   };
+  const fresh = freshRungBy(ctx);
   for (const group of base.groups) {
     for (const item of group.items) {
       const partner = group.format === "superset" ? group.items.find(o => o !== item)?.slotKey ?? null : null;
-      const original = choiceOf(ctx, group, item, item.exercise, item.why);
-      const pool = rankedFor(item).filter(r => r.ex.id !== item.exercise.id).map(r => choiceOf(ctx, group, item, r.ex, r.reasons));
+      const original = choiceOf(ctx, group, item, item.exercise, item.why, fresh);
+      const pool = rankedFor(item).filter(r => r.ex.id !== item.exercise.id).map(r => choiceOf(ctx, group, item, r.ex, r.reasons, fresh));
       slots[item.slotKey] = { slotKey: item.slotKey, partner, original, pool };
       current[item.slotKey] = original;
     }

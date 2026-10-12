@@ -228,9 +228,13 @@ const WINDOW_DAYS = 14;
 const RECENT_SESSIONS = 3;
 const PROGRESSION_ENTRIES = 2;
 
+/** A logged entry: a move's id and at least one set, in any format. */
+const isLogged = (e: HistorySession["entries"][number] | null | undefined): e is HistorySession["entries"][number] =>
+  Boolean(e && e.id && (e.sets || []).some(Boolean));
+
 /** A logged entry progression reads: ladders and circuits don't count, nor an entry with no sets. */
 const isProgression = (e: HistorySession["entries"][number] | null | undefined): e is HistorySession["entries"][number] =>
-  Boolean(e && e.id && e.format !== "ladder" && e.format !== "circuit" && (e.sets || []).some(Boolean));
+  isLogged(e) && e.format !== "ladder" && e.format !== "circuit";
 
 /** The first day of `trim`'s window: 14 days back, or the running block's start (or a lift's rotation in) if earlier. */
 function windowFrom(today: string, block: Pick<Block, "startedAt" | "weeks" | "rotations"> | null): string {
@@ -302,6 +306,6 @@ function summarize(sessions: readonly HistorySession[], asOf: string): HistorySu
 const TRIM = { recentSessions: RECENT_SESSIONS, progressionEntries: PROGRESSION_ENTRIES, windowFrom } as const;
 
 export const Hist = {
-  sorted, idsIn, daysBetween, canonical, firstDone, newMoveThisWeek, lastFamilyDate, trim, summarize, TRIM, isProgression,
+  sorted, idsIn, daysBetween, canonical, firstDone, newMoveThisWeek, lastFamilyDate, trim, summarize, TRIM, isLogged, isProgression,
   firstDoneIn, newMoveThisWeekIn, lastFamilyDateIn,
 };
