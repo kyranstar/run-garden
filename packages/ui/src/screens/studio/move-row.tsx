@@ -35,7 +35,7 @@ const FIT_ICON: Readonly<Record<FitState, ReactNode>> = {
 /** Today's fit: icon, colour and word together, the reason one tap down. */
 export function FitBadge({ fit }: { fit: Fit }) {
   return (
-    <Tooltip term={fit.word} tip={fit.reason} className={`stu-fit stu-fit--${fit.state}`}>
+    <Tooltip term={fit.word} tip={fit.reason} className={`tap-pad stu-fit stu-fit--${fit.state}`}>
       {FIT_ICON[fit.state]}
       {fit.word}
     </Tooltip>

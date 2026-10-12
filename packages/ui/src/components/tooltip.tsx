@@ -13,8 +13,10 @@
  * Escape goes through `useEscapeKey`, so it belongs to the top thing: a tooltip open inside a sheet closes first, and
  * the sheet only on the next press. One tooltip is open at a time — opening another closes the last.
  *
- * The word is a fingertip target without growing the line it sits in: `.tap-pad` gives it an invisible 44px hit area
- * (its container, `.stu-meta`, says how far that may reach). The popover is placed under the word and measured on open:
+ * A term inside a line of text is an inline target (WCAG 2.5.8's inline exemption): no pad of its own, because a pad
+ * on every word of a line would reach into the lines around it and overlap. A caller whose term stands alone (the
+ * Studio's fit badge) passes `tap-pad` in `className`, and its container says how far that may reach. The popover is
+ * placed under the word and measured on open:
  * past the right edge it shifts back inside (`--tip-shift`), because the shell clips anything wider than the page; too
  * near the bottom — or the phone's tab bar — it opens upward instead (`data-place="above"`), and it paints above the
  * tab bar either way.
@@ -98,7 +100,7 @@ export function Tooltip({
     >
       <button
         type="button"
-        className={className ? `term tap-pad ${className}` : "term tap-pad"}
+        className={className ? `term ${className}` : "term"}
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((o) => !o)}

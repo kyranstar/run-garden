@@ -473,9 +473,23 @@ describe("the Studio is honest about its bounds", () => {
     expect(z(".term-pop")).toBeGreaterThan(z(".bottom-nav"));
   });
 
-  it("a term's tap pad reaches no further than its line allows, so a finger gets 44px and the layout grows by nothing", () => {
-    // The makeup rule grows a padded control by 44 − 2 × clearance; at 12px it asks for 20px, under a term's own 23px.
-    expect(ruleBody(".stu-meta")).toContain("--tap-clear: var(--space-5)");
+  it("only the fit carries a pad, and it reaches no further than the row guarantees on either side: nothing overlaps", () => {
+    // The terms are words inside a line of text (WCAG's inline exemption): no pad, so no reach into the lines around.
+    expect(ruleBody(".stu-meta")).not.toContain("--tap-clear");
+    const root = css.slice(css.indexOf(":root {"), css.indexOf("\n}\n", css.indexOf(":root {")));
+    const px = (token: string) => parseFloat(new RegExp(`--${token}: ([\\d.]+)rem`).exec(root)![1]!) * 16;
+    const step = (v: string) => px(/var\(--([\w-]+)\)/.exec(v)![1]!);
+    const dose = ruleBody(".stu-meta--dose");
+    const reach = step(/--tap-clear-y: ([^;]+);/.exec(dose)![1]!);
+    expect(reach).toBeGreaterThan(0);
+    // Below: the row's own bottom padding (its phone value — the smaller one).
+    const row = ruleBody(".stu-move");
+    const pad = /padding: (var\([^)]+\)) (var\([^)]+\));/.exec(row)!;
+    expect(step(pad[1]!)).toBeGreaterThanOrEqual(reach);
+    // Above: the line above's distance — the row's gap plus this line's own top margin.
+    const gap = step(/row-gap: ([^;]+);/.exec(row)![1]!);
+    const top = step(/margin-top: ([^;]+);/.exec(dose)![1]!);
+    expect(gap + top).toBeGreaterThanOrEqual(reach);
   });
 
   it("the themes are one row that scrolls sideways inside its own box, never the page", () => {

@@ -39,7 +39,7 @@ describe("a move row", () => {
 
   it("line 3: purpose · contraction · primary muscles, each a term that explains itself — and nothing else", () => {
     for (const [word, id] of [["Strength", "strength"], ["Isotonic", "isotonic"], ["Quads", "quads"], ["Glute max", "glute-max"]] as const) {
-      expect(line(html, 0), word).toMatch(new RegExp(`<button type="button" class="term tap-pad"[^>]*aria-expanded="false"[^>]*>${word}</button>`));
+      expect(line(html, 0), word).toMatch(new RegExp(`<button type="button" class="term"[^>]*aria-expanded="false"[^>]*>${word}</button>`));
       expect(html, word).toContain(GLOSSARY[id]!.replace(/'/g, "&#x27;"));
     }
     expect(text(line(html, 0))).not.toContain("Kettlebell");
@@ -61,10 +61,12 @@ describe("a move row", () => {
     expect(at(["mat"])).toContain("Kettlebell or Dumbbells");
   });
 
-  it("every term and the fit carry a tap pad: 44px to a finger, no growth in the layout", () => {
-    const buttons = [...html.matchAll(/<button type="button" class="([^"]*)"/g)].map((m) => m[1]!);
-    expect(buttons.length).toBeGreaterThan(4);
-    for (const cls of buttons) expect(cls.split(" "), cls).toContain("tap-pad");
+  it("the terms are words inside a line (the inline exemption): no pads to overlap; the fit alone is a padded target", () => {
+    for (const cls of [...line(html, 0).matchAll(/<button type="button" class="([^"]*)"/g)].map((m) => m[1]!)) {
+      expect(cls, cls).toBe("term");
+    }
+    const fit = /<button type="button" class="([^"]*stu-fit[^"]*)"/.exec(line(html, 1))![1]!;
+    expect(fit.split(" ")).toContain("tap-pad");
   });
 
   it("Add is there only when there is something for it to do", () => {

@@ -160,7 +160,9 @@ export function StudioScreen({ onAdd, onOpen, onQuickStart }: StudioScreenProps 
     if (!want || !r) return;
     const field = r.querySelector<HTMLInputElement>(".search-field input");
     const chip = typeof want.to === "number" ? r.querySelectorAll<HTMLElement>(".stu-chip-x")[want.to] : null;
-    const target = want.to === "field" ? field : (chip ?? heading.current);
+    // Decided from the NEW state (`listing`), not the deferred view: a list that is closing still draws its old
+    // chips and heading for a frame, and focusing one of them would leave focus on a node about to unmount.
+    const target = want.to === "field" || !listing ? field : (chip ?? heading.current);
     // The list is on its way (the view is deferred): wait for the render that brings it.
     if (!target && listing) return;
     focusNext.current = null;

@@ -9233,11 +9233,10 @@ button.stu-qs:hover {
   font-size: var(--text-sm);
   color: var(--ink-soft);
 }
-/* A term is ~23px tall; its pad may reach 12px (`--space-5`), so it is 44px to
-   a finger while the makeup rule asks the box for 44 − 24 = 20px, under its own
-   height: no line grows. */
+/* The terms are words inside a line of text — WCAG 2.5.8's inline exemption —
+   so they carry no pad: a pad on every word reached into the lines above and
+   below and overlapped its neighbours'. */
 .stu-meta {
-  --tap-clear: var(--space-5);
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
@@ -9249,6 +9248,16 @@ button.stu-qs:hover {
 }
 .stu-move-sum + .stu-meta {
   margin-top: var(--space-2);
+}
+/* The one padded target in a row, today's fit, is on this, the row's last line.
+   Its pad reaches what the row guarantees on both sides — 8px: the row's bottom
+   padding below (8px on a phone, 12 from sm), and above, the row's 2px gap plus
+   this line's 6px top margin — so it overlaps nothing; under a finger the
+   makeup rule grows the badge to 44 − 16 = 28px and the pad takes it to 44. */
+.stu-meta--dose {
+  --tap-clear-y: var(--space-4);
+  --tap-clear-x: var(--space-2);
+  margin-top: var(--space-3);
 }
 .stu-meta--dose > span:first-child {
   color: var(--ink);

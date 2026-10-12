@@ -369,6 +369,33 @@ describe("typing filters, live", () => {
     expect(document.activeElement?.textContent).toBe("Moves");
   });
 
+  it("removing the last chip with nothing typed closes the list: focus goes to the field, never to the page", async () => {
+    // A browsed part: its chip was the list's only one.
+    mount("/studio");
+    await press("Strength");
+    await press("Remove Strength");
+    expect(where).toBe("/studio");
+    expect(body()).toContain("Quick starts");
+    expect(document.activeElement).toBe(input());
+  });
+
+  it("…the same with the place's gear known, whose default chip the closing list still drew for a frame", async () => {
+    mount("/studio", { places: placesDto(["mat", "kettlebell"]) });
+    await press("Strength");
+    expect(host!.querySelector('[aria-label="Remove At Home"]')).not.toBeNull();
+    await press("Remove Strength");
+    expect(body()).toContain("Quick starts");
+    expect(document.activeElement).toBe(input());
+  });
+
+  it("…and from a deep link, with no home behind it", async () => {
+    mount("/studio?tag=ski");
+    await press("Remove Ski");
+    expect(where).toBe("/studio");
+    expect(body()).toContain("Quick starts");
+    expect(document.activeElement).toBe(input());
+  });
+
   it("a loosening hands focus to the list it opened", async () => {
     mount("/studio?part=power&tag=desk-relief");
     const show = [...host!.querySelectorAll("button")].find((b) => /^Show \d+ without/.test(b.textContent ?? ""))!;
