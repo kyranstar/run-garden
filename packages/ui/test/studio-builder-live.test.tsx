@@ -823,6 +823,15 @@ describe("a planned workout that can't change, judged by today", () => {
     expect(text()).not.toContain("Fix the note above to start.");
     expect(startButton()).toBeNull();
     expect(document.querySelector(".stu-build-foot [hidden]")).toBeNull();
+    // Nothing here can be fixed, so nothing says "to fix": the count is of notes — the rule-out, and the Develop day's
+    // cost ("Build needs a calm jaw…") — in the neutral style, and the rule-out is a note to a screen reader too.
+    const count = document.querySelector(".stu-sum-count")!;
+    expect(count.textContent).toBe("2 notes");
+    expect(count.classList.contains("stu-sum-count--error")).toBe(false);
+    expect(document.querySelector('.stu-sum [role="status"]')!.textContent).toBe("2 notes");
+    expect(document.querySelector(".stu-note--error .stu-note-text .visually-hidden")!.textContent).toBe("Note: ");
+    expect(text()).not.toContain("to fix");
+    expect(text()).not.toContain("To fix");
   });
 
   it("…and today's check unanswered: the note says so, with no check to answer from here", async () => {

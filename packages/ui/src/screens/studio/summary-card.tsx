@@ -15,7 +15,7 @@
  * and the warnings (costs, never blocks) fold away. Every level has its number beside it, and every note its shape
  * (a triangle to fix, a circle for a cost) and a word for a screen reader: status is never colour alone. A workout
  * that can't change (done, under way, its day passed) still says what it would be judged by, but offers nothing to do:
- * no Fix, no check.
+ * no Fix, no check — and nothing says "to fix": its notes are counted as notes, in the neutral style.
  */
 import { useId } from "react";
 import { GLOSSARY } from "@rg/exercise-library";
@@ -44,7 +44,7 @@ export function NoteRow({
     <li className={`stu-note stu-note--${note.severity}`}>
       <span className="stu-note-icon">{error ? <IconAlert /> : <IconInfo />}</span>
       <span className="stu-note-text">
-        <span className="visually-hidden">{error ? "To fix: " : "Note: "}</span>
+        <span className="visually-hidden">{error && !readOnly ? "To fix: " : "Note: "}</span>
         {note.message}
       </span>
       {!readOnly && (note.check || note.fix) ? (
@@ -91,7 +91,10 @@ export function SummaryCard({
   const errors = judged.notes.filter((n) => n.severity === "error");
   const warnings = judged.notes.filter((n) => n.severity === "warning");
   const line = [d ? `${d.estimatedMinutes} min` : "No moves yet", d ? (CATEGORY_LABELS[d.category] ?? null) : null, place].filter(Boolean).join(" · ");
-  const count = errors.length ? `${errors.length} to fix` : warnings.length ? `${warnings.length} ${warnings.length === 1 ? "note" : "notes"}` : "";
+  const notesWord = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
+  // Read-only, nothing here can be fixed: every note is counted as a note, in the neutral style.
+  const fixing = readOnly ? 0 : errors.length;
+  const count = fixing ? `${fixing} to fix` : readOnly && judged.notes.length ? notesWord(judged.notes.length) : warnings.length ? notesWord(warnings.length) : "";
   const areas = d ? areasWorked(d) : [];
   const row = (n: Note, i: number) => <NoteRow key={`${n.code}-${i}`} note={n} onFix={onFix} onCheck={onCheck} checkLabel={checkLabel} readOnly={readOnly} />;
   return (
@@ -101,7 +104,7 @@ export function SummaryCard({
       </h2>
       <button type="button" className="stu-sum-head" aria-expanded={open} aria-controls={`${id}-b`} onClick={onToggle}>
         <span className="stu-sum-line">{line}</span>
-        {count ? <span className={`stu-sum-count${errors.length ? " stu-sum-count--error" : ""}`}>{count}</span> : null}
+        {count ? <span className={`stu-sum-count${fixing ? " stu-sum-count--error" : ""}`}>{count}</span> : null}
         <span className="stu-sum-chev" aria-hidden="true">
           <IconChevron />
         </span>
@@ -109,7 +112,7 @@ export function SummaryCard({
       {/* What is left to fix, said when it changes — and nothing, said plainly: a Fix that clears the last error is heard
           as well as seen. (Costs aren't counted here: they change nothing Start or Schedule can do.) */}
       <span className="visually-hidden" role="status">
-        {errors.length ? `${errors.length} to fix` : "Nothing to fix."}
+        {readOnly ? count : fixing ? `${fixing} to fix` : "Nothing to fix."}
       </span>
       {errors.length ? <ul className="stu-notes">{errors.map(row)}</ul> : null}
       <div id={`${id}-b`} className="stu-sum-body" hidden={!open}>
