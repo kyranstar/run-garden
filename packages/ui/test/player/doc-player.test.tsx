@@ -253,7 +253,7 @@ describe("a document workout's items, played", () => {
     expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 58 });
   });
 
-  it("an Edit left open as the rest runs out holds the rest; Confirm writes to the hold, and the next step is neither touched nor skipped", async () => {
+  it("an Edit card holds the clocks while it is open; Confirm writes to the hold, and the next step is neither touched nor skipped", async () => {
     type Stored = { live: { entries: Record<string, { sets: Array<{ secs: number | null; done: boolean; touched: boolean }> }> } };
     await start(maxBuild(), docView());
     await stepTo(4);
@@ -261,13 +261,16 @@ describe("a document workout's items, played", () => {
     await click("Done");
     await until(() => text().includes("5 of 6"), "the rest after the wall sit");
     await click("Edit");
-    // The rest's 30 s run out with the card open: it stays on the rest, card and Confirm in reach.
+    // Well past the rest's 30 s with the card open: still the rest, its time held, card and Confirm in reach.
     await at(T0 + 150 * S);
     expect(text()).toContain("5 of 6");
+    expect(text()).toContain("0:30");
     await type(control("Seconds") as HTMLInputElement, "58");
     await click("Confirm");
-    // Closed: the rest that ran out moves on.
+    // Closed: the rest carries on from now — its 30 s, then the next step.
     await at(T0 + 151 * S);
+    expect(text()).toContain("5 of 6");
+    await at(T0 + 180 * S);
     await until(() => text().includes("6 of 6"), "the next step");
     expect(text()).toContain("Reclined butterfly");
     await act(async () => window.dispatchEvent(new Event("pagehide")));
@@ -275,6 +278,50 @@ describe("a document workout's items, played", () => {
     const stored = await readLive<Stored>(db!, SLOT);
     expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 58 });
     expect(stored?.recorder.live.entries.reclinedButterfly!.sets[0]).toMatchObject({ secs: null, touched: false });
+  });
+
+  it("an Edit card opened in a session already paused leaves it paused when it closes", async () => {
+    await start(maxBuild(), docView());
+    await stepTo(4);
+    await at(T0 + 30 * S);
+    await click("Pause");
+    expect(text()).toContain("Resume");
+    // Done while paused: the rest after it starts paused too.
+    await click("Done");
+    await until(() => text().includes("5 of 6"), "the rest");
+    expect(text()).toContain("Paused");
+    await click("Edit");
+    await click("Confirm");
+    await at(T0 + 60 * S);
+    expect(text()).toContain("Paused");
+    expect(text()).toContain("0:30");
+  });
+
+  it("a card held past the rest's end never plays its overrun into the next step: the hold after arrives at its get-ready", async () => {
+    type Stored = { live: { entries: Record<string, { sets: Array<{ secs: number | null; done: boolean }> }> } };
+    await start(maxBuild(), docView());
+    await at(T0 + 53 * S);
+    await click("Done");
+    await until(() => text().includes("2 of 6"), "the right side");
+    await at(T0 + 94 * S);
+    await click("Done");
+    await until(() => text().includes("3 of 6"), "the rest");
+    // A second of the rest left; the card open 20 s past its end.
+    await at(T0 + 123 * S);
+    await click("Edit");
+    await at(T0 + 144 * S);
+    await click("Confirm");
+    await at(T0 + 145 * S);
+    await until(() => text().includes("4 of 6"), "the wall sit");
+    expect(text()).toContain("Get ready");
+    // Done just after its get-ready: a second held, never the 20 s the card was open.
+    await at(T0 + 154 * S);
+    await click("Done");
+    await until(() => text().includes("5 of 6"), "the rest after");
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    const stored = await readLive<Stored>(db!, SLOT);
+    expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 1 });
   });
 
   it("a timed move to max with no target counts up from its start, and Done's card holds the seconds counted", async () => {

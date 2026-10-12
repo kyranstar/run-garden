@@ -9,7 +9,8 @@
  * results it holds and however many sessions its windows hold.
  *
  * RULES
- * - hold_max: the longest done set (`performed_sets.seconds`) of the moves, app and watch sessions alike. best_set:
+ * - hold_max: the longest done set (`performed_sets.seconds`) of the moves, app and watch sessions alike — a set held
+ *   a side at a time (a row per side under one set number) at its shorter side, as history reads it. best_set:
  *   per done, loaded set — `e1rm` = kg × (1 + reps / 30) (Epley; a single is its own load; a set of more than 12 reps
  *   is no estimate and is left out), `load_at_reps` = the heaviest kg lifted for at least `reps`, `reps_at_load` = the
  *   most reps at `loadKg` or more (within 0.05 kg). Logs use `load_kg`, so sets typed in lb and kg compare. One point
@@ -27,8 +28,10 @@
  *   (`planned_workouts.workout_doc`) — and for a move the document does not hold, the build's own steps
  *   (`payload.build.steps`: a timed step's seconds, a set step's target reps and weight), else the slot it was swapped
  *   into mid-session: a document build's ⇄ options (`payload.build.fromDoc.slots`: a planned alternate or a library
- *   offer) carry the slot's `max` and the option's own timed seconds — a real max on the swapped move counts. An app
- *   session's build is
+ *   offer) carry the slot's `max` and the option's own timed seconds — a real max on the swapped move counts. A move
+ *   offered in more than one slot is judged by the slot at the set's place among the session's moves (its entry: the
+ *   moves in the order the build first plays them), when one is there; else by every slot offering it, a slot to max
+ *   winning (`max` makes it a test). An app session's build is
  *   its `build_id`; a watch session's is its workout's latest locked build (the one sent). SQLite reads just the
  *   moves' items and steps out of the documents and payloads; the Worker never parses either whole. A set whose
  *   prescription is unknown is not capacity — nothing says it was a max. `current` is the best of every set (each is
@@ -228,12 +231,18 @@ type CompactItem = [string, number, number | null, number | null, number | null]
 /** A build step, as SQLite reads it: [exerciseId, kind, seconds, target reps, target weight v, u]. */
 type CompactStep = [string | null, string | null, number | null, number | null, number | null, string | null];
 
-/** A document build's ⇄ option for one of the moves, as SQLite reads it: [move id, its slot's max (0|1), its timed seconds]. */
-type CompactOption = [string, number, number | null];
+/**
+ * A document build's ⇄ option for one of the moves, as SQLite reads it: [move id, its slot's max (0|1), its timed
+ * seconds, its slot's key].
+ */
+type CompactOption = [string, number, number | null, string];
+/** A build's logged steps in play order, as SQLite reads them: [slot key, move id]. */
+type CompactPlace = [string, string];
 
 const isItem = (x: unknown): x is CompactItem => Array.isArray(x) && x.length === 5 && typeof x[0] === "string";
 const isStep = (x: unknown): x is CompactStep => Array.isArray(x) && x.length === 6;
-const isOption = (x: unknown): x is CompactOption => Array.isArray(x) && x.length === 3 && typeof x[0] === "string";
+const isOption = (x: unknown): x is CompactOption => Array.isArray(x) && x.length === 4 && typeof x[0] === "string";
+const isPlace = (x: unknown): x is CompactPlace => Array.isArray(x) && x.length === 2 && typeof x[0] === "string" && typeof x[1] === "string";
 
 interface Prescribed {
   /** The moves' items in the session's document; null when the session has no document. */
@@ -241,6 +250,22 @@ interface Prescribed {
   steps: CompactStep[];
   /** The moves among the build's ⇄ options (a document build's slots), with their slot's prescription. */
   options: CompactOption[];
+  /** Each slot's place among the session's moves (an entry index), read from the build's logged steps. */
+  places: Map<string, number>;
+}
+
+/**
+ * Each slot's place among a session's moves: the moves in the order the build first plays them, as the recorder
+ * numbers its entries (one entry a move) — so the entry a set was saved under says which slot it was played in.
+ */
+function placesOf(steps: readonly CompactPlace[]): Map<string, number> {
+  const moves: string[] = [];
+  const out = new Map<string, number>();
+  for (const [slotKey, move] of steps) {
+    if (!moves.includes(move)) moves.push(move);
+    if (!out.has(slotKey)) out.set(slotKey, moves.indexOf(move));
+  }
+  return out;
 }
 
 /** What a session asked of one move: whether it was a test, and the most it prescribed (undefined where it said nothing). */
@@ -288,9 +313,19 @@ function slotOptions(moves: SQL): SQL<string | null> {
     select json_group_array(json_array(
       json_extract(op.value, '$.id'),
       coalesce(json_extract(sl.value, '$.max'), 0),
-      (select max(json_extract(st.value, '$.seconds')) from json_each(op.value, '$.steps') st where json_extract(st.value, '$.kind') = 'timed')))
+      (select max(json_extract(st.value, '$.seconds')) from json_each(op.value, '$.steps') st where json_extract(st.value, '$.kind') = 'timed'),
+      sl.key))
     from json_each(${sessionBuilds.payload}, '$.build.fromDoc.slots') sl, json_each(sl.value) grp, json_each(grp.value) op
     where grp.key in ('alternates', 'offers') and json_extract(op.value, '$.id') in ${moves}
+  ) end`;
+}
+
+/** A document build's logged steps in play order — [slot key, move id] — for the slots' places (`placesOf`). */
+function loggedPlaces(): SQL<string | null> {
+  return sql<string | null>`case when json_valid(${sessionBuilds.payload}) and json_type(${sessionBuilds.payload}, '$.build.fromDoc.slots') = 'object' then (
+    select json_group_array(json_array(json_extract(st.value, '$.slotKey'), json_extract(st.value, '$.exerciseId')))
+    from json_each(${sessionBuilds.payload}, '$.build.steps') st
+    where json_extract(st.value, '$.log') = 1 and json_extract(st.value, '$.exerciseId') is not null
   ) end`;
 }
 
@@ -303,7 +338,7 @@ const maxOf = (xs: readonly (number | null | undefined)[]): number | undefined =
  * What the session asked of this move: its document's items for it, else its build's steps, else the slot it was
  * swapped into (a document build's ⇄ option: the slot's max, the option's window); null when none says.
  */
-function prescriptionFor(p: Prescribed | undefined, exerciseId: string): Prescription | null {
+function prescriptionFor(p: Prescribed | undefined, exerciseId: string, entryIndex: number): Prescription | null {
   if (!p) return null;
   const items = (p.items ?? []).filter((i) => canonicalId(i[0]) === exerciseId);
   if (items.length > 0) {
@@ -313,8 +348,11 @@ function prescriptionFor(p: Prescribed | undefined, exerciseId: string): Prescri
   }
   const steps = p.steps.filter((s) => typeof s[0] === "string" && canonicalId(s[0]) === exerciseId);
   if (steps.length === 0) {
-    const options = p.options.filter((o) => canonicalId(o[0]) === exerciseId);
-    if (options.length === 0) return null;
+    const offered = p.options.filter((o) => canonicalId(o[0]) === exerciseId);
+    if (offered.length === 0) return null;
+    // The slot at the set's place, when one is; else every slot offering it, a slot to max winning.
+    const placed = offered.filter((o) => p.places.get(o[3]) === entryIndex);
+    const options = placed.length > 0 ? placed : offered;
     const tests = options.filter((o) => o[1] === 1);
     return { test: tests.length > 0, holdSec: maxOf((tests.length > 0 ? tests : options).map((o) => o[2])) };
   }
@@ -368,6 +406,9 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
     db
       .select({
         sessionId: performedSets.performedSessionId,
+        entryIndex: performedSets.entryIndex,
+        setIndex: performedSets.setIndex,
+        side: performedSets.side,
         exerciseId: performedSets.exerciseId,
         reps: performedSets.reps,
         seconds: performedSets.seconds,
@@ -391,6 +432,7 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
         items: documentItems(sessionBuilds.workoutDoc, moves),
         steps: buildSteps(moves),
         options: slotOptions(moves),
+        places: loggedPlaces(),
       })
       .from(sessionBuilds)
       .where(
@@ -455,16 +497,30 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
     const s = chosen.get(sessionId)!;
     const b = s.buildId !== null ? builds.get(s.buildId) : s.workoutId !== null ? sent.get(s.workoutId) : undefined;
     const items = parsedList(b?.items, isItem) ?? (s.workoutId !== null ? (plannedItems.get(s.workoutId) ?? null) : null);
-    const p = { items, steps: parsedList(b?.steps, isStep) ?? [], options: parsedList(b?.options, isOption) ?? [] };
+    const p = {
+      items,
+      steps: parsedList(b?.steps, isStep) ?? [],
+      options: parsedList(b?.options, isOption) ?? [],
+      places: placesOf(parsedList(b?.places, isPlace) ?? []),
+    };
     prescribed.set(sessionId, p);
     return p;
   };
 
-  return setRows
+  // A set held a side at a time is a row per side under one set number: one set, at its shorter side (as history reads
+  // it — the per-side rows never make a longer hold than both sides held).
+  const sets = new Map<string, (typeof setRows)[number]>();
+  for (const r of setRows) {
+    const key = r.side === null ? `${r.sessionId}|${r.entryIndex}|${r.setIndex}|${sets.size}` : `${r.sessionId}|${r.entryIndex}|${r.setIndex}`;
+    const held = sets.get(key);
+    const seconds = !held || held.seconds === null ? r.seconds : r.seconds === null ? held.seconds : Math.min(held.seconds, r.seconds);
+    sets.set(key, { ...(held ?? r), seconds });
+  }
+  return [...sets.values()]
     .filter((r) => chosen.has(r.sessionId))
     .map((r) => {
       const exerciseId = canonicalId(r.exerciseId);
-      const p = prescriptionFor(prescribedFor(r.sessionId), exerciseId);
+      const p = prescriptionFor(prescribedFor(r.sessionId), exerciseId, r.entryIndex);
       return {
         date: chosen.get(r.sessionId)!.localDate,
         exerciseId,

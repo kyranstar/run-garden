@@ -13,6 +13,7 @@
  *  - its cost flat from 0 to 1,000 sessions: the same statements, and a bounded number of rows handed to the Worker.
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { adaptiveConfigSchema, addDays, newId, startOfIsoWeek, type UserPreferences } from "@rg/domain";
 import { schema } from "@rg/database";
 import { EXERCISES, type EngineData } from "@rg/exercise-library";
@@ -163,6 +164,30 @@ describe("the records state from the database equals Records.baseline over the w
         }
       }
     }
+  });
+
+  it("a hold played a side at a time (a row per side under one set number) is one set at its shorter side, as history reads it", async () => {
+    const data = WORLDS[0]!.data;
+    const { userId } = await makeTestUser(db);
+    const hold = EXERCISES.find((e) => e.dose.type === "time")!.id;
+    const date = "2026-06-01";
+    const s: HistorySession = {
+      id: "sides-0", date, startedAt: `${date}T18:00:00.000Z`, mode: "build", theme: "t", blockNumber: 1,
+      checks: {}, done: [{ id: hold, secs: 60 }], entries: [{ id: hold, implement: null, perSide: true, format: "holds", flags: [], sets: [{ w: null, reps: null, secs: 45 }] }],
+    };
+    await writeHistory(db, userId, [s], "sides");
+    // The set as the app saves a hold to max played a side at a time: a row per side under its one number.
+    await db.delete(schema.performedSets).where(eq(schema.performedSets.performedSessionId, s.id));
+    const row = { performedSessionId: s.id, entryIndex: 0, exerciseId: hold, implement: null, format: "holds", perSide: true, setIndex: 0, reps: null, loadValue: null, loadUnit: null, loadKg: null, done: true, flags: [] };
+    await db.insert(schema.performedSets).values([{ ...row, id: newId(), side: "left", seconds: 60 }, { ...row, id: newId(), side: "right", seconds: 40 }]);
+    const whole = await loadHistory(db, userId);
+    expect(whole[0]!.entries[0]!.sets).toEqual([{ w: null, reps: null, secs: 40 }]);
+    const ids = [hold];
+    const later = addDays(date, 3);
+    const full = Records.baseline(data, whole, { ids, date: later, weeklyGoal: 4 });
+    const got = await recordsBaseline(db, userId, data, { ids, date: later, weeklyGoal: 4 });
+    expect(normal(got, later)).toEqual(normal(full, later));
+    expect(got.bests[hold]).toMatchObject({ secs: 40 });
   });
 
   it("is empty for an account with no sessions, as the whole history's is", async () => {

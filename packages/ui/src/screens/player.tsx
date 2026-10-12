@@ -260,6 +260,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const [logOpen, setLogOpen] = useState(false);
   /** A panel paused the countdown: closing it resumes. */
   const pausedByPanel = useRef(false);
+  /** The Edit card in a rest paused the clocks (as ⓘ and ⇄ do): closing it resumes, from now. */
+  const pausedByCard = useRef(false);
   const writer = useRef<LiveWriter | null>(null);
   /**
    * Keeping the session on the device failed (storage full, the database gone), or the device has no IndexedDB at all
@@ -295,8 +297,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     setNow(t);
     // A write that lands again clears the warning.
     if (writer.current && writer.current.error === null) setNotKept(false);
-    // A log card open in a rest (Edit) holds the rest there: it moves on once the card is closed.
-    setState((s) => settle(s, t, { autoAdvance: auto && !logRef.current }));
+    setState((s) => settle(s, t, { autoAdvance: auto }));
   }, [auto]);
   useEffect(() => {
     const onVisible = () => {
@@ -436,6 +437,14 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     });
     setLogOpen(true);
   };
+  /** Edit in a rest: the card holds the clocks while it is open, as ⓘ and ⇄ do — the rest, and what follows it. */
+  const editHeld = () => {
+    if (!state.paused && !state.finished) {
+      pausedByCard.current = true;
+      act(pause);
+    }
+    openLog();
+  };
   const confirm = () => {
     if (!draft) return;
     const t = logTarget(state, draft.held);
@@ -514,6 +523,14 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   logRef.current = logOpen;
   const finishedRef = useRef(state.finished);
   finishedRef.current = state.finished;
+  // The Edit card closed, however it closed (Confirm, Esc, a step): the clocks it held carry on from now.
+  useEffect(() => {
+    if (logOpen || !pausedByCard.current) return;
+    pausedByCard.current = false;
+    act(resume);
+    // `act` is this render's; the card's closing is all this waits on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logOpen]);
   // A log card left open when the session ended (✕ → End and review) is closed with it: its draft was never confirmed.
   useEffect(() => {
     if (!state.finished) return;
@@ -651,7 +668,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             toMax={toMax}
             open={open}
             held={logOpen ? null : heldBefore(state)}
-            onEditHeld={openLog}
+            onEditHeld={editHeld}
             log={
               logOpen && draft ? (
                 <LogCard

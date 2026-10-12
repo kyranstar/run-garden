@@ -111,10 +111,15 @@ async function session(
   return id;
 }
 
-async function sets(sessionId: string, exerciseId: string, rows: Array<{ seconds?: number; reps?: number; value?: number; unit?: "lb" | "kg"; done?: boolean }>): Promise<void> {
+async function sets(
+  sessionId: string,
+  exerciseId: string,
+  rows: Array<{ seconds?: number; reps?: number; value?: number; unit?: "lb" | "kg"; done?: boolean; side?: "left" | "right"; setIndex?: number }>,
+  entryIndex = 0,
+): Promise<void> {
   await db.insert(performedSets).values(
     rows.map((r, i) => ({
-      id: newId(), performedSessionId: sessionId, entryIndex: 0, exerciseId, setIndex: i,
+      id: newId(), performedSessionId: sessionId, entryIndex, exerciseId, setIndex: r.setIndex ?? i, side: r.side ?? null,
       seconds: r.seconds ?? null, reps: r.reps ?? null,
       loadValue: r.value ?? null, loadUnit: r.unit ?? null,
       loadKg: r.value === undefined ? null : r.unit === "lb" ? r.value * LB : r.value,
@@ -255,6 +260,57 @@ describe("hold_max", () => {
     // Not to max: past the slot's window by two seconds or more is capacity; at it, capped.
     await sets(await swapped(4, false, "alternates"), "splitSquatHold", [{ seconds: 63 }]);
     expect((await measure(SPLIT)).series.map((s) => [s.value, s.capped ?? false])).toEqual([[45, false], [60, true], [63, false]]);
+  });
+
+  it("a set held a side at a time (a row per side under one number) is one set at its shorter side, as history reads it", async () => {
+    const s = await appSession(day(3), { doc: doc([hold("wallSit", 40, true)]) });
+    await sets(s, "wallSit", [{ seconds: 70, side: "left", setIndex: 0 }, { seconds: 50, side: "right", setIndex: 0 }, { seconds: 30, setIndex: 1 }]);
+    const p = await measure(WALL_SIT);
+    expect(p).toMatchObject({ current: 50, sampleSize: 1 });
+    expect(p.series).toEqual([{ date: day(3), value: 50, display: 50 }]);
+  });
+
+  it("a move offered in two slots is judged by the slot at the set's place among the session's moves; with none there, a slot to max wins", async () => {
+    const SPLIT = { kind: "hold_max", libraryIds: ["splitSquatHold"] } as const;
+    const option = (slotKey: string, seconds: number) => ({
+      id: "splitSquatHold", name: "Split squat hold", reasons: [], moveKey: "k", pairing: {},
+      steps: [{ kind: "timed", slotKey, exerciseId: "splitSquatHold", seconds }],
+    });
+    /** core:0 (the wall sit, to max, 60 s) and core:1 (the plank, 40 s) both offer the split squat hold. */
+    const twoSlots = async (n: number) => {
+      const workoutId = await planned(day(n));
+      const buildId = newId();
+      await db.insert(sessionBuilds).values({
+        id: buildId, userId, workoutId, version: 1, engineVersion: "doc-build-3", inputsHash: "h",
+        payload: {
+          build: {
+            // Two sets of the wall sit, then the plank: the moves' places are 0 and 1 (a move counts once, where it is
+            // first played).
+            steps: [
+              { kind: "timed", slotKey: "core:0", exerciseId: "wallSit", seconds: 60, log: true },
+              { kind: "rest", slotKey: "core:0", exerciseId: null, seconds: 30, log: false },
+              { kind: "timed", slotKey: "core:0", exerciseId: "wallSit", seconds: 60, log: true },
+              { kind: "timed", slotKey: "core:1", exerciseId: "sidePlank", seconds: 40, log: true },
+            ],
+            fromDoc: { rev: 1, swaps: [], blocked: [], slots: { "core:0": { max: true, offers: [option("core:0", 60)] }, "core:1": { offers: [option("core:1", 40)] } } },
+          },
+          view: {},
+        },
+        workoutDoc: JSON.stringify(doc([hold("wallSit", 60, true), hold("sidePlank", 40)])),
+        lockedAt: T0, createdAt: T0,
+      });
+      return session(day(n), { buildId, workoutId });
+    };
+    const capped = async () => (await measure(SPLIT)).series.map((s) => s.capped ?? false);
+    // Saved under the second move's entry: played in core:1 (not to max, 40 s) — 41 s is at its window, capped.
+    await sets(await twoSlots(6), "splitSquatHold", [{ seconds: 41 }], 1);
+    expect(await capped()).toEqual([true]);
+    // Under the first's: core:0, to max at 60 s — 41 s is where the athlete stopped, capacity.
+    await sets(await twoSlots(5), "splitSquatHold", [{ seconds: 41 }], 0);
+    expect(await capped()).toEqual([true, false]);
+    // At no slot's place: every slot offering it, the one to max winning — capacity.
+    await sets(await twoSlots(4), "splitSquatHold", [{ seconds: 41 }], 7);
+    expect(await capped()).toEqual([true, false, false]);
   });
 
   it("a set with no known prescription (no build, no document) is capped — nothing says it was a max", async () => {
