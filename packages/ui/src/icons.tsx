@@ -41,6 +41,41 @@ export const IconGarden = ({ size }: IconProps) => (
   </svg>
 );
 
+/** The Studio (Stage 2 spec §2): a dumbbell growing the garden glyph's leaf — the moves, and what they grow into. */
+export const IconStudio = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <rect x="3.2" y="9" width="3.6" height="10" rx="1.2" />
+    <rect x="17.2" y="9" width="3.6" height="10" rx="1.2" />
+    <path d="M6.8 14h10.4" />
+    <path d="M12 14v-3.2" />
+    <path d="M12 10.8c0-3 2-5 5-5 0 3-2 5-5 5Z" />
+  </svg>
+);
+
+/** ⌕ — search. */
+export const IconSearch = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <circle cx="10.8" cy="10.8" r="6.3" />
+    <path d="M15.6 15.6 20.5 20.5" />
+  </svg>
+);
+
+/** Two sliders — filters. */
+export const IconFilters = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M4 7.5h9M17.5 7.5H20M4 16.5h2.5M11 16.5h9" />
+    <circle cx="15.2" cy="7.5" r="2.2" />
+    <circle cx="8.8" cy="16.5" r="2.2" />
+  </svg>
+);
+
+/** ＋ — add. */
+export const IconPlus = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
 export const IconInsights = ({ size }: IconProps) => (
   <svg {...base(size)}>
     <path d="M4 20V10M10 20V4M16 20v-7M21 20H3" />

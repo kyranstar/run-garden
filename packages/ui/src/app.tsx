@@ -11,6 +11,7 @@ import { SettingsScreen } from "./screens/settings.js";
 import { WelcomeScreen } from "./screens/welcome.js";
 import { Onboarding } from "./screens/onboarding.js";
 import { PlayerScreen } from "./screens/player.js";
+import { StudioScreen } from "./screens/studio/screen.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 import { OutboxSync } from "./components/outbox-sync.js";
@@ -78,6 +79,9 @@ function AuthedApp() {
       <Routes>
         <Route path="/" element={<GardenScreen />} />
         <Route path="/plan" element={<PlanScreen />} />
+        {/* Stage 2: the Studio — search, browse by part, themes and tags. Its sub-routes (a move, the builder,
+            templates) arrive with Tasks 5–7. */}
+        <Route path="/studio" element={<StudioScreen />} />
         {/* The boundary sits OUTSIDE the screen rather than inside it: a
             boundary never catches an error thrown by its own render, so
             wrapping the screen's returned tree would have missed anything

@@ -758,3 +758,62 @@ describe("from lg the watch's foots lie as the approved mocks draw them (audit 3
     expect(rule(".review-save")).toMatch(/min-width:\s*200px/);
   });
 });
+
+describe("the Studio exists at every width (Stage 2 Task 4)", () => {
+  const STUDIO_CLASSES = [
+    ".stu",
+    ".stu-bar",
+    ".search-field",
+    ".stu-filters-btn",
+    ".stu-home",
+    ".stu-section",
+    ".stu-quick",
+    ".stu-qs",
+    ".stu-chipset",
+    ".stu-themes",
+    ".stu-theme",
+    ".stu-results",
+    ".stu-chips",
+    ".stu-list",
+    ".stu-move",
+    ".stu-meta",
+    ".term",
+    ".term-pop",
+    ".stu-fit",
+    ".stu-empty",
+  ];
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+  // The Studio's own classes — not the old plan modal's `.studio-*`.
+  const studioSel = /(^|[\s,>+~])\.(stu(-[\w-]+)?|search-field[\w-]*|term(-[\w-]+)?)(?![\w-])/;
+
+  it("every one is styled in the base layer", () => {
+    for (const cls of STUDIO_CLASSES) expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
+  });
+
+  it("only lg lays it out differently: the filter column beside the list, and the button it replaces", () => {
+    const touched: string[] = [];
+    for (const block of widthBlocks) {
+      for (const m of block.body.matchAll(/([^{}]+)\{[^{}]*\}/g)) {
+        const sel = m[1]!.trim();
+        if (studioSel.test(sel)) touched.push(`${block.condition} ${sel}`);
+      }
+    }
+    expect(touched.sort()).toEqual(
+      [
+        "(min-width: 1024px) .stu--results .stu-filters-btn",
+        "(min-width: 1024px) .stu-facets",
+        "(min-width: 1024px) .stu-results",
+      ].sort(),
+    );
+  });
+
+  it("the filter column's controls are the sheet's controls: one component, two homes", () => {
+    const screen = read("../src/screens/studio/screen.tsx");
+    const sheet = read("../src/screens/studio/filters-sheet.tsx");
+    expect(screen).toMatch(/<aside className="stu-facets scroller"[^>]*>\s*<FilterControls/);
+    expect(sheet).toMatch(/<Sheet[\s\S]*<FilterControls[\s\S]*<\/Sheet>/);
+    // Below lg the column is not drawn, and the Filters button that opens the sheet always is.
+    expect(baseLayer).toMatch(/\.stu-facets \{[^}]*display: none/);
+    expect(baseLayer).not.toMatch(/\.stu-filters-btn \{[^}]*display: none/);
+  });
+});

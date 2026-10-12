@@ -26,6 +26,9 @@ import { CoachPanel, ProposalCard } from "../src/screens/coach-panel.js";
 import { CorosCheck } from "../src/screens/coros-check.js";
 import { DockPill } from "../src/screens/garden.js";
 import { WeeklyBrief } from "../src/screens/plan-brief.js";
+import { StudioScreen } from "../src/screens/studio/screen.js";
+import { FiltersSheet } from "../src/screens/studio/filters-sheet.js";
+import { emptyStudioCtx } from "../src/screens/studio/model.js";
 
 const noop = () => undefined;
 
@@ -396,5 +399,69 @@ describe("the coach overlay reserves its own room", () => {
     expect(ruleBody("  .plan-page--coach-open")).toContain(
       "padding-right: calc(var(--coach-w) + var(--space-7))",
     );
+  });
+});
+
+// ── 8. The Studio (Stage 2 Task 4) ─────────────────────────────────────────
+
+describe("the Studio is honest about its bounds", () => {
+  function renderAt(path: string, el: React.ReactElement): string {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    return renderToStaticMarkup(
+      createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, { initialEntries: [path] }, el)),
+    );
+  }
+
+  it("the page owns the list's scroll; the one scroller is the lg filter column", () => {
+    const html = renderAt("/studio?q=squat", createElement(StudioScreen));
+    expect(html).toContain('class="stu-list"');
+    expect((html.match(/scroller/g) ?? []).length).toBe(1);
+    expect(html).toMatch(/<aside class="stu-facets scroller"/);
+    // …and the home has none at all.
+    expect(renderAt("/studio", createElement(StudioScreen))).not.toContain("scroller");
+  });
+
+  it("the filters sheet is one scroll owner, with its actions pinned below it", () => {
+    const html = renderAt(
+      "/studio",
+      createElement(FiltersSheet, {
+        open: true,
+        onClose: noop,
+        filters: {},
+        ctx: emptyStudioCtx,
+        count: 12,
+        onChange: noop,
+        onClear: noop,
+        onShow: noop,
+      }),
+    );
+    expect((html.match(/scroller/g) ?? []).length).toBe(1);
+    expect(html.indexOf('class="sheet-body scroller"')).toBeLessThan(html.indexOf('class="sheet-foot"'));
+    expect(html.slice(html.indexOf('class="sheet-foot"'))).toContain("Show 12 moves");
+  });
+
+  it("nothing in a row, the bar or the chips can push the page wider", () => {
+    expect(ruleBody(".search-field")).toContain("min-width: 0");
+    expect(ruleBody(".search-field input")).toContain("min-width: 0");
+    expect(ruleBody(".stu-move")).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    expect(ruleBody(".stu-move-name")).toContain("overflow-wrap: anywhere");
+    for (const sel of [".stu-meta", ".stu-chips", ".stu-chipset"]) expect(ruleBody(sel), sel).toContain("flex-wrap: wrap");
+    // A long placeholder ends in an ellipsis rather than a hard cut.
+    expect(ruleBody(".search-field input")).toContain("text-overflow: ellipsis");
+  });
+
+  it("the count and Clear wrap together, never Clear alone on a line", () => {
+    const html = renderAt("/studio?q=squat", createElement(StudioScreen));
+    expect(html).toMatch(/<span class="stu-tally"><span class="stu-count"[^>]*>[^<]*<\/span><button[^>]*>Clear<\/button><\/span>/);
+    expect(ruleBody(".stu-tally")).toContain("white-space: nowrap");
+  });
+
+  it("a term's popover is a sentence box, not a pill, and it fits the viewport", () => {
+    const pop = ruleBody(".term-pop");
+    expect(pop).toContain("white-space: normal");
+    expect(pop).toContain("overflow-wrap: anywhere");
+    expect(pop).toMatch(/max-width: min\([^;]*100vw[^;]*\)/);
+    // Measured on open and shifted back inside the viewport when it would cross the edge.
+    expect(pop).toContain("translateX(var(--tip-shift, 0px))");
   });
 });

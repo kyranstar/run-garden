@@ -8875,3 +8875,477 @@ button.session-chip::after {
     min-width: 240px;
   }
 }
+
+/* ── Studio (Stage 2 spec §2–§5) ──────────────────────────────────────────
+   One column, phone first: the title, the search pill with Filters beside it,
+   then the home (quick starts · browse · themes · tags) or the moves. From lg
+   the moves get the filters as a sticky column beside them — the same
+   controls the sheet holds below lg — and nothing else changes with width.
+
+   The list is ONE surface with hairlines between rows, not a card per move:
+   150 moves read as a list, and the quick starts (green, the instant way in)
+   and the themes (raised, serif names) are the only tiles on the page. */
+.stu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.stu-bar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-4);
+}
+
+/* The search pill: the whole pill is the target, its ring is the focus. */
+.search-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--tap);
+  padding: 0 var(--space-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--ink-soft);
+}
+.search-field:focus-within {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
+}
+.search-field > svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+/* 16px, so a phone never zooms into the field. */
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap-fine);
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-md);
+  text-overflow: ellipsis;
+}
+/* A step down from what is typed, so the hint fits a phone's field beside Filters. */
+.search-field input::placeholder {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.search-field input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-round);
+  background: var(--bg-sunken);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.search-clear svg {
+  width: 14px;
+  height: 14px;
+}
+.stu-filters-btn {
+  flex: none;
+  border-radius: var(--radius-pill);
+}
+.stu-filters-btn > svg {
+  width: 18px;
+  height: 18px;
+}
+.stu-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5em;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--green);
+  color: var(--on-accent);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  line-height: 1.6;
+}
+
+/* The home. Its sections are the app's rank 2 (the eyebrow) over content. */
+.stu-home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+/* Stage 3's coach composer lands here; until then it takes no room. */
+.stu-composer-slot:empty {
+  display: none;
+}
+.stu-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+/* Quick starts: three across on a phone, wider tiles as the column grows —
+   fluid by their own minimum (a share of the row, never under 6.5rem), so
+   no width query is needed. */
+.stu-quick {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(max(6.5rem, 15%), 1fr));
+  gap: var(--space-4);
+}
+.stu-qs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--green) 28%, transparent);
+  border-radius: var(--radius);
+  background: var(--green-soft);
+  color: var(--green-ink);
+  font: inherit;
+  text-align: left;
+}
+button.stu-qs {
+  cursor: pointer;
+}
+button.stu-qs:hover {
+  border-color: var(--green);
+}
+.stu-qs-name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1.25;
+}
+.stu-qs-min {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.stu-qs-min svg {
+  width: 13px;
+  height: 13px;
+}
+.stu-chipset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.stu-themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(max(9rem, 22%), 1fr));
+  gap: var(--space-4);
+}
+.stu-theme {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-height: var(--tap);
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stu-theme:hover {
+  border-color: var(--border-strong);
+}
+.stu-theme-name {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.25;
+}
+.stu-theme-n {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+
+/* The moves. */
+.stu-results,
+.stu-results-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+/* The lg column; below lg the same controls live in the sheet. */
+.stu-facets {
+  display: none;
+}
+.stu-facets-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.stu-facet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.stu-facet .chip {
+  gap: var(--space-2);
+}
+.stu-facet .chip[aria-pressed="true"] {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--on-accent);
+}
+.stu-facet .chip svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+/* The pads of Clear reach only as far as the row's own gap. */
+.stu-chips {
+  --tap-clear: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.stu-chip-x {
+  gap: var(--space-2);
+  border-color: var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--ink);
+}
+.stu-chip-x svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--ink-soft);
+}
+/* The count and Clear travel together: on a narrow row they wrap as one. */
+.stu-tally {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.stu-count {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.stu-clear {
+  font-size: var(--text-sm);
+}
+.stu-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.stu-move {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-4);
+  row-gap: var(--space-1);
+  padding: var(--space-5) var(--space-6);
+}
+.stu-move + .stu-move {
+  border-top: 1px solid var(--border);
+}
+.stu-move-name {
+  grid-column: 1;
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.stu-move-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stu-move-add {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+  padding: var(--space-2) var(--space-4);
+}
+.stu-move-add svg {
+  width: 18px;
+  height: 18px;
+}
+.stu-move-sum {
+  grid-column: 1;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.stu-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.stu-move-sum + .stu-meta {
+  margin-top: var(--space-2);
+}
+.stu-meta--dose > span:first-child {
+  color: var(--ink);
+  font-weight: var(--weight-medium);
+}
+.stu-sep {
+  color: var(--ink-faint);
+}
+.stu-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-7) var(--space-6);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+.stu-empty-head {
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+.stu-sheet-actions {
+  justify-content: space-between;
+}
+
+/* A term that explains itself (components/tooltip.tsx). A dotted underline
+   says "there is more"; the popover is a sentence box under the word, kept
+   inside the viewport by `--tip-shift`, which the component measures on
+   open. Inline in a line of metadata, so it takes the inline-target
+   exemption rather than a pad that would reach into the lines around it. */
+.term-wrap {
+  position: relative;
+  display: inline-block;
+}
+.term {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-1) 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--ink-faint);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.25em;
+  cursor: pointer;
+}
+.term:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+.term[aria-expanded="true"] {
+  color: var(--green-ink);
+  text-decoration-style: solid;
+  text-decoration-color: currentColor;
+}
+.term-pop {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  z-index: 30;
+  display: block;
+  width: max-content;
+  max-width: min(18rem, calc(100vw - 2 * var(--space-6)));
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-regular);
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  transform: translateX(var(--tip-shift, 0px));
+}
+.term-pop[hidden] {
+  display: none;
+}
+.term-pop b {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--ink);
+  font-weight: var(--weight-medium);
+}
+
+/* Today's fit: the colour is the word's, and the word is always there. */
+.stu-fit {
+  font-weight: var(--weight-medium);
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+.stu-fit svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+/* `.term` in the selector: a fit keeps its colour while hovered or open. */
+.term.stu-fit--fits {
+  color: var(--green-ink);
+}
+.term.stu-fit--care {
+  color: var(--warn-ink);
+}
+.term.stu-fit--not {
+  color: var(--danger-ink);
+}
+
+@media (min-width: 1024px) {
+  .stu--results .stu-filters-btn {
+    display: none;
+  }
+  .stu-results {
+    display: grid;
+    grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-8);
+  }
+  .stu-facets {
+    --scroll-surface: var(--bg);
+    display: block;
+    position: sticky;
+    top: var(--space-6);
+    max-height: calc(100dvh - 2 * var(--space-6));
+    padding-right: var(--space-4);
+  }
+}

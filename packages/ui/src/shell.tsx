@@ -2,17 +2,23 @@ import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
 import type { RestoreStatus } from "@rg/api-client";
-import { IconGarden, IconPlan, IconRuns, IconSettings } from "./icons.js";
+import { IconGarden, IconPlan, IconRuns, IconSettings, IconStudio } from "./icons.js";
 import { useCorosReadNow } from "./screens/use-coros-read.js";
 import { RestorePendingNotice } from "./screens/restore-notice.js";
 
-// Four tabs (System 2): Insights merged into Activity — /insights redirects.
-const NAV = [
+// Five tabs: Insights merged into Activity (System 2) — /insights redirects; the Studio sits between Plan and
+// Activity (Stage 2 spec §2). Labels stay one short word: five equal links share a 320px bar.
+export const NAV = [
   { to: "/", label: "Garden", icon: <IconGarden /> },
   { to: "/plan", label: "Plan", icon: <IconPlan /> },
+  { to: "/studio", label: "Studio", icon: <IconStudio /> },
   { to: "/runs", label: "Activity", icon: <IconRuns /> },
   { to: "/settings", label: "Settings", icon: <IconSettings /> },
 ];
+
+/** The routes that take the wide treatment at lg: the plan's week grid and coach, the Studio's columns. */
+const isWide = (pathname: string): boolean =>
+  ["/plan", "/studio"].some((root) => pathname === root || pathname.startsWith(`${root}/`));
 
 export function AppShell({
   children,
@@ -30,7 +36,9 @@ export function AppShell({
   // The garden route escapes the reading column on desktop — the scene is a
   // stage, not a card (see .garden-stage). The plan route gets the milder
   // wide treatment (rework spec §6): the week grid and the floating coach
-  // both need more than the 880px reading column. Every other route keeps it.
+  // both need more than the 880px reading column — and so does the Studio,
+  // whose filters · list · detail are three columns at lg (Stage 2 spec §2).
+  // Every other route keeps it.
   const { pathname } = useLocation();
   const [staging, setStaging] = useState(false);
   useEffect(() => {
@@ -45,7 +53,7 @@ export function AppShell({
   // query cache, so those chips reflect this pull).
   useCorosReadNow();
   const immersive = pathname === "/" || pathname === "/garden";
-  const wide = pathname.startsWith("/plan");
+  const wide = isWide(pathname);
   return (
     <div className="shell">
       <nav className="side-nav" aria-label="Main">
