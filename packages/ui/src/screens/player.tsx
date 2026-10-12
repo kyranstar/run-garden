@@ -38,8 +38,10 @@ import {
   beginPlayer,
   closeHowto,
   confirmLog,
+  doneHold,
   endSession,
   fromLiveSession,
+  goesToMax,
   logTarget,
   next,
   pause,
@@ -313,6 +315,12 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     let start = state.clock.anchor - state.clock.bankedMs;
     for (let i = state.index; i < state.live.steps.length; i++) {
       const step = state.live.steps[i]!;
+      if (goesToMax(state, step)) {
+        // A hold to max: the end of its get-ready, and its target; it ends on Done, so nothing after it is known.
+        if (readyMs(step) > 0) due.push(start + readyMs(step));
+        due.push(start + readyMs(step) + step.seconds * 1000);
+        break;
+      }
       const length = lengthMs(step, state.restExtra[i] ?? 0);
       if (length === null) break;
       if (readyMs(step) > 0) due.push(start + readyMs(step));
@@ -321,7 +329,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
       if (!auto || due.length > 60) break;
     }
     deps.chimes.schedule(due);
-  }, [state.index, state.clock, state.paused, state.finished, state.restExtra, state.live.steps, auto, deps.chimes]);
+  }, [state.index, state.clock, state.paused, state.finished, state.restExtra, state.live.steps, state.toMax, auto, deps.chimes]);
   // A reload loses the audio unlock: the first tap after it unlocks again.
   useEffect(() => {
     const unlock = () => deps.chimes.unlock();
@@ -343,6 +351,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
 
   const view = state.finished ? null : stepView(state, now);
   const step = view?.step ?? null;
+  /** The step in play is a hold to max: it counts up past its target until Done. */
+  const toMax = goesToMax(state, step ?? undefined);
   /** The slot ⇄ and ⓘ are about: the step in play, or during a rest the move that comes next. */
   const focus = useMemo(() => focusStep(state), [state]);
   // What ⇄ offers now: recomputed after each swap with the engine's rules over what the build stored (player/swap.ts).
@@ -429,6 +439,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     if (step.kind === "set") return openLog();
     if (view.phase === "over") return act(next);
     if (step.kind === "rest") return act(next);
+    if (toMax && view.phase === "hold") return act(doneHold);
     return act(state.paused ? resume : pause);
   };
   const run = (c: PlayerCommand): boolean => {
@@ -616,6 +627,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             exercise={ex}
             exercises={src.build.exercises}
             careLabel={careLabel}
+            cue={src.build.fromDoc?.slots?.[step.slotKey]?.cue ?? null}
+            toMax={toMax}
             log={
               logOpen && draft ? (
                 <LogCard
@@ -638,6 +651,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             state={state}
             step={step}
             phase={view.phase}
+            toMax={toMax}
             logOpen={logOpen}
             onPrimary={primary}
             onConfirm={confirm}
@@ -650,7 +664,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
           />
         ) : null}
         <p className="player-kbd" aria-hidden="true">
-          <kbd>Space</kbd> {primaryWord(step, view?.phase ?? null, logOpen, state.paused)} · <kbd>←</kbd> <kbd>→</kbd> step
+          <kbd>Space</kbd> {primaryWord(step, view?.phase ?? null, logOpen, state.paused, toMax)} · <kbd>←</kbd> <kbd>→</kbd> step
           {alternatives.length > 0 ? (
             <>
               {" "}
@@ -811,10 +825,10 @@ function timeLeft(state: PlayerState, now: number): number {
   return Math.max(0, ms);
 }
 
-function primaryWord(step: Step | null, phase: string | null, logOpen: boolean, paused: boolean): string {
+function primaryWord(step: Step | null, phase: string | null, logOpen: boolean, paused: boolean, toMax: boolean): string {
   if (!step) return "";
   if (logOpen) return "Confirm";
-  if (step.kind === "set") return "Done";
+  if (step.kind === "set" || (toMax && phase === "hold")) return "Done";
   if (phase === "over" || step.kind === "rest") return "Next";
   return paused ? "Resume" : "Pause";
 }
@@ -862,7 +876,8 @@ function eyebrow(step: Step, careLabel: string | null, exercise?: { contraction?
   return parts.join(" · ");
 }
 
-function Ring({ fraction, children }: { fraction: number; children: React.ReactNode }) {
+/** The timer's ring; `mark` puts a tick at the top, where a hold to max's fill reaches its target. */
+function Ring({ fraction, mark = false, children }: { fraction: number; mark?: boolean; children: React.ReactNode }) {
   const r = 46;
   const c = 2 * Math.PI * r;
   const f = Math.max(0, Math.min(1, fraction));
@@ -871,6 +886,7 @@ function Ring({ fraction, children }: { fraction: number; children: React.ReactN
       <svg viewBox="0 0 100 100" aria-hidden="true">
         <circle className="player-ring-track" cx="50" cy="50" r={r} />
         <circle className="player-ring-fill" cx="50" cy="50" r={r} strokeDasharray={`${c * f} ${c}`} transform="rotate(-90 50 50)" />
+        {mark ? <line className="player-ring-mark" x1="50" y1="1" x2="50" y2="9" /> : null}
       </svg>
       <div className="player-ring-face">{children}</div>
     </div>
@@ -884,6 +900,8 @@ function StepBody({
   exercise,
   exercises,
   careLabel,
+  cue,
+  toMax,
   log,
 }: {
   state: PlayerState;
@@ -892,9 +910,14 @@ function StepBody({
   exercise: SessionExerciseDto | undefined;
   exercises: Readonly<Record<string, SessionExerciseDto | undefined>>;
   careLabel: string | null;
+  /** The item's cue (a document workout's), under the move's name. */
+  cue: string | null;
+  /** A hold to max: it counts up past its target. */
+  toMax: boolean;
   log: React.ReactNode;
 }) {
   const following = nextLine(state, step, exercises);
+  const cueLine = cue ? <p className="player-cue">{cue}</p> : null;
   if (step.kind === "rest") {
     return (
       <>
@@ -915,6 +938,7 @@ function StepBody({
       <>
         <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise)}</span>
         <h1 className="display player-name">{name}</h1>
+        {cueLine}
         {log ?? (
           <>
             <span className="player-big num">{t.reps ?? t.secs ?? "—"}</span>
@@ -930,15 +954,26 @@ function StepBody({
     );
   }
   const ready = view.phase === "ready";
+  // A hold to max counts up from the end of its get-ready: the ring fills to the target, at the mark, and stays full.
+  const held = toMax && !ready ? Math.max(0, view.elapsedMs - readyMs(step)) : null;
   return (
     <>
       <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise)}</span>
       <h1 className="display player-name">{name}</h1>
+      {cueLine}
       {step.side ? <span className="player-meta">{sideWord(step.side)}</span> : null}
-      <Ring fraction={view.phaseMs > 0 ? view.remainingMs / view.phaseMs : 0}>
-        {ready ? <span className="eyebrow player-ring-label">Get ready</span> : null}
-        <span className="player-big num">{clockText(view.remainingMs)}</span>
-      </Ring>
+      {held === null ? (
+        <Ring fraction={view.phaseMs > 0 ? view.remainingMs / view.phaseMs : 0}>
+          {ready ? <span className="eyebrow player-ring-label">Get ready</span> : null}
+          <span className="player-big num">{clockText(view.remainingMs)}</span>
+        </Ring>
+      ) : (
+        <Ring fraction={view.phaseMs > 0 ? held / view.phaseMs : 1} mark>
+          <span className="eyebrow player-ring-label">To max</span>
+          <span className="player-big num">{clockText(Math.floor(held / 1000) * 1000)}</span>
+        </Ring>
+      )}
+      {toMax ? <span className="player-meta">Target {clockText(step.seconds * 1000)}</span> : null}
       {state.paused ? <span className="player-meta">Paused</span> : null}
       {following ? <span className="player-next">{following}</span> : null}
     </>
@@ -949,6 +984,7 @@ function Actions({
   state,
   step,
   phase,
+  toMax,
   logOpen,
   onPrimary,
   onConfirm,
@@ -959,6 +995,7 @@ function Actions({
   state: PlayerState;
   step: Step;
   phase: string;
+  toMax: boolean;
   logOpen: boolean;
   onPrimary: () => void;
   onConfirm: () => void;
@@ -997,6 +1034,19 @@ function Actions({
         </button>
         <button type="button" className="btn" onClick={onSkip}>
           Skip
+        </button>
+      </div>
+    );
+  }
+  if (toMax && phase === "hold") {
+    // Holding to max: Done ends it at the time held (the primary action, as a set's Done).
+    return (
+      <div className="btn-row player-pair">
+        <button type="button" className="btn" onClick={onPause}>
+          {state.paused ? "Resume" : "Pause"}
+        </button>
+        <button type="button" className="btn btn-primary" onClick={onPrimary}>
+          Done
         </button>
       </div>
     );

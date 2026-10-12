@@ -12,6 +12,11 @@
  * steps — the server's rebuild with the same swaps plays the same; a slot may offer fewer (or later-ranked) moves than
  * the server would list, since the moves the build did not offer are not on the device. Swaps apply in the order
  * made, as the server applies stored swaps.
+ *
+ * A DOCUMENT workout's item may plan its own alternates (Stage 2 spec §11): the build carries each with its steps
+ * (`fromDoc.slots`), and ⇄ offers them first, then the engine's usual offers. A document's time and its superset pairs
+ * are its author's — the day's own swap at the build (`gateDoc`) holds an alternate to the validator alone — so its
+ * build is held to no time budget and no pairing rule; a move the session already holds is still never offered.
  */
 import type { SessionBuildDto } from "@rg/api-client";
 import type { ExerciseRecord } from "@rg/exercise-library";
@@ -29,6 +34,7 @@ const cache = new WeakMap<SessionBuildDto, { state: SwapState; steps: Step[] }>(
 export function swapStateOf(build: SessionBuildDto): { state: SwapState; steps: Step[] } {
   const hit = cache.get(build);
   if (hit) return hit;
+  const fromDoc = build.fromDoc !== undefined;
   const slots: Record<string, SwapSlot> = {};
   const current: Record<string, SlotChoice> = {};
   for (const item of build.items) {
@@ -42,18 +48,20 @@ export function swapStateOf(build: SessionBuildDto): { state: SwapState; steps: 
       moveKey: Swapping.moveKeyOf(ex),
       pairing: Swapping.pairingOf(ex),
     };
-    const offered = build.alternatives[item.slotKey] ?? [];
+    // The item's planned alternates first, then the engine's offers (a move in both is offered once, as planned).
+    const offered = [...(build.fromDoc?.slots?.[item.slotKey]?.alternates ?? []), ...(build.alternatives[item.slotKey] ?? [])];
     // The plan's own move: what a day's swap replaced, when the build offers it back; otherwise the move it holds.
     const from = build.params.swaps?.[item.slotKey]?.from ?? null;
     const original = (from && from !== item.exerciseId ? offered.find((c) => c.id === from) : undefined) ?? here;
     const partner =
-      item.format === "superset"
+      item.format === "superset" && !fromDoc
         ? (build.items.find((o) => o.slotKey !== item.slotKey && o.block === item.block && o.format === "superset")?.slotKey ?? null)
         : null;
     slots[item.slotKey] = { slotKey: item.slotKey, partner, original, pool: offered.filter((c) => c.id !== original.id) };
     current[item.slotKey] = here;
   }
-  const out = { state: { budget: build.minutes * 60, slack: Swapping.SLACK_SECONDS, current, slots }, steps: build.steps };
+  const budget = fromDoc ? Number.POSITIVE_INFINITY : build.minutes * 60;
+  const out = { state: { budget, slack: Swapping.SLACK_SECONDS, current, slots }, steps: build.steps };
   cache.set(build, out);
   return out;
 }

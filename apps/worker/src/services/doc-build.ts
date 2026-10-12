@@ -14,27 +14,33 @@
  *  - `materializeDocBuild` — the build the player plays: the steps are `playerStepsFromDoc` of the gated document (one
  *    builder per output, principles §3.2), one item per slot in play order, the library records of every move the
  *    steps name, the planned time the steps add up to (the engine's own `costOf`). A document workout has no theme, no
- *    block, no new move and no progression targets of the engine's; its mode is its effort's. Its alternatives are
- *    left to the player's swap (Stage 2 Task 8): none are offered here.
+ *    block, no new move and no progression targets of the engine's; its mode is its effort's. The engine's swap list
+ *    (`alternatives`) stays empty: the sheet's ⇄ rebuilds with the day's swaps, which a document's build does not run.
+ *    What the player reads of each item beside its steps (Stage 2 Task 8) is `slots` (stored as `fromDoc.slots`): its
+ *    cue, a hold to max, and its planned alternates — each with the slot's steps as the document plays with it in the
+ *    item's place (`withAlternate`, the day's own swap) and its record among the build's moves, for ⇄ offline.
  */
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
 import { sessionLead } from "@rg/domain";
 import { EXERCISES, PROFILES, isProfileId, type ExerciseRecord } from "@rg/exercise-library";
-import { Swapping, type Step } from "@rg/session-engine";
+import { Swapping, type SlotChoice, type Step } from "@rg/session-engine";
 import {
+  DocTooLargeError,
   deriveDoc,
+  docSlotKeys,
   makeLibraryIndex,
   modeOfEffort,
   playerStepsFromDoc,
   validateWorkoutDoc,
   type DocIssue,
   type DocIssueCode,
+  type DocSlotKey,
   type ValidateCtx,
 } from "@rg/workout";
 import type { BuildItem, BuildPayload, CheckAnswer, ExerciseSlice, SessionView } from "./session-build.js";
 
 /** Bump when a document build's shape or rules change: a stored build of an older version is then built again. */
-export const DOC_BUILD_VERSION = "doc-build-1";
+export const DOC_BUILD_VERSION = "doc-build-2";
 
 /** The issue codes that keep a move out on the day — what an alternate can stand in for. */
 const GATE_CODES: ReadonlySet<DocIssueCode> = new Set(["condition_never", "condition_pattern", "condition_gate", "condition_gate_pending"]);
@@ -52,6 +58,16 @@ export interface DocSwap {
   reason: string;
 }
 
+/** What the player reads of one slot's item beside its steps (`DocBuildInfo.slots`). */
+export interface DocSlot {
+  /** The item's cue: shown under the move's name. */
+  cue?: string;
+  /** "To max" (`dose.max`): the slot's holds count up past their window until Done, and log the seconds held. */
+  max?: true;
+  /** The item's planned alternates, in its order, each with the slot's steps with it in place: ⇄ offers them first. */
+  alternates?: SlotChoice[];
+}
+
 /** What a document build says of its document (`BuildPayload.fromDoc`). */
 export interface DocBuildInfo {
   /** The document revision the build was made from (`planned_workouts.workout_doc_rev`). */
@@ -59,6 +75,8 @@ export interface DocBuildInfo {
   swaps: DocSwap[];
   /** The errors left once the swaps are made: while any stands, the build is never locked. */
   blocked: DocIssue[];
+  /** Per slot key, what its item says that the steps do not (only slots that say something). Absent before doc-build-2. */
+  slots?: Record<string, DocSlot>;
 }
 
 export interface GatedDoc {
@@ -68,6 +86,18 @@ export interface GatedDoc {
 }
 
 type Exercise = Extract<WorkoutItem, { kind: "exercise" }>;
+
+/**
+ * The item with its alternate `k` (the library's `to`) in its place, as the day's swap makes it: the alternate takes
+ * the item's place and dose, its why (if it has one) replaces the item's, and what was said of the original move alone
+ * — its progression, its test, its alternates — goes with it; the other alternates stay.
+ */
+function withAlternate(item: Exercise, k: number, to: string): Exercise {
+  const alt = item.alternates![k]!;
+  const rest = item.alternates!.filter((_, ai) => ai !== k);
+  const { progression: _progression, test: _test, alternates: _alternates, ...kept } = item;
+  return { ...kept, libraryId: to, ...(alt.why ? { why: alt.why } : {}), ...(rest.length > 0 ? { alternates: rest } : {}) };
+}
 
 /** An issue at one of an item's alternates — an option for a swap, never what is played. */
 const atAlternate = (i: DocIssue): boolean => i.path.includes(".alternates[");
@@ -108,18 +138,8 @@ export function gateDoc(doc: WorkoutDoc, ctx: ValidateCtx): GatedDoc {
     const clean = options.findIndex(standsIn(() => true));
     const k = clean >= 0 ? clean : options.findIndex(standsIn((x) => x.severity === "error"));
     if (k < 0) continue;
-    const alt = item.alternates![k]!;
-    const to = find(alt.libraryId)!.id;
-    const rest = item.alternates!.filter((_, ai) => ai !== k);
-    // The alternate takes the item's place and dose; what was said of the original move alone goes with it.
-    const { progression: _progression, test: _test, alternates: _alternates, ...kept } = item;
-    const swapped: Exercise = {
-      ...kept,
-      libraryId: to,
-      ...(alt.why ? { why: alt.why } : {}),
-      ...(rest.length > 0 ? { alternates: rest } : {}),
-    };
-    parts[p]!.items[i] = swapped;
+    const to = find(item.alternates![k]!.libraryId)!.id;
+    parts[p]!.items[i] = withAlternate(item, k, to);
     swaps.push({ path, from: own, to, reason: e.message });
   }
   // The day's document, judged again: an alternate the day keeps out is taken off its item (the player's swap must
@@ -220,10 +240,84 @@ export interface DocBuildInput {
   library: readonly ExerciseRecord[];
 }
 
-/** What `materializeDocBuild` makes: the build without what only storing it decides, and its view. */
+/** What `materializeDocBuild` makes: the build without what only storing it decides, its view, and its slots. */
 export interface MaterializedBuild {
   build: Omit<BuildPayload, "buildId" | "version" | "engineVersion" | "inputsHash" | "builtAt" | "blockRef" | "fromDoc">;
   view: SessionView;
+  /** What each slot's item says beside its steps (`DocBuildInfo.slots`). */
+  slots: Record<string, DocSlot>;
+}
+
+/**
+ * What each slot's item says beside its steps: its cue, a hold to max, its planned alternates (a move the library
+ * lacks, or the item's own move, is none). An alternate's steps are the slot's steps in the document with it in the
+ * item's place: every item's k-th alternate goes in at once — a slot's steps are its own item's (its dose, its move,
+ * its part's format and rounds) — so the alternates cost at most three more builds of the steps. A set of alternates
+ * that would take the document past its size bound is tried one by one; one that alone does is not offered.
+ */
+function docSlots(doc: WorkoutDoc, library: readonly ExerciseRecord[]): { slots: Record<string, DocSlot>; records: ExerciseRecord[] } {
+  const find = makeLibraryIndex(library);
+  const keys = docSlotKeys(doc);
+  const itemAt = (s: DocSlotKey) => doc.parts[s.part]!.items[s.item]!;
+  const slots: Record<string, DocSlot> = {};
+  for (const s of keys) {
+    const item = itemAt(s);
+    if (item.kind === "rest") continue;
+    const max = item.kind !== "run" && item.dose.max === true;
+    if (item.cue || max) slots[s.key] = { ...(item.cue ? { cue: item.cue } : {}), ...(max ? { max: true as const } : {}) };
+  }
+  /** An item's alternate `k` (the library's `to`) put in its place. */
+  interface Put {
+    at: DocSlotKey;
+    item: Exercise;
+    k: number;
+    to: ExerciseRecord;
+    why: string | undefined;
+  }
+  /** The slots' steps with each alternate in its item's place; null when that takes the document past its bound. */
+  const playedWith = (puts: readonly Put[]): Step[] | null => {
+    const parts = doc.parts.map((p) => ({ ...p, items: [...p.items] }));
+    for (const x of puts) parts[x.at.part]!.items[x.at.item] = withAlternate(x.item, x.k, x.to.id);
+    try {
+      return playerStepsFromDoc({ ...doc, parts }, library);
+    } catch (e) {
+      if (e instanceof DocTooLargeError) return null;
+      throw e;
+    }
+  };
+  const records: ExerciseRecord[] = [];
+  const planning = keys.flatMap((at) => {
+    const item = itemAt(at);
+    return item.kind === "exercise" && item.alternates ? [{ at, item, alternates: item.alternates }] : [];
+  });
+  const most = Math.max(0, ...planning.map((x) => x.alternates.length));
+  for (let k = 0; k < most; k++) {
+    const puts: Put[] = [];
+    for (const { at, item, alternates } of planning) {
+      const alt = alternates[k];
+      const to = alt ? find(alt.libraryId) : undefined;
+      if (!to || to.id === (find(item.libraryId)?.id ?? item.libraryId)) continue;
+      puts.push({ at, item, k, to, why: alt!.why });
+    }
+    if (puts.length === 0) continue;
+    const together = playedWith(puts);
+    for (const x of puts) {
+      const played = together ?? playedWith([x]);
+      if (!played) continue;
+      const choice: SlotChoice = {
+        id: x.to.id,
+        name: x.to.name,
+        reasons: x.why ? [x.why] : [],
+        steps: played.filter((st) => st.kind !== "rest" && st.slotKey === x.at.key),
+        moveKey: Swapping.moveKeyOf(x.to),
+        pairing: Swapping.pairingOf(x.to),
+      };
+      const slot = (slots[x.at.key] ??= {});
+      slot.alternates = [...(slot.alternates ?? []), choice];
+      records.push(x.to);
+    }
+  }
+  return { slots, records };
 }
 
 /** The build the player plays, made from a (gated) document (see the header). */
@@ -251,6 +345,8 @@ export function materializeDocBuild(doc: WorkoutDoc, input: DocBuildInput): Mate
       why: [...s.why],
     });
   }
+  const { slots, records } = docSlots(doc, input.library);
+  for (const rec of records) if (!exercises[rec.id]) exercises[rec.id] = sliceOf(rec);
   const mode = modeOfEffort(doc.intent.effort);
   const minutes = deriveDoc(doc, input.library).estimatedMinutes;
   const targets: BuildPayload["targets"] = {};
@@ -286,5 +382,6 @@ export function materializeDocBuild(doc: WorkoutDoc, input: DocBuildInput): Mate
       newMove: null,
       lead: sessionLead({ items, steps, targets, exercises }),
     },
+    slots,
   };
 }

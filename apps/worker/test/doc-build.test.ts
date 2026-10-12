@@ -114,6 +114,31 @@ describe("building a document workout", () => {
     expect(again.body.build.buildId).toBe(build.buildId);
   });
 
+  it("the player's ⇄ (Task 8): an item's planned alternates ride the build with their steps and records — never a hidden move", async () => {
+    const id = await create(landingsDoc());
+    const built = await call("POST", `/api/sessions/${id}/build`, {});
+    expect(built.status).toBe(200);
+    const planned = built.body.build.fromDoc.slots["accessory:0"].alternates;
+    expect(planned.map((a: { id: string; reasons: string[] }) => [a.id, a.reasons])).toEqual([["tempoSquat", ["The same legs, no landing."]]]);
+    expect(planned[0].steps.length).toBeGreaterThan(0);
+    expect(built.body.build.exercises.tempoSquat).toBeDefined();
+    // The engine's own swap list stays empty: the sheet offers no ⇄ it cannot rebuild.
+    expect(built.body.build.alternatives).toEqual({});
+    // "Not for me" (or 👎) since: never offered, in every response (ruling 2a-R1).
+    await db.insert(schema.exercisePrefs).values({ id: `${userId}:tempoSquat`, userId, exerciseId: "tempoSquat", rating: null, excluded: true, pinned: false, introducedOn: null, updatedAt: nowInstant() });
+    expect((await call("GET", `/api/sessions/${id}`)).body.build.fromDoc.slots).toEqual({});
+  });
+
+  it("the review's basis reads a document's planned alternates too (a move ⇄ may bring in)", async () => {
+    await db.insert(schema.exercisePrefs).values({ id: `${userId}:tempoSquat`, userId, exerciseId: "tempoSquat", rating: 1, excluded: false, pinned: false, introducedOn: null, updatedAt: nowInstant() });
+    const id = await create(landingsDoc());
+    const built = await call("POST", `/api/sessions/${id}/build`, {});
+    expect((await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId })).status).toBe(200);
+    const basis = await call("GET", `/api/sessions/${id}/review-basis`);
+    expect(basis.status).toBe(200);
+    expect(basis.body.prefs.ratings).toEqual({ tempoSquat: 1 });
+  });
+
   it("Start locks it, and the build after Start is the locked one", async () => {
     const id = await create(calmDoc());
     const built = await call("POST", `/api/sessions/${id}/build`, {});

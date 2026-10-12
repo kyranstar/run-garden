@@ -2,6 +2,10 @@
  * WALL-CLOCK TIMERS (Phase 2 spec §2b "Player"; plan Global Constraints). A timer is the epoch ms it was last started
  * from plus the time it had already run: what has elapsed is always worked out from `Date.now()`, never by counting
  * ticks, so a backgrounded tab, a locked phone or a relaunch reads the true time on its next look.
+ *
+ * A hold TO MAX (a document item's `dose.max`, Stage 2 spec §11; `toMax` below) has its get-ready as any hold, then
+ * counts up past its window — the target — and never runs out: like a set, it waits for Done, and the time held is
+ * never capped at the window (a hold-time objective reads it).
  */
 import type { Step } from "@rg/session-engine";
 
@@ -28,9 +32,12 @@ export const stopClock = (clock: StepClock, now: number): StepClock =>
 /** The get-ready before a timed step: 8 s, or 3 s inside flows and circuits (the step's own `prepGap`). */
 export const readyMs = (step: Step): number => (step.kind === "timed" ? (step.prepGap || 0) * 1000 : 0);
 
-/** How long a step's timer runs: get-ready + hold for a timed step, the rest (plus any +15 s) for a rest; a set has none. */
-export function lengthMs(step: Step, extraSecs = 0): number | null {
-  if (step.kind === "timed") return readyMs(step) + step.seconds * 1000;
+/**
+ * How long a step's timer runs: get-ready + hold for a timed step, the rest (plus any +15 s) for a rest; a set has
+ * none, nor has a hold to max (it ends on Done).
+ */
+export function lengthMs(step: Step, extraSecs = 0, toMax = false): number | null {
+  if (step.kind === "timed") return toMax ? null : readyMs(step) + step.seconds * 1000;
   if (step.kind === "rest") return (step.seconds + extraSecs) * 1000;
   return null;
 }
@@ -47,9 +54,13 @@ export interface PhaseView {
   phaseMs: number;
 }
 
-/** Where a step stands after `elapsed` ms of its timer. */
-export function phaseAt(step: Step, elapsed: number, extraSecs = 0): PhaseView {
+/**
+ * Where a step stands after `elapsed` ms of its timer. A hold to max is in its hold from the end of its get-ready on,
+ * never over: as a set, nothing is left of it (it ends on Done); `phaseMs` is its target.
+ */
+export function phaseAt(step: Step, elapsed: number, extraSecs = 0, toMax = false): PhaseView {
   if (step.kind === "set") return { phase: "set", remainingMs: 0, elapsedMs: elapsed, phaseMs: 0 };
+  if (step.kind === "timed" && toMax && elapsed >= readyMs(step)) return { phase: "hold", remainingMs: 0, elapsedMs: elapsed, phaseMs: step.seconds * 1000 };
   const length = lengthMs(step, extraSecs)!;
   if (elapsed >= length) return { phase: "over", remainingMs: 0, elapsedMs: elapsed, phaseMs: step.kind === "rest" ? length : step.seconds * 1000 };
   if (step.kind === "rest") return { phase: "rest", remainingMs: length - elapsed, elapsedMs: elapsed, phaseMs: length };
@@ -58,10 +69,11 @@ export function phaseAt(step: Step, elapsed: number, extraSecs = 0): PhaseView {
   return { phase: "hold", remainingMs: length - elapsed, elapsedMs: elapsed, phaseMs: step.seconds * 1000 };
 }
 
-/** Seconds of a timed step's hold actually held: its timer past the get-ready, never more than the hold. */
-export function heldSecs(step: Step, elapsed: number): number {
+/** Seconds of a timed step's hold actually held: its timer past the get-ready, never more than the hold — but to max. */
+export function heldSecs(step: Step, elapsed: number, toMax = false): number {
   if (step.kind !== "timed") return 0;
-  return Math.min(step.seconds, Math.max(0, elapsed - readyMs(step)) / 1000);
+  const held = Math.max(0, elapsed - readyMs(step)) / 1000;
+  return toMax ? held : Math.min(step.seconds, held);
 }
 
 /** "0:48", "14:06", "1:02:05". */

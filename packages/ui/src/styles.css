@@ -8548,6 +8548,13 @@ button.session-chip::after {
   color: var(--ink-faint);
   overflow-wrap: anywhere;
 }
+/* A document item's cue, under the move's name. */
+.player-cue {
+  max-width: 100%;
+  color: var(--ink-soft);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
 .player-ring {
   position: relative;
   width: min(220px, 62vw);
@@ -8568,6 +8575,12 @@ button.session-chip::after {
 }
 .player-ring-fill {
   stroke: var(--green);
+  stroke-linecap: round;
+}
+/* A hold to max: the target, where the fill closes. */
+.player-ring-mark {
+  stroke: var(--ink);
+  stroke-width: 2;
   stroke-linecap: round;
 }
 .player-ring-face {

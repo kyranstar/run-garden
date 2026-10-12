@@ -133,6 +133,29 @@ test("a timed hold counts once you've held at least half of it, at the time you 
   expect(e.sets[step.setIndex!]!.secs, "a value you typed stays").toBe(99);
 });
 
+test("a hold to max ended with Done counts at the time held, however short or long: where you stopped is the result", () => {
+  const plan = planFor({ theme: themed(["straight"]), minutes: 40 });
+  const i = plan.steps.findIndex(s => s.kind === "timed" && s.log);
+  expect(i, "needs a logged timed step").toBeGreaterThanOrEqual(0);
+  const step = plan.steps[i]!;
+  const short = Recorder.create(data, plan, meta(plan));
+  Recorder.reach(short, i);
+  Recorder.finishTimed(short, i, 3.4, true);
+  expect(short.entries[step.exerciseId!]!.sets[step.setIndex!]).toMatchObject({ done: true, secs: 3 });
+  expect(Recorder.toSession(short, { endedAt: "x" }).stepsDone).toBe(1);
+  const long = Recorder.create(data, plan, meta(plan));
+  Recorder.reach(long, i);
+  Recorder.finishTimed(long, i, step.seconds + 31.2, true);
+  expect(long.entries[step.exerciseId!]!.sets[step.setIndex!]!.secs, "never capped at the window").toBe(step.seconds + 31);
+  // Under a second is no hold; and a hold left any other way keeps the half-time rule.
+  const none = Recorder.create(data, plan, meta(plan));
+  Recorder.reach(none, i);
+  Recorder.finishTimed(none, i, 0.4, true);
+  expect(none.entries[step.exerciseId!]!.sets[step.setIndex!]!.done).toBe(false);
+  Recorder.finishTimed(none, i, 3);
+  expect(none.entries[step.exerciseId!]!.sets[step.setIndex!]!.done).toBe(false);
+});
+
 test("done lists logged moves with a done set, and unlogged moves you reached", () => {
   const plan = planFor();
   const live = Recorder.create(data, plan, meta(plan));

@@ -5,6 +5,9 @@
  *
  *  - Steps come from the locked build. Arriving at a set counts it (the recorder's rule); a timed hold counts when
  *    it is left, if at least half of it was held (`finishTimed`), at the time held — never more than the hold.
+ *  - A hold TO MAX (a document item's `dose.max`: its slot in the build's `fromDoc.slots`, Stage 2 spec §11) counts up
+ *    past its target and never runs out; Done (`doneHold`) counts it at the time held however short (where the athlete
+ *    stopped is the result), and every way of leaving it logs the time held, never capped at the target.
  *  - Timers are wall-clock anchored (`timer.ts`). `settle` catches up with the clock: a timed step or a rest whose
  *    time has run out ends at the moment it ran out and, with auto-advance on, the next step starts from that moment
  *    — so a phone locked mid-hold resumes on the step the clock says, each hold judged at the time it could be held.
@@ -55,7 +58,17 @@ export interface PlayerState {
   howto: string | null;
   /** Swaps made mid-session, in order: the slot and the move it holds now. */
   swaps: Array<{ slotKey: string; to: string }>;
+  /** The slots whose holds go to max (read from the build, never kept apart from it). */
+  toMax: readonly string[];
 }
+
+/** The slots whose holds go to max: a document item's `dose.max` (an engine build has none). */
+const maxSlotsOf = (build: SessionBuildDto): string[] =>
+  Object.entries(build.fromDoc?.slots ?? {}).flatMap(([slotKey, slot]) => (slot.max ? [slotKey] : []));
+
+/** The step is a hold that goes to max. */
+export const goesToMax = (state: Pick<PlayerState, "toMax">, step: Step | undefined): boolean =>
+  !!step && step.kind === "timed" && state.toMax.includes(step.slotKey);
 
 /** The review's own inputs: the post-check per profile, the note, and its pending ratings, exclusions and switches. */
 export interface ReviewKept {
@@ -107,14 +120,18 @@ export function withLive(state: PlayerState, change: (live: Live) => void): Play
   return s;
 }
 
-/** Leaving the current step at `now`: a hold is judged by the half-time rule; time on a move is added to it. */
-function leave(s: PlayerState, now: number): void {
+/**
+ * Leaving the current step at `now`: a hold is judged by the half-time rule — a hold to max ended with Done (`ended`)
+ * counts at the time held — and time on a move is added to it.
+ */
+function leave(s: PlayerState, now: number, ended = false): void {
   const step = stepAt(s);
   if (!step || s.finished) return;
   const elapsed = elapsedMs(s.clock, now);
   if (step.kind === "timed") {
-    const held = heldSecs(step, elapsed);
-    Recorder.finishTimed(s.live, s.index, held);
+    const max = goesToMax(s, step);
+    const held = heldSecs(step, elapsed, max);
+    Recorder.finishTimed(s.live, s.index, held, ended && max);
     if (step.exerciseId) Recorder.addSeconds(s.live, step.exerciseId, held);
   } else if (step.kind === "set" && step.exerciseId) {
     Recorder.addSeconds(s.live, step.exerciseId, elapsed / 1000);
@@ -180,6 +197,7 @@ export function beginPlayer(src: PlayerSource, data: EngineData, opts: { perform
     newMoveShown: false,
     howto: null,
     swaps: [],
+    toMax: maxSlotsOf(build),
   };
   arrive(s, 0, opts.now, build.newMove);
   return s;
@@ -193,7 +211,7 @@ export function settle(state: PlayerState, now: number, opts: { autoAdvance: boo
     const cur = s ?? state;
     const step = stepAt(cur);
     if (!step || cur.paused || cur.finished) break;
-    const length = lengthMs(step, cur.restExtra[cur.index] ?? 0);
+    const length = lengthMs(step, cur.restExtra[cur.index] ?? 0, goesToMax(cur, step));
     if (length === null) break;
     const elapsed = elapsedMs(cur.clock, now);
     if (elapsed < length) break;
@@ -211,6 +229,18 @@ export function next(state: PlayerState, now: number): PlayerState {
   if (state.finished) return state;
   const s = draft(state);
   leave(s, now);
+  arrive(s, s.index + 1, now, s.live.meta.newMove);
+  return s;
+}
+
+/**
+ * Done on a hold to max, once its get-ready is over: it counts at the time held — past its target, or short of half
+ * of it (where the athlete stopped is the result) — and the session goes on. Anything else: nothing changes.
+ */
+export function doneHold(state: PlayerState, now: number): PlayerState {
+  if (state.finished || !goesToMax(state, stepAt(state)) || stepView(state, now).phase !== "hold") return state;
+  const s = draft(state);
+  leave(s, now, true);
   arrive(s, s.index + 1, now, s.live.meta.newMove);
   return s;
 }
@@ -297,7 +327,7 @@ export interface StepView extends PhaseView {
 
 export function stepView(state: PlayerState, now: number): StepView {
   const step = stepAt(state)!;
-  return { step, ...phaseAt(step, elapsedMs(state.clock, now), state.restExtra[state.index] ?? 0) };
+  return { step, ...phaseAt(step, elapsedMs(state.clock, now), state.restExtra[state.index] ?? 0, goesToMax(state, step)) };
 }
 
 export interface LogTarget {
@@ -417,5 +447,6 @@ export function fromLiveSession(stored: LiveSession<unknown>, src: Pick<PlayerSo
     newMoveShown: r.newMoveShown,
     howto: r.howto,
     swaps: [...r.swaps],
+    toMax: maxSlotsOf(src.build),
   };
 }

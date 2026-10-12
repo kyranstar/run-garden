@@ -626,6 +626,16 @@ export interface DocSwapDto {
   reason: string;
 }
 
+/** What the player reads of one slot's item beside its steps (`DocBuildInfoDto.slots`). */
+export interface DocSlotDto {
+  /** The item's cue: shown under the move's name. */
+  cue?: string;
+  /** "To max" (`dose.max`): the slot's holds count up past their window until Done, and log the seconds held. */
+  max?: true;
+  /** The item's planned alternates, in its order, each with the slot's steps with it in place: ⇄ offers them first. */
+  alternates?: Alternative[];
+}
+
 /** What a document workout's build says of its document (`SessionBuildDto.fromDoc`). */
 export interface DocBuildInfoDto {
   /** The revision the build was made from. */
@@ -633,6 +643,11 @@ export interface DocBuildInfoDto {
   swaps: DocSwapDto[];
   /** Errors still standing once the swaps are made: Start and Send refuse (409 `gated`). */
   blocked: DocIssueDto[];
+  /**
+   * Per slot key, what its item says that the steps do not: only slots that say something. Absent from a build made
+   * before it (`doc-build-1`): nothing is said.
+   */
+  slots?: Record<string, DocSlotDto>;
 }
 
 /** A saved template (`GET /api/templates`). */

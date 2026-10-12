@@ -146,12 +146,13 @@ function reach(live: Live, index: number): void {
 /**
  * Leaving a timed hold: it counts if you held at least half of it, at the time you held (unless you typed one) — a
  * logged hold's set and an unlogged hold alike (ruling 2b-R15). Once held, going back to it and leaving early again
- * does not undo it.
+ * does not undo it. A hold to max you end with Done (`ended`) counts at whatever time you held it, a second or more:
+ * where you stopped is the result.
  */
-function finishTimed(live: Live, index: number, elapsedSecs: number): void {
+function finishTimed(live: Live, index: number, elapsedSecs: number, ended = false): void {
   const step = live.steps[index];
   if (!step || step.kind !== "timed") return;
-  const held = elapsedSecs >= step.seconds / 2;
+  const held = elapsedSecs >= step.seconds / 2 || (ended && Math.round(elapsedSecs) >= 1);
   live.held ??= {};
   if (held) live.held[index] = true;
   else if (live.held[index] !== true) live.held[index] = false;

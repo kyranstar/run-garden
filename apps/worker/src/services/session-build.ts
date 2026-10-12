@@ -92,7 +92,7 @@ import {
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
-import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, snapshotErrors, type DocBuildInfo } from "./doc-build.js";
+import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, snapshotErrors, type DocBuildInfo, type DocSlot } from "./doc-build.js";
 import { DocTooLargeError, type DocIssue, type ValidateCtx } from "@rg/workout";
 
 /**
@@ -740,7 +740,22 @@ function toPayload(b: BuildRow, hidden: ReadonlySet<string>): { build: BuildPayl
   const alternatives = Object.fromEntries(
     Object.entries(stored.build.alternatives).map(([slotKey, list]) => [slotKey, list.filter((a) => !hidden.has(a.id))]),
   );
-  return { build: { buildId: b.id, version: b.version, ...stored.build, alternatives }, view: stored.view };
+  // A document's planned alternates are offered by the player's ⇄: never a hidden move either.
+  const doc = stored.build.fromDoc;
+  const slots = doc?.slots ? { fromDoc: { ...doc, slots: withoutHidden(doc.slots, hidden) } } : {};
+  return { build: { buildId: b.id, version: b.version, ...stored.build, alternatives, ...slots }, view: stored.view };
+}
+
+/** A document build's slots with the hidden moves out of their alternates (a slot left saying nothing is dropped). */
+function withoutHidden(slots: Readonly<Record<string, DocSlot>>, hidden: ReadonlySet<string>): Record<string, DocSlot> {
+  const out: Record<string, DocSlot> = {};
+  for (const [key, slot] of Object.entries(slots)) {
+    const { alternates, ...said } = slot;
+    const kept = (alternates ?? []).filter((a) => !hidden.has(a.id));
+    const next: DocSlot = kept.length > 0 ? { ...said, alternates: kept } : said;
+    if (Object.keys(next).length > 0) out[key] = next;
+  }
+  return out;
 }
 
 /** The sheet's labels and choices from a build's context: the same context the engine plans with. */
@@ -1388,7 +1403,14 @@ async function commitDocBuild(
   const refused = await beginWrite(db, userId, s, ctx);
   if (refused) return refused;
   const stored: StoredBuild = {
-    build: { engineVersion: version, inputsHash, builtAt: ctx.now, blockRef: null, ...made.build, fromDoc: { rev, swaps: gated.swaps, blocked: gated.blocked } },
+    build: {
+      engineVersion: version,
+      inputsHash,
+      builtAt: ctx.now,
+      blockRef: null,
+      ...made.build,
+      fromDoc: { rev, swaps: gated.swaps, blocked: gated.blocked, slots: made.slots },
+    },
     view: made.view,
   };
   // The snapshot is the document as played: the day's swaps made, the row's own document untouched.

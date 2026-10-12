@@ -9,7 +9,7 @@
  * - Blocks: arrive → arrive, warmup and activation → prep, main and run → core, power, accessory and conditioning →
  *   accessory, care → care, cooldown → cooldown. A power part is the engine's jumps block, which plays as its accessory
  *   block (before the core lifts on a jumping day): never the core block, which the worker reads as a core lift. Slots
- *   are numbered in play order within a block ("core:0", …).
+ *   are numbered in play order within a block ("core:0", …; `docSlotKeys`, which says which item each slot is).
  * - A move with `holdSec` (or `carryM`, a 1 m/s walk) plays timed windows of that many seconds: per side (`perSide`
  *   with no fixed side) a Left then a Right window. A move with neither plays self-paced sets. The seconds of a window
  *   with no hold and of a set are the engine's own (`Builder.windowSeconds`, `Builder.setSeconds`), reading the
@@ -66,22 +66,46 @@ interface Ctx {
 
 const isMove = (s: Slot): s is Slot & { item: Move } => s.item.kind !== "run";
 
+/** An item's slot: the key its steps carry, and where the item is (`parts[part].items[item]`). */
+export interface DocSlotKey {
+  key: string;
+  part: number;
+  item: number;
+}
+
+/**
+ * Every item's slot but a rest's, in document order: its part's block and its place in play order within that block
+ * ("core:0", "core:1", …). The one numbering — the steps' slot keys are these.
+ */
+export function docSlotKeys(doc: WorkoutDoc): DocSlotKey[] {
+  const next: Partial<Record<BlockId, number>> = {};
+  const out: DocSlotKey[] = [];
+  doc.parts.forEach((part, p) => {
+    const block = BLOCK_OF_PURPOSE[part.purpose];
+    part.items.forEach((item, i) => {
+      if (item.kind === "rest") return;
+      const n = next[block] ?? 0;
+      next[block] = n + 1;
+      out.push({ key: `${block}:${n}`, part: p, item: i });
+    });
+  });
+  return out;
+}
+
 export function playerStepsFromDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): Step[] {
   const tooLarge = docTooLarge(doc, library);
   if (tooLarge) throw new DocTooLargeError(tooLarge);
   const find = makeLibraryIndex(library);
-  const next: Partial<Record<BlockId, number>> = {};
+  const keys = new Map(docSlotKeys(doc).map((s) => [`${s.part}:${s.item}`, s.key]));
   const out: Step[] = [];
-  for (const part of doc.parts) {
+  doc.parts.forEach((part, p) => {
     const ctx: Ctx = { block: BLOCK_OF_PURPOSE[part.purpose], fid: FORMAT_OF_PART[part.format] };
     let letter = 0;
-    const slots = part.items.map((item): Slot | null => {
+    const slots = part.items.map((item, i): Slot | null => {
       if (item.kind === "rest") return null;
-      const n = next[ctx.block] ?? 0;
-      next[ctx.block] = n + 1;
       const rec = item.kind === "exercise" ? find(item.libraryId) : undefined;
       return {
-        key: `${ctx.block}:${n}`,
+        key: keys.get(`${p}:${i}`)!,
         item,
         rec,
         exerciseId: item.kind === "exercise" ? (rec?.id ?? item.libraryId) : null,
@@ -90,7 +114,7 @@ export function playerStepsFromDoc(doc: WorkoutDoc, library: readonly ExerciseRe
       };
     });
     out.push(...partSteps(part, slots, ctx));
-  }
+  });
   return out;
 }
 

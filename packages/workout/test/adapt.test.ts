@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { WATCH_MAX_STEPS, workoutDocSchema, type PlannedStage, type WorkoutDoc } from "@rg/domain";
 import { isPlyometric, type ExerciseRecord } from "@rg/exercise-library";
 import type { Step } from "@rg/session-engine";
-import { DocTooLargeError, deriveDoc, docFromBuild, placementFor, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
+import { DocTooLargeError, deriveDoc, docFromBuild, docSlotKeys, placementFor, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
 import { LIBRARY, jumpDayBuilds, seededBuilds, stored } from "./seeded-builds.js";
 
 /** A circuit station: it plays the circuit's work window, whatever hold its move's target suggests. */
@@ -239,6 +239,29 @@ describe("playerStepsFromDoc — any document", () => {
       ["timed", 40, 1], ["rest", 15, null], ["timed", 40, 1], ["rest", 45, null],
       ["timed", 40, 2], ["rest", 15, null], ["timed", 40, 2],
     ]);
+  });
+
+  it("docSlotKeys names each item's slot as its steps name it: its block, in play order within the block (rests none)", () => {
+    const d = doc([
+      { purpose: "warmup", format: "flow", items: [{ kind: "exercise", libraryId: "sidePlank", dose: { sets: 1, holdSec: 30 } }] },
+      { purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: 8 } },
+        { kind: "rest", seconds: 30 },
+        { kind: "free_exercise", name: "Wall sit", dose: { sets: 1, holdSec: 45, max: true } },
+      ] },
+      { purpose: "activation", format: "holds", items: [{ kind: "exercise", libraryId: "sidePlank", dose: { sets: 1, holdSec: 20 } }] },
+      { purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: 600 }, effort: "easy" }] },
+    ]);
+    const slots = docSlotKeys(d);
+    expect(slots).toEqual([
+      { key: "prep:0", part: 0, item: 0 },
+      { key: "core:0", part: 1, item: 0 },
+      { key: "core:1", part: 1, item: 2 },
+      { key: "prep:1", part: 2, item: 0 },
+      { key: "core:2", part: 3, item: 0 },
+    ]);
+    const played = [...new Set(playerStepsFromDoc(d, LIB).filter((s) => s.kind !== "rest").map((s) => s.slotKey))];
+    expect(played).toEqual(slots.map((s) => s.key));
   });
 });
 

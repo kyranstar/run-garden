@@ -14,7 +14,7 @@
  */
 import type { ConditionViewDto, SessionBuildDto, SessionExerciseDto, SessionItemDto, SessionViewDto } from "@rg/api-client";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
-import type { Step } from "@rg/session-engine";
+import type { Alternative, Step } from "@rg/session-engine";
 
 export const TODAY = "2026-10-08";
 export const SLOT = "slot-p1-2026-10-08";
@@ -126,6 +126,55 @@ export function build(over: Partial<SessionBuildDto> = {}): SessionBuildDto {
     ...over,
   } as SessionBuildDto;
 }
+
+/** What the document's items say beside the steps (Stage 2 Task 8). Synthetic words. */
+export const SQUAT_CUE = "Elbows inside the knees.";
+export const HOLD_CUE = "Back flat on the wall.";
+export const STRETCH_CUE = "Let the knees fall.";
+export const PLANNED_WHY = "Kinder on the knees.";
+
+/** The planned alternate for the squat: the split squat, with the document's why. */
+export const plannedSplitSquat = (): Alternative => ({
+  id: "splitSquat",
+  name: "Supported split squat",
+  reasons: [PLANNED_WHY],
+  steps: splitSquatSteps(),
+  moveKey: "splitSquat|glutes,quads",
+  pairing: { doseType: "reps", patterns: ["lunge"], positionGroup: "standing" },
+});
+
+/**
+ * The same steps as a DOCUMENT workout's build (Stage 2): no theme, block, targets or new move, no engine swaps; the
+ * squat's item has a cue and a planned alternate, the wall sit is held to max (target 40 s) with a cue, the stretch
+ * has a cue only.
+ */
+export function docBuild(over: Partial<SessionBuildDto> = {}): SessionBuildDto {
+  const base = build();
+  return build({
+    engineVersion: "doc-build-2+test",
+    theme: null,
+    blockRef: null,
+    weekOfBlock: null,
+    targets: {},
+    newMove: null,
+    steps: base.steps.map((s) => ({ ...s, isNew: false })),
+    items: base.items.map((i) => ({ ...i, isNew: false, coreFamily: null })),
+    alternatives: {},
+    fromDoc: {
+      rev: 1,
+      swaps: [],
+      blocked: [],
+      slots: {
+        "core:0": { cue: SQUAT_CUE, alternates: [plannedSplitSquat()] },
+        "accessory:0": { cue: HOLD_CUE, max: true },
+        "cooldown:0": { cue: STRETCH_CUE },
+      },
+    },
+    ...over,
+  });
+}
+
+export const docView = (): SessionViewDto => view({ theme: null, proposedTheme: null, block: null, newMove: null });
 
 export function view(over: Partial<SessionViewDto> = {}): SessionViewDto {
   return {

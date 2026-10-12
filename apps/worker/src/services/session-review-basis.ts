@@ -6,9 +6,9 @@
  * So when the athlete starts (online, ruling 2b-R1) the player fetches this once and keeps it on the device:
  *
  *   records     `Records.baseline`: the history folded down to what one more session — on the build's day, playing only
- *               the build's moves and alternatives — can read (bests for those moves, the weeks it touches, the
- *               milestone counters). The review folds the session played onto it: the same answer as the whole
- *               history (packages/session-engine/test/records-baseline.test.ts).
+ *               the build's moves and alternatives (a document's planned alternates too) — can read (bests for those
+ *               moves, the weeks it touches, the milestone counters). The review folds the session played onto it: the
+ *               same answer as the whole history (packages/session-engine/test/records-baseline.test.ts).
  *   graduation  the program's block (when it is still the build's) and, per core lift the build plays, the newest
  *               logged entries progression reads (`Hist.TRIM.progressionEntries`, ties kept), ids made canonical;
  *               plus the harder moves those lifts graduate to, which the build's slice may not carry.
@@ -392,7 +392,9 @@ export async function reviewBasis(db: Db, userId: string, workoutId: string, ctx
   const weeklyGoal = parsed.success ? parsed.data.weeklyGoal : 4;
 
   const data = engineDataFor(await activeProfileIds(db, userId), []);
-  const ids = [...new Set([...build.items.map((i) => i.exerciseId), ...Object.values(build.alternatives).flat().map((a) => a.id)])];
+  // The moves the session may hold by its end: its own, and what ⇄ offers (the engine's, a document's planned alternates).
+  const offered = [...Object.values(build.alternatives).flat(), ...Object.values(build.fromDoc?.slots ?? {}).flatMap((s) => s.alternates ?? [])];
+  const ids = [...new Set([...build.items.map((i) => i.exerciseId), ...offered.map((a) => a.id)])];
   // A summary, never the whole history (ruling 2b-R11): its cost does not grow with the account's sessions.
   const records = await recordsBaseline(db, userId, data, { ids, date: build.date, weeklyGoal });
 
