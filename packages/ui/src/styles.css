@@ -9613,6 +9613,15 @@ button.stu-qs:hover {
   margin: 0;
   accent-color: var(--green);
 }
+/* A row held for a choice there is none of (yet): it keeps its place, quieter. */
+.stu-add-choice:has(input:disabled) {
+  color: var(--ink-soft);
+  cursor: default;
+}
+/* Until the draft has been read the list is not drawn; its room is (three rows), so it lands without a jump. */
+.stu-add-targets[aria-busy="true"] {
+  min-height: calc(3 * (var(--tap) + 2 * var(--space-2)) + 2 * var(--space-3));
+}
 .stu-add-what {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -9682,9 +9691,22 @@ button.stu-qs:hover {
   gap: var(--space-6);
   font-size: var(--text-sm);
 }
+/* Under the one row, across it: the watch's Send, the costs, a failed Undo. */
+.stu-added-send,
+.stu-added-notes,
 .stu-added-error {
   grid-column: 1 / -1;
-  grid-row: 2;
+}
+.stu-added-send {
+  justify-self: start;
+}
+.stu-added-notes {
+  margin: 0;
+  padding-left: var(--space-6);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.stu-added-error {
   font-size: var(--text-xs);
   color: var(--danger-ink);
 }

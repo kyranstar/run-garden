@@ -16,7 +16,9 @@ import type { WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, type DraftDoc } from "@rg/workout";
 import { StudioScreen } from "../src/screens/studio/screen.js";
-import { draftStore } from "../src/studio-drafts.js";
+import { AddSheet, type AddDone } from "../src/screens/studio/add-sheet.js";
+import { emptyStudioCtx } from "../src/screens/studio/model.js";
+import { draftStore, type DraftStore, type StudioDraft } from "../src/studio-drafts.js";
 import { primedClient } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -108,18 +110,22 @@ function template(over: Partial<TemplateDto> = {}): TemplateDto {
 
 interface Server {
   workouts?: WorkoutDto[];
-  templates?: TemplateDto[];
+  /** GET /api/templates, in turn (the last one repeats). */
+  templates?: TemplateDto[] | TemplateDto[][];
   /** GET /api/workouts/:id/doc, in turn (the last one repeats). */
   docs?: Array<{ doc: WorkoutDoc; rev: number }>;
-  /** PUT /api/workouts/:id/doc answers, in turn (the last one repeats): a status, or OK. */
-  revise?: Array<number | { error: string; status: number }>;
+  /** PUT /api/workouts/:id/doc answers, in turn (the last one repeats): a refusal, "hang" (never answers), or OK with
+   * what the server says of it. */
+  revise?: Array<number | "hang" | { error: string; status: number } | { watchHasOlder?: boolean; warnings?: unknown[] }>;
 }
 
 function serve(s: Server = {}): Call[] {
   const calls: Call[] = [];
   let docRead = 0;
   let revised = 0;
+  let tplRead = 0;
   let rev = 0;
+  const tplAnswers: TemplateDto[][] = Array.isArray(s.templates?.[0]) ? (s.templates as TemplateDto[][]) : [(s.templates as TemplateDto[] | undefined) ?? []];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -128,7 +134,7 @@ function serve(s: Server = {}): Call[] {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, path, body });
       if (method === "GET" && path === "/api/plan/workouts") return json({ today: TODAY, plan: null, corosWritesEnabled: false, workouts: s.workouts ?? [] });
-      if (method === "GET" && path === "/api/templates") return json({ templates: s.templates ?? [] });
+      if (method === "GET" && path === "/api/templates") return json({ templates: tplAnswers[Math.min(tplRead++, tplAnswers.length - 1)] });
       if (method === "PUT" && path.startsWith("/api/templates/")) return json({ template: { ...template(), doc: body.doc }, warnings: [] });
       const doc = /^\/api\/workouts\/([^/]+)\/doc$/.exec(path);
       if (doc && method === "GET") {
@@ -139,10 +145,22 @@ function serve(s: Server = {}): Call[] {
       }
       if (doc && method === "PUT") {
         const a = s.revise?.[Math.min(revised++, (s.revise?.length ?? 1) - 1)];
-        if (a && typeof a === "object") return json({ error: a.error, rev: rev + 1 }, a.status);
+        if (a === "hang") return new Promise<Response>(() => undefined);
+        if (a && typeof a === "object" && "error" in a) return json({ error: a.error, rev: rev + 1 }, a.status);
+        const said = a && typeof a === "object" ? a : {};
         const w = planned({ id: doc[1]! });
-        return json({ workout: { ...w, date: w.effectiveDate, time: w.effectiveTime, title: body.doc.title, intentSummary: "", docRev: body.baseRev + 1, minutes: 20 }, rev: body.baseRev + 1, watchHasOlder: false, warnings: [] });
+        return json({
+          workout: { ...w, date: w.effectiveDate, time: w.effectiveTime, title: body.doc.title, intentSummary: "", docRev: body.baseRev + 1, minutes: 20 },
+          rev: body.baseRev + 1,
+          watchHasOlder: said.watchHasOlder ?? false,
+          warnings: said.warnings ?? [],
+        });
       }
+      if (method === "GET" && path === "/api/sessions/w1/watch-preview") {
+        return json({ buildId: "b9", stamp: "Strength day — 2026-10-15", steps: [{ name: "Goblet Squat", freeText: false, target: { kind: "reps", reps: 7 }, grams: null, load: null, overview: "", restSeconds: 0 }], freeText: 0, refusal: null, digest: "d9" });
+      }
+      if (method === "POST" && path === "/api/sessions/w1/send-to-watch") return json({ workoutId: "w1", watch: { state: "sending" } });
+      if (method === "POST" && path === "/api/sessions/watch/drain") return json({ executed: 1 });
       const prefs = /^\/api\/library\/([^/]+)\/prefs$/.exec(path);
       if (prefs && method === "PUT") return json({ prefs: { exerciseId: prefs[1], rating: null, excluded: false, pinned: false, introducedOn: null, ...body } });
       return json({ error: "offline" }, 503);
@@ -192,6 +210,11 @@ async function click(el: Element | null | undefined, what: string) {
   await settle();
 }
 
+/** A choice that is offered (its row is there and can be taken). */
+const offered = (label: string) => {
+  const o = option(label);
+  return o && !o.disabled ? o : null;
+};
 const option = (label: string) =>
   [...sheet()!.querySelectorAll<HTMLLabelElement>(".stu-add-choice")].find((l) => l.textContent?.trim() === label)?.querySelector("input") ?? null;
 const addButton = () => sheet()!.querySelector<HTMLButtonElement>(".stu-add-go");
@@ -213,13 +236,17 @@ const exerciseIds = (doc: WorkoutDoc, purpose: string) =>
 // ── The choices ────────────────────────────────────────────────────────────
 
 describe("the choices the sheet offers", () => {
-  it("with nothing to add to: a new workout, chosen; and Pin", async () => {
+  it("with nothing to add to: a new workout, chosen; the planned and template rows hold their place, saying there are none; and Pin", async () => {
     serve();
     await openAdd("goblet", "Goblet squat");
     expect(sheet()!.querySelector("h2")!.textContent).toBe("Add Goblet squat");
     const choices = [...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim());
-    expect(choices).toEqual(["To a new workout"]);
+    expect(choices).toEqual(["To a planned workout", "To a new workout", "To a template"]);
     expect(option("To a new workout")!.checked).toBe(true);
+    expect(option("To a planned workout")!.disabled).toBe(true);
+    expect(option("To a template")!.disabled).toBe(true);
+    expect(sheet()!.textContent).toContain("None coming up");
+    expect(sheet()!.textContent).toContain("None yet");
     expect(sheet()!.textContent).toContain("Pin — keep it in my rotation");
   });
 
@@ -227,7 +254,7 @@ describe("the choices the sheet offers", () => {
     await draftStore().save(draftDoc());
     serve({ workouts: [programSession, planned({ id: "w1" }), planned({ id: "done", completionState: "completed" })], templates: [template()] });
     await openAdd("goblet", "Goblet squat");
-    await until(() => !!option("To a template"), "the templates");
+    await until(() => !!offered("To a template"), "the templates");
     const choices = [...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim());
     expect(choices).toEqual(["To the workout I'm building", "To a planned workout", "To a new workout", "To a template"]);
     expect(option("To the workout I'm building")!.checked).toBe(true);
@@ -243,14 +270,16 @@ describe("the choices the sheet offers", () => {
     await openAdd("goblet", "Goblet squat");
     await until(() => calls.some((c) => c.path === "/api/plan/workouts"), "the plan read");
     await settle(20);
-    expect(option("To a planned workout")).toBeNull();
+    expect(offered("To a planned workout")).toBeNull();
+    expect(sheet()!.textContent).toContain("None coming up");
     expect(sheet()!.textContent).not.toContain("Garden program");
     const pin = [...sheet()!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Pin — keep it in my rotation"))!;
     expect(pin.getAttribute("aria-pressed")).toBe("false");
     await click(pin, "Pin");
     expect(calls.find((c) => c.method === "PUT" && c.path === "/api/library/gobletSquat/prefs")?.body).toEqual({ pinned: true });
-    await until(() => sheet()!.querySelector(".stu-add-pin")?.getAttribute("aria-pressed") === "true", "Pinned");
-    expect(sheet()!.querySelector(".stu-add-pin")!.textContent).toBe("Pinned");
+    await until(() => sheet()!.querySelector(".stu-add-pin")?.getAttribute("aria-pressed") === "true", "pressed");
+    // One name; the state is the button's `aria-pressed`, shown by the check.
+    expect(sheet()!.querySelector(".stu-add-pin")!.textContent).toBe("Pin — keep it in my rotation");
   });
 });
 
@@ -349,7 +378,7 @@ describe("to a planned workout", () => {
     const original = storedDoc("Strength day");
     const calls = serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: original, rev: 3 }] });
     await openAdd("goblet", "Goblet squat");
-    await until(() => !!option("To a planned workout"), "the planned workout");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
     await click(option("To a planned workout"), "the planned choice");
     await click(addButton(), "Add");
     await until(() => !!line(), "the line");
@@ -378,7 +407,7 @@ describe("to a planned workout", () => {
       revise: [{ error: "stale_revision", status: 409 }, 200],
     });
     await openAdd("goblet", "Goblet squat");
-    await until(() => !!option("To a planned workout"), "the planned workout");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
     await click(option("To a planned workout"), "the planned choice");
     await click(addButton(), "Add");
     await until(() => !!line(), "the line");
@@ -390,7 +419,7 @@ describe("to a planned workout", () => {
   it("refused (no longer editable): says why in the sheet; nothing is confirmed", async () => {
     serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 1 }], revise: [{ error: "not_editable", status: 409 }] });
     await openAdd("goblet", "Goblet squat");
-    await until(() => !!option("To a planned workout"), "the planned workout");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
     await click(option("To a planned workout"), "the planned choice");
     await click(addButton(), "Add");
     await until(() => !!sheet()?.querySelector('[role="alert"]'), "the refusal");
@@ -404,7 +433,7 @@ describe("to a template", () => {
     const t = template();
     const calls = serve({ templates: [t] });
     await openAdd("goblet", "Goblet squat");
-    await until(() => !!option("To a template"), "the template");
+    await until(() => !!offered("To a template"), "the template");
     await click(option("To a template"), "the template choice");
     await click(addButton(), "Add");
     await until(() => !!line(), "the line");
@@ -446,5 +475,193 @@ describe("from the detail", () => {
     await click(line()!.querySelector('[aria-label="Dismiss"]'), "Dismiss");
     expect(line()).toBeNull();
     expect(document.activeElement).toBe(host!.querySelector('[aria-label="Add Goblet squat"]'));
+  });
+});
+
+// ── Fix round 1 ────────────────────────────────────────────────────────────
+
+/** The sheet alone, with a draft store the test controls. */
+function mountSheet(drafts: DraftStore, onAdded: (d: AddDone) => void = () => undefined) {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  act(() => {
+    root!.render(
+      createElement(
+        QueryClientProvider,
+        { client: primedClient() },
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(AddSheet, {
+            rec: EXERCISES.find((r) => r.id === "gobletSquat")!,
+            ctx: emptyStudioCtx,
+            today: TODAY,
+            onClose: () => undefined,
+            onAdded,
+            drafts,
+          }),
+        ),
+      ),
+    );
+  });
+}
+
+/** A store whose first read answers only when the test says, and whose device holds `held` (changeable). */
+function lateStore(held: { draft: StudioDraft | null }) {
+  let answer: (() => void) | null = null;
+  let first = true;
+  const store = {
+    load: vi.fn(() => {
+      if (!first) return Promise.resolve(held.draft);
+      first = false;
+      return new Promise<StudioDraft | null>((r) => (answer = () => r(held.draft)));
+    }),
+    save: vi.fn(async (doc: DraftDoc) => (held.draft = { doc, updatedAt: 2 })),
+    clear: vi.fn(async () => {
+      held.draft = null;
+    }),
+  };
+  return { store, answer: () => answer?.() };
+}
+
+describe("before the draft has been read (review: Add must not overwrite a draft it has not seen)", () => {
+  it("nothing can be taken and Add waits; then the draft is chosen, the rows in place", async () => {
+    serve();
+    const held = { draft: { doc: draftDoc(), updatedAt: 1 } as StudioDraft | null };
+    const { store, answer } = lateStore(held);
+    mountSheet(store);
+    await settle(20);
+    expect(sheet()!.querySelector("fieldset")!.getAttribute("aria-busy")).toBe("true");
+    expect(sheet()!.querySelectorAll('input[type="radio"]')).toHaveLength(0);
+    expect(addButton()!.disabled).toBe(true);
+    await act(async () => answer());
+    await until(() => option("To the workout I'm building")?.checked === true, "the draft, chosen");
+    expect(sheet()!.querySelector("fieldset")!.getAttribute("aria-busy")).toBe("false");
+    expect(addButton()!.disabled).toBe(false);
+  });
+
+  it("a new workout's Undo puts back the draft the device held when the Add was made — read then, not as the sheet saw it", async () => {
+    serve();
+    // The sheet read no draft; another tab then started one before Add.
+    const held = { draft: null as StudioDraft | null };
+    const { store, answer } = lateStore(held);
+    let done: AddDone | null = null;
+    mountSheet(store, (d) => (done = d));
+    await act(async () => answer());
+    await until(() => option("To a new workout")?.checked === true, "a new workout");
+    const elsewhere = draftDoc("Started in another tab");
+    held.draft = { doc: elsewhere, updatedAt: 1 };
+    await click(addButton(), "Add");
+    await until(() => done !== null, "the Add");
+    expect(held.draft?.doc.title).toBe("New workout");
+    await act(async () => done!.undo());
+    expect(held.draft?.doc).toEqual(elsewhere);
+    expect(store.clear).not.toHaveBeenCalled();
+  });
+
+  it("a save this device could not make says so plainly — not as a connection", async () => {
+    serve();
+    const held = { draft: null as StudioDraft | null };
+    const { store, answer } = lateStore(held);
+    store.save.mockRejectedValue(new Error("QuotaExceededError"));
+    mountSheet(store);
+    await act(async () => answer());
+    await until(() => !addButton()!.disabled, "Add");
+    await click(addButton(), "Add");
+    await until(() => !!sheet()!.querySelector('[role="alert"]'), "the refusal");
+    expect(sheet()!.querySelector('[role="alert"]')!.textContent).toBe("Couldn't keep it on this device.");
+  });
+});
+
+describe("the watch holds the older version (review: watchHasOlder, spec §10)", () => {
+  it("the line says so, with the server's costs, and Send the new version goes through the session's own preview and Send", async () => {
+    const warning = { path: "parts[1].items[1]", code: "balance", message: "Two squats in a row load the knees twice.", severity: "warning" };
+    const calls = serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true, warnings: [warning] }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Added to Main in “Strength day”. Your watch has the older version.");
+    expect(line()!.querySelector(".stu-added-notes")!.textContent).toBe("Two squats in a row load the knees twice.");
+    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Send the new version"), "Send the new version");
+    await until(() => !!host!.querySelector(".watch-send"), "the watch preview");
+    await click(host!.querySelector(".watch-send"), "Send");
+    expect(calls.find((c) => c.method === "POST" && c.path === "/api/sessions/w1/send-to-watch")?.body).toEqual({ buildId: "b9", digest: "d9" });
+    await until(() => line()?.textContent?.includes("Sending the new version to your watch.") ?? false, "sending");
+    expect(calls.some((c) => c.path === "/api/sessions/watch/drain")).toBe(true);
+    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Send the new version")).toBe(false);
+  });
+
+  it("no older copy: nothing about the watch", async () => {
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    expect(line()!.textContent).not.toContain("watch");
+  });
+});
+
+describe("Undo and Open in reach of a keyboard (review)", () => {
+  it("after an Add from the list, focus is on the line — still a status — so Open and Undo are the next Tab stops", async () => {
+    serve();
+    await openAdd("goblet", "Goblet squat");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    const said = line()!.querySelector(".stu-added-text")!;
+    expect(document.activeElement).toBe(said);
+    expect(said.getAttribute("role")).toBe("status");
+    const after = [...line()!.querySelectorAll("a, button")].map((el) => el.textContent || el.getAttribute("aria-label"));
+    expect(after.slice(0, 2)).toEqual(["Open", "Undo"]);
+  });
+
+  it("an Undo that fails is an alert, and Undo stays", async () => {
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [200, { error: "stale_revision", status: 409 }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
+    await until(() => !!line()!.querySelector('[role="alert"]'), "the alert");
+    expect(line()!.querySelector('[role="alert"]')!.textContent).toBe("It changed since, so it can't be undone here.");
+    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Undo")).toBe(true);
+  });
+});
+
+describe("while a write is under way (review)", () => {
+  it("✕ and Escape wait for its answer: the sheet stays", async () => {
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: ["hang"] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    expect(addButton()!.textContent).toBe("Adding…");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    expect(sheet()).not.toBeNull();
+    await click(sheet()!.querySelector('[aria-label="Close"]'), "Close");
+    expect(sheet()).not.toBeNull();
+  });
+});
+
+describe("a template's Undo (review)", () => {
+  it("refuses, plainly, when the template changed since the Add", async () => {
+    const t = template();
+    const calls = serve({ templates: [[t], [t], [{ ...t, updatedAt: "2026-10-11T09:00:00Z" }]] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a template"), "the template");
+    await click(option("To a template"), "the template choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
+    await until(() => !!line()!.querySelector('[role="alert"]'), "the refusal");
+    expect(line()!.querySelector('[role="alert"]')!.textContent).toBe("That template changed since, so it can't be undone here.");
+    expect(calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1")).toHaveLength(1);
   });
 });

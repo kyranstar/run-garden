@@ -35,12 +35,13 @@
  */
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useMatch, useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import type { QuickStartKind } from "@rg/workout";
 import { localTodayGuess } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
+import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { IconFilters } from "../../icons.js";
 import { AddedLine, AddSheet, writeErrorText, type Added } from "./add-sheet.js";
 import { FilterControls, FiltersSheet } from "./filters-sheet.js";
@@ -122,7 +123,9 @@ type FocusTo =
   /** The row of a move whose detail closed. */
   | { to: "move"; id: string }
   /** The Add that made a dismissed confirmation. */
-  | { to: "add"; id: string; from: "detail" | "list" };
+  | { to: "add"; id: string; from: "detail" | "list" }
+  /** The confirmation line on the page, after an Add from the list. */
+  | { to: "line" };
 
 export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
   const [params, setParams] = useSearchParams();
@@ -131,6 +134,7 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
   const search = params.toString();
   const url = useMemo(() => readStudio(new URLSearchParams(search)), [search]);
   const ctx = useStudioCtx();
+  const qc = useQueryClient();
   const wide = useMinWidth(DETAIL_PANE_MIN_PX);
   const [sheetOpen, setSheetOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -211,12 +215,30 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
     }),
     [search, state],
   );
+  /** A list to land on once a close's Back has landed: the list changed while the pane was open. */
+  const relist = useRef<string | null>(null);
   const closeMove = useCallback(() => {
     const { search, state, openId } = here.current;
     if (openId) focusNext.current = { to: "move", id: openId };
-    if (state?.moveDepth && state.list === search) navigate(-state.moveDepth);
-    else navigate({ pathname: "/studio", search: search ? `?${search}` : "" }, { replace: true });
+    if (state?.moveDepth) {
+      // Back out of every move entry; the list as it is now then takes the place of the one they started from.
+      if (state.list !== search) relist.current = search;
+      navigate(-state.moveDepth);
+    } else navigate({ pathname: "/studio", search: search ? `?${search}` : "" }, { replace: true });
   }, [navigate]);
+  // The close's Back has landed: put the list as it now is in the entry it landed on — a step from the home when it
+  // landed on the home (so the home is there once, behind it), back to that home when the list is now empty and the
+  // entry came from one, else in the entry's place.
+  useEffect(() => {
+    const want = relist.current;
+    if (want === null || openId) return;
+    relist.current = null;
+    if (want === search) return;
+    const to = { pathname: "/studio", search: want ? `?${want}` : "" };
+    if (search === "") navigate(to, { state: { fromHome: true } satisfies StudioHistory });
+    else if (want === "" && state?.fromHome) navigate(-1);
+    else navigate(to, { replace: true, state });
+  }, [openId, search, state, navigate]);
   const openHref = useCallback((id: string) => moveHref(id, search), [search]);
 
   // ── Add: the one small sheet, then the line ──
@@ -240,6 +262,16 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
   const dismiss = () => {
     if (added) focusNext.current = { to: "add", id: added.rec.id, from: added.from };
     setAdded(null);
+  };
+  // "Send the new version": the session's own Send — its watch preview, then the push — for the workout added to.
+  const [sendingWatch, setSendingWatch] = useState<{ n: number; workoutId: string; minutes: number } | null>(null);
+  const sendWatch = (workoutId: string) => {
+    if (added?.watch?.workoutId === workoutId) setSendingWatch({ n: added.n, workoutId, minutes: added.watch.minutes });
+  };
+  const watchWritten = (workoutId: string) => {
+    void qc.invalidateQueries({ queryKey: ["session", workoutId] });
+    void qc.invalidateQueries({ queryKey: ["plan"] });
+    void qc.invalidateQueries({ queryKey: ["today"] });
   };
   // The line shows where the Add was made: in the detail's foot while that move is open, else on the page.
   const inDetail = !!added && added.from === "detail" && openRec?.id === added.rec.id;
@@ -271,6 +303,10 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
       if (openId === want.id) return;
       target = rowOf(want.id)?.querySelector<HTMLElement>(".stu-move-open") ?? (listing ? heading.current : title.current);
       if (!target && listing) return;
+    } else if (want.to === "line") {
+      // After an Add from the list: the line that says where it went, Open and Undo next in Tab order.
+      target = r.querySelector<HTMLElement>(":scope > .stu-added--on .stu-added-text");
+      if (!target) return;
     } else if (want.to === "add") {
       target =
         (want.from === "detail" ? r.querySelector<HTMLElement>(".stu-detail-add") : rowOf(want.id)?.querySelector<HTMLElement>(".stu-move-add")) ??
@@ -309,7 +345,7 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
       onClose={closeMove}
       onAdd={addFromDetail}
       moveLink={moveLink}
-      added={<AddedLine added={inDetail ? added : null} onUndo={() => void undo()} onDismiss={dismiss} />}
+      added={<AddedLine added={inDetail ? added : null} onUndo={() => void undo()} onDismiss={dismiss} onSendWatch={sendWatch} />}
     />
   ) : null;
   return (
@@ -397,10 +433,39 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
           onAdded={(done) => {
             setAdded({ ...done, n: adding.n, rec: adding.rec, from: adding.from, phase: "done" });
             setAdding(null);
+            // From the list, the line is far from the ＋ in Tab order: focus goes to it, so Open and Undo are next. (From
+            // the detail it sits right above the Add that focus returns to.)
+            if (adding.from === "list") focusNext.current = { to: "line" };
           }}
         />
       ) : null}
-      <AddedLine added={inDetail ? null : added} onUndo={() => void undo()} onDismiss={dismiss} />
+      <AddedLine added={inDetail ? null : added} onUndo={() => void undo()} onDismiss={dismiss} onSendWatch={sendWatch} />
+      {sendingWatch ? (
+        <WatchPreviewSheet
+          workoutId={sendingWatch.workoutId}
+          minutes={sendingWatch.minutes}
+          onClose={() => setSendingWatch(null)}
+          onSent={() => {
+            const { n, workoutId } = sendingWatch;
+            setSendingWatch(null);
+            setAdded((cur) => (cur?.n === n ? { ...cur, sent: true } : cur));
+            // As the session sheet does after a Send: run the queued push, then read again what it changed.
+            watchWritten(workoutId);
+            void api
+              .drainWatch()
+              .catch(() => undefined)
+              .finally(() => watchWritten(workoutId));
+          }}
+          onStale={() => {
+            setSendingWatch(null);
+            watchWritten(sendingWatch.workoutId);
+          }}
+          onRefused={() => {
+            setSendingWatch(null);
+            watchWritten(sendingWatch.workoutId);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

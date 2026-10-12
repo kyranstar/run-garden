@@ -87,13 +87,16 @@ const deviceDrafts = draftStore();
 
 /**
  * The current draft, shared by every screen that shows it (the Add sheet, the builder): `draft` is null when there is
- * none (or before it has been read); `save` and `clear` write through to the device and the shared cache.
+ * none (or before it has been read — `loaded` says which); `save` and `clear` write through to the device and the
+ * shared cache. `load` reads the device itself: a write that depends on what the draft was (Add's Undo) reads it at the
+ * moment of writing, never from what a render last saw.
  */
 export function useStudioDraft(store: DraftStore = deviceDrafts): {
   draft: StudioDraft | null;
   loaded: boolean;
   save: (doc: DraftDoc) => Promise<StudioDraft>;
   clear: () => Promise<void>;
+  load: () => Promise<StudioDraft | null>;
 } {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: STUDIO_DRAFT_QUERY, queryFn: () => store.load(), networkMode: "always", staleTime: 0 });
@@ -109,5 +112,7 @@ export function useStudioDraft(store: DraftStore = deviceDrafts): {
     await store.clear();
     qc.setQueryData(STUDIO_DRAFT_QUERY, null);
   }, [qc, store]);
-  return { draft: q.data ?? null, loaded: q.isSuccess, save, clear };
+  const load = useCallback(() => store.load(), [store]);
+  // Read, whatever the answer (a read that failed is no draft): the choices it decides can now be offered.
+  return { draft: q.data ?? null, loaded: q.isSuccess || q.isError, save, clear, load };
 }

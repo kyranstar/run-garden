@@ -204,6 +204,36 @@ describe("your say, from the detail", () => {
     expect(notForMe.getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("answers apply in the order the taps were made: a late answer to an earlier tap never undoes a later one", async () => {
+    mount("/studio/move/gobletSquat");
+    let releaseFirst: () => void = () => undefined;
+    let n = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string, init?: RequestInit) => {
+        if (init?.method === "PUT" && String(input) === "/api/library/gobletSquat/prefs") {
+          const patch = JSON.parse(String(init.body));
+          const answer = () =>
+            new Response(JSON.stringify({ prefs: { exerciseId: "gobletSquat", rating: null, excluded: false, pinned: false, introducedOn: null, ...patch } }), { status: 200 });
+          // The first tap's answer is slow; the second's is quick.
+          if (n++ === 0) return new Promise<Response>((r) => (releaseFirst = () => r(answer())));
+          return answer();
+        }
+        return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+      }),
+    );
+    const pin = () => [...dialog()!.querySelectorAll<HTMLButtonElement>(".stu-say button")].find((b) => /Pin/.test(b.textContent ?? ""))!;
+    await click(pin(), "Pin");
+    expect(pin().getAttribute("aria-pressed")).toBe("true");
+    await click(pin(), "Pin");
+    expect(pin().getAttribute("aria-pressed")).toBe("false");
+    await act(async () => {
+      releaseFirst();
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(pin().getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("a write that fails puts the toggle back and says so", async () => {
     mount("/studio/move/gobletSquat");
     const pin = () => [...dialog()!.querySelectorAll<HTMLButtonElement>(".stu-say button")].find((b) => /Pin/.test(b.textContent ?? ""))!;
@@ -280,5 +310,17 @@ describe("from md: the pane beside the list", () => {
     await click(pane()!.querySelector('[aria-label="Close"]'));
     expect(where).toBe("/studio?q=goblet");
     expect(pane()).toBeNull();
+  });
+
+  it("…and Back from there is what came before the list: the move's entries are gone, the old list replaced, nothing twice", async () => {
+    mount("/studio?q=goblet&how=isotonic", { wide: true, before: ["/studio"] });
+    await click(rowLink("Goblet squat"));
+    await click(host!.querySelector('[aria-label="Remove Isotonic"]'), "the Isotonic chip");
+    await click(pane()!.querySelector('[aria-label="Close"]'));
+    await settle();
+    expect(where).toBe("/studio?q=goblet");
+    await act(async () => history.back());
+    await settle();
+    expect(where).toBe("/studio");
   });
 });

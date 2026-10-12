@@ -7,7 +7,7 @@
  * the move's own read and the Studio's list (so rows, the "Pinned" filter and the ranking follow). A write that fails
  * puts the toggle back and says so — nothing is kept on this device to send later.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ExercisePrefsPatch, type LibraryItemDto, type LibraryListDto } from "@rg/api-client";
 import type { MovePrefs, StudioCtx } from "./model.js";
@@ -36,6 +36,7 @@ export function useMoveSay(id: string, ctx: StudioCtx): {
   // and the move's own read both failed, say), and every hook on the move hears it (the detail and the Add sheet).
   const written = useQuery({ queryKey: sayQuery(id), queryFn: () => null as Say | null, enabled: false, staleTime: Infinity });
   const [pending, setPending] = useState<{ id: string; say: Say } | null>(null);
+  const asked = useRef(0);
   const [error, setError] = useState<{ id: string; text: string } | null>(null);
   const known = ctx.prefs.get(id);
   const stored: Say =
@@ -44,11 +45,14 @@ export function useMoveSay(id: string, ctx: StudioCtx): {
 
   const set = (patch: ExercisePrefsPatch) => {
     const next: Say = { ...say, ...patch };
+    // Answers can arrive out of order: only the latest tap's answer is applied (an earlier one is already superseded).
+    const n = ++asked.current;
     setPending({ id, say: next });
     setError(null);
     api
       .setExercisePrefs(id, patch)
       .then(({ prefs }) => {
+        if (n !== asked.current) return;
         const saved: Say = { rating: prefs.rating, pinned: prefs.pinned, excluded: prefs.excluded };
         qc.setQueryData<Say>(sayQuery(id), saved);
         qc.setQueryData<LibraryItemDto>(libraryItemQuery(id), (old) => (old ? { ...old, prefs } : old));
@@ -56,8 +60,12 @@ export function useMoveSay(id: string, ctx: StudioCtx): {
           old ? { ...old, items: old.items.map((r) => (r.id === id ? { ...r, ...saved } : r)) } : old,
         );
       })
-      .catch(() => setError({ id, text: "Couldn't save that. Check your connection." }))
-      .finally(() => setPending((p) => (p?.id === id && p.say === next ? null : p)));
+      .catch(() => {
+        if (n === asked.current) setError({ id, text: "Couldn't save that. Check your connection." });
+      })
+      .finally(() => {
+        if (n === asked.current) setPending((p) => (p?.id === id && p.say === next ? null : p));
+      });
   };
   return { say, set, error: error?.id === id ? error.text : null };
 }

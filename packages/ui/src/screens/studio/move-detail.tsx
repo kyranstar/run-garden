@@ -4,7 +4,7 @@
  *
  *   Goblet squat                                        ✕
  *   Hold the weight at your chest and sit down between your heels.
- *   Strength · Isotonic · Posture · Kettlebell or Dumbbells · Difficulty 2
+ *   Strength · Isotonic · Posture · Kettlebell or Dumbbells · Difficulty 2 of 5
  *   2 × 7 · ✓ Fits today
  *   HOW              setup (bullets), then the steps (numbered)
  *   FOCUS · COMMON MISTAKES · BREATHING · WHY
@@ -86,8 +86,8 @@ const Lines = ({ items, ordered = false }: { items: readonly string[]; ordered?:
   const List = ordered ? "ol" : "ul";
   return (
     <List className="stu-detail-list">
-      {items.map((x) => (
-        <li key={x}>{x}</li>
+      {items.map((x, i) => (
+        <li key={`${i}-${x}`}>{x}</li>
       ))}
     </List>
   );
@@ -130,7 +130,7 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
           rec.contraction.length ? <TermList ids={rec.contraction} /> : null,
           rec.tags.length ? <TermList ids={rec.tags} /> : null,
           gear ? <span>{gear}</span> : null,
-          <span>{`Difficulty ${rec.difficulty}`}</span>,
+          <span>{`Difficulty ${rec.difficulty} of 5`}</span>,
         ])}
       </p>
       <p className="stu-meta stu-meta--dose stu-detail-dose">
@@ -221,7 +221,7 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
           </button>
           <button type="button" className="chipbtn" aria-pressed={say.pinned} onClick={() => onSay({ pinned: !say.pinned })}>
             {say.pinned ? <IconCheck /> : <IconPin />}
-            {say.pinned ? "Pinned" : "Pin"}
+            Pin
           </button>
           <button type="button" className="chipbtn" aria-pressed={say.excluded} onClick={() => onSay({ excluded: !say.excluded })}>
             {say.excluded ? <IconCheck /> : null}

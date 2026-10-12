@@ -15,6 +15,7 @@ import { docOriginRow, type WorkoutDoc } from "@rg/domain";
 import { label, type ExerciseRecord } from "@rg/exercise-library";
 import { itemFor, newDoc, placementFor, startEditing, tryEdit, type DraftDoc, type Rejection } from "@rg/workout";
 import type { WorkoutDto } from "@rg/api-client";
+import { formatDayShort, formatTime } from "../../components.js";
 
 export type AddTargetKind = "draft" | "workout" | "new" | "template";
 
@@ -69,13 +70,22 @@ export function editableWorkouts(workouts: readonly WorkoutDto[], today: string)
     .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate) || a.effectiveTime.localeCompare(b.effectiveTime));
 }
 
+/**
+ * A planned workout as the sheet's choice names it: "Thu Oct 15 · Strength day" — with its time too when another one
+ * offered shares its day and title, so two choices never read alike.
+ */
+export function plannedLabel(w: WorkoutDto, offered: readonly WorkoutDto[]): string {
+  const twin = offered.some((o) => o.id !== w.id && o.effectiveDate === w.effectiveDate && o.title === w.title);
+  return `${formatDayShort(w.effectiveDate)} · ${w.title}${twin ? ` · ${formatTime(w.effectiveTime)}` : ""}`;
+}
+
 /** Why an Add did nothing, in plain words. */
 export function rejectionText(r: Rejection): string {
   switch (r) {
     case "full":
       return "That part is full.";
     case "invalid":
-      return "Fix this item first.";
+      return "That move can't go in here.";
     case "missing":
       return "That part is gone.";
     case "unchanged":

@@ -61,7 +61,7 @@ describe("the sections, in the spec's order", () => {
     const meta = /<p class="stu-meta stu-detail-meta">([\s\S]*?)<\/p>/.exec(html)![1]!;
     expect(meta).toMatch(/<button type="button" class="term"[^>]*>Strength<\/button>/);
     expect(meta).toContain(GLOSSARY.strength!.replace(/'/g, "&#x27;"));
-    expect(text(meta)).toContain(`Difficulty ${tempo.difficulty}`);
+    expect(text(meta)).toContain(`Difficulty ${tempo.difficulty} of 5`);
     // The dose Add puts in, and today's fit — the word beside its colour.
     const dose = /<p class="stu-meta stu-meta--dose stu-detail-dose">([\s\S]*?)<\/p>/.exec(html)![1]!;
     expect(text(dose)).toMatch(/\d/);
@@ -138,7 +138,9 @@ describe("your history and your say", () => {
     expect(html).toMatch(/<button type="button" class="chipbtn" aria-pressed="true" aria-label="More like this"><svg[^>]*>/);
     expect(html).toMatch(/aria-label="Less like this"><span aria-hidden="true">/);
     expect(html).toMatch(/aria-pressed="false" aria-label="Less like this"/);
-    expect(html).toMatch(/aria-pressed="true"><svg[^>]*>[\s\S]*?<\/svg>Pinned<\/button>/);
+    // One name whatever the state: `aria-pressed` carries it, the check in the pin's place shows it.
+    expect(html).toMatch(/aria-pressed="true"><svg[^>]*><path d="M4.5 12.5l5 5L19.5 7"><\/path><\/svg>Pin<\/button>/);
+    expect(html).toMatch(/aria-pressed="true"><svg[^>]*>[\s\S]*?<\/svg>Pin<\/button>/);
     expect(html).toMatch(/aria-pressed="false">Not for me<\/button>/);
     const unpinned = body({ rec: goblet, say: { rating: null, pinned: false, excluded: true } });
     expect(unpinned).toMatch(/aria-pressed="false"><svg[^>]*>[\s\S]*?<\/svg>Pin<\/button>/);

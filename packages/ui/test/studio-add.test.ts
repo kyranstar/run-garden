@@ -15,6 +15,7 @@ import {
   editableWorkout,
   editableWorkouts,
   freshDoc,
+  plannedLabel,
   rejectionText,
 } from "../src/screens/studio/add-model.js";
 
@@ -112,7 +113,7 @@ describe("Add lands by purpose", () => {
 
   it("says why in plain words", () => {
     expect(rejectionText("full")).toBe("That part is full.");
-    expect(rejectionText("invalid")).toBe("Fix this item first.");
+    expect(rejectionText("invalid")).toBe("That move can't go in here.");
     expect(addedText("main", "Hips & posture")).toBe("Added to Main in “Hips & posture”.");
     expect(addedText("cooldown", "New workout")).toBe("Added to Cool-down in “New workout”.");
   });
@@ -173,6 +174,17 @@ describe("the planned workouts the sheet offers", () => {
     expect(editableWorkout(workout({ contentState: "done" }), TODAY)).toBe(false);
     expect(editableWorkout(workout({ effectiveDate: "2026-10-10" }), TODAY)).toBe(false);
     expect(editableWorkout(workout({ archived: true }), TODAY)).toBe(false);
+  });
+
+  it("names each by its day and title — and its time when another offered shares both", () => {
+    const a = workout({ id: "a", effectiveDate: "2026-10-13", effectiveTime: "07:00" });
+    const b = workout({ id: "b", effectiveDate: "2026-10-13", effectiveTime: "18:30" });
+    const c = workout({ id: "c", effectiveDate: "2026-10-14", title: "Hips & posture" });
+    const offered = [a, b, c];
+    expect(plannedLabel(a, offered)).toBe("Tue Oct 13 · Strength · 7 AM");
+    expect(plannedLabel(b, offered)).toBe("Tue Oct 13 · Strength · 6:30 PM");
+    expect(plannedLabel(c, offered)).toBe("Wed Oct 14 · Hips & posture");
+    expect(plannedLabel(a, [a, c])).toBe("Tue Oct 13 · Strength");
   });
 
   it("soonest first", () => {
