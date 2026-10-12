@@ -463,5 +463,7 @@ describe("the Studio is honest about its bounds", () => {
     expect(pop).toMatch(/max-width: min\([^;]*100vw[^;]*\)/);
     // Measured on open and shifted back inside the viewport when it would cross the edge.
     expect(pop).toContain("translateX(var(--tip-shift, 0px))");
+    // `display: block` out-specifies the browser's own `[hidden]`, so a closed popover must say none itself.
+    expect(ruleBody(".term-pop[hidden]")).toContain("display: none");
   });
 });

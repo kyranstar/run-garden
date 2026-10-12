@@ -140,8 +140,10 @@ describe("today's condition fit", () => {
     const f = fitToday(clenching, tmj, reading(0))!;
     expect(f.state).toBe("not");
     expect(f.reason).toBe("TMJ rules this move out.");
-    // An unrated move fails closed.
-    expect(fitToday({ ...rec("gobletSquat"), conditions: {} }, tmj, reading(0))!.state).toBe("not");
+    // An unrated move fails closed, and says so — not left to a profile's own reader to happen to fail closed.
+    const unrated = fitToday({ ...rec("gobletSquat"), conditions: {} }, tmj, reading(0))!;
+    expect(unrated.state).toBe("not");
+    expect(unrated.reason).toBe("TMJ rules this move out.");
   });
 });
 

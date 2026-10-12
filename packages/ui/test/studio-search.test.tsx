@@ -103,6 +103,11 @@ describe("the URL is the state", () => {
     expect(chips.find((c) => c.label === "At Home")!.without).toEqual({ part: "strength", tag: "ski", gear: "any" });
     expect(chips.find((c) => c.label === "Fits today")!.without).toEqual({ part: "strength", tag: "ski", fit: false });
     expect(chips.find((c) => c.label === "Strength")!.without).toEqual({ tag: "ski" });
+    // A muscle belongs to its area: the area's chip takes both, the muscle's only itself.
+    const area = activeChips({ area: "hips", muscle: "adductors" }, emptyStudioCtx);
+    expect(area.map((c) => c.label)).toEqual(["Hips", "Adductors"]);
+    expect(area[0]!.without).toEqual({});
+    expect(area[1]!.without).toEqual({ area: "hips" });
   });
 
   it("an empty result offers the loosening that shows the most", () => {
