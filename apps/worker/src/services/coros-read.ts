@@ -44,6 +44,11 @@ export interface ReadNowResult {
   fullSchedule?: boolean;
   /** What the garden's replay from the earliest ingested day did, when it walked any day or left some to walk. */
   garden?: { simulatedDays: number; resimPending: boolean };
+  /**
+   * Planned workouts this read could not write (one bad row each; the import wrote the rest). Present only when some
+   * failed: the read is then not a clean success — the connection carries `partial_import` until a read writes them.
+   */
+  failedWrites?: number;
 }
 
 /** Cached per-isolate — the locale bundle is static reference data. */
@@ -192,8 +197,9 @@ export async function corosReadNow(
 
     // Same ingest order as the bridge-sync route: plan first, then
     // activities (matching sees fresh workouts), then health.
+    let failedWrites = 0;
     if (snapshot.plan && snapshot.workouts.length > 0) {
-      await importPlanSnapshot(
+      ({ failedWrites } = await importPlanSnapshot(
         db,
         {
           userId,
@@ -205,7 +211,7 @@ export async function corosReadNow(
           source: "bridge",
         },
         prefs,
-      );
+      ));
     }
 
     let ingested = 0;
@@ -259,7 +265,24 @@ export async function corosReadNow(
         .where(eq(providerConnections.id, conn.id));
     }
     await touchCorosSync(db, userId);
-    return { status: "ok", ingested, ...(fullScheduleDue ? { fullSchedule: true } : {}), ...(garden ? { garden } : {}) };
+    if (failedWrites > 0) {
+      // A partial read: the rest landed, these rows did not (their old fingerprints stand, so the next read writes
+      // them again). Said on the connection, where the sync status reads it — never a clean success.
+      await db
+        .update(providerConnections)
+        .set({
+          lastErrorCategory: "partial_import",
+          meta: { ...meta, lastErrorDetail: `${failedWrites} planned workout(s) could not be saved`, lastErrorAt: nowInstant() },
+        })
+        .where(eq(providerConnections.id, conn.id));
+    }
+    return {
+      status: "ok",
+      ingested,
+      ...(fullScheduleDue ? { fullSchedule: true } : {}),
+      ...(garden ? { garden } : {}),
+      ...(failedWrites > 0 ? { failedWrites } : {}),
+    };
   } catch (e) {
     // WHAT ACTUALLY WENT WRONG, and whose fault it is.
     //
@@ -302,6 +325,8 @@ export interface SweepAccountStats {
   garden: ReadNowResult["garden"] | null;
   /** Coach reads this turn claimed and generated (each a model call). */
   coachReads: number;
+  /** Planned workouts the read could not write (a partial read). */
+  failedWrites: number;
 }
 
 /**
@@ -347,6 +372,7 @@ export async function corosSweepAccount(
     fullSchedule: result?.fullSchedule === true,
     garden,
     coachReads,
+    failedWrites: result?.failedWrites ?? 0,
   };
 }
 

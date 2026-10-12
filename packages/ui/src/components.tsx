@@ -684,6 +684,10 @@ export function SyncStatusLine({
       if (status.cloud.error === "bad_credentials") {
         return "COROS rejected the password — fix in Settings";
       }
+      // The read worked, and some workouts from it could not be saved: COROS is fine, the next read tries again.
+      if (status.cloud.error === "partial_import") {
+        return "Some COROS workouts couldn't be saved — retrying";
+      }
       if (status.cloud.error) {
         return "COROS unreachable — retrying";
       }

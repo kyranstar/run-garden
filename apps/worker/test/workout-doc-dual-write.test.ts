@@ -75,8 +75,11 @@ const revisionStatements = () => statements.filter((q) => /^insert into "workout
  * Worker killed mid-request runs nothing more); inside an atomic batch the throw rolls the batch back, as D1 does.
  */
 let dying: { after: number; writes: number; dead: boolean } | null = null;
+/** While set, every stage insert throws this (a failure every row of a batch hits). */
+let stageFailure: (() => Error) | null = null;
 const hook = (q: string): void => {
   statements.push(q);
+  if (stageFailure && /^insert into "planned_workout_stages"/.test(q)) throw stageFailure();
   if (!dying) return;
   if (!dying.dead && isWrite(q) && ++dying.writes >= dying.after) dying.dead = true;
   if (dying.dead) throw new Error("the invocation died");
@@ -85,6 +88,7 @@ const hook = (q: string): void => {
 beforeEach(async () => {
   statements = [];
   dying = null;
+  stageFailure = null;
   db = makeTestDb({ boundVariableCap: 100, onStatement: hook });
   ({ userId, prefs } = await makeTestUser(db, { weightUnit: "lb" }));
   today = todayInZone(prefs.timezone);
@@ -481,9 +485,9 @@ describe("the COROS import: where stages are written, the document is too", () =
   });
 
   describe("the content batches: a row, its stages and its document land together", () => {
-    /** Twelve runs (two batches of ten and two), each `minutes` long, fingerprints tagged `tag`. */
-    const twelve = (tag: string, minutes: number) =>
-      Array.from({ length: 12 }, (_, i) =>
+    /** `n` runs (twelve: two batches, ten and two), each `minutes` long, fingerprints tagged `tag`. */
+    const twelve = (tag: string, minutes: number, n = 12) =>
+      Array.from({ length: n }, (_, i) =>
         src(i + 1, { title: `Run ${i + 1}`, contentFingerprint: `${tag}-${i + 1}`, stages: [st({ id: "1", order: 0, kind: "work", durationType: "time", durationSeconds: minutes * 60 })] }),
       );
     /** Each row: its fingerprint's tag, its stages' seconds, its document's stated minutes and its revisions. */
@@ -502,6 +506,7 @@ describe("the COROS import: where stages are written, the document is too", () =
     };
 
     it("an invocation that dies at any write of the read leaves no row half-written, and the next read heals every row", { timeout: 120_000 }, async () => {
+      silence();
       // How many writes a whole read of twelve changed runs makes.
       await snapshot(twelve("old", 30));
       dying = { after: Number.POSITIVE_INFINITY, writes: 0, dead: false };
@@ -540,6 +545,8 @@ describe("the COROS import: where stages are written, the document is too", () =
       statements.length = 0;
       const stats = await snapshot(changed);
       expect(stats.failedWrites).toBe(1);
+      // Counted once each, and only once written: eleven content changes, not twelve.
+      expect(stats.updatedContent).toBe(11);
       const rows = await state();
       expect(rows.filter((r) => r.tag === "new")).toHaveLength(11);
       // The failed row is still wholly its old self, and the next read will try it again.
@@ -553,10 +560,46 @@ describe("the COROS import: where stages are written, the document is too", () =
       expect(revisionStatements()).toHaveLength(9 + 1);
     });
 
-    it("a clean read: one revision statement per batch of ten rows, each batch holding its rows' stages", async () => {
+    it("an error every row of a batch hits fails the read — a schema drift, a runtime ceiling, a constraint on every row — and writes nothing", async () => {
+      const warn = silence();
+      const failures: Array<[string, () => Error]> = [
+        ["no constraint", () => new Error("D1_ERROR: table planned_workout_stages has no column named note: SQLITE_ERROR")],
+        ["a runtime ceiling", () => new Error("Too many API requests by single worker invocation.")],
+        ["a constraint every row hits", () => Object.assign(new Error("CHECK constraint failed: stage_kind"), { name: "SqliteError", code: "SQLITE_CONSTRAINT_CHECK" })],
+      ];
+      for (const [label, failure] of failures) {
+        db = makeTestDb({ boundVariableCap: 100, onStatement: hook });
+        ({ userId, prefs } = await makeTestUser(db, { weightUnit: "lb" }));
+        // Five runs: ONE batch, inside the retry cap — so only the every-row rule can fail the constraint case.
+        await snapshot(twelve("old", 30, 5));
+        stageFailure = failure;
+        await expect(snapshot(twelve("new", 45, 5)), label).rejects.toThrow();
+        stageFailure = null;
+        // Nothing of the read landed: every row wholly its old self.
+        for (const row of await state()) expect(row, label).toEqual({ tag: "old", stages: [1800], minutes: 30, rev: 1, revs: [1] });
+      }
+      // The constraint every row hit was retried row by row (logged each time) before the read failed; the others
+      // were never retried.
+      expect(warn.mock.calls.filter((c) => String(c[0]).startsWith("import row write failed"))).toHaveLength(5);
+    });
+
+    it("past ten rows retried one by one, the read fails: a bad row in each of two batches", async () => {
+      silence();
       await snapshot(twelve("old", 30));
+      // Rows 5 (first batch) and 11 (second batch) come back with two stages under one id.
+      const changed = twelve("new", 45).map((w, i) => (i === 4 || i === 10 ? { ...w, stages: [w.stages[0]!, { ...w.stages[0]!, order: 1 }] } : w));
+      await expect(snapshot(changed)).rejects.toThrow(/UNIQUE constraint failed/);
+      // The first batch's retry wrote its nine good rows (they stay written); the second batch was not retried.
+      const rows = await state();
+      expect(rows.filter((r) => r.tag === "new")).toHaveLength(9);
+      for (const row of rows.filter((r) => r.tag === "old")) expect(row).toEqual({ tag: "old", stages: [1800], minutes: 30, rev: 1, revs: [1] });
+    });
+
+    it("a clean read: one revision statement per batch of ten rows, each batch holding its rows' stages", async () => {
+      expect((await snapshot(twelve("old", 30))).created).toBe(12);
       statements.length = 0;
-      await snapshot(twelve("new", 45));
+      const stats = await snapshot(twelve("new", 45));
+      expect([stats.updatedContent, stats.failedWrites]).toEqual([12, 0]);
       expect(revisionStatements()).toHaveLength(2);
       for (const row of await state()) expect(row).toEqual({ tag: "new", stages: [2700], minutes: 45, rev: 2, revs: [1, 2] });
     });

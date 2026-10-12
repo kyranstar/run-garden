@@ -28,6 +28,7 @@ import {
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { isSpikeStamp } from "@rg/coros";
+import { isRuntimeLimit } from "./runtime-limit.js";
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
@@ -629,11 +630,22 @@ export async function importPlanSnapshot(
    * after the loop (nothing in the loop reads them back), `IMPORT_WRITE_BATCH` rows per atomic batch: each row's write
    * (its document in the same statement) and its stages, then ONE revision statement for the batch's documents. A row
    * and its stages land together or not at all, so no read can leave a row with a new fingerprint and old or no stages
-   * (the fingerprint would then match and nothing would ever heal it). A batch that fails is retried row by row: a
-   * row that cannot be written blocks only itself (counted in `failedWrites`, logged by code), and the next read,
-   * still seeing its old fingerprint, writes it again.
+   * (the fingerprint would then match and nothing would ever heal it).
+   *
+   * A batch refused by a ROW's constraint (one bad row: a key it collides with) is retried row by row, at most
+   * `IMPORT_ROW_RETRIES` rows a read: a row that cannot be written blocks only itself — counted in `failedWrites`,
+   * logged by code — and the next read, still seeing its old fingerprint, writes it again. Anything else fails the
+   * read, as before: an error that is no constraint (a schema drift, the database gone), a runtime ceiling, a retry
+   * in which every row fails, or more retries than the cap. A row's count (`created`, `updatedContent`,
+   * `replacedRecycled`) moves only once it is written.
    */
-  const contentWrites: Array<{ id: string; write: AtomicStatement; revise: boolean; stagesOf: SourcePlannedWorkout }> = [];
+  const contentWrites: Array<{
+    id: string;
+    write: AtomicStatement;
+    revise: boolean;
+    stagesOf: SourcePlannedWorkout;
+    counts: "created" | "updatedContent" | "replacedRecycled";
+  }> = [];
 
   for (const src of admitted) {
     seenSourceIds.add(src.sourceWorkoutId);
@@ -790,6 +802,7 @@ export async function importPlanSnapshot(
         id: current.id,
         revise: doc !== null,
         stagesOf: src,
+        counts: "replacedRecycled",
         write: db
           .update(plannedWorkouts)
           .set({
@@ -828,7 +841,6 @@ export async function importPlanSnapshot(
           })
           .where(eq(plannedWorkouts.id, current.id)),
       });
-      stats.replacedRecycled += 1;
       continue;
     }
 
@@ -919,6 +931,7 @@ export async function importPlanSnapshot(
         id,
         revise: doc !== null,
         stagesOf: src,
+        counts: "created",
         write: db.insert(plannedWorkouts).values({
           id,
           userId: input.userId,
@@ -954,7 +967,6 @@ export async function importPlanSnapshot(
           updatedAt: now,
         }),
       });
-      stats.created += 1;
       continue;
     }
 
@@ -1191,7 +1203,6 @@ export async function importPlanSnapshot(
       Object.assign(updates, updateDocColumns(revised));
       if (current.calendarSyncState === "synced") updates.calendarSyncState = "pending";
       restaged = true;
-      stats.updatedContent += 1;
       touched = true;
     } else if (
       stageSummary !== undefined &&
@@ -1234,7 +1245,7 @@ export async function importPlanSnapshot(
     if (touched) {
       updates.updatedAt = now;
       const update = db.update(plannedWorkouts).set(updates).where(eq(plannedWorkouts.id, current.id));
-      if (restaged) contentWrites.push({ id: current.id, revise: revised !== null, stagesOf: src, write: update });
+      if (restaged) contentWrites.push({ id: current.id, revise: revised !== null, stagesOf: src, counts: "updatedContent", write: update });
       else await update;
     } else {
       stats.unchanged += 1;
@@ -1254,21 +1265,35 @@ export async function importPlanSnapshot(
         now,
       }),
     ]);
+  const written = (rows: typeof contentWrites) => {
+    for (const row of rows) stats[row.counts] += 1;
+  };
+  let retries = 0;
   for (let i = 0; i < contentWrites.length; i += IMPORT_WRITE_BATCH) {
     const batch = contentWrites.slice(i, i + IMPORT_WRITE_BATCH);
     try {
       await writeContent(batch);
+      written(batch);
       continue;
-    } catch {
-      // One row can sink the batch: each is tried on its own below.
-    }
-    for (const row of batch) {
-      try {
-        await writeContent([row]);
-      } catch (e) {
-        stats.failedWrites += 1;
-        console.warn(`import row write failed: ${writeFailureCode(e)}`);
+    } catch (e) {
+      // Only a row's own constraint is one bad row; anything else is the read failing.
+      if (!rowConstraint(e) || isRuntimeLimit(e)) throw e;
+      if (retries + batch.length > IMPORT_ROW_RETRIES) throw e;
+      retries += batch.length;
+      let landed = 0;
+      for (const row of batch) {
+        try {
+          await writeContent([row]);
+          written([row]);
+          landed += 1;
+        } catch (rowError) {
+          if (!rowConstraint(rowError) || isRuntimeLimit(rowError)) throw rowError;
+          stats.failedWrites += 1;
+          console.warn(`import row write failed: ${writeFailureCode(rowError)}`);
+        }
       }
+      // Every row refused: no row is the bad one — the read fails, as before.
+      if (landed === 0) throw e;
     }
   }
 
@@ -1535,6 +1560,20 @@ export async function importPlanSnapshot(
 
 /** How many rows one content batch writes (each with its stages: a few statements a row, inside D1's batch). */
 export const IMPORT_WRITE_BATCH = 10;
+/** How many rows one read may retry one by one after a row's constraint refused their batch; past it, the read fails. */
+export const IMPORT_ROW_RETRIES = 10;
+
+/**
+ * A row's own constraint refused it (SQLite's constraint codes: a UNIQUE or PRIMARY KEY collision, a NOT NULL, a
+ * CHECK, a FOREIGN KEY) — the one failure a single bad row can cause. D1 says it in the message
+ * (`… constraint failed … SQLITE_CONSTRAINT`), better-sqlite3 in `code` too.
+ */
+function rowConstraint(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const code = (e as { code?: unknown }).code;
+  if (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) return true;
+  return /\b(?:UNIQUE|NOT NULL|FOREIGN KEY|CHECK|PRIMARY KEY) constraint failed\b|\bSQLITE_CONSTRAINT/.test(e.message);
+}
 
 /** Why a row could not be written, by code only: the error's class and, for a constraint, which kind — never a value. */
 function writeFailureCode(e: unknown): string {
