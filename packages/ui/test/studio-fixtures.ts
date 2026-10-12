@@ -4,7 +4,7 @@
  */
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
+import { createPath, Router, type To } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LibraryListDto, LibraryRowDto, PlacesResponse, TodayResponse } from "@rg/api-client";
 import { EXERCISES } from "@rg/exercise-library";
@@ -86,14 +86,28 @@ export function primedClient(p: Primed = {}): QueryClient {
   return qc;
 }
 
-export function renderAt(path: string, el: ReactElement, p: Primed = {}): string {
-  return renderToStaticMarkup(
-    createElement(
-      QueryClientProvider,
-      { client: primedClient(p) },
-      createElement(MemoryRouter, { initialEntries: [path] }, el),
-    ),
+/**
+ * A router for a static render: what `StaticRouter` does (no layout effects, so no server-render warnings), without
+ * loading react-router-dom's CommonJS `/server` entry beside the ESM one — two copies would be two router contexts.
+ */
+export function staticRouter(path: string, el: ReactElement): ReactElement {
+  const url = new URL(path, "http://studio.test");
+  const refuse = () => {
+    throw new Error("a static render cannot navigate");
+  };
+  return createElement(
+    Router,
+    {
+      location: { pathname: url.pathname, search: url.search, hash: "", state: null, key: "static" },
+      navigator: { createHref: (to: To) => (typeof to === "string" ? to : createPath(to)), push: refuse, replace: refuse, go: refuse },
+      static: true,
+    },
+    el,
   );
+}
+
+export function renderAt(path: string, el: ReactElement, p: Primed = {}): string {
+  return renderToStaticMarkup(createElement(QueryClientProvider, { client: primedClient(p) }, staticRouter(path, el)));
 }
 
 /** Text content of some markup, tags dropped and entities decoded enough for assertions. */

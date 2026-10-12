@@ -781,6 +781,8 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
     ".term-pop",
     ".stu-fit",
     ".stu-empty",
+    ".stu-tally",
+    ".stu-more",
   ];
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
   // The Studio's own classes — not the old plan modal's `.studio-*`.
@@ -790,7 +792,7 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
     for (const cls of STUDIO_CLASSES) expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
   });
 
-  it("only lg lays it out differently: the filter column beside the list, and the button it replaces", () => {
+  it("width only re-lays it: a roomier row from sm; from lg the filter column beside the list, the button it replaces, and the themes wrapping", () => {
     const touched: string[] = [];
     for (const block of widthBlocks) {
       for (const m of block.body.matchAll(/([^{}]+)\{[^{}]*\}/g)) {
@@ -800,11 +802,26 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
     }
     expect(touched.sort()).toEqual(
       [
+        "(min-width: 640px) .stu-move",
         "(min-width: 1024px) .stu--results .stu-filters-btn",
         "(min-width: 1024px) .stu-facets",
         "(min-width: 1024px) .stu-results",
+        "(min-width: 1024px) .stu-results-main",
+        "(min-width: 1024px) .stu-themes",
       ].sort(),
     );
+  });
+
+  it("each of those rules only re-lays: no width adds or removes a Studio control", () => {
+    for (const block of widthBlocks) {
+      for (const m of block.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!studioSel.test(m[1]!.trim())) continue;
+        const props = [...m[2]!.matchAll(/([-a-z]+)\s*:/g)].map((p) => p[1]!);
+        const allowed = ["display", "grid-template-columns", "grid-column", "grid-row", "align-items", "gap", "position", "top",
+          "max-height", "padding", "padding-right", "--scroll-surface", "flex-wrap", "overflow-x"];
+        for (const p of props) expect(allowed, `${m[1]!.trim()} { ${p} }`).toContain(p);
+      }
+    }
   });
 
   it("the filter column's controls are the sheet's controls: one component, two homes", () => {

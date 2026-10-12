@@ -3,18 +3,22 @@
  *
  *   Goblet squat                                [＋]
  *   Squat holding one weight at your chest.
- *   Strength · Isotonic · Quads, Glute max · Kettlebell or Dumbbells
- *   2 × 7 · Last done 6 days ago · ✓ Fits today
+ *   Strength · Isotonic · Quads, Glute max
+ *   2 × 7 · Last done 6 days ago · Kettlebell or Dumbbells · ◬ With care
  *
  * Line 3's purpose, contraction and muscles are terms: each a button that explains itself in one sentence from the
  * library's `GLOSSARY`, so the coach and the Studio explain a word alike. Line 4 is the dose Add puts in, the athlete's
- * history with the move, and today's fit — a colour that always sits beside its word, and whose reason is one tap down.
+ * history with the move, the gear when the place's gear does not cover it, and today's fit — a colour that always
+ * sits beside its word, and whose reason is one tap down.
+ *
+ * Nothing said twice: a list browsed by a part does not repeat the part on every row (its chip says it once), and the
+ * list hides "Fits today" while that filter is on (see `search.tsx`).
  *
  * Add and the detail (Task 5) are callbacks: a row draws them only when there is something for them to do, never
  * dead.
  */
 import { Fragment, memo, type ReactNode } from "react";
-import { EQUIPMENT, GLOSSARY, label, type ExerciseRecord, type Purpose } from "@rg/exercise-library";
+import { EQUIPMENT, GLOSSARY, hasEquipment, label, type ExerciseRecord, type Purpose } from "@rg/exercise-library";
 import { Tooltip } from "../../components/tooltip.js";
 import { IconAlert, IconCheck, IconClose, IconPlus } from "../../icons.js";
 import { doseLine, historyLine, type Fit, type FitState, type MovePrefs } from "./model.js";
@@ -73,7 +77,8 @@ export const MoveRow = memo(function MoveRow({
   fit,
   prefs,
   today,
-  purpose: shownPurpose,
+  browsedPart,
+  placeGear,
   onAdd,
   onOpen,
 }: {
@@ -84,14 +89,16 @@ export const MoveRow = memo(function MoveRow({
   prefs: MovePrefs | null | undefined;
   /** The athlete's today, for "last done". */
   today: string;
-  /** The part the list was browsed by: named instead of the move's first purpose when the move serves it. */
-  purpose?: Purpose;
+  /** The part the list was browsed by: its chip names it, so the row does not. */
+  browsedPart?: Purpose;
+  /** The place's gear: a move it covers needs no gear named. Null or absent: not known, so the gear is named. */
+  placeGear?: readonly string[] | null;
   onAdd?: (rec: ExerciseRecord) => void;
   onOpen?: (rec: ExerciseRecord) => void;
 }) {
-  const purpose = shownPurpose && rec.purposes.includes(shownPurpose) ? shownPurpose : rec.purposes[0];
+  const purpose = browsedPart && rec.purposes.includes(browsedPart) ? null : rec.purposes[0];
   const muscles = rec.muscles.primary.slice(0, MUSCLES_SHOWN);
-  const gear = gearLine(rec);
+  const gear = placeGear && hasEquipment(rec, placeGear) ? null : gearLine(rec);
   return (
     <li className="stu-move">
       <h3 className="stu-move-name">
@@ -132,13 +139,13 @@ export const MoveRow = memo(function MoveRow({
               ))}
             </span>
           ) : null,
-          gear ? <span>{gear}</span> : null,
         ])}
       </p>
       <p className="stu-meta stu-meta--dose">
         {dotted([
           <span key="dose">{doseLine(rec)}</span>,
           ...historyLine(prefs, today).map((h) => <span key={h}>{h}</span>),
+          gear ? <span>{gear}</span> : null,
           fit ? <FitBadge fit={fit} /> : null,
         ])}
       </p>

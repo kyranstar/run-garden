@@ -13,7 +13,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EXERCISES, PROFILES, label } from "@rg/exercise-library";
-import { StudioScreen } from "../src/screens/studio/screen.js";
+import { StudioScreen, URL_WRITE_MS } from "../src/screens/studio/screen.js";
 import {
   activeChips,
   emptyStudioCtx,
@@ -171,17 +171,21 @@ function mount(path: string, p: Primed = {}, before: string[] = []) {
 const input = () => host!.querySelector<HTMLInputElement>('input[type="search"]')!;
 const body = () => (host!.textContent ?? "").replace(/\s+/g, " ");
 
-async function type(value: string) {
+const wait = (ms: number) =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, ms));
+  });
+
+/** Types into the field; by default waits for the query to reach the URL (it is written after a pause). */
+async function type(value: string, { settle = true } = {}) {
   const el = input();
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   await act(async () => {
     set.call(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  // useDeferredValue settles on the next render.
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 0));
-  });
+  // useDeferredValue settles on the next render; the URL after the write delay.
+  await wait(settle ? URL_WRITE_MS + 40 : 0);
 }
 
 async function press(label: string) {
@@ -225,13 +229,33 @@ describe("results, rendered", () => {
     expect(text(html)).toContain("Clear");
   });
 
-  it("an empty result says what to loosen, in plain words", () => {
+  it("an empty result says what to loosen, in plain words — once: no count of zero beside it", () => {
     const html = shown("/studio?part=power&tag=desk-relief");
     expect(html).not.toContain('class="stu-list"');
     expect(text(html)).toContain("No moves match.");
     expect(text(html)).toMatch(/Show \d+ without (Power|Desk relief)/);
+    expect(text(html)).not.toContain("0 moves");
+    // The live region stays, so the next count is still announced.
+    expect(html).toMatch(/<span class="stu-count" aria-live="polite"><\/span>/);
     const word = shown("/studio?q=zzzqqq");
     expect(text(word)).toContain("No moves match “zzzqqq”.");
+  });
+
+  it("at lg the list comes first in reading order; the filter column is placed beside it by the grid", () => {
+    const html = shown("/studio?q=squat");
+    expect(html.indexOf('class="stu-results-main"')).toBeGreaterThan(-1);
+    expect(html.indexOf('class="stu-results-main"')).toBeLessThan(html.indexOf('class="stu-facets scroller"'));
+  });
+
+  it("a row names the gear only when the place's gear does not cover it", () => {
+    const html = shown("/studio?q=squat&gear=any", { places: placesDto(["mat", "kettlebell"]) });
+    const rowOf = (name: string) => {
+      const at = html.indexOf(`>${name}</h3>`);
+      expect(at, name).toBeGreaterThan(-1);
+      return text(html.slice(at, html.indexOf("</li>", at)));
+    };
+    expect(rowOf("Goblet squat")).not.toContain("Kettlebell");
+    expect(rowOf("Box squat to bench")).toContain("Bench or Sturdy chair");
   });
 
   it("while the list is filtered to what fits today, a row says only what is not plain: care", () => {
@@ -250,16 +274,14 @@ describe("results, rendered", () => {
     expect(rowOf(off, plain)).toMatch(/Fits today|With care|Not today/);
   });
 
-  it("a list browsed by part names that part on every row", () => {
+  it("a list browsed by part does not repeat the part on its rows: the chip says it once", () => {
     const html = shown("/studio?part=mobility");
-    // A move whose first purpose is not mobility, in mobility's list: its row says mobility.
-    const rec = studioResults(EXERCISES, "", { part: "mobility" }, emptyStudioCtx).find((r) => r.purposes[0] !== "mobility")!;
-    expect(rec).toBeDefined();
-    const at = html.indexOf(`>${rec.name}</h3>`);
-    expect(at).toBeGreaterThan(-1);
-    const row = html.slice(at, html.indexOf("</li>", at));
-    expect(row).toMatch(/class="term"[^>]*>Mobility work<\/button>/);
-    expect(row).not.toMatch(new RegExp(`>${label(rec.purposes[0]!)}</button>`));
+    const start = html.indexOf('class="stu-list"');
+    const list = html.slice(start, html.indexOf("</ul>", start));
+    expect(list).toContain("stu-move-name");
+    expect(list).not.toMatch(new RegExp(`>${label("mobility")}</button>`));
+    // The chip still names it.
+    expect(html).toContain(`aria-label="Remove ${label("mobility")}"`);
   });
 
   it("the place's gear and today's fit show as chips once known", () => {
@@ -315,19 +337,85 @@ describe("typing filters, live", () => {
     expect(after).toContain("Half-kneeling one-arm press");
   });
 
-  it("Clear goes back to the home", async () => {
+  it("Clear resets the chips and keeps the search, with focus in the field", async () => {
     mount("/studio?q=squat&tag=ski");
     await press("Clear");
+    expect(where).toBe("/studio?q=squat");
+    expect(input().value).toBe("squat");
+    expect(host!.querySelector('[aria-label="Remove Ski"]')).toBeNull();
+    expect(host!.querySelectorAll(".stu-move").length).toBe(studioResults(EXERCISES, "squat", {}, emptyStudioCtx).length);
+    expect(document.activeElement).toBe(input());
+  });
+
+  it("Clear with nothing typed goes back to the home", async () => {
+    mount("/studio?tag=ski");
+    await press("Clear");
     expect(where).toBe("/studio");
-    expect(input().value).toBe("");
     expect(body()).toContain("Quick starts");
+    expect(document.activeElement).toBe(input());
+  });
+
+  it("Clear is offered only when there is a filter to clear", () => {
+    expect(text(shown("/studio?q=squat"))).not.toContain("Clear");
+    expect(text(shown("/studio?q=squat&fit=0", { library: libraryDto({ tmj: true }) }))).toContain("Clear");
+  });
+
+  it("removing a chip hands focus to the next chip, and after the last to the list", async () => {
+    mount("/studio?q=squat&part=strength&tag=posture");
+    await press("Remove Strength");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Remove Posture");
+    await press("Remove Posture");
+    expect(where).toBe("/studio?q=squat");
+    expect(document.activeElement?.textContent).toBe("Moves");
+  });
+
+  it("a loosening hands focus to the list it opened", async () => {
+    mount("/studio?part=power&tag=desk-relief");
+    const show = [...host!.querySelectorAll("button")].find((b) => /^Show \d+ without/.test(b.textContent ?? ""))!;
+    await press(show.textContent!);
+    expect(host!.querySelector(".stu-list")).not.toBeNull();
+    expect(document.activeElement?.textContent).toBe("Moves");
+  });
+
+  it("the field's ✕ empties it and keeps the focus", async () => {
+    mount("/studio?q=squat");
+    await press("Clear search");
+    expect(input().value).toBe("");
+    expect(document.activeElement).toBe(input());
+    await wait(URL_WRITE_MS + 40);
+    expect(where).toBe("/studio");
+  });
+
+  it("the query reaches the URL after a pause, not on every keystroke", async () => {
+    mount("/studio");
+    await type("g", { settle: false });
+    await type("go", { settle: false });
+    await type("gob", { settle: false });
+    // The list follows the field at once; the address waits.
+    expect(body()).not.toContain("Quick starts");
+    expect(where).toBe("/studio");
+    await wait(URL_WRITE_MS + 40);
+    expect(where).toBe("/studio?q=gob");
+  });
+
+  it("emptying the field after a search goes back to the home entry, so Back does not show the home twice", async () => {
+    mount("/studio", {}, ["/plan"]);
+    await type("gob");
+    expect(where).toBe("/studio?q=gob");
+    await type("");
+    expect(where).toBe("/studio");
+    expect(body()).toContain("Quick starts");
+    await act(async () => back());
+    expect(where).toBe("/plan");
   });
 
   it("Back leaves the results for the home: the first step into a list is an entry, every refinement after it is not", async () => {
     mount("/studio", {}, ["/plan"]);
     await type("gob");
     await type("goblet");
-    await press("Strength");
+    // The filter column's chip (the rows have a "Strength" term too, and the list comes first).
+    const chip = [...host!.querySelectorAll<HTMLButtonElement>(".stu-facets button[aria-pressed]")].find((b) => b.textContent === "Strength")!;
+    await act(async () => chip.click());
     expect(where).toBe("/studio?q=goblet&part=strength");
     await act(async () => back());
     expect(where).toBe("/studio");
@@ -340,6 +428,15 @@ describe("typing filters, live", () => {
     await act(async () => {
       input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
+    expect(input().value).toBe("");
+    await wait(URL_WRITE_MS + 40);
+    expect(where).toBe("/studio");
+  });
+
+  it("Back from a list to the home brings the field back to empty", async () => {
+    mount("/studio", {}, ["/plan"]);
+    await type("goblet");
+    await act(async () => back());
     expect(where).toBe("/studio");
     expect(input().value).toBe("");
   });

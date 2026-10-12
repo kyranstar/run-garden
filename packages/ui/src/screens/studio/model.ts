@@ -344,6 +344,9 @@ export function activeChips(f: StudioFilters, ctx: StudioCtx): Chip[] {
 /** How many filters the athlete set (the defaults are not counted): the Filters button's badge. */
 export const setFilterCount = (f: StudioFilters, ctx: StudioCtx): number => activeChips(f, ctx).filter((c) => !c.isDefault).length;
 
+/** Whether Clear has anything to do: a filter or "all moves" in the URL (the query is the field's, not Clear's). */
+export const clearable = (f: StudioFilters, all: boolean): boolean => studioSearch("", f, all) !== "";
+
 /** For an empty result: the chips whose removal would show something, the most first (two at most). */
 export function loosenings(
   records: readonly ExerciseRecord[],
@@ -389,10 +392,20 @@ export function visibleThemes(ctx: StudioCtx): Theme[] {
   return THEMES.filter((t) => !t.profile || ctx.profiles.some((p) => p.id === t.profile));
 }
 
-/** The tags that have moves, in the vocabulary's order. */
+const PURPOSE_IDS = new Set<string>(PURPOSES);
+
+/**
+ * The tags to browse by: those that have moves, the most used first (the vocabulary's order breaks ties). A tag that
+ * is also a part's name (`balance`) is left out — the part already offers it, and two "Balance" chips opening two
+ * different lists is one too many.
+ */
 export function browseTags(records: readonly ExerciseRecord[]): Tag[] {
-  return TAGS.filter((t) => records.some((r) => r.tags.includes(t)));
+  const used = (t: Tag) => records.filter((r) => r.tags.includes(t)).length;
+  return TAGS.filter((t) => !PURPOSE_IDS.has(t) && used(t) > 0).sort((a, b) => used(b) - used(a) || TAGS.indexOf(a) - TAGS.indexOf(b));
 }
+
+/** How many tags the home shows before "More tags". */
+export const HOME_TAGS = 8;
 
 /**
  * What a theme card says under its name: how many moves a tap shows — or, when that is none because of one of the
@@ -439,20 +452,13 @@ export function quickStarts(ctx: StudioCtx): QuickStart[] {
 
 /**
  * The dose Add puts in (`defaultDose`): "2 × 7", "10 reps", "2 × 45 s", "90 s", "7 breaths", "… each side". A carry
- * is held for time: the record's range is seconds.
+ * is a timed carry — the library's carry range is seconds, so `defaultDose` gives it `holdSec` (a distance, `carryM`,
+ * only ever comes from a source that stated one, never from the library).
  */
 export function doseLine(rec: ExerciseRecord): string {
   const d = defaultDose(rec);
   const reps = typeof d.reps === "number" ? `${d.reps}` : d.reps ? `${d.reps.min}–${d.reps.max}` : null;
-  const amount =
-    reps ??
-    (d.holdSec !== undefined
-      ? secondsText(d.holdSec)
-      : d.breaths !== undefined
-        ? `${d.breaths} breaths`
-        : d.carryM !== undefined
-          ? secondsText(d.carryM)
-          : "");
+  const amount = reps ?? (d.holdSec !== undefined ? secondsText(d.holdSec) : d.breaths !== undefined ? `${d.breaths} breaths` : "");
   const sets = d.sets && d.sets > 1 ? `${d.sets} × ` : "";
   // "2 × 7" reads as reps; a lone "7" does not.
   const unit = reps !== null && !sets ? " reps" : "";

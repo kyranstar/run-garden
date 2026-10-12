@@ -29,6 +29,7 @@ import { WeeklyBrief } from "../src/screens/plan-brief.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { FiltersSheet } from "../src/screens/studio/filters-sheet.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
+import { staticRouter } from "./studio-fixtures.js";
 
 const noop = () => undefined;
 
@@ -407,10 +408,9 @@ describe("the coach overlay reserves its own room", () => {
 describe("the Studio is honest about its bounds", () => {
   function renderAt(path: string, el: React.ReactElement): string {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    return renderToStaticMarkup(
-      createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, { initialEntries: [path] }, el)),
-    );
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter(path, el)));
   }
+  const rem = (v: string): number => parseFloat(v) * 16;
 
   it("the page owns the list's scroll; the one scroller is the lg filter column", () => {
     const html = renderAt("/studio?q=squat", createElement(StudioScreen));
@@ -451,7 +451,7 @@ describe("the Studio is honest about its bounds", () => {
   });
 
   it("the count and Clear wrap together, never Clear alone on a line", () => {
-    const html = renderAt("/studio?q=squat", createElement(StudioScreen));
+    const html = renderAt("/studio?q=squat&tag=ski", createElement(StudioScreen));
     expect(html).toMatch(/<span class="stu-tally"><span class="stu-count"[^>]*>[^<]*<\/span><button[^>]*>Clear<\/button><\/span>/);
     expect(ruleBody(".stu-tally")).toContain("white-space: nowrap");
   });
@@ -465,5 +465,41 @@ describe("the Studio is honest about its bounds", () => {
     expect(pop).toContain("translateX(var(--tip-shift, 0px))");
     // `display: block` out-specifies the browser's own `[hidden]`, so a closed popover must say none itself.
     expect(ruleBody(".term-pop[hidden]")).toContain("display: none");
+  });
+
+  it("near the bottom a popover opens upward, and it paints above the tab bar", () => {
+    expect(ruleBody('.term-pop[data-place="above"]')).toContain("bottom: calc(100% + var(--space-2))");
+    const z = (sel: string) => Number(/z-index:\s*(\d+)/.exec(ruleBody(sel))![1]);
+    expect(z(".term-pop")).toBeGreaterThan(z(".bottom-nav"));
+  });
+
+  it("a term's tap pad reaches no further than its line allows, so a finger gets 44px and the layout grows by nothing", () => {
+    // The makeup rule grows a padded control by 44 − 2 × clearance; at 12px it asks for 20px, under a term's own 23px.
+    expect(ruleBody(".stu-meta")).toContain("--tap-clear: var(--space-5)");
+  });
+
+  it("the themes are one row that scrolls sideways inside its own box, never the page", () => {
+    const row = ruleBody(".stu-themes");
+    expect(row).toContain("overflow-x: auto");
+    expect(row).toContain("overscroll-behavior-x: contain");
+    expect(ruleBody(".stu-theme")).toContain("flex: none");
+  });
+
+  it("three quick starts fit across a 320px phone", () => {
+    const grid = ruleBody(".stu-quick");
+    const min = rem(/minmax\(max\(([\d.]+)rem/.exec(grid)![1]!);
+    expect(grid).toContain("gap: var(--space-3)");
+    // 320 − 2 × 16px gutters = 288px for three tiles and two 6px gaps.
+    expect(3 * min + 2 * 6).toBeLessThanOrEqual(288);
+  });
+
+  it("a scroller at rest shows no shadow: each cover is solid past the shadow it hides", () => {
+    const s = ruleBody(".scroller");
+    const cover = /linear-gradient\(var\(--scroll-surface, var\(--bg-raised\)\) (\d+)%, transparent\) top \/ 100% ([\d.]+)rem/.exec(s);
+    const shadow = /radial-gradient\(farthest-side at 50% 0%[^)]*\)[^/]*\) top \/ 100% ([\d.]+)rem/.exec(s);
+    expect(cover, "top cover").not.toBeNull();
+    expect(shadow, "top shadow").not.toBeNull();
+    expect((Number(cover![1]) / 100) * rem(cover![2]!)).toBeGreaterThanOrEqual(rem(shadow![1]!));
+    expect(s).toMatch(/linear-gradient\(transparent, var\(--scroll-surface, var\(--bg-raised\)\) \d+%\) bottom/);
   });
 });

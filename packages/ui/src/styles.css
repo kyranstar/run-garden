@@ -1019,6 +1019,11 @@ a.note {
    gradients scroll WITH the content and hide the two `scroll` shadows that
    are pinned to the box.
 
+   Each cover is SOLID for the first 60% of its 1.5rem (0.9rem) — past the
+   0.85rem shadow it hides — and only then fades. A cover that faded from its
+   first pixel let ~5% of the shadow through at rest, a grey smudge under the
+   top of every sheet and of the Studio's filter column (S2 T4 fix 1).
+
    `--scroll-surface` is the colour the covers paint in; set it wherever the
    scroller sits on something other than a raised surface. `min-height: 0` is
    the other half of the contract: inside a flex column a scroller must be
@@ -1029,9 +1034,9 @@ a.note {
   overflow-y: auto;
   overscroll-behavior: contain;
   background:
-    linear-gradient(var(--scroll-surface, var(--bg-raised)), transparent) top / 100% 1.5rem no-repeat
+    linear-gradient(var(--scroll-surface, var(--bg-raised)) 60%, transparent) top / 100% 1.5rem no-repeat
       local,
-    linear-gradient(transparent, var(--scroll-surface, var(--bg-raised))) bottom / 100% 1.5rem
+    linear-gradient(transparent, var(--scroll-surface, var(--bg-raised)) 40%) bottom / 100% 1.5rem
       no-repeat local,
     radial-gradient(farthest-side at 50% 0%, rgba(var(--scrim-rgb), 0.34), transparent) top / 100% 0.85rem
       no-repeat scroll,
@@ -8997,13 +9002,13 @@ button.session-chip::after {
   gap: var(--space-4);
   min-width: 0;
 }
-/* Quick starts: three across on a phone, wider tiles as the column grows —
-   fluid by their own minimum (a share of the row, never under 6.5rem), so
-   no width query is needed. */
+/* Quick starts: three across on a phone — at 320 too (3 × 5.75rem + two 6px
+   gaps = 288px, the column) — wider tiles as the column grows, fluid by their
+   own minimum (a share of the row), so no width query is needed. */
 .stu-quick {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(max(6.5rem, 15%), 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(max(5.75rem, 15%), 1fr));
+  gap: var(--space-3);
 }
 .stu-qs {
   display: flex;
@@ -9012,7 +9017,7 @@ button.session-chip::after {
   justify-content: space-between;
   gap: var(--space-3);
   min-height: var(--tap);
-  padding: var(--space-5);
+  padding: var(--space-4) var(--space-5);
   border: 1px solid color-mix(in srgb, var(--green) 28%, transparent);
   border-radius: var(--radius);
   background: var(--green-soft);
@@ -9043,22 +9048,45 @@ button.stu-qs:hover {
   height: 13px;
 }
 .stu-chipset {
+  --tap-clear: var(--space-3);
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-3);
 }
+/* The folded chips join the row in place when opened (chip-row.tsx). */
+.stu-more {
+  display: contents;
+}
+.stu-more[hidden] {
+  display: none;
+}
+.stu-more-btn {
+  font-size: var(--text-sm);
+}
+/* Themes: ONE row of compact tiles that scrolls sideways inside its own box on
+   a phone (the tile cut at the edge says there is more; a pointer gets a thin
+   bar), so eleven themes cost one row, not six. From lg they wrap. */
 .stu-themes {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(max(9rem, 22%), 1fr));
-  gap: var(--space-4);
+  display: flex;
+  gap: var(--space-3);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  padding-bottom: var(--space-2);
 }
 .stu-theme {
+  flex: none;
+  width: 9.5rem;
+  scroll-snap-align: start;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  justify-content: space-between;
   gap: var(--space-1);
   min-height: var(--tap);
-  padding: var(--space-5);
+  padding: var(--space-4) var(--space-5);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-raised);
@@ -9166,7 +9194,7 @@ button.stu-qs:hover {
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: var(--space-4);
   row-gap: var(--space-1);
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-4) var(--space-5);
 }
 .stu-move + .stu-move {
   border-top: 1px solid var(--border);
@@ -9205,7 +9233,11 @@ button.stu-qs:hover {
   font-size: var(--text-sm);
   color: var(--ink-soft);
 }
+/* A term is ~23px tall; its pad may reach 12px (`--space-5`), so it is 44px to
+   a finger while the makeup rule asks the box for 44 − 24 = 20px, under its own
+   height: no line grows. */
 .stu-meta {
+  --tap-clear: var(--space-5);
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
@@ -9281,7 +9313,8 @@ button.stu-qs:hover {
   position: absolute;
   top: calc(100% + var(--space-2));
   left: 0;
-  z-index: 30;
+  /* Above the phone's tab bar (40). */
+  z-index: 45;
   display: block;
   width: max-content;
   max-width: min(18rem, calc(100vw - 2 * var(--space-6)));
@@ -9301,6 +9334,11 @@ button.stu-qs:hover {
 }
 .term-pop[hidden] {
   display: none;
+}
+/* Near the bottom (or the tab bar) it opens upward (tooltip.tsx measures). */
+.term-pop[data-place="above"] {
+  top: auto;
+  bottom: calc(100% + var(--space-2));
 }
 .term-pop b {
   display: block;
@@ -9330,6 +9368,13 @@ button.stu-qs:hover {
   color: var(--danger-ink);
 }
 
+@media (min-width: 640px) {
+  .stu-move {
+    padding: var(--space-5) var(--space-6);
+  }
+}
+/* The list comes first in the DOM (reading and Tab order reach the moves
+   first); the grid places the filter column to its left. */
 @media (min-width: 1024px) {
   .stu--results .stu-filters-btn {
     display: none;
@@ -9340,12 +9385,22 @@ button.stu-qs:hover {
     align-items: start;
     gap: var(--space-8);
   }
+  .stu-results-main {
+    grid-column: 2;
+    grid-row: 1;
+  }
   .stu-facets {
     --scroll-surface: var(--bg);
     display: block;
+    grid-column: 1;
+    grid-row: 1;
     position: sticky;
     top: var(--space-6);
     max-height: calc(100dvh - 2 * var(--space-6));
     padding-right: var(--space-4);
+  }
+  .stu-themes {
+    flex-wrap: wrap;
+    overflow-x: visible;
   }
 }

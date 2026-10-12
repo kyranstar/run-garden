@@ -6,10 +6,10 @@ import { createElement } from "react";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { AppShell, NAV } from "../src/shell.js";
+import { staticRouter } from "./studio-fixtures.js";
 
 function shellAt(path: string): string {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -17,7 +17,7 @@ function shellAt(path: string): string {
     createElement(
       QueryClientProvider,
       { client: qc },
-      createElement(MemoryRouter, { initialEntries: [path] }, createElement(AppShell, { children: null })),
+      staticRouter(path, createElement(AppShell, { children: null })),
     ),
   );
 }

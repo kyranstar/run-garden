@@ -146,4 +146,33 @@ describe("Tooltip, live", () => {
     key("Escape");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
+
+  it("focus leaving the term (Tab away) closes it; focus moving into its own popover does not", () => {
+    mount(createElement("div", null, createElement(Tooltip, { term: "Isometric", tip: SENTENCE }), createElement("button", { id: "next" }, "Next")));
+    const b = term();
+    act(() => {
+      b.focus();
+      b.click();
+    });
+    expect(isOpen(b)).toBe(true);
+    act(() => document.getElementById("next")!.focus());
+    expect(isOpen(b)).toBe(false);
+  });
+
+  it("near the bottom of the screen it opens upward, clear of the tab bar", () => {
+    const real = HTMLElement.prototype.getBoundingClientRect;
+    // jsdom has no layout: the popover reports itself below the fold (jsdom's window is 768px tall).
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const low = this.classList.contains("term-pop") || this.classList.contains("term");
+      return { top: low ? 700 : 0, bottom: low ? 790 : 0, left: 20, right: 220, width: 200, height: 90, x: 20, y: 700, toJSON() {} } as DOMRect;
+    };
+    try {
+      mount(createElement(Tooltip, { term: "Isometric", tip: SENTENCE }));
+      const b = term();
+      act(() => b.click());
+      expect(pop(b).dataset.place).toBe("above");
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = real;
+    }
+  });
 });

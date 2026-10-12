@@ -109,7 +109,7 @@ export const IMPLEMENT_CLASS = {
 
 const LABELS: Record<string, string> = {
   squat: "Squats", hinge: "Hinging", lunge: "Lunges", carry: "Carries", rotate: "Rotation",
-  mobility: "Mobility work", breathe: "Breathing", release: "Release work",
+  mobility: "Mobility", breathe: "Breathing", release: "Release work",
   "push-h": "Pushing", "push-v": "Overhead pressing", "pull-h": "Rows", "pull-v": "Vertical pulling",
   "anti-rotate": "Anti-rotation", "anti-extend": "Anti-extension", "anti-lateral": "Side-bend resistance",
   "upper-back": "Upper back", "low-back": "Low back", "full-body": "Full body",

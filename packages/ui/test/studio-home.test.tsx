@@ -5,7 +5,7 @@
  */
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { EXERCISES, label } from "@rg/exercise-library";
+import { EXERCISES, TAGS, label } from "@rg/exercise-library";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { emptyStudioCtx, studioResults } from "../src/screens/studio/model.js";
 import { libraryDto, placesDto, renderAt, text, todayDto } from "./studio-fixtures.js";
@@ -64,6 +64,8 @@ describe("the Studio home", () => {
       "All moves",
       ...["warmup", "activation", "strength", "power", "balance", "mobility", "stretch", "recovery", "cooldown"].map(label),
     ]);
+    // The purpose reads as itself, not as the movement pattern's "Mobility work".
+    expect(chips).toContain("Mobility");
     // Condition care is a part only while a profile is on; conditioning has no moves yet, so no chip.
     const cared = section(home({ library: libraryDto({ tmj: true }) }), "Browse");
     expect(text(cared)).toContain(label("condition-care"));
@@ -109,6 +111,33 @@ describe("the Studio home", () => {
     // No move carries these yet: no chip that would open an empty list.
     expect(plain).not.toContain("Isometric hold");
     expect(plain).not.toContain("Rotational");
+  });
+
+  it("tags: the eight most used show; the rest are one tap down behind More tags", () => {
+    const html = section(home(), "Tags");
+    const used = (t: string) => EXERCISES.filter((e) => e.tags.includes(t as never)).length;
+    const shownFirst = [...html.slice(0, html.indexOf("stu-more")).matchAll(/<button type="button" class="chip">([^<]*)<\/button>/g)].map((m) => m[1]!);
+    expect(shownFirst).toHaveLength(8);
+    // The most used first: desk relief (the library's most tagged) leads.
+    expect(shownFirst[0]).toBe(label("desk-relief"));
+    const counts = shownFirst.map((l) => used(TAGS.find((t) => label(t) === l)!));
+    expect([...counts].sort((a, b) => b - a)).toEqual(counts);
+    // The rest are in the DOM, hidden, under a disclosure that names what it opens.
+    const more = /<button type="button" class="linklike stu-more-btn tap-pad" aria-expanded="false" aria-controls="([^"]+)">More tags<\/button>/.exec(html);
+    expect(more, "More tags").not.toBeNull();
+    expect(html).toMatch(new RegExp(`<span id="${more![1]}" class="stu-more" hidden="">`));
+  });
+
+  it("the balance tag is not a second Balance chip beside the Balance part", () => {
+    const html = home();
+    expect([...text(section(html, "Tags")).matchAll(/\bBalance\b/g)]).toHaveLength(0);
+    expect(text(section(html, "Browse"))).toContain("Balance");
+  });
+
+  it("themes are one row of compact tiles, not a grid of cards", () => {
+    const html = section(home(), "Themes");
+    expect(html).toContain('class="stu-themes"');
+    expect([...html.matchAll(/class="stu-theme"/g)]).toHaveLength(10);
   });
 
   it("every browse, theme and tag control is a real button", () => {

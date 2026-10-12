@@ -34,20 +34,37 @@ describe("a move row", () => {
     expect(text(html)).toContain(goblet.text.summary);
   });
 
-  it("line 3: purpose · contraction · primary muscles, each a term that explains itself, then the gear", () => {
+  /** The markup of one of the row's two meta lines (0: terms, 1: dose). */
+  const line = (h: string, i: 0 | 1) => [...h.matchAll(/<p class="stu-meta[^"]*">([\s\S]*?)<\/p>/g)][i]![1]!;
+
+  it("line 3: purpose · contraction · primary muscles, each a term that explains itself — and nothing else", () => {
     for (const [word, id] of [["Strength", "strength"], ["Isotonic", "isotonic"], ["Quads", "quads"], ["Glute max", "glute-max"]] as const) {
-      expect(html, word).toMatch(new RegExp(`<button type="button" class="term"[^>]*aria-expanded="false"[^>]*>${word}</button>`));
+      expect(line(html, 0), word).toMatch(new RegExp(`<button type="button" class="term tap-pad"[^>]*aria-expanded="false"[^>]*>${word}</button>`));
       expect(html, word).toContain(GLOSSARY[id]!.replace(/'/g, "&#x27;"));
     }
-    expect(text(html)).toContain("Kettlebell or Dumbbells");
+    expect(text(line(html, 0))).not.toContain("Kettlebell");
   });
 
-  it("line 4: the default dose, the history, and today's fit", () => {
-    const plain = text(html);
+  it("line 4: the default dose, the history, today's fit — and the gear, with no place to judge it by", () => {
+    const plain = text(line(html, 1));
     expect(plain).toContain("2 × 7");
     expect(plain).toContain("Last done 6 days ago");
     expect(plain).toContain("3× in 30 days");
     expect(plain).toContain("Fits today");
+    expect(plain).toContain("Kettlebell or Dumbbells");
+  });
+
+  it("the gear is dropped when the place's gear covers it, and named when it does not", () => {
+    const at = (placeGear: string[]) =>
+      text(line(renderToStaticMarkup(createElement(MoveRow, { rec: goblet, fit: null, prefs: null, today: TODAY, placeGear })), 1));
+    expect(at(["mat", "kettlebell"])).not.toContain("Kettlebell");
+    expect(at(["mat"])).toContain("Kettlebell or Dumbbells");
+  });
+
+  it("every term and the fit carry a tap pad: 44px to a finger, no growth in the layout", () => {
+    const buttons = [...html.matchAll(/<button type="button" class="([^"]*)"/g)].map((m) => m[1]!);
+    expect(buttons.length).toBeGreaterThan(4);
+    for (const cls of buttons) expect(cls.split(" "), cls).toContain("tap-pad");
   });
 
   it("Add is there only when there is something for it to do", () => {
@@ -77,11 +94,14 @@ describe("the dose line", () => {
     expect(doseLine(single)).toBe(`${Math.round((lo + hi) / 2)} reps`);
   });
 
-  it("a row can name the part it was found under instead of the move's first purpose", () => {
-    const multi = EXERCISES.find((e) => e.purposes.length > 1)!;
-    const second = multi.purposes[1]!;
-    const html = renderToStaticMarkup(createElement(MoveRow, { rec: multi, fit: null, prefs: null, today: TODAY, purpose: second }));
-    expect(html).toMatch(new RegExp(`>${label(second)}</button>`));
+  it("in a list browsed by a part, a row does not repeat that part (the chip says it once)", () => {
+    const goblet = rec("gobletSquat");
+    const browsed = renderToStaticMarkup(createElement(MoveRow, { rec: goblet, fit: null, prefs: null, today: TODAY, browsedPart: "strength" }));
+    expect(browsed).not.toMatch(new RegExp(`>${label("strength")}</button>`));
+    expect(browsed).toMatch(/>Isotonic<\/button>/);
+    // Browsed by another part, or not at all: the move's own first purpose.
+    const plain = renderToStaticMarkup(createElement(MoveRow, { rec: goblet, fit: null, prefs: null, today: TODAY }));
+    expect(plain).toMatch(new RegExp(`>${label("strength")}</button>`));
   });
 
   it("the history line: when, and how often lately", () => {
@@ -154,7 +174,7 @@ describe("status words beside every fit colour", () => {
     for (const state of STATES) {
       const fit: Fit = { state, word: FIT_WORD[state], reason: "Because." };
       const html = renderToStaticMarkup(createElement(FitBadge, { fit }));
-      const button = /<button[^>]*class="term stu-fit stu-fit--(\w+)"[^>]*>([\s\S]*?)<\/button>/.exec(html);
+      const button = /<button[^>]*class="term tap-pad stu-fit stu-fit--(\w+)"[^>]*>([\s\S]*?)<\/button>/.exec(html);
       expect(button, state).not.toBeNull();
       expect(button![1]).toBe(state);
       expect(button![2]).toContain("<svg");
