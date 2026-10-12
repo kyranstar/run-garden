@@ -30,8 +30,8 @@ export interface LiveSet {
   done: boolean;
   touched: boolean;
   /**
-   * A hold to max played a side at a time: the seconds held on each side done — each its own set at save, with its
-   * side, so neither overwrites the other. Absent otherwise.
+   * A hold to max played a side at a time: the seconds held on each side done, neither overwriting the other — one
+   * set, saved with each side (`SavedEntry`). Absent otherwise.
    */
   sides?: Partial<Record<HoldSide, number>>;
 }
@@ -86,8 +86,11 @@ export interface SavedEntry extends HistoryEntry {
   metric: LiveEntry["metric"];
   format: FormatId;
   flags: string[];
-  /** A set of a hold to max played a side at a time names its side. */
-  sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; side?: HoldSide }>;
+  /**
+   * A set of a hold to max played a side at a time is one set: its seconds the shorter side's (what it held on both,
+   * as history reads one set), and each side's (`sides`, a row per side on the wire).
+   */
+  sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; sides?: Partial<Record<HoldSide, number>> }>;
 }
 
 /**
@@ -269,16 +272,15 @@ function toSession(live: Live, { endedAt, post = {}, note = "", completed = fals
   const doneIds = movesDone(live);
   const entries: SavedEntry[] = live.order.map(id => live.entries[id]!).map(e => ({
     id: e.id, implement: e.implement, log: e.log, metric: e.metric, perSide: e.perSide, format: e.format, flags: [...e.flags],
-    sets: e.sets.filter(s => s.done).flatMap(s => {
-      const one = (secs: number | null, side?: HoldSide) => ({
+    sets: e.sets.filter(s => s.done).map(s => {
+      // A hold to max played a side at a time: one set, the shorter side's seconds, each side's beside them.
+      const sides = s.sides && Object.keys(s.sides).length > 0 && e.metric === "time" ? s.sides : null;
+      return {
         w: e.log === "load" ? s.w : null,
         reps: e.metric === "reps" ? s.reps : null,
-        secs: e.metric === "time" ? secs : null,
-        ...(side ? { side } : {}),
-      });
-      // A hold to max played a side at a time: a set per side held.
-      const sides = (["left", "right"] as const).filter(k => s.sides?.[k] !== undefined);
-      return sides.length > 0 ? sides.map(k => one(s.sides![k]!, k)) : [one(s.secs)];
+        secs: e.metric !== "time" ? null : sides ? Math.min(...Object.values(sides)) : s.secs,
+        ...(sides ? { sides: { ...sides } } : {}),
+      };
     }),
   })).filter(e => e.sets.length);
   const checks: Record<string, CheckReading> = {};

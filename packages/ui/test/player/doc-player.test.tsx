@@ -253,6 +253,30 @@ describe("a document workout's items, played", () => {
     expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 58 });
   });
 
+  it("an Edit left open as the rest runs out holds the rest; Confirm writes to the hold, and the next step is neither touched nor skipped", async () => {
+    type Stored = { live: { entries: Record<string, { sets: Array<{ secs: number | null; done: boolean; touched: boolean }> }> } };
+    await start(maxBuild(), docView());
+    await stepTo(4);
+    await at(T0 + 69 * S);
+    await click("Done");
+    await until(() => text().includes("5 of 6"), "the rest after the wall sit");
+    await click("Edit");
+    // The rest's 30 s run out with the card open: it stays on the rest, card and Confirm in reach.
+    await at(T0 + 150 * S);
+    expect(text()).toContain("5 of 6");
+    await type(control("Seconds") as HTMLInputElement, "58");
+    await click("Confirm");
+    // Closed: the rest that ran out moves on.
+    await at(T0 + 151 * S);
+    await until(() => text().includes("6 of 6"), "the next step");
+    expect(text()).toContain("Reclined butterfly");
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    const stored = await readLive<Stored>(db!, SLOT);
+    expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 58 });
+    expect(stored?.recorder.live.entries.reclinedButterfly!.sets[0]).toMatchObject({ secs: null, touched: false });
+  });
+
   it("a timed move to max with no target counts up from its start, and Done's card holds the seconds counted", async () => {
     await start(maxBuild(), docView());
     await stepTo(6);

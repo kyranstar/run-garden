@@ -2,7 +2,7 @@ import {
   performedSessionSaveSchema, type ConditionCheck, type PerformedSessionWire, type PerformedSessionWireInput, type PerformedSource,
 } from "@rg/domain";
 import type { CheckReading, HistoryEntry, HistorySession } from "@rg/exercise-library";
-import type { PendingChanges, PerformedSessionSave } from "./recorder.js";
+import type { HoldSide, PendingChanges, PerformedSessionSave } from "./recorder.js";
 
 // The one place the recorder's save meets the wire contract (ruling P1-R3). The domain's
 // `performedSessionSaveSchema` is what the outbox holds and the server accepts; `PerformedSessionSave` is what the
@@ -40,7 +40,8 @@ function checkRows(save: PerformedSessionSave): ConditionCheck[] {
  * be represented — better at Save than as an outbox entry the server will never take).
  *
  * Set flags are per exercise in the recorder and per set on the wire (and in `performed_sets`): every set of an
- * entry carries the entry's flags. Sets are numbered among the done sets the recorder kept.
+ * entry carries the entry's flags. Sets are numbered among the done sets the recorder kept; a set held a side at a time
+ * (a hold to max) is a row per side under its one number, each with its side and its seconds.
  */
 export function toPerformedSave(save: PerformedSessionSave, review: PendingChanges, ctx: PerformedSaveContext): PerformedSessionWire {
   const wire: PerformedSessionWireInput = {
@@ -72,10 +73,14 @@ export function toPerformedSave(save: PerformedSessionSave, review: PendingChang
       implement: e.implement,
       format: e.format,
       perSide: e.perSide,
-      sets: e.sets.map((s, i) => ({
-        setIndex: i, side: s.side ?? null, reps: whole(s.reps), seconds: whole(s.secs),
-        load: s.w ? { v: s.w.v, u: s.w.u } : null, done: true, flags: [...e.flags],
-      })),
+      sets: e.sets.flatMap((s, i) => {
+        const row = (side: HoldSide | null, secs: number | null) => ({
+          setIndex: i, side, reps: whole(s.reps), seconds: whole(secs),
+          load: s.w ? { v: s.w.v, u: s.w.u } : null, done: true, flags: [...e.flags],
+        });
+        const sides = (["left", "right"] as const).filter(k => s.sides?.[k] !== undefined);
+        return sides.length > 0 ? sides.map(k => row(k, s.sides![k]!)) : [row(null, s.secs)];
+      }),
     })),
     checks: checkRows(save),
     review: {
@@ -105,7 +110,19 @@ export function historyFromPerformed(p: PerformedSessionWire): HistorySession {
   }
   const entries: HistoryEntry[] = [];
   for (const e of p.entries) {
-    const sets = e.sets.filter(s => s.done).map(s => ({ w: s.load ? { v: s.load.v, u: s.load.u } : null, reps: s.reps, secs: s.seconds }));
+    // A set held a side at a time is a row per side under one number: one set, as the recorder saved it — the shorter
+    // side's seconds.
+    const sets: Array<{ w: HistoryEntry["sets"][number]["w"]; reps: number | null; secs: number | null }> = [];
+    let last: { setIndex: number; side: boolean } | null = null;
+    for (const s of e.sets.filter(x => x.done)) {
+      const prev = sets[sets.length - 1];
+      if (prev && last && s.side !== null && last.side && last.setIndex === s.setIndex) {
+        prev.secs = prev.secs === null || s.seconds === null ? (prev.secs ?? s.seconds) : Math.min(prev.secs, s.seconds);
+        continue;
+      }
+      sets.push({ w: s.load ? { v: s.load.v, u: s.load.u } : null, reps: s.reps, secs: s.seconds });
+      last = { setIndex: s.setIndex, side: s.side !== null };
+    }
     if (sets.length === 0) continue;
     entries.push({
       id: e.exerciseId, implement: e.implement, perSide: e.perSide, format: e.format,

@@ -9,8 +9,10 @@
  *  - Only live rows of this user that the app authored (`appAuthoredRow`: `program`, `on_demand`, and the document
  *    workouts `studio` / `template`). Anything else is not found. A document workout is built from its document, not
  *    by the engine, through the same versions, lock and Start contract (see "A document workout's build" below).
- *  - A started or done slot is LOCKED: its build never changes, and any build request is refused with the locked
- *    build (409 `locked`). Start locks the latest build of the day.
+ *  - A started or done slot is LOCKED: what its build plays never changes, and any build request is refused with the
+ *    locked build (409 `locked`). Start locks the latest build of the day. (One thing of a locked build does change: a
+ *    document build sent to the watch loses, as it starts, the ⇄ options the day's reading now keeps out —
+ *    `$.build.fromDoc.slots` alone, written in place.)
  *  - Today → a build, versioned per workout (1, 2, …). The day's choices persist: a request that leaves out
  *    `overrides` or `swaps` keeps the stored ones; new overrides drop the swaps (their slots may mean something
  *    else now). A build writes its block changes to `program_blocks` and the row's title, discipline (§9.2: a core
@@ -1491,13 +1493,13 @@ async function lockDocBuild(
 }
 
 /**
- * A sent document build, about to Start (it is locked: nothing can be swapped): its snapshot judged with the day's
+ * A sent document build, about to Start (it is locked: what it plays cannot change): its snapshot judged with the day's
  * reading (`snapshotErrors`). A move the day now keeps out refuses Start with the issues (`GatedError`); take it off
- * the watch to rebuild. What ⇄ may offer is judged too (`slotsForDay`): the build's payload with an alternate or offer
+ * the watch to rebuild. What ⇄ may offer is judged too (`slotsForDay`): the build's slots with an alternate or offer
  * the day now keeps out taken off — only its options, never what it plays (nor the watch's copy) — when one is; else
- * null. Reads only: the caller writes it as the build starts.
+ * null. Reads only: the caller writes them (`$.build.fromDoc.slots` alone) as the build starts.
  */
-async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: BuildRow, today: string): Promise<StoredBuild | null> {
+async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: BuildRow, today: string): Promise<Record<string, DocSlot> | null> {
   const snapshot = parseStoredWorkoutDoc(sent.workoutDoc);
   if (!snapshot) return null;
   const profiles = await activeProfilesOf(db, userId);
@@ -1509,8 +1511,7 @@ async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: B
   const slots = stored.build.fromDoc?.slots;
   if (!slots) return null;
   const open = slotsForDay(slots, snapshot, day);
-  if (JSON.stringify(open) === JSON.stringify(slots)) return null;
-  return { ...stored, build: { ...stored.build, fromDoc: { ...stored.build.fromDoc!, slots: open } } };
+  return JSON.stringify(open) === JSON.stringify(slots) ? null : open;
 }
 
 /**
@@ -1610,8 +1611,8 @@ export async function lockCurrentBuild(
   const unchanged = async (session: Promise<SessionResponse>) => ({ session: await session, calendarChanged: false, lockedNow: false });
   if (lockedOf(row, builds)) {
     // START ON A SENT BUILD (Phase 3, spec §4.4): the athlete takes the phone along. The slot is `built` with the
-    // build on the watch locked; Start plays that very build — `started`, no rebuild, no new hash check (a locked
-    // build never changes). It must be the build the athlete was shown, on the slot's day.
+    // build on the watch locked; Start plays that very build — `started`, no rebuild, no new hash check (what a locked
+    // build plays never changes). It must be the build the athlete was shown, on the slot's day.
     if (opts.as === "start" && row.contentState === "built") {
       const sent = await sentBuildIdOf(db, workoutId);
       const locked = builds.find((b) => b.lockedAt !== null);
@@ -1621,7 +1622,13 @@ export async function lockCurrentBuild(
         // A document workout re-gates at Start (Stage 2 spec §10), even the very build on the watch.
         const trimmed = docOriginRow(row) ? await refuseGatedSnapshot(db, userId, row, locked, today) : null;
         if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
-        if (trimmed) await db.update(sessionBuilds).set({ payload: trimmed as unknown as Record<string, unknown> }).where(eq(sessionBuilds.id, locked.id));
+        // Only the options, in place: whatever else the payload holds now (a stamp written since it was read) stays.
+        if (trimmed) {
+          await db
+            .update(sessionBuilds)
+            .set({ payload: sql`json_set(${sessionBuilds.payload}, '$.build.fromDoc.slots', json(${JSON.stringify(trimmed)}))` })
+            .where(eq(sessionBuilds.id, locked.id));
+        }
         await db
           .update(plannedWorkouts)
           .set({ contentState: "started", updatedAt: now })

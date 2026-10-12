@@ -356,16 +356,28 @@ export interface LogTarget {
   sides: Partial<Record<HoldSide, number>> | null;
 }
 
-/** The set the log card edits: the current set, or during a rest the set just finished. */
-export function logTarget(state: PlayerState): LogTarget | null {
+/** Which set a log card was opened on: kept with the card, so it writes there whatever the clock has done since. */
+export interface LogFor {
+  exerciseId: string;
+  setIndex: number;
+  side: Step["side"];
+}
+
+/** The set the log card would open on now: the current set, or during a rest the set just finished. */
+export function logFor(state: PlayerState): LogFor | null {
   const k = Recorder.logStepIndex(state.live, state.index);
   const step = k === null ? undefined : state.live.steps[k];
-  if (!step || !step.exerciseId) return null;
-  const entry = state.live.entries[step.exerciseId];
-  const setIndex = step.setIndex ?? 0;
-  const set = entry?.sets[setIndex];
+  return step?.exerciseId ? { exerciseId: step.exerciseId, setIndex: step.setIndex ?? 0, side: step.side } : null;
+}
+
+/** The set the log card edits: the one it was opened on (`held`), else the one it would open on now (`logFor`). */
+export function logTarget(state: PlayerState, held: LogFor | null = null): LogTarget | null {
+  const at = held ?? logFor(state);
+  if (!at) return null;
+  const entry = state.live.entries[at.exerciseId];
+  const set = entry?.sets[at.setIndex];
   if (!entry || !set) return null;
-  return { exerciseId: step.exerciseId, setIndex, entry, w: set.w, reps: set.reps, secs: set.secs, sides: set.sides ?? null };
+  return { exerciseId: at.exerciseId, setIndex: at.setIndex, entry, w: set.w, reps: set.reps, secs: set.secs, sides: set.sides ?? null };
 }
 
 /**
@@ -399,8 +411,9 @@ export function editLog(
   state: PlayerState,
   values: LogValues,
   flags: Readonly<Record<string, boolean>>,
+  held: LogFor | null = null,
 ): PlayerState {
-  const t = logTarget(state);
+  const t = logTarget(state, held);
   if (!t) return state;
   const s = draft(state);
   if (values.w !== undefined && !sameWeight(values.w, t.w)) Recorder.update(s.live, t.exerciseId, t.setIndex, "w", values.w);
@@ -416,14 +429,21 @@ export function editLog(
   return s;
 }
 
+/**
+ * Confirm: the card's values written to the set it was opened on (`held`, else the one it would open on now); on that
+ * very set, it goes on (to the rest) — a card opened elsewhere (an Edit in a rest) moves nothing.
+ */
 export function confirmLog(
   state: PlayerState,
   values: LogValues,
   flags: Readonly<Record<string, boolean>>,
   now: number,
+  held: LogFor | null = null,
 ): PlayerState {
-  const edited = editLog(state, values, flags);
-  return stepAt(edited)?.kind === "set" ? next(edited, now) : edited;
+  const edited = editLog(state, values, flags, held);
+  const step = stepAt(edited);
+  const here = !held || (step?.exerciseId === held.exerciseId && (step.setIndex ?? 0) === held.setIndex);
+  return step?.kind === "set" && here ? next(edited, now) : edited;
 }
 
 /** The recorder's save: the session as performed, with its running time. */

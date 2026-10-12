@@ -22,7 +22,10 @@ export const sessionBuilds = sqliteTable(
      * `planned_workouts.workout_doc` is: written as `JSON.stringify(doc)`, read with `parseStoredWorkoutDoc`.
      */
     workoutDoc: text("workout_doc"),
-    /** Set when the session starts; a locked build never changes. */
+    /**
+     * Set when the session starts (or the build is sent to the watch); what a locked build plays never changes — only a
+     * sent document build's ⇄ options are narrowed as it starts (`$.build.fromDoc.slots`).
+     */
     lockedAt: text("locked_at"),
     createdAt: text("created_at").notNull(),
   },

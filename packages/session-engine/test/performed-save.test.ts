@@ -55,15 +55,19 @@ const asHistory = (s: PerformedSessionSave): HistorySession => ({
 const overTheWire = (w: PerformedSessionWire): PerformedSessionWire => performedSessionSaveSchema.parse(JSON.parse(JSON.stringify(w)));
 
 describe("a hold to max played a side at a time (Stage 2 Task 8)", () => {
-  test("goes over the wire as a set per side, each naming its side", () => {
+  test("is one set: on the wire a row per side under its one number, each naming its side; read back, one set again", () => {
     const plan = Builder.build(data, input());
     const save = Recorder.toSession(Recorder.create(data, plan, meta(plan)), { endedAt: "2026-09-29T18:40:00.000Z" });
     save.entries = [{
       id: "sidePlank", implement: null, log: "time", metric: "time", perSide: true, format: "holds", flags: [],
-      sets: [{ w: null, reps: null, secs: 45, side: "left" }, { w: null, reps: null, secs: 39, side: "right" }],
+      sets: [{ w: null, reps: null, secs: 39, sides: { left: 45, right: 39 } }, { w: null, reps: null, secs: 30, sides: { left: 30 } }, { w: null, reps: null, secs: 25 }],
     } as PerformedSessionSave["entries"][number]];
     const wire = toPerformedSave(save, { ratings: {}, excluded: {}, graduations: [] }, { source: "app", workoutId: "pw-1", buildId: "sb-1" });
-    expect(wire.entries[0]!.sets.map((s) => [s.setIndex, s.side, s.seconds])).toEqual([[0, "left", 45], [1, "right", 39]]);
+    expect(wire.entries[0]!.sets.map((s) => [s.setIndex, s.side, s.seconds])).toEqual([[0, "left", 45], [0, "right", 39], [1, "left", 30], [2, null, 25]]);
+    // History reads what the recorder saved: three sets, the per-side one at its shorter side.
+    const history = historyFromPerformed(overTheWire(wire));
+    expect(history.entries[0]!.sets).toEqual([{ w: null, reps: null, secs: 39 }, { w: null, reps: null, secs: 30 }, { w: null, reps: null, secs: 25 }]);
+    expect(history.entries[0]!.sets).toEqual(save.entries[0]!.sets.map(({ sides: _sides, ...set }) => set));
   });
 });
 

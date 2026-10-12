@@ -43,6 +43,7 @@ import {
   fromLiveSession,
   goesToMax,
   heldBefore,
+  logFor,
   logTarget,
   next,
   openHold,
@@ -54,6 +55,7 @@ import {
   stepView,
   swapSlot,
   toLiveSession,
+  type LogFor,
   type PlayerSource,
   type PlayerState,
 } from "../player/run.js";
@@ -293,7 +295,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     setNow(t);
     // A write that lands again clears the warning.
     if (writer.current && writer.current.error === null) setNotKept(false);
-    setState((s) => settle(s, t, { autoAdvance: auto }));
+    // A log card open in a rest (Edit) holds the rest there: it moves on once the card is closed.
+    setState((s) => settle(s, t, { autoAdvance: auto && !logRef.current }));
   }, [auto]);
   useEffect(() => {
     const onVisible = () => {
@@ -417,7 +420,9 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   );
   const [draft, setDraft] = useState<LogDraft | null>(null);
   const openLog = () => {
-    const t = logTarget(state);
+    // The card writes to the set it opens on, whatever the clock does while it is open.
+    const held = logFor(state);
+    const t = logTarget(state, held);
     if (!t) return;
     // A hold to max with no target: Done's card holds the seconds counted.
     const counted = open && view ? Math.floor(view.elapsedMs / 1000) : null;
@@ -427,11 +432,13 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
       secs: counted !== null ? String(counted) : t.secs === null ? "" : String(t.secs),
       sides: t.sides ? Object.fromEntries(Object.entries(t.sides).map(([k, v]) => [k, String(v)])) : null,
       flags: Object.fromEntries(flags.map((f) => [f.id, t.entry.flags.includes(f.id)])),
+      held,
     });
     setLogOpen(true);
   };
   const confirm = () => {
-    const t = logTarget(state);
+    if (!draft) return;
+    const t = logTarget(state, draft.held);
     if (!t || !draft) return;
     const w = t.entry.log === "load" ? (draft.weight.trim() === "" ? null : (parseWeight(draft.weight, t.w?.u ?? unit) ?? t.w)) : undefined;
     const reps = t.entry.metric === "reps" ? wholeOr(draft.reps, t.reps) : undefined;
@@ -439,7 +446,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     const secs = t.entry.metric === "time" && !sides ? wholeOr(draft.secs, t.secs) : undefined;
     setLogOpen(false);
     setDraft(null);
-    act((s, at) => confirmLog(s, { w, reps, secs, sides }, draft.flags, at));
+    act((s, at) => confirmLog(s, { w, reps, secs, sides }, draft.flags, at, draft.held));
   };
 
   // ── The primary action and the keys ────────────────────────────────────────────────────────────────────────────
@@ -812,6 +819,8 @@ interface LogDraft {
   /** A hold to max played a side at a time: each side's seconds. */
   sides: Partial<Record<HoldSide, string>> | null;
   flags: Record<string, boolean>;
+  /** The set the card was opened on: it writes there. */
+  held: LogFor | null;
 }
 
 /** The move a slot plays as built (the build's own steps): a document item's cue is said of it alone. */
@@ -1079,6 +1088,14 @@ function Actions({
       </button>
     );
   }
+  if (step.kind === "rest" && logOpen) {
+    // The log card opened from the rest (Edit, after a hold to max) — even once the rest has run out: Confirm.
+    return (
+      <button type="button" className="btn btn-primary player-primary" onClick={onConfirm}>
+        Confirm
+      </button>
+    );
+  }
   if (phase === "over") {
     return (
       <button type="button" className="btn btn-primary player-primary" onClick={onSkip}>
@@ -1087,14 +1104,6 @@ function Actions({
     );
   }
   if (step.kind === "rest") {
-    // The log card opened from the rest (Edit, after a hold to max): Confirm keeps the rest going.
-    if (logOpen) {
-      return (
-        <button type="button" className="btn btn-primary player-primary" onClick={onConfirm}>
-          Confirm
-        </button>
-      );
-    }
     return (
       <div className="btn-row player-pair">
         <button type="button" className="btn" onClick={onAddRest}>
@@ -1150,7 +1159,7 @@ function LogCard({
   location: { equipment: string[]; implements: Record<string, Weight[]>; id: string };
   unit: WeightUnit;
 }) {
-  const t = logTarget(state);
+  const t = logTarget(state, draft.held);
   if (!t) return null;
   const kbWeights = Lib.kettlebellsAt(location);
   const ctx = { implement: t.entry.implement, kbWeights };

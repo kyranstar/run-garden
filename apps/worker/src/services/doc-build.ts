@@ -278,34 +278,45 @@ const bare = (item: WorkoutItem): WorkoutItem => {
 };
 
 /**
- * Each asked item's moves judged by the validator as its alternates, in the document as it stands — three at a time,
- * the most an item holds: the issues raised at each, by slot key and move id. A probe the validator cannot read at all
- * (its bounds, its size) judges every move it asked about with that issue.
+ * Each asked item's moves judged by the validator IN THE ITEM'S PLACE — the move as the item (`inPlace`: the item's
+ * dose), every alternate in the document stripped — so every rule that judges a move played holds: the day's flare
+ * rule and a gate waiting on the day's check among them, which the validator does not apply to an alternate. One move
+ * an item a probe, the items' next moves together; the issues at the item's move, by slot key and move id. An item is
+ * asked no further once `enough` says so. A probe the validator cannot read at all (its bounds, its size: moves put in
+ * together can take a document past its bound) is asked again one move at a time; one it cannot read alone is judged
+ * with that issue.
  */
-function judgeAsAlternates(
+function judgeInPlace(
   doc: WorkoutDoc,
   asked: ReadonlyArray<{ at: DocSlotKey; ids: readonly string[] }>,
   ctx: ValidateCtx,
+  enough: (slotKey: string, judged: ReadonlyMap<string, DocIssue[]>) => boolean = () => false,
 ): Map<string, DocIssue[]> {
   const out = new Map<string, DocIssue[]>();
-  const rounds = Math.ceil(Math.max(0, ...asked.map((a) => a.ids.length)) / 3);
-  for (let r = 0; r < rounds; r++) {
-    const parts = doc.parts.map((p) => ({ ...p, items: p.items.map(bare) }));
-    const probing = asked.map((a) => ({ at: a.at, ids: a.ids.slice(3 * r, 3 * r + 3) })).filter((a) => a.ids.length > 0);
-    for (const a of probing) {
-      const item = doc.parts[a.at.part]!.items[a.at.item] as Exercise;
-      parts[a.at.part]!.items[a.at.item] = { ...item, alternates: a.ids.map((libraryId) => ({ libraryId })) };
-    }
-    const issues = validateWorkoutDoc({ ...doc, parts }, ctx);
-    const unread = issues.filter((i) => i.code === "bounds" || i.code === "too_large");
-    for (const a of probing) {
-      a.ids.forEach((id, k) => {
-        const path = `parts[${a.at.part}].items[${a.at.item}].alternates[${k}].libraryId`;
-        out.set(optionKey(a.at.key, id), unread.length > 0 ? unread : issues.filter((i) => i.path === path));
-      });
-    }
+  const next = new Map(asked.map((a) => [a.at.key, 0]));
+  for (;;) {
+    const probing = asked.flatMap((a) => {
+      const k = next.get(a.at.key)!;
+      return k < a.ids.length && !enough(a.at.key, out) ? [{ at: a.at, id: a.ids[k]! }] : [];
+    });
+    if (probing.length === 0) return out;
+    for (const a of probing) next.set(a.at.key, next.get(a.at.key)! + 1);
+    const probe = (moves: typeof probing): void => {
+      const parts = doc.parts.map((p) => ({ ...p, items: p.items.map(bare) }));
+      for (const a of moves) parts[a.at.part]!.items[a.at.item] = inPlace(doc.parts[a.at.part]!.items[a.at.item] as Exercise, a.id, undefined);
+      const issues = validateWorkoutDoc({ ...doc, parts }, ctx);
+      const unread = issues.filter((i) => i.code === "bounds" || i.code === "too_large");
+      if (unread.length > 0 && moves.length > 1) {
+        for (const a of moves) probe([a]);
+        return;
+      }
+      for (const a of moves) {
+        const path = `parts[${a.at.part}].items[${a.at.item}].libraryId`;
+        out.set(optionKey(a.at.key, a.id), unread.length > 0 ? unread : issues.filter((i) => i.path === path));
+      }
+    };
+    probe(probing);
   }
-  return out;
 }
 
 /**
@@ -349,10 +360,11 @@ export function libraryOffers(
 
 /**
  * What each slot's item says beside its steps: its cue, a hold to max, and the moves ⇄ offers — its planned
- * alternates, then the library's usual offers (`libraryOffers`), all judged by the validator as the item's alternates
- * with the day's judgement (`judge`). An alternate the day keeps out (an error) is never offered; one that costs
- * something (a warning) comes after the clean ones, the cost in its reasons; an offer is only ever a clean one, three
- * at most. A move the library lacks, or the item's own move, is none.
+ * alternates, then the library's usual offers (`libraryOffers`), each judged by the validator in the item's place
+ * (`judgeInPlace`) with the build's own judgement (`judge`): an alternate the day keeps out (an error) is never offered;
+ * one that costs something (a warning: the flare rule, a move set aside, gear the place lacks) comes after the clean
+ * ones, the cost in its reasons; an offer is only ever a clean one, three at most — the library's moves are judged in
+ * order until three are. A move the library lacks, or the item's own move, is none.
  *
  * A move's steps are the slot's steps in the document with it in the item's place (`inPlace`): every item's k-th move
  * goes in at once — a slot's steps are its own item's (its dose, its move, its part's format and rounds) — so the moves
@@ -390,20 +402,26 @@ function docSlots(
     const away = { ids: new Set(planned.map((p) => p.to.id)), keys: new Set(held.filter((r) => r.id !== own).map((r) => Swapping.moveKeyOf(r))) };
     return { at, item, planned, offered: rec ? libraryOffers(rec, library, find, away) : [] };
   });
-  const judged = judgeAsAlternates(doc, asked.map((a) => ({ at: a.at, ids: [...a.planned, ...a.offered].map((o) => o.to.id) })), judge);
-  const issuesOf = (slotKey: string, id: string): DocIssue[] => judged.get(optionKey(slotKey, id)) ?? [];
+  const byKey = new Map(asked.map((a) => [a.at.key, a]));
+  /** An item is judged enough once three of the library's moves are clean (all it plans comes first, so is judged). */
+  const enough = (slotKey: string, judged: ReadonlyMap<string, DocIssue[]>): boolean => {
+    const a = byKey.get(slotKey)!;
+    return a.offered.filter((o) => judged.get(optionKey(slotKey, o.to.id))?.length === 0).length >= OFFERS;
+  };
+  const judged = judgeInPlace(doc, asked.map((a) => ({ at: a.at, ids: [...a.planned, ...a.offered].map((o) => o.to.id) })), judge, enough);
+  const issuesOf = (slotKey: string, id: string): DocIssue[] | undefined => judged.get(optionKey(slotKey, id));
 
   const lists = asked.map(({ at, item, planned, offered }) => {
     const clean: SlotOption[] = [];
     const costly: SlotOption[] = [];
     for (const p of planned) {
-      const issues = issuesOf(at.key, p.to.id);
+      const issues = issuesOf(at.key, p.to.id) ?? [];
       if (issues.some((i) => i.severity === "error")) continue;
       const costs = issues.map((i) => i.message);
       (costs.length > 0 ? costly : clean).push({ to: p.to, why: p.why, reasons: [...(p.why ? [p.why] : []), ...costs] });
     }
     const offers = offered
-      .filter((o) => issuesOf(at.key, o.to.id).length === 0)
+      .filter((o) => issuesOf(at.key, o.to.id)?.length === 0)
       .slice(0, OFFERS)
       .map((o): SlotOption => ({ to: o.to, why: undefined, reasons: [o.reason] }));
     const all = [
@@ -456,9 +474,9 @@ function docSlots(
 }
 
 /**
- * A locked document build's alternates and offers judged again with the day's reading — Start of a build sent to the
- * watch, which nothing rebuilds: one the day now keeps out (an error) is taken off, as `gateDoc` takes it off a build
- * made today; a slot left saying nothing goes. Only options change: never what is played.
+ * A locked document build's alternates and offers judged again, in the item's place, with the day's reading — Start of
+ * a build sent to the watch, which nothing rebuilds: one the day now keeps out (an error) is taken off; a slot left
+ * saying nothing goes. Only options change: never what is played.
  */
 export function slotsForDay(slots: Readonly<Record<string, DocSlot>>, snapshot: WorkoutDoc, ctx: ValidateCtx): Record<string, DocSlot> {
   const where = new Map(docSlotKeys(snapshot).map((s) => [s.key, s]));
@@ -467,7 +485,7 @@ export function slotsForDay(slots: Readonly<Record<string, DocSlot>>, snapshot: 
     const ids = [...(slot.alternates ?? []), ...(slot.offers ?? [])].map((c) => c.id);
     return at && snapshot.parts[at.part]!.items[at.item]!.kind === "exercise" && ids.length > 0 ? [{ at, ids }] : [];
   });
-  const judged = judgeAsAlternates(snapshot, asked, ctx);
+  const judged = judgeInPlace(snapshot, asked, ctx);
   const open = (key: string) => (c: SlotChoice): boolean => !(judged.get(optionKey(key, c.id)) ?? []).some((i) => i.severity === "error");
   const out: Record<string, DocSlot> = {};
   for (const [key, slot] of Object.entries(slots)) {

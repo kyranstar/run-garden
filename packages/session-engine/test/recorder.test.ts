@@ -156,7 +156,7 @@ test("a hold to max ended with Done counts at the time held, however short or lo
   expect(none.entries[step.exerciseId!]!.sets[step.setIndex!]!.done).toBe(false);
 });
 
-test("a hold to max played a side at a time logs each side as its own set: neither overwrites the other", () => {
+test("a hold to max played a side at a time logs each side, neither overwriting the other: one set, saved with each side", () => {
   const side = (s: "Left" | "Right", log: boolean): Step => ({
     kind: "timed", slotKey: "accessory:0", block: "accessory", exerciseId: "sidePlank", side: s, setIndex: 0, setCount: 1,
     seconds: 30, prepGap: 8, target: null, format: { id: "holds", group: null, round: null }, why: [], isNew: false, log,
@@ -175,8 +175,9 @@ test("a hold to max played a side at a time logs each side as its own set: neith
   Recorder.finishTimed(one, 0, 20, { toMax: true, done: true });
   Recorder.setSide(one, "sidePlank", 0, "right", 99);
   const sets = (l: Live) => Recorder.toSession(l, { endedAt: "x" }).entries.find(e => e.id === "sidePlank")!.sets;
-  expect(sets(live)).toEqual([{ w: null, reps: null, secs: 45, side: "left" }, { w: null, reps: null, secs: 41, side: "right" }]);
-  expect(sets(one)).toEqual([{ w: null, reps: null, secs: 20, side: "left" }]);
+  // One set: what it held on both sides (the shorter), and each side's.
+  expect(sets(live)).toEqual([{ w: null, reps: null, secs: 41, sides: { left: 45, right: 41 } }]);
+  expect(sets(one)).toEqual([{ w: null, reps: null, secs: 20, sides: { left: 20 } }]);
   // An engine build's sides (no max): one set, the last side's time, as before.
   const engine = Recorder.create(data, plan, meta(plan));
   Recorder.reach(engine, 0);

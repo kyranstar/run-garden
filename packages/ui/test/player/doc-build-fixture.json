@@ -1,0 +1,673 @@
+{
+  "minutes": 3,
+  "plannedSeconds": 254,
+  "steps": [
+    {
+      "kind": "set",
+      "seconds": 25,
+      "slotKey": "core:0",
+      "block": "core",
+      "exerciseId": "tempoSquat",
+      "side": null,
+      "setIndex": 0,
+      "setCount": 2,
+      "target": {
+        "lo": 8,
+        "hi": 15,
+        "type": "reps",
+        "reps": 5,
+        "secs": null,
+        "w": null,
+        "note": ""
+      },
+      "format": {
+        "id": "straight",
+        "group": null,
+        "round": null
+      },
+      "why": [],
+      "isNew": false,
+      "log": true,
+      "prepGap": 0
+    },
+    {
+      "kind": "rest",
+      "slotKey": "core:0",
+      "block": "core",
+      "exerciseId": null,
+      "side": null,
+      "setIndex": null,
+      "setCount": null,
+      "seconds": 45,
+      "prepGap": 0,
+      "target": null,
+      "format": {
+        "id": "straight",
+        "group": null,
+        "round": null
+      },
+      "why": [],
+      "isNew": false,
+      "log": false
+    },
+    {
+      "kind": "set",
+      "seconds": 25,
+      "slotKey": "core:0",
+      "block": "core",
+      "exerciseId": "tempoSquat",
+      "side": null,
+      "setIndex": 1,
+      "setCount": 2,
+      "target": {
+        "lo": 8,
+        "hi": 15,
+        "type": "reps",
+        "reps": 5,
+        "secs": null,
+        "w": null,
+        "note": ""
+      },
+      "format": {
+        "id": "straight",
+        "group": null,
+        "round": null
+      },
+      "why": [],
+      "isNew": false,
+      "log": true,
+      "prepGap": 0
+    },
+    {
+      "kind": "rest",
+      "slotKey": "core:0",
+      "block": "core",
+      "exerciseId": null,
+      "side": null,
+      "setIndex": null,
+      "setCount": null,
+      "seconds": 45,
+      "prepGap": 0,
+      "target": null,
+      "format": {
+        "id": "straight",
+        "group": null,
+        "round": null
+      },
+      "why": [],
+      "isNew": false,
+      "log": false
+    },
+    {
+      "kind": "set",
+      "seconds": 42,
+      "slotKey": "core:1",
+      "block": "core",
+      "exerciseId": "deadBug",
+      "side": null,
+      "setIndex": 0,
+      "setCount": 2,
+      "target": {
+        "lo": 6,
+        "hi": 10,
+        "type": "reps",
+        "reps": 8,
+        "secs": null,
+        "w": null,
+        "note": ""
+      },
+      "format": {
+        "id": "straight",
+        "group": null,
+        "round": null
+      },
+      "why": [],
+      "isNew": false,
+      "log": true,
+      "prepGap": 0
+    },
+    {
+      "kind": "rest",
+      "slotKey": "core:1",
+      "block": "core",
+      "exerciseId": null,
+      "side": null,
+      "setIndex": null,
+      "setCount": null,
+      "seconds": 30,
+      "prepGap": 0,
+      "target": null,
+      "format": {
+        "id": "straight",
+        "group": null,
+        "round": null
+      },
+      "why": [],
+      "isNew": false,
+      "log": false
+    },
+    {
+      "kind": "set",
+      "seconds": 42,
+      "slotKey": "core:1",
+      "block": "core",
+      "exerciseId": "deadBug",
+      "side": null,
+      "setIndex": 1,
+      "setCount": 2,
+      "target": {
+        "lo": 6,
+        "hi": 10,
+        "type": "reps",
+        "reps": 8,
+        "secs": null,
+        "w": null,
+        "note": ""
+      },
+      "format": {
+        "id": "straight",
+        "group": null,
+        "round": null
+      },
+      "why": [],
+      "isNew": false,
+      "log": true,
+      "prepGap": 0
+    }
+  ],
+  "items": [
+    {
+      "slotKey": "core:0",
+      "block": "core",
+      "exerciseId": "tempoSquat",
+      "format": "straight",
+      "sets": 2,
+      "group": null,
+      "coreFamily": null,
+      "isNew": false,
+      "why": []
+    },
+    {
+      "slotKey": "core:1",
+      "block": "core",
+      "exerciseId": "deadBug",
+      "format": "straight",
+      "sets": 2,
+      "group": null,
+      "coreFamily": null,
+      "isNew": false,
+      "why": []
+    }
+  ],
+  "alternatives": {},
+  "params": {
+    "checks": {},
+    "overrides": {},
+    "swaps": {}
+  },
+  "exercises": [
+    "birdDog",
+    "boxSquat",
+    "bwSplitSquat",
+    "cossackSquat",
+    "deadBug",
+    "gobletSquat",
+    "plankPelvicTilts",
+    "tempoSquat"
+  ],
+  "slots": {
+    "core:0": {
+      "alternates": [
+        {
+          "id": "gobletSquat",
+          "name": "Goblet squat",
+          "reasons": [],
+          "steps": [
+            {
+              "kind": "set",
+              "seconds": 25,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "gobletSquat",
+              "side": null,
+              "setIndex": 0,
+              "setCount": 2,
+              "target": {
+                "lo": 5,
+                "hi": 8,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            },
+            {
+              "kind": "set",
+              "seconds": 25,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "gobletSquat",
+              "side": null,
+              "setIndex": 1,
+              "setCount": 2,
+              "target": {
+                "lo": 5,
+                "hi": 8,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            }
+          ],
+          "moveKey": "squat|glutes,hips,quads",
+          "pairing": {
+            "doseType": "reps",
+            "patterns": [
+              "squat"
+            ],
+            "positionGroup": "standing"
+          }
+        },
+        {
+          "id": "bwSplitSquat",
+          "name": "Split squat",
+          "reasons": [
+            "One leg.",
+            "You set Split squat aside as not for you."
+          ],
+          "steps": [
+            {
+              "kind": "set",
+              "seconds": 25,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "bwSplitSquat",
+              "side": null,
+              "setIndex": 0,
+              "setCount": 2,
+              "target": {
+                "lo": 8,
+                "hi": 12,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [
+                "One leg."
+              ],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            },
+            {
+              "kind": "set",
+              "seconds": 25,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "bwSplitSquat",
+              "side": null,
+              "setIndex": 1,
+              "setCount": 2,
+              "target": {
+                "lo": 8,
+                "hi": 12,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [
+                "One leg."
+              ],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            }
+          ],
+          "moveKey": "splitSquat|glutes,quads",
+          "pairing": {
+            "doseType": "reps",
+            "patterns": [
+              "lunge"
+            ],
+            "positionGroup": "standing"
+          }
+        }
+      ],
+      "offers": [
+        {
+          "id": "boxSquat",
+          "name": "Box squat to bench",
+          "reasons": [
+            "An easier version"
+          ],
+          "steps": [
+            {
+              "kind": "set",
+              "seconds": 25,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "boxSquat",
+              "side": null,
+              "setIndex": 0,
+              "setCount": 2,
+              "target": {
+                "lo": 8,
+                "hi": 12,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            },
+            {
+              "kind": "set",
+              "seconds": 25,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "boxSquat",
+              "side": null,
+              "setIndex": 1,
+              "setCount": 2,
+              "target": {
+                "lo": 8,
+                "hi": 12,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            }
+          ],
+          "moveKey": "squat|glutes,quads",
+          "pairing": {
+            "doseType": "reps",
+            "patterns": [
+              "squat"
+            ],
+            "positionGroup": "standing"
+          }
+        },
+        {
+          "id": "cossackSquat",
+          "name": "Cossack squat",
+          "reasons": [
+            "The same movement"
+          ],
+          "steps": [
+            {
+              "kind": "set",
+              "seconds": 40,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "cossackSquat",
+              "side": null,
+              "setIndex": 0,
+              "setCount": 2,
+              "target": {
+                "lo": 4,
+                "hi": 6,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            },
+            {
+              "kind": "set",
+              "seconds": 40,
+              "slotKey": "core:0",
+              "block": "core",
+              "exerciseId": "cossackSquat",
+              "side": null,
+              "setIndex": 1,
+              "setCount": 2,
+              "target": {
+                "lo": 4,
+                "hi": 6,
+                "type": "reps",
+                "reps": 5,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            }
+          ],
+          "moveKey": "cossack|glutes,hips,quads",
+          "pairing": {
+            "doseType": "reps",
+            "patterns": [
+              "squat",
+              "mobility"
+            ],
+            "positionGroup": "standing"
+          }
+        }
+      ]
+    },
+    "core:1": {
+      "offers": [
+        {
+          "id": "birdDog",
+          "name": "Bird dog",
+          "reasons": [
+            "The same movement"
+          ],
+          "steps": [
+            {
+              "kind": "set",
+              "seconds": 50,
+              "slotKey": "core:1",
+              "block": "core",
+              "exerciseId": "birdDog",
+              "side": null,
+              "setIndex": 0,
+              "setCount": 2,
+              "target": {
+                "lo": 6,
+                "hi": 10,
+                "type": "reps",
+                "reps": 8,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            },
+            {
+              "kind": "set",
+              "seconds": 50,
+              "slotKey": "core:1",
+              "block": "core",
+              "exerciseId": "birdDog",
+              "side": null,
+              "setIndex": 1,
+              "setCount": 2,
+              "target": {
+                "lo": 6,
+                "hi": 10,
+                "type": "reps",
+                "reps": 8,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            }
+          ],
+          "moveKey": "birdDog|core,low-back",
+          "pairing": {
+            "doseType": "reps",
+            "patterns": [
+              "anti-rotate",
+              "anti-extend"
+            ],
+            "positionGroup": "floor"
+          }
+        },
+        {
+          "id": "plankPelvicTilts",
+          "name": "Plank pelvic tilts",
+          "reasons": [
+            "The same movement"
+          ],
+          "steps": [
+            {
+              "kind": "set",
+              "seconds": 42,
+              "slotKey": "core:1",
+              "block": "core",
+              "exerciseId": "plankPelvicTilts",
+              "side": null,
+              "setIndex": 0,
+              "setCount": 2,
+              "target": {
+                "lo": 8,
+                "hi": 10,
+                "type": "reps",
+                "reps": 8,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            },
+            {
+              "kind": "set",
+              "seconds": 42,
+              "slotKey": "core:1",
+              "block": "core",
+              "exerciseId": "plankPelvicTilts",
+              "side": null,
+              "setIndex": 1,
+              "setCount": 2,
+              "target": {
+                "lo": 8,
+                "hi": 10,
+                "type": "reps",
+                "reps": 8,
+                "secs": null,
+                "w": null,
+                "note": ""
+              },
+              "format": {
+                "id": "straight",
+                "group": null,
+                "round": null
+              },
+              "why": [],
+              "isNew": false,
+              "log": true,
+              "prepGap": 0
+            }
+          ],
+          "moveKey": "plank|core",
+          "pairing": {
+            "doseType": "reps",
+            "patterns": [
+              "anti-extend"
+            ],
+            "positionGroup": "floor"
+          }
+        }
+      ]
+    }
+  }
+}

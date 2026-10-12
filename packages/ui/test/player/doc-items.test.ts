@@ -16,6 +16,7 @@ import {
   fromLiveSession,
   goesToMax,
   heldBefore,
+  logFor,
   logTarget,
   next,
   openHold,
@@ -27,8 +28,10 @@ import {
   toLiveSession,
   type PlayerState,
 } from "../../src/player/run.js";
-import { offeredNow } from "../../src/player/swap.js";
-import { build, docBuild, docView, maxBuild, PLANNED_WHY, plannedSplitSquat, SLOT, T0, view } from "./fixtures.js";
+import { offeredNow, planAfter } from "../../src/player/swap.js";
+import type { SessionBuildDto } from "@rg/api-client";
+import fixture from "./doc-build-fixture.json";
+import { build, docBuild, docView, exercise, maxBuild, PLANNED_WHY, plannedSplitSquat, SLOT, T0, view } from "./fixtures.js";
 
 const S = 1000;
 const docSrc = () => ({ workoutId: SLOT, build: docBuild(), view: docView(), profiles: ["tmj"] });
@@ -136,10 +139,8 @@ describe("holds to max, each with a rest after (maxBuild)", () => {
     const s = bothSides();
     expect(s.live.entries.lowLunge!.sets[0]).toMatchObject({ done: true, sides: { left: 50, right: 38 } });
     const save = saveOf(s, { endedAt: new Date(T0 + 100 * S).toISOString() });
-    expect(save.entries.find((e) => e.id === "lowLunge")!.sets).toEqual([
-      { w: null, reps: null, secs: 50, side: "left" },
-      { w: null, reps: null, secs: 38, side: "right" },
-    ]);
+    // One set, as history reads it: what it held on both sides, and each side's.
+    expect(save.entries.find((e) => e.id === "lowLunge")!.sets).toEqual([{ w: null, reps: null, secs: 38, sides: { left: 50, right: 38 } }]);
   });
 
   it("the rest after says what was held, and its log card edits it — each side, or the seconds", () => {
@@ -166,6 +167,25 @@ describe("holds to max, each with a rest after (maxBuild)", () => {
     expect(heldBefore(afterSet)).toBeNull();
   });
 
+  it("a card opened in the rest writes to the set it was opened on, whatever the clock did since — never the next step", () => {
+    // The wall sit held 61 s; the rest after it (30 s) begins at T0+169 s.
+    const atRest = doneHold(next(bothSides(), T0 + 100 * S), T0 + 169 * S);
+    const held = logFor(atRest);
+    expect(held).toEqual({ exerciseId: "wallSit", setIndex: 0, side: null });
+    // The rest runs out while the card is open: the next step (a set) is the one in play now.
+    const moved = settle(atRest, T0 + 260 * S, { autoAdvance: true });
+    expect(moved.index).toBe(5);
+    expect(logTarget(moved)).toMatchObject({ exerciseId: "reclinedButterfly" });
+    const confirmed = confirmLog(moved, { secs: 58 }, {}, T0 + 261 * S, held);
+    expect(confirmed.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 58 });
+    // The set in play is neither written nor skipped.
+    expect(confirmed.index).toBe(5);
+    expect(confirmed.live.entries.reclinedButterfly!.sets[0]).toMatchObject({ secs: null, touched: false });
+    // On the set it was opened on, Confirm goes on as ever.
+    const onSet = confirmLog(moved, { secs: 90 }, {}, T0 + 262 * S, logFor(moved));
+    expect(onSet.index).toBe(6);
+  });
+
   it("a timed move to max with no target plays as a set that counts up; its log card is filled in on Done", () => {
     let s = bothSides();
     s = next(doneHold(next(s, T0 + 100 * S), T0 + 150 * S), T0 + 160 * S);
@@ -176,6 +196,41 @@ describe("holds to max, each with a rest after (maxBuild)", () => {
     // The screen fills the card with the seconds counted; Confirm logs them.
     const logged = confirmLog(s, { secs: 95 }, {}, T0 + 255 * S);
     expect(logged.live.entries.reclinedButterfly!.sets[0]).toMatchObject({ done: true, secs: 95 });
+  });
+});
+
+describe("⇄ on a materialised document build (doc-build-fixture.json: what the worker's materializeDocBuild makes)", () => {
+  /** TMJ at 6 (a flare; jumps kept out), the split squat set aside: the tempo squat plans the split squat, a jump and the goblet squat. */
+  const materialised = (): SessionBuildDto =>
+    ({
+      ...build(),
+      ...fixture,
+      engineVersion: "doc-build-3",
+      targets: {},
+      newMove: null,
+      exercises: Object.fromEntries((fixture.exercises as string[]).map((id) => [id, exercise(id)])),
+      fromDoc: { rev: 1, swaps: [], blocked: [], slots: fixture.slots },
+    }) as unknown as SessionBuildDto;
+
+  it("offers the planned alternates the day allows — clean ones first, then a costly one with its cost — then the library's usual offers; each plays as offered", () => {
+    const b = materialised();
+    const slot = b.fromDoc!.slots!["core:0"]!;
+    expect(slot.offers!.length).toBeGreaterThan(0);
+    const offered = offeredNow(b, [], "core:0");
+    // Three at most (the engine's rule), in order: the clean planned alternate, the set-aside one with its cost, then
+    // the library's offers; never the jump the day keeps out.
+    expect(offered.map((c) => c.id)).toEqual(["gobletSquat", "bwSplitSquat", ...slot.offers!.map((o) => o.id)].slice(0, 3));
+    expect(offered[1]!.reasons[0]).toBe("One leg.");
+    expect(offered[1]!.reasons.length).toBe(2);
+    expect(offered.map((c) => c.id)).not.toContain("snapDown");
+    // Every one plays exactly its offered steps in the slot.
+    for (const c of offered) {
+      const plan = planAfter(b, [{ slotKey: "core:0", to: c.id }]);
+      expect(plan.state.current["core:0"]!.id).toBe(c.id);
+      expect(plan.steps.filter((st) => st.kind !== "rest" && st.slotKey === "core:0")).toEqual(c.steps);
+    }
+    // The other slot: the library's offers alone (it plans no alternate).
+    expect(offeredNow(b, [], "core:1").map((c) => c.id)).toEqual(b.fromDoc!.slots!["core:1"]!.offers!.map((o) => o.id).slice(0, 3));
   });
 });
 

@@ -5,7 +5,7 @@
  * passing alternate (shown before anything locks), or Start refuses with the issues. Route tests on the real today.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
@@ -381,9 +381,17 @@ describe("Start re-gates with the day's reading", () => {
       originalDate: today, destinationDate: today, requestedAt: nowInstant(), updatedAt: nowInstant(), status: "verified",
     });
     await check(6);
+    // Something else the payload holds (a stamp another request wrote) is never rewritten by the trim.
+    await db.update(sessionBuilds).set({ payload: sql`json_set(${sessionBuilds.payload}, '$.stamp', 'kept')` }).where(eq(sessionBuilds.id, built.body.build.buildId));
+    statements.length = 0;
     const started = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
     expect(started.status).toBe(200);
     expect(started.body.contentState).toBe("started");
+    // Only the options, in place: one write of the build, setting `$.build.fromDoc.slots` alone.
+    const writes = statements.filter((st) => /^update "session_builds"/i.test(st));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatch(/json_set\("session_builds"\."payload", '\$\.build\.fromDoc\.slots'/);
+    expect((await buildRow(built.body.build.buildId)).payload).toMatchObject({ stamp: "kept" });
     expect(started.body.build.buildId).toBe(built.body.build.buildId);
     expect(started.body.build.steps).toEqual(built.body.build.steps);
     expect(started.body.build.fromDoc.slots["core:0"].alternates.map((a: { id: string }) => a.id)).toEqual(["bwSplitSquat"]);

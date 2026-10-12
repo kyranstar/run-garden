@@ -222,6 +222,41 @@ describe("hold_max", () => {
     expect(await measure(WALL_SIT)).toMatchObject({ current: 55, evidence: "sparse" });
   });
 
+  it("a move swapped into a slot mid-session (a planned alternate, a library offer) is judged by its slot: a max there is a max", async () => {
+    const SPLIT = { kind: "hold_max", libraryIds: ["splitSquatHold"] } as const;
+    /** A document build whose wall-sit slot (to max, or not) offers the split squat hold, its window 60 s. */
+    const swapped = async (n: number, max: boolean, list: "alternates" | "offers") => {
+      const workoutId = await planned(day(n));
+      const option = {
+        id: "splitSquatHold", name: "Split squat hold", reasons: [], moveKey: "k", pairing: {},
+        steps: [{ kind: "timed", slotKey: "core:0", exerciseId: "splitSquatHold", seconds: 60 }],
+      };
+      const buildId = newId();
+      await db.insert(sessionBuilds).values({
+        id: buildId, userId, workoutId, version: 1, engineVersion: "doc-build-3", inputsHash: "h",
+        payload: {
+          build: {
+            steps: [{ kind: "timed", slotKey: "core:0", exerciseId: "wallSit", seconds: 60 }],
+            fromDoc: { rev: 1, swaps: [], blocked: [], slots: { "core:0": { ...(max ? { max: true } : {}), [list]: [option] } } },
+          },
+          view: {},
+        },
+        workoutDoc: JSON.stringify(doc([hold("wallSit", 60, max)])),
+        lockedAt: T0, createdAt: T0,
+      });
+      return session(day(n), { buildId, workoutId });
+    };
+    // Held 45 s of a 60 s target to max: where the athlete stopped is the result.
+    await sets(await swapped(6, true, "alternates"), "splitSquatHold", [{ seconds: 45 }]);
+    expect(await measure(SPLIT)).toMatchObject({ current: 45, evidence: "sparse" });
+    // An offer swapped in, to max, held at its window: the timer stopped it — capped.
+    await sets(await swapped(5, true, "offers"), "splitSquatHold", [{ seconds: 60 }]);
+    expect((await measure(SPLIT)).series.map((s) => [s.value, s.capped ?? false])).toEqual([[45, false], [60, true]]);
+    // Not to max: past the slot's window by two seconds or more is capacity; at it, capped.
+    await sets(await swapped(4, false, "alternates"), "splitSquatHold", [{ seconds: 63 }]);
+    expect((await measure(SPLIT)).series.map((s) => [s.value, s.capped ?? false])).toEqual([[45, false], [60, true], [63, false]]);
+  });
+
   it("a set with no known prescription (no build, no document) is capped — nothing says it was a max", async () => {
     await sets(await appSession(day(4), null), "wallSit", [{ seconds: 90 }]);
     expect(await measure(WALL_SIT)).toMatchObject({ current: 90, evidence: "capped" });
