@@ -14,6 +14,7 @@ import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { buildSession, recordCheck, startSession } from "../src/services/session-build.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { DAY, NOON, seedCatalog, seedTmj, switchOn } from "./watch-push-fixture.js";
@@ -115,6 +116,17 @@ describe("a document workout's watch paths re-gate with the day's reading", () =
     expect((await pushOf(buildId))!.status).toBe("failed");
     // The sheet says why Send is not offered: gated, not "Couldn't send" with a Retry that would be refused.
     expect((await call("GET", workoutId)).body.watch).toEqual({ state: "unavailable", reason: "gated" });
+  });
+
+  it("a failed push the day closed, with COROS writes since turned off: the sheet gives Retry's own reason, in Retry's order", async () => {
+    const { workoutId, buildId } = await builtDoc();
+    expect((await send(workoutId, buildId)).status).toBe(200);
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    await flare();
+    await savePreferences(db, userId, { ...prefs, corosWritesEnabled: false });
+    const retry = await call("POST", `${workoutId}/send-to-watch`, { buildId, digest: "no-preview" });
+    expect(retry).toEqual({ status: 409, body: { error: "writes_off" } });
+    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "unavailable", reason: "writes_off" });
   });
 
   it("a failed push the day still allows is offered Retry, and Retry queues it", async () => {

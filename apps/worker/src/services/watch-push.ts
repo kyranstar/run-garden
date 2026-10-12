@@ -56,12 +56,14 @@ import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-st
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { dayValidateCtx, snapshotErrors } from "./doc-build.js";
 import {
+  activeProfilesOf,
   loadSession,
   loadSlot,
   lockCurrentBuild,
   pushJobId,
   RestoringError,
   sentBuildIdOf,
+  slotChecks,
   StaleBuildError,
   type BuildCtx,
   type BuildPayload,
@@ -533,6 +535,19 @@ async function gatedSnapshot(
   return snapshotErrors(snapshot, dayValidateCtx({ profiles, checks, date: row.effectiveDate, today: row.effectiveDate })).length > 0;
 }
 
+/**
+ * A document workout's queued push, judged as the lane claims it: its build's snapshot with the day's reading now
+ * (`gatedSnapshot`, as Send, Retry and Start judge it) — the reading can rise between the tap and the lane's run. Never
+ * an engine build's: a locked engine build plays as built wherever it is judged (Send, Retry, Start), so there is no
+ * gate of its own to re-check.
+ */
+export async function gatedAtClaim(db: Db, userId: string, row: WorkoutRow, buildId: string, today: string): Promise<boolean> {
+  if (!docOriginRow(row)) return false;
+  const profiles = await activeProfilesOf(db, userId);
+  const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, profiles);
+  return gatedSnapshot(db, row, buildId, profiles, checks);
+}
+
 /** The sheet's state for a push just read: the row decides between on and off the watch for a verified one. */
 function stateOfPush(status: string, row: WorkoutRow): WatchState {
   if (isInFlight(status)) return { state: "sending" };
@@ -572,10 +587,11 @@ export async function watchStateOf(
   if (sent) {
     const push = await jobById(db, pushJobId(sent));
     // A document workout's failed push is offered Retry only while the day still allows what it holds: a reading
-    // that has since closed one of its moves makes it `gated` (Retry would be refused the same way).
+    // that has since closed one of its moves makes it unavailable, for the reason Retry itself would give — Retry's own
+    // checks in Retry's order (the slot's, then the build's, the gate among them), so the two never disagree.
     const retry = push !== null && !isInFlight(push.status) && push.status !== "verified";
     if (retry && docOriginRow(row) && (await gatedSnapshot(db, row, sent, session.profiles.map((p) => p.profileId), session.checks))) {
-      return { state: "unavailable", reason: "gated" };
+      return { state: "unavailable", reason: (await unavailableReason(db, userId, row, session, prefs, todayOf(prefs))) ?? "gated" };
     }
     if (push) return stateOfPush(push.status, row);
   } else if (session.build && (await copyLeftOnWatch(db, session.build.buildId))) {

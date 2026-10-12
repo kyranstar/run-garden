@@ -18,10 +18,12 @@ import type { Db } from "../src/services/db.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
-import { loadSession } from "../src/services/session-build.js";
+import { createDocWorkout } from "../src/services/doc-workouts.js";
+import { buildSession, loadSession, recordCheck } from "../src/services/session-build.js";
 import { sendToWatch, takeOffWatch, watchStateOf } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
+import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { buildToday, connectMock, DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
 
 const { corosWriteJobs, plannedWorkouts, sessionBuilds } = schema;
@@ -115,6 +117,53 @@ describe("a resolved slot", () => {
     await lane();
     expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
     expect(copiesNamed(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).name)).toBe(1);
+  });
+});
+
+describe("a document workout the day now keeps a move of (Stage 2 batch end: the lane re-gates as Send did)", () => {
+  /** A document workout sent at a calm reading: its jump open, its push queued. */
+  async function docSent(doc = landingsDoc({ alternates: false })): Promise<{ workoutId: string; buildId: string }> {
+    await recordCheck(db, userId, { profileId: "tmj", value: 1, feelingOff: false }, ctx());
+    const { workout } = await createDocWorkout(db, userId, { date: DAY, time: "18:00", doc }, ctx());
+    const built = await buildSession(db, userId, workout.id, { checks: { tmj: { pre: 1, feelingOff: false } } }, ctx());
+    const buildId = built.build!.buildId;
+    await sendToWatch(db, switchOn(), userId, workout.id, buildId, ctx());
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
+    return { workoutId: workout.id, buildId };
+  }
+  /** The jaw rises after Send, before the lane runs: the day's latest reading. */
+  const flare = () => recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: false }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+
+  it("the reading rose after Send: superseded, nothing written, the build unlocked — the sheet no longer says it is on its way", async () => {
+    const { workoutId, buildId } = await docSent();
+    await flare();
+    await supersededUnwritten(buildId, () => lane());
+    expect((await buildOf(buildId)).lockedAt).toBeNull();
+    const session = await loadSession(db, userId, workoutId, DAY);
+    const state = await watchStateOf(db, switchOn(), userId, await rowOf(db, workoutId), session, prefs);
+    expect(state.state).not.toBe("sending");
+  });
+
+  it("still calm: it is written, as any push", async () => {
+    const { buildId } = await docSent();
+    await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+  });
+
+  it("a calm document is written whatever the reading", async () => {
+    const { buildId } = await docSent(calmDoc());
+    await flare();
+    await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+  });
+
+  it("an engine build is never re-gated: a locked one plays as built, whatever the reading or its stored snapshot says", async () => {
+    const { buildId } = await sent();
+    // The build's snapshot holds a jump with nothing to stand in for it, and the jaw has risen since Send.
+    await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
+    await flare();
+    await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
   });
 });
 

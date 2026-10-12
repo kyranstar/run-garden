@@ -421,8 +421,9 @@ export async function repairPlannedWorkoutFidelity(
         qualitySubtype: null,
         ...(row.sport === "run" ? { structuredJson: null } : {}),
         // The document described the body this repair takes away: NULL, its counter kept (the revision history holds
-        // it), and the backfill derives it again from the repaired row.
-        ...updateDocColumns(null),
+        // it), and the backfill derives it again from the repaired row — never a document workout's, whose document is
+        // its content (nothing could derive it again).
+        ...(docOriginRow(row) ? {} : updateDocColumns(null)),
         updatedAt: now,
       })
       .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId)));

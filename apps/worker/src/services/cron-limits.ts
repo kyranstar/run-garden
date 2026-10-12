@@ -63,3 +63,13 @@ export const COACH_RUN_STEP_STALE_MINUTES = 15;
  * app resumes stepping before then.
  */
 export const COACH_RUN_LEFT_MINUTES = 2;
+
+/**
+ * How many planned rows the hourly cron gives their workout document again in one account's run (Stage 2 batch end):
+ * a row reopened from completed, skipped or missed, or repaired, loses its document (`reopenedDocColumns`, the fidelity
+ * repair) until something derives it again. The hourly's small backfill (`backfillLiveDocs`) does, through the admin
+ * backfill's own converters, a few rows a run, as a heavy step: each row is converted and schema-checked (the CPU),
+ * and the run costs at most this many writes plus a handful of reads in one batch. The most recently changed rows go
+ * first; anything older the manual backfill still reaches.
+ */
+export const CRON_DOC_BACKFILL_MAX = 5;

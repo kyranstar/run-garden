@@ -111,7 +111,7 @@ import {
   workoutDocRevisions,
   workoutTemplates,
 } from "@rg/database";
-import type { Db } from "./db.js";
+import { runAtomically, type Db } from "./db.js";
 
 export type TableScope =
   | { kind: "user" }
@@ -358,6 +358,11 @@ export function orderColumns(table: SQLiteTable): SQLiteColumn[] {
  * delete-all cleared child tables with no WHERE at all (a single-user
  * shortcut); a restore's wipe runs on a live account and must never reach
  * another account's rows.
+ *
+ * ONE ROUND TRIP: the deletes (one per table, ~70) go to D1 as one batch,
+ * which runs them in order as one transaction — the whole wipe lands or none
+ * of it does, and it costs delete-all and a restore one round trip, not one
+ * per table.
  */
 export async function wipeAccountData(
   db: Db,
@@ -368,10 +373,8 @@ export async function wipeAccountData(
   const targets = ACCOUNT_TABLES.filter(
     (t) => (t.scope.kind === "user" || t.scope.kind === "child") && !keep.has(t.name),
   ).sort((a, b) => b.order - a.order);
-  for (const t of targets) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await db.delete(t.table as any).where(scopeWhere(t, userId));
-  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await runAtomically(db, targets.map((t) => db.delete(t.table as any).where(scopeWhere(t, userId))));
 }
 
 /**
@@ -379,19 +382,23 @@ export async function wipeAccountData(
  * Such a row belongs to no account (its only link to one is gone), so this is
  * safe with any number of users — unlike the WHERE-less child delete the old
  * delete-all used, which removed other accounts' live rows too. Delete-all
- * runs it after the scoped wipe (audit 1 data finding 10).
+ * runs it after the scoped wipe (audit 1 data finding 10). One batch, as the
+ * wipe: one round trip.
  */
 export async function deleteOrphanedChildren(db: Db): Promise<void> {
-  for (const t of ACCOUNT_TABLES) {
-    if (t.scope.kind !== "child") continue;
+  const deletes = ACCOUNT_TABLES.flatMap((t) => {
+    if (t.scope.kind !== "child") return [];
     const parent = accountTable(t.scope.parent);
     const parentKey = columnBySqlName(parent.table, t.scope.parentKey ?? "id");
     const col = columnBySqlName(t.table, t.scope.column);
-    await db
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .delete(t.table as any)
-      .where(sql`${col} not in (select ${parentKey} from ${parent.table})`);
-  }
+    return [
+      db
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .delete(t.table as any)
+        .where(sql`${col} not in (select ${parentKey} from ${parent.table})`),
+    ];
+  });
+  await runAtomically(db, deletes);
 }
 
 /** SQLite needs a LIMIT before an OFFSET; this is "no limit". */

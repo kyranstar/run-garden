@@ -59,17 +59,19 @@
  * statements. No column is read that the conversion does not need. A dry run reads and converts exactly as a real one,
  * and writes nothing; `convertedBy` says which converter each document came from.
  */
-import { and, asc, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { coachPlans, plannedWorkouts, plannedWorkoutStages, sessionBuilds, syncIntents } from "@rg/database";
-import { appAuthoredRow, coachSessionSchema, nowInstant, sessionSummaryLine, type CoachSession, type WeightUnit, type WorkoutDoc } from "@rg/domain";
+import { APP_AUTHORED_ORIGINS, appAuthoredRow, coachSessionSchema, nowInstant, sessionSummaryLine, type CoachSession, type WeightUnit, type WorkoutDoc } from "@rg/domain";
 import type { BuildPayload } from "@rg/workout";
 import { chunkIds, runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { CRON_DOC_BACKFILL_MAX } from "./cron-limits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { isUpstreamFingerprint } from "./coach-apply.js";
 import {
   docForBuild,
   docForCoachSession,
   docForStages,
+  FROZEN_STATES,
   plannedStageOfRow,
   revisionInserts,
   storedDocText,
@@ -135,6 +137,22 @@ export async function backfillWorkoutDocs(db: Db, userId: string, opts: Backfill
   const limit = backfillLimit(opts.limit);
   const now = opts.now ?? nowInstant();
   return opts.kind === "planned" ? backfillPlanned(db, userId, opts, limit, now) : backfillBuilds(db, userId, opts, limit);
+}
+
+/**
+ * THE HOURLY'S SMALL BACKFILL (Stage 2 batch end; `CRON_DOC_BACKFILL_MAX`): a live row that lost its document since the
+ * last manual backfill — reopened from completed, skipped or missed (`reopenedDocColumns`), repaired — gets it again,
+ * a few a run, the most recently changed first, through `backfillPlanned`'s own converters, writes and revisions. Only
+ * rows a writer would derive: never a frozen row (completed, skipped, missed: what it had is history), never an
+ * app-authored row (a programme's slot or an on-demand session — its build carries the document — nor a Studio or
+ * template row, whose document is its content and is never derived), never a rest day or an archived row. A row whose
+ * conversion fails stays as it is; one that converts leaves the scan. No cursor: the manual backfill's keyset still
+ * reaches whatever is older than a run's page.
+ */
+export async function backfillLiveDocs(db: Db, userId: string, opts: { limit?: number; now?: string }): Promise<BackfillReport> {
+  return backfillPlanned(db, userId, { kind: "planned", dryRun: false }, Math.min(opts.limit ?? CRON_DOC_BACKFILL_MAX, BACKFILL_MAX_LIMIT), opts.now ?? nowInstant(), {
+    live: true,
+  });
 }
 
 class Tally {
@@ -321,8 +339,23 @@ async function convertPlanned(
   return asStages();
 }
 
-async function backfillPlanned(db: Db, userId: string, opts: BackfillOptions, limit: number, now: string): Promise<BackfillReport> {
+async function backfillPlanned(
+  db: Db,
+  userId: string,
+  opts: BackfillOptions,
+  limit: number,
+  now: string,
+  scope: { live: boolean } = { live: false },
+): Promise<BackfillReport> {
   const pw = plannedWorkouts;
+  // The hourly's live rows (`backfillLiveDocs`): only what a writer would derive, the most recently changed first.
+  const live = scope.live
+    ? [
+        ne(pw.category, "rest"),
+        or(isNull(pw.completionState), notInArray(pw.completionState, [...FROZEN_STATES])),
+        or(isNull(pw.origin), notInArray(pw.origin, [...APP_AUTHORED_ORIGINS])),
+      ]
+    : [];
   const rows = await db
     .select({
       id: pw.id,
@@ -342,10 +375,12 @@ async function backfillPlanned(db: Db, userId: string, opts: BackfillOptions, li
     })
     .from(pw)
     .leftJoin(coachPlans, and(eq(coachPlans.id, pw.planId), eq(coachPlans.userId, pw.userId)))
-    .where(and(eq(pw.userId, userId), isNull(pw.workoutDoc), isNull(pw.archivedAt), ...(opts.after ? [gt(pw.id, opts.after)] : [])))
-    .orderBy(asc(pw.id))
+    .where(and(eq(pw.userId, userId), isNull(pw.workoutDoc), isNull(pw.archivedAt), ...live, ...(opts.after ? [gt(pw.id, opts.after)] : [])))
+    .orderBy(...(scope.live ? [desc(pw.updatedAt), asc(pw.id)] : [asc(pw.id)]))
     .limit(limit + 1);
-  const { page, nextAfter } = paged(rows, limit);
+  const paging = paged(rows, limit);
+  const { page } = paging;
+  const nextAfter = scope.live ? null : paging.nextAfter;
   const tally = new Tally(opts, page.length, nextAfter);
 
   const convertible = page.filter((r) => r.category !== "rest" && !appAuthoredRow(r));

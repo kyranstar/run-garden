@@ -1140,7 +1140,7 @@ export async function applyOps(
         // copy changes only by the athlete's Send and Take off. `validateOps` refuses this op as
         // `app_built_session`; a proposal stored before that rule is re-checked here, at the tap.
         if (appAuthoredRow(found.row)) {
-          out.missed.push("a session it eases is built by its programme, so nothing was changed");
+          out.missed.push("a session it eases is yours to change, so nothing was changed");
           break;
         }
         const target = found.row;
@@ -1380,7 +1380,7 @@ export async function applyOps(
         }
         // Built by its programme (ruling 3-R13): its length is its build's.
         if (appAuthoredRow(found.row)) {
-          out.missed.push("a session it re-times is built by its programme, so its length is unchanged");
+          out.missed.push("a session it re-times is yours to change, so its length is unchanged");
           break;
         }
         const row = found.row;

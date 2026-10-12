@@ -289,6 +289,48 @@ describe("export and restore stay inside one account", () => {
     expect(mine.tables.filter((t) => t.name !== "users" && t.rows > 0)).toEqual([]);
   });
 
+  it("the wipe is one round trip to D1 — one batch of every table's delete, in one transaction — and delete-all a handful", async () => {
+    // D1's way: an awaited statement is a round trip; `db.batch([...])` is one, its statements run in order as one
+    // transaction. The test database is given the same `batch`, and every statement run outside one is counted.
+    let trips = 0;
+    let batched = 0;
+    let inBatch = false;
+    const db = makeTestDb({ boundVariableCap: 100, onStatement: () => (inBatch ? (batched += 1) : (trips += 1)) });
+    const sqlite = (db as unknown as { $client: { transaction: (run: () => void) => () => void } }).$client;
+    (db as unknown as { batch: (qs: ReadonlyArray<{ run: () => unknown }>) => Promise<void> }).batch = async (qs) => {
+      trips += 1;
+      inBatch = true;
+      try {
+        sqlite.transaction(() => {
+          for (const q of qs) q.run();
+        })();
+      } finally {
+        inBatch = false;
+      }
+    };
+    const { userId: me } = await makeTestUser(db);
+    const { userId: other } = await makeTestUser(db);
+    await seedFullAccount(db, me);
+    await seedFullAccount(db, other);
+    const theirsBefore = await exportAll(db, other);
+
+    trips = 0;
+    batched = 0;
+    await wipeAccountData(db, me, { keep: [] });
+    expect(trips).toBe(1);
+    expect(batched).toBe(userAndChildTables().length);
+    expect((await exportManifest(db, me)).tables.filter((t) => t.name !== "users" && t.rows > 0)).toEqual([]);
+    expect(stripVolatile(await exportAll(db, other))).toEqual(stripVolatile(theirsBefore));
+
+    await seedFullAccount(db, me);
+    trips = 0;
+    await deleteAllUserData(db, me);
+    console.info(`[budget] delete-all: ${trips} round trips (${userAndChildTables().length} account tables)`);
+    expect(trips).toBeLessThanOrEqual(6);
+    expect(await db.select().from(schema.users).where(eq(schema.users.id, me))).toEqual([]);
+    expect(stripVolatile(await exportAll(db, other))).toEqual(stripVolatile(theirsBefore));
+  });
+
   it("a restore leaves every row of another account untouched", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId: me } = await makeTestUser(db);

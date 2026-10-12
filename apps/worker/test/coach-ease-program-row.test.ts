@@ -152,7 +152,11 @@ describe("the op layer: ease and adjust refuse an app-built session", () => {
       { kind: "ease", workoutId, session: DISTANCE_RUN },
       { kind: "adjust", workoutId, durationMinutes: 45 },
     ]);
-    expect(out.missed).toHaveLength(2);
+    // In plain words, as every other missed line: whose the session is, never the programme's machinery.
+    expect(out.missed).toEqual([
+      "a session it eases is yours to change, so nothing was changed",
+      "a session it re-times is yours to change, so its length is unchanged",
+    ]);
     expect(out.updated).toEqual([]);
     const after = await rowOf(db, workoutId);
     expect([after.title, after.calendarBlockDurationSeconds]).toEqual([before.title, before.calendarBlockDurationSeconds]);

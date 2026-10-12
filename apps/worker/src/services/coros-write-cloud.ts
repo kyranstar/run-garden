@@ -48,7 +48,7 @@ import { openIntentFor, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
 import { recordedStampFor, renamedCopyOfRow, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
-import { unlockSentBuild, unpushBuild } from "./watch-push.js";
+import { gatedAtClaim, unlockSentBuild, unpushBuild } from "./watch-push.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -564,7 +564,15 @@ export async function executeCloudJobs(
           row.completionState === "completed" ||
           row.completionState === "skipped" ||
           row.completionState === "missed";
-        if (spec.happenDay !== todayInZone(prefs.timezone) || resolved || !prefs.corosWritesEnabled) {
+        // Nor what the day now keeps out of a document workout: Send judged its build with the reading of the tap, and a
+        // reading that has risen since closes a move of it, as Retry and Start would judge it (`gatedAtClaim`; an engine
+        // build has no such gate). The slot then builds again with the day's swap.
+        if (
+          spec.happenDay !== todayInZone(prefs.timezone) ||
+          resolved ||
+          !prefs.corosWritesEnabled ||
+          (await gatedAtClaim(db, userId, row, spec.buildId, spec.happenDay))
+        ) {
           const now = nowInstant();
           await db.update(corosWriteJobs).set({ status: "superseded", updatedAt: now }).where(eq(corosWriteJobs.id, job.id));
           await unlockSentBuild(db, row, spec.buildId, now);

@@ -647,7 +647,8 @@ function currentBuild(row: SlotRow, builds: readonly BuildRow[], today: string):
   return builds.find((b) => (ahead ? b.version === 0 : b.version > 0) && storedOf(b).build.date === row.effectiveDate) ?? null;
 }
 
-async function activeProfilesOf(db: Db, userId: string): Promise<string[]> {
+/** The account's switched-on condition profiles: ids the library knows, sorted. */
+export async function activeProfilesOf(db: Db, userId: string): Promise<string[]> {
   const rows = await db
     .select({ profileId: userConditions.profileId })
     .from(userConditions)

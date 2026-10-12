@@ -603,6 +603,10 @@ describe("the one-shot fidelity repair", () => {
       db.update(plannedWorkouts).set({ workoutDoc: held, workoutDocRev: rev }).where(eq(plannedWorkouts.id, id));
     await seedDamagedEase("w-eased", "2026-08-17");
     await withDoc("w-eased", 3);
+    // An eased row that is a document workout (a Studio row): its document is its content, so it is kept.
+    await seedDamagedEase("w-eased-studio", "2026-08-18");
+    await db.update(plannedWorkouts).set({ origin: "studio" }).where(eq(plannedWorkouts.id, "w-eased-studio"));
+    await withDoc("w-eased-studio", 4);
     // Rows whose titles are the ownership stamp: one to come, one done, and a document workout.
     for (const [id, state] of [["w-stamped", "scheduled"], ["w-stamped-done", "completed"], ["w-stamped-studio", "scheduled"]] as const) {
       await db.insert(corosWriteJobs).values({
@@ -625,8 +629,11 @@ describe("the one-shot fidelity repair", () => {
     expect((await docColumns("w-eased")).workoutDoc).toBe(held);
 
     const report = await repairPlannedWorkoutFidelity(db, userId, { dryRun: false });
-    expect([report.totals.easedRowsRepaired, report.totals.titlesRepaired]).toEqual([1, 3]);
+    expect([report.totals.easedRowsRepaired, report.totals.titlesRepaired]).toEqual([2, 3]);
     expect(await docColumns("w-eased")).toEqual({ title: "Easy first run back", workoutDoc: null, workoutDocRev: 3 });
+    // The eased document workout is repaired as any eased row — and keeps its document (nothing could derive it again).
+    expect((await docColumns("w-eased-studio")).workoutDoc).toBe(held);
+    expect((await docColumns("w-eased-studio")).workoutDocRev).toBe(4);
     expect(await docColumns("w-stamped")).toEqual({ title: "Legs-back jog", workoutDoc: null, workoutDocRev: 2 });
     // A completed workout's document is history: kept, as every writer keeps it.
     expect(await docColumns("w-stamped-done")).toEqual({ title: "Legs-back jog", workoutDoc: held, workoutDocRev: 2 });

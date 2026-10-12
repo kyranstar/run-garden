@@ -38,7 +38,8 @@ import { templateRoutes } from "./routes/templates.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
-import { COACH_RUN_SWEEP_MAX, CRON_GARDEN_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./services/cron-limits.js";
+import { COACH_RUN_SWEEP_MAX, CRON_DOC_BACKFILL_MAX, CRON_GARDEN_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./services/cron-limits.js";
+import { backfillLiveDocs } from "./services/workout-doc-backfill.js";
 import { defaultRunDeps, sweepCoachRuns } from "./services/coach-runs.js";
 import { runBackfillChunkCloud, sweepStaleBackfills } from "./services/backfill.js";
 import { closeStrandedSyncRuns, sweepStaleSuppressions, reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
@@ -251,7 +252,7 @@ async function corosHalfHour(db: Db, env: Env, userId: string): Promise<void> {
 }
 
 /** The step an hourly run spent its budget on, in its run row's stats (`heavyStep`); null when none had work. */
-export type HourlyHeavyStep = "garden" | "coach_read" | "coros_write" | "coach_run";
+export type HourlyHeavyStep = "garden" | "coach_read" | "coros_write" | "coach_run" | "doc_backfill";
 
 /** Thrown between steps of a per-user cron loop when a restore began for
  * that account while the loop was working on it (ruling B9). */
@@ -343,6 +344,16 @@ export async function hourly(db: Db, env: Env): Promise<void> {
           heavyStep = "coach_run";
           coachRunSteps += swept.stepped;
         }
+      }
+      if (heavyStep === null) {
+        await stillOurs();
+        // Workout documents a reopened or repaired row lost since the last manual backfill: a few a run
+        // (CRON_DOC_BACKFILL_MAX), through the backfill's own converters, in the slot no other heavy step took.
+        const docs = await backfillLiveDocs(db, userId, { limit: CRON_DOC_BACKFILL_MAX }).catch((e: unknown) => {
+          console.error(`document backfill failed: ${e instanceof Error ? e.name : "unknown"}`);
+          return null;
+        });
+        if (docs && docs.scanned > 0) heavyStep = "doc_backfill";
       }
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep });
     } catch (e) {
