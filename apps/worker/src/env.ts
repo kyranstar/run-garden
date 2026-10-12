@@ -42,6 +42,9 @@ export interface Env {
   AI_STUDIO_MODEL_EDIT?: string;
   /** Ambient coach-read model; defaults to the strong tier. Var. */
   AI_COACH_READ_MODEL?: string;
+  /** The coach designer's model on the gateway's native Messages endpoint (Stage 3); defaults to
+   * anthropic/claude-opus-5.5 (llm-messages.ts). Var. */
+  AI_DESIGN_MODEL?: string;
   /** Optional official COROS MCP bearer token for cloud reads / capability probing. */
   COROS_MCP_URL?: string;
   COROS_MCP_TOKEN?: string;
