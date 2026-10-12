@@ -7,7 +7,7 @@ import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { Swapping } from "@rg/session-engine";
 import { deriveDoc, playerStepsFromDoc, type ValidateCtx } from "@rg/workout";
-import { gateDoc, materializeDocBuild } from "../src/services/doc-build.js";
+import { gateDoc, judgeDoc, materializeDocBuild } from "../src/services/doc-build.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 
 const DAY = "2026-10-07";
@@ -74,6 +74,18 @@ describe("gateDoc", () => {
     expect(doc.parts[0]!.items[0]).toMatchObject({ libraryId: "snapDown" });
   });
 
+  it("prefers an alternate that costs nothing (no warning either), then the first the day allows", () => {
+    const doc = withPower([
+      { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "tempoSquat" }, { libraryId: "bwSplitSquat" }] },
+    ]);
+    // Set aside, tempo squats cost a warning: the split squat, clean, stands in.
+    const setAside: ValidateCtx = { ...ctxAt(6), excluded: ["tempoSquat"] };
+    expect(gateDoc(doc, setAside).swaps.map((s) => s.to)).toEqual(["bwSplitSquat"]);
+    // Every alternate costs something: the first the day allows.
+    expect(gateDoc(doc, { ...ctxAt(6), excluded: ["tempoSquat", "bwSplitSquat"] }).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+    expect(gateDoc(doc, ctxAt(6)).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+  });
+
   it("a gated item with no passing alternate is blocked, while another item's swap still stands", () => {
     const doc = withPower([
       { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "tempoSquat" }] },
@@ -114,6 +126,40 @@ describe("gateDoc", () => {
   });
 });
 
+describe("judgeDoc (a save's judgement)", () => {
+  it("today: a move its alternate answers is a warning naming the alternate; an alternate the day closes, a warning", () => {
+    const doc = withPower([
+      { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "pogoHop" }, { libraryId: "tempoSquat" }] },
+    ]);
+    const judged = judgeDoc(doc, ctxAt(6));
+    expect(judged.errors).toEqual([]);
+    const name = EXERCISES.find((e) => e.id === "tempoSquat")!.name;
+    expect(judged.warnings).toContainEqual(
+      expect.objectContaining({ path: "parts[0].items[0].libraryId", code: "condition_gate", fix: "tempoSquat", message: expect.stringMatching(new RegExp(`${name} stands in today\\.$`)) }),
+    );
+    expect(judged.warnings).toContainEqual(expect.objectContaining({ path: "parts[0].items[0].alternates[0].libraryId", code: "condition_gate", severity: "warning" }));
+    expect(judged.warnings.every((i) => i.severity === "warning")).toBe(true);
+  });
+
+  it("today: what no alternate answers is the error", () => {
+    const judged = judgeDoc(landingsDoc({ alternates: false }), ctxAt(6));
+    expect(judged.errors.map((i) => [i.path, i.code, i.severity])).toEqual([["parts[0].items[0].libraryId", "condition_gate", "error"]]);
+  });
+
+  it("a day ahead keeps the validator's pending rule; a template (no day) its own", () => {
+    const ahead: ValidateCtx = { ...ctxAt(null), day: { date: "2026-10-09", today: DAY, readings: {} } };
+    expect(judgeDoc(landingsDoc({ alternates: false }), ahead).errors.map((i) => i.code)).toEqual(["condition_gate_pending"]);
+    expect(judgeDoc(landingsDoc(), ahead).warnings.map((i) => i.code)).toContain("condition_gate_pending");
+    expect(judgeDoc(landingsDoc({ alternates: false }), { ...ctxAt(null), day: null })).toEqual({ errors: [], warnings: expect.any(Array) });
+    // Ahead, an alternate must suit a recovery day — a hard lift does not, so the jump is still an error (the day's
+    // build is never asked to swap in a move the pending rule would refuse).
+    const hardAlternate = withPower([
+      { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "skaterSquat" }] },
+    ]);
+    expect(judgeDoc(hardAlternate, ahead).errors.map((i) => [i.path, i.code])).toEqual([["parts[0].items[0].libraryId", "condition_gate_pending"]]);
+  });
+});
+
 describe("materializeDocBuild", () => {
   const location = { id: "home", name: "Home", equipment: [], implements: {} };
 
@@ -122,10 +168,15 @@ describe("materializeDocBuild", () => {
     const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES });
     const steps = playerStepsFromDoc(doc, EXERCISES);
     expect(made.build.steps).toEqual(steps);
-    expect(made.build.items).toEqual([
-      { slotKey: "core:0", block: "core", exerciseId: "snapDown", format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [] },
-      { slotKey: "core:1", block: "core", exerciseId: "bwSplitSquat", format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [] },
-    ]);
+    // One item per slot, in play order, as the adapter numbers and blocks them.
+    const work = steps.filter((s) => s.kind !== "rest");
+    const first = (key: string) => work.find((s) => s.slotKey === key)!;
+    expect(made.build.items).toEqual(
+      [...new Set(work.map((s) => s.slotKey))].map((slotKey) => ({
+        slotKey, block: first(slotKey).block, exerciseId: first(slotKey).exerciseId, format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [],
+      })),
+    );
+    expect(made.build.items.map((i) => i.exerciseId)).toEqual(["snapDown", "bwSplitSquat"]);
     expect(Object.keys(made.build.exercises).sort()).toEqual(["bwSplitSquat", "snapDown"]);
     expect(Object.values(made.build.exercises).every((e) => !("providers" in e))).toBe(true);
     expect(made.build).toMatchObject({ date: DAY, mode: "consistent", theme: null, alternatives: {}, targets: {}, newMove: null, weekOfBlock: null, locationId: "home" });
@@ -133,7 +184,8 @@ describe("materializeDocBuild", () => {
     expect(made.build.minutes).toBe(deriveDoc(doc, EXERCISES).estimatedMinutes);
     expect(made.view).toMatchObject({ mode: "consistent", proposedMode: "consistent", theme: null, block: null, newMove: null, location });
     const name = (id: string) => EXERCISES.find((e) => e.id === id)!.name;
-    expect(made.view.lead).toEqual({ moves: [expect.objectContaining({ name: name("snapDown") }), expect.objectContaining({ name: name("bwSplitSquat") })], more: 0 });
+    expect(made.view.lead.more).toBe(0);
+    expect(made.view.lead.moves.map((m) => m.name).sort()).toEqual([name("snapDown"), name("bwSplitSquat")].sort());
   });
 
   it("the mode is the effort's", () => {

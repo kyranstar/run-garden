@@ -56,12 +56,37 @@ const check = async (value: number) => {
   expect(res.status).toBe(200);
 };
 
+/** Save the started session as the player's review does: one move's two sets. Answers the activity's discipline. */
+async function saveSession(workoutId: string, build: Record<string, any>, move: string): Promise<string | undefined> {
+  const performedId = "3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c";
+  const now = nowInstant();
+  const saved = await savePerformedSession(
+    db,
+    userId,
+    performedId,
+    {
+      id: performedId, source: "app", sourceRef: null, workoutId, buildId: build.buildId, localDate: today,
+      startedAt: now, endedAt: now, seconds: 600, plannedSeconds: build.plannedSeconds, minutes: build.minutes, mode: build.mode,
+      theme: null, locationId: build.locationId, blockRef: null, blockNumber: null, completed: true,
+      stepsTotal: build.steps.length, stepsDone: build.steps.length,
+      movesDone: build.items.map((i: { exerciseId: string }) => ({ exerciseId: i.exerciseId, seconds: 60 })), note: null, newMove: null,
+      entries: [{ exerciseId: move, implement: null, format: "holds", perSide: false, sets: [{ setIndex: 0, reps: null, seconds: 60, load: null }] }],
+      checks: [], review: {},
+    },
+    { now, prefs },
+  );
+  expect(saved.status).toBe("saved");
+  const [activity] = await db.select().from(schema.activities).where(eq(schema.activities.id, performedId));
+  return activity?.sport;
+}
+
 const movesOf = (steps: Array<{ kind: string; exerciseId: string | null }>) => [...new Set(steps.filter((s) => s.kind !== "rest").map((s) => s.exerciseId))];
 
 describe("building a document workout", () => {
-  it("is the document's own steps, its snapshot stored beside it; the row keeps the document's title", async () => {
+  it("is the document's own steps, its snapshot stored beside it; the row keeps what its document says", async () => {
     const doc = calmDoc();
     const id = await create(doc);
+    const before = await rowOf(id);
     const res = await call("POST", `/api/sessions/${id}/build`, {});
     expect(res.status).toBe(200);
     const build = res.body.build;
@@ -73,10 +98,16 @@ describe("building a document workout", () => {
     expect(build.exercises.bridge.providers).toBeUndefined();
     expect(res.body.view).toMatchObject({ mode: "consistent", theme: null, block: null, minutes: deriveDoc(doc, EXERCISES).estimatedMinutes });
     expect(res.body).toMatchObject({ contentState: "built", locked: false });
+    // Its mode, moves and place are its document's: the sheet is offered no choices (overrides are not read).
+    expect(res.body.choices).toEqual({ modes: [], themes: [], locations: [] });
+    expect((await call("GET", `/api/sessions/${id}`)).body.choices).toEqual({ modes: [], themes: [], locations: [] });
 
     expect(JSON.parse((await buildRow(build.buildId)).workoutDoc!)).toEqual(doc);
     const row = await rowOf(id);
     expect(row).toMatchObject({ contentState: "built", title: "Hips and back", workoutDocRev: 1 });
+    // Its title, discipline and booked length are its document's (derived when it was made), never the build's.
+    const shown = ["title", "category", "sport", "calendarBlockDurationSeconds", "fallbackEstimatedDurationSeconds", "calendarSyncState"] as const;
+    for (const k of shown) expect(row[k], k).toEqual(before[k]);
 
     // The same inputs again: the stored build, nothing written.
     const again = await call("POST", `/api/sessions/${id}/build`, {});
@@ -147,29 +178,30 @@ describe("building a document workout", () => {
     expect((await rowOf(id)).sport).toBe("yoga");
     const built = await call("POST", `/api/sessions/${id}/build`, {});
     expect(built.body.build.items.every((i: { block: string }) => i.block === "core")).toBe(true);
+    // The build leaves the row its document's discipline (an engine build's core block would make it strength).
+    expect(await rowOf(id)).toMatchObject({ sport: "yoga", category: "yoga" });
     const started = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
-    const build = started.body.build;
-    const performedId = "3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c";
-    const now = nowInstant();
-    const saved = await savePerformedSession(
-      db,
-      userId,
-      performedId,
-      {
-        id: performedId, source: "app", sourceRef: null, workoutId: id, buildId: build.buildId, localDate: today,
-        startedAt: now, endedAt: now, seconds: 600, plannedSeconds: build.plannedSeconds, minutes: build.minutes, mode: build.mode,
-        theme: null, locationId: build.locationId, blockRef: null, blockNumber: null, completed: true,
-        stepsTotal: build.steps.length, stepsDone: build.steps.length,
-        movesDone: build.items.map((i: { exerciseId: string }) => ({ exerciseId: i.exerciseId, seconds: 60 })), note: null, newMove: null,
-        entries: [{ exerciseId: "puppyFloor", implement: null, format: "holds", perSide: false, sets: [{ setIndex: 0, reps: null, seconds: 60, load: null }] }],
-        checks: [], review: {},
-      },
-      { now, prefs },
-    );
-    expect(saved.status).toBe("saved");
+    expect(await saveSession(id, started.body.build, "puppyFloor")).toBe("yoga");
     expect(await rowOf(id)).toMatchObject({ completionState: "completed", contentState: "done", sport: "yoga", category: "yoga" });
-    const [activity] = await db.select().from(schema.activities).where(eq(schema.activities.id, performedId));
-    expect(activity?.sport).toBe("yoga");
+  });
+
+  it("…and as it was played: a lift the day swapped for a mobility move is credited as mobility", async () => {
+    await activateTmj(db, userId);
+    await check(1);
+    const doc: WorkoutDoc = {
+      ...calmDoc({ title: "Landings, gently" }),
+      parts: [
+        { purpose: "power", format: "straight", items: [{ kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "catCow" }] }] },
+        { purpose: "cooldown", format: "holds", items: [{ kind: "exercise", libraryId: "puppyFloor", dose: { sets: 1, holdSec: 60 } }] },
+      ],
+    };
+    const id = await create(doc);
+    expect((await rowOf(id)).sport).toBe("strength");
+    await check(6);
+    const built = await call("POST", `/api/sessions/${id}/build`, {});
+    expect(built.body.build.fromDoc.swaps.map((x: { to: string }) => x.to)).toEqual(["catCow"]);
+    const started = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
+    expect(await saveSession(id, started.body.build, "catCow")).toBe("yoga");
   });
 
   it("reads no programme: builds, starts and shows its profiles the same with the Studio programme gone", async () => {

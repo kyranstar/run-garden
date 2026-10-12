@@ -594,7 +594,9 @@ export interface CreateDocWorkoutRequest {
 
 /**
  * 201 of `POST /api/workouts`. Errors: 422 `{error: "invalid_doc", issues}` (every issue; an error blocks),
- * `{error: "past_date"}`, `{error: "invalid_workout"}`.
+ * `{error: "past_date"}`, `{error: "run_unsupported", message}` (a run is not planned in the Studio yet),
+ * `{error: "invalid_workout"}`. For today a move the day's reading keeps out that an alternate answers is a warning
+ * (its `fix` the alternate), not an error: the day's build swaps it.
  */
 export interface CreateDocWorkoutResponse {
   workout: DocWorkoutDto;
@@ -1206,7 +1208,10 @@ export interface SessionDto {
   view: SessionViewDto | null;
   /** The switched-on condition profiles, as the sheet labels them (the pre-check, the reading, the care block). */
   profiles: ConditionViewDto[];
-  /** What the sheet's chips can pick: the program's modes, the themes (each with the modes it suits), the places. */
+  /**
+   * What the sheet's chips can pick: the program's modes, the themes (each with the modes it suits), the places. A
+   * document workout (a Studio or template row) offers none: its document decides them.
+   */
   choices: {
     modes: SessionMode[];
     themes: Array<{ id: string; name: string; modes: SessionMode[] }>;
@@ -1231,7 +1236,12 @@ export type WatchUnavailableReason =
   | "empty"
   | "taking_off"
   /** Send's 409 only: this build's copy is on the watch already (its removal failed or was neutralised) — Take off. */
-  | "already_sent";
+  | "already_sent"
+  /**
+   * A document workout whose build holds a move the day's reading keeps out: never sent (first Send, Retry, or after
+   * Start). Taken off or discarded, the day's build swaps in an alternate where one passes.
+   */
+  | "gated";
 
 /**
  * `ready` → Send to watch; `sending` → "Sending…"; `on_watch` → "On your watch" with Take off watch; `failed` →

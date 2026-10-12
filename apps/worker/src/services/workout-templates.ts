@@ -9,15 +9,17 @@
  *    is read as raw text and parsed with `parseStoredWorkoutDoc`.
  *  - Using one bumps its uses and its last use, and answers its document stamped `basedOn: template` — scheduled, it
  *    is a `template` row.
- *  - At most `MAX_TEMPLATES` an account (the list reads them all). User-scoped: another account's id is not found.
+ *  - At most `MAX_TEMPLATES` an account (the list reads them all), held by the insert itself (insert … select where the
+ *    count is under the cap), so two saves at once cannot pass it. User-scoped: another account's id is not found.
  */
-import { and, asc, count, desc, eq, sql } from "drizzle-orm";
-import { exercisePrefs, userConditions, workoutTemplates } from "@rg/database";
-import { newId, parseStoredWorkoutDoc, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES, PROFILES, isProfileId } from "@rg/exercise-library";
-import { deriveDoc, validateWorkoutDoc, type DocIssue } from "@rg/workout";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { workoutTemplates } from "@rg/database";
+import { newId, parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain";
+import { EXERCISES } from "@rg/exercise-library";
+import { deriveDoc, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
-import { DocInvalidError } from "./doc-workouts.js";
+import { judgeDoc } from "./doc-build.js";
+import { accepted, parsedDoc, profilesAndSetAside } from "./doc-workouts.js";
 
 /** The most templates an account keeps. */
 export const MAX_TEMPLATES = 200;
@@ -80,29 +82,11 @@ function dtoOf(r: Row): TemplateDto {
   };
 }
 
-/** The document, schema-checked, then validated with no day: refused on any error, its warnings answered. */
+/** The document, schema-checked, then judged with no day (`judgeDoc`): refused on any error, its warnings answered. */
 async function validated(db: Db, userId: string, raw: unknown): Promise<{ doc: WorkoutDoc; warnings: DocIssue[] }> {
-  const parsed = workoutDocSchema.safeParse(raw);
-  if (!parsed.success) throw new DocInvalidError(validateWorkoutDoc(raw, { library: EXERCISES, activeProfiles: [], day: null }));
-  const [conditionRows, setAside] = await Promise.all([
-    db
-      .select({ profileId: userConditions.profileId })
-      .from(userConditions)
-      .where(and(eq(userConditions.userId, userId), eq(userConditions.active, true))),
-    db
-      .select({ exerciseId: exercisePrefs.exerciseId })
-      .from(exercisePrefs)
-      .where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.excluded, true))),
-  ]);
-  const active = [...new Set(conditionRows.map((r) => r.profileId).filter(isProfileId))].sort();
-  const issues = validateWorkoutDoc(parsed.data, {
-    library: EXERCISES,
-    activeProfiles: active.map((id) => PROFILES[id]),
-    day: null,
-    excluded: setAside.map((r) => r.exerciseId),
-  });
-  if (issues.some((i) => i.severity === "error")) throw new DocInvalidError(issues);
-  return { doc: parsed.data, warnings: issues };
+  const doc = parsedDoc(raw);
+  const { profiles, excluded } = await profilesAndSetAside(db, userId);
+  return { doc, warnings: accepted(judgeDoc(doc, { library: EXERCISES, activeProfiles: profiles, day: null, excluded })) };
 }
 
 /** The account's templates: pinned first, then the most recently used, then by name. */
@@ -123,10 +107,15 @@ export async function createTemplate(
   now: string,
 ): Promise<{ template: TemplateDto; warnings: DocIssue[] }> {
   const { doc, warnings } = await validated(db, userId, input.doc);
-  const [{ n } = { n: 0 }] = await db.select({ n: count() }).from(t).where(eq(t.userId, userId));
-  if (n >= MAX_TEMPLATES) throw new TooManyTemplatesError();
   const row = { id: newId(), userId, name: input.name, doc: doc as unknown as Record<string, unknown>, pinned: input.pinned ?? false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now };
-  await db.insert(t).values(row);
+  // The cap in the insert itself: a save that would pass it writes nothing.
+  const inserted = await db
+    .insert(t)
+    .select(
+      sql`select ${row.id}, ${userId}, ${row.name}, ${JSON.stringify(doc)}, ${row.pinned ? 1 : 0}, 0, null, ${now}, ${now} where (select count(*) from ${t} where ${t.userId} = ${userId}) < ${MAX_TEMPLATES}`,
+    )
+    .returning({ id: t.id });
+  if (inserted.length === 0) throw new TooManyTemplatesError();
   return { template: dtoOf(row), warnings };
 }
 

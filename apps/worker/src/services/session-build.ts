@@ -92,8 +92,8 @@ import {
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
-import { DOC_BUILD_VERSION, gateDoc, materializeDocBuild, playedErrors, type DocBuildInfo } from "./doc-build.js";
-import { validateWorkoutDoc, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, snapshotErrors, type DocBuildInfo } from "./doc-build.js";
+import type { DocIssue, ValidateCtx } from "@rg/workout";
 
 /**
  * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
@@ -741,13 +741,10 @@ function sheetExtras(context: EngineContext): SheetExtras {
   };
 }
 
-/**
- * The sheet's labels and choices for a slot, read fresh (its program gone: no profiles, every mode, nothing to pick). A
- * document workout reads no programme.
- */
+/** The sheet's labels and choices for a slot, read fresh (its program gone: no profiles, every mode, nothing to pick). */
 async function loadExtras(db: Db, userId: string, row: SlotRow): Promise<SheetExtras> {
   try {
-    return sheetExtras(await loadEngineContext(db, userId, docOriginRow(row) ? null : row.planId, {}));
+    return sheetExtras(await loadEngineContext(db, userId, row.planId, {}));
   } catch (e) {
     if (e instanceof Error && e.message === "program_not_found") {
       return { profiles: [], choices: { modes: ["recovery", "consistent", "build"], themes: [], locations: [] } };
@@ -789,7 +786,9 @@ async function readResponse(db: Db, userId: string, row: SlotRow, today: string,
   const all = builds ?? (await loadBuilds(db, userId, row.id));
   const active = await activeProfilesOf(db, userId);
   const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, active);
-  return respond(row, all, today, checks, await hiddenMoves(db, userId), await loadExtras(db, userId, row));
+  // A document workout reads no programme, and its sheet is offered no choices (`docExtras`).
+  const extras = docOriginRow(row) ? docExtras(active) : await loadExtras(db, userId, row);
+  return respond(row, all, today, checks, await hiddenMoves(db, userId), extras);
 }
 
 /** `GET /api/sessions/:workoutId`: the slot, its current build (or none), its day's checks, and the lock. */
@@ -1029,121 +1028,129 @@ export interface BuildOutcome {
   calendarChanged: boolean;
 }
 
+/** What the row shows of a build it holds: its title, discipline and booked length (`builtRowContent`). */
+type RowContent = ReturnType<typeof builtRowContent>;
+
 /**
- * Build from `inputs`, or return the stored build when its hash matches them (nothing written); store the build and
- * the day's row as the rules say.
+ * How a build of a slot's day is stored — shared by the engine's builds (`commitBuild`) and a document workout's
+ * (`commitDocBuild`), which differ only in how the build is made and in what the row shows of it.
  */
-async function commitBuild(
+interface BuildStore {
+  row: SlotRow;
+  builds: readonly BuildRow[];
+  /** A day ahead: the build is a preview (version 0), and the row is left alone. */
+  preview: boolean;
+  /** The checks the build is made with (a preview's response shows none). */
+  checks: Record<string, CheckAnswer>;
+  /** What recording the request's checks writes, just before the first write (audit M10). */
+  preChecks: PreCheckWrite[];
+  hidden: ReadonlySet<string>;
+  extras: SheetExtras;
+  /**
+   * What the row takes from a build it holds: an engine build's title, discipline and booked length; null for a
+   * document workout, whose row shows its document's already.
+   */
+  contentOf: (stored: StoredBuild) => RowContent | null;
+}
+
+/**
+ * The row's changes for holding `stored` as the day's build, and what they mean for the calendar: its content (if
+ * any), `built`, and the day's choices as `session_params`.
+ */
+function builtChanges(s: BuildStore, stored: StoredBuild, now: string) {
+  const content = s.contentOf(stored);
+  const changes = {
+    ...(content ?? {}),
+    contentState: "built",
+    sessionParams: stored.build.params as unknown as Record<string, unknown>,
+    updatedAt: now,
+  } satisfies Partial<SlotRow>;
+  return { changes, ...(content ? rowChange(s.row, content) : { resized: false, calendarChanged: false }) };
+}
+
+/**
+ * The stored build is the one the day's inputs make (`previous`, its hash and version matching): nothing new is built.
+ * The request's checks are recorded; a slot moved away and back is an outline again (ruling 2a-R7), yet the build it
+ * holds is for this date and these inputs — it is built again (audit M1): the row takes the stored build's content
+ * again, exactly as that build first wrote it (re-review R2).
+ */
+async function reuseStored(db: Db, userId: string, s: BuildStore, previous: BuildRow, ctx: BuildCtx): Promise<BuildOutcome> {
+  const { row, builds, preview, checks, hidden, extras } = s;
+  const rebuilt = !preview && row.contentState !== "built";
+  if (s.preChecks.length === 0 && !rebuilt) {
+    return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras), calendarChanged: false };
+  }
+  const refused = await beginWrite(db, userId, s, ctx);
+  if (refused) return refused;
+  if (!rebuilt) return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras), calendarChanged: false };
+  const { changes, resized, calendarChanged } = builtChanges(s, storedOf(previous), ctx.now);
+  const updated = await db
+    .update(plannedWorkouts)
+    .set(changes)
+    .where(
+      and(
+        eq(plannedWorkouts.id, row.id),
+        eq(plannedWorkouts.userId, userId),
+        or(isNull(plannedWorkouts.contentState), eq(plannedWorkouts.contentState, "outline")),
+      ),
+    )
+    .returning({ id: plannedWorkouts.id });
+  // Started (or built) meanwhile: what it is now is the answer.
+  if (updated.length === 0) {
+    return { session: await readResponse(db, userId, await loadSlot(db, userId, row.id), ctx.today), calendarChanged: false };
+  }
+  if (resized) await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now });
+  return { session: respond({ ...row, ...changes }, builds, ctx.today, checks, hidden, extras), calendarChanged };
+}
+
+/**
+ * Just before a build's first write: a restore that began while it read and planned refuses it (audit M10) — the slot
+ * is answered as it is — else the request's checks are recorded. (An answer that leaves the day's checks as they were,
+ * the day's check given again, is still the slot's own.)
+ */
+async function beginWrite(db: Db, userId: string, s: BuildStore, ctx: BuildCtx): Promise<BuildOutcome | null> {
+  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, s.row, ctx.today, s.builds), calendarChanged: false };
+  await recordPreChecks(db, userId, s.row.id, s.row.effectiveDate, s.preChecks, ctx.now);
+  return null;
+}
+
+/**
+ * Store a new build: a day ahead's preview (version 0, overwritten, the row left alone), or the day's next version —
+ * a Start that landed while it was made wins (audit M2: this version goes, and the request is refused with the locked
+ * session), as does a concurrent build that took the version first (its build stands); the row takes the build
+ * (`builtChanges`) never over a started or done slot nor while any build of it is locked (re-review R3); a longer
+ * session runs the day's collision pass; only the latest unlocked build is kept (ruling P1-R7). The response is made
+ * from what this writes (ruling 2a-R8), never read back. Call `beginWrite` first.
+ */
+async function storeBuild(
   db: Db,
   userId: string,
-  row: SlotRow,
-  builds: readonly BuildRow[],
-  inputs: DayInputs,
+  s: BuildStore,
+  w: { engineVersion: string; inputsHash: string; stored: StoredBuild; workoutDoc: string | null },
   ctx: BuildCtx,
 ): Promise<BuildOutcome> {
-  const { date, preview, previous, overrides, swaps, context, checks, block, history, version, hashOf, inputsHash } = inputs;
+  const { row, builds, hidden, extras } = s;
   const workoutId = row.id;
-  const hidden = hiddenFrom(context.prefs);
-  // A restore can begin while a build reads and plans; it is checked again just before the first write (audit M10).
-  const restoring = async (): Promise<BuildOutcome | null> =>
-    (await restoreInProgress(db, userId)) ? { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false } : null;
-  if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) {
-    // A slot moved away and back is an outline again (ruling 2a-R7), yet the build it holds is for this date and these
-    // inputs: it is built again (audit M1).
-    const rebuilt = !preview && row.contentState !== "built";
-    if (inputs.preChecks.length === 0 && !rebuilt) {
-      return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, sheetExtras(context)), calendarChanged: false };
-    }
-    const refused = await restoring();
-    if (refused) return refused;
-    // An answer that leaves the day's checks as they were (the day's check, given again) is still the slot's own.
-    await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
-    if (rebuilt) {
-      // While it was an outline a placement pass may have given it the program's outline content (its name, default
-      // length and discipline): the row takes the stored build's again, exactly as that build first wrote it
-      // (re-review R2).
-      const stored = storedOf(previous);
-      const content = builtRowContent(
-        inputs.programName ?? row.title,
-        stored.view.theme,
-        stored.build.plannedSeconds,
-        stored.build.items.some((i) => i.block === "core"),
-      );
-      const changes = {
-        ...content,
-        contentState: "built",
-        sessionParams: stored.build.params as unknown as Record<string, unknown>,
-        updatedAt: ctx.now,
-      } satisfies Partial<SlotRow>;
-      const updated = await db
-        .update(plannedWorkouts)
-        .set(changes)
-        .where(
-          and(
-            eq(plannedWorkouts.id, workoutId),
-            eq(plannedWorkouts.userId, userId),
-            or(isNull(plannedWorkouts.contentState), eq(plannedWorkouts.contentState, "outline")),
-          ),
-        )
-        .returning({ id: plannedWorkouts.id });
-      // Started (or built) meanwhile: what it is now is the answer.
-      if (updated.length === 0) {
-        return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
-      }
-      const { resized, calendarChanged } = rowChange(row, content);
-      if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
-      return { session: respond({ ...row, ...changes }, builds, ctx.today, checks, hidden, sheetExtras(context)), calendarChanged };
-    }
-    return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, sheetExtras(context)), calendarChanged: false };
-  }
-
-  const composed = composeBuild({ date, programId: row.planId, context, block, history: history.sessions, summary: history.summary, checks, overrides, swaps });
-
-  const refused = await restoring();
-  if (refused) return refused;
-  await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
-
-  // A preview never starts or rotates a block: that happens on the session's day.
-  let blockRef = block?.id ?? null;
-  let recordedHash = inputsHash;
-  if (!preview && composed.blockUpdate) {
-    blockRef = await saveProgramState(db, row.planId, composed.blockUpdate.block, ctx.now);
-    recordedHash = await hashOf({ ...composed.blockUpdate.block, id: blockRef });
-  }
-  const stored: StoredBuild = {
-    build: { engineVersion: version, inputsHash: recordedHash, builtAt: ctx.now, blockRef, ...composed.build },
-    view: composed.view,
-  };
-  // The build's workout document, in the same statement as the build (Stage 1 dual-write): a snapshot of this build,
-  // no revisions. A conversion that fails is logged by its code and stored as NULL — never a failed build.
-  const workoutDoc = storedDocText(docForBuild(stored.build));
-
-  // The response is made from what this writes (ruling 2a-R8), never read back: the row as updated, and the build as
-  // stored — after the prune, the only unlocked build left.
-  const payload = stored as unknown as Record<string, unknown>;
+  const payload = w.stored as unknown as Record<string, unknown>;
+  const fields = { engineVersion: w.engineVersion, inputsHash: w.inputsHash, payload, workoutDoc: w.workoutDoc };
   const locked = builds.filter((b) => b.lockedAt !== null);
-  if (preview) {
+  if (s.preview) {
     const existing = builds.find((b) => b.version === 0);
     const written: BuildRow = existing
-      ? { ...existing, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, createdAt: ctx.now }
-      : { id: newId(), userId, workoutId, version: 0, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, lockedAt: null, createdAt: ctx.now };
+      ? { ...existing, ...fields, createdAt: ctx.now }
+      : { id: newId(), userId, workoutId, version: 0, ...fields, lockedAt: null, createdAt: ctx.now };
     if (existing) {
-      await db
-        .update(sessionBuilds)
-        .set({ engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, createdAt: ctx.now })
-        .where(eq(sessionBuilds.id, existing.id));
+      await db.update(sessionBuilds).set({ ...fields, createdAt: ctx.now }).where(eq(sessionBuilds.id, existing.id));
     } else {
       await db.insert(sessionBuilds).values(written);
     }
     await pruneBuilds(db, workoutId, written.id);
     // A preview leaves the row alone: nothing the calendar shows changed.
-    return { session: respond(row, [written, ...locked], ctx.today, {}, hidden, sheetExtras(context)), calendarChanged: false };
+    return { session: respond(row, [written, ...locked], ctx.today, {}, hidden, extras), calendarChanged: false };
   }
 
   const next = Math.max(0, ...builds.map((b) => b.version)) + 1;
-  const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash: recordedHash, payload, workoutDoc, lockedAt: null, createdAt: ctx.now };
-  // A Start that landed while this build ran wins (audit M2): this build's version goes, and the request is refused
-  // with the locked session, as any build after Start is.
+  const written: BuildRow = { id: newId(), userId, workoutId, version: next, ...fields, lockedAt: null, createdAt: ctx.now };
   const refuse = async (): Promise<never> => {
     await db.delete(sessionBuilds).where(and(eq(sessionBuilds.id, written.id), isNull(sessionBuilds.lockedAt)));
     throw new SessionLockedError(await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today));
@@ -1159,15 +1166,7 @@ async function commitBuild(
   }
   if (race.some((b) => b.lockedAt !== null)) return refuse();
 
-  const content = builtRowContent(inputs.programName ?? row.title, composed.view.theme, composed.build.plannedSeconds, composed.hasCoreLift);
-  const changes = {
-    ...content,
-    contentState: "built",
-    sessionParams: { checks, overrides, swaps } as unknown as Record<string, unknown>,
-    updatedAt: ctx.now,
-  } satisfies Partial<SlotRow>;
-  // Never over a started or done slot, nor while any build of it is locked: a Start between the check above and here
-  // still wins, even one that has locked but not yet marked the slot started (re-review R3).
+  const { changes, resized, calendarChanged } = builtChanges(s, w.stored, ctx.now);
   const updated = await db
     .update(plannedWorkouts)
     .set(changes)
@@ -1187,27 +1186,77 @@ async function commitBuild(
     .returning({ id: plannedWorkouts.id });
   if (updated.length === 0) return refuse();
   // A longer session can now overlap the day's other plans: the same retime placement and coach edits use.
-  const { resized, calendarChanged } = rowChange(row, content);
-  if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
+  if (resized) await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now });
   await pruneBuilds(db, workoutId, written.id);
   return {
-    session: respond({ ...row, ...changes }, [written, ...locked], ctx.today, checks, hidden, sheetExtras(context)),
+    session: respond({ ...row, ...changes }, [written, ...locked], ctx.today, s.checks, hidden, extras),
     // The calendar shows the row's title, discipline and booked length; a build that keeps all three (a swap, a
     // check that keeps the theme) leaves the event to the half-hourly reconcile (ruling 2a-R8).
     calendarChanged,
   };
 }
 
+/** An engine build's row content: `<program> · <theme>`, its discipline (§9.2) and its booked length. */
+const engineContentOf = (row: SlotRow, programName: string | null) => (stored: StoredBuild): RowContent =>
+  builtRowContent(programName ?? row.title, stored.view.theme, stored.build.plannedSeconds, stored.build.items.some((i) => i.block === "core"));
+
+/**
+ * Build from `inputs`, or return the stored build when its hash matches them (nothing written); store the build and
+ * the day's row as the rules say.
+ */
+async function commitBuild(
+  db: Db,
+  userId: string,
+  row: SlotRow,
+  builds: readonly BuildRow[],
+  inputs: DayInputs,
+  ctx: BuildCtx,
+): Promise<BuildOutcome> {
+  const { date, preview, previous, overrides, swaps, context, checks, block, history, version, hashOf, inputsHash } = inputs;
+  const s: BuildStore = {
+    row,
+    builds,
+    preview,
+    checks,
+    preChecks: inputs.preChecks,
+    hidden: hiddenFrom(context.prefs),
+    extras: sheetExtras(context),
+    contentOf: engineContentOf(row, inputs.programName),
+  };
+  if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return reuseStored(db, userId, s, previous, ctx);
+
+  const composed = composeBuild({ date, programId: row.planId, context, block, history: history.sessions, summary: history.summary, checks, overrides, swaps });
+  const refused = await beginWrite(db, userId, s, ctx);
+  if (refused) return refused;
+
+  // A preview never starts or rotates a block: that happens on the session's day.
+  let blockRef = block?.id ?? null;
+  let recordedHash = inputsHash;
+  if (!preview && composed.blockUpdate) {
+    blockRef = await saveProgramState(db, row.planId, composed.blockUpdate.block, ctx.now);
+    recordedHash = await hashOf({ ...composed.blockUpdate.block, id: blockRef });
+  }
+  const stored: StoredBuild = {
+    build: { engineVersion: version, inputsHash: recordedHash, builtAt: ctx.now, blockRef, ...composed.build },
+    view: composed.view,
+  };
+  // The build's workout document, in the same statement as the build (Stage 1 dual-write): a snapshot of this build,
+  // no revisions. A conversion that fails is logged by its code and stored as NULL — never a failed build.
+  const workoutDoc = storedDocText(docForBuild(stored.build));
+  return storeBuild(db, userId, s, { engineVersion: version, inputsHash: recordedHash, stored, workoutDoc }, ctx);
+}
+
 // ── A document workout's build (Stage 2 spec §10; programme spec §3.11) ──────────────────────────────────────────
 //
 // A Studio or template row (`docOriginRow`) is played through this same path — the same versions, preview, lock,
-// prune, pre-checks and Start contract — but its build is MATERIALISED from the row's document (`doc-build.ts`)
-// instead of composed by the engine: no programme, no block, no history. The day's choices are its checks only (a
-// document's moves, mode and length are its own: overrides and swaps in a request are not read). The row's title,
-// discipline and booked length are the document's, written when it was made or revised, so a build changes nothing
-// the calendar shows. The inputs hash covers the row's document text and revision, the day's checks, the active
-// profiles and the place: a revision or a new reading makes the shown build stale, and Start then answers with the
-// fresh one (audit I3's contract), which carries any swap the reading made — or refuses (`GatedError`).
+// prune, pre-checks and Start contract (`reuseStored`, `beginWrite`, `storeBuild`, `lockProven`) — but its build is
+// MATERIALISED from the row's document (`doc-build.ts`) instead of composed by the engine: no programme, no block, no
+// history. The day's choices are its checks only (a document's moves, mode and length are its own: overrides and swaps
+// in a request are not read, and the sheet is offered none). The row's title, discipline and booked length are the
+// document's, written when it was made or revised, so a build changes nothing the calendar shows. The inputs hash
+// covers the row's document text and revision, the day's checks, the active profiles and the place: a revision or a
+// new reading makes the shown build stale, and Start then answers with the fresh one (audit I3's contract), which
+// carries any swap the reading made — or refuses (`GatedError`).
 
 /** Everything a document build of a row on its day reads, and the hash over it. */
 interface DocDayInputs {
@@ -1233,23 +1282,17 @@ const viewLocationOf = (l: EngineContext["location"]): SessionView["location"] =
 });
 
 /**
- * What the validator reads of the day for a document build: the active profiles, the day's reading per profile, the
- * athlete's set-aside moves and the place's gear. (Only its errors decide a build; the history the warnings read is
- * not loaded here.)
+ * A document workout's sheet: its profiles (the pre-check), and no choices — its mode, moves and place are its
+ * document's, and a build request's overrides are not read.
  */
-function docValidateCtx(context: EngineContext, checks: Record<string, CheckAnswer>, date: string, today: string): ValidateCtx {
-  return {
-    library: EXERCISES,
-    activeProfiles: context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]),
-    day: {
-      date,
-      today,
-      readings: Object.fromEntries(Object.entries(checks).map(([p, a]) => [p, { pre: a.pre, post: null, feelingOff: a.feelingOff }])),
-    },
-    excluded: context.prefs.excluded,
-    equipment: context.location.equipment,
-  };
-}
+const docExtras = (activeProfiles: readonly string[]): SheetExtras => ({
+  profiles: activeProfiles.map(conditionView),
+  choices: { modes: [], themes: [], locations: [] },
+});
+
+/** What the validator reads of the day for a document build (only its errors decide one). */
+const docValidateCtx = (context: EngineContext, checks: Record<string, CheckAnswer>, date: string, today: string): ValidateCtx =>
+  dayValidateCtx({ profiles: context.activeProfiles, checks, date, today, excluded: context.prefs.excluded, equipment: context.location.equipment });
 
 /** The day's checks for a document row (the request's, recorded, over the day's) and its context; reads only. */
 async function docDay(
@@ -1293,9 +1336,9 @@ async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readon
 }
 
 /**
- * Build a document row from `inputs`, or return the stored build when its hash matches them; store it as `commitBuild`
- * stores a day's build or a preview. A day ahead has no reading yet: its preview plays the document as it stands, and
- * the day's own build gates it.
+ * Build a document row from `inputs`, or return the stored build when its hash matches them; stored as `commitBuild`
+ * stores one (`storeBuild`). A day ahead has no reading yet: its preview plays the document as it stands, and the
+ * day's own build gates it.
  */
 async function commitDocBuild(
   db: Db,
@@ -1306,101 +1349,78 @@ async function commitDocBuild(
   ctx: BuildCtx,
 ): Promise<BuildOutcome> {
   const { date, preview, previous, doc, rev, context, checks, version, inputsHash } = inputs;
-  const workoutId = row.id;
-  const hidden = hiddenFrom(context.prefs);
-  const extras = sheetExtras(context);
-  const unchanged = (session: SessionResponse): BuildOutcome => ({ session, calendarChanged: false });
-  const restoring = async (): Promise<BuildOutcome | null> =>
-    (await restoreInProgress(db, userId)) ? unchanged(await readResponse(db, userId, row, ctx.today, builds)) : null;
-  const params = { checks, overrides: {}, swaps: {} } as unknown as Record<string, unknown>;
-  /** The row as built: its content is its document's already, so only its state and the day's choices change. */
-  const builtWhere = (states: SQL) => and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId), states);
-
-  if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) {
-    // A row moved away and back is an outline again, yet the build it holds is for this date and these inputs.
-    const rebuilt = !preview && row.contentState !== "built";
-    if (inputs.preChecks.length === 0 && !rebuilt) return unchanged(respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras));
-    const refused = await restoring();
-    if (refused) return refused;
-    await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
-    if (rebuilt) {
-      const changes = { contentState: "built", sessionParams: params, updatedAt: ctx.now } satisfies Partial<SlotRow>;
-      const updated = await db
-        .update(plannedWorkouts)
-        .set(changes)
-        .where(builtWhere(or(isNull(plannedWorkouts.contentState), eq(plannedWorkouts.contentState, "outline"))!))
-        .returning({ id: plannedWorkouts.id });
-      if (updated.length === 0) return unchanged(await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today));
-      return unchanged(respond({ ...row, ...changes }, builds, ctx.today, checks, hidden, extras));
-    }
-    return unchanged(respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras));
-  }
+  const s: BuildStore = {
+    row,
+    builds,
+    preview,
+    checks,
+    preChecks: inputs.preChecks,
+    hidden: hiddenFrom(context.prefs),
+    extras: docExtras(context.activeProfiles),
+    contentOf: () => null,
+  };
+  if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return reuseStored(db, userId, s, previous, ctx);
 
   const gated = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, docValidateCtx(context, checks, date, ctx.today));
   const made = materializeDocBuild(gated.doc, { date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: EXERCISES });
-
-  const refused = await restoring();
+  const refused = await beginWrite(db, userId, s, ctx);
   if (refused) return refused;
-  await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
-
   const stored: StoredBuild = {
     build: { engineVersion: version, inputsHash, builtAt: ctx.now, blockRef: null, ...made.build, fromDoc: { rev, swaps: gated.swaps, blocked: gated.blocked } },
     view: made.view,
   };
   // The snapshot is the document as played: the day's swaps made, the row's own document untouched.
-  const workoutDoc = storedDocText(gated.doc);
-  const payload = stored as unknown as Record<string, unknown>;
-  const locked = builds.filter((b) => b.lockedAt !== null);
-  if (preview) {
-    const existing = builds.find((b) => b.version === 0);
-    const written: BuildRow = existing
-      ? { ...existing, engineVersion: version, inputsHash, payload, workoutDoc, createdAt: ctx.now }
-      : { id: newId(), userId, workoutId, version: 0, engineVersion: version, inputsHash, payload, workoutDoc, lockedAt: null, createdAt: ctx.now };
-    if (existing) {
-      await db.update(sessionBuilds).set({ engineVersion: version, inputsHash, payload, workoutDoc, createdAt: ctx.now }).where(eq(sessionBuilds.id, existing.id));
-    } else {
-      await db.insert(sessionBuilds).values(written);
-    }
-    await pruneBuilds(db, workoutId, written.id);
-    return unchanged(respond(row, [written, ...locked], ctx.today, {}, hidden, extras));
-  }
+  return storeBuild(db, userId, s, { engineVersion: version, inputsHash, stored, workoutDoc: storedDocText(gated.doc) }, ctx);
+}
 
-  const next = Math.max(0, ...builds.map((b) => b.version)) + 1;
-  const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash, payload, workoutDoc, lockedAt: null, createdAt: ctx.now };
-  // A Start that landed while this build ran wins (audit M2), as in `commitBuild`.
-  const refuse = async (): Promise<never> => {
-    await db.delete(sessionBuilds).where(and(eq(sessionBuilds.id, written.id), isNull(sessionBuilds.lockedAt)));
-    throw new SessionLockedError(await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today));
-  };
-  await db.insert(sessionBuilds).values(written).onConflictDoNothing();
-  const race = await db
-    .select({ id: sessionBuilds.id, lockedAt: sessionBuilds.lockedAt })
-    .from(sessionBuilds)
-    .where(and(eq(sessionBuilds.workoutId, workoutId), or(eq(sessionBuilds.id, written.id), isNotNull(sessionBuilds.lockedAt))));
-  if (!race.some((b) => b.id === written.id)) return unchanged(await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today));
-  if (race.some((b) => b.lockedAt !== null)) return refuse();
-  const changes = { contentState: "built", sessionParams: params, updatedAt: ctx.now } satisfies Partial<SlotRow>;
-  const updated = await db
-    .update(plannedWorkouts)
-    .set(changes)
-    .where(
-      builtWhere(
-        and(
-          or(isNull(plannedWorkouts.contentState), notInArray(plannedWorkouts.contentState, ["started", "done"])),
-          notExists(db.select({ id: sessionBuilds.id }).from(sessionBuilds).where(and(eq(sessionBuilds.workoutId, workoutId), isNotNull(sessionBuilds.lockedAt)))),
-        )!,
-      ),
-    )
-    .returning({ id: plannedWorkouts.id });
-  if (updated.length === 0) return refuse();
-  await pruneBuilds(db, workoutId, written.id);
-  return unchanged(respond({ ...row, ...changes }, [written, ...locked], ctx.today, checks, hidden, extras));
+/**
+ * Lock `current` — proven the day's build for its inputs — for Start or Send: Send's preconditions asked of it first
+ * (before anything is written, so a refusal locks nothing), a restore checked once more just before the lock (audit
+ * M10), then the lock; Start marks the slot `started`, and a slot that is an outline again (moved away and back) takes
+ * the build's content as it locks (U4) — Send never reaches an outline (it refuses `not_built` first) and changes
+ * nothing on the row; the other unlocked builds are pruned. Shared by the engine's builds and a document's.
+ */
+async function lockProven(
+  db: Db,
+  userId: string,
+  row: SlotRow,
+  builds: readonly BuildRow[],
+  current: BuildRow,
+  ctx: BuildCtx,
+  opts: LockOptions,
+  day: { profiles: readonly string[]; checks: Record<string, CheckAnswer>; contentOf: (stored: StoredBuild) => RowContent | null },
+): Promise<LockOutcome> {
+  const workoutId = row.id;
+  await opts.beforeLock?.({ row, build: toPayload(current, new Set()).build, profiles: day.profiles, checks: day.checks });
+  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false, lockedNow: false };
+
+  const adopted = opts.as === "start" && (row.contentState === null || row.contentState === "outline");
+  const stored = storedOf(current);
+  const content = adopted ? day.contentOf(stored) : null;
+  await db.update(sessionBuilds).set({ lockedAt: ctx.now }).where(eq(sessionBuilds.id, current.id));
+  if (opts.as === "start") {
+    await db
+      .update(plannedWorkouts)
+      .set({
+        ...(adopted ? { ...(content ?? {}), sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
+        contentState: "started",
+        updatedAt: ctx.now,
+      })
+      .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
+  }
+  await pruneBuilds(db, workoutId, current.id);
+  let calendarChanged = false;
+  if (content) {
+    const change = rowChange(row, content);
+    calendarChanged = change.calendarChanged;
+    if (change.resized) await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now });
+  }
+  return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged, lockedNow: true };
 }
 
 /**
  * Start's and Send's lock of a document row's current build, once it is proven to be the build the day's inputs make
- * (else the fresh build: `StaleBuildError`, or `GatedError` when it is blocked). A blocked build never locks. Returns
- * what `lockCurrentBuild` returns.
+ * (else the fresh build: `StaleBuildError`, or `GatedError` when it is blocked). A blocked build never locks.
  */
 async function lockDocBuild(
   db: Db,
@@ -1410,9 +1430,8 @@ async function lockDocBuild(
   current: BuildRow,
   buildId: string,
   ctx: BuildCtx,
-  opts: Parameters<typeof lockCurrentBuild>[5],
-): Promise<{ session: SessionResponse; calendarChanged: boolean; lockedNow: boolean }> {
-  const workoutId = row.id;
+  opts: LockOptions,
+): Promise<LockOutcome> {
   const inputs = await docDayInputs(db, userId, row, builds, {}, ctx);
   if (current.id !== buildId || current.inputsHash !== inputs.inputsHash || current.engineVersion !== inputs.version) {
     const fresh = await commitDocBuild(db, userId, row, builds, inputs, ctx);
@@ -1422,35 +1441,20 @@ async function lockDocBuild(
   }
   const blocked = storedOf(current).build.fromDoc?.blocked ?? [];
   if (blocked.length > 0) throw new GatedError(blocked);
-  await opts.beforeLock?.({ row, build: toPayload(current, new Set()).build, profiles: inputs.context.activeProfiles, checks: inputs.checks });
-  const unchanged = async () => ({ session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false, lockedNow: false });
-  if (await restoreInProgress(db, userId)) return unchanged();
-  const adopted = opts.as === "start" && (row.contentState === null || row.contentState === "outline");
-  await db.update(sessionBuilds).set({ lockedAt: ctx.now }).where(eq(sessionBuilds.id, current.id));
-  if (opts.as === "start") {
-    await db
-      .update(plannedWorkouts)
-      .set({
-        ...(adopted ? { sessionParams: storedOf(current).build.params as unknown as Record<string, unknown> } : {}),
-        contentState: "started",
-        updatedAt: ctx.now,
-      })
-      .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
-  }
-  await pruneBuilds(db, workoutId, current.id);
-  return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false, lockedNow: true };
+  return lockProven(db, userId, row, builds, current, ctx, opts, { profiles: inputs.context.activeProfiles, checks: inputs.checks, contentOf: () => null });
 }
 
 /**
  * A sent document build, about to Start (it is locked: nothing can be swapped): its snapshot judged with the day's
- * reading. A move the day now keeps out refuses Start with the issues (`GatedError`); take it off the watch to rebuild.
+ * reading (`snapshotErrors`). A move the day now keeps out refuses Start with the issues (`GatedError`); take it off
+ * the watch to rebuild.
  */
-async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: BuildRow, ctx: BuildCtx): Promise<void> {
+async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: BuildRow, today: string): Promise<void> {
   const snapshot = parseStoredWorkoutDoc(sent.workoutDoc);
   if (!snapshot) return;
-  const { context, checks } = await docDay(db, userId, row, {}, ctx, snapshot.setting?.placeId);
-  // Every error in what is played counts: a move an alternate could have stood in for is still in the locked build.
-  const errors = playedErrors(validateWorkoutDoc(snapshot, docValidateCtx(context, checks, row.effectiveDate, ctx.today)));
+  const profiles = await activeProfilesOf(db, userId);
+  const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, profiles);
+  const errors = snapshotErrors(snapshot, dayValidateCtx({ profiles, checks, date: row.effectiveDate, today }));
   if (errors.length > 0) throw new GatedError(errors);
 }
 
@@ -1509,6 +1513,24 @@ export async function startSessionOutcome(
   return lockCurrentBuild(db, userId, workoutId, buildId, now, { as: "start" });
 }
 
+/** Start's or Send's lock (`lockCurrentBuild`). */
+export interface LockOptions {
+  as: "start" | "send";
+  /** The caller's preferences, already loaded (Send's budget, ruling 3-R11); read here otherwise. */
+  prefs?: UserPreferences;
+  /**
+   * Send's own preconditions, asked of the build about to be locked once it is proven current — before anything is
+   * written, so a refusal thrown here locks nothing. Not asked of a build that was locked already.
+   */
+  beforeLock?: (v: { row: SlotRow; build: BuildPayload; profiles: readonly string[]; checks: Record<string, CheckAnswer> }) => Promise<void>;
+}
+
+export interface LockOutcome {
+  session: SessionResponse;
+  calendarChanged: boolean;
+  lockedNow: boolean;
+}
+
 /**
  * Lock the build the athlete was shown — Start's lock, and Send to watch's (Phase 3, ruling 3-R2): only while it is
  * still the day's current build and the day's inputs still make it, else `StaleBuildError` with the fresh build (made
@@ -1524,17 +1546,8 @@ export async function lockCurrentBuild(
   workoutId: string,
   buildId: string,
   now: string,
-  opts: {
-    as: "start" | "send";
-    /** The caller's preferences, already loaded (Send's budget, ruling 3-R11); read here otherwise. */
-    prefs?: UserPreferences;
-    /**
-     * Send's own preconditions, asked of the build about to be locked once it is proven current — before anything is
-     * written, so a refusal thrown here locks nothing. Not asked of a build that was locked already.
-     */
-    beforeLock?: (v: { row: SlotRow; build: BuildPayload; profiles: readonly string[]; checks: Record<string, CheckAnswer> }) => Promise<void>;
-  },
-): Promise<{ session: SessionResponse; calendarChanged: boolean; lockedNow: boolean }> {
+  opts: LockOptions,
+): Promise<LockOutcome> {
   const row = await loadSlot(db, userId, workoutId);
   const prefs = opts.prefs ?? (await loadPreferences(db, userId));
   const today = todayInZone(prefs.timezone, new Date(now));
@@ -1551,7 +1564,7 @@ export async function lockCurrentBuild(
         if (row.effectiveDate !== today) throw new NotTodayError(row.effectiveDate, today);
         if (buildId !== sent) throw new StaleBuildError(await readResponse(db, userId, row, today, builds), false);
         // A document workout re-gates at Start (Stage 2 spec §10), even the very build on the watch.
-        if (docOriginRow(row)) await refuseGatedSnapshot(db, userId, row, locked, { today, now, prefs });
+        if (docOriginRow(row)) await refuseGatedSnapshot(db, userId, row, locked, today);
         if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
         await db
           .update(plannedWorkouts)
@@ -1574,41 +1587,11 @@ export async function lockCurrentBuild(
     const fresh = await commitBuild(db, userId, row, builds, inputs, ctx);
     throw new StaleBuildError(fresh.session, fresh.calendarChanged);
   }
-  await opts.beforeLock?.({ row, build: toPayload(current, new Set()).build, profiles: inputs.context.activeProfiles, checks: inputs.checks });
-  // A restore can begin while the inputs are read again: checked once more just before the lock (audit M10).
-  if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
-
-  // An outline again (moved away and back): the row takes the build's content as Start locks it (U4). Send never
-  // reaches an outline (it refuses `not_built` first) and changes nothing on the row.
-  const adopted = opts.as === "start" && (row.contentState === null || row.contentState === "outline");
-  const stored = storedOf(current);
-  const content = adopted
-    ? builtRowContent(
-        inputs.programName ?? row.title,
-        stored.view.theme,
-        stored.build.plannedSeconds,
-        stored.build.items.some((i) => i.block === "core"),
-      )
-    : null;
-  await db.update(sessionBuilds).set({ lockedAt: now }).where(eq(sessionBuilds.id, current.id));
-  if (opts.as === "start") {
-    await db
-      .update(plannedWorkouts)
-      .set({
-        ...(content ? { ...content, sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
-        contentState: "started",
-        updatedAt: now,
-      })
-      .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
-  }
-  await pruneBuilds(db, workoutId, current.id);
-  let calendarChanged = false;
-  if (content) {
-    const change = rowChange(row, content);
-    calendarChanged = change.calendarChanged;
-    if (change.resized) await separateDayCollisions(db, userId, [row.effectiveDate], prefs, { from: today, now });
-  }
-  return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), today), calendarChanged, lockedNow: true };
+  return lockProven(db, userId, row, builds, current, ctx, opts, {
+    profiles: inputs.context.activeProfiles,
+    checks: inputs.checks,
+    contentOf: engineContentOf(row, inputs.programName),
+  });
 }
 
 /** A push job's id for a build (`push:<buildId>`): one per build, so sending the same build twice is one job. */

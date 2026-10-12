@@ -26,6 +26,8 @@ import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, programs, providerConnections, sessionBuilds } from "@rg/database";
 import {
   canonicalJson,
+  docOriginRow,
+  parseStoredWorkoutDoc,
   programSessionPushJobSchema,
   STAMPING_JOB_KINDS,
   todayInZone,
@@ -52,6 +54,7 @@ import type { Db } from "./db.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
+import { dayValidateCtx, snapshotErrors } from "./doc-build.js";
 import {
   loadSession,
   loadSlot,
@@ -62,6 +65,7 @@ import {
   StaleBuildError,
   type BuildCtx,
   type BuildPayload,
+  type CheckAnswer,
   type SessionResponse,
 } from "./session-build.js";
 
@@ -348,7 +352,13 @@ export type WatchUnavailable =
    * failed or a restore neutralised it — so there is nothing Send could queue. The sheet shows it on the watch, with
    * Take off.
    */
-  | "already_sent";
+  | "already_sent"
+  /**
+   * A document workout (Stage 2 spec §10) whose build holds a move the day's reading keeps out: a locked build cannot
+   * swap it, so it is never sent — on a first Send, a Retry, or a Send after Start. Rebuilt (taken off, or discarded),
+   * the day's build swaps in an alternate where one passes.
+   */
+  | "gated";
 
 export interface WatchState {
   state: "unavailable" | "ready" | "sending" | "on_watch" | "failed" | "off_watch";
@@ -484,21 +494,43 @@ async function slotRefusal(
   return null;
 }
 
-/** The refusals the build answers: current and built for the day, the pre-check answered, nothing coming off, fits. */
+/**
+ * The refusals the build answers: current and built for the day, the pre-check answered, nothing coming off, fits —
+ * and a document workout's build re-gated with the day's reading (`gatedSnapshot`), whichever Send this is.
+ */
 async function buildRefusal(
   db: Db,
   row: WorkoutRow,
   build: BuildPayload | null,
   profiles: readonly string[],
-  checks: Readonly<Record<string, unknown>>,
+  checks: Readonly<Record<string, CheckAnswer>>,
 ): Promise<WatchUnavailable | null> {
   if (!build || build.version === 0 || build.date !== row.effectiveDate || (row.contentState !== "built" && row.contentState !== "started")) {
     return "not_built";
   }
   if (profiles.some((p) => !checks[p])) return "precheck";
+  if (docOriginRow(row) && (await gatedSnapshot(db, row, build, profiles, checks))) return "gated";
   const unpush = await jobById(db, unpushJobId(build.buildId));
   if (unpush && isInFlight(unpush.status)) return "taking_off";
   return watchStepsFromBuild(build, NO_CATALOG).refusal;
+}
+
+/**
+ * A document build the day keeps a move of: its snapshot (`session_builds.workout_doc`, what the watch would hold —
+ * a blocked build's blocked move included) judged with the day's reading, as Start judges a build already on the
+ * watch — so a build sent at a calm reading is refused a Retry, or a Send after Start, once the reading has risen.
+ */
+async function gatedSnapshot(
+  db: Db,
+  row: WorkoutRow,
+  build: BuildPayload,
+  profiles: readonly string[],
+  checks: Readonly<Record<string, CheckAnswer>>,
+): Promise<boolean> {
+  const [stored] = await db.select({ doc: sessionBuilds.workoutDoc }).from(sessionBuilds).where(eq(sessionBuilds.id, build.buildId)).limit(1);
+  const snapshot = parseStoredWorkoutDoc(stored?.doc ?? null);
+  if (!snapshot) return false;
+  return snapshotErrors(snapshot, dayValidateCtx({ profiles, checks, date: row.effectiveDate, today: row.effectiveDate })).length > 0;
 }
 
 /** The sheet's state for a push just read: the row decides between on and off the watch for a verified one. */
@@ -549,8 +581,12 @@ export async function watchStateOf(
 
 const todayOf = (prefs: UserPreferences): string => todayInZone(prefs.timezone);
 
-/** The program's name: what the stamp is made of (the slot's title carries the theme too). */
+/**
+ * What the stamp is made of: the program's name (the slot's title carries the theme too) — for a document workout its
+ * own title, the one the athlete gave it (its programme is only the account's Studio bucket).
+ */
 async function programNameOf(db: Db, row: WorkoutRow): Promise<string> {
+  if (docOriginRow(row)) return row.title.trim();
   const [program] = await db.select({ name: programs.name }).from(programs).where(eq(programs.id, row.planId)).limit(1);
   return program?.name?.trim() || row.title;
 }
@@ -701,7 +737,7 @@ export async function sendToWatch(
   /** The payload to queue; null when the build's push is still running and is what reaches the watch. */
   let payload: ProgramSessionPushJob | null = null;
   /** Send's preconditions on the build it would send, then the payload — all before anything is written. */
-  const prepare = async (slot: WorkoutRow, build: BuildPayload | null, profiles: readonly string[], checks: Readonly<Record<string, unknown>>) => {
+  const prepare = async (slot: WorkoutRow, build: BuildPayload | null, profiles: readonly string[], checks: Readonly<Record<string, CheckAnswer>>) => {
     const refusal = await buildRefusal(db, slot, build, profiles, checks);
     if (refusal) throw new WatchUnavailableError(refusal);
     const earlier = await jobById(db, pushJobId(build!.buildId));

@@ -19,7 +19,7 @@
  */
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
 import { sessionLead } from "@rg/domain";
-import type { ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, PROFILES, isProfileId, type ExerciseRecord } from "@rg/exercise-library";
 import { Swapping, type Step } from "@rg/session-engine";
 import {
   deriveDoc,
@@ -82,7 +82,8 @@ export function playedErrors(issues: readonly DocIssue[]): DocIssue[] {
 
 /** The document as the day allows it (see the header). */
 export function gateDoc(doc: WorkoutDoc, ctx: ValidateCtx): GatedDoc {
-  const errors = validateWorkoutDoc(doc, ctx).filter((i) => i.severity === "error");
+  const judged = validateWorkoutDoc(doc, ctx);
+  const errors = judged.filter((i) => i.severity === "error");
   if (errors.length === 0) return { doc, swaps: [], blocked: [] };
   const find = makeLibraryIndex(ctx.library);
   const swaps: DocSwap[] = [];
@@ -96,10 +97,16 @@ export function gateDoc(doc: WorkoutDoc, ctx: ValidateCtx): GatedDoc {
     const item = doc.parts[p]?.items[i];
     if (item?.kind !== "exercise") continue;
     const own = find(item.libraryId)?.id ?? item.libraryId;
-    const k = (item.alternates ?? []).findIndex((alt, ai) => {
+    /** An alternate that can stand in: a move the library has, not the item's own, raising nothing `bar` counts. */
+    const standsIn = (bar: (i: DocIssue) => boolean) => (alt: { libraryId: string }, ai: number): boolean => {
       const rec = find(alt.libraryId);
-      return rec !== undefined && rec.id !== own && !errors.some((x) => x.path.startsWith(`${path}.alternates[${ai}].`));
-    });
+      return rec !== undefined && rec.id !== own && !judged.some((x) => bar(x) && x.path.startsWith(`${path}.alternates[${ai}].`));
+    };
+    // One that costs nothing (no warning either: the mode, the format, set aside, the gear) first; else the first that
+    // the day allows.
+    const options = item.alternates ?? [];
+    const clean = options.findIndex(standsIn(() => true));
+    const k = clean >= 0 ? clean : options.findIndex(standsIn((x) => x.severity === "error"));
     if (k < 0) continue;
     const alt = item.alternates![k]!;
     const to = find(alt.libraryId)!.id;
@@ -121,6 +128,63 @@ export function gateDoc(doc: WorkoutDoc, ctx: ValidateCtx): GatedDoc {
   const issues = swaps.length > 0 ? validateWorkoutDoc(swappedDoc, ctx) : errors;
   const closed = issues.filter((i) => i.severity === "error" && atAlternate(i)).map((i) => i.path);
   return { doc: closed.length > 0 ? withoutAlternates(swappedDoc, closed) : swappedDoc, swaps, blocked: playedErrors(issues) };
+}
+
+/**
+ * A document judged as a SAVE judges it (made or revised, Stage 2 ruling): for the day itself — or a day gone, still
+ * to be done — through `gateDoc`, as its build will play it: only what no alternate can answer refuses it (`errors`);
+ * a move the day keeps out that an alternate stands in for comes back as a warning naming the alternate (its `fix`),
+ * and so does an alternate the day closes (it is only not offered today). A day ahead, or no day (a template), keeps
+ * the validator's own rules: a gate the day's check could close needs an alternate that suits a recovery day.
+ */
+export function judgeDoc(doc: WorkoutDoc, ctx: ValidateCtx): { errors: DocIssue[]; warnings: DocIssue[] } {
+  const issues = validateWorkoutDoc(doc, ctx);
+  const warnings = issues.filter((i) => i.severity === "warning");
+  if (ctx.day === null || ctx.day.date > ctx.day.today || !issues.some((i) => i.severity === "error")) {
+    return { errors: issues.filter((i) => i.severity === "error"), warnings };
+  }
+  const gated = gateDoc(doc, ctx);
+  const find = makeLibraryIndex(ctx.library);
+  const stillBlocked = (i: DocIssue): boolean => gated.blocked.some((b) => b.path === i.path && b.code === i.code);
+  const resolved = issues
+    .filter((i) => i.severity === "error" && !stillBlocked(i))
+    .map((i): DocIssue => {
+      const swap = gated.swaps.find((s) => i.path === `${s.path}.libraryId`);
+      if (!swap) return { ...i, severity: "warning" };
+      return { ...i, severity: "warning", message: `${i.message} ${find(swap.to)?.name ?? swap.to} stands in today.`, fix: swap.to };
+    });
+  return { errors: gated.blocked, warnings: [...warnings, ...resolved] };
+}
+
+/** What the validator reads of a day when only its errors matter: the active profiles and each one's reading. */
+export function dayValidateCtx(o: {
+  profiles: readonly string[];
+  checks: Readonly<Record<string, CheckAnswer>>;
+  date: string;
+  today: string;
+  excluded?: readonly string[];
+  equipment?: readonly string[];
+}): ValidateCtx {
+  return {
+    library: EXERCISES,
+    activeProfiles: o.profiles.filter(isProfileId).map((id) => PROFILES[id]),
+    day: {
+      date: o.date,
+      today: o.today,
+      readings: Object.fromEntries(Object.entries(o.checks).map(([p, a]) => [p, { pre: a.pre, post: null, feelingOff: a.feelingOff }])),
+    },
+    ...(o.excluded ? { excluded: o.excluded } : {}),
+    ...(o.equipment ? { equipment: o.equipment } : {}),
+  };
+}
+
+/**
+ * A LOCKED build's snapshot judged for the day — Start of a build on the watch, and every Send of one: its errors in
+ * what is played (`playedErrors`). Nothing can be swapped in a locked build, so a move an alternate could have stood
+ * in for still counts.
+ */
+export function snapshotErrors(snapshot: WorkoutDoc, ctx: ValidateCtx): DocIssue[] {
+  return playedErrors(validateWorkoutDoc(snapshot, ctx));
 }
 
 /** The document with the alternates at `paths` ("parts[p].items[i].alternates[k].libraryId") taken off their items. */

@@ -11,6 +11,7 @@ import { addDays, todayInZone, type UserPreferences, type WorkoutDoc } from "@rg
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
+import { MAX_TEMPLATES } from "../src/services/workout-templates.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
 
@@ -123,6 +124,23 @@ describe("templates", () => {
     const scheduled = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: used.body.doc });
     expect(scheduled.status).toBe(201);
     expect(scheduled.body.workout.origin).toBe("template");
+  });
+
+  it("keeps at most 200 an account: the save past the cap is 409 too_many and writes nothing", async () => {
+    for (let i = 0; i < MAX_TEMPLATES - 1; i++) {
+      await db.insert(workoutTemplates).values({
+        id: `cap-${i}`, userId, name: `T${i}`, doc: calmDoc() as unknown as Record<string, unknown>, pinned: false, uses: 0,
+        lastUsedAt: null, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z",
+      });
+    }
+    expect((await save("The last one")).status).toBe(201);
+    expect(await save("One too many")).toEqual({ status: 409, body: { error: "too_many" } });
+    const mine = await db.select().from(workoutTemplates).where(eq(workoutTemplates.userId, userId));
+    expect(mine).toHaveLength(MAX_TEMPLATES);
+    expect(mine.map((t) => t.name)).not.toContain("One too many");
+    // Another account has its own room.
+    const other = await makeTestUser(db);
+    expect((await (await clientFor(db, other.userId))("POST", "/api/templates", { name: "Theirs", doc: calmDoc() })).status).toBe(201);
   });
 
   it("a stored document that no longer reads is listed without it, never a 500", async () => {

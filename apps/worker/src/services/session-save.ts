@@ -60,6 +60,7 @@ import {
   canonicalJson,
   coreBlockIntentSchema,
   docOriginRow,
+  parseStoredWorkoutDoc,
   isLocalDate,
   performedSessionSaveSchema,
   todayInZone,
@@ -71,6 +72,7 @@ import {
 import { EXERCISES } from "@rg/exercise-library";
 import { ORPHAN_ADOPTION_FLOOR, scoreAgainstStoredRow } from "@rg/providers";
 import { Blocks } from "@rg/session-engine";
+import { deriveDoc } from "@rg/workout";
 import type { ZodIssue } from "zod";
 import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
@@ -179,11 +181,12 @@ export async function savedByAnother(db: Db, userId: string, workoutId: string, 
 
 /**
  * §9.2 from the locked build: a core lift → strength, else yoga; read in SQL, never parsing the payload here. A
- * document workout's discipline is its document's (`deriveDoc`, written on the row when it was made or revised): its
- * main part is the build's core block whatever it holds, so a main part of stretches is still mobility.
+ * document workout's discipline is never read off its build's blocks (its main part is the core block whatever it
+ * holds, so a main part of stretches is still mobility): it is `deriveDoc`'s, of the document as played — the build's
+ * snapshot, the day's swaps made — else of the row's own document (its sport, derived when it was made or revised).
  */
 async function disciplineOf(db: Db, userId: string, slot: SlotRow, buildId: string | null): Promise<"strength" | "yoga"> {
-  if (docOriginRow(slot) && (slot.sport === "strength" || slot.sport === "yoga")) return slot.sport;
+  if (docOriginRow(slot)) return docDisciplineOf(db, userId, slot, buildId);
   if (buildId) {
     const [row] = await db
       .select({
@@ -195,6 +198,20 @@ async function disciplineOf(db: Db, userId: string, slot: SlotRow, buildId: stri
     if (row) return row.core ? "strength" : "yoga";
   }
   return slot.category === "strength" || slot.sport === "strength" ? "strength" : "yoga";
+}
+
+/** A document workout's discipline (see `disciplineOf`): strength, else mobility (a run is never made one, doc-workouts.ts). */
+async function docDisciplineOf(db: Db, userId: string, slot: SlotRow, buildId: string | null): Promise<"strength" | "yoga"> {
+  const [build] = buildId
+    ? await db
+        .select({ doc: sessionBuilds.workoutDoc })
+        .from(sessionBuilds)
+        .where(and(eq(sessionBuilds.id, buildId), eq(sessionBuilds.userId, userId), eq(sessionBuilds.workoutId, slot.id)))
+        .limit(1)
+    : [];
+  const played = parseStoredWorkoutDoc(build?.doc ?? null) ?? parseStoredWorkoutDoc(slot.workoutDoc);
+  const discipline = played ? deriveDoc(played, EXERCISES).discipline : slot.sport;
+  return discipline === "strength" ? "strength" : "yoga";
 }
 
 /**

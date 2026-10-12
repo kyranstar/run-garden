@@ -190,8 +190,8 @@ describe("POST /api/workouts", () => {
   it("422 with the issues on a fatal one, and nothing is written", async () => {
     await activateTmj(db, userId);
     const writesBefore = statements.filter(isWrite).length;
-    // A jump today with no jaw check answered: the gate is closed.
-    const res = await call("POST", "/api/workouts", { date: today, doc: landingsDoc() });
+    // A jump today with no jaw check answered, and no alternate to stand in: the gate is closed.
+    const res = await call("POST", "/api/workouts", { date: today, doc: landingsDoc({ alternates: false }) });
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("invalid_doc");
     expect(res.body.issues).toContainEqual(
@@ -226,6 +226,85 @@ describe("POST /api/workouts", () => {
     expect(ok.body.warnings).toContainEqual(expect.objectContaining({ code: "condition_gate_pending", severity: "warning" }));
     const no = await call("POST", "/api/workouts", { date: addDays(today, 2), doc: landingsDoc({ alternates: false }) });
     expect(no.status).toBe(422);
+  });
+
+  it("today, a gated move its alternate answers is a warning naming the alternate (as the day's build swaps it); the row keeps the athlete's document", async () => {
+    await activateTmj(db, userId);
+    const doc = landingsDoc();
+    const res = await call("POST", "/api/workouts", { date: today, doc });
+    expect(res.status).toBe(201);
+    const tempo = EXERCISES.find((e) => e.id === "tempoSquat")!.name;
+    expect(res.body.warnings).toContainEqual(
+      expect.objectContaining({ path: "parts[0].items[0].libraryId", code: "condition_gate", severity: "warning", fix: "tempoSquat", message: expect.stringContaining(`${tempo} stands in today.`) }),
+    );
+    expect(res.body.warnings.some((i: { severity: string }) => i.severity === "error")).toBe(false);
+    expect(JSON.parse((await rowOf(res.body.workout.id)).workoutDoc!)).toEqual(doc);
+    // A revision is judged the same way.
+    const revised = await call("PUT", `/api/workouts/${res.body.workout.id}/doc`, { doc: landingsDoc({ reps: 10 }), baseRev: 1 });
+    expect(revised.status).toBe(200);
+    expect(revised.body.warnings).toContainEqual(expect.objectContaining({ code: "condition_gate", severity: "warning", fix: "tempoSquat" }));
+  });
+
+  it("a document that derives to a run is refused, made or revised: 422 run_unsupported", async () => {
+    const run = { ...calmDoc({ title: "Easy run" }), parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: 1800 }, effort: "easy" }] }] };
+    const made = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: run });
+    expect(made).toEqual({ status: 422, body: { error: "run_unsupported", message: expect.any(String) } });
+    const id = (await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc() })).body.workout.id;
+    expect((await call("PUT", `/api/workouts/${id}/doc`, { doc: run, baseRev: 1 })).body.error).toBe("run_unsupported");
+    expect((await rowOf(id)).workoutDocRev).toBe(1);
+  });
+
+  it("the revision is labelled by the row's origin, never by what the document says of its source", async () => {
+    const claimed = { ...calmDoc(), source: { kind: "coach" as const } };
+    const a = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: claimed });
+    const b = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: { ...claimed, basedOn: { kind: "template", id: "t-1" } } });
+    expect((await revisionsOf(a.body.workout.id))[0]!.sourceKind).toBe("studio");
+    expect((await revisionsOf(b.body.workout.id))[0]!.sourceKind).toBe("template");
+  });
+
+  describe("an asked time is pinned", () => {
+    /** Someone else's plan for the day: an hour's easy run at seven. */
+    async function morningRun(date: string): Promise<string> {
+      await db.insert(plannedWorkouts).values({
+        id: "run-7", userId, planId: "plan-1", sourceWorkoutId: "run-7", title: "Easy run", category: "easy", sport: "run",
+        originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "07:00", sourceContentFingerprint: "fp",
+        calendarBlockDurationSeconds: 3600, sourceEstimatedDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+      return "run-7";
+    }
+    const longer = (): WorkoutDoc => {
+      const doc = calmDoc();
+      doc.parts[0]!.items.push({ kind: "exercise", libraryId: "puppyFloor", dose: { sets: 4, holdSec: 90 } });
+      return doc;
+    };
+
+    it("as the athlete's own time change is: a revision's collision pass moves the other session, never this one", async () => {
+      const date = addDays(today, 1);
+      const run = await morningRun(date);
+      const made = await call("POST", "/api/workouts", { date, time: "07:00", doc: calmDoc() });
+      const id = made.body.workout.id as string;
+      const [pin] = await db.select().from(schema.scheduleOverrides).where(eq(schema.scheduleOverrides.workoutId, id));
+      expect(pin).toMatchObject({ kind: "time_change", fromDate: date, toDate: date, toTime: "07:00" });
+      const revised = await call("PUT", `/api/workouts/${id}/doc`, { doc: longer(), baseRev: 1 });
+      expect(revised.status).toBe(200);
+      expect(revised.body.workout).toMatchObject({ date, time: "07:00" });
+      expect((await rowOf(id)).effectiveTime).toBe("07:00");
+      expect((await rowOf(run)).effectiveTime).not.toBe("07:00");
+    });
+
+    it("a time left out gives way, and a revision answers the time the collision pass left", async () => {
+      const date = addDays(today, 1);
+      await morningRun(date);
+      const made = await call("POST", "/api/workouts", { date, doc: calmDoc() });
+      const id = made.body.workout.id as string;
+      expect(made.body.workout.time).toBe((await rowOf(id)).effectiveTime);
+      expect(await db.select().from(schema.scheduleOverrides).where(eq(schema.scheduleOverrides.workoutId, id))).toEqual([]);
+      await db.update(plannedWorkouts).set({ effectiveTime: "07:00" }).where(eq(plannedWorkouts.id, id));
+      const revised = await call("PUT", `/api/workouts/${id}/doc`, { doc: longer(), baseRev: 1 });
+      const row = await rowOf(id);
+      expect(revised.body.workout).toMatchObject({ date: row.effectiveDate, time: row.effectiveTime });
+      expect(row.effectiveTime).not.toBe("07:00");
+    });
   });
 
   it("refuses a day gone, a malformed date or time, and a body with extra keys", async () => {

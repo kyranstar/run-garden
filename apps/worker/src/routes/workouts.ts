@@ -7,7 +7,8 @@
  *   POST /api/workouts           {date, time?, doc} → 201 {workout, warnings}: a document workout (services/doc-workouts.ts)
  *   PUT  /api/workouts/:id/doc   {doc, baseRev} → {workout, rev, watchHasOlder, warnings}: its next revision
  *
- * 422 `invalid_workout` (the body), `invalid_doc` with every issue (an error in the document for its day), `past_date`;
+ * 422 `invalid_workout` (the body), `invalid_doc` with every issue (an error in the document for its day), `past_date`,
+ * `run_unsupported` (a document that derives to a run: no run is played from the Studio yet);
  * 409 `stale_revision` with the current `rev`, or `not_editable` (a programme's session, or one resolved or under way);
  * 404 for a row that is not this account's; 423 while a restore is replacing the account. User-scoped throughout. A
  * new workout, and a revision that changes what its event shows, hand the calendar one bounded sync step.
@@ -29,6 +30,7 @@ import {
   NotEditableError,
   PastDateError,
   reviseDocWorkout,
+  RunUnsupportedError,
   StaleRevisionError,
 } from "../services/doc-workouts.js";
 import { RestoreInProgressError } from "../services/programs.js";
@@ -54,6 +56,7 @@ const reviseSchema = z.object({ doc: docField, baseRev: z.number().int().min(0) 
 function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof DocInvalidError) return c.json({ error: "invalid_doc", issues: e.issues }, 422);
   if (e instanceof PastDateError) return c.json({ error: "past_date" }, 422);
+  if (e instanceof RunUnsupportedError) return c.json({ error: "run_unsupported", message: "Runs can't be planned in the Studio yet." }, 422);
   if (e instanceof DocWorkoutNotFoundError) return c.json({ error: "not_found" }, 404);
   if (e instanceof NotEditableError) return c.json({ error: "not_editable" }, 409);
   if (e instanceof StaleRevisionError) return c.json({ error: "stale_revision", rev: e.rev }, 409);

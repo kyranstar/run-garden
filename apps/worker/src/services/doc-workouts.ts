@@ -2,29 +2,34 @@
  * DOCUMENT WORKOUTS, MADE AND REVISED (Stage 2 spec §10; programme spec §3.11) — the one path the Studio's Schedule and
  * Save and, in Stage 3, the coach's approved proposals write a workout document through.
  *
- * MAKING ONE (`createDocWorkout`). The document is validated for its day (`validateWorkoutDoc` with the day's reading,
- * the athlete's set-aside moves, the place's gear, what they have done cleanly and their recent sessions): an error
- * refuses it (`DocInvalidError`, every issue), a warning comes back with it and never blocks. It becomes a planned row
+ * MAKING ONE (`createDocWorkout`). The document is judged for its day (`judgeDoc`, doc-build.ts: the validator with the
+ * day's reading, the athlete's set-aside moves, the place's gear, what they have done cleanly and their recent
+ * sessions — and on the day itself as its build will play it, a move the day keeps out answered by its alternate): an
+ * error refuses it (`DocInvalidError`, every issue), a warning comes back with it and never blocks. A document whose
+ * derived discipline is a run is refused (`RunUnsupportedError`) until a run has a way to be played. It becomes a planned row
  * exactly as the app's own sessions are written (a programme's slot, `program-slots.ts`): origin `studio` — or
  * `template` when the document is based on one — hung from the account's own Studio programme (`studioProgramId`,
  * the per-user programme the one-workout-system spec §9.3 hangs on-demand sessions from); its own id as its source;
  * `calendar_only` with no watch address, so the reconciler books its event and nothing but the athlete's Send puts it
  * on the watch (`appAuthoredRow`); an outline until its day's build. Its title is the document's; its discipline,
  * category and booked length are derived (`deriveDoc`, the length rounded up to five minutes as a built slot's is); its
- * time is the one asked for, else the athlete's window, then the day's collision pass. The document is stored at
- * revision 1 with its revision row, in the same batch (`workout-doc-store.ts`).
+ * time is the one asked for — pinned, as a time the athlete picks is (a `time_change` override: the collision pass never
+ * moves it) — else the athlete's window, then the day's collision pass. The document is stored at revision 1 with its
+ * revision row, in the same batch (`workout-doc-store.ts`), labelled by the row's origin unless a server caller says
+ * otherwise (the client never labels its own revision).
  *
  * REVISING ONE (`reviseDocWorkout`). Only a document workout's own document, and only while it is still to be done:
  * a programme's session (the engine builds it), a completed, skipped or missed row, and a session already started are
  * `NotEditableError`; a base revision that is not the row's current one is `StaleRevisionError` — never a silent
  * overwrite, and the update itself re-checks both, so a write that lands in between still wins. The same document
  * again is no new revision. `watchHasOlder`: the watch holds (or is being sent) a copy built from another revision —
- * the athlete is offered "Send the new version".
+ * the athlete is offered "Send the new version". A new length runs the day's collision pass (a pinned time stays); the
+ * answer carries the row's date and time as they then are.
  *
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
 import { and, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
-import { exercisePrefs, locations, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
+import { exercisePrefs, locations, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions } from "@rg/database";
 import {
   DOC_ORIGINS,
   docOriginRow,
@@ -33,11 +38,12 @@ import {
   type UserPreferences,
   type WorkoutDoc,
 } from "@rg/domain";
-import { EXERCISES, PROFILES, isProfileId, type ConditionProfile } from "@rg/exercise-library";
+import { EXERCISES, PROFILES, isDoneCleanly, isProfileId, type ConditionProfile } from "@rg/exercise-library";
 import { Hist, type HistorySession, type HistorySummary } from "@rg/session-engine";
-import { deriveDoc, makeLibraryIndex, validateWorkoutDoc, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { deriveDoc, makeLibraryIndex, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { restoreInProgress } from "./account-state.js";
 import { runAtomically, type Db } from "./db.js";
+import { judgeDoc } from "./doc-build.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
@@ -47,7 +53,7 @@ import { FROZEN_STATES, newRowDocColumns, revisionInsert, storedDocText, updateD
 /** The account's own Studio programme: what every document workout hangs from (its `plan_id`). */
 export const studioProgramId = (userId: string): string => `studio-${userId}`;
 
-/** The name the Studio programme carries (and the watch's stamp is made of: "Studio — <date>"). */
+/** The name the Studio programme carries (a document workout's watch stamp is its own title, watch-push.ts). */
 const STUDIO_PROGRAM_NAME = "Studio";
 
 /** A session already under way, or done: its content is locked. */
@@ -57,6 +63,13 @@ const LOCKED_CONTENT = ["started", "done"] as const;
 export class DocInvalidError extends Error {
   constructor(public readonly issues: DocIssue[]) {
     super("invalid_doc");
+  }
+}
+
+/** A run is not played by the app yet (Stage 3 adds its execution path): a document that derives to one is refused. */
+export class RunUnsupportedError extends Error {
+  constructor() {
+    super("run_unsupported");
   }
 }
 
@@ -111,7 +124,10 @@ export interface DocWorkoutCtx {
   prefs: UserPreferences;
 }
 
-/** Who wrote the revision: the document's own source unless the caller says (an athlete's edit, a coach proposal). */
+/**
+ * Who wrote the revision: by default the row's origin (made) or the athlete's edit (revised); a server caller (the
+ * coach's approval, Stage 3) says otherwise. Never the document's own `source`, which the client writes.
+ */
 export interface DocWriteSource {
   sourceKind?: DocSourceKind;
   sourceRef?: string | null;
@@ -120,28 +136,23 @@ export interface DocWriteSource {
 // ── The day a document is checked for ────────────────────────────────────────────────────────────────────────
 
 /**
- * The moves the athlete has done CLEANLY by the summary's day — the engine's own rule for unlocking the next rung
- * (`unlocksBy`, session-engine builder): done, and never logged, or logged at least once without each active profile's
- * flag. A clenched exposure is not a clean one. Ids under every legacy name count as the move they now are.
+ * The moves the athlete has done CLEANLY by the summary's day — `DayContext.done`, by the library's one rule for what
+ * unlocks the next rung (`isDoneCleanly`, the engine's own): a clenched exposure is not a clean one. Each move's tally
+ * merges its entries under every legacy id into the move it now is, as the engine's history stats do.
  */
 export function doneCleanly(summary: HistorySummary, profiles: readonly ConditionProfile[]): Set<string> {
   const find = makeLibraryIndex(EXERCISES);
-  const byMove = new Map<string, { last: string | null; logged: number; flags: Record<string, number> }>();
+  const byMove = new Map<string, { lastDate: string | null; logged: number; flags: Record<string, number> }>();
   for (const [raw, m] of Object.entries(summary.moves)) {
     if (m.last === null && !m.logged) continue;
     const id = find(raw)?.id ?? raw;
-    const st = byMove.get(id) ?? { last: null, logged: 0, flags: {} };
-    if (m.last && (!st.last || m.last > st.last)) st.last = m.last;
-    st.logged += m.logged;
-    for (const [flag, n] of Object.entries(m.flags)) st.flags[flag] = (st.flags[flag] ?? 0) + n;
-    byMove.set(id, st);
+    const tally = byMove.get(id) ?? { lastDate: null, logged: 0, flags: {} };
+    if (m.last && (!tally.lastDate || m.last > tally.lastDate)) tally.lastDate = m.last;
+    tally.logged += m.logged;
+    for (const [flag, n] of Object.entries(m.flags)) tally.flags[flag] = (tally.flags[flag] ?? 0) + n;
+    byMove.set(id, tally);
   }
-  const clean = new Set<string>();
-  for (const [id, st] of byMove) {
-    if (!st.last) continue;
-    if (st.logged === 0 || profiles.every((p) => !p.setFlag || (st.flags[p.setFlag.id] ?? 0) < st.logged)) clean.add(id);
-  }
-  return clean;
+  return new Set([...byMove].filter(([, tally]) => isDoneCleanly(tally, profiles)).map(([id]) => id));
 }
 
 /** The last session and the last seven days', as the engine's mode proposal reads them. */
@@ -160,22 +171,13 @@ export async function docDayContext(
   userId: string,
   o: { date: string; today: string; workoutId: string; placeId?: string },
 ): Promise<ValidateCtx> {
-  const [conditionRows, setAside, places, history] = await Promise.all([
-    db
-      .select({ profileId: userConditions.profileId })
-      .from(userConditions)
-      .where(and(eq(userConditions.userId, userId), eq(userConditions.active, true))),
-    db
-      .select({ exerciseId: exercisePrefs.exerciseId })
-      .from(exercisePrefs)
-      .where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.excluded, true))),
+  const [{ active, profiles, excluded }, places, history] = await Promise.all([
+    profilesAndSetAside(db, userId),
     o.placeId
       ? db.select({ equipment: locations.equipment }).from(locations).where(and(eq(locations.id, o.placeId), eq(locations.userId, userId))).limit(1)
       : Promise.resolve([]),
     loadBuildHistory(db, userId, o.today, null),
   ]);
-  const active = [...new Set(conditionRows.map((r) => r.profileId).filter(isProfileId))].sort();
-  const profiles = active.map((id) => PROFILES[id]);
   const checks = o.date <= o.today && active.length > 0 ? await slotChecks(db, userId, o.workoutId, o.date, o.today, active) : {};
   const place = places[0];
   return {
@@ -188,24 +190,58 @@ export async function docDayContext(
       done: doneCleanly(history.summary, profiles),
       recent: recentOf(history.sessions, o.today),
     },
-    excluded: setAside.map((r) => r.exerciseId),
+    excluded,
     ...(place ? { equipment: [...place.equipment] } : {}),
   };
 }
 
-/** The document, schema-checked, then validated for its day: refused on any error, its warnings answered. */
+/**
+ * The account's switched-on condition profiles (ids the library knows, sorted) and the moves it set aside ("not for
+ * me"): what every judgement of a document reads of the athlete — a workout's (`docDayContext`), a template's.
+ */
+export async function profilesAndSetAside(db: Db, userId: string): Promise<{ active: string[]; profiles: ConditionProfile[]; excluded: string[] }> {
+  const [conditionRows, setAside] = await Promise.all([
+    db
+      .select({ profileId: userConditions.profileId })
+      .from(userConditions)
+      .where(and(eq(userConditions.userId, userId), eq(userConditions.active, true))),
+    db
+      .select({ exerciseId: exercisePrefs.exerciseId })
+      .from(exercisePrefs)
+      .where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.excluded, true))),
+  ]);
+  const active = [...new Set(conditionRows.map((r) => r.profileId).filter(isProfileId))].sort();
+  return { active, profiles: active.map((id) => PROFILES[id]), excluded: setAside.map((r) => r.exerciseId) };
+}
+
+/** A document as the schema reads it; else `DocInvalidError` with its schema issues (nothing else can be read of it). */
+export function parsedDoc(raw: unknown): WorkoutDoc {
+  const parsed = workoutDocSchema.safeParse(raw);
+  if (!parsed.success) throw new DocInvalidError(validateWorkoutDoc(raw, { library: EXERCISES, activeProfiles: [], day: null }));
+  return parsed.data;
+}
+
+/** A judged document: refused on any error (`DocInvalidError`, every issue — errors first), else its warnings. */
+export function accepted(judged: { errors: DocIssue[]; warnings: DocIssue[] }): DocIssue[] {
+  if (judged.errors.length > 0) throw new DocInvalidError([...judged.errors, ...judged.warnings]);
+  return judged.warnings;
+}
+
+/**
+ * The document, schema-checked, refused when it is a run (`RunUnsupportedError`), then judged for its day: refused on
+ * any error, its warnings answered — with what is derived from it.
+ */
 async function validated(
   db: Db,
   userId: string,
   raw: unknown,
   day: { date: string; today: string; workoutId: string },
-): Promise<{ doc: WorkoutDoc; warnings: DocIssue[] }> {
-  const parsed = workoutDocSchema.safeParse(raw);
-  // Nothing can be read safely from what is not a document: its schema issues, with no day to read.
-  if (!parsed.success) throw new DocInvalidError(validateWorkoutDoc(raw, { library: EXERCISES, activeProfiles: [], day: null }));
-  const issues = validateWorkoutDoc(parsed.data, await docDayContext(db, userId, { ...day, placeId: parsed.data.setting?.placeId }));
-  if (issues.some((i) => i.severity === "error")) throw new DocInvalidError(issues);
-  return { doc: parsed.data, warnings: issues };
+): Promise<{ doc: WorkoutDoc; derived: DocDerived; warnings: DocIssue[] }> {
+  const doc = parsedDoc(raw);
+  const derived = deriveDoc(doc, EXERCISES);
+  if (derived.discipline === "run") throw new RunUnsupportedError();
+  const warnings = accepted(judgeDoc(doc, await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId })));
+  return { doc, derived, warnings };
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -252,10 +288,9 @@ export async function createDocWorkout(
 ): Promise<{ workout: DocWorkoutDto; warnings: DocIssue[] }> {
   if (input.date < ctx.today) throw new PastDateError();
   const id = newId();
-  const { doc, warnings } = await validated(db, userId, input.doc, { date: input.date, today: ctx.today, workoutId: id });
+  const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: input.date, today: ctx.today, workoutId: id });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
 
-  const derived = deriveDoc(doc, EXERCISES);
   const seconds = bookedSeconds(derived.estimatedMinutes * 60);
   const date = input.date;
   // Every column, as placement writes a slot's (P1-R12).
@@ -321,7 +356,22 @@ export async function createDocWorkout(
       })
       .onConflictDoNothing(),
     db.insert(plannedWorkouts).values(row),
-    revisionInsert(db, { userId, workoutId: id, sourceKind: source.sourceKind ?? doc.source.kind, sourceRef: source.sourceRef ?? null, now: ctx.now }),
+    revisionInsert(db, { userId, workoutId: id, sourceKind: source.sourceKind ?? row.origin, sourceRef: source.sourceRef ?? null, now: ctx.now }),
+    // A time the athlete picked is pinned, as a time change of theirs is (jobs.ts): no collision pass moves it.
+    ...(input.time != null
+      ? [
+          db.insert(scheduleOverrides).values({
+            id: newId(),
+            workoutId: id,
+            kind: "time_change",
+            fromDate: date,
+            toDate: date,
+            toTime: input.time,
+            source: "app",
+            createdAt: ctx.now,
+          }),
+        ]
+      : []),
   ]);
 
   // A time asked for stands; the athlete's window gives way to what the day already holds, as a placed slot's does.
@@ -386,10 +436,9 @@ export async function reviseDocWorkout(
   if (!docOriginRow(row) || frozen || underWay) throw new NotEditableError();
   if ((row.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(row.workoutDocRev ?? null);
 
-  const { doc, warnings } = await validated(db, userId, input.doc, { date: row.effectiveDate, today: ctx.today, workoutId });
+  const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: row.effectiveDate, today: ctx.today, workoutId });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
 
-  const derived = deriveDoc(doc, EXERCISES);
   const seconds = bookedSeconds(derived.estimatedMinutes * 60);
   const text = storedDocText(doc);
   await runAtomically(db, [
@@ -429,12 +478,20 @@ export async function reviseDocWorkout(
     if (after && (after.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(after.workoutDocRev ?? null);
     throw new NotEditableError();
   }
-  if (seconds !== row.calendarBlockDurationSeconds) {
-    await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now });
-  }
+  // A new length can overlap the day's other plans: the collision pass (a pinned time stays), and the time it leaves.
+  const moved = seconds !== row.calendarBlockDurationSeconds
+    ? await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now })
+    : [];
   const rev = after.workoutDocRev ?? null;
   const workout = dtoOf(
-    { ...row, title: doc.title, category: derived.category, sport: derived.discipline, workoutDocRev: rev },
+    {
+      ...row,
+      effectiveTime: moved.find((m) => m.workoutId === workoutId)?.to ?? row.effectiveTime,
+      title: doc.title,
+      category: derived.category,
+      sport: derived.discipline,
+      workoutDocRev: rev,
+    },
     doc,
     derived.estimatedMinutes,
   );
