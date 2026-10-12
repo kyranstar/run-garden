@@ -32,6 +32,11 @@ import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { AddSheet } from "../src/screens/studio/add-sheet.js";
 import { EXERCISES } from "@rg/exercise-library";
 import { staticRouter } from "./studio-fixtures.js";
+import { BuilderRoute } from "../src/screens/studio/builder.js";
+import { ItemSheet } from "../src/screens/studio/item-sheet.js";
+import { buildCtxOf } from "../src/screens/studio/build-model.js";
+import { STUDIO_DRAFT_QUERY } from "../src/studio-drafts.js";
+import { edit, newDoc, startEditing, suggestedItem } from "@rg/workout";
 
 const noop = () => undefined;
 
@@ -600,5 +605,122 @@ describe("the Studio is honest about its bounds", () => {
     expect(shadow, "top shadow").not.toBeNull();
     expect((Number(cover![1]) / 100) * rem(cover![2]!)).toBeGreaterThanOrEqual(rem(shadow![1]!));
     expect(s).toMatch(/linear-gradient\(transparent, var\(--scroll-surface, var\(--bg-raised\)\) \d+%\) bottom/);
+  });
+});
+
+// ── 9. The builder (Stage 2 Task 6) ─────────────────────────────────────────
+
+describe("the builder is honest about its bounds", () => {
+  const rem = (v: string): number => parseFloat(v) * 16;
+  const root = css.slice(css.indexOf(":root {"), css.indexOf("\n}\n", css.indexOf(":root {")));
+  const px = (token: string) => parseFloat(new RegExp(`--${token}: ([\\d.]+)rem`).exec(root)![1]!) * 16;
+  const z = (sel: string) => Number(/z-index:\s*(\d+)/.exec(ruleBody(sel))![1]);
+  const withGoblet = () =>
+    edit(startEditing(newDoc("structured", { title: "Hips & posture", source: { kind: "studio" } })), { type: "addItem", part: 1, item: suggestedItem(EXERCISES.find((r) => r.id === "gobletSquat")!, "main") }, EXERCISES).doc;
+  function builderAt(path: string): string {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(STUDIO_DRAFT_QUERY, { doc: withGoblet(), updatedAt: 1 });
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter(path, createElement(BuilderRoute))));
+  }
+
+  it("the page owns the scroll; the actions are the builder's own child, outside the grid, so their sticky box travels its height", () => {
+    const html = builderAt("/studio/build/new");
+    expect(html).not.toContain("scroller");
+    // Between the grid's start and the actions, every <div> opened is closed: the actions sit after the grid, not in it.
+    const from = html.indexOf('<div class="stu-build-grid">');
+    const to = html.indexOf('<div class="stu-build-foot">');
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    const between = html.slice(from, to);
+    expect((between.match(/<div[\s>]/g) ?? []).length).toBe((between.match(/<\/div>/g) ?? []).length);
+    expect(html.slice(0, from)).toMatch(/<div class="stu-build">$/);
+  });
+
+  it("the actions stick above the tab bar, under the popovers and the tab bar itself", () => {
+    const foot = ruleBody(".stu-build-foot");
+    expect(foot).toContain("position: sticky");
+    expect(foot).toContain("bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4))");
+    expect(z(".stu-build-foot")).toBeLessThan(z(".bottom-nav"));
+    expect(z(".stu-build-foot")).toBeLessThan(z(".term-pop"));
+    // Its menu (Save ▾) paints above it.
+    expect(z(".stu-save-menu")).toBeGreaterThan(z(".stu-build-foot"));
+  });
+
+  it("at 320px the two actions sit side by side in the pinned footer", () => {
+    // 320 − two 16px gutters − the footer's padding on both sides − its two 1px borders: the room for two buttons and a gap.
+    const foot = ruleBody(".stu-build-foot");
+    const pad = px(/padding: var\(--([\w-]+)\)/.exec(foot)![1]!);
+    const gap = px(/gap: var\(--([\w-]+)\)/.exec(ruleBody(".stu-build-actions"))![1]!);
+    const basis = rem(/flex: 1 1 ([\d.]+)rem/.exec(ruleBody(".stu-build-actions > .btn"))![1]!);
+    expect(2 * basis + gap).toBeLessThanOrEqual(320 - 2 * 16 - 2 * pad - 2);
+    // …and when the words do not fit (a long reason, a status), they wrap above the buttons, never beside them.
+    expect(ruleBody(".stu-build-actions")).toContain("flex-wrap: wrap");
+    expect(ruleBody(".stu-build-foot")).toContain("flex-direction: column");
+  });
+
+  it("nothing in a part, a row, the summary or the header can push the page wider", () => {
+    expect(ruleBody(".stu-build-grid")).toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(ruleBody(".stu-item")).toContain("grid-template-columns: minmax(0, 1fr) auto auto");
+    expect(ruleBody(".stu-sum-head")).toContain("grid-template-columns: minmax(0, 1fr) auto auto");
+    expect(ruleBody(".stu-note")).toContain("grid-template-columns: auto minmax(0, 1fr)");
+    for (const sel of [".stu-item-name", ".stu-item-dose", ".stu-item-cue", ".stu-note-text", ".stu-sum-line", ".stu-part-why", ".stu-build-goal-list", ".stu-swap-name,\n.stu-pick-name"]) {
+      expect(ruleBody(sel), sel).toContain("overflow-wrap: anywhere");
+    }
+    for (const sel of [".stu-build-title", ".stu-build-why-field", ".stu-part-head", ".stu-build-bar"]) expect(ruleBody(sel), sel).toContain("min-width: 0");
+    for (const sel of [".stu-seg", ".stu-dose", ".stu-build-goals", ".stu-part-title", ".stu-effort"]) {
+      expect(ruleBody(sel), sel).toContain("flex-wrap: wrap");
+    }
+    // A suggestion's name wraps in its row, beside its ＋; the row never grows past the column.
+    expect(ruleBody(".stu-sug")).toContain("max-width: 100%");
+    expect(ruleBody(".stu-sug .term-wrap")).toContain("min-width: 0");
+    expect(ruleBody(".stu-sug .term")).toContain("overflow-wrap: anywhere");
+    expect(ruleBody(".stu-save-menu")).toContain("max-width: calc(100vw - 2 * var(--space-6))");
+  });
+
+  it("every control in it keeps the 44px floor as its own box — no pad reaching into a neighbour", () => {
+    for (const sel of [".stu-item", ".stu-sug", ".stu-sug-add", ".stu-add-move", ".stu-icon-btn", ".stu-save-item", ".stu-seg-opt span",
+      ".stu-swap,\n.stu-pick", ".stu-build-goals-edit", ".stu-sum-head"]) {
+      expect(ruleBody(sel), sel).toMatch(/min-(height|width): var\(--tap\)/);
+    }
+    const stepper = ruleBody(".stu-stepper");
+    expect(stepper).toContain("grid-template-columns: var(--tap) 3.5rem var(--tap)");
+    expect(stepper).toContain("grid-template-rows: auto var(--tap)");
+  });
+
+  it("a move's sheet: one scroll owner, Remove and Done pinned below it", () => {
+    const doc = withGoblet();
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient() },
+        staticRouter(
+          "/studio/build/new",
+          createElement(ItemSheet, {
+            doc,
+            part: 1,
+            item: 0,
+            rec: EXERCISES.find((r) => r.id === "gobletSquat"),
+            notes: [],
+            unit: "kg",
+            bc: buildCtxOf(emptyStudioCtx, "2026-10-11"),
+            ctx: emptyStudioCtx,
+            library: EXERCISES,
+            onEdit: () => undefined,
+            onMoved: noop,
+            onRemove: noop,
+            onFix: noop,
+            onCheck: noop,
+            checkLabel: () => "",
+            onClose: noop,
+          }),
+        ),
+      ),
+    );
+    expect((html.match(/scroller/g) ?? []).length).toBe(1);
+    const foot = html.slice(html.indexOf('class="sheet-foot"'));
+    expect(html.indexOf('class="sheet-body scroller"')).toBeLessThan(html.indexOf('class="sheet-foot"'));
+    expect(foot).toMatch(/>Remove<\/button>[\s\S]*>Done<\/button>/);
+    // 16px fields, so a phone never zooms into them.
+    for (const sel of [".stu-load-input,\n.stu-field,\n.stu-select", ".stu-step,\n.stu-stepper input"]) expect(ruleBody(sel), sel).toContain("font-size: var(--text-md)");
   });
 });

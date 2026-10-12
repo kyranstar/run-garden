@@ -7,7 +7,7 @@
  */
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type ConditionViewDto } from "@rg/api-client";
+import { api, type ConditionCheckDto, type ConditionViewDto } from "@rg/api-client";
 import { Banner, Sheet } from "../components.js";
 
 export interface TodayReading {
@@ -137,9 +137,12 @@ export function FeelingOffToggle({ on, onToggle, disabled, word }: { on: boolean
 export function ConditionCheckSheet({
   condition,
   onClose,
+  onSaved,
 }: {
   condition: ConditionViewDto & { today: TodayReading | null };
   onClose: () => void;
+  /** The check as recorded, before the sheet closes (the Studio's builder judges with it at once). */
+  onSaved?: (check: ConditionCheckDto) => void;
 }) {
   const qc = useQueryClient();
   const [value, setValue] = useState<number | null>(condition.today?.value ?? null);
@@ -152,6 +155,7 @@ export function ConditionCheckSheet({
       // The chip reads it from Today; a session built today reads it as its pre-check.
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["session"] });
+      onSaved?.(res.check);
       onClose();
     },
   });

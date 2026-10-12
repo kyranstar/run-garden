@@ -3,6 +3,7 @@
  *
  *   [ the coach's composer — Stage 3 fills this slot ]
  *   Quick starts   Jaw care 5 min · Desk reset 8 min · Hip opener 10 min
+ *   [ New workout ]                                             ← the builder (Task 6); "Continue …" while one is being built
  *   Browse         All moves · Warm-up · Activation · Strength · … · Cool-down
  *   Themes         Hips & posture 27 · Ski prep 13 · …          ← one row, scrolled sideways on a phone
  *   Tags           Desk relief · Ski · Single-leg · … More tags  ← the eight most used; the rest one tap down
@@ -18,6 +19,7 @@ import { useId, type ReactNode } from "react";
 import { EXERCISES, label } from "@rg/exercise-library";
 import type { QuickStartKind } from "@rg/workout";
 import { IconClock } from "../../icons.js";
+import { BuildEntry } from "./build-entry.js";
 import { ChipRow } from "./chip-row.js";
 import {
   browseParts,
@@ -83,6 +85,8 @@ export function StudioHome({
           })}
         </div>
       </Section>
+
+      <BuildEntry />
 
       <Section title="Browse">
         <div className="stu-chipset">

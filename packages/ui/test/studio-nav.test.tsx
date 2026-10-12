@@ -2,15 +2,16 @@
  * Stage 2 Task 4 — the Studio is the fifth tab (spec §2): Garden · Plan · Studio · Activity · Settings, in the bottom
  * bar and the side rail alike, with the wide treatment `/plan` has, on `/studio` and everything under it.
  */
-import { createElement } from "react";
+import { Children, createElement, type ReactElement } from "react";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Navigate } from "react-router-dom";
+import { Navigate, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it } from "vitest";
 import { StudioRoute } from "../src/app.js";
 import { features, studioFlag } from "../src/features.js";
+import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { AppShell, NAV, navItems } from "../src/shell.js";
 import { staticRouter } from "./studio-fixtures.js";
@@ -108,9 +109,15 @@ describe("the Studio ships dark: the `studio` flag (off in production builds unt
     expect(el.props).toEqual({ to: "/", replace: true });
   });
 
-  it("on: five tabs, and /studio is the Studio", () => {
+  it("on: five tabs; /studio is the Studio, and /studio/build/* the builder (Task 6)", () => {
     features.studio = true;
     expect(navItems().map((n) => n.label)).toEqual(["Garden", "Plan", "Studio", "Activity", "Settings"]);
-    expect(StudioRoute().type).toBe(StudioScreen);
+    const el = StudioRoute();
+    expect(el.type).toBe(Routes);
+    const routes = Children.toArray((el.props as { children: unknown }).children) as ReactElement<{ path: string; element: ReactElement }>[];
+    expect(routes.map((r) => [r.props.path, r.props.element.type])).toEqual([
+      ["build/*", BuilderRoute],
+      ["*", StudioScreen],
+    ]);
   });
 });

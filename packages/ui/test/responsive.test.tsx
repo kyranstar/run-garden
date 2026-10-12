@@ -831,6 +831,12 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
         "(min-width: 1024px) .stu--detail .stu-results",
         "(min-width: 1024px) .stu-detail",
         "(min-width: 1024px) .stu > .stu-added--on",
+        // Task 6: the builder's summary beside its parts from md; no tab bar to clear for its actions from lg.
+        "(min-width: 900px) .stu-build-grid",
+        "(min-width: 900px) .stu-build-head",
+        "(min-width: 900px) .stu-parts",
+        "(min-width: 900px) .stu-build-sum",
+        "(min-width: 1024px) .stu-build-foot",
       ].sort(),
     );
   });
@@ -840,11 +846,35 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
       for (const m of block.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
         if (!studioSel.test(m[1]!.trim())) continue;
         const props = [...m[2]!.matchAll(/([-a-z]+)\s*:/g)].map((p) => p[1]!);
-        const allowed = ["display", "grid-template-columns", "grid-column", "grid-row", "align-items", "gap", "position", "top",
+        const allowed = ["display", "grid-template-columns", "grid-template-rows", "grid-column", "grid-row", "align-items", "gap", "position", "top",
           "max-height", "padding", "padding-right", "--scroll-surface", "flex-wrap", "overflow-x", "bottom"];
         for (const p of props) expect(allowed, `${m[1]!.trim()} { ${p} }`).toContain(p);
       }
     }
+  });
+
+  it("the builder: one column on a phone, the summary beside the parts from md, the actions pinned at every width (Task 6)", () => {
+    for (const cls of [".stu-build", ".stu-build-grid", ".stu-build-head", ".stu-build-sum", ".stu-sum", ".stu-sum-head", ".stu-bal",
+      ".stu-notes", ".stu-note", ".stu-parts", ".stu-part", ".stu-part--ghost", ".stu-items", ".stu-item", ".stu-sugs", ".stu-sug",
+      ".stu-sug-add", ".stu-add-move", ".stu-add-parts", ".stu-build-foot", ".stu-build-actions", ".stu-stepper", ".stu-dose",
+      ".stu-swap", ".stu-pick", ".stu-seg", ".stu-save-menu", ".stu-build-entry"]) {
+      expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
+    }
+    // One column until md, in the base layer.
+    expect(baseLayer).toMatch(/\.stu-build-grid \{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+    // The actions are pinned at every width — sticky in the base layer; lg moves only where they stick.
+    expect(baseLayer).toMatch(/\.stu-build-foot \{[^}]*position: sticky/);
+    const lg = widthBlocks.find((b) => b.condition === "(min-width: 1024px)" && b.body.includes(".stu-build-foot"))!;
+    expect(lg.body).toMatch(/\.stu-build-foot \{\s*bottom: var\(--space-6\);\s*\}/);
+    // From md, the summary is its own sticky column beside the head and the parts.
+    const md = widthBlocks.find((b) => b.condition === "(min-width: 900px)" && b.body.includes(".stu-build-grid"))!;
+    expect(md.body).toMatch(/\.stu-build-grid \{[^}]*grid-template-columns: minmax\(0, 3fr\) minmax\(0, 2fr\)/);
+    expect(md.body).toMatch(/\.stu-build-sum \{[^}]*grid-column: 2;[^}]*position: sticky/);
+    // The same summary at every width: the builder draws it once, folded below md and open from it.
+    const builder = read("../src/screens/studio/builder.tsx");
+    expect(builder).toContain("const wide = useMinWidth(DETAIL_PANE_MIN_PX);");
+    expect(builder).toContain("const open = sumOpen ?? wide;");
+    expect((builder.match(/<SummaryCard/g) ?? []).length).toBe(1);
   });
 
   it("the filter column's controls are the sheet's controls: one component, two homes", () => {

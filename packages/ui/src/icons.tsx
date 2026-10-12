@@ -200,3 +200,44 @@ export const IconInfo = ({ size }: IconProps) => (
     <path d="M12 11v5.5M12 7.6v.1" />
   </svg>
 );
+
+/** ↶ — undo the last edit (the Studio's builder). */
+export const IconUndo = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M9 14 4.5 9.5 9 5M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3" />
+  </svg>
+);
+
+/** ↷ — redo it. */
+export const IconRedo = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M15 14l4.5-4.5L15 5M19.5 9.5H10a5.5 5.5 0 0 0 0 11h3" />
+  </svg>
+);
+
+/** ⋯ — more about a part or a move. */
+export const IconMore = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M5.5 12h.01M12 12h.01M18.5 12h.01" strokeWidth={3} />
+  </svg>
+);
+
+/** ↑ / ↓ — move up or down one place. */
+export const IconArrowUp = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M12 19.5v-15M6 10.5l6-6 6 6" />
+  </svg>
+);
+
+export const IconArrowDown = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M12 4.5v15M6 13.5l6 6 6-6" />
+  </svg>
+);
+
+/** ‹ — back. */
+export const IconBack = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M15 6l-6 6 6 6" />
+  </svg>
+);
