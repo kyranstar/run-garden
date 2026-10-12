@@ -73,7 +73,7 @@ export function toPerformedSave(save: PerformedSessionSave, review: PendingChang
       format: e.format,
       perSide: e.perSide,
       sets: e.sets.map((s, i) => ({
-        setIndex: i, side: null, reps: whole(s.reps), seconds: whole(s.secs),
+        setIndex: i, side: s.side ?? null, reps: whole(s.reps), seconds: whole(s.secs),
         load: s.w ? { v: s.w.v, u: s.w.u } : null, done: true, flags: [...e.flags],
       })),
     })),

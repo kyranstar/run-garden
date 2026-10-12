@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Builder, Lib, Planner, Records, Recorder, Review, type BuildInput, type Live, type RecorderMeta, type Theme } from "../src/index.js";
+import { Builder, Lib, Planner, Records, Recorder, Review, type BuildInput, type Live, type RecorderMeta, type Step, type Theme } from "../src/index.js";
 import { block, checksFor, data, home, themed } from "./builder-fixtures.js";
 
 // Ported from the standalone tests/recorder.test.js, plus the recorder regressions the handoff lists.
@@ -135,25 +135,55 @@ test("a timed hold counts once you've held at least half of it, at the time you 
 
 test("a hold to max ended with Done counts at the time held, however short or long: where you stopped is the result", () => {
   const plan = planFor({ theme: themed(["straight"]), minutes: 40 });
-  const i = plan.steps.findIndex(s => s.kind === "timed" && s.log);
+  const i = plan.steps.findIndex(s => s.kind === "timed" && s.log && s.side === null);
   expect(i, "needs a logged timed step").toBeGreaterThanOrEqual(0);
   const step = plan.steps[i]!;
   const short = Recorder.create(data, plan, meta(plan));
   Recorder.reach(short, i);
-  Recorder.finishTimed(short, i, 3.4, true);
+  Recorder.finishTimed(short, i, 3.4, { toMax: true, done: true });
   expect(short.entries[step.exerciseId!]!.sets[step.setIndex!]).toMatchObject({ done: true, secs: 3 });
   expect(Recorder.toSession(short, { endedAt: "x" }).stepsDone).toBe(1);
   const long = Recorder.create(data, plan, meta(plan));
   Recorder.reach(long, i);
-  Recorder.finishTimed(long, i, step.seconds + 31.2, true);
+  Recorder.finishTimed(long, i, step.seconds + 31.2, { toMax: true, done: true });
   expect(long.entries[step.exerciseId!]!.sets[step.setIndex!]!.secs, "never capped at the window").toBe(step.seconds + 31);
   // Under a second is no hold; and a hold left any other way keeps the half-time rule.
   const none = Recorder.create(data, plan, meta(plan));
   Recorder.reach(none, i);
-  Recorder.finishTimed(none, i, 0.4, true);
+  Recorder.finishTimed(none, i, 0.4, { toMax: true, done: true });
   expect(none.entries[step.exerciseId!]!.sets[step.setIndex!]!.done).toBe(false);
-  Recorder.finishTimed(none, i, 3);
+  Recorder.finishTimed(none, i, 3, { toMax: true });
   expect(none.entries[step.exerciseId!]!.sets[step.setIndex!]!.done).toBe(false);
+});
+
+test("a hold to max played a side at a time logs each side as its own set: neither overwrites the other", () => {
+  const side = (s: "Left" | "Right", log: boolean): Step => ({
+    kind: "timed", slotKey: "accessory:0", block: "accessory", exerciseId: "sidePlank", side: s, setIndex: 0, setCount: 1,
+    seconds: 30, prepGap: 8, target: null, format: { id: "holds", group: null, round: null }, why: [], isNew: false, log,
+  });
+  const plan = { steps: [side("Left", false), side("Right", true)], plannedSeconds: 76, newMove: null };
+  const live = Recorder.create(data, plan, meta(plan));
+  Recorder.reach(live, 0);
+  Recorder.finishTimed(live, 0, 45.2, { toMax: true, done: true });
+  Recorder.reach(live, 1);
+  Recorder.finishTimed(live, 1, 38.6, { toMax: true, done: true });
+  expect(live.entries.sidePlank!.sets[0]).toMatchObject({ done: true, sides: { left: 45, right: 39 } });
+  Recorder.setSide(live, "sidePlank", 0, "right", 41);
+  // Never a side that was not held.
+  const one = Recorder.create(data, plan, meta(plan));
+  Recorder.reach(one, 0);
+  Recorder.finishTimed(one, 0, 20, { toMax: true, done: true });
+  Recorder.setSide(one, "sidePlank", 0, "right", 99);
+  const sets = (l: Live) => Recorder.toSession(l, { endedAt: "x" }).entries.find(e => e.id === "sidePlank")!.sets;
+  expect(sets(live)).toEqual([{ w: null, reps: null, secs: 45, side: "left" }, { w: null, reps: null, secs: 41, side: "right" }]);
+  expect(sets(one)).toEqual([{ w: null, reps: null, secs: 20, side: "left" }]);
+  // An engine build's sides (no max): one set, the last side's time, as before.
+  const engine = Recorder.create(data, plan, meta(plan));
+  Recorder.reach(engine, 0);
+  Recorder.finishTimed(engine, 0, 30);
+  Recorder.reach(engine, 1);
+  Recorder.finishTimed(engine, 1, 28);
+  expect(sets(engine)).toEqual([{ w: null, reps: null, secs: 28 }]);
 });
 
 test("done lists logged moves with a done set, and unlogged moves you reached", () => {

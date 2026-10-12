@@ -14,9 +14,11 @@
  * made, as the server applies stored swaps.
  *
  * A DOCUMENT workout's item may plan its own alternates (Stage 2 spec §11): the build carries each with its steps
- * (`fromDoc.slots`), and ⇄ offers them first, then the engine's usual offers. A document's time and its superset pairs
- * are its author's — the day's own swap at the build (`gateDoc`) holds an alternate to the validator alone — so its
- * build is held to no time budget and no pairing rule; a move the session already holds is still never offered.
+ * (`fromDoc.slots`), and ⇄ offers them first, then the library's usual offers the server worked out for the slot (the
+ * engine's offers for a document: `slots[k].offers`), then the engine's own (an engine build's). A document's time and
+ * its superset pairs are its author's — the day's own swap at the build (`gateDoc`) holds an alternate to the
+ * validator alone — so its build is held to no time budget and no pairing rule; a move the session already holds is
+ * still never offered.
  */
 import type { SessionBuildDto } from "@rg/api-client";
 import type { ExerciseRecord } from "@rg/exercise-library";
@@ -48,8 +50,9 @@ export function swapStateOf(build: SessionBuildDto): { state: SwapState; steps: 
       moveKey: Swapping.moveKeyOf(ex),
       pairing: Swapping.pairingOf(ex),
     };
-    // The item's planned alternates first, then the engine's offers (a move in both is offered once, as planned).
-    const offered = [...(build.fromDoc?.slots?.[item.slotKey]?.alternates ?? []), ...(build.alternatives[item.slotKey] ?? [])];
+    // The item's planned alternates first, then the usual offers (a move listed twice is offered once, the first time).
+    const doc = build.fromDoc?.slots?.[item.slotKey];
+    const offered = [...(doc?.alternates ?? []), ...(doc?.offers ?? []), ...(build.alternatives[item.slotKey] ?? [])];
     // The plan's own move: what a day's swap replaced, when the build offers it back; otherwise the move it holds.
     const from = build.params.swaps?.[item.slotKey]?.from ?? null;
     const original = (from && from !== item.exerciseId ? offered.find((c) => c.id === from) : undefined) ?? here;

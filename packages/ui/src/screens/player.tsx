@@ -18,7 +18,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api, type MeResponse, type ReviewBasisDto, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
 import { formatWeight, parseWeight, type Weight, type WeightUnit } from "@rg/domain";
 import type { EngineData } from "@rg/exercise-library";
-import { Lib, Prog, type SlotChoice, type Step } from "@rg/session-engine";
+import { Lib, Prog, type HoldSide, type SlotChoice, type Step } from "@rg/session-engine";
 import { Sheet, Spinner } from "../components.js";
 import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js";
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
@@ -42,8 +42,10 @@ import {
   endSession,
   fromLiveSession,
   goesToMax,
+  heldBefore,
   logTarget,
   next,
+  openHold,
   pause,
   playerData,
   prev,
@@ -60,7 +62,7 @@ import { reviewData } from "../player/review.js";
 import { discardSession, savedHere, saveSession } from "../player/save.js";
 import { ReviewScreen } from "./review.js";
 import { offeredNow } from "../player/swap.js";
-import { clockText, lengthMs, readyMs } from "../player/timer.js";
+import { clockText, elapsedMs, lengthMs, readyMs } from "../player/timer.js";
 import { holdWakeLock } from "../player/wake.js";
 
 export interface PlayerDeps {
@@ -353,6 +355,10 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const step = view?.step ?? null;
   /** The step in play is a hold to max: it counts up past its target until Done. */
   const toMax = goesToMax(state, step ?? undefined);
+  /** The step in play is a hold to max with no target, played as a set: it counts up from its start. */
+  const open = openHold(state, step ?? undefined);
+  /** Counting up with no end in sight — past a hold's target, or a hold with none: the header says time so far. */
+  const counting = open || (!!step && toMax && view?.phase === "hold" && view.elapsedMs - readyMs(step) >= step.seconds * 1000);
   /** The slot ⇄ and ⓘ are about: the step in play, or during a rest the move that comes next. */
   const focus = useMemo(() => focusStep(state), [state]);
   // What ⇄ offers now: recomputed after each swap with the engine's rules over what the build stored (player/swap.ts).
@@ -413,10 +419,13 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const openLog = () => {
     const t = logTarget(state);
     if (!t) return;
+    // A hold to max with no target: Done's card holds the seconds counted.
+    const counted = open && view ? Math.floor(view.elapsedMs / 1000) : null;
     setDraft({
       weight: t.w ? formatWeight(t.w) : "",
       reps: t.reps === null ? "" : String(t.reps),
-      secs: t.secs === null ? "" : String(t.secs),
+      secs: counted !== null ? String(counted) : t.secs === null ? "" : String(t.secs),
+      sides: t.sides ? Object.fromEntries(Object.entries(t.sides).map(([k, v]) => [k, String(v)])) : null,
       flags: Object.fromEntries(flags.map((f) => [f.id, t.entry.flags.includes(f.id)])),
     });
     setLogOpen(true);
@@ -426,10 +435,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     if (!t || !draft) return;
     const w = t.entry.log === "load" ? (draft.weight.trim() === "" ? null : (parseWeight(draft.weight, t.w?.u ?? unit) ?? t.w)) : undefined;
     const reps = t.entry.metric === "reps" ? wholeOr(draft.reps, t.reps) : undefined;
-    const secs = t.entry.metric === "time" ? wholeOr(draft.secs, t.secs) : undefined;
+    const sides = t.sides && draft.sides ? { left: wholeOr(draft.sides.left ?? "", t.sides.left ?? null), right: wholeOr(draft.sides.right ?? "", t.sides.right ?? null) } : undefined;
+    const secs = t.entry.metric === "time" && !sides ? wholeOr(draft.secs, t.secs) : undefined;
     setLogOpen(false);
     setDraft(null);
-    act((s, at) => confirmLog(s, { w, reps, secs }, draft.flags, at));
+    act((s, at) => confirmLog(s, { w, reps, secs, sides }, draft.flags, at));
   };
 
   // ── The primary action and the keys ────────────────────────────────────────────────────────────────────────────
@@ -590,7 +600,10 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
         <span className="player-count num">
           <span className="player-count-title">{title} · </span>
           {state.index + 1} of {total}
-          <span className="player-count-left"> · {clockText(left)} left</span>
+          <span className="player-count-left">
+            {" "}
+            · {counting ? `${clockText(elapsedMs(state.session, now))} elapsed` : `${clockText(left)} left`}
+          </span>
         </span>
         <span className="player-tools">
           {alternatives.length > 0 ? (
@@ -627,8 +640,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             exercise={ex}
             exercises={src.build.exercises}
             careLabel={careLabel}
-            cue={src.build.fromDoc?.slots?.[step.slotKey]?.cue ?? null}
+            cue={step.exerciseId === plannedMoveOf(src.build, step.slotKey) ? (src.build.fromDoc?.slots?.[step.slotKey]?.cue ?? null) : null}
             toMax={toMax}
+            open={open}
+            held={logOpen ? null : heldBefore(state)}
+            onEditHeld={openLog}
             log={
               logOpen && draft ? (
                 <LogCard
@@ -793,7 +809,22 @@ interface LogDraft {
   weight: string;
   reps: string;
   secs: string;
+  /** A hold to max played a side at a time: each side's seconds. */
+  sides: Partial<Record<HoldSide, string>> | null;
   flags: Record<string, boolean>;
+}
+
+/** The move a slot plays as built (the build's own steps): a document item's cue is said of it alone. */
+const plannedMoveOf = (build: { steps: readonly Step[] }, slotKey: string): string | null =>
+  build.steps.find((s) => s.kind !== "rest" && s.slotKey === slotKey)?.exerciseId ?? null;
+
+/** Where a hold to max's target sits on its ring: the fill reaches the mark at the target and goes on past it. */
+const TARGET_AT = 0.8;
+
+/** "0:44"; each side's: "0:45 left · 0:38 right". */
+function heldText(held: { secs: number | null; sides: Partial<Record<HoldSide, number>> | null }): string {
+  if (held.sides) return (["left", "right"] as const).flatMap((k) => (held.sides![k] === undefined ? [] : [`${clockText(held.sides![k]! * 1000)} ${k}`])).join(" · ");
+  return clockText((held.secs ?? 0) * 1000);
 }
 
 const wholeOr = (text: string, fallback: number | null): number | null => {
@@ -876,17 +907,21 @@ function eyebrow(step: Step, careLabel: string | null, exercise?: { contraction?
   return parts.join(" · ");
 }
 
-/** The timer's ring; `mark` puts a tick at the top, where a hold to max's fill reaches its target. */
-function Ring({ fraction, mark = false, children }: { fraction: number; mark?: boolean; children: React.ReactNode }) {
+/** The timer's ring, filling clockwise from the top; `mark` puts a tick that far round (a hold to max's target). */
+function Ring({ fraction, mark, children }: { fraction: number; mark?: number; children: React.ReactNode }) {
   const r = 46;
   const c = 2 * Math.PI * r;
   const f = Math.max(0, Math.min(1, fraction));
+  const at = (radius: number) => {
+    const a = 2 * Math.PI * (mark ?? 0);
+    return { x: 50 + radius * Math.sin(a), y: 50 - radius * Math.cos(a) };
+  };
   return (
     <div className="player-ring">
       <svg viewBox="0 0 100 100" aria-hidden="true">
         <circle className="player-ring-track" cx="50" cy="50" r={r} />
         <circle className="player-ring-fill" cx="50" cy="50" r={r} strokeDasharray={`${c * f} ${c}`} transform="rotate(-90 50 50)" />
-        {mark ? <line className="player-ring-mark" x1="50" y1="1" x2="50" y2="9" /> : null}
+        {mark !== undefined ? <line className="player-ring-mark" x1={at(41).x} y1={at(41).y} x2={at(50).x} y2={at(50).y} /> : null}
       </svg>
       <div className="player-ring-face">{children}</div>
     </div>
@@ -902,6 +937,9 @@ function StepBody({
   careLabel,
   cue,
   toMax,
+  open,
+  held: heldThen,
+  onEditHeld,
   log,
 }: {
   state: PlayerState;
@@ -910,10 +948,15 @@ function StepBody({
   exercise: SessionExerciseDto | undefined;
   exercises: Readonly<Record<string, SessionExerciseDto | undefined>>;
   careLabel: string | null;
-  /** The item's cue (a document workout's), under the move's name. */
+  /** The item's cue (a document workout's), under the move's name: only while the slot plays the move it was said of. */
   cue: string | null;
   /** A hold to max: it counts up past its target. */
   toMax: boolean;
+  /** A hold to max with no target, played as a set: it counts up from its start. */
+  open: boolean;
+  /** During the rest after a hold to max that counted: what was held. */
+  held: ReturnType<typeof heldBefore>;
+  onEditHeld: () => void;
   log: React.ReactNode;
 }) {
   const following = nextLine(state, step, exercises);
@@ -924,6 +967,14 @@ function StepBody({
         <span className="eyebrow player-eyebrow">Rest</span>
         <span className="player-big num">{clockText(view.remainingMs)}</span>
         {state.paused ? <span className="player-meta">Paused</span> : null}
+        {heldThen ? (
+          <>
+            <span className="player-meta">Held {heldText(heldThen)}</span>
+            <button type="button" className="btn" onClick={onEditHeld}>
+              Edit
+            </button>
+          </>
+        ) : null}
         {log}
         {following ? <span className="player-next">{following}</span> : null}
       </>
@@ -939,23 +990,32 @@ function StepBody({
         <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise)}</span>
         <h1 className="display player-name">{name}</h1>
         {cueLine}
-        {log ?? (
-          <>
-            <span className="player-big num">{t.reps ?? t.secs ?? "—"}</span>
-            <span className="player-meta">
-              {metric}
-              {each}
-              {t.w ? ` @ ${formatWeight(t.w)}` : ""}
-            </span>
-          </>
-        )}
+        {log ??
+          (open ? (
+            <>
+              <span className="eyebrow player-ring-label">To max</span>
+              <span className="player-big num">{clockText(Math.floor(view.elapsedMs / 1000) * 1000)}</span>
+            </>
+          ) : (
+            <>
+              <span className="player-big num">{t.reps ?? t.secs ?? "—"}</span>
+              <span className="player-meta">
+                {metric}
+                {each}
+                {t.w ? ` @ ${formatWeight(t.w)}` : ""}
+              </span>
+            </>
+          ))}
         {following ? <span className="player-next">{following}</span> : null}
       </>
     );
   }
   const ready = view.phase === "ready";
-  // A hold to max counts up from the end of its get-ready: the ring fills to the target, at the mark, and stays full.
+  // A hold to max counts up from the end of its get-ready: the ring reaches the mark at the target and goes on, full at
+  // a quarter past it; past the target it says by how much.
   const held = toMax && !ready ? Math.max(0, view.elapsedMs - readyMs(step)) : null;
+  const target = step.seconds * 1000;
+  const over = held !== null && held >= target + 1000 ? held - target : null;
   return (
     <>
       <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise)}</span>
@@ -968,12 +1028,12 @@ function StepBody({
           <span className="player-big num">{clockText(view.remainingMs)}</span>
         </Ring>
       ) : (
-        <Ring fraction={view.phaseMs > 0 ? held / view.phaseMs : 1} mark>
-          <span className="eyebrow player-ring-label">To max</span>
+        <Ring fraction={target > 0 ? (held / target) * TARGET_AT : 1} mark={TARGET_AT}>
+          <span className="eyebrow player-ring-label">{over === null ? "To max" : `+${clockText(Math.floor(over / 1000) * 1000)}`}</span>
           <span className="player-big num">{clockText(Math.floor(held / 1000) * 1000)}</span>
         </Ring>
       )}
-      {toMax ? <span className="player-meta">Target {clockText(step.seconds * 1000)}</span> : null}
+      {toMax ? <span className="player-meta">Target {clockText(target)}</span> : null}
       {state.paused ? <span className="player-meta">Paused</span> : null}
       {following ? <span className="player-next">{following}</span> : null}
     </>
@@ -1027,6 +1087,14 @@ function Actions({
     );
   }
   if (step.kind === "rest") {
+    // The log card opened from the rest (Edit, after a hold to max): Confirm keeps the rest going.
+    if (logOpen) {
+      return (
+        <button type="button" className="btn btn-primary player-primary" onClick={onConfirm}>
+          Confirm
+        </button>
+      );
+    }
     return (
       <div className="btn-row player-pair">
         <button type="button" className="btn" onClick={onAddRest}>
@@ -1039,11 +1107,15 @@ function Actions({
     );
   }
   if (toMax && phase === "hold") {
-    // Holding to max: Done ends it at the time held (the primary action, as a set's Done).
+    // Holding to max: Done ends it at the time held (the primary action, as a set's Done); Skip moves on, logging
+    // nothing of it.
     return (
       <div className="btn-row player-pair">
         <button type="button" className="btn" onClick={onPause}>
           {state.paused ? "Resume" : "Pause"}
+        </button>
+        <button type="button" className="btn" onClick={onSkip}>
+          Skip
         </button>
         <button type="button" className="btn btn-primary" onClick={onPrimary}>
           Done
@@ -1093,6 +1165,10 @@ function LogCard({
     const v = Math.max(0, (Number.isFinite(n) ? n : 0) + by);
     setDraft({ ...draft, [field]: String(v) });
   };
+  const stepSide = (side: HoldSide, by: number) => {
+    const n = Number(draft.sides?.[side]);
+    setDraft({ ...draft, sides: { ...draft.sides, [side]: String(Math.max(0, (Number.isFinite(n) ? n : 0) + by)) } });
+  };
   return (
     <div className="player-log" role="group" aria-label="Log this set">
       {t.entry.log === "load" ? (
@@ -1107,7 +1183,23 @@ function LogCard({
           onMore={() => stepW(1)}
         />
       ) : null}
-      {t.entry.metric === "reps" ? (
+      {t.sides && draft.sides ? (
+        (["left", "right"] as const)
+          .filter((k) => t.sides![k] !== undefined)
+          .map((k) => (
+            <Stepper
+              key={k}
+              label={k === "left" ? "Left seconds" : "Right seconds"}
+              inputMode="numeric"
+              value={draft.sides![k] ?? ""}
+              onChange={(v) => setDraft({ ...draft, sides: { ...draft.sides, [k]: v } })}
+              lessLabel={k === "left" ? "Fewer seconds on the left" : "Fewer seconds on the right"}
+              moreLabel={k === "left" ? "More seconds on the left" : "More seconds on the right"}
+              onLess={() => stepSide(k, -5)}
+              onMore={() => stepSide(k, 5)}
+            />
+          ))
+      ) : t.entry.metric === "reps" ? (
         <Stepper
           label="Reps"
           inputMode="numeric"

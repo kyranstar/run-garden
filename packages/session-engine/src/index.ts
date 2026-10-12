@@ -17,7 +17,7 @@ export {
   type ProgramState, type TodayView,
 } from "./planner.js";
 export {
-  Recorder, Review, type EndOptions, type Live, type LiveEntry, type LiveSet, type PendingChanges, type PerformedSessionSave,
-  type PlanSteps, type RecorderMeta, type ReviewOffer, type ReviewState, type SavedEntry,
+  Recorder, Review, type EndOptions, type HoldEnd, type HoldSide, type Live, type LiveEntry, type LiveSet,
+  type PendingChanges, type PerformedSessionSave, type PlanSteps, type RecorderMeta, type ReviewOffer, type ReviewState, type SavedEntry,
 } from "./recorder.js";
 export { historyFromPerformed, toPerformedSave, type PerformedSaveContext } from "./performed.js";

@@ -17,12 +17,15 @@
  *    block, no new move and no progression targets of the engine's; its mode is its effort's. The engine's swap list
  *    (`alternatives`) stays empty: the sheet's ⇄ rebuilds with the day's swaps, which a document's build does not run.
  *    What the player reads of each item beside its steps (Stage 2 Task 8) is `slots` (stored as `fromDoc.slots`): its
- *    cue, a hold to max, and its planned alternates — each with the slot's steps as the document plays with it in the
- *    item's place (`withAlternate`, the day's own swap) and its record among the build's moves, for ⇄ offline.
+ *    cue, a hold to max, its planned alternates and the library's usual offers (`docSlots`) — each with the slot's steps
+ *    as the document plays with it in the item's place (`inPlace`, the day's own swap) and its record among the build's
+ *    moves, for ⇄ offline.
+ *  - `slotsForDay` — a locked build's alternates and offers judged again with the day's reading (Start of a build sent
+ *    to the watch): one the day now keeps out is taken off.
  */
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
 import { sessionLead } from "@rg/domain";
-import { EXERCISES, PROFILES, isProfileId, type ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, PROFILES, isPlyometric, isProfileId, type ExerciseRecord } from "@rg/exercise-library";
 import { Swapping, type SlotChoice, type Step } from "@rg/session-engine";
 import {
   DocTooLargeError,
@@ -40,7 +43,7 @@ import {
 import type { BuildItem, BuildPayload, CheckAnswer, ExerciseSlice, SessionView } from "./session-build.js";
 
 /** Bump when a document build's shape or rules change: a stored build of an older version is then built again. */
-export const DOC_BUILD_VERSION = "doc-build-2";
+export const DOC_BUILD_VERSION = "doc-build-3";
 
 /** The issue codes that keep a move out on the day — what an alternate can stand in for. */
 const GATE_CODES: ReadonlySet<DocIssueCode> = new Set(["condition_never", "condition_pattern", "condition_gate", "condition_gate_pending"]);
@@ -64,8 +67,13 @@ export interface DocSlot {
   cue?: string;
   /** "To max" (`dose.max`): the slot's holds count up past their window until Done, and log the seconds held. */
   max?: true;
-  /** The item's planned alternates, in its order, each with the slot's steps with it in place: ⇄ offers them first. */
+  /**
+   * The item's planned alternates, each with the slot's steps with it in place: ⇄ offers them first — those the day
+   * judges clean in the document's order, then those that cost something, the cost in their reasons.
+   */
   alternates?: SlotChoice[];
+  /** The library's usual offers for the slot (`libraryOffers`), after the planned alternates. */
+  offers?: SlotChoice[];
 }
 
 /** What a document build says of its document (`BuildPayload.fromDoc`). */
@@ -88,15 +96,13 @@ export interface GatedDoc {
 type Exercise = Extract<WorkoutItem, { kind: "exercise" }>;
 
 /**
- * The item with its alternate `k` (the library's `to`) in its place, as the day's swap makes it: the alternate takes
- * the item's place and dose, its why (if it has one) replaces the item's, and what was said of the original move alone
- * — its progression, its test, its alternates — goes with it; the other alternates stay.
+ * The item with another move (the library's `to`) in its place, as the day's swap makes it: the move takes the item's
+ * place and dose, its why (if it has one) replaces the item's, and what was said of the original move alone — its
+ * progression, its test, its cue, its alternates — goes with it; `rest`, the other alternates, stay.
  */
-function withAlternate(item: Exercise, k: number, to: string): Exercise {
-  const alt = item.alternates![k]!;
-  const rest = item.alternates!.filter((_, ai) => ai !== k);
-  const { progression: _progression, test: _test, alternates: _alternates, ...kept } = item;
-  return { ...kept, libraryId: to, ...(alt.why ? { why: alt.why } : {}), ...(rest.length > 0 ? { alternates: rest } : {}) };
+function inPlace(item: Exercise, to: string, why: string | undefined, rest: NonNullable<Exercise["alternates"]> = []): Exercise {
+  const { progression: _progression, test: _test, cue: _cue, alternates: _alternates, ...kept } = item;
+  return { ...kept, libraryId: to, ...(why ? { why } : {}), ...(rest.length > 0 ? { alternates: rest } : {}) };
 }
 
 /** An issue at one of an item's alternates — an option for a swap, never what is played. */
@@ -139,7 +145,7 @@ export function gateDoc(doc: WorkoutDoc, ctx: ValidateCtx): GatedDoc {
     const k = clean >= 0 ? clean : options.findIndex(standsIn((x) => x.severity === "error"));
     if (k < 0) continue;
     const to = find(item.alternates![k]!.libraryId)!.id;
-    parts[p]!.items[i] = withAlternate(item, k, to);
+    parts[p]!.items[i] = inPlace(item, to, item.alternates![k]!.why, item.alternates!.filter((_, ai) => ai !== k));
     swaps.push({ path, from: own, to, reason: e.message });
   }
   // The day's document, judged again: an alternate the day keeps out is taken off its item (the player's swap must
@@ -238,6 +244,8 @@ export interface DocBuildInput {
   location: SessionView["location"];
   checks: Record<string, CheckAnswer>;
   library: readonly ExerciseRecord[];
+  /** The day's judgement (`dayValidateCtx`, with the athlete's set-aside moves and the place's gear): the options' gate. */
+  judge: ValidateCtx;
 }
 
 /** What `materializeDocBuild` makes: the build without what only storing it decides, its view, and its slots. */
@@ -248,14 +256,114 @@ export interface MaterializedBuild {
   slots: Record<string, DocSlot>;
 }
 
+/** How many of the library's usual offers a slot holds. */
+const OFFERS = 3;
+/** How many of the library's moves are judged for a slot's offers, best first. */
+const OFFER_CANDIDATES = 9;
+
+/** A move a slot can take instead of its own: its record, what ⇄ says of it, and the why it brings to the item. */
+interface SlotOption {
+  to: ExerciseRecord;
+  reasons: string[];
+  why: string | undefined;
+}
+
+const optionKey = (slotKey: string, id: string): string => `${slotKey}|${id}`;
+
+/** The item without its alternates (an item a probe does not ask about). */
+const bare = (item: WorkoutItem): WorkoutItem => {
+  if (item.kind !== "exercise" || !item.alternates) return item;
+  const { alternates: _alternates, ...rest } = item;
+  return rest;
+};
+
 /**
- * What each slot's item says beside its steps: its cue, a hold to max, its planned alternates (a move the library
- * lacks, or the item's own move, is none). An alternate's steps are the slot's steps in the document with it in the
- * item's place: every item's k-th alternate goes in at once — a slot's steps are its own item's (its dose, its move,
- * its part's format and rounds) — so the alternates cost at most three more builds of the steps. A set of alternates
- * that would take the document past its size bound is tried one by one; one that alone does is not offered.
+ * Each asked item's moves judged by the validator as its alternates, in the document as it stands — three at a time,
+ * the most an item holds: the issues raised at each, by slot key and move id. A probe the validator cannot read at all
+ * (its bounds, its size) judges every move it asked about with that issue.
  */
-function docSlots(doc: WorkoutDoc, library: readonly ExerciseRecord[]): { slots: Record<string, DocSlot>; records: ExerciseRecord[] } {
+function judgeAsAlternates(
+  doc: WorkoutDoc,
+  asked: ReadonlyArray<{ at: DocSlotKey; ids: readonly string[] }>,
+  ctx: ValidateCtx,
+): Map<string, DocIssue[]> {
+  const out = new Map<string, DocIssue[]>();
+  const rounds = Math.ceil(Math.max(0, ...asked.map((a) => a.ids.length)) / 3);
+  for (let r = 0; r < rounds; r++) {
+    const parts = doc.parts.map((p) => ({ ...p, items: p.items.map(bare) }));
+    const probing = asked.map((a) => ({ at: a.at, ids: a.ids.slice(3 * r, 3 * r + 3) })).filter((a) => a.ids.length > 0);
+    for (const a of probing) {
+      const item = doc.parts[a.at.part]!.items[a.at.item] as Exercise;
+      parts[a.at.part]!.items[a.at.item] = { ...item, alternates: a.ids.map((libraryId) => ({ libraryId })) };
+    }
+    const issues = validateWorkoutDoc({ ...doc, parts }, ctx);
+    const unread = issues.filter((i) => i.code === "bounds" || i.code === "too_large");
+    for (const a of probing) {
+      a.ids.forEach((id, k) => {
+        const path = `parts[${a.at.part}].items[${a.at.item}].alternates[${k}].libraryId`;
+        out.set(optionKey(a.at.key, id), unread.length > 0 ? unread : issues.filter((i) => i.path === path));
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The library's usual offers for an exercise item (`rec`, its move), best first and nine at most: its easier versions
+ * (two steps down), then its family's other versions, then moves of its patterns — each dosed the same way (reps, time
+ * or breaths: the item's dose stays), never a jump in a move's place that is not one, never a move `away` names: a
+ * version of a move the document holds elsewhere (`keys`: family and regions, so the document's own moves too), or one
+ * the item already plans as an alternate (`ids`).
+ */
+export function libraryOffers(
+  rec: ExerciseRecord,
+  library: readonly ExerciseRecord[],
+  find: (id: string) => ExerciseRecord | undefined,
+  away: { ids: ReadonlySet<string>; keys: ReadonlySet<string> },
+): Array<{ to: ExerciseRecord; reason: string }> {
+  const kind = (r: ExerciseRecord): string => (r.dose.type === "carry" ? "time" : r.dose.type);
+  const seen = new Set<string>([rec.id]);
+  const out: Array<{ to: ExerciseRecord; reason: string }> = [];
+  const take = (r: ExerciseRecord | undefined, reason: string): void => {
+    if (!r || seen.has(r.id) || out.length >= OFFER_CANDIDATES) return;
+    seen.add(r.id);
+    if (away.ids.has(r.id) || away.keys.has(Swapping.moveKeyOf(r)) || kind(r) !== kind(rec)) return;
+    if (isPlyometric(r) && !isPlyometric(rec)) return;
+    out.push({ to: r, reason });
+  };
+  let frontier = [...rec.easier];
+  for (let depth = 0; depth < 2 && frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      const r = find(id);
+      if (!r) continue;
+      next.push(...r.easier);
+      take(r, "An easier version");
+    }
+    frontier = next;
+  }
+  for (const r of library) if (r.family === rec.family) take(r, "Another version");
+  for (const r of library) if (r.patterns.some((p) => rec.patterns.includes(p))) take(r, "The same movement");
+  return out;
+}
+
+/**
+ * What each slot's item says beside its steps: its cue, a hold to max, and the moves ⇄ offers — its planned
+ * alternates, then the library's usual offers (`libraryOffers`), all judged by the validator as the item's alternates
+ * with the day's judgement (`judge`). An alternate the day keeps out (an error) is never offered; one that costs
+ * something (a warning) comes after the clean ones, the cost in its reasons; an offer is only ever a clean one, three
+ * at most. A move the library lacks, or the item's own move, is none.
+ *
+ * A move's steps are the slot's steps in the document with it in the item's place (`inPlace`): every item's k-th move
+ * goes in at once — a slot's steps are its own item's (its dose, its move, its part's format and rounds) — so the moves
+ * cost at most six more builds of the steps. A set that would take the document past its size bound is tried one by
+ * one; one that alone does is not offered.
+ */
+function docSlots(
+  doc: WorkoutDoc,
+  library: readonly ExerciseRecord[],
+  judge: ValidateCtx,
+): { slots: Record<string, DocSlot>; records: ExerciseRecord[] } {
   const find = makeLibraryIndex(library);
   const keys = docSlotKeys(doc);
   const itemAt = (s: DocSlotKey) => doc.parts[s.part]!.items[s.item]!;
@@ -266,18 +374,56 @@ function docSlots(doc: WorkoutDoc, library: readonly ExerciseRecord[]): { slots:
     const max = item.kind !== "run" && item.dose.max === true;
     if (item.cue || max) slots[s.key] = { ...(item.cue ? { cue: item.cue } : {}), ...(max ? { max: true as const } : {}) };
   }
-  /** An item's alternate `k` (the library's `to`) put in its place. */
+
+  const exercises = keys.flatMap((at) => {
+    const item = itemAt(at);
+    return item.kind === "exercise" ? [{ at, item, rec: find(item.libraryId) }] : [];
+  });
+  const held = exercises.flatMap((x) => (x.rec ? [x.rec] : []));
+  const asked = exercises.map(({ at, item, rec }) => {
+    const own = rec?.id ?? item.libraryId;
+    const planned: Array<{ to: ExerciseRecord; why: string | undefined }> = [];
+    for (const alt of item.alternates ?? []) {
+      const to = find(alt.libraryId);
+      if (to && to.id !== own && !planned.some((p) => p.to.id === to.id)) planned.push({ to, why: alt.why });
+    }
+    const away = { ids: new Set(planned.map((p) => p.to.id)), keys: new Set(held.filter((r) => r.id !== own).map((r) => Swapping.moveKeyOf(r))) };
+    return { at, item, planned, offered: rec ? libraryOffers(rec, library, find, away) : [] };
+  });
+  const judged = judgeAsAlternates(doc, asked.map((a) => ({ at: a.at, ids: [...a.planned, ...a.offered].map((o) => o.to.id) })), judge);
+  const issuesOf = (slotKey: string, id: string): DocIssue[] => judged.get(optionKey(slotKey, id)) ?? [];
+
+  const lists = asked.map(({ at, item, planned, offered }) => {
+    const clean: SlotOption[] = [];
+    const costly: SlotOption[] = [];
+    for (const p of planned) {
+      const issues = issuesOf(at.key, p.to.id);
+      if (issues.some((i) => i.severity === "error")) continue;
+      const costs = issues.map((i) => i.message);
+      (costs.length > 0 ? costly : clean).push({ to: p.to, why: p.why, reasons: [...(p.why ? [p.why] : []), ...costs] });
+    }
+    const offers = offered
+      .filter((o) => issuesOf(at.key, o.to.id).length === 0)
+      .slice(0, OFFERS)
+      .map((o): SlotOption => ({ to: o.to, why: undefined, reasons: [o.reason] }));
+    const all = [
+      ...[...clean, ...costly].map((option) => ({ option, list: "alternates" as const })),
+      ...offers.map((option) => ({ option, list: "offers" as const })),
+    ];
+    return { at, item, all };
+  });
+
+  /** A move put in an item's place. */
   interface Put {
     at: DocSlotKey;
     item: Exercise;
-    k: number;
-    to: ExerciseRecord;
-    why: string | undefined;
+    option: SlotOption;
+    list: "alternates" | "offers";
   }
-  /** The slots' steps with each alternate in its item's place; null when that takes the document past its bound. */
+  /** The slots' steps with each move in its item's place; null when that takes the document past its bound. */
   const playedWith = (puts: readonly Put[]): Step[] | null => {
     const parts = doc.parts.map((p) => ({ ...p, items: [...p.items] }));
-    for (const x of puts) parts[x.at.part]!.items[x.at.item] = withAlternate(x.item, x.k, x.to.id);
+    for (const x of puts) parts[x.at.part]!.items[x.at.item] = inPlace(x.item, x.option.to.id, x.option.why);
     try {
       return playerStepsFromDoc({ ...doc, parts }, library);
     } catch (e) {
@@ -286,38 +432,52 @@ function docSlots(doc: WorkoutDoc, library: readonly ExerciseRecord[]): { slots:
     }
   };
   const records: ExerciseRecord[] = [];
-  const planning = keys.flatMap((at) => {
-    const item = itemAt(at);
-    return item.kind === "exercise" && item.alternates ? [{ at, item, alternates: item.alternates }] : [];
-  });
-  const most = Math.max(0, ...planning.map((x) => x.alternates.length));
+  const most = Math.max(0, ...lists.map((l) => l.all.length));
   for (let k = 0; k < most; k++) {
-    const puts: Put[] = [];
-    for (const { at, item, alternates } of planning) {
-      const alt = alternates[k];
-      const to = alt ? find(alt.libraryId) : undefined;
-      if (!to || to.id === (find(item.libraryId)?.id ?? item.libraryId)) continue;
-      puts.push({ at, item, k, to, why: alt!.why });
-    }
-    if (puts.length === 0) continue;
+    const puts = lists.flatMap((l): Put[] => (l.all[k] ? [{ at: l.at, item: l.item, ...l.all[k]! }] : []));
     const together = playedWith(puts);
     for (const x of puts) {
       const played = together ?? playedWith([x]);
       if (!played) continue;
       const choice: SlotChoice = {
-        id: x.to.id,
-        name: x.to.name,
-        reasons: x.why ? [x.why] : [],
+        id: x.option.to.id,
+        name: x.option.to.name,
+        reasons: x.option.reasons,
         steps: played.filter((st) => st.kind !== "rest" && st.slotKey === x.at.key),
-        moveKey: Swapping.moveKeyOf(x.to),
-        pairing: Swapping.pairingOf(x.to),
+        moveKey: Swapping.moveKeyOf(x.option.to),
+        pairing: Swapping.pairingOf(x.option.to),
       };
       const slot = (slots[x.at.key] ??= {});
-      slot.alternates = [...(slot.alternates ?? []), choice];
-      records.push(x.to);
+      slot[x.list] = [...(slot[x.list] ?? []), choice];
+      records.push(x.option.to);
     }
   }
   return { slots, records };
+}
+
+/**
+ * A locked document build's alternates and offers judged again with the day's reading — Start of a build sent to the
+ * watch, which nothing rebuilds: one the day now keeps out (an error) is taken off, as `gateDoc` takes it off a build
+ * made today; a slot left saying nothing goes. Only options change: never what is played.
+ */
+export function slotsForDay(slots: Readonly<Record<string, DocSlot>>, snapshot: WorkoutDoc, ctx: ValidateCtx): Record<string, DocSlot> {
+  const where = new Map(docSlotKeys(snapshot).map((s) => [s.key, s]));
+  const asked = Object.entries(slots).flatMap(([key, slot]) => {
+    const at = where.get(key);
+    const ids = [...(slot.alternates ?? []), ...(slot.offers ?? [])].map((c) => c.id);
+    return at && snapshot.parts[at.part]!.items[at.item]!.kind === "exercise" && ids.length > 0 ? [{ at, ids }] : [];
+  });
+  const judged = judgeAsAlternates(snapshot, asked, ctx);
+  const open = (key: string) => (c: SlotChoice): boolean => !(judged.get(optionKey(key, c.id)) ?? []).some((i) => i.severity === "error");
+  const out: Record<string, DocSlot> = {};
+  for (const [key, slot] of Object.entries(slots)) {
+    const { alternates, offers, ...said } = slot;
+    const a = (alternates ?? []).filter(open(key));
+    const o = (offers ?? []).filter(open(key));
+    const kept: DocSlot = { ...said, ...(a.length > 0 ? { alternates: a } : {}), ...(o.length > 0 ? { offers: o } : {}) };
+    if (Object.keys(kept).length > 0) out[key] = kept;
+  }
+  return out;
 }
 
 /** The build the player plays, made from a (gated) document (see the header). */
@@ -345,7 +505,7 @@ export function materializeDocBuild(doc: WorkoutDoc, input: DocBuildInput): Mate
       why: [...s.why],
     });
   }
-  const { slots, records } = docSlots(doc, input.library);
+  const { slots, records } = docSlots(doc, input.library, input.judge);
   for (const rec of records) if (!exercises[rec.id]) exercises[rec.id] = sliceOf(rec);
   const mode = modeOfEffort(doc.intent.effort);
   const minutes = deriveDoc(doc, input.library).estimatedMinutes;

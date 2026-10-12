@@ -392,8 +392,9 @@ export async function reviewBasis(db: Db, userId: string, workoutId: string, ctx
   const weeklyGoal = parsed.success ? parsed.data.weeklyGoal : 4;
 
   const data = engineDataFor(await activeProfileIds(db, userId), []);
-  // The moves the session may hold by its end: its own, and what ⇄ offers (the engine's, a document's planned alternates).
-  const offered = [...Object.values(build.alternatives).flat(), ...Object.values(build.fromDoc?.slots ?? {}).flatMap((s) => s.alternates ?? [])];
+  // The moves the session may hold by its end: its own, and what ⇄ offers (the engine's; a document's alternates and offers).
+  const planned = Object.values(build.fromDoc?.slots ?? {}).flatMap((s) => [...(s.alternates ?? []), ...(s.offers ?? [])]);
+  const offered = [...Object.values(build.alternatives).flat(), ...planned];
   const ids = [...new Set([...build.items.map((i) => i.exerciseId), ...offered.map((a) => a.id)])];
   // A summary, never the whole history (ruling 2b-R11): its cost does not grow with the account's sessions.
   const records = await recordsBaseline(db, userId, data, { ids, date: build.date, weeklyGoal });

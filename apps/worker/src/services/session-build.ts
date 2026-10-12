@@ -92,7 +92,7 @@ import {
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
-import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, snapshotErrors, type DocBuildInfo, type DocSlot } from "./doc-build.js";
+import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, slotsForDay, snapshotErrors, type DocBuildInfo, type DocSlot } from "./doc-build.js";
 import { DocTooLargeError, type DocIssue, type ValidateCtx } from "@rg/workout";
 
 /**
@@ -746,13 +746,14 @@ function toPayload(b: BuildRow, hidden: ReadonlySet<string>): { build: BuildPayl
   return { build: { buildId: b.id, version: b.version, ...stored.build, alternatives, ...slots }, view: stored.view };
 }
 
-/** A document build's slots with the hidden moves out of their alternates (a slot left saying nothing is dropped). */
+/** A document build's slots with the hidden moves out of their alternates and offers (a slot left saying nothing goes). */
 function withoutHidden(slots: Readonly<Record<string, DocSlot>>, hidden: ReadonlySet<string>): Record<string, DocSlot> {
   const out: Record<string, DocSlot> = {};
   for (const [key, slot] of Object.entries(slots)) {
-    const { alternates, ...said } = slot;
-    const kept = (alternates ?? []).filter((a) => !hidden.has(a.id));
-    const next: DocSlot = kept.length > 0 ? { ...said, alternates: kept } : said;
+    const { alternates, offers, ...said } = slot;
+    const a = (alternates ?? []).filter((c) => !hidden.has(c.id));
+    const o = (offers ?? []).filter((c) => !hidden.has(c.id));
+    const next: DocSlot = { ...said, ...(a.length > 0 ? { alternates: a } : {}), ...(o.length > 0 ? { offers: o } : {}) };
     if (Object.keys(next).length > 0) out[key] = next;
   }
   return out;
@@ -1390,10 +1391,11 @@ async function commitDocBuild(
   };
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return reuseStored(db, userId, s, previous, ctx);
 
-  const gated = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, docValidateCtx(context, checks, date, ctx.today));
+  const judge = docValidateCtx(context, checks, date, ctx.today);
+  const gated = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, judge);
   let made: ReturnType<typeof materializeDocBuild>;
   try {
-    made = materializeDocBuild(gated.doc, { date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: EXERCISES });
+    made = materializeDocBuild(gated.doc, { date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: EXERCISES, judge });
   } catch (e) {
     // Too large to build (`playerStepsFromDoc` checks the bound before making a step) — today, ahead, or grown past it
     // by the day's swap: refused with the issue, nothing materialised, never a 500.
@@ -1491,15 +1493,24 @@ async function lockDocBuild(
 /**
  * A sent document build, about to Start (it is locked: nothing can be swapped): its snapshot judged with the day's
  * reading (`snapshotErrors`). A move the day now keeps out refuses Start with the issues (`GatedError`); take it off
- * the watch to rebuild.
+ * the watch to rebuild. What ⇄ may offer is judged too (`slotsForDay`): the build's payload with an alternate or offer
+ * the day now keeps out taken off — only its options, never what it plays (nor the watch's copy) — when one is; else
+ * null. Reads only: the caller writes it as the build starts.
  */
-async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: BuildRow, today: string): Promise<void> {
+async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: BuildRow, today: string): Promise<StoredBuild | null> {
   const snapshot = parseStoredWorkoutDoc(sent.workoutDoc);
-  if (!snapshot) return;
+  if (!snapshot) return null;
   const profiles = await activeProfilesOf(db, userId);
   const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, profiles);
-  const errors = snapshotErrors(snapshot, dayValidateCtx({ profiles, checks, date: row.effectiveDate, today }));
+  const day = dayValidateCtx({ profiles, checks, date: row.effectiveDate, today });
+  const errors = snapshotErrors(snapshot, day);
   if (errors.length > 0) throw new GatedError(errors);
+  const stored = storedOf(sent);
+  const slots = stored.build.fromDoc?.slots;
+  if (!slots) return null;
+  const open = slotsForDay(slots, snapshot, day);
+  if (JSON.stringify(open) === JSON.stringify(slots)) return null;
+  return { ...stored, build: { ...stored.build, fromDoc: { ...stored.build.fromDoc!, slots: open } } };
 }
 
 /**
@@ -1608,8 +1619,9 @@ export async function lockCurrentBuild(
         if (row.effectiveDate !== today) throw new NotTodayError(row.effectiveDate, today);
         if (buildId !== sent) throw new StaleBuildError(await readResponse(db, userId, row, today, builds), false);
         // A document workout re-gates at Start (Stage 2 spec §10), even the very build on the watch.
-        if (docOriginRow(row)) await refuseGatedSnapshot(db, userId, row, locked, today);
+        const trimmed = docOriginRow(row) ? await refuseGatedSnapshot(db, userId, row, locked, today) : null;
         if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
+        if (trimmed) await db.update(sessionBuilds).set({ payload: trimmed as unknown as Record<string, unknown> }).where(eq(sessionBuilds.id, locked.id));
         await db
           .update(plannedWorkouts)
           .set({ contentState: "started", updatedAt: now })

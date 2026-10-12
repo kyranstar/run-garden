@@ -176,6 +176,40 @@ export function docBuild(over: Partial<SessionBuildDto> = {}): SessionBuildDto {
 
 export const docView = (): SessionViewDto => view({ theme: null, proposedTheme: null, block: null, newMove: null });
 
+/**
+ * A document build of holds to max, each followed by a rest (Task 8 fix round 1):
+ *
+ *   0  timed  prep:0       Low lunge · Left    3 s get-ready, target 45 s   (the document's per-side windows: the left
+ *   1  timed  prep:0       Low lunge · Right   3 s get-ready, target 45 s    unlogged, the right logged)
+ *   2  rest   prep:0       30 s
+ *   3  timed  accessory:0  Wall sit            8 s get-ready, target 40 s
+ *   4  rest   accessory:0  30 s
+ *   5  set    cooldown:0   Reclined butterfly  a timed move to max with no target: played as a set
+ */
+export function maxBuild(): SessionBuildDto {
+  const holds = { id: "holds" as const, group: null, round: null };
+  const side = (s: "Left" | "Right"): Step =>
+    step({ kind: "timed", slotKey: "prep:0", block: "prep", exerciseId: "lowLunge", side: s, setIndex: 0, setCount: 1, seconds: 45, prepGap: 3, format: holds, log: s === "Right" });
+  const all = [
+    side("Left"),
+    side("Right"),
+    step({ kind: "rest", slotKey: "prep:0", block: "prep", seconds: 30 }),
+    step({ kind: "timed", slotKey: "accessory:0", block: "accessory", exerciseId: "wallSit", setIndex: 0, setCount: 1, seconds: 40, prepGap: 8, format: holds, log: true }),
+    step({ kind: "rest", slotKey: "accessory:0", block: "accessory", seconds: 30 }),
+    step({ kind: "set", slotKey: "cooldown:0", block: "cooldown", exerciseId: "reclinedButterfly", setIndex: 0, setCount: 1, seconds: 60, format: holds, log: true }),
+  ];
+  return docBuild({
+    steps: all,
+    plannedSeconds: all.reduce((n, s) => n + s.seconds + s.prepGap, 0),
+    items: [
+      item({ slotKey: "prep:0", block: "prep", exerciseId: "lowLunge", format: "holds" }),
+      item({ slotKey: "accessory:0", block: "accessory", exerciseId: "wallSit", format: "holds" }),
+      item({ slotKey: "cooldown:0", block: "cooldown", exerciseId: "reclinedButterfly", format: "holds" }),
+    ],
+    fromDoc: { rev: 1, swaps: [], blocked: [], slots: { "prep:0": { max: true }, "accessory:0": { max: true }, "cooldown:0": { max: true } } },
+  });
+}
+
 export function view(over: Partial<SessionViewDto> = {}): SessionViewDto {
   return {
     mode: "consistent",

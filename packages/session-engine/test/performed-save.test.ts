@@ -54,6 +54,19 @@ const asHistory = (s: PerformedSessionSave): HistorySession => ({
 /** Through the outbox and the network: JSON, then the server's parse. */
 const overTheWire = (w: PerformedSessionWire): PerformedSessionWire => performedSessionSaveSchema.parse(JSON.parse(JSON.stringify(w)));
 
+describe("a hold to max played a side at a time (Stage 2 Task 8)", () => {
+  test("goes over the wire as a set per side, each naming its side", () => {
+    const plan = Builder.build(data, input());
+    const save = Recorder.toSession(Recorder.create(data, plan, meta(plan)), { endedAt: "2026-09-29T18:40:00.000Z" });
+    save.entries = [{
+      id: "sidePlank", implement: null, log: "time", metric: "time", perSide: true, format: "holds", flags: [],
+      sets: [{ w: null, reps: null, secs: 45, side: "left" }, { w: null, reps: null, secs: 39, side: "right" }],
+    } as PerformedSessionSave["entries"][number]];
+    const wire = toPerformedSave(save, { ratings: {}, excluded: {}, graduations: [] }, { source: "app", workoutId: "pw-1", buildId: "sb-1" });
+    expect(wire.entries[0]!.sets.map((s) => [s.setIndex, s.side, s.seconds])).toEqual([[0, "left", 45], [1, "right", 39]]);
+  });
+});
+
 describe("toPerformedSave → historyFromPerformed", () => {
   test("a played session's history survives the wire exactly", () => {
     const { save, pending } = playedSession();

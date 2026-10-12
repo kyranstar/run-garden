@@ -29,6 +29,22 @@ export interface LiveSet {
   secs: number | null;
   done: boolean;
   touched: boolean;
+  /**
+   * A hold to max played a side at a time: the seconds held on each side done — each its own set at save, with its
+   * side, so neither overwrites the other. Absent otherwise.
+   */
+  sides?: Partial<Record<HoldSide, number>>;
+}
+
+/** A side of a hold played a side at a time, as a saved set names it. */
+export type HoldSide = "left" | "right";
+
+/** How a timed hold is left (`finishTimed`). */
+export interface HoldEnd {
+  /** A hold to max (a document item's `dose.max`): a side is logged on its own (`LiveSet.sides`). */
+  toMax?: boolean;
+  /** Ended with Done: it counts at whatever time was held, a second or more — where you stopped is the result. */
+  done?: boolean;
 }
 
 export interface LiveEntry {
@@ -70,7 +86,8 @@ export interface SavedEntry extends HistoryEntry {
   metric: LiveEntry["metric"];
   format: FormatId;
   flags: string[];
-  sets: Array<{ w: Weight | null; reps: number | null; secs: number | null }>;
+  /** A set of a hold to max played a side at a time names its side. */
+  sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; side?: HoldSide }>;
 }
 
 /**
@@ -146,13 +163,13 @@ function reach(live: Live, index: number): void {
 /**
  * Leaving a timed hold: it counts if you held at least half of it, at the time you held (unless you typed one) — a
  * logged hold's set and an unlogged hold alike (ruling 2b-R15). Once held, going back to it and leaving early again
- * does not undo it. A hold to max you end with Done (`ended`) counts at whatever time you held it, a second or more:
- * where you stopped is the result.
+ * does not undo it. A hold to max ended with Done (`how.done`) counts at whatever time you held it, a second or more:
+ * where you stopped is the result; one played a side at a time logs each side on its own (`LiveSet.sides`).
  */
-function finishTimed(live: Live, index: number, elapsedSecs: number, ended = false): void {
+function finishTimed(live: Live, index: number, elapsedSecs: number, how: HoldEnd = {}): void {
   const step = live.steps[index];
   if (!step || step.kind !== "timed") return;
-  const held = elapsedSecs >= step.seconds / 2 || (ended && Math.round(elapsedSecs) >= 1);
+  const held = elapsedSecs >= step.seconds / 2 || (how.done === true && Math.round(elapsedSecs) >= 1);
   live.held ??= {};
   if (held) live.held[index] = true;
   else if (live.held[index] !== true) live.held[index] = false;
@@ -160,7 +177,18 @@ function finishTimed(live: Live, index: number, elapsedSecs: number, ended = fal
   const set = e ? e.sets[step.setIndex ?? 0] : undefined;
   if (!set || !held) return;
   set.done = true;
-  if (!set.touched) set.secs = Math.round(elapsedSecs);
+  const side = how.toMax ? sideOf(step) : null;
+  if (side) set.sides = { ...set.sides, [side]: Math.round(elapsedSecs) };
+  else if (!set.touched) set.secs = Math.round(elapsedSecs);
+}
+
+const sideOf = (step: Step): HoldSide | null => (step.side === "Left" ? "left" : step.side === "Right" ? "right" : null);
+
+/** Editing one side's seconds of a hold to max played a side at a time (a side held, never one that was not). */
+function setSide(live: Live, exId: string, setIndex: number, side: HoldSide, secs: number): void {
+  const set = live.entries[exId]?.sets[setIndex];
+  if (set?.sides?.[side] === undefined) return;
+  set.sides = { ...set.sides, [side]: secs };
 }
 
 /** The steps that count as done: every step reached but a rest, and but a hold left before half its time. */
@@ -241,11 +269,17 @@ function toSession(live: Live, { endedAt, post = {}, note = "", completed = fals
   const doneIds = movesDone(live);
   const entries: SavedEntry[] = live.order.map(id => live.entries[id]!).map(e => ({
     id: e.id, implement: e.implement, log: e.log, metric: e.metric, perSide: e.perSide, format: e.format, flags: [...e.flags],
-    sets: e.sets.filter(s => s.done).map(s => ({
-      w: e.log === "load" ? s.w : null,
-      reps: e.metric === "reps" ? s.reps : null,
-      secs: e.metric === "time" ? s.secs : null,
-    })),
+    sets: e.sets.filter(s => s.done).flatMap(s => {
+      const one = (secs: number | null, side?: HoldSide) => ({
+        w: e.log === "load" ? s.w : null,
+        reps: e.metric === "reps" ? s.reps : null,
+        secs: e.metric === "time" ? secs : null,
+        ...(side ? { side } : {}),
+      });
+      // A hold to max played a side at a time: a set per side held.
+      const sides = (["left", "right"] as const).filter(k => s.sides?.[k] !== undefined);
+      return sides.length > 0 ? sides.map(k => one(s.sides![k]!, k)) : [one(s.secs)];
+    }),
   })).filter(e => e.sets.length);
   const checks: Record<string, CheckReading> = {};
   for (const id of new Set([...Object.keys(m.checks || {}), ...Object.keys(post)])) {
@@ -294,7 +328,7 @@ function rebase(data: EngineData, old: Live, freshPlan: PlanSteps, index: number
   return live;
 }
 
-export const Recorder = { create, reach, finishTimed, addSeconds, update, setDone, addSet, setFlag, logStepIndex, toSession, rebase, movesDone };
+export const Recorder = { create, reach, finishTimed, addSeconds, update, setDone, addSet, setFlag, setSide, logStepIndex, toSession, rebase, movesDone };
 
 // ---- Review: the decisions made on the review screen (ratings, "not for me", graduations) are held as a
 // pending change set and applied on save, never written while reviewing (spec §5 change 4).

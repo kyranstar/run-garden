@@ -7,7 +7,10 @@
  *    it is left, if at least half of it was held (`finishTimed`), at the time held — never more than the hold.
  *  - A hold TO MAX (a document item's `dose.max`: its slot in the build's `fromDoc.slots`, Stage 2 spec §11) counts up
  *    past its target and never runs out; Done (`doneHold`) counts it at the time held however short (where the athlete
- *    stopped is the result), and every way of leaving it logs the time held, never capped at the target.
+ *    stopped is the result), never capped at the target, each side on its own when it is played a side at a time;
+ *    End by the half-time rule at the time held; moving on without Done (Skip, → or ←) logs nothing of it — a skipped
+ *    test is no measure. A timed move to max with no target plays as a set (`openHold`): it counts up from the start,
+ *    and Done's log card holds the seconds counted.
  *  - Timers are wall-clock anchored (`timer.ts`). `settle` catches up with the clock: a timed step or a rest whose
  *    time has run out ends at the moment it ran out and, with auto-advance on, the next step starts from that moment
  *    — so a phone locked mid-hold resumes on the step the clock says, each hold judged at the time it could be held.
@@ -18,7 +21,7 @@
 import type { SessionBuildDto, SessionViewDto } from "@rg/api-client";
 import type { Weight } from "@rg/domain";
 import { isProfileId, makeEngineData, type CheckReading, type EngineData, type ExerciseRecord } from "@rg/exercise-library";
-import { Recorder, Swapping, type Live, type LiveEntry, type PerformedSessionSave, type ReviewState, type SlotChoice, type Step } from "@rg/session-engine";
+import { Recorder, Swapping, type HoldSide, type Live, type LiveEntry, type PerformedSessionSave, type ReviewState, type SlotChoice, type Step } from "@rg/session-engine";
 import type { LiveSession } from "../offline/live.js";
 import { elapsedMs, heldSecs, lengthMs, phaseAt, runningClock, startClock, stopClock, stoppedClock, type PhaseView, type StepClock } from "./timer.js";
 
@@ -69,6 +72,13 @@ const maxSlotsOf = (build: SessionBuildDto): string[] =>
 /** The step is a hold that goes to max. */
 export const goesToMax = (state: Pick<PlayerState, "toMax">, step: Step | undefined): boolean =>
   !!step && step.kind === "timed" && state.toMax.includes(step.slotKey);
+
+/**
+ * The step is a hold to max with no target: a timed move's item to max with no hold, which the document plays as a
+ * self-paced set. It counts up from its start; Done's log card holds the seconds counted.
+ */
+export const openHold = (state: Pick<PlayerState, "toMax" | "live">, step: Step | undefined): boolean =>
+  !!step && step.kind === "set" && !!step.exerciseId && state.toMax.includes(step.slotKey) && state.live.entries[step.exerciseId]?.metric === "time";
 
 /** The review's own inputs: the post-check per profile, the note, and its pending ratings, exclusions and switches. */
 export interface ReviewKept {
@@ -121,17 +131,22 @@ export function withLive(state: PlayerState, change: (live: Live) => void): Play
 }
 
 /**
- * Leaving the current step at `now`: a hold is judged by the half-time rule — a hold to max ended with Done (`ended`)
- * counts at the time held — and time on a move is added to it.
+ * How a step is left: `on` (it ran out, Next or Skip, ← or →), `done` (Done on a hold to max), `end` (End and review).
+ * Only a hold to max tells them apart: Done counts it at the time held, however short; End by the half-time rule, at
+ * the time held; moving on without Done logs nothing of it — a skipped test is no measure.
  */
-function leave(s: PlayerState, now: number, ended = false): void {
+type Leave = "on" | "done" | "end";
+
+/** Leaving the current step at `now`: a hold is judged by the half-time rule (but see `Leave`); time on a move is added to it. */
+function leave(s: PlayerState, now: number, how: Leave = "on"): void {
   const step = stepAt(s);
   if (!step || s.finished) return;
   const elapsed = elapsedMs(s.clock, now);
   if (step.kind === "timed") {
     const max = goesToMax(s, step);
     const held = heldSecs(step, elapsed, max);
-    Recorder.finishTimed(s.live, s.index, held, ended && max);
+    if (!max) Recorder.finishTimed(s.live, s.index, held);
+    else Recorder.finishTimed(s.live, s.index, how === "on" ? 0 : held, { toMax: true, done: how === "done" });
     if (step.exerciseId) Recorder.addSeconds(s.live, step.exerciseId, held);
   } else if (step.kind === "set" && step.exerciseId) {
     Recorder.addSeconds(s.live, step.exerciseId, elapsed / 1000);
@@ -240,7 +255,7 @@ export function next(state: PlayerState, now: number): PlayerState {
 export function doneHold(state: PlayerState, now: number): PlayerState {
   if (state.finished || !goesToMax(state, stepAt(state)) || stepView(state, now).phase !== "hold") return state;
   const s = draft(state);
-  leave(s, now, true);
+  leave(s, now, "done");
   arrive(s, s.index + 1, now, s.live.meta.newMove);
   return s;
 }
@@ -303,9 +318,9 @@ export function endSession(state: PlayerState, now: number): PlayerState {
   // The step in play counts only if it was done: a set reached but never confirmed was not; a hold by the half-time
   // rule; a rest is no step.
   const step = stepAt(s);
-  const held = step ? heldSecs(step, elapsedMs(s.clock, now)) : 0;
+  const held = step ? heldSecs(step, elapsedMs(s.clock, now), goesToMax(s, step)) : 0;
   const notDone = !!step && (step.kind === "set" || (step.kind === "timed" && held < step.seconds / 2));
-  leave(s, now);
+  leave(s, now, "end");
   if (notDone && step) {
     if (step.kind === "set" && step.exerciseId) Recorder.setDone(s.live, step.exerciseId, step.setIndex ?? 0, false);
     s.live.reached.delete(s.index);
@@ -337,6 +352,8 @@ export interface LogTarget {
   w: Weight | null;
   reps: number | null;
   secs: number | null;
+  /** A hold to max played a side at a time: the seconds of each side held (edited each on its own). */
+  sides: Partial<Record<HoldSide, number>> | null;
 }
 
 /** The set the log card edits: the current set, or during a rest the set just finished. */
@@ -348,10 +365,31 @@ export function logTarget(state: PlayerState): LogTarget | null {
   const setIndex = step.setIndex ?? 0;
   const set = entry?.sets[setIndex];
   if (!entry || !set) return null;
-  return { exerciseId: step.exerciseId, setIndex, entry, w: set.w, reps: set.reps, secs: set.secs };
+  return { exerciseId: step.exerciseId, setIndex, entry, w: set.w, reps: set.reps, secs: set.secs, sides: set.sides ?? null };
+}
+
+/**
+ * During the rest after a hold to max that counted: what was held — the seconds, or each side's — for the line that
+ * says so (and its edit, the log card). Null otherwise.
+ */
+export function heldBefore(state: PlayerState): { secs: number | null; sides: Partial<Record<HoldSide, number>> | null } | null {
+  if (stepAt(state)?.kind !== "rest") return null;
+  const k = Recorder.logStepIndex(state.live, state.index);
+  const held = k === null ? undefined : state.live.steps[k];
+  const t = logTarget(state);
+  if (!t || !goesToMax(state, held) || !t.entry.sets[t.setIndex]!.done) return null;
+  return { secs: t.secs, sides: t.sides };
 }
 
 const sameWeight = (a: Weight | null, b: Weight | null) => (a === null || b === null ? a === b : a.v === b.v && a.u === b.u);
+
+/** What the log card writes: the set's weight, reps or seconds — or, for a hold to max played a side at a time, each side's. */
+export interface LogValues {
+  w?: Weight | null;
+  reps?: number | null;
+  secs?: number | null;
+  sides?: Partial<Record<HoldSide, number | null>>;
+}
 
 /**
  * The log card's values for the set, written as the recorder writes an edit (a changed value also fills the later
@@ -359,7 +397,7 @@ const sameWeight = (a: Weight | null, b: Weight | null) => (a === null || b === 
  */
 export function editLog(
   state: PlayerState,
-  values: { w?: Weight | null; reps?: number | null; secs?: number | null },
+  values: LogValues,
   flags: Readonly<Record<string, boolean>>,
 ): PlayerState {
   const t = logTarget(state);
@@ -368,6 +406,10 @@ export function editLog(
   if (values.w !== undefined && !sameWeight(values.w, t.w)) Recorder.update(s.live, t.exerciseId, t.setIndex, "w", values.w);
   if (values.reps !== undefined && values.reps !== t.reps) Recorder.update(s.live, t.exerciseId, t.setIndex, "reps", values.reps);
   if (values.secs !== undefined && values.secs !== t.secs) Recorder.update(s.live, t.exerciseId, t.setIndex, "secs", values.secs);
+  for (const side of ["left", "right"] as const) {
+    const v = values.sides?.[side];
+    if (typeof v === "number" && v !== t.sides?.[side]) Recorder.setSide(s.live, t.exerciseId, t.setIndex, side, v);
+  }
   for (const [flag, on] of Object.entries(flags)) {
     if (s.live.entries[t.exerciseId]!.flags.includes(flag) !== on) Recorder.setFlag(s.live, t.exerciseId, flag, on);
   }
@@ -376,7 +418,7 @@ export function editLog(
 
 export function confirmLog(
   state: PlayerState,
-  values: { w?: Weight | null; reps?: number | null; secs?: number | null },
+  values: LogValues,
   flags: Readonly<Record<string, boolean>>,
   now: number,
 ): PlayerState {

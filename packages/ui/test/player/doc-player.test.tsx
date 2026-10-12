@@ -17,7 +17,7 @@ import { readLive } from "../../src/offline/live.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
 import type { Chimes } from "../../src/player/audio.js";
-import { build, docBuild, docView, HOLD_CUE, PLANNED_WHY, profiles, SLOT, SQUAT_CUE, STRETCH_CUE, T0, view } from "./fixtures.js";
+import { build, docBuild, docView, HOLD_CUE, maxBuild, PLANNED_WHY, profiles, SLOT, SQUAT_CUE, STRETCH_CUE, T0, view } from "./fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,6 +25,8 @@ let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 let db: OfflineDb | null = null;
 let scheduled: number[][] = [];
+/** How many steps the build started has. */
+let total = 9;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -78,7 +80,8 @@ async function start(b: SessionBuildDto, v: SessionViewDto): Promise<void> {
       ),
     );
   });
-  await until(() => text().includes("1 of 9"), "the first step");
+  total = b.steps.length;
+  await until(() => text().includes(`1 of ${total}`), "the first step");
 }
 
 const flush = () => act(async () => void (await new Promise((r) => setImmediate(r))));
@@ -97,6 +100,13 @@ async function click(name: string) {
   if (!b) throw new Error(`no control ${name}\n${text()}`);
   await act(async () => b.click());
 }
+async function type(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    set.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
 async function press(key: string) {
   await act(async () => {
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
@@ -109,7 +119,7 @@ async function at(ms: number) {
   });
 }
 async function stepTo(n: number) {
-  while (!text().includes(`${n} of 9`)) await press("ArrowRight");
+  while (!text().includes(`${n} of ${total}`)) await press("ArrowRight");
 }
 /** What sits right under the move's name. */
 const underName = () => document.querySelector("h1.player-name")?.nextElementSibling ?? null;
@@ -131,6 +141,21 @@ describe("a document workout's items, played", () => {
     expect(underName()!.textContent).toBe(STRETCH_CUE);
   });
 
+  it("a cue is said of its move: swapped for another, the slot shows none; swapped back, it shows again", async () => {
+    await start(docBuild(), docView());
+    await stepTo(3);
+    await click("Swap");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
+    await click("Use");
+    await until(() => document.querySelector("h1.player-name")!.textContent === "Supported split squat", "the alternate");
+    expect(document.querySelector(".player-cue")).toBeNull();
+    await click("Swap");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the swap list again");
+    await click("Use");
+    await until(() => document.querySelector("h1.player-name")!.textContent === "Goblet squat", "the planned move");
+    expect(underName()!.textContent).toBe(SQUAT_CUE);
+  });
+
   it("a hold to max counts up past its target, shows the target, and Done logs the seconds held", async () => {
     await start(docBuild(), docView());
     await stepTo(8);
@@ -142,10 +167,22 @@ describe("a document workout's items, played", () => {
     expect(text()).toContain("To max");
     expect(text()).toContain("Target 0:40");
     expect(document.querySelector(".player-ring-mark")).not.toBeNull();
+    // Short of the target: the session's time left, and the ring's mark is not where the fill starts.
+    expect(text()).toContain("left");
+    expect(text()).not.toContain("elapsed");
+    const mark = document.querySelector(".player-ring-mark")!;
+    expect(Number(mark.getAttribute("x1"))).toBeLessThan(40);
+    // 30 s of a 40 s target: the fill is at 0.8 of the way to the mark, which sits 0.8 round.
+    const fill = document.querySelector(".player-ring-fill")!.getAttribute("stroke-dasharray")!;
+    expect(Number(fill.split(" ")[0])).toBeCloseTo(2 * Math.PI * 46 * 0.6, 1);
     await at(T0 + 78 * S);
-    // Still on the hold, 70 s held: counting up past the 40 s target.
+    // Still on the hold, 70 s held: counting up past the 40 s target, 30 s past it; the session's time so far.
     expect(text()).toContain("8 of 9");
     expect(text()).toContain("1:10");
+    expect(text()).toContain("+0:30");
+    expect(text()).not.toContain("To max");
+    expect(text()).toContain("1:18 elapsed");
+    expect(text()).not.toContain(" left");
     await click("Done");
     await until(() => text().includes("9 of 9"), "the next step");
     await act(async () => window.dispatchEvent(new Event("pagehide")));
@@ -166,6 +203,65 @@ describe("a document workout's items, played", () => {
     expect(hint()).toContain("Space Done");
     await press(" ");
     await until(() => text().includes("9 of 9"), "the next step");
+  });
+
+  it("Skip on a hold to max moves on and logs nothing of it", async () => {
+    await start(docBuild(), docView());
+    await stepTo(8);
+    await at(T0 + 78 * S);
+    await click("Skip");
+    await until(() => text().includes("9 of 9"), "the next step");
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    const stored = await readLive<{ live: { entries: Record<string, { sets: Array<{ secs: number | null; done: boolean }> }> } }>(db!, SLOT);
+    expect(stored?.recorder.live.entries.wallSit!.sets[0]!.done).toBe(false);
+  });
+
+  it("after Done the rest says what was held — each side of a hold played a side at a time — and Edit fixes it", async () => {
+    type Stored = { live: { entries: Record<string, { sets: Array<{ secs: number | null; done: boolean; sides?: Record<string, number> }> }> } };
+    await start(maxBuild(), docView());
+    await at(T0 + 53 * S);
+    await click("Done");
+    await until(() => text().includes("2 of 6"), "the right side");
+    await at(T0 + 94 * S);
+    await click("Done");
+    await until(() => text().includes("3 of 6"), "the rest");
+    expect(text()).toContain("Held 0:50 left · 0:38 right");
+    await click("Edit");
+    const right = control("Right seconds") as HTMLInputElement;
+    expect((control("Left seconds") as HTMLInputElement).value).toBe("50");
+    expect(right.value).toBe("38");
+    await type(right, "40");
+    await click("Confirm");
+    expect(text()).toContain("Held 0:50 left · 0:40 right");
+    expect(text()).toContain("3 of 6");
+    // The wall sit: 61 s held of 40; the rest after it says so, and its seconds can be fixed.
+    await click("Skip");
+    await until(() => text().includes("4 of 6"), "the wall sit");
+    await at(T0 + 163 * S);
+    await click("Done");
+    await until(() => text().includes("5 of 6"), "the rest");
+    expect(text()).toContain("Held 1:01");
+    await click("Edit");
+    await type(control("Seconds") as HTMLInputElement, "58");
+    await click("Confirm");
+    expect(text()).toContain("Held 0:58");
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    const stored = await readLive<Stored>(db!, SLOT);
+    expect(stored?.recorder.live.entries.lowLunge!.sets[0]!.sides).toEqual({ left: 50, right: 40 });
+    expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 58 });
+  });
+
+  it("a timed move to max with no target counts up from its start, and Done's card holds the seconds counted", async () => {
+    await start(maxBuild(), docView());
+    await stepTo(6);
+    expect(text()).toContain("To max");
+    await at(T0 + 95 * S);
+    expect(text()).toContain("1:35");
+    expect(text()).toContain("elapsed");
+    await click("Done");
+    expect((control("Seconds") as HTMLInputElement).value).toBe("95");
   });
 
   it("⇄ lists the item's planned alternates first, with their why", async () => {

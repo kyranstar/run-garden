@@ -632,8 +632,13 @@ export interface DocSlotDto {
   cue?: string;
   /** "To max" (`dose.max`): the slot's holds count up past their window until Done, and log the seconds held. */
   max?: true;
-  /** The item's planned alternates, in its order, each with the slot's steps with it in place: ⇄ offers them first. */
+  /**
+   * The item's planned alternates, each with the slot's steps with it in place: ⇄ offers them first — those the day
+   * judges clean in the document's order, then those that cost something, the cost in their reasons.
+   */
   alternates?: Alternative[];
+  /** The library's usual offers for the slot, after the planned alternates: three at most, each clean on the day. */
+  offers?: Alternative[];
 }
 
 /** What a document workout's build says of its document (`SessionBuildDto.fromDoc`). */

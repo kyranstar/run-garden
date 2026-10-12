@@ -6,9 +6,11 @@ import { describe, expect, it } from "vitest";
 import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { Swapping } from "@rg/session-engine";
-import { deriveDoc, playerStepsFromDoc, type ValidateCtx } from "@rg/workout";
-import { gateDoc, judgeDoc, materializeDocBuild } from "../src/services/doc-build.js";
+import { deriveDoc, playerStepsFromDoc, validateWorkoutDoc, type ValidateCtx } from "@rg/workout";
+import { gateDoc, judgeDoc, libraryOffers, materializeDocBuild, slotsForDay, type DocSlot } from "../src/services/doc-build.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
+// The player's own swap (packages/ui), run on a build this module materialises: what ⇄ offers on the phone.
+import { offeredNow, planAfter } from "../../../packages/ui/src/player/swap.js";
 
 const DAY = "2026-10-07";
 
@@ -162,10 +164,14 @@ describe("judgeDoc (a save's judgement)", () => {
 
 describe("materializeDocBuild", () => {
   const location = { id: "home", name: "Home", equipment: [], implements: {} };
+  /** No profile, no day: nothing the day keeps out. */
+  const open: ValidateCtx = { library: EXERCISES, activeProfiles: [], day: null };
+  const input = (judge: ValidateCtx = open) => ({ date: DAY, location, checks: {}, library: EXERCISES, judge });
+  const options = (slot: DocSlot | undefined) => [...(slot?.alternates ?? []), ...(slot?.offers ?? [])];
 
   it("plays the document's own steps: one item per slot in play order, the moves' records without their provider mappings", () => {
     const doc = landingsDoc();
-    const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES });
+    const made = materializeDocBuild(doc, input());
     const steps = playerStepsFromDoc(doc, EXERCISES);
     expect(made.build.steps).toEqual(steps);
     // One item per slot, in play order: the jumps (a power part) play as the accessory block, the lift as core.
@@ -173,8 +179,10 @@ describe("materializeDocBuild", () => {
       { slotKey: "accessory:0", block: "accessory", exerciseId: "snapDown", format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [] },
       { slotKey: "core:0", block: "core", exerciseId: "bwSplitSquat", format: "straight", sets: 2, group: null, coreFamily: null, isNew: false, why: [] },
     ]);
-    // The moves the steps name, and the planned alternates the player's ⇄ offers (offline: their records with them).
-    expect(Object.keys(made.build.exercises).sort()).toEqual(["bwSplitSquat", "snapDown", "tempoSquat"]);
+    // The moves the steps name, and every move ⇄ may offer (offline: their records with them), the planned alternate too.
+    const offered = Object.values(made.slots).flatMap((s) => options(s).map((c) => c.id));
+    expect(offered).toContain("tempoSquat");
+    expect(Object.keys(made.build.exercises).sort()).toEqual([...new Set(["bwSplitSquat", "snapDown", ...offered])].sort());
     expect(Object.values(made.build.exercises).every((e) => !("providers" in e))).toBe(true);
     expect(made.build).toMatchObject({ date: DAY, mode: "consistent", theme: null, alternatives: {}, targets: {}, newMove: null, weekOfBlock: null, locationId: "home" });
     expect(made.build.plannedSeconds).toBe(Swapping.costOf(steps));
@@ -187,10 +195,10 @@ describe("materializeDocBuild", () => {
 
   it("the mode is the effort's", () => {
     const recover = workoutDocSchema.parse({ ...calmDoc(), intent: { ...calmDoc().intent, effort: "recover" } });
-    expect(materializeDocBuild(recover, { date: DAY, location, checks: {}, library: EXERCISES }).build.mode).toBe("recovery");
+    expect(materializeDocBuild(recover, input()).build.mode).toBe("recovery");
   });
 
-  describe("what the player reads of each item beside its steps (Stage 2 Task 8): its cue, a hold to max, its planned alternates", () => {
+  describe("what the player reads of each item beside its steps (Stage 2 Task 8): its cue, a hold to max, what ⇄ offers", () => {
     const doc = () =>
       workoutDocSchema.parse({
         ...calmDoc(),
@@ -222,19 +230,18 @@ describe("materializeDocBuild", () => {
         ],
       });
 
-    it("one entry per slot that says something, under the slot key its steps carry", () => {
-      const made = materializeDocBuild(doc(), { date: DAY, location, checks: {}, library: EXERCISES });
-      expect(Object.keys(made.slots).sort()).toEqual(["core:0", "core:1", "core:2", "core:3"]);
+    it("a cue and a hold to max under the slot key its steps carry", () => {
+      const made = materializeDocBuild(doc(), input());
       expect(made.slots["core:0"]).toMatchObject({ cue: "Squeeze at the top." });
       expect(made.slots["core:0"]!.max).toBeUndefined();
-      expect(made.slots["core:1"]).toEqual({ cue: "Back flat on the wall.", max: true });
-      // A free-text move: its cue and its max, though it names no move.
+      expect(made.slots["core:1"]).toMatchObject({ cue: "Back flat on the wall.", max: true });
+      // A free-text move: its cue and its max, though it names no move (and nothing to offer in its place).
       expect(made.slots["core:3"]).toEqual({ cue: "Ribs down.", max: true });
       expect(made.build.steps.filter((s) => s.slotKey === "core:3" && s.kind !== "rest").map((s) => s.exerciseId)).toEqual([null]);
     });
 
     it("an alternate plays the steps the document plays with it in the item's place (the day's own swap: `gateDoc`)", () => {
-      const made = materializeDocBuild(doc(), { date: DAY, location, checks: {}, library: EXERCISES });
+      const made = materializeDocBuild(doc(), input());
       // Never a move the library lacks, nor the item's own move.
       const alternates = made.slots["core:0"]!.alternates!;
       expect(alternates.map((a) => [a.id, a.reasons])).toEqual([["tempoSquat", ["Kinder on the back."]]]);
@@ -243,10 +250,11 @@ describe("materializeDocBuild", () => {
       expect(made.slots["core:2"]!.alternates!.map((a) => [a.id, a.reasons])).toEqual([["birdDog", ["Another brace."]], ["bridge", []]]);
       const tempo = EXERCISES.find((e) => e.id === "tempoSquat")!;
       expect(alternates[0]).toMatchObject({ name: tempo.name, moveKey: Swapping.moveKeyOf(tempo), pairing: Swapping.pairingOf(tempo) });
-      // The alternate takes the item's place and dose; its why replaces the item's; the progression note goes with the move.
+      // The alternate takes the item's place and dose; its why replaces the item's; the progression note and the cue
+      // go with the move.
       const swapped = workoutDocSchema.parse({
         ...doc(),
-        parts: [{ ...doc().parts[0]!, items: [{ kind: "exercise", libraryId: "tempoSquat", dose: { sets: 2, reps: 12, restSec: 30 }, why: "Kinder on the back.", cue: "Squeeze at the top." }, ...doc().parts[0]!.items.slice(1)] }],
+        parts: [{ ...doc().parts[0]!, items: [{ kind: "exercise", libraryId: "tempoSquat", dose: { sets: 2, reps: 12, restSec: 30 }, why: "Kinder on the back." }, ...doc().parts[0]!.items.slice(1)] }],
       });
       const own = playerStepsFromDoc(swapped, EXERCISES).filter((s) => s.kind !== "rest" && s.slotKey === "core:0");
       expect(own.map((s) => s.exerciseId)).toEqual(["tempoSquat", "tempoSquat"]);
@@ -256,8 +264,73 @@ describe("materializeDocBuild", () => {
       expect("providers" in made.build.exercises.tempoSquat!).toBe(false);
       // The build's own swap list stays the engine's (none for a document): the sheet's ⇄ rebuilds with the engine.
       expect(made.build.alternatives).toEqual({});
-      // The steps and items are the document's own, whatever its alternates.
+      // The steps and items are the document's own, whatever ⇄ may offer.
       expect(made.build.steps).toEqual(playerStepsFromDoc(doc(), EXERCISES));
+    });
+
+    it("the day judges the planned alternates: one it keeps out is not offered; one that costs something comes after the clean ones, its cost in plain words", () => {
+      const planned = workoutDocSchema.parse({
+        ...calmDoc(),
+        parts: [{ purpose: "main", format: "straight", items: [
+          { kind: "exercise", libraryId: "tempoSquat", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "bwSplitSquat", why: "One leg." }, { libraryId: "snapDown" }, { libraryId: "gobletSquat" }] },
+        ] }],
+      });
+      // TMJ at 6: the jump is kept out; the split squat is set aside by the athlete (a warning: a cost, not a block).
+      const judge: ValidateCtx = { ...ctxAt(6), excluded: ["bwSplitSquat"] };
+      const made = materializeDocBuild(planned, input(judge));
+      const alternates = made.slots["core:0"]!.alternates!;
+      expect(alternates.map((a) => a.id)).toEqual(["gobletSquat", "bwSplitSquat"]);
+      const aside = validateWorkoutDoc(planned, judge).find((i) => i.path === "parts[0].items[0].alternates[0].libraryId")!;
+      expect(aside).toMatchObject({ code: "excluded_by_athlete", severity: "warning" });
+      expect(alternates[1]!.reasons).toEqual(["One leg.", aside.message]);
+      expect(alternates[0]!.reasons).toEqual([]);
+      expect(options(made.slots["core:0"]).map((c) => c.id)).not.toContain("snapDown");
+    });
+
+    it("then the library's usual offers: easier versions first, the move's family, its patterns — dosed the same way, clean on the day, three at most", () => {
+      const lift = workoutDocSchema.parse({
+        ...calmDoc(),
+        parts: [{ purpose: "main", format: "straight", items: [
+          { kind: "exercise", libraryId: "singleLegBridge", dose: { sets: 2, reps: 10 } },
+          { kind: "exercise", libraryId: "deadBug", dose: { sets: 2, reps: 8 } },
+        ] }],
+      });
+      const rec = EXERCISES.find((e) => e.id === "singleLegBridge")!;
+      const made = materializeDocBuild(lift, input(ctxAt(2)));
+      const offers = made.slots["core:0"]!.offers!;
+      expect(offers.length).toBeGreaterThan(0);
+      expect(offers.length).toBeLessThanOrEqual(3);
+      // Easier first: the move's own easier version, when the day allows it.
+      expect(rec.easier.length).toBeGreaterThan(0);
+      expect(offers[0]).toMatchObject({ id: rec.easier[0], reasons: ["An easier version"] });
+      const tier = ["An easier version", "Another version", "The same movement"];
+      const tiers = offers.map((o) => tier.indexOf(o.reasons[0]!));
+      expect(tiers.every((t, i) => t >= 0 && (i === 0 || t >= tiers[i - 1]!))).toBe(true);
+      for (const o of offers) {
+        const r = EXERCISES.find((e) => e.id === o.id)!;
+        // Never a move the document holds, dosed another way, or a jump in a move's place that is not one.
+        expect(["singleLegBridge", "deadBug"]).not.toContain(o.id);
+        expect(r.dose.type).toBe("reps");
+        expect(r.contraction).not.toContain("plyometric");
+        // Clean on the day: the validator raises nothing at it as the item's alternate.
+        const probe = workoutDocSchema.parse({ ...lift, parts: [{ ...lift.parts[0]!, items: [{ ...lift.parts[0]!.items[0]!, alternates: [{ libraryId: o.id }] }, lift.parts[0]!.items[1]!] }] });
+        expect(validateWorkoutDoc(probe, ctxAt(2)).filter((i) => i.path.startsWith("parts[0].items[0].alternates["))).toEqual([]);
+        // Its steps are the slot's, with it in place; its record rides the build.
+        expect(o.steps.length).toBeGreaterThan(0);
+        expect(o.steps.every((s) => s.exerciseId === o.id && s.slotKey === "core:0")).toBe(true);
+        expect(made.build.exercises[o.id]).toBeDefined();
+      }
+      // Never one the item already plans as an alternate: it is offered once, as planned.
+      const planning = workoutDocSchema.parse({ ...lift, parts: [{ ...lift.parts[0]!, items: [{ ...lift.parts[0]!.items[0]!, alternates: [{ libraryId: rec.easier[0]! }] }, lift.parts[0]!.items[1]!] }] });
+      const both = materializeDocBuild(planning, input(ctxAt(2))).slots["core:0"]!;
+      expect(both.alternates!.map((a) => a.id)).toEqual([rec.easier[0]]);
+      expect(both.offers!.map((o) => o.id)).not.toContain(rec.easier[0]);
+      // Never a move the document holds — the bridge, the easier version, is in it here.
+      const withBridge = workoutDocSchema.parse({ ...lift, parts: [{ ...lift.parts[0]!, items: [lift.parts[0]!.items[0]!, { kind: "exercise", libraryId: "bridge", dose: { sets: 2, reps: 10 } }] }] });
+      expect(materializeDocBuild(withBridge, input(ctxAt(2))).slots["core:0"]!.offers!.map((o) => o.id)).not.toContain("bridge");
+      // Set aside by the athlete (a cost): never an offer.
+      const aside = materializeDocBuild(lift, input({ ...ctxAt(2), excluded: [offers[0]!.id] }));
+      expect(aside.slots["core:0"]!.offers!.map((o) => o.id)).not.toContain(offers[0]!.id);
     });
 
     it("alternates that together would take the document past its size bound are tried one by one; one that alone does is not offered", () => {
@@ -277,19 +350,120 @@ describe("materializeDocBuild", () => {
         deriveDoc({ ...doc, parts: [{ ...doc.parts[0]!, items: doc.parts[0]!.items.map((it, i) => (i < swapped ? { ...it, libraryId: "broadJumpStick" } : it)) as WorkoutDoc["parts"][0]["items"] }] }, EXERCISES).estimatedMinutes;
       // About 180 minutes an item: both alternates in are past 600 minutes, either alone is not.
       expect([minutes(big(135), 0), minutes(big(135), 1), minutes(big(135), 2)].map((m) => m <= 600)).toEqual([true, true, false]);
-      const pair = materializeDocBuild(big(135), { date: DAY, location, checks: {}, library: EXERCISES });
+      const pair = materializeDocBuild(big(135), input());
       expect(pair.slots["core:0"]!.alternates!.map((a) => a.id)).toEqual(["broadJumpStick"]);
       expect(pair.slots["core:1"]!.alternates!.map((a) => a.id)).toEqual(["broadJumpStick"]);
       expect(pair.slots["core:1"]!.alternates![0]!.steps.every((s) => s.exerciseId === "broadJumpStick" && s.slotKey === "core:1")).toBe(true);
       // About 250 minutes an item: even one alternate is past it — none offered, and the build is made.
       expect([minutes(big(188), 0), minutes(big(188), 1)].map((m) => m <= 600)).toEqual([true, false]);
-      const none = materializeDocBuild(big(188), { date: DAY, location, checks: {}, library: EXERCISES });
-      expect(none.slots).toEqual({});
+      const none = materializeDocBuild(big(188), input());
+      expect(Object.values(none.slots).some((s) => s.alternates)).toBe(false);
       expect(none.build.steps).toEqual(playerStepsFromDoc(big(188), EXERCISES));
     });
 
-    it("a document with no cue, max or alternate says nothing beside its steps", () => {
-      expect(materializeDocBuild(calmDoc(), { date: DAY, location, checks: {}, library: EXERCISES }).slots).toEqual({});
+    it("the day's own swap drops the cue with the move it was said of", () => {
+      const cued = withPower([
+        { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, cue: "Land soft.", alternates: [{ libraryId: "tempoSquat" }] },
+      ]);
+      const gated = gateDoc(cued, ctxAt(6));
+      expect(gated.swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+      expect(gated.doc.parts[0]!.items[0]).not.toHaveProperty("cue");
+      expect(materializeDocBuild(gated.doc, input(ctxAt(6))).slots["accessory:0"]?.cue).toBeUndefined();
+      // Played as written, the cue stays.
+      expect(materializeDocBuild(cued, input(ctxAt(1))).slots["accessory:0"]?.cue).toBe("Land soft.");
     });
+  });
+});
+
+describe("libraryOffers (the library's usual offers for a slot)", () => {
+  const find = (id: string) => EXERCISES.find((e) => e.id === id);
+  const none = { ids: new Set<string>(), keys: new Set<string>() };
+  it("are dosed as the move is, never a jump for a move that is not one; nine at most, its own move never", () => {
+    for (const id of ["tempoSquat", "gobletSquat", "wallSit", "bridge", "deadBug"]) {
+      const rec = find(id)!;
+      const kind = (t: string) => (t === "carry" ? "time" : t);
+      const offers = libraryOffers(rec, EXERCISES, find, none);
+      expect(offers.length, id).toBeGreaterThan(0);
+      expect(offers.length).toBeLessThanOrEqual(9);
+      for (const o of offers) {
+        expect(o.to.id).not.toBe(id);
+        expect(kind(o.to.dose.type), `${id} → ${o.to.id}`).toBe(kind(rec.dose.type));
+        expect(o.to.contraction, `${id} → ${o.to.id}`).not.toContain("plyometric");
+      }
+    }
+    // A jump's own: other jumps may stand in.
+    expect(libraryOffers(find("snapDown")!, EXERCISES, find, none).some((o) => o.to.contraction.includes("plyometric"))).toBe(true);
+  });
+
+  it("never a move away names: one the item plans, or a version of a move held elsewhere", () => {
+    const rec = find("tempoSquat")!;
+    const first = libraryOffers(rec, EXERCISES, find, none)[0]!.to;
+    expect(libraryOffers(rec, EXERCISES, find, { ids: new Set([first.id]), keys: new Set() }).map((o) => o.to.id)).not.toContain(first.id);
+    expect(libraryOffers(rec, EXERCISES, find, { ids: new Set(), keys: new Set([Swapping.moveKeyOf(first)]) }).map((o) => o.to.id)).not.toContain(first.id);
+  });
+});
+
+describe("the player's ⇄ on a materialised document build (Stage 2 Task 8)", () => {
+  const location = { id: "home", name: "Home", equipment: [], implements: {} };
+  it("offers the planned alternates the day allows — clean ones first, then a costly one with its cost — then the library's usual offers; each plays as offered", () => {
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "tempoSquat", dose: { sets: 2, reps: 5, restSec: 45 }, alternates: [{ libraryId: "bwSplitSquat", why: "One leg." }, { libraryId: "snapDown" }, { libraryId: "gobletSquat" }] },
+        { kind: "exercise", libraryId: "deadBug", dose: { sets: 2, reps: 8, restSec: 30 } },
+      ] }],
+    });
+    const judge: ValidateCtx = { ...ctxAt(6), excluded: ["bwSplitSquat"] };
+    const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge });
+    const build = { buildId: "b1", version: 1, engineVersion: "doc-build-2", inputsHash: "h", builtAt: `${DAY}T17:00:00.000Z`, blockRef: null, ...made.build, fromDoc: { rev: 1, swaps: [], blocked: [], slots: made.slots } } as unknown as Parameters<typeof offeredNow>[0];
+    const slot = made.slots["core:0"]!;
+    expect(slot.offers!.length).toBeGreaterThan(0);
+    const offered = offeredNow(build, [], "core:0");
+    // Three at most (the engine's rule), in order: the clean planned alternate, the set-aside one with its cost, then
+    // the library's offers; never the jump the day keeps out.
+    expect(offered.map((c) => c.id)).toEqual(["gobletSquat", "bwSplitSquat", ...slot.offers!.map((o) => o.id)].slice(0, 3));
+    expect(offered[1]!.reasons[0]).toBe("One leg.");
+    expect(offered[1]!.reasons.length).toBe(2);
+    expect(offered.map((c) => c.id)).not.toContain("snapDown");
+    // Every one plays exactly its offered steps in the slot.
+    for (const c of offered) {
+      const plan = planAfter(build, [{ slotKey: "core:0", to: c.id }]);
+      expect(plan.state.current["core:0"]!.id).toBe(c.id);
+      expect(plan.steps.filter((st) => st.kind !== "rest" && st.slotKey === "core:0")).toEqual(c.steps);
+    }
+    // The other slot: the library's offers alone (it plans no alternate).
+    expect(offeredNow(build, [], "core:1").map((c) => c.id)).toEqual(made.slots["core:1"]!.offers!.map((o) => o.id).slice(0, 3));
+  });
+});
+
+describe("slotsForDay (Start of a build sent to the watch)", () => {
+  const location = { id: "home", name: "Home", equipment: [], implements: {} };
+  it("takes off what ⇄ offers that the day's reading now keeps out, keeps the rest and what the slot says", () => {
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "tempoSquat", dose: { sets: 2, reps: 5 }, cue: "Slow down.", alternates: [{ libraryId: "snapDown" }, { libraryId: "bwSplitSquat" }] },
+      ] }],
+    });
+    const sent = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge: ctxAt(1) }).slots;
+    expect(sent["core:0"]!.alternates!.map((a) => a.id)).toEqual(["snapDown", "bwSplitSquat"]);
+    const now = slotsForDay(sent, doc, ctxAt(6));
+    expect(now["core:0"]!.alternates!.map((a) => a.id)).toEqual(["bwSplitSquat"]);
+    expect(now["core:0"]!.cue).toBe("Slow down.");
+    const shut = (now["core:0"]!.offers ?? []).map((o) => o.id);
+    for (const o of sent["core:0"]!.offers ?? []) {
+      const probe = workoutDocSchema.parse({ ...doc, parts: [{ ...doc.parts[0]!, items: [{ ...doc.parts[0]!.items[0]!, alternates: [{ libraryId: o.id }] }] }] });
+      const closed = validateWorkoutDoc(probe, ctxAt(6)).some((i) => i.path === "parts[0].items[0].alternates[0].libraryId" && i.severity === "error");
+      expect(shut.includes(o.id), o.id).toBe(!closed);
+    }
+    // The same day: nothing changes.
+    expect(slotsForDay(sent, doc, ctxAt(1))).toEqual(sent);
+    // A snapshot the validator can no longer read at all (here past the size bound): nothing is offered — what the
+    // slot says stays.
+    const huge = workoutDocSchema.parse({
+      ...doc,
+      parts: [{ ...doc.parts[0]!, items: [0, 1, 2, 3].map(() => ({ ...doc.parts[0]!.items[0]!, dose: { sets: 20, reps: 188, restSec: 0 } })) }],
+    });
+    expect(slotsForDay(sent, huge, ctxAt(1))).toEqual({ "core:0": { cue: "Slow down." } });
   });
 });

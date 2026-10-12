@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, nowInstant, todayInZone, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import { addDays, nowInstant, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, playerStepsFromDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
@@ -80,6 +80,10 @@ async function saveSession(workoutId: string, build: Record<string, any>, move: 
   return activity?.sport;
 }
 
+/** Every move a document build's ⇄ may offer: its slots' alternates and offers. */
+const offeredIn = (build: { fromDoc?: { slots?: Record<string, { alternates?: Array<{ id: string }>; offers?: Array<{ id: string }> }> } }): string[] =>
+  Object.values(build.fromDoc?.slots ?? {}).flatMap((s) => [...(s.alternates ?? []), ...(s.offers ?? [])].map((c) => c.id));
+
 const movesOf = (steps: Array<{ kind: string; exerciseId: string | null }>) => [...new Set(steps.filter((s) => s.kind !== "rest").map((s) => s.exerciseId))];
 
 describe("building a document workout", () => {
@@ -94,7 +98,8 @@ describe("building a document workout", () => {
     expect(build).toMatchObject({ version: 1, date: today, mode: "consistent", theme: null, blockRef: null, fromDoc: { rev: 1, swaps: [], blocked: [] } });
     expect(build.engineVersion).toMatch(/^doc-build-/);
     expect(build.items.map((i: { exerciseId: string }) => i.exerciseId)).toEqual(["bridge", "deadBug"]);
-    expect(Object.keys(build.exercises).sort()).toEqual(["bridge", "deadBug"]);
+    // The moves it plays, and every move ⇄ may offer in their place (offline: their records with them).
+    expect(Object.keys(build.exercises).sort()).toEqual([...new Set(["bridge", "deadBug", ...offeredIn(build)])].sort());
     expect(build.exercises.bridge.providers).toBeUndefined();
     expect(res.body.view).toMatchObject({ mode: "consistent", theme: null, block: null, minutes: deriveDoc(doc, EXERCISES).estimatedMinutes });
     expect(res.body).toMatchObject({ contentState: "built", locked: false });
@@ -124,9 +129,34 @@ describe("building a document workout", () => {
     expect(built.body.build.exercises.tempoSquat).toBeDefined();
     // The engine's own swap list stays empty: the sheet offers no ⇄ it cannot rebuild.
     expect(built.body.build.alternatives).toEqual({});
-    // "Not for me" (or 👎) since: never offered, in every response (ruling 2a-R1).
-    await db.insert(schema.exercisePrefs).values({ id: `${userId}:tempoSquat`, userId, exerciseId: "tempoSquat", rating: null, excluded: true, pinned: false, introducedOn: null, updatedAt: nowInstant() });
-    expect((await call("GET", `/api/sessions/${id}`)).body.build.fromDoc.slots).toEqual({});
+    // Then the library's usual offers, each with its steps and record.
+    const offers = built.body.build.fromDoc.slots["accessory:0"].offers;
+    expect(offers.length).toBeGreaterThan(0);
+    for (const o of offers) expect(built.body.build.exercises[o.id]).toBeDefined();
+    // "Not for me" or 👎 since: never offered, in every response (ruling 2a-R1).
+    const thumbsDown = offers[0].id as string;
+    await db.insert(schema.exercisePrefs).values([
+      { id: `${userId}:tempoSquat`, userId, exerciseId: "tempoSquat", rating: null, excluded: true, pinned: false, introducedOn: null, updatedAt: nowInstant() },
+      { id: `${userId}:${thumbsDown}`, userId, exerciseId: thumbsDown, rating: -1, excluded: false, pinned: false, introducedOn: null, updatedAt: nowInstant() },
+    ]);
+    const shown = (await call("GET", `/api/sessions/${id}`)).body.build;
+    expect(offeredIn(shown)).not.toContain("tempoSquat");
+    expect(offeredIn(shown)).not.toContain(thumbsDown);
+    expect(shown.fromDoc.slots["accessory:0"]?.alternates).toBeUndefined();
+  });
+
+  it("the build judges ⇄'s moves with the day, the athlete and the place: one the place's gear can't serve comes last, saying so", async () => {
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "deadBug", dose: { sets: 2, reps: 8 }, alternates: [{ libraryId: "bandPallofPress", why: "Resists the twist." }, { libraryId: "birdDog" }] },
+      ] }],
+    });
+    const built = (await call("POST", `/api/sessions/${await create(doc)}/build`, {})).body.build;
+    const planned = built.fromDoc.slots["core:0"].alternates as Array<{ id: string; reasons: string[] }>;
+    expect(planned.map((a) => a.id)).toEqual(["birdDog", "bandPallofPress"]);
+    expect(planned[1]!.reasons[0]).toBe("Resists the twist.");
+    expect(planned[1]!.reasons[1]).toMatch(/band/i);
   });
 
   it("the review's basis reads a document's planned alternates too (a move ⇄ may bring in)", async () => {
@@ -333,6 +363,33 @@ describe("Start re-gates with the day's reading", () => {
     const built = await call("POST", `/api/sessions/${id}/build`, { checks: { tmj: { pre: 7, feelingOff: false } } });
     expect(built.body.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
     expect(built.body.build.fromDoc.swaps.map((s: { to: string }) => s.to)).toEqual(["tempoSquat"]);
+  });
+
+  it("Start of a sent build takes off what ⇄ offers that the day's check now closes — kept so — and plays what was sent", async () => {
+    const doc = workoutDocSchema.parse({
+      ...landingsDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "tempoSquat", dose: { sets: 2, reps: 5, restSec: 45 }, alternates: [{ libraryId: "snapDown", why: "Land softly." }, { libraryId: "bwSplitSquat" }] },
+      ] }],
+    });
+    const id = await create(doc);
+    const built = await call("POST", `/api/sessions/${id}/build`, {});
+    expect(built.body.build.fromDoc.slots["core:0"].alternates.map((a: { id: string }) => a.id)).toEqual(["snapDown", "bwSplitSquat"]);
+    await lockCurrentBuild(db, userId, id, built.body.build.buildId, nowInstant(), { as: "send", prefs });
+    await db.insert(schema.corosWriteJobs).values({
+      id: `push:${built.body.build.buildId}`, userId, workoutId: id, kind: "program_session_push", expectedContentFingerprint: "fp",
+      originalDate: today, destinationDate: today, requestedAt: nowInstant(), updatedAt: nowInstant(), status: "verified",
+    });
+    await check(6);
+    const started = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
+    expect(started.status).toBe(200);
+    expect(started.body.contentState).toBe("started");
+    expect(started.body.build.buildId).toBe(built.body.build.buildId);
+    expect(started.body.build.steps).toEqual(built.body.build.steps);
+    expect(started.body.build.fromDoc.slots["core:0"].alternates.map((a: { id: string }) => a.id)).toEqual(["bwSplitSquat"]);
+    expect(offeredIn(started.body.build)).not.toContain("snapDown");
+    // Kept so: every later read shows the same.
+    expect((await call("GET", `/api/sessions/${id}`)).body.build.fromDoc.slots).toEqual(started.body.build.fromDoc.slots);
   });
 
   it("Send re-gates too, and a sent build that the day's check now closes cannot Start", async () => {
