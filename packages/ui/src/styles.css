@@ -10198,9 +10198,6 @@ a.stu-qs:hover {
   font-size: var(--text-sm);
   color: var(--ink);
 }
-.stu-build-status:empty {
-  display: none;
-}
 .stu-build-status .linklike {
   min-height: var(--tap);
 }
@@ -10552,9 +10549,6 @@ html:has(.stu-build) {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
-.stu-tpl-status:empty {
-  display: none;
-}
 .stu-tpl-list {
   margin: 0;
   padding: 0;
@@ -10622,6 +10616,14 @@ a.stu-tpl-open:focus-visible::before {
   flex: none;
   margin-top: var(--space-1);
   color: var(--green-ink);
+}
+.stu-tpl-facts {
+  min-width: 0;
+}
+/* Each fact one unbroken piece ("34 min ·"): at 320 a line breaks only
+   between them, never mid-phrase. */
+.stu-tpl-fact {
+  white-space: nowrap;
 }
 /* Above the stretched name, so they keep their own taps. */
 .stu-tpl-acts {

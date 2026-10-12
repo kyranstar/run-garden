@@ -788,4 +788,20 @@ describe("the templates and the quick starts are honest about their bounds", () 
     expect(ruleBody(".stu-icon-btn")).toContain("min-width: var(--tap)");
     for (const sel of [".stu-tpl-link", ".stu-qs"]) expect(ruleBody(sel), sel).toContain("min-height: var(--tap)");
   });
+
+  it("a row's facts wrap only between them: each fact one unbroken piece", () => {
+    expect(ruleBody(".stu-tpl-fact")).toContain("white-space: nowrap");
+    expect(at("/studio/templates", createElement(TemplatesScreen))).toContain('<span class="stu-tpl-fact">');
+  });
+
+  it("an empty status line is visually hidden, never display: none — a live region kept in the page is heard when it speaks", () => {
+    // The app's one visually-hidden rule, worn while there is nothing to say.
+    expect(at("/studio/templates", createElement(TemplatesScreen))).toContain('<p class="stu-tpl-status visually-hidden" role="status"></p>');
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(STUDIO_DRAFT_QUERY, { doc: doc(), updatedAt: 1 });
+    const builder = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter("/studio/build/new", createElement(BuilderRoute))));
+    expect(builder).toContain('<div class="stu-build-status visually-hidden" role="status"></div>');
+    // No Studio live region is taken out of the page while it is empty.
+    for (const sel of [".stu-tpl-status", ".stu-build-status"]) expect(css, sel).not.toMatch(new RegExp(`\\n\\${sel}:empty[^{]*\\{[^}]*display: none`));
+  });
 });

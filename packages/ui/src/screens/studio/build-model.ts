@@ -79,6 +79,11 @@ export type BuildSource =
   | { kind: "template"; id: string }
   | { kind: "workout"; id: string };
 
+/** A quick start's kind from its address; null for anything else. */
+export function quickKindOf(s: string): QuickStartKind | null {
+  return QUICK_START_KINDS.find((k) => k === s) ?? null;
+}
+
 /**
  * The builder's address (spec §2): `/studio/build/new`, `…/quick/:kind` (a quick start, spec §9), `…/template/:id`,
  * `…/workout/:workoutId`; anything else, null.
@@ -87,7 +92,7 @@ export function sourceOfPath(pathname: string): BuildSource | null {
   if (/^\/studio\/build\/new\/?$/.test(pathname)) return { kind: "new" };
   const q = /^\/studio\/build\/quick\/([^/]+)\/?$/.exec(pathname);
   if (q) {
-    const quick = QUICK_START_KINDS.find((k) => k === q[1]);
+    const quick = quickKindOf(q[1]!);
     return quick ? { kind: "quick", quick } : null;
   }
   const m = /^\/studio\/build\/(template|workout)\/([^/]+)\/?$/.exec(pathname);

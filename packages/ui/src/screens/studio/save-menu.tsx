@@ -69,9 +69,13 @@ export function SaveMenu({ items }: { items: readonly SaveChoice[] }) {
   );
 }
 
-/** "Save as template": its name (the title by default), then the server keeps it. */
-export function NameSheet({ initial, onSave, onClose }: { initial: string; onSave: (name: string) => Promise<string | null>; onClose: () => void }) {
+/**
+ * "Save as template": its name (the title by default) and, if asked, pinned to the quick starts — one tap from the
+ * Studio's home from then on — then the server keeps it.
+ */
+export function NameSheet({ initial, onSave, onClose }: { initial: string; onSave: (name: string, pinned: boolean) => Promise<string | null>; onClose: () => void }) {
   const [name, setName] = useState(initial);
+  const [pinned, setPinned] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
@@ -79,7 +83,7 @@ export function NameSheet({ initial, onSave, onClose }: { initial: string; onSav
     if (!name.trim() || busy) return;
     setBusy(true);
     setError(null);
-    const why = await onSave(name);
+    const why = await onSave(name, pinned);
     setBusy(false);
     if (why) setError(why);
   };
@@ -109,6 +113,11 @@ export function NameSheet({ initial, onSave, onClose }: { initial: string; onSav
             if (e.key === "Enter") void go();
           }}
         />
+      </label>
+      {/* The Studio's choice row (the Add sheet's): a 44px label, its box first. */}
+      <label className="stu-add-choice">
+        <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
+        Pin to quick starts
       </label>
       {error ? (
         <p className="stu-build-error" role="alert">

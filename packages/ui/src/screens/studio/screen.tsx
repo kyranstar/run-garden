@@ -102,14 +102,16 @@ export function useStudioCtx(): StudioCtx {
 /**
  * The context, and whether its reads have all answered — or, offline, given up for now (`paused`): what is built from
  * them once and kept (a quick start) waits for that, rather than being built twice, the first time knowing less.
+ * `profilesKnown`: the library read (the switched-on profiles' one full list) has answered at some point — false while
+ * it is paused or failed with nothing kept, when "no profile is on" would be a guess.
  */
-export function useStudioReads(): { ctx: StudioCtx; settled: boolean } {
+export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKnown: boolean } {
   const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: 200 }), staleTime: 60_000 });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces, staleTime: 60_000 });
   const ctx = useMemo(() => studioCtxFrom(library.data, today.data, places.data), [library.data, today.data, places.data]);
   const settled = [library, today, places].every((q) => !q.isPending || q.fetchStatus === "paused");
-  return { ctx, settled };
+  return { ctx, settled, profilesKnown: library.data !== undefined };
 }
 
 /** What a history entry under the Studio carries: whether it came from the home, and how deep into moves it is. */

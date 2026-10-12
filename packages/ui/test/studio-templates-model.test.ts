@@ -8,13 +8,12 @@ import type { TemplateDto } from "@rg/api-client";
 import { PROFILES } from "@rg/exercise-library";
 import { newDoc, suggestedItem, edit, startEditing, toProposable, type QuickStartKind } from "@rg/workout";
 import { EXERCISES } from "@rg/exercise-library";
-import { sourceKey, sourceOfPath } from "../src/screens/studio/build-model.js";
+import { quickKindOf, sourceKey, sourceOfPath } from "../src/screens/studio/build-model.js";
 import { emptyStudioCtx, type StudioCtx } from "../src/screens/studio/model.js";
 import {
   daySeed,
   lastUsedText,
   quickHref,
-  quickKindOf,
   quickStartFor,
   quickTiles,
   sortTemplates,
@@ -69,9 +68,26 @@ describe("the templates list's order", () => {
 describe("a template's row", () => {
   it("says its minutes, its kind and when it was last used", () => {
     const facts = templateFacts(tpl("a", { lastUsedAt: "2026-10-08T12:00:00.000Z" }), TODAY);
-    expect(facts[0]).toMatch(/^\d+ min$/);
-    expect(facts[1]).toBe("Strength");
-    expect(facts[2]).toBe("Used 3 days ago");
+    expect(facts).toEqual(["20 min", "Strength", "Used 3 days ago"]);
+  });
+
+  it("its minutes and kind are the server's, as the home's tile says them — not worked out again here", () => {
+    // The document is a goblet squat (a strength workout of another length): the server's numbers are what is said.
+    expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Yoga", "Not used yet"]);
+    expect(templateFacts(tpl("a", { minutes: 45, discipline: "run" }), TODAY)).toEqual(["45 min", "Run", "Not used yet"]);
+    // Only a row the server said nothing of is worked out on the device.
+    const derived = templateFacts(tpl("a", { minutes: null, discipline: null }), TODAY);
+    expect(derived[0]).toMatch(/^\d+ min$/);
+    expect(derived[0]).not.toBe("20 min");
+    expect(derived[1]).toBe("Strength");
+    // What the server did say is kept; only the rest is worked out.
+    expect(templateFacts(tpl("a", { minutes: 34, discipline: null }), TODAY)).toEqual(["34 min", "Strength", "Not used yet"]);
+  });
+
+  it("with the server's numbers, the document is not read again on the device (no derive per row per render)", () => {
+    // A document this device could not derive from: the row still says the server's numbers.
+    const unreadable = { parts: null } as unknown as TemplateDto["doc"];
+    expect(templateFacts(tpl("a", { doc: unreadable, minutes: 12, discipline: "strength" }), TODAY)).toEqual(["12 min", "Strength", "Not used yet"]);
   });
 
   it("a template whose document no longer reads says it can't be opened", () => {
@@ -114,6 +130,13 @@ describe("the home's quick starts", () => {
       ["Pinned recent", 12, "/studio/build/template/t3"],
       ["Pinned later", 25, "/studio/build/template/t2"],
     ]);
+  });
+
+  it("a pinned template's minutes are the list's: the server's, else worked out from its document", () => {
+    const t = tpl("t1", { name: "Said nothing", pinned: true, minutes: null, discipline: null });
+    const [tile] = quickTiles(emptyStudioCtx, [t]).slice(2);
+    expect(tile!.minutes).not.toBeNull();
+    expect(`${tile!.minutes} min`).toBe(templateFacts(t, TODAY)[0]);
   });
 });
 

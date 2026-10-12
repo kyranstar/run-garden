@@ -80,14 +80,23 @@ describe("the templates list", () => {
   it("each row: its name opens the builder; minutes, kind, last used; a pin is said in words", () => {
     const [pinned, old] = rows(list());
     expect(pinned).toContain('href="/studio/build/template/t-pin"');
-    expect(text(pinned!)).toMatch(/Pinned · \d+ min · Strength · Used 3 days ago/);
-    expect(text(old!)).toMatch(/^Old favourite \d+ min · Strength · Used 21 days ago/);
+    expect(text(pinned!)).toMatch(/Pinned · 14 min · Strength · Used 3 days ago/);
+    expect(text(old!)).toMatch(/^Old favourite 14 min · Strength · Used 21 days ago/);
     expect(text(old!)).not.toContain("Pinned");
+  });
+
+  it("a row's facts break only between them, never inside one (at 320 too): each its own unbroken piece, the dot kept with the one before", () => {
+    const [pinned] = rows(list());
+    const facts = [...pinned!.matchAll(/<span class="stu-tpl-fact">([\s\S]*?)<\/span>/g)].map((m) => text(m[1]!));
+    expect(facts).toEqual(["Pinned ·", "14 min ·", "Strength ·", "Used 3 days ago"]);
+    // The pin's mark sits with the facts' first line, outside the pieces that wrap.
+    expect(pinned).toMatch(/<p class="stu-tpl-meta"><svg[\s\S]*?<\/svg><span class="stu-tpl-facts">/);
   });
 
   it("Start on each template that can be opened; the other actions one tap down, named for the template", () => {
     const r = rows(list());
-    expect(r[0]).toMatch(/<button type="button" class="btn stu-tpl-start">Start<\/button>/);
+    // Each Start is named for its template: "Start" to the eye, "Start: Hips & posture" to a screen reader.
+    expect(r[0]).toMatch(/<button type="button" class="btn stu-tpl-start">Start<span class="visually-hidden">: Hips &amp; posture<\/span><\/button>/);
     expect(r[0]).toContain('aria-label="Hips &amp; posture: more"');
     // One that no longer reads can't be started (or opened), but can still be renamed or deleted.
     const broken = r[2]!;

@@ -4,17 +4,17 @@
  *
  *   sortTemplates   the list's order: pinned first, then the most recently used, then by name — the server's own
  *                   order, kept by the page as a pin or a rename changes a row in place.
- *   templateFacts   a row's line: minutes, the kind of workout (the builder summary's word for it), when last used.
+ *   templateFacts   a row's line: minutes, the kind of workout, when last used — the minutes and kind the server's
+ *                   (`templateShape`), as the home's tile says them.
  *   quickTiles      the home's quick starts: the built-in ones on offer (condition care only while a profile with care
  *                   content is on), then the athlete's pinned templates — each a link to the builder, pre-filled.
  *   quickStartFor   a quick start for the day, built on the device (no network, no AI) with everything the builder
  *                   judges with, seeded by the date: the same tile gives the same workout all day, another the next.
- *   quickKindOf     a quick start's address back to its kind.
  */
-import { deriveDoc, QUICK_START_KINDS, quickStartDoc, type QuickStart, type QuickStartKind } from "@rg/workout";
+import { deriveDoc, quickStartDoc, type QuickStart, type QuickStartKind } from "@rg/workout";
 import { EXERCISES, type CheckReading } from "@rg/exercise-library";
 import type { TemplateDto } from "@rg/api-client";
-import { CATEGORY_LABELS, formatShortDate } from "../../components.js";
+import { formatShortDate } from "../../components.js";
 import { addTargetHref } from "./add-model.js";
 import { buildCtxOf, suggestCtxOf } from "./build-model.js";
 import { quickStarts, type StudioCtx } from "./model.js";
@@ -27,11 +27,6 @@ export const quickHref = (kind: QuickStartKind): string => `/studio/build/quick/
 
 /** The builder on a template. */
 export const templateHref = (id: string): string => addTargetHref({ kind: "template", id });
-
-/** A quick start's kind from its address; null for anything else. */
-export function quickKindOf(s: string): QuickStartKind | null {
-  return QUICK_START_KINDS.find((k) => k === s) ?? null;
-}
 
 /** What the templates list asks the builder to do once it is open: its Start, or its Schedule… */
 export interface BuilderArrival {
@@ -73,11 +68,26 @@ export function lastUsedText(iso: string | null, today: string): string {
   return `Used ${formatShortDate(day)}`;
 }
 
+/** A workout's discipline (`deriveDoc`'s axis) in a word — the builder summary's word for a strength or yoga one. */
+const DISCIPLINE_WORD: Readonly<Record<string, string>> = { run: "Run", strength: "Strength", yoga: "Yoga" };
+
+/**
+ * A template's minutes and kind: the server's (derived from its document there), so the list and the home's tile say
+ * the same. Worked out here only for a row the server said nothing of but whose document reads; with no document,
+ * nothing.
+ */
+export function templateShape(t: TemplateDto): { minutes: number | null; discipline: string | null } {
+  if (t.minutes !== null && t.discipline !== null) return { minutes: t.minutes, discipline: t.discipline };
+  const d = t.doc ? deriveDoc(t.doc, EXERCISES) : null;
+  return { minutes: t.minutes ?? d?.estimatedMinutes ?? null, discipline: t.discipline ?? d?.discipline ?? null };
+}
+
 /** A row's facts: "34 min", "Strength", "Used 3 days ago". A template whose document no longer reads says so. */
 export function templateFacts(t: TemplateDto, today: string): string[] {
   if (!t.doc) return ["Can't be opened"];
-  const d = deriveDoc(t.doc, EXERCISES);
-  return [`${d.estimatedMinutes} min`, CATEGORY_LABELS[d.category] ?? null, lastUsedText(t.lastUsedAt, today)].filter((x): x is string => !!x);
+  const { minutes, discipline } = templateShape(t);
+  const kind = discipline ? (DISCIPLINE_WORD[discipline] ?? null) : null;
+  return [minutes !== null ? `${minutes} min` : null, kind, lastUsedText(t.lastUsedAt, today)].filter((x): x is string => !!x);
 }
 
 // ── Quick starts ────────────────────────────────────────────────────────────
@@ -95,7 +105,7 @@ export function quickTiles(ctx: StudioCtx, templates: readonly TemplateDto[] = [
   const own = sortTemplates(templates.filter((t) => t.pinned && t.doc !== null));
   return [
     ...quickStarts(ctx).map((q) => ({ key: q.kind, title: q.title, minutes: q.minutes, href: quickHref(q.kind) })),
-    ...own.map((t) => ({ key: `template:${t.id}`, title: t.name, minutes: t.minutes, href: templateHref(t.id) })),
+    ...own.map((t) => ({ key: `template:${t.id}`, title: t.name, minutes: templateShape(t).minutes, href: templateHref(t.id) })),
   ];
 }
 

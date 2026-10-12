@@ -16,11 +16,14 @@
  * that refuses is said there, as for any workout; the tap itself unlocks the player's audio and asks for storage, as
  * every Start does. ⋯ holds the rest, one tap down: Schedule… (the builder's sheet), Rename…, Pin to quick starts (a
  * pinned template joins the home's quick starts, and comes first here), Delete… (asked first). A pin or a rename
- * changes the row in place; focus follows the row, or after a delete goes to its neighbour, never to the page.
+ * changes the row in place; focus follows the row, or after a delete goes to its neighbour, never to the page. A
+ * template deleted elsewhere (a write answered 404) is said to be gone, the list is read again, and focus goes to the
+ * neighbour too.
  *
- * Reads and writes are the server's (`/api/templates`): with no connection the list says so and a write says why.
+ * Reads and writes are the server's (`/api/templates`): with no connection the list says so (and fills in once the
+ * connection is back) and a write says why.
  */
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type TemplateDto } from "@rg/api-client";
@@ -79,6 +82,30 @@ export function TemplatesScreen() {
   const put = (t: TemplateDto) =>
     qc.setQueryData<Templates>(TEMPLATES_QUERY, (old) => (old ? { templates: old.templates.map((x) => (x.id === t.id ? t : x)) } : old));
 
+  /** Where focus goes when a row leaves the list: the next row's name (else the one before), else the page's title. */
+  const neighbourOf = (id: string): FocusTo => {
+    const at = list.findIndex((x) => x.id === id);
+    const near = at < 0 ? undefined : (list[at + 1] ?? list[at - 1]);
+    return near ? { id: near.id, to: "open" } : { to: "title" };
+  };
+  /**
+   * A template the server no longer has (deleted elsewhere): the list is read again, and its row goes. Its ⋯ goes with
+   * it, so focus can't go back there — a sheet or question still open sends it to the neighbour when it closes.
+   */
+  const gone = useRef<{ id: string; focus: FocusTo } | null>(null);
+  const lost = (e: unknown, t: TemplateDto): boolean => {
+    if (!(e instanceof ApiError && e.status === 404)) return false;
+    gone.current = { id: t.id, focus: neighbourOf(t.id) };
+    void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
+    return true;
+  };
+  /** A sheet or question about `t` closed: focus to the neighbour if its row went while it was open. */
+  const closedOn = (t: TemplateDto) => {
+    if (gone.current?.id !== t.id) return;
+    focusNext.current = gone.current.focus;
+    gone.current = null;
+  };
+
   const start = (t: TemplateDto) => {
     // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (as every Start does).
     chimes.unlock();
@@ -97,6 +124,8 @@ export function TemplatesScreen() {
       focusNext.current = { id: t.id, to: "more" };
       setStatus(res.template.pinned ? `Pinned “${t.name}” to quick starts.` : `Unpinned “${t.name}”.`);
     } catch (e) {
+      // The menu has closed already: focus goes to the neighbour now, before the row goes.
+      if (lost(e, t)) closedOn(t);
       setStatus(templateWriteError(e, "pin"));
     }
   };
@@ -109,6 +138,7 @@ export function TemplatesScreen() {
       setStatus(`Renamed “${res.template.name}”.`);
       return null;
     } catch (e) {
+      lost(e, t);
       return templateWriteError(e, "rename");
     }
   };
@@ -119,13 +149,11 @@ export function TemplatesScreen() {
     try {
       await api.deleteTemplate(d.t.id);
     } catch (e) {
+      lost(e, d.t);
       setDeleting({ ...d, busy: false, error: templateWriteError(e, "delete") });
-      if (e instanceof ApiError && e.status === 404) void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
       return;
     }
-    const at = list.findIndex((x) => x.id === d.t.id);
-    const near = list[at + 1] ?? list[at - 1];
-    focusNext.current = near ? { id: near.id, to: "open" } : { to: "title" };
+    focusNext.current = neighbourOf(d.t.id);
     qc.setQueryData<Templates>(TEMPLATES_QUERY, (old) => (old ? { templates: old.templates.filter((x) => x.id !== d.t.id) } : old));
     void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
     setDeleting(null);
@@ -134,11 +162,14 @@ export function TemplatesScreen() {
 
   const menuT = menuId ? (list.find((t) => t.id === menuId) ?? null) : null;
 
+  // Offline with nothing kept, the read waits (paused) rather than failing: it says so, and goes on by itself once the
+  // connection is back — never a wait that does not end.
+  const waiting = q.isPending && q.fetchStatus === "paused";
   let body;
-  if (q.isPending) body = <Spinner label="Loading your templates" />;
-  else if (q.isError && !q.data) {
+  if (q.isPending && !waiting) body = <Spinner label="Loading your templates" />;
+  else if (!q.data && (waiting || q.isError)) {
     body = (
-      <EmptyState title="Couldn't load your templates.">
+      <EmptyState title={waiting ? "Your templates need a connection." : "Couldn't load your templates."}>
         <button type="button" className="btn" onClick={() => void q.refetch()}>
           Try again
         </button>
@@ -155,7 +186,7 @@ export function TemplatesScreen() {
     body = (
       <ul className="stu-tpl-list">
         {list.map((t) => {
-          const facts = [t.pinned ? "Pinned" : null, ...templateFacts(t, today)].filter(Boolean).join(" · ");
+          const facts = [...(t.pinned ? ["Pinned"] : []), ...templateFacts(t, today)];
           return (
             <li key={t.id} className="stu-tpl" data-id={t.id}>
               <h2 className="stu-tpl-name">
@@ -169,12 +200,20 @@ export function TemplatesScreen() {
               </h2>
               <p className="stu-tpl-meta">
                 {t.pinned ? <IconPin size={14} /> : null}
-                {facts}
+                {/* Each fact one unbroken piece, its dot kept with it: a line breaks only between them. */}
+                <span className="stu-tpl-facts">
+                  {facts.map((f, i) => (
+                    <Fragment key={f}>
+                      {i > 0 ? " " : null}
+                      <span className="stu-tpl-fact">{i < facts.length - 1 ? `${f} ·` : f}</span>
+                    </Fragment>
+                  ))}
+                </span>
               </p>
               <span className="stu-tpl-acts">
                 {t.doc && features.player ? (
                   <button type="button" className="btn stu-tpl-start" onClick={() => start(t)}>
-                    Start
+                    Start<span className="visually-hidden">: {t.name}</span>
                   </button>
                 ) : null}
                 <button type="button" className="btn stu-icon-btn stu-tpl-more" aria-label={`${t.name}: more`} aria-haspopup="dialog" onClick={() => setMenuId(t.id)}>
@@ -199,7 +238,8 @@ export function TemplatesScreen() {
       <h1 ref={title} tabIndex={-1}>
         Templates
       </h1>
-      <p className="stu-tpl-status" role="status">
+      {/* Empty, it is visually hidden — never display: none — so the region stays in the page and is heard when it speaks. */}
+      <p className={status ? "stu-tpl-status" : "stu-tpl-status visually-hidden"} role="status">
         {status}
       </p>
       {body}
@@ -241,10 +281,23 @@ export function TemplatesScreen() {
           </div>
         </Sheet>
       ) : null}
-      {renaming ? <RenameSheet key={renaming.id} initial={renaming.name} onSave={(name) => rename(renaming, name)} onClose={() => setRenaming(null)} /> : null}
+      {renaming ? (
+        <RenameSheet
+          key={renaming.id}
+          initial={renaming.name}
+          onSave={(name) => rename(renaming, name)}
+          onClose={() => {
+            closedOn(renaming);
+            setRenaming(null);
+          }}
+        />
+      ) : null}
       <ConfirmDialog
         open={!!deleting}
-        onClose={() => setDeleting(null)}
+        onClose={() => {
+          if (deleting) closedOn(deleting.t);
+          setDeleting(null);
+        }}
         title="Delete this template?"
         confirmLabel="Delete"
         onConfirm={() => void remove()}

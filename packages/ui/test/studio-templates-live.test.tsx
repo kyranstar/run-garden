@@ -113,10 +113,10 @@ function built(id: string): SessionDto {
 }
 
 /**
- * A templates server that keeps what it is told; `fail` makes the named writes fail with no connection; `library` is
- * the athlete's library read, answered after `ms`.
+ * A templates server that keeps what it is told; `fail` makes the named writes fail with no connection (`start`: the
+ * session's start); `library` is the athlete's library read, answered after `ms`.
  */
-function serve(initial: TemplateDto[] = [], fail: { delete?: boolean } = {}, library?: { dto: unknown; ms: number }): Call[] {
+function serve(initial: TemplateDto[] = [], fail: { delete?: boolean; start?: boolean } = {}, library?: { dto: unknown; ms: number }): Call[] {
   const calls: Call[] = [];
   let templates = [...initial];
   vi.stubGlobal(
@@ -127,6 +127,11 @@ function serve(initial: TemplateDto[] = [], fail: { delete?: boolean } = {}, lib
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, path, body });
       if (method === "GET" && path === "/api/templates") return json({ templates });
+      if (method === "POST" && path === "/api/templates") {
+        const made = tpl("t-made", body.name, { doc: body.doc, pinned: body.pinned ?? false });
+        templates = [...templates, made];
+        return json({ template: made, warnings: [] }, 201);
+      }
       if (method === "GET" && path === "/api/library" && library) {
         await new Promise((r) => setTimeout(r, library.ms));
         return json(library.dto);
@@ -161,7 +166,7 @@ function serve(initial: TemplateDto[] = [], fail: { delete?: boolean } = {}, lib
       }
       const session = /^\/api\/sessions\/([^/]+)\/(build|start)$/.exec(path);
       if (session && method === "POST" && session[2] === "build") return json(built(session[1]!));
-      if (session && method === "POST" && session[2] === "start") return json({ ...built(session[1]!), contentState: "started", locked: true });
+      if (session && method === "POST" && session[2] === "start" && !fail.start) return json({ ...built(session[1]!), contentState: "started", locked: true });
       return json({ error: "offline" }, 503);
     }),
   );
@@ -228,6 +233,9 @@ const dialog = (title: string) => [...document.querySelectorAll<HTMLElement>('[r
 const rowNames = () => [...document.querySelectorAll(".stu-tpl-open")].map((a) => a.textContent);
 const rowOf = (name: string) => [...document.querySelectorAll<HTMLElement>(".stu-tpl")].find((r) => r.querySelector(".stu-tpl-open")?.textContent === name) ?? null;
 const startButton = () => document.querySelector<HTMLButtonElement>(".stu-build-start");
+/** A row's Start ("Start", and to a screen reader "Start: <name>"). */
+const startOf = (name: string) => rowOf(name)?.querySelector<HTMLButtonElement>(".stu-tpl-start") ?? null;
+const nameOf = (name: string) => rowOf(name)?.querySelector<HTMLElement>("a.stu-tpl-open") ?? null;
 
 function setValue(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
@@ -255,7 +263,7 @@ describe("a template from the list", () => {
     const calls = serve([tpl("t1", "Hips & posture")]);
     mount("/studio/templates");
     await until(() => rowNames().length === 1, "the list");
-    await click(button("Start", rowOf("Hips & posture")!), "Start");
+    await click(startOf("Hips & posture"), "Start");
     await until(() => text().includes("the player"), "the player");
     expect(where).toBe("/session/w-new");
     const create = calls.find((c) => c.method === "POST" && c.path === "/api/workouts")!;
@@ -278,7 +286,7 @@ describe("a template from the list", () => {
     const calls = serve([tpl("t1", "Press day", { doc: pressDay })], {}, { dto: libraryDto({ tmj: true }), ms: 60 });
     mount("/studio/templates", { library: undefined });
     await until(() => rowNames().length === 1, "the list");
-    await click(button("Start", rowOf("Press day")!), "Start");
+    await click(startOf("Press day"), "Start");
     await until(() => !!dialog("Jaw / head"), "the check");
     expect(calls.some((c) => c.method === "POST" && c.path === "/api/workouts")).toBe(false);
   });
@@ -288,7 +296,7 @@ describe("a template from the list", () => {
     const calls = serve([tpl("t1", "Hips & posture")]);
     mount("/studio/templates", { strict: true, templates: [tpl("t1", "Hips & posture")] });
     await until(() => rowNames().length === 1, "the list");
-    await click(button("Start", rowOf("Hips & posture")!), "Start");
+    await click(startOf("Hips & posture"), "Start");
     await until(() => text().includes("the player"), "the player");
     await settle(30);
     expect(calls.filter((c) => c.method === "POST" && c.path === "/api/workouts")).toHaveLength(1);
@@ -310,6 +318,38 @@ describe("a template from the list", () => {
     await until(() => !dialog("Schedule"), "the sheet to close");
     await settle(20);
     expect(dialog("Schedule")).toBeNull();
+  });
+
+  it("after Start, the planned workout it made still goes back to the list", async () => {
+    // The start is refused, so the builder stays on the workout it made (Back from the player lands on the same entry).
+    serve([tpl("t1", "Hips & posture")], { start: true });
+    mount("/studio/templates");
+    await until(() => rowNames().length === 1, "the list");
+    await click(startOf("Hips & posture"), "Start");
+    await until(() => where === "/studio/build/workout/w-new" && !text().includes("Starting…"), "the planned workout");
+    expect(whereState).toEqual({ from: "templates" });
+    const back = document.querySelector<HTMLAnchorElement>(".stu-build-back")!;
+    expect(back.textContent).toBe("Templates");
+    expect(back.getAttribute("href")).toBe("/studio/templates");
+  });
+});
+
+describe("the list with no connection", () => {
+  it("says so — never a wait that does not end — and fills in by itself once the connection is back", async () => {
+    serve([tpl("t1", "Hips & posture")]);
+    onlineManager.setOnline(false);
+    try {
+      // Nothing kept on the device: the read can't go out, and waits (paused).
+      mount("/studio/templates");
+      await until(() => text().includes("Your templates need a connection."), "the reason");
+      expect(text()).not.toContain("Loading your templates");
+      expect(button("Try again")).not.toBeNull();
+    } finally {
+      await act(async () => {
+        onlineManager.setOnline(true);
+      });
+    }
+    await until(() => rowNames().length === 1, "the list");
   });
 });
 
@@ -368,7 +408,8 @@ describe("Rename, Pin and Delete", () => {
     await until(() => !rowNames().includes("Hips & posture"), "the row to go");
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/api/templates/t1"]);
     expect(text()).toContain("Deleted “Hips & posture”.");
-    expect(document.activeElement).not.toBe(document.body);
+    // Its ⋯ went with it: focus is on the next row's name.
+    expect(document.activeElement).toBe(nameOf("Legs"));
   });
 
   it("a template that can no longer be opened can still be renamed or deleted — nothing else", async () => {
@@ -384,12 +425,72 @@ describe("Rename, Pin and Delete", () => {
     serve([tpl("t1", "Hips & posture")], { delete: true });
     mount("/studio/templates");
     await until(() => rowNames().length === 1, "the list");
+    // Pressed from the keyboard (a script's click does not focus it): the ⋯ is what the sheets give focus back to.
+    button("Hips & posture: more")!.focus();
     await click(button("Hips & posture: more"), "more");
     await click(button("Delete…", dialog("Hips & posture")!), "Delete…");
     await click(button("Delete", dialog("Delete this template?")!), "Delete");
     await until(() => text().includes("Deleting needs a connection."), "the reason");
     expect(dialog("Delete this template?")).not.toBeNull();
     expect(rowNames()).toEqual(["Hips & posture"]);
+    // Not gone, only out of reach: closing the question puts focus back on its row's ⋯.
+    await click(button("Cancel", dialog("Delete this template?")!), "Cancel");
+    expect(document.activeElement).toBe(button("Hips & posture: more"));
+  });
+});
+
+describe("a template deleted elsewhere (the server answers 404)", () => {
+  // This device still lists “Hips & posture”; the server no longer has it.
+  const listed = () => [tpl("t1", "Hips & posture"), tpl("t2", "Legs")];
+
+  it("Pin says it is gone, the list is read again without it, and focus goes to the next row's name", async () => {
+    serve([tpl("t2", "Legs")]);
+    mount("/studio/templates", { templates: listed() });
+    await until(() => rowNames().length === 2, "the list");
+    await click(button("Hips & posture: more"), "more");
+    await click(button("Pin to quick starts", dialog("Hips & posture")!), "Pin");
+    await until(() => !rowNames().includes("Hips & posture"), "the gone row to go");
+    expect(text()).toContain("That template is gone now.");
+    expect(document.activeElement).toBe(nameOf("Legs"));
+  });
+
+  it("Rename says it is gone, the list is read again without it, and closing the sheet puts focus on the next row's name", async () => {
+    serve([tpl("t2", "Legs")]);
+    mount("/studio/templates", { templates: listed() });
+    await until(() => rowNames().length === 2, "the list");
+    await click(button("Hips & posture: more"), "more");
+    await click(button("Rename…", dialog("Hips & posture")!), "Rename…");
+    await act(async () => setValue(dialog("Rename")!.querySelector<HTMLInputElement>("input")!, "Hips again"));
+    await click(button("Save", dialog("Rename")!), "Save");
+    await until(() => dialog("Rename")?.textContent?.includes("That template is gone now.") === true, "the reason");
+    await until(() => !rowNames().includes("Hips & posture"), "the gone row to go");
+    await click(button("Close", dialog("Rename")!), "Close");
+    expect(document.activeElement).toBe(nameOf("Legs"));
+  });
+
+  it("Delete says it is gone, the list is read again without it, and closing the question puts focus on the next row's name", async () => {
+    serve([tpl("t2", "Legs")]);
+    mount("/studio/templates", { templates: listed() });
+    await until(() => rowNames().length === 2, "the list");
+    await click(button("Hips & posture: more"), "more");
+    await click(button("Delete…", dialog("Hips & posture")!), "Delete…");
+    await click(button("Delete", dialog("Delete this template?")!), "Delete");
+    await until(() => dialog("Delete this template?")?.textContent?.includes("That template is gone now.") === true, "the reason");
+    await until(() => !rowNames().includes("Hips & posture"), "the gone row to go");
+    await click(button("Cancel", dialog("Delete this template?")!), "Cancel");
+    expect(document.activeElement).toBe(nameOf("Legs"));
+  });
+
+  it("with no row left, focus goes to the page's title", async () => {
+    serve([]);
+    mount("/studio/templates", { templates: [tpl("t1", "Hips & posture")] });
+    await until(() => rowNames().length === 1, "the list");
+    await click(button("Hips & posture: more"), "more");
+    await click(button("Delete…", dialog("Hips & posture")!), "Delete…");
+    await click(button("Delete", dialog("Delete this template?")!), "Delete");
+    await until(() => text().includes("No templates yet."), "the empty list");
+    await click(button("Cancel", dialog("Delete this template?")!), "Cancel");
+    expect(document.activeElement).toBe(document.querySelector("h1"));
   });
 });
 
@@ -448,6 +549,12 @@ describe("a quick start", () => {
       await until(() => text().includes("Scheduled for today at 4 PM."), "the line");
       expect(where).toBe("/studio/build/workout/w-new");
       expect(calls.filter((c) => c.method === "POST" && c.path === "/api/workouts")).toHaveLength(1);
+      // Start now starts that planned workout: no second one is made.
+      await click(startButton(), "Start now");
+      await until(() => text().includes("the player"), "the player");
+      expect(where).toBe("/session/w-new");
+      expect(calls.filter((c) => c.method === "POST" && c.path === "/api/workouts")).toHaveLength(1);
+      expect(calls.filter((c) => c.path === "/api/sessions/w-new/start")).toHaveLength(1);
       expect((await draftStore().load())?.doc.title).toBe("My own");
     } finally {
       vi.useRealTimers();
@@ -487,5 +594,56 @@ describe("a quick start", () => {
     mount("/studio/build/quick/condition_care");
     await until(() => text().includes("Condition care needs a condition profile with care switched on."), "the reason");
     expect(startButton()).toBeNull();
+  });
+
+  it("condition care opened by its address with no connection, its profiles never read: it needs a connection the first time", async () => {
+    serve();
+    onlineManager.setOnline(false);
+    try {
+      mount("/studio/build/quick/condition_care", { library: undefined });
+      await until(() => text().includes("Condition care needs a connection the first time."), "the reason");
+      expect(text()).not.toContain("needs a condition profile");
+      expect(startButton()).toBeNull();
+    } finally {
+      await act(async () => {
+        onlineManager.setOnline(true);
+      });
+    }
+  });
+
+  it("condition care whose profiles' read failed says the same — not that no profile is on", async () => {
+    serve(); // The library read is answered 503.
+    mount("/studio/build/quick/condition_care", { library: undefined });
+    await until(() => text().includes("Condition care needs a connection the first time."), "the reason");
+    expect(text()).not.toContain("needs a condition profile");
+  });
+
+  it("Save as template can pin it to the quick starts in the same step", async () => {
+    const calls = serve();
+    mount("/studio/build/quick/desk_reset");
+    await until(() => !!startButton(), "the builder");
+    const saveAs = async () => {
+      await click(document.querySelector(".stu-save-btn"), "Save");
+      await click(document.querySelector('[role="menuitem"]'), "Save as template…");
+      return dialog("Save as template")!;
+    };
+    // Off unless asked for.
+    let sheet = await saveAs();
+    let pin = sheet.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(pin.closest("label")!.textContent).toBe("Pin to quick starts");
+    expect(pin.checked).toBe(false);
+    await click(button("Save", sheet), "Save");
+    await until(() => !dialog("Save as template"), "the sheet to close");
+    expect((calls.filter((c) => c.method === "POST" && c.path === "/api/templates")[0]!.body as { pinned?: boolean }).pinned).toBeUndefined();
+    // Asked for: the template is pinned as it is made, and the line says so.
+    sheet = await saveAs();
+    pin = sheet.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    await click(pin, "Pin to quick starts");
+    expect(pin.checked).toBe(true);
+    await click(button("Save", sheet), "Save");
+    await until(() => text().includes("pinned to quick starts"), "the line");
+    const body = calls.filter((c) => c.method === "POST" && c.path === "/api/templates")[1]!.body as { name: string; pinned?: boolean };
+    expect(body.pinned).toBe(true);
+    expect(text()).toContain(`Saved “${body.name}” as a template, pinned to quick starts.`);
   });
 });

@@ -231,7 +231,7 @@ function Builder({ source }: { source: BuildSource }) {
   const location = useLocation();
   /** What the templates list asked of this visit (its Start, its Schedule…), and where its way back goes. */
   const arrived = location.state as BuilderArrival | null;
-  const { ctx, settled } = useStudioReads();
+  const { ctx, settled, profilesKnown } = useStudioReads();
   const today = ctx.today ?? localTodayGuess();
   const unit = useWeightUnit();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
@@ -433,7 +433,8 @@ function Builder({ source }: { source: BuildSource }) {
     const editor = source.kind === "template" ? { ...cur.editor, doc: startEditing(forSchedule(cur.editor.doc, source)).doc } : cur.editor;
     setLoaded({ key: `workout:${w.id}`, editor, baseline: sent, rev: w.docRev ?? 1, row: { date: w.date, time: w.time } });
     if (cur.key === "new") void drafts.clear().catch(() => undefined);
-    navigate(addTargetHref({ kind: "workout", id: w.id }), { replace: true });
+    // The entry keeps where its way back goes (the templates list, when it came from there).
+    navigate(addTargetHref({ kind: "workout", id: w.id }), { replace: true, state: arrived?.from ? ({ from: arrived.from } satisfies BuilderArrival) : null });
   };
 
   // ── Start now ──
@@ -578,14 +579,15 @@ function Builder({ source }: { source: BuildSource }) {
       return refusalText(e, "schedule");
     }
   };
-  const saveAsTemplate = async (name: string): Promise<string | null> => {
+  const saveAsTemplate = async (name: string, pinned: boolean): Promise<string | null> => {
     const d = live.current ? toProposable(live.current.editor.doc) : null;
     if (!d) return EMPTY_BLOCK;
     try {
-      const res = await api.createTemplate({ name: name.trim(), doc: d });
+      // Pinned as it is made, it is one of the home's quick starts at once (spec §9).
+      const res = await api.createTemplate({ name: name.trim(), doc: d, ...(pinned ? { pinned: true } : {}) });
       void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
       setNaming(false);
-      setStatus({ text: `Saved “${name.trim()}” as a template.`, notes: newNotes(res.warnings) });
+      setStatus({ text: `Saved “${name.trim()}” as a template${pinned ? ", pinned to quick starts" : ""}.`, notes: newNotes(res.warnings) });
       return null;
     } catch (e) {
       return refusalText(e, "save");
@@ -661,7 +663,10 @@ function Builder({ source }: { source: BuildSource }) {
     } else if (source.kind === "workout") {
       if (stored.isError) problem = stored.error instanceof ApiError && stored.error.status === 404 ? "That workout is gone." : "Opening a planned workout needs a connection.";
       else if (stored.data && !stored.data.doc) problem = "This workout can't be changed in the Studio.";
-    } else if (source.kind === "quick" && made && "reason" in made) problem = made.reason;
+    } else if (source.kind === "quick" && made && "reason" in made) {
+      // Condition care with the profiles never read (offline, or the read failed): "no profile is on" would be a guess.
+      problem = source.quick === "condition_care" && !profilesKnown ? "Condition care needs a connection the first time." : made.reason;
+    }
     return (
       <div className="stu-build">
         {problem ? (
@@ -896,7 +901,8 @@ function Builder({ source }: { source: BuildSource }) {
       </div>
 
       <div className="stu-build-foot">
-        <div className="stu-build-status" role="status">
+        {/* Empty, it is visually hidden — never display: none — so the region stays in the page and is heard when it speaks. */}
+        <div className={status ? "stu-build-status" : "stu-build-status visually-hidden"} role="status">
           {status ? (
             <>
               <span className="stu-build-status-text">
