@@ -16,14 +16,16 @@
  *    → the coach session (`docForCoachSession`) — UNLESS the import restaged the row after the coach: every coach write
  *    of a body deletes the row's stage rows (`writeStages` writes none for a lift or mobility), and only the import
  *    writes stage rows under one (rule 7, the recycled slot), stamping the wire's fingerprint. Stage rows under a body
- *    with an upstream fingerprint → the stages;
+ *    with an upstream fingerprint → the stages (`authoredAsStages`: a body is the coach's row even with no content
+ *    intent, as a lift eased before intents existed has none);
  *  - a row the coach AUTHORED — a coach plan's row, or one an ease rewrote (its content intent: `ease` records one for
  *    every row it rewrites, the app's own mark of "the app wrote this content") — with stages that read back as the
  *    coach's run blocks (`coachBlocksOf`) and a summary that is still the coach's own line for them
  *    (`sessionSummaryLine`; the import's restage writes its own) → the coach session, carrying each stage's pace band,
- *    heart-rate band or zone (the coach's blocks have no place for them; the stage converter's own reading of each
- *    stage supplies them, item by item). Shape alone is no proof: a plain unlabelled COROS run reads as coach blocks
- *    too, and its summary can coincide. Any other stages → `docForStages`;
+ *    heart-rate band or zone through the store's `withStageTargets` — the very helper the coach's own write uses, so a
+ *    coach run's document is the same whichever wrote it (item for item, on the same seconds or metres; anything else
+ *    lends nothing). Shape alone is no proof: a plain unlabelled COROS run reads as coach blocks too, and its summary can
+ *    coincide. Any other stages → `docForStages` (`authoredAsStages` when the coach wrote the row at some point);
  *  - no stages: a row the coach authored → the coach session with no body (its category, title and minutes); any other
  *    row → `docForStages` (the stand-in of the row's length, as the import writes it).
  *  - The rows the import wrote — the old Studio's sessions arrive this way; no planned row names a Studio plan (only
@@ -59,18 +61,7 @@
  */
 import { and, asc, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { coachPlans, plannedWorkouts, plannedWorkoutStages, sessionBuilds, syncIntents } from "@rg/database";
-import {
-  appAuthoredRow,
-  coachSessionSchema,
-  nowInstant,
-  sessionSummaryLine,
-  workoutDocSchema,
-  type CoachSession,
-  type PlannedStage,
-  type WeightUnit,
-  type WorkoutDoc,
-  type WorkoutItem,
-} from "@rg/domain";
+import { appAuthoredRow, coachSessionSchema, nowInstant, sessionSummaryLine, type CoachSession, type WeightUnit, type WorkoutDoc } from "@rg/domain";
 import type { BuildPayload } from "@rg/workout";
 import { chunkIds, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -79,8 +70,10 @@ import {
   docForBuild,
   docForCoachSession,
   docForStages,
+  plannedStageOfRow,
   revisionInserts,
   storedDocText,
+  withStageTargets,
   type ConversionFailed,
   type DocSourceKind,
   type StagesRowMeta,
@@ -99,8 +92,13 @@ export const BACKFILL_MAX_LIMIT = 20;
 /** Why a row was left without a document (by design, not a failure). */
 export type SkipReason = "rest" | "outline" | "app_built";
 
-/** The converter a document came from. `studio`: no stored row holds an old Studio session (always 0). */
-export type ConvertedBy = "coachSession" | "stages" | "build" | "studio";
+/**
+ * The converter a document came from: the coach's session; the stages of a row the import wrote (`stages`) or of one
+ * the coach wrote at some point and the stages now say better (`authoredAsStages`: a body the import restaged since, a
+ * coach run whose stages are the wire's or no longer the coach's blocks); a build. `studio`: no stored row holds an old
+ * Studio session (always 0). The buckets partition `converted`.
+ */
+export type ConvertedBy = "coachSession" | "stages" | "authoredAsStages" | "build" | "studio";
 
 export interface BackfillReport {
   dryRun: boolean;
@@ -147,7 +145,7 @@ class Tally {
       kind: opts.kind,
       scanned,
       converted: 0,
-      convertedBy: { coachSession: 0, stages: 0, build: 0, studio: 0 },
+      convertedBy: { coachSession: 0, stages: 0, authoredAsStages: 0, build: 0, studio: 0 },
       skipped: 0,
       skippedBy: {},
       failed: [],
@@ -204,37 +202,11 @@ async function readStages(db: Db, ids: string[]) {
   return out;
 }
 
-/** A stored stage as the import handed it to the converter: a NULL column is absent (the converter reads presence). */
-function plannedStageOfRow(r: StageRow): PlannedStage {
-  const opt = <K extends string, V>(key: K, value: V | null): { [P in K]?: V } => (value === null ? {} : ({ [key]: value } as { [P in K]: V }));
-  return {
-    id: r.id,
-    ...opt("parentStageId", r.parentStageId),
-    order: r.ord,
-    kind: r.kind as PlannedStage["kind"],
-    ...opt("repeatCount", r.repeatCount),
-    durationType: r.durationType as PlannedStage["durationType"],
-    ...opt("durationSeconds", r.durationSeconds),
-    ...opt("distanceMeters", r.distanceMeters),
-    ...opt("targetType", r.targetType as PlannedStage["targetType"] | null),
-    ...opt("targetLow", r.targetLow),
-    ...opt("targetHigh", r.targetHigh),
-    ...opt("paceZone", r.paceZone),
-    ...opt("hrZone", r.hrZone),
-    ...opt("label", r.label),
-    ...opt("reps", r.reps),
-    ...opt("loadKg", r.loadKg),
-    ...opt("loadBodyweight", r.loadBodyweight),
-    ...opt("restSeconds", r.restSeconds),
-    ...opt("note", r.note),
-  };
-}
-
 /**
  * The coach's run blocks back from the stages `writeStages` wrote for them — top-level, timed or measured, labelled with
  * the block's intensity (or nothing), no strength fields — or null when the stages are not that (the wire's own). The
  * blocks hold no target: a stage's pace band, heart-rate band or zone rides into the document item by item
- * (`withStageTargets`).
+ * (`withStageTargets`, the store's helper the coach's own write uses too).
  */
 function coachBlocksOf(stages: StageRow[]): Array<{ kind: "duration" | "distance"; value: number; intensity?: string }> | null {
   const blocks: Array<{ kind: "duration" | "distance"; value: number; intensity?: string }> = [];
@@ -249,28 +221,6 @@ function coachBlocksOf(stages: StageRow[]): Array<{ kind: "duration" | "distance
     else return null;
   }
   return blocks;
-}
-
-/**
- * The coach's run document with each stage's target: the stage converter's reading of the same stages (its own bounds,
- * one item per stage, as the coach's converter makes one item per block) lends its pace band, heart-rate band and zone
- * to the coach's item at the same place. Null when the two do not line up item for item, or the result is no document.
- */
-export function withStageTargets(doc: WorkoutDoc, fromStages: WorkoutDoc): WorkoutDoc | null {
-  const theirs = fromStages.parts.flatMap((p) => p.items);
-  if (doc.parts.reduce((n, p) => n + p.items.length, 0) !== theirs.length) return null;
-  let i = 0;
-  const parts = doc.parts.map((p) => ({
-    ...p,
-    items: p.items.map((item): WorkoutItem => {
-      const stage = theirs[i++]!;
-      if (item.kind !== "run" || stage.kind !== "run") return item;
-      const { pace, hr, zone } = stage.target;
-      return { ...item, target: { ...item.target, ...(pace ? { pace } : {}), ...(hr ? { hr } : {}), ...(zone ? { zone } : {}) } };
-    }),
-  }));
-  const parsed = workoutDocSchema.safeParse({ ...doc, parts });
-  return parsed.success ? parsed.data : null;
 }
 
 /** `planned_workouts.structured_json` as the coach writes it (`sessionColumns`), read back unchecked. */
@@ -295,7 +245,7 @@ interface PlannedFacts {
   coachPlanId: string | null;
 }
 
-type Conversion = { doc: WorkoutDoc; by: "coachSession" | "stages" } | { code: string };
+type Conversion = { doc: WorkoutDoc; by: "coachSession" | "stages" | "authoredAsStages" } | { code: string };
 
 class Unreadable extends Error {}
 
@@ -324,22 +274,6 @@ async function convertPlanned(
     qualitySubtype: row.qualitySubtype,
     durationSeconds: row.sourceSeconds ?? row.fallbackSeconds,
   };
-  const asStages = (): Conversion => {
-    const doc = docForStages(stages.map(plannedStageOfRow), meta, onFailed);
-    return doc ? { doc, by: "stages" } : { code: code ?? "no_document" };
-  };
-  const asSession = async (session: CoachSession): Promise<Conversion> => {
-    // Loads are typed in the athlete's unit, as the coach's add types them; only a body has loads.
-    const doc = docForCoachSession(session, { weightUnit: session.lift || session.mobility ? await weightUnit() : undefined }, onFailed);
-    if (!doc) return { code: code ?? "no_document" };
-    if (!session.run || stages.length === 0) return { doc, by: "coachSession" };
-    const fromStages = docForStages(stages.map(plannedStageOfRow), meta);
-    if (!fromStages) return { doc, by: "coachSession" };
-    const withTargets = withStageTargets(doc, fromStages);
-    // Not item for item: the stages themselves, which drop nothing.
-    return withTargets ? { doc: withTargets, by: "coachSession" } : { doc: fromStages, by: "stages" };
-  };
-
   let structured: StructuredBody | null = null;
   if (row.structured !== null) {
     try {
@@ -350,8 +284,24 @@ async function convertPlanned(
     }
   }
   const base = { category: row.category, title: row.title, durationMinutes: Math.round((row.sourceSeconds ?? row.fallbackSeconds ?? row.calendarSeconds) / 60) };
+  const hasBody = structured !== null && Array.isArray(structured.exercises) && structured.exercises.length > 0;
 
-  if (structured && Array.isArray(structured.exercises) && structured.exercises.length > 0) {
+  const asStages = (): Conversion => {
+    const doc = docForStages(stages.map(plannedStageOfRow), meta, onFailed);
+    // A row the coach wrote (a coach plan's, an eased one, a body) whose current content is read from its stages.
+    return doc ? { doc, by: authored || hasBody ? "authoredAsStages" : "stages" } : { code: code ?? "no_document" };
+  };
+  const asSession = async (session: CoachSession): Promise<Conversion> => {
+    // Loads are typed in the athlete's unit, as the coach's add types them; only a body has loads. A run carries its
+    // stages' targets, exactly as the coach's own write does (the store's `withStageTargets`).
+    const doc = withStageTargets(
+      docForCoachSession(session, { weightUnit: session.lift || session.mobility ? await weightUnit() : undefined }, onFailed),
+      stages,
+    );
+    return doc ? { doc, by: "coachSession" } : { code: code ?? "no_document" };
+  };
+
+  if (structured && hasBody) {
     // The import restaged it after the coach: stage rows under a body, and the wire's fingerprint.
     if (stages.length > 0 && isUpstreamFingerprint(row.fingerprint)) return asStages();
     const body = { ...(structured.rounds ? { rounds: structured.rounds } : {}), exercises: structured.exercises };

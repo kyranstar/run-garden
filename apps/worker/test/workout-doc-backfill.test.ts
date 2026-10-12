@@ -43,10 +43,10 @@ import {
   BACKFILL_DEFAULT_LIMIT,
   BACKFILL_MAX_LIMIT,
   backfillWorkoutDocs,
-  withStageTargets,
   type BackfillKind,
   type BackfillReport,
 } from "../src/services/workout-doc-backfill.js";
+import { withStageTargets, type StageRowLike } from "../src/services/workout-doc-store.js";
 import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 /** The stages converter throws for this one title: the row whose conversion fails. */
@@ -322,7 +322,7 @@ describe("the dry run", () => {
     expect(planned).toEqual({
       scanned: 14,
       converted: 7,
-      convertedBy: { coachSession: 4, stages: 3, build: 0, studio: 0 },
+      convertedBy: { coachSession: 4, stages: 3, authoredAsStages: 0, build: 0, studio: 0 },
       skipped: 5,
       skippedBy: { rest: 2, outline: 2, app_built: 1 },
       failed: [
@@ -333,7 +333,7 @@ describe("the dry run", () => {
     expect(builds).toEqual({
       scanned: ids.builds.length,
       converted: ids.builds.length,
-      convertedBy: { coachSession: 0, stages: 0, build: ids.builds.length, studio: 0 },
+      convertedBy: { coachSession: 0, stages: 0, authoredAsStages: 0, build: ids.builds.length, studio: 0 },
       skipped: 0,
       skippedBy: {},
       failed: [],
@@ -651,7 +651,8 @@ describe("a coach row whose stages the coach's blocks cannot be read back from",
     for (const id of ["c-rest", "c-odd"]) expect(parseStoredWorkoutDoc((await rowOf(db, id)).workoutDoc)!.source.kind, id).toBe("coros_import");
     // The revisions say what made the documents: the stages, as the import's rule 7 labels them.
     for (const id of ["c-wire", "c-rest", "c-odd"]) expect((await revisionsOf(db, id)).map((r) => [r.rev, r.sourceKind, r.sourceRef]), id).toEqual([[1, "coros_import", `fp-${id}`]]);
-    expect(report.convertedBy).toEqual({ coachSession: 0, stages: 3, build: 0, studio: 0 });
+    // The coach wrote these rows; their stages say it better now.
+    expect(report.convertedBy).toEqual({ coachSession: 0, stages: 0, authoredAsStages: 3, build: 0, studio: 0 });
   });
 
   it("a coach session states the row's estimate, not its calendar block (which carries buffer)", async () => {
@@ -693,9 +694,13 @@ describe("the content's last writer decides the converter, and the revision says
     // The create's verify stamped the wire's echo, and wrote no stages: the coach's content.
     await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "b-echo"));
     await db.update(plannedWorkouts).set({ sourceContentFingerprint: WIRE(2) }).where(eq(plannedWorkouts.id, "b-echo"));
+    // An imported row eased before content intents existed (a body, no intent), restaged since: still the coach's row.
+    await insertRow(db, { ...lift, id: "b-old-ease", planId: "plan-1" });
+    await db.update(plannedWorkoutStages).set({ durationType: "none", durationSeconds: null, label: "Goblet Squat", reps: 8 }).where(eq(plannedWorkoutStages.workoutId, "b-old-ease"));
+    await db.update(plannedWorkouts).set({ sourceContentFingerprint: WIRE(4) }).where(eq(plannedWorkouts.id, "b-old-ease"));
 
     const report = await backfillWorkoutDocs(db, userId, { kind: "planned", dryRun: false, now: NOW });
-    expect([report.failed, report.convertedBy]).toEqual([[], { coachSession: 2, stages: 1, build: 0, studio: 0 }]);
+    expect([report.failed, report.convertedBy]).toEqual([[], { coachSession: 2, stages: 0, authoredAsStages: 2, build: 0, studio: 0 }]);
     const sourceOf = async (id: string) => parseStoredWorkoutDoc((await rowOf(db, id)).workoutDoc)!.source.kind;
     const labelOf = async (id: string) => (await revisionsOf(db, id)).map((r) => [r.sourceKind, r.sourceRef]);
     expect([await sourceOf("b-restaged"), await labelOf("b-restaged")]).toEqual(["coros_import", [["coros_import", WIRE(1)]]]);
@@ -726,21 +731,75 @@ describe("the content's last writer decides the converter, and the revision says
     await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "r-bare"));
 
     const report = await backfillWorkoutDocs(db, userId, { kind: "planned", dryRun: false, now: NOW });
-    expect([report.failed, report.convertedBy]).toEqual([[], { coachSession: 0, stages: 3, build: 0, studio: 0 }]);
+    // The restaged coach-plan run was the coach's (authored, read from its stages); the other two never were.
+    expect([report.failed, report.convertedBy]).toEqual([[], { coachSession: 0, stages: 2, authoredAsStages: 1, build: 0, studio: 0 }]);
     for (const id of ["r-restaged", "r-moved", "r-bare"]) {
       expect(parseStoredWorkoutDoc((await rowOf(db, id)).workoutDoc)!.source.kind, id).toBe("coros_import");
     }
   });
 
-  it("targets ride item for item, or not at all", () => {
+  it("targets ride item for item, on the same seconds or metres — anything else lends nothing", () => {
     const run = (target: Record<string, unknown>) => ({ kind: "run" as const, target, effort: "easy" as const });
     const doc = (items: unknown[]): WorkoutDoc =>
       ({ version: 1, title: "Run", intent: { summary: "Run", goals: [], focus: [], effort: "maintain" }, parts: [{ purpose: "run", format: "steady", items }], source: { kind: "coach" } }) as WorkoutDoc;
-    const coach = doc([run({ durationSec: 600 }), run({ durationSec: 300 })]);
-    const paced = doc([run({ durationSec: 600, pace: { fastSecPerKm: 300, slowSecPerKm: 330 } }), run({ durationSec: 300, hr: { low: 120, high: 140 } })]);
-    expect(withStageTargets(coach, paced)!.parts[0]!.items).toEqual(paced.parts[0]!.items);
-    // A stage list that does not line up with the blocks lends nothing: the caller keeps the stages' own document.
-    expect(withStageTargets(coach, doc([run({ durationSec: 900, pace: { fastSecPerKm: 300, slowSecPerKm: 330 } })]))).toBeNull();
+    const stage = (ord: number, o: Partial<StageRowLike>): StageRowLike => ({
+      id: `s:${ord}`, parentStageId: null, ord, kind: "work", repeatCount: null, durationType: "time", durationSeconds: null, distanceMeters: null,
+      targetType: "none", targetLow: null, targetHigh: null, paceZone: null, hrZone: null, label: null, ...o,
+    });
+    const coach = doc([run({ durationSec: 600 }), run({ distanceM: 1000 }), run({ durationSec: 300 })]);
+    const rows = [
+      stage(0, { durationSeconds: 600, targetType: "pace", targetLow: 300, targetHigh: 330 }),
+      stage(1, { durationType: "distance", distanceMeters: 1000, targetType: "heart_rate", targetLow: 120, targetHigh: 140 }),
+      stage(2, { durationSeconds: 300, paceZone: 3 }),
+    ];
+    expect(withStageTargets(coach, rows)!.parts[0]!.items.map((i) => (i.kind === "run" ? i.target : null))).toEqual([
+      { durationSec: 600, pace: { fastSecPerKm: 300, slowSecPerKm: 330 } },
+      { distanceM: 1000, hr: { low: 120, high: 140 } },
+      { durationSec: 300, zone: { kind: "pace", index: 3 } },
+    ]);
+    // A stage of another length lends nothing to its item; the others still lend theirs.
+    const shifted = [rows[0]!, stage(1, { durationType: "distance", distanceMeters: 1200, targetType: "heart_rate", targetLow: 120, targetHigh: 140 }), rows[2]!];
+    expect(withStageTargets(coach, shifted)!.parts[0]!.items.map((i) => (i.kind === "run" ? Object.keys(i.target).sort() : null))).toEqual([
+      ["durationSec", "pace"], ["distanceM"], ["durationSec", "zone"],
+    ]);
+    // A stage list of another length lends nothing at all.
+    expect(withStageTargets(coach, rows.slice(0, 2))).toEqual(coach);
+    // No stages, no document: as it was.
+    expect(withStageTargets(coach, [])).toBe(coach);
+    expect(withStageTargets(null, rows)).toBeNull();
+  });
+
+  it("with the athlete's threshold, the coach's own write and the backfill's are the same document; the same content again is no new revision", async () => {
+    silence();
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId: athlete, prefs: theirPrefs } = await makeTestUser(db, { weightUnit: "lb" });
+    const day = todayInZone(theirPrefs.timezone);
+    client(db)
+      .prepare(`insert into daily_health (id, user_id, date, threshold_pace_sec_per_km, provider, content_fingerprint, updated_at) values (?, ?, ?, 300, 'coros', 'fp', ?)`)
+      .run(`${athlete}:${day}`, athlete, day, BUILT_AT);
+    const [id] = (await applyOps(db, athlete, theirPrefs, "p-add", [coachOpSchema.parse({ kind: "add", date: addDays(day, 3), session: COACH_RUN })])).created as [string];
+
+    // The coach's own write: the document carries the very bands its stage rows were written with.
+    const live = (await rowOf(db, id)).workoutDoc!;
+    const stages = await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, id));
+    stages.sort((a, b) => a.ord - b.ord);
+    expect(stages.every((s) => s.targetType === "pace")).toBe(true);
+    const runs = parseStoredWorkoutDoc(live)!.parts.flatMap((p) => p.items).flatMap((i) => (i.kind === "run" ? [i.target.pace] : []));
+    expect(runs).toEqual(stages.map((s) => ({ fastSecPerKm: s.targetLow, slowSecPerKm: s.targetHigh })));
+
+    // The same session again (an ease to identical content): no new revision.
+    await applyOps(db, athlete, theirPrefs, "p-same", [coachOpSchema.parse({ kind: "ease", workoutId: id, session: COACH_RUN })]);
+    expect((await rowOf(db, id)).workoutDocRev).toBe(1);
+    expect((await revisionsOf(db, id)).map((r) => r.rev)).toEqual([1]);
+    expect((await rowOf(db, id)).workoutDoc).toBe(live);
+
+    // The backfill, for the same row: the same document, byte for byte.
+    client(db).prepare(`update planned_workouts set workout_doc = null, workout_doc_rev = null`).run();
+    client(db).prepare(`delete from workout_doc_revisions`).run();
+    const report = await backfillWorkoutDocs(db, athlete, { kind: "planned", dryRun: false, now: NOW });
+    expect(report.convertedBy.coachSession).toBe(1);
+    expect((await rowOf(db, id)).workoutDoc).toBe(live);
+    expect(parseStoredWorkoutDoc((await rowOf(db, id)).workoutDoc)).toEqual(parseStoredWorkoutDoc(live));
   });
 
   it("a build whose own write fails is that build's failure, by its error's name: the others land", async () => {
@@ -800,7 +859,7 @@ describe("the content's last writer decides the converter, and the revision says
       silence();
       const db = cloneTestDb(base, { boundVariableCap: 100 });
       const report = await backfillWorkoutDocs(db, userId, { kind: "planned", dryRun: false, now: NOW });
-      expect([report.failed, report.convertedBy]).toEqual([[], { coachSession: 3, stages: 0, build: 0, studio: 0 }]);
+      expect([report.failed, report.convertedBy]).toEqual([[], { coachSession: 3, stages: 0, authoredAsStages: 0, build: 0, studio: 0 }]);
       for (const id of [ids.easedRun, ids.easedLift, ids.coachRun]) {
         const row = await rowOf(db, id);
         expect(parseStoredWorkoutDoc(row.workoutDoc), row.title).toEqual(parseStoredWorkoutDoc(written.get(id)));

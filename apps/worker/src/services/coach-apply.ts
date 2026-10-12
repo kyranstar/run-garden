@@ -26,6 +26,7 @@ import {
   type CoachOp,
   type CoachSession,
   type UserPreferences,
+  type WeightUnit,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
 import { chunkIds, chunkedInsert, runAtomically, type Db } from "./db.js";
@@ -41,7 +42,14 @@ import {
 } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
-import { docForCoachSession, newRowDocColumns, revisionInsert, revisionInserts, updateDocColumns } from "./workout-doc-store.js";
+import {
+  docForCoachSession,
+  newRowDocColumns,
+  revisionInsert,
+  revisionInserts,
+  updateDocColumns,
+  withStageTargets,
+} from "./workout-doc-store.js";
 
 /**
  * Approval → deterministic mutations (spec §7). No LLM here, ever. All row
@@ -235,8 +243,17 @@ export async function writeStages(
   thresholdPaceSecPerKm?: number,
 ): Promise<void> {
   await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, workoutId));
+  const stageRows = coachStageRows(workoutId, session, thresholdPaceSecPerKm);
+  if (stageRows.length === 0) return;
+  await chunkedInsert(stageRows, (batch) => db.insert(plannedWorkoutStages).values(batch));
+}
+
+/**
+ * The stage rows `writeStages` writes for a session — none for a body, or for a run with no blocks. Pure, so the
+ * session's workout document can be made from exactly these rows (their pace bands) before they are written.
+ */
+export function coachStageRows(workoutId: string, session: CoachSession, thresholdPaceSecPerKm?: number) {
   const blocks = session.run?.blocks ?? [];
-  if (blocks.length === 0) return;
   // Structured stages so the app's session detail shows the prescription
   // (incl. pace bands) immediately — a later COROS re-import replaces these
   // with the wire's own truth, which matches because pace round-trips
@@ -255,7 +272,7 @@ export async function writeStages(
   // harness's `store_stage_role_is_positional` ledger entry was this bug, and
   // deleting it was the point.
   const roles = runBlockRoles(blocks);
-  const stageRows = blocks.map((b, i) => {
+  return blocks.map((b, i) => {
     const band = paceBandFor(b.intensity, thresholdPaceSecPerKm);
     return {
       id: `${workoutId}:${i}`,
@@ -283,7 +300,6 @@ export async function writeStages(
       label: b.intensity ?? null,
     };
   });
-  await chunkedInsert(stageRows, (batch) => db.insert(plannedWorkoutStages).values(batch));
 }
 
 /**
@@ -357,6 +373,15 @@ interface NewSession {
 }
 
 /**
+ * A session's workout document, with the targets of the very stage rows `writeStages` writes for it (a run's pace
+ * bands from the athlete's threshold) — `withStageTargets`, the helper the backfill uses, so a coach run's document is
+ * the same whichever wrote it.
+ */
+function sessionDoc(workoutId: string, session: CoachSession, weightUnit: WeightUnit | undefined, thresholdPaceSecPerKm?: number) {
+  return withStageTargets(docForCoachSession(session, { weightUnit }), coachStageRows(workoutId, session, thresholdPaceSecPerKm));
+}
+
+/**
  * The op's new sessions: every row, with its workout document at revision 1, and the revisions of those documents —
  * ONE batch, so the op costs one revision statement however many sessions it adds (Stage 1 dual-write; a rest day has
  * no document, and a conversion that fails is NULL — never a failed apply). A re-apply inserts nothing, so it revises
@@ -381,7 +406,7 @@ async function insertSessions(
     const effectiveTime = opts.prefs
       ? windowTimeFor({ category: session.category, date }, opts.prefs)
       : "07:00";
-    const doc = docForCoachSession(session, { weightUnit: opts.prefs?.weightUnit });
+    const doc = sessionDoc(id, session, opts.prefs?.weightUnit, opts.thresholdPaceSecPerKm);
     const insert = db
       .insert(plannedWorkouts)
       .values({
@@ -1116,7 +1141,7 @@ export async function applyOps(
         // and its workout document as the row's next revision, in the same
         // batch (Stage 1 dual-write; `updateDocColumns` keeps a row resolved
         // meanwhile as it was).
-        const doc = docForCoachSession(op.session, { weightUnit: prefs.weightUnit });
+        const doc = sessionDoc(op.workoutId, op.session, prefs.weightUnit, thresholdPaceSecPerKm);
         await runAtomically(db, [
           db
             .update(plannedWorkouts)

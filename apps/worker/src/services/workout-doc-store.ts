@@ -28,7 +28,7 @@
  * `session_builds.workout_doc` is a snapshot of one build: no revisions.
  */
 import { and, eq, inArray, isNotNull, notInArray, or, sql, type SQL } from "drizzle-orm";
-import { plannedWorkouts, workoutDocRevisions } from "@rg/database";
+import { plannedWorkoutStages, plannedWorkouts, workoutDocRevisions } from "@rg/database";
 import {
   workoutDocSchema,
   type CoachSession,
@@ -37,6 +37,7 @@ import {
   type StudioSession,
   type WeightUnit,
   type WorkoutDoc,
+  type WorkoutItem,
 } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import {
@@ -150,6 +151,87 @@ export function docForStages(stages: PlannedStage[], meta: StagesRowMeta, onFail
     () => docFromStages(stages, { ...meta, corosKeyToLibraryId: (label) => libraryIdOfCorosName(label), library: library() }).doc,
     onFailed,
   );
+}
+
+type StageColumns = typeof plannedWorkoutStages.$inferSelect;
+/** A stage row as stored, or as `coachStageRows` is about to store it (a coach run's rows have no strength columns). */
+export type StageRowLike = Pick<
+  StageColumns,
+  | "id" | "parentStageId" | "ord" | "kind" | "repeatCount" | "durationType" | "durationSeconds" | "distanceMeters"
+  | "targetType" | "targetLow" | "targetHigh" | "paceZone" | "hrZone" | "label"
+> &
+  Partial<Pick<StageColumns, "reps" | "loadKg" | "loadBodyweight" | "restSeconds" | "note">>;
+
+/** A stage row → the converter's stage, as the import hands it over: a NULL (or missing) column is absent. */
+export function plannedStageOfRow(r: StageRowLike): PlannedStage {
+  const opt = <K extends string, V>(key: K, value: V | null | undefined): { [P in K]?: V } =>
+    value === null || value === undefined ? {} : ({ [key]: value } as { [P in K]: V });
+  return {
+    id: r.id,
+    ...opt("parentStageId", r.parentStageId),
+    order: r.ord,
+    kind: r.kind as PlannedStage["kind"],
+    ...opt("repeatCount", r.repeatCount),
+    durationType: r.durationType as PlannedStage["durationType"],
+    ...opt("durationSeconds", r.durationSeconds),
+    ...opt("distanceMeters", r.distanceMeters),
+    ...opt("targetType", r.targetType as PlannedStage["targetType"] | null),
+    ...opt("targetLow", r.targetLow),
+    ...opt("targetHigh", r.targetHigh),
+    ...opt("paceZone", r.paceZone),
+    ...opt("hrZone", r.hrZone),
+    ...opt("label", r.label),
+    ...opt("reps", r.reps),
+    ...opt("loadKg", r.loadKg),
+    ...opt("loadBodyweight", r.loadBodyweight),
+    ...opt("restSeconds", r.restSeconds),
+    ...opt("note", r.note),
+  };
+}
+
+type RunTarget = Extract<WorkoutItem, { kind: "run" }>["target"];
+/** The same segment: the same seconds, or the same metres. */
+const sameMeasure = (a: RunTarget, b: RunTarget): boolean =>
+  (a.durationSec !== undefined && a.durationSec === b.durationSec) || (a.distanceM !== undefined && a.distanceM === b.distanceM);
+
+/**
+ * A COACH RUN'S DOCUMENT, WITH ITS STAGES' TARGETS — the one helper both the coach's own write (`coach-apply.ts`) and
+ * the backfill use, so a coach run's document is the same whichever wrote it.
+ *
+ * The coach's blocks have no place for a target; the stage rows written for them do (`writeStages`: a pace band from
+ * the athlete's threshold). The stage converter's own reading of those rows — its bounds, one item per stage, as the
+ * coach's converter makes one item per block — lends each coach run item its `pace`, `hr` and `zone`. Only where the
+ * two line up: the same number of items, and at each place a run item of the same seconds or metres. Anything else
+ * lends nothing. A document the schema would refuse is left as it was.
+ */
+export function withStageTargets(doc: WorkoutDoc | null, stages: readonly StageRowLike[]): WorkoutDoc | null {
+  if (!doc || stages.length === 0) return doc;
+  let fromStages: WorkoutDoc;
+  try {
+    // Only the targets are read, and a target depends on the stage alone, not on the workout's title or category. The
+    // converter puts the stages in their own order.
+    fromStages = docFromStages(stages.map(plannedStageOfRow), { title: doc.title, sport: "run", corosKeyToLibraryId: () => null }).doc;
+  } catch {
+    return doc;
+  }
+  const theirs = fromStages.parts.flatMap((p) => p.items);
+  if (doc.parts.reduce((n, p) => n + p.items.length, 0) !== theirs.length) return doc;
+  let i = 0;
+  let lent = false;
+  const parts = doc.parts.map((p) => ({
+    ...p,
+    items: p.items.map((item): WorkoutItem => {
+      const stage = theirs[i++]!;
+      if (item.kind !== "run" || stage.kind !== "run" || !sameMeasure(item.target, stage.target)) return item;
+      const { pace, hr, zone } = stage.target;
+      if (!pace && !hr && !zone) return item;
+      lent = true;
+      return { ...item, target: { ...item.target, ...(pace ? { pace } : {}), ...(hr ? { hr } : {}), ...(zone ? { zone } : {}) } };
+    }),
+  }));
+  if (!lent) return doc;
+  const parsed = workoutDocSchema.safeParse({ ...doc, parts });
+  return parsed.success ? parsed.data : doc;
 }
 
 /** An old Studio session → its document; `corosKeyOfOrigin` reads the athlete's catalog id as its T-code. */
