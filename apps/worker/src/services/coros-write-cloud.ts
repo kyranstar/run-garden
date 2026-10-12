@@ -2,6 +2,7 @@ import { ZodError } from "zod";
 import { and, desc, eq, exists, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
+  APP_AUTHORED_ORIGINS,
   appAuthoredRow,
   nowInstant,
   COACH_JOB_KINDS,
@@ -196,7 +197,7 @@ async function heldByAnother(
           isNull(plannedWorkouts.archivedAt),
           or(
             // `appAuthoredRow`, in SQL.
-            inArray(plannedWorkouts.origin, ["program", "on_demand"]),
+            inArray(plannedWorkouts.origin, [...APP_AUTHORED_ORIGINS]),
             exists(
               db
                 .select({ one: sql`1` })

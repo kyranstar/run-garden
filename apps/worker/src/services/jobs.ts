@@ -208,7 +208,7 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
   // outline is named by its program as it is now — never by the old build's "<program> · <theme>" (audit 2a-UI M13).
   const toOutline =
     fromDate !== req.toDate &&
-    (workout.origin === "program" || workout.origin === "on_demand") &&
+    appAuthoredRow(workout) &&
     workout.contentState === "built";
   const [program] =
     toOutline && workout.origin === "program"

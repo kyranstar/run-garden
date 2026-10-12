@@ -56,8 +56,10 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  appAuthoredRow,
   canonicalJson,
   coreBlockIntentSchema,
+  docOriginRow,
   isLocalDate,
   performedSessionSaveSchema,
   todayInZone,
@@ -175,8 +177,13 @@ export async function savedByAnother(db: Db, userId: string, workoutId: string, 
   return row !== undefined;
 }
 
-/** §9.2 from the locked build: a core lift → strength, else yoga; read in SQL, never parsing the payload here. */
+/**
+ * §9.2 from the locked build: a core lift → strength, else yoga; read in SQL, never parsing the payload here. A
+ * document workout's discipline is its document's (`deriveDoc`, written on the row when it was made or revised): its
+ * main part is the build's core block whatever it holds, so a main part of stretches is still mobility.
+ */
 async function disciplineOf(db: Db, userId: string, slot: SlotRow, buildId: string | null): Promise<"strength" | "yoga"> {
+  if (docOriginRow(slot) && (slot.sport === "strength" || slot.sport === "yoga")) return slot.sport;
   if (buildId) {
     const [row] = await db
       .select({
@@ -443,7 +450,7 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.id, p.workoutId), eq(plannedWorkouts.userId, userId)))
     .limit(1);
-  if (!slot || (slot.origin !== "program" && slot.origin !== "on_demand")) throw new SessionNotFoundError();
+  if (!slot || !appAuthoredRow(slot)) throw new SessionNotFoundError();
   // Ruling 2b-R7 as amended (audit 2b-A I-4): the session's day is the day its LOCKED build was built and started for
   // — or the next, for a session that ran past midnight — and never after tomorrow. A build started once and
   // un-started since counts too (ruling 2b-R19): another device's save made from it may drain after the Discard and a

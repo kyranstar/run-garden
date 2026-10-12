@@ -34,7 +34,7 @@ beforeEach(async () => {
 });
 
 /** A slot as placement writes it (calendar_only, no watch address), or another app-authored row. */
-async function seedAppRow(id: string, date: string, origin: "program" | "on_demand" = "program"): Promise<void> {
+async function seedAppRow(id: string, date: string, origin: "program" | "on_demand" | "studio" | "template" = "program"): Promise<void> {
   await db.insert(plannedWorkouts).values({
     id,
     userId,
@@ -69,7 +69,8 @@ async function rowOf(id: string) {
 }
 
 describe("moving an app-authored session with no watch address", () => {
-  it.each(["program", "on_demand"] as const)("origin %s: the move is the calendar's only — no job, no open intent", async (origin) => {
+  // A Studio or template workout is the app's own session too (Stage 2 spec §10): the same lane.
+  it.each(["program", "on_demand", "studio", "template"] as const)("origin %s: the move is the calendar's only — no job, no open intent", async (origin) => {
     const from = addDays(today, 2);
     const to = addDays(today, 3);
     await seedAppRow("slot-a", from, origin);

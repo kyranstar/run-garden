@@ -9,7 +9,7 @@
  */
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import { activities, plannedWorkouts, sessionBuilds, workoutCompletionMatches } from "@rg/database";
-import { nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { APP_AUTHORED_ORIGINS, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { RawCorosLapItem } from "@rg/providers";
 import type { Db } from "./db.js";
 import { ingestActivities } from "./completion.js";
@@ -84,7 +84,7 @@ export async function seedWatchSession(db: Db, userId: string, prefs: UserPrefer
         eq(plannedWorkouts.userId, userId),
         eq(plannedWorkouts.effectiveDate, today),
         isNull(plannedWorkouts.archivedAt),
-        inArray(plannedWorkouts.origin, ["program", "on_demand"]),
+        inArray(plannedWorkouts.origin, [...APP_AUTHORED_ORIGINS]),
         // Still to do: a session already done today (an earlier journey's) is not the one the watch just did.
         eq(plannedWorkouts.completionState, "scheduled"),
         ne(plannedWorkouts.contentState, "done"),

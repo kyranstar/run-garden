@@ -125,11 +125,14 @@ export const put = <T>(path: string, body?: unknown) =>
 
 export interface WorkoutDto {
   id: string;
-  /** Where the row came from: program | on_demand for the app's own sessions; null for rows not yet labelled. */
+  /**
+   * Where the row came from: program | on_demand | studio | template for the app's own sessions (studio and template
+   * rows are document workouts, played from their document); null for rows not yet labelled.
+   */
   origin?: string | null;
   /** How far an app session's content has got; null for rows that have none. */
   contentState?: "outline" | "built" | "started" | "done" | null;
-  /** The program a program or on-demand row belongs to; null otherwise. */
+  /** The program an app session belongs to (a Studio or template row: the account's Studio programme); null otherwise. */
   programId?: string | null;
   /** Human display name — the server substitutes category words when COROS
    * sent an opaque code ("T1004"); the raw code rides in corosName. */
@@ -551,6 +554,100 @@ export interface CoachPlanDto {
 export type WorkoutDocResponse =
   | { doc: WorkoutDoc; derived: { estimatedMinutes: number; discipline: string; category: string; mode: string; watchStepCount: number } & Record<string, unknown>; rev: number | null }
   | { doc: null; reason: "missing" | "invalid" };
+
+/** One issue `validateWorkoutDoc` raises on a workout document: an error blocks, a warning is a cost shown. */
+export interface DocIssueDto {
+  /** Where in the document: "intent.focus[2]", "parts[1].format", "parts[1].items[0].libraryId". */
+  path: string;
+  code: string;
+  /** Plain words for the athlete. */
+  message: string;
+  /** A replacement for the value at `path` (a library id, a vocabulary id, a format, an effort, or a dose as JSON). */
+  fix?: string;
+  severity: "error" | "warning";
+}
+
+/** A document workout as `POST /api/workouts` and `PUT /api/workouts/:id/doc` answer it. */
+export interface DocWorkoutDto {
+  id: string;
+  date: string;
+  /** "HH:MM". */
+  time: string;
+  title: string;
+  intentSummary: string;
+  category: string;
+  sport: string;
+  origin: "studio" | "template";
+  contentState: "outline" | "built" | "started" | "done";
+  completionState: string;
+  docRev: number | null;
+  /** Derived from the document. */
+  minutes: number;
+}
+
+/** `POST /api/workouts`: a document workout for a day (today or later). `time` left out: the athlete's window. */
+export interface CreateDocWorkoutRequest {
+  date: string;
+  time?: string | null;
+  doc: WorkoutDoc;
+}
+
+/**
+ * 201 of `POST /api/workouts`. Errors: 422 `{error: "invalid_doc", issues}` (every issue; an error blocks),
+ * `{error: "past_date"}`, `{error: "invalid_workout"}`.
+ */
+export interface CreateDocWorkoutResponse {
+  workout: DocWorkoutDto;
+  warnings: DocIssueDto[];
+}
+
+/**
+ * 200 of `PUT /api/workouts/:id/doc`. `watchHasOlder`: the watch holds (or is being sent) a copy built from another
+ * revision — offer "Send the new version". Errors: 409 `{error: "stale_revision", rev}` (changed elsewhere — reload),
+ * `{error: "not_editable"}` (a programme's session, or one resolved or under way); 422 `invalid_doc`; 404.
+ */
+export interface ReviseDocWorkoutResponse {
+  workout: DocWorkoutDto;
+  /** The row's revision now (the same as the base when the document did not change). */
+  rev: number | null;
+  watchHasOlder: boolean;
+  warnings: DocIssueDto[];
+}
+
+/** A move the day kept out of a document workout, and the alternate that stands in for it in today's build. */
+export interface DocSwapDto {
+  /** The item: "parts[0].items[2]". */
+  path: string;
+  from: string;
+  to: string;
+  /** Why the day kept `from` out. */
+  reason: string;
+}
+
+/** What a document workout's build says of its document (`SessionBuildDto.fromDoc`). */
+export interface DocBuildInfoDto {
+  /** The revision the build was made from. */
+  rev: number | null;
+  swaps: DocSwapDto[];
+  /** Errors still standing once the swaps are made: Start and Send refuse (409 `gated`). */
+  blocked: DocIssueDto[];
+}
+
+/** A saved template (`GET /api/templates`). */
+export interface TemplateDto {
+  id: string;
+  name: string;
+  /** Null when the stored document no longer reads. */
+  doc: WorkoutDoc | null;
+  pinned: boolean;
+  uses: number;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Derived from the document; null without one. */
+  minutes: number | null;
+  discipline: string | null;
+}
 
 /** One row of `GET /api/workouts`. */
 export interface WorkoutListItemDto {
@@ -1069,6 +1166,8 @@ export interface SessionBuildDto {
   newMove: string | null;
   /** The day's choices this build was made with. */
   params: { checks: Record<string, SessionCheckAnswer>; overrides: SessionOverrides; swaps: Swaps };
+  /** A document workout's build (a Studio or template row): made from its document, not by the engine. */
+  fromDoc?: DocBuildInfoDto;
 }
 
 export interface SessionViewDto {
@@ -1093,6 +1192,8 @@ export interface SessionViewDto {
  * Exact shape of `GET /api/sessions/:workoutId` and of a build or start. Errors: 404 `not_found`; 409
  * `{error: "not_today", date, today}`, `{error: "locked", session}`, `{error: "not_built"}`, and for a start
  * `{error: "stale", session}` (the fresh build to show); 422 `invalid_build`, `invalid_start` or `unknown_profile`.
+ * A document workout's start (or send) also: 409 `{error: "gated", issues: DocIssueDto[]}` — the day's reading keeps a
+ * move out that no alternate stands in for — and `{error: "no_document"}`.
  */
 export interface SessionDto {
   workoutId: string;
@@ -1686,6 +1787,19 @@ export const api = {
     if (opts.limit) qs.set("limit", String(opts.limit));
     return get<WorkoutListItemDto[]>(`/api/workouts${qs.size ? `?${qs}` : ""}`);
   },
+  /** Schedule a document workout (the Studio's Schedule and Start now). */
+  createWorkout: (body: CreateDocWorkoutRequest) => post<CreateDocWorkoutResponse>("/api/workouts", body),
+  /** Save a new revision of a document workout's document; `baseRev` is the revision the edit started from. */
+  reviseWorkoutDoc: (id: string, doc: WorkoutDoc, baseRev: number) =>
+    put<ReviseDocWorkoutResponse>(`/api/workouts/${encodeURIComponent(id)}/doc`, { doc, baseRev }),
+  templates: () => get<{ templates: TemplateDto[] }>("/api/templates"),
+  createTemplate: (body: { name: string; doc: WorkoutDoc; pinned?: boolean }) =>
+    post<{ template: TemplateDto; warnings: DocIssueDto[] }>("/api/templates", body),
+  updateTemplate: (id: string, patch: { name?: string; doc?: WorkoutDoc; pinned?: boolean }) =>
+    put<{ template: TemplateDto; warnings: DocIssueDto[] }>(`/api/templates/${encodeURIComponent(id)}`, patch),
+  deleteTemplate: (id: string) => request<{ ok: true }>(`/api/templates/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Bumps the template's uses; its document comes back stamped `basedOn: template`, to open or schedule. */
+  useTemplate: (id: string) => post<{ template: TemplateDto; doc: WorkoutDoc | null }>(`/api/templates/${encodeURIComponent(id)}/use`, {}),
   deleteAll: () => post("/api/settings/delete-all", { confirm: "delete everything" }),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),

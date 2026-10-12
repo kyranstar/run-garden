@@ -18,10 +18,17 @@
  *                                            or a watch review — `source: "watch_review"`)
  *   POST   /api/conditions/checks            {profileId, value, feelingOff} → the day's check
  *
- * 404 for a slot that is not this user's live program / on-demand row; 409 `not_today` (a day gone, or Start on a
- * day ahead), 409 `locked` with the locked session, 409 `not_built`, 409 `stale` with the fresh session (Start named a
- * build the day's inputs no longer make); 422 for an invalid body or a profile that is not switched on. Everything engine-shaped lives in `services/session-build.ts`. A restore in progress is refused
- * (423) by `requireUser` before any write runs.
+ * 404 for a slot that is not this user's live app session (a programme's, an on-demand, a Studio or a template row);
+ * 409 `not_today` (a day gone, or Start on a day ahead), 409 `locked` with the locked session, 409 `not_built`, 409
+ * `stale` with the fresh session (Start named a build the day's inputs no longer make); 422 for an invalid body or a
+ * profile that is not switched on. Everything engine-shaped lives in `services/session-build.ts`. A restore in
+ * progress is refused (423) by `requireUser` before any write runs.
+ *
+ * A DOCUMENT WORKOUT (a Studio or template row, Stage 2 spec §10) builds from its document, not the engine: the build
+ * carries `fromDoc` (its revision, the day's swaps, what is still blocked). Start and Send re-gate it with the day's
+ * reading: 409 `gated` with the validator's `issues` when a move the day keeps out has no alternate to stand in (a
+ * swap the reading makes comes back first as `stale`, so the athlete sees it before it locks); 409 `no_document` when
+ * its stored document cannot be read.
  *
  * THE WATCH (Phase 3, spec §4, §6). Every session response carries `watch` — null while the switch
  * (`WATCH_PUSH_ENABLED`) is off, so nothing about the watch renders — through one helper, `withWatch`. Off, the three
@@ -41,8 +48,10 @@ import { requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import {
   buildSessionOutcome,
+  GatedError,
   loadSession,
   loadSessionState,
+  NoDocumentError,
   NotBuiltError,
   NotTodayError,
   PerformedExistsError,
@@ -124,6 +133,8 @@ async function refusal(c: Context<AppContext>, e: unknown): Promise<Response> {
   if (e instanceof NotTodayError) return c.json({ error: "not_today", date: e.date, today: e.today }, 409);
   if (e instanceof SessionLockedError) return c.json({ error: "locked", session: await withWatch(c, e.session) }, 409);
   if (e instanceof NotBuiltError) return c.json({ error: "not_built" }, 409);
+  if (e instanceof GatedError) return c.json({ error: "gated", issues: e.issues }, 409);
+  if (e instanceof NoDocumentError) return c.json({ error: "no_document" }, 409);
   if (e instanceof UnknownProfileError) return c.json({ error: "unknown_profile" }, 422);
   throw e;
 }

@@ -577,22 +577,28 @@ function toEngineLocation(row: LocationRow, unit: WeightUnit): EngineLocation {
 
 const sortedUnique = (xs: Iterable<string>): string[] => [...new Set(xs)].sort();
 
-/** Prefs, saved ids, the place, the unit and the profiles for one build of `programId` (this user's). */
+/**
+ * Prefs, saved ids, the place, the unit and the profiles for one build of `programId` (this user's). `null` — a
+ * document workout's build, which no programme's settings shape — reads no programme and takes the defaults.
+ */
 export async function loadEngineContext(
   db: Db,
   userId: string,
-  programId: string,
+  programId: string | null,
   opts: { locationId?: string; prefs?: UserPreferences },
 ): Promise<EngineContext> {
-  const [program] = await db
-    .select({ config: programs.config })
-    .from(programs)
-    .where(and(eq(programs.id, programId), eq(programs.userId, userId)))
-    .limit(1);
-  if (!program) throw new Error("program_not_found");
-  const parsed = adaptiveConfigSchema.safeParse(program.config);
-  if (!parsed.success) console.error(`program ${programId}: stored config does not parse; building with the defaults`);
-  const config = parsed.success ? parsed.data : adaptiveConfigSchema.parse({});
+  let config = adaptiveConfigSchema.parse({});
+  if (programId !== null) {
+    const [program] = await db
+      .select({ config: programs.config })
+      .from(programs)
+      .where(and(eq(programs.id, programId), eq(programs.userId, userId)))
+      .limit(1);
+    if (!program) throw new Error("program_not_found");
+    const parsed = adaptiveConfigSchema.safeParse(program.config);
+    if (!parsed.success) console.error(`program ${programId}: stored config does not parse; building with the defaults`);
+    if (parsed.success) config = parsed.data;
+  }
 
   const [conditionRows, prefRows, savedRows, placeRows, userPrefs] = await Promise.all([
     db

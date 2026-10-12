@@ -45,11 +45,27 @@ export function watchAddressOf(w: WatchAddressFields): WatchAddress | null {
 }
 
 /**
- * A row the APP authored — an adaptive program's slot or an on-demand session (Phase 2 §2a). THE ONE PREDICATE
- * (ruling 2a-R4, extended by 3-R3 and 3-R9): its content is its build's, COROS never authors it, and nothing but the
- * athlete's own Send (and the cleanup of that send) may write it to the watch — no move, no rewrite, no create; the
- * import never rewrites it and never archives it by absence.
+ * The origins of a DOCUMENT WORKOUT (Stage 2 spec §10; programme spec §3.11): a workout made in the Studio, or from a
+ * saved template. Its content is its workout document — played through a build materialised from it, and revised
+ * only as new revisions of that document.
+ */
+export const DOC_ORIGINS = ["studio", "template"] as const;
+
+/** The origins of the app's own sessions: a programme's slot, an on-demand session, and a document workout. */
+export const APP_AUTHORED_ORIGINS = ["program", "on_demand", ...DOC_ORIGINS] as const;
+
+/**
+ * A row the APP authored — an adaptive program's slot, an on-demand session (Phase 2 §2a), or a document workout from
+ * the Studio or a template (Stage 2). THE ONE PREDICATE (ruling 2a-R4, extended by 3-R3 and 3-R9): its content is its
+ * build's, COROS never authors it, and nothing but the athlete's own Send (and the cleanup of that send) may write it
+ * to the watch — no move, no rewrite, no create; the import never rewrites it and never archives it by absence. In SQL:
+ * `inArray(origin, [...APP_AUTHORED_ORIGINS])`.
  */
 export function appAuthoredRow(w: { origin: string | null }): boolean {
-  return w.origin === "program" || w.origin === "on_demand";
+  return (APP_AUTHORED_ORIGINS as readonly (string | null)[]).includes(w.origin);
+}
+
+/** A document workout (`DOC_ORIGINS`): built from its document, never by the engine. */
+export function docOriginRow(w: { origin: string | null }): boolean {
+  return (DOC_ORIGINS as readonly (string | null)[]).includes(w.origin);
 }

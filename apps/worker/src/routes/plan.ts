@@ -457,7 +457,7 @@ function workoutDto(
     // `programId` only for the app's own rows, whose plan id IS the program's.
     origin: w.origin ?? null,
     contentState: w.contentState ?? null,
-    programId: w.origin === "program" || w.origin === "on_demand" ? w.planId : null,
+    programId: appAuthoredRow(w) ? w.planId : null,
     // Lift/mobility prescription, formatted once here so the sheet can't
     // invent its own notation, and carrying the ONE fact the flat
     // stageSummary cannot: which movements the watch's own library knows

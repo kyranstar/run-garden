@@ -40,6 +40,8 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  APP_AUTHORED_ORIGINS,
+  appAuthoredRow,
   isLocalDate,
   programSessionPushJobSchema,
   SESSION_FORMATS,
@@ -274,7 +276,7 @@ async function reviewSlot(db: Db, userId: string, workoutId: string): Promise<Sl
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)))
     .limit(1);
-  if (!slot || (slot.origin !== "program" && slot.origin !== "on_demand")) throw new SessionNotFoundError();
+  if (!slot || !appAuthoredRow(slot)) throw new SessionNotFoundError();
   return slot;
 }
 
@@ -514,7 +516,7 @@ export async function watchReviewOffers(db: Db, userId: string, today: string): 
       and(
         eq(plannedWorkouts.userId, userId),
         isNull(plannedWorkouts.archivedAt),
-        inArray(plannedWorkouts.origin, ["program", "on_demand"]),
+        inArray(plannedWorkouts.origin, [...APP_AUTHORED_ORIGINS]),
         or(inArray(buildDate, [today, yesterday]), and(inArray(plannedWorkouts.effectiveDate, [today, yesterday]), sent)),
         sql`not exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${userId} and (${performedSessions.workoutId} = ${plannedWorkouts.id} or ${performedSessions.activityId} = ${activities.id}) and ${performedSessions.source} in ('app', 'watch_review') and ${performedSessions.payloadHash} <> ${PENDING_HASH})`,
       ),
