@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
 import type { RestoreStatus } from "@rg/api-client";
+import { features } from "./features.js";
 import { IconGarden, IconPlan, IconRuns, IconSettings, IconStudio } from "./icons.js";
 import { useCorosReadNow } from "./screens/use-coros-read.js";
 import { RestorePendingNotice } from "./screens/restore-notice.js";
@@ -15,6 +16,11 @@ export const NAV = [
   { to: "/runs", label: "Activity", icon: <IconRuns /> },
   { to: "/settings", label: "Settings", icon: <IconSettings /> },
 ];
+
+/** The tabs to draw: all five, or the original four while the Studio ships dark (`features.studio`). */
+export function navItems(): typeof NAV {
+  return features.studio ? NAV : NAV.filter((n) => n.to !== "/studio");
+}
 
 /** The routes that take the wide treatment at lg: the plan's week grid and coach, the Studio's columns. */
 const isWide = (pathname: string): boolean =>
@@ -58,7 +64,7 @@ export function AppShell({
     <div className="shell">
       <nav className="side-nav" aria-label="Main">
         <div className="brand">{PRODUCT_NAME}</div>
-        {NAV.map((item) => (
+        {navItems().map((item) => (
           <NavLink key={item.to} to={item.to} end={item.to === "/"}>
             {item.icon}
             {item.label}
@@ -91,7 +97,7 @@ export function AppShell({
       </main>
 
       <nav className="bottom-nav" aria-label="Main">
-        {NAV.map((item) => (
+        {navItems().map((item) => (
           <NavLink key={item.to} to={item.to} end={item.to === "/"}>
             {item.icon}
             {item.label}

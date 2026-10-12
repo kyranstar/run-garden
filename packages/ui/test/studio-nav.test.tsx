@@ -6,9 +6,13 @@ import { createElement } from "react";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
+import { Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
-import { AppShell, NAV } from "../src/shell.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { StudioRoute } from "../src/app.js";
+import { features, studioFlag } from "../src/features.js";
+import { StudioScreen } from "../src/screens/studio/screen.js";
+import { AppShell, NAV, navItems } from "../src/shell.js";
 import { staticRouter } from "./studio-fixtures.js";
 
 function shellAt(path: string): string {
@@ -64,9 +68,49 @@ describe("the Studio tab", () => {
     }
   });
 
-  it("the app routes /studio to the Studio screen", () => {
+  it("the app routes /studio, and everything under it, through the Studio's gate", () => {
     const app = readFileSync(fileURLToPath(new URL("../src/app.tsx", import.meta.url)), "utf8");
-    expect(app).toContain('<Route path="/studio" element={<StudioScreen />} />');
+    expect(app).toContain('<Route path="/studio/*" element={<StudioRoute />} />');
     expect(app).toMatch(/import \{ StudioScreen \} from "\.\/screens\/studio\/screen\.js";/);
+  });
+});
+
+describe("the Studio ships dark: the `studio` flag (off in production builds until it is finished)", () => {
+  afterEach(() => {
+    features.studio = true;
+  });
+
+  it("is decided by the build: on in dev, tests and the fixture stack; off in a production build unless VITE_STUDIO=1", () => {
+    expect(studioFlag({ DEV: true, PROD: false })).toBe(true);
+    expect(studioFlag({ DEV: false, PROD: true })).toBe(false);
+    expect(studioFlag({ DEV: false, PROD: true, VITE_STUDIO: "1" })).toBe(true);
+    expect(studioFlag({ DEV: false, PROD: true, VITE_STUDIO: "0" })).toBe(false);
+    // No Vite env at all (a plain Node run): off.
+    expect(studioFlag(undefined)).toBe(false);
+    // …and under vitest it is on, so every Studio suite runs against the tab as it will ship.
+    expect(features.studio).toBe(true);
+  });
+
+  it("off: the nav is the original four tabs, in both bars", () => {
+    features.studio = false;
+    expect(navItems().map((n) => n.label)).toEqual(["Garden", "Plan", "Activity", "Settings"]);
+    const html = shellAt("/plan");
+    for (const nav of ["bottom-nav", "side-nav"]) {
+      expect(links(html, nav).map(([, t]) => t), nav).toEqual(["Garden", "Plan", "Activity", "Settings"]);
+    }
+  });
+
+  it("off: /studio and everything under it (one route, `/studio/*`) go home, replacing the entry", () => {
+    // `<Navigate>` acts in an effect, which a static render never runs: what the gate RETURNS is the contract.
+    features.studio = false;
+    const el = StudioRoute();
+    expect(el.type).toBe(Navigate);
+    expect(el.props).toEqual({ to: "/", replace: true });
+  });
+
+  it("on: five tabs, and /studio is the Studio", () => {
+    features.studio = true;
+    expect(navItems().map((n) => n.label)).toEqual(["Garden", "Plan", "Studio", "Activity", "Settings"]);
+    expect(StudioRoute().type).toBe(StudioScreen);
   });
 });

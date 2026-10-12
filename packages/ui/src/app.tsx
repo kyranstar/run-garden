@@ -12,6 +12,7 @@ import { WelcomeScreen } from "./screens/welcome.js";
 import { Onboarding } from "./screens/onboarding.js";
 import { PlayerScreen } from "./screens/player.js";
 import { StudioScreen } from "./screens/studio/screen.js";
+import { features } from "./features.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 import { OutboxSync } from "./components/outbox-sync.js";
@@ -29,6 +30,11 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+/** The Studio while it ships dark (`features.studio`): off, `/studio` and everything under it go home. */
+export function StudioRoute() {
+  return features.studio ? <StudioScreen /> : <Navigate to="/" replace />;
+}
 
 function AuthedApp() {
   const me = useQuery({
@@ -80,8 +86,8 @@ function AuthedApp() {
         <Route path="/" element={<GardenScreen />} />
         <Route path="/plan" element={<PlanScreen />} />
         {/* Stage 2: the Studio — search, browse by part, themes and tags. Its sub-routes (a move, the builder,
-            templates) arrive with Tasks 5–7. */}
-        <Route path="/studio" element={<StudioScreen />} />
+            templates) arrive with Tasks 5–7; one gated route holds them all while it ships dark. */}
+        <Route path="/studio/*" element={<StudioRoute />} />
         {/* The boundary sits OUTSIDE the screen rather than inside it: a
             boundary never catches an error thrown by its own render, so
             wrapping the screen's returned tree would have missed anything
