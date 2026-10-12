@@ -606,6 +606,21 @@ describe("planPush — the diff", () => {
     expect(batch.localDeletes).toEqual(["row-9"]);
   });
 
+  it("a retire's kept rows stay as they are: what is behind it is not removed, what is ahead is", () => {
+    const rows = [
+      verifiedRow({ id: "behind", happenDay: "2026-09-07", sessionTitle: "Upper A — wk 1" }),
+      verifiedRow({ id: "ahead", happenDay: "2026-09-14", sessionTitle: "Upper A — wk 2", corosIdInPlan: "22" }),
+      row({ id: "kept-pending", status: "pending", happenDay: "2026-09-08", sessionTitle: "Lower A — wk 1" }),
+    ];
+    const batch = planPush({ ...base, desired: [], rows, keep: new Set(["behind", "kept-pending"]) });
+
+    expect(batch.deletes.map((d) => d.row.id)).toEqual(["ahead"]);
+    expect(batch.localDeletes).toEqual([]);
+    // The kept pending row is not reported "unaddressable": it is not being removed.
+    expect(batch.failures).toEqual([]);
+    expect(batch.creates).toEqual([]);
+  });
+
   it("surfaces a removed PENDING row with no recorded address rather than claiming it is gone", () => {
     const rows = [row({ id: "row-9", status: "pending", happenDay: "2026-09-21", sessionTitle: "Gone" })];
     const batch = planPush({ ...base, desired: [], rows });

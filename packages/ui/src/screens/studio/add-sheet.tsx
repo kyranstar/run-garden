@@ -195,14 +195,37 @@ export async function addTo(target: AddTarget, rec: ExerciseRecord, deps: AddDep
       };
     }
     case "template": {
+      // The read can be a copy (the service worker answers from its cache when the network is slow): every write names
+      // the copy it was built on (`baseUpdatedAt`), so one the template has moved past is refused, never written over it.
       const fresh = async () => (await deps.qc.fetchQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 0 })).templates;
-      const t = (await fresh()).find((x) => x.id === target.id);
-      if (!t?.doc) throw new Refused("That template can't be read.");
+      const read = async () => {
+        const t = (await fresh()).find((x) => x.id === target.id);
+        if (!t?.doc) throw new Refused("That template can't be read.");
+        return t as TemplateDto & { doc: WorkoutDoc };
+      };
+      const write = async (t: TemplateDto & { doc: WorkoutDoc }) => {
+        const r = into(t.doc);
+        const doc = toProposable(r.doc);
+        if (!doc) throw new Refused("That template can't be changed here.");
+        return { r, saved: await api.updateTemplate(t.id, { doc, baseUpdatedAt: t.updatedAt }) };
+      };
+      let t = await read();
+      let done: Awaited<ReturnType<typeof write>>;
+      try {
+        done = await write(t);
+      } catch (e) {
+        // Changed between the read and the write: add to what is there now, once.
+        if (!isStale(e)) throw e;
+        t = await read();
+        try {
+          done = await write(t);
+        } catch (again) {
+          if (isStale(again)) throw new Refused("That template changed elsewhere. Try again.");
+          throw again;
+        }
+      }
       const original = t.doc;
-      const r = into(original);
-      const doc = toProposable(r.doc);
-      if (!doc) throw new Refused("That template can't be changed here.");
-      const saved = await api.updateTemplate(t.id, { doc });
+      const { r, saved } = done;
       void deps.qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
       return {
         text: addedText(r.part, t.name),
@@ -213,7 +236,7 @@ export async function addTo(target: AddTarget, rec: ExerciseRecord, deps: AddDep
           const now = (await fresh()).find((x) => x.id === t.id);
           if (!now) throw new Refused("That template is gone.");
           if (now.updatedAt !== saved.template.updatedAt) throw new Refused("That template changed since, so it can't be undone here.");
-          await api.updateTemplate(t.id, { doc: original });
+          await api.updateTemplate(t.id, { doc: original, baseUpdatedAt: saved.template.updatedAt });
           void deps.qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
         },
       };

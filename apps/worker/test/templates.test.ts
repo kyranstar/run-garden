@@ -104,6 +104,36 @@ describe("templates", () => {
     expect(kept).toMatchObject({ name: "Theirs", uses: 0 });
   });
 
+  /**
+   * A whole-document write builds on a copy (the Add sheet's fresh read, the builder's opened template — either can be
+   * the service worker's cached answer). With the copy's `baseUpdatedAt`, a template changed since is refused, 409
+   * `stale_revision` with the template's own `updatedAt`, as a workout's stale `baseRev` is; nothing changes.
+   */
+  it("a write with a stale base is 409 stale_revision and changes nothing; the current base writes", async () => {
+    const saved = (await save("Base", calmDoc())).body.template as { id: string; updatedAt: string };
+    // Renamed elsewhere, a minute later.
+    vi.setSystemTime(new Date(Date.now() + 60_000));
+    let renamed: Reply;
+    try {
+      renamed = await call("PUT", `/api/templates/${saved.id}`, { name: "Renamed elsewhere" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const current = renamed.body.template.updatedAt as string;
+    expect(current).not.toBe(saved.updatedAt);
+
+    const stale = await call("PUT", `/api/templates/${saved.id}`, { doc: landingsDoc(), baseUpdatedAt: saved.updatedAt });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toEqual({ error: "stale_revision", updatedAt: current });
+    const [row] = await db.select().from(workoutTemplates).where(eq(workoutTemplates.id, saved.id));
+    expect(JSON.parse(row!.doc)).toEqual(calmDoc());
+    expect(row!.updatedAt).toBe(current);
+
+    const ok = await call("PUT", `/api/templates/${saved.id}`, { doc: landingsDoc(), baseUpdatedAt: current });
+    expect(ok.status).toBe(200);
+    expect(ok.body.template.doc).toEqual(landingsDoc());
+  });
+
   it("deletes one", async () => {
     const id = (await save("Gone soon")).body.template.id;
     expect(await call("DELETE", `/api/templates/${id}`)).toEqual({ status: 200, body: { ok: true } });

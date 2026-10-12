@@ -20,7 +20,7 @@ import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { openMoveIntents } from "../services/sync-intents.js";
 import { activeSyncNotes, dismissSyncNote, DISMISS_ONLY_NOTE_KINDS } from "../services/sync-notes.js";
 import { computeSyncStatus, openFailedCoachWrites } from "../services/sync-status.js";
-import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
+import { pushStudioPlan, retireStudioPlan, studioPlanRetired, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
 import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
 import { convergeDivergedContent, countDivergedContent } from "../services/content-converge.js";
@@ -176,7 +176,12 @@ syncRoutes.post("/retry", async (c) => {
         .limit(1)
     )[0];
     if (failedCurrent) {
-      const summary = await pushStudioPlan(db, { userId, studioPlanId: currentPlan.id, today });
+      // A retired plan's failed rows are its retire's failed deletes: retried as the retire, never as a push of the
+      // plan, which would put back every session the athlete took off the watch.
+      const retired = await studioPlanRetired(db, userId, currentPlan.id);
+      const summary = retired
+        ? await retireStudioPlan(db, { userId, studioPlanId: currentPlan.id, today, alreadyRetired: true })
+        : await pushStudioPlan(db, { userId, studioPlanId: currentPlan.id, today });
       if (summary.ok) studioRetried += 1;
     }
   }

@@ -8,7 +8,8 @@
  *   POST   /:id/use    → {template, doc}: its uses bumped; the document stamped `basedOn: template`
  *
  * 422 `invalid_template` (the body), `invalid_doc` with every issue (an error in the document, checked with no day);
- * 409 `too_many`; 404 for a template that is not this account's; 423 while a restore is replacing the account
+ * 409 `too_many`; 409 `stale_revision` with the template's `updatedAt` for a PUT whose `baseUpdatedAt` (the version the
+ * write was built on) is no longer the template's — as a workout's stale `baseRev` is; 404 for a template that is not this account's; 423 while a restore is replacing the account
  * (`requireUser`). User-scoped throughout.
  */
 import { Hono, type Context } from "hono";
@@ -20,6 +21,7 @@ import {
   createTemplate,
   deleteTemplate,
   listTemplates,
+  StaleTemplateError,
   TemplateNotFoundError,
   TooManyTemplatesError,
   updateTemplate,
@@ -32,12 +34,15 @@ templateRoutes.use("*", requireUser);
 const name = z.string().trim().min(1).max(80);
 const doc = z.record(z.string(), z.unknown());
 const createSchema = z.object({ name, doc, pinned: z.boolean().optional() }).strict();
-const updateSchema = z.object({ name: name.optional(), doc: doc.optional(), pinned: z.boolean().optional() }).strict();
+const updateSchema = z
+  .object({ name: name.optional(), doc: doc.optional(), pinned: z.boolean().optional(), baseUpdatedAt: z.string().min(1).max(40).optional() })
+  .strict();
 
 function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof DocInvalidError) return c.json({ error: "invalid_doc", issues: e.issues }, 422);
   if (e instanceof TemplateNotFoundError) return c.json({ error: "not_found" }, 404);
   if (e instanceof TooManyTemplatesError) return c.json({ error: "too_many" }, 409);
+  if (e instanceof StaleTemplateError) return c.json({ error: "stale_revision", updatedAt: e.updatedAt }, 409);
   throw e;
 }
 

@@ -27,6 +27,8 @@ import type { AppContext } from "../src/auth/middleware.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { studioRoutes } from "../src/routes/studio.js";
+import { coachRoutes } from "../src/routes/coach.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -1082,5 +1084,136 @@ describe("cross-user write isolation (F6)", () => {
     expect(pushRow.status).toBe("verified");
     expect(await db.select().from(studioPlans)).toHaveLength(1);
     expect(await db.select().from(studioPlanPushes)).toHaveLength(1);
+  });
+});
+
+// ── Retiring the old generator's plan (Stage 2 Task 9, fix round 1) ──────────
+//
+// Its screens are retired; its plans must not be stuck. Retire takes everything ahead off the watch through the push
+// path and keeps what is behind, nothing in the database deleted, and the plan leaves the list.
+
+describe("POST /api/studio/plans/:id/retire", () => {
+  /** A two-week plan pushed to COROS, the day between its weeks: week 1 (Sep 7) behind, week 2 (Sep 14) ahead. */
+  async function pushedPlan(): Promise<{ planId: string; behind: string; ahead: string }> {
+    vi.setSystemTime(new Date("2026-09-10T19:00:00Z"));
+    await seedCatalog();
+    const planId = await seedPlan();
+    const row = async (happenDay: string, sessionTitle: string, idInPlan: string) => {
+      const id = newId();
+      await db.insert(studioPlanPushes).values({
+        id,
+        planId,
+        planVersion: 1,
+        happenDay,
+        sessionTitle,
+        corosIdInPlan: idInPlan,
+        corosProgramId: idInPlan,
+        corosPlanId: "coros-plan",
+        sessionFingerprint: "fp",
+        status: "verified",
+        error: null,
+        updatedAt: nowInstant(),
+      });
+      return id;
+    };
+    return { planId, behind: await row("2026-09-07", "Full Body — wk 1", "21"), ahead: await row("2026-09-14", "Full Body — wk 2", "22") };
+  }
+
+  const coachList = async () => {
+    const app = mountRoutes(db, "/api/coach", coachRoutes);
+    const res = await app.request("/api/coach/plans", { headers: { Cookie: cookie } }, makeEnv());
+    return ((await res.json()) as { plans: Array<{ id: string; source?: string }> }).plans.filter((p) => p.source === "studio");
+  };
+  const jobs = () => db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
+  const statusOf = async (id: string) => (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, id)))[0]!.status;
+
+  it("takes what is ahead off the watch through the push path, keeps what is behind, and the plan leaves the list", async () => {
+    const { planId, behind, ahead } = await pushedPlan();
+    expect((await coachList()).map((p) => p.id)).toEqual([planId]);
+
+    const res = await client().post(`/api/studio/plans/${planId}/retire`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, summary: { deletes: 1, creates: 0 } });
+
+    // The push path's own removal: a guarded delete for the session ahead, nothing for the one behind.
+    const queued = await jobs();
+    expect(queued.map((j) => [j.kind, j.studioPushId])).toEqual([["delete_scheduled_workout", ahead]]);
+    expect(await statusOf(behind)).toBe("verified");
+    // Nothing deleted from the database: the plan and its rows are all still there.
+    expect(await db.select().from(studioPlans).where(eq(studioPlans.id, planId))).toHaveLength(1);
+    expect(await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId))).toHaveLength(2);
+    expect(await coachList()).toEqual([]);
+
+    // Retired once: a second Retire is refused plainly, and queues nothing more.
+    const again = await client().post(`/api/studio/plans/${planId}/retire`);
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: "already_retired" });
+    expect(await jobs()).toHaveLength(1);
+  });
+
+  it("a session already done today stays; one still to do today goes", async () => {
+    const { planId, ahead } = await pushedPlan();
+    vi.setSystemTime(new Date("2026-09-14T19:00:00Z"));
+    await seedObservation({ sourceWorkoutId: "coros-plan:22", title: "Full Body — wk 2", lastVerifiedCorosDate: "2026-09-14" });
+    await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.sourceWorkoutId, "coros-plan:22"));
+
+    const res = await client().post(`/api/studio/plans/${planId}/retire`);
+    expect(res.status).toBe(200);
+    expect(await jobs()).toEqual([]);
+    expect(await statusOf(ahead)).toBe("verified");
+  });
+
+  it("refuses plainly: another account's or no plan (404), an older plan (409 not_current), one over (409 plan_completed)", async () => {
+    const { planId } = await pushedPlan();
+    expect((await client().post("/api/studio/plans/nope/retire")).status).toBe(404);
+
+    // Another account's plan reads as no plan at all.
+    const other = await makeTestUser(db, { corosWritesEnabled: true });
+    const otherCookie = `${SESSION_COOKIE}=${await createSession(db, other.userId)}`;
+    const theirs = await client().post(`/api/studio/plans/${planId}/retire`, undefined, { Cookie: otherCookie });
+    expect(theirs.status).toBe(404);
+
+    // A newer plan makes this one history: the generate that replaced it already retired what it had.
+    const newer = newId();
+    await db.insert(studioPlans).values({
+      id: newer,
+      userId,
+      brief: plan().brief as unknown as Record<string, unknown>,
+      plan: plan() as unknown as Record<string, unknown>,
+      version: 1,
+      createdAt: new Date(Date.now() + 1000).toISOString(),
+      updatedAt: nowInstant(),
+    });
+    const stale = await client().post(`/api/studio/plans/${planId}/retire`);
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: "not_current" });
+
+    // Past its last day (Sun Sep 20): over, nothing to retire.
+    vi.setSystemTime(new Date("2026-09-22T19:00:00Z"));
+    const over = await client().post(`/api/studio/plans/${newer}/retire`);
+    expect(over.status).toBe(409);
+    expect(await over.json()).toEqual({ error: "plan_completed" });
+    expect(await jobs()).toEqual([]);
+  });
+
+  it("with COROS writes switched off it says so (412) and changes nothing", async () => {
+    const { planId, ahead } = await pushedPlan();
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: false });
+    const res = await client().post(`/api/studio/plans/${planId}/retire`);
+    expect(res.status).toBe(412);
+    expect(await res.json()).toEqual({ error: "writes_disabled" });
+    expect(await jobs()).toEqual([]);
+    expect(await statusOf(ahead)).toBe("verified");
+    expect((await coachList()).map((p) => p.id)).toEqual([planId]);
+  });
+
+  it("a retired plan's adopted session is not put back on the watch by an undo", async () => {
+    const { planId } = await pushedPlan();
+    expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(200);
+    const adopted = await seedAdoptedPushRow(planId, { happenDay: "2026-09-15", sessionTitle: "Full Body — wk 2b", corosIdInPlan: "23" });
+    const before = (await jobs()).length;
+    const res = await client().post(`/api/studio/adoption/${adopted}/undo`);
+    expect(res.status).toBe(404);
+    expect(await jobs()).toHaveLength(before);
   });
 });

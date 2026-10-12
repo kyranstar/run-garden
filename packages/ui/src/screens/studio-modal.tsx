@@ -29,7 +29,8 @@ export function StudioModal({
   onClose: () => void;
   /** Sends a canned coach message and opens the coach surface. */
   onCanned: (body: string) => void;
-  onRetire: (id: string) => void;
+  /** Retire the plan; `source` says which kind, so the page asks the right route. */
+  onRetire: (id: string, source: "coach" | "studio") => void;
   onRename: (id: string, name: string) => void;
 }) {
   const units = useUnits();
@@ -47,6 +48,8 @@ export function StudioModal({
   const [name, setName] = useState(plan?.name ?? "");
   /** So closing the rename editor hands focus back to what opened it. */
   const renameBtn = useRef<HTMLButtonElement>(null);
+  /** Who made it: the coach, the retired generator ("studio"), or COROS. */
+  const source = (detail.data?.plan ?? plan)?.source ?? "coach";
 
   if (isNew) {
     const discipline = planId === "new-lift" ? "lift" : "run";
@@ -156,6 +159,13 @@ export function StudioModal({
               Retire…
             </button>
           </>
+        ) : null}
+        {/* A plan the retired generator made has no screen of its own any more: it is retired here, as a coach plan
+            is, while it runs — what is ahead leaves the watch, what is done stays. */}
+        {source === "studio" && ((d?.plan ?? plan)?.status === "active" || (d?.plan ?? plan)?.status === "draft") ? (
+          <button type="button" className="btn" aria-haspopup="dialog" onClick={() => setConfirmingRetire(true)}>
+            Retire…
+          </button>
         ) : null}
         <span className="studio-modal-grow" />
         <button
@@ -330,7 +340,7 @@ export function StudioModal({
         onClose={() => setConfirmingRetire(false)}
         title="Retire this plan?"
         confirmLabel="Retire the plan"
-        onConfirm={() => onRetire(planId)}
+        onConfirm={() => onRetire(planId, source === "studio" ? "studio" : "coach")}
       >
         “{title}” stops here and every session still ahead of it is archived. Sessions you have
         already done are kept.

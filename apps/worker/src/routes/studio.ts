@@ -31,7 +31,13 @@ import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
-import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
+import {
+  pushStudioPlan,
+  retireStudioPlan,
+  studioPlanEnd,
+  studioPlanRetired,
+  undoStudioAdoption,
+} from "../services/studio-push.js";
 import { applyExerciseRemap, type RemapRule } from "../services/studio-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { corosConnectionStatus } from "../services/coros-connection.js";
@@ -862,6 +868,38 @@ studioRoutes.post("/push/retry", async (c) => {
     .where(eq(studioPlanPushes.planId, planRow.id))
     .orderBy(asc(studioPlanPushes.happenDay));
   return c.json({ ok: true, summary, pushes: pushes.map(pushRowDto) });
+});
+
+// ── POST /api/studio/plans/:id/retire ────────────────────────────────────────
+//
+// The old generator's screens are retired, so its plans are retired here, as a coach plan is from the plan modal:
+// every session still ahead leaves the watch through the push path, what is behind stays, and the plan leaves the list
+// (`retireStudioPlan`). Only the account's current plan, and only while it runs: an older plan was already retired by
+// the generate that replaced it, and one past its last day is over — both refused in plain codes. The removals it
+// queues drain as a coach plan's Retire's do — the hourly lane, or any drain — so the request itself stays within one
+// invocation's budget for the longest plan (studio-retire-budget.test.ts).
+
+studioRoutes.post("/plans/:id/retire", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const planId = c.req.param("id");
+  const current = await loadCurrentPlan(db, userId);
+  if (!current || current.id !== planId) {
+    const [owned] = await db
+      .select({ id: studioPlans.id })
+      .from(studioPlans)
+      .where(and(eq(studioPlans.id, planId), eq(studioPlans.userId, userId)))
+      .limit(1);
+    return owned ? c.json({ error: "not_current" }, 409) : c.json({ error: "not_found" }, 404);
+  }
+  if (await studioPlanRetired(db, userId, planId)) return c.json({ error: "already_retired" }, 409);
+  const prefs = await loadPreferences(db, userId);
+  const today = todayInZone(prefs.timezone);
+  if (compareLocalDates(studioPlanEnd(current), today) < 0) return c.json({ error: "plan_completed" }, 409);
+
+  const summary = await retireStudioPlan(db, { userId, studioPlanId: planId, today, alreadyRetired: false });
+  if (!summary.ok) return pushOutcomeResponse(c, summary);
+  return c.json({ ok: true, summary });
 });
 
 // ── POST /api/studio/adoption/:pushId/undo ───────────────────────────────────

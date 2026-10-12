@@ -754,6 +754,14 @@ function writeStorage(key: string, value: string): void {
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Retire a plan from its modal: one the retired generator made by its own route (what is ahead leaves the watch through
+ * its push path), every other by the coach's.
+ */
+export function retirePlan(v: { id: string; source: "coach" | "studio" }): Promise<{ ok: boolean }> {
+  return v.source === "studio" ? api.studioPlanRetire(v.id) : api.coachPlanRetire(v.id);
+}
+
 export function PlanScreen() {
   const [params, setParams] = useSearchParams();
   const isDesktop = useIsDesktop();
@@ -1012,7 +1020,7 @@ export function PlanScreen() {
     },
   });
   const retire = useMutation({
-    mutationFn: (id: string) => api.coachPlanRetire(id),
+    mutationFn: retirePlan,
     onSettled: () => {
       for (const k of ["coach-plans", "plan-detail", "plan", "plan-week", "coach-state"]) {
         void qc.invalidateQueries({ queryKey: [k] });
@@ -1158,8 +1166,8 @@ export function PlanScreen() {
             closePlan();
             cannedSend(body);
           }}
-          onRetire={(id) => {
-            retire.mutate(id);
+          onRetire={(id, source) => {
+            retire.mutate({ id, source });
             closePlan();
           }}
           onRename={(id, name) => rename.mutate({ id, name })}

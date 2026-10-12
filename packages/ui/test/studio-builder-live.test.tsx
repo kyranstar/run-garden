@@ -12,7 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DocIssueDto, SessionDto, WorkoutDto } from "@rg/api-client";
+import type { DocIssueDto, SessionDto, TemplateDto, WorkoutDto } from "@rg/api-client";
 import { DEFAULT_SCHEDULING_PREFERENCES, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, suggestedItem, type DraftDoc, type EditAction } from "@rg/workout";
@@ -127,6 +127,10 @@ interface Server {
   build?: SessionDto;
   /** What `POST /api/workouts` warns of (what the server could see that the page could not). */
   warnings?: DocIssueDto[];
+  /** GET /api/templates, in turn (the last repeats). */
+  templates?: TemplateDto[][];
+  /** PUT /api/templates/:id, in turn (the last repeats): `stale` (409 stale_revision), else OK. */
+  tplPut?: Array<"stale" | "ok">;
 }
 
 function serve(s: Server = {}): Call[] {
@@ -134,6 +138,8 @@ function serve(s: Server = {}): Call[] {
   let docRead = 0;
   let revised = 0;
   let started = 0;
+  let tplRead = 0;
+  let tplPut = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -142,7 +148,12 @@ function serve(s: Server = {}): Call[] {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, path, body });
       if (method === "GET" && path === "/api/plan/workouts") return json({ today: TODAY, plan: null, corosWritesEnabled: false, workouts: s.planned ?? [] });
-      if (method === "GET" && path === "/api/templates") return json({ templates: [] });
+      if (method === "GET" && path === "/api/templates") return json({ templates: s.templates?.[Math.min(tplRead++, s.templates.length - 1)] ?? [] });
+      const tpl = /^\/api\/templates\/([^/]+)$/.exec(path);
+      if (tpl && method === "PUT") {
+        if (s.tplPut?.[Math.min(tplPut++, s.tplPut.length - 1)] === "stale") return json({ error: "stale_revision", updatedAt: "2026-10-11T09:00:00Z" }, 409);
+        return json({ template: { id: tpl[1], name: "Thursday lift", doc: body.doc, pinned: false, uses: 0, lastUsedAt: null, createdAt: "", updatedAt: "2026-10-12T10:00:00Z", minutes: 20, discipline: "strength" }, warnings: [] });
+      }
       if (method === "POST" && path === "/api/templates") {
         return json({ template: { id: "t-new", name: body.name, doc: body.doc, pinned: false, uses: 0, lastUsedAt: null, createdAt: "", updatedAt: "", minutes: 20, discipline: "strength" }, warnings: [] }, 201);
       }
@@ -408,6 +419,54 @@ describe("Save", () => {
     await until(() => document.querySelector<HTMLInputElement>(".stu-build-title")!.value === "Thursday lift, changed", "the new version");
     expect(text()).not.toContain("This workout changed elsewhere.");
     expect(saveChanges()!.disabled).toBe(true);
+  });
+});
+
+describe("a template's changes (Task 9 fix round 1)", () => {
+  const tpl = (title: string, updatedAt: string): TemplateDto => ({
+    id: "t1",
+    name: "Thursday lift",
+    doc: storedDoc(title),
+    pinned: false,
+    uses: 0,
+    lastUsedAt: null,
+    createdAt: "2026-10-01T00:00:00Z",
+    updatedAt,
+    minutes: 20,
+    discipline: "strength",
+  });
+  const saveTemplate = async () => {
+    await click(button("Save"), "Save");
+    await click([...document.querySelectorAll('[role="menuitem"]')].find((m) => m.textContent === "Save template"), "Save template");
+  };
+
+  it("are saved on the version opened; changed elsewhere since, it says so, and Reload brings the new one", async () => {
+    const calls = serve({
+      templates: [[tpl("Thursday lift", "2026-10-01T00:00:00Z")], [tpl("Thursday lift, changed", "2026-10-11T09:00:00Z")]],
+      tplPut: ["stale", "ok"],
+    });
+    mount("/studio/build/template/t1");
+    await until(() => document.querySelector<HTMLInputElement>(".stu-build-title")?.value === "Thursday lift", "the template");
+    await click(effort("develop"), "Develop");
+    await saveTemplate();
+    await until(() => text().includes("This template changed elsewhere."), "the stale line");
+    const puts = () => calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1").map((c) => c.body as { baseUpdatedAt?: string });
+    expect(puts().map((b) => b.baseUpdatedAt)).toEqual(["2026-10-01T00:00:00Z"]);
+    expect(text()).not.toContain("Saved.");
+
+    await click(button("Reload"), "Reload");
+    await until(() => titleField().value === "Thursday lift, changed", "the new version");
+    expect(text()).not.toContain("This template changed elsewhere.");
+    // The next save is on the version Reload brought.
+    await click(effort("develop"), "Develop");
+    await saveTemplate();
+    await until(() => text().includes("Saved."), "Saved.");
+    expect(puts().map((b) => b.baseUpdatedAt)).toEqual(["2026-10-01T00:00:00Z", "2026-10-11T09:00:00Z"]);
+    // And the one after it, on the version that save made — never refused by the builder's own last save.
+    await click(effort("peak"), "Peak");
+    await saveTemplate();
+    await until(() => puts().length === 3, "the third save");
+    expect(puts()[2]!.baseUpdatedAt).toBe("2026-10-12T10:00:00Z");
   });
 });
 

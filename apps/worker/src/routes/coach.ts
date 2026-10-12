@@ -52,6 +52,7 @@ import {
 } from "../services/coach-wake.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
+import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -616,6 +617,12 @@ coachRoutes.get("/plans", async (c) => {
   // Newest studio plan only: generate keeps full history and each replace
   // retires the previous plan's COROS sessions — listing superseded rows as
   // live would be the same lie pointed the other way.
+  //
+  // And only while something of it is (or was) on the watch: the generator's
+  // screens are retired (Stage 2), so a draft it never pushed is nothing the
+  // athlete can act on, and listing it hid the lifting intake card. One that
+  // was retired leaves the list; one past its last day reads as completed.
+  const today = todayInZone(prefs.timezone);
   const studio = (
     await db
       .select()
@@ -625,28 +632,31 @@ coachRoutes.get("/plans", async (c) => {
       .limit(1)
   )[0];
   const studioEntries = [];
-  if (studio) {
-    // "Written to COROS" only when a push has actually materialized there —
-    // generate and push are separate actions.
-    const pushed = (
-      await db
-        .select({ id: studioPlanPushes.id })
-        .from(studioPlanPushes)
-        .where(and(eq(studioPlanPushes.planId, studio.id), eq(studioPlanPushes.status, "verified")))
-        .limit(1)
-    )[0];
+  // Its pushes' statuses: one row each (a plan's sessions, not more).
+  const pushStatuses = studio
+    ? (
+        await db
+          .select({ status: studioPlanPushes.status })
+          .from(studioPlanPushes)
+          .where(eq(studioPlanPushes.planId, studio.id))
+      ).map((p) => p.status)
+    : [];
+  if (studio && pushStatuses.some((s) => s !== "deleted") && !(await studioPlanRetired(db, userId, studio.id))) {
     // Real span from the brief the plan was generated with — createdAt-based
     // dates rendered "wk 1/1 · ends <creation day>" for a 16-week plan that
     // hadn't even started (2026-08-12 audit finding 6).
-    const brief = studio.brief as { startDate?: string; durationWeeks?: number } | null;
+    const brief = studio.brief as { startDate?: string } | null;
     const start = brief?.startDate ?? studio.createdAt.slice(0, 10);
-    const weeks = Math.max(1, brief?.durationWeeks ?? 1);
-    const end = addDays(startOfIsoWeek(start), weeks * 7 - 1);
+    const end = studioPlanEnd(studio);
+    // "Written to COROS" only when a push has actually materialized there —
+    // generate and push are separate actions.
+    const status: "active" | "draft" | "completed" =
+      end < today ? "completed" : pushStatuses.includes("verified") ? "active" : "draft";
     studioEntries.push({
       id: studio.id,
       discipline: "lift" as const,
       name: ((studio.plan as { name?: string })?.name ?? "Lifting plan"),
-      status: (pushed ? "active" : "draft") as "active" | "draft",
+      status,
       startDate: start,
       endDate: end,
       raceDate: prefs.raceDate,
@@ -657,7 +667,6 @@ coachRoutes.get("/plans", async (c) => {
   // The imported COROS plan IS the user's running plan — a page that shows
   // its 35 workouts while the run slot claims "no plan" denies reality
   // (audit finding 6). Read-only card: the app doesn't author these.
-  const today = todayInZone(prefs.timezone);
   const corosPlans = await db
     .select()
     .from(trainingPlans)
@@ -1133,6 +1142,14 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     }));
 
     const [pushed] = pushes.filter((p) => p.status === "verified").slice(0, 1);
+    // The list's words for it: retired by the athlete, over once its last day has passed, active while on the watch.
+    const status: "active" | "draft" | "completed" | "retired" = (await studioPlanRetired(db, userId, sp.id))
+      ? "retired"
+      : endDate < today
+        ? "completed"
+        : pushed
+          ? "active"
+          : "draft";
     const duePushes = keys.filter(({ push }) => (push.corosHappenDay ?? push.happenDay) <= today);
     const doneCount = duePushes.filter(({ key }) => bySourceId.get(key)?.completionState === "completed").length;
     return c.json({
@@ -1140,7 +1157,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
         id: sp.id,
         discipline: "lift" as const,
         name: plan.name ?? "Lifting plan",
-        status: (pushed ? "active" : "draft") as "active" | "draft",
+        status,
         startDate: plan.brief.startDate,
         endDate,
         raceDate: prefs.raceDate,

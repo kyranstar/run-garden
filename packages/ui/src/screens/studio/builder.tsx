@@ -161,6 +161,8 @@ interface Loaded {
   rev: number | null;
   /** A planned workout's day and time, when this page made it. */
   row: { date: string; time: string } | null;
+  /** A template's version as opened (its `updatedAt`): its save is written on that version, or refused. */
+  base?: string;
 }
 
 type Flow =
@@ -269,7 +271,7 @@ function Builder({ source }: { source: BuildSource }) {
       return drafts.loaded ? { key, editor: startEditing(drafts.draft?.doc ?? freshDoc()), baseline: null, rev: null, row: null } : null;
     }
     if (source.kind === "quick") return made && "doc" in made ? { key, editor: startEditing(made.doc), baseline: null, rev: null, row: null } : null;
-    if (source.kind === "template") return template?.doc ? { key, editor: startEditing(template.doc), baseline: template.doc, rev: null, row: null } : null;
+    if (source.kind === "template") return template?.doc ? { key, editor: startEditing(template.doc), baseline: template.doc, rev: null, row: null, base: template.updatedAt } : null;
     const r = stored.data;
     return r?.doc ? { key, editor: startEditing(r.doc), baseline: r.doc, rev: r.rev, row: null } : null;
   };
@@ -598,12 +600,16 @@ function Builder({ source }: { source: BuildSource }) {
     if (!tplId || !d) return;
     setSaving(true);
     try {
-      const res = await api.updateTemplate(tplId, { doc: d });
+      // On the version it opened: one changed elsewhere since (or a cached copy it opened) is refused, never overwritten.
+      const res = await api.updateTemplate(tplId, { doc: d, ...(live.current?.base ? { baseUpdatedAt: live.current.base } : {}) });
       void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
-      if (live.current) setLoaded({ ...live.current, baseline: d });
+      if (live.current) setLoaded({ ...live.current, baseline: d, base: res.template.updatedAt });
       setStatus({ text: "Saved.", notes: newNotes(res.warnings) });
     } catch (e) {
-      setStatus({ text: refusalText(e, "save") });
+      if (errorBody(e)?.error === "stale_revision") {
+        setStale(true);
+        setStatus(null);
+      } else setStatus({ text: refusalText(e, "save") });
     } finally {
       setSaving(false);
     }
@@ -631,6 +637,22 @@ function Builder({ source }: { source: BuildSource }) {
     }
   };
   const reload = async () => {
+    if (tplId) {
+      try {
+        const t = (await qc.fetchQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 0 })).templates.find((x) => x.id === tplId);
+        if (!t?.doc) {
+          setStatus({ text: t ? "This template can't be read." : "That template is gone." });
+          return;
+        }
+        setLoaded({ key, editor: startEditing(t.doc), baseline: t.doc, rev: null, row: null, base: t.updatedAt });
+        setStale(false);
+        setStatus(null);
+        setFlow(IDLE);
+      } catch {
+        setStatus({ text: "Reloading needs a connection." });
+      }
+      return;
+    }
     if (!wid) return;
     try {
       const r = await qc.fetchQuery({ queryKey: workoutDocQuery(wid), queryFn: () => api.workoutDoc(wid), staleTime: 0 });
@@ -942,7 +964,7 @@ function Builder({ source }: { source: BuildSource }) {
         </div>
         {stale ? (
           <p className="stu-build-stale" role="alert">
-            This workout changed elsewhere.{" "}
+            {tplId ? "This template changed elsewhere." : "This workout changed elsewhere."}{" "}
             <button type="button" className="linklike" onClick={() => void reload()}>
               Reload
             </button>

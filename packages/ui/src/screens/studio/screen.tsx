@@ -199,6 +199,11 @@ export function StudioScreen() {
     },
     [navigate, setParams],
   );
+  // The latest `write`, for the field's late one: the write made by the render the typing happened in resolves its
+  // address against the location of that render — a move tapped inside the pause (`/studio/move/:id`) had the list's
+  // address written over its entry, and the detail opened and shut.
+  const writeLatest = useRef(write);
+  writeLatest.current = write;
 
   const type = (v: string) => {
     setText(v);
@@ -206,7 +211,7 @@ export function StudioScreen() {
     const { filters, all } = url;
     timer.current = setTimeout(() => {
       timer.current = null;
-      write(v, filters, all);
+      writeLatest.current(v, filters, all);
     }, URL_WRITE_MS);
   };
 

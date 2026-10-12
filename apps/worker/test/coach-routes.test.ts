@@ -332,73 +332,95 @@ describe("coach routes", () => {
   });
 });
 
-describe("GET /plans — studio union (user-nits fix)", () => {
-  it("lists only the newest studio plan, with push-derived status", async () => {
-    // Two studio plans: the older one is superseded and must not appear; the
-    // newest has no verified push yet, so it reads as a draft.
-    await db.insert(schema.studioPlans).values([
-      {
-        id: "sp-old",
-        userId,
-        brief: {},
-        plan: { name: "Old Lift Block" },
-        version: 1,
-        createdAt: "2026-07-01T00:00:00.000Z",
-        updatedAt: "2026-07-01T00:00:00.000Z",
-      },
-      {
-        id: "sp-new",
-        userId,
-        brief: {},
-        plan: { name: "Full Body Strength" },
-        version: 2,
-        createdAt: "2026-08-01T00:00:00.000Z",
-        updatedAt: "2026-08-01T00:00:00.000Z",
-      },
-    ]);
-
-    let res = (await (await client().get("/api/coach/plans")).json()) as {
-      plans: Array<{ id: string; name: string; status: string; source?: string }>;
-    };
-    const studioRows = res.plans.filter((p) => p.source === "studio");
-    expect(studioRows).toHaveLength(1);
-    expect(studioRows[0]).toMatchObject({
-      id: "sp-new",
-      name: "Full Body Strength",
-      status: "draft",
+describe("GET /plans — studio union (user-nits fix; Stage 2: the old generator's plans are never stuck)", () => {
+  /** A studio plan whose brief runs `weeks` weeks from `start` (a Monday). */
+  async function seedStudio(id: string, start: string, weeks: number, createdAt: string, name = "Full Body Strength") {
+    await db.insert(schema.studioPlans).values({
+      id,
+      userId,
+      brief: { startDate: start, durationWeeks: weeks },
+      // Enough of a lifting plan for the detail to read: its brief, and its weeks (no sessions in them).
+      plan: { name, brief: { startDate: start, durationWeeks: weeks }, weeks: Array.from({ length: weeks }, () => ({ sessions: [] })) },
+      version: 1,
+      createdAt,
+      updatedAt: createdAt,
     });
-
-    // A verified push flips it to active ("written to COROS").
+  }
+  async function seedPush(planId: string, status: string, happenDay: string, title = `${happenDay} — Lift`) {
     await db.insert(schema.studioPlanPushes).values({
       id: newId(),
-      planId: "sp-new",
-      planVersion: 2,
-      happenDay: "2026-08-12",
-      sessionTitle: "W1 Mon — Lift",
-      status: "verified",
+      planId,
+      planVersion: 1,
+      happenDay,
+      sessionTitle: title,
+      status,
       updatedAt: nowInstant(),
     });
-    res = (await (await client().get("/api/coach/plans")).json()) as typeof res;
-    expect(res.plans.filter((p) => p.source === "studio")[0]).toMatchObject({
-      id: "sp-new",
-      status: "active",
+  }
+  const studioRows = async () =>
+    ((await (await client().get("/api/coach/plans")).json()) as {
+      plans: Array<{ id: string; name: string; status: string; source?: string; startDate: string; endDate: string }>;
+    }).plans.filter((p) => p.source === "studio");
+
+  it("lists only the newest studio plan, with push-derived status", async () => {
+    const today = todayInZone(prefs.timezone);
+    const monday = startOfIsoWeek(today);
+    // Two studio plans: the older one is superseded and must not appear, pushed or not.
+    await seedStudio("sp-old", addDays(monday, -14), 8, "2026-07-01T00:00:00.000Z", "Old Lift Block");
+    await seedPush("sp-old", "verified", addDays(monday, -14));
+    await seedStudio("sp-new", monday, 8, "2026-08-01T00:00:00.000Z");
+    // A push still on its way: on (or about to be on) the watch, not yet confirmed there — a draft.
+    await seedPush("sp-new", "pending", addDays(monday, 7));
+    let rows = await studioRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: "sp-new", name: "Full Body Strength", status: "draft" });
+
+    // A verified push flips it to active ("written to COROS").
+    await seedPush("sp-new", "verified", monday);
+    rows = await studioRows();
+    expect(rows[0]).toMatchObject({ id: "sp-new", status: "active" });
+  });
+
+  it("a draft the generator never pushed is not listed — the lifting intake card shows instead", async () => {
+    const monday = startOfIsoWeek(todayInZone(prefs.timezone));
+    await seedStudio("sp-draft", monday, 8, "2026-08-01T00:00:00.000Z");
+    expect(await studioRows()).toEqual([]);
+    // Every push deleted (a retire, or a replace, that ran to the end): nothing of it is on the watch either.
+    await seedPush("sp-draft", "deleted", monday);
+    expect(await studioRows()).toEqual([]);
+  });
+
+  it("a pushed plan past its last day reads as completed, not active forever", async () => {
+    const monday = startOfIsoWeek(todayInZone(prefs.timezone));
+    // Four weeks ending the Sunday before this week.
+    await seedStudio("sp-over", addDays(monday, -28), 4, "2026-08-01T00:00:00.000Z");
+    await seedPush("sp-over", "verified", addDays(monday, -28));
+    const rows = await studioRows();
+    expect(rows[0]).toMatchObject({ id: "sp-over", status: "completed", endDate: addDays(monday, -1) });
+    const detail = (await (await client().get("/api/coach/plans/sp-over/detail")).json()) as { plan: { status: string } };
+    expect(detail.plan.status).toBe("completed");
+  });
+
+  it("a retired plan leaves the list; its detail says retired", async () => {
+    const monday = startOfIsoWeek(todayInZone(prefs.timezone));
+    await seedStudio("sp-ret", monday, 8, "2026-08-01T00:00:00.000Z");
+    await seedPush("sp-ret", "verified", monday);
+    await db.insert(schema.auditEvents).values({
+      id: newId(),
+      userId,
+      kind: "studio_plan_retired",
+      detail: { studioPlanId: "sp-ret" },
+      createdAt: nowInstant(),
     });
+    expect(await studioRows()).toEqual([]);
+    const detail = (await (await client().get("/api/coach/plans/sp-ret/detail")).json()) as { plan: { status: string } };
+    expect(detail.plan.status).toBe("retired");
   });
 
   it("studio dates come from the BRIEF, not createdAt (audit finding 6: 'wk 1/1 ends Aug 3')", async () => {
-    await db.insert(schema.studioPlans).values({
-      id: "sp-brief",
-      userId,
-      brief: { startDate: "2026-08-17", durationWeeks: 16 },
-      plan: { name: "16-Week Posterior Chain" },
-      version: 1,
-      createdAt: "2026-08-03T00:00:00.000Z",
-      updatedAt: "2026-08-03T00:00:00.000Z",
-    });
-    const res = (await (await client().get("/api/coach/plans")).json()) as {
-      plans: Array<{ id: string; startDate: string; endDate: string; source?: string }>;
-    };
-    const row = res.plans.find((p) => p.id === "sp-brief")!;
+    await seedStudio("sp-brief", "2026-08-17", 16, "2026-08-03T00:00:00.000Z", "16-Week Posterior Chain");
+    await seedPush("sp-brief", "verified", "2026-08-17");
+    const row = (await studioRows()).find((p) => p.id === "sp-brief")!;
     expect(row.startDate).toBe("2026-08-17");
     expect(row.endDate).toBe("2026-12-06"); // Mon 08-17 + 16*7 - 1
   });

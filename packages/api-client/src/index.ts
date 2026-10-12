@@ -1906,7 +1906,11 @@ export const api = {
   templates: () => get<{ templates: TemplateDto[] }>("/api/templates"),
   createTemplate: (body: { name: string; doc: WorkoutDoc; pinned?: boolean }) =>
     post<{ template: TemplateDto; warnings: DocIssueDto[] }>("/api/templates", body),
-  updateTemplate: (id: string, patch: { name?: string; doc?: WorkoutDoc; pinned?: boolean }) =>
+  /**
+   * `baseUpdatedAt`: the `updatedAt` of the copy a whole-document write was built on — the template moved past it since
+   * is 409 `stale_revision` (with its `updatedAt`), nothing written. A rename or a pin needs none.
+   */
+  updateTemplate: (id: string, patch: { name?: string; doc?: WorkoutDoc; pinned?: boolean; baseUpdatedAt?: string }) =>
     put<{ template: TemplateDto; warnings: DocIssueDto[] }>(`/api/templates/${encodeURIComponent(id)}`, patch),
   deleteTemplate: (id: string) => request<{ ok: true }>(`/api/templates/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /** Bumps the template's uses; its document comes back stamped `basedOn: template`, to open or schedule. */
@@ -1929,6 +1933,11 @@ export const api = {
   studioUndoAdoption: (pushId: string) =>
     post<StudioAdoptionUndoResponse>(`/api/studio/adoption/${pushId}/undo`),
   studioHistory: () => get<{ plans: StudioHistoryEntryDto[] }>("/api/studio/history"),
+  /**
+   * Retire the old generator's current plan (its screens are retired; the plan modal's Retire…): what is ahead leaves
+   * the watch, what is behind stays. 409 `not_current` / `already_retired` / `plan_completed`, 412 `writes_disabled`.
+   */
+  studioPlanRetire: (id: string) => post<{ ok: true }>(`/api/studio/plans/${encodeURIComponent(id)}/retire`),
   syncStatus: () => get<SyncStatusDto>("/api/sync/status"),
   syncNotes: () => get<{ notes: SyncNoteDto[] }>("/api/sync/notes"),
   raceHub: () => get<RaceHubResponse>("/api/plan/race"),

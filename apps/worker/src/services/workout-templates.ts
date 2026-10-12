@@ -30,6 +30,13 @@ export class TemplateNotFoundError extends Error {
   }
 }
 
+/** A write built on a copy the template has since moved past (its `updatedAt` is the template's own, now). */
+export class StaleTemplateError extends Error {
+  constructor(readonly updatedAt: string) {
+    super("stale_revision");
+  }
+}
+
 export class TooManyTemplatesError extends Error {
   constructor() {
     super("too_many");
@@ -123,7 +130,7 @@ export async function updateTemplate(
   db: Db,
   userId: string,
   id: string,
-  patch: { name?: string; doc?: unknown; pinned?: boolean },
+  patch: { name?: string; doc?: unknown; pinned?: boolean; baseUpdatedAt?: string },
   now: string,
 ): Promise<{ template: TemplateDto; warnings: DocIssue[] }> {
   const [row] = await db.select(columns).from(t).where(and(eq(t.id, id), eq(t.userId, userId))).limit(1);
@@ -135,7 +142,17 @@ export async function updateTemplate(
     ...(checked ? { doc: JSON.stringify(checked.doc) } : {}),
     updatedAt: now,
   };
-  await db.update(t).set(set).where(and(eq(t.id, id), eq(t.userId, userId)));
+  // With a base, the write lands only on that version: one made since the copy was read is refused, never written over.
+  const written = await db
+    .update(t)
+    .set(set)
+    .where(and(eq(t.id, id), eq(t.userId, userId), ...(patch.baseUpdatedAt !== undefined ? [eq(t.updatedAt, patch.baseUpdatedAt)] : [])))
+    .returning({ id: t.id });
+  if (written.length === 0) {
+    const [current] = await db.select({ updatedAt: t.updatedAt }).from(t).where(and(eq(t.id, id), eq(t.userId, userId))).limit(1);
+    if (!current) throw new TemplateNotFoundError();
+    throw new StaleTemplateError(current.updatedAt);
+  }
   return { template: dtoOf({ ...row, ...set }), warnings: checked?.warnings ?? [] };
 }
 

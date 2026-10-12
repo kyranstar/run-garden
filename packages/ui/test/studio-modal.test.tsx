@@ -138,6 +138,29 @@ describe("StudioModal — detail mode", () => {
     expect(html).not.toContain("Revise this plan");
     expect(html).not.toContain("<details");
   });
+
+  /** Its screens are gone, so it is retired here, as a coach plan is — and only the coach's own plans take the rest. */
+  it("a running plan the old generator made offers Retire…, and nothing only a coach plan takes", () => {
+    const made: CoachPlanDto = { ...liftPlan, id: "sp1", name: "Generated Block", source: "studio" };
+    const html = renderWithCache(createElement(StudioModal, { ...props, planId: "sp1", plans: [made] }), {
+      key: ["plan-detail", "sp1"],
+      data: { ...detail, plan: made },
+    });
+    expect(html).toContain("Retire…");
+    for (const coachOnly of ["Extend", "Wind down", "Rename"]) expect(html).not.toContain(`>${coachOnly}<`);
+  });
+
+  it("one that is over, or already retired, offers no Retire", () => {
+    for (const status of ["completed", "retired"] as const) {
+      const made: CoachPlanDto = { ...liftPlan, id: "sp1", name: "Generated Block", source: "studio", status };
+      const html = renderWithCache(createElement(StudioModal, { ...props, planId: "sp1", plans: [made] }), {
+        key: ["plan-detail", "sp1"],
+        data: { ...detail, plan: made },
+      });
+      expect(html, status).toContain("Generated Block");
+      expect(html, status).not.toContain("Retire…");
+    }
+  });
 });
 
 describe("lift loads in the athlete's weight unit (Audit 2c-A MINOR-5)", () => {

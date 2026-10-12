@@ -98,6 +98,35 @@ async function key(k: string) {
 const dialog = () => host!.querySelector<HTMLElement>('[role="dialog"]');
 const pane = () => host!.querySelector<HTMLElement>("aside.stu-detail");
 
+/** Types into the search field and does not wait: a tap can come before the field has written the URL. */
+async function typeOnly(value: string) {
+  const el = host!.querySelector<HTMLInputElement>('input[type="search"]')!;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    set.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+describe("a tap that comes before the field has written the URL (Task 9 fix round 1)", () => {
+  // The field writes the URL after a pause. A row tapped inside it opened the move, and then the late write — made by
+  // the render the typing happened in — wrote the list's address over the move's entry: the detail opened and shut.
+  for (const wide of [false, true]) {
+    it(`${wide ? "beside the list" : "on a phone"}: the move stays open, and the list it came from is in its address`, async () => {
+      mount("/studio", { wide });
+      await typeOnly("goblet");
+      await click(rowLink("Goblet squat"), "row link");
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, URL_WRITE_MS + 40));
+      });
+      await settle();
+      expect(where).toBe("/studio/move/gobletSquat?q=goblet");
+      const open = wide ? pane() : dialog();
+      expect(open?.querySelector("h2")?.textContent).toBe("Goblet squat");
+    });
+  }
+});
+
 describe("on a phone: a sheet over the list", () => {
   it("a row's tap opens the move as a dialog over the list; the list stays behind it", async () => {
     mount("/studio?q=goblet");

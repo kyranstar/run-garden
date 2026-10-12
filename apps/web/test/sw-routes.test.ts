@@ -80,12 +80,23 @@ describe("the read cache (rg-read-cache)", () => {
     }
   });
 
-  it("keeps no read of one move, one workout or one template, and no typed search: each would be an entry of its own", () => {
+  // Spec §12 (fix round 1): a planned workout opens in the builder offline. A save after reconnecting carries the
+  // revision it was built on (`baseRev`), so a stale copy from here is refused (409), never a lost update.
+  it("answers a planned workout's document offline, one entry a workout", () => {
+    expect(matches("/api/workouts/w1/doc")).toBe(true);
+    expect(matches("/api/workouts/0b6f8a5e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/doc")).toBe(true);
+  });
+
+  it("keeps no read of one move or one template, no typed search, no filtered library: each would be an entry of its own", () => {
     for (const path of [
       "/api/library/gobletSquat",
       "/api/library/gobletSquat/prefs",
-      "/api/workouts/w1/doc",
+      // The library's list only as the Studio reads it (all of it, or a page of it): a filter is a list of its own.
+      "/api/library?part=main",
+      "/api/library?limit=200&q=squat",
       "/api/workouts?q=squat",
+      "/api/workouts/w1",
+      "/api/workouts/w1/doc/x",
       "/api/templates/t1",
       "/api/templates/t1/use",
       "/api/places/p1",

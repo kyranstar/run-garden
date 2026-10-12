@@ -121,6 +121,8 @@ interface Server {
   /** PUT /api/workouts/:id/doc answers, in turn (the last one repeats): a refusal, "hang" (never answers), or OK with
    * what the server says of it. */
   revise?: Array<number | "hang" | "held" | { error: string; status: number } | { watchHasOlder?: boolean; warnings?: unknown[] }>;
+  /** PUT /api/templates/:id answers, in turn (the last one repeats): `stale` (409 stale_revision), else OK. */
+  tplPut?: Array<"stale" | "ok">;
 }
 
 function serve(s: Server = {}): Call[] {
@@ -128,6 +130,7 @@ function serve(s: Server = {}): Call[] {
   let docRead = 0;
   let revised = 0;
   let tplRead = 0;
+  let tplPut = 0;
   let rev = 0;
   const tplAnswers: TemplateDto[][] = Array.isArray(s.templates?.[0]) ? (s.templates as TemplateDto[][]) : [(s.templates as TemplateDto[] | undefined) ?? []];
   vi.stubGlobal(
@@ -139,7 +142,10 @@ function serve(s: Server = {}): Call[] {
       calls.push({ method, path, body });
       if (method === "GET" && path === "/api/plan/workouts") return json({ today: TODAY, plan: null, corosWritesEnabled: false, workouts: s.workouts ?? [] });
       if (method === "GET" && path === "/api/templates") return json({ templates: tplAnswers[Math.min(tplRead++, tplAnswers.length - 1)] });
-      if (method === "PUT" && path.startsWith("/api/templates/")) return json({ template: { ...template(), doc: body.doc }, warnings: [] });
+      if (method === "PUT" && path.startsWith("/api/templates/")) {
+        if (s.tplPut?.[Math.min(tplPut++, s.tplPut.length - 1)] === "stale") return json({ error: "stale_revision", updatedAt: "2026-10-11T09:00:00Z" }, 409);
+        return json({ template: { ...template(), doc: body.doc }, warnings: [] });
+      }
       const doc = /^\/api\/workouts\/([^/]+)\/doc$/.exec(path);
       if (doc && method === "GET") {
         const d = s.docs?.[Math.min(docRead++, (s.docs?.length ?? 1) - 1)];
@@ -444,10 +450,39 @@ describe("to a template", () => {
     await until(() => !!line(), "the line");
     const puts = calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1");
     expect(exerciseIds((puts[0]!.body as { doc: WorkoutDoc }).doc, "main")).toEqual(["boxSquat", "gobletSquat"]);
+    // Built on the copy it read: the write names that copy, so a template changed since is refused, not overwritten.
+    expect((puts[0]!.body as { baseUpdatedAt?: string }).baseUpdatedAt).toBe(t.updatedAt);
     expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Added to Main in “Desk reset”.");
     await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
     await until(() => line()?.textContent?.includes("Undone.") ?? false, "Undone");
-    expect(calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1")[1]!.body).toEqual({ doc: t.doc });
+    expect(calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1")[1]!.body).toEqual({ doc: t.doc, baseUpdatedAt: t.updatedAt });
+  });
+
+  it("a template changed elsewhere since it was read (a cached copy): refused, read again, the move added to what is there now", async () => {
+    const t = template();
+    const newer = { ...t, updatedAt: "2026-10-11T09:00:00Z", doc: storedDoc("Desk reset, longer") };
+    const calls = serve({ templates: [[t], [t], [newer]], tplPut: ["stale", "ok"] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a template"), "the template");
+    await click(option("To a template"), "the template choice");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    const puts = calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1").map((c) => c.body as { doc: WorkoutDoc; baseUpdatedAt: string });
+    expect(puts.map((b) => b.baseUpdatedAt)).toEqual([t.updatedAt, newer.updatedAt]);
+    expect(puts[1]!.doc.title).toBe("Desk reset, longer");
+  });
+
+  it("changed again on the second try: says so plainly, and adds nothing", async () => {
+    const t = template();
+    const calls = serve({ templates: [t], tplPut: ["stale"] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a template"), "the template");
+    await click(option("To a template"), "the template choice");
+    await click(addButton(), "Add");
+    await until(() => !!sheet()?.querySelector('[role="alert"]'), "the refusal");
+    expect(sheet()!.querySelector('[role="alert"]')!.textContent).toBe("That template changed elsewhere. Try again.");
+    expect(line()).toBeNull();
+    expect(calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1")).toHaveLength(2);
   });
 });
 

@@ -6,8 +6,8 @@ import { test, expect } from "./fixtures.js";
  *
  *   (a) search → a move's detail → Add → the builder → Schedule → the workout is on the Plan;
  *   (b) a quick start → Start now → the player opens;
- *   (c) a template saved from the builder, then reused: the templates list's Start plays it, and the workout made is
- *       the template's (`basedOn`), its uses counted;
+ *   (c) a template saved from the builder, then reused: the templates list's Start plays it, and the list then says it
+ *       was used today;
  *   (d) offline after one visit: search, a move's detail and a quick start still work with the network off.
  *
  * Needs the fixture stack, whose dev build has the Studio on (`features.studio`): `bash apps/web/e2e/fixture-stack.sh`,
@@ -34,12 +34,12 @@ function mondayOf(day: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Type into the Studio's field; the list follows at once, the address once typing pauses. */
+/**
+ * Type into the Studio's field; the list follows at once, the address once typing pauses. A journey taps a move at once,
+ * inside that pause, as a quick reader does — the move must stay open when the late write lands (fix round 1).
+ */
 async function search(page: Page, text: string) {
   await page.getByRole("searchbox", { name: "Search moves" }).fill(text);
-  // A move tapped before the address has caught up loses its detail to the late write (reported with Task 9): this
-  // journey waits for it, as a reader does.
-  await expect(page).toHaveURL(/[?&]q=/);
 }
 
 /** A move's detail: a sheet over the list on a phone, the pane beside it from md. */
@@ -69,12 +69,9 @@ async function signIn(context: BrowserContext, baseURL: string | undefined) {
   }
 }
 
-/** The session's id, from the player's address. */
-const sessionId = (page: Page) => decodeURIComponent(new URL(page.url()).pathname.split("/").pop()!);
-
 /**
- * The app's own API, asked from the page as the app asks it (its cookie, its origin). Not `context.request`: through
- * the dev server's proxy its kept-alive socket can be one the proxy has already closed (ECONNRESET).
+ * The app's own API, asked from the page as the app asks it (its cookie, its origin) — here only to clean up. Not
+ * `context.request`: through the dev server's proxy its kept-alive socket can be one the proxy has already closed.
  */
 async function fromThePage<T>(page: Page, method: "GET" | "DELETE", path: string): Promise<{ status: number; body: T }> {
   return page.evaluate(
@@ -108,8 +105,8 @@ test.describe("on the fixture stack", () => {
     await sheet.getByRole("radio", { name: "To a new workout" }).check();
     await sheet.getByRole("button", { name: "Add", exact: true }).click();
     await expect(sheet).toHaveCount(0);
-    await expect(page.getByText("Added to Main in “New workout”.")).toBeVisible();
-    await page.locator(".stu-added--on").getByRole("link", { name: "Open" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Added to Main in “New workout”." })).toBeVisible();
+    await page.getByRole("link", { name: "Open", exact: true }).click();
 
     // The builder, on the workout being built on this device, the move in its main part.
     await expect(page).toHaveURL(/\/studio\/build\/new$/);
@@ -179,11 +176,9 @@ test.describe("on the fixture stack", () => {
       await intoThePlayer(page);
       await expect(page.getByRole("banner")).toContainText(/Hip opener · 1 of \d+/);
 
-      const made = await fromThePage<{ doc: { basedOn?: { kind: string; id: string } } }>(page, "GET", `/api/workouts/${encodeURIComponent(sessionId(page))}/doc`);
-      expect(made.status).toBe(200);
-      expect(made.body.doc.basedOn).toMatchObject({ kind: "template", id: templateId });
-      const list = await fromThePage<{ templates: Array<{ id: string; uses: number }> }>(page, "GET", "/api/templates");
-      expect(list.body.templates.find((t) => t.id === templateId)?.uses).toBe(1);
+      // Back on the templates, it says what a person would look for: it was used, today.
+      await page.goto("/studio/templates");
+      await expect(row).toContainText("Used today");
     } finally {
       // The two projects share the account: a template a run saved goes again.
       if (templateId) expect((await fromThePage(page, "DELETE", `/api/templates/${encodeURIComponent(templateId)}`)).status).toBe(200);

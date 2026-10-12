@@ -47,7 +47,7 @@
  *     (`healPushAddresses`) before anything is planned against it.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import {
   auditEvents,
   corosExercises,
@@ -452,6 +452,11 @@ export interface PlanPushInput {
   /** originIds present in the synced COROS catalog. */
   catalogIds: Set<string>;
   today: LocalDate;
+  /**
+   * Rows left exactly as they are, even when the desired set no longer holds them — a retire's: what is behind it (a
+   * day passed, a session done) stays on the watch while everything ahead is removed (`retireStudioPlan`).
+   */
+  keep?: Set<string>;
 }
 
 /**
@@ -499,6 +504,7 @@ export function planPush(input: PlanPushInput): PushBatch {
   for (const row of input.rows) {
     if (row.status === "deleted") continue;
     if (desiredKeys.has(identity(row.happenDay, row.sessionTitle))) continue;
+    if (input.keep?.has(row.id)) continue;
     // Drift is surfaced, never clobbered: the user's own edit wins.
     if (untouchable.has(row.id)) {
       batch.blocked.push(row.id);
@@ -864,6 +870,8 @@ export async function pushStudioPlan(
      * this row; re-adopting it mid-flight would cancel the correction.
      */
     suppressDriftPushIds?: Set<string>;
+    /** Rows to leave as they are although the desired set drops them (`PlanPushInput.keep`; a retire's). */
+    keepPushIds?: Set<string>;
   },
 ): Promise<PushSummary> {
   const now = nowInstant();
@@ -1027,6 +1035,7 @@ export async function pushStudioPlan(
     driftedPushIds,
     catalogIds,
     today,
+    ...(opts.keepPushIds ? { keep: opts.keepPushIds } : {}),
   });
 
   const catalogNames = new Map(
@@ -1059,6 +1068,9 @@ export async function pushStudioPlan(
   const baseMs = Date.parse(now);
   let seq = 0;
   const stamped = (): string => new Date(baseMs + seq++).toISOString();
+  // Queued together at the end, a few to a statement: one statement a job made a plan's retire (every session ahead
+  // removed) cost one D1 statement per session, past the request budget for a long plan.
+  const jobs: StudioJobRow[] = [];
 
   for (const del of batch.deletes) {
     const followUp = del.followUp;
@@ -1096,15 +1108,17 @@ export async function pushStudioPlan(
           }
         : {}),
     };
-    await enqueueStudioJob(db, {
-      userId: opts.userId,
-      kind: "delete_scheduled_workout",
-      pushId: del.row.id,
-      happenDay: del.row.happenDay,
-      payload: payload as unknown as Record<string, unknown>,
-      requestedAt: stamped(),
-      now,
-    });
+    jobs.push(
+      studioJobRow({
+        userId: opts.userId,
+        kind: "delete_scheduled_workout",
+        pushId: del.row.id,
+        happenDay: del.row.happenDay,
+        payload: payload as unknown as Record<string, unknown>,
+        requestedAt: stamped(),
+        now,
+      }),
+    );
   }
 
   for (const create of batch.creates) {
@@ -1125,16 +1139,19 @@ export async function pushStudioPlan(
       session: create.desired.session,
       catalog: catalogFor(create.desired.session),
     };
-    await enqueueStudioJob(db, {
-      userId: opts.userId,
-      kind: "create_scheduled_workout",
-      pushId,
-      happenDay: create.desired.happenDay,
-      payload: payload as unknown as Record<string, unknown>,
-      requestedAt: stamped(),
-      now,
-    });
+    jobs.push(
+      studioJobRow({
+        userId: opts.userId,
+        kind: "create_scheduled_workout",
+        pushId,
+        happenDay: create.desired.happenDay,
+        payload: payload as unknown as Record<string, unknown>,
+        requestedAt: stamped(),
+        now,
+      }),
+    );
   }
+  await insertStudioJobs(db, jobs);
 
   // `app_moved` is the app recognizing its OWN move — not a genuine adoption
   // — so it must not inflate the reported/audited `drifted` count the way it
@@ -1234,18 +1251,38 @@ async function upsertPushRow(
   return row.id;
 }
 
-async function enqueueStudioJob(
-  db: Db,
-  v: {
-    userId: string;
-    kind: "create_scheduled_workout" | "delete_scheduled_workout";
-    pushId: string;
-    happenDay: string;
-    payload: Record<string, unknown>;
-    requestedAt: string;
-    now: string;
-  },
-): Promise<string> {
+type StudioJobRow = typeof corosWriteJobs.$inferInsert & { id: string };
+
+interface StudioJobInput {
+  userId: string;
+  kind: "create_scheduled_workout" | "delete_scheduled_workout";
+  pushId: string;
+  happenDay: string;
+  payload: Record<string, unknown>;
+  requestedAt: string;
+  now: string;
+}
+
+/**
+ * Studio jobs to a statement: every column of the table is bound for each row of a multi-row insert, and D1 takes 100
+ * bound parameters a statement.
+ */
+const JOBS_PER_INSERT = Math.max(1, Math.floor(100 / Object.keys(getTableColumns(corosWriteJobs)).length));
+
+/** Queue jobs built by `studioJobRow`, a few to a statement. */
+async function insertStudioJobs(db: Db, rows: StudioJobRow[]): Promise<void> {
+  for (let i = 0; i < rows.length; i += JOBS_PER_INSERT) {
+    await db.insert(corosWriteJobs).values(rows.slice(i, i + JOBS_PER_INSERT));
+  }
+}
+
+async function enqueueStudioJob(db: Db, v: StudioJobInput): Promise<string> {
+  const row = studioJobRow(v);
+  await insertStudioJobs(db, [row]);
+  return row.id;
+}
+
+function studioJobRow(v: StudioJobInput): StudioJobRow {
   // The payload is validated at the moment it becomes a queued instruction, so
   // an unwritable job is never persisted. The bridge re-validates on receipt;
   // this catches it a hop earlier, where the push can still report why.
@@ -1253,7 +1290,7 @@ async function enqueueStudioJob(
     throw new Error(`invalid_${v.kind}_payload`);
   }
   const id = newId();
-  await db.insert(corosWriteJobs).values({
+  return {
     id,
     userId: v.userId,
     // `workoutId` is NOT NULL and means "the row this job acts on"; for studio
@@ -1270,8 +1307,7 @@ async function enqueueStudioJob(
     requestedAt: v.requestedAt,
     status: "queued",
     updatedAt: v.now,
-  });
-  return id;
+  };
 }
 
 /**
@@ -1533,6 +1569,8 @@ export async function undoStudioAdoption(
       .limit(1)
   )[0];
   if (!row || row.status !== "adopted") return { ok: false, error: "not_found" };
+  // A retired plan's session is not put back on the watch: the retire took the plan off it.
+  if (await studioPlanRetired(db, userId, row.planId)) return { ok: false, error: "not_found" };
 
   const now = nowInstant();
 
@@ -1626,4 +1664,106 @@ export async function undoStudioAdoption(
     ...(missing ? {} : { suppressDriftPushIds: new Set([pushId]) }),
   });
   return { ok: true, summary };
+}
+
+// ── Retiring a plan (the old generator's; its screens are retired, its plans are not stuck) ─────────────────────────
+
+/** The audit row that marks a studio plan retired: kept where the push summaries are, so no schema change. */
+export const STUDIO_PLAN_RETIRED = "studio_plan_retired";
+
+/**
+ * A studio plan's last day: the Sunday of its last week, from the brief it was generated with (the plan list's and the
+ * detail's one rule; a brief without dates falls back to the day it was made, one week).
+ */
+export function studioPlanEnd(row: { brief: unknown; createdAt: string }): LocalDate {
+  const brief = row.brief as { startDate?: string; durationWeeks?: number } | null;
+  const start = brief?.startDate ?? row.createdAt.slice(0, 10);
+  const weeks = Math.max(1, brief?.durationWeeks ?? 1);
+  return addDays(startOfIsoWeek(start), weeks * 7 - 1);
+}
+
+/** Whether the athlete retired this studio plan. One statement. */
+export async function studioPlanRetired(db: Db, userId: string, planId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: auditEvents.id })
+    .from(auditEvents)
+    .where(
+      and(
+        eq(auditEvents.userId, userId),
+        eq(auditEvents.kind, STUDIO_PLAN_RETIRED),
+        sql`json_extract(${auditEvents.detail}, '$.studioPlanId') = ${planId}`,
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * RETIRE A STUDIO PLAN, as a coach plan's Retire does: what is ahead of today leaves the watch, what is behind stays.
+ * Through the push path — the desired set emptied (`desiredOverride: []`), the diff's own removal machinery deleting
+ * every addressable session ahead — with what is behind kept as it is (`keepPushIds`): a session whose day has passed,
+ * or one already done today. Nothing in the database is deleted; the plan is marked retired (`STUDIO_PLAN_RETIRED`) so
+ * the plan list drops it, and a later retry finishes the retire instead of pushing the plan again.
+ *
+ * Callers check that the plan is the account's current one and not over; this only retires. `alreadyRetired`: the
+ * plan carries the mark (a retry finishing the retire), so it is not written twice.
+ */
+export async function retireStudioPlan(
+  db: Db,
+  opts: { userId: string; studioPlanId: string; today: LocalDate; alreadyRetired: boolean },
+): Promise<PushSummary> {
+  const rows = await db
+    .select({
+      id: studioPlanPushes.id,
+      happenDay: studioPlanPushes.happenDay,
+      corosHappenDay: studioPlanPushes.corosHappenDay,
+      corosPlanId: studioPlanPushes.corosPlanId,
+      corosIdInPlan: studioPlanPushes.corosIdInPlan,
+      status: studioPlanPushes.status,
+    })
+    .from(studioPlanPushes)
+    .where(eq(studioPlanPushes.planId, opts.studioPlanId));
+  // A session done today is behind the retire too: the workout a push became, completed.
+  const sourceOf = (r: (typeof rows)[number]): string | null =>
+    r.corosPlanId && r.corosIdInPlan ? `${r.corosPlanId}:${r.corosIdInPlan}` : null;
+  const todays = rows.filter((r) => (r.corosHappenDay ?? r.happenDay) === opts.today);
+  const done = new Set<string>();
+  for (const ids of chunkIds(todays.map(sourceOf).filter((k): k is string => k !== null))) {
+    const found = await db
+      .select({ key: plannedWorkouts.sourceWorkoutId })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, opts.userId),
+          inArray(plannedWorkouts.sourceWorkoutId, ids),
+          eq(plannedWorkouts.completionState, "completed"),
+        ),
+      );
+    for (const f of found) if (f.key) done.add(f.key);
+  }
+  // Kept: what is (or may be) on the watch and behind the day. A failed row is never kept — nothing of it is there to
+  // keep, and the diff clears it as it clears any failed row the plan drops.
+  const keep = new Set(
+    rows
+      .filter((r) => r.status === "verified" || r.status === "pending")
+      .filter((r) => compareLocalDates(r.corosHappenDay ?? r.happenDay, opts.today) < 0 || done.has(sourceOf(r) ?? ""))
+      .map((r) => r.id),
+  );
+  const summary = await pushStudioPlan(db, {
+    userId: opts.userId,
+    studioPlanId: opts.studioPlanId,
+    today: opts.today,
+    desiredOverride: [],
+    keepPushIds: keep,
+  });
+  if (summary.ok && !opts.alreadyRetired) {
+    await db.insert(auditEvents).values({
+      id: newId(),
+      userId: opts.userId,
+      kind: STUDIO_PLAN_RETIRED,
+      detail: { studioPlanId: opts.studioPlanId, kept: keep.size, deletes: summary.deletes },
+      createdAt: nowInstant(),
+    });
+  }
+  return summary;
 }

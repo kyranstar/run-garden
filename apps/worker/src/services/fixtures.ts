@@ -128,11 +128,13 @@ function bodyweight(
 /**
  * Plan Studio fixture world (plan-studio-design §8): a small 2-week, 3-day
  * lifting plan built from `FIXTURE_EXERCISE_CATALOG`, exercising every
- * `studio_plan_pushes` status the Studio UI renders differently:
+ * `studio_plan_pushes` status the old plan generator's screen rendered
+ * differently (that screen is retired, Stage 2; the plan now lists, opens
+ * and retires from the plan modal, and its rows still feed sync status):
  *
  *  - week 1 (the past week) is fully resolved — one `verified` session, one
  *    `failed` session that IS still retryable and carries a `corosHappenDay`
- *    (so `PushRowStatus`'s "Failed — still on calendar" branch renders), and
+ *    (the retired screen's "Failed — still on calendar" state), and
  *    one `changed_on_coros` session (drifted after an earlier verify — the
  *    disabled "Forget / re-adopt" affordance and "changed outside the
  *    studio" copy).
@@ -297,7 +299,7 @@ async function seedStudioFixtures(db: Db, userId: string, today: LocalDate): Pro
 
   // 2. failed, retryable, still on the calendar (mapCreateResult's
   //    `wrong_date`: ids persisted, COROS filed it a day off from what was
-  //    asked). Exercises PushRowStatus's "Failed — still on calendar" copy.
+  //    asked). The retired screen's "Failed — still on calendar" state.
   const lowerA1Day = happenDay(0, lowerA1.weekday);
   await db.insert(studioPlanPushes).values({
     id: newId(),
@@ -318,7 +320,7 @@ async function seedStudioFixtures(db: Db, userId: string, today: LocalDate): Pro
 
   // 3. changed_on_coros — previously verified, then found renamed/moved on a
   //    later drift check. The forget/re-adopt button stays disabled for this
-  //    one; retry is intentionally not offered (see studio.tsx PushRowStatus).
+  //    one; retry is intentionally not offered (the retired screen offered none).
   const upperB1Day = happenDay(0, upperB1.weekday);
   await db.insert(studioPlanPushes).values({
     id: newId(),

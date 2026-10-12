@@ -416,6 +416,29 @@ describe("POST /api/sync/retry", () => {
     expect(after.every((r) => r.status === "failed" && r.error === "day_in_past")).toBe(true);
   });
 
+  it("a retired studio plan's failed removal is retried as the retire, never as a push that puts the plan back", async () => {
+    await connectTestCoros(db, userId);
+    const { planId, pushId } = await seedAdoptedPush();
+    // The retire's delete of week 1 failed: the row is on COROS still, addressable, and counted as an issue.
+    await db.update(studioPlanPushes).set({ status: "failed", error: "network" }).where(eq(studioPlanPushes.id, pushId));
+    await db.insert(schema.auditEvents).values({
+      id: newId(),
+      userId,
+      kind: "studio_plan_retired",
+      detail: { studioPlanId: planId },
+      createdAt: nowInstant(),
+    });
+
+    const res = await client().post("/api/sync/retry");
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { studioRetried: number }).studioRetried).toBe(1);
+
+    // The removal again — and no recreate: a push of the plan would have chained one to the delete.
+    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
+    expect(jobs.map((j) => j.kind)).toEqual(["delete_scheduled_workout"]);
+    expect((jobs[0]!.payload as { followUpCreate?: unknown }).followUpCreate).toBeUndefined();
+  });
+
   it("no-ops cleanly (movesRetried/studioRetried both 0) when nothing has failed", async () => {
     const res = await client().post("/api/sync/retry");
     expect(res.status).toBe(200);
