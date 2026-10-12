@@ -26,8 +26,11 @@ export const coachMemory = sqliteTable(
     /** 'stated' | 'inferred' | 'confirmed' */
     confidence: text("confidence").notNull().default("stated"),
     supersededBy: text("superseded_by"),
-    /** What supports an observation. */
-    evidence: text("evidence", { mode: "json" }).$type<unknown>(),
+    /**
+     * What supports an observation: JSON as plain text (no json mode — a malformed value must not throw on every row
+     * read). Writers stringify; readers parse at read and survive a bad value.
+     */
+    evidence: text("evidence"),
     updatedAt: text("updated_at"),
   },
   (t) => [index("coach_memory_user_idx").on(t.userId, t.active)],
@@ -217,8 +220,11 @@ export const coachRuns = sqliteTable(
     request: text("request"),
     /** 'queued' | 'running' | 'waiting_athlete' | 'done' | 'failed' | 'cancelled' | 'expired' */
     status: text("status").notNull(),
-    /** The resumable agent state, kept compact. */
-    state: text("state", { mode: "json" }).$type<unknown>(),
+    /**
+     * The resumable agent state, kept compact: JSON as plain text (no json mode, like the document columns). Writers
+     * stringify; readers parse at read and survive a bad value.
+     */
+    state: text("state"),
     steps: integer("steps").notNull().default(0),
     costUsd: real("cost_usd").notNull().default(0),
     proposalId: text("proposal_id"),
