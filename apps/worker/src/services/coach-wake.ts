@@ -31,7 +31,8 @@ import {
   type UserPreferences,
   type WakeOutput,
 } from "@rg/domain";
-import { fixtureModeEnabled, type Env } from "../env.js";
+import type { Env } from "../env.js";
+import { wakeGateway } from "./gateway-route.js";
 import { chunkIds, type Db } from "./db.js";
 import { plannedRowColumns } from "./planned-columns.js";
 import { restoreInProgress } from "./account-state.js";
@@ -83,40 +84,9 @@ export interface WakeResult {
 const MAX_OUTPUT_TOKENS_WAKE = 64_000; // a wake may draft a whole plan
 const STALE_BRIEFING_HOURS = 20;
 
-/**
- * Where a wake's model call goes (Audit 2 I1, Ruling C2). `AI_DEFAULT_ENABLED`
- * does not gate the wake, and the e2e fixture stack's Plan page fires one on
- * every open of a fresh account, so this is decided before the wake thinks:
- *
- * - fixture mode → `canned`: a fixed reply, no network. The one exception is
- *   a recorded-model server on loopback named by `FIXTURE_MODEL_URL` (the
- *   coach replay specs); `AI_GATEWAY_BASE_URL` is never used in fixture mode.
- * - no key → `no_key`: no call at all (coach reads skip the same way).
- */
-export type WakeGateway = { kind: "canned" } | { kind: "no_key" } | { kind: "model"; env: Env };
-
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
-
-function loopbackUrl(raw: string | undefined): string | null {
-  if (!raw) return null;
-  try {
-    const u = new URL(raw);
-    return (u.protocol === "http:" || u.protocol === "https:") && LOOPBACK_HOSTS.has(u.hostname) ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-export function wakeGateway(env: Env): WakeGateway {
-  if (fixtureModeEnabled(env)) {
-    const recorded = loopbackUrl(env.FIXTURE_MODEL_URL);
-    if (!recorded) return { kind: "canned" };
-    if (!env.AI_GATEWAY_API_KEY) return { kind: "no_key" };
-    return { kind: "model", env: { ...env, AI_GATEWAY_BASE_URL: recorded } };
-  }
-  if (!env.AI_GATEWAY_API_KEY) return { kind: "no_key" };
-  return { kind: "model", env };
-}
+/** Where a wake's model call goes (canned / no_key / model): gateway-route.ts, shared with the coach designer and
+ * re-exported here so existing imports keep working. */
+export { wakeGateway, type WakeGateway } from "./gateway-route.js";
 
 /** Fixture mode's whole model: a briefing that says what it is. */
 const CANNED_WAKE_CHAT = {

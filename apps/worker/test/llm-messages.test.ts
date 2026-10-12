@@ -4,15 +4,19 @@
  * No key and no network: every call goes through an injected `fetchImpl` (the repo's seam — see
  * studio-llm.test.ts), which records what reached the "gateway" and answers with a scripted JSON body or SSE stream.
  */
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import { isOutOfCredits, OUT_OF_CREDITS_REASON } from "../src/services/ai-credits.js";
+import { wakeGateway as wakeGatewayFromCoachWake } from "../src/services/coach-wake.js";
+import { wakeGateway } from "../src/services/gateway-route.js";
 import {
   callMessages,
   DEFAULT_DESIGN_MODEL,
   designModel,
   messagesCostMicros,
   MODEL_PRICES,
+  PRICE_CEILING,
   type MessageParam,
   type MessagesRequest,
   type SystemBlock,
@@ -47,6 +51,32 @@ interface Scripted {
   throws?: boolean;
   /** A stream that sends these events and then never ends. */
   hangAfter?: Array<Record<string, unknown>>;
+  /** A JSON answer that sends this much of its body and then never ends (until the request aborts). */
+  hangJson?: string;
+  /** Answer only after this long (headers late). */
+  delayMs?: number;
+  /** A stream that starts a message and then only pings, every this many ms, forever — until the request's signal
+   * aborts, which errors the read as a real connection would. */
+  pingEveryMs?: number;
+}
+
+/** Pings forever; the request's abort errors the body. */
+function pinging(everyMs: number, signal: AbortSignal | null | undefined): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(sseText([{ type: "message_start", message: { usage: { input_tokens: 1 } } }])));
+      timer = setInterval(() => controller.enqueue(encoder.encode(sseText([{ type: "ping" }]))), everyMs);
+      signal?.addEventListener("abort", () => {
+        clearInterval(timer);
+        controller.error(new DOMException("The operation was aborted.", "AbortError"));
+      });
+    },
+    cancel() {
+      clearInterval(timer);
+    },
+  });
 }
 
 interface Call {
@@ -59,11 +89,21 @@ function sseText(events: Array<Record<string, unknown>>): string {
   return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join("");
 }
 
-/** A body that arrives 7 bytes at a time, so lines and JSON split across reads. */
-function chunked(text: string, hang = false): ReadableStream<Uint8Array> {
+/** A body that arrives 7 bytes at a time, so lines and JSON split across reads. The request's abort errors it, as a
+ * real connection would. */
+function chunked(text: string, hang = false, signal?: AbortSignal | null): ReadableStream<Uint8Array> {
   const bytes = new TextEncoder().encode(text);
   let at = 0;
   return new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal?.addEventListener("abort", () => {
+        try {
+          controller.error(new DOMException("The operation was aborted.", "AbortError"));
+        } catch {
+          // already closed
+        }
+      });
+    },
     pull(controller) {
       if (at >= bytes.length) {
         if (!hang) controller.close();
@@ -92,6 +132,19 @@ function scriptedFetch(responses: Scripted[]): { fetchImpl: typeof fetch; calls:
     const spec = responses[i++];
     if (!spec) throw new Error("scriptedFetch: no more responses configured");
     if (spec.throws) throw new TypeError("fetch failed");
+    if (spec.delayMs) await new Promise((resolve) => setTimeout(resolve, spec.delayMs));
+    if (spec.pingEveryMs !== undefined) {
+      return new Response(pinging(spec.pingEveryMs, init?.signal), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (spec.hangJson !== undefined) {
+      return new Response(chunked(spec.hangJson, true, init?.signal), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (spec.sse || spec.hangAfter) {
       return new Response(chunked(sseText(spec.sse ?? spec.hangAfter ?? []), !!spec.hangAfter), {
         status: spec.status ?? 200,
@@ -223,9 +276,18 @@ describe("callMessages — the request", () => {
     expect(second.ok && second.model).toBe("anthropic/claude-opus-5");
   });
 
-  it("defaults to the strongest Claude id the gateway lists (probed 2026-10-12)", () => {
+  it("defaults to the owner's chosen model, Opus 5.5 under the gateway's naming (configurable via AI_DESIGN_MODEL)", () => {
     expect(DEFAULT_DESIGN_MODEL).toBe("anthropic/claude-opus-5.5");
     expect(MODEL_PRICES[DEFAULT_DESIGN_MODEL]).toBeDefined();
+  });
+
+  it("reaches the gateway route through its own module, never through the coach wake (no import cycle)", () => {
+    // coach-wake re-exports the one function, so its callers are unchanged…
+    expect(wakeGatewayFromCoachWake).toBe(wakeGateway);
+    // …and the designer's client does not depend on the coach it may one day be called from.
+    const source = readFileSync(new URL("../src/services/llm-messages.ts", import.meta.url), "utf8");
+    expect(source).not.toMatch(/from "\.\/coach-wake\.js"/);
+    expect(source).toMatch(/from "\.\/gateway-route\.js"/);
   });
 });
 
@@ -257,8 +319,9 @@ describe("callMessages — the answer (JSON)", () => {
       content,
       stopReason: "tool_use",
       usage: { inputTokens: 1_000, cacheReadTokens: 10_000, cacheWriteTokens: 2_000, outputTokens: 500 },
-      // Opus 5.5 per 1M: $4 in, $0.20 cache read, $5 cache write, $20 out.
-      costMicros: 1_000 * 4 + 10_000 * 0.2 + 2_000 * 5 + 500 * 20,
+      // Opus 5.5 per 1M: $4 in, $0.20 cache read, $5 cache write, $20 out:
+      // 1,000 × 4 + 10,000 × 0.2 + 2,000 × 5 + 500 × 20 = 4,000 + 2,000 + 10,000 + 10,000.
+      costMicros: 26_000,
     });
   });
 });
@@ -275,20 +338,53 @@ describe("cost", () => {
     expect(messagesCostMicros("anthropic/claude-opus-5.5", { inputTokens: 0, cacheReadTokens: 3, cacheWriteTokens: 0, outputTokens: 0 })).toBe(1);
   });
 
-  it("prices a model missing from the table at the table's highest rates — the cap trips early, never late", () => {
+  it("prices a model missing from the table at the ceiling — the listing's highest rates — so the cap trips early, never late", () => {
+    // The highest rates the gateway listed on 2026-10-12, kind by kind: Claude Opus 4 ($15 / $75, cache read $1.50,
+    // cache write $18.75), listed in the morning and gone from the listing an hour later. Above every Fable 5 /
+    // Opus-fast rate ($10 / $50 / $1.00 / $12.50).
+    expect(PRICE_CEILING).toEqual({ input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 });
     const usage = { inputTokens: 1_000, cacheReadTokens: 1_000, cacheWriteTokens: 1_000, outputTokens: 1_000 };
-    const highest = Object.values(MODEL_PRICES).reduce(
-      (m, p) => ({
-        input: Math.max(m.input, p.input),
-        output: Math.max(m.output, p.output),
-        cacheRead: Math.max(m.cacheRead, p.cacheRead),
-        cacheWrite: Math.max(m.cacheWrite, p.cacheWrite),
-      }),
-      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    );
-    const expected = Math.ceil(1_000 * (highest.input + highest.output + highest.cacheRead + highest.cacheWrite));
-    expect(messagesCostMicros("anthropic/claude-something-new", usage)).toBe(expected);
-    expect(expected).toBeGreaterThan(messagesCostMicros(DEFAULT_DESIGN_MODEL, usage));
+    // 1,000 × (15 + 75 + 1.5 + 18.75).
+    expect(messagesCostMicros("anthropic/claude-something-new", usage)).toBe(110_250);
+    // No row is priced above the ceiling, for any kind of token.
+    for (const [id, p] of Object.entries(MODEL_PRICES)) {
+      expect.soft(p.input, id).toBeLessThanOrEqual(PRICE_CEILING.input);
+      expect.soft(p.output, id).toBeLessThanOrEqual(PRICE_CEILING.output);
+      expect.soft(p.cacheRead, id).toBeLessThanOrEqual(PRICE_CEILING.cacheRead);
+      expect.soft(p.cacheWrite, id).toBeLessThanOrEqual(PRICE_CEILING.cacheWrite);
+    }
+  });
+
+  it("has a row for every Claude id the gateway listed, at its listed rates (tiered prices at their top tier)", () => {
+    const listed = [
+      "anthropic/claude-3-haiku",
+      "anthropic/claude-fable-5",
+      "anthropic/claude-fable-5.1",
+      "anthropic/claude-haiku-4.5",
+      "anthropic/claude-haiku-5.5",
+      "anthropic/claude-opus-4",
+      "anthropic/claude-opus-4.5",
+      "anthropic/claude-opus-4.6",
+      "anthropic/claude-opus-4.7",
+      "anthropic/claude-opus-4.8",
+      "anthropic/claude-opus-4.8-fast",
+      "anthropic/claude-opus-5",
+      "anthropic/claude-opus-5-fast",
+      "anthropic/claude-opus-5.5",
+      "anthropic/claude-opus-5.5-fast",
+      "anthropic/claude-sonnet-4",
+      "anthropic/claude-sonnet-4.5",
+      "anthropic/claude-sonnet-4.6",
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-sonnet-5.5",
+    ];
+    expect(Object.keys(MODEL_PRICES).sort()).toEqual(listed);
+    // The cache-read outliers the old five-row table missed.
+    expect(MODEL_PRICES["anthropic/claude-fable-5"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 });
+    expect(MODEL_PRICES["anthropic/claude-opus-5-fast"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 });
+    expect(MODEL_PRICES["anthropic/claude-opus-4.8-fast"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 });
+    // A tiered model at its top tier (prompts over 100k tokens on Haiku 5.5 cost 5×): never under.
+    expect(MODEL_PRICES["anthropic/claude-haiku-5.5"]).toEqual({ input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 });
   });
 
   it("a response without usage is never free: tokens are estimated from the bytes", async () => {
@@ -432,7 +528,8 @@ describe("callMessages — the streamed answer", () => {
       ],
       stopReason: "tool_use",
       usage: { inputTokens: 1_200, cacheReadTokens: 9_000, cacheWriteTokens: 300, outputTokens: 640 },
-      costMicros: Math.ceil(1_200 * 4 + 9_000 * 0.2 + 300 * 5 + 640 * 20),
+      // 1,200 × 4 + 9,000 × 0.2 + 300 × 5 + 640 × 20 = 4,800 + 1,800 + 1,500 + 12,800.
+      costMicros: 20_900,
     });
   });
 
@@ -455,6 +552,34 @@ describe("callMessages — the streamed answer", () => {
     const { fetchImpl } = scriptedFetch([{ hangAfter: STREAM.slice(0, 3) }]);
     const pending = callMessages(makeEnv(), request(), fetchImpl);
     await vi.advanceTimersByTimeAsync(151_000);
+    expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+  });
+
+  it("a stream that keeps pinging past the 10-minute deadline is cut at it, and says timeout, not error", async () => {
+    vi.useFakeTimers();
+    // A ping every 90 s: never silent long enough for the stall guard; only the overall deadline ends it.
+    const { fetchImpl } = scriptedFetch([{ pingEveryMs: 90_000 }]);
+    const pending = callMessages(makeEnv(), request(), fetchImpl);
+    await vi.advanceTimersByTimeAsync(601_000);
+    expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+  });
+});
+
+describe("callMessages — a buffered answer that stalls", () => {
+  it("a JSON body that stops arriving is cut loose like a silent stream, and retryable", async () => {
+    vi.useFakeTimers();
+    const { fetchImpl } = scriptedFetch([{ hangJson: '{"id":"msg_1","type":"message","content":[{"type":"te' }]);
+    const pending = callMessages(makeEnv(), request(), fetchImpl);
+    await vi.advanceTimersByTimeAsync(151_000);
+    expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+  });
+
+  it("a buffered answer the 10-minute deadline cuts off says timeout, not a broken answer", async () => {
+    vi.useFakeTimers();
+    // Headers after 500 s, then a body that never finishes: the deadline, not the stall guard, ends the read.
+    const { fetchImpl } = scriptedFetch([{ delayMs: 500_000, hangJson: '{"id":"msg_1","type":"mess' }]);
+    const pending = callMessages(makeEnv(), request(), fetchImpl);
+    await vi.advanceTimersByTimeAsync(601_000);
     expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
   });
 });

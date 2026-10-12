@@ -1,6 +1,6 @@
 import type { Env } from "../env.js";
 import { OUT_OF_CREDITS_REASON } from "./ai-credits.js";
-import { wakeGateway } from "./coach-wake.js";
+import { wakeGateway } from "./gateway-route.js";
 
 /**
  * THE COACH DESIGNER'S MODEL CLIENT — the AI gateway's native Messages endpoint (Stage 3 spec §2).
@@ -17,7 +17,7 @@ import { wakeGateway } from "./coach-wake.js";
  * clears it exactly as it does for the coach. Spend is not recorded here (this module takes no database): the caller
  * writes `costMicros` to `llm_usage` and enforces the weekly cap before calling.
  *
- * Fixture mode routes exactly as the coach wake does (`wakeGateway`): a canned answer and no network, unless
+ * Fixture mode routes exactly as the coach wake does (`wakeGateway`, gateway-route.ts): a canned answer and no network, unless
  * `FIXTURE_MODEL_URL` names a recorded-model server on loopback, which then gets `{FIXTURE_MODEL_URL}/messages`.
  *
  * WHAT THE GATEWAY ACCEPTS (free schema probe, `apps/worker/scripts/probe-gateway-model.mjs`, 2026-10-12). The gateway
@@ -28,7 +28,8 @@ import { wakeGateway } from "./coach-wake.js";
  * the model ids and their prices come from the gateway's public, unauthenticated `GET {base}/models` listing instead.
  */
 
-/** The strongest Claude model the gateway lists (probe, 2026-10-12): Claude Opus 5.5 under the gateway's naming. */
+/** The owner's chosen default (2026-10-10: quality first — Opus 5.5 with caching, inside the $20/week cap): Claude
+ * Opus 5.5 under the gateway's naming, listed by the gateway on 2026-10-12. Configurable via `AI_DESIGN_MODEL`. */
 export const DEFAULT_DESIGN_MODEL = "anthropic/claude-opus-5.5";
 const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -54,30 +55,43 @@ export interface ModelPrice {
 }
 
 /**
- * The one price table: copied from the gateway's own listing (`GET https://ai-gateway.vercel.sh/v1/models`,
- * 2026-10-12, global rates; the "us"/"eu" regional rates are 10% higher and this client asks for no region).
- * Cache reads are not a fixed fraction of input — Opus 5.5 reads at 0.05×, Opus 5 at 0.1×, Fable 5.1 at 0.025× — so
- * every rate is listed, never derived. Re-run the probe script and update a row when the gateway's prices move.
+ * The one price table: every Claude id in the gateway's own listing (`GET https://ai-gateway.vercel.sh/v1/models`,
+ * 2026-10-12, global rates; the "us"/"eu" regional rates are 10% higher and this client asks for no region). Cache
+ * reads are not a fixed fraction of input — Opus 5.5 reads at 0.05×, Opus 5 at 0.1×, Fable 5 at 0.1×, Fable 5.1 at
+ * 0.025× — so every rate is listed, never derived. A model whose prices rise with the prompt's length (Haiku 5.5 past
+ * 100k tokens, Sonnet 4 / 4.5 past 200k) is entered at its top tier: an over-estimate, never an under-estimate. Re-run
+ * the probe script and update a row when the gateway's prices move.
  */
 export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   "anthropic/claude-opus-5.5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+  "anthropic/claude-opus-5.5-fast": { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10 },
   "anthropic/claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "anthropic/claude-opus-5-fast": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  "anthropic/claude-opus-4.8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "anthropic/claude-opus-4.8-fast": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  "anthropic/claude-opus-4.7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "anthropic/claude-opus-4.6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "anthropic/claude-opus-4.5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "anthropic/claude-opus-4": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
   "anthropic/claude-fable-5.1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+  "anthropic/claude-fable-5": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   "anthropic/claude-sonnet-5.5": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+  "anthropic/claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  "anthropic/claude-sonnet-4.6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "anthropic/claude-sonnet-4.5": { input: 6, output: 22.5, cacheRead: 0.6, cacheWrite: 7.5 },
+  "anthropic/claude-sonnet-4": { input: 6, output: 22.5, cacheRead: 0.6, cacheWrite: 7.5 },
+  "anthropic/claude-haiku-5.5": { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 },
   "anthropic/claude-haiku-4.5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+  "anthropic/claude-3-haiku": { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
 };
 
-/** A model the table does not know is priced at its highest rate for each kind of token: the weekly cap can then
- * only trip early, never late. */
-const UNKNOWN_MODEL_PRICE: ModelPrice = Object.values(MODEL_PRICES).reduce(
-  (m, p) => ({
-    input: Math.max(m.input, p.input),
-    output: Math.max(m.output, p.output),
-    cacheRead: Math.max(m.cacheRead, p.cacheRead),
-    cacheWrite: Math.max(m.cacheWrite, p.cacheWrite),
-  }),
-  { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-);
+/**
+ * What a model the table does not know is charged: the highest rate the gateway listed for each kind of token, so
+ * the weekly cap can only trip early, never late. That is Claude Opus 4 ($15 / $75, cache read $1.50, cache write
+ * $18.75), which was in the listing on the morning of 2026-10-12 and gone from it an hour later; the listing changes
+ * between calls, so the ceiling keeps the highest seen. Every row above sits at or under it.
+ */
+export const PRICE_CEILING: Readonly<ModelPrice> = { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 };
 
 export interface MessagesUsage {
   /** Uncached input only: the whole prompt is inputTokens + cacheReadTokens + cacheWriteTokens. */
@@ -91,7 +105,7 @@ export interface MessagesUsage {
 /** Whole micro-dollars, rounded up. $1 per 1M tokens is 1 µ$ per token; the sum is taken in integer µ$-per-1M
  * units so 0.2 µ$ × 3 is 1 µ$, not 0.6000000000000001 → 1 by luck. */
 export function messagesCostMicros(model: string, usage: MessagesUsage): number {
-  const p = MODEL_PRICES[model] ?? UNKNOWN_MODEL_PRICE;
+  const p = MODEL_PRICES[model] ?? PRICE_CEILING;
   const perMillion = (usd: number) => Math.round(usd * 1_000_000);
   const total =
     usage.inputTokens * perMillion(p.input) +
@@ -282,8 +296,8 @@ export async function callMessages(
     const contentType = response.headers.get("content-type") ?? "";
     const answer =
       contentType.includes("text/event-stream") && response.body
-        ? await readStream(response.body, startedAt)
-        : await readJson(response);
+        ? await readStream(response.body, startedAt, controller.signal)
+        : await readJson(response, startedAt, controller.signal);
     if (!answer.ok) return answer;
 
     const usage = usageOf(answer.usage, body, answer.content);
@@ -325,8 +339,23 @@ function usageOf(raw: RawUsage, requestBody: string, content: ContentBlock[]): M
 
 type RawMessage = { content?: unknown; stop_reason?: unknown; usage?: unknown };
 
-async function readJson(response: Response): Promise<Answer | MessagesFailure> {
-  const text = await response.text().catch(() => null);
+/** How long the next read may take: the stall limit, or what is left of the whole call's deadline if less. */
+function readWait(startedAt: number): number {
+  return Math.max(1000, Math.min(STREAM_STALL_MS, TIMEOUT_MS - (Date.now() - startedAt)));
+}
+
+/** A buffered answer. Its body read gets the same stall guard as a stream's reads: the abort alone does not cut a
+ * body read loose in workerd. */
+async function readJson(response: Response, startedAt: number, deadline: AbortSignal): Promise<Answer | MessagesFailure> {
+  const text = await withTimeout(
+    response.text().catch(() => null),
+    readWait(startedAt),
+  );
+  if (text === "timed_out") {
+    await response.body?.cancel().catch(() => undefined);
+    return retryable("llm_timeout");
+  }
+  if (text === null && deadline.aborted) return retryable("llm_timeout");
   let parsed: RawMessage | null;
   try {
     parsed = text === null ? null : (JSON.parse(text) as RawMessage | null);
@@ -371,7 +400,11 @@ type StreamEvent = {
  * pieces and is parsed once its block stops. A stream that ends before the model says it stopped is a dropped
  * connection, not a short answer.
  */
-async function readStream(body: ReadableStream<Uint8Array>, startedAt: number): Promise<Answer | MessagesFailure> {
+async function readStream(
+  body: ReadableStream<Uint8Array>,
+  startedAt: number,
+  deadline: AbortSignal,
+): Promise<Answer | MessagesFailure> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const blocks: Array<Record<string, unknown> | undefined> = [];
@@ -382,8 +415,7 @@ async function readStream(body: ReadableStream<Uint8Array>, startedAt: number): 
   let buffered = "";
   try {
     for (;;) {
-      const wait = Math.max(1000, Math.min(STREAM_STALL_MS, TIMEOUT_MS - (Date.now() - startedAt)));
-      const next = await withTimeout(reader.read(), wait);
+      const next = await withTimeout(reader.read(), readWait(startedAt));
       if (next === "timed_out") {
         await reader.cancel().catch(() => undefined);
         return retryable("llm_timeout");
@@ -449,7 +481,8 @@ async function readStream(body: ReadableStream<Uint8Array>, startedAt: number): 
       }
     }
   } catch {
-    return retryable("llm_error");
+    // The whole call's deadline aborting the read is a timeout; anything else is the connection failing.
+    return retryable(deadline.aborted ? "llm_timeout" : "llm_error");
   }
   if (!stopped && stopReason === null) return retryable("gateway_bad_response");
   return {

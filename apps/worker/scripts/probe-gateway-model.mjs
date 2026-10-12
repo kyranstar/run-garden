@@ -8,7 +8,7 @@
  *
  *   1. The model: `GET {base}/models` is public. Is the model listed, and at what prices? (The Messages endpoint does
  *      not check the model id before it authenticates — a made-up id also answers 401 — so the listing is the check.)
- *      Prints the row for llm-messages.ts's MODEL_PRICES, and the strongest Claude ids the gateway lists.
+ *      Prints the row for llm-messages.ts's MODEL_PRICES, and the Claude Opus / Fable / Sonnet ids the gateway lists.
  *   2. The body: the gateway validates the body BEFORE it authenticates. Each probe posts one deliberately invalid
  *      value with the junk key: a 400 naming the field means the field is parsed; a 401 means it was dropped as
  *      unknown. A valid control body must answer 401 (well-formed, then refused for the key).
