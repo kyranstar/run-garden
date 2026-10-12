@@ -16,7 +16,7 @@ import { Banner, SyncNotesStack, SyncStatusLine } from "../components.js";
 
 /**
  * Shared sync status + notes (sync-transparency Task 12) — mounted once per
- * screen (Garden, Plan, Studio) so the account's sync state boils
+ * screen (Garden, Plan) so the account's sync state boils
  * down to one line + one dismissible notes feed everywhere, backed by
  * `GET /api/sync/status` and `GET /api/sync/notes` rather than each screen's
  * own read of the legacy `TodayResponse.sync` shape.
@@ -30,7 +30,7 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
   // Freshness (reward-loop spec §1): a COROS read landing means new
   // activities/completions may have grown the garden — refetch it while the
   // user is looking instead of waiting for a remount. This panel already
-  // polls sync status every 30s on Garden/Today/Plan/Studio, so the watch
+  // polls sync status every 30s on Garden/Today/Plan, so the watch
   // costs nothing extra.
   const lastRead = status.data?.lastCorosReadAt ?? null;
   const prevReadRef = useRef<string | null>(null);
@@ -47,7 +47,6 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
     void qc.invalidateQueries({ queryKey: ["sync-notes"] });
     void qc.invalidateQueries({ queryKey: ["today"] });
     void qc.invalidateQueries({ queryKey: ["plan"] });
-    void qc.invalidateQueries({ queryKey: ["studio"] });
   };
 
   const retry = useMutation({
@@ -60,7 +59,6 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
       void qc.invalidateQueries({ queryKey: ["sync-status"] });
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });
-      void qc.invalidateQueries({ queryKey: ["studio"] });
     },
   });
   const dismiss = useMutation({
@@ -79,9 +77,9 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
       invalidateAfterUndo();
     },
     onError: (err: unknown, id: string) => {
-      // adopted_coros_edit/removal notes forward to the same studio-adoption
-      // undo the Studio screen's per-row button uses — a renamed-on-COROS row
-      // 409s the same way there (studio.tsx's `undoAdoption` mutation).
+      // adopted_coros_edit/removal notes forward to the studio-adoption undo
+      // (the retired plan generator's push rows, still reconciled server-side):
+      // a renamed-on-COROS row 409s there.
       const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
       setUndoErrors((e) => ({
         ...e,

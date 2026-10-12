@@ -45,8 +45,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               cloud on their own. Nothing to configure here.
             </p>
             <p className="muted">
-              On this device you get everything else: your garden, the full plan calendar, the
-              lifting studio, and activity insights — wherever you are.
+              On this device you get everything else: your garden, the full plan calendar, and
+              activity insights — wherever you are.
             </p>
             <div style={{ marginTop: "var(--space-6)" }}>
               <button className="btn btn-primary" style={{ width: "100%" }} onClick={onDone}>

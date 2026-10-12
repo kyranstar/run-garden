@@ -68,6 +68,39 @@ describe("the read cache (rg-read-cache)", () => {
     expect(matches("/api/sessions/slot-p1-2026-10-08/watch-review")).toBe(true);
   });
 
+  /**
+   * The Studio's reads (Stage 2 spec §12): the templates, the planned workouts' list, the athlete's side of the library
+   * (pins, ratings, history) and the places' gear — so the Studio opened offline, a cold start included, knows what it
+   * knew online, and a quick start is built at once rather than after its reads fail through their retries. One entry
+   * each: the lists only, never a move's or a workout's own read, and never a typed search of the workouts.
+   */
+  it("answers the Studio's list reads offline: templates, workouts, the library view, places", () => {
+    for (const path of ["/api/templates", "/api/workouts", "/api/workouts?from=2026-10-12&to=2026-11-09", "/api/library", "/api/library?limit=200", "/api/places"]) {
+      expect(matches(path), path).toBe(true);
+    }
+  });
+
+  it("keeps no read of one move, one workout or one template, and no typed search: each would be an entry of its own", () => {
+    for (const path of [
+      "/api/library/gobletSquat",
+      "/api/library/gobletSquat/prefs",
+      "/api/workouts/w1/doc",
+      "/api/workouts?q=squat",
+      "/api/templates/t1",
+      "/api/templates/t1/use",
+      "/api/places/p1",
+      "/api/librarything",
+      "/api/templatesx",
+    ]) {
+      expect(matches(path), path).toBe(false);
+    }
+  });
+
+  it("caches answers only — GET — and its bounds are as they were: 40 entries, a day", () => {
+    expect(readCache().method ?? "GET").toBe("GET");
+    expect(readCache().options?.expiration).toEqual({ maxEntries: 40, maxAgeSeconds: 86400 });
+  });
+
   it("keeps nothing else of a session: the sheet, the preview, the review basis, a save", () => {
     for (const path of [
       "/api/sessions/slot-p1-2026-10-08",

@@ -738,7 +738,7 @@ function syncNoteText(note: SyncNoteDto): string | null {
     case "adopted_coros_change":
       return `Moved to ${formatDayShort(p.newDate as string)} on COROS`;
     case "adopted_coros_edit":
-      return `“${p.sessionTitle as string}” was edited on COROS — the studio stopped managing it`;
+      return `“${p.sessionTitle as string}” was edited on COROS — Run Garden stopped managing it`;
     case "adopted_coros_removal":
       return `“${p.sessionTitle as string}” was removed on COROS`;
     case "race_move_rejected":

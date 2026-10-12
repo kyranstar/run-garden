@@ -1281,8 +1281,8 @@ export function AiSection({ prefs }: { prefs: UserPreferences }) {
           <strong>Activity reads &amp; weekly narration</strong>
           <p className="faint">
             This switch gates the coach&apos;s automatic activity reads and the weekly review
-            narration. Coach chat, check-ins, and Studio plan generation are also AI-powered but
-            run only when you ask. Scheduling, sync, and the garden are fully deterministic.
+            narration. Coach chat and check-ins are also AI-powered but run only when you ask.
+            Scheduling, sync, and the garden are fully deterministic.
           </p>
         </div>
         <button className="btn btn-small" disabled={toggle.isPending} onClick={() => toggle.mutate(!prefs.aiEnabled)}>

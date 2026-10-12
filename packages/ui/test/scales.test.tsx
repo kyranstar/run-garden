@@ -181,7 +181,7 @@ describe("a raw length is a lint error waiting to happen", () => {
   it("no JSX inline style leaks a raw length either", () => {
     // 112 inline style objects were the other half of the sprawl.
     const files = ["components.tsx", "shell.tsx", "screens/onboarding.tsx", "screens/settings.tsx",
-      "screens/studio.tsx", "screens/today.tsx", "screens/signals-panel.tsx", "screens/plan.tsx",
+      "screens/today.tsx", "screens/signals-panel.tsx", "screens/plan.tsx",
       "screens/coach-panel.tsx", "screens/garden.tsx", "screens/codex.tsx", "screens/welcome.tsx"];
     const SIZE = /^(margin|padding|gap|rowGap|columnGap|fontSize)/;
     const offenders: string[] = [];
@@ -255,7 +255,7 @@ describe("emphasis comes from one of three ranks", () => {
     // trees into one: the mobile-only "since Aug 12" chip became `.hud-beat-
     // label`, the same label the stage has always used, and the class no
     // longer exists to be checked.)
-    for (const s of [".card-title", ".week-header", ".signal-group-label", ".studio-week-label",
+    for (const s of [".card-title", ".week-header", ".signal-group-label",
       ".race-h", ".plan-week-dow", ".prog-chip-label", ".wkrow-state",
       ".new-ring", ".codex-newring", ".nudge-disc", ".rarity", ".today-tag"]) {
       expect(selector, s).toContain(`${s},`.replace(",", ""));
@@ -388,7 +388,7 @@ describe("one touch floor, enforced", () => {
     // one; the same selectors carry `--tap-fine` outside the media query.
     const coarse = css.slice(css.indexOf("@media (pointer: coarse) {"));
     const coarseBody = coarse.slice(0, coarse.lastIndexOf("}"));
-    for (const sel of [".chip", ".chipbtn", ".day-chip", ".cal-ghost",
+    for (const sel of [".chip", ".chipbtn", ".cal-ghost",
       ".coach-input input", ".act-actions > *", ".act-status-slot"]) {
       expect(coarseBody, sel).toContain(`${sel},`.replace(/,$/, ""));
     }
@@ -410,8 +410,7 @@ describe("one touch floor, enforced", () => {
     expect(rootBlock).toContain("--tap-fine-row: 32px");
     // The fine-pointer branch is each control's PRE-floor size, so a mouse
     // sees exactly what it saw before System 2.
-    for (const sel of [".chip", ".chipbtn", ".cal-ghost", ".day-chip",
-      ".coach-input input", ".studio-revise summary"])
+    for (const sel of [".chip", ".chipbtn", ".cal-ghost", ".coach-input input"])
       expect(rules, sel).toMatch(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^{]*\\{[^}]*var\\(--tap-fine\\)`));
     expect(rules).toContain(".act-status-slot { min-height: var(--tap-fine-row); }");
     // …and a pad is never gated: it costs no layout, so there is nothing to

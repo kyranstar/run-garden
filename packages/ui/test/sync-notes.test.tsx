@@ -34,3 +34,13 @@ describe("SyncNotesStack — kept_local_change", () => {
     expect(html.match(/class="sync-note /g)?.length).toBe(1);
   });
 });
+
+describe("SyncNotesStack — adopted_coros_edit", () => {
+  // A session the retired AI plan generator wrote to the watch, then edited on COROS. The note named "the studio" — that
+  // generator's screen, gone now, and a name the Studio tab carries — so it says who stopped managing it instead.
+  it("says Run Garden stopped managing the session, not a screen that is gone", () => {
+    const html = render([{ ...note("n1", { sessionTitle: "Upper A — wk 2" }), kind: "adopted_coros_edit" }]);
+    expect(html).toContain("“Upper A — wk 2” was edited on COROS — Run Garden stopped managing it");
+    expect(html.toLowerCase()).not.toContain("studio");
+  });
+});

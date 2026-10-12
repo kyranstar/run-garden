@@ -1,8 +1,10 @@
 /**
- * Studio modal (2026-08-11 rework §7): detail mode renders header, prog
- * chips, honest charts, week rows, two-step retire; intake mode renders the
- * interview CTA. Detail arrives via a primed QueryClient cache — the modal's
- * own query then serves synchronously in a static render.
+ * The plan modal (`StudioModal`, 2026-08-11 rework §7): detail mode renders
+ * header, prog chips, honest charts, week rows, two-step retire; intake mode
+ * renders the interview CTA — and neither holds the retired AI plan
+ * generator any more (Stage 2 spec §2). Detail arrives via a primed
+ * QueryClient cache — the modal's own query then serves synchronously in a
+ * static render.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -11,7 +13,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanProgression } from "@rg/api-client";
 import { StudioModal } from "../src/screens/studio-modal.js";
-import { PlannedVsActualBars, prescribedLoad, progressionInUnits, ProgressionStepChart } from "../src/screens/plan-charts.js";
+import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "../src/screens/plan-charts.js";
 
 const noop = () => undefined;
 
@@ -108,6 +110,34 @@ describe("StudioModal — detail mode", () => {
     expect(html).toContain("Start the interview");
     expect(html).not.toContain("studio-modal-weeks");
   });
+
+  /**
+   * The old AI plan generator (also called "Studio") is retired (Stage 2 spec §2): its two entries in this modal go —
+   * "Or build it yourself in the Studio" under the lifting intake, and "Revise this plan (Studio)" on a plan it made —
+   * and the coach's intake and the plan's detail stay.
+   */
+  it("the lifting intake is the coach's interview alone: the old generator's form is gone", () => {
+    const html = renderWithCache(createElement(StudioModal, { ...props, planId: "new-lift" }));
+    expect(html).toContain("Plan lifting with your coach");
+    expect(html).toContain("Start the interview");
+    expect(html).not.toContain("build it yourself");
+    expect(html).not.toContain("<details");
+  });
+
+  it("a plan the old generator made still shows its detail, with nothing to revise it in", () => {
+    const made: CoachPlanDto = { ...liftPlan, id: "sp1", name: "Generated Block", source: "studio" };
+    const html = renderWithCache(createElement(StudioModal, { ...props, planId: "sp1", plans: [made] }), {
+      key: ["plan-detail", "sp1"],
+      data: { ...detail, plan: made },
+    });
+    expect(html).toContain("Generated Block");
+    expect(html).toContain("active · on watch");
+    expect(html).toContain("5 of 16 sessions done");
+    expect(html).toContain("W3");
+    expect(html).toContain("Talk to your coach about this plan");
+    expect(html).not.toContain("Revise this plan");
+    expect(html).not.toContain("<details");
+  });
 });
 
 describe("lift loads in the athlete's weight unit (Audit 2c-A MINOR-5)", () => {
@@ -124,12 +154,6 @@ describe("lift loads in the athlete's weight unit (Audit 2c-A MINOR-5)", () => {
   it("other units are left as they are", () => {
     const sets: PlanProgression = { ...bench, key: "lift:weekly-sets", unit: "sets" };
     expect(progressionInUnits(sets, "mi", "lb")).toBe(sets);
-  });
-
-  it("a prescribed load reads in the athlete's unit; bodyweight stays bodyweight", () => {
-    expect(prescribedLoad({ type: "kg", value: 20 }, "lb")).toBe("44 lb");
-    expect(prescribedLoad({ type: "kg", value: 20 }, "kg")).toBe("20 kg");
-    expect(prescribedLoad({ type: "bodyweight" }, "lb")).toBe("bodyweight");
   });
 });
 

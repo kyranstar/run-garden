@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
-import { SchedulingSection, UnitsSection } from "../src/screens/settings.js";
+import { AiSection, SchedulingSection, UnitsSection } from "../src/screens/settings.js";
 
 function render(prefs: UserPreferences): string {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -50,5 +50,16 @@ describe("race course climb field", () => {
     const km = render({ ...DEFAULT_USER_PREFERENCES, units: "km", raceCourseClimbMetres: 140 });
     expect(km).toContain(">m</b>");
     expect(km).toContain('value="140"');
+  });
+});
+
+describe("the AI card", () => {
+  // The AI plan generator that sat in the Plan screen's plan modal is retired (Stage 2 spec §2); the card no longer
+  // lists it among what is AI-powered.
+  it("names what is AI-powered on request — coach chat and check-ins — and not the retired plan generator", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(AiSection, { prefs: DEFAULT_USER_PREFERENCES })));
+    expect(html).toContain("Coach chat and check-ins are also AI-powered but run only when you ask.");
+    expect(html).not.toContain("plan generation");
   });
 });

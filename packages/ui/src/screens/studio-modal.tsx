@@ -6,14 +6,15 @@ import { ConfirmDialog, formatShortDate, Sheet, Spinner } from "../components.js
 import { startOfIsoWeek } from "@rg/domain";
 import { progressionHeadline } from "./plan-cards.js";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
-import { StudioSection } from "./studio.js";
 
 /**
- * The studio modal (rework spec §7): one room per plan — where you are,
- * where it's taking you (graphed), what each week holds, and every plan
- * action. `new-run` / `new-lift` render intake mode: the coach interviews
- * you (the existing canned-message pipeline), or the lifting Studio's form
- * flow. The page routes it by `?plan=<id>`, so links and back work.
+ * The plan modal (rework spec §7; named for the plan "studio" it was drawn as,
+ * before the Studio tab): one room per plan — where you are, where it's taking
+ * you (graphed), what each week holds, and every plan action. `new-run` /
+ * `new-lift` render intake mode: the coach interviews you (the existing
+ * canned-message pipeline). The page routes it by `?plan=<id>`, so links and
+ * back work. The old AI plan generator's form and revise panel that used to
+ * open in here are retired (Stage 2 spec §2); a plan it made still opens here.
  */
 export function StudioModal({
   planId,
@@ -69,12 +70,6 @@ export function StudioModal({
           >
             Start the interview
           </button>
-          {discipline === "lift" ? (
-            <details className="studio-revise">
-              <summary>Or build it yourself in the Studio</summary>
-              <StudioSection />
-            </details>
-          ) : null}
         </div>
       </Sheet>
     );
@@ -328,13 +323,6 @@ export function StudioModal({
               </div>
             )}
           </>
-        ) : null}
-
-        {(d?.plan ?? plan)?.source === "studio" ? (
-          <details className="studio-revise">
-            <summary>Revise this plan (Studio)</summary>
-            <StudioSection />
-          </details>
         ) : null}
       </div>
       <ConfirmDialog

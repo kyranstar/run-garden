@@ -1,5 +1,5 @@
 import type { PlanProgression } from "@rg/api-client";
-import { formatWeightIn, weightInUnit, type WeightUnit } from "@rg/domain";
+import { weightInUnit, type WeightUnit } from "@rg/domain";
 import { useRef } from "react";
 import { ChartFrame } from "../charts.js";
 import {
@@ -48,14 +48,9 @@ export function progressionInUnits(p: PlanProgression, units: "km" | "mi", weigh
   };
 }
 
-/** A plan exercise's prescribed load as the athlete reads it: kilograms in their weight unit; bodyweight as it is. */
-export function prescribedLoad(weight: { type: "kg"; value: number } | { type: "bodyweight" }, unit: WeightUnit): string {
-  return weight.type === "kg" ? formatWeightIn({ v: weight.value, u: "kg" }, unit) : "bodyweight";
-}
-
 
 /**
- * Progression charts for the studio modal (rework spec §7). Honest by
+ * Progression charts for the plan modal (rework spec §7). Honest by
  * construction: lift series are the PRESCRIPTION drawn as steps with
  * completed sessions dotted on it (COROS sends no actual bar weights);
  * run series are planned values, with actual minutes overlaid when known.
