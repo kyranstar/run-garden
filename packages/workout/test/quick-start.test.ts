@@ -5,6 +5,7 @@
  * jumps, and varies with the seed and what was done recently. The profile is the library's own; nothing is personal.
  */
 import { describe, expect, it } from "vitest";
+import type { WorkoutDoc } from "@rg/domain";
 import { EQUIPMENT_IDS, EXERCISES, MUSCLE_REGION, TMJ, hasEquipment, isPlyometric, type CheckReading, type ExerciseRecord, type MuscleId } from "@rg/exercise-library";
 import {
   QUICK_START_MINUTES,
@@ -33,7 +34,11 @@ const DAYS: Record<string, DayContext | null> = {
 const CTX: SuggestCtx = { activeProfiles: [TMJ], day: DAYS.calm!, focusRefs: ["hip-flexors", "thoracic"], recentIds: [], pinned: [], excluded: [], equipment: EQUIPMENT_IDS };
 const KINDS: readonly QuickStartKind[] = ["condition_care", "desk_reset", "hip_opener"];
 const SEEDS = Array.from({ length: 20 }, (_, i) => i + 1);
-const make = (kind: QuickStartKind, seed: number, o: Partial<SuggestCtx> = {}) => quickStartDoc(kind, EXERCISES, { ...CTX, ...o, seed });
+const make = (kind: QuickStartKind, seed: number, o: Partial<SuggestCtx> = {}): WorkoutDoc => {
+  const r = quickStartDoc(kind, EXERCISES, { ...CTX, ...o, seed });
+  if (!("doc" in r)) throw new Error(r.reason);
+  return r.doc;
+};
 const itemIds = (doc: ReturnType<typeof make>): string[] => doc.parts.flatMap((p) => p.items.flatMap((i) => (i.kind === "exercise" ? [i.libraryId] : [])));
 
 describe("quick starts validate clean and land within two minutes of their length", () => {
@@ -91,6 +96,102 @@ describe("what each one holds", () => {
       }
     }
     expect(focusOnly).toBeGreaterThan(0);
+  });
+
+  it("desk reset: done standing or seated, at the desk — another position only when those fall short of the length", () => {
+    const atDesk = (id: string) => rec(id).position === "standing" || rec(id).position === "seated";
+    for (const day of Object.values(DAYS)) for (const seed of SEEDS) for (const id of itemIds(make("desk_reset", seed, { day }))) expect(atDesk(id), id).toBe(true);
+    // Short of desk moves: all but two set aside, it reaches its length with moves done elsewhere.
+    const deskMoves = EXERCISES.filter((e) => (e.tags.includes("desk-relief") || e.tags.includes("posture")) && atDesk(e.id)).map((e) => e.id);
+    const keep = new Set(["chinTuck", "doorwayPecStretch"]);
+    const short = make("desk_reset", 1, { excluded: deskMoves.filter((id) => !keep.has(id)) });
+    expect(itemIds(short).filter(atDesk).sort()).toEqual([...keep].sort());
+    expect(itemIds(short).some((id) => !atDesk(id))).toBe(true);
+    expect(Math.abs(deriveDoc(short, EXERCISES).estimatedMinutes - QUICK_START_MINUTES.desk_reset)).toBeLessThanOrEqual(2);
+  });
+
+  it("desk reset: each move says what it loosens, wakes, opens or eases — not one stock line", () => {
+    for (const seed of SEEDS) {
+      const doc = make("desk_reset", seed);
+      const whys = doc.parts.flatMap((p) => p.items.flatMap((i) => (i.kind === "exercise" ? [i.why ?? ""] : [])));
+      for (const w of whys) expect(w).toMatch(/^(loosens|wakes|opens|eases) the [a-z ]+$/);
+      expect(new Set(whys).size, `seed ${seed}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("hip opener: hip-opening moves lead; moves only for a focus area are at most a third, whatever the focus", () => {
+    for (const focusRefs of [["jaw"], ["neck"], ["thoracic"], ["hip-flexors", "thoracic"]]) {
+      for (const seed of SEEDS) {
+        const ids = itemIds(make("hip_opener", seed, { focusRefs }));
+        const opening = ids.filter((id) => rec(id).tags.includes("hip-opening")).length;
+        const focusOnly = ids.length - opening;
+        expect(opening, `${focusRefs} seed ${seed}`).toBeGreaterThanOrEqual(focusOnly);
+        expect(focusOnly * 3, `${focusRefs} seed ${seed}`).toBeLessThanOrEqual(ids.length);
+      }
+    }
+  });
+
+  it("a passive move only ever cools down: never in a warm-up or an activation part", () => {
+    for (const kind of ["desk_reset", "hip_opener"] as const) {
+      for (const day of [DAYS.calm, DAYS.flare]) {
+        for (const seed of SEEDS) {
+          for (const p of make(kind, seed, { day }).parts) {
+            if (p.purpose !== "warmup" && p.purpose !== "activation") continue;
+            for (const i of p.items) if (i.kind === "exercise") expect(rec(i.libraryId).contraction.every((c) => c === "passive"), `${kind} ${i.libraryId}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it("hip opener: a hip-opening move outweighs a focus-area move — it leads the cool-down whatever the focus", () => {
+    for (const focusRefs of [["jaw"], ["neck"], ["thoracic"], ["upper-back"]]) {
+      const led = SEEDS.filter((seed) => {
+        const cool = make("hip_opener", seed, { focusRefs }).parts.find((p) => p.purpose === "cooldown")!;
+        const first = cool.items[0]!;
+        return first.kind === "exercise" && rec(first.libraryId).tags.includes("hip-opening");
+      }).length;
+      expect(led, String(focusRefs)).toBeGreaterThanOrEqual(18);
+    }
+  });
+
+  it("easier first: the hard couch stretch mostly gives way to the low lunges of its family", () => {
+    const docs = SEEDS.map((seed) => itemIds(make("hip_opener", seed, { focusRefs: [] })));
+    expect(docs.filter((ids) => ids.includes("couchStretch")).length).toBeLessThanOrEqual(4);
+    expect(docs.filter((ids) => ids.includes("lowLunge") || ids.includes("lowLungeBlock")).length).toBeGreaterThanOrEqual(15);
+  });
+
+  it("a move the day would warn about is never chosen, even when little else is left", () => {
+    // A flare day is a recovery day: the couch stretch is harder than recovery takes, so only the figure-4 stays.
+    const keep = new Set(["couchStretch", "figureFour"]);
+    const doc = make("hip_opener", 1, { day: DAYS.flare, focusRefs: [], excluded: EXERCISES.map((e) => e.id).filter((id) => !keep.has(id)) });
+    expect(itemIds(doc)).toEqual(["figureFour"]);
+    expect(validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: [TMJ], day: DAYS.flare!, equipment: EQUIPMENT_IDS })).toEqual([]);
+  });
+
+  it("hip opener: each reason uses its part's verb", () => {
+    const VERB: Record<string, string> = { warmup: "warms up", activation: "wakes", cooldown: "eases" };
+    for (const seed of SEEDS) {
+      for (const p of make("hip_opener", seed).parts) {
+        for (const i of p.items) if (i.kind === "exercise") expect(i.why!.startsWith(`${VERB[p.purpose]} `), `${p.purpose}: ${i.why}`).toBe(true);
+      }
+    }
+  });
+
+  it("on a flare day relaxation and unresisted moves lead; easier moves first", () => {
+    const relaxed = (id: string) => {
+      const r = rec(id);
+      return r.contraction.every((c) => c === "passive") || r.patterns.includes("breathe") || r.purposes.includes("recovery");
+    };
+    for (const kind of ["desk_reset", "hip_opener"] as const) {
+      const count = (day: DayContext) => SEEDS.flatMap((seed) => itemIds(make(kind, seed, { day }))).filter(relaxed).length;
+      expect(count(DAYS.flare!), kind).toBeGreaterThan(count(DAYS.calm!));
+    }
+    // Easier first: the hip opener's moves are easier, on the whole, than the moves it could have chosen.
+    const pool = EXERCISES.filter((e) => e.tags.includes("hip-opening") && !isPlyometric(e));
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const chosen = SEEDS.flatMap((seed) => itemIds(make("hip_opener", seed, { focusRefs: [] }))).map((id) => rec(id).difficulty);
+    expect(mean(chosen)).toBeLessThan(mean(pool.map((e) => e.difficulty)));
   });
 
   it("maintain on a calm day; recovery when the day asks for it; condition care always recovery", () => {
@@ -161,6 +262,8 @@ describe("varied, and respectful of the athlete's lists", () => {
   it("condition care is offered only while a profile with care is active", () => {
     expect(quickStartKinds({ activeProfiles: [TMJ] })).toEqual(["condition_care", "desk_reset", "hip_opener"]);
     expect(quickStartKinds({ activeProfiles: [] })).toEqual(["desk_reset", "hip_opener"]);
-    expect(() => make("condition_care", 1, { activeProfiles: [] })).toThrow();
+    expect(quickStartDoc("condition_care", EXERCISES, { ...CTX, activeProfiles: [], seed: 1 })).toEqual({ reason: "Condition care needs a condition profile with care switched on." });
+    // Nothing fits at all: a reason, never a throw.
+    expect(quickStartDoc("desk_reset", EXERCISES, { ...CTX, excluded: EXERCISES.map((e) => e.id), seed: 1 })).toEqual({ reason: "No move in the library fits this quick start here today." });
   });
 });

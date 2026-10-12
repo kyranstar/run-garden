@@ -30,6 +30,8 @@ export interface SearchContext {
   fit?: (ex: ExerciseRecord) => number;
   /** An extra yes/no the caller owns (a place's gear, "safe on a flare day"). */
   accepts?: (ex: ExerciseRecord) => boolean;
+  /** The athlete's own lean (their rating, a pin) for tie-breaks after the fit: higher first. Default: all equal. */
+  boost?: (id: string) => number;
 }
 
 /** Whether a record passes every filter given (the text query is separate). */
@@ -52,6 +54,25 @@ export function matchesFilters(ex: ExerciseRecord, f: LibraryFilters): boolean {
 /** Words of five or more letters forgive one typo (Stage 2 spec §4). */
 const TYPO_MIN_LETTERS = 5;
 
+/** Everyday words for the vocabulary's: a query word standing for another. */
+const ALIASES: Readonly<Record<string, string>> = {
+  calf: "calves", ab: "core", abs: "core", ham: "hamstrings", hammies: "hamstrings", butt: "glutes", bum: "glutes",
+  delts: "deltoids", shin: "tibialis", tspine: "thoracic",
+};
+
+/**
+ * Where a word of the record says something, as a rank: lower is stronger. The class (tens) says which field: 0 the
+ * name, a primary muscle or a region; 1 a tag, purpose, contraction, the gear, the card line or the id; 2 a secondary
+ * muscle; 3 a typo only. The units say how central it is: a primary muscle's or a region's place in its list.
+ */
+const NAME = 0;
+const STRONG = 0;
+const CHIP = 10;
+const SECONDARY = 20;
+const TYPO = 30;
+/** A list position past this counts as this. */
+const MAX_EMPHASIS = 9;
+
 /** Lowercase words: camelCase ids split ("gobletSquat" → goblet, squat), anything not a letter or digit separates. */
 function wordsOf(s: string): string[] {
   return s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -73,63 +94,114 @@ function withinOneEdit(a: string, b: string): boolean {
   return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
 }
 
-function nearAny(w: string, words: ReadonlySet<string>): boolean {
-  for (const x of words) if (withinOneEdit(w, x)) return true;
+/**
+ * Whether `q` appears in `text` at the start of a word ("arm" in "one arm", never in "warm"); `whole` also wants it to
+ * end a word, a plural forgiven ("arm" in "both arms", not in "armpit").
+ */
+function atWordStart(text: string, q: string, whole = false): boolean {
+  for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + 1)) {
+    if (i > 0 && /[a-z0-9]/.test(text[i - 1]!)) continue;
+    if (!whole || /^(e?s)?(?![a-z0-9])/.test(text.slice(i + q.length))) return true;
+  }
   return false;
 }
 
-/** Everything a word of the query may match in a record, beyond its name and card line: what the record's chips say. */
-interface Haystack {
-  text: string;
-  words: ReadonlySet<string>;
-}
-const haystacks = new WeakMap<ExerciseRecord, Haystack>();
-function haystackOf(ex: ExerciseRecord): Haystack {
-  let h = haystacks.get(ex);
-  if (h) return h;
-  const muscles = [...ex.muscles.primary, ...ex.muscles.secondary];
+/** Every word a record says anything with, at its strongest rank. Cached per record. */
+const haystacks = new WeakMap<ExerciseRecord, ReadonlyMap<string, number>>();
+function wordsOfRecord(ex: ExerciseRecord): ReadonlyMap<string, number> {
+  const cached = haystacks.get(ex);
+  if (cached) return cached;
+  const words = new Map<string, number>();
+  const put = (texts: readonly string[], rank: number): void => {
+    for (const w of texts.flatMap(wordsOf)) words.set(w, Math.min(words.get(w) ?? Infinity, rank));
+  };
+  const listed = (ids: readonly string[], base: number): void =>
+    ids.forEach((id, i) => put([id, label(id)], base + Math.min(i, MAX_EMPHASIS)));
+  put([ex.name], NAME);
+  listed(ex.muscles.primary, STRONG);
+  listed(ex.regions, STRONG);
   const gear = [...ex.equipment.all, ...ex.equipment.oneOf];
-  const parts = [
-    ex.name, ex.id, ex.family, ex.text.summary, ...ex.tags, ...ex.tags.map(label),
-    ...ex.purposes, ...ex.purposes.map(label), ...ex.contraction,
-    ...muscles, ...muscles.map(label), ...ex.regions, ...ex.regions.map(label),
-    ...gear, ...gear.map(g => EQUIPMENT[g]),
-  ];
-  h = { text: parts.join(" | ").toLowerCase(), words: new Set(parts.flatMap(wordsOf)) };
-  haystacks.set(ex, h);
-  return h;
+  put([ex.text.summary, ex.id, ex.family, ...ex.contraction, ...gear, ...gear.map(g => EQUIPMENT[g])], CHIP);
+  for (const ids of [ex.tags, ex.purposes]) put([...ids, ...ids.map(label)], CHIP);
+  listed(ex.muscles.secondary, SECONDARY);
+  haystacks.set(ex, words);
+  return words;
+}
+
+/** A query word and its singular — or, for an everyday word, the vocabulary word it stands for instead. */
+function variants(w: string): string[] {
+  if (ALIASES[w]) return [ALIASES[w]];
+  const out = [w];
+  if (w.length > 3 && w.endsWith("es")) out.push(w.slice(0, -2));
+  if (w.length > 3 && w.endsWith("s")) out.push(w.slice(0, -1));
+  return out;
+}
+
+/** The strongest rank at which the record says this query word, or null. */
+function rankOfWord(words: ReadonlyMap<string, number>, w: string): number | null {
+  let best: number | null = null;
+  const vs = variants(w);
+  for (const [x, rank] of words) if (vs.some(v => x.startsWith(v)) && (best === null || rank < best)) best = rank;
+  if (best !== null) return best;
+  if (w.length < TYPO_MIN_LETTERS) return null;
+  for (const x of words.keys()) if (vs.some(v => withinOneEdit(v, x))) return TYPO;
+  return null;
 }
 
 /**
- * 0 exact name, 1 name prefix, 2 name/summary/tag/id/family contains the query, 3 every word of the query found among
- * those and the record's purposes, contraction, muscles, regions and gear (ids and labels; any order), a word of five
- * or more letters forgiving one typo; null no match. An empty query matches all (3).
+ * How well the record says every word of the query (the any-field tier): the weakest word decides; null when a word
+ * is missing. Lower is better: see the ranks above.
  */
-export function textTier(ex: ExerciseRecord, query: string): 0 | 1 | 2 | 3 | null {
+export function wordRank(ex: ExerciseRecord, query: string): number | null {
+  const qs = wordsOf(query);
+  if (qs.length === 0) return null;
+  const words = wordsOfRecord(ex);
+  let worst = 0;
+  for (const w of qs) {
+    const r = rankOfWord(words, w);
+    if (r === null) return null;
+    worst = Math.max(worst, r);
+  }
+  return worst;
+}
+
+export type TextTier = 0 | 1 | 2 | 3 | 4 | 5;
+
+/**
+ * How the record meets the query (Stage 2 spec §4), best first: 0 the name is the query; 1 the name starts with it;
+ * 2 a word of the name starts with it; 3 the name contains it; 4 the card line or a tag says it as whole words (a
+ * plural forgiven); 5 every word of the query starts a word the record says anywhere — name, card line, id, tags, purposes,
+ * contraction, muscles, regions, gear (ids and labels), in any order, plurals and everyday words ("calf", "abs")
+ * forgiven, a word of five or more letters forgiving one typo (ranked inside the tier by `wordRank`); null no match.
+ * An empty query matches all (5).
+ */
+export function textTier(ex: ExerciseRecord, query: string): TextTier | null {
   const q = query.trim().toLowerCase();
-  if (q === "") return 3;
+  if (q === "") return 5;
   const name = ex.name.toLowerCase();
   if (name === q) return 0;
   if (name.startsWith(q)) return 1;
-  if ([name, ex.id, ex.family, ex.text.summary, ...ex.tags].some(s => s.toLowerCase().includes(q))) return 2;
-  const words = wordsOf(q);
-  if (words.length === 0) return null;
-  const h = haystackOf(ex);
-  return words.every(w => h.text.includes(w) || (w.length >= TYPO_MIN_LETTERS && nearAny(w, h.words))) ? 3 : null;
+  if (atWordStart(name, q)) return 2;
+  if (name.includes(q)) return 3;
+  if (atWordStart(ex.text.summary.toLowerCase(), q, true) || ex.tags.some(t => atWordStart(t, q, true) || atWordStart(label(t).toLowerCase(), q, true))) return 4;
+  return wordRank(ex, q) === null ? null : 5;
 }
 
 /**
- * The records that match the query and filters, best first: exact name, name prefix, contains (name, summary, tags),
- * then every word found (chips' labels too; one typo forgiven in a word of five or more letters); ties by condition
- * fit, then name (then id).
+ * The records that match the query and filters, best first: by `textTier`, inside the any-field tier by `wordRank`
+ * (a primary muscle or region, then a tag, purpose or gear, then a secondary muscle, then a typo); ties by condition
+ * fit for today, then the athlete's own lean (`boost`), then name (then id).
  */
 export function searchLibrary(records: readonly ExerciseRecord[], query: string, filters: LibraryFilters = {}, ctx: SearchContext = {}): ExerciseRecord[] {
-  const scored: Array<{ ex: ExerciseRecord; tier: number; fit: number }> = [];
+  const scored: Array<{ ex: ExerciseRecord; tier: number; rank: number; fit: number; boost: number }> = [];
+  const q = query.trim();
   for (const ex of records) {
-    const tier = textTier(ex, query);
+    const tier = textTier(ex, q);
     if (tier === null || !matchesFilters(ex, filters) || (ctx.accepts && !ctx.accepts(ex))) continue;
-    scored.push({ ex, tier, fit: ctx.fit ? ctx.fit(ex) : 0 });
+    const rank = tier === 5 && q !== "" ? wordRank(ex, q)! : 0;
+    scored.push({ ex, tier, rank, fit: ctx.fit ? ctx.fit(ex) : 0, boost: ctx.boost ? ctx.boost(ex.id) : 0 });
   }
-  scored.sort((a, b) => a.tier - b.tier || a.fit - b.fit || byName.compare(a.ex.name, b.ex.name) || (a.ex.id < b.ex.id ? -1 : a.ex.id > b.ex.id ? 1 : 0));
+  scored.sort((a, b) =>
+    a.tier - b.tier || a.rank - b.rank || a.fit - b.fit || b.boost - a.boost || byName.compare(a.ex.name, b.ex.name) || (a.ex.id < b.ex.id ? -1 : a.ex.id > b.ex.id ? 1 : 0));
   return scored.map(s => s.ex);
 }
