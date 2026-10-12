@@ -91,10 +91,18 @@ function sseText(events: Array<Record<string, unknown>>): string {
 
 /** A body that arrives 7 bytes at a time, so lines and JSON split across reads. The request's abort errors it, as a
  * real connection would. */
-function chunked(text: string, hang = false, signal?: AbortSignal | null): ReadableStream<Uint8Array> {
+function chunked(
+  text: string,
+  hang = false,
+  signal?: AbortSignal | null,
+  onCancel?: () => void,
+): ReadableStream<Uint8Array> {
   const bytes = new TextEncoder().encode(text);
   let at = 0;
   return new ReadableStream<Uint8Array>({
+    cancel() {
+      onCancel?.();
+    },
     start(controller) {
       signal?.addEventListener("abort", () => {
         try {
@@ -116,8 +124,16 @@ function chunked(text: string, hang = false, signal?: AbortSignal | null): Reada
   });
 }
 
-function scriptedFetch(responses: Scripted[]): { fetchImpl: typeof fetch; calls: Call[] } {
+/** A scripted body's connection: let go when its stream is cancelled or its request aborted. */
+interface Body {
+  cancelled: boolean;
+  signal: AbortSignal | null | undefined;
+}
+const letGo = (b: Body | undefined): boolean => !!b && (b.cancelled || !!b.signal?.aborted);
+
+function scriptedFetch(responses: Scripted[]): { fetchImpl: typeof fetch; calls: Call[]; bodies: Body[] } {
   const calls: Call[] = [];
+  const bodies: Body[] = [];
   let i = 0;
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers: Record<string, string> = {};
@@ -140,13 +156,18 @@ function scriptedFetch(responses: Scripted[]): { fetchImpl: typeof fetch; calls:
       });
     }
     if (spec.hangJson !== undefined) {
-      return new Response(chunked(spec.hangJson, true, init?.signal), {
+      const tracked: Body = { cancelled: false, signal: init?.signal };
+      bodies.push(tracked);
+      return new Response(chunked(spec.hangJson, true, init?.signal, () => (tracked.cancelled = true)), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
     }
     if (spec.sse || spec.hangAfter) {
-      return new Response(chunked(sseText(spec.sse ?? spec.hangAfter ?? []), !!spec.hangAfter), {
+      const tracked: Body = { cancelled: false, signal: init?.signal };
+      bodies.push(tracked);
+      const text = sseText(spec.sse ?? spec.hangAfter ?? []);
+      return new Response(chunked(text, !!spec.hangAfter, undefined, () => (tracked.cancelled = true)), {
         status: spec.status ?? 200,
         headers: { "content-type": "text/event-stream" },
       });
@@ -159,7 +180,7 @@ function scriptedFetch(responses: Scripted[]): { fetchImpl: typeof fetch; calls:
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
-  return { fetchImpl, calls };
+  return { fetchImpl, calls, bodies };
 }
 
 const failingFetch = (async () => {
@@ -549,10 +570,11 @@ describe("callMessages — the streamed answer", () => {
 
   it("a stream that goes silent is cut loose and retryable", async () => {
     vi.useFakeTimers();
-    const { fetchImpl } = scriptedFetch([{ hangAfter: STREAM.slice(0, 3) }]);
+    const { fetchImpl, bodies } = scriptedFetch([{ hangAfter: STREAM.slice(0, 3) }]);
     const pending = callMessages(makeEnv(), request(), fetchImpl);
     await vi.advanceTimersByTimeAsync(151_000);
     expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+    expect(letGo(bodies[0])).toBe(true); // the connection is let go, not left open until the invocation ends
   });
 
   it("a stream that keeps pinging past the 10-minute deadline is cut at it, and says timeout, not error", async () => {
@@ -568,10 +590,11 @@ describe("callMessages — the streamed answer", () => {
 describe("callMessages — a buffered answer that stalls", () => {
   it("a JSON body that stops arriving is cut loose like a silent stream, and retryable", async () => {
     vi.useFakeTimers();
-    const { fetchImpl } = scriptedFetch([{ hangJson: '{"id":"msg_1","type":"message","content":[{"type":"te' }]);
+    const { fetchImpl, bodies } = scriptedFetch([{ hangJson: '{"id":"msg_1","type":"message","content":[{"type":"te' }]);
     const pending = callMessages(makeEnv(), request(), fetchImpl);
     await vi.advanceTimersByTimeAsync(151_000);
     expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+    expect(letGo(bodies[0])).toBe(true); // cancelled or aborted, not left open until the invocation ends
   });
 
   it("a buffered answer the 10-minute deadline cuts off says timeout, not a broken answer", async () => {

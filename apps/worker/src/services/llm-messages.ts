@@ -344,21 +344,33 @@ function readWait(startedAt: number): number {
   return Math.max(1000, Math.min(STREAM_STALL_MS, TIMEOUT_MS - (Date.now() - startedAt)));
 }
 
-/** A buffered answer. Its body read gets the same stall guard as a stream's reads: the abort alone does not cut a
- * body read loose in workerd. */
+/** A buffered answer. Its body is read through a reader, read by read, with the same stall guard as a stream's
+ * reads (the abort alone does not cut a body read loose in workerd), so a stalled body can be cancelled:
+ * `response.text()` would lock the body and leave nothing to cancel, keeping the connection open until the
+ * invocation ends. */
 async function readJson(response: Response, startedAt: number, deadline: AbortSignal): Promise<Answer | MessagesFailure> {
-  const text = await withTimeout(
-    response.text().catch(() => null),
-    readWait(startedAt),
-  );
-  if (text === "timed_out") {
-    await response.body?.cancel().catch(() => undefined);
-    return retryable("llm_timeout");
+  if (!response.body) return retryable("gateway_bad_response");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (;;) {
+      const next = await withTimeout(reader.read(), readWait(startedAt));
+      if (next === "timed_out") {
+        await reader.cancel().catch(() => undefined);
+        return retryable("llm_timeout");
+      }
+      if (next.done) break;
+      text += decoder.decode(next.value, { stream: true });
+    }
+    text += decoder.decode();
+  } catch {
+    // The whole call's deadline aborting the read is a timeout; anything else is the connection failing.
+    return retryable(deadline.aborted ? "llm_timeout" : "llm_error");
   }
-  if (text === null && deadline.aborted) return retryable("llm_timeout");
   let parsed: RawMessage | null;
   try {
-    parsed = text === null ? null : (JSON.parse(text) as RawMessage | null);
+    parsed = JSON.parse(text) as RawMessage | null;
   } catch {
     parsed = null;
   }
