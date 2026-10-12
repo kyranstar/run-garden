@@ -497,6 +497,95 @@ describe("keeping the session on the device", () => {
   });
 });
 
+/** The footer's actions in order: each one's words, and whether it is the primary one. Every one is a 44px `.btn`. */
+function actions(): Array<[string, boolean]> {
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>(".player-actions button")];
+  for (const b of buttons) expect(b.classList.contains("btn")).toBe(true);
+  return buttons.map((b) => [b.textContent!.trim(), b.classList.contains("btn-primary")]);
+}
+const hint = () => document.querySelector(".player-kbd")!.textContent!.replace(/\s+/g, " ");
+
+describe("a paused session (Stage 2 minors)", () => {
+  it("every step offers Resume while paused — a set and a rest too — as its primary action, and says Paused; Resume carries the clocks on", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await at(T0 + 13 * S);
+    await click("Pause");
+    // Skip from a paused hold: the next hold arrives paused, then the set.
+    await click("Skip");
+    await until(() => text().includes("2 of 9"), "the right side");
+    expect(actions()).toEqual([["Resume", true], ["Skip", false]]);
+    await click("Skip");
+    await until(() => text().includes("3 of 9"), "the set");
+    expect(text()).toContain("Paused");
+    expect(actions()).toEqual([["Resume", true], ["Done", false]]);
+    expect(hint()).toContain("Space Resume");
+    // Done still logs the set while paused; the rest after it arrives paused, Resume first.
+    await click("Done");
+    expect(actions()).toEqual([["Confirm · rest 75 s", true]]);
+    await click(/^Confirm/);
+    await until(() => text().includes("4 of 9"), "the rest");
+    expect(text()).toContain("Paused");
+    expect(actions()).toEqual([["Resume", true], ["+15 s", false], ["Skip", false]]);
+    expect(hint()).toContain("Space Resume");
+    await at(T0 + 60 * S);
+    expect(text()).toContain("1:15");
+    // Space is the primary action: Resume, never Next.
+    await press(" ");
+    expect(text()).toContain("4 of 9");
+    expect(text()).not.toContain("Paused");
+    expect(actions()).toEqual([["+15 s", false], ["Skip", false]]);
+    await at(T0 + 70 * S);
+    expect(text()).toContain("1:05");
+    // The session's running time carries on with it: 13 s before the pause, running again from the Resume.
+    await until(async () => (await readLive(db!, SLOT))?.paused === false, "the Resume kept at once");
+    const live = await readLive<{ session: { anchor: number | null; bankedMs: number } }>(db!, SLOT);
+    expect(live?.recorder.session).toEqual({ anchor: T0 + 60 * S, bankedMs: 13 * S });
+  });
+
+  it("a hold run out with auto-advance off, left paused: Resume, then its Next", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Settings");
+    await click("Move on when a timer ends");
+    await press("Escape");
+    await at(T0 + 60 * S);
+    expect(actions()).toEqual([["Next", true]]);
+    await click("Leave the session");
+    await until(() => !!control(/^Leave$/), "the question");
+    await click(/^Leave$/);
+    await until(() => text().includes("today screen"), "Today");
+    act(() => root!.unmount());
+    mount();
+    await until(() => text().includes("1 of 9"), "the same hold");
+    expect(text()).toContain("Paused");
+    expect(actions()).toEqual([["Resume", true], ["Next", false]]);
+    await click("Next");
+    await until(() => text().includes("2 of 9"), "the next side, still paused");
+    expect(actions()).toEqual([["Resume", true], ["Skip", false]]);
+  });
+
+  it("a set left paused (✕ → Leave) opens again with Resume", async () => {
+    await storedStart();
+    mount();
+    await toFirstSet();
+    await click("Leave the session");
+    await until(() => !!control(/^Leave$/), "the question");
+    await click(/^Leave$/);
+    await until(() => text().includes("today screen"), "Today");
+    act(() => root!.unmount());
+    mount();
+    await until(() => text().includes("3 of 9"), "the same set");
+    expect(text()).toContain("Paused");
+    expect(actions()).toEqual([["Resume", true], ["Done", false]]);
+    await click("Resume");
+    expect(text()).not.toContain("Paused");
+    expect(actions()).toEqual([["Done", true]]);
+  });
+});
+
 describe("leave and come back", () => {
   it("✕ asks; Leave keeps the session; opening it again resumes on the same step with the timer where it was", async () => {
     await storedStart();

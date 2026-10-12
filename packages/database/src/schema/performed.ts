@@ -73,9 +73,11 @@ export const performedSessions = sqliteTable(
      * Every move the session reached, logged or not (the engine's `done`):
      * played-only moves (mobility, breathing) have no set rows, and the
      * engine's repetition penalty, first-done dates and coverage read them.
+     * An app save also names each move's build slot (`slotKey`, absent on
+     * older rows): key results judge a set by its slot's prescription.
      */
     movesDone: text("moves_done", { mode: "json" })
-      .$type<Array<{ exerciseId: string; seconds: number }>>()
+      .$type<Array<{ exerciseId: string; seconds: number; slotKey?: string }>>()
       .notNull()
       .default([]),
     note: text("note"),

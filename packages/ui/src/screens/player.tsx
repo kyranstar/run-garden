@@ -12,7 +12,7 @@
  * left). Timers read the wall clock (`player/timer.ts`); chimes are placed on the audio clock from it
  * (`player/audio.ts`); the screen is kept on while playing (`player/wake.ts`).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, type MeResponse, type ReviewBasisDto, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
@@ -56,6 +56,7 @@ import {
   swapSlot,
   toLiveSession,
   type LogFor,
+  type LogTarget,
   type PlayerSource,
   type PlayerState,
 } from "../player/run.js";
@@ -462,11 +463,19 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const primary = () => {
     if (!view || !step) return;
     if (logOpen) return confirm();
+    // Paused, every step's primary action is Resume: a set or a rest too, never only a hold.
+    if (state.paused) return act(resume);
     if (step.kind === "set") return openLog();
     if (view.phase === "over") return act(next);
     if (step.kind === "rest") return act(next);
     if (toMax && view.phase === "hold") return act(doneHold);
-    return act(state.paused ? resume : pause);
+    return act(pause);
+  };
+  /** Done, paused or not: a set's log card, or a hold to max ended at the time held. */
+  const done = () => {
+    if (!view || !step) return;
+    if (step.kind === "set") return openLog();
+    if (toMax && view.phase === "hold") return act(doneHold);
   };
   const run = (c: PlayerCommand): boolean => {
     switch (c) {
@@ -678,6 +687,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
                   flags={flags}
                   location={src.view.location}
                   unit={unit}
+                  // In a rest the card edits a set already played: it says which. A set's own sits under its name.
+                  titleFrom={step?.kind === "rest" ? src.build.exercises : null}
                 />
               ) : null
             }
@@ -693,7 +704,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             phase={view.phase}
             toMax={toMax}
             logOpen={logOpen}
-            onPrimary={primary}
+            onDone={done}
             onConfirm={confirm}
             onSkip={() => {
               setLogOpen(false);
@@ -885,9 +896,20 @@ function timeLeft(state: PlayerState, now: number): number {
 function primaryWord(step: Step | null, phase: string | null, logOpen: boolean, paused: boolean, toMax: boolean): string {
   if (!step) return "";
   if (logOpen) return "Confirm";
+  if (paused) return "Resume";
   if (step.kind === "set" || (toMax && phase === "hold")) return "Done";
   if (phase === "over" || step.kind === "rest") return "Next";
-  return paused ? "Resume" : "Pause";
+  return "Pause";
+}
+
+/**
+ * The Edit card's title in a rest: the move by the library's name and its set — "Wall sit · set 1" — and, for a hold
+ * played a side at a time, the side it holds ("right side") or "both sides".
+ */
+function setTitle(name: string, t: Pick<LogTarget, "setIndex" | "sides">): string {
+  const held = (["left", "right"] as const).filter((k) => t.sides?.[k] !== undefined);
+  const sides = held.length === 2 ? "both sides" : held.length === 1 ? `${held[0]} side` : null;
+  return [name, `set ${t.setIndex + 1}`, sides].filter(Boolean).join(" · ");
 }
 
 const sideWord = (side: Step["side"]) => (side ? `${side} side` : null);
@@ -1032,6 +1054,7 @@ function StepBody({
               </span>
             </>
           ))}
+        {state.paused ? <span className="player-meta">Paused</span> : null}
         {following ? <span className="player-next">{following}</span> : null}
       </>
     );
@@ -1072,7 +1095,7 @@ function Actions({
   phase,
   toMax,
   logOpen,
-  onPrimary,
+  onDone,
   onConfirm,
   onSkip,
   onAddRest,
@@ -1083,67 +1106,84 @@ function Actions({
   phase: string;
   toMax: boolean;
   logOpen: boolean;
-  onPrimary: () => void;
+  onDone: () => void;
   onConfirm: () => void;
   onSkip: () => void;
   onAddRest: () => void;
   onPause: () => void;
 }) {
-  if (step.kind === "set") {
-    if (logOpen) {
-      const rest = state.live.steps[state.index + 1];
-      const label = rest?.kind === "rest" ? `Confirm · rest ${rest.seconds} s` : "Confirm";
-      return (
-        <button type="button" className="btn btn-primary player-primary" onClick={onConfirm}>
-          {label}
-        </button>
-      );
-    }
+  if (step.kind === "set" && logOpen) {
+    const rest = state.live.steps[state.index + 1];
+    const label = rest?.kind === "rest" ? `Confirm · rest ${rest.seconds} s` : "Confirm";
     return (
-      <button type="button" className="btn btn-primary player-primary" onClick={onPrimary}>
-        Done
+      <button type="button" className="btn btn-primary player-primary" onClick={onConfirm}>
+        {label}
       </button>
     );
   }
   if (step.kind === "rest" && logOpen) {
-    // The log card opened from the rest (Edit, after a hold to max) — even once the rest has run out: Confirm.
+    // The log card opened from the rest (Edit, after a hold to max) — even once the rest has run out: Confirm alone.
+    // The card holds the clocks it opened on; Resume is back once it closes.
     return (
       <button type="button" className="btn btn-primary player-primary" onClick={onConfirm}>
         Confirm
       </button>
     );
   }
-  if (phase === "over") {
-    return (
-      <button type="button" className="btn btn-primary player-primary" onClick={onSkip}>
-        Next
+  const paused = state.paused;
+  // Paused, every step leads with Resume, the primary action (where a hold's Pause sits); the step's own actions keep
+  // their order after it, and a Done or Next that was primary steps down while it is there.
+  const resumeButton = (
+    <button type="button" className="btn btn-primary" onClick={onPause}>
+      Resume
+    </button>
+  );
+  const lone = (label: string, onClick: () => void) =>
+    paused ? (
+      <div className="btn-row player-pair">
+        {resumeButton}
+        <button type="button" className="btn" onClick={onClick}>
+          {label}
+        </button>
+      </div>
+    ) : (
+      <button type="button" className="btn btn-primary player-primary" onClick={onClick}>
+        {label}
       </button>
     );
-  }
+  if (step.kind === "set") return lone("Done", onDone);
+  if (phase === "over") return lone("Next", onSkip);
+  const skip = (
+    <button type="button" className="btn" onClick={onSkip}>
+      Skip
+    </button>
+  );
   if (step.kind === "rest") {
     return (
       <div className="btn-row player-pair">
+        {paused ? resumeButton : null}
         <button type="button" className="btn" onClick={onAddRest}>
           +15 s
         </button>
-        <button type="button" className="btn" onClick={onSkip}>
-          Skip
-        </button>
+        {skip}
       </div>
     );
   }
+  const pauseButton = paused ? (
+    resumeButton
+  ) : (
+    <button type="button" className="btn" onClick={onPause}>
+      Pause
+    </button>
+  );
   if (toMax && phase === "hold") {
-    // Holding to max: Done ends it at the time held (the primary action, as a set's Done); Skip moves on, logging
-    // nothing of it.
+    // Holding to max: Done ends it at the time held (the primary action, as a set's Done, but while paused); Skip
+    // moves on, logging nothing of it.
     return (
       <div className="btn-row player-pair">
-        <button type="button" className="btn" onClick={onPause}>
-          {state.paused ? "Resume" : "Pause"}
-        </button>
-        <button type="button" className="btn" onClick={onSkip}>
-          Skip
-        </button>
-        <button type="button" className="btn btn-primary" onClick={onPrimary}>
+        {pauseButton}
+        {skip}
+        <button type="button" className={paused ? "btn" : "btn btn-primary"} onClick={onDone}>
           Done
         </button>
       </div>
@@ -1151,12 +1191,8 @@ function Actions({
   }
   return (
     <div className="btn-row player-pair">
-      <button type="button" className="btn" onClick={onPause}>
-        {state.paused ? "Resume" : "Pause"}
-      </button>
-      <button type="button" className="btn" onClick={onSkip}>
-        Skip
-      </button>
+      {pauseButton}
+      {skip}
     </div>
   );
 }
@@ -1168,6 +1204,7 @@ function LogCard({
   flags,
   location,
   unit,
+  titleFrom,
 }: {
   state: PlayerState;
   draft: LogDraft;
@@ -1175,9 +1212,13 @@ function LogCard({
   flags: Array<{ id: string; label: string }>;
   location: { equipment: string[]; implements: Record<string, Weight[]>; id: string };
   unit: WeightUnit;
+  /** The build's moves, when the card names the set it edits (an Edit in a rest); null when it sits under the name. */
+  titleFrom: Readonly<Record<string, SessionExerciseDto | undefined>> | null;
 }) {
+  const titleId = useId();
   const t = logTarget(state, draft.held);
   if (!t) return null;
+  const name = titleFrom?.[t.exerciseId]?.name;
   const kbWeights = Lib.kettlebellsAt(location);
   const ctx = { implement: t.entry.implement, kbWeights };
   const current = parseWeight(draft.weight, t.w?.u ?? unit);
@@ -1196,7 +1237,8 @@ function LogCard({
     setDraft({ ...draft, sides: { ...draft.sides, [side]: String(Math.max(0, (Number.isFinite(n) ? n : 0) + by)) } });
   };
   return (
-    <div className="player-log" role="group" aria-label="Log this set">
+    <div className="player-log" role="group" {...(name ? { "aria-labelledby": titleId } : { "aria-label": "Log this set" })}>
+      {name ? <h2 id={titleId}>{setTitle(name, t)}</h2> : null}
       {t.entry.log === "load" ? (
         <Stepper
           label="Weight"

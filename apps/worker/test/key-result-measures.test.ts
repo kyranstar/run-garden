@@ -12,7 +12,8 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
-import { EXERCISES } from "@rg/exercise-library";
+import { EXERCISES, makeEngineData } from "@rg/exercise-library";
+import { Recorder, Review, Swapping, toPerformedSave, type Live, type RecorderMeta, type Step } from "@rg/session-engine";
 import {
   addDays,
   keyResultMeasureSchema,
@@ -26,6 +27,7 @@ import {
 import type { Db } from "../src/services/db.js";
 import { measureKeyResult, measureKeyResults } from "../src/services/key-result-measures.js";
 import { updateProfile } from "../src/services/profile.js";
+import { setRows } from "../src/services/session-save.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 const { activities, dailyHealth, performedSessions, performedSets, plannedWorkouts, sessionBuilds, workoutCompletionMatches } = schema;
@@ -311,6 +313,92 @@ describe("hold_max", () => {
     // At no slot's place: every slot offering it, the one to max winning — capacity.
     await sets(await twoSlots(4), "splitSquatHold", [{ seconds: 41 }], 7);
     expect(await capped()).toEqual([true, false, false]);
+  });
+
+  describe("a swapped-in move is judged by the slot its session saved it in, however its entry's index drifted (Stage 2 minors)", () => {
+    const SPLIT = { kind: "hold_max", libraryIds: ["splitSquatHold"] } as const;
+    const engine = makeEngineData({ activeProfiles: [], careProfiles: [], exercises: [...EXERCISES] });
+    const timed = (slotKey: string, exerciseId: string, seconds: number, setIndex = 0, setCount = 1): Step => ({
+      kind: "timed", slotKey, block: "core", exerciseId, side: null, setIndex, setCount, seconds, prepGap: 8, target: null,
+      format: { id: "holds", group: null, round: null }, why: [], isNew: false, log: true,
+    });
+    const rest = (slotKey: string): Step => ({ ...timed(slotKey, "", 30), kind: "rest", exerciseId: null, setIndex: null, setCount: null, log: false });
+    /** The split squat hold's steps in a slot: `sets` of them at the slot's window, rests between. */
+    const splitSteps = (slotKey: string, seconds: number, sets: number): Step[] =>
+      Array.from({ length: sets }, (_, i) => timed(slotKey, "splitSquatHold", seconds, i, sets)).flatMap((s, i) => (i === 0 ? [s] : [rest(slotKey), s]));
+    /**
+     * A document build — core:0 a side plank (40 s, `planks` sets), core:1 a wall sit to max (60 s), each slot offering
+     * the split squat hold at its own window — played through the recorder by `play` (with ⇄ as the player's
+     * `swapSlot` does it), and saved as the server saves a session (`toPerformedSave`, then `setRows`).
+     */
+    const played = async (n: number, planks: 1 | 2, play: (live: Live, swap: (live: Live, i: number, slotKey: string) => Live) => Live) => {
+      const workoutId = await planned(day(n));
+      const steps = [...splitSteps("core:0", 40, planks).map((s) => ({ ...s, exerciseId: s.exerciseId && "sidePlank" })), timed("core:1", "wallSit", 60)];
+      const offers = { "core:0": splitSteps("core:0", 40, planks), "core:1": splitSteps("core:1", 60, 1) };
+      const option = (slotKey: keyof typeof offers) => ({ id: "splitSquatHold", name: "Split squat hold", reasons: [], moveKey: "k", pairing: {}, steps: offers[slotKey] });
+      const buildId = newId();
+      await db.insert(sessionBuilds).values({
+        id: buildId, userId, workoutId, version: 1, engineVersion: "doc-build-3", inputsHash: "h",
+        payload: {
+          build: { steps, fromDoc: { rev: 1, swaps: [], blocked: [], slots: { "core:0": { offers: [option("core:0")] }, "core:1": { max: true, offers: [option("core:1")] } } } },
+          view: {},
+        },
+        workoutDoc: JSON.stringify(doc([{ kind: "exercise", libraryId: "sidePlank", dose: { sets: planks, holdSec: 40 } }, hold("wallSit", 60, true)])),
+        lockedAt: T0, createdAt: T0,
+      });
+      const id = newId();
+      const meta: RecorderMeta = {
+        id, startedAt: T0, date: day(n), mode: "build", theme: null, locationId: "home", minutes: 30, block: null, checks: {},
+        equipment: [], plannedSeconds: 0, newMove: null,
+      };
+      const swap = (live: Live, i: number, slotKey: string): Live => {
+        const spliced = Swapping.splice(live.plan.steps, slotKey, offers[slotKey as keyof typeof offers]);
+        return Recorder.rebase(engine, live, { steps: spliced, plannedSeconds: Swapping.costOf(spliced) }, i, slotKey);
+      };
+      const live = play(Recorder.create(engine, { steps, plannedSeconds: 0 }, meta), swap);
+      const wire = toPerformedSave(Recorder.toSession(live, { endedAt: T0 }), Review.pending(Review.start(), []), { source: "app", workoutId, buildId });
+      await db.insert(performedSessions).values({
+        id, userId, source: "app", localDate: day(n), payloadHash: "h", buildId, workoutId, movesDone: wire.movesDone, createdAt: T0, updatedAt: T0,
+      });
+      await db.insert(performedSets).values(setRows(id, wire));
+      return wire;
+    };
+    const capped = async () => (await measure(SPLIT)).series.map((s) => s.capped ?? false);
+
+    it("shifted down: the move before it, never done, is dropped at save", async () => {
+      // The side plank skipped, the wall sit's slot swapped and held to max 41 s. Saved as the first entry — the side
+      // plank's place — it was played in core:1, to max at 60 s: a true max.
+      const down = await played(6, 1, (live, swap) => {
+        Recorder.reach(live, 0);
+        Recorder.finishTimed(live, 0, 5);
+        Recorder.reach(live, 1);
+        const swapped = swap(live, 1, "core:1");
+        Recorder.reach(swapped, 1);
+        Recorder.finishTimed(swapped, 1, 41, { toMax: true, done: true });
+        return swapped;
+      });
+      expect(down.entries.map((e) => e.exerciseId)).toEqual(["splitSquatHold"]);
+      expect(await capped()).toEqual([false]);
+    });
+
+    it("shifted up: swapped in after its slot's first set, its entry after the move it replaced", async () => {
+      // The side plank's first set held, its second swapped for the split squat hold and held to its 40 s window, then
+      // the wall sit. Saved as the second entry — the wall sit's place — it was played in core:0, at its window: capped.
+      const up = await played(5, 2, (live, swap) => {
+        Recorder.reach(live, 0);
+        Recorder.finishTimed(live, 0, 40);
+        Recorder.reach(live, 1);
+        Recorder.reach(live, 2);
+        const swapped = swap(live, 2, "core:0");
+        Recorder.reach(swapped, 2);
+        Recorder.finishTimed(swapped, 2, 40);
+        Recorder.reach(swapped, 3);
+        Recorder.finishTimed(swapped, 3, 70, { toMax: true, done: true });
+        return swapped;
+      });
+      expect(up.entries.map((e) => e.exerciseId)).toEqual(["sidePlank", "splitSquatHold", "wallSit"]);
+      expect(await capped()).toEqual([true]);
+    });
   });
 
   it("a set with no known prescription (no build, no document) is capped — nothing says it was a max", async () => {

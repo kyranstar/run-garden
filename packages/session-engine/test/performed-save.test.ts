@@ -104,7 +104,9 @@ describe("toPerformedSave → historyFromPerformed", () => {
       stepsDone: save.stepsDone, movesPlanned: save.movesPlanned, note: "felt strong", newMove: save.newMove,
     });
     expect(wire.movesPlanned).toBeGreaterThan(0);
-    expect(wire.movesDone).toEqual(save.done.map(d => ({ exerciseId: d.id, seconds: d.secs })));
+    // Each move with the slot it was played in (Stage 2 minors: a reader never guesses it from an entry's index).
+    expect(wire.movesDone).toEqual(save.done.map(d => ({ exerciseId: d.id, seconds: d.secs, slotKey: d.slotKey })));
+    expect(wire.movesDone.filter(m => m.slotKey !== undefined).length).toBeGreaterThan(0);
     expect(wire.checks).toEqual([
       { profileId: "tmj", kind: "pre", value: 1, feelingOff: false, at: "2026-09-29T18:00:00.000Z" },
       { profileId: "tmj", kind: "post", value: 2, feelingOff: false, at: "2026-09-29T18:41:00.000Z" },

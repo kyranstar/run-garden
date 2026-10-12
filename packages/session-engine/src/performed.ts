@@ -64,7 +64,7 @@ export function toPerformedSave(save: PerformedSessionSave, review: PendingChang
     completed: save.completed,
     stepsTotal: save.stepsTotal,
     stepsDone: save.stepsDone,
-    movesDone: save.done.map(d => ({ exerciseId: d.id, seconds: Math.round(d.secs) })),
+    movesDone: save.done.map(d => ({ exerciseId: d.id, seconds: Math.round(d.secs), ...(d.slotKey ? { slotKey: d.slotKey } : {}) })),
     movesPlanned: save.movesPlanned,
     note: save.note === "" ? null : save.note,
     newMove: save.newMove,

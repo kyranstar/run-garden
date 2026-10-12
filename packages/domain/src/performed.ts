@@ -152,9 +152,13 @@ export const performedSessionSaveSchema = z
     completed: z.boolean(),
     stepsTotal: count.nullable(),
     stepsDone: count.nullable(),
-    /** Every move reached, logged or not, with the seconds spent on it (`performed_sessions.moves_done`). */
+    /**
+     * Every move reached, logged or not, with the seconds spent on it (`performed_sessions.moves_done`) and, from the
+     * app's player, the build slot it was played in (`slotKey`, e.g. "core:1"; absent when it was played in more than
+     * one, and on saves made before it was sent): a set is judged by its slot's prescription.
+     */
     movesDone: z
-      .array(z.object({ exerciseId: id, seconds: count }).strict())
+      .array(z.object({ exerciseId: id, seconds: count, slotKey: z.string().min(1).max(60).optional() }).strict())
       .max(PERFORMED_LIMITS.movesDone)
       .default([]),
     /**

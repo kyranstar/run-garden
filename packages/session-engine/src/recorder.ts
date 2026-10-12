@@ -113,7 +113,12 @@ export interface PerformedSessionSave extends HistorySession {
   movesPlanned: number;
   note: string;
   newMove: string | null;
-  done: Array<{ id: string; secs: number }>;
+  /**
+   * The moves done, each with its seconds and — when it was played in one slot — that slot (`slotKey`): a reader judges a
+   * set by the slot it was played in, never by its entry's index, which drifts from the build's order (an entry with no
+   * done set is dropped; a swap after a slot's first set adds the new move's entry after the old one's).
+   */
+  done: Array<{ id: string; secs: number; slotKey?: string }>;
   entries: SavedEntry[];
 }
 
@@ -209,6 +214,18 @@ function movesDone(live: Live): string[] {
     .filter(id => !live.entries[id] || live.entries[id]!.sets.some(x => x.done));
 }
 
+/** The slot each move done was played in (its steps that count): none for a move played in more than one. */
+function slotsPlayed(live: Live): Map<string, string> {
+  const slots = new Map<string, Set<string>>();
+  for (const s of stepsCounted(live)) {
+    if (!s.exerciseId) continue;
+    const held = slots.get(s.exerciseId) ?? new Set<string>();
+    held.add(s.slotKey);
+    slots.set(s.exerciseId, held);
+  }
+  return new Map([...slots].flatMap(([id, keys]) => (keys.size === 1 ? [[id, [...keys][0]!] as const] : [])));
+}
+
 const addSeconds = (live: Live, exId: string, secs: number): void => {
   live.secs[exId] = (live.secs[exId] || 0) + secs;
 };
@@ -270,6 +287,7 @@ function toSession(live: Live, { endedAt, post = {}, note = "", completed = fals
   // Logged moves count when a set is done; unlogged ones (mobility, breathing) when you reached them — a hold only
   // when you held half of it (ruling 2b-R15).
   const doneIds = movesDone(live);
+  const slots = slotsPlayed(live);
   const entries: SavedEntry[] = live.order.map(id => live.entries[id]!).map(e => ({
     id: e.id, implement: e.implement, log: e.log, metric: e.metric, perSide: e.perSide, format: e.format, flags: [...e.flags],
     sets: e.sets.filter(s => s.done).map(s => {
@@ -297,7 +315,10 @@ function toSession(live: Live, { endedAt, post = {}, note = "", completed = fals
     stepsTotal: live.steps.filter(s => s.kind !== "rest").length, stepsDone: reachedSteps.length,
     movesPlanned: new Set(live.steps.filter(s => s.kind !== "rest" && s.exerciseId).map(s => s.exerciseId)).size,
     checks, note, newMove: m.newMove || null,
-    done: doneIds.map(id => ({ id, secs: Math.round(live.secs[id] || 0) })),
+    done: doneIds.map(id => {
+      const slotKey = slots.get(id);
+      return { id, secs: Math.round(live.secs[id] || 0), ...(slotKey ? { slotKey } : {}) };
+    }),
     entries,
   };
 }

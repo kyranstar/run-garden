@@ -17,7 +17,7 @@ import { readLive } from "../../src/offline/live.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
 import type { Chimes } from "../../src/player/audio.js";
-import { build, docBuild, docView, HOLD_CUE, maxBuild, PLANNED_WHY, profiles, SLOT, SQUAT_CUE, STRETCH_CUE, T0, view } from "./fixtures.js";
+import { build, docBuild, docView, exercise, HOLD_CUE, maxBuild, PLANNED_WHY, profiles, SLOT, SQUAT_CUE, STRETCH_CUE, T0, view } from "./fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -123,6 +123,19 @@ async function stepTo(n: number) {
 }
 /** What sits right under the move's name. */
 const underName = () => document.querySelector("h1.player-name")?.nextElementSibling ?? null;
+/** The footer's actions in order: each one's words, and whether it is the primary one. Every one is a 44px `.btn`. */
+function actions(): Array<[string, boolean]> {
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>(".player-actions button")];
+  for (const b of buttons) expect(b.classList.contains("btn")).toBe(true);
+  return buttons.map((b) => [b.textContent!.trim(), b.classList.contains("btn-primary")]);
+}
+/** The log card's title — the words inside the card that name it — or null when it has none. */
+function cardTitle(): string | null {
+  const card = document.querySelector(".player-log");
+  const id = card?.getAttribute("aria-labelledby");
+  const title = id ? card!.querySelector(`[id="${id}"]`) : null;
+  return title?.textContent ?? null;
+}
 const S = 1000;
 
 describe("a document workout's items, played", () => {
@@ -322,6 +335,73 @@ describe("a document workout's items, played", () => {
     await until(() => true, "flush");
     const stored = await readLive<Stored>(db!, SLOT);
     expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 1 });
+  });
+
+  it("a hold to max paused, then Done: the rest offers Resume, and so does the set after it (Stage 2 minors)", async () => {
+    await start(maxBuild(), docView());
+    await stepTo(4);
+    await at(T0 + 30 * S);
+    await click("Pause");
+    // Paused in its hold: Resume takes the primary place; Done is still there, and still logs.
+    expect(actions()).toEqual([["Resume", true], ["Skip", false], ["Done", false]]);
+    await click("Done");
+    await until(() => text().includes("5 of 6"), "the rest");
+    expect(document.querySelector(".player-big")!.textContent).toBe("0:30");
+    expect(text()).toContain("Paused");
+    expect(text()).toContain("Held 0:22");
+    expect(actions()).toEqual([["Resume", true], ["+15 s", false], ["Skip", false]]);
+    await click("Skip");
+    await until(() => text().includes("6 of 6"), "the set");
+    expect(text()).toContain("Paused");
+    expect(actions()).toEqual([["Resume", true], ["Done", false]]);
+    await click("Resume");
+    expect(text()).not.toContain("Paused");
+    expect(actions()).toEqual([["Done", true]]);
+    // Running again: the set counts up from the Resume, and the session's time from where it stopped.
+    await at(T0 + 40 * S);
+    expect(text()).toContain("0:10");
+    expect(text()).toContain("0:40 elapsed");
+  });
+
+  it("the Edit card in a rest names what it edits: the move, its set, and the sides of a hold played a side at a time", async () => {
+    await start(maxBuild(), docView());
+    await at(T0 + 53 * S);
+    await click("Done");
+    await until(() => text().includes("2 of 6"), "the right side");
+    await at(T0 + 94 * S);
+    await click("Done");
+    await until(() => text().includes("3 of 6"), "the rest");
+    await click("Edit");
+    // The library's name, as it is: "Low lunge · hands on front thigh".
+    expect(cardTitle()).toBe(`${exercise("lowLunge").name} · set 1 · both sides`);
+    await click("Confirm");
+    await click("Skip");
+    await until(() => text().includes("4 of 6"), "the wall sit");
+    await at(T0 + 163 * S);
+    await click("Done");
+    await until(() => text().includes("5 of 6"), "the rest");
+    await click("Edit");
+    expect(cardTitle()).toBe("Wall sit · set 1");
+    await click("Confirm");
+    // A set's own card sits under the move's name: no title of its own.
+    await click("Skip");
+    await until(() => text().includes("6 of 6"), "the set");
+    await click("Done");
+    expect(document.querySelector(".player-log")).not.toBeNull();
+    expect(cardTitle()).toBeNull();
+  });
+
+  it("a hold to max held on one side only: the Edit card names that side", async () => {
+    await start(maxBuild(), docView());
+    // The left side skipped (nothing logged), the right held 38 s.
+    await click("Skip");
+    await until(() => text().includes("2 of 6"), "the right side");
+    await at(T0 + 41 * S);
+    await click("Done");
+    await until(() => text().includes("3 of 6"), "the rest");
+    expect(text()).toContain("Held 0:38 right");
+    await click("Edit");
+    expect(cardTitle()).toBe(`${exercise("lowLunge").name} · set 1 · right side`);
   });
 
   it("a timed move to max with no target counts up from its start, and Done's card holds the seconds counted", async () => {

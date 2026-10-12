@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Builder, Lib, Planner, Records, Recorder, Review, type BuildInput, type Live, type RecorderMeta, type Step, type Theme } from "../src/index.js";
+import { Builder, Lib, Planner, Records, Recorder, Review, Swapping, toPerformedSave, type BuildInput, type Live, type RecorderMeta, type Step, type Theme } from "../src/index.js";
 import { block, checksFor, data, home, themed } from "./builder-fixtures.js";
 
 // Ported from the standalone tests/recorder.test.js, plus the recorder regressions the handoff lists.
@@ -368,6 +368,72 @@ describe("recorder regressions and the save shape", () => {
     expect(Records.forSession(data, [s], s.id).records.length).toBeGreaterThan(0);
     const program = { settings: { unit: "lb" as const, weeklyGoal: 4, blockWeeks: 5, defaultMinutes: 30, location: "home" }, locations: [home], prefs: { ratings: {}, excluded: [], pinned: [] }, savedIds: [], block, sessions: [] };
     expect(() => Planner.graduationOffers(data, program, s)).not.toThrow();
+  });
+});
+
+// Each move done says the slot it was played in (`done[].slotKey`, on the wire `movesDone[].slotKey`): a reader never
+// has to guess it from the entry's index, which drifts from the build's order of first play — an entry with no done
+// set is dropped at save (later entries shift down), and a swap after a slot's first set keeps the old move's entry
+// and adds the new one after it (later entries shift up).
+describe("the slot each move was played in (Stage 2 minors)", () => {
+  const hold = (slotKey: string, exerciseId: string, seconds: number, setIndex = 0, setCount = 1): Step => ({
+    kind: "timed", slotKey, block: "core", exerciseId, side: null, setIndex, setCount, seconds, prepGap: 8, target: null,
+    format: { id: "holds", group: null, round: null }, why: [], isNew: false, log: true,
+  });
+  const rest = (slotKey: string): Step => ({ ...hold(slotKey, "", 30), kind: "rest", exerciseId: null, setIndex: null, setCount: null, log: false });
+  const meta0 = meta({ plannedSeconds: 0, newMove: null });
+  /** ⇄ at step `i`: the slot plays `fresh` from here on (the player's `swapSlot`). */
+  const swap = (live: Live, i: number, slotKey: string, fresh: Step[]): Live => {
+    const steps = Swapping.splice(live.plan.steps, slotKey, fresh);
+    return Recorder.rebase(data, live, { steps, plannedSeconds: Swapping.costOf(steps) }, i, slotKey);
+  };
+  const end = (live: Live) => Recorder.toSession(live, { endedAt: "2026-09-29T18:40:00.000Z" });
+  const ctx = { source: "app" as const, workoutId: "w1", buildId: "b1" };
+
+  test("a move whose entry shifted down (the one before it, never done, is dropped at save) still says its slot", () => {
+    // core:0 a side plank, core:1 a wall sit; the plank skipped, the wall sit's slot swapped and held.
+    const plan = { steps: [hold("core:0", "sidePlank", 40), hold("core:1", "wallSit", 60)], plannedSeconds: 0 };
+    let live = Recorder.create(data, plan, meta0);
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 5);
+    Recorder.reach(live, 1);
+    live = swap(live, 1, "core:1", [hold("core:1", "splitSquatHold", 60)]);
+    Recorder.reach(live, 1);
+    Recorder.finishTimed(live, 1, 41, { toMax: true, done: true });
+    const s = end(live);
+    // Saved as the first entry, though its slot is the second move the build plays.
+    expect(s.entries.map(e => e.id)).toEqual(["splitSquatHold"]);
+    expect(s.done).toEqual([{ id: "splitSquatHold", secs: 0, slotKey: "core:1" }]);
+    expect(toPerformedSave(s, Review.pending(Review.start(), []), ctx).movesDone).toEqual([{ exerciseId: "splitSquatHold", seconds: 0, slotKey: "core:1" }]);
+  });
+
+  test("a move whose entry shifted up (swapped in after its slot's first set) still says its slot; the move it replaced says the same slot", () => {
+    // core:0 two sets of a side plank, core:1 a wall sit; the plank's second set swapped for the split squat hold.
+    const plan = { steps: [hold("core:0", "sidePlank", 40, 0, 2), rest("core:0"), hold("core:0", "sidePlank", 40, 1, 2), hold("core:1", "wallSit", 60)], plannedSeconds: 0 };
+    let live = Recorder.create(data, plan, meta0);
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 40);
+    Recorder.reach(live, 1);
+    Recorder.reach(live, 2);
+    live = swap(live, 2, "core:0", [hold("core:0", "splitSquatHold", 40, 0, 2), rest("core:0"), hold("core:0", "splitSquatHold", 40, 1, 2)]);
+    Recorder.reach(live, 2);
+    Recorder.finishTimed(live, 2, 40);
+    Recorder.reach(live, 3);
+    Recorder.finishTimed(live, 3, 55);
+    const s = end(live);
+    // The second entry, though its slot is the first move the build plays.
+    expect(s.entries.map(e => e.id)).toEqual(["sidePlank", "splitSquatHold", "wallSit"]);
+    expect(s.done.map(d => [d.id, d.slotKey])).toEqual([["sidePlank", "core:0"], ["splitSquatHold", "core:0"], ["wallSit", "core:1"]]);
+  });
+
+  test("a move played in more than one slot names none (the reader falls back to its own rule)", () => {
+    const plan = { steps: [hold("core:0", "wallSit", 40), hold("core:1", "wallSit", 40, 1, 2)], plannedSeconds: 0 };
+    const live = Recorder.create(data, plan, meta0);
+    for (const k of [0, 1]) {
+      Recorder.reach(live, k);
+      Recorder.finishTimed(live, k, 40);
+    }
+    expect(end(live).done).toEqual([{ id: "wallSit", secs: 0 }]);
   });
 });
 

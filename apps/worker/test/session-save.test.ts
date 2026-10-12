@@ -176,7 +176,8 @@ function payload(s: { workoutId: string; build: BuildPayload }, over: Partial<Pe
     completed: true,
     stepsTotal: s.build.steps.length,
     stepsDone: s.build.steps.length,
-    movesDone: s.build.items.map((i) => ({ exerciseId: i.exerciseId, seconds: 120 })),
+    // Each with the build slot it was played in, as the app's player sends it.
+    movesDone: s.build.items.map((i) => ({ exerciseId: i.exerciseId, seconds: 120, slotKey: i.slotKey })),
     note: "felt good",
     newMove: s.build.newMove,
     entries: [
@@ -242,6 +243,8 @@ describe("a save writes the session, its sets and checks, an app activity and th
       // hash, which its outbox keys the entry by.
       payloadHash: await sha256Hex(canonicalJson(parsed)),
     });
+    // Each move's slot is kept as sent: key results judge a set by it (Stage 2 minors).
+    expect(session!.movesDone.map((m) => m.slotKey)).toEqual(s.build.items.map((i) => i.slotKey));
 
     // Weights exactly as typed, plus kg for the maths.
     const sets = (await db.select().from(performedSets)).sort((a, b) => a.entryIndex - b.entryIndex || a.setIndex - b.setIndex);
