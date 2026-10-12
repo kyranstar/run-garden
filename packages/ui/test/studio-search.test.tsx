@@ -9,7 +9,7 @@
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EXERCISES, PROFILES, label } from "@rg/exercise-library";
@@ -128,13 +128,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+let back: () => void = () => undefined;
+
 function Where() {
   const loc = useLocation();
+  const navigate = useNavigate();
   where = `${loc.pathname}${loc.search}`;
+  back = () => navigate(-1);
   return null;
 }
 
-function mount(path: string, p: Primed = {}) {
+/** Mounted at `path`; `before` are history entries behind it (Back goes to them). */
+function mount(path: string, p: Primed = {}, before: string[] = []) {
   if (root) act(() => root!.unmount());
   host?.remove();
   // The Studio reads the library, today and places; nothing here is fetched (the cache is primed or the read fails).
@@ -147,7 +152,12 @@ function mount(path: string, p: Primed = {}) {
       createElement(
         QueryClientProvider,
         { client: primedClient(p) },
-        createElement(MemoryRouter, { initialEntries: [path] }, createElement(StudioScreen), createElement(Where)),
+        createElement(
+          MemoryRouter,
+          { initialEntries: [...before, path], initialIndex: before.length },
+          createElement(StudioScreen),
+          createElement(Where),
+        ),
       ),
     );
   });
@@ -306,5 +316,43 @@ describe("typing filters, live", () => {
     expect(where).toBe("/studio");
     expect(input().value).toBe("");
     expect(body()).toContain("Quick starts");
+  });
+
+  it("Back leaves the results for the home: the first step into a list is an entry, every refinement after it is not", async () => {
+    mount("/studio", {}, ["/plan"]);
+    await type("gob");
+    await type("goblet");
+    await press("Strength");
+    expect(where).toBe("/studio?q=goblet&part=strength");
+    await act(async () => back());
+    expect(where).toBe("/studio");
+    await act(async () => back());
+    expect(where).toBe("/plan");
+  });
+
+  it("Escape in the field empties it", async () => {
+    mount("/studio?q=squat");
+    await act(async () => {
+      input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(where).toBe("/studio");
+    expect(input().value).toBe("");
+  });
+
+  it("a browse tap hands focus to the list it opened, not to where the tapped chip was", async () => {
+    mount("/studio");
+    await press("Strength");
+    const heading = host!.querySelector("h2.visually-hidden")!;
+    expect(heading.textContent).toBe("Moves");
+    expect(document.activeElement).toBe(heading);
+  });
+
+  it("the Filters badge counts the athlete's own filters, not the Studio's defaults", () => {
+    const html = shown("/studio?part=strength&tag=posture", {
+      library: libraryDto({ tmj: true }),
+      places: placesDto(["mat"]),
+    });
+    expect(text(/<button[^>]*stu-filters-btn[^>]*>[\s\S]*?<\/button>/.exec(html)![0])).toBe("Filters : 2 set");
+    expect(text(/<button[^>]*stu-filters-btn[^>]*>[\s\S]*?<\/button>/.exec(shown("/studio?q=squat", { library: libraryDto({ tmj: true }) }))![0])).toBe("Filters");
   });
 });

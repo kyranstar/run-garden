@@ -116,6 +116,16 @@ describe("today's condition fit", () => {
     expect(fitToday(press, tmj, reading(null))!.state).toBe("not");
   });
 
+  it("a flare day, or feeling off, is a recovery day: a move allowed only in harder sessions is not for today", () => {
+    // Farmer carry: fine for TMJ in a consistent or build session, never in recovery.
+    const carry = rec("farmerCarry");
+    expect(fitToday(carry, tmj, reading(1))!.state).toBe("care");
+    expect(fitToday(carry, tmj, reading(8))!.state).toBe("not");
+    expect(fitToday(carry, tmj, reading(1, true))!.state).toBe("not");
+    expect(fitToday(carry, tmj, reading(1, true))!.reason).toBe("Not while you're feeling off.");
+    expect(fitToday(carry, tmj, reading(8))!.reason).toBe("Not with jaw / head at 8 today.");
+  });
+
   it("a jump says why it is not for today, in the profile's own words", () => {
     const jump = rec("landingStick");
     const f = fitToday(jump, tmj, reading(null))!;
