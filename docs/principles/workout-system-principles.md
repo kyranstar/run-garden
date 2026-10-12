@@ -385,7 +385,7 @@ garden-voice rules.
 ### 6.11 Platform realities for the agent
 - The Workers **Free** plan: each request stays within ~45 combined D1 statements + external fetches; an agent loop
   runs **one step per request** (state persisted between steps), which also makes each step a visible event.
-- Model: quality first (the strongest available model for design and review), with caching; the model id is
+- Model: quality first, with caching — Opus 5.5 for design and review by the owner's choice (decision log); the model id is
   configuration, not code.
 
 ---
@@ -486,3 +486,4 @@ At the end of the programme, additionally:
 | 2026-10-10 | The design red-team's findings are adopted (spec §3.11): soreness and feedback recorded by area and per session from Stage 1; every condition rule applies to every source; documents keep revisions; review always precedes a proposal, and quick relief is fast through one-tap quick-starts rather than a skipped review. |
 | 2026-10-10 | Scenario red-teams of the design and of the built system (§10); the coach gets context by **tool calls**, and the opening prompt carries only what it must know (§6.3). |
 | 2026-10-10 | "Every workout should be designed with intention and awareness of the possibilities … do not be overly prescriptive for the coach, but instead empower the coach." (§2.1, §2.2, §6.1) |
+| 2026-10-12 | The coach designer's model is **Opus 5.5** (the owner's quality-first choice of 2026-10-10), with prompt caching; `AI_DESIGN_MODEL` can switch to a stronger, costlier model (e.g. Fable 5.1, about 2.5× the price) without code changes. Unknown models are priced at the highest rate the gateway has listed, so the cap trips early, never late. |

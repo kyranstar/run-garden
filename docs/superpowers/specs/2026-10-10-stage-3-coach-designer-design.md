@@ -48,7 +48,7 @@ enforces.
   calls and the next step executes them before calling the model.
 - **Budget per step** (Workers Free): ≤ 45 combined D1 statements and fetches. Each tool declares its statement cost;
   the step executes tool calls in order until the next would exceed the budget. The model call is one fetch.
-- **The model**: the strongest available Claude model through the Vercel AI Gateway's **native Messages endpoint**
+- **The model**: Opus 5.5 (the owner's quality-first choice; a stronger, costlier model is one setting away) through the Vercel AI Gateway's **native Messages endpoint**
   (`/v1/messages` on the same host and key) — it carries tools, prompt caching (`cache_control`) and the real effort
   setting. The model id is configuration (`AI_DESIGN_MODEL`), verified by the gateway's free schema probe before
   first use; the reviewer may use the same model.
