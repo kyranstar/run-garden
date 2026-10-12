@@ -386,6 +386,26 @@ describe("jumps only in a power part, on a day that passes the gate", () => {
     }
   });
 
+  it("only where a jump raises no placement warning: straight sets or a superset, before any lift, the one jumps part", () => {
+    const jumpsIn = (d: WorkoutDoc, i: number) => ids(suggest(d, i)).filter((id) => isPlyometric(rec(id)));
+    const warm = part("warmup", "flow", []);
+    const squat = part("main", "straight", [ex("gobletSquat")]);
+    expect(jumpsIn(docOf([warm, part("power", "straight", []), squat], "maintain"), 1).length).toBeGreaterThan(0);
+    expect(jumpsIn(docOf([warm, part("power", "superset", []), squat], "maintain"), 1).length).toBeGreaterThan(0);
+    // In a circuit: no jump.
+    expect(jumpsIn(docOf([warm, part("power", "circuit", []), squat], "maintain"), 1)).toEqual([]);
+    // After the lifting: no jump.
+    expect(jumpsIn(docOf([warm, squat, part("power", "straight", [])], "maintain"), 2)).toEqual([]);
+    // Another part holds the jumps already: none here.
+    expect(jumpsIn(docOf([warm, part("power", "straight", []), part("power", "straight", [ex("snapDown", { sets: 2, reps: 5 })]), squat], "maintain"), 1)).toEqual([]);
+    // Each one offered validates with no placement warning in the document it is offered for.
+    const d = docOf([warm, part("power", "straight", []), squat], "maintain");
+    for (const s of suggest(d, 1)) {
+      const withIt = docOf([warm, part("power", "straight", [suggestedItem(rec(s.libraryId), "power")]), squat], "maintain");
+      expect(validateWorkoutDoc(withIt, { library: EXERCISES, activeProfiles: [TMJ], day: CALM }).filter((i) => i.code === "jump_placement"), s.libraryId).toEqual([]);
+    }
+  });
+
   it("with no profile switched on, still never on a recovery or feeling-off day", () => {
     expect(ids(suggest(doc("recover"), 1, { activeProfiles: [] })).filter((id) => isPlyometric(rec(id)))).toEqual([]);
     expect(ids(suggest(doc("maintain"), 1, { activeProfiles: [], day: dayOf(null, { readings: {}, feelingOff: true }) })).filter((id) => isPlyometric(rec(id)))).toEqual([]);
