@@ -137,6 +137,15 @@ export interface ConditionProfile {
     block: CareBlock;
     coverageTargets: Partial<CoverageTargets>;
   } | null;
+
+  /**
+   * The rules above in plain sentences, one per line, for the coach designer's opening context (Stage 3 spec §3).
+   * Generated from the same constants the rules read — never written beside them — so the prompt and the code cannot
+   * disagree. Each line says whether its rule is refused (`never`, `allowPattern`, `allowRecord`: the validator's
+   * errors) or a cost shown to the athlete (`fitsMode`, `fitsFormat`, the flare, the mode reasons). It speaks of the
+   * profile and its readings, never of a person.
+   */
+  describeRules(): string[];
 }
 
 /** A check nobody answered. */
