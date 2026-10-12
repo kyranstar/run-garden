@@ -87,6 +87,7 @@ import { buildTerrainReport } from "../services/terrain.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { requireUser } from "../auth/middleware.js";
 import { checkWorkoutDocParity } from "../services/workout-doc-parity.js";
+import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { emitPendingWork } from "../services/jobs.js";
@@ -433,7 +434,7 @@ function rowToLap(row: typeof activityLaps.$inferSelect): ActivityLap {
   };
 }
 
-function rowToPlannedWorkout(row: typeof plannedWorkouts.$inferSelect): PlannedWorkout {
+function rowToPlannedWorkout(row: PlannedRow): PlannedWorkout {
   return {
     id: row.id,
     sourceProvider: "coros",
@@ -526,7 +527,7 @@ insightRoutes.get("/", async (c) => {
   const [workoutRows, actRows, dismissed, healthRows, reviews, storedRows, hrMaxRows, sleepRows] =
     await Promise.all([
     db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(

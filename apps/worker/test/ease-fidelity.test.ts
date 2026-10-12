@@ -13,12 +13,13 @@
  * one-shot repair for the rows the bug already damaged.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import {
   addDays,
   nowInstant,
   todayInZone,
+  workoutDocSchema,
   type CoachOp,
   type CoachSession,
   type UserPreferences,
@@ -97,6 +98,16 @@ async function stagesOf(db: Db, workoutId: string) {
 
 let db: Db;
 let userId: string;
+
+/** The row's title and document columns, the document as its raw text. */
+async function docColumns(id: string) {
+  return (
+    await db
+      .select({ title: plannedWorkouts.title, workoutDoc: sql<string | null>`${plannedWorkouts.workoutDoc}`, workoutDocRev: plannedWorkouts.workoutDocRev })
+      .from(plannedWorkouts)
+      .where(eq(plannedWorkouts.id, id))
+  )[0]!;
+}
 let prefs: UserPreferences;
 
 beforeEach(async () => {
@@ -575,6 +586,52 @@ describe("the one-shot fidelity repair", () => {
       .from(plannedWorkouts)
       .where(eq(plannedWorkouts.id, "w-imported"));
     expect(after!.sourceEstimatedDurationSeconds).toBe(4509);
+  });
+
+  it("a repaired row's document is cleared, its counter kept, for the backfill to derive again; a resolved row keeps its own", async () => {
+    // Any valid document: the one the row held before the repair.
+    const held = JSON.stringify(
+      workoutDocSchema.parse({
+        version: 1,
+        title: "Threshold 6×640",
+        intent: { summary: "Threshold", goals: [], focus: [], effort: "develop" },
+        source: { kind: "coach" },
+        parts: [{ purpose: "run", format: "intervals", items: [{ kind: "run", target: { durationSec: 1800 }, effort: "threshold" }] }],
+      }),
+    );
+    const withDoc = (id: string, rev: number) =>
+      db.update(plannedWorkouts).set({ workoutDoc: held, workoutDocRev: rev }).where(eq(plannedWorkouts.id, id));
+    await seedDamagedEase("w-eased", "2026-08-17");
+    await withDoc("w-eased", 3);
+    // Rows whose titles are the ownership stamp: one to come, one done, and a document workout.
+    for (const [id, state] of [["w-stamped", "scheduled"], ["w-stamped-done", "completed"], ["w-stamped-studio", "scheduled"]] as const) {
+      await db.insert(corosWriteJobs).values({
+        id: `job-${id}`, userId, workoutId: id, kind: "coach_create_workout", expectedContentFingerprint: `coach-${id}`,
+        originalDate: "2026-10-26", destinationDate: "2026-10-26",
+        payload: { workoutId: id, happenDay: "2026-10-26", name: "Legs-back jog — 2026-10-26", session: { category: "easy", title: "Legs-back jog", durationMinutes: 30 } },
+        requestedAt: nowInstant(), status: "verified", updatedAt: nowInstant(),
+      });
+      await db.insert(plannedWorkouts).values({
+        id, userId, planId: "p", sourceWorkoutId: `9001:${id}`, title: "Legs-back jog — 2026-10-26", category: "easy", sport: "run",
+        originalPlanDate: "2026-10-26", lastVerifiedCorosDate: "2026-10-26", effectiveDate: "2026-10-26", effectiveTime: "07:00",
+        sourceContentFingerprint: `wire-${id}`, calendarBlockDurationSeconds: 1800, completionState: state,
+        ...(id === "w-stamped-studio" ? { origin: "studio" } : {}),
+        createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+      await withDoc(id, 2);
+    }
+
+    await repairPlannedWorkoutFidelity(db, userId, { dryRun: true });
+    expect((await docColumns("w-eased")).workoutDoc).toBe(held);
+
+    const report = await repairPlannedWorkoutFidelity(db, userId, { dryRun: false });
+    expect([report.totals.easedRowsRepaired, report.totals.titlesRepaired]).toEqual([1, 3]);
+    expect(await docColumns("w-eased")).toEqual({ title: "Easy first run back", workoutDoc: null, workoutDocRev: 3 });
+    expect(await docColumns("w-stamped")).toEqual({ title: "Legs-back jog", workoutDoc: null, workoutDocRev: 2 });
+    // A completed workout's document is history: kept, as every writer keeps it.
+    expect(await docColumns("w-stamped-done")).toEqual({ title: "Legs-back jog", workoutDoc: held, workoutDocRev: 2 });
+    // A document workout's document is its content: nothing could derive it again.
+    expect(await docColumns("w-stamped-studio")).toEqual({ title: "Legs-back jog", workoutDoc: held, workoutDocRev: 2 });
   });
 
   it("history is not rewritten", async () => {

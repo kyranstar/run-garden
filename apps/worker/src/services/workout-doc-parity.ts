@@ -1,7 +1,8 @@
 /**
  * THE PARITY DIAGNOSTIC (programme spec §3, Task 12): read-only. For each planned workout of the signed-in account it
  * asks whether the stored workout document and the old formats still agree: the row's own minutes, discipline and
- * title, and the steps of its latest build. Counts and ids only; no title or personal text leaves this module.
+ * title, and the steps of its build — the played one (locked), else the latest. Counts and ids only; no title or
+ * personal text leaves this module.
  *
  * Rules: a null column is `missing`, an unparsable one `invalid` (never thrown). Rest-day rows carry no document by
  * design and are exempt. Minutes: a run's document is compared by its DERIVED minutes (a run derives exactly: its
@@ -11,13 +12,15 @@
  * minutes). Where a document states a length its derived estimate is more than 50 % away from, it is counted
  * `derivedFar` — visible, not a mismatch (a coach's lift states the whole session, its sets add up to less). Steps are
  * compared as
- * multisets of library ids, canonicalised through `legacyIds` on both sides, so a renamed move is not a mismatch.
+ * multisets of library ids, canonicalised through `legacyIds` on both sides, so a renamed move is not a mismatch. A
+ * document too large to build (`docTooLarge`: the player refuses it with `DocTooLargeError`) is counted `tooLarge`, and
+ * its steps are not compared — never thrown.
  */
 import { and, asc, eq, getTableColumns, gt, inArray, isNull, sql } from "drizzle-orm";
 import { plannedWorkouts, sessionBuilds } from "@rg/database";
 import { parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { deriveDoc, makeLibraryIndex, playerStepsFromDoc } from "@rg/workout";
+import { deriveDoc, docTooLarge, makeLibraryIndex, playerStepsFromDoc } from "@rg/workout";
 import { chunkIds, type Db } from "./db.js";
 
 export type ParityField = "minutes" | "discipline" | "title" | "steps";
@@ -34,6 +37,8 @@ export interface ParityReport {
   derivedFar: number;
   /** Rows whose chosen build predates the current document: steps not compared. */
   stale: number;
+  /** Documents too large to build (`docTooLarge`): counted, their steps not compared. */
+  tooLarge: number;
   mismatched: Array<{ id: string; field: ParityField }>;
   /** Ids of rows with no usable document (missing or invalid), capped. */
   sample: string[];
@@ -89,6 +94,17 @@ export function rowMinutes(row: DurationColumns): number {
   return estimatedRowMinutes(row) ?? Math.round(row.calendarBlockDurationSeconds / 60);
 }
 
+/** A build's steps as their JSON text → the array; anything else → undefined (nothing compared). */
+function parseSteps(text: string | null): unknown[] | undefined {
+  if (text === null) return undefined;
+  try {
+    const steps: unknown = JSON.parse(text);
+    return Array.isArray(steps) ? steps : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function checkWorkoutDocParity(
   db: Db,
   userId: string,
@@ -111,7 +127,7 @@ export async function checkWorkoutDocParity(
   const page = rows.slice(0, limit);
   const next = rows.length > limit ? page[page.length - 1]!.id : null;
 
-  const report: ParityReport = { checked: 0, withDoc: 0, missing: 0, invalid: 0, exempt: 0, unestimated: 0, derivedFar: 0, stale: 0, mismatched: [], sample: [], next };
+  const report: ParityReport = { checked: 0, withDoc: 0, missing: 0, invalid: 0, exempt: 0, unestimated: 0, derivedFar: 0, stale: 0, tooLarge: 0, mismatched: [], sample: [], next };
   const parsed = new Map<string, WorkoutDoc>();
   for (const row of page) {
     if (row.category === "rest") {
@@ -140,7 +156,9 @@ export async function checkWorkoutDocParity(
       .select({
         workoutId: sessionBuilds.workoutId,
         version: sessionBuilds.version,
-        payload: sessionBuilds.payload,
+        // The steps alone, as JSON text, from where a build stores them (`{ build: { steps }, view }`, session-build.ts):
+        // never the whole payload, which carries the library slice and the view. A malformed payload reads as none.
+        steps: sql<string | null>`case when json_valid(${sessionBuilds.payload}) and json_type(${sessionBuilds.payload}, '$.build.steps') = 'array' then json_extract(${sessionBuilds.payload}, '$.build.steps') end`,
         workoutDoc: sql<string | null>`${sessionBuilds.workoutDoc}`,
         lockedAt: sessionBuilds.lockedAt,
         createdAt: sessionBuilds.createdAt,
@@ -156,7 +174,7 @@ export async function checkWorkoutDocParity(
         version: b.version,
         createdAt: b.createdAt,
         buildDoc: b.workoutDoc,
-        steps: (b.payload as { steps?: unknown } | null)?.steps,
+        steps: parseSteps(b.steps),
       });
     }
   }
@@ -176,6 +194,11 @@ export async function checkWorkoutDocParity(
     const axis = axisOfCategory(row.category);
     if (axis !== null && axis !== derived.discipline) report.mismatched.push({ id: row.id, field: "discipline" });
     if (norm(doc.title) !== norm(row.title)) report.mismatched.push({ id: row.id, field: "title" });
+    // Exactly what `playerStepsFromDoc` refuses (`DocTooLargeError`, the same `docTooLarge`): counted, never built.
+    if (docTooLarge(doc, library) !== null) {
+      report.tooLarge++;
+      continue;
+    }
     const build = chosen.get(row.id);
     if (build && Array.isArray(build.steps)) {
       // A build made before the document last changed says nothing about it: counted, not compared. A build that

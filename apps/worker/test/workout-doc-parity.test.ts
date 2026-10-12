@@ -6,15 +6,33 @@ import { describe, expect, it } from "vitest";
 import { plannedWorkouts, sessionBuilds } from "@rg/database";
 import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { deriveDoc } from "@rg/workout";
+import { deriveDoc, docTooLarge } from "@rg/workout";
 import { settingsRoutes } from "../src/routes/misc.js";
-import { workoutRoutes } from "../src/routes/workouts.js";
+import { likePatternOf, workoutRoutes } from "../src/routes/workouts.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { checkWorkoutDocParity, minutesDiffer } from "../src/services/workout-doc-parity.js";
 import type { Db } from "../src/services/db.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const NOW = "2026-10-01T00:00:00.000Z";
+
+/**
+ * A build's payload as `session-build.ts` stores it (`StoredBuild`): the build under `build` — its steps among it —
+ * and the player's view beside it. `steps: null` stores a build with no steps array.
+ */
+function storedPayload(exerciseIds: string[] | null): Record<string, unknown> {
+  return {
+    build: {
+      engineVersion: "t",
+      inputsHash: "h",
+      builtAt: NOW,
+      blockRef: null,
+      plannedSeconds: 600,
+      ...(exerciseIds ? { steps: exerciseIds.map((exerciseId) => ({ kind: "set", exerciseId, sets: 1, reps: 8 })) } : {}),
+    },
+    view: { theme: "t", lead: "A session" },
+  };
+}
 
 function docOf(over: { title?: string; summary?: string; items?: unknown[] } = {}): WorkoutDoc {
   return workoutDocSchema.parse({
@@ -168,7 +186,7 @@ describe("GET /api/settings/diagnostics/workout-docs", () => {
     const build = (workoutId: string, ids: string[]) =>
       db.insert(sessionBuilds).values({
         id: `b-${workoutId}`, userId, workoutId, version: 1, engineVersion: "t", inputsHash: "h",
-        payload: { steps: ids.map((exerciseId) => ({ kind: "set", exerciseId })) }, workoutDoc: null, lockedAt: null, createdAt: NOW,
+        payload: storedPayload(ids), workoutDoc: null, lockedAt: null, createdAt: NOW,
       });
     // The doc names "newMove"; the old build names it "oldMove" (renamed) or a different move.
     await seed(db, userId, "same", { workoutDoc: doc as never, sourceEstimatedDurationSeconds: minutes, category: "strength" });
@@ -177,6 +195,57 @@ describe("GET /api/settings/diagnostics/workout-docs", () => {
     await build("diff", ["otherMove"]);
     const report = await checkWorkoutDocParity(db, userId, {}, library);
     expect(report.mismatched.filter((m) => m.field === "steps")).toEqual([{ id: "diff", field: "steps" }]);
+  });
+
+  it("reads a build's steps where the build stores them (under `build`), and never the whole payload", async () => {
+    const statements: string[] = [];
+    const db = makeTestDb({ boundVariableCap: 100, onStatement: (q) => statements.push(q) });
+    const { userId } = await makeTestUser(db);
+    const library: ExerciseRecord[] = [
+      { ...EXERCISES[0]!, id: "moveA", legacyIds: [] },
+      { ...EXERCISES[1]!, id: "moveB", legacyIds: [] },
+    ];
+    const doc = docOf({ items: [{ kind: "exercise", libraryId: "moveA", dose: { sets: 1, reps: 8 } }] });
+    const seconds = deriveDoc(doc, library).estimatedMinutes * 60;
+    for (const [id, steps] of [["same", ["moveA"]], ["diff", ["moveB"]]] as const) {
+      await seed(db, userId, id, { workoutDoc: doc as never, sourceEstimatedDurationSeconds: seconds, category: "strength" });
+      await db.insert(sessionBuilds).values({
+        id: `b-${id}`, userId, workoutId: id, version: 1, engineVersion: "t", inputsHash: "h",
+        payload: storedPayload([...steps]), workoutDoc: JSON.stringify(doc), lockedAt: null, createdAt: NOW,
+      });
+    }
+    statements.length = 0;
+    const report = await checkWorkoutDocParity(db, userId, {}, library);
+    expect(report.mismatched.filter((m) => m.field === "steps")).toEqual([{ id: "diff", field: "steps" }]);
+    const buildReads = statements.filter((q) => /from "session_builds"/.test(q));
+    expect(buildReads).toHaveLength(1);
+    // The payload is read only through the path to its steps.
+    expect(buildReads[0]).toMatch(/json_extract\((?:"session_builds"\.)?"payload", '\$\.build\.steps'\)/);
+    expect(buildReads[0]!.replace(/json_\w+\((?:"session_builds"\.)?"payload"[^)]*\)/g, "")).not.toMatch(/"payload"/);
+  });
+
+  it("a document too large to build is counted, never thrown: its steps are not compared, the page still answers", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const move = EXERCISES[0]!.id;
+    // 25 moves of 10 sets: 250 watch steps, past what a push holds — `playerStepsFromDoc` refuses to build it.
+    const huge = docOf({ items: Array.from({ length: 25 }, () => ({ kind: "exercise", libraryId: move, dose: { sets: 10, reps: 8 } })) });
+    expect(docTooLarge(huge, EXERCISES)).not.toBeNull();
+    const fine = docOf({ items: [{ kind: "exercise", libraryId: move, dose: { sets: 3, reps: 8 } }] });
+    await seed(db, userId, "huge-built", { workoutDoc: huge as never, category: "strength" });
+    await seed(db, userId, "huge-bare", { workoutDoc: huge as never, category: "strength" });
+    await seed(db, userId, "fine", { workoutDoc: fine as never, category: "strength" });
+    for (const id of ["huge-built", "fine"]) {
+      await db.insert(sessionBuilds).values({
+        id: `b-${id}`, userId, workoutId: id, version: 1, engineVersion: "t", inputsHash: "h",
+        payload: storedPayload([EXERCISES[1]!.id]), workoutDoc: null, lockedAt: null, createdAt: NOW,
+      });
+    }
+    const { status, body } = await (await client(db, userId)).diag();
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ checked: 3, withDoc: 3, tooLarge: 2 });
+    // The fine row's build differs from it and is flagged; the too-large row's is never compared.
+    expect(body.mismatched.filter((m: { field: string }) => m.field === "steps")).toEqual([{ id: "fine", field: "steps" }]);
   });
 
   it("paginates by id", async () => {
@@ -281,6 +350,99 @@ describe("GET /api/workouts", () => {
   });
 });
 
+/**
+ * D1's LIKE, on the test database: a pattern over 50 bytes is refused ("LIKE or GLOB pattern too complex", D1's
+ * SQLITE_LIMIT_LIKE_PATTERN_LENGTH), anything else matched as SQLite matches it — `%` and `_` (one character), the
+ * ESCAPE character, ASCII case folded and nothing else.
+ */
+function likeAsD1(db: Db): void {
+  const sqlite = (db as unknown as { $client: { function(name: string, opts: object, fn: (...a: unknown[]) => unknown): void } }).$client;
+  sqlite.function("like", { deterministic: true, varargs: true }, (pattern, value, escape) => {
+    if (pattern === null || value === null) return null;
+    const p = String(pattern);
+    if (new TextEncoder().encode(p).length > 50) throw new Error("LIKE or GLOB pattern too complex");
+    const fold = (s: string) => s.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
+    let re = "";
+    let escaped = false;
+    for (const ch of fold(p)) {
+      if (escaped) {
+        re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        escaped = false;
+      } else if (escape != null && ch === escape) escaped = true;
+      else if (ch === "%") re += "[\\s\\S]*";
+      else if (ch === "_") re += "[\\s\\S]";
+      else re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    return new RegExp(`^${re}$`, "u").test(fold(String(value))) ? 1 : 0;
+  });
+}
+
+describe("q, as D1 holds a LIKE pattern to 50 bytes", () => {
+  const ids = (r: { body: Array<{ id: string }> }) => r.body.map((x) => x.id);
+
+  it("the pattern is cut to 50 bytes of UTF-8, whole characters and whole escapes only", () => {
+    expect(likePatternOf("hill")).toBe("%hill%");
+    expect(likePatternOf("   ")).toBeNull();
+    expect(likePatternOf(undefined)).toBeNull();
+    // Two bytes a character: 24 of them and the two wildcards.
+    expect(likePatternOf("é".repeat(40))).toBe(`%${"é".repeat(24)}%`);
+    // Four bytes, and two UTF-16 units: never half of one.
+    expect(likePatternOf("🏃".repeat(20))).toBe(`%${"🏃".repeat(12)}%`);
+    expect(likePatternOf(`ab${"é".repeat(22)}🏃`)).toBe(`%ab${"é".repeat(22)}%`);
+    // An escaped metacharacter is two bytes; never cut between the backslash and its character.
+    expect(likePatternOf("%".repeat(40))).toBe(`%${"\\%".repeat(24)}%`);
+    expect(likePatternOf(`${"a".repeat(23)}_x`)).toBe(`%${"a".repeat(23)}\\_x%`);
+    expect(likePatternOf(`${"a".repeat(30)}${"_".repeat(10)}`)).toBe(`%${"a".repeat(30)}${"\\_".repeat(9)}%`);
+    expect(likePatternOf(`${"a".repeat(31)}${"_".repeat(9)}`)).toBe(`%${"a".repeat(31)}${"\\_".repeat(8)}%`);
+    // Cut at 40 characters first, as before.
+    expect(likePatternOf(`${"a".repeat(46)}_`)).toBe(`%${"a".repeat(40)}%`);
+    for (const q of ["é".repeat(40), "🏃".repeat(40), "%_\\".repeat(20), `a${"%_\\".repeat(20)}`, `${"a".repeat(39)}🏃`, "ü".repeat(17) + "%".repeat(10)]) {
+      const pattern = likePatternOf(q)!;
+      expect(new TextEncoder().encode(pattern).length, q).toBeLessThanOrEqual(50);
+      // Wildcards at the ends, and between them only whole escapes and plain characters.
+      expect(pattern, q).toMatch(/^%(?:\\[\\%_]|[^\\%_])+%$/u);
+      expect(pattern).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    }
+  });
+
+  it("a long accented, emoji or metacharacter q answers (D1 refuses the pattern otherwise) and still finds its rows", async () => {
+    const db = makeTestDb();
+    likeAsD1(db);
+    const { userId } = await makeTestUser(db);
+    await seed(db, userId, "accents", { title: "é".repeat(30) });
+    await seed(db, userId, "emoji", { title: "🏃".repeat(15) });
+    await seed(db, userId, "percent", { title: `${"%".repeat(30)} off` });
+    await seed(db, userId, "plain", { title: "Something else" });
+    const c = await client(db, userId);
+    for (const [q, want] of [["é".repeat(40), ["accents"]], ["🏃".repeat(40), ["emoji"]], ["%".repeat(40), ["percent"]], ["_".repeat(40), []]] as const) {
+      const res = await c.work(`?q=${encodeURIComponent(q)}`);
+      expect(res.status, q).toBe(200);
+      expect(ids(res), q).toEqual(want);
+    }
+  });
+
+  it("the list reads the intent summary in SQL — never the whole document", async () => {
+    const statements: string[] = [];
+    const db = makeTestDb({ onStatement: (s) => statements.push(s) });
+    const { userId } = await makeTestUser(db);
+    await seed(db, userId, "doc", { title: "Hill repeats", workoutDoc: docOf({ summary: "Strong legs" }) as never, workoutDocRev: 1 });
+    await seed(db, userId, "odd", { title: "Odd", workoutDoc: { version: 1, intent: { summary: 7 } } as never });
+    await seed(db, userId, "none", { title: "None" });
+    const c = await client(db, userId);
+    statements.length = 0;
+    const res = await c.work("?q=legs");
+    expect(res.body.map((r: { id: string; intentSummary: string | null }) => [r.id, r.intentSummary])).toEqual([["doc", "Strong legs"]]);
+    const all = await c.work("");
+    expect(Object.fromEntries(all.body.map((r: { id: string; intentSummary: string | null }) => [r.id, r.intentSummary]))).toEqual({ doc: "Strong legs", odd: null, none: null });
+    const reads = statements.filter((q) => /from "planned_workouts"/.test(q));
+    expect(reads.length).toBeGreaterThan(0);
+    for (const q of reads) {
+      expect(q).toMatch(/json_extract\((?:"planned_workouts"\.)?"workout_doc", '\$\.intent\.summary'\)/);
+      expect(q.replace(/json_\w+\((?:"planned_workouts"\.)?"workout_doc"[^)]*\)/g, "")).not.toMatch(/"workout_doc"/);
+    }
+  });
+});
+
 describe("fix round 1", () => {
   const ids = (r: { body: Array<{ id: string }> }) => r.body.map((x) => x.id);
 
@@ -346,7 +508,7 @@ describe("fix round 1", () => {
     const put = (db: Db, userId: string, workoutId: string, version: number, stepIds: string[], over: { lockedAt?: string | null; createdAt?: string; workoutDoc?: WorkoutDoc | null } = {}) =>
       db.insert(sessionBuilds).values({
         id: `b-${workoutId}-${version}`, userId, workoutId, version, engineVersion: "t", inputsHash: "h",
-        payload: { steps: stepIds.map((exerciseId) => ({ kind: "set", exerciseId })) }, workoutDoc: over.workoutDoc ? JSON.stringify(over.workoutDoc) : null,
+        payload: storedPayload(stepIds), workoutDoc: over.workoutDoc ? JSON.stringify(over.workoutDoc) : null,
         lockedAt: over.lockedAt ?? null, createdAt: over.createdAt ?? NOW,
       });
     const steps = (r: { mismatched: Array<{ id: string; field: string }> }) => r.mismatched.filter((m) => m.field === "steps");
@@ -369,7 +531,7 @@ describe("fix round 1", () => {
       expect(steps(await checkWorkoutDocParity(db, userId, {}, library))).toEqual([{ id: "w", field: "steps" }]);
       // The newest build carries no steps array: nothing is compared, and v1 does not stand in.
       await db.insert(sessionBuilds).values({
-        id: "b-w-3", userId, workoutId: "w", version: 3, engineVersion: "t", inputsHash: "h", payload: {}, workoutDoc: null, lockedAt: null, createdAt: NOW,
+        id: "b-w-3", userId, workoutId: "w", version: 3, engineVersion: "t", inputsHash: "h", payload: storedPayload(null), workoutDoc: null, lockedAt: null, createdAt: NOW,
       });
       expect(steps(await checkWorkoutDocParity(db, userId, {}, library))).toEqual([]);
     });

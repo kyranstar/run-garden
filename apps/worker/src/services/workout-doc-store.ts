@@ -27,9 +27,11 @@
  *  - the revision row copies the row's own stored document and counter (INSERT … SELECT), so the two cannot differ.
  * `session_builds.workout_doc` is a snapshot of one build: no revisions.
  */
-import { and, eq, inArray, isNotNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { plannedWorkoutStages, plannedWorkouts, workoutDocRevisions } from "@rg/database";
 import {
+  DOC_ORIGINS,
+  parseStoredWorkoutDoc,
   workoutDocSchema,
   type CoachSession,
   type DOC_SOURCES,
@@ -234,6 +236,22 @@ export function withStageTargets(doc: WorkoutDoc | null, stages: readonly StageR
   return parsed.success ? parsed.data : doc;
 }
 
+/**
+ * A stored document with its stated length changed (the coach's `adjust`: how long a session lasts, never what it is):
+ * `setting.targetMinutes` and nothing else. A length the schema cannot hold is no longer stated (stating the old one
+ * would be wrong). No usable stored document → null: the caller leaves the columns as they are.
+ */
+export function docWithStatedLength(stored: unknown, minutes: number): WorkoutDoc | null {
+  const doc = parseStoredWorkoutDoc(stored);
+  if (!doc) return null;
+  const { setting: was, ...rest } = doc;
+  const { targetMinutes: _old, ...setting } = was ?? {};
+  const next = workoutDocSchema.safeParse({ ...rest, setting: { ...setting, targetMinutes: minutes } });
+  if (next.success) return next.data;
+  const unstated = workoutDocSchema.safeParse(Object.keys(setting).length > 0 ? { ...rest, setting } : rest);
+  return unstated.success ? unstated.data : null;
+}
+
 /** An old Studio session → its document; `corosKeyOfOrigin` reads the athlete's catalog id as its T-code. */
 export function docForStudioSession(session: StudioSession, ctx: { corosKeyOfOrigin: (originId: string) => string | null }): WorkoutDoc | null {
   const originIdToLibraryId = (id: string): string | null => {
@@ -273,6 +291,21 @@ export function updateDocColumns(doc: WorkoutDoc | null, opts: { reopens?: boole
     workoutDoc,
     workoutDocRev: sql`case when ${kept} or ${plannedWorkouts.workoutDoc} is ${text} then ${plannedWorkouts.workoutDocRev} else coalesce(${plannedWorkouts.workoutDocRev}, 0) + 1 end`,
   };
+}
+
+/**
+ * A row that LEAVES a completed, skipped or missed state (an unskip, the coach's restore, a "not yet", an unmatch). While
+ * frozen its document was kept as it was, and its content may have moved on meanwhile (the import still rewrites a
+ * skipped row's content; a write keeps a frozen row's document): the document is set NULL, its counter kept, so the
+ * backfill or the next writer derives it again from the row's content as it now is — and so the next revision's id
+ * never collides with the history. Never a document workout's (`DOC_ORIGINS`): its document IS its content, and it can
+ * never have been revised while frozen. In SQL, against the row as it was, so a state that changed under the write
+ * still holds; a row that was not frozen keeps its document.
+ */
+export function reopenedDocColumns(): { workoutDoc: SQL } {
+  const pw = plannedWorkouts;
+  const stale = and(frozen(), or(isNull(pw.origin), notInArray(pw.origin, [...DOC_ORIGINS])));
+  return { workoutDoc: sql`case when ${stale} then null else ${pw.workoutDoc} end` };
 }
 
 /**

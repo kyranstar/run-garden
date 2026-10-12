@@ -16,6 +16,7 @@ import { ingestActivities } from "./completion.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { sentBuildIdOf, type BuildPayload } from "./session-build.js";
 import { linkWatchSessionsToWorkouts } from "./watch-sets.js";
+import { reopenedDocColumns } from "./workout-doc-store.js";
 
 export type FixtureWatchSessionResult =
   | { status: "ok"; workoutId: string; activityId: string; providerActivityId: string }
@@ -147,7 +148,7 @@ export async function seedWatchSession(db: Db, userId: string, prefs: UserPrefer
     if (o.workoutId !== slot.id) {
       await db
         .update(plannedWorkouts)
-        .set({ completionState: "unresolved", resolutionDate: null, updatedAt: at })
+        .set({ completionState: "unresolved", resolutionDate: null, ...reopenedDocColumns(), updatedAt: at })
         .where(and(eq(plannedWorkouts.id, o.workoutId), eq(plannedWorkouts.userId, userId)));
     }
   }

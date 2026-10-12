@@ -15,6 +15,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { sha256Hex } from "../auth/crypto.js";
 import { chunkIds } from "../services/db.js";
 import { restoreInProgress } from "../services/account-state.js";
+import { plannedRowColumns } from "../services/planned-columns.js";
 
 const { activities, plannedWorkouts, users, workoutCompletionMatches } = schema;
 
@@ -85,7 +86,7 @@ lifeosRoutes.get("/plan", async (c) => {
   if (await restoreInProgress(db, owner.id)) return c.json({ error: "restore_in_progress" }, 503);
 
   const rows = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(

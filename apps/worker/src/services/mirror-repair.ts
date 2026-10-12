@@ -75,6 +75,7 @@ import { auditEvents, calendarEventSuppressions, plannedWorkouts } from "@rg/dat
 import { newId, nowInstant } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { loadOwnProgramNames } from "./coros-stamp.js";
+import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 // The importer's OWN definition of one session, imported rather than restated:
 // this repair reverses the mirror dedupe, so it has to agree with the dedupe
 // about what a mirror is, permanently and by construction.
@@ -83,7 +84,8 @@ import { mirrorGroupKey } from "./import-plan.js";
 /** `audit_events.kind` for the pre-change backup written by a live repair. */
 export const MIRROR_REPAIR_BACKUP_KIND = "orphaned_mirror_unarchived";
 
-type WorkoutRow = typeof plannedWorkouts.$inferSelect;
+/** The document is never read: un-archiving leaves it as it is (`plannedRowColumns`). */
+type WorkoutRow = PlannedRow;
 
 export interface OrphanedMirrorReport {
   workoutId: string;
@@ -148,7 +150,7 @@ export async function repairOrphanedMirrors(
   userId: string,
   opts: MirrorRepairOptions,
 ): Promise<MirrorRepairReport> {
-  const all = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+  const all = await db.select(plannedRowColumns()).from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
 
   // EXHAUSTIVE over history, like `plan-repair.ts`'s own load and for the same
   // reason: the damaged rows are months out, well past any import window, and a

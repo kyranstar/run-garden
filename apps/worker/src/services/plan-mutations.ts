@@ -6,6 +6,7 @@ import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
 import { enqueueProgramUnpush } from "./watch-push.js";
 import { sentBuildIdOf } from "./session-build.js";
+import { reopenedDocColumns } from "./workout-doc-store.js";
 
 /**
  * The athlete's own plan mutations, as services — so the coach's ops and the
@@ -248,10 +249,11 @@ export async function unskipWorkout(
   const resolvedOn =
     w.resolutionDate && w.resolutionDate > w.effectiveDate ? w.resolutionDate : w.effectiveDate;
   // `sanctionedBy` clears with the skip: the garden's mercy was granted for a
-  // rest day that is no longer being taken.
+  // rest day that is no longer being taken. The workout document, kept as it
+  // was while skipped, is derived again from the row (`reopenedDocColumns`).
   await db
     .update(plannedWorkouts)
-    .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, updatedAt: now })
+    .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, ...reopenedDocColumns(), updatedAt: now })
     .where(and(eq(plannedWorkouts.id, w.id), eq(plannedWorkouts.userId, userId)));
   await db.insert(scheduleOverrides).values({
     id: newId(),

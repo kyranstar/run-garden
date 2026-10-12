@@ -101,6 +101,9 @@ export async function corosReadNow(
   // Hoisted so the catch can preserve it while adding the failure detail —
   // spreading a stale copy would silently drop `lastFullScheduleAt`.
   const meta = (conn.meta ?? {}) as Record<string, unknown> & { lastFullScheduleAt?: string };
+  // The connection's meta as this read has left it so far: every write spreads THIS, the catch's too — never the copy
+  // taken before the read (a read that failed after its full schedule landed would un-do its own `lastFullScheduleAt`).
+  let nextMeta: Record<string, unknown> = meta;
   try {
     const client = await corosClient(db, env, userId, fetchImpl);
     if (!client) {
@@ -258,11 +261,11 @@ export async function corosReadNow(
       await upsertAthleteZones(db, userId, snapshot.zones).catch(() => undefined);
     }
 
-    // The connection's meta as this read leaves it: every write below spreads THIS, never the copy taken before the
-    // read (a partial full-schedule read spreading that copy un-did its own `lastFullScheduleAt`).
-    const nextMeta = fullScheduleDue ? { ...meta, lastFullScheduleAt: new Date().toISOString() } : meta;
+    // A partial full-schedule read spreading the old copy un-did its own `lastFullScheduleAt`.
     if (fullScheduleDue) {
-      await db.update(providerConnections).set({ meta: nextMeta }).where(eq(providerConnections.id, conn.id));
+      const stamped = { ...meta, lastFullScheduleAt: new Date().toISOString() };
+      await db.update(providerConnections).set({ meta: stamped }).where(eq(providerConnections.id, conn.id));
+      nextMeta = stamped;
     }
     await touchCorosSync(db, userId);
     if (failedWrites > 0) {
@@ -307,7 +310,7 @@ export async function corosReadNow(
         lastErrorCategory: "api_error",
         // `provider_connections` has no detail column and this does not warrant
         // a migration; `meta` is already the connection's own scratch space.
-        meta: { ...meta, lastErrorDetail: detail.slice(0, 400), lastErrorAt: nowInstant() },
+        meta: { ...nextMeta, lastErrorDetail: detail.slice(0, 400), lastErrorAt: nowInstant() },
       })
       .where(eq(providerConnections.id, conn.id));
     return { status: "coros_unreachable" };

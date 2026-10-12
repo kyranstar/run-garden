@@ -9,17 +9,19 @@
  * in coros."
  */
 import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, nowInstant, todayInZone, type CoachSession } from "@rg/domain";
+import { newId, nowInstant, parseStoredWorkoutDoc, todayInZone, type CoachSession } from "@rg/domain";
 import {
   countAbsentPushable,
   pushAbsentSessions,
   restoreAuthoredSessions,
 } from "../src/services/push-absent.js";
+import { sessionDoc } from "../src/services/coach-apply.js";
+import { storedDocText } from "../src/services/workout-doc-store.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
-const { plannedWorkouts, corosWriteJobs, trainingPlans } = schema;
+const { auditEvents, plannedWorkouts, corosWriteJobs, trainingPlans, workoutDocRevisions } = schema;
 
 const SQUAT = "425898928110747648";
 
@@ -214,5 +216,44 @@ describe("restoring a session COROS's echo overwrote", () => {
     // Idempotent: a row already rendering correctly is not rewritten.
     const again = await restoreAuthoredSessions(db, userId, { dryRun: false });
     expect(again.totals.restored).toBe(0);
+  });
+});
+
+describe("a restored session's workout document", () => {
+  it("is written as the coach's own write writes it: the session's document at the next revision, in the same batch", async () => {
+    const db = await makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true, weightUnit: "lb" });
+    // A loaded lift: the document's loads are typed in the athlete's unit.
+    const base = lift([SQUAT, SQUAT]);
+    const session: CoachSession = { ...base, lift: { exercises: base.lift!.exercises.map((e) => ({ ...e, weight: { type: "kg" as const, value: 20 } })) } };
+    // The echo's document: what the import made of COROS's copy (any other document stands in for it here).
+    const echo = sessionDoc("echo", lift([SQUAT]), "kg");
+    const id = await seed(db, userId, session, todayInZone(prefs.timezone), {
+      stageSummary: "3 × open Reverse Lunge / open Reverse Lunge",
+      workoutDoc: storedDocText(echo),
+      workoutDocRev: 1,
+    });
+    const bare = await seed(db, userId, session, todayInZone(prefs.timezone), { stageSummary: "stale" });
+
+    await restoreAuthoredSessions(db, userId, { dryRun: true });
+    const raw = async (workoutId: string) =>
+      (await db.select({ ...getTableColumns(plannedWorkouts), workoutDoc: sql<string | null>`${plannedWorkouts.workoutDoc}` }).from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId)))[0]!;
+    expect((await raw(id)).workoutDoc).toBe(storedDocText(echo));
+
+    const live = await restoreAuthoredSessions(db, userId, { dryRun: false });
+    expect(live.totals.restored).toBe(2);
+    const [audit] = await db.select().from(auditEvents).where(and(eq(auditEvents.userId, userId), eq(auditEvents.kind, "authored_sessions_restored")));
+    for (const [workoutId, rev] of [[id, 2], [bare, 1]] as const) {
+      const row = await raw(workoutId);
+      // The coach's own document of the session, in the athlete's weight unit.
+      expect(row.workoutDoc).toBe(storedDocText(sessionDoc(workoutId, session, "lb")));
+      const doc = parseStoredWorkoutDoc(row.workoutDoc)!;
+      expect([doc.title, doc.source.kind, doc.parts.flatMap((p) => p.items).length]).toEqual([session.title, "coach", 2]);
+      expect(row.workoutDoc).not.toBe(storedDocText(sessionDoc(workoutId, session, "kg")));
+      expect(row.workoutDocRev).toBe(rev);
+      const revs = await db.select({ rev: workoutDocRevisions.rev, sourceKind: workoutDocRevisions.sourceKind, sourceRef: workoutDocRevisions.sourceRef, doc: sql<string>`${workoutDocRevisions.doc}` }).from(workoutDocRevisions).where(eq(workoutDocRevisions.workoutId, workoutId));
+      expect(revs.map((r) => [r.rev, r.sourceKind, r.sourceRef])).toEqual([[rev, "coach", audit!.id]]);
+      expect(revs[0]!.doc).toBe(row.workoutDoc);
+    }
   });
 });

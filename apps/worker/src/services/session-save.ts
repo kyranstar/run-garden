@@ -85,6 +85,7 @@ import { engineDataFor, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH }
 import { sessionAnswerStatements } from "./session-answers.js";
 import { saveWatchReview } from "./session-watch-review.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
+import { reopenedDocColumns } from "./workout-doc-store.js";
 
 /**
  * What a save says beside the session, when something did not go the usual way. `superseded_auto_match`: the matcher's
@@ -625,10 +626,10 @@ async function planMatch(db: Db, userId: string, slot: SlotRow, performedId: str
     if (reopened) alsoFrom.push(reopened.effectiveDate);
     statements.push(
       db.update(workoutCompletionMatches).set({ undoneAt: now }).where(eq(workoutCompletionMatches.id, elsewhere.id)),
-      // As the athlete's own unmatch leaves a slot (routes/plan.ts).
+      // As the athlete's own unmatch leaves a slot (routes/plan.ts), its workout document too.
       db
         .update(plannedWorkouts)
-        .set({ completionState: "unresolved", resolutionDate: null, updatedAt: now })
+        .set({ completionState: "unresolved", resolutionDate: null, ...reopenedDocColumns(), updatedAt: now })
         .where(and(eq(plannedWorkouts.id, elsewhere.workoutId), eq(plannedWorkouts.userId, userId))),
     );
   }

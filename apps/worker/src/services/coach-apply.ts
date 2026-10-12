@@ -27,6 +27,7 @@ import {
   type CoachSession,
   type UserPreferences,
   type WeightUnit,
+  type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
 import { chunkIds, chunkedInsert, runAtomically, type Db } from "./db.js";
@@ -44,6 +45,7 @@ import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
 import {
   docForCoachSession,
+  docWithStatedLength,
   newRowDocColumns,
   revisionInsert,
   revisionInserts,
@@ -375,10 +377,16 @@ interface NewSession {
 /**
  * A session's workout document, with the targets of the very stage rows `writeStages` writes for it (a run's pace
  * bands from the athlete's threshold) — `withStageTargets`, the helper the backfill uses, so a coach run's document is
- * the same whichever wrote it.
+ * the same whichever wrote it. Never fails the write: the conversion answers null (logged by code), and lending the
+ * targets, should it throw, leaves the document as converted.
  */
-function sessionDoc(workoutId: string, session: CoachSession, weightUnit: WeightUnit | undefined, thresholdPaceSecPerKm?: number) {
-  return withStageTargets(docForCoachSession(session, { weightUnit }), coachStageRows(workoutId, session, thresholdPaceSecPerKm));
+export function sessionDoc(workoutId: string, session: CoachSession, weightUnit: WeightUnit | undefined, thresholdPaceSecPerKm?: number): WorkoutDoc | null {
+  const doc = docForCoachSession(session, { weightUnit });
+  try {
+    return withStageTargets(doc, coachStageRows(workoutId, session, thresholdPaceSecPerKm));
+  } catch {
+    return doc;
+  }
 }
 
 /**
@@ -1376,23 +1384,33 @@ export async function applyOps(
           break;
         }
         const row = found.row;
-        await db
-          .update(plannedWorkouts)
-          .set({
-            calendarBlockDurationSeconds: op.durationMinutes * 60,
-            // The estimate the load maths falls back on moves with the block,
-            // or the two would disagree about how long the session is.
-            fallbackEstimatedDurationSeconds: op.durationMinutes * 60,
-            // …and nothing ahead of it in `source ?? fallback` may still say
-            // the old length.
-            sourceEstimatedDurationSeconds: null,
-            durationEstimate: null,
-            // `corosSyncState` is left alone on purpose: no push job is
-            // enqueued here, so flipping it to `calendar_only` stranded the
-            // row as "not synced" forever. The watch copy is unchanged.
-            updatedAt: now,
-          })
-          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        // The document states the new length — `setting.targetMinutes`, and
+        // nothing else of it — as the row's next revision, in the same batch
+        // (Stage 1 dual-write; `updateDocColumns` keeps a row resolved
+        // meanwhile as it was). A row with no usable document is left with
+        // what it has: the backfill derives one.
+        const doc = docWithStatedLength(row.workoutDoc, op.durationMinutes);
+        await runAtomically(db, [
+          db
+            .update(plannedWorkouts)
+            .set({
+              calendarBlockDurationSeconds: op.durationMinutes * 60,
+              // The estimate the load maths falls back on moves with the block,
+              // or the two would disagree about how long the session is.
+              fallbackEstimatedDurationSeconds: op.durationMinutes * 60,
+              // …and nothing ahead of it in `source ?? fallback` may still say
+              // the old length.
+              sourceEstimatedDurationSeconds: null,
+              durationEstimate: null,
+              // `corosSyncState` is left alone on purpose: no push job is
+              // enqueued here, so flipping it to `calendar_only` stranded the
+              // row as "not synced" forever. The watch copy is unchanged.
+              ...(doc ? updateDocColumns(doc) : {}),
+              updatedAt: now,
+            })
+            .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId))),
+          ...(doc ? [revisionInsert(db, { userId, workoutId: op.workoutId, sourceKind: "coach", sourceRef: proposalId, now })] : []),
+        ]);
         // A longer or shorter block can collide with its neighbours.
         touchedDates.add(row.effectiveDate);
         out.updated.push(op.workoutId);

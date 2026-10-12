@@ -80,8 +80,11 @@ beforeEach(async () => {
     encryptedRefreshToken: await encryptSecret("refresh", TEST_KEY), encryptedAccessToken: await encryptSecret("access", TEST_KEY),
     accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(), createdAt: nowInstant(), updatedAt: nowInstant(),
   });
-  // The mock's schedule is this week and next: the read's window holds all of it.
-  server = renormalizingCoros({ baseMonday: startOfIsoWeek(today) });
+  // The mock's schedule is two weeks from a Monday, and both reads' windows must hold all of it on any weekday: a read
+  // after the full-schedule one reaches only a week ahead, so from this week's Monday a Monday or Tuesday read missed
+  // next week's renamed programs. From the Monday 6–12 days back, the fortnight ends within the week ahead, starts
+  // within the activity window, and its activity day has passed.
+  server = renormalizingCoros({ baseMonday: startOfIsoWeek(addDays(today, -6)) });
   const pwdMd5 = createHash("md5").update(server.password, "utf8").digest("hex");
   expect((await connectCoros(db, makeEnv(), userId, { email: server.email, pwdMd5, region: "us" }, server.fetchImpl)).status).toBe("connected");
   const google = fakeGoogle();

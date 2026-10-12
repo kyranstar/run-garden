@@ -103,6 +103,32 @@ workoutRoutes.put("/:id/doc", async (c) => {
 const LIST_DEFAULT = 50;
 const LIST_MAX = 200;
 const Q_MAX = 40;
+/** D1 refuses a LIKE pattern over this many BYTES ("LIKE or GLOB pattern too complex"). */
+const LIKE_MAX_BYTES = 50;
+
+/**
+ * q as a LIKE pattern (ESCAPE '\'): trimmed and cut at 40 characters, its `\`, `%` and `_` escaped, between two `%`
+ * wildcards — then shortened a whole character at a time (never half an emoji, never a backslash without its
+ * character) until the pattern is within D1's 50 bytes of UTF-8. An all-whitespace q is no filter (null). LIKE folds
+ * case for ASCII only, so "é" does not match "É".
+ */
+export function likePatternOf(raw: string | undefined): string | null {
+  const chars = [...(raw?.trim() ?? "")].slice(0, Q_MAX);
+  const bytes = new TextEncoder();
+  for (let n = chars.length; n > 0; n--) {
+    const q = chars.slice(0, n).join("").trim();
+    if (!q) return null;
+    const pattern = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    if (bytes.encode(pattern).length <= LIKE_MAX_BYTES) return pattern;
+  }
+  return null;
+}
+
+/**
+ * The document's intent summary, read in SQL: the list never carries a whole document. NULL for no document, a
+ * malformed one (json_valid: json_extract would throw and fail the whole list), another version, or no text there.
+ */
+const summarySql = sql<string | null>`case when json_valid(${plannedWorkouts.workoutDoc}) and json_extract(${plannedWorkouts.workoutDoc}, '$.version') = 1 and json_type(${plannedWorkouts.workoutDoc}, '$.intent.summary') = 'text' then json_extract(${plannedWorkouts.workoutDoc}, '$.intent.summary') end`;
 
 workoutRoutes.get("/:id/doc", async (c) => {
   const row = (
@@ -126,14 +152,21 @@ workoutRoutes.get("/", async (c) => {
   if ((from !== undefined && !DATE.test(from)) || (to !== undefined && !DATE.test(to))) return c.json({ error: "bad_date" }, 400);
   const asked = Number(c.req.query("limit"));
   const limit = Number.isFinite(asked) && asked >= 1 ? Math.min(Math.floor(asked), LIST_MAX) : LIST_DEFAULT;
-  // D1 refuses a LIKE pattern over 50 bytes ("LIKE or GLOB pattern too complex"): trim, then cut silently at 40
-  // characters, leaving room for the two % wildcards. An all-whitespace q is no filter. LIKE folds case for ASCII
-  // only, so "é" does not match "É".
-  const q = (c.req.query("q")?.trim().slice(0, Q_MAX) ?? "").trim();
-  const like = q ? `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%` : null;
+  const like = likePatternOf(c.req.query("q"));
   const rows = await c
     .get("db")
-    .select(plannedWorkoutColumns())
+    .select({
+      id: plannedWorkouts.id,
+      date: plannedWorkouts.effectiveDate,
+      title: plannedWorkouts.title,
+      intentSummary: summarySql,
+      category: plannedWorkouts.category,
+      completionState: plannedWorkouts.completionState,
+      docRev: plannedWorkouts.workoutDocRev,
+      sourceEstimatedDurationSeconds: plannedWorkouts.sourceEstimatedDurationSeconds,
+      fallbackEstimatedDurationSeconds: plannedWorkouts.fallbackEstimatedDurationSeconds,
+      calendarBlockDurationSeconds: plannedWorkouts.calendarBlockDurationSeconds,
+    })
     .from(plannedWorkouts)
     .where(
       and(
@@ -145,8 +178,7 @@ workoutRoutes.get("/", async (c) => {
           ? [
               or(
                 sql`${plannedWorkouts.title} LIKE ${like} ESCAPE '\\'`,
-                // json_valid guards a malformed column: json_extract would throw and fail the whole list.
-                sql`CASE WHEN json_valid(${plannedWorkouts.workoutDoc}) THEN json_extract(${plannedWorkouts.workoutDoc}, '$.intent.summary') END LIKE ${like} ESCAPE '\\'`,
+                sql`${summarySql} LIKE ${like} ESCAPE '\\'`,
               )!,
             ]
           : []),
@@ -155,16 +187,10 @@ workoutRoutes.get("/", async (c) => {
     .orderBy(desc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime), asc(plannedWorkouts.id))
     .limit(limit);
   return c.json(
-    rows.map((w) => ({
-      id: w.id,
-      date: w.effectiveDate,
-      title: w.title,
-      intentSummary: parseStoredWorkoutDoc(w.workoutDoc)?.intent.summary ?? null,
-      category: w.category,
-      completionState: w.completionState,
-      docRev: w.workoutDocRev ?? null,
+    rows.map(({ sourceEstimatedDurationSeconds, fallbackEstimatedDurationSeconds, calendarBlockDurationSeconds, ...w }) => ({
+      ...w,
       // For display: the estimate, else the calendar slot (the parity check never uses the slot).
-      minutes: rowMinutes(w),
+      minutes: rowMinutes({ sourceEstimatedDurationSeconds, fallbackEstimatedDurationSeconds, calendarBlockDurationSeconds }),
     })),
   );
 });

@@ -77,6 +77,7 @@ import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
+import { reopenedDocColumns } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -834,7 +835,7 @@ planRoutes.get("/workouts", async (c) => {
   const start = c.req.query("start") ?? addDays(today, -56);
   const end = c.req.query("end") ?? addDays(today, 7 * prefs.mirrorWeeksAhead);
   const rows = await db
-    .select()
+    .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -989,7 +990,7 @@ planRoutes.get("/week", async (c) => {
   const [rows, catalog, presence, activePlans, historyRows, acts, latestCoachMsg, raceMismatch] =
     await Promise.all([
       db
-        .select()
+        .select(plannedRowColumns())
         .from(plannedWorkouts)
         .where(
           and(
@@ -1009,7 +1010,7 @@ planRoutes.get("/week", async (c) => {
         .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
       // 4-week adherence source (all disciplines), trend against the 4 prior.
       db
-        .select()
+        .select(plannedRowColumns())
         .from(plannedWorkouts)
         .where(
           and(
@@ -1509,7 +1510,8 @@ planRoutes.post("/workouts/:id/defer", async (c) => {
   await c
     .get("db")
     .update(plannedWorkouts)
-    .set({ completionState: "scheduled", snoozedUntil: tomorrow, updatedAt: nowInstant() })
+    // A resolved row reopened: its workout document is derived again (`reopenedDocColumns`).
+    .set({ completionState: "scheduled", snoozedUntil: tomorrow, ...reopenedDocColumns(), updatedAt: nowInstant() })
     .where(
       and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, c.get("userId"))),
     );
@@ -1618,9 +1620,10 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
   // counted. Mirror the matching path (completion.ts adds
   // workout.effectiveDate to affectedDates): replay from the earlier of the
   // workout's day and today.
+  // The completed row reopened: its workout document is derived again (`reopenedDocColumns`).
   await db
     .update(plannedWorkouts)
-    .set({ completionState: "unresolved", resolutionDate: null, updatedAt: now })
+    .set({ completionState: "unresolved", resolutionDate: null, ...reopenedDocColumns(), updatedAt: now })
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)));
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);

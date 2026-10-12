@@ -39,6 +39,8 @@ let poisonKind: "constraint" | "other" = "constraint";
 let poisonAll = false;
 /** A failure every stage insert hits (no constraint: the schema drifted). */
 let stagesBroken = false;
+/** The next write of a partial read's detail to the connection fails (once): the read fails after its schedule landed. */
+let partialNoteFailsOnce = false;
 
 /** The test database, with the two failures wired into its statements (by bound value, as a constraint would be). */
 function failingDb(): Db {
@@ -60,6 +62,15 @@ function failingDb(): Db {
         return run(...params);
       };
     }
+    if (/^update "provider_connections"/.test(sql)) {
+      stmt.run = (...params: unknown[]) => {
+        if (partialNoteFailsOnce && params.some((p) => typeof p === "string" && p.includes("could not be saved"))) {
+          partialNoteFailsOnce = false;
+          throw new Error("D1_ERROR: Network connection lost.");
+        }
+        return run(...params);
+      };
+    }
     if (/^insert into "planned_workout_stages"/.test(sql)) {
       stmt.run = (...params: unknown[]) => {
         if (stagesBroken) throw new Error("D1_ERROR: table planned_workout_stages has no column named note: SQLITE_ERROR");
@@ -76,6 +87,7 @@ beforeEach(async () => {
   poisonKind = "constraint";
   poisonAll = false;
   stagesBroken = false;
+  partialNoteFailsOnce = false;
   db = failingDb();
   ({ userId, prefs } = await makeTestUser(db));
   server = renormalizingCoros({ baseMonday: startOfIsoWeek(todayInZone(prefs.timezone)) });
@@ -177,6 +189,30 @@ describe("a read whose import cannot write", () => {
     expect(second.status).toBe("ok");
     expect(second.fullSchedule).toBeUndefined();
     expect(((await connection()).meta as { lastFullScheduleAt?: string }).lastFullScheduleAt).toBe(meta.lastFullScheduleAt);
+  });
+
+  it("a read that fails after its full schedule landed keeps lastFullScheduleAt: the failure is recorded beside it", async () => {
+    poisonTitle = "Easy + Strides";
+    partialNoteFailsOnce = true;
+    const first = await read();
+    expect(first.status).toBe("coros_unreachable");
+    const conn = await connection();
+    expect(conn.lastErrorCategory).toBe("api_error");
+    const meta = conn.meta as { lastFullScheduleAt?: string; lastErrorDetail?: string };
+    expect(meta.lastErrorDetail).toContain("Network connection lost");
+    expect(typeof meta.lastFullScheduleAt).toBe("string");
+    poisonTitle = null;
+    const second = await read();
+    expect(second.status).toBe("ok");
+    expect(second.fullSchedule).toBeUndefined();
+  });
+
+  it("a read that fails before its full schedule lands claims none: the next read is the full-schedule read", async () => {
+    poisonAll = true;
+    expect((await read()).status).toBe("coros_unreachable");
+    expect((await connection()).meta).not.toHaveProperty("lastFullScheduleAt");
+    poisonAll = false;
+    expect(await read()).toMatchObject({ status: "ok", fullSchedule: true });
   });
 
   it("more bad rows than the retry cap fail the read: api_error recorded, COROS answered unreachable", async () => {

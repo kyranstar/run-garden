@@ -27,10 +27,12 @@
 import { and, desc, eq, gte, inArray, isNotNull, isNull } from "drizzle-orm";
 import { auditEvents, dailyHealth, plannedWorkouts, plannedWorkoutStages } from "@rg/database";
 import { appAuthoredRow, newId, nowInstant, todayInZone, watchAddressOf } from "@rg/domain";
-import { chunkIds, type Db } from "./db.js";
+import { chunkIds, runAtomically, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { enqueueWatchCreate, sessionColumns, watchPushable, writeStages } from "./coach-apply.js";
+import { enqueueWatchCreate, sessionColumns, sessionDoc, watchPushable, writeStages } from "./coach-apply.js";
 import { sessionFromRow } from "./content-converge.js";
+import { plannedRowColumns } from "./planned-columns.js";
+import { revisionInsert, updateDocColumns } from "./workout-doc-store.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */
 export const PUSH_ABSENT_BACKUP_KIND = "absent_sessions_pushed";
@@ -92,7 +94,7 @@ export async function pushAbsentSessions(
 
   const rows = (
     await db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -269,7 +271,7 @@ export async function restoreAuthoredSessions(
   const now = nowInstant();
   const rows = (
     await db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)))
   ).filter(
@@ -308,15 +310,22 @@ export async function restoreAuthoredSessions(
     .orderBy(desc(dailyHealth.date))
     .limit(1);
 
+  const { weightUnit } = await loadPreferences(db, userId);
   for (const entry of out) {
     const row = rows.find((r) => r.id === entry.workoutId)!;
     const session = sessionFromRow(row, [])!;
     // The SAME writers the coach uses, so a restored session and an approved one
-    // cannot be two different things.
-    await db
-      .update(plannedWorkouts)
-      .set({ ...sessionColumns(session), updatedAt: now })
-      .where(eq(plannedWorkouts.id, row.id));
+    // cannot be two different things — its workout document too, as an ease
+    // writes it: the row's next revision in the same batch (Stage 1 dual-write),
+    // filed under this repair's audit event.
+    const doc = sessionDoc(row.id, session, weightUnit, threshold?.v ?? undefined);
+    await runAtomically(db, [
+      db
+        .update(plannedWorkouts)
+        .set({ ...sessionColumns(session), ...updateDocColumns(doc), updatedAt: now })
+        .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId))),
+      ...(doc ? [revisionInsert(db, { userId, workoutId: row.id, sourceKind: "coach", sourceRef: auditEventId, now })] : []),
+    ]);
     await writeStages(db, row.id, session, threshold?.v ?? undefined);
   }
   return { dryRun: false, rows: out, totals: { candidates: rows.length, restored: out.length } };

@@ -33,11 +33,14 @@ import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { deriveDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
 import { applyOps } from "../src/services/coach-apply.js";
+import { backfillWorkoutDocs } from "../src/services/workout-doc-backfill.js";
+import { planRoutes } from "../src/routes/plan.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { checkWorkoutDocParity } from "../src/services/workout-doc-parity.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { buildSession } from "../src/services/session-build.js";
 import { slotId } from "../src/services/program-slots.js";
-import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 /** Converters throw while `boom.on`: the failure every writer must survive. */
 const boom = vi.hoisted(() => ({ on: false }));
@@ -60,6 +63,7 @@ vi.setConfig({ testTimeout: 30_000 });
 
 const { plannedWorkouts, programs, sessionBuilds, workoutDocRevisions } = schema;
 const GOBLET = EXERCISES.find((e) => e.name === "Goblet squat")!.id;
+const NOW_ISO = "2026-10-01T00:00:00.000Z";
 
 let db: Db;
 let userId: string;
@@ -311,6 +315,55 @@ describe("the coach: an add and an ease write the document and its revision", ()
     expect((await revisionsOf(id!)).map((r) => r.rev)).toEqual([1]);
   });
 
+  it("an adjust: the document states the new length at the next revision, and nothing else of it changes", async () => {
+    const [id] = (await applyOps(db, userId, prefs, "p-add", [add(addDays(today, 2), { ...LIFT, durationMinutes: 45 })])).created;
+    const before = docOf(await rowOf(id!));
+    expect(before.setting?.targetMinutes).toBe(45);
+    statements.length = 0;
+    const out = await applyOps(db, userId, prefs, "p-adjust", [coachOpSchema.parse({ kind: "adjust", workoutId: id, durationMinutes: 20 })]);
+    expect(out.updated).toEqual([id]);
+    const row = await rowOf(id!);
+    expect(rowMinutes(row)).toBe(20);
+    const doc = docOf(row);
+    expect(doc.setting?.targetMinutes).toBe(20);
+    expect({ ...doc, setting: { ...doc.setting, targetMinutes: 45 } }).toEqual(before);
+    expect(row.workoutDocRev).toBe(2);
+    const revs = await revisionsOf(id!);
+    expect(revs.map((r) => [r.rev, r.sourceKind, r.sourceRef])).toEqual([[1, "coach", "p-add"], [2, "coach", "p-adjust"]]);
+    expect(revs[1]!.doc).toEqual(row.workoutDoc);
+    // The document rides the length's own write; its revision is one statement more.
+    expect(statements.filter((q) => /^update "planned_workouts" set .*"calendar_block_duration_seconds"/.test(q)).map((q) => /"workout_doc" =/.test(q))).toEqual([true]);
+    expect(revisionStatements()).toHaveLength(1);
+    // The row and its document agree on the length: no minutes mismatch.
+    expect((await checkWorkoutDocParity(db, userId)).mismatched.filter((m) => m.field === "minutes")).toEqual([]);
+    // The same adjust again is the same document: no new revision.
+    await applyOps(db, userId, prefs, "p-adjust", [coachOpSchema.parse({ kind: "adjust", workoutId: id, durationMinutes: 20 })]);
+    expect((await rowOf(id!)).workoutDocRev).toBe(2);
+    expect((await revisionsOf(id!)).map((r) => r.rev)).toEqual([1, 2]);
+  });
+
+  it("an adjust to a length no document can state drops the stated length; a row with no document is left with none", async () => {
+    const [id] = (await applyOps(db, userId, prefs, "p-add", [add(addDays(today, 2), LIFT)])).created;
+    await applyOps(db, userId, prefs, "p-long", [coachOpSchema.parse({ kind: "adjust", workoutId: id, durationMinutes: 700 })]);
+    const row = await rowOf(id!);
+    expect(docOf(row).setting?.targetMinutes).toBeUndefined();
+    expect(row.workoutDocRev).toBe(2);
+    const warn = silence();
+    boom.on = true;
+    const [bare] = (await applyOps(db, userId, prefs, "p-bare", [add(addDays(today, 3), LIFT)])).created;
+    boom.on = false;
+    warn.mockRestore();
+    await applyOps(db, userId, prefs, "p-bare-adjust", [coachOpSchema.parse({ kind: "adjust", workoutId: bare, durationMinutes: 20 })]);
+    const after = await rowOf(bare!);
+    expect([rowMinutes(after), after.workoutDoc, after.workoutDocRev]).toEqual([20, null, null]);
+    expect(await revisionsOf(bare!)).toEqual([]);
+    // A malformed document is left as it is, its counter too: the adjust changes the length, and only the length.
+    await db.run(sql`update planned_workouts set workout_doc = '{not json', workout_doc_rev = 4 where id = ${id!}`);
+    await applyOps(db, userId, prefs, "p-bad-adjust", [coachOpSchema.parse({ kind: "adjust", workoutId: id, durationMinutes: 25 })]);
+    const bad = await rowOf(id!);
+    expect([rowMinutes(bad), bad.workoutDoc, bad.workoutDocRev]).toEqual([25, "{not json", 4]);
+  });
+
   it("the cost: one statement more per op that writes documents (the revisions of all its sessions), none without one", async () => {
     statements.length = 0;
     const out = await applyOps(db, userId, prefs, "p-cost", [add(addDays(today, 2), RUN), add(addDays(today, 3), { category: "rest", title: "Rest", durationMinutes: 0 })]);
@@ -467,6 +520,77 @@ describe("the COROS import: where stages are written, the document is too", () =
     expect([row.completionState, row.sport, row.workoutDocRev]).toEqual(["scheduled", "strength", 2]);
     expect(docOf(row).title).toBe("Upper");
     expect((await revisionsOf(row.id)).map((r) => [r.rev, titleOf(r.doc)])).toEqual([[1, "Easy 30"], [2, "Upper"]]);
+  });
+
+  describe("a row put back on the plan from skipped, completed or missed: its document is derived again", () => {
+    const easy45 = () => changed(src(2, { title: "Easy 45", contentFingerprint: "fp-2b", stages: [st({ id: "1", order: 0, kind: "work", durationType: "time", durationSeconds: 2700 })] }));
+    /** Row 2 skipped, then rewritten upstream while skipped: the row follows, its document (frozen) does not. */
+    const skippedThenChanged = async () => {
+      await snapshot(base());
+      const { id } = await bySource(2);
+      await db.update(plannedWorkouts).set({ completionState: "skipped", resolutionDate: today }).where(eq(plannedWorkouts.id, id));
+      await snapshot(easy45());
+      const row = await bySource(2);
+      expect([row.title, docOf(row).title, row.workoutDocRev]).toEqual(["Easy 45", "Easy 30", 1]);
+      return id;
+    };
+    const cookie = async () => `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const post = async (path: string) =>
+      mountRoutes(db, "/api/plan", planRoutes).request(`/api/plan${path}`, { method: "POST", headers: { Cookie: await cookie() } }, { FIXTURE_MODE: "1" } as never);
+
+    it("an unskip: NULL, the counter kept; the backfill derives it again from the row as it now is, at the next revision", async () => {
+      const id = await skippedThenChanged();
+      expect((await post(`/workouts/${id}/unskip`)).status).toBe(200);
+      const row = await bySource(2);
+      expect([row.completionState, row.title, row.workoutDoc, row.workoutDocRev]).toEqual(["scheduled", "Easy 45", null, 1]);
+      expect((await backfillWorkoutDocs(db, userId, { kind: "planned", dryRun: false })).converted).toBe(1);
+      const after = await bySource(2);
+      expect([docOf(after).title, after.workoutDocRev]).toEqual(["Easy 45", 2]);
+      expect((await revisionsOf(id)).map((r) => [r.rev, titleOf(r.doc)])).toEqual([[1, "Easy 30"], [2, "Easy 45"]]);
+      expect((await checkWorkoutDocParity(db, userId)).mismatched).toEqual([]);
+    });
+
+    it("the coach's restore is the same unskip", async () => {
+      const id = await skippedThenChanged();
+      const out = await applyOps(db, userId, prefs, "p-restore", [coachOpSchema.parse({ kind: "restore", workoutId: id })]);
+      expect(out.updated).toEqual([id]);
+      const row = await bySource(2);
+      expect([row.completionState, row.workoutDoc, row.workoutDocRev]).toEqual(["scheduled", null, 1]);
+    });
+
+    it("a “not yet” and an unmatch reopen a resolved row the same way; a row that was not resolved keeps its document", async () => {
+      await snapshot(base());
+      const one = (await bySource(1)).id;
+      const two = (await bySource(2)).id;
+      const three = (await bySource(3)).id;
+      // Row 1 completed by an activity, then unmatched; row 2 missed, then deferred; row 3 unresolved, then deferred.
+      await db.insert(schema.activities).values({
+        id: "act-1", userId, source: "coros", corosActivityId: "a1", startTime: `${today}T14:00:00Z`, startTimeLocal: `${today}T07:00:00`,
+        timezone: prefs.timezone, sport: "run", durationSeconds: 1800, sourceMergeConfidence: 1, createdAt: NOW_ISO, updatedAt: NOW_ISO,
+      });
+      await db.insert(schema.workoutCompletionMatches).values({ id: "m-1", workoutId: one, activityId: "act-1", confidence: 1, method: "manual", matchedAt: NOW_ISO });
+      await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, one));
+      await db.update(plannedWorkouts).set({ completionState: "missed" }).where(eq(plannedWorkouts.id, two));
+      await db.update(plannedWorkouts).set({ completionState: "unresolved" }).where(eq(plannedWorkouts.id, three));
+      expect((await post(`/workouts/${one}/unmatch`)).status).toBe(200);
+      expect((await post(`/workouts/${two}/defer`)).status).toBe(200);
+      expect((await post(`/workouts/${three}/defer`)).status).toBe(200);
+      const states = await Promise.all([1, 2, 3].map(async (n) => {
+        const r = await bySource(n);
+        return [r.completionState, r.workoutDoc === null, r.workoutDocRev];
+      }));
+      expect(states).toEqual([["unresolved", true, 1], ["scheduled", true, 1], ["scheduled", false, 1]]);
+    });
+
+    it("a document workout's document is its content: an unskip keeps it", async () => {
+      await snapshot(base());
+      const { id } = await bySource(2);
+      await db.update(plannedWorkouts).set({ origin: "studio", completionState: "skipped" }).where(eq(plannedWorkouts.id, id));
+      const before = await bySource(2);
+      expect((await post(`/workouts/${id}/unskip`)).status).toBe(200);
+      const row = await bySource(2);
+      expect([row.completionState, row.workoutDoc, row.workoutDocRev]).toEqual(["scheduled", before.workoutDoc, 1]);
+    });
   });
 
   it("the cost: one statement more per read that writes documents, none for an unchanged read", async () => {

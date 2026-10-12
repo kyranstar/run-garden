@@ -88,6 +88,7 @@ import {
 } from "@rg/domain";
 import { RUN_PACE_WIRE } from "@rg/coros";
 import { chunkIds, type Db } from "./db.js";
+import type { PlannedRow } from "./planned-columns.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { enqueueContentConvergence, ownershipProofFor, watchPushable } from "./coach-apply.js";
 
@@ -195,7 +196,7 @@ export interface ContentConvergeReport {
  * from. Since the same derivation now writes the stage rows too (`writeStages`),
  * the round trip is closed.
  */
-export function sessionFromRow(row: WorkoutRow, stages: StageRow[]): CoachSession | null {
+export function sessionFromRow(row: PlannedRow, stages: StageRow[]): CoachSession | null {
   const minutes = Math.round((row.calendarBlockDurationSeconds ?? 0) / 60);
   if (row.sport === "run") {
     if (stages.length === 0) return null;

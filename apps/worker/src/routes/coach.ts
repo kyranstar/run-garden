@@ -51,6 +51,7 @@ import {
   WAKE_LOCK_STALE_MINUTES,
 } from "../services/coach-wake.js";
 import { chunkIds, type Db } from "../services/db.js";
+import { plannedRowColumns } from "../services/planned-columns.js";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -1095,7 +1096,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
       .map((p) => ({ push: p, key: `${p.corosPlanId}:${p.corosIdInPlan}` }));
     const linked = keys.length
       ? await db
-          .select()
+          .select(plannedRowColumns())
           .from(plannedWorkouts)
           .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)))
       : [];

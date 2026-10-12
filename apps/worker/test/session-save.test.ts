@@ -1281,6 +1281,8 @@ describe("ruling 2b-R5: the app's session supersedes an automatic match, never a
     await ensureGarden(db, userId, prefs, "2026-09-28");
     const s = await started("recovery");
     const yesterday = await seedSlot(YESTERDAY);
+    // A document it held while completed: the reopened slot's is derived again.
+    await db.update(plannedWorkouts).set({ workoutDoc: '{"version":1}', workoutDocRev: 1 }).where(eq(plannedWorkouts.id, yesterday));
     const coros = await watchFirst();
     await matched("m-elsewhere", yesterday, coros, "scored_auto", PLAYED);
     await advanceGarden(db, userId, prefs, new Date(SAVED));
@@ -1294,7 +1296,7 @@ describe("ruling 2b-R5: the app's session supersedes an automatic match, never a
     expect(outcome).toMatchObject({ status: "saved", activityId: coros, matched: true, notes: ["superseded_auto_match"] });
     expect(await active()).toEqual([[s.workoutId, coros, "app_session"]]);
     expect(await pointer(coros)).toBe(`app:${payload(s).id}`);
-    expect(await rowOf(yesterday)).toMatchObject({ completionState: "unresolved", resolutionDate: null });
+    expect(await rowOf(yesterday)).toMatchObject({ completionState: "unresolved", resolutionDate: null, workoutDoc: null, workoutDocRev: 1 });
     expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", resolutionDate: PLAYED });
     // Yesterday's credit came from a session that was today's: the replay went back for it.
     expect(await credited(YESTERDAY, yesterday)).toBe(false);

@@ -52,14 +52,21 @@
 
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { auditEvents, plannedWorkoutStages, plannedWorkouts, syncIntents } from "@rg/database";
-import { formatExerciseBlock, newId, nowInstant } from "@rg/domain";
+import { docOriginRow, formatExerciseBlock, newId, nowInstant } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { loadOwnProgramNames } from "./coros-stamp.js";
+import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
+import { updateDocColumns } from "./workout-doc-store.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live repair. */
 export const FIDELITY_REPAIR_BACKUP_KIND = "planned_workout_fidelity_repaired";
 
-type WorkoutRow = typeof plannedWorkouts.$inferSelect;
+/**
+ * A row as the repair reads it: without its document (`plannedRowColumns`). The backup's pre-change rows carry no
+ * document either; the repair sets it NULL and keeps the counter, and the revision that counter names
+ * (`workout_doc_revisions`) holds it.
+ */
+type WorkoutRow = PlannedRow;
 type StageRow = typeof plannedWorkoutStages.$inferSelect;
 
 /** One column this repair would rewrite, in the athlete's row. */
@@ -240,7 +247,7 @@ export async function repairPlannedWorkoutFidelity(
     for (const ids of chunkIds(opts.workoutIds)) {
       easedRows.push(
         ...(await db
-          .select()
+          .select(plannedRowColumns())
           .from(plannedWorkouts)
           .where(and(eq(plannedWorkouts.userId, userId), inArray(plannedWorkouts.id, ids)))),
       );
@@ -250,7 +257,7 @@ export async function repairPlannedWorkoutFidelity(
     // missed just because its intent row went missing.
     easedRows.push(
       ...(
-        await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))
+        await db.select(plannedRowColumns()).from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))
       ).filter(
         (r) =>
           claimedIds.has(r.id) || r.sourceContentFingerprint.startsWith(COACH_FINGERPRINT_PREFIX),
@@ -331,7 +338,7 @@ export async function repairPlannedWorkoutFidelity(
   const titlesToWrite: Array<{ row: WorkoutRow; to: string }> = [];
   if (ownNames.size > 0) {
     const allRows = await db
-      .select()
+      .select(plannedRowColumns())
       .from(plannedWorkouts)
       .where(eq(plannedWorkouts.userId, userId));
     for (const row of allRows.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate))) {
@@ -413,6 +420,9 @@ export async function repairPlannedWorkoutFidelity(
         expectedDistanceMeters: null,
         qualitySubtype: null,
         ...(row.sport === "run" ? { structuredJson: null } : {}),
+        // The document described the body this repair takes away: NULL, its counter kept (the revision history holds
+        // it), and the backfill derives it again from the repaired row.
+        ...updateDocColumns(null),
         updatedAt: now,
       })
       .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId)));
@@ -423,7 +433,9 @@ export async function repairPlannedWorkoutFidelity(
   for (const { row, to } of titlesToWrite) {
     await db
       .update(plannedWorkouts)
-      .set({ title: to, updatedAt: now })
+      // The document carries the stamp as its title too: NULL, as above — but never a document workout's, whose
+      // document is its content (nothing could derive it again).
+      .set({ title: to, ...(docOriginRow(row) ? {} : updateDocColumns(null)), updatedAt: now })
       .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId)));
   }
 
