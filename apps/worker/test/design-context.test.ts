@@ -181,6 +181,11 @@ async function seedAthlete() {
   await db.insert(schema.performedSets).values({
     id: newId(), performedSessionId: performedId, entryIndex: 0, exerciseId: "sentinelSetMove", setIndex: 0, reps: 8,
   });
+  // A watch session still being written reads as absent everywhere (`PENDING_HASH`), here too.
+  await db.insert(schema.performedSessions).values({
+    id: newId(), userId, source: "watch", sourceRef: "w-1", localDate: "2026-03-09", seconds: 600, payloadHash: "pending",
+    createdAt: at("2026-03-09"), updatedAt: at("2026-03-09"),
+  });
 
   const answer = (questionId: string, localDate: string, extra: Record<string, unknown> = {}) => ({
     id: newId(), userId, questionId, source: "checkin", localDate, at: at(localDate), ...extra,
