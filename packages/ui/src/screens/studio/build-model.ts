@@ -2,7 +2,9 @@
  * THE BUILDER'S DECISIONS, PURE (Stage 2 spec §8; principles §2.1–§2.8, §7). Everything the builder decides that needs
  * no React, so each rule is a test and the screen only draws:
  *
- *   sourceOfPath     where the builder is: a new workout (the draft on this device), a template, a planned workout.
+ *   sourceOfPath     where the builder is: a new workout (the draft on this device), a quick start (built on the
+ *                    device for the day, kept nowhere until it is started, scheduled or saved), a template, a planned
+ *                    workout.
  *   buildCtxOf       what it judges and suggests with: the switched-on profiles and today's readings (joined by any
  *                    this page recorded), the athlete's set-aside, pinned and recent moves, the place's gear, and what
  *                    was done cleanly — by the library's one rule (`isDoneCleanly`), and only where this device can
@@ -44,6 +46,7 @@ import {
   deriveDoc,
   makeLibraryIndex,
   PART_ORDER,
+  QUICK_START_KINDS,
   toProposable,
   validateWorkoutDoc,
   type BalanceProfile,
@@ -52,6 +55,7 @@ import {
   type DocIssue,
   type DraftDoc,
   type EditAction,
+  type QuickStartKind,
   type SuggestCtx,
 } from "@rg/workout";
 import type { ConditionViewDto } from "@rg/api-client";
@@ -62,11 +66,23 @@ type Library = readonly ExerciseRecord[];
 
 // ── Where the builder is ───────────────────────────────────────────────────
 
-export type BuildSource = { kind: "new" } | { kind: "template"; id: string } | { kind: "workout"; id: string };
+export type BuildSource =
+  | { kind: "new" }
+  | { kind: "quick"; quick: QuickStartKind }
+  | { kind: "template"; id: string }
+  | { kind: "workout"; id: string };
 
-/** The builder's address (spec §2): `/studio/build/new`, `…/template/:id`, `…/workout/:workoutId`; anything else, null. */
+/**
+ * The builder's address (spec §2): `/studio/build/new`, `…/quick/:kind` (a quick start, spec §9), `…/template/:id`,
+ * `…/workout/:workoutId`; anything else, null.
+ */
 export function sourceOfPath(pathname: string): BuildSource | null {
   if (/^\/studio\/build\/new\/?$/.test(pathname)) return { kind: "new" };
+  const q = /^\/studio\/build\/quick\/([^/]+)\/?$/.exec(pathname);
+  if (q) {
+    const quick = QUICK_START_KINDS.find((k) => k === q[1]);
+    return quick ? { kind: "quick", quick } : null;
+  }
   const m = /^\/studio\/build\/(template|workout)\/([^/]+)\/?$/.exec(pathname);
   if (!m) return null;
   let id: string;
@@ -78,7 +94,7 @@ export function sourceOfPath(pathname: string): BuildSource | null {
   return m[1] === "template" ? { kind: "template", id } : { kind: "workout", id };
 }
 
-export const sourceKey = (s: BuildSource): string => (s.kind === "new" ? "new" : `${s.kind}:${s.id}`);
+export const sourceKey = (s: BuildSource): string => (s.kind === "new" ? "new" : s.kind === "quick" ? `quick:${s.quick}` : `${s.kind}:${s.id}`);
 
 // ── What it judges and suggests with ───────────────────────────────────────
 

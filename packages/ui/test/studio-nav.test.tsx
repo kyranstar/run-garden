@@ -13,6 +13,7 @@ import { StudioRoute } from "../src/app.js";
 import { features, studioFlag } from "../src/features.js";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
+import { TemplatesScreen } from "../src/screens/studio/templates.js";
 import { AppShell, NAV, navItems } from "../src/shell.js";
 import { staticRouter } from "./studio-fixtures.js";
 
@@ -109,7 +110,7 @@ describe("the Studio ships dark: the `studio` flag (off in production builds unt
     expect(el.props).toEqual({ to: "/", replace: true });
   });
 
-  it("on: five tabs; /studio is the Studio, and /studio/build/* the builder (Task 6)", () => {
+  it("on: five tabs; /studio is the Studio, /studio/build/* the builder (Task 6), /studio/templates the templates (Task 7)", () => {
     features.studio = true;
     expect(navItems().map((n) => n.label)).toEqual(["Garden", "Plan", "Studio", "Activity", "Settings"]);
     const el = StudioRoute();
@@ -117,6 +118,7 @@ describe("the Studio ships dark: the `studio` flag (off in production builds unt
     const routes = Children.toArray((el.props as { children: unknown }).children) as ReactElement<{ path: string; element: ReactElement }>[];
     expect(routes.map((r) => [r.props.path, r.props.element.type])).toEqual([
       ["build/*", BuilderRoute],
+      ["templates", TemplatesScreen],
       ["*", StudioScreen],
     ]);
   });

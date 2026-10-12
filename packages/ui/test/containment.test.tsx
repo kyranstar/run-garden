@@ -36,7 +36,8 @@ import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { ItemSheet } from "../src/screens/studio/item-sheet.js";
 import { buildCtxOf } from "../src/screens/studio/build-model.js";
 import { STUDIO_DRAFT_QUERY } from "../src/studio-drafts.js";
-import { edit, newDoc, startEditing, suggestedItem } from "@rg/workout";
+import { edit, newDoc, startEditing, suggestedItem, toProposable } from "@rg/workout";
+import { TemplatesScreen } from "../src/screens/studio/templates.js";
 
 const noop = () => undefined;
 
@@ -722,5 +723,55 @@ describe("the builder is honest about its bounds", () => {
     expect(foot).toMatch(/>Remove<\/button>[\s\S]*>Done<\/button>/);
     // 16px fields, so a phone never zooms into them.
     for (const sel of [".stu-load-input,\n.stu-field,\n.stu-select", ".stu-step,\n.stu-stepper input"]) expect(ruleBody(sel), sel).toContain("font-size: var(--text-md)");
+  });
+});
+
+// ── 10. Templates and quick starts (Stage 2 Task 7) ─────────────────────────
+
+describe("the templates and the quick starts are honest about their bounds", () => {
+  const long = "A very long template name that someone typed without a single thought for a phone at three hundred and twenty pixels";
+  const doc = () =>
+    toProposable(edit(startEditing(newDoc("structured", { title: "Legs", source: { kind: "studio" } })), { type: "addItem", part: 1, item: suggestedItem(EXERCISES.find((r) => r.id === "gobletSquat")!, "main") }, EXERCISES).doc)!;
+  const tpl = (id: string, name: string, pinned = false) => ({ id, name, doc: doc(), pinned, uses: 0, lastUsedAt: null, createdAt: "", updatedAt: "", minutes: 14, discipline: "strength" });
+  function at(path: string, el: React.ReactElement): string {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(["templates"], { templates: [tpl("t1", long, true), tpl("t2", "Legs")] });
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter(path, el)));
+  }
+
+  it("the list's page owns the scroll; a row's name and facts wrap in their column, its actions beside them", () => {
+    const html = at("/studio/templates", createElement(TemplatesScreen));
+    expect(html).toContain('class="stu-tpl-list"');
+    expect(html).not.toContain("scroller");
+    expect(ruleBody(".stu-tpls")).toContain("min-width: 0");
+    expect(ruleBody(".stu-tpl")).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    for (const sel of [".stu-tpl-name", ".stu-tpl-meta", ".stu-tpl-status", ".stu-qs-name"]) expect(ruleBody(sel), sel).toContain("overflow-wrap: anywhere");
+    expect(ruleBody(".stu-tpl-meta")).toContain("min-width: 0");
+    // A pinned template's long name stays inside its tile on the home.
+    expect(ruleBody(".stu-qs-name")).toContain("max-width: 100%");
+    // "New workout" and "Templates (n)" wrap onto two lines before either is squeezed.
+    expect(ruleBody(".stu-build-row")).toContain("flex-wrap: wrap");
+  });
+
+  it("the whole row opens the template; Start and ⋯ paint above that link and keep their own taps", () => {
+    expect(ruleBody(".stu-tpl")).toContain("position: relative");
+    const stretch = ruleBody("a.stu-tpl-open::before");
+    expect(stretch).toContain("position: absolute");
+    expect(stretch).toContain("inset: 0");
+    expect(ruleBody(".stu-tpl-acts")).toContain("position: relative");
+    expect(ruleBody("a.stu-tpl-open:focus-visible::before")).toContain("outline: 2px solid var(--focus)");
+    // The actions come after the name in the DOM, so they paint above its stretched box.
+    const row = /<li class="stu-tpl"[\s\S]*?<\/li>/.exec(at("/studio/templates", createElement(TemplatesScreen)))![0];
+    expect(row.indexOf("stu-tpl-open")).toBeLessThan(row.indexOf("stu-tpl-acts"));
+  });
+
+  it("every control keeps the 44px floor as its own box", () => {
+    const html = at("/studio/templates", createElement(TemplatesScreen));
+    // Start is a full `.btn` (44px), ⋯ the builder's square icon button (44 wide); the home's link and tiles too.
+    expect(html).toContain('class="btn stu-tpl-start"');
+    expect(html).toContain('class="btn stu-icon-btn stu-tpl-more"');
+    expect(ruleBody(".btn")).toContain("min-height: var(--tap)");
+    expect(ruleBody(".stu-icon-btn")).toContain("min-width: var(--tap)");
+    for (const sel of [".stu-tpl-link", ".stu-qs"]) expect(ruleBody(sel), sel).toContain("min-height: var(--tap)");
   });
 });

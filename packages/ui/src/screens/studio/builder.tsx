@@ -41,9 +41,14 @@
  * says so; one the day refuses says why. Once made, the builder is on that planned workout (its address too), so a
  * second Start never makes a second workout.
  *
+ * QUICK STARTS AND TEMPLATES (spec §9): a quick start (`/studio/build/quick/:kind`) opens pre-filled, built on the
+ * device for the day, so its tile and Start now are two taps to a running session; it is kept nowhere until it is
+ * started, scheduled or saved as a template. The templates list's Start and Schedule… open the template here and do
+ * that once, and its way back is the list.
+ *
  * SCHEDULE (spec §8): one small sheet — "Later today" (the athlete's usual time while it is ahead, else the next whole
- * hour and one more) or another day. A new workout, scheduled, becomes that planned workout here; a template stays a
- * template, and the workout made from it says so (`basedOn`).
+ * hour and one more) or another day. A new workout or a quick start, scheduled, becomes that planned workout here; a
+ * template stays a template, and the workout made from it says so (`basedOn`).
  *
  * WIDTHS. One column on a phone, the summary folded. From md the summary is a column of its own beside the parts,
  * open and sticky. The actions are pinned to the bottom at every width, above the phone's tab bar.
@@ -116,8 +121,9 @@ import { CommitField, ItemSheet, itemName } from "./item-sheet.js";
 import { MovePicker } from "./move-picker.js";
 import { formatLine, PartMenu } from "./part-menu.js";
 import { ScheduleSheet } from "./schedule-sheet.js";
-import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioCtx } from "./screen.js";
+import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioReads } from "./screen.js";
 import { SummaryCard } from "./summary-card.js";
+import { quickStartFor, TEMPLATES_HREF, type BuilderArrival } from "./templates-model.js";
 
 /** A planned workout's document, read fresh (`GET /api/workouts/:id/doc`). */
 export const workoutDocQuery = (id: string) => ["workout-doc", id] as const;
@@ -128,7 +134,7 @@ const plannedQuery = (today: string) => ["plan", "studio-targets", today] as con
 
 const sentence = (s: string): string => `${s.charAt(0).toUpperCase()}${s.slice(1)}${/[.!?]$/.test(s) ? "" : "."}`;
 
-/** The builder's routes (spec §2): `/studio/build/new`, `…/template/:id`, `…/workout/:workoutId`. One instance across them. */
+/** The builder's routes (spec §2): `/studio/build/new`, `…/quick/:kind`, `…/template/:id`, `…/workout/:workoutId`. One instance across them. */
 export function BuilderRoute() {
   const { pathname } = useLocation();
   const source = sourceOfPath(pathname);
@@ -209,7 +215,10 @@ function scheduledText(w: DocWorkoutDto, today: string): string {
 function Builder({ source }: { source: BuildSource }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const ctx = useStudioCtx();
+  const location = useLocation();
+  /** What the templates list asked of this visit (its Start, its Schedule…), and where its way back goes. */
+  const arrived = location.state as BuilderArrival | null;
+  const { ctx, settled } = useStudioReads();
   const today = ctx.today ?? localTodayGuess();
   const unit = useWeightUnit();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
@@ -233,6 +242,11 @@ function Builder({ source }: { source: BuildSource }) {
     staleTime: Infinity,
     initialData: {} as Record<string, CheckReading>,
   });
+  // A quick start (spec §9): built here, from the bundled library, as soon as what it is judged with is known — no
+  // network, no AI; the day's seed keeps it the same workout all day. Kept nowhere until it is started, scheduled or
+  // saved as a template, so the workout being built on this device is never touched.
+  const quick = source.kind === "quick" ? source.quick : null;
+  const made = useMemo(() => (quick && settled ? quickStartFor(quick, ctx, today, recordedQ.data) : null), [quick, settled, ctx, today, recordedQ.data]);
 
   // ── The document, and every edit to it ──
   const template = tplId ? templates.data?.templates.find((t) => t.id === tplId) : undefined;
@@ -241,6 +255,7 @@ function Builder({ source }: { source: BuildSource }) {
     if (source.kind === "new") {
       return drafts.loaded ? { key, editor: startEditing(drafts.draft?.doc ?? freshDoc()), baseline: null, rev: null, row: null } : null;
     }
+    if (source.kind === "quick") return made && "doc" in made ? { key, editor: startEditing(made.doc), baseline: null, rev: null, row: null } : null;
     if (source.kind === "template") return template?.doc ? { key, editor: startEditing(template.doc), baseline: template.doc, rev: null, row: null } : null;
     const r = stored.data;
     return r?.doc ? { key, editor: startEditing(r.doc), baseline: r.doc, rev: r.rev, row: null } : null;
@@ -257,7 +272,7 @@ function Builder({ source }: { source: BuildSource }) {
     const next = opened();
     if (next) setLoaded(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, drafts.loaded, drafts.draft, template, stored.data, setLoaded]);
+  }, [key, drafts.loaded, drafts.draft, template, stored.data, made, setLoaded]);
 
   const ready = loaded?.key === key ? loaded : null;
   const doc = ready?.editor.doc ?? null;
@@ -463,6 +478,20 @@ function Builder({ source }: { source: BuildSource }) {
     void startNow(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resume, judged]);
+  // Arrived from the templates list's Start or Schedule…: done once the workout and what it is judged with are here —
+  // and taken off the history entry first, so Back to it (or a reload) opens the builder and nothing more. (Start's
+  // tap unlocked the audio and asked for storage there, inside the gesture.) Once per entry: StrictMode runs a mount's
+  // effects twice, and a second Start would make a second workout.
+  const then = arrived?.then;
+  const actedOn = useRef<string | null>(null);
+  useEffect(() => {
+    if (!then || !ready || !judged || !settled || actedOn.current === location.key) return;
+    actedOn.current = location.key;
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: arrived?.from ? ({ from: arrived.from } satisfies BuilderArrival) : null });
+    if (then === "schedule") setScheduling(true);
+    else void startNow(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [then, ready, judged, settled]);
 
   // ── Schedule, and the saves ──
   const schedule = async (when: string, time: string | null): Promise<string | null> => {
@@ -481,7 +510,8 @@ function Builder({ source }: { source: BuildSource }) {
           .then(() => qc.invalidateQueries({ queryKey: TEMPLATES_QUERY }))
           .catch(() => undefined);
       }
-      if (cur.key === "new") adopt(res.workout, sent);
+      // A new workout or a quick start, scheduled, is that planned workout now (a second Start never makes another).
+      if (cur.key === "new" || source.kind === "quick") adopt(res.workout, sent);
       setScheduling(false);
       setStatus({ text: scheduledText(res.workout, today), link: { to: "/plan", label: "See it in Plan" }, notes: newNotes(res.warnings) });
       return null;
@@ -571,7 +601,7 @@ function Builder({ source }: { source: BuildSource }) {
     } else if (source.kind === "workout") {
       if (stored.isError) problem = stored.error instanceof ApiError && stored.error.status === 404 ? "That workout is gone." : "Opening a planned workout needs a connection.";
       else if (stored.data && !stored.data.doc) problem = "This workout can't be changed in the Studio.";
-    }
+    } else if (source.kind === "quick" && made && "reason" in made) problem = made.reason;
     return (
       <div className="stu-build">
         {problem ? (
@@ -646,7 +676,8 @@ function Builder({ source }: { source: BuildSource }) {
           { label: "Save template", run: () => void saveTemplate() },
           { label: "Save as a new template…", run: () => setNaming(true) },
         ]
-      : isWorkout
+      : // A quick start offers no "Start over": that would clear the workout being built on this device.
+        isWorkout || source.kind === "quick"
         ? [{ label: "Save as template…", run: () => setNaming(true) }]
         : [
             { label: "Save as template…", run: () => setNaming(true) },
@@ -662,9 +693,9 @@ function Builder({ source }: { source: BuildSource }) {
       <div className="stu-build-grid">
         <header className="stu-build-head">
           <div className="stu-build-bar">
-            <Link className="btn stu-build-back" to="/studio">
+            <Link className="btn stu-build-back" to={arrived?.from === "templates" ? TEMPLATES_HREF : "/studio"}>
               <IconBack size={16} />
-              Studio
+              {arrived?.from === "templates" ? "Templates" : "Studio"}
             </Link>
             <span className="stu-build-tools">
               <button type="button" className="btn stu-icon-btn" aria-label="Undo" disabled={ready.editor.past.length === 0} onClick={() => commit(undo(ready.editor))}>

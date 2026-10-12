@@ -887,3 +887,16 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
     expect(baseLayer).not.toMatch(/\.stu-filters-btn \{[^}]*display: none/);
   });
 });
+
+describe("the templates and the quick starts exist at every width (Stage 2 Task 7)", () => {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+
+  it("every one is styled in the base layer, and no width rule touches them: one list, one row of tiles, at every width", () => {
+    const classes = [".stu-tpls", ".stu-tpl-status", ".stu-tpl-list", ".stu-tpl", ".stu-tpl-name", ".stu-tpl-open", ".stu-tpl-meta", ".stu-tpl-acts",
+      ".stu-tpl-menu", ".stu-tpl-del", ".stu-qs--yours", ".stu-build-row", ".stu-tpl-link"];
+    for (const cls of classes) expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
+    for (const block of widthBlocks) {
+      for (const cls of classes) expect(block.body, `${block.condition} ${cls}`).not.toMatch(new RegExp(`${esc(cls)}(?![\\w-])`));
+    }
+  });
+});

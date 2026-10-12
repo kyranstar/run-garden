@@ -38,7 +38,6 @@ import { Navigate, useLocation, useMatch, useNavigate, useSearchParams } from "r
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import type { QuickStartKind } from "@rg/workout";
 import { localTodayGuess } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
@@ -97,15 +96,20 @@ for (const r of EXERCISES) {
  * beyond it would simply be missing — those rows would show no history or pin — until this asks for them by page.
  */
 export function useStudioCtx(): StudioCtx {
+  return useStudioReads().ctx;
+}
+
+/**
+ * The context, and whether its reads have all answered — or, offline, given up for now (`paused`): what is built from
+ * them once and kept (a quick start) waits for that, rather than being built twice, the first time knowing less.
+ */
+export function useStudioReads(): { ctx: StudioCtx; settled: boolean } {
   const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: 200 }), staleTime: 60_000 });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces, staleTime: 60_000 });
-  return useMemo(() => studioCtxFrom(library.data, today.data, places.data), [library.data, today.data, places.data]);
-}
-
-export interface StudioScreenProps {
-  /** A quick start card (Task 7: the builder, pre-filled). Absent, the cards are not buttons. */
-  onQuickStart?: (kind: QuickStartKind) => void;
+  const ctx = useMemo(() => studioCtxFrom(library.data, today.data, places.data), [library.data, today.data, places.data]);
+  const settled = [library, today, places].every((q) => !q.isPending || q.fetchStatus === "paused");
+  return { ctx, settled };
 }
 
 /** What a history entry under the Studio carries: whether it came from the home, and how deep into moves it is. */
@@ -127,7 +131,7 @@ type FocusTo =
   /** The confirmation line on the page, after an Add from the list. */
   | { to: "line" };
 
-export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
+export function StudioScreen() {
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -413,7 +417,7 @@ export function StudioScreen({ onQuickStart }: StudioScreenProps = {}) {
             </aside>
           </div>
         ) : (
-          <StudioHome ctx={ctx} onBrowse={browse} onQuickStart={onQuickStart} />
+          <StudioHome ctx={ctx} onBrowse={browse} />
         )}
         {wide ? detail : null}
       </div>

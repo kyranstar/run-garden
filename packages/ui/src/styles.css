@@ -9038,16 +9038,30 @@ button.session-chip::after {
   font: inherit;
   text-align: left;
 }
-button.stu-qs {
-  cursor: pointer;
+/* Each tile is a link to the builder, pre-filled (Task 7). */
+a.stu-qs {
+  text-decoration: none;
 }
-button.stu-qs:hover {
+a.stu-qs:hover {
   border-color: var(--green);
 }
 .stu-qs-name {
+  max-width: 100%;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+/* "＋ Yours": the way to the templates, where one is pinned to join these. */
+.stu-qs--yours {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-style: dashed;
+  background: none;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
 }
 .stu-qs-min {
   display: inline-flex;
@@ -10678,6 +10692,136 @@ textarea.stu-field {
 }
 .stu-build-entry-btn {
   gap: var(--space-2);
+}
+/* "[ New workout ]   Templates (4) ›" — one row, wrapping before it squeezes. */
+.stu-build-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.stu-tpl-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--tap);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+.stu-tpl-link:hover {
+  text-decoration: underline;
+}
+
+/* ── The templates (Stage 2 spec §9) ──────────────────────────────────────
+   One list at every width: a row is its name (a link stretched over the row,
+   as a move's is), its facts under it, and Start and ⋯ beside them. The rest
+   is one tap down, in the ⋯ sheet. */
+.stu-tpls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  max-width: 48rem;
+}
+.stu-tpl-status {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.stu-tpl-status:empty {
+  display: none;
+}
+.stu-tpl-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.stu-tpl {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-4);
+  row-gap: var(--space-1);
+  padding: var(--space-4) var(--space-5);
+}
+.stu-tpl + .stu-tpl {
+  border-top: 1px solid var(--border);
+}
+.stu-tpl-name {
+  grid-column: 1;
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.stu-tpl-open {
+  color: inherit;
+  text-decoration: none;
+}
+a.stu-tpl-open::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+a.stu-tpl-open:hover {
+  color: var(--green-ink);
+}
+a.stu-tpl-open:focus-visible {
+  outline: none;
+}
+a.stu-tpl-open:focus-visible::before {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.stu-tpl-meta {
+  grid-column: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+/* The pin sits on the first line when the facts wrap: a 14px mark centred in
+   the 18px line (1.5 × 12px). */
+.stu-tpl-meta svg {
+  flex: none;
+  margin-top: var(--space-1);
+  color: var(--green-ink);
+}
+/* Above the stretched name, so they keep their own taps. */
+.stu-tpl-acts {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.stu-tpl-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.stu-tpl-menu .btn {
+  justify-content: flex-start;
+  gap: var(--space-3);
+}
+.stu-tpl-del {
+  color: var(--danger-ink);
 }
 
 @media (min-width: 900px) {

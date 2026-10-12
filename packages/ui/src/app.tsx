@@ -13,6 +13,7 @@ import { Onboarding } from "./screens/onboarding.js";
 import { PlayerScreen } from "./screens/player.js";
 import { StudioScreen } from "./screens/studio/screen.js";
 import { BuilderRoute } from "./screens/studio/builder.js";
+import { TemplatesScreen } from "./screens/studio/templates.js";
 import { features } from "./features.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
@@ -34,14 +35,15 @@ const queryClient = new QueryClient({
 
 /**
  * The Studio while it ships dark (`features.studio`): off, `/studio` and everything under it go home. On: the builder
- * at `/studio/build/*` (one instance across a new workout, a template and a planned workout), else the Studio itself
- * (its home, its list and a move's detail).
+ * at `/studio/build/*` (one instance across a new workout, a quick start, a template and a planned workout), the
+ * templates at `/studio/templates`, else the Studio itself (its home, its list and a move's detail).
  */
 export function StudioRoute() {
   if (!features.studio) return <Navigate to="/" replace />;
   return (
     <Routes>
       <Route path="build/*" element={<BuilderRoute />} />
+      <Route path="templates" element={<TemplatesScreen />} />
       <Route path="*" element={<StudioScreen />} />
     </Routes>
   );
