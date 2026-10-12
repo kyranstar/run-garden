@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkoutDto } from "@rg/api-client";
 import type { WorkoutDoc, WorkoutDose } from "@rg/domain";
-import { DEFAULT_SCHEDULING_PREFERENCES } from "@rg/domain";
+import { DEFAULT_SCHEDULING_PREFERENCES, itemSchema, partSchema, secondsText, workoutDocSchema } from "@rg/domain";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, suggestedItem, undo, type DraftDoc, type EditAction } from "@rg/workout";
 import {
@@ -35,6 +35,7 @@ import {
   swapOptions,
   timeHasPassed,
   typedAmount,
+  usualTime,
   type BuildCtx,
 } from "../src/screens/studio/build-model.js";
 import { emptyStudioCtx, studioCtxFrom, type MovePrefs, type StudioCtx } from "../src/screens/studio/model.js";
@@ -98,12 +99,18 @@ describe("what the builder judges with", () => {
     expect(buildCtxOf(studio(), TODAY).done).toBeUndefined();
   });
 
-  it("the Studio reads the server's word from the library rows — and an older cached row, without it, claims nothing clean", () => {
+  it("the Studio reads the server's word from the library rows — and an older cached row, without it, says nothing either way", () => {
     const ctx = studioCtxFrom(libraryDto({ items: [row("snapDown", { doneCleanly: true, lastDoneOn: "2026-10-01" }), row("pogoHop", { lastDoneOn: "2026-10-02" })] }));
     expect(ctx.prefs.get("snapDown")!.doneCleanly).toBe(true);
     expect(ctx.prefs.get("pogoHop")!.doneCleanly).toBe(false);
+    expect([...buildCtxOf(ctx, TODAY).done!]).toEqual(["snapDown"]);
+    // A read from before the field: not "nothing done cleanly" (every jump a jump) but unknown, as before any read.
     const older = studioCtxFrom(libraryDto({ items: [{ ...row("snapDown", { lastDoneOn: "2026-10-01" }), doneCleanly: undefined } as never] }));
-    expect(older.prefs.get("snapDown")!.doneCleanly).toBe(false);
+    expect(older.prefs.get("snapDown")!.doneCleanly).toBeNull();
+    expect(buildCtxOf(older, TODAY).done).toBeUndefined();
+    // A row that does not say, among rows that do, is not counted clean.
+    const mixed = studioCtxFrom(libraryDto({ items: [row("snapDown", { doneCleanly: true }), { ...row("pogoHop", { lastDoneOn: "2026-10-02" }), doneCleanly: undefined } as never] }));
+    expect([...buildCtxOf(mixed, TODAY).done!]).toEqual(["snapDown"]);
   });
 
   it("so the frontier speaks in the builder: a jump past the ones done cleanly is noted, with the rung that comes first", () => {
@@ -368,6 +375,17 @@ describe("scheduling", () => {
     expect(laterToday(at(21, 59), null, TODAY)).toBe("23:00");
   });
 
+  it("the athlete's usual time for a day is the window the server places an untimed workout in", () => {
+    // TODAY (2026-10-12) is a Monday; 2026-10-17 a Saturday, with its own morning time.
+    expect(usualTime(prefs, TODAY)).toBe("07:00");
+    expect(usualTime(prefs, "2026-10-17")).toBe("08:00");
+    expect(usualTime({ ...prefs, defaultWindow: "evening" }, TODAY)).toBe("19:00");
+    expect(usualTime({ ...prefs, defaultWindow: "evening" }, "2026-10-17")).toBe("19:00");
+    // Unknown (no settings yet, or a time not written as one): nothing to compare with.
+    expect(usualTime(null, TODAY)).toBeNull();
+    expect(usualTime({ ...prefs, weekdayMorningTime: "early" }, TODAY)).toBeNull();
+  });
+
   it("a time today that has come is past", () => {
     expect(timeHasPassed("14:20", at(14, 20))).toBe(true);
     expect(timeHasPassed("14:21", at(14, 20))).toBe(false);
@@ -397,17 +415,33 @@ describe("edits, and why one was refused", () => {
     expect(editAll(s0, [{ type: "setTitle", title: "Test" }], EXERCISES).rejected).toBe("unchanged");
   });
 
-  it("says why in the words of what was asked", () => {
+  it("says why in the words of what was asked — each bound the schema's own, so the two can't drift apart", () => {
     const d = draft(into(1, "gobletSquat"));
+    // The bounds as the schema writes them (today: rounds 1–50, rest 15 min, a part's why 160, the summary 200, goals 6,
+    // focus 12, parts 20, a part's moves 60, a cue 160, a title 80).
+    const listMax = (s: { _def: { maxLength: { value: number } | null } }) => s._def.maxLength!.value;
+    const rounds = partSchema.shape.rounds.unwrap();
+    const intent = workoutDocSchema.shape.intent.shape;
+    const cue = itemSchema.options[0].shape.cue.unwrap();
     expect(editRefusal({ type: "setDose", part: 1, item: 0, dose: { reps: 900 } }, "invalid", d)).toBe("That dose is more than a workout takes.");
-    expect(editRefusal({ type: "setPart", part: 1, patch: { rounds: 99 } }, "invalid", d)).toBe("Rounds go from 1 to 50.");
-    expect(editRefusal({ type: "setPart", part: 1, patch: { restBetweenRoundsSec: 2000 } }, "invalid", d)).toBe("Rest between rounds goes up to 15 minutes.");
+    expect(editRefusal({ type: "setPart", part: 1, patch: { rounds: 99 } }, "invalid", d)).toBe(`Rounds go from ${rounds.minValue} to ${rounds.maxValue}.`);
+    expect(editRefusal({ type: "setPart", part: 1, patch: { restBetweenRoundsSec: 2000 } }, "invalid", d)).toBe(
+      `Rest between rounds goes up to ${secondsText(partSchema.shape.restBetweenRoundsSec.unwrap().maxValue!)}.`,
+    );
+    expect(editRefusal({ type: "setPart", part: 1, patch: { why: "x".repeat(400) } }, "invalid", d)).toBe(`A part's why takes at most ${partSchema.shape.why.unwrap().maxLength} characters.`);
     expect(editRefusal({ type: "setPart", part: 1, patch: { format: "steady" } }, "invalid", d)).toBe("That doesn't fit this part.");
-    expect(editRefusal({ type: "setIntent", intent: { goals: [] } }, "invalid", d)).toBe("A workout serves at most 6 goals.");
-    expect(editRefusal({ type: "setIntent", intent: { focus: [] } }, "invalid", d)).toBe("A workout has at most 12 focus areas.");
+    expect(editRefusal({ type: "setIntent", intent: { goals: [] } }, "invalid", d)).toBe(`A workout serves at most ${listMax(intent.goals)} goals.`);
+    expect(editRefusal({ type: "setIntent", intent: { focus: [] } }, "invalid", d)).toBe(`A workout has at most ${listMax(intent.focus)} focus areas.`);
+    expect(editRefusal({ type: "setIntent", intent: { summary: "x".repeat(400) } }, "invalid", d)).toBe(`The why takes at most ${intent.summary.maxLength} characters.`);
+    expect(editRefusal({ type: "setCue", part: 1, item: 0, cue: "x".repeat(400) }, "invalid", d)).toBe(`A cue takes at most ${cue.maxLength} characters.`);
     expect(editRefusal({ type: "setTitle", title: "" }, "invalid", d)).toBe("The title can't be empty.");
-    expect(editRefusal({ type: "addPart", purpose: "power" }, "full", d)).toBe("A workout holds at most 20 parts.");
-    expect(editRefusal({ type: "addItem", part: 1, item: suggestedItem(rec("catCow"), "main") }, "full", d)).toBe("That part is full.");
+    expect(editRefusal({ type: "setTitle", title: "x".repeat(200) }, "invalid", d)).toBe(`A title takes at most ${workoutDocSchema.shape.title.maxLength} characters.`);
+    expect(editRefusal({ type: "addPart", purpose: "power" }, "full", d)).toBe(`A workout holds at most ${listMax(workoutDocSchema.shape.parts)} parts.`);
+    expect(editRefusal({ type: "addItem", part: 1, item: suggestedItem(rec("catCow"), "main") }, "full", d)).toBe(`A part holds at most ${listMax(partSchema.shape.items)} moves.`);
+    // A move with no part named, refused full in a workout of as many parts as it can hold: no room for its part.
+    const most = { ...d, parts: Array.from({ length: listMax(workoutDocSchema.shape.parts) }, () => d.parts[1]!) } as WorkoutDoc;
+    expect(editRefusal({ type: "addItem", item: suggestedItem(rec("catCow"), "main") }, "full", most)).toBe(`A workout holds at most ${listMax(workoutDocSchema.shape.parts)} parts.`);
+    expect(editRefusal({ type: "addItem", item: suggestedItem(rec("catCow"), "main") }, "full", d)).toBe(`A part holds at most ${listMax(partSchema.shape.items)} moves.`);
     expect(editRefusal({ type: "removeItem", part: 4, item: 0 }, "missing", d)).toBe("That's gone already.");
     // An item already outside the rules (a stored document's) changes only by a swap or by going.
     const broken = { ...d, parts: d.parts.map((p, i) => (i === 1 ? { ...p, items: [{ kind: "exercise", libraryId: "gobletSquat", dose: { reps: 900 } }] } : p)) } as WorkoutDoc;

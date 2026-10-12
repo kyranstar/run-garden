@@ -767,10 +767,23 @@ describe("suggestions on one line", () => {
     await draftStore().save(draft(into(0, "catCow")));
     serve();
     mount("/studio/build/new");
-    await until(() => !!button("Add a suggested move to Warm-up"), "the line");
-    await click(button("Add a suggested move to Warm-up"), "＋");
+    await until(() => !!button("Add a move to Warm-up"), "the line");
+    // One control per action: the line's ＋ is the part's Add a move — there is no second.
+    expect(button("Add a move", document.querySelector('[data-part="0"]')!)).toBeNull();
+    await click(button("Add a move to Warm-up"), "＋");
     await until(() => !!dialog("Add to Warm-up"), "the picker");
     expect(dialog("Add to Warm-up")!.querySelector("h3")!.textContent).toBe("Suggested");
+  });
+
+  it("a move removed from a part that still has others hands focus to the part's ＋", async () => {
+    await draftStore().save(draft(into(0, "catCow"), into(0, "ankleRocks")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown()[0]?.[1]?.length === 2, "the warm-up");
+    await click(document.querySelector('[data-at="0-1"]'), "the second row");
+    await press(button("Remove", [...document.querySelectorAll<HTMLElement>('[role="dialog"]')][0]!), "Remove");
+    await until(() => partsShown()[0]?.[1]?.length === 1, "the removal");
+    expect(document.activeElement).toBe(button("Add a move to Warm-up"));
   });
 });
 
@@ -787,5 +800,136 @@ describe("a title", () => {
     expect(titleField().value).toBe("Hips & posture");
     expect(document.querySelector<HTMLTextAreaElement>(".stu-build-why-field")!.value).toBe("");
     expect(button("Undo")!.disabled).toBe(true);
+  });
+});
+
+// ── Fix round 2 ────────────────────────────────────────────────────────────
+
+/** A stored workout today's Jaw / head check at 3 rules a move out of: a half-kneeling press, a floor press its alternate. */
+const pressDoc = (title: string): WorkoutDoc => ({
+  ...storedDoc(title),
+  intent: { summary: title, goals: [], focus: [], effort: "develop" },
+  parts: [{ purpose: "main", format: "straight", items: [{ ...suggestedItem(rec("halfKneelingPress"), "main"), alternates: [{ libraryId: "floorPress" }] }] }],
+});
+
+describe("a planned workout that can't change, judged by today", () => {
+  it("its day passed, and today's check rules a move out: the note says so, but offers no Fix, and nothing waits to start", async () => {
+    serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [plannedRow("w1", "2026-10-08")] });
+    mount("/studio/build/workout/w1", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
+    await until(() => text().includes("This workout's day has passed, so it can't be changed."), "the line");
+    await until(() => text().includes("Half-kneeling one-arm press isn't allowed with today's Jaw / head check at 3."), "the note");
+    expect(button("Swap in Floor press")).toBeNull();
+    expect(document.querySelector(".stu-note-actions")).toBeNull();
+    expect(text()).not.toContain("Fix the note above to start.");
+    expect(startButton()).toBeNull();
+    expect(document.querySelector(".stu-build-foot [hidden]")).toBeNull();
+  });
+
+  it("…and today's check unanswered: the note says so, with no check to answer from here", async () => {
+    serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [plannedRow("w1", "2026-10-08")] });
+    mount("/studio/build/workout/w1", { library: libraryDto({ tmj: true }), today: todayDto(null, false) });
+    await until(() => text().includes("Half-kneeling one-arm press needs today's Jaw / head check answered first."), "the note");
+    expect(button("Jaw check")).toBeNull();
+    expect(document.querySelector(".stu-note-actions")).toBeNull();
+    expect(text()).not.toContain("to start.");
+  });
+});
+
+describe("a planned workout on another day, with something to fix", () => {
+  it("offers the Fix, but says nothing of starting: it starts on its own day", async () => {
+    const lone: WorkoutDoc = { ...storedDoc("Thursday lift"), parts: [{ ...storedDoc("Thursday lift").parts[0]!, format: "superset" }] };
+    serve({ docs: [{ doc: lone, rev: 2 }], planned: [plannedRow("w1", "2026-10-15")] });
+    mount("/studio/build/workout/w1");
+    await until(() => text().includes("A superset pairs exactly two moves; this one has 1."), "the note");
+    expect(document.querySelector(".stu-note-fix")).not.toBeNull();
+    expect(startButton()).toBeNull();
+    expect(text()).not.toContain("Fix the note above to start.");
+    expect(document.querySelector(".stu-build-foot [hidden]")).toBeNull();
+  });
+});
+
+describe("the footer, after an edit", () => {
+  it("moves on from what it said of the last state: Saved. goes with the next edit", async () => {
+    serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [plannedRow("w1", "2026-10-15")] });
+    mount("/studio/build/workout/w1");
+    await until(() => titleField()?.value === "Thursday lift", "the workout");
+    await click(effort("develop"), "Develop");
+    await click(button("Save changes"), "Save changes");
+    await until(() => text().includes("Saved."), "Saved.");
+    await click(effort("maintain"), "Maintain");
+    expect(text()).not.toContain("Saved.");
+    expect(document.querySelector(".stu-build-status")!.textContent).toBe("");
+  });
+
+  it("…and a template saved: its line goes with the next edit too", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown()[1]?.[1]?.length === 1, "the workout");
+    await click(button(/^Save/), "Save ▾");
+    await click(document.querySelector('[role="menuitem"]'), "Save as template…");
+    await click(button("Save", dialog("Save as template")!), "Save");
+    await until(() => text().includes("as a template."), "the line");
+    await click(effort("develop"), "Develop");
+    expect(text()).not.toContain("as a template.");
+  });
+});
+
+describe("the activation prompt's ✕", () => {
+  it("hands focus to the builder's heading, not the page", async () => {
+    await draftStore().save(draft(into(1, "deadlift")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => !!document.querySelector(".stu-part--ghost"), "the prompt");
+    await press(button("No activation part"), "✕");
+    expect(document.querySelector(".stu-part--ghost")).toBeNull();
+    expect(document.activeElement).toBe(document.querySelector("h1"));
+    expect(document.activeElement!.textContent).toBe("Hips & posture");
+  });
+});
+
+describe("Schedule, another day set to today", () => {
+  it("with no time, once the athlete's usual time today has passed: it asks for a time later today, and Schedule waits", async () => {
+    // TODAY (2026-10-11) is a Sunday: the usual time is the weekend's 8 AM, gone by 2:20 PM.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 14, 20) });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      serve();
+      mount("/studio/build/new");
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      const sheet = dialog("Schedule")!;
+      const scheduleBtn = () => buttons(sheet).find((b) => b.textContent === "Schedule")!;
+      await type(sheet.querySelector('input[aria-label="Day"]'), TODAY, "the day");
+      expect(sheet.textContent).toContain("Your usual time today has passed. Pick a time later today.");
+      expect(scheduleBtn().disabled).toBe(true);
+      await type(sheet.querySelector('input[aria-label="Time (optional)"]'), "17:00", "the time");
+      expect(sheet.textContent).not.toContain("Your usual time today has passed.");
+      expect(scheduleBtn().disabled).toBe(false);
+      // Another day, no time: the usual time is that day's, and nothing is asked.
+      await type(sheet.querySelector('input[aria-label="Time (optional)"]'), "", "no time");
+      await type(sheet.querySelector('input[aria-label="Day"]'), "2026-10-13", "the day");
+      expect(sheet.textContent).not.toContain("Your usual time today has passed.");
+      expect(scheduleBtn().disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("…and before the usual time, today with no time is fine", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 6, 30) });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      serve();
+      mount("/studio/build/new");
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      const sheet = dialog("Schedule")!;
+      await type(sheet.querySelector('input[aria-label="Day"]'), TODAY, "the day");
+      expect(sheet.textContent).not.toContain("Your usual time today has passed.");
+      expect(buttons(sheet).find((b) => b.textContent === "Schedule")!.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

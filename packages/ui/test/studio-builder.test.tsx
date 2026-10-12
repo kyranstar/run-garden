@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_SCHEDULING_PREFERENCES, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, suggestedItem, type DraftDoc, type EditAction } from "@rg/workout";
+import { features } from "../src/features.js";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { STUDIO_DRAFT_QUERY } from "../src/studio-drafts.js";
 import { TEMPLATES_QUERY } from "../src/screens/studio/add-sheet.js";
@@ -76,6 +77,18 @@ describe("a new workout", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Schedule…<\/button>/);
     // Nothing to sum up yet: the summary waits for a move.
     expect(html).toContain('<div class="stu-build-sum" hidden="">');
+  });
+
+  it("…and with no player to start it in, Schedule waits on a move too, and the actions still say so", () => {
+    features.player = false;
+    try {
+      const html = renderBuilder("/studio/build/new");
+      expect(html).not.toContain("stu-build-start");
+      expect(text(html)).toContain("Add a move first.");
+      expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Schedule…<\/button>/);
+    } finally {
+      features.player = true;
+    }
   });
 
   it("the draft on this device is what opens, its title and why in their fields", () => {
@@ -209,11 +222,16 @@ describe("the summary", () => {
     expect(text(html)).toContain(`${j.derived!.estimatedMinutes} min · Strength · Home`);
   });
 
-  it("its count of notes is also a live region, so a Fix that clears the last one is heard", () => {
+  it("what is left to fix is also a live region — and nothing to fix is said plainly, so a Fix that clears the last one is heard", () => {
     const d = draft(into(1, "gobletSquat"));
-    const html = renderBuilder("/studio/build/new", { draft: d, primed: { places: placesDto(["mat"]) } });
-    expect(html).toContain('<span class="visually-hidden" role="status">1 note</span>');
-    expect(renderBuilder("/studio/build/new", { draft: d })).toContain('<span class="visually-hidden" role="status"></span>');
+    // A cost (gear this place lacks) is a note to see, not something to fix.
+    const costs = renderBuilder("/studio/build/new", { draft: d, primed: { places: placesDto(["mat"]) } });
+    expect(costs).toContain('<span class="stu-sum-count">1 note</span>');
+    expect(costs).toContain('<span class="visually-hidden" role="status">Nothing to fix.</span>');
+    expect(renderBuilder("/studio/build/new", { draft: d })).toContain('<span class="visually-hidden" role="status">Nothing to fix.</span>');
+    const ruled = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress", { alternates: [{ libraryId: "floorPress" }] }));
+    const errors = renderBuilder("/studio/build/new", { draft: ruled, primed: { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) } });
+    expect(errors).toContain('<span class="visually-hidden" role="status">1 to fix</span>');
   });
 });
 
@@ -221,12 +239,21 @@ describe("suggestions, once a part has a move", () => {
   it("fold to one line — names that explain themselves, and one ＋ that opens the part's Add a move; an empty part keeps its rows", () => {
     const html = renderBuilder("/studio/build/new", { draft: draft(into(0, "catCow")) });
     const warmup = html.slice(html.indexOf('data-part="0"'), html.indexOf("</section>", html.indexOf('data-part="0"')));
-    expect(warmup).toContain('<p class="stu-sug-line"><span class="stu-sugs-k">Suggested:</span>');
+    expect(warmup).toMatch(/<div class="stu-sug-line"><span class="stu-sugs-k" id="([^"]+)">Suggested:<\/span><ul class="stu-sug-names" aria-labelledby="\1">/);
     expect(warmup).not.toContain("stu-sug-list");
-    expect((warmup.match(/aria-label="Add [^"]*"/g) ?? [])).toEqual(['aria-label="Add a suggested move to Warm-up"']);
-    expect((warmup.match(/class="term"/g) ?? []).length).toBeGreaterThan(1);
+    // Each name its own item — a list a screen reader counts, never one string run together; the dots are drawn, not read.
+    const names = warmup.slice(warmup.indexOf('<ul class="stu-sug-names"'), warmup.indexOf("</ul>", warmup.indexOf('<ul class="stu-sug-names"')));
+    const items = names.split("<li>").slice(1);
+    expect(items.length).toBeGreaterThan(1);
+    for (const li of items) expect((li.match(/class="term"/g) ?? []).length).toBe(1);
+    expect(text(names.replace(/<span class="stu-sep" aria-hidden="true">·<\/span>/g, ""))).not.toContain("·");
+    // One control per action (the spec's mock): the line's ＋ is the part's Add a move, and there is no second one.
+    expect((warmup.match(/aria-label="Add [^"]*"/g) ?? [])).toEqual(['aria-label="Add a move to Warm-up"']);
+    expect(warmup).not.toContain("Add a move</button>");
     // The empty cool-down still lists its suggestions a row each, each with its own ＋.
     const cool = html.slice(html.indexOf('data-part="2"'));
     expect(cool).toContain('class="stu-sug-list"');
+    // …and, its rows each adding one move, its own Add a move for any other.
+    expect(cool).toContain("Add a move</button>");
   });
 });

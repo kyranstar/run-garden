@@ -11,8 +11,9 @@
  * "Later today" is the athlete's usual time to train while it is still ahead, else the next whole hour and one more,
  * and its time field says which; it is not offered once no slot is left before the athlete's latest evening finish.
  * Another day's time is optional — left empty, the server places it at the athlete's usual window. A time today that
- * has already passed is refused in plain words. The workout is judged for the day chosen: an error that day keeps
- * Schedule off and says why; today, one a check could answer asks for the check instead.
+ * has already passed is refused in plain words, and so is today with no time once the usual window has gone by: it
+ * asks for a time later today instead. The workout is judged for the day chosen: an error that day keeps Schedule off
+ * and says why; today, one a check could answer asks for the check instead.
  */
 import { useId, useState, type ReactNode } from "react";
 import { addDays } from "@rg/domain";
@@ -23,6 +24,8 @@ export interface ScheduleSheetProps {
   today: string;
   /** "Later today"'s slot, "HH:MM"; null once the day is out of hours. */
   later: string | null;
+  /** The athlete's usual time today, "HH:MM" — where an untimed workout today would go; null when unknown. */
+  usual: string | null;
   /** The workout judged for a day. */
   judgeFor: (date: string) => Judged;
   checkLabel: (profileId: string) => string;
@@ -32,7 +35,7 @@ export interface ScheduleSheetProps {
   onClose: () => void;
 }
 
-export function ScheduleSheet({ today, later, judgeFor, checkLabel, onCheck, onSchedule, onClose }: ScheduleSheetProps) {
+export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onCheck, onSchedule, onClose }: ScheduleSheetProps) {
   const name = useId();
   const tomorrow = addDays(today, 1);
   const [choice, setChoice] = useState<"later" | "day">(later ? "later" : "day");
@@ -47,7 +50,9 @@ export function ScheduleSheet({ today, later, judgeFor, checkLabel, onCheck, onS
   const valid = choice === "later" ? /^\d{2}:\d{2}$/.test(laterTime) : /^\d{4}-\d{2}-\d{2}$/.test(date) && date >= today;
   const asking = when.date === today ? judged.checks : [];
   const passed = when.date === today && when.time !== null && timeHasPassed(when.time, new Date());
-  const disabled = busy || !valid || passed || !!judged.blocked || asking.length > 0;
+  // Today with no time goes to the usual window: once that has gone by, a time later today is asked for instead.
+  const usualPassed = when.date === today && when.time === null && usual !== null && timeHasPassed(usual, new Date());
+  const disabled = busy || !valid || passed || usualPassed || !!judged.blocked || asking.length > 0;
 
   const go = async () => {
     if (disabled) return;
@@ -130,6 +135,10 @@ export function ScheduleSheet({ today, later, judgeFor, checkLabel, onCheck, onS
       {passed ? (
         <p className="stu-build-why" role="status">
           That time has passed.
+        </p>
+      ) : usualPassed ? (
+        <p className="stu-build-why" role="status">
+          Your usual time today has passed. Pick a time later today.
         </p>
       ) : null}
       {asking.length ? (

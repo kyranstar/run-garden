@@ -8,7 +8,8 @@
  *   buildCtxOf       what it judges and suggests with: the switched-on profiles and today's readings (joined by any
  *                    this page recorded), the athlete's set-aside, pinned and recent moves, the place's gear, and what
  *                    was done cleanly — the server's `isDoneCleanly` over the same tally the engine reads, per library
- *                    row (`doneCleanly`); before the library read answers, nothing is claimed (no frontier).
+ *                    row (`doneCleanly`); before the library read answers, or when it does not say (an older cached
+ *                    read), nothing is claimed (no frontier).
  *   judgeDraft       the notes: the validator on the draft as it would be saved (`toProposable`), each note put back on
  *                    the draft's own part and item (empty parts and all), with its Fix as an editor action, and — for an
  *                    error today's check could answer — the profile whose check to ask for. What blocks Start and
@@ -16,13 +17,14 @@
  *                    are costs, never blocks.
  *   balanceRows …    the summary's numbers; a dose in words; the item sheet's steppers and load; the swap list; the
  *                    parts on offer; where activation belongs once the main part loads a lift; "Later today"; why a
- *                    planned workout opens read-only; why an edit was refused, in the words of what was asked;
- *                    several edits as one (one Undo).
+ *                    planned workout opens read-only; why an edit was refused, in the words of what was asked and
+ *                    with the schema's own bounds; several edits as one (one Undo); the athlete's usual time.
  */
 import {
   formatWeight,
   itemSchema,
   parseWeight,
+  partSchema,
   secondsText,
   toKg,
   type SchedulingPreferences,
@@ -31,6 +33,7 @@ import {
   type WorkoutDose,
   type WorkoutItem,
   type WorkoutPart,
+  workoutDocSchema,
 } from "@rg/domain";
 import {
   bestDay,
@@ -105,6 +108,35 @@ export const sentence = (s: string): string => `${s.charAt(0).toUpperCase()}${s.
 
 // ── Edits ──────────────────────────────────────────────────────────────────
 
+/** A bound the schema must write (an edit is refused by the schema's own rules, so its reason quotes them). */
+function bound(n: number | null | undefined, what: string): number {
+  if (n === null || n === undefined) throw new Error(`the workout schema no longer bounds ${what}`);
+  return n;
+}
+const listBound = (s: { _def: { maxLength: { value: number } | null } }, what: string): number => bound(s._def.maxLength?.value, what);
+/** The schema's bounds an edit can meet, read from the schema itself. */
+const BOUNDS = (() => {
+  const part = partSchema.shape;
+  const intent = workoutDocSchema.shape.intent.shape;
+  const rounds = part.rounds.unwrap();
+  return {
+    rounds: [bound(rounds.minValue, "rounds"), bound(rounds.maxValue, "rounds")] as const,
+    restSec: bound(part.restBetweenRoundsSec.unwrap().maxValue, "rest between rounds"),
+    partWhy: bound(part.why.unwrap().maxLength, "a part's why"),
+    moves: listBound(part.items, "a part's moves"),
+    title: bound(workoutDocSchema.shape.title.maxLength, "the title"),
+    summary: bound(intent.summary.maxLength, "the summary"),
+    goals: listBound(intent.goals, "goals"),
+    focus: listBound(intent.focus, "focus"),
+    parts: listBound(workoutDocSchema.shape.parts, "parts"),
+  };
+})();
+/** A cue's bound, for the kind of item it is on (an exercise's when the kind is unknown). */
+function cueBound(kind: string | undefined): number {
+  const variant = itemSchema.options.find((o) => o.shape.kind.value === kind) ?? itemSchema.options[0];
+  return bound("cue" in variant.shape ? variant.shape.cue.unwrap().maxLength : null, "a cue");
+}
+
 /**
  * Several actions as ONE edit — one Undo takes them all back: each applied to the last one's result; the first refusal
  * stops them all and nothing changes.
@@ -127,7 +159,11 @@ export function editAll(state: EditorState, actions: readonly EditAction[], libr
 export function editRefusal(action: EditAction, r: Rejection, doc?: WorkoutDoc): string {
   if (r === "missing") return "That's gone already.";
   if (r === "unchanged") return "Nothing changed.";
-  if (r === "full") return action.type === "addPart" ? "A workout holds at most 20 parts." : "That part is full.";
+  if (r === "full") {
+    // A move with no part named goes to its purpose's part, made if need be: refused full, there was no room for one.
+    const noPart = action.type === "addPart" || (action.type === "addItem" && action.part === undefined && (doc?.parts.length ?? 0) >= BOUNDS.parts);
+    return noPart ? `A workout holds at most ${BOUNDS.parts} parts.` : `A part holds at most ${BOUNDS.moves} moves.`;
+  }
   switch (action.type) {
     case "setDose":
     case "setCue":
@@ -136,25 +172,25 @@ export function editRefusal(action: EditAction, r: Rejection, doc?: WorkoutDoc):
       const it = doc?.parts[action.part]?.items[action.item];
       if (it && !itemSchema.safeParse(it).success) return "Fix this item first.";
       if (action.type === "setDose") return "That dose is more than a workout takes.";
-      if (action.type === "setCue") return "That cue is too long.";
+      if (action.type === "setCue") return `A cue takes at most ${cueBound(it?.kind)} characters.`;
       return "That move can't stand in here.";
     }
     case "setPart": {
       const p = action.patch;
-      if (p.rounds !== undefined) return "Rounds go from 1 to 50.";
-      if (p.restBetweenRoundsSec !== undefined) return "Rest between rounds goes up to 15 minutes.";
-      if (p.why !== undefined) return "The why takes at most 160 characters.";
+      if (p.rounds !== undefined) return `Rounds go from ${BOUNDS.rounds[0]} to ${BOUNDS.rounds[1]}.`;
+      if (p.restBetweenRoundsSec !== undefined) return `Rest between rounds goes up to ${secondsText(BOUNDS.restSec)}.`;
+      if (p.why !== undefined) return `A part's why takes at most ${BOUNDS.partWhy} characters.`;
       return "That doesn't fit this part.";
     }
     case "setIntent": {
       const i = action.intent;
-      if (i.goals !== undefined) return "A workout serves at most 6 goals.";
-      if (i.focus !== undefined) return "A workout has at most 12 focus areas.";
-      if (i.summary !== undefined) return "The why takes at most 200 characters.";
+      if (i.goals !== undefined) return `A workout serves at most ${BOUNDS.goals} goals.`;
+      if (i.focus !== undefined) return `A workout has at most ${BOUNDS.focus} focus areas.`;
+      if (i.summary !== undefined) return `The why takes at most ${BOUNDS.summary} characters.`;
       return "That can't be set for this workout.";
     }
     case "setTitle":
-      return "The title can't be empty.";
+      return action.title.trim() ? `A title takes at most ${BOUNDS.title} characters.` : "The title can't be empty.";
     case "addItem":
       return "That move can't go in this part.";
     default:
@@ -175,7 +211,7 @@ export interface BuildCtx {
   recent: string[];
   /** The place's gear; null until it is known (then gear is not judged). */
   equipment: readonly string[] | null;
-  /** Done cleanly (the library read's `doneCleanly`); undefined before that read answers. */
+  /** Done cleanly (the library read's `doneCleanly`); undefined before that read answers, or when it does not say. */
   done: ReadonlySet<string> | undefined;
   today: string;
 }
@@ -189,8 +225,10 @@ export function buildCtxOf(ctx: StudioCtx, today: string, recorded: Readonly<Rec
   const recent = prefs
     .filter(([, p]) => p.lastDoneOn !== null && (Date.parse(today) - Date.parse(p.lastDoneOn)) / DAY_MS < RECENT_DAYS)
     .map(([id]) => id);
-  // The server judged each move by the one rule (`isDoneCleanly`, flags and all); before its read, nothing is known.
-  const done = prefs.length > 0 ? new Set(prefs.filter(([, p]) => p.doneCleanly).map(([id]) => id)) : undefined;
+  // The server judged each move by the one rule (`isDoneCleanly`, flags and all). Before its read — or from an older
+  // cached read that does not say — nothing is known: unknown, never "nothing done cleanly" (every jump a jump).
+  const told = prefs.some(([, p]) => p.doneCleanly !== null);
+  const done = told ? new Set(prefs.filter(([, p]) => p.doneCleanly === true).map(([id]) => id)) : undefined;
   return {
     profiles: ctx.profiles,
     readings: { ...ctx.readings, ...recorded },
@@ -691,6 +729,16 @@ export const nowHHMM = (now: Date): string => hhmm(now.getHours() * 60 + now.get
 export const LATER_LEAD_MIN = 15;
 
 /**
+ * The athlete's usual time to train on a day, "HH:MM": the window the server places an untimed workout in (the evening
+ * when that is their default, else the morning — a weekend's own); null when unknown.
+ */
+export function usualTime(prefs: SchedulingPreferences | null, date: string): string | null {
+  if (!prefs) return null;
+  const t = prefs.defaultWindow === "evening" ? prefs.weekdayEveningTime : isWeekend(date) ? prefs.weekendMorningTime : prefs.weekdayMorningTime;
+  return /^\d{2}:\d{2}$/.test(t) ? t : null;
+}
+
+/**
  * "Later today": the athlete's usual time to train (the window a planned session takes) while it is at least
  * `LATER_LEAD_MIN` ahead, else the next whole hour and one more — so long as a workout of `minutes` started then
  * finishes by their latest evening finish (Settings); null when no such slot is left today.
@@ -699,10 +747,8 @@ export function laterToday(now: Date, prefs: SchedulingPreferences | null, today
   const mins = now.getHours() * 60 + now.getMinutes();
   const finish = prefs && /^\d{2}:\d{2}$/.test(prefs.latestEveningFinish) ? minutesOf(prefs.latestEveningFinish) : 24 * 60;
   const fits = (start: number) => start < 24 * 60 && start + minutes <= finish;
-  if (prefs) {
-    const usual = prefs.defaultWindow === "evening" ? prefs.weekdayEveningTime : isWeekend(today) ? prefs.weekendMorningTime : prefs.weekdayMorningTime;
-    if (/^\d{2}:\d{2}$/.test(usual) && minutesOf(usual) >= mins + LATER_LEAD_MIN && fits(minutesOf(usual))) return usual;
-  }
+  const usual = usualTime(prefs, today);
+  if (usual !== null && minutesOf(usual) >= mins + LATER_LEAD_MIN && fits(minutesOf(usual))) return usual;
   const next = (Math.floor(mins / 60) + 2) * 60;
   return fits(next) ? hhmm(next) : null;
 }

@@ -10487,6 +10487,22 @@ textarea.stu-field {
   overflow-wrap: anywhere;
   text-align: left;
 }
+.stu-sug-names {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stu-sug-names li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
 /* A planned workout that can't change: its rows are words, not buttons. */
 .stu-item--still {
   cursor: default;

@@ -110,6 +110,7 @@ import {
   forSchedule,
   judgeDraft,
   laterToday,
+  usualTime,
   nowHHMM,
   partMinutes,
   readOnlyWhy,
@@ -297,9 +298,10 @@ function Builder({ source }: { source: BuildSource }) {
       setLoaded(next);
       if (next.key === "new") void drafts.save(editor.doc).catch(() => undefined);
       // An edit moves on from what the footer said of the last state: a refusal, a build shown before it locked, the
-      // offer to undo a removal. (A start under way, and a started session this device could not keep, stay.)
+      // offer to undo a removal, "Saved." (A start under way, and a started session this device could not keep, stay;
+      // an edit that says something of its own — "Removed …" — says it after this.)
       setFlow((f) => (f.step === "busy" || f.step === "notKept" ? f : IDLE));
-      setStatus((s) => (s?.undoAt !== undefined ? null : s));
+      setStatus(null);
     },
     [drafts, setLoaded],
   );
@@ -686,6 +688,7 @@ function Builder({ source }: { source: BuildSource }) {
   const open = sumOpen ?? wide;
   const notesAt = (p: number, i: number) => judged.notes.filter((n) => n.part === p && n.item === i);
   const showGhost = ghostAt !== null && ghost.length > 0 && !ghostOff && !frozen;
+  const footWhy = flow.step === "swaps" ? null : canStart ? blockedLine(judged) : blocked === EMPTY_BLOCK ? EMPTY_BLOCK : null;
 
   const addSuggested = (pi: number | "ghost", rec: ExerciseRecord, why?: string) => {
     let r: Rejection | undefined;
@@ -711,6 +714,11 @@ function Builder({ source }: { source: BuildSource }) {
     focusNext.current = [`[data-at="${p}-${at}"]`, `[data-part="${p}"] .stu-sug-add`, `[data-part="${p}"] .stu-add-move`];
     return r;
   };
+  /** The activation prompt, declined: it goes, its ✕ with it, so focus goes to the page's heading. */
+  const dismissGhost = () => {
+    setGhostOff(true);
+    focusNext.current = [".stu-build-h1"];
+  };
   const removeItem = (p: number, i: number) => {
     const it = doc.parts[p]?.items[i];
     const name = it ? itemName(it, it.kind === "exercise" ? find(it.libraryId) : undefined) : "it";
@@ -721,7 +729,8 @@ function Builder({ source }: { source: BuildSource }) {
       return;
     }
     setEditing(null);
-    focusNext.current = [`[data-part="${p}"] .stu-add-move`];
+    // The part's add: Add a move, or — while its suggestions fold to one line — that line's ＋.
+    focusNext.current = [`[data-part="${p}"] .stu-add-move`, `[data-part="${p}"] .stu-sug-line .stu-sug-add`];
     setStatus({ text: `Removed ${name}.`, undoAt: live.current?.editor.past.length ?? 0 });
   };
   const removePart = (p: number) => {
@@ -797,7 +806,9 @@ function Builder({ source }: { source: BuildSource }) {
             </span>
           </div>
           {isWorkout && row ? <p className="stu-build-when">{`${row.date === today ? "Today" : formatDayShort(row.date)} · ${formatTime(row.time)}`}</p> : null}
-          <h1 className="visually-hidden">{doc.title}</h1>
+          <h1 className="visually-hidden stu-build-h1" tabIndex={-1}>
+            {doc.title}
+          </h1>
           <CommitField label="Title" className="stu-build-title display" value={doc.title} maxLength={80} onCommit={setTitle} readOnly={frozen} />
           <CommitField
             label="Why"
@@ -833,13 +844,14 @@ function Builder({ source }: { source: BuildSource }) {
             onFix={onFix}
             onCheck={onCheck}
             checkLabel={checkLabel}
+            readOnly={frozen}
           />
         </div>
 
         <div className="stu-parts">
           {doc.parts.map((part, pi) => (
             <Fragment key={pi}>
-              {showGhost && ghostAt === pi ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={() => setGhostOff(true)} /> : null}
+              {showGhost && ghostAt === pi ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={dismissGhost} /> : null}
               <PartBlock
                 index={pi}
                 part={part}
@@ -857,7 +869,7 @@ function Builder({ source }: { source: BuildSource }) {
               />
             </Fragment>
           ))}
-          {showGhost && ghostAt === doc.parts.length ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={() => setGhostOff(true)} /> : null}
+          {showGhost && ghostAt === doc.parts.length ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={dismissGhost} /> : null}
           {!frozen && addablePurposes(doc, ctx.profiles).length ? (
             <div className="stu-add-parts">
               <span className="stu-build-k">Add a part</span>
@@ -963,9 +975,11 @@ function Builder({ source }: { source: BuildSource }) {
           </p>
         ) : null}
         {/* One voice per fact: the note above says what and offers its Fix; here, only that Start waits on it — the full
-            reason is Start's description, for a screen reader on the button. */}
-        {blocked && flow.step !== "swaps" ? <p className="stu-build-why">{blockedLine(judged)}</p> : null}
-        {blocked ? (
+            reason is Start's description, for a screen reader on the button. Only where there is a Start: a workout
+            that can't change, or one on another day, has nothing waiting to start (an empty one still says to add a
+            move, which Schedule waits on too). */}
+        {footWhy ? <p className="stu-build-why">{footWhy}</p> : null}
+        {blocked && canStart ? (
           <span id={whyId} hidden>
             {blocked}
           </span>
@@ -1069,6 +1083,7 @@ function Builder({ source }: { source: BuildSource }) {
         <ScheduleSheet
           today={today}
           later={laterToday(new Date(), settings.data?.prefs ?? null, today, judged.derived?.estimatedMinutes ?? 0)}
+          usual={usualTime(settings.data?.prefs ?? null, today)}
           judgeFor={(d) => judgeDraft(doc, bc, d)}
           checkLabel={checkLabel}
           onCheck={onCheck}
@@ -1173,28 +1188,34 @@ function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: 
 
 /**
  * Once a part has a move, its suggestions fold to one line (the spec's mock: "Suggested: Hip airplane · Ankle rocks ＋"):
- * each name explains itself, and ＋ opens the part's Add a move, where they come first, each a tap to add.
+ * a list, each name its own item that explains itself (the dots between are drawn, not read), and ＋ — the part's one
+ * Add a move — opens the picker, where they come first, each a tap to add.
  */
 function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[]; partName: string; onPick: () => void }) {
+  const hid = useId();
   const recs = recsOf(list);
   if (recs.length === 0) return null;
   return (
-    <p className="stu-sug-line">
-      <span className="stu-sugs-k">Suggested:</span>
-      {recs.map(({ rec, why }, i) => (
-        <Fragment key={rec.id}>
-          {i > 0 ? (
-            <span className="stu-sep" aria-hidden="true">
-              ·
-            </span>
-          ) : null}
-          <Tooltip term={rec.name} tip={sentence(why)} />
-        </Fragment>
-      ))}
-      <button type="button" className="stu-sug-add" aria-label={`Add a suggested move to ${partName}`} onClick={onPick}>
+    <div className="stu-sug-line">
+      <span className="stu-sugs-k" id={hid}>
+        Suggested:
+      </span>
+      <ul className="stu-sug-names" aria-labelledby={hid}>
+        {recs.map(({ rec, why }, i) => (
+          <li key={rec.id}>
+            {i > 0 ? (
+              <span className="stu-sep" aria-hidden="true">
+                ·
+              </span>
+            ) : null}
+            <Tooltip term={rec.name} tip={sentence(why)} />
+          </li>
+        ))}
+      </ul>
+      <button type="button" className="stu-sug-add" aria-label={`Add a move to ${partName}`} onClick={onPick}>
         <IconPlus size={16} />
       </button>
-    </p>
+    </div>
   );
 }
 
@@ -1226,6 +1247,7 @@ function PartBlock({
   const name = label(part.purpose);
   const tip = GLOSSARY[part.purpose];
   const meta = [formatLine(part), minutes ? `${minutes} min` : ""].filter(Boolean).join(" · ");
+  const lined = part.items.length > 0 && recsOf(suggestions).length > 0;
   return (
     <section className="stu-part" data-part={index} aria-labelledby={hid}>
       <div className="stu-part-head">
@@ -1285,7 +1307,8 @@ function PartBlock({
       ) : (
         <SuggestionLine list={suggestions} partName={name} onPick={onPick} />
       )}
-      {readOnly ? null : (
+      {/* One control per action: while the suggestions fold to one line, its ＋ is the part's Add a move. */}
+      {readOnly || lined ? null : (
         <button type="button" className="linklike stu-add-move" onClick={onPick}>
           <IconPlus size={14} />
           Add a move

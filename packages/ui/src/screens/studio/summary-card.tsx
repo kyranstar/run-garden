@@ -13,7 +13,9 @@
  * The line and the count are the toggle; the errors stay in view whatever it is set to, because they are what stops
  * Start — each with its Fix where the validator has one, or the check that could answer it. The balance, the areas
  * and the warnings (costs, never blocks) fold away. Every level has its number beside it, and every note its shape
- * (a triangle to fix, a circle for a cost) and a word for a screen reader: status is never colour alone.
+ * (a triangle to fix, a circle for a cost) and a word for a screen reader: status is never colour alone. A workout
+ * that can't change (done, under way, its day passed) still says what it would be judged by, but offers nothing to do:
+ * no Fix, no check.
  */
 import { useId } from "react";
 import { GLOSSARY } from "@rg/exercise-library";
@@ -27,12 +29,15 @@ export function NoteRow({
   onFix,
   onCheck,
   checkLabel,
+  readOnly = false,
 }: {
   note: Note;
   onFix: (note: Note) => void;
   onCheck: (profileId: string) => void;
   /** The words of a profile's check ("Jaw check"). */
   checkLabel: (profileId: string) => string;
+  /** The workout can't change: the note is said, with nothing to do about it here. */
+  readOnly?: boolean;
 }) {
   const error = note.severity === "error";
   return (
@@ -42,7 +47,7 @@ export function NoteRow({
         <span className="visually-hidden">{error ? "To fix: " : "Note: "}</span>
         {note.message}
       </span>
-      {note.check || note.fix ? (
+      {!readOnly && (note.check || note.fix) ? (
         <span className="stu-note-actions">
           {note.check ? (
             <button type="button" className="btn btn-small" onClick={() => onCheck(note.check!)}>
@@ -68,6 +73,7 @@ export function SummaryCard({
   onFix,
   onCheck,
   checkLabel,
+  readOnly = false,
 }: {
   judged: Judged;
   /** The place the gear is judged at, by name; null until known. */
@@ -77,6 +83,8 @@ export function SummaryCard({
   onFix: (note: Note) => void;
   onCheck: (profileId: string) => void;
   checkLabel: (profileId: string) => string;
+  /** The workout can't change: its notes offer no Fix and no check. */
+  readOnly?: boolean;
 }) {
   const id = useId();
   const d = judged.derived;
@@ -85,7 +93,7 @@ export function SummaryCard({
   const line = [d ? `${d.estimatedMinutes} min` : "No moves yet", d ? (CATEGORY_LABELS[d.category] ?? null) : null, place].filter(Boolean).join(" · ");
   const count = errors.length ? `${errors.length} to fix` : warnings.length ? `${warnings.length} ${warnings.length === 1 ? "note" : "notes"}` : "";
   const areas = d ? areasWorked(d) : [];
-  const row = (n: Note, i: number) => <NoteRow key={`${n.code}-${i}`} note={n} onFix={onFix} onCheck={onCheck} checkLabel={checkLabel} />;
+  const row = (n: Note, i: number) => <NoteRow key={`${n.code}-${i}`} note={n} onFix={onFix} onCheck={onCheck} checkLabel={checkLabel} readOnly={readOnly} />;
   return (
     <section className="stu-sum" aria-labelledby={`${id}-h`}>
       <h2 id={`${id}-h`} className="visually-hidden">
@@ -98,9 +106,10 @@ export function SummaryCard({
           <IconChevron />
         </span>
       </button>
-      {/* The count, said when it changes: a Fix that clears the last error is heard as well as seen. */}
+      {/* What is left to fix, said when it changes — and nothing, said plainly: a Fix that clears the last error is heard
+          as well as seen. (Costs aren't counted here: they change nothing Start or Schedule can do.) */}
       <span className="visually-hidden" role="status">
-        {count}
+        {errors.length ? `${errors.length} to fix` : "Nothing to fix."}
       </span>
       {errors.length ? <ul className="stu-notes">{errors.map(row)}</ul> : null}
       <div id={`${id}-b`} className="stu-sum-body" hidden={!open}>
