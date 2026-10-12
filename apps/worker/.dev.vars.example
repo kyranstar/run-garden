@@ -36,3 +36,5 @@ COROS_MCP_TOKEN=
 APP_URL=http://localhost:8787
 FIXTURE_MODE=1
 AI_DEFAULT_ENABLED=1
+# The coach designer (Stage 3): off (404) in production until the owner turns it on.
+COACH_DESIGNER=1

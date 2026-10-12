@@ -14,3 +14,5 @@ migrations_dir = "../../packages/database/migrations"
 APP_URL = "http://localhost:5173"
 FIXTURE_MODE = "1"
 AI_DEFAULT_ENABLED = "0"
+# The coach designer's routes and sweep (Stage 3): on for local work, absent in production's wrangler.toml.
+COACH_DESIGNER = "1"

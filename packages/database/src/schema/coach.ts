@@ -218,7 +218,8 @@ export const coachRuns = sqliteTable(
     /** { kind: 'now' | 'later_today' | 'week' | 'next_n', n?, from?, to? } */
     scope: text("scope", { mode: "json" }).notNull().$type<Record<string, unknown>>(),
     request: text("request"),
-    /** 'queued' | 'running' | 'waiting_athlete' | 'done' | 'failed' | 'cancelled' | 'expired' */
+    /** 'active' | 'stepping' | 'waiting_athlete' | 'finished' | 'failed' | 'cancelled' | 'expired' | 'stopped_cap'
+     * (services/coach-runs.ts; 'stepping' is a step's claim) */
     status: text("status").notNull(),
     /**
      * The resumable agent state, kept compact: JSON as plain text (no json mode, like the document columns). Writers

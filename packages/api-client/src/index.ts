@@ -855,6 +855,60 @@ export interface CoachWakeResult {
   proposalIds?: string[];
 }
 
+// ── The coach designer's runs (worker: services/coach-runs.ts, routes/coach-runs.ts) ──
+
+export type CoachRunStatus =
+  | "active"
+  | "stepping"
+  | "waiting_athlete"
+  | "finished"
+  | "failed"
+  | "cancelled"
+  | "expired"
+  | "stopped_cap";
+export type CoachRunRole = "main" | "designer" | "reviewer";
+export interface CoachRunScope {
+  kind: "now" | "later_today" | "week" | "next_n";
+  /** `next_n` only. */
+  n?: number;
+}
+
+export interface CoachRunDto {
+  id: string;
+  role: CoachRunRole;
+  scope: CoachRunScope;
+  /** The athlete's words. */
+  request: string | null;
+  /** What the run is doing now; `waiting_athlete` while any part of it waits on an answer. */
+  status: CoachRunStatus;
+  steps: number;
+  costUsd: number;
+  proposalId: string | null;
+  /** Why it stopped, as a code (weekly_cap, run_ceiling, step_cap, state_cap, gateway_402, no_key, retries, refusal,
+   * expired, …); the plain line is the run's last event. */
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CoachRunEventDto {
+  seq: number;
+  kind: "tool_call" | "tool_result" | "draft" | "review" | "revision" | "question" | "note" | "error";
+  /** One plain line for the run view. */
+  summary: string;
+  /** Bounded detail; a sub-run's event carries `by: { runId, role }`. */
+  payload: unknown;
+  at: string;
+}
+
+export interface CoachRunStepResult {
+  status: CoachRunStatus;
+  /** Step again at `at`; null: nothing to step (finished, stopped, or waiting on the athlete). */
+  nextDue: { runId: string; role: CoachRunRole; at: string } | null;
+  events: CoachRunEventDto[];
+}
+
 /** Arrival watermark for the garden's celebration/beat surfaces — the newest
  * durable event the user has seen plus same-day (preview) unlocks already
  * celebrated. Mirrors `GardenView["seen"]` (garden-sync.ts) and the body of
@@ -1780,6 +1834,18 @@ export const api = {
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),
   coachMemoryDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "DELETE" }),
+  // The coach designer's runs (Stage 3; 404 unless the server turned them on). One live run per athlete: a second
+  // create answers the live one (`existing`). A step is one model call — minutes at most — so it is never cut off
+  // client-side; a 409 means another step holds the run (poll `coachRun` and step again).
+  coachRunCreate: (body: { scope: CoachRunScope; request?: string | null; rehearsal?: boolean }) =>
+    post<{ run: CoachRunDto; existing: boolean }>("/api/coach/runs", body),
+  coachRunStep: (id: string) =>
+    post<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, {}, AI_TIMEOUT_MS),
+  coachRun: (id: string, afterSeq = 0) =>
+    get<{ run: CoachRunDto; events: CoachRunEventDto[] }>(`/api/coach/runs/${encodeURIComponent(id)}?afterSeq=${afterSeq}`),
+  coachRunAnswer: (id: string, body: { answers: string[]; dismissed?: boolean }) =>
+    post<{ run: CoachRunDto }>(`/api/coach/runs/${encodeURIComponent(id)}/answer`, body),
+  coachRunCancel: (id: string) => post<{ run: CoachRunDto }>(`/api/coach/runs/${encodeURIComponent(id)}/cancel`, {}),
   corosStatus: () => get<CorosStatusResponse>("/api/coros/status"),
   corosReadNow: () =>
     post<{ status: string; ingested?: number }>("/api/coros/read-now", undefined, 60_000),

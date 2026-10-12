@@ -12,7 +12,7 @@ import {
 import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
 import { computeWeeklyFacts, DISCIPLINES } from "@rg/analytics";
 import type { Env } from "./env.js";
-import { fixtureModeEnabled, stagingEnabled } from "./env.js";
+import { coachDesignerEnabled, fixtureModeEnabled, stagingEnabled } from "./env.js";
 import { installStagingGuard } from "./services/staging.js";
 import { withDb, requireUser, type AppContext } from "./auth/middleware.js";
 import { authRoutes } from "./routes/auth.js";
@@ -21,6 +21,7 @@ import { gardenRoutes } from "./routes/garden.js";
 import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from "./routes/misc.js";
 import { studioRoutes } from "./routes/studio.js";
 import { coachRoutes, sweepUserProposals } from "./routes/coach.js";
+import { coachRunRoutes } from "./routes/coach-runs.js";
 import { corosRoutes } from "./routes/coros.js";
 import { syncRoutes } from "./routes/sync.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -37,7 +38,8 @@ import { templateRoutes } from "./routes/templates.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
-import { CRON_GARDEN_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./services/cron-limits.js";
+import { COACH_RUN_SWEEP_MAX, CRON_GARDEN_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./services/cron-limits.js";
+import { defaultRunDeps, sweepCoachRuns } from "./services/coach-runs.js";
 import { runBackfillChunkCloud, sweepStaleBackfills } from "./services/backfill.js";
 import { closeStrandedSyncRuns, sweepStaleSuppressions, reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
@@ -82,6 +84,9 @@ app.use("/api/*", originGuard);
 app.route("/api/auth", authRoutes);
 app.route("/api/plan", planRoutes);
 app.route("/api/garden", gardenRoutes);
+// The coach designer's runs: 404 unless COACH_DESIGNER or staging, then requireUser. Ahead of /api/coach, whose own
+// sign-in would otherwise answer these paths first.
+app.route("/api/coach/runs", coachRunRoutes);
 app.route("/api/coach", coachRoutes);
 app.route("/api/coros", corosRoutes);
 app.route("/api/calendar", calendarRoutes);
@@ -246,7 +251,7 @@ async function corosHalfHour(db: Db, env: Env, userId: string): Promise<void> {
 }
 
 /** The step an hourly run spent its budget on, in its run row's stats (`heavyStep`); null when none had work. */
-export type HourlyHeavyStep = "garden" | "coach_read" | "coros_write";
+export type HourlyHeavyStep = "garden" | "coach_read" | "coros_write" | "coach_run";
 
 /** Thrown between steps of a per-user cron loop when a restore began for
  * that account while the loop was working on it (ruling B9). */
@@ -269,6 +274,8 @@ export async function hourly(db: Db, env: Env): Promise<void> {
   await placeSlotsForAllPrograms(db).catch((e: unknown) =>
     console.error(`slot placement failed: ${e instanceof Error ? e.message : "unknown"}`),
   );
+  // Coach designer run steps taken in this invocation, across every account (COACH_RUN_SWEEP_MAX).
+  let coachRunSteps = 0;
   for (const userId of await allUserIds(db)) {
     // The loop was handed this account before any step ran, and a step (the
     // garden's, a coach read) can take seconds: a restore that began since
@@ -321,6 +328,21 @@ export async function hourly(db: Db, env: Env): Promise<void> {
         // Mac is no longer in the loop. One a run; each route that queues one drains it in its own request.
         const jobs = await executeCloudJobs(db, env, userId, prefs, { cap: 1 }).catch(() => null);
         if (jobs && jobs.executed > 0) heavyStep = "coros_write";
+      }
+      if (coachDesignerEnabled(env)) {
+        await stillOurs();
+        // The coach designer's runs (Stage 3): a dead step's claim given back and a run left for half an hour
+        // expired, every run (cheap SQL); and one step — a model call — of a run nobody is stepping, only in the slot
+        // no other heavy step took and at most COACH_RUN_SWEEP_MAX in the whole invocation.
+        const maxSteps = heavyStep === null ? Math.max(0, COACH_RUN_SWEEP_MAX - coachRunSteps) : 0;
+        const swept = await sweepCoachRuns(db, env, userId, new Date(), defaultRunDeps(), { maxSteps }).catch((e: unknown) => {
+          console.error(`coach run sweep failed: ${e instanceof Error ? e.message : "unknown"}`);
+          return null;
+        });
+        if (swept && swept.stepped > 0) {
+          heavyStep = "coach_run";
+          coachRunSteps += swept.stepped;
+        }
       }
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep });
     } catch (e) {

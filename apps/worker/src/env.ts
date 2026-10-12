@@ -17,6 +17,10 @@ export interface Env {
    * A global switch, not a preference (ruling 3-R4). Absent (off) in every environment until the owner-approved first
    * push; off, nothing Phase 3 adds writes to COROS (unpushes and deletes still run, ruling 3-R10). Var. */
   WATCH_PUSH_ENABLED?: string;
+  /** "1" turns on the coach designer (Stage 3): the `/api/coach/runs` routes answer and the hourly sweep steps
+   * orphaned runs. Absent (a 404, no sweep) in production until the owner turns it on; on in local dev and the
+   * fixture stack; always on in staging. Var. */
+  COACH_DESIGNER?: string;
 
   // Secrets
   SESSION_SECRET: string;
@@ -56,6 +60,10 @@ export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";
 
 /** The watch switch (Phase 3): only "1" is on. A missing env (a test host with none) is off. */
 export const watchPushEnabled = (env: Env | undefined): boolean => env?.WATCH_PUSH_ENABLED === "1";
+
+/** The coach designer's switch: staging, or COACH_DESIGNER = "1". A missing env (a test host with none) is off. */
+export const coachDesignerEnabled = (env: Env | undefined): boolean =>
+  !!env && (stagingEnabled(env) || env.COACH_DESIGNER === "1");
 
 export function fixtureModeEnabled(env: Env): boolean {
   return env.FIXTURE_MODE === "1";
