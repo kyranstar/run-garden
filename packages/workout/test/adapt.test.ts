@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { WATCH_MAX_STEPS, workoutDocSchema, type PlannedStage, type WorkoutDoc } from "@rg/domain";
 import { isPlyometric, type ExerciseRecord } from "@rg/exercise-library";
 import type { Step } from "@rg/session-engine";
-import { DocTooLargeError, deriveDoc, docFromBuild, docSlotKeys, placementFor, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
+import { DOC_MAX_STEPS, DocTooLargeError, deriveDoc, docFromBuild, docSlotKeys, placementFor, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
 import { LIBRARY, jumpDayBuilds, seededBuilds, stored } from "./seeded-builds.js";
 
 /** A circuit station: it plays the circuit's work window, whatever hold its move's target suggests. */
@@ -123,14 +123,17 @@ describe("a document's size is bounded (final review I4): it is refused before a
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
-  it("past the watch's steps or 600 minutes it is refused; at the limit it plays", () => {
+  it("past the app's steps (600) or 600 minutes it is refused; past the watch's (200) it still plays, every step; at the limit it plays", () => {
     const steps = (n: number): WorkoutDoc => workoutDocSchema.parse({
       version: 1, title: "T", intent: { summary: "S", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
-      parts: [{ purpose: "main", format: "circuit", rounds: n / 5, items: Array.from({ length: 5 }, () => ({ kind: "exercise", libraryId: "deadBug", dose: { sets: 1, holdSec: 5 } })) }],
+      parts: [{ purpose: "main", format: "holds", rounds: n / 15, items: Array.from({ length: 15 }, () => ({ kind: "exercise", libraryId: "deadBug", dose: { sets: 1, holdSec: 5 } })) }],
     });
-    expect(deriveDoc(steps(WATCH_MAX_STEPS), LIBRARY).watchStepCount).toBe(WATCH_MAX_STEPS);
-    expect(playerStepsFromDoc(steps(WATCH_MAX_STEPS), LIBRARY).length).toBeGreaterThan(0);
-    expect(() => playerStepsFromDoc(steps(WATCH_MAX_STEPS + 5), LIBRARY)).toThrow(DocTooLargeError);
+    expect(DOC_MAX_STEPS).toBeGreaterThan(WATCH_MAX_STEPS);
+    expect(deriveDoc(steps(WATCH_MAX_STEPS + 25), LIBRARY).watchStepCount).toBe(WATCH_MAX_STEPS + 25);
+    expect(playerStepsFromDoc(steps(WATCH_MAX_STEPS + 25), LIBRARY)).toHaveLength(WATCH_MAX_STEPS + 25);
+    expect(deriveDoc(steps(DOC_MAX_STEPS), LIBRARY).watchStepCount).toBe(DOC_MAX_STEPS);
+    expect(playerStepsFromDoc(steps(DOC_MAX_STEPS), LIBRARY)).toHaveLength(DOC_MAX_STEPS);
+    expect(() => playerStepsFromDoc(steps(DOC_MAX_STEPS + 15), LIBRARY)).toThrow(DocTooLargeError);
     const long = workoutDocSchema.parse({
       version: 1, title: "T", intent: { summary: "S", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
       parts: [{ purpose: "main", format: "holds", items: [{ kind: "exercise", libraryId: "deadBug", dose: { sets: 11, holdSec: 3600 } }] }],

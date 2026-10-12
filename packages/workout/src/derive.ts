@@ -45,9 +45,12 @@
  *   an `all` entry, members sorted. Every sort here compares code units (`byCodeUnit`), never the locale: a server and a
  *   phone in another language derive the same lists.
  * - Condition maxima: for each profile, each attribute's highest rating among the resolved items (a flag counts 1 or 0).
- * - Size (`docTooLarge`): a document deriving more than DOC_MAX_MINUTES (600) minutes or more watch steps than a push
- *   holds (`WATCH_MAX_STEPS`) is too large to build — read from the document's numbers alone, before any step exists.
- *   The validator's `too_large` and the player's `DocTooLargeError` are this one bound.
+ * - Size (`docSize`), read from the document's numbers alone, before any step exists — two bounds:
+ *   - the app's (`docTooLarge`): more than DOC_MAX_MINUTES (600) minutes or more than DOC_MAX_STEPS (600) steps is too
+ *     large to build. The validator's `too_large` error and the player's `DocTooLargeError` are this bound.
+ *   - the watch's: within the app's bound but more steps than a push holds (`WATCH_MAX_STEPS`, 200) plays in the app
+ *     and can't go to the watch whole — the validator's `too_long_for_watch` warning; the watch path refuses it as
+ *     "too long" (its own count of the steps it would send).
  *
  * SHARED with the player's steps (`playerStepsFromDoc`) and the validator, exported once here: a move's assumed seconds
  * per rep, a run's assumed pace and an open segment's nominal length (`secondsOfRun`), and how a part's format reads as
@@ -133,6 +136,11 @@ export const DEFAULT_RUN_SECS_PER_KM = 360;
 export const OPEN_RUN_SECONDS = 600;
 /** The longest document a Worker builds, in derived minutes (the schema's own cap on a stated length). */
 export const DOC_MAX_MINUTES = 600;
+/**
+ * The most steps a document a Worker builds may play: the app's own bound, three times what a watch takes
+ * (`WATCH_MAX_STEPS`) — a long document plays in the app; only its trip to the watch is refused.
+ */
+export const DOC_MAX_STEPS = 600;
 
 /** A part's format as the engine's (and every condition profile's) format: intervals are a circuit, steady straight sets. */
 export const FORMAT_OF_PART: Readonly<Record<WorkoutPart["format"], FormatId>> = {
@@ -376,12 +384,30 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
   };
 }
 
+/** What a document's size says, in plain words: too large for the app to build, and too long for a watch to take whole. */
+export interface DocSize {
+  /** Past the app's bound (`docTooLarge`): nothing is built. */
+  tooLarge: string | null;
+  /** Within the app's bound but past what a watch takes: the app plays it all; the watch can't take it whole. */
+  tooLongForWatch: string | null;
+}
+
+/** Both of the document's size bounds, read from one derivation (see the header's Size). */
+export function docSize(doc: WorkoutDoc, library: readonly ExerciseRecord[]): DocSize {
+  const { estimatedMinutes, watchStepCount } = deriveDoc(doc, library);
+  if (estimatedMinutes > DOC_MAX_MINUTES) {
+    return { tooLarge: `This workout is too large: about ${estimatedMinutes} minutes, and the most is ${DOC_MAX_MINUTES}.`, tooLongForWatch: null };
+  }
+  if (watchStepCount > DOC_MAX_STEPS) return { tooLarge: `This workout is too large: ${watchStepCount} steps, and the most is ${DOC_MAX_STEPS}.`, tooLongForWatch: null };
+  if (watchStepCount > WATCH_MAX_STEPS) {
+    return { tooLarge: null, tooLongForWatch: `This workout has ${watchStepCount} steps and a watch takes ${WATCH_MAX_STEPS}, so it can't go to the watch whole.` };
+  }
+  return { tooLarge: null, tooLongForWatch: null };
+}
+
 /** Why a document is too large for a Worker to build, in plain words; null when it is within the bound. */
 export function docTooLarge(doc: WorkoutDoc, library: readonly ExerciseRecord[]): string | null {
-  const { estimatedMinutes, watchStepCount } = deriveDoc(doc, library);
-  if (estimatedMinutes > DOC_MAX_MINUTES) return `This workout is too large: about ${estimatedMinutes} minutes, and the most is ${DOC_MAX_MINUTES}.`;
-  if (watchStepCount > WATCH_MAX_STEPS) return `This workout is too large: ${watchStepCount} steps, and the most a watch takes is ${WATCH_MAX_STEPS}.`;
-  return null;
+  return docSize(doc, library).tooLarge;
 }
 
 /** A document too large to build (`docTooLarge`): `playerStepsFromDoc` throws it before building a step. */

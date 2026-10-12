@@ -329,7 +329,7 @@ export class NoDocumentError extends Error {
 }
 
 /**
- * A document workout too large to build (`docTooLarge`: past 600 derived minutes or the watch's steps): nothing is
+ * A document workout too large to build (`docTooLarge`: past 600 derived minutes or 600 steps): nothing is
  * materialised, and the build, a preview or Start's fresh build answers with the issue. The validator refuses such a
  * document when it is made or revised, so only one stored before that bound (or grown by the day's swap) reaches here.
  */

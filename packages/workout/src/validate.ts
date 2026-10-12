@@ -5,9 +5,10 @@
  * RULES
  * - Schema first: the input is anything (`unknown`); what does not parse as `workoutDocSchema` returns only `bounds`
  *   errors, one per schema issue at its path, in plain words; nothing else can be read safely from it.
- * - Size second: a document too large to build (`docTooLarge`: past 600 derived minutes, or more watch steps than a
- *   push holds) returns only its `too_large` error — read from the document's numbers before anything is built or
- *   judged, so a hostile document costs a Worker one pass over its items.
+ * - Size second (`docSize`): a document too large to build (past 600 derived minutes or 600 steps) returns only its
+ *   `too_large` error — read from the document's numbers before anything is built or judged, so a hostile document
+ *   costs a Worker one pass over its items. One within that bound but with more steps than a watch takes is judged
+ *   like any other, with a `too_long_for_watch` warning: the app plays it all; it can't go to the watch whole.
  * - The day decides how the condition rules read (Amendment A): `day: null` (a template, a library context) judges every
  *   reading-dependent rule on each profile's calmest day — "does this fit the workout's mode at all"; a `day` whose
  *   `date` is after its `today` is a future day (that day's check is unknown); any other day uses `day.readings`.
@@ -64,6 +65,7 @@
  *   earlier in its own part), both at the item; and a part holding a jump in a format other than straight sets or a
  *   superset, once at the part's format (`fix` straight). Free-text moves and alternates are not read.
  * - too_large (error, at "parts", alone): see Size.
+ * - too_long_for_watch (warning, at "parts"): see Size.
  * - unknown_focus (warning): a focus id that is neither a region nor a muscle.
  * - unknown_equipment (warning): a `setting.equipment` id the library does not know.
  * Not checked here: `test.keyResultId` and `intent.objectiveIds` (opaque without the database).
@@ -98,7 +100,7 @@ import {
   type Mode,
   type ProposalCtx,
 } from "@rg/exercise-library";
-import { FORMAT_OF_PART, docTooLarge, makeLibraryIndex, modeOfEffort } from "./derive.js";
+import { FORMAT_OF_PART, docSize, makeLibraryIndex, modeOfEffort } from "./derive.js";
 
 export const DOC_ISSUE_CODES = [
   "bounds",
@@ -120,6 +122,7 @@ export const DOC_ISSUE_CODES = [
   "dose_mismatch",
   "jump_placement",
   "too_large",
+  "too_long_for_watch",
   "unknown_focus",
   "unknown_equipment",
 ] as const;
@@ -265,8 +268,8 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     return parsed.error.issues.map((i) => ({ path: pathOf(i.path), code: "bounds", message: plainSchemaIssue(i), severity: "error" }));
   }
   const doc = parsed.data;
-  const tooLarge = docTooLarge(doc, ctx.library);
-  if (tooLarge) return [{ path: "parts", code: "too_large", message: tooLarge, severity: "error" }];
+  const size = docSize(doc, ctx.library);
+  if (size.tooLarge) return [{ path: "parts", code: "too_large", message: size.tooLarge, severity: "error" }];
   const find = makeLibraryIndex(ctx.library);
   const profiles = ctx.activeProfiles;
   const day = ctx.day;
@@ -414,6 +417,9 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     }
     return undefined;
   }
+
+  // ── Size: within the app's bound, but more than a watch takes ──
+  if (size.tooLongForWatch) add({ path: "parts", code: "too_long_for_watch", message: size.tooLongForWatch, severity: "warning" });
 
   // ── Intent and setting ──
   doc.intent.focus.forEach((id, i) => {

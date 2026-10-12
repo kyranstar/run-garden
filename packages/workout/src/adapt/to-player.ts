@@ -4,8 +4,9 @@
  * it for 50 seeded builds); any other document plays by the same rules.
  *
  * RULES (the engine's `groupSteps`, read from the document's numbers)
- * - Size first: a document too large to build (`docTooLarge`: past 600 derived minutes or the watch's steps) is refused
- *   with a `DocTooLargeError` before any step is made.
+ * - Size first: a document too large to build (`docTooLarge`: past 600 derived minutes or 600 steps) is refused with a
+ *   `DocTooLargeError` before any step is made. One past what a watch takes plays in full: only its trip to the watch
+ *   is refused.
  * - Blocks: arrive → arrive, warmup and activation → prep, main and run → core, power, accessory and conditioning →
  *   accessory, care → care, cooldown → cooldown. A power part is the engine's jumps block, which plays as its accessory
  *   block (before the core lifts on a jumping day): never the core block, which the worker reads as a core lift. Slots

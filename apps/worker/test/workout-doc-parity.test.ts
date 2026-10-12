@@ -228,14 +228,18 @@ describe("GET /api/settings/diagnostics/workout-docs", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const move = EXERCISES[0]!.id;
-    // 25 moves of 10 sets: 250 watch steps, past what a push holds — `playerStepsFromDoc` refuses to build it.
-    const huge = docOf({ items: Array.from({ length: 25 }, () => ({ kind: "exercise", libraryId: move, dose: { sets: 10, reps: 8 } })) });
+    // 60 moves of 11 sets: 660 steps, past the 600 the app builds — `playerStepsFromDoc` refuses to build it.
+    const huge = docOf({ items: Array.from({ length: 60 }, () => ({ kind: "exercise", libraryId: move, dose: { sets: 11, reps: 8 } })) });
     expect(docTooLarge(huge, EXERCISES)).not.toBeNull();
+    // 25 moves of 10 sets: 250 steps, past what a watch takes but well within what the app plays — built and compared.
+    const long = docOf({ items: Array.from({ length: 25 }, () => ({ kind: "exercise", libraryId: move, dose: { sets: 10, reps: 8 } })) });
+    expect(docTooLarge(long, EXERCISES)).toBeNull();
     const fine = docOf({ items: [{ kind: "exercise", libraryId: move, dose: { sets: 3, reps: 8 } }] });
     await seed(db, userId, "huge-built", { workoutDoc: huge as never, category: "strength" });
     await seed(db, userId, "huge-bare", { workoutDoc: huge as never, category: "strength" });
+    await seed(db, userId, "long", { workoutDoc: long as never, category: "strength" });
     await seed(db, userId, "fine", { workoutDoc: fine as never, category: "strength" });
-    for (const id of ["huge-built", "fine"]) {
+    for (const id of ["huge-built", "long", "fine"]) {
       await db.insert(sessionBuilds).values({
         id: `b-${id}`, userId, workoutId: id, version: 1, engineVersion: "t", inputsHash: "h",
         payload: storedPayload([EXERCISES[1]!.id]), workoutDoc: null, lockedAt: null, createdAt: NOW,
@@ -243,9 +247,9 @@ describe("GET /api/settings/diagnostics/workout-docs", () => {
     }
     const { status, body } = await (await client(db, userId)).diag();
     expect(status).toBe(200);
-    expect(body).toMatchObject({ checked: 3, withDoc: 3, tooLarge: 2 });
-    // The fine row's build differs from it and is flagged; the too-large row's is never compared.
-    expect(body.mismatched.filter((m: { field: string }) => m.field === "steps")).toEqual([{ id: "fine", field: "steps" }]);
+    expect(body).toMatchObject({ checked: 4, withDoc: 4, tooLarge: 2 });
+    // The fine and long rows' builds differ from them and are flagged; the too-large row's is never compared.
+    expect(body.mismatched.filter((m: { field: string }) => m.field === "steps").map((m: { id: string }) => m.id).sort()).toEqual(["fine", "long"]);
   });
 
   it("paginates by id", async () => {

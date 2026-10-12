@@ -88,7 +88,7 @@ describe("validateWorkoutDoc — a clean workout", () => {
       [
         "bounds", "condition_flare", "condition_format", "condition_gate", "condition_gate_pending", "condition_mode", "condition_never",
         "condition_pattern", "dose_mismatch", "equipment_unavailable", "excluded_by_athlete", "format_mismatch", "jump_placement", "legacy_id",
-        "mode_above_day", "mode_limits", "progression_jump", "too_large", "unknown_equipment", "unknown_exercise", "unknown_focus",
+        "mode_above_day", "mode_limits", "progression_jump", "too_large", "too_long_for_watch", "unknown_equipment", "unknown_exercise", "unknown_focus",
       ].sort(),
     );
   });
@@ -312,13 +312,30 @@ describe("too_large (final review I4): a document a Worker cannot afford is refu
     expect(issues[0]!.message).toMatch(/too large/i);
   });
 
-  it("more watch steps than a push holds, or more than 600 minutes, is an error; at the limits it is not", () => {
-    const steps = (rounds: number) => docOf([part("main", "circuit", ["tempoSquat", "bridge", "deadBug", "catCow", "birdDog"].map((id) => ex(id, { sets: 1, holdSec: 5 })), { rounds })], "develop");
-    expect(only(check(steps(40)), "too_large")).toEqual([]); // 200 steps
-    expect(codes(only(check(steps(41)), "too_large"))).toEqual(["error:too_large@parts"]);
+  it("more steps than the app plays (600), or more than 600 minutes, is an error; at the limits it is not", () => {
+    const moves = ["tempoSquat", "bridge", "deadBug", "catCow", "birdDog", "wallSit"];
+    const steps = (items: number) => docOf([part("main", "holds", Array.from({ length: items }, (_, i) => ex(moves[i % moves.length]!, { sets: 1, holdSec: 5 })), { rounds: 50 })], "develop");
+    expect(only(check(steps(12)), "too_large")).toEqual([]); // 600 steps
+    const past = check(steps(13)); // 650 steps
+    expect(codes(past)).toEqual(["error:too_large@parts"]);
+    expect(past[0]!.message).toBe("This workout is too large: 650 steps, and the most is 600.");
     const long = (sets: number) => docOf([part("main", "holds", [ex("wallSit", { sets, holdSec: 3600 })])]);
     expect(only(check(long(9)), "too_large")).toEqual([]); // 540 minutes and a little
     expect(codes(only(check(long(11)), "too_large"))).toEqual(["error:too_large@parts"]);
+  });
+
+  it("more steps than a watch takes (200) is a warning, once, at the parts: the app plays it all, the watch can't take it whole", () => {
+    const steps = (rounds: number) => docOf([part("main", "circuit", ["tempoSquat", "bridge", "deadBug", "catCow", "birdDog"].map((id) => ex(id, { sets: 1, holdSec: 5 })), { rounds })], "develop");
+    expect(only(check(steps(40)), "too_long_for_watch")).toEqual([]); // 200 steps
+    const over = check(steps(41)); // 205 steps
+    expect(only(over, "too_large")).toEqual([]);
+    expect(only(over, "too_long_for_watch")).toEqual([
+      { path: "parts", code: "too_long_for_watch", severity: "warning", message: "This workout has 205 steps and a watch takes 200, so it can't go to the watch whole." },
+    ]);
+    // Every other rule still reads it (a long document is judged like any other).
+    expect(codes(check(steps(41), dayOf(reading(3))))).toContain("warning:mode_above_day@intent.effort");
+    // A template is the same document: its size is its own, whatever the day.
+    expect(codes(only(check(steps(41), null), "too_long_for_watch"))).toEqual(["warning:too_long_for_watch@parts"]);
   });
 });
 

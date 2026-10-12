@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import type { UserPreferences, WorkoutDoc } from "@rg/domain";
+import { workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
@@ -150,6 +150,31 @@ describe("a document workout's watch paths re-gate with the day's reading", () =
     await startSession(db, userId, workoutId, buildId, NOON);
     await flare();
     expect((await send(workoutId, buildId)).status).toBe(200);
+  });
+});
+
+describe("a document longer than a watch takes (Stage 2 batch end: one bound for the app, one for the watch)", () => {
+  /** 15 timed moves, 14 rounds: 210 steps — past the watch's 200, well within what the app plays. */
+  const longDoc = (): WorkoutDoc =>
+    workoutDocSchema.parse({
+      version: 1, title: "Long flow", intent: { summary: "A long, easy flow.", goals: [], focus: [], effort: "maintain" }, source: { kind: "studio" },
+      parts: [{
+        purpose: "main", format: "holds", rounds: 14,
+        items: Array.from({ length: 15 }, (_, i) => ({ kind: "exercise", libraryId: ["catCow", "deadBug", "birdDog"][i % 3], dose: { sets: 1, holdSec: 5 } })),
+      }],
+    });
+
+  it("is made and plays every step in the app; the watch refuses it whole, the preview and Send saying why", async () => {
+    const { workoutId, buildId } = await builtDoc(longDoc());
+    const session = await call("GET", workoutId);
+    expect(session.body.build.steps.filter((s: { kind: string }) => s.kind !== "rest")).toHaveLength(210);
+    expect(session.body.watch).toEqual({ state: "unavailable", reason: "too_long" });
+    const preview = await call("GET", `${workoutId}/watch-preview`);
+    expect(preview.status).toBe(200);
+    expect(preview.body.refusal).toBe("too_long");
+    expect(preview.body.steps).toHaveLength(210);
+    expect(await call("POST", `${workoutId}/send-to-watch`, { buildId, digest: preview.body.digest })).toEqual({ status: 409, body: { error: "too_long" } });
+    expect(await pushOf(buildId)).toBeUndefined();
   });
 });
 
