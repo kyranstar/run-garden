@@ -5,36 +5,44 @@
  * the "Later today" slot.
  */
 import { describe, expect, it } from "vitest";
+import type { WorkoutDto } from "@rg/api-client";
 import type { WorkoutDoc, WorkoutDose } from "@rg/domain";
 import { DEFAULT_SCHEDULING_PREFERENCES } from "@rg/domain";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
-import { edit, newDoc, startEditing, suggestedItem, type DraftDoc, type EditAction } from "@rg/workout";
+import { edit, newDoc, startEditing, suggestedItem, undo, type DraftDoc, type EditAction } from "@rg/workout";
 import {
   activationAt,
   addablePurposes,
   amountKind,
   areasWorked,
   balanceRows,
+  blockedLine,
   buildCtxOf,
   doseSummary,
+  editAll,
+  editRefusal,
   forSchedule,
+  holdSeconds,
   judgeDraft,
   laterToday,
   loadFrom,
   moveTarget,
+  readOnlyWhy,
   showsSuggestions,
   sourceOfPath,
   stepAmount,
   stepSets,
   swapOptions,
+  timeHasPassed,
   typedAmount,
   type BuildCtx,
 } from "../src/screens/studio/build-model.js";
-import { emptyStudioCtx, type MovePrefs, type StudioCtx } from "../src/screens/studio/model.js";
+import { emptyStudioCtx, studioCtxFrom, type MovePrefs, type StudioCtx } from "../src/screens/studio/model.js";
+import { libraryDto, row } from "./studio-fixtures.js";
 
 const TODAY = "2026-10-12";
 const rec = (id: string) => EXERCISES.find((r) => r.id === id)!;
-const prefs = (over: Partial<MovePrefs> = {}): MovePrefs => ({ rating: null, pinned: false, excluded: false, lastDoneOn: null, timesDone30d: 0, ...over });
+const prefs = (over: Partial<MovePrefs> = {}): MovePrefs => ({ rating: null, pinned: false, excluded: false, lastDoneOn: null, timesDone30d: 0, doneCleanly: false, ...over });
 
 const studio = (over: Partial<StudioCtx> = {}): StudioCtx => ({ ...emptyStudioCtx, today: TODAY, ...over });
 const tmjCtx = (pre: number | null): StudioCtx =>
@@ -83,13 +91,30 @@ describe("what the builder judges with", () => {
     expect(buildCtxOf(studio(), TODAY).equipment).toBeNull();
   });
 
-  it("what was done cleanly is the library's one rule — and with a profile that flags a rung, this device can't tell, so it says nothing", () => {
-    const known = new Map([["landingStick", prefs({ lastDoneOn: "2026-10-01" })], ["pogoHop", prefs()]]);
-    expect([...(buildCtxOf(studio({ prefs: known }), TODAY).done ?? [])]).toEqual(["landingStick"]);
-    // TMJ flags a clenched rung, which the library read does not carry: no frontier is claimed.
-    expect(buildCtxOf(studio({ prefs: known, profiles: [PROFILES.tmj] }), TODAY).done).toBeUndefined();
-    // Before the library read answers, nothing is known either.
+  it("what was done cleanly is the server's word on each move (the library's one rule, flags and all) — and nothing before its read", () => {
+    // Done, but only ever clenched: the server says not clean, and it is not.
+    const known = new Map([["landingStick", prefs({ lastDoneOn: "2026-10-01", doneCleanly: true })], ["pogoHop", prefs({ lastDoneOn: "2026-10-02" })]]);
+    expect([...buildCtxOf(studio({ prefs: known, profiles: [PROFILES.tmj] }), TODAY).done!]).toEqual(["landingStick"]);
     expect(buildCtxOf(studio(), TODAY).done).toBeUndefined();
+  });
+
+  it("the Studio reads the server's word from the library rows — and an older cached row, without it, claims nothing clean", () => {
+    const ctx = studioCtxFrom(libraryDto({ items: [row("snapDown", { doneCleanly: true, lastDoneOn: "2026-10-01" }), row("pogoHop", { lastDoneOn: "2026-10-02" })] }));
+    expect(ctx.prefs.get("snapDown")!.doneCleanly).toBe(true);
+    expect(ctx.prefs.get("pogoHop")!.doneCleanly).toBe(false);
+    const older = studioCtxFrom(libraryDto({ items: [{ ...row("snapDown", { lastDoneOn: "2026-10-01" }), doneCleanly: undefined } as never] }));
+    expect(older.prefs.get("snapDown")!.doneCleanly).toBe(false);
+  });
+
+  it("so the frontier speaks in the builder: a jump past the ones done cleanly is noted, with the rung that comes first", () => {
+    const hop = draft({ type: "addPart", purpose: "power" }, { type: "addItem", part: 1, item: suggestedItem(rec("pogoHop"), "power") });
+    const noteOf = (ctx: StudioCtx) => judgeDraft(hop, buildCtxOf(ctx, TODAY), TODAY).notes.find((n) => n.code === "progression_jump");
+    const note = noteOf(studio({ prefs: new Map([["catCow", prefs({ doneCleanly: true })]]) }))!;
+    expect(note.message).toBe("Pogo hops is a step past the jumps you've done; Snap-down comes first.");
+    expect(note.fix).toEqual({ action: { type: "swapItem", part: 1, item: 0, libraryId: "snapDown" }, label: "Swap in Snap-down" });
+    expect(noteOf(studio({ prefs: new Map([["snapDown", prefs({ doneCleanly: true })]]) }))).toBeUndefined();
+    // Before the library read, no frontier is claimed, so nothing is said.
+    expect(noteOf(studio())).toBeUndefined();
   });
 });
 
@@ -215,7 +240,9 @@ describe("a dose in words, and its steppers", () => {
     expect(stepAmount({ holdSec: 30 }, "hold", 1)).toEqual({ holdSec: 35 });
     expect(stepAmount({ holdSec: 60 }, "hold", 1)).toEqual({ holdSec: 75 });
     expect(stepAmount({ holdSec: 60 }, "hold", -1)).toEqual({ holdSec: 55 });
-    expect(stepAmount({ holdSec: 5 }, "hold", -1)).toEqual({ holdSec: 5 });
+    // Down to the schema's own floor, one second.
+    expect(stepAmount({ holdSec: 5 }, "hold", -1)).toEqual({ holdSec: 1 });
+    expect(stepAmount({ holdSec: 1 }, "hold", -1)).toEqual({ holdSec: 1 });
     expect(stepAmount({}, "breaths", 1)).toEqual({ breaths: 1 });
     expect(stepSets({ reps: 8 }, 1)).toEqual({ reps: 8, sets: 2 });
     expect(stepSets({ sets: 1, reps: 8 }, -1)).toEqual({ sets: 1, reps: 8 });
@@ -226,6 +253,14 @@ describe("a dose in words, and its steppers", () => {
     expect(typedAmount({ reps: 8, sets: 2 }, "reps", "12")).toEqual({ reps: 12, sets: 2 });
     expect(typedAmount({ reps: 8 }, "reps", "8-12")).toEqual({ reps: { min: 8, max: 12 } });
     expect(typedAmount({ holdSec: 30 }, "hold", "45")).toEqual({ holdSec: 45 });
+    // A hold in minutes, as a person types it.
+    expect(typedAmount({ holdSec: 30 }, "hold", "2m")).toEqual({ holdSec: 120 });
+    expect(typedAmount({ holdSec: 30 }, "hold", "2 min")).toEqual({ holdSec: 120 });
+    expect(typedAmount({ holdSec: 30 }, "hold", "1:30")).toEqual({ holdSec: 90 });
+    expect(typedAmount({ holdSec: 30 }, "hold", "90 s")).toEqual({ holdSec: 90 });
+    expect(holdSeconds("0")).toBeNull();
+    expect(holdSeconds("1:75")).toBeNull();
+    expect(holdSeconds("61m")).toBeNull();
     expect(typedAmount({ reps: 8 }, "reps", "")).toBeNull();
     expect(typedAmount({ reps: 8 }, "reps", "12-8")).toBeNull();
     expect(typedAmount({ reps: 8 }, "reps", "0")).toBeNull();
@@ -253,6 +288,15 @@ describe("swap", () => {
     expect(same.length).toBeLessThanOrEqual(4);
     for (const id of ["gobletSquat", "tempoSquat", "deadlift", "boxSquat"]) expect(same).not.toContain(id);
     expect(same.every((id) => rec(id).purposes.includes("strength"))).toBe(true);
+  });
+
+  it("never offers a move the athlete set aside, in any of its lists", () => {
+    const d = draft(into(1, "gobletSquat", { alternates: [{ libraryId: "deadlift" }] }));
+    const ctx = studio({ prefs: new Map([["deadlift", prefs({ excluded: true })], ["boxSquat", prefs({ excluded: true })]]) });
+    const o = swapOptions(d.parts[1]!.items[0]!, rec("gobletSquat"), d, EXERCISES, buildCtxOf(ctx, TODAY));
+    expect(o.alternates).toEqual([]);
+    expect(o.easier).toEqual([]);
+    expect([...o.harder, ...o.same].map((r) => r.id)).not.toContain("boxSquat");
   });
 });
 
@@ -299,22 +343,102 @@ describe("scheduling", () => {
   };
   const prefs = DEFAULT_SCHEDULING_PREFERENCES;
 
-  it("Later today is the athlete's usual time when it is still ahead, else the next whole hour and one more", () => {
+  it("Later today is the athlete's usual time when it is at least 15 minutes ahead, else the next whole hour and one more", () => {
     expect(laterToday(at(5, 40), prefs, TODAY)).toBe("07:00");
     expect(laterToday(at(14, 20), prefs, TODAY)).toBe("16:00");
     expect(laterToday(at(14, 20), { ...prefs, defaultWindow: "evening" }, TODAY)).toBe("19:00");
-    // A Saturday morning is the weekend's own time.
+    // 2026-10-17 is a Saturday: the weekend's own morning time.
     expect(laterToday(at(6, 0, "2026-10-17"), prefs, "2026-10-17")).toBe("08:00");
     expect(laterToday(at(14, 20), null, TODAY)).toBe("16:00");
-    // Too late for one more: none.
-    expect(laterToday(at(22, 30), prefs, TODAY)).toBeNull();
-    expect(laterToday(at(21, 59), prefs, TODAY)).toBe("23:00");
+    // Ten minutes to the usual time is now, not later: the next whole hour and one more.
+    expect(laterToday(at(6, 50), prefs, TODAY)).toBe("08:00");
+    expect(laterToday(at(6, 45), prefs, TODAY)).toBe("07:00");
+  });
+
+  it("…and finishes by the athlete's latest evening finish (21:00 unless they set another), or is not offered", () => {
+    expect(laterToday(at(18, 10), prefs, TODAY)).toBe("20:00");
+    expect(laterToday(at(19, 5), prefs, TODAY)).toBe("21:00");
+    // A 30-minute workout from 21:00 would run past it.
+    expect(laterToday(at(19, 5), prefs, TODAY, 30)).toBeNull();
+    expect(laterToday(at(18, 10), prefs, TODAY, 45)).toBe("20:00");
+    expect(laterToday(at(18, 10), prefs, TODAY, 61)).toBeNull();
+    expect(laterToday(at(21, 30), { ...prefs, latestEveningFinish: "23:30" }, TODAY)).toBe("23:00");
+    // With no settings, only midnight bounds it.
+    expect(laterToday(at(22, 30), null, TODAY)).toBeNull();
+    expect(laterToday(at(21, 59), null, TODAY)).toBe("23:00");
+  });
+
+  it("a time today that has come is past", () => {
+    expect(timeHasPassed("14:20", at(14, 20))).toBe(true);
+    expect(timeHasPassed("14:21", at(14, 20))).toBe(false);
+    expect(timeHasPassed("09:00", at(14, 20))).toBe(true);
   });
 
   it("a template's workout says it is based on the template", () => {
     const doc = { title: "T" } as WorkoutDoc;
     expect(forSchedule(doc, { kind: "template", id: "t1" })).toEqual({ title: "T", basedOn: { kind: "template", id: "t1" } });
     expect(forSchedule(doc, { kind: "new" })).toBe(doc);
+  });
+});
+
+describe("edits, and why one was refused", () => {
+  it("several actions are one edit — one Undo takes them all back — and a refusal stops them all", () => {
+    const s0 = startEditing(draft());
+    const r = editAll(s0, [{ type: "setIntent", intent: { summary: "Hips" } }, { type: "setTitle", title: "Hips" }], EXERCISES);
+    expect(r.rejected).toBeUndefined();
+    expect([r.state.doc.title, r.state.doc.intent.summary]).toEqual(["Hips", "Hips"]);
+    expect(r.state.past).toHaveLength(1);
+    const back = undo(r.state);
+    expect([back.doc.title, back.doc.intent.summary]).toEqual(["Test", "Test"]);
+    // The title can't be empty: nothing at all changes, the summary included.
+    const no = editAll(s0, [{ type: "setIntent", intent: { summary: "X" } }, { type: "setTitle", title: "  " }], EXERCISES);
+    expect(no.rejected).toBe("invalid");
+    expect(no.state).toBe(s0);
+    expect(editAll(s0, [{ type: "setTitle", title: "Test" }], EXERCISES).rejected).toBe("unchanged");
+  });
+
+  it("says why in the words of what was asked", () => {
+    const d = draft(into(1, "gobletSquat"));
+    expect(editRefusal({ type: "setDose", part: 1, item: 0, dose: { reps: 900 } }, "invalid", d)).toBe("That dose is more than a workout takes.");
+    expect(editRefusal({ type: "setPart", part: 1, patch: { rounds: 99 } }, "invalid", d)).toBe("Rounds go from 1 to 50.");
+    expect(editRefusal({ type: "setPart", part: 1, patch: { restBetweenRoundsSec: 2000 } }, "invalid", d)).toBe("Rest between rounds goes up to 15 minutes.");
+    expect(editRefusal({ type: "setPart", part: 1, patch: { format: "steady" } }, "invalid", d)).toBe("That doesn't fit this part.");
+    expect(editRefusal({ type: "setIntent", intent: { goals: [] } }, "invalid", d)).toBe("A workout serves at most 6 goals.");
+    expect(editRefusal({ type: "setIntent", intent: { focus: [] } }, "invalid", d)).toBe("A workout has at most 12 focus areas.");
+    expect(editRefusal({ type: "setTitle", title: "" }, "invalid", d)).toBe("The title can't be empty.");
+    expect(editRefusal({ type: "addPart", purpose: "power" }, "full", d)).toBe("A workout holds at most 20 parts.");
+    expect(editRefusal({ type: "addItem", part: 1, item: suggestedItem(rec("catCow"), "main") }, "full", d)).toBe("That part is full.");
+    expect(editRefusal({ type: "removeItem", part: 4, item: 0 }, "missing", d)).toBe("That's gone already.");
+    // An item already outside the rules (a stored document's) changes only by a swap or by going.
+    const broken = { ...d, parts: d.parts.map((p, i) => (i === 1 ? { ...p, items: [{ kind: "exercise", libraryId: "gobletSquat", dose: { reps: 900 } }] } : p)) } as WorkoutDoc;
+    expect(editRefusal({ type: "setDose", part: 1, item: 0, dose: { reps: 8 } }, "invalid", broken)).toBe("Fix this item first.");
+  });
+});
+
+describe("a planned workout that can't change", () => {
+  const w = (over: Partial<WorkoutDto>): WorkoutDto =>
+    ({ id: "w1", effectiveDate: TODAY, completionState: "scheduled", contentState: "outline", archived: false, origin: "studio", ...over }) as WorkoutDto;
+  it("opens read-only, and says why in plain words", () => {
+    expect(readOnlyWhy(w({}), TODAY)).toBeNull();
+    expect(readOnlyWhy(w({ effectiveDate: "2026-10-20" }), TODAY)).toBeNull();
+    expect(readOnlyWhy(w({ completionState: "completed" }), TODAY)).toBe("This workout is done, so it can't be changed.");
+    expect(readOnlyWhy(w({ contentState: "done" }), TODAY)).toBe("This workout is done, so it can't be changed.");
+    expect(readOnlyWhy(w({ completionState: "skipped" }), TODAY)).toBe("This workout was skipped, so it can't be changed.");
+    expect(readOnlyWhy(w({ completionState: "missed" }), TODAY)).toBe("This workout was missed, so it can't be changed.");
+    expect(readOnlyWhy(w({ contentState: "started" }), TODAY)).toBe("This workout is under way, so it can't be changed.");
+    expect(readOnlyWhy(w({ archived: true }), TODAY)).toBe("This workout is no longer in the plan, so it can't be changed.");
+    expect(readOnlyWhy(w({ effectiveDate: "2026-10-01" }), TODAY)).toBe("This workout's day has passed, so it can't be changed.");
+  });
+});
+
+describe("what the actions say while Start is off", () => {
+  it("the reason itself only for an empty workout; otherwise where to look — the note above says what", () => {
+    expect(blockedLine(judgeDraft(draft(), buildCtxOf(studio(), TODAY), TODAY))).toBe("Add a move first.");
+    const one = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress"));
+    expect(blockedLine(judgeDraft(one, buildCtxOf(tmjCtx(3), TODAY), TODAY))).toBe("Fix the note above to start.");
+    const two = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress"), into(1, "halfKneelingPress"));
+    expect(blockedLine(judgeDraft(two, buildCtxOf(tmjCtx(3), TODAY), TODAY))).toBe("Fix the 2 notes above to start.");
+    expect(blockedLine(judgeDraft(draft(into(1, "gobletSquat")), buildCtxOf(studio(), TODAY), TODAY))).toBeNull();
   });
 });
 

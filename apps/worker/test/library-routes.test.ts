@@ -88,6 +88,7 @@ interface Row {
   primaryMuscles: string[];
   lastDoneOn: string | null;
   timesDone30d: number;
+  doneCleanly: boolean;
 }
 interface ListBody {
   total: number;
@@ -128,7 +129,7 @@ describe("GET /api/library", () => {
     const goblet = body.items.find((r) => r.id === "gobletSquat")!;
     expect(Object.keys(goblet).sort()).toEqual(
       [
-        "contraction", "difficulty", "equipment", "excluded", "family", "id", "lastDoneOn", "name", "patterns", "pinned", "primaryMuscles",
+        "contraction", "difficulty", "doneCleanly", "equipment", "excluded", "family", "id", "lastDoneOn", "name", "patterns", "pinned", "primaryMuscles",
         "purposes", "rating", "regions", "roles", "safety", "saved", "summary", "tags", "timesDone30d", "unlocksWith",
       ].sort(),
     );
@@ -409,6 +410,40 @@ describe("GET /api/library — the Studio's filters, ranking and history", () =>
     const byId = new Map((await list()).items.map((r) => [r.id, r]));
     expect(byId.get("catCow")).toMatchObject({ lastDoneOn: add(today, -29), timesDone30d: 1 });
     expect(byId.get("legsUp")).toMatchObject({ lastDoneOn: add(today, -30), timesDone30d: 0 });
+  });
+
+  it("says whether each move was done cleanly — the library's one rule, over the tally the engine reads: a rung only ever done with a switched-on profile's flag is not", async () => {
+    const { todayInZone, addDays: add } = await import("@rg/domain");
+    const today = todayInZone(prefs.timezone);
+    const logged = async (date: string, exerciseId: string, flags: string[][], o: { hash?: string; done?: boolean } = {}) => {
+      const sid = await settledSession(date, { hash: o.hash });
+      await db.insert(performedSets).values(setRows(sid, exerciseId, flags, o.done ?? true));
+    };
+    // Goblet squat: once with a clenched set in the entry, once clean. Deadlift: only ever clenched.
+    await logged(add(today, -6), "gobletSquat", [["clenched"], []]);
+    await logged(add(today, -3), "gobletSquat", [[], []]);
+    await logged(add(today, -4), "deadlift", [["clenched"]]);
+    await logged(add(today, -2), "deadlift", [[], ["clenched"]]);
+    // An entry never finished is no entry at all: a clean set left undone unlocks nothing.
+    await logged(add(today, -1), "deadlift", [[]], { done: false });
+    // Played only (no sets): done, never logged, so no flag could be set.
+    await settledSession(add(today, -1), { moves: ["catCow"] });
+    // Neither a session still being written nor an unfinished set is done.
+    await logged(add(today, -1), "pogoHop", [[]], { hash: "pending" });
+    await logged(add(today, -1), "boxSquat", [[]], { done: false });
+
+    const clean = async () => new Map((await list()).items.map((r) => [r.id, r.doneCleanly]));
+    // With no profile that flags a set, done is clean.
+    expect(Object.fromEntries([...(await clean())].filter(([id]) => ["gobletSquat", "deadlift", "catCow", "pogoHop", "boxSquat", "bridge"].includes(id)))).toEqual({
+      gobletSquat: true, deadlift: true, catCow: true, pogoHop: false, boxSquat: false, bridge: false,
+    });
+    // With TMJ on, its "clenched" flag counts: a rung only ever done clenched unlocks nothing.
+    await activateTmj();
+    const withTmj = await clean();
+    expect(withTmj.get("gobletSquat")).toBe(true);
+    expect(withTmj.get("deadlift")).toBe(false);
+    expect(withTmj.get("catCow")).toBe(true);
+    expect(withTmj.get("pogoHop")).toBe(false);
   });
 
   it("stays within 45 statements, reading the performed work in ONE statement", async () => {

@@ -14,13 +14,13 @@
  * are offered only to a part already in one: a run is not planned in the Studio yet. Removing a part is one action
  * and Undo brings it back.
  */
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { PART_FORMATS, PART_PURPOSES, type WorkoutPart } from "@rg/domain";
 import { label } from "@rg/exercise-library";
 import type { EditAction, Rejection } from "@rg/workout";
 import { Sheet } from "../../components.js";
 import { IconArrowDown, IconArrowUp } from "../../icons.js";
-import { rejectionText } from "./add-model.js";
+import { editRefusal } from "./build-model.js";
 import { CommitField, NumberStepper } from "./item-sheet.js";
 
 type Format = WorkoutPart["format"];
@@ -70,9 +70,18 @@ export function PartMenu({
 }) {
   const ids = useId();
   const [error, setError] = useState<string | null>(null);
+  const upBtn = useRef<HTMLButtonElement>(null);
+  const downBtn = useRef<HTMLButtonElement>(null);
+  /** A move that reached the end turns its button off: the other one keeps focus in the sheet. */
+  const moved = useRef<"up" | "down" | null>(null);
+  useEffect(() => {
+    const dir = moved.current;
+    moved.current = null;
+    if (dir && (dir === "up" ? upBtn : downBtn).current?.disabled) (dir === "up" ? downBtn : upBtn).current?.focus();
+  });
   const run = (action: EditAction): boolean => {
     const r = onEdit(action);
-    setError(r && r !== "unchanged" ? rejectionText(r) : null);
+    setError(r && r !== "unchanged" ? editRefusal(action, r) : null);
     return !r;
   };
   const patch = (p: Partial<Omit<WorkoutPart, "items">>) => run({ type: "setPart", part: index, patch: p });
@@ -81,7 +90,10 @@ export function PartMenu({
   const rounds = part.rounds ?? 1;
   const rest = part.restBetweenRoundsSec ?? 0;
   const move = (to: number) => {
-    if (run({ type: "movePart", part: index, to })) onMoved(to);
+    if (run({ type: "movePart", part: index, to })) {
+      moved.current = to < index ? "up" : "down";
+      onMoved(to);
+    }
   };
   return (
     <Sheet
@@ -170,11 +182,11 @@ export function PartMenu({
           </label>
         </div>
         <div className="btn-row stu-move-btns">
-          <button type="button" className="btn" disabled={index === 0} onClick={() => move(index - 1)}>
+          <button ref={upBtn} type="button" className="btn" disabled={index === 0} onClick={() => move(index - 1)}>
             <IconArrowUp size={16} />
             Move up
           </button>
-          <button type="button" className="btn" disabled={index >= count - 1} onClick={() => move(index + 1)}>
+          <button ref={downBtn} type="button" className="btn" disabled={index >= count - 1} onClick={() => move(index + 1)}>
             <IconArrowDown size={16} />
             Move down
           </button>

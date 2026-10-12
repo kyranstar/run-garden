@@ -6,7 +6,9 @@
  *                    position, laterality, difficulty, a place's gear, and "safe for every switched-on profile", best
  *                    match first, cut to `limit`. Each row carries the card line, purposes, contraction, tags, primary
  *                    muscles, the day the athlete last did it and how many sessions did it in 30 days (logged sets and
- *                    played-only moves alike), its safety per switched-on profile, the athlete's rating, "not for
+ *                    played-only moves alike), whether they have done it CLEANLY (`doneCleanly`: the library's one
+ *                    rule for what unlocks the next rung, `isDoneCleanly`, over the same tally the engine and the
+ *                    document validator read), its safety per switched-on profile, the athlete's rating, "not for
  *                    me", pin, whether it came from their saves, and the gear the default place lacks for it; plus
  *                    what each wishlist item would unlock at the default place
  *   libraryItem      one record whole (how-to, dose, notes for switched-on profiles, easier/harder by name, where a
@@ -33,6 +35,7 @@ import {
   EQUIPMENT_IDS,
   EXERCISES,
   hasEquipment,
+  isDoneCleanly,
   LOCATION_PRESETS,
   MODE_IDS,
   profileById,
@@ -84,6 +87,12 @@ export interface LibraryRow {
   lastDoneOn: string | null;
   /** Sessions with the move in the last 30 days. */
   timesDone30d: number;
+  /**
+   * Done cleanly (`isDoneCleanly` over its tally, legacy ids merged): done, and logged at least once without each
+   * switched-on profile's set flag (a rung only ever done clenched unlocks nothing). The Studio's builder reads it as the
+   * validator's `DayContext.done`, so a jump past the frontier is noted there as it is on the server.
+   */
+  doneCleanly: boolean;
   safety: Record<string, Safety>;
   rating: 1 | -1 | null;
   excluded: boolean;
@@ -231,15 +240,39 @@ const ratingOf = (v: number | null | undefined): 1 | -1 | null => (v == null || 
 
 const SAFETY_RANK: Record<Safety, number> = { safe: 0, care: 1, never: 2 };
 
+/** What one move's settled work says: its last day, its sessions in 30 days, and the tally `isDoneCleanly` reads. */
+interface DoneStat {
+  last: string | null;
+  n30: number;
+  /** Logged entries (an entry index with a done set), up to today. */
+  logged: number;
+  /** Logged entries carrying each flag, up to today. */
+  flags: Record<string, number>;
+}
+
 /**
- * Per move: the latest settled day and the sessions in the last 30 days, from ONE compound read: the logged sets (done
- * ones) and the moves a session reached (`moves_done`, which also holds played-only moves such as mobility and
- * breathing). A move logged and played in one session counts once.
+ * Per move, from ONE compound read:
+ *  - the latest settled day and the sessions in the last 30 days, from the logged sets (done ones) and the moves a
+ *    session reached (`moves_done`, which also holds played-only moves such as mobility and breathing) — a move logged
+ *    and played in one session counts once;
+ *  - the tally `isDoneCleanly` reads, exactly as the engine's history summary counts it (`historyRows`,
+ *    engine-inputs.ts): an entry is the sets with one entry index, named by its first set, and it counts only with a
+ *    done set; `logged` is the entries up to today, each flag the entries any of whose sets carries it.
+ * Legacy ids are merged into the move they now are.
  */
-async function doneStats(db: Db, userId: string, since: string): Promise<Map<string, { last: string; n30: number }>> {
+async function doneStats(db: Db, userId: string, since: string, today: string): Promise<Map<string, DoneStat>> {
   const rows = (await db.all(sql`
-    select exercise_id as exerciseId, max(day) as last, count(distinct case when day >= ${since} then sid end) as n30
-    from (
+    with e as (
+      -- Logged entries (with a done set). With exactly one MIN() in a query, SQLite takes the bare columns from the
+      -- row holding the minimum: the entry's first set.
+      select ${performedSets.performedSessionId} as sid, ${performedSets.entryIndex} as ei, ${performedSets.exerciseId} as ex,
+             ${performedSessions.localDate} as day, min(${performedSets.setIndex}) as first_set
+      from ${performedSets} inner join ${performedSessions} on ${performedSessions.id} = ${performedSets.performedSessionId}
+      where ${performedSessions.userId} = ${userId} and ${performedSessions.payloadHash} != ${PENDING_HASH}
+      group by ${performedSets.performedSessionId}, ${performedSets.entryIndex}
+      having sum(${performedSets.done}) > 0
+    ),
+    work as (
       select ${performedSets.exerciseId} as exercise_id, ${performedSessions.localDate} as day, ${performedSessions.id} as sid
       from ${performedSets} inner join ${performedSessions} on ${performedSessions.id} = ${performedSets.performedSessionId}
       where ${performedSessions.userId} = ${userId} and ${performedSessions.payloadHash} != ${PENDING_HASH} and ${performedSets.done} = 1
@@ -249,13 +282,32 @@ async function doneStats(db: Db, userId: string, since: string): Promise<Map<str
         json_each(case when json_valid(${performedSessions.movesDone}) then ${performedSessions.movesDone} else '[]' end) as m
       where ${performedSessions.userId} = ${userId} and ${performedSessions.payloadHash} != ${PENDING_HASH}
     )
-    where exercise_id is not null
-    group by exercise_id`)) as Array<{ exerciseId: string; last: string; n30: number }>;
-  const out = new Map<string, { last: string; n30: number }>();
+    select 'done' as kind, exercise_id as exerciseId, max(day) as last, count(distinct case when day >= ${since} then sid end) as n, null as flag
+    from work where exercise_id is not null group by exercise_id
+    union all
+    select 'logged', ex, null, count(*), null from e where ex <> '' and day <= ${today} group by ex
+    union all
+    select 'flag', ex, null, count(*), flag from (
+      select distinct e.sid, e.ei, e.ex, e.day, j.value as flag
+      from e join ${performedSets} ps on ps.performed_session_id = e.sid and ps.entry_index = e.ei,
+        json_each(case when json_valid(ps.flags) then ps.flags else '[]' end) as j
+    ) where ex <> '' and day <= ${today} group by ex, flag`)) as Array<{
+    kind: "done" | "logged" | "flag";
+    exerciseId: string;
+    last: string | null;
+    n: number;
+    flag: string | null;
+  }>;
+  const out = new Map<string, DoneStat>();
   for (const r of rows) {
     const id = canonicalId.get(r.exerciseId) ?? r.exerciseId;
-    const cur = out.get(id);
-    out.set(id, { last: cur && cur.last > r.last ? cur.last : r.last, n30: (cur?.n30 ?? 0) + Number(r.n30) });
+    const cur = out.get(id) ?? { last: null, n30: 0, logged: 0, flags: {} };
+    if (r.kind === "done") {
+      if (r.last && (!cur.last || r.last > cur.last)) cur.last = r.last;
+      cur.n30 += Number(r.n);
+    } else if (r.kind === "logged") cur.logged += Number(r.n);
+    else if (r.flag) cur.flags[r.flag] = (cur.flags[r.flag] ?? 0) + Number(r.n);
+    out.set(id, cur);
   }
   return out;
 }
@@ -272,7 +324,8 @@ export async function listLibrary(db: Db, userId: string, query: LibraryQuery): 
   const profiles = active.map(profileById);
   const prefs = new Map(prefRows.map((r) => [r.exerciseId, r]));
   const saved = new Set(savedRows.map((r) => r.exerciseId));
-  const done = await doneStats(db, userId, addDays(todayInZone(userPrefs.timezone), -29));
+  const today = todayInZone(userPrefs.timezone);
+  const done = await doneStats(db, userId, addDays(today, -29), today);
 
   const safeOf = new Map(EXERCISES.map((ex) => [ex.id, safetyOf(profiles, ex)]));
   const { q, location: _location, safe, limit, ...filters } = query;
@@ -300,6 +353,7 @@ export async function listLibrary(db: Db, userId: string, query: LibraryQuery): 
       primaryMuscles: ex.muscles.primary,
       lastDoneOn: d?.last ?? null,
       timesDone30d: d?.n30 ?? 0,
+      doneCleanly: isDoneCleanly(d ? { lastDate: d.last, logged: d.logged, flags: d.flags } : null, profiles),
       safety: safeOf.get(ex.id)!,
       rating: ratingOf(p?.rating),
       excluded: p?.excluded ?? false,

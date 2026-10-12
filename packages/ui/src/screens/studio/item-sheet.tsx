@@ -16,19 +16,23 @@
  * athlete says it, in their unit unless they name one ("25", "12 kg"), and kept as typed beside its kilograms. An edit
  * the editor refuses says why — an item already outside the rules ("Fix this item first.") changes only through Swap.
  * Up and Down move one place, across into the next part at a part's edge, so a move goes anywhere by buttons alone.
+ *
+ * Focus stays in the sheet: a Fix whose note goes with it hands focus to the sheet's first control, and a move that
+ * reaches the end (its button now off) hands it to the other one.
  */
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { WeightUnit, WorkoutDoc, WorkoutItem } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
 import type { EditAction, Rejection } from "@rg/workout";
 import { Sheet } from "../../components.js";
 import { IconArrowDown, IconArrowUp, IconCheck } from "../../icons.js";
-import { rejectionText } from "./add-model.js";
 import {
   amountKind,
   amountValue,
+  editRefusal,
   loadFrom,
   moveTarget,
+  sentence,
   stepAmount,
   stepSets,
   swapOptions,
@@ -50,6 +54,7 @@ export function NumberStepper({
   canMore = true,
   lessLabel,
   moreLabel,
+  inputMode = "numeric",
 }: {
   label: string;
   value: string;
@@ -60,6 +65,8 @@ export function NumberStepper({
   canMore?: boolean;
   lessLabel: string;
   moreLabel: string;
+  /** "text" where a value is more than digits: a rep range ("8-12"), a hold in minutes ("2m"). */
+  inputMode?: "numeric" | "text";
 }) {
   const id = useId();
   const [text, setText] = useState(value);
@@ -79,7 +86,7 @@ export function NumberStepper({
       </button>
       <input
         id={id}
-        inputMode="numeric"
+        inputMode={inputMode}
         autoComplete="off"
         value={text}
         onFocus={() => setTyping(true)}
@@ -105,6 +112,7 @@ export function CommitField({
   multiline = false,
   className,
   maxLength,
+  readOnly = false,
 }: {
   label: string;
   value: string;
@@ -113,6 +121,8 @@ export function CommitField({
   multiline?: boolean;
   className?: string;
   maxLength?: number;
+  /** Shown, not changed (a planned workout that can't change). */
+  readOnly?: boolean;
 }) {
   const [text, setText] = useState(value);
   const [typing, setTyping] = useState(false);
@@ -125,11 +135,12 @@ export function CommitField({
     value: text,
     placeholder,
     maxLength,
+    readOnly,
     onFocus: () => setTyping(true),
     onChange: (e: { target: { value: string } }) => setText(e.target.value),
     onBlur: () => {
       setTyping(false);
-      if (text !== value) onCommit(text);
+      if (!readOnly && text !== value) onCommit(text);
     },
   };
   return multiline ? (
@@ -205,11 +216,32 @@ export function ItemSheet({ doc, part, item, rec, notes, unit, bc, ctx, library,
   const [swapping, setSwapping] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const swapId = useId();
+  const body = useRef<HTMLDivElement>(null);
+  const upBtn = useRef<HTMLButtonElement>(null);
+  const downBtn = useRef<HTMLButtonElement>(null);
+  /** Where focus goes once this render lands: the sheet's first control (after a Fix), or the other move button. */
+  const refocus = useRef<"first" | "up" | "down" | null>(null);
+  useEffect(() => {
+    const want = refocus.current;
+    if (!want) return;
+    refocus.current = null;
+    if (want === "first") {
+      body.current?.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled), textarea")?.focus();
+      return;
+    }
+    // The button pressed is off now (the move reached the end): the other one keeps focus in the sheet.
+    const pressed = want === "up" ? upBtn.current : downBtn.current;
+    if (pressed?.disabled) (want === "up" ? downBtn.current : upBtn.current)?.focus();
+  });
   if (!it) return null;
   const run = (action: EditAction): boolean => {
     const r = onEdit(action);
-    setError(r && r !== "unchanged" ? rejectionText(r) : null);
+    setError(r && r !== "unchanged" ? editRefusal(action, r, doc) : null);
     return !r;
+  };
+  const fix = (n: Note) => {
+    onFix(n);
+    refocus.current = "first";
   };
   const name = itemName(it, rec);
   const dosed = it.kind === "exercise" || it.kind === "free_exercise";
@@ -218,8 +250,11 @@ export function ItemSheet({ doc, part, item, rec, notes, unit, bc, ctx, library,
   const setDose = (d: NonNullable<typeof dose>) => run({ type: "setDose", part, item, dose: d });
   const up = moveTarget(doc, part, item, -1);
   const down = moveTarget(doc, part, item, 1);
-  const move = (t: ReturnType<typeof moveTarget>) => {
-    if (t && run({ type: "moveItem", from: t.from, to: t.to })) onMoved(t.to);
+  const move = (t: ReturnType<typeof moveTarget>, dir: "up" | "down") => {
+    if (t && run({ type: "moveItem", from: t.from, to: t.to })) {
+      onMoved(t.to);
+      refocus.current = dir;
+    }
   };
   const loaded = !!dose && (rec?.load === "external" || (dose.load !== undefined && dose.load !== "bodyweight"));
   const sided = !!dose && (rec ? rec.laterality !== "bilateral" : dose.perSide === true);
@@ -250,12 +285,12 @@ export function ItemSheet({ doc, part, item, rec, notes, unit, bc, ctx, library,
         </div>
       }
     >
-      <div className="stu-item-body">
-        {it.kind !== "rest" && it.why ? <p className="stu-item-why">{`${it.why.charAt(0).toUpperCase()}${it.why.slice(1)}${/[.!?]$/.test(it.why) ? "" : "."}`}</p> : null}
+      <div ref={body} className="stu-item-body">
+        {it.kind !== "rest" && it.why ? <p className="stu-item-why">{sentence(it.why)}</p> : null}
         {notes.length ? (
           <ul className="stu-notes">
             {notes.map((n, i) => (
-              <NoteRow key={`${n.code}-${i}`} note={n} onFix={onFix} onCheck={onCheck} checkLabel={checkLabel} />
+              <NoteRow key={`${n.code}-${i}`} note={n} onFix={fix} onCheck={onCheck} checkLabel={checkLabel} />
             ))}
           </ul>
         ) : null}
@@ -285,6 +320,7 @@ export function ItemSheet({ doc, part, item, rec, notes, unit, bc, ctx, library,
                 <NumberStepper
                   label={AMOUNT_LABEL[kind]}
                   value={amountValue(dose, kind)}
+                  inputMode={kind === "breaths" ? "numeric" : "text"}
                   lessLabel={`Less: ${AMOUNT_LABEL[kind].toLowerCase()}`}
                   moreLabel={`More: ${AMOUNT_LABEL[kind].toLowerCase()}`}
                   onStep={(dir) => setDose(stepAmount(dose, kind, dir))}
@@ -367,11 +403,11 @@ export function ItemSheet({ doc, part, item, rec, notes, unit, bc, ctx, library,
         ) : null}
 
         <div className="btn-row stu-move-btns">
-          <button type="button" className="btn" disabled={!up} onClick={() => move(up)}>
+          <button ref={upBtn} type="button" className="btn" disabled={!up} onClick={() => move(up, "up")}>
             <IconArrowUp size={16} />
             Move up
           </button>
-          <button type="button" className="btn" disabled={!down} onClick={() => move(down)}>
+          <button ref={downBtn} type="button" className="btn" disabled={!down} onClick={() => move(down, "down")}>
             <IconArrowDown size={16} />
             Move down
           </button>

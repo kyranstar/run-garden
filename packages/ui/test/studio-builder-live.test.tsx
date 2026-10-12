@@ -12,7 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionDto, WorkoutDto } from "@rg/api-client";
+import type { DocIssueDto, SessionDto, WorkoutDto } from "@rg/api-client";
 import { DEFAULT_SCHEDULING_PREFERENCES, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, suggestedItem, type DraftDoc, type EditAction } from "@rg/workout";
@@ -125,6 +125,8 @@ interface Server {
   /** POST /api/sessions/:id/start answers, in turn. */
   start?: Array<SessionDto | { status: number; body: unknown }>;
   build?: SessionDto;
+  /** What `POST /api/workouts` warns of (what the server could see that the page could not). */
+  warnings?: DocIssueDto[];
 }
 
 function serve(s: Server = {}): Call[] {
@@ -159,7 +161,7 @@ function serve(s: Server = {}): Call[] {
         return json(
           {
             workout: { id: "w-new", date: body.date, time: body.time ?? "18:00", title: body.doc.title, intentSummary: "", category: "strength", sport: "strength", origin: "studio", contentState: "outline", completionState: "scheduled", docRev: 1, minutes: 20 },
-            warnings: [],
+            warnings: s.warnings ?? [],
           },
           201,
         );
@@ -181,13 +183,13 @@ function serve(s: Server = {}): Call[] {
 
 // ── Mounting and driving ───────────────────────────────────────────────────
 
-function mount(path: string, primed: Primed = {}) {
+function mount(path: string, primed: Primed = {}, prefs: typeof DEFAULT_SCHEDULING_PREFERENCES = DEFAULT_SCHEDULING_PREFERENCES) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   // Today is the fixtures' day (no programme, so no condition chips) unless a case says otherwise.
   const qc = primedClient({ places: placesDto(HOME_GEAR), today: todayDto(null, false), ...primed });
-  qc.setQueryData(["settings"], { prefs: DEFAULT_SCHEDULING_PREFERENCES });
+  qc.setQueryData(["settings"], { prefs });
   act(() => {
     root!.render(
       createElement(
@@ -266,6 +268,29 @@ function draft(...actions: EditAction[]): DraftDoc {
 }
 const into = (part: number, id: string, extra: object = {}): EditAction => ({ type: "addItem", part, item: { ...suggestedItem(rec(id), "main"), ...extra } as never });
 const saved = async () => (await draftStore().load())?.doc ?? null;
+/** A planned workout's stored document: one lift in its main part. */
+const storedDoc = (title: string): WorkoutDoc => ({
+  version: 1,
+  title,
+  intent: { summary: title, goals: [], focus: [], effort: "maintain" },
+  parts: [{ purpose: "main", format: "straight", items: [suggestedItem(rec("gobletSquat"), "main")] }],
+  source: { kind: "studio" },
+});
+const titleField = () => document.querySelector<HTMLInputElement>(".stu-build-title")!;
+const effort = (value: string) => [...document.querySelectorAll<HTMLInputElement>('.stu-seg input[type="radio"]')].find((r) => r.value === value);
+/** Focus a control as a keyboard would (jsdom does not focus what it clicks), then press it. */
+async function press(el: Element | null | undefined, what: string) {
+  if (!el) throw new Error(`no ${what} in: ${text()}`);
+  act(() => (el as HTMLElement).focus());
+  await click(el, what);
+}
+/** Type into a field that commits when left: focus, the new text, then leave it. */
+async function retype(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  act(() => input.focus());
+  await act(async () => setValue(input, value));
+  act(() => input.blur());
+  await settle();
+}
 const ids = (doc: WorkoutDoc | null, purpose: string) => doc?.parts.find((p) => p.purpose === purpose)?.items.map((i) => (i.kind === "exercise" ? i.libraryId : i.kind)) ?? null;
 
 // ── Parts and suggestions ──────────────────────────────────────────────────
@@ -285,6 +310,8 @@ describe("activate before loading", () => {
     await click(buttons(dialog("Add to Main")!).find((b) => b.querySelector(".stu-pick-name")?.textContent === "Deadlift"), "the Deadlift row");
     await until(() => !dialog("Add to Main"), "the picker to close");
     expect(partsShown()[1]).toEqual(["Main", ["Deadlift"]]);
+    // The picker's gone: focus is on the move it added, not back on Add a move or the page.
+    expect(document.activeElement).toBe(document.querySelector('[data-at="1-0"]'));
 
     // The prompt: an activation part, not made yet, between the warm-up and the main part.
     const ghost = document.querySelector<HTMLElement>(".stu-part--ghost");
@@ -325,7 +352,7 @@ describe("Add a move", () => {
 // ── Errors block, with a Fix ───────────────────────────────────────────────
 
 describe("an error", () => {
-  it("keeps Start off with its reason beside it; Fix swaps in the alternate and Start comes on", async () => {
+  it("keeps Start off — its reason Start's own description — and Fix swaps in the alternate and Start comes on", async () => {
     await draftStore().save(draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress", { alternates: [{ libraryId: "floorPress" }] })));
     serve();
     mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
@@ -518,9 +545,8 @@ describe("Schedule", () => {
       await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
       await click(button("Schedule…"), "Schedule…");
       const sheet = dialog("Schedule")!;
-      // A Sunday at 2:20 PM, the usual morning gone: the next whole hour and one more.
+      // TODAY (2026-10-11) is a Sunday; at 2:20 PM the weekend's usual 8 AM is gone: the next whole hour and one more.
       expect(sheet.querySelector<HTMLInputElement>('input[aria-label="Time today"]')!.value).toBe("16:00");
-      expect(sheet.textContent).toContain("Today at 4 PM");
       await click(buttons(sheet).find((b) => b.textContent === "Schedule"), "Schedule");
       await until(() => text().includes("Scheduled for today at 4 PM."), "the line");
       const create = calls.find((c) => c.method === "POST" && c.path === "/api/workouts")!;
@@ -530,5 +556,236 @@ describe("Schedule", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("Later today needs the workout to finish by the athlete's latest evening finish: too long for the slot, it isn't offered", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 18, 10) });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      serve();
+      // The next slot is 8 PM; a finish at 8:01 leaves no room for a workout of a few minutes.
+      mount("/studio/build/new", {}, { ...DEFAULT_SCHEDULING_PREFERENCES, latestEveningFinish: "20:01" });
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      const sheet = dialog("Schedule")!;
+      expect(sheet.textContent).not.toContain("Later today");
+      expect(sheet.querySelector<HTMLInputElement>('input[type="radio"][value="day"]')!.checked).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a time today that has passed is refused in plain words, and Schedule stays off", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 14, 20) });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      serve();
+      mount("/studio/build/new");
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      const sheet = dialog("Schedule")!;
+      await type(sheet.querySelector('input[aria-label="Time today"]'), "13:00", "the time");
+      expect(sheet.textContent).toContain("That time has passed.");
+      expect(buttons(sheet).find((b) => b.textContent === "Schedule")!.disabled).toBe(true);
+      await type(sheet.querySelector('input[aria-label="Time today"]'), "15:00", "the time");
+      expect(sheet.textContent).not.toContain("That time has passed.");
+      expect(buttons(sheet).find((b) => b.textContent === "Schedule")!.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ── Fix round 1: the footer says one thing at a time ───────────────────────
+
+describe("the footer", () => {
+  it("a base changed elsewhere during Start says so once — the stale line, no second refusal — and Reload clears it", async () => {
+    serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }, { doc: storedDoc("Thursday lift, changed"), rev: 4 }], revise: [{ error: "stale_revision", status: 409 }], planned: [plannedRow("w1")] });
+    mount("/studio/build/workout/w1");
+    await until(() => titleField()?.value === "Thursday lift" && !!startButton(), "the workout");
+    await click(effort("develop"), "Develop");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("This workout changed elsewhere."), "the stale line");
+    expect(document.querySelector(".stu-build-error")).toBeNull();
+    await click(button("Reload"), "Reload");
+    await until(() => titleField().value === "Thursday lift, changed", "the new version");
+    expect(text()).not.toContain("This workout changed elsewhere.");
+    expect(document.querySelector(".stu-build-error")).toBeNull();
+  });
+
+  it("an edit moves on from a refusal", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve({ build: built("w-new", { blocked: [{ path: "parts[0].items[0].libraryId", code: "condition_gate", message: "Goblet squat isn't allowed today.", severity: "error" }] }) });
+    mount("/studio/build/new");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("Goblet squat isn't allowed today."), "the refusal");
+    await click(effort("develop"), "Develop");
+    expect(text()).not.toContain("Goblet squat isn't allowed today.");
+  });
+
+  it("Undo after a removal is offered only until the next edit", async () => {
+    await draftStore().save(draft(into(0, "catCow"), into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown()[1]?.[1]?.length === 1, "the workout");
+    await click([...document.querySelectorAll(".stu-item")].find((b) => b.textContent?.includes("Goblet squat")), "the row");
+    await click(button("Remove", dialog("Goblet squat")!), "Remove");
+    expect(text()).toContain("Removed Goblet squat.");
+    expect(buttons(document.querySelector(".stu-build-status")!).map((b) => b.textContent)).toEqual(["Undo"]);
+    await click(effort("develop"), "Develop");
+    expect(text()).not.toContain("Removed Goblet squat.");
+    expect(document.querySelector(".stu-build-status")!.textContent).toBe("");
+  });
+
+  it("the server's own warnings are shown with the build before it locks: Start anyway, or Not now — it stays on today's plan", async () => {
+    const warning: DocIssueDto = { path: "parts[1].items[0].libraryId", code: "progression_jump", message: "A note only the server could see.", severity: "warning" };
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    let calls = serve({ warnings: [warning] });
+    mount("/studio/build/new");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("A note only the server could see."), "the warning");
+    expect(calls.some((c) => c.path.endsWith("/start"))).toBe(false);
+    expect(button("Start with these changes")).toBeNull();
+    await click(button("Not now"), "Not now");
+    expect(text()).toContain("It stays on today's plan.");
+    expect(calls.some((c) => c.path.endsWith("/start"))).toBe(false);
+
+    // Again, and this time Start anyway.
+    act(() => root?.unmount());
+    host?.remove();
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    calls = serve({ warnings: [warning] });
+    mount("/studio/build/new");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!button("Start anyway"), "Start anyway");
+    await click(button("Start anyway"), "Start anyway");
+    await until(() => text().includes("the player"), "the player");
+  });
+});
+
+// ── Fix round 1: focus never falls to the page ─────────────────────────────
+
+describe("focus", () => {
+  const atRow = (p: number, i: number) => document.querySelector(`[data-at="${p}-${i}"]`);
+
+  it("after a suggestion's ＋, on the move's new row", async () => {
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown().length === 3, "the parts");
+    const warmup = document.querySelectorAll<HTMLElement>(".stu-part:not(.stu-part--ghost)")[0]!;
+    await press(warmup.querySelector(".stu-sug-add"), "a warm-up ＋");
+    expect(document.activeElement).toBe(atRow(0, 0));
+  });
+
+  it("after a Fix in the summary, on the item it fixed; after a Fix in the item's sheet, still in the sheet", async () => {
+    const d = () => draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress", { alternates: [{ libraryId: "floorPress" }] }));
+    await draftStore().save(d());
+    serve();
+    mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
+    await until(() => !!button("Swap in Floor press"), "the Fix");
+    await press(button("Swap in Floor press"), "Fix");
+    expect(document.activeElement).toBe(atRow(1, 0));
+    expect(atRow(1, 0)!.textContent).toContain("Floor press");
+
+    act(() => root?.unmount());
+    host?.remove();
+    await draftStore().save(d());
+    serve();
+    mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
+    await until(() => !!atRow(1, 0), "the row");
+    await click(atRow(1, 0), "the row");
+    const sheet = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')][0]!;
+    await press(button("Swap in Floor press", sheet()), "Fix in the sheet");
+    expect(sheet().querySelector("h2")!.textContent).toBe("Floor press");
+    expect(document.activeElement).not.toBe(document.body);
+    expect(sheet().contains(document.activeElement)).toBe(true);
+  });
+
+  it("a part moved down to the very end hands focus to Move up", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown().length === 3, "the parts");
+    await click(button("Main: options"), "Main's ⋯");
+    const sheet = dialog("Main")!;
+    await press(button("Move down", sheet), "Move down");
+    expect(partsShown().map(([n]) => n)).toEqual(["Warm-up", "Cool-down", "Main"]);
+    expect(button("Move down", sheet)!.disabled).toBe(true);
+    expect(document.activeElement).toBe(button("Move up", sheet));
+  });
+
+  it("Move up to the very top hands focus to Move down", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => !!atRow(1, 0), "the row");
+    await click(atRow(1, 0), "the row");
+    const sheet = dialog("Goblet squat")!;
+    await press(button("Move up", sheet), "Move up");
+    // Into the empty warm-up: now the first move of the first part, with nowhere further up.
+    expect(partsShown()[0]).toEqual(["Warm-up", ["Goblet squat"]]);
+    expect(button("Move up", sheet)!.disabled).toBe(true);
+    expect(document.activeElement).toBe(button("Move down", sheet));
+  });
+
+  it("a Save menu choice that opens a sheet returns focus to Save when it closes", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown()[1]?.[1]?.length === 1, "the workout");
+    const save = button(/^Save/)!;
+    await press(save, "Save ▾");
+    await press(document.querySelector('[role="menuitem"]'), "Save as template…");
+    expect(dialog("Save as template")!.contains(document.activeElement)).toBe(true);
+    await click(button("Close", dialog("Save as template")!), "Close");
+    expect(document.activeElement).toBe(save);
+  });
+});
+
+// ── Fix round 1: the rest ──────────────────────────────────────────────────
+
+describe("a planned workout that can't change", () => {
+  it("opens read-only and says why: no Start, no saving changes, no adding, no undo", async () => {
+    serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [{ ...plannedRow("w1"), completionState: "completed" } as WorkoutDto] });
+    mount("/studio/build/workout/w1");
+    await until(() => text().includes("This workout is done, so it can't be changed."), "the line");
+    expect(startButton()).toBeNull();
+    expect(button("Save changes")).toBeNull();
+    expect(button("Add a move")).toBeNull();
+    expect(button("Undo")).toBeNull();
+    expect(document.querySelector("button.stu-item")).toBeNull();
+    expect(document.querySelector(".stu-item")!.textContent).toContain("Goblet squat");
+    expect(titleField().readOnly).toBe(true);
+  });
+});
+
+describe("suggestions on one line", () => {
+  it("once a part has a move, its ＋ opens the part's Add a move, the suggestions first", async () => {
+    await draftStore().save(draft(into(0, "catCow")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => !!button("Add a suggested move to Warm-up"), "the line");
+    await click(button("Add a suggested move to Warm-up"), "＋");
+    await until(() => !!dialog("Add to Warm-up"), "the picker");
+    expect(dialog("Add to Warm-up")!.querySelector("h3")!.textContent).toBe("Suggested");
+  });
+});
+
+describe("a title", () => {
+  it("renamed while the why still follows it is one edit: one Undo takes back both", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => titleField()?.value === "Hips & posture", "the title");
+    await retype(titleField(), "Legs");
+    expect(titleField().value).toBe("Legs");
+    expect(document.querySelector<HTMLTextAreaElement>(".stu-build-why-field")!.value).toBe("");
+    await click(button("Undo"), "Undo");
+    expect(titleField().value).toBe("Hips & posture");
+    expect(document.querySelector<HTMLTextAreaElement>(".stu-build-why-field")!.value).toBe("");
+    expect(button("Undo")!.disabled).toBe(true);
   });
 });

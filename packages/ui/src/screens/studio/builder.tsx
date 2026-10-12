@@ -53,7 +53,7 @@
  * WIDTHS. One column on a phone, the summary folded. From md the summary is a column of its own beside the parts,
  * open and sticky. The actions are pinned to the bottom at every width, above the phone's tab bar.
  */
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -66,8 +66,8 @@ import {
   type SessionDto,
   type WorkoutDto,
 } from "@rg/api-client";
-import { addDays, EFFORT_LEVELS, GOAL_IDS, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES, GLOSSARY, label, REGIONS, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
+import { addDays, EFFORT_LEVELS, type WorkoutDoc } from "@rg/domain";
+import { EXERCISES, GLOSSARY, label, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
 import {
   makeLibraryIndex,
   placementFor,
@@ -84,7 +84,7 @@ import {
   type SuggestCtx,
   type Suggestion,
 } from "@rg/workout";
-import { ConfirmDialog, EmptyState, formatDayShort, formatTime, localTodayGuess, Sheet, Spinner, useEscapeKey } from "../../components.js";
+import { ConfirmDialog, EmptyState, formatDayShort, formatTime, localTodayGuess, Spinner } from "../../components.js";
 import { checkWord, ConditionCheckSheet } from "../../components/condition-check-sheet.js";
 import { keepStarted } from "../../components/start-session.js";
 import { Tooltip } from "../../components/tooltip.js";
@@ -95,20 +95,25 @@ import { requestPersistentStorage } from "../../offline/live.js";
 import { chimes } from "../../player/audio.js";
 import { useStudioDraft } from "../../studio-drafts.js";
 import { useWeightUnit } from "../../use-units.js";
-import { addTargetHref, editableWorkout, freshDoc, rejectionText } from "./add-model.js";
-import { PLANNED_DAYS, TEMPLATES_QUERY } from "./add-sheet.js";
+import { addTargetHref, freshDoc } from "./add-model.js";
+import { TEMPLATES_QUERY } from "./add-sheet.js";
 import {
   activationAt,
   addablePurposes,
+  blockedLine,
   buildCtxOf,
   checkViewOf,
   doseSummary,
+  editAll,
+  editRefusal,
   EMPTY_BLOCK,
   forSchedule,
   judgeDraft,
   laterToday,
   nowHHMM,
   partMinutes,
+  readOnlyWhy,
+  sentence,
   showsSuggestions,
   sourceKey,
   sourceOfPath,
@@ -119,7 +124,9 @@ import {
 } from "./build-model.js";
 import { CommitField, ItemSheet, itemName } from "./item-sheet.js";
 import { MovePicker } from "./move-picker.js";
+import { GoalsSheet } from "./goals-sheet.js";
 import { formatLine, PartMenu } from "./part-menu.js";
+import { NameSheet, SaveMenu } from "./save-menu.js";
 import { ScheduleSheet } from "./schedule-sheet.js";
 import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioReads } from "./screen.js";
 import { SummaryCard } from "./summary-card.js";
@@ -129,10 +136,12 @@ import { quickStartFor, TEMPLATES_HREF, type BuilderArrival } from "./templates-
 export const workoutDocQuery = (id: string) => ["workout-doc", id] as const;
 /** The readings this page recorded (or the session read gave): a Studio-only athlete's Today carries none. */
 const readingsQuery = (today: string) => ["studio", "readings", today] as const;
-/** The planned workouts the Studio may change — the Add sheet's read, shared. */
-const plannedQuery = (today: string) => ["plan", "studio-targets", today] as const;
-
-const sentence = (s: string): string => `${s.charAt(0).toUpperCase()}${s.slice(1)}${/[.!?]$/.test(s) ? "" : "."}`;
+/**
+ * The planned workout this builder is on, read with its day and its state: a window either side of today wide enough
+ * to find one done (or gone) a while ago, so it opens read-only and says why.
+ */
+const rowQuery = (today: string) => ["plan", "studio-row", today] as const;
+const ROW_DAYS = 56;
 
 /** The builder's routes (spec §2): `/studio/build/new`, `…/quick/:kind`, `…/template/:id`, `…/workout/:workoutId`. One instance across them. */
 export function BuilderRoute() {
@@ -156,15 +165,18 @@ interface Loaded {
 type Flow =
   | { step: "idle" }
   | { step: "busy"; what: string }
-  /** The day's build changed the workout: shown before it locks. */
-  | { step: "swaps"; session: SessionDto }
+  /** The day's build changed the workout, or the server saw a cost this page had not said: shown before it locks. */
+  | { step: "swaps"; session: SessionDto; notes?: string[] }
   | { step: "refused"; text: string }
   /** Started, but this device could not keep it. */
   | { step: "notKept"; workoutId: string };
 
+const IDLE: Flow = { step: "idle" };
+
 interface Status {
   text: string;
-  undo?: boolean;
+  /** Undo the removal: offered until the next edit (every edit clears it), at this depth of the history. */
+  undoAt?: number;
   link?: { to: string; label: string };
   /** The watch holds an older copy of the workout: its Send (the preview, then the push) is offered. */
   watch?: { workoutId: string; minutes: number };
@@ -230,8 +242,8 @@ function Builder({ source }: { source: BuildSource }) {
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, enabled: tplId !== null, staleTime: 30_000 });
   const stored = useQuery({ queryKey: workoutDocQuery(wid ?? ""), queryFn: () => api.workoutDoc(wid!), enabled: wid !== null, staleTime: 0 });
   const planned = useQuery({
-    queryKey: plannedQuery(today),
-    queryFn: () => api.workouts(today, addDays(today, PLANNED_DAYS)),
+    queryKey: rowQuery(today),
+    queryFn: () => api.workouts(addDays(today, -ROW_DAYS), addDays(today, ROW_DAYS)),
     enabled: wid !== null,
     staleTime: 30_000,
   });
@@ -284,6 +296,10 @@ function Builder({ source }: { source: BuildSource }) {
       const next = { ...cur, editor };
       setLoaded(next);
       if (next.key === "new") void drafts.save(editor.doc).catch(() => undefined);
+      // An edit moves on from what the footer said of the last state: a refusal, a build shown before it locked, the
+      // offer to undo a removal. (A start under way, and a started session this device could not keep, stay.)
+      setFlow((f) => (f.step === "busy" || f.step === "notKept" ? f : IDLE));
+      setStatus((s) => (s?.undoAt !== undefined ? null : s));
     },
     [drafts, setLoaded],
   );
@@ -293,6 +309,18 @@ function Builder({ source }: { source: BuildSource }) {
       const cur = live.current;
       if (!cur) return "missing";
       const r = tryEdit(cur.editor, action, EXERCISES);
+      if (r.rejected) return r.rejected === "unchanged" ? undefined : r.rejected;
+      commit(r.state);
+      return undefined;
+    },
+    [commit],
+  );
+  /** Several editor actions as one edit (one Undo). */
+  const editMany = useCallback(
+    (actions: readonly EditAction[]): Rejection | undefined => {
+      const cur = live.current;
+      if (!cur) return "missing";
+      const r = editAll(cur.editor, actions, EXERCISES);
       if (r.rejected) return r.rejected === "unchanged" ? undefined : r.rejected;
       commit(r.state);
       return undefined;
@@ -332,13 +360,20 @@ function Builder({ source }: { source: BuildSource }) {
   const [flow, setFlow] = useState<Flow>({ step: "idle" });
   const [sendingWatch, setSendingWatch] = useState<{ workoutId: string; minutes: number } | null>(null);
   const root = useRef<HTMLDivElement>(null);
-  const focusNext = useRef<string | null>(null);
+  /** Where focus goes once the next render lands: the first of these on the page. */
+  const focusNext = useRef<readonly string[] | null>(null);
   const whyId = useId();
   useEffect(() => {
-    if (!focusNext.current) return;
-    const el = root.current?.querySelector<HTMLElement>(focusNext.current);
+    const want = focusNext.current;
+    if (!want) return;
     focusNext.current = null;
-    el?.focus();
+    for (const sel of want) {
+      const el = root.current?.querySelector<HTMLElement>(sel);
+      if (el) {
+        el.focus();
+        break;
+      }
+    }
   });
 
   const refreshPlan = useCallback(() => {
@@ -356,10 +391,23 @@ function Builder({ source }: { source: BuildSource }) {
     const p = profileOf(id);
     return p ? `${checkWord(p.check.label)} check` : "Check";
   };
-  const onFix = (n: Note) => {
+  /** A note's Fix. From the summary, its button goes with the note: focus goes to what was fixed. */
+  const onFix = (n: Note, from: "summary" | "sheet" = "summary") => {
     if (!n.fix) return;
     const r = edit(n.fix.action);
-    setStatus(r ? { text: rejectionText(r) } : null);
+    if (r) {
+      const cur = live.current;
+      setStatus({ text: cur ? editRefusal(n.fix.action, r, cur.editor.doc) : "That can't be done here." });
+      return;
+    }
+    setStatus(null);
+    if (from === "summary") {
+      focusNext.current = [
+        ...(n.part !== null && n.item !== null ? [`[data-at="${n.part}-${n.item}"]`] : []),
+        ...(n.part !== null ? [`[data-part="${n.part}"] .stu-part-menu`] : []),
+        ".stu-sum-head",
+      ];
+    }
   };
   const onCheck = (profileId: string) => setAsking({ profileId, then: null });
   const onCheckSaved = (c: ConditionCheckDto) => {
@@ -426,15 +474,19 @@ function Builder({ source }: { source: BuildSource }) {
     setStatus(null);
     try {
       let id: string;
+      // The server's own warnings (what this page could not see) are shown with the build, before it locks.
+      let fresh: string[] = [];
       if (cur.key.startsWith("workout:")) {
         id = cur.key.slice("workout:".length);
         if (dirtyOf(cur)) {
           const res = await api.reviseWorkoutDoc(id, doc0, cur.rev ?? 0);
           setLoaded({ ...live.current!, baseline: doc0, rev: res.rev });
+          fresh = newNotes(res.warnings) ?? [];
         }
       } else {
         const sent = forSchedule(doc0, source);
         const res = await api.createWorkout({ date: today, time: nowHHMM(new Date()), doc: sent });
+        fresh = newNotes(res.warnings) ?? [];
         if (source.kind === "template") void api.useTemplate(source.id).catch(() => undefined);
         adopt(res.workout, sent);
         id = res.workout.id;
@@ -447,13 +499,18 @@ function Builder({ source }: { source: BuildSource }) {
         setFlow({ step: "refused", text: info.blocked[0]!.message });
         return;
       }
-      if (info?.swaps.length) {
-        setFlow({ step: "swaps", session: built });
+      if (info?.swaps.length || fresh.length) {
+        setFlow({ step: "swaps", session: built, notes: fresh });
         return;
       }
       await lock(built);
     } catch (e) {
-      if (errorBody(e)?.error === "stale_revision") setStale(true);
+      // A base changed elsewhere says so once, on its own line, with Reload.
+      if (errorBody(e)?.error === "stale_revision") {
+        setStale(true);
+        setFlow(IDLE);
+        return;
+      }
       setFlow({ step: "refused", text: refusalText(e, "start") });
     }
   };
@@ -580,6 +637,7 @@ function Builder({ source }: { source: BuildSource }) {
       setLoaded({ key, editor: startEditing(r.doc), baseline: r.doc, rev: r.rev, row: live.current?.row ?? null });
       setStale(false);
       setStatus(null);
+      setFlow(IDLE);
     } catch {
       setStatus({ text: "Reloading needs a connection." });
     }
@@ -619,13 +677,15 @@ function Builder({ source }: { source: BuildSource }) {
 
   // ── Ready ──
   const dirty = dirtyOf(ready);
-  const frozen = !!plannedRow && !editableWorkout(plannedRow, today);
+  // Done, under way, gone or past: read-only, and the page says why.
+  const frozenWhy = isWorkout && plannedRow ? readOnlyWhy(plannedRow, today) : null;
+  const frozen = frozenWhy !== null;
   const canStart = features.player && (!isWorkout || (row !== null && row.date === today)) && !frozen;
   const blocked = judged.blocked;
   const busy = flow.step === "busy";
   const open = sumOpen ?? wide;
   const notesAt = (p: number, i: number) => judged.notes.filter((n) => n.part === p && n.item === i);
-  const showGhost = ghostAt !== null && ghost.length > 0 && !ghostOff;
+  const showGhost = ghostAt !== null && ghost.length > 0 && !ghostOff && !frozen;
 
   const addSuggested = (pi: number | "ghost", rec: ExerciseRecord, why?: string) => {
     let r: Rejection | undefined;
@@ -640,35 +700,60 @@ function Builder({ source }: { source: BuildSource }) {
     } else {
       r = edit({ type: "addItem", part: pi, item: suggestedItem(rec, doc.parts[pi]!.purpose, why) });
     }
-    setStatus(r ? { text: rejectionText(r) } : null);
+    if (r) {
+      setStatus({ text: editRefusal({ type: "addItem", item: suggestedItem(rec, "main") }, r, doc) });
+      return r;
+    }
+    setStatus(null);
+    // The pressed ＋ goes with its suggestion: focus goes to the move's new row, else the next ＋, else Add a move.
+    const p = pi === "ghost" ? ghostAt! : pi;
+    const at = pi === "ghost" ? 0 : doc.parts[pi]!.items.length;
+    focusNext.current = [`[data-at="${p}-${at}"]`, `[data-part="${p}"] .stu-sug-add`, `[data-part="${p}"] .stu-add-move`];
     return r;
   };
   const removeItem = (p: number, i: number) => {
     const it = doc.parts[p]?.items[i];
     const name = it ? itemName(it, it.kind === "exercise" ? find(it.libraryId) : undefined) : "it";
-    if (edit({ type: "removeItem", part: p, item: i })) return;
+    const action: EditAction = { type: "removeItem", part: p, item: i };
+    const r = edit(action);
+    if (r) {
+      setStatus({ text: editRefusal(action, r, doc) });
+      return;
+    }
     setEditing(null);
-    focusNext.current = `[data-part="${p}"] .stu-add-move`;
-    setStatus({ text: `Removed ${name}.`, undo: true });
+    focusNext.current = [`[data-part="${p}"] .stu-add-move`];
+    setStatus({ text: `Removed ${name}.`, undoAt: live.current?.editor.past.length ?? 0 });
   };
   const removePart = (p: number) => {
     const part = doc.parts[p];
-    if (!part || edit({ type: "removePart", part: p })) return;
+    if (!part) return;
+    const action: EditAction = { type: "removePart", part: p };
+    const r = edit(action);
+    if (r) {
+      setStatus({ text: editRefusal(action, r, doc) });
+      return;
+    }
     setMenuPart(null);
-    focusNext.current = ".stu-add-parts .chip, .stu-build-title";
-    setStatus({ text: `Removed ${label(part.purpose)}.`, undo: true });
+    focusNext.current = [".stu-add-parts .chip", ".stu-build-title"];
+    setStatus({ text: `Removed ${label(part.purpose)}.`, undoAt: live.current?.editor.past.length ?? 0 });
+  };
+  /** An edit whose refusal is said in the footer's line. */
+  const say = (action: EditAction) => {
+    const r = edit(action);
+    if (r) setStatus({ text: editRefusal(action, r, doc) });
   };
   const setTitle = (text: string) => {
     const t = text.trim();
     if (!t) return;
-    // A why never written follows the title (the document keeps the title as its summary until one is).
-    if (doc.intent.summary === doc.title) edit({ type: "setIntent", intent: { summary: t.slice(0, 200) } });
-    edit({ type: "setTitle", title: t });
+    // A why never written follows the title (the document keeps the title as its summary until one is) — one edit, one Undo.
+    const actions: EditAction[] = [
+      ...(doc.intent.summary === doc.title ? [{ type: "setIntent", intent: { summary: t.slice(0, 200) } } satisfies EditAction] : []),
+      { type: "setTitle", title: t },
+    ];
+    const r = editMany(actions);
+    if (r) setStatus({ text: editRefusal(actions[actions.length - 1]!, r, doc) });
   };
-  const setWhy = (text: string) => {
-    const t = text.trim();
-    edit({ type: "setIntent", intent: { summary: (t || doc.title).slice(0, 200) } });
-  };
+  const setWhy = (text: string) => say({ type: "setIntent", intent: { summary: (text.trim() || doc.title).slice(0, 200) } });
 
   const saveItems: Array<{ label: string; run: () => void }> =
     source.kind === "template" && !isWorkout
@@ -698,18 +783,22 @@ function Builder({ source }: { source: BuildSource }) {
               {arrived?.from === "templates" ? "Templates" : "Studio"}
             </Link>
             <span className="stu-build-tools">
-              <button type="button" className="btn stu-icon-btn" aria-label="Undo" disabled={ready.editor.past.length === 0} onClick={() => commit(undo(ready.editor))}>
-                <IconUndo size={18} />
-              </button>
-              <button type="button" className="btn stu-icon-btn" aria-label="Redo" disabled={ready.editor.future.length === 0} onClick={() => commit(redo(ready.editor))}>
-                <IconRedo size={18} />
-              </button>
+              {frozen ? null : (
+                <>
+                  <button type="button" className="btn stu-icon-btn" aria-label="Undo" disabled={ready.editor.past.length === 0} onClick={() => commit(undo(ready.editor))}>
+                    <IconUndo size={18} />
+                  </button>
+                  <button type="button" className="btn stu-icon-btn" aria-label="Redo" disabled={ready.editor.future.length === 0} onClick={() => commit(redo(ready.editor))}>
+                    <IconRedo size={18} />
+                  </button>
+                </>
+              )}
               <SaveMenu items={saveItems} />
             </span>
           </div>
           {isWorkout && row ? <p className="stu-build-when">{`${row.date === today ? "Today" : formatDayShort(row.date)} · ${formatTime(row.time)}`}</p> : null}
           <h1 className="visually-hidden">{doc.title}</h1>
-          <CommitField label="Title" className="stu-build-title display" value={doc.title} maxLength={80} onCommit={setTitle} />
+          <CommitField label="Title" className="stu-build-title display" value={doc.title} maxLength={80} onCommit={setTitle} readOnly={frozen} />
           <CommitField
             label="Why"
             className="stu-build-why-field"
@@ -718,16 +807,19 @@ function Builder({ source }: { source: BuildSource }) {
             placeholder="Why this workout"
             value={doc.intent.summary === doc.title ? "" : doc.intent.summary}
             onCommit={setWhy}
+            readOnly={frozen}
           />
-          <EffortPicker value={doc.intent.effort} onPick={(effort) => edit({ type: "setIntent", intent: { effort } })} />
+          <EffortPicker value={doc.intent.effort} disabled={frozen} onPick={(effort) => say({ type: "setIntent", intent: { effort } })} />
           <div className="stu-build-goals">
             <span className="stu-build-k">Goals</span>
             <span className="stu-build-goal-list">
               {[...doc.intent.goals.map((g) => label(g)), ...doc.intent.focus.map((f) => label(f))].join(" · ")}
             </span>
-            <button type="button" className="linklike stu-build-goals-edit" onClick={() => setGoalsOpen(true)}>
-              {doc.intent.goals.length || doc.intent.focus.length ? "Edit" : "Add"}
-            </button>
+            {frozen ? null : (
+              <button type="button" className="linklike stu-build-goals-edit" onClick={() => setGoalsOpen(true)}>
+                {doc.intent.goals.length || doc.intent.focus.length ? "Edit" : "Add"}
+              </button>
+            )}
           </div>
         </header>
 
@@ -761,11 +853,12 @@ function Builder({ source }: { source: BuildSource }) {
                   setPickError(null);
                   setPicking(pi);
                 }}
+                readOnly={frozen}
               />
             </Fragment>
           ))}
           {showGhost && ghostAt === doc.parts.length ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={() => setGhostOff(true)} /> : null}
-          {addablePurposes(doc, ctx.profiles).length ? (
+          {!frozen && addablePurposes(doc, ctx.profiles).length ? (
             <div className="stu-add-parts">
               <span className="stu-build-k">Add a part</span>
               <div className="stu-chipset">
@@ -775,8 +868,9 @@ function Builder({ source }: { source: BuildSource }) {
                     type="button"
                     className="chip stu-add-part"
                     onClick={() => {
-                      const r = edit({ type: "addPart", purpose: p });
-                      setStatus(r ? { text: rejectionText(r) } : null);
+                      const action: EditAction = { type: "addPart", purpose: p };
+                      const r = edit(action);
+                      setStatus(r ? { text: editRefusal(action, r, doc) } : null);
                     }}
                   >
                     <IconPlus size={14} />
@@ -796,7 +890,7 @@ function Builder({ source }: { source: BuildSource }) {
               <span className="stu-build-status-text">
                 {status.watch ? `${status.text} ${status.sent ? "Sending the new version to your watch." : "Your watch has the older version."}` : status.text}
               </span>
-              {status.undo ? (
+              {status.undoAt !== undefined ? (
                 <button
                   type="button"
                   className="linklike"
@@ -836,7 +930,7 @@ function Builder({ source }: { source: BuildSource }) {
             </button>
           </p>
         ) : null}
-        {frozen ? <p className="stu-build-why">This workout can't be changed now.</p> : null}
+        {frozenWhy ? <p className="stu-build-why">{frozenWhy}</p> : null}
         {flow.step === "refused" ? (
           <p className="stu-build-error" role="alert">
             {flow.text}
@@ -844,12 +938,23 @@ function Builder({ source }: { source: BuildSource }) {
         ) : null}
         {flow.step === "swaps" ? (
           <div className="stu-build-swaps" role="alert">
-            <p className="stu-build-why">Today's check changes this workout:</p>
-            <ul>
-              {swapsShown.map((s) => (
-                <li key={s.path}>{`${find(s.from)?.name ?? s.from} → ${find(s.to)?.name ?? s.to}. ${s.reason}`}</li>
-              ))}
-            </ul>
+            {swapsShown.length ? (
+              <>
+                <p className="stu-build-why">Today's check changes this workout:</p>
+                <ul>
+                  {swapsShown.map((s) => (
+                    <li key={s.path}>{`${find(s.from)?.name ?? s.from} → ${find(s.to)?.name ?? s.to}. ${s.reason}`}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+            {flow.notes?.length ? (
+              <ul className="stu-build-notes">
+                {flow.notes.map((n) => (
+                  <li key={n}>{n}</li>
+                ))}
+              </ul>
+            ) : null}
           </div>
         ) : null}
         {flow.step === "notKept" ? (
@@ -857,18 +962,28 @@ function Builder({ source }: { source: BuildSource }) {
             This session isn't being kept on this device. It plays while you're online, and a reload starts it again.
           </p>
         ) : null}
-        {blocked && flow.step !== "swaps" ? (
-          <p className="stu-build-why" id={whyId}>
+        {/* One voice per fact: the note above says what and offers its Fix; here, only that Start waits on it — the full
+            reason is Start's description, for a screen reader on the button. */}
+        {blocked && flow.step !== "swaps" ? <p className="stu-build-why">{blockedLine(judged)}</p> : null}
+        {blocked ? (
+          <span id={whyId} hidden>
             {blocked}
-          </p>
+          </span>
         ) : null}
         <div className="stu-build-actions">
           {flow.step === "swaps" ? (
             <>
               <button type="button" className="btn btn-primary" onClick={() => void lock(flow.session)}>
-                Start with these changes
+                {swapsShown.length ? "Start with these changes" : "Start anyway"}
               </button>
-              <button type="button" className="btn" onClick={() => setFlow({ step: "idle" })}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setFlow(IDLE);
+                  setStatus({ text: "It stays on today's plan." });
+                }}
+              >
                 Not now
               </button>
             </>
@@ -889,8 +1004,8 @@ function Builder({ source }: { source: BuildSource }) {
                   {busy ? flow.what : "Start now"}
                 </button>
               ) : null}
-              {isWorkout ? (
-                <button type="button" className="btn" disabled={!dirty || saving || busy || frozen} onClick={() => void saveChanges()}>
+              {frozen ? null : isWorkout ? (
+                <button type="button" className="btn" disabled={!dirty || saving || busy} onClick={() => void saveChanges()}>
                   {saving ? "Saving…" : "Save changes"}
                 </button>
               ) : (
@@ -917,7 +1032,7 @@ function Builder({ source }: { source: BuildSource }) {
           onEdit={edit}
           onMoved={(to) => setEditing({ part: to[0], item: to[1] })}
           onRemove={() => removeItem(editing.part, editing.item)}
-          onFix={onFix}
+          onFix={(n) => onFix(n, "sheet")}
           onCheck={onCheck}
           checkLabel={checkLabel}
           onClose={() => setEditing(null)}
@@ -943,7 +1058,7 @@ function Builder({ source }: { source: BuildSource }) {
           error={pickError}
           onPick={(rec, why) => {
             const r = addSuggested(picking, rec, why);
-            if (r) setPickError(rejectionText(r));
+            if (r) setPickError(editRefusal({ type: "addItem", item: suggestedItem(rec, doc.parts[picking]!.purpose) }, r, doc));
             else setPicking(null);
           }}
           onClose={() => setPicking(null)}
@@ -953,7 +1068,7 @@ function Builder({ source }: { source: BuildSource }) {
       {scheduling ? (
         <ScheduleSheet
           today={today}
-          later={laterToday(new Date(), settings.data?.prefs ?? null, today)}
+          later={laterToday(new Date(), settings.data?.prefs ?? null, today, judged.derived?.estimatedMinutes ?? 0)}
           judgeFor={(d) => judgeDraft(doc, bc, d)}
           checkLabel={checkLabel}
           onCheck={onCheck}
@@ -1004,10 +1119,18 @@ function Builder({ source }: { source: BuildSource }) {
 
 // ── The pieces ─────────────────────────────────────────────────────────────
 
-function EffortPicker({ value, onPick }: { value: WorkoutDoc["intent"]["effort"]; onPick: (e: WorkoutDoc["intent"]["effort"]) => void }) {
+function EffortPicker({
+  value,
+  onPick,
+  disabled = false,
+}: {
+  value: WorkoutDoc["intent"]["effort"];
+  onPick: (e: WorkoutDoc["intent"]["effort"]) => void;
+  disabled?: boolean;
+}) {
   const name = useId();
   return (
-    <fieldset className="stu-effort">
+    <fieldset className="stu-effort" disabled={disabled}>
       <legend className="stu-build-k">Effort</legend>
       <div className="stu-seg">
         {EFFORT_LEVELS.map((e) => (
@@ -1021,11 +1144,15 @@ function EffortPicker({ value, onPick }: { value: WorkoutDoc["intent"]["effort"]
   );
 }
 
-function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: (rec: ExerciseRecord, why: string) => void }) {
-  const recs = list.flatMap((s) => {
+const recsOf = (list: readonly Suggestion[]) =>
+  list.flatMap((s) => {
     const rec = find(s.libraryId);
     return rec ? [{ rec, why: s.reason }] : [];
   });
+
+/** A part's suggestions while it has no move: a row each — the name explains itself (its reason, one tap down), ＋ adds it. */
+function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: (rec: ExerciseRecord, why: string) => void }) {
+  const recs = recsOf(list);
   if (recs.length === 0) return null;
   return (
     <div className="stu-sugs">
@@ -1044,6 +1171,33 @@ function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: 
   );
 }
 
+/**
+ * Once a part has a move, its suggestions fold to one line (the spec's mock: "Suggested: Hip airplane · Ankle rocks ＋"):
+ * each name explains itself, and ＋ opens the part's Add a move, where they come first, each a tap to add.
+ */
+function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[]; partName: string; onPick: () => void }) {
+  const recs = recsOf(list);
+  if (recs.length === 0) return null;
+  return (
+    <p className="stu-sug-line">
+      <span className="stu-sugs-k">Suggested:</span>
+      {recs.map(({ rec, why }, i) => (
+        <Fragment key={rec.id}>
+          {i > 0 ? (
+            <span className="stu-sep" aria-hidden="true">
+              ·
+            </span>
+          ) : null}
+          <Tooltip term={rec.name} tip={sentence(why)} />
+        </Fragment>
+      ))}
+      <button type="button" className="stu-sug-add" aria-label={`Add a suggested move to ${partName}`} onClick={onPick}>
+        <IconPlus size={16} />
+      </button>
+    </p>
+  );
+}
+
 function PartBlock({
   index,
   part,
@@ -1054,6 +1208,7 @@ function PartBlock({
   onMenu,
   onAdd,
   onPick,
+  readOnly = false,
 }: {
   index: number;
   part: WorkoutDoc["parts"][number];
@@ -1064,6 +1219,8 @@ function PartBlock({
   onMenu: () => void;
   onAdd: (rec: ExerciseRecord, why: string) => void;
   onPick: () => void;
+  /** A planned workout that can't change: its moves are shown, nothing offers to change them. */
+  readOnly?: boolean;
 }) {
   const hid = useId();
   const name = label(part.purpose);
@@ -1076,9 +1233,11 @@ function PartBlock({
           <span className="stu-part-name eyebrow">{tip ? <Tooltip term={name} tip={tip} /> : name}</span>
           {meta ? <span className="stu-part-meta">{meta}</span> : null}
         </h2>
-        <button type="button" className="btn stu-icon-btn stu-part-menu" aria-label={`${name}: options`} onClick={onMenu}>
-          <IconMore size={18} />
-        </button>
+        {readOnly ? null : (
+          <button type="button" className="btn stu-icon-btn stu-part-menu" aria-label={`${name}: options`} onClick={onMenu}>
+            <IconMore size={18} />
+          </button>
+        )}
       </div>
       {part.why ? <p className="stu-part-why">{part.why}</p> : null}
       {part.items.length ? (
@@ -1087,34 +1246,51 @@ function PartBlock({
             const rec = it.kind === "exercise" ? find(it.libraryId) : undefined;
             const dose = it.kind === "exercise" || it.kind === "free_exercise" ? doseSummary(it.dose) : it.kind === "rest" ? `${it.seconds} s` : "";
             const cue = it.kind !== "rest" ? it.cue : undefined;
-            return (
-              <li key={i}>
-                <button type="button" className="stu-item" onClick={() => onItem(i)}>
-                  <span className="stu-item-name">
-                    {itemName(it, rec)}
-                    {flagged(i) ? (
-                      <span className="stu-item-flag">
-                        <IconAlert size={14} />
-                        <span className="visually-hidden">, needs a fix</span>
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="stu-item-dose">{dose}</span>
+            const body = (
+              <>
+                <span className="stu-item-name">
+                  {itemName(it, rec)}
+                  {flagged(i) ? (
+                    <span className="stu-item-flag">
+                      <IconAlert size={14} />
+                      <span className="visually-hidden">, needs a fix</span>
+                    </span>
+                  ) : null}
+                </span>
+                <span className="stu-item-dose">{dose}</span>
+                {readOnly ? null : (
                   <span className="stu-item-chev" aria-hidden="true">
                     <IconChevron size={16} />
                   </span>
-                  {cue ? <span className="stu-item-cue">{cue}</span> : null}
-                </button>
+                )}
+                {cue ? <span className="stu-item-cue">{cue}</span> : null}
+              </>
+            );
+            return (
+              <li key={i}>
+                {readOnly ? (
+                  <div className="stu-item stu-item--still">{body}</div>
+                ) : (
+                  <button type="button" className="stu-item" data-at={`${index}-${i}`} onClick={() => onItem(i)}>
+                    {body}
+                  </button>
+                )}
               </li>
             );
           })}
         </ul>
       ) : null}
-      {suggestions.length ? <SuggestionChips list={suggestions} onAdd={onAdd} /> : null}
-      <button type="button" className="linklike stu-add-move" onClick={onPick}>
-        <IconPlus size={14} />
-        Add a move
-      </button>
+      {readOnly || suggestions.length === 0 ? null : part.items.length === 0 ? (
+        <SuggestionChips list={suggestions} onAdd={onAdd} />
+      ) : (
+        <SuggestionLine list={suggestions} partName={name} onPick={onPick} />
+      )}
+      {readOnly ? null : (
+        <button type="button" className="linklike stu-add-move" onClick={onPick}>
+          <IconPlus size={14} />
+          Add a move
+        </button>
+      )}
     </section>
   );
 }
@@ -1129,168 +1305,11 @@ function GhostPart({ list, onAdd, onDismiss }: { list: readonly Suggestion[]; on
         <h2 id={hid} className="stu-part-title">
           <span className="stu-part-name eyebrow">{tip ? <Tooltip term={label("activation")} tip={tip} /> : label("activation")}</span>
         </h2>
-        <button type="button" className="btn stu-icon-btn" aria-label="Not now" onClick={onDismiss}>
+        <button type="button" className="btn stu-icon-btn" aria-label="No activation part" onClick={onDismiss}>
           <IconClose size={16} />
         </button>
       </div>
       <SuggestionChips list={list} onAdd={onAdd} />
     </section>
-  );
-}
-
-/** Save ▾: a small menu under its button. Escape or a tap elsewhere closes it; the arrows move between its items. */
-function SaveMenu({ items }: { items: ReadonlyArray<{ label: string; run: () => void }> }) {
-  const [open, setOpen] = useState(false);
-  const id = useId();
-  const wrap = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
-  const close = useCallback(() => setOpen(false), []);
-  useEscapeKey(open, () => {
-    close();
-    button.current?.focus();
-  });
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: PointerEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) close();
-    };
-    document.addEventListener("pointerdown", away);
-    wrap.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-    return () => document.removeEventListener("pointerdown", away);
-  }, [open, close]);
-  const move = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    e.preventDefault();
-    const all = [...(wrap.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
-    const at = all.indexOf(document.activeElement as HTMLElement);
-    all[(at + (e.key === "ArrowDown" ? 1 : all.length - 1)) % all.length]?.focus();
-  };
-  return (
-    <div className="stu-save" ref={wrap}>
-      <button ref={button} type="button" className="btn stu-save-btn" aria-haspopup="menu" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
-        Save
-        <span className="stu-save-chev" aria-hidden="true">
-          <IconChevron size={14} />
-        </span>
-      </button>
-      <div id={id} role="menu" className="stu-save-menu" hidden={!open} onKeyDown={move}>
-        {items.map((it) => (
-          <button
-            key={it.label}
-            type="button"
-            role="menuitem"
-            className="stu-save-item"
-            onClick={() => {
-              close();
-              it.run();
-            }}
-          >
-            {it.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function NameSheet({ initial, onSave, onClose }: { initial: string; onSave: (name: string) => Promise<string | null>; onClose: () => void }) {
-  const [name, setName] = useState(initial);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const id = useId();
-  const go = async () => {
-    if (!name.trim() || busy) return;
-    setBusy(true);
-    setError(null);
-    const why = await onSave(name);
-    setBusy(false);
-    if (why) setError(why);
-  };
-  return (
-    <Sheet
-      open
-      onClose={onClose}
-      title="Save as template"
-      footer={
-        <div className="btn-row stu-sched-actions">
-          <button type="button" className="btn btn-primary" disabled={!name.trim() || busy} onClick={() => void go()}>
-            {busy ? "Saving…" : "Save"}
-          </button>
-        </div>
-      }
-    >
-      <label className="stu-field-row stu-field-row--wide" htmlFor={id}>
-        <span>Name</span>
-        <input
-          id={id}
-          className="stu-field"
-          value={name}
-          maxLength={80}
-          autoComplete="off"
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void go();
-          }}
-        />
-      </label>
-      {error ? (
-        <p className="stu-build-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </Sheet>
-  );
-}
-
-/** Goals and focus areas: what the workout serves, and where its suggestions look. */
-function GoalsSheet({ doc, onEdit, onClose }: { doc: WorkoutDoc; onEdit: (a: EditAction) => Rejection | undefined; onClose: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const toggle = (list: readonly string[], id: string): string[] => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
-  const run = (a: EditAction) => {
-    const r = onEdit(a);
-    setError(r ? "That's as many as a workout takes." : null);
-  };
-  return (
-    <Sheet open onClose={onClose} title="Goals and focus">
-      <div className="stu-item-body">
-        <section className="stu-item-sec">
-          <h3 className="eyebrow">Goals</h3>
-          <div className="stu-chipset">
-            {GOAL_IDS.map((g) => (
-              <button
-                key={g}
-                type="button"
-                className="chipbtn stu-toggle"
-                aria-pressed={doc.intent.goals.includes(g)}
-                onClick={() => run({ type: "setIntent", intent: { goals: toggle(doc.intent.goals, g) as WorkoutDoc["intent"]["goals"] } })}
-              >
-                {label(g)}
-              </button>
-            ))}
-          </div>
-        </section>
-        <section className="stu-item-sec">
-          <h3 className="eyebrow">Focus areas</h3>
-          <div className="stu-chipset">
-            {REGIONS.filter((r) => r !== "full-body").map((r) => (
-              <button
-                key={r}
-                type="button"
-                className="chipbtn stu-toggle"
-                aria-pressed={doc.intent.focus.includes(r)}
-                onClick={() => run({ type: "setIntent", intent: { focus: toggle(doc.intent.focus, r) } })}
-              >
-                {label(r)}
-              </button>
-            ))}
-          </div>
-        </section>
-        {error ? (
-          <p className="stu-build-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-      </div>
-    </Sheet>
   );
 }

@@ -114,15 +114,18 @@ describe("activate before loading", () => {
 });
 
 describe("errors block, with their reason and a Fix", () => {
-  it("a move today's reading rules out keeps Start off, says why beside it, and offers its alternate", () => {
+  it("a move today's reading rules out keeps Start off, the note says why with its Fix, and the actions say where to look", () => {
     const d = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress", { alternates: [{ libraryId: "floorPress" }] }));
     const html = renderBuilder("/studio/build/new", { draft: d, primed: { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) } });
     const why = "Half-kneeling one-arm press isn&#x27;t allowed with today&#x27;s Jaw / head check at 3.";
-    // Start is off, described by the reason printed beside it.
+    // Start is off. One voice per fact: the note says what (below); the actions say only that Start waits on it, and the
+    // full reason is Start's own description, for a screen reader on the button.
     const start = /<button[^>]*class="btn btn-primary stu-build-start"[^>]*>Start now<\/button>/.exec(html)![0];
     expect(start).toContain('disabled=""');
     const describedBy = /aria-describedby="([^"]+)"/.exec(start)![1]!;
-    expect(html).toContain(`id="${describedBy}">${why}</p>`);
+    expect(html).toContain(`<span id="${describedBy}" hidden="">${why}</span>`);
+    expect(html).toContain('<p class="stu-build-why">Fix the note above to start.</p>');
+    expect((html.match(new RegExp(why.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"), "g")) ?? []).length).toBe(2);
     // The note is in the summary — never folded away (the summary is folded here, a phone's default) — with its Fix,
     // and the item is marked.
     expect(html).toMatch(/class="stu-sum-body" hidden=""/);
@@ -174,13 +177,17 @@ describe("the item sheet", () => {
       ),
     );
 
-  it("reorders by buttons — up and down, never a drag — and each says where it can't go", () => {
+  it("reorders by buttons — up and down, never a drag — the first move of a part going up into the part before", () => {
     const first = sheet(1, 0);
     expect(first).toMatch(/<button[^>]*class="btn"[^>]*>(<svg[^]*?<\/svg>)?Move up<\/button>/);
     expect(first).toMatch(/<button[^>]*class="btn"[^>]*>(<svg[^]*?<\/svg>)?Move down<\/button>/);
     expect(first).not.toContain("draggable");
-    // The first item of the main part goes up into the warm-up; the last of the last part has nowhere further.
     expect(/<button[^>]*>(<svg[^]*?<\/svg>)?Move up<\/button>/.exec(first)![0]).not.toContain("disabled");
+  });
+
+  it("types a rep range or a hold in minutes: those fields bring up a keyboard with more than digits", () => {
+    expect(sheet(1, 0)).toMatch(/<input[^>]*inputMode="text"[^>]*value="5–8"/);
+    expect(sheet(1, 0)).toMatch(/<input[^>]*inputMode="numeric"[^>]*value="2"/);
   });
 
   it("doses with steppers, the load as typed in the athlete's unit, and a cue", () => {
@@ -195,10 +202,31 @@ describe("the item sheet", () => {
 });
 
 describe("the summary", () => {
-  it("says the minutes, the kind and the place, and its count of notes", () => {
+  it("says the minutes, the kind and the place", () => {
     const d = draft(into(1, "gobletSquat"));
     const html = renderBuilder("/studio/build/new", { draft: d });
     const j = judgeDraft(d, buildCtxOf({ ...emptyStudioCtx, place: { name: "Home", equipment: HOME_GEAR }, today: TODAY }, TODAY), TODAY);
     expect(text(html)).toContain(`${j.derived!.estimatedMinutes} min · Strength · Home`);
+  });
+
+  it("its count of notes is also a live region, so a Fix that clears the last one is heard", () => {
+    const d = draft(into(1, "gobletSquat"));
+    const html = renderBuilder("/studio/build/new", { draft: d, primed: { places: placesDto(["mat"]) } });
+    expect(html).toContain('<span class="visually-hidden" role="status">1 note</span>');
+    expect(renderBuilder("/studio/build/new", { draft: d })).toContain('<span class="visually-hidden" role="status"></span>');
+  });
+});
+
+describe("suggestions, once a part has a move", () => {
+  it("fold to one line — names that explain themselves, and one ＋ that opens the part's Add a move; an empty part keeps its rows", () => {
+    const html = renderBuilder("/studio/build/new", { draft: draft(into(0, "catCow")) });
+    const warmup = html.slice(html.indexOf('data-part="0"'), html.indexOf("</section>", html.indexOf('data-part="0"')));
+    expect(warmup).toContain('<p class="stu-sug-line"><span class="stu-sugs-k">Suggested:</span>');
+    expect(warmup).not.toContain("stu-sug-list");
+    expect((warmup.match(/aria-label="Add [^"]*"/g) ?? [])).toEqual(['aria-label="Add a suggested move to Warm-up"']);
+    expect((warmup.match(/class="term"/g) ?? []).length).toBeGreaterThan(1);
+    // The empty cool-down still lists its suggestions a row each, each with its own ＋.
+    const cool = html.slice(html.indexOf('data-part="2"'));
+    expect(cool).toContain('class="stu-sug-list"');
   });
 });

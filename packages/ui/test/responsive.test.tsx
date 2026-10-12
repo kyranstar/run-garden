@@ -857,7 +857,7 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
     for (const cls of [".stu-build", ".stu-build-grid", ".stu-build-head", ".stu-build-sum", ".stu-sum", ".stu-sum-head", ".stu-bal",
       ".stu-notes", ".stu-note", ".stu-parts", ".stu-part", ".stu-part--ghost", ".stu-items", ".stu-item", ".stu-sugs", ".stu-sug",
       ".stu-sug-add", ".stu-add-move", ".stu-add-parts", ".stu-build-foot", ".stu-build-actions", ".stu-stepper", ".stu-dose",
-      ".stu-swap", ".stu-pick", ".stu-seg", ".stu-save-menu", ".stu-build-entry"]) {
+      ".stu-swap", ".stu-pick", ".stu-seg", ".stu-save-menu", ".stu-build-entry", ".stu-sug-line", ".stu-item--still"]) {
       expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
     }
     // One column until md, in the base layer.

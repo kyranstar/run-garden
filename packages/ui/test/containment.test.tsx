@@ -678,6 +678,20 @@ describe("the builder is honest about its bounds", () => {
     expect(ruleBody(".stu-save-menu")).toContain("max-width: calc(100vw - 2 * var(--space-6))");
   });
 
+  it("a row brought into view by focus clears the pinned actions and the tab bar (fix round 1)", () => {
+    const pad = ruleBody("html:has(.stu-build)");
+    expect(pad).toMatch(/scroll-padding-bottom: calc\(var\(--nav-height\) \+ env\(safe-area-inset-bottom, 0px\) \+ ([\d.]+)rem\)/);
+    // At least the footer's height: two lines of words and the 44px buttons, inside its padding.
+    expect(rem(/\+ ([\d.]+)rem\)/.exec(pad)![1]!)).toBeGreaterThanOrEqual(144);
+  });
+
+  it("a part's suggestions on one line wrap inside the column, names and all", () => {
+    const line = ruleBody(".stu-sug-line");
+    expect(line).toContain("flex-wrap: wrap");
+    expect(line).toContain("min-width: 0");
+    expect(ruleBody(".stu-sug-line .term")).toContain("overflow-wrap: anywhere");
+  });
+
   it("every control in it keeps the 44px floor as its own box — no pad reaching into a neighbour", () => {
     for (const sel of [".stu-item", ".stu-sug", ".stu-sug-add", ".stu-add-move", ".stu-icon-btn", ".stu-save-item", ".stu-seg-opt span",
       ".stu-swap,\n.stu-pick", ".stu-build-goals-edit", ".stu-sum-head"]) {

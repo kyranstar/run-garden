@@ -580,14 +580,33 @@ describe("mode_limits", () => {
 
   it("works with no active profile: a difficulty-5 move in a recovery workout is a warning", () => {
     const [issue] = check(one(ex("tuckJump", { sets: 2, reps: 3 }), "recover", "holds"), dayOf(CALM), none);
-    expect(issue).toMatchObject({ path: `${P0}.libraryId`, code: "mode_limits", severity: "warning", message: "Tuck jump is harder than a recovery day takes." });
+    expect(issue).toMatchObject({ path: `${P0}.libraryId`, code: "mode_limits", severity: "warning", message: "Tuck jump is harder than a Recover day takes." });
   });
 
   it("a loaded move in a recovery workout is a warning; the same move on a maintain day is not", () => {
     expect(check(one(ex("gobletSquat", { sets: 2, reps: 8 }), "recover", "holds"), dayOf(CALM), none)).toEqual([
-      expect.objectContaining({ code: "mode_limits", message: "Goblet squat uses added weight, which a recovery day leaves out." }),
+      expect.objectContaining({ code: "mode_limits", message: "Goblet squat uses added weight, which a Recover day leaves out." }),
     ]);
     expect(check(one(ex("gobletSquat", { sets: 2, reps: 8 }), "maintain"), dayOf(CALM), none)).toEqual([]);
+  });
+
+  it("names the day in the document's own effort words — a Maintain day — never the engine's mode name", () => {
+    // A move the profile keeps out of this effort whatever the reading, and a format it does not use.
+    expect(only(check(one(ex("halfKneelingPress", { sets: 2, reps: 6 }), "maintain")), "condition_pattern")[0]!.message).toBe(
+      "Half-kneeling one-arm press isn't allowed on a Maintain day with TMJ.",
+    );
+    const circuit = docOf([part("main", "circuit", ["bridge", "deadBug", "birdDog"].map((id) => ex(id, { sets: 1, holdSec: 40 })), { rounds: 2 })], "maintain");
+    expect(only(check(circuit), "mode_limits")[0]!.message).toBe("A Maintain day doesn't use a circuit.");
+    // A loaded move on a Recover day, and a hard one: the effort's word, not "recovery".
+    expect(only(check(one(ex("gobletSquat", { sets: 2, reps: 8 }), "recover", "holds")), "mode_limits")[0]!.message).toBe(
+      "Goblet squat uses added weight, which a Recover day leaves out.",
+    );
+    const all = [
+      ...check(one(ex("halfKneelingPress", { sets: 2, reps: 6 }), "maintain")),
+      ...check(circuit),
+      ...check(one(ex("tuckJump", { sets: 2, reps: 3 }), "recover", "holds")),
+    ].map((i) => i.message);
+    for (const m of all) expect(m).not.toMatch(/\b(consistent|recovery|build) day\b/);
   });
 
   it("a part whose format the mode does not use is a warning — only when it holds exercises", () => {

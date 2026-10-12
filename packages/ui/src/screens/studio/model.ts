@@ -146,6 +146,8 @@ export interface MovePrefs {
   excluded: boolean;
   lastDoneOn: string | null;
   timesDone30d: number;
+  /** Done cleanly (the server's `isDoneCleanly`): what the builder's validator reads as the jump frontier. */
+  doneCleanly: boolean;
 }
 
 export interface StudioCtx {
@@ -178,7 +180,8 @@ export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, p
   const prefs = new Map<string, MovePrefs>(
     (library?.items ?? []).map((r) => [
       r.id,
-      { rating: r.rating, pinned: r.pinned, excluded: r.excluded, lastDoneOn: r.lastDoneOn, timesDone30d: r.timesDone30d },
+      // An older payload (a cached read from before `doneCleanly`) says nothing clean: no frontier is claimed from it.
+      { rating: r.rating, pinned: r.pinned, excluded: r.excluded, lastDoneOn: r.lastDoneOn, timesDone30d: r.timesDone30d, doneCleanly: r.doneCleanly === true },
     ]),
   );
   let place: StudioCtx["place"] = null;

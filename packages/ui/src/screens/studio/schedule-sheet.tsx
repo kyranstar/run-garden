@@ -9,14 +9,15 @@
  *                                                 [ Schedule ]
  *
  * "Later today" is the athlete's usual time to train while it is still ahead, else the next whole hour and one more,
- * and the sheet says which; it is not offered once the day is out of hours. Another day's time is optional — left
- * empty, the server places it at the athlete's usual window. The workout is judged for the day chosen: an error that
- * day keeps Schedule off and says why; today, one a check could answer asks for the check instead.
+ * and its time field says which; it is not offered once no slot is left before the athlete's latest evening finish.
+ * Another day's time is optional — left empty, the server places it at the athlete's usual window. A time today that
+ * has already passed is refused in plain words. The workout is judged for the day chosen: an error that day keeps
+ * Schedule off and says why; today, one a check could answer asks for the check instead.
  */
 import { useId, useState, type ReactNode } from "react";
 import { addDays } from "@rg/domain";
-import { formatTime, Sheet } from "../../components.js";
-import type { Judged } from "./build-model.js";
+import { Sheet } from "../../components.js";
+import { timeHasPassed, type Judged } from "./build-model.js";
 
 export interface ScheduleSheetProps {
   today: string;
@@ -45,7 +46,8 @@ export function ScheduleSheet({ today, later, judgeFor, checkLabel, onCheck, onS
   const judged = judgeFor(when.date);
   const valid = choice === "later" ? /^\d{2}:\d{2}$/.test(laterTime) : /^\d{4}-\d{2}-\d{2}$/.test(date) && date >= today;
   const asking = when.date === today ? judged.checks : [];
-  const disabled = busy || !valid || !!judged.blocked || asking.length > 0;
+  const passed = when.date === today && when.time !== null && timeHasPassed(when.time, new Date());
+  const disabled = busy || !valid || passed || !!judged.blocked || asking.length > 0;
 
   const go = async () => {
     if (disabled) return;
@@ -125,7 +127,11 @@ export function ScheduleSheet({ today, later, judgeFor, checkLabel, onCheck, onS
           </span>,
         )}
       </fieldset>
-      {choice === "later" && laterTime ? <p className="stu-sched-when">{`Today at ${formatTime(laterTime)}`}</p> : null}
+      {passed ? (
+        <p className="stu-build-why" role="status">
+          That time has passed.
+        </p>
+      ) : null}
       {asking.length ? (
         <div className="stu-sched-check">
           <p className="stu-build-why">{judged.notes.find((n) => n.check)?.message}</p>

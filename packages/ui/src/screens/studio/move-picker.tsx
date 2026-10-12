@@ -22,10 +22,8 @@ import { makeLibraryIndex, type Suggestion } from "@rg/workout";
 import { Sheet } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconClose } from "../../icons.js";
-import { browsePurposeOf } from "./build-model.js";
+import { browsePurposeOf, sentence } from "./build-model.js";
 import { activeChips, fitOf, FIT_WORD, studioResults, type StudioCtx, type StudioFilters } from "./model.js";
-
-const sentence = (s: string): string => `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
 
 function PickRow({ rec, why, ctx, onPick }: { rec: ExerciseRecord; why?: string; ctx: StudioCtx; onPick: (rec: ExerciseRecord, why?: string) => void }) {
   const fit = fitOf(rec, ctx);

@@ -1523,6 +1523,11 @@ export interface LibraryRowDto {
   lastDoneOn: string | null;
   /** Sessions with it in the last 30 days. */
   timesDone30d: number;
+  /**
+   * Done CLEANLY — the library's one rule for what unlocks the next rung (`isDoneCleanly`): done, and logged at least
+   * once without a switched-on profile's set flag. The builder judges a jump's frontier with it (`DayContext.done`).
+   */
+  doneCleanly: boolean;
   /** Per switched-on profile id. */
   safety: Record<string, LibrarySafety>;
   rating: 1 | -1 | null;

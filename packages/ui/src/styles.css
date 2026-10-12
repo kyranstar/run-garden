@@ -10693,6 +10693,32 @@ textarea.stu-field {
 .stu-build-entry-btn {
   gap: var(--space-2);
 }
+/* A part with moves: its suggestions on one line — names that explain themselves, and one ＋ (its Add a move). */
+.stu-sug-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.stu-sug-line .term {
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+/* A planned workout that can't change: its rows are words, not buttons. */
+.stu-item--still {
+  cursor: default;
+}
+.stu-item--still:hover {
+  background: none;
+}
+/* A row brought into view by focus clears the pinned actions and the tab bar (the footer is about 10rem at most). */
+html:has(.stu-build) {
+  scroll-padding-bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + 10rem);
+}
 /* "[ New workout ]   Templates (4) ›" — one row, wrapping before it squeezes. */
 .stu-build-row {
   display: flex;

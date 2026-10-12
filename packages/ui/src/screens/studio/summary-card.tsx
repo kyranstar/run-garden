@@ -98,6 +98,10 @@ export function SummaryCard({
           <IconChevron />
         </span>
       </button>
+      {/* The count, said when it changes: a Fix that clears the last error is heard as well as seen. */}
+      <span className="visually-hidden" role="status">
+        {count}
+      </span>
       {errors.length ? <ul className="stu-notes">{errors.map(row)}</ul> : null}
       <div id={`${id}-b`} className="stu-sum-body" hidden={!open}>
         {d ? (

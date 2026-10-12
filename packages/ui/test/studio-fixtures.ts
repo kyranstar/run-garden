@@ -30,6 +30,7 @@ export function row(id: string, over: Partial<LibraryRowDto> = {}): LibraryRowDt
     primaryMuscles: [...ex.muscles.primary],
     lastDoneOn: null,
     timesDone30d: 0,
+    doneCleanly: false,
     safety: {},
     rating: null,
     excluded: false,

@@ -214,19 +214,25 @@ const guessFocus = guesser([...FOCUS_IDS].flatMap((id) => [[id, id], [label(id),
 const EQUIPMENT_SET = new Set<string>(EQUIPMENT_IDS);
 const guessEquipment = guesser(EQUIPMENT_IDS.flatMap((id) => [[id, id], [EQUIPMENT[id], id]] as const));
 
-const modeWord = (m: Mode): string => (MODES[m]?.label ?? m).toLowerCase();
+/**
+ * The day as the document names it: its own effort, in the vocabulary's words ("a Maintain day") — never the engine's
+ * mode name ("consistent"), which the athlete never chose. Develop and Peak share the build mode, and each says its own.
+ */
+const effortWord = (e: WorkoutDoc["intent"]["effort"]): string => label(e);
 const worstDay = (p: ConditionProfile): CheckReading => ({ pre: p.check.max, post: p.check.max, feelingOff: true });
 const patternOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => rec.patterns.every((pt) => p.allowPattern(pt, mode, r));
 const recordOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => !p.allowRecord || p.allowRecord(rec, mode, r);
 /** A reading that says something: a "before" number, or "feeling off". */
 const answered = (r: CheckReading | null): r is CheckReading => r !== null && (r.pre != null || r.feelingOff);
 
-/** What the mode's general limits (the engine's difficulty cap and load rule) say against a move, or null. */
-function limitsAgainst(rec: ExerciseRecord, m: Mode): string | null {
+/**
+ * What the mode's general limits (the engine's difficulty cap and load rule) say against a move, or null; `w` names the
+ * day in the document's words.
+ */
+function limitsAgainst(rec: ExerciseRecord, m: Mode, w: string): string | null {
   const spec = MODES[m];
   const loaded = !spec.allowExternalLoad && rec.load === "external";
   const hard = rec.difficulty > spec.maxDifficulty;
-  const w = modeWord(m);
   if (loaded && hard) return `${rec.name} uses added weight and is harder than a ${w} day takes.`;
   if (loaded) return `${rec.name} uses added weight, which a ${w} day leaves out.`;
   if (hard) return `${rec.name} is harder than a ${w} day takes.`;
@@ -266,6 +272,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   const day = ctx.day;
   const phase: Phase = !day ? "any" : day.date > day.today ? "future" : "today";
   const mode = modeOfEffort(doc.intent.effort);
+  const dayWord = effortWord(doc.intent.effort);
   const canonical = (id: string): string => find(id)?.id ?? id;
   const excluded = new Set((ctx.excluded ?? []).map(canonical));
   const equipment = ctx.equipment;
@@ -303,7 +310,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
 
   function gateMessage(p: ConditionProfile, name: string, g: GateFail): string {
     const r = readingOf(p);
-    if (g.why === "mode") return `${name} isn't allowed on a ${modeWord(mode)} day with ${p.label}.`;
+    if (g.why === "mode") return `${name} isn't allowed on a ${dayWord} day with ${p.label}.`;
     if (r?.feelingOff) return `${name} isn't allowed while you're feeling off.`;
     if (r && r.pre != null) return `${name} isn't allowed with today's ${p.check.label} check at ${r.pre}.`;
     return `${name} needs today's ${p.check.label} check answered first.`;
@@ -323,7 +330,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         out.push({ code: "condition_never", severity: "error", message: `${name} is never allowed with ${p.label}.` });
         continue;
       }
-      if (!p.fitsMode(a, mode)) out.push({ code: "condition_mode", severity: "warning", message: `${name} is more than ${p.label} allows on a ${modeWord(mode)} day.` });
+      if (!p.fitsMode(a, mode)) out.push({ code: "condition_mode", severity: "warning", message: `${name} is more than ${p.label} allows on a ${dayWord} day.` });
       if (!p.fitsFormat(a, FORMAT_RULE[format])) out.push({ code: "condition_format", severity: "warning", message: `${name} doesn't suit ${FORMAT_WORDS[format]} with ${p.label}.` });
       const g = gate(p, rec);
       if (g?.why === "pending") out.push({ code: "condition_gate_pending", severity: "warning", message: "", pending: p });
@@ -333,7 +340,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         out.push({ code: "condition_flare", severity: "warning", message: `${name} isn't flare-safe, and today's ${p.check.label} check is a flare.` });
       }
     }
-    const limits = limitsAgainst(rec, mode);
+    const limits = limitsAgainst(rec, mode, dayWord);
     if (limits) out.push({ code: "mode_limits", severity: "warning", message: limits });
     if (excluded.has(rec.id)) out.push({ code: "excluded_by_athlete", severity: "warning", message: `You set ${name} aside as not for you.` });
     if (equipment && !hasEquipment(rec, equipment)) {
@@ -347,7 +354,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
 
   /** Passes in recovery mode whatever the day's check reads: what a future day's gated move needs as its alternate. */
   const passesRecovery = (rec: ExerciseRecord): boolean =>
-    limitsAgainst(rec, "recovery") === null &&
+    limitsAgainst(rec, "recovery", "") === null &&
     profiles.every((p) => {
       const a = attrsOf(rec, p);
       if (!a || p.never(a) || !p.fitsMode(a, "recovery")) return false;
@@ -508,7 +515,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     const allowed = MODES[mode].formats;
     if (moves > 0 && !allowed.includes(FORMAT_RULE[part.format])) {
       const fix = FORMAT_PREFERENCE.find((f) => allowed.includes(FORMAT_RULE[f]));
-      add({ path, code: "mode_limits", message: `A ${modeWord(mode)} day doesn't use ${FORMAT_WORDS[part.format]}.`, fix, severity: "warning" });
+      add({ path, code: "mode_limits", message: `A ${dayWord} day doesn't use ${FORMAT_WORDS[part.format]}.`, fix, severity: "warning" });
     }
   }
 
