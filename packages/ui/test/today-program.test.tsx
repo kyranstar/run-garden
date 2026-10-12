@@ -13,8 +13,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PROFILES } from "@rg/exercise-library";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -371,17 +371,14 @@ describe("no condition word lives in the UI's code (audit 2a-UI M11d)", () => {
    * flag's label — read from the library, so a profile added there is covered here; plus the stems already known.
    */
   const words = (() => {
-    const dir = here("../../exercise-library/src/conditions/");
     const out = new Set(["jaw", "tmj", "clench"]);
-    // The profile ids: the keys of `PROFILES`.
-    const index = readFileSync(join(dir, "index.ts"), "utf8");
-    for (const m of (/PROFILES = \{([^}]*)\}/.exec(index)?.[1] ?? "").matchAll(/(\w+):/g)) out.add(m[1]!.toLowerCase());
-    for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts") && n !== "index.ts" && n !== "types.ts")) {
-      const text = readFileSync(join(dir, f), "utf8");
-      // The profile's label, its check's label and its flag's label ("TMJ", "Jaw / head", "Clenched"). "head" is
-      // also a word the UI uses for other things (a sheet's head), so it is left to the first word.
-      for (const m of text.matchAll(/^ {2}(?:label|check: \{ label|setFlag: \{ id: [^,]+, label):\s*"([^"]+)"/gm)) {
-        for (const w of m[1]!.split(/[\s/]+/)) if (w.length >= 3 && w.toLowerCase() !== "head") out.add(w.toLowerCase());
+    // Each profile's id, its label, its check's label and its flag's label ("TMJ", "Jaw / head", "Clenched"), read
+    // from the profiles themselves (not their source text, which a refactor into constants would hide). "head" is
+    // also a word the UI uses for other things (a sheet's head), so it is left to the first word.
+    for (const [id, p] of Object.entries(PROFILES)) {
+      out.add(id.toLowerCase());
+      for (const text of [p.label, p.check.label, p.setFlag?.label ?? ""]) {
+        for (const w of text.split(/[\s/]+/)) if (w.length >= 3 && w.toLowerCase() !== "head") out.add(w.toLowerCase());
       }
     }
     return [...out];
