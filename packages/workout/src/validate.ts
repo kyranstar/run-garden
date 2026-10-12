@@ -543,12 +543,12 @@ function ownAmount(rec: ExerciseRecord): Partial<WorkoutDose> {
   const [lo, hi] = rec.dose.range;
   const mid = Math.round((lo + hi) / 2);
   switch (rec.dose.type) {
+    // A library carry's range is seconds: a timed carry.
     case "time":
+    case "carry":
       return { holdSec: mid };
     case "breaths":
       return { breaths: mid };
-    case "carry":
-      return { carryM: mid };
     default:
       return { reps: lo === hi ? lo : { min: lo, max: hi } };
   }

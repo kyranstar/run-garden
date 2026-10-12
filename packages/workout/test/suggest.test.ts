@@ -392,6 +392,15 @@ describe("a malformed part is a programming error", () => {
   });
 });
 
+describe("a suggested carry is held for time", () => {
+  it("the library's carry range is seconds, so the item is a timed carry, never a distance", () => {
+    const carry = EXERCISES.find((e) => e.dose.type === "carry")!;
+    const item = suggestedItem(carry, "main") as { dose: Record<string, unknown> };
+    expect(item.dose.holdSec).toBe(carry.dose.range[0]);
+    expect(item.dose.carryM).toBeUndefined();
+  });
+});
+
 describe("the builder's words are in the glossary", () => {
   it("every part purpose, format and effort has a sentence", () => {
     expect([...PART_PURPOSES, ...PART_FORMATS, ...EFFORT_LEVELS].filter((id) => !(id in GLOSSARY))).toEqual([]);

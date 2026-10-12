@@ -223,6 +223,25 @@ describe("swapItem", () => {
     expect(dose).toEqual(defaultDose(repsRec));
     expect(dose.holdSec).toBeUndefined();
   });
+  it("a carry is held for time: swapping a hold onto a carry keeps it, swapping reps onto one makes a timed carry", () => {
+    const carry = ofType("carry");
+    let s = run(fresh(), { type: "addItem", item: ex(timeRec.id, { sets: 2, holdSec: 40 }), part: 1 });
+    s = run(s, { type: "swapItem", part: 1, item: 0, libraryId: carry.id });
+    expect((s.doc.parts[1]!.items[0] as { dose: unknown }).dose).toEqual({ sets: 2, holdSec: 40 });
+    s = run(fresh(), { type: "addItem", item: ex(repsRec.id, { sets: 3, reps: 8 }), part: 1 });
+    s = run(s, { type: "swapItem", part: 1, item: 0, libraryId: carry.id });
+    const dose = (s.doc.parts[1]!.items[0] as { dose: Record<string, unknown> }).dose;
+    expect(dose).toEqual(defaultDose(carry));
+    expect(dose.holdSec).toBeDefined();
+    expect(dose.carryM).toBeUndefined();
+  });
+  it("a distance a source stated stays a distance on a carry", () => {
+    const carry = ofType("carry");
+    let s = run(fresh(), { type: "addItem", item: ex(carry.id, { sets: 2, carryM: 40 }), part: 1 });
+    const other = EXERCISES.find((e) => e.dose.type === "carry" && e.id !== carry.id)!;
+    s = run(s, { type: "swapItem", part: 1, item: 0, libraryId: other.id });
+    expect((s.doc.parts[1]!.items[0] as { dose: unknown }).dose).toEqual({ sets: 2, carryM: 40 });
+  });
   it("an empty dose converts too; a legacy target id resolves to the canonical id", () => {
     const legacy = fake({ id: "renamedMove", legacyIds: ["oldMove"], dose: { type: "reps", range: [6, 10] } });
     let s = run(fresh(), { type: "addItem", item: ex("zzz", {}), part: 1 });
@@ -242,7 +261,8 @@ describe("defaultDose", () => {
     expect(defaultDose(r)).toEqual({ sets: 2, reps: 10, restSec: 60 });
     expect(defaultDose(fake({ dose: { type: "time", range: [20, 40] }, laterality: "bilateral" }))).toEqual({ holdSec: 30 });
     expect(defaultDose(fake({ dose: { type: "breaths", range: [5, 10] }, laterality: "bilateral" }))).toEqual({ breaths: 8 });
-    expect(defaultDose(fake({ dose: { type: "carry", range: [20, 30] }, laterality: "bilateral" }))).toEqual({ carryM: 25 });
+    // A library carry's range is seconds: its default is a timed carry, never a distance (cross-task ruling, S2 T4 fix 1).
+    expect(defaultDose(fake({ dose: { type: "carry", range: [20, 30] }, laterality: "bilateral" }))).toEqual({ holdSec: 25 });
     expect(defaultDose(fake({ dose: { type: "reps", range: [6, 6] }, laterality: "unilateral" as never }))).toEqual({ reps: 6, perSide: true });
   });
   it("every record's default dose parses", () => {

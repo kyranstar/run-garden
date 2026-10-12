@@ -174,7 +174,8 @@ export function suggestedDose(rec: ExerciseRecord, purpose: PartPurpose): Workou
   const [lo, hi] = rec.dose.range;
   const sets = LIGHT_PARTS.has(purpose) ? 1 : (rec.dose.sets?.[0] ?? 1);
   const amount: WorkoutDose =
-    rec.dose.type === "time" ? { holdSec: lo } : rec.dose.type === "breaths" ? { breaths: lo } : rec.dose.type === "carry" ? { carryM: lo } : { reps: lo === hi ? lo : { min: lo, max: hi } };
+    // A library carry's range is seconds: a timed carry.
+    rec.dose.type === "time" || rec.dose.type === "carry" ? { holdSec: lo } : rec.dose.type === "breaths" ? { breaths: lo } : { reps: lo === hi ? lo : { min: lo, max: hi } };
   return { sets, ...amount, ...(rec.laterality !== "bilateral" ? { perSide: true } : {}) };
 }
 

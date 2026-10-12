@@ -96,12 +96,15 @@ export function newDoc(kind: "blank" | "structured", meta: { title: string; sour
 /** Open a document (a stored one, or a new draft) for editing. */
 export const startEditing = (doc: WorkoutDoc): EditorState => ({ doc: asDraft(doc), past: [], future: [] });
 
-/** A new move's dose: the record's own sets (the low end), the middle of its range, its rest. */
+/**
+ * A new move's dose: the record's own sets (the low end), the middle of its range, its rest. A library carry's range is
+ * seconds, so its dose is a timed carry (`holdSec`); `carryM` is only ever a distance a source stated.
+ */
 export function defaultDose(rec: ExerciseRecord): WorkoutDose {
   const [lo, hi] = rec.dose.range;
   const mid = Math.round((lo + hi) / 2);
   const amount: WorkoutDose =
-    rec.dose.type === "time" ? { holdSec: mid } : rec.dose.type === "breaths" ? { breaths: mid } : rec.dose.type === "carry" ? { carryM: mid } : { reps: mid };
+    rec.dose.type === "time" || rec.dose.type === "carry" ? { holdSec: mid } : rec.dose.type === "breaths" ? { breaths: mid } : { reps: mid };
   return {
     ...(rec.dose.sets ? { sets: rec.dose.sets[0] } : {}),
     ...amount,
@@ -119,7 +122,8 @@ export function itemFor(rec: ExerciseRecord): WorkoutItem {
 function fitsType(dose: WorkoutDose, type: ExerciseRecord["dose"]["type"]): boolean {
   if (type === "time") return dose.holdSec !== undefined && dose.reps === undefined;
   if (type === "breaths") return dose.breaths !== undefined;
-  if (type === "carry") return dose.carryM !== undefined;
+  // Timed (the library's way), or a distance a source stated.
+  if (type === "carry") return (dose.holdSec !== undefined || dose.carryM !== undefined) && dose.reps === undefined;
   return dose.reps !== undefined && dose.holdSec === undefined;
 }
 

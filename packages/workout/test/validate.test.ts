@@ -210,6 +210,14 @@ describe("dose_mismatch", () => {
     expect(check(one(ex("wallSit", { sets: 2, max: true })))).toEqual([]);
   });
 
+  it("a carry with no amount is fixed as a timed carry: the library's carry range is seconds, not metres", () => {
+    const [issue] = check(one(ex("farmerCarry", { sets: 2 }), "maintain"));
+    expect(issue).toMatchObject({ code: "dose_mismatch", severity: "warning" });
+    const fix = JSON.parse(issue!.fix!) as Record<string, unknown>;
+    expect(fix.holdSec).toBeGreaterThan(0);
+    expect(fix.carryM).toBeUndefined();
+  });
+
   it("a free-text move with no amount is a warning too (no fix: the library cannot say)", () => {
     const [issue] = check(one({ kind: "free_exercise", name: "Something", dose: { sets: 2 } } as WorkoutItem));
     expect(issue).toMatchObject({ code: "dose_mismatch", severity: "warning" });
