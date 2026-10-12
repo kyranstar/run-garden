@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 import { EFFORT_LEVELS, PART_FORMATS, PART_PURPOSES, type WorkoutDoc, type WorkoutItem, type WorkoutPart } from "@rg/domain";
 import { EQUIPMENT_IDS, EXERCISES, GLOSSARY, TMJ, hasEquipment, isPlyometric, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
-import { suggestForPart, suggestedItem, validateWorkoutDoc, type DayContext, type SuggestCtx, type Suggestion } from "../src/index.js";
+import { docFromBuild, suggestForPart, suggestedItem, validateWorkoutDoc, type DayContext, type SuggestCtx, type Suggestion } from "../src/index.js";
+import { LIBRARY, seededBuilds, stored } from "./seeded-builds.js";
 
 type Over = Record<string, unknown>;
 const byId = new Map(EXERCISES.map((e) => [e.id, e]));
@@ -166,6 +167,39 @@ describe("one part per move: it is offered where it fits best", () => {
         expect(new Set(flat).size, JSON.stringify(lists)).toBe(flat.length);
       }
     }
+  });
+
+  it("30 generated documents (seeded builds), whole and as shells around their main work: no move is offered in two parts — two parts of one kind included", () => {
+    // The sample the final review found 4 of 30 documents offering one move in two parts: a move ranked fourth where it
+    // fits best filled the place another part's move left there, and two parts of one kind (two warm-ups) listed alike.
+    const twice: string[] = [];
+    let sameKind = 0;
+    for (const { label, plan } of seededBuilds(30)) {
+      const whole = docFromBuild(stored(plan));
+      const shell = { ...whole, parts: whole.parts.map((p) => (p.purpose === "main" ? p : { ...p, items: [] })) } as WorkoutDoc;
+      for (const doc of [whole, shell]) {
+        const kinds = doc.parts.map((p) => p.purpose);
+        if (new Set(kinds).size < kinds.length) sameKind += 1;
+        const where = new Map<string, number>();
+        doc.parts.forEach((p, i) => {
+          for (const id of ids(suggestForPart(doc, i, LIBRARY, CTX))) {
+            if (where.has(id)) twice.push(`${label}${doc === shell ? " (shell)" : ""}: ${id} in ${doc.parts[where.get(id)!]!.purpose} and ${p.purpose}`);
+            else where.set(id, i);
+          }
+        });
+      }
+    }
+    expect(sameKind).toBeGreaterThan(20);
+    expect(twice).toEqual([]);
+  });
+
+  it("two parts of one kind each offer their own: the second warm-up takes the next moves, not the first's again", () => {
+    const doc = docOf([part("warmup", "flow", []), part("warmup", "flow", []), part("main", "straight", [ex("gobletSquat")])]);
+    const first = ids(suggest(doc, 0));
+    const second = ids(suggest(doc, 1));
+    expect(first).toHaveLength(3);
+    expect(second.length).toBeGreaterThan(0);
+    expect(second.filter((id) => first.includes(id))).toEqual([]);
   });
 
   it("a move leaves a part only for a part that really lists it, so no part that has moves to offer is left empty", () => {

@@ -20,8 +20,11 @@ const inList = (list: readonly string[], value: unknown): boolean => typeof valu
 /** A plyometric record, read safely from a record that may be malformed. */
 const plyometric = (ex: { contraction?: unknown }): boolean => Array.isArray(ex.contraction) && ex.contraction.includes("plyometric");
 
-/** Tags that say a move jumps, lands or brakes: the condition gate only sees a jump through its plyometric contraction. */
-const JUMP_TAGS = ["elastic", "landing", "deceleration"] as const;
+/**
+ * Tags that say a move jumps or lands: the condition gate only sees a jump through its plyometric contraction.
+ * Deceleration is not one of them: braking well is trained without leaving the floor (a slow eccentric step-down).
+ */
+const JUMP_TAGS = ["elastic", "landing"] as const;
 /**
  * Moves that may carry a jump-like tag without a plyometric contraction, by id — each one a deliberate choice (a slow
  * landing drill with no flight, say). Empty: every tagged move in the library is a jump the gate rules on.
@@ -89,7 +92,7 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     if (Array.isArray(ex.tags)) {
       for (const t of ex.tags) inVocab(id, "tag", t, TAGS);
       for (const t of new Set(ex.tags)) if (ex.tags.filter(x => x === t).length > 1) err(id, `tags repeats "${t}"`);
-      // A move that jumps, lands or brakes is gated as a jump only through its contraction: the tag alone gates nothing.
+      // A move that jumps or lands is gated as a jump only through its contraction: the tag alone gates nothing.
       if (ex.tags.some(t => (JUMP_TAGS as readonly string[]).includes(t)) && !plyometric(ex) && !jumpTagExempt.has(ex.id)) {
         err(id, `a jump-like tag (${JUMP_TAGS.join(", ")}) needs a plyometric contraction, or an exemption`);
       }
@@ -159,6 +162,17 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     // A jump ladder's links mirror: the frontier walks `easier` and graduation walks `harder`, so a one-way link would
     // let one of them skip a rung the other requires.
     if (!plyometric(ex)) continue;
+    // Graduation takes the first harder rung the day allows, so a jump's harder links run gentlest first.
+    const harder = (ex.harder ?? []).flatMap(n => {
+      const h = byId.get(n);
+      return h && h !== ex ? [h] : [];
+    });
+    for (let i = 1; i < harder.length; i++) {
+      const [a, b] = [harder[i - 1]!, harder[i]!];
+      if (b.difficulty < a.difficulty) {
+        err(ex.id, `harder links must run gentlest first ("${b.id}", difficulty ${b.difficulty}, comes before "${a.id}", difficulty ${a.difficulty})`);
+      }
+    }
     for (const [kind, back] of [["harder", "easier"], ["easier", "harder"]] as const) {
       for (const n of ex[kind] ?? []) {
         const other = byId.get(n);

@@ -61,7 +61,8 @@ export const ATHLETIC = defineExercises([
     purposes: ["power", "balance"],
     tags: ["landing", "deceleration"],
     themes: ["plyoIntro", "athleticBase"],
-    harder: ["broadJumpStick", "pogoHop", "boxJumpStepDown"],
+    // Gentlest first: graduation takes the first rung the day allows, so the next step up is the smallest one.
+    harder: ["pogoHop", "boxJumpStepDown", "broadJumpStick"],
     text: {
       summary: "Rise tall on your toes, then snap down fast into a still, athletic stance.",
       setup: ["Stand tall with the feet hip-width apart.", "Reach both arms overhead and rise onto the balls of the feet."],

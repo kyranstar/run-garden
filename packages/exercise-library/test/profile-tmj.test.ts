@@ -204,8 +204,10 @@ describe("TMJ profile — proposal", () => {
   it("build checks 1–3 with the standalone reasons", () => {
     const failing = (c: ProposalCtx) => TMJ.buildChecks(c).filter(([ok]) => !ok).map(([, r]) => r);
     expect(failing(ctx({ pre: 1 }))).toEqual([]);
-    expect(failing(ctx({ pre: 3 }))).toEqual(["Build needs a calm jaw (2 or less) — you're at 3."]);
-    expect(failing(ctx({ pre: null, last: session("2026-09-28", { post: null }) }))).toEqual(["Build needs a jaw check first."]);
+    expect(failing(ctx({ pre: 3 }))).toEqual(["A Develop or Peak day needs a calm jaw (2 or less) — you're at 3."]);
+    expect(failing(ctx({ pre: null, last: session("2026-09-28", { post: null }) }))).toEqual(["A Develop or Peak day needs a jaw check first."]);
+    // The athlete chose an effort (Develop, Peak), never the engine's mode: its name is in none of the profile's lines.
+    for (const pre of [null, 3, 9]) for (const why of failing(ctx({ pre }))) expect(why).not.toMatch(/\bbuild\b/i);
     const flared = [session("2026-09-24", { pre: 6, post: 5 }), session("2026-09-28")];
     expect(failing(ctx({ pre: 1, week: flared, last: flared[1] }))).toEqual(["Your jaw has flared in the last 7 days."]);
     expect(failing(ctx({ pre: 1, last: session("2026-09-28", { flags: [["clenched"]] }) }))).toEqual(["Last session wasn't clean."]);

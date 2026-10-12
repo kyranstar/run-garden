@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
-  BLOCK_IDS, EXERCISES, EQUIPMENT_IDS, LOCATION_PRESETS, MODE_IDS, defineExercises, hasEquipment, makeEngineData, validateLibrary,
+  BLOCK_IDS, EXERCISES, EQUIPMENT_IDS, LOCATION_PRESETS, MODE_IDS, TMJ, defineExercises, hasEquipment, makeEngineData, validateLibrary,
   type EngineData, type ExerciseRecord,
 } from "../src/index.js";
 import { ex, lifted } from "./fixtures.js";
@@ -226,14 +226,32 @@ describe("jumps in one place (final review): a ladder's links mirror, and a jump
     expect(errors.filter(e => e.includes("mirrored"))).toEqual([]);
   });
 
-  test("a move tagged elastic, landing or deceleration must be plyometric, unless the library exempts it by id", () => {
+  test("a move tagged elastic or landing must be plyometric, unless the library exempts it by id", () => {
     const tagged = (id: string, tag: string) => ex(id, { tags: [tag] });
-    const errors = errorsOf([tagged("springy", "elastic"), tagged("softLand", "landing"), tagged("brake", "deceleration"), tagged("plain", "posture")]);
-    for (const id of ["springy", "softLand", "brake"]) {
-      expect(errors).toContain(`${id}: a jump-like tag (elastic, landing, deceleration) needs a plyometric contraction, or an exemption`);
+    const errors = errorsOf([tagged("springy", "elastic"), tagged("softLand", "landing"), tagged("plain", "posture")]);
+    for (const id of ["springy", "softLand"]) {
+      expect(errors).toContain(`${id}: a jump-like tag (elastic, landing) needs a plyometric contraction, or an exemption`);
     }
     expect(errors.filter(e => e.startsWith("plain:"))).toEqual([]);
-    expect(errorsOf([tagged("brake", "deceleration")], { jumpTagExempt: ["brake"] }).filter(e => e.startsWith("brake:"))).toEqual([]);
+    expect(errorsOf([tagged("softLand", "landing")], { jumpTagExempt: ["softLand"] }).filter(e => e.startsWith("softLand:"))).toEqual([]);
+  });
+
+  test("deceleration alone is braking work, not a jump: a slow eccentric step-down may carry it; a real jump keeps its gate", () => {
+    // Slowing down well is trained without leaving the floor, so the tag says nothing about flight.
+    const stepDown = ex("slowStepDown", { tags: ["deceleration", "single-leg"], contraction: ["isotonic", "eccentric"], purposes: ["strength", "balance"] });
+    expect(errorsOf([stepDown]).filter(e => e.startsWith("slowStepDown:"))).toEqual([]);
+    // Landing and deceleration together still need the jump's contraction.
+    expect(errorsOf([ex("brakeAndLand", { tags: ["deceleration", "landing"] })])).toContain(
+      "brakeAndLand: a jump-like tag (elastic, landing) needs a plyometric contraction, or an exemption",
+    );
+    // The gate rules on the contraction: the step-down is open on a recovery day, the snap-down (tagged deceleration too) is not.
+    const [defined] = defineExercises([stepDown]);
+    const recoveryDay = { pre: 1, post: null, feelingOff: false };
+    expect(defined!.tags).toContain("deceleration");
+    expect(TMJ.allowRecord!(defined!, "recovery", recoveryDay)).toBe(true);
+    expect(get("snapDown")!.tags).toContain("deceleration");
+    expect(TMJ.allowRecord!(get("snapDown")!, "recovery", recoveryDay)).toBe(false);
+    expect(TMJ.allowRecord!(get("snapDown")!, "build", recoveryDay)).toBe(true);
   });
 
   test("the real library's ladders mirror: the box jump leads to the tuck jump both ways, the snap-down to each rung above it", () => {
@@ -241,5 +259,20 @@ describe("jumps in one place (final review): a ladder's links mirror, and a jump
     expect(by("tuckJump").easier).toContain("boxJumpStepDown");
     expect(by("snapDown").harder).toEqual(expect.arrayContaining(["broadJumpStick", "pogoHop", "boxJumpStepDown"]));
     expect(validateLibrary(data).filter(e => e.includes("mirrored") || e.includes("jump-like"))).toEqual([]);
+  });
+
+  test("a jump's harder links run gentlest first, so the next step up is the smallest one", () => {
+    const errors = errorsOf([
+      jump("base", { harder: ["big", "small"] }), jump("small", { difficulty: 2, easier: ["base"] }), jump("big", { difficulty: 4, easier: ["base"] }),
+      jump("okBase", { harder: ["okSmall", "okBig"] }), jump("okSmall", { difficulty: 2, easier: ["okBase"] }), jump("okBig", { difficulty: 3, easier: ["okBase"] }),
+    ]);
+    expect(errors).toContain('base: harder links must run gentlest first ("small", difficulty 2, comes before "big", difficulty 4)');
+    expect(errors.filter(e => e.startsWith("ok"))).toEqual([]);
+    // The real snap-down: pogo hops (difficulty 2) is the first step up, ahead of the box jump and the broad jump (3).
+    const snap = get("snapDown")!;
+    expect(snap.harder[0]).toBe("pogoHop");
+    const difficulties = snap.harder.map(id => get(id)!.difficulty);
+    expect(difficulties).toEqual([...difficulties].sort((a, b) => a - b));
+    expect(validateLibrary(data).filter(e => e.includes("gentlest"))).toEqual([]);
   });
 });

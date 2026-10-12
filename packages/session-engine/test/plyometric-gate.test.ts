@@ -519,6 +519,17 @@ describe("ready for the next: the harder variant only when today's gate and the 
     });
     expect(at(oneWay)).toMatchObject({ action: "tempo", graduate: null });
   });
+
+  test("the snap-down graduates to the gentlest rung above it: pogo hops (difficulty 2), never the broad jump (3) first", () => {
+    const snap = byId.get("snapDown")!;
+    const toppedOut: ProgEntry[] = [{
+      date: "2026-10-01", startedAt: "2026-10-01T18:00:00", sets: [{ w: null, reps: snap.dose.range[1], secs: null }],
+      flags: [], checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, mode: "build",
+    }];
+    const next = (mode: Mode) => Prog.suggest(data, snap, toppedOut, { mode, checks: { tmj: calm }, implement: null, kbWeights: [], unit: "lb", equipment: home.equipment });
+    expect(next("build")).toMatchObject({ action: "graduate", graduate: "pogoHop" });
+    expect(next("consistent")).toMatchObject({ action: "graduate", graduate: "pogoHop" });
+  });
 });
 
 describe("final review: rest and retry read every logged jump, swaps keep the session's one new-or-retry rung, and a day's feeling off reaches the build", () => {

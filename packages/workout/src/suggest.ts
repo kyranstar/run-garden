@@ -32,10 +32,11 @@
  *     passive moves. conditioning: conditioning moves. run: none.
  *   Easier first in every part: −0.5 per difficulty step above 1 (a jump's gentlest rungs first; no hard eccentric
  *   leading an accessory part).
- * - One part per move: a move another part of the document wants more (a higher fit there; on a tie, the earlier part)
- *   is offered there, not here — only when that part would really list it (its own top three, one per family, the
- *   probe passed); and a part is never emptied so: when every move it could offer is listed elsewhere, it offers them
- *   too.
+ * - One part per move, of any kind (two warm-ups included): a move is offered in the part that wants it most (its
+ *   highest fit; on a tie, the earlier part) among the parts that would really list it (each part's own top three, one
+ *   per family, the probe passed) — worked out for the whole document at once (`onePartPerMove`), so a move a part turns
+ *   away goes on to the next part that wants it, and no two parts' lists share a move. A part is never emptied so: when
+ *   every move it could offer is listed elsewhere, it offers them too (the one way a move shows in two parts).
  * - Never: a move already in the document (items or alternates), or of a family already in the part; set aside
  *   (`ctx.excluded`); needing gear the place lacks (`ctx.equipment`); raising any issue — error or warning — at the
  *   item in that part, for the day (`validateWorkoutDoc` with the day, the active profiles, the set-aside list and the
@@ -435,41 +436,61 @@ export function suggestForPart(doc: WorkoutDoc, partIndex: number, library: read
 
   const recent = new Set(ctx.recentIds.map(canonical));
   const pinned = new Set(ctx.pinned.map(canonical));
-  const memo = <T>(compute: (pi: number) => T): ((pi: number) => T) => {
-    const cache = new Map<number, T>();
-    return (pi) => {
-      if (!cache.has(pi)) cache.set(pi, compute(pi));
-      return cache.get(pi)!;
-    };
-  };
-  /** Every move part `pi` would take on its own, with its fit there and why. */
-  const candidatesOf = memo((pi): Scored[] => {
+  /** Every move part `pi` would take on its own, clean for the day, ranked: its fit there and why. */
+  const rankedIn = (pi: number): Scored[] => {
+    if (!scorerOf(doc.parts[pi]!.purpose)) return [];
     const out: Scored[] = [];
     for (const rec of library) {
       if (inDoc.has(rec.id) || excluded.has(rec.id) || !hasEquipment(rec, ctx.equipment)) continue;
       const here = fitIn(rec, pi);
       if (here) out.push({ rec, fit: here.fit, reason: here.reason.slice(0, REASON_MAX) });
     }
-    return out;
-  });
-  const cleanOf = memo((pi) => cleanInPart(candidatesOf(pi).map((s) => s.rec), doc.parts[pi]!, doc.intent.effort, library, ctx));
-  /** What part `pi` lists, of the moves `keep` allows: clean for the day, ranked, varied, three at most. */
-  const listOf = (pi: number, keep: (s: Scored) => boolean = () => true): Scored[] =>
-    pickVaried(rankScored(candidatesOf(pi).filter((s) => cleanOf(pi).has(s.rec.id) && keep(s)), recent, pinned, { seed: ctx.seed }), MAX_SUGGESTIONS);
-  /** The moves part `qi` lists on its own (before this rule). */
-  const listedIn = memo((qi) => new Set(listOf(qi).map((s) => s.rec.id)));
-  /** Another part of a different kind wants the move more (or as much, and comes first), and lists it there. */
-  const belongsElsewhere = (s: Scored): boolean =>
-    doc.parts.some((p, qi) => {
-      if (qi === partIndex || p.purpose === part.purpose) return false;
-      const there = fitIn(s.rec, qi);
-      return there !== null && (there.fit > s.fit || (there.fit === s.fit && qi < partIndex)) && listedIn(qi).has(s.rec.id);
-    });
-
-  const mine = listOf(partIndex, (s) => !belongsElsewhere(s));
+    const clean = cleanInPart(out.map((s) => s.rec), doc.parts[pi]!, doc.intent.effort, library, ctx);
+    return rankScored(out.filter((s) => clean.has(s.rec.id)), recent, pinned, { seed: ctx.seed });
+  };
+  const ranked = doc.parts.map((_, pi) => rankedIn(pi));
+  const held = onePartPerMove(ranked);
+  const mine = pickVaried(ranked[partIndex]!.filter((s) => held[partIndex]!.has(s.rec.id)), MAX_SUGGESTIONS);
   // Never empty a part: when every move it could offer is listed elsewhere, it offers them too.
-  const picked = mine.length > 0 ? mine : listOf(partIndex);
+  const picked = mine.length > 0 ? mine : pickVaried(ranked[partIndex]!, MAX_SUGGESTIONS);
   return picked.map((s) => ({ libraryId: s.rec.id, reason: s.reason }));
+}
+
+/**
+ * Which part lists each move (see the header's "One part per move"): every move asks the part that wants it most first
+ * (its highest fit; on a tie the earlier part), and on down; a part keeps what it would list of the moves that asked it
+ * (`pickVaried` over its own ranking) and turns the rest away, so a move sits where it fits best among the parts that
+ * would really list it, in one part at most. Each move asks each part once, so it ends. Answers each part's moves.
+ */
+function onePartPerMove(ranked: readonly (readonly Scored[])[]): Set<string>[] {
+  const wants = new Map<string, Array<{ pi: number; fit: number }>>();
+  ranked.forEach((list, pi) => {
+    for (const s of list) {
+      const w = wants.get(s.rec.id) ?? [];
+      w.push({ pi, fit: s.fit });
+      wants.set(s.rec.id, w);
+    }
+  });
+  for (const w of wants.values()) w.sort((a, b) => b.fit - a.fit || a.pi - b.pi);
+  const held = ranked.map(() => new Set<string>());
+  const asked = new Map<string, number>();
+  const waiting = [...wants.keys()];
+  while (waiting.length > 0) {
+    const id = waiting.shift()!;
+    const k = asked.get(id) ?? 0;
+    const next = wants.get(id)![k];
+    if (!next) continue;
+    asked.set(id, k + 1);
+    const here = held[next.pi]!;
+    here.add(id);
+    const kept = new Set(pickVaried(ranked[next.pi]!.filter((s) => here.has(s.rec.id)), MAX_SUGGESTIONS).map((s) => s.rec.id));
+    for (const other of [...here]) {
+      if (kept.has(other)) continue;
+      here.delete(other);
+      waiting.push(other);
+    }
+  }
+  return held;
 }
 
 /** Up to `n`, best first, one per family, each with a different reason before any reason repeats. */

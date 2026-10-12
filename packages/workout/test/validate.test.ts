@@ -502,7 +502,7 @@ describe("mode_above_day", () => {
 
   it("a develop workout on a day the profile's build checks fail carries the failed check's words", () => {
     expect(check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(reading(3)))).toEqual([
-      expect.objectContaining({ code: "mode_above_day", message: "Build needs a calm jaw (2 or less) — you're at 3.", fix: "maintain" }),
+      expect.objectContaining({ code: "mode_above_day", message: "A Develop or Peak day needs a calm jaw (2 or less) — you're at 3.", fix: "maintain" }),
     ]);
     // The recent sessions are read too: a flare in the last week.
     const flared = { id: "s1", date: addDays(TODAY, -2), startedAt: null, mode: "consistent" as const, theme: null, blockNumber: null, checks: { tmj: reading(6) }, done: [], entries: [] };

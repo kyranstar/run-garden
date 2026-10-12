@@ -184,7 +184,7 @@ export const TMJ: ConditionProfile = {
     const avgPost = mean(posts);
     const clenches = ctx.last ? flaggedCount(ctx.last) : 0;
     return [
-      [lvl != null && lvl <= CALM_MAX_PRE, lvl == null ? "Build needs a jaw check first." : `Build needs a calm jaw (${CALM_MAX_PRE} or less) — you're at ${lvl}.`],
+      [lvl != null && lvl <= CALM_MAX_PRE, lvl == null ? "A Develop or Peak day needs a jaw check first." : `A Develop or Peak day needs a calm jaw (${CALM_MAX_PRE} or less) — you're at ${lvl}.`],
       [!ctx.week.some(s => { const c = checkOf(s); return c != null && c.pre != null && c.pre >= HIGH_PRE; }) && (avgPost == null || avgPost <= BUILD_WEEK_POST_MAX), "Your jaw has flared in the last 7 days."],
       [clenches === 0 && !(l && l.pre != null && l.post != null && l.post - l.pre > BUILD_LAST_RISE_MAX), "Last session wasn't clean."],
     ];
