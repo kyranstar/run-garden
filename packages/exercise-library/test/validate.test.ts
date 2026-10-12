@@ -203,3 +203,43 @@ describe("curation fields", () => {
     expect(errors).toContain('curated: tag "nonsense" is not in the vocabulary');
   });
 });
+
+describe("jumps in one place (final review): a ladder's links mirror, and a jump-like tag means a jump", () => {
+  const jump = (id: string, over: Record<string, unknown> = {}) =>
+    ex(id, { contraction: ["plyometric"], purposes: ["power"], tags: ["elastic"], ...over });
+  const errorsOf = (exercises: ReturnType<typeof ex>[], options: { jumpTagExempt?: readonly string[] } = {}) =>
+    validateLibrary(withExercises(defineExercises(exercises)), { presets: [], ...options });
+
+  test("a plyometric record's harder link is named back as easier, and its easier link back as harder", () => {
+    const errors = errorsOf([
+      jump("lowHop", { harder: ["highHop"] }), jump("highHop", { difficulty: 2 }),
+      jump("stick", { difficulty: 1 }), jump("dropIn", { difficulty: 3, easier: ["stick"] }),
+      jump("okA", { harder: ["okB"] }), jump("okB", { difficulty: 2, easier: ["okA"] }),
+    ]);
+    expect(errors).toContain('lowHop: harder link "highHop" is not mirrored (highHop does not name lowHop as easier)');
+    expect(errors).toContain('dropIn: easier link "stick" is not mirrored (stick does not name dropIn as harder)');
+    expect(errors.filter(e => e.startsWith("okA") || e.startsWith("okB"))).toEqual([]);
+  });
+
+  test("links between other moves may stay one-way (a core lift's easier move is not its graduation)", () => {
+    const errors = errorsOf([lifted("liftA", { harder: ["liftB"] }), lifted("liftB", { difficulty: 3 })]);
+    expect(errors.filter(e => e.includes("mirrored"))).toEqual([]);
+  });
+
+  test("a move tagged elastic, landing or deceleration must be plyometric, unless the library exempts it by id", () => {
+    const tagged = (id: string, tag: string) => ex(id, { tags: [tag] });
+    const errors = errorsOf([tagged("springy", "elastic"), tagged("softLand", "landing"), tagged("brake", "deceleration"), tagged("plain", "posture")]);
+    for (const id of ["springy", "softLand", "brake"]) {
+      expect(errors).toContain(`${id}: a jump-like tag (elastic, landing, deceleration) needs a plyometric contraction, or an exemption`);
+    }
+    expect(errors.filter(e => e.startsWith("plain:"))).toEqual([]);
+    expect(errorsOf([tagged("brake", "deceleration")], { jumpTagExempt: ["brake"] }).filter(e => e.startsWith("brake:"))).toEqual([]);
+  });
+
+  test("the real library's ladders mirror: the box jump leads to the tuck jump both ways, the snap-down to each rung above it", () => {
+    const by = (id: string) => get(id)!;
+    expect(by("tuckJump").easier).toContain("boxJumpStepDown");
+    expect(by("snapDown").harder).toEqual(expect.arrayContaining(["broadJumpStick", "pogoHop", "boxJumpStepDown"]));
+    expect(validateLibrary(data).filter(e => e.includes("mirrored") || e.includes("jump-like"))).toEqual([]);
+  });
+});

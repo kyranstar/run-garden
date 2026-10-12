@@ -61,7 +61,7 @@ export const ATHLETIC = defineExercises([
     purposes: ["power", "balance"],
     tags: ["landing", "deceleration"],
     themes: ["plyoIntro", "athleticBase"],
-    harder: ["broadJumpStick"],
+    harder: ["broadJumpStick", "pogoHop", "boxJumpStepDown"],
     text: {
       summary: "Rise tall on your toes, then snap down fast into a still, athletic stance.",
       setup: ["Stand tall with the feet hip-width apart.", "Reach both arms overhead and rise onto the balls of the feet."],
@@ -432,7 +432,7 @@ export const ATHLETIC = defineExercises([
     purposes: ["power"],
     tags: ["elastic", "landing"],
     themes: ["athleticBase"],
-    easier: ["broadJumpStick", "dropLanding"],
+    easier: ["broadJumpStick", "dropLanding", "boxJumpStepDown"],
     text: {
       summary: "Jump straight up, draw the knees toward the chest, and land softly.",
       setup: ["Stand with the feet hip-width apart on a firm floor, arms ready to swing.", "Only once the stick and hop drills feel easy."],

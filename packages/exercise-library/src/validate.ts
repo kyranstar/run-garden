@@ -17,12 +17,24 @@ const TEXT_LISTS = ["setup", "steps", "focus", "mistakes"] as const;
 const PROVENANCE = new RegExp(["http", "www\\.", ["insta", "gram"].join(""), "@"].join("|"), "i");
 
 const inList = (list: readonly string[], value: unknown): boolean => typeof value === "string" && list.includes(value);
+/** A plyometric record, read safely from a record that may be malformed. */
+const plyometric = (ex: { contraction?: unknown }): boolean => Array.isArray(ex.contraction) && ex.contraction.includes("plyometric");
+
+/** Tags that say a move jumps, lands or brakes: the condition gate only sees a jump through its plyometric contraction. */
+const JUMP_TAGS = ["elastic", "landing", "deceleration"] as const;
+/**
+ * Moves that may carry a jump-like tag without a plyometric contraction, by id — each one a deliberate choice (a slow
+ * landing drill with no flight, say). Empty: every tagged move in the library is a jump the gate rules on.
+ */
+export const JUMP_TAG_EXEMPT: readonly string[] = [];
 
 export interface ValidateOptions {
   /** Location presets to check coverage at (default: the library's presets; `[]` skips coverage). */
   presets?: readonly LocationPreset[];
   /** Profiles every record must be rated for (default: every profile the library knows). */
   profiles?: readonly ConditionProfile[];
+  /** Ids that may carry a jump-like tag without a plyometric contraction (default: `JUMP_TAG_EXEMPT`). */
+  jumpTagExempt?: readonly string[];
 }
 
 export function validateLibrary(data: EngineData, options: ValidateOptions = {}): string[] {
@@ -32,6 +44,7 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     if (!inList(list, value)) err(id, `${field} "${String(value)}" is not in the vocabulary`);
   };
   const profiles = options.profiles ?? Object.values(PROFILES);
+  const jumpTagExempt = new Set(options.jumpTagExempt ?? JUMP_TAG_EXEMPT);
   const ids = new Set<string>();
 
   for (const ex of data.exercises) {
@@ -76,6 +89,10 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     if (Array.isArray(ex.tags)) {
       for (const t of ex.tags) inVocab(id, "tag", t, TAGS);
       for (const t of new Set(ex.tags)) if (ex.tags.filter(x => x === t).length > 1) err(id, `tags repeats "${t}"`);
+      // A move that jumps, lands or brakes is gated as a jump only through its contraction: the tag alone gates nothing.
+      if (ex.tags.some(t => (JUMP_TAGS as readonly string[]).includes(t)) && !plyometric(ex) && !jumpTagExempt.has(ex.id)) {
+        err(id, `a jump-like tag (${JUMP_TAGS.join(", ")}) needs a plyometric contraction, or an exemption`);
+      }
     }
 
     const d = (ex.dose ?? {}) as { type?: unknown; range?: unknown; sets?: unknown };
@@ -131,11 +148,23 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
     if (PROVENANCE.test(JSON.stringify(ex))) err(id, "carries a link or a handle (provenance stays private)");
   }
 
+  const byId = new Map(data.exercises.map(ex => [ex.id, ex]));
   for (const ex of data.exercises) {
     for (const [kind, list] of [["easier", ex.easier], ["harder", ex.harder]] as const) {
       for (const n of list ?? []) {
         if (n === ex.id) err(ex.id, "links to itself");
         else if (!ids.has(n)) err(ex.id, `${kind} link "${n}" does not exist`);
+      }
+    }
+    // A jump ladder's links mirror: the frontier walks `easier` and graduation walks `harder`, so a one-way link would
+    // let one of them skip a rung the other requires.
+    if (!plyometric(ex)) continue;
+    for (const [kind, back] of [["harder", "easier"], ["easier", "harder"]] as const) {
+      for (const n of ex[kind] ?? []) {
+        const other = byId.get(n);
+        if (other && other !== ex && plyometric(other) && !(other[back] ?? []).includes(ex.id)) {
+          err(ex.id, `${kind} link "${n}" is not mirrored (${n} does not name ${ex.id} as ${back})`);
+        }
       }
     }
   }

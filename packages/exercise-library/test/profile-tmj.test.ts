@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, flareSafe, makeEngineData, recordFlareSafe,
+  EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, flareSafe, isDoneCleanly, makeEngineData, recordFlareSafe,
   type Attrs, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type ProposalCtx,
 } from "../src/index.js";
 
@@ -276,5 +276,30 @@ describe("TMJ profile — the flare definition (Phase 2d: flare days on the cond
     for (const pre of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
       expect(TMJ.recoveryReason(ctx({ pre, last: null })) === `Jaw/head is at ${pre} right now.`).toBe(TMJ.flare(reading(pre)));
     }
+  });
+});
+
+describe("done cleanly (final review I3): the one rule the engine's ladder and every DayContext.done use", () => {
+  const tally = (lastDate: string | null, logged: number, flags: Record<string, number> = {}) => ({ lastDate, logged, flags });
+
+  it("done and never logged (a timed move only started): clean — no flag could be set", () => {
+    expect(isDoneCleanly(tally("2026-10-01", 0), [TMJ])).toBe(true);
+  });
+
+  it("never done: not clean, whatever the counts say", () => {
+    expect(isDoneCleanly(tally(null, 0), [TMJ])).toBe(false);
+    expect(isDoneCleanly(tally(null, 2), [TMJ])).toBe(false);
+    expect(isDoneCleanly(undefined, [TMJ])).toBe(false);
+    expect(isDoneCleanly(null, [TMJ])).toBe(false);
+  });
+
+  it("logged with the profile's set flag every time: not clean; once without it: clean", () => {
+    expect(isDoneCleanly(tally("2026-10-01", 2, { clenched: 2 }), [TMJ])).toBe(false);
+    expect(isDoneCleanly(tally("2026-10-01", 3, { clenched: 2 }), [TMJ])).toBe(true);
+  });
+
+  it("a flag no active profile sets doesn't count; with no profile active, done is clean", () => {
+    expect(isDoneCleanly(tally("2026-10-01", 1, { other: 1 }), [TMJ])).toBe(true);
+    expect(isDoneCleanly(tally("2026-10-01", 1, { clenched: 1 }), [])).toBe(true);
   });
 });

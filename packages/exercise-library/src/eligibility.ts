@@ -79,6 +79,28 @@ export const plyometricDay = (theme: Pick<Theme, "emphasis"> | null | undefined)
 export const onFrontier = (ex: ExerciseRecord, done: (id: string) => boolean): boolean =>
   !isPlyometric(ex) || ex.easier.length === 0 || ex.easier.some(id => done(id));
 
+/** What a move's history says for the ladder: the last day it was done, how often it was logged, and with which flags. */
+export interface MoveTally {
+  lastDate: string | null;
+  /** Logged entries (any format). */
+  logged: number;
+  /** Logged entries carrying each flag. */
+  flags: Readonly<Record<string, number>>;
+}
+
+/**
+ * Whether a move was DONE CLEANLY — the one rule for what unlocks the next rung (`onFrontier`'s `done`): done, and
+ * either never logged (no flag could be set) or logged at least once without each active profile's set flag. A rung
+ * only ever done with a profile's flag on it (clenched) unlocks nothing. The engine's ladder reads it per move from its
+ * history stats; anyone building a validator's `DayContext.done` must use it too (per move, legacy ids merged into the
+ * move they now are), so the Studio, the coach and the engine agree on the frontier. Resting a flagged rung is the
+ * engine's own rule (`restingBy`), not this one.
+ */
+export function isDoneCleanly(tally: MoveTally | null | undefined, profiles: readonly ConditionProfile[]): boolean {
+  if (!tally || !tally.lastDate) return false;
+  return tally.logged === 0 || profiles.every(p => !p.setFlag || (tally.flags[p.setFlag.id] || 0) < tally.logged);
+}
+
 /** The core family a core-role exercise belongs to, by pattern. */
 export function coreFamilyOf(data: EngineData, ex: ExerciseRecord | null | undefined): string | null {
   if (!ex || !ex.roles.includes("core")) return null;

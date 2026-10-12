@@ -128,12 +128,21 @@ function wordsOfRecord(ex: ExerciseRecord): ReadonlyMap<string, number> {
   return words;
 }
 
-/** A query word and its singular — or, for an everyday word, the vocabulary word it stands for instead. */
+/** A singular keeps at least this many letters ("toes" is never "to"). */
+const MIN_STEM = 3;
+
+/**
+ * A query word and its singular — or, for an everyday word, the vocabulary word it stands for instead. The plural is
+ * forgiven only when the word left keeps three letters: a trailing "s" ("lunges" → "lunge", "toes" → "toe"), and "es"
+ * only after s, x, z, ch or sh ("presses" → "press", "boxes" → "box").
+ */
 function variants(w: string): string[] {
   if (ALIASES[w]) return [ALIASES[w]];
   const out = [w];
-  if (w.length > 3 && w.endsWith("es")) out.push(w.slice(0, -2));
-  if (w.length > 3 && w.endsWith("s")) out.push(w.slice(0, -1));
+  const es = w.slice(0, -2);
+  if (w.endsWith("es") && es.length >= MIN_STEM && /(s|x|z|ch|sh)$/.test(es)) out.push(es);
+  const s = w.slice(0, -1);
+  if (w.endsWith("s") && s.length >= MIN_STEM) out.push(s);
   return out;
 }
 

@@ -151,4 +151,18 @@ describe("searchLibrary", () => {
     expect(some.length).toBeLessThan(everything.length);
     expect(some.map(e => e.id)).toEqual(everything.filter(e => e.difficulty === 1).map(e => e.id));
   });
+
+  test("a plural is forgiven only when the word it leaves keeps three letters, and \"es\" only after s, x, z, ch or sh", () => {
+    // "toes" is never "to" (which starts "tongue", "toward", "top"…): every hit says a word that starts "toe".
+    const toes = searchLibrary(EXERCISES, "toes");
+    expect(toes.length).toBeGreaterThan(0);
+    expect(toes.filter(e => wordRank(e, "toe") === null && textTier(e, "toes")! === 5).map(e => e.id)).toEqual([]);
+    expect(toes.length).toBeLessThan(searchLibrary(EXERCISES, "to").length);
+    // Real plurals still reach their singular.
+    const ids = (q: string) => searchLibrary(EXERCISES, q).map(e => e.id);
+    expect(ids("presses")).toEqual(expect.arrayContaining(["floorPress"]));
+    expect(ids("lunges")).toEqual(expect.arrayContaining(["lowLunge"]));
+    expect(ids("boxes")).toEqual(expect.arrayContaining(["boxJumpStepDown"]));
+    expect(ids("hips")).toEqual(expect.arrayContaining(EXERCISES.filter(e => e.regions.includes("hips")).map(e => e.id)));
+  });
 });
