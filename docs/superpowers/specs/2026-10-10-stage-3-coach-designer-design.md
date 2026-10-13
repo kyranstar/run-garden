@@ -107,8 +107,9 @@ notes, imported names, free-text answers). Errors are teachable (`{ error, why, 
 | `ask_athlete(questions[≤ 2])` | each `{ text, chips[], allowFreeText: true, why }`; the run pauses (`waiting_athlete`); answers are recorded as `athlete_answers` and the run resumes |
 | `record_answer(...)` | records something the athlete stated in the request (e.g. soreness by area) as an answer, shown in the receipt with one-tap undo |
 | `remember(kind, body, confidence, evidence?)` | memory v2 write (§9); inferred items are marked as inference |
-| `propose_workout(doc, target, review)` | designer only: target `{ kind: "new", date, time? }` or `{ kind: "revise", workoutId, baseRev }`; refuses with a reason on fatal issues, a stale base, a resolved or programme row |
-| `plan_set(briefs[])` | main only (week / next N): one brief per workout (date, purpose, emphasis, constraints, why) → spawns designer runs |
+| `propose_workout(doc, target, changeNote?)` | a designer, or main for now / later today: target `{ kind: "new", date, time? }` or `{ kind: "revise", workoutId, baseRev }`; refuses with a reason on fatal issues, a stale base, a resolved or programme row; otherwise has the draft reviewed by an independent reviewer sub-run and returns the review as its result (the designer revises and calls again, ≤ 2 rounds); the proposal keeps the best-scoring passing version with its review — the designer never writes a review |
+| `plan_set(briefs[])` | main only (week / next N): one brief per workout (date, purpose, emphasis, constraints, why) → spawns designer runs; their workouts join the run's single pending proposal, and main judges the set and calls `finish` |
+| `submit_review(review)` | reviewer only: `{ scores, notes, mustFix, improvements }` per §5 — ends the reviewer run |
 | `finish(summary)` | ends the run with one plain line for the thread |
 
 ## 5. Design → review → revise (principles §6.4)
