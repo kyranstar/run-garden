@@ -6,12 +6,14 @@
  * design-read-tools.test.ts.
  */
 import { beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { PROMPT_TOOL_NAMES } from "../src/services/design-prompt.js";
 import { allTools, READ_TOOLS } from "../src/services/design-tools/index.js";
+import { MAX_TAGGED_TERMS, readAthlete, readTagged } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type DesignTool, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { TOOL_RESULT_MAX_BYTES } from "../src/services/coach-runs.js";
 import { at, day, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
@@ -106,6 +108,15 @@ describe("the registry", () => {
       expect(isToolErr(result), t.name).toBe(true);
       expect((result as ToolErr).why, t.name).toContain('"zzz"');
     }
+  });
+});
+
+describe("the shared reads refuse what would break them", () => {
+  it("readAthlete will not let an extra read take the athlete's own column; readTagged holds D1's five terms", async () => {
+    await expect(readAthlete(db, rich.userId, NOW, { prefs: sql`(select 1)` })).rejects.toThrow(/athlete's own column/);
+    const term = sql`select 'x' as t, '{}' as j`;
+    await expect(readTagged(db, Array.from({ length: MAX_TAGGED_TERMS + 1 }, () => term))).rejects.toThrow(/6 terms/);
+    expect((await readTagged(db, Array.from({ length: MAX_TAGGED_TERMS }, () => term))).get("x")).toHaveLength(MAX_TAGGED_TERMS);
   });
 });
 

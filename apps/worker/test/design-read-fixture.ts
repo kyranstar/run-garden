@@ -274,7 +274,8 @@ async function seedRows(db: Db, userId: string, tag: string): Promise<SeedIds> {
   await db.insert(schema.objectives).values([
     { id: `${userId}-obj-hold`, userId, title: t("Hold a strong wall sit"), why: t("Ski legs"), status: "active", goalIds: ["strength"], sort: 0, createdAt: at(day(60)), updatedAt: at(day(60)) },
     { id: `${userId}-obj-run`, userId, title: t("A faster half"), status: "active", goalIds: ["speed"], sort: 1, createdAt: at(day(60)), updatedAt: at(day(60)) },
-    { id: `${userId}-obj-paused`, userId, title: t("Paused objective"), status: "paused", sort: 2, createdAt: at(day(60)), updatedAt: at(day(60)) },
+    // Sorted first by the athlete, but paused: it still comes after the active ones.
+    { id: `${userId}-obj-paused`, userId, title: t("Paused objective"), status: "paused", sort: -1, createdAt: at(day(60)), updatedAt: at(day(60)) },
     { id: `${userId}-obj-dropped`, userId, title: t("DROPPED-OBJECTIVE"), status: "dropped", sort: 3, createdAt: at(day(60)), updatedAt: at(day(60)) },
   ]);
   const kr = (objectiveId: string, label: string, measure: Record<string, unknown>, unit: string, o: { target?: number; baseline?: number; direction?: string; position?: number } = {}) => ({
