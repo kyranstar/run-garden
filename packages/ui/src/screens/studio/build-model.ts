@@ -364,13 +364,17 @@ function fixOf(issue: DocIssue, map: readonly number[], doc: WorkoutDoc, find: (
 
 const keyOf = (i: DocIssue): string => `${i.path}|${i.code}`;
 
-export function judgeDraft(draft: DraftDoc, bc: BuildCtx, date: string, library: Library = EXERCISES): Judged {
+/**
+ * The draft judged for `date` — or, with no date (a planned workout done with: see `judgeDayOf`), by the static rules
+ * alone: no day, so nothing a day's reading decides.
+ */
+export function judgeDraft(draft: DraftDoc, bc: BuildCtx, date: string | null, library: Library = EXERCISES): Judged {
   const doc = toProposable(draft);
   if (!doc) return { doc: null, derived: null, notes: [], blocked: EMPTY_BLOCK, checks: [] };
   const vctx = (readings: BuildCtx["readings"]) => ({
     library,
     activeProfiles: bc.profiles,
-    day: { ...dayFor(bc, date), readings },
+    day: date === null ? null : { ...dayFor(bc, date), readings },
     excluded: bc.excluded,
     ...(bc.equipment ? { equipment: bc.equipment } : {}),
   });
@@ -782,13 +786,37 @@ export const timeHasPassed = (time: string, now: Date): boolean => minutesOf(tim
  * day passed) in plain words — or null when it can be changed.
  */
 export function readOnlyWhy(w: WorkoutDto, today: string): string | null {
-  if (w.archived) return "This workout is no longer in the plan, so it can't be changed.";
-  if (w.completionState === "completed" || w.contentState === "done") return "This workout is done, so it can't be changed.";
-  if (w.completionState === "skipped") return "This workout was skipped, so it can't be changed.";
-  if (w.completionState === "missed") return "This workout was missed, so it can't be changed.";
-  if (w.contentState === "started") return "This workout is under way, so it can't be changed.";
-  if (w.effectiveDate < today) return "This workout's day has passed, so it can't be changed.";
+  const why = readOnlyOf(w, today);
+  return why ? READ_ONLY_WORDS[why] : null;
+}
+type ReadOnly = "gone" | "done" | "skipped" | "missed" | "underWay" | "past";
+const READ_ONLY_WORDS: Readonly<Record<ReadOnly, string>> = {
+  gone: "This workout is no longer in the plan, so it can't be changed.",
+  done: "This workout is done, so it can't be changed.",
+  skipped: "This workout was skipped, so it can't be changed.",
+  missed: "This workout was missed, so it can't be changed.",
+  underWay: "This workout is under way, so it can't be changed.",
+  past: "This workout's day has passed, so it can't be changed.",
+};
+function readOnlyOf(w: WorkoutDto, today: string): ReadOnly | null {
+  if (w.archived) return "gone";
+  if (w.completionState === "completed" || w.contentState === "done") return "done";
+  if (w.completionState === "skipped") return "skipped";
+  if (w.completionState === "missed") return "missed";
+  if (w.contentState === "started") return "underWay";
+  if (w.effectiveDate < today) return "past";
   return null;
+}
+
+/**
+ * The day a planned workout is judged for: `date` (its own, with today's readings for today) while it can still be
+ * done — editable, or under way today — and none once it is done with (done, skipped, missed, gone, or its day passed):
+ * today's reading says nothing of another day, so only the static rules speak.
+ */
+export function judgeDayOf(w: WorkoutDto | undefined, today: string, date: string): string | null {
+  if (!w) return date;
+  const why = readOnlyOf(w, today);
+  return why === null || (why === "underWay" && w.effectiveDate === today) ? date : null;
 }
 
 /** What the actions say while Start is off: the reason itself when no note shows it, else where to look. */

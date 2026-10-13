@@ -94,6 +94,7 @@ import {
   editAll,
   editRefusal,
   EMPTY_BLOCK,
+  judgeDayOf,
   judgeDraft,
   laterToday,
   usualTime,
@@ -260,7 +261,10 @@ function Builder({ source }: { source: BuildSource }) {
   const row = ready?.row ?? (plannedRow ? { date: plannedRow.effectiveDate, time: plannedRow.effectiveTime } : null);
   const isWorkout = key.startsWith("workout:");
   const date = isWorkout && row && row.date > today ? row.date : today;
-  const judged = useMemo(() => (doc ? judgeDraft(doc, bc, date) : null), [doc, bc, date]);
+  // A planned workout done with (its day passed, done, gone) is judged by the static rules alone: today's reading says
+  // nothing of another day. One under way today keeps today's.
+  const judgeOn = isWorkout ? judgeDayOf(plannedRow, today, date) : date;
+  const judged = useMemo(() => (doc ? judgeDraft(doc, bc, judgeOn) : null), [doc, bc, judgeOn]);
   const sctx = useMemo(() => suggestCtxOf(bc, date), [bc, date]);
   const suggestions = useMemo(() => (doc ? doc.parts.map((p, i) => (showsSuggestions(p) ? suggestionsFor(doc, i, sctx) : [])) : []), [doc, sctx]);
   const ghostAt = useMemo(() => (doc ? activationAt(doc) : null), [doc]);

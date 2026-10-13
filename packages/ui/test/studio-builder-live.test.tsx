@@ -881,6 +881,9 @@ describe("a title", () => {
 
 // ── Fix round 2 ────────────────────────────────────────────────────────────
 
+/** The summary's notes in view: none inside a folded part of the card. */
+const listedNotes = () => [...document.querySelectorAll<HTMLElement>(".stu-sum .stu-note")].filter((n) => !n.closest("[hidden]"));
+
 /** A stored workout today's Jaw / head check at 3 rules a move out of: a half-kneeling press, a floor press its alternate. */
 const pressDoc = (title: string): WorkoutDoc => ({
   ...storedDoc(title),
@@ -889,10 +892,10 @@ const pressDoc = (title: string): WorkoutDoc => ({
 });
 
 describe("a planned workout that can't change, judged by today", () => {
-  it("its day passed, and today's check rules a move out: the note says so, but offers no Fix, and nothing waits to start", async () => {
-    serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [plannedRow("w1", "2026-10-08")] });
+  it("under way today, and today's check rules a move out: the note says so, but offers no Fix, and nothing waits to start", async () => {
+    serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [{ ...plannedRow("w1"), contentState: "started" } as WorkoutDto] });
     mount("/studio/build/workout/w1", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
-    await until(() => text().includes("This workout's day has passed, so it can't be changed."), "the line");
+    await until(() => text().includes("This workout is under way, so it can't be changed."), "the line");
     await until(() => text().includes("Half-kneeling one-arm press isn't allowed with today's Jaw / head check at 3."), "the note");
     expect(button("Swap in Floor press")).toBeNull();
     expect(document.querySelector(".stu-note-actions")).toBeNull();
@@ -915,15 +918,35 @@ describe("a planned workout that can't change, judged by today", () => {
     expect(flag.classList.contains("stu-item-flag--note")).toBe(true);
     expect(flag.textContent).toBe(", has a note");
     expect(text()).not.toContain("needs a fix");
+    // The count is of the notes listed with it: none folded away out of sight, none said twice.
+    expect(listedNotes().length).toBe(2);
+    expect(document.querySelectorAll(".stu-sum .stu-note").length).toBe(2);
   });
 
   it("…and today's check unanswered: the note says so, with no check to answer from here", async () => {
-    serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [plannedRow("w1", "2026-10-08")] });
+    serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [{ ...plannedRow("w1"), contentState: "started" } as WorkoutDto] });
     mount("/studio/build/workout/w1", { library: libraryDto({ tmj: true }), today: todayDto(null, false) });
     await until(() => text().includes("Half-kneeling one-arm press needs today's Jaw / head check answered first."), "the note");
     expect(button("Jaw check")).toBeNull();
     expect(document.querySelector(".stu-note-actions")).toBeNull();
     expect(text()).not.toContain("to start.");
+  });
+
+  it("its day passed: today's reading says nothing of it — only the static rules speak, and the count is what is listed", async () => {
+    serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [plannedRow("w1", "2026-10-08")] });
+    // Today's jaw reading is high, and this place has no kettlebell or dumbbells.
+    mount("/studio/build/workout/w1", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }), places: placesDto(["mat"]) });
+    await until(() => text().includes("This workout's day has passed, so it can't be changed."), "the line");
+    await until(() => text().includes("Half-kneeling one-arm press needs kettlebell or dumbbells, which this place doesn't have."), "the gear note");
+    expect(text()).not.toContain("today's Jaw / head check");
+    expect(text()).not.toContain("calm jaw");
+    // The press and its alternate both want gear this place lacks: two notes, both listed, and the count says two.
+    expect(listedNotes().map((n) => n.querySelector(".stu-note-text")!.textContent)).toEqual([
+      "Note: Half-kneeling one-arm press needs kettlebell or dumbbells, which this place doesn't have.",
+      "Note: Floor press needs kettlebell or dumbbells, which this place doesn't have.",
+    ]);
+    expect(document.querySelector(".stu-sum-count")!.textContent).toBe("2 notes");
+    expect(document.querySelectorAll(".stu-sum .stu-note").length).toBe(2);
   });
 });
 

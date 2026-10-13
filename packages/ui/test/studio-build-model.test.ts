@@ -23,6 +23,7 @@ import {
   editRefusal,
   forSchedule,
   holdSeconds,
+  judgeDayOf,
   judgeDraft,
   laterToday,
   loadFrom,
@@ -462,6 +463,36 @@ describe("a planned workout that can't change", () => {
     expect(readOnlyWhy(w({ contentState: "started" }), TODAY)).toBe("This workout is under way, so it can't be changed.");
     expect(readOnlyWhy(w({ archived: true }), TODAY)).toBe("This workout is no longer in the plan, so it can't be changed.");
     expect(readOnlyWhy(w({ effectiveDate: "2026-10-01" }), TODAY)).toBe("This workout's day has passed, so it can't be changed.");
+  });
+
+  it("is judged by today's reading only while it can still be done today: once done with, by the static rules alone", () => {
+    // Editable: its own day (today's, or the day ahead it is planned for).
+    expect(judgeDayOf(w({}), TODAY, TODAY)).toBe(TODAY);
+    expect(judgeDayOf(w({ effectiveDate: "2026-10-20" }), TODAY, "2026-10-20")).toBe("2026-10-20");
+    expect(judgeDayOf(undefined, TODAY, TODAY)).toBe(TODAY);
+    // Under way today: today's reading still holds for it.
+    expect(judgeDayOf(w({ contentState: "started" }), TODAY, TODAY)).toBe(TODAY);
+    // Its day passed, or done with: today's reading says nothing of it.
+    expect(judgeDayOf(w({ effectiveDate: "2026-10-09" }), TODAY, TODAY)).toBeNull();
+    expect(judgeDayOf(w({ effectiveDate: "2026-10-09", contentState: "started" }), TODAY, TODAY)).toBeNull();
+    expect(judgeDayOf(w({ completionState: "completed" }), TODAY, TODAY)).toBeNull();
+    expect(judgeDayOf(w({ contentState: "done" }), TODAY, TODAY)).toBeNull();
+    expect(judgeDayOf(w({ completionState: "skipped" }), TODAY, TODAY)).toBeNull();
+    expect(judgeDayOf(w({ completionState: "missed" }), TODAY, TODAY)).toBeNull();
+    expect(judgeDayOf(w({ archived: true }), TODAY, TODAY)).toBeNull();
+  });
+
+  it("judged with no day, a move today's reading rules out is no note — the static rules still speak", () => {
+    const d = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress", { alternates: [{ libraryId: "floorPress" }] }));
+    const today = judgeDraft(d, buildCtxOf(tmjCtx(3), TODAY), TODAY);
+    expect(today.notes.some((n) => n.message.includes("today's Jaw / head check"))).toBe(true);
+    const none = judgeDraft(d, buildCtxOf({ ...tmjCtx(3), place: { name: "Home", equipment: ["mat"] } }, TODAY), null);
+    expect(none.notes.map((n) => n.message)).toEqual([
+      "Half-kneeling one-arm press needs kettlebell or dumbbells, which this place doesn't have.",
+      "Floor press needs kettlebell or dumbbells, which this place doesn't have.",
+    ]);
+    expect(none.checks).toEqual([]);
+    expect(none.blocked).toBeNull();
   });
 });
 

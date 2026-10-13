@@ -15,7 +15,8 @@
  * and the warnings (costs, never blocks) fold away. Every level has its number beside it, and every note its shape
  * (a triangle to fix, a circle for a cost) and a word for a screen reader: status is never colour alone. A workout
  * that can't change (done, under way, its day passed) still says what it would be judged by, but offers nothing to do:
- * no Fix, no check — and nothing says "to fix": its notes are counted as notes, in the neutral style.
+ * no Fix, no check — and nothing says "to fix": its notes are counted as notes, in the neutral style, every one of
+ * them in view beside the count.
  */
 import { useId } from "react";
 import { GLOSSARY } from "@rg/exercise-library";
@@ -97,6 +98,8 @@ export function SummaryCard({
   const fixing = readOnly ? 0 : errors.length;
   const count = fixing ? `${fixing} to fix` : readOnly && judged.notes.length ? notesWord(judged.notes.length) : warnings.length ? notesWord(warnings.length) : "";
   const areas = d ? areasWorked(d) : [];
+  const inView = readOnly ? judged.notes : errors;
+  const folded = readOnly ? [] : warnings;
   const row = (n: Note, i: number) => <NoteRow key={`${n.code}-${i}`} note={n} onFix={onFix} onCheck={onCheck} checkLabel={checkLabel} readOnly={readOnly} />;
   return (
     <section className="stu-sum" aria-labelledby={`${id}-h`}>
@@ -115,7 +118,9 @@ export function SummaryCard({
       <span className="visually-hidden" role="status">
         {readOnly ? count : fixing ? `${fixing} to fix` : "Nothing to fix."}
       </span>
-      {errors.length ? <ul className="stu-notes">{errors.map(row)}</ul> : null}
+      {/* In view whatever the toggle says: the errors (what stops Start) — and, read-only, every note, so the count of
+          notes beside them is of what is listed here, none folded out of sight. */}
+      {inView.length ? <ul className="stu-notes">{inView.map(row)}</ul> : null}
       <div id={`${id}-b`} className="stu-sum-body" hidden={!open}>
         {d ? (
           <dl className="stu-bal">
@@ -135,7 +140,7 @@ export function SummaryCard({
           </dl>
         ) : null}
         {areas.length ? <p className="stu-sum-areas">{`Works ${areas.join(", ")}`}</p> : null}
-        {warnings.length ? <ul className="stu-notes">{warnings.map(row)}</ul> : null}
+        {folded.length ? <ul className="stu-notes">{folded.map(row)}</ul> : null}
       </div>
     </section>
   );
