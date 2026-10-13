@@ -41,7 +41,7 @@ export const runtimeCaching: RuntimeCaching[] = [
       plugins: [
         {
           fetchDidSucceed: async ({ response }) => {
-            if (response.status === 401) await Promise.all([caches.delete("rg-me"), caches.delete("rg-read-cache")]);
+            if (response.status === 401) await Promise.all([caches.delete("rg-me"), caches.delete("rg-read-cache"), caches.delete("rg-doc-cache")]);
             return response;
           },
         },
@@ -61,21 +61,31 @@ export const runtimeCaching: RuntimeCaching[] = [
     // offline, a cold start included, knows what it knew online, and a quick start is built at once instead of after its
     // reads fail through their retries. The lists one entry each — the library's only as the Studio reads it (all, or a
     // page), never filtered, and the workouts' never a typed search: each filter or query would be an entry of its own,
-    // pushing Today out of the 40. And a planned workout's document, so it opens in the builder offline: its save carries
-    // the revision it was built on, so a stale copy from here is refused (409), never written over a newer one. Never one
-    // move's or one template's own read.
+    // pushing Today out of the 40. Never one move's or one template's own read, nor a workout's document (below).
     urlPattern: ({ url }) =>
       url.pathname.match(/^\/api\/(plan\/today|plan\/workouts|garden|insights|settings)/) !== null ||
       /^\/api\/sessions\/[^/]+\/watch-review$/.test(url.pathname) ||
       /^\/api\/(templates|places)$/.test(url.pathname) ||
       (url.pathname === "/api/library" && [...url.searchParams.keys()].every((k) => k === "limit")) ||
-      (url.pathname === "/api/workouts" && !url.searchParams.has("q")) ||
-      /^\/api\/workouts\/[^/]+\/doc$/.test(url.pathname),
+      (url.pathname === "/api/workouts" && !url.searchParams.has("q")),
     handler: "NetworkFirst",
     options: {
       cacheName: "rg-read-cache",
       networkTimeoutSeconds: 4,
       expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 },
+    },
+  },
+  {
+    // A planned workout's document, so it opens in the builder offline: its save carries the revision it was built on,
+    // so a stale copy from here is refused (409), never written over a newer one. One entry a workout, so in a cache of
+    // its own and a small one: the documents of many workouts opened never push Today out of the read cache. Forgotten
+    // with the account's other answers on a 401 (above, and packages/ui/src/offline/me.ts).
+    urlPattern: ({ url }) => /^\/api\/workouts\/[^/]+\/doc$/.test(url.pathname),
+    handler: "NetworkFirst",
+    options: {
+      cacheName: "rg-doc-cache",
+      networkTimeoutSeconds: 4,
+      expiration: { maxEntries: 12, maxAgeSeconds: 60 * 60 * 24 },
     },
   },
 ];

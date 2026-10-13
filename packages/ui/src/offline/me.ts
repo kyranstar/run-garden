@@ -11,11 +11,11 @@
  * (the player must reopen); otherwise the failure stands ("Couldn't reach").
  *
  * What makes that safe is forgetting (ruling 2b-R6 as amended):
- *  - any 401 forgets the account's cached answers, `rg-me` and `rg-read-cache` (`forgetCachedAnswers`) — and NEVER the
+ *  - any 401 forgets the account's cached answers, `rg-me`, `rg-read-cache` and `rg-doc-cache` (`forgetCachedAnswers`) — and NEVER the
  *    live session or the outbox: a sign-in that expired mid-session must not lose the workout; the session resumes and
  *    the outbox drains once the athlete signs in again, under the same account. A 401 that reaches the worker after its
- *    3 s timeout (the cached answer already served) purges both caches there too (apps/web/sw-routes.ts);
- *  - sign-out forgets the offline identity (`forgetOfflineIdentity`): both caches, the stored builds and live
+ *    3 s timeout (the cached answer already served) purges them there too (apps/web/sw-routes.ts);
+ *  - sign-out forgets the offline identity (`forgetOfflineIdentity`): those caches, the stored builds and live
  *    sessions, and the Studio's draft; its unsynced saves stay, tagged with the account, for its next sign-in
  *    (outbox.ts);
  *  - delete-all forgets the same, and drops that account's unsynced saves too.
@@ -29,6 +29,8 @@ import { discardAccountEntries } from "./outbox.js";
 export const ME_CACHE = "rg-me";
 /** The service worker's cache of read-only API answers (apps/web/sw-routes.ts). */
 export const READ_CACHE = "rg-read-cache";
+/** The service worker's cache of planned workouts' documents (apps/web/sw-routes.ts): the account's answers too. */
+export const DOC_CACHE = "rg-doc-cache";
 const ME_URL = "/api/auth/me";
 
 type Caches = Pick<CacheStorage, "match" | "delete">;
@@ -76,10 +78,13 @@ export async function meWithOfflineFallback(
 /** How long forgetting waits for the offline database before it lets sign-in or sign-out go on. */
 const FORGET_DB_WAIT_MS = 2000;
 
-/** On any 401 (ruling 2b-R6 as amended): the account's cached answers go — `rg-me`, `rg-read-cache` — and nothing else. Never throws. */
+/**
+ * On any 401 (ruling 2b-R6 as amended): the account's cached answers go — `rg-me`, `rg-read-cache`, `rg-doc-cache` —
+ * and nothing else. Never throws.
+ */
 export async function forgetCachedAnswers(deps: Pick<OfflineDeps, "caches"> = {}): Promise<void> {
   const store = "caches" in deps ? deps.caches : browserCaches();
-  await Promise.all([ME_CACHE, READ_CACHE].map((name) => store?.delete(name).catch(() => false)));
+  await Promise.all([ME_CACHE, READ_CACHE, DOC_CACHE].map((name) => store?.delete(name).catch(() => false)));
 }
 
 /**

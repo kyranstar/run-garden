@@ -8,6 +8,7 @@ import {
 } from "@rg/database";
 import { todayInZone, type LocalDate, type UserPreferences, type WorkoutSyncView } from "@rg/domain";
 import { openContentIntentTargets, openMoveIntents } from "./sync-intents.js";
+import { studioPlanRetired } from "./studio-push.js";
 import type { Db } from "./db.js";
 
 /** Legacy constant — last consumers (device routes) die in Phase C Task 4. */
@@ -226,9 +227,16 @@ export async function computeSyncStatus(
   const currentStudioPlan = studioPlanRows[0];
   const [corosConn] = corosConnRows;
 
-  const failedStudio = currentStudioPlan
+  const failedRows = currentStudioPlan
     ? await db
-        .select({ id: studioPlanPushes.id })
+        .select({
+          id: studioPlanPushes.id,
+          happenDay: studioPlanPushes.happenDay,
+          corosHappenDay: studioPlanPushes.corosHappenDay,
+          corosIdInPlan: studioPlanPushes.corosIdInPlan,
+          corosProgramId: studioPlanPushes.corosProgramId,
+          corosPlanId: studioPlanPushes.corosPlanId,
+        })
         .from(studioPlanPushes)
         .where(
           and(
@@ -237,6 +245,16 @@ export async function computeSyncStatus(
           ),
         )
     : [];
+  // A RETIRED plan keeps what is behind today on the watch as it is (`retireStudioPlan`): a failed row there with an
+  // address is a copy left alone on purpose, which Retry keeps too — never an issue the athlete could clear. One read
+  // more, only when the plan has a failed row.
+  const today = todayInZone(prefs.timezone);
+  const keptBehind = (r: (typeof failedRows)[number]) =>
+    Boolean(r.corosIdInPlan && r.corosProgramId && r.corosPlanId) && (r.corosHappenDay ?? r.happenDay) < today;
+  const failedStudio =
+    currentStudioPlan && failedRows.some(keptBehind) && (await studioPlanRetired(db, userId, currentStudioPlan.id))
+      ? failedRows.filter((r) => !keptBehind(r))
+      : failedRows;
   const issueCount = failedMoveCount + failedStudio.length + failedCoachCreates;
 
   const state: SyncStatusState =

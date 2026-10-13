@@ -293,7 +293,10 @@ describe("POST /api/workouts", () => {
     });
 
     it("a time left out gives way, and a revision answers the time the collision pass left", async () => {
-      const date = addDays(today, 1);
+      // A weekday: on a weekend the athlete's window moves this row clear of the run on its own (a clock-shift check
+      // found this test red whenever tomorrow was a Saturday or a Sunday).
+      let date = addDays(today, 1);
+      while ([0, 6].includes(new Date(`${date}T12:00:00Z`).getUTCDay())) date = addDays(date, 1);
       await morningRun(date);
       const made = await call("POST", "/api/workouts", { date, doc: calmDoc() });
       const id = made.body.workout.id as string;
@@ -364,6 +367,85 @@ describe("POST /api/workouts", () => {
     const res = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: landingsDoc() });
     expect(res.status).toBe(201);
     expect(statements.length).toBeLessThanOrEqual(45);
+  });
+});
+
+describe("POST /api/workouts with the draft's clientId: a retry never makes a second workout (whole-branch review)", () => {
+  const studioRows = async () =>
+    (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.origin === "studio" || r.origin === "template");
+
+  it("a repeated key answers the row it made: one workout, one revision, one calendar booking", async () => {
+    const body = { date: addDays(today, 1), doc: calmDoc(), clientId: "draft-6f1c2b3a-0d4e" };
+    const first = await call("POST", "/api/workouts", body);
+    expect(first.status).toBe(201);
+    statements.length = 0;
+    const again = await call("POST", "/api/workouts", body);
+    expect(again.status).toBe(200);
+    expect(again.body.workout).toEqual(first.body.workout);
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect(await studioRows()).toHaveLength(1);
+    expect(await revisionsOf(first.body.workout.id)).toHaveLength(1);
+    expect(calendar.syncs).toHaveLength(1);
+  });
+
+  it("even when the retry changed its day: the row it made, as it is", async () => {
+    const first = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc(), clientId: "draft-a" });
+    const again = await call("POST", "/api/workouts", { date: addDays(today, 3), doc: calmDoc({ title: "Other" }), clientId: "draft-a" });
+    expect(again.body.workout).toEqual(first.body.workout);
+    expect(await studioRows()).toHaveLength(1);
+  });
+
+  it("another key, or none, makes another; another account's same key is its own", async () => {
+    await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc(), clientId: "draft-a" });
+    await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc(), clientId: "draft-b" });
+    await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc() });
+    await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc() });
+    expect(await studioRows()).toHaveLength(4);
+    const { userId: other } = await makeTestUser(db);
+    const theirs = await createDocWorkout(db, other, { date: addDays(today, 1), doc: calmDoc(), clientId: "draft-a" }, { today, now: nowInstant(), prefs });
+    expect((await studioRows()).map((r) => r.id)).not.toContain(theirs.workout.id);
+  });
+
+  it("two racing creates with one key make one workout", async () => {
+    const input = { date: addDays(today, 1), doc: calmDoc(), clientId: "draft-race" };
+    const ctx = { today, now: nowInstant(), prefs };
+    const [a, b] = await Promise.all([createDocWorkout(db, userId, input, ctx), createDocWorkout(db, userId, input, ctx)]);
+    expect(a.workout.id).toBe(b.workout.id);
+    expect(await studioRows()).toHaveLength(1);
+  });
+
+  it("the other create landing between this one's look and its write: this one answers it, and writes nothing of its own", async () => {
+    const ctx = { today, now: nowInstant(), prefs };
+    const theirs = { date: addDays(today, 2), doc: calmDoc({ title: "Landed first" }), clientId: "draft-between" };
+    const sqlite = (db as unknown as { $client: { prepare(q: string): { run(...a: unknown[]): unknown } } }).$client;
+    // The other request's row, written into the table at the last read before this one's batch (the restore check).
+    const other = makeTestDb();
+    await other.insert(schema.users).values({ id: userId, email: "x@example.com", googleSub: "x", createdAt: nowInstant() });
+    const landed = await createDocWorkout(other, userId, theirs, ctx);
+    const row = (await other.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, landed.workout.id)))[0]!;
+    let armed = true;
+    beforeStatement = (s) => {
+      if (!armed || !/from "account_state"/.test(s)) return;
+      armed = false;
+      const cols = Object.keys(row);
+      const names = cols.map((k) => k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`));
+      const vals = cols.map((k) => {
+        const v = (row as Record<string, unknown>)[k];
+        return v !== null && typeof v === "object" ? JSON.stringify(v) : typeof v === "boolean" ? Number(v) : v;
+      });
+      sqlite.prepare(`insert into planned_workouts (${names.join(", ")}) values (${names.map(() => "?").join(", ")})`).run(...vals);
+    };
+    const mine = await createDocWorkout(db, userId, { ...theirs, doc: calmDoc({ title: "Mine" }) }, ctx);
+    expect(armed).toBe(false);
+    expect(mine.workout.id).toBe(landed.workout.id);
+    expect(mine.workout.title).toBe("Landed first");
+    expect(await studioRows()).toHaveLength(1);
+    expect(await revisionsOf(landed.workout.id)).toEqual([]);
+  });
+
+  it("a key that is no key is refused", async () => {
+    expect((await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc(), clientId: "" })).status).toBe(422);
+    expect((await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc(), clientId: "x".repeat(65) })).status).toBe(422);
   });
 });
 

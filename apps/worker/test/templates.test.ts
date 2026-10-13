@@ -40,6 +40,35 @@ async function save(name: string, doc: WorkoutDoc = calmDoc(), pinned?: boolean)
   return call("POST", "/api/templates", { name, doc, ...(pinned === undefined ? {} : { pinned }) });
 }
 
+describe("POST /api/templates with the draft's clientId: a retry never saves a second template (whole-branch review)", () => {
+  const mine = async () => db.select().from(workoutTemplates).where(eq(workoutTemplates.userId, userId));
+
+  it("a repeated key answers the template it saved, writing nothing", async () => {
+    const body = { name: "Hips", doc: calmDoc(), clientId: "draft-tpl-1" };
+    const first = await call("POST", "/api/templates", body);
+    expect(first.status).toBe(201);
+    statements.length = 0;
+    const again = await call("POST", "/api/templates", { ...body, name: "Hips again" });
+    expect(again.status).toBe(200);
+    expect(again.body.template).toEqual(first.body.template);
+    expect(statements.filter((s) => /^\s*(insert|update|delete)/i.test(s))).toEqual([]);
+    expect(await mine()).toHaveLength(1);
+  });
+
+  it("another key, or none, saves another; two racing saves with one key save one", async () => {
+    await call("POST", "/api/templates", { name: "A", doc: calmDoc(), clientId: "k1" });
+    await call("POST", "/api/templates", { name: "B", doc: calmDoc(), clientId: "k2" });
+    await save("C");
+    expect(await mine()).toHaveLength(3);
+    const [x, y] = await Promise.all([
+      call("POST", "/api/templates", { name: "D", doc: calmDoc(), clientId: "race" }),
+      call("POST", "/api/templates", { name: "D", doc: calmDoc(), clientId: "race" }),
+    ]);
+    expect(x.body.template.id).toBe(y.body.template.id);
+    expect(await mine()).toHaveLength(4);
+  });
+});
+
 describe("templates", () => {
   it("saves one and lists it with its minutes and discipline", async () => {
     const doc = calmDoc();

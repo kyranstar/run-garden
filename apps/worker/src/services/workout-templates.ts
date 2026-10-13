@@ -19,7 +19,7 @@ import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
-import { accepted, parsedDoc, profilesAndSetAside } from "./doc-workouts.js";
+import { accepted, keyedRowId, parsedDoc, profilesAndSetAside } from "./doc-workouts.js";
 
 /** The most templates an account keeps. */
 export const MAX_TEMPLATES = 200;
@@ -107,21 +107,42 @@ export async function listTemplates(db: Db, userId: string): Promise<TemplateDto
   return rows.map(dtoOf);
 }
 
+/**
+ * A save with a client's key (`clientId`, a draft's, made once on the device) is made once (`keyedRowId`, as a
+ * workout's): a repeat answers the template it saved, as it now is, writing nothing (`repeated`).
+ */
 export async function createTemplate(
   db: Db,
   userId: string,
-  input: { name: string; doc: unknown; pinned?: boolean },
+  input: { name: string; doc: unknown; pinned?: boolean; clientId?: string },
   now: string,
-): Promise<{ template: TemplateDto; warnings: DocIssue[] }> {
+): Promise<{ template: TemplateDto; warnings: DocIssue[]; repeated?: true }> {
+  const id = input.clientId ? await keyedRowId(userId, input.clientId) : newId();
+  const saved = async (): Promise<{ template: TemplateDto; warnings: DocIssue[]; repeated: true } | null> => {
+    const [made] = await db.select(columns).from(t).where(and(eq(t.id, id), eq(t.userId, userId))).limit(1);
+    return made ? { template: dtoOf(made), warnings: [], repeated: true } : null;
+  };
+  if (input.clientId) {
+    const made = await saved();
+    if (made) return made;
+  }
   const { doc, warnings } = await validated(db, userId, input.doc);
-  const row = { id: newId(), userId, name: input.name, doc: JSON.stringify(doc), pinned: input.pinned ?? false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now };
+  const row = { id, userId, name: input.name, doc: JSON.stringify(doc), pinned: input.pinned ?? false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now };
   // The cap in the insert itself: a save that would pass it writes nothing.
-  const inserted = await db
-    .insert(t)
-    .select(
-      sql`select ${row.id}, ${userId}, ${row.name}, ${row.doc}, ${row.pinned ? 1 : 0}, 0, null, ${now}, ${now} where (select count(*) from ${t} where ${t.userId} = ${userId}) < ${MAX_TEMPLATES}`,
-    )
-    .returning({ id: t.id });
+  let inserted: Array<{ id: string }>;
+  try {
+    inserted = await db
+      .insert(t)
+      .select(
+        sql`select ${row.id}, ${userId}, ${row.name}, ${row.doc}, ${row.pinned ? 1 : 0}, 0, null, ${now}, ${now} where (select count(*) from ${t} where ${t.userId} = ${userId}) < ${MAX_TEMPLATES}`,
+      )
+      .returning({ id: t.id });
+  } catch (e) {
+    // Two saves with one key raced: the one that landed is the answer.
+    const made = input.clientId ? await saved() : null;
+    if (made) return made;
+    throw e;
+  }
   if (inserted.length === 0) throw new TooManyTemplatesError();
   return { template: dtoOf(row), warnings };
 }

@@ -49,6 +49,7 @@ export type CalendarSyncState =
   | "synced" // event exists and matches intended schedule
   | "pending" // local change not yet pushed to Calendar
   | "user_deleted" // user deleted the managed event; do not recreate
+  | "app_only" // started at once in the Studio (Start now): never planned, never booked; a move books it
   | "error"; // last Calendar operation failed
 
 /** Completion lifecycle of a planned workout. */

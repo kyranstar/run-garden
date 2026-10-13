@@ -38,11 +38,20 @@ function makeEnv(extra: Partial<Env> = {}): Env {
 
 let db: Db;
 let statements: string[];
+/**
+ * The clock, pinned a week before the rows' day: the hourly's own reconcile marks a row unresolved from its day and
+ * missed a week after, so on the real calendar these rows would stop being live (a time bomb). Date only: the
+ * database's timers keep running.
+ */
+const NOW = "2026-10-13T19:00:00.000Z";
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(NOW));
   statements = [];
   db = makeTestDb({ boundVariableCap: 100, onStatement: (q) => statements.push(q) });
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 

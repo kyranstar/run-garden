@@ -15,7 +15,7 @@ import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateA
 import type { Location, NavigateFunction } from "react-router-dom";
 import type { QueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DocIssueDto, type DocWorkoutDto, type MeResponse, type SessionDto } from "@rg/api-client";
-import { addDays, type WorkoutDoc } from "@rg/domain";
+import { addDays, newId, type WorkoutDoc } from "@rg/domain";
 import { startEditing, toProposable, type EditorState } from "@rg/workout";
 import { formatDayShort, formatTime } from "../../components.js";
 import { keepStarted } from "../../components/start-session.js";
@@ -177,6 +177,19 @@ export function useBuildFlows({
   const dirtyOf = (l: Loaded | null): boolean =>
     !!l && l.baseline !== null && JSON.stringify(toProposable(l.editor.doc)) !== JSON.stringify(toProposable(startEditing(l.baseline).doc));
 
+  /**
+   * A create's key (`clientId`): made once for what is being built — per draft, and per kind of create — and kept
+   * until that create lands, so a retry whose answer was lost names the same workout (or template) and the server
+   * answers it, never a second; a create that landed lets the next one make another (a template scheduled twice).
+   */
+  const createKeys = useRef(new Map<string, string>());
+  const keyed = (kind: "workout" | "template", draftKey: string) => {
+    const k = `${kind}|${draftKey}`;
+    const id = createKeys.current.get(k) ?? newId();
+    createKeys.current.set(k, id);
+    return { clientId: id, landed: () => createKeys.current.delete(k) };
+  };
+
   /** A planned workout this page made (or saved): the builder is on it now, at its own address. */
   const adopt = (w: DocWorkoutDto, sent: WorkoutDoc) => {
     const cur = live.current;
@@ -239,7 +252,9 @@ export function useBuildFlows({
         }
       } else {
         const sent = forSchedule(doc0, source);
-        const res = await api.createWorkout({ date: today, time: nowHHMM(new Date()), doc: sent });
+        const once = keyed("workout", cur.key);
+        const res = await api.createWorkout({ date: today, time: nowHHMM(new Date()), doc: sent, clientId: once.clientId, startNow: true });
+        once.landed();
         fresh = newNotes(res.warnings) ?? [];
         if (source.kind === "template") void api.useTemplate(source.id).catch(() => undefined);
         adopt(res.workout, sent);
@@ -313,7 +328,9 @@ export function useBuildFlows({
     if (j.blocked) return j.blocked;
     const sent = forSchedule(j.doc, source);
     try {
-      const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc: sent });
+      const once = keyed("workout", cur.key);
+      const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc: sent, clientId: once.clientId });
+      once.landed();
       refreshPlan();
       if (source.kind === "template") {
         void api
@@ -335,7 +352,9 @@ export function useBuildFlows({
     if (!d) return EMPTY_BLOCK;
     try {
       // Pinned as it is made, it is one of the home's quick starts at once (spec §9).
-      const res = await api.createTemplate({ name: name.trim(), doc: d, ...(pinned ? { pinned: true } : {}) });
+      const once = keyed("template", live.current!.key);
+      const res = await api.createTemplate({ name: name.trim(), doc: d, ...(pinned ? { pinned: true } : {}), clientId: once.clientId });
+      once.landed();
       void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
       setNaming(false);
       setStatus({ text: `Saved “${name.trim()}” as a template${pinned ? ", pinned to quick starts" : ""}.`, notes: newNotes(res.warnings) });
@@ -430,6 +449,8 @@ export function useBuildFlows({
     }
   };
   const startOver = () => {
+    // Another draft: what this one's creates were keyed by goes with it.
+    createKeys.current.clear();
     void drafts.clear().catch(() => undefined);
     setLoaded({ key: "new", editor: startEditing(freshDoc()), baseline: null, rev: null, row: null });
     setFreshAsk(false);

@@ -6,6 +6,7 @@ import type { Db } from "../src/services/db.js";
 import { applyJobResult, applyMove } from "../src/services/jobs.js";
 import { recordIntent } from "../src/services/sync-intents.js";
 import { cloudPresence, computeSyncStatus } from "../src/services/sync-status.js";
+import { STUDIO_PLAN_RETIRED } from "../src/services/studio-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
 
 /**
@@ -399,5 +400,41 @@ describe("cloudPresence", () => {
     const presence = await cloudPresence(db, userId);
     expect(presence.online).toBe(false);
     expect(presence.registered).toBe(false);
+  });
+});
+
+describe("a retired studio plan's rows kept on the watch (whole-branch review, server finding 5)", () => {
+  /** A studio plan with one failed row a day: `behind` days before today, an address or not; retired or not. */
+  async function planWith(rows: Array<{ days: number; address: boolean }>, retired: boolean) {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    await connectTestCoros(db, userId);
+    const today = todayInZone(prefs.timezone);
+    const planId = newId();
+    await db.insert(schema.studioPlans).values({ id: planId, userId, brief: {} as never, plan: {} as never, version: 1, createdAt: nowInstant(), updatedAt: nowInstant() });
+    for (const [i, r] of rows.entries()) {
+      await db.insert(schema.studioPlanPushes).values({
+        id: newId(), planId, planVersion: 1, happenDay: addDays(today, r.days), sessionTitle: `S${i}`, sessionFingerprint: "fp", status: "failed", error: "x",
+        ...(r.address ? { corosIdInPlan: `${i}`, corosProgramId: `${i}`, corosPlanId: "coros-plan" } : {}),
+        updatedAt: nowInstant(),
+      });
+    }
+    if (retired) {
+      await db.insert(schema.auditEvents).values({ id: newId(), userId, kind: STUDIO_PLAN_RETIRED, detail: { studioPlanId: planId }, createdAt: nowInstant() });
+    }
+    return computeSyncStatus(db, userId, prefs);
+  }
+
+  it("a failed row behind today with an address stays on the watch after a retire: no sync issue the athlete could clear", async () => {
+    const status = await planWith([{ days: -3, address: true }], true);
+    expect(status.issueCount).toBe(0);
+    expect(status.state).not.toBe("sync_issue");
+  });
+
+  it("before the retire it is an issue; after it, a failed row ahead or one with no address still is", async () => {
+    expect((await planWith([{ days: -3, address: true }], false)).issueCount).toBe(1);
+    expect((await planWith([{ days: 2, address: true }], true)).issueCount).toBe(1);
+    expect((await planWith([{ days: -3, address: false }], true)).issueCount).toBe(1);
+    expect((await planWith([{ days: -3, address: true }, { days: 2, address: true }], true)).issueCount).toBe(1);
   });
 });

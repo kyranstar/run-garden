@@ -74,6 +74,7 @@ import { InvalidSaveError, savePerformedSession } from "../services/session-save
 import { reviewBasis } from "../services/session-review-basis.js";
 import { watchReviewBasis } from "../services/session-watch-review.js";
 import { waitUntilSafe } from "../services/wait-until.js";
+import { removeAbandonedStartNow } from "../services/doc-workouts.js";
 
 export const sessionRoutes = new Hono<AppContext>();
 sessionRoutes.use("*", requireUser);
@@ -221,14 +222,18 @@ sessionRoutes.post("/:workoutId/build", async (c) => {
 /**
  * The player's Discard (ruling 2b-R9): a started slot back to `built`, its build unlocked — Today offers Start again.
  * 200 with the session (also when it was built already); 409 `performed` once a performed session exists for it; 404
- * for a slot that is not this user's; 423 while a restore runs.
+ * for a slot that is not this user's; 423 while a restore runs. A workout started at once (Start now) with nothing
+ * logged was never planned: it is removed (`removeAbandonedStartNow`), and the answer says `removed: true`.
  */
 sessionRoutes.post("/:workoutId/unstart", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await withWatch(c, await unstartSession(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant() })));
+    const now = nowInstant();
+    const session = await withWatch(c, await unstartSession(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now }));
+    if (await removeAbandonedStartNow(db, userId, c.req.param("workoutId"), { now, prefs })) return c.json({ ...session, removed: true });
+    return c.json(session);
   } catch (e) {
     if (e instanceof PerformedExistsError) return c.json({ error: "performed" }, 409);
     if (e instanceof RestoringError) return c.json({ error: "restore_in_progress" }, 423);

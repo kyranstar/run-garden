@@ -2,7 +2,7 @@
  * `/api/templates` — the athlete's saved workout templates (Stage 2 spec §9–§10; services/workout-templates.ts).
  *
  *   GET    /           {templates}: pinned first, then the most recently used, then by name
- *   POST   /           {name, doc, pinned?} → 201 {template, warnings}
+ *   POST   /           {name, doc, pinned?, clientId?} → 201 {template, warnings}; a `clientId` it has seen → 200, that one
  *   PUT    /:id        {name?, doc?, pinned?} → {template, warnings}
  *   DELETE /:id        → {ok}
  *   POST   /:id/use    → {template, doc}: its uses bumped; the document stamped `basedOn: template`
@@ -17,6 +17,7 @@ import { z } from "zod";
 import { nowInstant } from "@rg/domain";
 import { requireUser, type AppContext } from "../auth/middleware.js";
 import { DocInvalidError } from "../services/doc-workouts.js";
+import { CLIENT_ID } from "./workouts.js";
 import {
   createTemplate,
   deleteTemplate,
@@ -33,7 +34,7 @@ templateRoutes.use("*", requireUser);
 
 const name = z.string().trim().min(1).max(80);
 const doc = z.record(z.string(), z.unknown());
-const createSchema = z.object({ name, doc, pinned: z.boolean().optional() }).strict();
+const createSchema = z.object({ name, doc, pinned: z.boolean().optional(), clientId: CLIENT_ID.optional() }).strict();
 const updateSchema = z
   .object({ name: name.optional(), doc: doc.optional(), pinned: z.boolean().optional(), baseUpdatedAt: z.string().min(1).max(40).optional() })
   .strict();
@@ -52,7 +53,8 @@ templateRoutes.post("/", async (c) => {
   const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "invalid_template", issues: parsed.error.issues }, 422);
   try {
-    return c.json(await createTemplate(c.get("db"), c.get("userId"), parsed.data, nowInstant()), 201);
+    const { repeated, ...created } = await createTemplate(c.get("db"), c.get("userId"), parsed.data, nowInstant());
+    return c.json(created, repeated ? 200 : 201);
   } catch (e) {
     return refusal(c, e);
   }

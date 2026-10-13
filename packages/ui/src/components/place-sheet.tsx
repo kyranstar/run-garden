@@ -12,6 +12,32 @@ import { api, ApiError, type PlaceDto, type PlacesResponse } from "@rg/api-clien
 import { weightListProblem } from "@rg/domain";
 import { Banner, ConfirmDialog, Sheet } from "../components.js";
 
+/** The sheet's place as it would send it whole. */
+interface PlaceBody {
+  name: string;
+  equipment: string[];
+  implements: Record<string, string>;
+  isDefault?: true;
+}
+
+const sameSet = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && [...a].sort().join("|") === [...b].sort().join("|");
+const sameLists = (a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>): boolean =>
+  JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+
+/**
+ * What a save of an existing place sends: only the fields the sheet changed (the server's PATCH keeps the rest as they
+ * are there). The sheet may have opened on a cached list (offline, or stale): a field it did not touch is never written
+ * back over a change made on another device since.
+ */
+export function placePatch(place: PlaceDto, edited: PlaceBody): Partial<PlaceBody> {
+  return {
+    ...(edited.name !== place.name ? { name: edited.name } : {}),
+    ...(!sameSet(edited.equipment, place.equipment) ? { equipment: edited.equipment } : {}),
+    ...(!sameLists(edited.implements, place.implements ?? {}) ? { implements: edited.implements } : {}),
+    ...(edited.isDefault ? { isDefault: true as const } : {}),
+  };
+}
+
 export function PlaceSheet({
   place,
   vocabulary,
@@ -47,7 +73,7 @@ export function PlaceSheet({
   };
 
   const save = useMutation({
-    mutationFn: () => (place ? api.updatePlace(place.id, body()) : api.createPlace(body())),
+    mutationFn: () => (place ? api.updatePlace(place.id, placePatch(place, body())) : api.createPlace(body())),
     onSuccess: () => {
       refresh();
       onClose();

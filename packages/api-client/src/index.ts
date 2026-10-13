@@ -592,6 +592,10 @@ export interface CreateDocWorkoutRequest {
   date: string;
   time?: string | null;
   doc: WorkoutDoc;
+  /** The draft's key, made once on the device: a retry with it answers the workout it made (200), never a second. */
+  clientId?: string;
+  /** Made to start at once (the builder's Start now): never planned, so booked on no calendar. */
+  startNow?: true;
 }
 
 /**
@@ -1936,11 +1940,17 @@ export const api = {
   },
   /** Schedule a document workout (the Studio's Schedule and Start now). */
   createWorkout: (body: CreateDocWorkoutRequest) => post<CreateDocWorkoutResponse>("/api/workouts", body),
+  /**
+   * A Studio or template workout never started, removed — its calendar event and unsent watch work with it. 409
+   * `{error: "not_removable", reason: "not_studio" | "started" | "done" | "sending"}`; 404 when it is not there.
+   */
+  deleteWorkout: (id: string) => request<{ ok: true }>(`/api/workouts/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /** Save a new revision of a document workout's document; `baseRev` is the revision the edit started from. */
   reviseWorkoutDoc: (id: string, doc: WorkoutDoc, baseRev: number) =>
     put<ReviseDocWorkoutResponse>(`/api/workouts/${encodeURIComponent(id)}/doc`, { doc, baseRev }),
   templates: () => get<{ templates: TemplateDto[] }>("/api/templates"),
-  createTemplate: (body: { name: string; doc: WorkoutDoc; pinned?: boolean }) =>
+  /** `clientId`: the draft's key, as a workout's — a retry with it answers the template it saved (200), never a second. */
+  createTemplate: (body: { name: string; doc: WorkoutDoc; pinned?: boolean; clientId?: string }) =>
     post<{ template: TemplateDto; warnings: DocIssueDto[] }>("/api/templates", body),
   /**
    * `baseUpdatedAt`: the `updatedAt` of the copy a whole-document write was built on — the template moved past it since
@@ -2024,7 +2034,8 @@ export const api = {
    * The player's Discard: the started slot back to built, its build unlocked (Today offers Start again). Idempotent;
    * 409 `{error: "performed"}` once a performed session exists for the slot; 423 while a restore runs.
    */
-  unstartSession: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/unstart`, {}),
+  /** `removed: true`: a workout started at once (Start now) with nothing logged was never planned, and is gone. */
+  unstartSession: (workoutId: string) => post<SessionDto & { removed?: true }>(`/api/sessions/${encodeURIComponent(workoutId)}/unstart`, {}),
   /** The steps as the watch will hold them (Phase 3). 404 while the switch is off; 409 `{error: reason}`. */
   watchPreview: (workoutId: string) => get<WatchPreviewDto>(`/api/sessions/${encodeURIComponent(workoutId)}/watch-preview`),
   /**

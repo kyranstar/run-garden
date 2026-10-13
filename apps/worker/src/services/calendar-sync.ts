@@ -316,6 +316,11 @@ export async function syncCalendar(
       if (linkByWorkout.has(w.id)) removedWorkoutIds.push(w.id);
       continue;
     }
+    // A workout started at once (the Studio's Start now) was never planned: it is booked on no calendar.
+    if (w.calendarSyncState === "app_only") {
+      if (linkByWorkout.has(w.id)) removedWorkoutIds.push(w.id);
+      continue;
+    }
     const workoutSeconds =
       w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds ?? 45 * 60;
     const block = computeBlock(w.effectiveDate, w.effectiveTime, workoutSeconds, prefs);

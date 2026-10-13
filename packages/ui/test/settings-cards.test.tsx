@@ -207,7 +207,8 @@ describe("Places & equipment", () => {
     await setValue(byName("Kettlebell weights"), "10, 15, 20 lb, 12kg");
     await press("Save");
     await until(() => calls.some((c) => c.method === "PATCH"), "the save");
-    expect(calls.find((c) => c.method === "PATCH")!.body).toEqual({ name: "Home", equipment: ["mat", "kettlebell"], implements: { kettlebell: "10, 15, 20 lb, 12kg" } });
+    // Only what changed (whole-branch review): the server keeps the rest, so a stale list never writes gear back over a change made elsewhere.
+    expect(calls.find((c) => c.method === "PATCH")!.body).toEqual({ implements: { kettlebell: "10, 15, 20 lb, 12kg" } });
     expect(state.places[0]!.implements.kettlebell).toBe("10, 15, 20 lb, 12kg");
     await until(() => text().includes("Kettlebell: 10, 15, 20 lb, 12kg"), "the card shows it as typed");
     await act(async () => document.querySelector<HTMLButtonElement>(".place-row")!.click());

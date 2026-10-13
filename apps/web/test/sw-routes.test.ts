@@ -28,7 +28,7 @@ describe("the rg-me route", () => {
     });
   });
 
-  it("a 401 from me deletes rg-me and rg-read-cache, and passes the answer through", async () => {
+  it("a 401 from me deletes rg-me, rg-read-cache and rg-doc-cache, and passes the answer through", async () => {
     const deleted: string[] = [];
     vi.stubGlobal("caches", { delete: vi.fn(async (name: string) => deleted.push(name) > 0) });
     const plugin = meRoute().options!.plugins!.find((p) => "fetchDidSucceed" in p)!;
@@ -36,7 +36,7 @@ describe("the rg-me route", () => {
 
     const signedOut = new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 });
     expect(await fetchDidSucceed({ response: signedOut })).toBe(signedOut);
-    expect(deleted.sort()).toEqual(["rg-me", "rg-read-cache"]);
+    expect(deleted.sort()).toEqual(["rg-doc-cache", "rg-me", "rg-read-cache"]);
 
     deleted.length = 0;
     const ok = new Response("{}", { status: 200 });
@@ -47,7 +47,7 @@ describe("the rg-me route", () => {
   });
 
   it("every other route keeps what it had: the shell, and the read cache's API paths", () => {
-    expect(runtimeCaching.map((r) => r.options?.cacheName)).toEqual(["rg-shell", "rg-me", "rg-read-cache"]);
+    expect(runtimeCaching.map((r) => r.options?.cacheName)).toEqual(["rg-shell", "rg-me", "rg-read-cache", "rg-doc-cache"]);
   });
 });
 
@@ -80,11 +80,9 @@ describe("the read cache (rg-read-cache)", () => {
     }
   });
 
-  // Spec §12 (fix round 1): a planned workout opens in the builder offline. A save after reconnecting carries the
-  // revision it was built on (`baseRev`), so a stale copy from here is refused (409), never a lost update.
-  it("answers a planned workout's document offline, one entry a workout", () => {
-    expect(matches("/api/workouts/w1/doc")).toBe(true);
-    expect(matches("/api/workouts/0b6f8a5e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/doc")).toBe(true);
+  // A planned workout's document is kept in a cache of its own (below): one entry a workout here would push Today out.
+  it("never keeps a planned workout's document: that is the document cache's", () => {
+    expect(matches("/api/workouts/w1/doc")).toBe(false);
   });
 
   it("keeps no read of one move or one template, no typed search, no filtered library: each would be an entry of its own", () => {
@@ -123,5 +121,28 @@ describe("the read cache (rg-read-cache)", () => {
     ]) {
       expect(matches(path), path).toBe(false);
     }
+  });
+});
+
+// Spec §12 (fix round 1): a planned workout opens in the builder offline. A save after reconnecting carries the revision
+// it was built on (`baseRev`), so a stale copy from here is refused (409), never a lost update. Whole-branch review: in
+// a cache of its own, a few entries, so the documents of many workouts opened never push Today out of the read cache.
+describe("the document cache (rg-doc-cache)", () => {
+  const docCache = () => runtimeCaching.find((r) => r.options?.cacheName === "rg-doc-cache")!;
+  const matches = (path: string) => {
+    const fn = new Function(`return (${String(docCache().urlPattern)});`)() as (p: { url: URL; request: { mode: string } }) => boolean;
+    return fn({ url: new URL(`https://run.garden.test${path}`), request: { mode: "cors" } });
+  };
+
+  it("answers a planned workout's document offline, one entry a workout, and nothing else", () => {
+    expect(matches("/api/workouts/w1/doc")).toBe(true);
+    expect(matches("/api/workouts/0b6f8a5e-1c2d-4e5f-8a9b-0c1d2e3f4a5b/doc")).toBe(true);
+    for (const path of ["/api/workouts", "/api/workouts/w1", "/api/workouts/w1/doc/x", "/api/plan/today", "/api/templates"]) expect(matches(path), path).toBe(false);
+  });
+
+  it("is NetworkFirst, GET only, and small: 12 entries, a day", () => {
+    expect(docCache()).toMatchObject({ handler: "NetworkFirst", options: { networkTimeoutSeconds: 4 } });
+    expect(docCache().method ?? "GET").toBe("GET");
+    expect(docCache().options?.expiration).toEqual({ maxEntries: 12, maxAgeSeconds: 86400 });
   });
 });
