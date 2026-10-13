@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Builder, Lib, Planner, Records, Recorder, Review, Swapping, toPerformedSave, type BuildInput, type Live, type RecorderMeta, type Step, type Theme } from "../src/index.js";
+import { Builder, historyFromPerformed, Lib, Planner, Records, Recorder, Review, Swapping, toPerformedSave, type BuildInput, type Live, type RecorderMeta, type Step, type Theme } from "../src/index.js";
 import { block, checksFor, data, home, themed } from "./builder-fixtures.js";
 
 // Ported from the standalone tests/recorder.test.js, plus the recorder regressions the handoff lists.
@@ -177,14 +177,15 @@ test("a hold to max played a side at a time logs each side, neither overwriting 
   const sets = (l: Live) => Recorder.toSession(l, { endedAt: "x" }).entries.find(e => e.id === "sidePlank")!.sets;
   // One set: what it held on both sides (the shorter), and each side's.
   expect(sets(live)).toEqual([{ w: null, reps: null, secs: 41, sides: { left: 45, right: 41 } }]);
-  expect(sets(one)).toEqual([{ w: null, reps: null, secs: 20, sides: { left: 20 } }]);
-  // An engine build's sides (no max): one set, the last side's time, as before.
+  // One side only: the side is kept, and the set measures nothing (whole-branch I-2).
+  expect(sets(one)).toEqual([{ w: null, reps: null, secs: null, sides: { left: 20 } }]);
+  // An engine build's sides (no max) are logged the same way (whole-branch M-1): one set at the shorter side.
   const engine = Recorder.create(data, plan, meta(plan));
   Recorder.reach(engine, 0);
   Recorder.finishTimed(engine, 0, 30);
   Recorder.reach(engine, 1);
   Recorder.finishTimed(engine, 1, 28);
-  expect(sets(engine)).toEqual([{ w: null, reps: null, secs: 28 }]);
+  expect(sets(engine)).toEqual([{ w: null, reps: null, secs: 28, sides: { left: 30, right: 28 } }]);
 });
 
 test("done lists logged moves with a done set, and unlogged moves you reached", () => {
@@ -523,6 +524,61 @@ describe("a move's sets, one per slot and set number, in play order (Stage 2 who
     Recorder.finishTimed(live, 2, 44);
     const s = end(live);
     expect(s.entries.map(e => [e.id, e.sets.map(x => x.secs)])).toEqual([["wallSit", [45, 44]], ["splitSquatHold", [40]]]);
+  });
+});
+
+// A set played a side at a time measures both sides at the shorter, and only with both (Stage 2 whole-branch I-2, M-1).
+describe("a set played a side at a time (Stage 2 whole-branch I-2, M-1)", () => {
+  const side = (s: "Left" | "Right" | null, seconds: number, log = true): Step => ({
+    kind: "timed", slotKey: "core:0", block: "core", exerciseId: "splitSquatHold", side: s, setIndex: 0, setCount: 1, seconds, prepGap: 8,
+    target: null, format: { id: "holds", group: null, round: null }, why: [], isNew: false, log,
+  });
+  const meta0 = meta({ plannedSeconds: 0, newMove: null });
+  const end = (live: Live) => Recorder.toSession(live, { endedAt: "2026-09-29T18:40:00.000Z" });
+  const ctx = { source: "app" as const, workoutId: "w1", buildId: "b1" };
+  const wire = (live: Live) => toPerformedSave(end(live), Review.pending(Review.start(), []), ctx);
+
+  test("to max, one side done and the other skipped: the set keeps its side and measures nothing", () => {
+    const live = Recorder.create(data, { steps: [side("Left", 40, false), side("Right", 40)], plannedSeconds: 0 }, meta0);
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 60, { toMax: true, done: true });
+    Recorder.reach(live, 1);
+    Recorder.finishTimed(live, 1, 0, { toMax: true });
+    const saved = end(live).entries.find(e => e.id === "splitSquatHold")!;
+    expect(saved.sets).toEqual([{ w: null, reps: null, secs: null, sides: { left: 60 } }]);
+    const sent = wire(live).entries.find(e => e.exerciseId === "splitSquatHold")!;
+    expect(sent.sets.map(s => [s.setIndex, s.side, s.seconds])).toEqual([[0, "left", 60]]);
+    // History reads it as a set that measures nothing, never a 60 s hold.
+    expect(historyFromPerformed(wire(live)).entries.find(e => e.id === "splitSquatHold")!.sets).toEqual([{ w: null, reps: null, secs: null }]);
+  });
+
+  test("a hold played a side at a time that is not to max (an engine build's) logs both sides too: one set at the shorter", () => {
+    const live = Recorder.create(data, { steps: [side("Left", 30, false), side("Right", 30)], plannedSeconds: 0 }, meta0);
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 30);
+    Recorder.reach(live, 1);
+    Recorder.finishTimed(live, 1, 22);
+    expect(end(live).entries.find(e => e.id === "splitSquatHold")!.sets).toEqual([{ w: null, reps: null, secs: 22, sides: { left: 30, right: 22 } }]);
+    const sent = wire(live).entries.find(e => e.exerciseId === "splitSquatHold")!;
+    expect(sent.sets.map(s => [s.setIndex, s.side, s.seconds])).toEqual([[0, "left", 30], [0, "right", 22]]);
+    expect(historyFromPerformed(wire(live)).entries.find(e => e.id === "splitSquatHold")!.sets).toEqual([{ w: null, reps: null, secs: 22 }]);
+  });
+
+  test("a hold on one fixed side (one window, no pair) is a plain set of that side's seconds", () => {
+    const live = Recorder.create(data, { steps: [side("Left", 30)], plannedSeconds: 0 }, meta0);
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 28);
+    expect(end(live).entries.find(e => e.id === "splitSquatHold")!.sets).toEqual([{ w: null, reps: null, secs: 28 }]);
+  });
+
+  test("an edit of a two-sided set's seconds (the review's) is each side's", () => {
+    const live = Recorder.create(data, { steps: [side("Left", 30, false), side("Right", 30)], plannedSeconds: 0 }, meta0);
+    for (const k of [0, 1]) {
+      Recorder.reach(live, k);
+      Recorder.finishTimed(live, k, 30);
+    }
+    Recorder.update(live, "splitSquatHold", 0, "secs", 25);
+    expect(end(live).entries.find(e => e.id === "splitSquatHold")!.sets).toEqual([{ w: null, reps: null, secs: 25, sides: { left: 25, right: 25 } }]);
   });
 });
 

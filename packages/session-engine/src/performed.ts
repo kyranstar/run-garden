@@ -111,18 +111,24 @@ export function historyFromPerformed(p: PerformedSessionWire): HistorySession {
   const entries: HistoryEntry[] = [];
   for (const e of p.entries) {
     // A set held a side at a time is a row per side under one number: one set, as the recorder saved it — the shorter
-    // side's seconds.
+    // side's seconds, and none when only one side is there (it measures nothing).
     const sets: Array<{ w: HistoryEntry["sets"][number]["w"]; reps: number | null; secs: number | null }> = [];
+    const sides: Array<Set<string> | null> = [];
     let last: { setIndex: number; side: boolean } | null = null;
     for (const s of e.sets.filter(x => x.done)) {
       const prev = sets[sets.length - 1];
       if (prev && last && s.side !== null && last.side && last.setIndex === s.setIndex) {
         prev.secs = prev.secs === null || s.seconds === null ? (prev.secs ?? s.seconds) : Math.min(prev.secs, s.seconds);
+        sides[sides.length - 1]!.add(s.side);
         continue;
       }
       sets.push({ w: s.load ? { v: s.load.v, u: s.load.u } : null, reps: s.reps, secs: s.seconds });
+      sides.push(s.side !== null ? new Set([s.side]) : null);
       last = { setIndex: s.setIndex, side: s.side !== null };
     }
+    sets.forEach((set, i) => {
+      if (sides[i] && sides[i]!.size < 2) set.secs = null;
+    });
     if (sets.length === 0) continue;
     entries.push({
       id: e.exerciseId, implement: e.implement, perSide: e.perSide, format: e.format,

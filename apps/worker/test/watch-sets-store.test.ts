@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
-import type { ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import { corosKeyOf, libraryIdsByKey } from "../src/services/coros-exercise-map.js";
 import { upsertWatchSession } from "../src/services/watch-sets.js";
 import type { Db } from "../src/services/db.js";
 import { D1_BIND_LIMIT, isWrite, makeTestDb, makeTestUser } from "./helpers.js";
@@ -74,6 +75,25 @@ describe("upsertWatchSession", () => {
       ["coros:T1055", 9, null, 12, "kg"],
       ["coros:T1010", null, 45, null, null],
       ["pushup", 15, null, null, null], // Phase 3 Task 2: T1004 is the library push-up's curated key
+    ]);
+  });
+
+  it("a one-sided library move's laps pair up a side at a time: a row per side under one set number (whole-branch M-1)", async () => {
+    const { db, userId } = await setup();
+    const one = EXERCISES.find((e) => e.laterality === "unilateral" && corosKeyOf(e.id) !== null && libraryIdsByKey().get(corosKeyOf(e.id)!) === e.id)!;
+    const key = corosKeyOf(one.id)!;
+    // Two sets, each a lap per side (left 10 reps, right 8 then 7).
+    const laps = [0, 1]
+      .flatMap((set) => [
+        item({ exerciseIndex: 0, setIndex: set, exerciseNameKey: key, reps: 10, weight: 12_000, time: 3_000 }),
+        item({ exerciseIndex: 0, setIndex: set, exerciseNameKey: key, reps: 8 - set, weight: 12_000, time: 3_000 }),
+      ])
+      .map((i, n) => ({ ...i, lapIndex: n + 1 }));
+    await upsertWatchSession(db, { userId, activity: ACTIVITY, detail: detailOf(laps) });
+    const [s] = await sessionsOf(db, userId);
+    const rows = (await setsOf(db, s!.id)).sort((a, b) => a.setIndex - b.setIndex || String(a.side).localeCompare(String(b.side)));
+    expect(rows.map((r) => [r.exerciseId, r.setIndex, r.side, r.reps, r.perSide])).toEqual([
+      [one.id, 0, "left", 10, true], [one.id, 0, "right", 8, true], [one.id, 1, "left", 10, true], [one.id, 1, "right", 7, true],
     ]);
   });
 

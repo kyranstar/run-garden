@@ -266,7 +266,11 @@ describe("hold_max", () => {
 
   it("a set held a side at a time (a row per side under one number) is one set at its shorter side, as history reads it", async () => {
     const s = await appSession(day(3), { doc: doc([hold("wallSit", 40, true)]) });
-    await sets(s, "wallSit", [{ seconds: 70, side: "left", setIndex: 0 }, { seconds: 50, side: "right", setIndex: 0 }, { seconds: 30, setIndex: 1 }]);
+    await sets(s, "wallSit", [
+      { seconds: 70, side: "left", setIndex: 0 }, { seconds: 50, side: "right", setIndex: 0 }, { seconds: 30, setIndex: 1 },
+      // One side only (the other skipped): it measures nothing (whole-branch I-2), never a 90 s hold.
+      { seconds: 90, side: "left", setIndex: 2 },
+    ]);
     const p = await measure(WALL_SIT);
     expect(p).toMatchObject({ current: 50, sampleSize: 1 });
     expect(p.series).toEqual([{ date: day(3), value: 50, display: 50 }]);

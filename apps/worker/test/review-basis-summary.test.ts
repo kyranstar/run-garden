@@ -179,9 +179,14 @@ describe("the records state from the database equals Records.baseline over the w
     // The set as the app saves a hold to max played a side at a time: a row per side under its one number.
     await db.delete(schema.performedSets).where(eq(schema.performedSets.performedSessionId, s.id));
     const row = { performedSessionId: s.id, entryIndex: 0, exerciseId: hold, implement: null, format: "holds", perSide: true, setIndex: 0, reps: null, loadValue: null, loadUnit: null, loadKg: null, done: true, flags: [] };
-    await db.insert(schema.performedSets).values([{ ...row, id: newId(), side: "left", seconds: 60 }, { ...row, id: newId(), side: "right", seconds: 40 }]);
+    // And a second set with one side only (the other skipped): it measures nothing (whole-branch I-2), never a 90 s hold.
+    await db.insert(schema.performedSets).values([
+      { ...row, id: newId(), side: "left", seconds: 60 },
+      { ...row, id: newId(), side: "right", seconds: 40 },
+      { ...row, id: newId(), setIndex: 1, side: "left", seconds: 90 },
+    ]);
     const whole = await loadHistory(db, userId);
-    expect(whole[0]!.entries[0]!.sets).toEqual([{ w: null, reps: null, secs: 40 }]);
+    expect(whole[0]!.entries[0]!.sets).toEqual([{ w: null, reps: null, secs: 40 }, { w: null, reps: null, secs: null }]);
     const ids = [hold];
     const later = addDays(date, 3);
     const full = Records.baseline(data, whole, { ids, date: later, weeklyGoal: 4 });

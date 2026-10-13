@@ -219,7 +219,19 @@ export function pairWatchSets(
     });
   }
 
-  const numbered = (sets: Array<Omit<PerformedSet, "setIndex"> & { from: "watch" | "target" }>) => sets.map((s, setIndex) => ({ ...s, setIndex }));
+  // A one-sided move's laps alternate left and right, each pair answering one build set: a left lap and the right lap
+  // after it are a row per side under one set number (as the app saves a set played a side at a time), so the set is
+  // read at its shorter side. A lap on its own (a fixed side) is a set of its own.
+  const numbered = (sets: Array<Omit<PerformedSet, "setIndex"> & { from: "watch" | "target" }>, perSide = false) => {
+    let n = -1;
+    let open = false;
+    return sets.map((s) => {
+      const pairs = perSide && open && s.side === "right";
+      if (!pairs) n += 1;
+      open = perSide && !pairs && s.side === "left";
+      return { ...s, setIndex: n };
+    });
+  };
   const target = (l: Lap) => ({ side: l.side, reps: l.reps, seconds: l.seconds, load: l.load, done: false, flags: [] as string[], from: "target" as const });
   const out: WatchReviewEntry[] = [];
   entries.forEach((e, b) => {
@@ -239,7 +251,7 @@ export function pairWatchSets(
       perSide: e.perSide,
       format: e.format,
       implement: null,
-      sets: numbered([...logged, ...e.laps.slice(logged.length).map(target)]),
+      sets: numbered([...logged, ...e.laps.slice(logged.length).map(target)], e.perSide),
     });
   });
   watch.forEach((x, w) => {
@@ -254,7 +266,7 @@ export function pairWatchSets(
   });
   entries.forEach((e, b) => {
     if (pairedWith.has(b) || e.laps.length === 0) return;
-    out.push({ exerciseId: e.exerciseId, perSide: e.perSide, format: e.format, implement: null, sets: numbered(e.laps.map(target)) });
+    out.push({ exerciseId: e.exerciseId, perSide: e.perSide, format: e.format, implement: null, sets: numbered(e.laps.map(target), e.perSide) });
   });
   return out;
 }

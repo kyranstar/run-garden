@@ -326,7 +326,8 @@ describe("pairWatchSets (ruling 3-R7)", () => {
       ["left", 10, "watch"], ["right", 10, "watch"], ["left", 10, "watch"],
       ["right", 10, "watch"], ["left", 10, "watch"], ["right", 10, "watch"],
     ]);
-    expect(row!.sets.map((s) => s.setIndex)).toEqual([0, 1, 2, 3, 4, 5]);
+    // Each pair answers one build set: a row per side under one set number (whole-branch M-1), read at its shorter side.
+    expect(row!.sets.map((s) => s.setIndex)).toEqual([0, 0, 1, 1, 2, 2]);
   });
 
   it("a per-side timed move: its Left and Right windows are its laps; short of laps, the rest are the targets, sides kept", () => {
@@ -338,6 +339,7 @@ describe("pairWatchSets (ruling 3-R7)", () => {
       ["left", 28, "watch", true],
       ["right", 30, "target", false],
     ]);
+    expect(plank!.sets.map((s) => s.setIndex)).toEqual([0, 0, 1, 1]);
   });
 
   it("a skipped move (no watch sets) shows its targets, not done; fewer laps than sets: the rest from targets", () => {

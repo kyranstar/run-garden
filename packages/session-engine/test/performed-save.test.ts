@@ -48,7 +48,8 @@ function playedSession(): { save: PerformedSessionSave; pending: PendingChanges 
 const asHistory = (s: PerformedSessionSave): HistorySession => ({
   id: s.id, date: s.date, startedAt: s.startedAt, mode: s.mode, theme: s.theme, blockNumber: s.blockNumber, checks: s.checks,
   done: s.done.map(d => ({ id: d.id, secs: d.secs })),
-  entries: s.entries.map(e => ({ id: e.id, implement: e.implement, perSide: e.perSide, format: e.format, flags: e.flags, sets: e.sets })),
+  // History holds a set's seconds, never its sides (a hold played a side at a time is one set at its shorter side).
+  entries: s.entries.map(e => ({ id: e.id, implement: e.implement, perSide: e.perSide, format: e.format, flags: e.flags, sets: e.sets.map(({ sides: _sides, ...set }) => set) })),
 });
 
 /** Through the outbox and the network: JSON, then the server's parse. */
@@ -60,13 +61,14 @@ describe("a hold to max played a side at a time (Stage 2 Task 8)", () => {
     const save = Recorder.toSession(Recorder.create(data, plan, meta(plan)), { endedAt: "2026-09-29T18:40:00.000Z" });
     save.entries = [{
       id: "sidePlank", implement: null, log: "time", metric: "time", perSide: true, format: "holds", flags: [],
-      sets: [{ w: null, reps: null, secs: 39, sides: { left: 45, right: 39 } }, { w: null, reps: null, secs: 30, sides: { left: 30 } }, { w: null, reps: null, secs: 25 }],
+      // The second set had one side done: the recorder saves it with no seconds (whole-branch I-2), its side kept.
+      sets: [{ w: null, reps: null, secs: 39, sides: { left: 45, right: 39 } }, { w: null, reps: null, secs: null, sides: { left: 30 } }, { w: null, reps: null, secs: 25 }],
     } as PerformedSessionSave["entries"][number]];
     const wire = toPerformedSave(save, { ratings: {}, excluded: {}, graduations: [] }, { source: "app", workoutId: "pw-1", buildId: "sb-1" });
     expect(wire.entries[0]!.sets.map((s) => [s.setIndex, s.side, s.seconds])).toEqual([[0, "left", 45], [0, "right", 39], [1, "left", 30], [2, null, 25]]);
-    // History reads what the recorder saved: three sets, the per-side one at its shorter side.
+    // History reads what the recorder saved: three sets, the per-side one at its shorter side, the one-sided one at none.
     const history = historyFromPerformed(overTheWire(wire));
-    expect(history.entries[0]!.sets).toEqual([{ w: null, reps: null, secs: 39 }, { w: null, reps: null, secs: 30 }, { w: null, reps: null, secs: 25 }]);
+    expect(history.entries[0]!.sets).toEqual([{ w: null, reps: null, secs: 39 }, { w: null, reps: null, secs: null }, { w: null, reps: null, secs: 25 }]);
     expect(history.entries[0]!.sets).toEqual(save.entries[0]!.sets.map(({ sides: _sides, ...set }) => set));
   });
 });
@@ -114,7 +116,12 @@ describe("toPerformedSave → historyFromPerformed", () => {
     // Every set of a flagged entry carries the flag (performed_sets.flags is per set); sets count among the done ones.
     const flagged = wire.entries.find(e => e.exerciseId === save.entries.find(x => x.flags.length)!.id)!;
     expect(flagged.sets.every(s => s.flags.includes("clenched"))).toBe(true);
-    for (const e of wire.entries) expect(e.sets.map(s => s.setIndex)).toEqual(e.sets.map((_, i) => i));
+    // Sets are numbered among the done ones; a set played a side at a time is a row per side under its one number.
+    for (const e of wire.entries) {
+      const saved = save.entries.find(x => x.id === e.exerciseId)!;
+      expect(e.sets.map(s => s.setIndex)).toEqual(saved.sets.flatMap((s, i) => (s.sides ? Object.keys(s.sides).map(() => i) : [i])));
+    }
+    expect(save.entries.some(e => e.sets.some(s => s.sides)), "an engine hold played a side at a time (whole-branch M-1)").toBe(true);
     expect(wire.review).toEqual({
       ratings: pending.ratings, excluded: pending.excluded, graduations: [{ family: "squat", to: "front-squat" }],
     });

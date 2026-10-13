@@ -535,14 +535,18 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
   };
 
   // A set held a side at a time is a row per side under one set number: one set, at its shorter side (as history reads
-  // it — the per-side rows never make a longer hold than both sides held).
+  // it — the per-side rows never make a longer hold than both sides held), and only with both sides there: one side
+  // alone (the other skipped) measures nothing.
   const sets = new Map<string, (typeof setRows)[number]>();
+  const sides = new Map<string, Set<string>>();
   for (const r of setRows) {
     const key = r.side === null ? `${r.sessionId}|${r.entryIndex}|${r.setIndex}|${sets.size}` : `${r.sessionId}|${r.entryIndex}|${r.setIndex}`;
     const held = sets.get(key);
     const seconds = !held || held.seconds === null ? r.seconds : r.seconds === null ? held.seconds : Math.min(held.seconds, r.seconds);
     sets.set(key, { ...(held ?? r), seconds });
+    if (r.side !== null) sides.set(key, (sides.get(key) ?? new Set()).add(r.side));
   }
+  for (const [key, held] of sides) if (held.size < 2) sets.set(key, { ...sets.get(key)!, seconds: null });
   return [...sets.values()]
     .filter((r) => chosen.has(r.sessionId))
     .map((r) => {

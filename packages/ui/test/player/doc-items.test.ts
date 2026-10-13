@@ -145,7 +145,8 @@ describe("holds to max, each with a rest after (maxBuild)", () => {
 
   it("the rest after says what was held, and its log card edits it — each side, or the seconds", () => {
     const s = bothSides();
-    expect(heldBefore(s)).toEqual({ secs: 45, sides: { left: 50, right: 38 } });
+    // The set's seconds are its shorter side's (whole-branch M-1); the line and the card read each side.
+    expect(heldBefore(s)).toEqual({ secs: 38, sides: { left: 50, right: 38 } });
     expect(logTarget(s)).toMatchObject({ exerciseId: "lowLunge", sides: { left: 50, right: 38 } });
     const edited = confirmLog(s, { sides: { left: 50, right: 40 } }, {}, T0 + 96 * S);
     expect(edited.index).toBe(2);

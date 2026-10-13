@@ -132,7 +132,7 @@ function recordsRows(db: Db, userId: string, opts: { keep: Array<[string, string
     k AS (SELECT json_extract(value, '$[0]') AS raw, json_extract(value, '$[1]') AS canon FROM json_each(${JSON.stringify(opts.keep)})),
     ds AS (
       -- The build's moves' done sets that count for bests, under their canonical ids.
-      SELECT e.sid, k.canon, ps.entry_index AS ei, ps.set_index AS si, ps.reps, ps.seconds AS secs,
+      SELECT e.sid, k.canon, ps.entry_index AS ei, ps.set_index AS si, ps.side, ps.reps, ps.seconds AS secs,
              ps.load_value AS v, ps.load_unit AS u, ${sql.raw(KG)} AS kg
       FROM e JOIN k ON k.raw = e.ex
       JOIN performed_sets ps ON ps.performed_session_id = e.sid AND ps.entry_index = e.ei AND ps.done = 1
@@ -206,9 +206,11 @@ function recordsRows(db: Db, userId: string, opts: { keep: Array<[string, string
       JOIN (SELECT sid, canon, v, u, kg, ROW_NUMBER() OVER (PARTITION BY sid, canon, kg ORDER BY ei, si) AS rn FROM ds WHERE kg IS NOT NULL) f
         ON f.sid = t.sid AND f.canon = t.canon AND f.kg = t.x AND f.rn = 1
       UNION ALL SELECT 'bare', canon, NULL, NULL, NULL, NULL, MAX(reps) FROM ds WHERE kg IS NULL GROUP BY canon
-      -- A set held a side at a time is a row per side under one number: one set at its shorter side (as history reads it).
+      -- A set held a side at a time is a row per side under one number: one set at its shorter side (as history reads it),
+      -- and only with both sides there — one side alone measures nothing.
       UNION ALL SELECT 'hold', canon, NULL, NULL, NULL, NULL, MAX(secs) FROM (
-        SELECT canon, MIN(secs) AS secs FROM ds GROUP BY sid, ei, si, canon
+        SELECT canon, CASE WHEN COUNT(side) > 0 AND COUNT(DISTINCT side) < 2 THEN NULL ELSE MIN(secs) END AS secs
+        FROM ds GROUP BY sid, ei, si, canon
       ) WHERE secs > 0 GROUP BY canon
       UNION ALL SELECT DISTINCT 'touched', k.canon, NULL, NULL, NULL, NULL, NULL FROM k JOIN touched t ON t.raw = k.raw
     )

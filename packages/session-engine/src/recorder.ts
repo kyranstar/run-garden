@@ -30,8 +30,9 @@ export interface LiveSet {
   done: boolean;
   touched: boolean;
   /**
-   * A hold to max played a side at a time: the seconds held on each side done, neither overwriting the other — one
-   * set, saved with each side (`SavedEntry`). Absent otherwise.
+   * A hold played a side at a time (a left and a right window of one set: `pairedSide`), to max or not: the seconds held
+   * on each side done, neither overwriting the other — one set, saved with each side (`SavedEntry`); its `secs` the
+   * shorter side's so far. Absent otherwise (a hold on one fixed side is a plain set).
    */
   sides?: Partial<Record<HoldSide, number>>;
 }
@@ -41,7 +42,7 @@ export type HoldSide = "left" | "right";
 
 /** How a timed hold is left (`finishTimed`). */
 export interface HoldEnd {
-  /** A hold to max (a document item's `dose.max`): a side is logged on its own (`LiveSet.sides`). */
+  /** A hold to max (a document item's `dose.max`). Each side of any hold played a side at a time is logged on its own. */
   toMax?: boolean;
   /** Ended with Done: it counts at whatever time was held, a second or more — where you stopped is the result. */
   done?: boolean;
@@ -113,8 +114,9 @@ export interface SavedEntry extends HistoryEntry {
   format: FormatId;
   flags: string[];
   /**
-   * A set of a hold to max played a side at a time is one set: its seconds the shorter side's (what it held on both,
-   * as history reads one set), and each side's (`sides`, a row per side on the wire).
+   * A set of a hold played a side at a time is one set: its seconds the shorter side's (what it held on both, as history
+   * reads one set) — none when only one side was done (it measures nothing) — and each side's (`sides`, a row per side
+   * on the wire).
    */
   sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; sides?: Partial<Record<HoldSide, number>> }>;
 }
@@ -202,7 +204,8 @@ function reach(live: Live, index: number): void {
  * Leaving a timed hold: it counts if you held at least half of it, at the time you held (unless you typed one) — a
  * logged hold's set and an unlogged hold alike (ruling 2b-R15). Once held, going back to it and leaving early again
  * does not undo it. A hold to max ended with Done (`how.done`) counts at whatever time you held it, a second or more:
- * where you stopped is the result; one played a side at a time logs each side on its own (`LiveSet.sides`).
+ * where you stopped is the result. A hold played a side at a time — to max or not — logs each side on its own
+ * (`LiveSet.sides`), its seconds the shorter side's so far.
  */
 function finishTimed(live: Live, index: number, elapsedSecs: number, how: HoldEnd = {}): void {
   const step = live.steps[index];
@@ -214,10 +217,30 @@ function finishTimed(live: Live, index: number, elapsedSecs: number, how: HoldEn
   const set = setOf(live, step);
   if (!set || !held) return;
   set.done = true;
-  const side = how.toMax ? sideOf(step) : null;
-  if (side) set.sides = { ...set.sides, [side]: Math.round(elapsedSecs) };
-  else if (!set.touched) set.secs = Math.round(elapsedSecs);
+  const side = pairedSide(live, step);
+  if (side) {
+    set.sides = { ...set.sides, [side]: Math.round(elapsedSecs) };
+    if (!set.touched) set.secs = shorterSide(set.sides);
+  } else if (!set.touched) set.secs = Math.round(elapsedSecs);
 }
+
+/**
+ * The step's side when it is one of a left and a right window of one set (the same move, slot and set number): the
+ * set is played a side at a time. Null for a hold with no side, or on one fixed side.
+ */
+function pairedSide(live: Live, step: Step): HoldSide | null {
+  const side = sideOf(step);
+  if (!side) return null;
+  const pair = live.steps.some(o =>
+    o !== step && o.kind === step.kind && o.exerciseId === step.exerciseId && o.slotKey === step.slotKey && o.setIndex === step.setIndex
+    && o.side !== null && o.side !== step.side);
+  return pair ? side : null;
+}
+
+const shorterSide = (sides: Partial<Record<HoldSide, number>>): number | null => {
+  const held = Object.values(sides);
+  return held.length > 0 ? Math.min(...held) : null;
+};
 
 const sideOf = (step: Step): HoldSide | null => (step.side === "Left" ? "left" : step.side === "Right" ? "right" : null);
 
@@ -226,6 +249,7 @@ function setSide(live: Live, exId: string, setIndex: number, side: HoldSide, sec
   const set = live.entries[exId]?.sets[setIndex];
   if (set?.sides?.[side] === undefined) return;
   set.sides = { ...set.sides, [side]: secs };
+  if (!set.touched) set.secs = shorterSide(set.sides);
 }
 
 /** The steps that count as done: every step reached but a rest, and but a hold left before half its time. */
@@ -267,13 +291,21 @@ function update<K extends "w" | "reps" | "secs">(live: Live, exId: string, setIn
   const e = live.entries[exId];
   const set = e ? e.sets[setIndex] : undefined;
   if (!e || !set) return;
-  set[field] = value;
+  write(set, field, value);
   set.touched = true;
   const keys = live.keys?.[exId];
   const slot = keys?.[setIndex] === undefined ? null : slotOfKey(keys[setIndex]!);
   for (let i = setIndex + 1; i < e.sets.length; i++) {
     if (slot !== null && (keys![i] === undefined || slotOfKey(keys![i]!) !== slot)) continue;
-    if (!e.sets[i]!.touched) e.sets[i]![field] = value;
+    if (!e.sets[i]!.touched) write(e.sets[i]!, field, value);
+  }
+}
+
+/** A value written to a set; the seconds of a set held a side at a time are each side's it holds. */
+function write<K extends "w" | "reps" | "secs">(set: LiveSet, field: K, value: LiveSet[K]): void {
+  set[field] = value;
+  if (field === "secs" && set.sides && typeof value === "number") {
+    set.sides = Object.fromEntries(Object.keys(set.sides).map(k => [k, value])) as Partial<Record<HoldSide, number>>;
   }
 }
 
@@ -331,12 +363,14 @@ function toSession(live: Live, { endedAt, post = {}, note = "", completed = fals
   const entries: SavedEntry[] = live.order.map(id => live.entries[id]!).map(e => ({
     id: e.id, implement: e.implement, log: e.log, metric: e.metric, perSide: e.perSide, format: e.format, flags: [...e.flags],
     sets: e.sets.filter(s => s.done).map(s => {
-      // A hold to max played a side at a time: one set, the shorter side's seconds, each side's beside them.
+      // A hold played a side at a time: one set, the shorter side's seconds, each side's beside them — with only one side
+      // done, no seconds: it measures nothing (the side's own row is kept).
       const sides = s.sides && Object.keys(s.sides).length > 0 && e.metric === "time" ? s.sides : null;
+      const both = sides !== null && sides.left !== undefined && sides.right !== undefined;
       return {
         w: e.log === "load" ? s.w : null,
         reps: e.metric === "reps" ? s.reps : null,
-        secs: e.metric !== "time" ? null : sides ? Math.min(...Object.values(sides)) : s.secs,
+        secs: e.metric !== "time" ? null : sides ? (both ? Math.min(sides.left!, sides.right!) : null) : s.secs,
         ...(sides ? { sides: { ...sides } } : {}),
       };
     }),
