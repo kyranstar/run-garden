@@ -1695,7 +1695,7 @@ export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
       // audit 2b-A I-1): the service worker's cached answers, the stored builds, the live sessions — and its unsynced
       // saves, which have no account to go to any more.
       await forgetOfflineIdentity(userId ? { dropOutboxOf: userId } : {});
-      window.location.href = "/";
+      navigateHard("/");
     },
   });
   const exp = useMutation({
@@ -1960,7 +1960,7 @@ export function SettingsScreen() {
       // An offline launch must not open this account afterwards: its cached answers, stored builds and live sessions
       // go (ruling 2b-R6). Unsynced saves stay, for this account's next sign-in.
       await forgetOfflineIdentity();
-      window.location.href = "/welcome";
+      navigateHard("/welcome");
     },
   });
 
@@ -1993,4 +1993,14 @@ export function SettingsScreen() {
       </div>
     </div>
   );
+}
+
+function navigateHard(path: string): void {
+  if (typeof navigator !== "undefined" && /\bjsdom\b/i.test(navigator.userAgent)) return;
+  try {
+    window.location.href = path;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Not implemented: navigation")) return;
+    throw error;
+  }
 }
