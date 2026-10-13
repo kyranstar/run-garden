@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES, TMJ, type ConditionProfile, type DescribedRule } from "@rg/exercise-library";
+import { EXERCISES, TMJ, type ConditionProfile, type DescribedRule, type HistorySession } from "@rg/exercise-library";
 import { FORMAT_OF_PART, validateWorkoutDoc } from "@rg/workout";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -538,12 +538,20 @@ describe("the enforcement labels", () => {
     rotateReason: { rotateReason: () => "probe" },
     care: { care: { ...TMJ.care!, block: { ...TMJ.care!.block, min: { recovery: 9, consistent: 9, build: 9 } } } },
   };
+  /** A day with history: yesterday's session flagged a move and its check rose — what the guide rules read, so their
+   * verdict must hold with them in play, not only on a day with nothing behind it. */
+  const HISTORY: HistorySession = {
+    id: "probe-yesterday", date: "2026-03-09", startedAt: "2026-03-09T18:00:00", mode: "build", theme: null, blockNumber: null,
+    checks: { tmj: { pre: 1, post: 4, feelingOff: false }, unratedProbe: { pre: 1, post: 4, feelingOff: false } },
+    done: [{ id: "bridge", secs: 120 }],
+    entries: [{ id: "bridge", implement: null, perSide: false, format: "straight", flags: ["clenched"], sets: [{ w: null, reps: 10, secs: null }] }],
+  };
   function enforcedAs(rule: DescribedRule): "refused" | "cost" | "guide" {
     const issues = (p: ConditionProfile) =>
       validateWorkoutDoc(probeDoc(), {
         library: EXERCISES,
         activeProfiles: [p],
-        day: { date: TODAY, today: TODAY, readings: { [p.id]: { pre: 1, post: null, feelingOff: false } } },
+        day: { date: TODAY, today: TODAY, readings: { [p.id]: { pre: 1, post: null, feelingOff: false } }, recent: { last: HISTORY, week: [HISTORY] } },
       });
     const before = issues(PERMISSIVE);
     const added = issues({ ...PERMISSIVE, ...STRICT[rule] }).filter(

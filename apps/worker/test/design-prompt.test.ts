@@ -6,6 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { PROFILES } from "@rg/exercise-library";
 import { DOC_ISSUE_CODES, type DocIssueCode } from "@rg/workout";
+import { MAX_TOOL_CALLS_PER_TURN as LOOP_MAX_TOOL_CALLS_PER_TURN } from "../src/services/coach-runs.js";
+import { MAX_TOOL_CALLS_PER_TURN } from "../src/services/design-limits.js";
 import { PROMPT_TOOL_NAMES, REVIEW_DIMENSIONS, SHARED_PROMPT, markUntrusted, roleBlock } from "../src/services/design-prompt.js";
 
 const ROLES = ["main", "designer", "reviewer"] as const;
@@ -77,18 +79,21 @@ describe("the prompt text", () => {
   });
 
   it("review follows ruling 4: propose_workout gets the draft reviewed and returns the review; the reviewer answers with submit_review", () => {
-    expect(SHARED_PROMPT).toContain("You never write the review yourself.");
+    expect(SHARED_PROMPT).toContain("The designer never writes its own review.");
     // The tool's own note says it too: it is what the model reads when it reaches for the tool.
     const proposeNote = SHARED_PROMPT.split("\n").find((l) => l.startsWith("- propose_workout:"));
     expect(proposeNote).toBeDefined();
     expect(proposeNote).toContain("submits a validated draft");
     expect(proposeNote).toContain("An independent reviewer scores it before anything reaches the athlete; the review comes back to you as the result.");
-    expect(proposeNote).toContain("You never write the review yourself.");
+    expect(proposeNote).toContain("The designer never writes its own review.");
     const reviewNote = SHARED_PROMPT.split("\n").find((l) => l.startsWith("- submit_review:"));
     expect(reviewNote).toContain("Only the reviewer has it.");
     expect(roleBlock("main")).toMatch(/you don't call propose_workout/);
     expect(roleBlock("main")).toMatch(/then call finish/);
     expect(roleBlock("designer")).toContain("propose_workout");
+    for (const role of ["main", "designer"] as const) {
+      expect(roleBlock(role), role).toContain("revise, validate again and call propose_workout again (at most two rounds), then call finish.");
+    }
     expect(roleBlock("reviewer")).toContain("submit_review");
     expect(roleBlock("designer")).not.toContain("submit_review");
     expect(roleBlock("main")).not.toContain("submit_review");
@@ -118,11 +123,17 @@ describe("the prompt text", () => {
     expect(fatal).toContain("a past date");
   });
 
+  it("states the loop's own per-turn tool-call limit (one definition until the loop imports design-limits.ts)", () => {
+    expect(MAX_TOOL_CALLS_PER_TURN).toBe(LOOP_MAX_TOOL_CALLS_PER_TURN);
+    expect(SHARED_PROMPT).toContain(`at most ${LOOP_MAX_TOOL_CALLS_PER_TURN} a turn`);
+    expect(SHARED_PROMPT).not.toContain("side by side");
+  });
+
   it("carries the review's wording of fix round 1", () => {
     for (const words of [
       "Don't restate what the proposal card computes and prints",
       "must come from a tool result you read, never an estimate",
-      "Ask for the reads you need together in one turn",
+      `Ask for the reads you need together in one turn (at most ${MAX_TOOL_CALLS_PER_TURN} a turn) — the app runs them all, one after another, before your next turn, so several reads in one turn cost one model call where the same reads one at a time cost several.`,
       "no AI cost; call it on every draft and again after each round of changes",
       "and what a brief asks this workout to be",
       "the role block below says which part is yours",
