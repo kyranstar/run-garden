@@ -496,8 +496,10 @@ function docSlots(
 
 /**
  * A locked document build's alternates and offers judged again, in the item's place, with the day's reading — Start of
- * a build sent to the watch, which nothing rebuilds: one the day now keeps out (an error) is taken off; a slot left
- * saying nothing goes. Only options change: never what is played.
+ * a build sent to the watch, which nothing rebuilds — by the build's own rules (`docSlots`): a planned alternate the day
+ * now keeps out (an error, or a jump past the frontier) is taken off, and one that now costs something (the day's flare
+ * rule) stays with the cost in its reasons, after the clean ones; an offer is only ever a clean one, so one that costs
+ * anything today is taken off. A slot left saying nothing goes. Only options change: never what is played.
  */
 export function slotsForDay(slots: Readonly<Record<string, DocSlot>>, snapshot: WorkoutDoc, ctx: ValidateCtx): Record<string, DocSlot> {
   const where = new Map(docSlotKeys(snapshot).map((s) => [s.key, s]));
@@ -507,12 +509,18 @@ export function slotsForDay(slots: Readonly<Record<string, DocSlot>>, snapshot: 
     return at && snapshot.parts[at.part]!.items[at.item]!.kind === "exercise" && ids.length > 0 ? [{ at, ids }] : [];
   });
   const judged = judgeInPlace(snapshot, asked, ctx);
-  const open = (key: string) => (c: SlotChoice): boolean => !(judged.get(optionKey(key, c.id)) ?? []).some((i) => i.severity === "error");
+  const issuesOf = (key: string, c: SlotChoice): DocIssue[] => judged.get(optionKey(key, c.id)) ?? [];
   const out: Record<string, DocSlot> = {};
   for (const [key, slot] of Object.entries(slots)) {
     const { alternates, offers, ...said } = slot;
-    const a = (alternates ?? []).filter(open(key));
-    const o = (offers ?? []).filter(open(key));
+    const judgedAlts = (alternates ?? []).flatMap((c) => {
+      const issues = issuesOf(key, c);
+      if (issues.some((i) => i.severity === "error" || i.code === "progression_jump")) return [];
+      const costs = issues.map((i) => i.message).filter((m) => m !== "" && !c.reasons.includes(m));
+      return [{ choice: costs.length > 0 ? { ...c, reasons: [...c.reasons, ...costs] } : c, costly: issues.length > 0 }];
+    });
+    const a = [...judgedAlts.filter((x) => !x.costly), ...judgedAlts.filter((x) => x.costly)].map((x) => x.choice);
+    const o = (offers ?? []).filter((c) => issuesOf(key, c).length === 0);
     const kept: DocSlot = { ...said, ...(a.length > 0 ? { alternates: a } : {}), ...(o.length > 0 ? { offers: o } : {}) };
     if (Object.keys(kept).length > 0) out[key] = kept;
   }

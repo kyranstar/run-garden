@@ -486,11 +486,12 @@ describe("slotsForDay (Start of a build sent to the watch)", () => {
     const now = slotsForDay(sent, doc, ctxAt(6));
     expect(now["core:0"]!.alternates!.map((a) => a.id)).toEqual(["bwSplitSquat"]);
     expect(now["core:0"]!.cue).toBe("Slow down.");
+    // An offer stays only when it costs nothing in the item's place today (whole-branch M-2): any issue takes it off.
     const shut = (now["core:0"]!.offers ?? []).map((o) => o.id);
     for (const o of sent["core:0"]!.offers ?? []) {
-      const probe = workoutDocSchema.parse({ ...doc, parts: [{ ...doc.parts[0]!, items: [{ ...doc.parts[0]!.items[0]!, alternates: [{ libraryId: o.id }] }] }] });
-      const closed = validateWorkoutDoc(probe, ctxAt(6)).some((i) => i.path === "parts[0].items[0].alternates[0].libraryId" && i.severity === "error");
-      expect(shut.includes(o.id), o.id).toBe(!closed);
+      const probe = workoutDocSchema.parse({ ...doc, parts: [{ ...doc.parts[0]!, items: [{ ...doc.parts[0]!.items[0]!, libraryId: o.id, alternates: undefined }] }] });
+      const costs = validateWorkoutDoc(probe, ctxAt(6)).some((i) => i.path === "parts[0].items[0].libraryId");
+      expect(shut.includes(o.id), o.id).toBe(!costs);
     }
     // The same day: nothing changes.
     expect(slotsForDay(sent, doc, ctxAt(1))).toEqual(sent);
@@ -501,5 +502,26 @@ describe("slotsForDay (Start of a build sent to the watch)", () => {
       parts: [{ ...doc.parts[0]!, items: [0, 1, 2, 3].map(() => ({ ...doc.parts[0]!.items[0]!, dose: { sets: 20, reps: 188, restSec: 0 } })) }],
     });
     expect(slotsForDay(sent, huge, ctxAt(1))).toEqual({ "core:0": { cue: "Slow down." } });
+  });
+
+  it("a day turned into a flare: an offer that costs anything is taken off; a planned alternate stays, the flare cost in its reasons (whole-branch M-2)", () => {
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "bandPullApart", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "pushupPullThrough", why: "A push and a pull." }] },
+      ] }],
+    });
+    const sent = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge: ctxAt(1) }).slots;
+    // Sent on a calm day: the prone Y-T-W is offered, the planned alternate costs nothing.
+    expect((sent["core:0"]!.offers ?? []).map((o) => o.id)).toContain("proneYTW");
+    expect(sent["core:0"]!.alternates!.map((a) => [a.id, a.reasons])).toEqual([["pushupPullThrough", ["A push and a pull."]]]);
+    const now = slotsForDay(sent, doc, ctxAt(6));
+    // Started on a flare day: the Y-T-W is not flare-safe — a cost, so no longer an offer.
+    expect((now["core:0"]!.offers ?? []).map((o) => o.id)).not.toContain("proneYTW");
+    const alt = now["core:0"]!.alternates![0]!;
+    expect(alt.id).toBe("pushupPullThrough");
+    expect(alt.reasons[0]).toBe("A push and a pull.");
+    expect(alt.reasons.slice(1)).toEqual([expect.stringContaining("flare")]);
+    expect(alt.steps).toEqual(sent["core:0"]!.alternates![0]!.steps);
   });
 });
