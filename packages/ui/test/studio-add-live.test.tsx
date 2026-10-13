@@ -9,7 +9,7 @@ import "fake-indexeddb/auto";
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TemplateDto, WorkoutDto } from "@rg/api-client";
 import type { WorkoutDoc } from "@rg/domain";
@@ -890,5 +890,26 @@ describe("Open on the line (Stage 2 whole-branch review M9)", () => {
     await click([...line()!.querySelectorAll("a")].find((a) => a.textContent === "Open"), "Open");
     expect(where).toBe("/studio/build/new");
     expect(whereState).toEqual({ from: { href: "/studio?q=goblet" } });
+  });
+});
+
+describe("offline (Stage 2 whole-branch review M5)", () => {
+  it("the planned-workout and template choices say they need a connection — never a wait that does not end", async () => {
+    onlineManager.setOnline(false);
+    try {
+      serve();
+      await openAdd("goblet", "Goblet squat");
+      await until(() => (sheet()?.textContent ?? "").includes("Needs a connection"), "the words");
+      const rows = [...sheet()!.querySelectorAll<HTMLElement>(".stu-add-opt")].map((r) => (r.textContent ?? "").replace(/\s+/g, " ").trim());
+      expect(rows.find((r) => r.startsWith("To a planned workout"))).toContain("Needs a connection");
+      expect(rows.find((r) => r.startsWith("To a template"))).toContain("Needs a connection");
+      expect(sheet()!.textContent).not.toContain("…");
+      // A new workout needs no connection: it is still offered, and chosen.
+      expect(option("To a new workout")!.checked).toBe(true);
+    } finally {
+      await act(async () => {
+        onlineManager.setOnline(true);
+      });
+    }
   });
 });

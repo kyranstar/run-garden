@@ -422,6 +422,8 @@ function Builder({ source }: { source: BuildSource }) {
   const open = sumOpen ?? wide;
   const notesAt = (p: number, i: number) => judged.notes.filter((n) => n.part === p && n.item === i);
   const showGhost = ghostAt !== null && ghost.length > 0 && !ghostOff && !frozen;
+  // The parts on offer — activation not twice: while its prompt is shown, the prompt is where it is offered.
+  const addable = addablePurposes(doc, ctx.profiles).filter((p) => !(showGhost && p === "activation"));
   const footWhy = flow.step === "swaps" ? null : canStart ? blockedLine(judged) : blocked === EMPTY_BLOCK ? EMPTY_BLOCK : null;
 
   const addSuggested = (pi: number | "ghost", rec: ExerciseRecord, why?: string) => {
@@ -602,11 +604,11 @@ function Builder({ source }: { source: BuildSource }) {
             </Fragment>
           ))}
           {showGhost && ghostAt === doc.parts.length ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={dismissGhost} /> : null}
-          {!frozen && addablePurposes(doc, ctx.profiles).length ? (
+          {!frozen && addable.length ? (
             <div className="stu-add-parts">
               <span className="stu-build-k">Add a part</span>
               <div className="stu-chipset">
-                {addablePurposes(doc, ctx.profiles).map((p) => (
+                {addable.map((p) => (
                   <button
                     key={p}
                     type="button"

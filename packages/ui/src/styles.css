@@ -9836,7 +9836,11 @@ a.stu-qs:hover {
   overflow-wrap: anywhere;
   color: var(--ink);
 }
+/* A word of a link, 44 px square at least as a box of its own — the word stays its size. */
 .stu-build-goals-edit {
+  display: inline-flex;
+  align-items: center;
+  min-width: var(--tap);
   min-height: var(--tap);
   font-size: var(--text-sm);
 }
@@ -10530,6 +10534,28 @@ textarea.stu-field {
 }
 .stu-sug-add--chip:hover .stu-sug-chip {
   background: var(--green-soft);
+}
+/* On a touch screen, a word too small to tap — a part's name, a suggested name (each opens what it means) — grows only
+   its hit area: 44 px tall and at least as wide, centred on the word, which stays its size. The suggested names' rows
+   part far enough that one name's area never reaches into the next row's. */
+@media (pointer: coarse) {
+  .stu-part-name .term,
+  .stu-sug-names .term {
+    position: relative;
+  }
+  .stu-part-name .term::after,
+  .stu-sug-names .term::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, var(--tap));
+    height: var(--tap);
+    transform: translate(-50%, -50%);
+  }
+  .stu-sug-names {
+    row-gap: var(--space-7);
+  }
 }
 /* A planned workout that can't change: its rows are words, not buttons. */
 .stu-item--still {

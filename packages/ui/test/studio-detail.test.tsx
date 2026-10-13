@@ -43,7 +43,7 @@ describe("the sections, in the spec's order", () => {
       "Common mistakes",
       "Breathing",
       "Why",
-      "TMJ",
+      "Jaw",
       "Muscles",
       "Easier and harder",
       "Your history",
@@ -86,16 +86,17 @@ describe("the sections, in the spec's order", () => {
 describe("the condition note", () => {
   const goblet = rec("gobletSquat");
 
-  it("each switched-on profile's note, in the move's own plain words, under the profile's name", () => {
+  it("each switched-on profile's note, in the move's own plain words, under its check's own word (as the rest of the UI says it)", () => {
     const html = body({ rec: goblet, ctx: tmjCtx() });
-    const sec = html.slice(html.indexOf(">TMJ</h3>") + 1, html.indexOf("<h3", html.indexOf(">TMJ</h3>")));
-    expect(text(sec)).toBe(`TMJ ${goblet.text.conditions.tmj}`);
+    expect(headings(html)).not.toContain("TMJ");
+    const sec = html.slice(html.indexOf(">Jaw</h3>") + 1, html.indexOf("<h3", html.indexOf(">Jaw</h3>")));
+    expect(text(sec)).toBe(`Jaw ${goblet.text.conditions.tmj}`);
     expect(text(sec)).toContain("Teeth apart");
   });
 
   it("no profile on: no condition section at all", () => {
     const html = body({ rec: goblet, ctx: emptyStudioCtx });
-    expect(headings(html)).not.toContain("TMJ");
+    expect(headings(html)).not.toContain("Jaw");
     expect(html).not.toContain("Teeth apart");
   });
 });

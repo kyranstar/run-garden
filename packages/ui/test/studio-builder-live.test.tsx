@@ -1100,3 +1100,29 @@ describe("Schedule, another day set to today", () => {
     }
   });
 });
+
+describe("Stage 2 whole-branch review: a part's why, and activation offered once (M7, M8)", () => {
+  it("a part's why asks plainly whatever the part is: 'Why this part'", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown().length === 3, "the parts");
+    for (const name of ["Warm-up", "Main", "Cool-down"]) {
+      await click(button(`${name}: options`), `${name}'s ⋯`);
+      const sheet = dialog(name)!;
+      expect(sheet.querySelector<HTMLTextAreaElement>("textarea")!.placeholder).toBe("Why this part");
+      await click(button("Close", sheet), "Close");
+    }
+  });
+
+  it("the activation prompt declined, Add a part offers Activation again", async () => {
+    await draftStore().save(draft(into(1, "deadlift")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => !!document.querySelector(".stu-part--ghost"), "the prompt");
+    const chips = () => [...document.querySelectorAll(".stu-add-part")].map((c) => c.textContent);
+    expect(chips()).not.toContain("Activation");
+    await click(button("No activation part"), "✕");
+    expect(chips()).toContain("Activation");
+  });
+});

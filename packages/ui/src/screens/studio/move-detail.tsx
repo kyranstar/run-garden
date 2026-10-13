@@ -30,6 +30,7 @@ import { formatWeightIn, secondsText, type WeightUnit } from "@rg/domain";
 import type { LibraryItemDto } from "@rg/api-client";
 import { Sheet, useEscapeKey, useIsomorphicLayoutEffect } from "../../components.js";
 import { IconCheck, IconClose, IconPin } from "../../icons.js";
+import { checkWord } from "../../components/condition-check-sheet.js";
 import { useWeightUnit } from "../../use-units.js";
 import { FitBadge, Term, dotted, gearLine } from "./move-row.js";
 import { doseLine, fitOf, historyLine, type StudioCtx } from "./model.js";
@@ -164,7 +165,7 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
         </Section>
       ) : null}
       {notes.map(({ p, note }) => (
-        <Section key={p.id} title={p.label}>
+        <Section key={p.id} title={checkWord(p.check.label)}>
           <p className="stu-detail-note">{note}</p>
         </Section>
       ))}

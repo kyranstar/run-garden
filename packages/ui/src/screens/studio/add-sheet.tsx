@@ -263,6 +263,9 @@ export interface AddSheetProps {
 const usableTemplates = (ts: readonly TemplateDto[]): TemplateDto[] =>
   ts.filter((t) => t.doc !== null).sort((a, b) => Number(b.pinned) - Number(a.pinned));
 
+/** A read that waits for the connection (paused offline) with nothing kept: said so, never a wait that does not end. */
+const waiting = (q: { fetchStatus: string; data: unknown }): string | null => (q.fetchStatus === "paused" && q.data === undefined ? "Needs a connection" : null);
+
 export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhileSaving }: AddSheetProps) {
   const qc = useQueryClient();
   const name = useId();
@@ -424,7 +427,7 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhi
                   ))}
                 </select>
               ) : (
-                held(planned.isPending ? "…" : "None coming up")
+                held(waiting(planned) ?? (planned.isPending ? "…" : "None coming up"))
               ),
               workouts.length > 0,
             )}
@@ -449,7 +452,7 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhi
                   ))}
                 </select>
               ) : (
-                held(templates.isPending ? "…" : "None yet")
+                held(waiting(templates) ?? (templates.isPending ? "…" : "None yet"))
               ),
               tpls.length > 0,
             )}

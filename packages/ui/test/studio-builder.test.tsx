@@ -280,3 +280,28 @@ describe("suggestions, once a part has a move", () => {
     expect(cool).toContain("Add a move</button>");
   });
 });
+
+describe("Stage 2 whole-branch review: the 44 px floor and activation offered once (M6, M7)", () => {
+  const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+
+  it("the Goals link is a 44 px box of its own; a part's name and a suggested name grow their hit area on a touch screen", () => {
+    expect(css).toMatch(/\.stu-build-goals-edit \{[^}]*display: inline-flex;[^}]*min-width: var\(--tap\);[^}]*min-height: var\(--tap\);/);
+    const coarse = css.slice(css.indexOf("@media (pointer: coarse) {\n  .stu-part-name .term,"));
+    expect(coarse.startsWith("@media (pointer: coarse)")).toBe(true);
+    const block = coarse.slice(0, coarse.indexOf("\n}\n") + 3);
+    expect(block).toMatch(/\.stu-part-name \.term::after,\s*\.stu-sug-names \.term::after \{[^}]*height: var\(--tap\);[^}]*\}/);
+    expect(block).toMatch(/width: max\(100%, var\(--tap\)\)/);
+    // The names' rows part far enough that one name's area never reaches into the next row's.
+    expect(block).toMatch(/\.stu-sug-names \{\s*row-gap: var\(--space-7\);/);
+  });
+
+  it("while the activation prompt is shown, Add a part doesn't offer Activation a second time", () => {
+    const withLift = renderBuilder("/studio/build/new", { draft: draft(into(1, "deadlift")) });
+    expect(withLift).toContain("stu-part--ghost");
+    const offered = text(withLift.slice(withLift.indexOf("stu-add-parts")));
+    expect(offered).not.toContain("Activation");
+    expect(offered).toContain("Power");
+    // No prompt (no lift): Activation is one of the parts on offer.
+    expect(text(renderBuilder("/studio/build/new").slice(renderBuilder("/studio/build/new").indexOf("stu-add-parts")))).toContain("Activation");
+  });
+});

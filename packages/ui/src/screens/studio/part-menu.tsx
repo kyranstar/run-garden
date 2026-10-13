@@ -176,7 +176,7 @@ export function PartMenu({
               multiline
               maxLength={160}
               value={part.why ?? ""}
-              placeholder={`Why this ${label(part.purpose).toLowerCase()}`}
+              placeholder="Why this part"
               onCommit={(text) => patch({ why: text.trim() ? text.trim() : undefined })}
             />
           </label>
