@@ -257,7 +257,7 @@ describe("suggestions, once a part has a move", () => {
     const names = warmup.slice(warmup.indexOf('<ul class="stu-sug-names"'), warmup.indexOf("</ul>", warmup.indexOf('<ul class="stu-sug-names"')));
     const items = names.split("<li>").slice(1);
     expect(items.length).toBeGreaterThan(1);
-    for (const li of items) expect((li.match(/class="term"/g) ?? []).length).toBe(1);
+    for (const li of items) expect((li.match(/class="term(?: tap-pad)?"/g) ?? []).length).toBe(1);
     expect(names).not.toContain("stu-sep");
     expect(names).not.toContain("·");
     const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
@@ -284,15 +284,16 @@ describe("suggestions, once a part has a move", () => {
 describe("Stage 2 whole-branch review: the 44 px floor and activation offered once (M6, M7)", () => {
   const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
 
-  it("the Goals link is a 44 px box of its own; a part's name and a suggested name grow their hit area on a touch screen", () => {
+  it("the Goals link is a 44 px box of its own; a part's name and a suggested name wear the app's pad, their rows granting it room", () => {
     expect(css).toMatch(/\.stu-build-goals-edit \{[^}]*display: inline-flex;[^}]*min-width: var\(--tap\);[^}]*min-height: var\(--tap\);/);
-    const coarse = css.slice(css.indexOf("@media (pointer: coarse) {\n  .stu-part-name .term,"));
-    expect(coarse.startsWith("@media (pointer: coarse)")).toBe(true);
-    const block = coarse.slice(0, coarse.indexOf("\n}\n") + 3);
-    expect(block).toMatch(/\.stu-part-name \.term::after,\s*\.stu-sug-names \.term::after \{[^}]*height: var\(--tap\);[^}]*\}/);
-    expect(block).toMatch(/width: max\(100%, var\(--tap\)\)/);
-    // The names' rows part far enough that one name's area never reaches into the next row's.
-    expect(block).toMatch(/\.stu-sug-names \{\s*row-gap: var\(--space-7\);/);
+    const html = renderBuilder("/studio/build/new", { draft: draft(into(0, "catCow")) });
+    // The part names and the suggested names are terms with the pad (44 px, clamped to what the row grants).
+    expect(html).toMatch(/<span class="stu-part-name eyebrow"><span class="term-wrap"><button type="button" class="term tap-pad"/);
+    const names = html.slice(html.indexOf('<ul class="stu-sug-names"'), html.indexOf("</ul>", html.indexOf('<ul class="stu-sug-names"')));
+    expect((names.match(/class="term tap-pad"/g) ?? []).length).toBeGreaterThan(1);
+    // …and the containers say how far a pad may reach: the names' rows part by exactly that much.
+    expect(css).toMatch(/\.stu-sug-names \{[^}]*--tap-clear: var\(--space-5\);[^}]*gap: var\(--tap-clear\) var\(--space-2\);/);
+    expect(css).toMatch(/\.stu-part-head \{[^}]*--tap-clear: var\(--space-5\);/);
   });
 
   it("while the activation prompt is shown, Add a part doesn't offer Activation a second time", () => {

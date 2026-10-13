@@ -10009,10 +10009,14 @@ a.stu-qs:hover {
   min-width: 0;
 }
 .stu-part-head {
+  /* The part's name (a term, `tap-pad`) reaches no further than the head row's own height leaves it; sideways, the
+     8 px beside it. (One row: the row gap only says what the pad may reach.) */
+  --tap-clear: var(--space-5);
+  --tap-clear-x: var(--space-4);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
+  gap: var(--tap-clear) var(--space-4);
   min-width: 0;
   border-bottom: 1px solid var(--border);
 }
@@ -10496,11 +10500,15 @@ textarea.stu-field {
   overflow-wrap: anywhere;
   text-align: left;
 }
+/* Each name is a word that explains itself, its hit area the app's pad (`tap-pad`): the rows part by the clearance they
+   grant, so one name's area never reaches into the next row's; sideways the names sit close, and say so. */
 .stu-sug-names {
+  --tap-clear: var(--space-5);
+  --tap-clear-x: var(--space-2);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--tap-clear) var(--space-2);
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -10534,28 +10542,6 @@ textarea.stu-field {
 }
 .stu-sug-add--chip:hover .stu-sug-chip {
   background: var(--green-soft);
-}
-/* On a touch screen, a word too small to tap — a part's name, a suggested name (each opens what it means) — grows only
-   its hit area: 44 px tall and at least as wide, centred on the word, which stays its size. The suggested names' rows
-   part far enough that one name's area never reaches into the next row's. */
-@media (pointer: coarse) {
-  .stu-part-name .term,
-  .stu-sug-names .term {
-    position: relative;
-  }
-  .stu-part-name .term::after,
-  .stu-sug-names .term::after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: max(100%, var(--tap));
-    height: var(--tap);
-    transform: translate(-50%, -50%);
-  }
-  .stu-sug-names {
-    row-gap: var(--space-7);
-  }
 }
 /* A planned workout that can't change: its rows are words, not buttons. */
 .stu-item--still {

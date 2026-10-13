@@ -941,7 +941,7 @@ function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[
       <ul className="stu-sug-names" aria-labelledby={hid}>
         {recs.map(({ rec, why }) => (
           <li key={rec.id}>
-            <Tooltip term={rec.name} tip={sentence(why)} />
+            <Tooltip term={rec.name} tip={sentence(why)} className="tap-pad" />
           </li>
         ))}
         {/* The row's last chip, wrapping with the names: never a ＋ left alone on a line of its own. */}
@@ -991,7 +991,7 @@ function PartBlock({
     <section className="stu-part" data-part={index} aria-labelledby={hid}>
       <div className="stu-part-head">
         <h2 id={hid} className="stu-part-title">
-          <span className="stu-part-name eyebrow">{tip ? <Tooltip term={name} tip={tip} /> : name}</span>
+          <span className="stu-part-name eyebrow">{tip ? <Tooltip term={name} tip={tip} className="tap-pad" /> : name}</span>
           {meta ? <span className="stu-part-meta">{meta}</span> : null}
         </h2>
         {readOnly ? null : (
