@@ -524,3 +524,16 @@ describe("the list row's dose (Stage 2 whole-branch review M3)", () => {
     if (warm) expect(doseLine(warm)).not.toMatch(/ × /);
   });
 });
+
+describe("a refusal says what to do next (Stage 2 whole-branch review M8)", () => {
+  it("not today, a day passed, offline", async () => {
+    const { refusalText } = await import("../src/screens/studio/use-build-flows.js");
+    const { ApiError } = await import("@rg/api-client");
+    const err = (status: number, body: unknown) => new ApiError(status, body as never);
+    expect(refusalText(err(409, { error: "not_today" }), "start")).toBe("This workout isn't today's — schedule it for today to start it.");
+    expect(refusalText(err(422, { error: "past_date" }), "schedule")).toBe("That day has passed — pick today or a later day.");
+    expect(refusalText(err(409, { error: "stale_revision" }), "save")).toBe("This workout changed elsewhere — reload it to see the new version.");
+    expect(refusalText(new TypeError("Failed to fetch"), "start")).toBe("Starting needs a connection — try again once you're online.");
+    expect(refusalText(new TypeError("Failed to fetch"), "save")).toBe("Saving needs a connection — try again once you're online.");
+  });
+});

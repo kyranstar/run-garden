@@ -14,7 +14,7 @@
 import { deriveDoc, quickStartDoc, type QuickStart, type QuickStartKind } from "@rg/workout";
 import { EXERCISES, type CheckReading } from "@rg/exercise-library";
 import type { TemplateDto } from "@rg/api-client";
-import { CATEGORY_LABELS, formatShortDate } from "../../components.js";
+import { CATEGORY_LABELS, formatShortDate, localTodayGuess } from "../../components.js";
 import { addTargetHref } from "./add-model.js";
 import { buildCtxOf, suggestCtxOf } from "./build-model.js";
 import { quickStarts, type StudioCtx } from "./model.js";
@@ -111,11 +111,19 @@ export interface QuickTile {
   href: string;
 }
 
-/** The home's quick starts: the built-in ones on offer, then the athlete's pinned templates that can be opened. */
+/**
+ * The home's quick starts: the built-in ones on offer, then the athlete's pinned templates that can be opened. A
+ * built-in tile says the minutes of the very workout it opens today (`quickStartFor`) — what the builder, then Today and
+ * Plan, say of it — never a nominal length.
+ */
 export function quickTiles(ctx: StudioCtx, templates: readonly TemplateDto[] = []): QuickTile[] {
   const own = sortTemplates(templates.filter((t) => t.pinned && t.doc !== null));
+  const minutesOf = (kind: QuickStartKind): number | null => {
+    const made = quickStartFor(kind, ctx, ctx.today ?? localTodayGuess());
+    return "doc" in made ? deriveDoc(made.doc, EXERCISES).estimatedMinutes : null;
+  };
   return [
-    ...quickStarts(ctx).map((q) => ({ key: q.kind, title: q.title, minutes: q.minutes, href: quickHref(q.kind) })),
+    ...quickStarts(ctx).map((q) => ({ key: q.kind, title: q.title, minutes: minutesOf(q.kind), href: quickHref(q.kind) })),
     ...own.map((t) => ({ key: `template:${t.id}`, title: t.name, minutes: templateShape(t).minutes, href: templateHref(t.id) })),
   ];
 }

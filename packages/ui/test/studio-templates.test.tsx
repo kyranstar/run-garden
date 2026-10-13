@@ -132,14 +132,16 @@ describe("the home's quick starts", () => {
   const tiles = (html: string) => [...html.matchAll(/<a class="stu-qs[^"]*" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [m[1]!, text(m[2]!)]);
 
   it("every tile is a link to the builder, pre-filled; condition care only while a profile with care is on", () => {
-    expect(tiles(quick())).toEqual([
-      ["/studio/build/quick/desk_reset", "Desk reset 8 min"],
-      ["/studio/build/quick/hip_opener", "Hip opener 10 min"],
-      // Its visible word, then what it opens for a screen reader.
-      ["/studio/templates", "Yours : your templates"],
-    ]);
+    const plain = tiles(quick());
+    expect(plain.map(([href]) => href)).toEqual(["/studio/build/quick/desk_reset", "/studio/build/quick/hip_opener", "/studio/templates"]);
+    // Each built-in tile says the minutes of the workout it opens today.
+    expect(plain[0]![1]).toMatch(/^Desk reset \d+ min$/);
+    expect(plain[1]![1]).toMatch(/^Hip opener \d+ min$/);
+    // Its visible word, then what it opens for a screen reader.
+    expect(plain[2]![1]).toBe("Yours : your templates");
     const cared = tiles(quick({ library: libraryDto({ tmj: true }) }));
-    expect(cared[0]).toEqual(["/studio/build/quick/condition_care", "Jaw care 5 min"]);
+    expect(cared[0]![0]).toBe("/studio/build/quick/condition_care");
+    expect(cared[0]![1]).toMatch(/^Jaw care \d+ min$/);
     expect(cared).toHaveLength(4);
   });
 

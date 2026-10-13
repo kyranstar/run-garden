@@ -48,14 +48,14 @@ describe("the Studio home", () => {
     expect(html).not.toContain("stu-list");
   });
 
-  it("quick starts: desk reset and hip opener with their lengths; condition care only with a profile on", () => {
+  it("quick starts: desk reset and hip opener with their lengths (the workout each opens today); condition care only with a profile on", () => {
     const plain = text(section(home(), "Quick starts"));
-    expect(plain).toContain("Desk reset 8 min");
-    expect(plain).toContain("Hip opener 10 min");
+    expect(plain).toMatch(/Desk reset \d+ min/);
+    expect(plain).toMatch(/Hip opener \d+ min/);
     expect(plain).not.toContain("Jaw care");
     const cared = text(section(home({ library: libraryDto({ tmj: true }) }), "Quick starts"));
     // The profile's own care block names it, and it comes first.
-    expect(cared.indexOf("Jaw care 5 min")).toBeGreaterThan(-1);
+    expect(cared).toMatch(/Jaw care \d+ min/);
     expect(cared.indexOf("Jaw care")).toBeLessThan(cared.indexOf("Desk reset"));
   });
 

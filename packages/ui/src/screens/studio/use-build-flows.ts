@@ -50,7 +50,9 @@ export type Flow =
   | { step: "swaps"; session: SessionDto; notes?: string[] }
   | { step: "refused"; text: string }
   /** Started, but this device could not keep it. */
-  | { step: "notKept"; workoutId: string };
+  | { step: "notKept"; workoutId: string }
+  /** Start now of a quick start or template today already holds, still to finish: that one is offered (Continue). */
+  | { step: "again"; workout: DocWorkoutDto };
 
 export const IDLE: Flow = { step: "idle" };
 
@@ -72,21 +74,25 @@ export function refusalText(e: unknown, what: "start" | "schedule" | "save"): st
   if (e instanceof ApiError) {
     const body = (e.body ?? {}) as { error?: string; issues?: DocIssueDto[]; message?: string };
     const issue = body.issues?.find((i) => i.severity === "error")?.message;
-    if (body.error === "invalid_doc" || body.error === "gated" || body.error === "too_large") return issue ?? "This workout can't be used as it is.";
+    if (body.error === "invalid_doc" || body.error === "gated" || body.error === "too_large") return issue ?? "This workout can't be used as it is — change it, then try again.";
     if (body.error === "run_unsupported") return body.message ?? "Runs can't be planned in the Studio yet.";
-    if (body.error === "past_date") return "That day has passed.";
-    if (body.error === "stale_revision") return "This workout changed elsewhere.";
-    if (body.error === "not_editable") return "This workout can't be changed now.";
+    if (body.error === "past_date") return "That day has passed — pick today or a later day.";
+    if (body.error === "stale_revision") return "This workout changed elsewhere — reload it to see the new version.";
+    if (body.error === "not_editable") return "This workout can't be changed now — it's under way or done. Save it as a template to change a copy.";
     if (body.error === "too_many") return "You have as many templates as you can keep. Delete one first.";
-    if (body.error === "not_today") return "This workout isn't today's.";
-    if (e.status === 404) return "That's gone now.";
+    if (body.error === "not_today") return "This workout isn't today's — schedule it for today to start it.";
+    if (e.status === 404) return "That's gone now — go back to the Studio to start another.";
     return what === "start" ? "Couldn't start it. Try again." : what === "schedule" ? "Couldn't schedule it. Try again." : "Couldn't save it. Try again.";
   }
-  return what === "start" ? "Starting needs a connection." : what === "schedule" ? "Scheduling needs a connection." : "Saving needs a connection.";
+  return what === "start"
+    ? "Starting needs a connection — try again once you're online."
+    : what === "schedule"
+      ? "Scheduling needs a connection — try again once you're online."
+      : "Saving needs a connection — try again once you're online.";
 }
 
-const errorBody = (e: unknown): { error?: string; session?: SessionDto } | null =>
-  e instanceof ApiError ? ((e.body ?? null) as { error?: string; session?: SessionDto } | null) : null;
+const errorBody = (e: unknown): { error?: string; session?: SessionDto; workout?: DocWorkoutDto } | null =>
+  e instanceof ApiError ? ((e.body ?? null) as { error?: string; session?: SessionDto; workout?: DocWorkoutDto } | null) : null;
 
 /** "Scheduled for today at 4 PM." */
 function scheduledText(w: DocWorkoutDto, today: string): string {
@@ -128,6 +134,8 @@ export interface BuildFlowsIn {
   newNotes: (ws: readonly DocIssueDto[]) => string[] | undefined;
   /** The server's readings for the day (a session read), kept. */
   noteChecks: (s: SessionDto) => void;
+  /** Focus goes to the line that says what a Schedule or a save did (its link, else its words), once it shows. */
+  focusStatus: () => void;
 }
 
 /**
@@ -172,6 +180,7 @@ export function useBuildFlows({
   refreshPlan,
   newNotes,
   noteChecks,
+  focusStatus,
 }: BuildFlowsIn) {
   /** Changed since it was saved: the two read alike through the schema (its key order, its empty parts dropped). */
   const dirtyOf = (l: Loaded | null): boolean =>
@@ -205,7 +214,7 @@ export function useBuildFlows({
   const userId = () => qc.getQueryData<MeResponse>(["me"])?.userId ?? null;
   const lock = async (s: SessionDto, retried = false): Promise<void> => {
     if (!s.build) {
-      setFlow({ step: "refused", text: "This workout couldn't be built." });
+      setFlow({ step: "refused", text: "This workout couldn't be built — try again, or change it and try again." });
       return;
     }
     setFlow({ step: "busy", what: "Starting…" });
@@ -280,6 +289,37 @@ export function useBuildFlows({
         setFlow(IDLE);
         return;
       }
+      // Today already holds this quick start or template, still to finish: that one, not a second (I3).
+      const held = errorBody(e)?.error === "started_today" ? errorBody(e)?.workout : undefined;
+      if (held) {
+        setFlow({ step: "again", workout: held });
+        return;
+      }
+      setFlow({ step: "refused", text: refusalText(e, "start") });
+    }
+  };
+  /** Continue the one today already holds: back into its session when it is under way, else started now. */
+  const continueToday = async (w: DocWorkoutDto): Promise<void> => {
+    if (w.contentState === "started") {
+      setFlow(IDLE);
+      navigate(`/session/${encodeURIComponent(w.id)}`);
+      return;
+    }
+    setFlow({ step: "busy", what: "Starting…" });
+    try {
+      const built = await api.buildSession(w.id, {});
+      noteChecks(built);
+      const info = built.build?.fromDoc;
+      if (info?.blocked.length) {
+        setFlow({ step: "refused", text: info.blocked[0]!.message });
+        return;
+      }
+      if (info?.swaps.length) {
+        setFlow({ step: "swaps", session: built });
+        return;
+      }
+      await lock(built);
+    } catch (e) {
       setFlow({ step: "refused", text: refusalText(e, "start") });
     }
   };
@@ -342,6 +382,7 @@ export function useBuildFlows({
       if (cur.key === "new" || source.kind === "quick") adopt(res.workout, sent);
       setScheduling(false);
       setStatus({ text: scheduledText(res.workout, today), link: { to: "/plan", label: "See it in Plan" }, notes: newNotes(res.warnings) });
+      focusStatus();
       return null;
     } catch (e) {
       return refusalText(e, "schedule");
@@ -385,6 +426,7 @@ export function useBuildFlows({
       void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
       if (live.current) setLoaded({ ...live.current, baseline: d, base: res.template.updatedAt });
       setStatus({ text: "Saved.", notes: newNotes(res.warnings) });
+      focusStatus();
     } catch (e) {
       if (errorBody(e)?.error === "stale_revision") {
         setStale(true);
@@ -407,6 +449,7 @@ export function useBuildFlows({
       refreshPlan();
       void qc.invalidateQueries({ queryKey: workoutDocQuery(id) });
       setStatus({ text: "Saved.", notes: newNotes(res.warnings), ...(res.watchHasOlder ? { watch: { workoutId: id, minutes: res.workout.minutes } } : {}) });
+      focusStatus();
     } catch (e) {
       if (errorBody(e)?.error === "stale_revision") {
         setStale(true);
@@ -458,5 +501,5 @@ export function useBuildFlows({
     setFlow({ step: "idle" });
   };
 
-  return { dirtyOf, lock, startNow, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver };
+  return { dirtyOf, lock, startNow, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver };
 }

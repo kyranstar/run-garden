@@ -77,6 +77,54 @@ export class RunUnsupportedError extends Error {
 }
 
 /** A workout cannot be made for a day gone. */
+/**
+ * Start now of a quick start or a template that today already holds, not done or skipped: the athlete is offered that
+ * one (Continue) rather than a second for the same day (`POST /api/workouts` with `startNow`, 409 `started_today`).
+ */
+export class StartedTodayError extends Error {
+  constructor(readonly workout: DocWorkoutDto) {
+    super("started_today");
+  }
+}
+
+/** What a document is a start of, to know it again on the same day: a template's, or a quick start's kind; else null. */
+function startOf(doc: WorkoutDoc): string | null {
+  if (doc.basedOn?.kind === "template") return `template:${doc.basedOn.id}`;
+  return doc.source.ref?.startsWith("quick_start:") ? doc.source.ref : null;
+}
+
+/**
+ * Today's row from the same quick start or template, still to finish (not done, skipped or missed, not gone): one read
+ * of today's document rows, only for a document that is such a start.
+ */
+async function startedToday(db: Db, userId: string, doc: WorkoutDoc, today: string): Promise<DocWorkoutDto | null> {
+  const start = startOf(doc);
+  if (!start) return null;
+  const pw = plannedWorkouts;
+  const rows = await db
+    .select({
+      id: pw.id, effectiveDate: pw.effectiveDate, effectiveTime: pw.effectiveTime, title: pw.title, category: pw.category, sport: pw.sport,
+      origin: pw.origin, contentState: pw.contentState, completionState: pw.completionState, workoutDocRev: pw.workoutDocRev,
+      workoutDoc: sql<string | null>`${pw.workoutDoc}`,
+    })
+    .from(pw)
+    .where(
+      and(
+        eq(pw.userId, userId),
+        eq(pw.effectiveDate, today),
+        isNull(pw.archivedAt),
+        inArray(pw.origin, [...DOC_ORIGINS]),
+        notInArray(pw.completionState, ["completed", "skipped", "missed"]),
+        ne(pw.contentState, "done"),
+      ),
+    );
+  for (const row of rows) {
+    const theirs = parseStoredWorkoutDoc(row.workoutDoc);
+    if (theirs && startOf(theirs) === start) return dtoOf(row, theirs, deriveDoc(theirs, EXERCISES).estimatedMinutes);
+  }
+  return null;
+}
+
 export class PastDateError extends Error {
   constructor() {
     super("past_date");
@@ -344,8 +392,15 @@ export async function createDocWorkout(
   if (input.date < ctx.today) throw new PastDateError();
   const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: input.date, today: ctx.today, workoutId: id });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
+  // Start now of what today already holds, still to finish: that one is offered instead of a second (I3).
+  if (input.startNow && input.date === ctx.today) {
+    const same = await startedToday(db, userId, doc, ctx.today);
+    if (same) throw new StartedTodayError(same);
+  }
 
-  const seconds = bookedSeconds(derived.estimatedMinutes * 60);
+  // Its length is the document's own (what the builder, Today and Plan say); the calendar books the rounded block.
+  const seconds = derived.estimatedMinutes * 60;
+  const booked = bookedSeconds(seconds);
   const date = input.date;
   // Every column, as placement writes a slot's (P1-R12).
   const row = {
@@ -367,7 +422,7 @@ export async function createDocWorkout(
     sourceVersion: null,
     sourceEstimatedDurationSeconds: null,
     fallbackEstimatedDurationSeconds: seconds,
-    calendarBlockDurationSeconds: seconds,
+    calendarBlockDurationSeconds: booked,
     durationEstimate: null,
     expectedDistanceMeters: null,
     stageSummary: null,
@@ -502,7 +557,9 @@ export async function reviseDocWorkout(
   const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: row.effectiveDate, today: ctx.today, workoutId });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
 
-  const seconds = bookedSeconds(derived.estimatedMinutes * 60);
+  // Its length is the document's own; the calendar books the rounded block (I4).
+  const seconds = derived.estimatedMinutes * 60;
+  const booked = bookedSeconds(seconds);
   const text = storedDocText(doc);
   await runAtomically(db, [
     db
@@ -513,9 +570,9 @@ export async function reviseDocWorkout(
         category: derived.category,
         sport: derived.discipline,
         fallbackEstimatedDurationSeconds: seconds,
-        calendarBlockDurationSeconds: seconds,
+        calendarBlockDurationSeconds: booked,
         // The event shows the title and the length: a written one is asked to update.
-        calendarSyncState: sql`case when ${pw.calendarSyncState} = 'synced' and (${pw.title} is not ${doc.title} or ${pw.calendarBlockDurationSeconds} is not ${seconds} or ${pw.category} is not ${derived.category}) then 'pending' else ${pw.calendarSyncState} end`,
+        calendarSyncState: sql`case when ${pw.calendarSyncState} = 'synced' and (${pw.title} is not ${doc.title} or ${pw.calendarBlockDurationSeconds} is not ${booked} or ${pw.category} is not ${derived.category}) then 'pending' else ${pw.calendarSyncState} end`,
         updatedAt: ctx.now,
       })
       .where(
@@ -542,7 +599,7 @@ export async function reviseDocWorkout(
     throw new NotEditableError();
   }
   // A new length can overlap the day's other plans: the collision pass (a pinned time stays), and the time it leaves.
-  const moved = seconds !== row.calendarBlockDurationSeconds
+  const moved = booked !== row.calendarBlockDurationSeconds
     ? await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now })
     : [];
   const rev = after.workoutDocRev ?? null;
@@ -558,7 +615,7 @@ export async function reviseDocWorkout(
     doc,
     derived.estimatedMinutes,
   );
-  const calendarChanged = row.title !== doc.title || row.calendarBlockDurationSeconds !== seconds || row.category !== derived.category;
+  const calendarChanged = row.title !== doc.title || row.calendarBlockDurationSeconds !== booked || row.category !== derived.category;
   return { workout, rev, watchHasOlder: await watchHoldsOlder(db, workoutId, rev), warnings, calendarChanged };
 }
 

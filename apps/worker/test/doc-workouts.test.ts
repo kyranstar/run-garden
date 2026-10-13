@@ -149,9 +149,10 @@ describe("POST /api/workouts", () => {
       workoutDocRev: 1,
     });
     expect(JSON.parse(row.workoutDoc!)).toEqual(doc);
-    // The calendar books the derived length, rounded up to five minutes, as a built slot's is.
+    // The calendar books the derived length, rounded up to five minutes, as a built slot's is; the workout's own length
+    // is the document's, exactly (what the builder, Today and Plan say) — I4.
     expect(row.calendarBlockDurationSeconds).toBe(Math.max(300, Math.ceil((derived.estimatedMinutes * 60) / 300) * 300));
-    expect(row.fallbackEstimatedDurationSeconds).toBe(row.calendarBlockDurationSeconds);
+    expect(row.fallbackEstimatedDurationSeconds).toBe(derived.estimatedMinutes * 60);
 
     const revs = await revisionsOf(id);
     expect(revs).toHaveLength(1);
@@ -702,5 +703,61 @@ describe("the service", () => {
     );
     const [rev] = await revisionsOf(workout.id);
     expect(rev).toMatchObject({ sourceKind: "coach", sourceRef: "proposal-1" });
+  });
+});
+
+describe("one workout, one length (Stage 2 whole-branch review I4)", () => {
+  it("its length is the document's derived minutes — made or revised — and only the calendar's block is rounded", async () => {
+    // Three minutes of moves: a block of five on the calendar, three everywhere the workout's length is said.
+    const doc = { ...calmDoc(), parts: [{ purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "bridge", dose: { sets: 1, reps: 10 } }] }] } as WorkoutDoc;
+    const minutes = deriveDoc(doc, EXERCISES).estimatedMinutes;
+    expect(minutes % 5).not.toBe(0);
+    const made = await call("POST", "/api/workouts", { date: today, doc });
+    expect(made.status).toBe(201);
+    expect(made.body.workout.minutes).toBe(minutes);
+    const row = await rowOf(made.body.workout.id);
+    expect(row.fallbackEstimatedDurationSeconds).toBe(minutes * 60);
+    expect(row.calendarBlockDurationSeconds).toBe(300);
+    // Revised to a longer one: the same rule.
+    const longer = { ...doc, parts: [{ ...doc.parts[0]!, items: [{ kind: "exercise", libraryId: "bridge", dose: { sets: 4, reps: 8, restSec: 90 } }] }] } as WorkoutDoc;
+    const longMinutes = deriveDoc(longer, EXERCISES).estimatedMinutes;
+    expect(longMinutes % 5).not.toBe(0);
+    const revised = await call("PUT", `/api/workouts/${made.body.workout.id}/doc`, { doc: longer, baseRev: 1 });
+    expect(revised.status).toBe(200);
+    const after = await rowOf(made.body.workout.id);
+    expect(after.fallbackEstimatedDurationSeconds).toBe(longMinutes * 60);
+    expect(after.calendarBlockDurationSeconds).toBe(Math.max(300, Math.ceil((longMinutes * 60) / 300) * 300));
+  });
+});
+
+describe("Start now of what today already holds (Stage 2 whole-branch review I3)", () => {
+  const quick = (kind: string): WorkoutDoc => ({ ...calmDoc({ title: "Desk reset" }), source: { kind: "studio", ref: `quick_start:${kind}` } }) as WorkoutDoc;
+  const fromTemplate = (id: string): WorkoutDoc => ({ ...calmDoc({ title: "Leg day" }), basedOn: { kind: "template", id } }) as WorkoutDoc;
+
+  it("the same quick start again today offers the one still to finish (409 started_today), never a second", async () => {
+    const first = await call("POST", "/api/workouts", { date: today, doc: quick("desk_reset"), startNow: true });
+    expect(first.status).toBe(201);
+    const again = await call("POST", "/api/workouts", { date: today, doc: quick("desk_reset"), startNow: true });
+    expect(again.status).toBe(409);
+    expect(again.body).toMatchObject({ error: "started_today", workout: { id: first.body.workout.id, title: "Desk reset", date: today } });
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.title === "Desk reset")).toHaveLength(1);
+    // Another kind is another workout.
+    expect((await call("POST", "/api/workouts", { date: today, doc: quick("hip_opener"), startNow: true })).status).toBe(201);
+  });
+
+  it("the same template again today too; a Schedule, a custom workout and a finished one are never held back", async () => {
+    const first = await call("POST", "/api/workouts", { date: today, doc: fromTemplate("t1"), startNow: true });
+    expect(first.status).toBe(201);
+    expect((await call("POST", "/api/workouts", { date: today, doc: fromTemplate("t1"), startNow: true })).body).toMatchObject({ error: "started_today", workout: { id: first.body.workout.id } });
+    // A Schedule of it is a plan of the athlete's own: made.
+    expect((await call("POST", "/api/workouts", { date: today, doc: fromTemplate("t1") })).status).toBe(201);
+    // A custom workout is never a "same one".
+    expect((await call("POST", "/api/workouts", { date: today, doc: calmDoc(), startNow: true })).status).toBe(201);
+    expect((await call("POST", "/api/workouts", { date: today, doc: calmDoc(), startNow: true })).status).toBe(201);
+    // Done (or skipped): a second, deliberate start is a new workout.
+    await db.update(plannedWorkouts).set({ completionState: "completed", contentState: "done" }).where(eq(plannedWorkouts.id, first.body.workout.id));
+    const scheduled = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.id !== first.body.workout.id && r.origin === "template");
+    for (const r of scheduled) await db.update(plannedWorkouts).set({ completionState: "skipped" }).where(eq(plannedWorkouts.id, r.id));
+    expect((await call("POST", "/api/workouts", { date: today, doc: fromTemplate("t1"), startNow: true })).status).toBe(201);
   });
 });

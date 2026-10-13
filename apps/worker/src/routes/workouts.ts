@@ -39,6 +39,7 @@ import {
   reviseDocWorkout,
   RunUnsupportedError,
   StaleRevisionError,
+  StartedTodayError,
 } from "../services/doc-workouts.js";
 import { RestoreInProgressError } from "../services/programs.js";
 import { plannedWorkoutColumns, rowMinutes } from "../services/workout-doc-parity.js";
@@ -69,6 +70,7 @@ const reviseSchema = z.object({ doc: docField, baseRev: z.number().int().min(0) 
 function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof DocInvalidError) return c.json({ error: "invalid_doc", issues: e.issues }, 422);
   if (e instanceof PastDateError) return c.json({ error: "past_date" }, 422);
+  if (e instanceof StartedTodayError) return c.json({ error: "started_today", workout: e.workout }, 409);
   if (e instanceof RunUnsupportedError) return c.json({ error: "run_unsupported", message: "Runs can't be planned in the Studio yet." }, 422);
   if (e instanceof DocWorkoutNotFoundError) return c.json({ error: "not_found" }, 404);
   if (e instanceof NotEditableError) return c.json({ error: "not_editable" }, 409);

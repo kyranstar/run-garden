@@ -133,6 +133,8 @@ interface Server {
   tplPut?: Array<"stale" | "ok">;
   /** PUT /api/workouts/:id/doc says the watch holds an older copy. */
   watchHasOlder?: boolean;
+  /** POST /api/workouts with `startNow` answers 409 `started_today` with this row (I3). */
+  startedToday?: { id: string; contentState: "outline" | "built" | "started" };
 }
 
 function serve(s: Server = {}): Call[] {
@@ -169,6 +171,13 @@ function serve(s: Server = {}): Call[] {
         const a = s.revise?.[Math.min(revised++, (s.revise?.length ?? 1) - 1)] ?? "ok";
         if (a !== "ok") return json({ error: a.error, rev: body.baseRev + 1 }, a.status);
         return json({ workout: { id: doc[1], date: TODAY, time: "18:00", title: body.doc.title, docRev: body.baseRev + 1 }, rev: body.baseRev + 1, watchHasOlder: s.watchHasOlder ?? false, warnings: [] });
+      }
+      if (method === "POST" && path === "/api/workouts" && body.startNow && s.startedToday) {
+        const w = s.startedToday;
+        return json(
+          { error: "started_today", workout: { id: w.id, date: TODAY, time: "09:00", title: body.doc.title, intentSummary: "", category: "strength", sport: "strength", origin: "studio", contentState: w.contentState, completionState: "scheduled", docRev: 1, minutes: 8 } },
+          409,
+        );
       }
       if (method === "POST" && path === "/api/workouts") {
         return json(
@@ -1124,5 +1133,90 @@ describe("Stage 2 whole-branch review: a part's why, and activation offered once
     expect(chips()).not.toContain("Activation");
     await click(button("No activation part"), "✕");
     expect(chips()).toContain("Activation");
+  });
+});
+
+describe("Start now of what today already holds (Stage 2 whole-branch review I3)", () => {
+  it("under way: says so, and Continue it goes back into that session — no second workout", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    const calls = serve({ startedToday: { id: "w-old", contentState: "started" } });
+    mount("/studio/build/new");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("You've started this today already."), "the offer");
+    await click(button("Continue it"), "Continue it");
+    await until(() => text().includes("the player"), "the player");
+    expect(where).toBe("/session/w-old");
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/api/workouts")).toHaveLength(1);
+    // Under way already: nothing is built or started again — the player picks it up where it is.
+    expect(calls.some((c) => c.path.startsWith("/api/sessions/w-old/"))).toBe(false);
+  });
+
+  it("not started yet: Continue it builds and starts that one", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    const calls = serve({ startedToday: { id: "w-old", contentState: "built" } });
+    mount("/studio/build/new");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("Today already has this one."), "the offer");
+    await click(button("Continue it"), "Continue it");
+    await until(() => text().includes("the player"), "the player");
+    expect(calls.some((c) => c.path === "/api/sessions/w-old/build")).toBe(true);
+    expect(calls.some((c) => c.path === "/api/sessions/w-old/start")).toBe(true);
+  });
+
+  it("Not now leaves the builder as it was", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve({ startedToday: { id: "w-old", contentState: "started" } });
+    mount("/studio/build/new");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!button("Not now"), "Not now");
+    await click(button("Not now"), "Not now");
+    expect(text()).not.toContain("You've started this today already.");
+    expect(startButton()!.disabled).toBe(false);
+  });
+});
+
+describe("focus after Schedule and Save changes (Stage 2 whole-branch review M4)", () => {
+  it("scheduled: focus is on See it in Plan — the Schedule button is gone", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 14, 20) });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      serve();
+      mount("/studio/build/new");
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await press(button("Schedule…"), "Schedule…");
+      await press(buttons(dialog("Schedule")!).find((b) => b.textContent === "Schedule"), "Schedule");
+      await until(() => text().includes("Scheduled for today"), "the line");
+      await settle(20);
+      expect(document.activeElement?.textContent).toBe("See it in Plan");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a template saved: focus is on the line that says so", async () => {
+    const t1: TemplateDto = { id: "t1", name: "Thursday lift", doc: storedDoc("Thursday lift"), pinned: false, uses: 0, lastUsedAt: null, createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", minutes: 20, discipline: "strength" };
+    serve({ templates: [[t1]], tplPut: ["ok"] });
+    mount("/studio/build/template/t1");
+    await until(() => titleField()?.value === "Thursday lift", "the template");
+    await click(effort("develop"), "Develop");
+    await press(button("Save"), "Save");
+    await press([...document.querySelectorAll('[role="menuitem"]')].find((m) => m.textContent === "Save template"), "Save template");
+    await until(() => text().includes("Saved."), "Saved.");
+    await settle(20);
+    expect(document.activeElement).toBe(document.querySelector(".stu-build-status-text"));
+  });
+
+  it("saved: focus is on the line that says so — Save changes greys out", async () => {
+    serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [plannedRow("w1", "2026-10-15")] });
+    mount("/studio/build/workout/w1");
+    await until(() => titleField()?.value === "Thursday lift", "the workout");
+    await click(effort("develop"), "Develop");
+    await press(button("Save changes"), "Save changes");
+    await until(() => text().includes("Saved."), "Saved.");
+    await settle(20);
+    expect(document.activeElement).toBe(document.querySelector(".stu-build-status-text"));
   });
 });

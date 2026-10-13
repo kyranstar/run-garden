@@ -350,7 +350,7 @@ function Builder({ source }: { source: BuildSource }) {
     if (Object.keys(known).length) qc.setQueryData<Record<string, CheckReading>>(readingsQuery(today), (old) => ({ ...(old ?? {}), ...known }));
   };
 
-  const { dirtyOf, lock, startNow, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver } = useBuildFlows({
+  const { dirtyOf, lock, startNow, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver } = useBuildFlows({
     source,
     key,
     tplId,
@@ -381,6 +381,10 @@ function Builder({ source }: { source: BuildSource }) {
     refreshPlan,
     newNotes,
     noteChecks,
+    // The button that was pressed goes (Schedule… becomes Save changes; Save changes greys): focus to what happened.
+    focusStatus: () => {
+      focusNext.current = [".stu-build-status a", ".stu-build-status-text"];
+    },
   });
 
   // ── Not ready ──
@@ -634,7 +638,7 @@ function Builder({ source }: { source: BuildSource }) {
         <div className={status ? "stu-build-status" : "stu-build-status visually-hidden"} role="status">
           {status ? (
             <>
-              <span className="stu-build-status-text">
+              <span className="stu-build-status-text" tabIndex={-1}>
                 {status.watch
                   ? [status.text, status.sent ? "Sending the new version to your watch." : "Your watch has the older version."].filter(Boolean).join(" ")
                   : status.text}
@@ -706,6 +710,12 @@ function Builder({ source }: { source: BuildSource }) {
             ) : null}
           </div>
         ) : null}
+        {flow.step === "again" ? (
+          // Mounted with its words (it answers the tap on Start): an alert, so it is heard.
+          <p className="stu-build-why" role="alert">
+            {flow.workout.contentState === "started" ? "You've started this today already." : "Today already has this one."}
+          </p>
+        ) : null}
         {flow.step === "notKept" ? (
           <p className="stu-build-error" role="alert">
             This session isn't being kept on this device. It plays while you're online, and a reload starts it again.
@@ -735,6 +745,15 @@ function Builder({ source }: { source: BuildSource }) {
                   setStatus({ text: "It stays on today's plan." });
                 }}
               >
+                Not now
+              </button>
+            </>
+          ) : flow.step === "again" ? (
+            <>
+              <button type="button" className="btn btn-primary" onClick={() => void continueToday(flow.workout)}>
+                Continue it
+              </button>
+              <button type="button" className="btn" onClick={() => setFlow(IDLE)}>
                 Not now
               </button>
             </>

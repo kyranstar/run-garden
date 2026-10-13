@@ -17,7 +17,7 @@
  * tile and Start now are two taps to a running session; a pinned template opens as itself. "Yours" opens the templates,
  * where one is pinned to join them.
  */
-import { useId, type ReactNode } from "react";
+import { useId, useMemo, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
@@ -54,6 +54,8 @@ export function StudioHome({
   // before they are read, the built-in quick starts stand alone and the link has no count.
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000 });
   const count = templates.data?.templates.length;
+  // Each built-in tile builds today's workout to say its minutes: once per change of what it is built with.
+  const tiles = useMemo(() => quickTiles(ctx, templates.data?.templates), [ctx, templates.data]);
   return (
     <div className="stu-home">
       {/* Stage 3: the coach's composer ("What do you want to do?" · Now · Later today) renders in this slot. */}
@@ -61,7 +63,7 @@ export function StudioHome({
 
       <Section title="Quick starts">
         <div className="stu-quick">
-          {quickTiles(ctx, templates.data?.templates).map((qs) => (
+          {tiles.map((qs) => (
             <Link key={qs.key} className="stu-qs" to={qs.href}>
               <span className="stu-qs-name">{qs.title}</span>
               {qs.minutes !== null ? (
