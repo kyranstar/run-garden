@@ -165,7 +165,9 @@ function Builder({ source }: { source: BuildSource }) {
   const tplId = source.kind === "template" ? source.id : null;
   const wid = source.kind === "workout" ? source.id : null;
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, enabled: tplId !== null, staleTime: 30_000 });
-  const stored = useQuery({ queryKey: workoutDocQuery(wid ?? ""), queryFn: () => api.workoutDoc(wid!), enabled: wid !== null, staleTime: 0 });
+  // The stored document: a planned workout's own, or the one "Do it again" copies.
+  const docId = source.kind === "workout" || source.kind === "again" ? source.id : null;
+  const stored = useQuery({ queryKey: workoutDocQuery(docId ?? ""), queryFn: () => api.workoutDoc(docId!), enabled: docId !== null, staleTime: 0 });
   const planned = useQuery({
     queryKey: rowQuery(today),
     queryFn: () => api.workouts(addDays(today, -ROW_DAYS), addDays(today, ROW_DAYS)),
@@ -195,6 +197,8 @@ function Builder({ source }: { source: BuildSource }) {
     if (source.kind === "quick") return made && "doc" in made ? { key, editor: startEditing(made.doc), baseline: null, rev: null, row: null } : null;
     if (source.kind === "template") return template?.doc ? { key, editor: startEditing(template.doc), baseline: template.doc, rev: null, row: null, base: template.updatedAt } : null;
     const r = stored.data;
+    // Do it again: a copy, as a new workout — nothing saved yet, so nothing to be "changed since".
+    if (source.kind === "again") return r?.doc ? { key, editor: startEditing(r.doc), baseline: null, rev: null, row: null } : null;
     return r?.doc ? { key, editor: startEditing(r.doc), baseline: r.doc, rev: r.rev, row: null } : null;
   };
   // Opened in the first render when its read is already here (the device's draft, a cached template), else once it is.
@@ -393,6 +397,9 @@ function Builder({ source }: { source: BuildSource }) {
     if (source.kind === "template") {
       if (templates.isError) problem = "Opening a template needs a connection.";
       else if (templates.isSuccess) problem = template ? "This template can't be read." : "That template is gone.";
+    } else if (source.kind === "again") {
+      if (stored.isError) problem = stored.error instanceof ApiError && stored.error.status === 404 ? "That workout is gone." : "Opening it again needs a connection.";
+      else if (stored.data && !stored.data.doc) problem = "This workout can't be opened in the Studio.";
     } else if (source.kind === "workout") {
       if (stored.isError) problem = stored.error instanceof ApiError && stored.error.status === 404 ? "That workout is gone." : "Opening a planned workout needs a connection.";
       else if (stored.data && !stored.data.doc) problem = "This workout can't be changed in the Studio.";
@@ -511,7 +518,7 @@ function Builder({ source }: { source: BuildSource }) {
           { label: "Save as a new template…", run: () => setNaming(true) },
         ]
       : // A quick start offers no "Start over": that would clear the workout being built on this device.
-        isWorkout || source.kind === "quick"
+        isWorkout || source.kind === "quick" || source.kind === "again"
         ? [{ label: "Save as template…", run: () => setNaming(true) }]
         : [
             { label: "Save as template…", run: () => setNaming(true) },

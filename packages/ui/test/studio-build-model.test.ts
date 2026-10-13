@@ -537,3 +537,10 @@ describe("a refusal says what to do next (Stage 2 whole-branch review M8)", () =
     expect(refusalText(new TypeError("Failed to fetch"), "save")).toBe("Saving needs a connection — try again once you're online.");
   });
 });
+
+describe("Do it again's address (CUJ B2)", () => {
+  it("opens a planned workout's document as the start of a new one", () => {
+    expect(sourceOfPath("/studio/build/again/w1")).toEqual({ kind: "again", id: "w1" });
+    expect(sourceOfPath("/studio/build/again/")).toBeNull();
+  });
+});

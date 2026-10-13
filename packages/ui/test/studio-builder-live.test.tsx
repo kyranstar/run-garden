@@ -1243,3 +1243,57 @@ describe("a hold to max in the item's sheet (CUJ R17)", () => {
     expect(buttons(dialog("Goblet squat")!).some((b) => b.textContent?.trim() === "To max")).toBe(false);
   });
 });
+
+describe("Do it again (CUJ B2)", () => {
+  it("opens a copy of a done workout as a new one: Start makes a new workout from it, the old one untouched", async () => {
+    const calls = serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [{ ...plannedRow("w1", "2026-10-08"), completionState: "completed" } as WorkoutDto] });
+    mount("/studio/build/again/w1");
+    await until(() => titleField()?.value === "Thursday lift", "the copy");
+    // A new workout: changeable, Start on offer, no Save changes (nothing saved yet).
+    expect(titleField().readOnly).toBe(false);
+    expect(button("Save changes")).toBeNull();
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    const made = calls.find((c) => c.method === "POST" && c.path === "/api/workouts")!;
+    expect((made.body as { doc: WorkoutDoc }).doc.title).toBe("Thursday lift");
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  it("its menu offers no Start over, which would clear the device's own draft", async () => {
+    serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }] });
+    mount("/studio/build/again/w1");
+    await until(() => titleField()?.value === "Thursday lift", "the copy");
+    await click(document.querySelector(".stu-save-btn"), "Save");
+    expect(buttons(document.querySelector(".stu-save-menu")!).map((b) => b.textContent)).toEqual(["Save as template…"]);
+  });
+
+  it("scheduled, the copy is that new planned workout in the builder — a later Start never makes a second", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 14, 20) });
+    try {
+      const calls = serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }] });
+      mount("/studio/build/again/w1");
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      await click(buttons(dialog("Schedule")!).find((b) => b.textContent === "Schedule"), "Schedule");
+      await until(() => text().includes("Scheduled for today at 4 PM."), "the line");
+      expect(where).toBe("/studio/build/workout/w-new");
+      expect(calls.filter((c) => c.method === "POST" && c.path === "/api/workouts")).toHaveLength(1);
+      expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a workout gone says so", async () => {
+    serve();
+    mount("/studio/build/again/w1");
+    await until(() => text().includes("That workout is gone."), "the problem");
+  });
+
+  it("a workout with no document of its own says it can't be opened", async () => {
+    serve({ docs: [{ doc: null as unknown as WorkoutDoc, rev: 1 }] });
+    mount("/studio/build/again/w1");
+    await until(() => text().includes("This workout can't be opened in the Studio."), "the problem");
+  });
+});

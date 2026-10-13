@@ -2279,9 +2279,26 @@ button.session-chip {
   color: var(--ink-soft);
   font-size: var(--text-sm);
 }
-/* A planned Studio workout's way into the Studio (Edit in Studio). */
+/* A planned Studio workout's way into the Studio (Edit in Studio, Remove), or a done one's (Do it again, Save as
+   template): small buttons, each padded to the floor within the room the row grants. */
 .session-edit {
+  --tap-clear: var(--space-4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tap-clear);
   margin: 0;
+}
+/* Why Start waits (today's check keeps a move out), and the moves today's check stood in for, one line each. */
+.session-refused {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+.session-swaps {
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
 }
 .session-blocks {
   display: grid;

@@ -81,7 +81,9 @@ export type BuildSource =
   | { kind: "new" }
   | { kind: "quick"; quick: QuickStartKind }
   | { kind: "template"; id: string }
-  | { kind: "workout"; id: string };
+  | { kind: "workout"; id: string }
+  /** A planned workout's document as the start of a new one ("Do it again", CUJ B2): a copy, kept nowhere yet. */
+  | { kind: "again"; id: string };
 
 /** A quick start's kind from its address; null for anything else. */
 export function quickKindOf(s: string): QuickStartKind | null {
@@ -99,7 +101,7 @@ export function sourceOfPath(pathname: string): BuildSource | null {
     const quick = quickKindOf(q[1]!);
     return quick ? { kind: "quick", quick } : null;
   }
-  const m = /^\/studio\/build\/(template|workout)\/([^/]+)\/?$/.exec(pathname);
+  const m = /^\/studio\/build\/(template|workout|again)\/([^/]+)\/?$/.exec(pathname);
   if (!m) return null;
   let id: string;
   try {
@@ -107,7 +109,7 @@ export function sourceOfPath(pathname: string): BuildSource | null {
   } catch {
     return null;
   }
-  return m[1] === "template" ? { kind: "template", id } : { kind: "workout", id };
+  return m[1] === "template" ? { kind: "template", id } : m[1] === "again" ? { kind: "again", id } : { kind: "workout", id };
 }
 
 export const sourceKey = (s: BuildSource): string => (s.kind === "new" ? "new" : s.kind === "quick" ? `quick:${s.quick}` : `${s.kind}:${s.id}`);

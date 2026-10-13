@@ -37,7 +37,7 @@ import {
   type SessionOverrides,
   type WorkoutDto,
 } from "@rg/api-client";
-import { doseText, type DoseStep, type DoseTarget } from "@rg/domain";
+import { docOriginRow, doseText, type DoseStep, type DoseTarget } from "@rg/domain";
 import { label as vocab } from "@rg/exercise-library";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
@@ -205,6 +205,33 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   // Opened from Today's row (its link says so) or from Plan: the Studio's way back returns there.
   const cameFrom = (useLocation().state as { from?: string } | null)?.from === "today" ? "today" : "plan";
   const editable = features.studio && editableWorkout(w, today);
+  // A Studio workout done with — done, or its day passed — can't change, but it can be the start of another (CUJ B2).
+  const doneWith =
+    features.studio &&
+    docOriginRow({ origin: w.origin ?? null }) &&
+    !editable &&
+    (w.completionState === "completed" || w.contentState === "done" || w.effectiveDate < today);
+  const [removing, setRemoving] = useState(false);
+  const remove = useMutation({
+    mutationFn: () => api.deleteWorkout(w.id),
+    onSuccess: () => {
+      setRemoving(false);
+      refreshPlan();
+      onClose();
+    },
+  });
+  const [templateSaid, setTemplateSaid] = useState("");
+  const saveAsTemplate = useMutation({
+    mutationFn: async () => {
+      const r = await api.workoutDoc(w.id);
+      if (!r.doc) throw new Error("no document");
+      return api.createTemplate({ name: r.doc.title, doc: r.doc });
+    },
+    onSuccess: (res) => setTemplateSaid(`Saved “${res.template.name}” as a template.`),
+    onError: (e) => setTemplateSaid(e instanceof ApiError ? "Couldn't save it as a template. Try again." : "Saving needs a connection — try again once you're online."),
+  });
+  /** Start refused because today's check keeps a move out (409 `gated`): said, never swallowed (CUJ B3). */
+  const [startRefused, setStartRefused] = useState<string | null>(null);
   const key = ["session", w.id];
   const session = useQuery({
     queryKey: key,
@@ -272,7 +299,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again. The
     // fresh build may have renamed or resized the row, so Today and Plan refetch too.
     onError: (err) => {
-      const body = err instanceof ApiError ? (err.body as { error?: string; session?: SessionDto } | null) : null;
+      const body = err instanceof ApiError ? (err.body as { error?: string; session?: SessionDto; issues?: Array<{ message: string; severity: string }> } | null) : null;
+      if (body?.error === "gated") {
+        const why = body.issues?.find((i) => i.severity === "error")?.message;
+        setStartRefused(`${why ?? "Today's check keeps a move of this workout out."} ${editable ? "Edit it in the Studio to change it." : ""}`.trim());
+      }
       if ((body?.error === "stale" || body?.error === "locked") && body.session) qc.setQueryData(key, body.session);
       else void qc.invalidateQueries({ queryKey: key });
       refreshPlan();
@@ -472,6 +503,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     },
   });
   const canPlay = features.player && date === today && !past && !skipped;
+  // Today's check keeps a move out that no alternate stands in for: Start waits, and the sheet says why (CUJ B3).
+  const gatedToday = (s?.build?.fromDoc?.blocked.length ?? 0) > 0;
   // A started session keeps Continue while its save would be taken: its build's day and the day after (ruling 2b-R16).
   const canContinue = features.player && !skipped && s?.contentState === "started" && continuable(s.build?.date ?? date, today);
   // SENT TO THE WATCH (Phase 3): Send locks the build and the slot stays built. The build is the watch's, so nothing
@@ -512,7 +545,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           key="start"
           type="button"
           className="btn btn-primary"
-          disabled={start.isPending}
+          disabled={start.isPending || gatedToday}
           onClick={() => {
             // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (offline spike).
             chimes.unlock();
@@ -728,14 +761,50 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           <p className="session-status">Saved on another device. This device still holds a copy of it, which won't be saved.</p>
         ) : null}
         {body}
+        {startRefused ? (
+          <p className="session-refused" role="alert">
+            {startRefused}
+          </p>
+        ) : null}
         {editable ? (
           <p className="session-edit">
             <Link className="btn btn-small" to={addTargetHref({ kind: "workout", id: w.id })} state={{ from: cameFrom } satisfies BuilderArrival}>
               Edit in Studio
             </Link>
+            {/* A Studio workout never started can come off the plan (and the calendar): asked first (CUJ R6). */}
+            <button type="button" className="btn btn-small" onClick={() => setRemoving(true)}>
+              Remove
+            </button>
+          </p>
+        ) : null}
+        {doneWith ? (
+          <p className="session-edit">
+            {/* Done with: the start of another — a copy as a new workout, or a template (CUJ B2). */}
+            <Link className="btn btn-small" to={`/studio/build/again/${encodeURIComponent(w.id)}`} state={{ from: cameFrom } satisfies BuilderArrival}>
+              Do it again
+            </Link>
+            <button type="button" className="btn btn-small" disabled={saveAsTemplate.isPending} onClick={() => saveAsTemplate.mutate()}>
+              Save as template
+            </button>
+          </p>
+        ) : null}
+        {doneWith ? (
+          <p className={templateSaid ? "session-status" : "session-status visually-hidden"} role="status">
+            {templateSaid}
           </p>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={removing}
+        onClose={() => setRemoving(false)}
+        title="Remove this workout?"
+        confirmLabel="Remove"
+        busy={remove.isPending}
+        onConfirm={() => remove.mutate()}
+        error={remove.isError ? "Couldn't remove it — try again." : null}
+      >
+        It comes off your plan and your calendar.
+      </ConfirmDialog>
       <ConfirmDialog
         open={discardingCopy}
         onClose={() => setDiscardingCopy(false)}
@@ -905,6 +974,16 @@ function BuiltSession({
         )}
       </div>
       {reasonLine(view) ? <p className="session-reason">{reasonLine(view)}</p> : null}
+      {build.fromDoc?.blocked.length ? (
+        <p className="session-refused">{build.fromDoc.blocked[0]!.message} Start waits until it can.</p>
+      ) : null}
+      {build.fromDoc?.swaps.length ? (
+        <ul className="session-swaps" aria-label="Today's check changes this workout">
+          {build.fromDoc.swaps.map((x) => (
+            <li key={x.path}>{`${build.exercises[x.from]?.name ?? x.from} → ${build.exercises[x.to]?.name ?? x.to}: ${x.reason}`}</li>
+          ))}
+        </ul>
+      ) : null}
       <div className="session-blocks">
         {sessionGroups(build, careLabel).map(({ key: groupKey, label, items }) => {
           const format = FORMAT_LABEL[items[0]!.format];

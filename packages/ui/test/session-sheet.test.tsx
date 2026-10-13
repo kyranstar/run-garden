@@ -1569,3 +1569,121 @@ describe("a document workout in the sheet (Stage 2 whole-branch review)", () => 
     expect([...document.querySelectorAll(".session-block-head")].map((h) => h.textContent!.split(" · ")[0])).toEqual(["Arrive", "Prep", "Core", "Knee care", "Cool-down"]);
   });
 });
+
+// ── CUJ wave: a document workout's dead ends, its targets, its removal and its second life (B2, B3, R4, R6) ─────────
+
+describe("a document workout in the sheet, CUJ wave", () => {
+  let studioWas = false;
+  let playerWas = false;
+  beforeEach(() => {
+    studioWas = features.studio;
+    playerWas = features.player;
+    features.studio = true;
+    features.player = true;
+  });
+  afterEach(() => {
+    features.studio = studioWas;
+    features.player = playerWas;
+  });
+  const gatedOn = (over: Partial<NonNullable<SessionDto["build"]>["fromDoc"]>) => {
+    const s = docSession();
+    return { ...s, build: { ...s.build!, fromDoc: { ...s.build!.fromDoc!, ...over } } } as SessionDto;
+  };
+
+  it("today's check keeps a move out that nothing stands in for: says so, Start waits, and Edit in Studio is there (B3)", async () => {
+    const why = "Goblet squat isn't allowed with today's Knee / hip check at 7.";
+    mount(gatedOn({ blocked: [{ path: "parts[1].items[0].libraryId", code: "condition_gate", message: why, severity: "error" }] }), { w: docRow() });
+    await until(() => body().includes(why), "the reason");
+    expect(body()).toContain(`${why} Start waits until it can.`);
+    expect((button(/^Start/) as HTMLButtonElement).disabled).toBe(true);
+    expect(button("Edit in Studio")).toBeDefined();
+  });
+
+  it("each move today's check stood in for is said, one line each, before it locks (B3)", async () => {
+    mount(gatedOn({ swaps: [{ path: "parts[1].items[0]", from: "goblet", to: "boxSquat", reason: "today's check" }] }), { w: docRow() });
+    await until(() => body().includes("Goblet squat → Goblet box squat: today's check"), "the swap");
+    expect(document.querySelector(".session-swaps")!.getAttribute("aria-label")).toBe("Today's check changes this workout");
+  });
+
+  it("a Start the day's check refuses (409 gated) is said, never swallowed (B3)", async () => {
+    const why = "Supported row isn't allowed with today's Knee / hip check at 7.";
+    mount(docSession(), {
+      w: docRow(),
+      route: (call) =>
+        call.path === `/api/sessions/${SLOT}/start`
+          ? new Response(JSON.stringify({ error: "gated", issues: [{ path: "x", code: "condition_gate", message: why, severity: "error" }] }), { status: 409, headers: { "Content-Type": "application/json" } })
+          : undefined,
+    });
+    await until(() => !!button(/^Start/), "Start");
+    await click(/^Start/);
+    await until(() => !!document.querySelector(".session-refused[role=alert]"), "the refusal");
+    expect(document.querySelector(".session-refused[role=alert]")!.textContent).toBe(`${why} Edit it in the Studio to change it.`);
+  });
+
+  it("its moves' targets are said where a build carries them and no words of its own (R4)", async () => {
+    const s = gatedOn({ doses: undefined });
+    s.build!.targets = { goblet: { lo: 5, hi: 8, type: "reps", w: { v: 25, u: "lb" }, reps: null, secs: null, action: "hold", note: "" } } as never;
+    mount(s, { w: docRow() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect(body()).toContain("3 × 5–8 @ 25 lb");
+  });
+
+  it("a Studio workout still to do can be removed, asked first (R6)", async () => {
+    const { calls } = mount(docSession(), {
+      w: docRow(),
+      route: (call) => (call.method === "DELETE" && call.path === `/api/workouts/${SLOT}` ? new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }) : undefined),
+    });
+    await until(() => !!button("Remove"), "Remove");
+    // Still to do: it can change, so it is no "Do it again" yet.
+    expect(button("Do it again")).toBeUndefined();
+    await click("Remove");
+    await until(() => body().includes("Remove this workout?"), "the confirm");
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter((b) => b.textContent === "Remove").pop()!;
+    await act(async () => confirm.click());
+    await until(() => calls.some((c) => c.method === "DELETE" && c.path === `/api/workouts/${SLOT}`), "the DELETE");
+  });
+
+  it("a done Studio workout: Do it again opens a copy in the Studio, and Save as template keeps it as one (B2)", async () => {
+    const done = docRow({ completionState: "completed", contentState: "done" });
+    const doc = { version: 1, title: "Leg day", intent: { summary: "Leg day", goals: [], focus: [], effort: "develop" }, parts: [], source: { kind: "studio" } };
+    const { calls } = mount(docSession({ contentState: "done", locked: true }), {
+      w: done,
+      route: (call) => {
+        const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+        if (call.path === `/api/workouts/${SLOT}/doc`) return json({ doc, rev: 1, derived: null });
+        if (call.method === "POST" && call.path === "/api/templates") return json({ template: { id: "t-new", name: (call.body as { name: string }).name }, warnings: [] }, 201);
+        return undefined;
+      },
+    });
+    await until(() => !!button("Do it again"), "Do it again");
+    expect(button("Edit in Studio")).toBeUndefined();
+    expect(button("Remove")).toBeUndefined();
+    expect(button("Do it again")!.getAttribute("href")).toBe(`/studio/build/again/${SLOT}`);
+    await click("Save as template");
+    await until(() => body().includes("Saved “Leg day” as a template."), "the line");
+    expect(calls.find((c) => c.method === "POST" && c.path === "/api/templates")!.body).toMatchObject({ name: "Leg day", doc });
+  });
+
+  it("a Studio workout whose day passed undone can be done again too (B2)", async () => {
+    mount(docSession(), { w: docRow({ effectiveDate: "2026-10-04", originalPlanDate: "2026-10-04" }) });
+    await until(() => !!button("Do it again"), "Do it again");
+    expect(button("Edit in Studio")).toBeUndefined();
+  });
+
+  it("a Studio workout under way today is not done with: no Do it again until it is (B2)", async () => {
+    mount(docSession({ contentState: "started", locked: true }), { w: docRow({ contentState: "started" }) });
+    await until(() => body().includes("Goblet squat"), "the build");
+    await act(async () => new Promise((r) => setTimeout(r, 20)));
+    expect(button("Do it again")).toBeUndefined();
+    expect(button("Edit in Studio")).toBeUndefined();
+  });
+
+  it("a done workout not made in the Studio has no Do it again (B2)", async () => {
+    mount(session({ contentState: "done", locked: true }), { w: slot({ completionState: "completed", contentState: "done" }) });
+    await until(() => body().includes("Hips"), "the sheet");
+    await act(async () => new Promise((r) => setTimeout(r, 20)));
+    expect(button("Do it again")).toBeUndefined();
+    expect(button("Save as template")).toBeUndefined();
+  });
+});
