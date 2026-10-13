@@ -512,6 +512,37 @@ describe("best_set", () => {
     expect(await measure(SQUAT)).toMatchObject({ evidence: "sparse", current: 60.5 });
   });
 
+  it("a lift swapped in through ⇄ is judged by its option's own set targets: more reps or load than it asked is capacity (whole-branch M-5)", async () => {
+    /** A document build whose deadlift slot offers the goblet squat at 8 reps × 20 kg; the squat logged as `logged`. */
+    const swappedLift = async (n: number, logged: { reps: number; value: number }) => {
+      const workoutId = await planned(day(n));
+      const set = (exerciseId: string, i: number) => ({
+        kind: "set", slotKey: "core:0", exerciseId, setIndex: i, setCount: 2, seconds: 40, log: true,
+        target: { reps: 8, w: { v: 20, u: "kg" } },
+      });
+      const buildId = newId();
+      await db.insert(sessionBuilds).values({
+        id: buildId, userId, workoutId, version: 1, engineVersion: "doc-build-5", inputsHash: "h",
+        payload: {
+          build: {
+            steps: [set("kbDeadlift", 0), set("kbDeadlift", 1)],
+            fromDoc: { rev: 1, swaps: [], blocked: [], slots: { "core:0": { offers: [{ id: "gobletSquat", name: "Goblet squat", reasons: [], moveKey: "k", pairing: {}, steps: [set("gobletSquat", 0), set("gobletSquat", 1)] }] } } },
+          },
+          view: {},
+        },
+        workoutDoc: JSON.stringify(doc([lift("kbDeadlift", 8, 20)])),
+        lockedAt: T0, createdAt: T0,
+      });
+      const id = await session(day(n), { buildId, workoutId });
+      await sets(id, "gobletSquat", [{ reps: logged.reps, value: logged.value, unit: "kg" }]);
+    };
+    // As asked: capped. Two more reps than asked: capacity.
+    await swappedLift(6, { reps: 8, value: 20 });
+    expect(await measure(SQUAT)).toMatchObject({ evidence: "capped" });
+    await swappedLift(5, { reps: 10, value: 20 });
+    expect((await measure(SQUAT)).series.map((s) => s.capped ?? false)).toEqual([true, false]);
+  });
+
   it("load at reps: the heaviest load lifted for at least that many reps", async () => {
     const tested = { doc: doc([{ kind: "exercise", libraryId: "gobletSquat", dose: { reps: 5, max: true } } as WorkoutItem]) };
     await sets(await appSession(day(6), tested), "gobletSquat", [{ reps: 5, value: 135, unit: "lb" }, { reps: 4, value: 155, unit: "lb" }, { reps: 6, value: 62, unit: "kg" }]);

@@ -28,7 +28,8 @@
  *   (`planned_workouts.workout_doc`) — and for a move the document does not hold, the build's own steps
  *   (`payload.build.steps`: a timed step's seconds, a set step's target reps and weight), else the slot it was swapped
  *   into mid-session: a document build's ⇄ options (`payload.build.fromDoc.slots`: a planned alternate or a library
- *   offer) carry the slot's `max` and the option's own timed seconds — a real max on the swapped move counts. A move
+ *   offer) carry the slot's `max`, the option's own timed seconds and its sets' reps and weight — a real max on the
+ *   swapped move counts, and a swapped-in lift past what its option asked shows capacity. A move
  *   offered in more than one slot is judged by the slot the session saved it in (`moves_done[].slotKey`: the recorder
  *   names the slot each move was played in); a session saved before it did, by the slot at the set's place among the
  *   session's moves (its entry: the moves in the order the build first plays them — a guess, as an entry with no done
@@ -235,9 +236,9 @@ type CompactStep = [string | null, string | null, number | null, number | null, 
 
 /**
  * A document build's ⇄ option for one of the moves, as SQLite reads it: [move id, its slot's max (0|1), its timed
- * seconds, its slot's key].
+ * seconds, its slot's key, its set steps' targets as [reps, weight v, weight u]].
  */
-type CompactOption = [string, number, number | null, string];
+type CompactOption = [string, number, number | null, string, Array<[number | null, number | null, string | null]>];
 /** A build's logged steps in play order, as SQLite reads them: [slot key, move id]. */
 type CompactPlace = [string, string];
 /** A move's build slot as the session saved it (`moves_done`), as SQLite reads it: [move id, slot key]. */
@@ -245,7 +246,7 @@ type CompactSlot = [string, string];
 
 const isItem = (x: unknown): x is CompactItem => Array.isArray(x) && x.length === 5 && typeof x[0] === "string";
 const isStep = (x: unknown): x is CompactStep => Array.isArray(x) && x.length === 6;
-const isOption = (x: unknown): x is CompactOption => Array.isArray(x) && x.length === 4 && typeof x[0] === "string";
+const isOption = (x: unknown): x is CompactOption => Array.isArray(x) && x.length === 5 && typeof x[0] === "string" && Array.isArray(x[4]);
 const isPlace = (x: unknown): x is CompactPlace => Array.isArray(x) && x.length === 2 && typeof x[0] === "string" && typeof x[1] === "string";
 const isSlot = (x: unknown): x is CompactSlot => Array.isArray(x) && x.length === 2 && typeof x[0] === "string" && typeof x[1] === "string";
 
@@ -311,7 +312,8 @@ function buildSteps(moves: SQL): SQL<string | null> {
 
 /**
  * A document build's ⇄ options for these moves — the planned alternates and library offers each slot carried — with
- * the slot's `max` and the option's own timed steps' longest window, read by SQLite.
+ * the slot's `max`, the option's own timed steps' longest window and its set steps' targets (reps, weight), read by
+ * SQLite.
  */
 function slotOptions(moves: SQL): SQL<string | null> {
   return sql<string | null>`case when json_valid(${sessionBuilds.payload}) and json_type(${sessionBuilds.payload}, '$.build.fromDoc.slots') = 'object' then (
@@ -319,7 +321,9 @@ function slotOptions(moves: SQL): SQL<string | null> {
       json_extract(op.value, '$.id'),
       coalesce(json_extract(sl.value, '$.max'), 0),
       (select max(json_extract(st.value, '$.seconds')) from json_each(op.value, '$.steps') st where json_extract(st.value, '$.kind') = 'timed'),
-      sl.key))
+      sl.key,
+      (select json_group_array(json_array(json_extract(st.value, '$.target.reps'), json_extract(st.value, '$.target.w.v'), json_extract(st.value, '$.target.w.u')))
+        from json_each(op.value, '$.steps') st where json_extract(st.value, '$.kind') = 'set')))
     from json_each(${sessionBuilds.payload}, '$.build.fromDoc.slots') sl, json_each(sl.value) grp, json_each(grp.value) op
     where grp.key in ('alternates', 'offers') and json_extract(op.value, '$.id') in ${moves}
   ) end`;
@@ -370,7 +374,14 @@ function prescriptionFor(p: Prescribed | undefined, exerciseId: string, entryInd
     const placed = slot !== undefined ? offered.filter((o) => o[3] === slot) : offered.filter((o) => p.places.get(o[3]) === entryIndex);
     const options = placed.length > 0 ? placed : offered;
     const tests = options.filter((o) => o[1] === 1);
-    return { test: tests.length > 0, holdSec: maxOf((tests.length > 0 ? tests : options).map((o) => o[2])) };
+    // A lift's option says its sets' reps and weight, as a build's own set steps do: more than it asked is capacity.
+    const sets = options.flatMap((o) => o[4]);
+    return {
+      test: tests.length > 0,
+      holdSec: maxOf((tests.length > 0 ? tests : options).map((o) => o[2])),
+      reps: maxOf(sets.map((t) => t[0])),
+      kg: maxOf(sets.map(([, v, u]) => (typeof v === "number" && (u === "kg" || u === "lb") ? toKg({ v, u }) : undefined))),
+    };
   }
   const weight = (s: CompactStep): number | undefined =>
     typeof s[4] === "number" && (s[5] === "kg" || s[5] === "lb") ? toKg({ v: s[4], u: s[5] }) : undefined;
