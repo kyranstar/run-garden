@@ -37,28 +37,54 @@ import {
   workoutTemplates,
 } from "@rg/database";
 import { EFFORT_LEVELS, addDays, daysBetween, isoWeekday, todayInZone, type ProfileDto, type UserPreferences } from "@rg/domain";
-import { EQUIPMENT, profileById, type EquipmentId } from "@rg/exercise-library";
-import { modeOfEffort } from "@rg/workout";
+import { EQUIPMENT, profileById, type DescribedRule, type EquipmentId, type FormatId } from "@rg/exercise-library";
+import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
 import type { Env } from "../env.js";
-import { loadPreferences } from "./calendar-sync.js";
 import { latestReading } from "./condition-views.js";
 import type { Db } from "./db.js";
-import { SHARED_PROMPT, markUntrusted, roleBlock } from "./design-prompt.js";
+import { SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
 import type { SystemBlock } from "./llm-messages.js";
-import { loadProfile } from "./profile.js";
+import { loadProfileWithPreferences } from "./profile.js";
 import { PENDING_HASH } from "./watch-sets.js";
 
-/** The D1 statements one build runs: the profile (4: its row, the preferences, the places, the conditions), the
- * preferences again for the training times, and seven reads — today's checks, the objectives, the memory core, the
- * plan over the horizon, the answers, the activities, and one statement of scalar counts. */
-export const DESIGN_CONTEXT_STATEMENTS = 12;
+/** The D1 statements one build runs: the profile with the preferences (4: its row, the preferences, the places, the
+ * conditions) and seven reads — today's checks, the objectives, the memory core, the plan over the horizon, the
+ * answers, the activities, and one statement of scalar counts. */
+export const DESIGN_CONTEXT_STATEMENTS = 11;
+
+/**
+ * HOW EACH DESCRIBED RULE IS ENFORCED — decided by where the rule is read, never by a line's own words. validate.ts
+ * turns `never`, an unrated move (`attributes`), `allowPattern` and `allowRecord` into errors; `fitsMode`, `fitsFormat`,
+ * the flare (`flare` with the flare-safe caps), `recoveryReason` and `buildChecks` into warnings; it never reads
+ * `stepDownCause`, `holdReason`, `rotateReason` or the care block's share — only the engine's own sessions apply those.
+ * A test probes the validator member by member and holds this table to what it finds.
+ */
+export const RULE_ENFORCEMENT: Readonly<Record<DescribedRule, "refused" | "cost" | "guide">> = {
+  attributes: "refused",
+  never: "refused",
+  allowPattern: "refused",
+  allowRecord: "refused",
+  fitsMode: "cost",
+  fitsFormat: "cost",
+  flare: "cost",
+  recoveryReason: "cost",
+  buildChecks: "cost",
+  stepDownCause: "guide",
+  holdReason: "guide",
+  rotateReason: "guide",
+  care: "guide",
+};
+export const ENFORCEMENT_LABEL = { refused: "Refused", cost: "A cost", guide: "A guide (no tool checks this)" } as const;
+
+/** What a run is asked to design, as `coach_runs.scope` holds it. */
+export type DesignScope = { kind: string; n?: number };
 
 /** The run the context is for: the parts of a `coach_runs` row the context reads (the model's own words never). */
 export interface DesignRun {
   id: string;
   role: "main" | "designer" | "reviewer";
-  /** What the run is asked to design: `{ kind, n? }` as `coach_runs.scope` holds it, or the kind alone. */
-  scope: { kind: string; n?: number } | string;
+  /** `{ kind, n? }`; or the column's text: that object as JSON, the kind alone, or the older `next_n:<n>`. */
+  scope: DesignScope | string;
   /** The athlete's words; null when they only tapped Now or Later today. */
   request: string | null;
   parentId: string | null;
@@ -99,19 +125,45 @@ function horizonDays(kind: ScopeKind, n: number): number {
   return 7;
 }
 
-function scopeOf(raw: DesignRun["scope"]): { kind: ScopeKind; n: number } {
+const SCOPE_KINDS: readonly ScopeKind[] = ["now", "later_today", "week", "next_n"];
+/** "Next N" without its N: the setting's default (spec §6). */
+const DEFAULT_NEXT_N = 3;
+/** The most workouts one "next N" run plans (the runs route's own bound). */
+const MAX_NEXT_N = 14;
+
+/**
+ * The run's scope from whatever form it arrives in: the object, the column's JSON text, the kind alone, or the older
+ * `next_n:<n>`. A scope it doesn't know is an error, never "now": a week planned as one workout would be a wrong answer
+ * delivered with confidence.
+ */
+export function scopeOf(raw: DesignRun["scope"]): { kind: ScopeKind; n: number } {
   let s: unknown = raw;
   if (typeof raw === "string") {
-    try {
-      s = raw.trim().startsWith("{") ? JSON.parse(raw) : { kind: raw };
-    } catch {
-      s = { kind: raw };
+    const text = raw.trim();
+    const colon = /^next_n:(.*)$/.exec(text);
+    if (text.startsWith("{")) {
+      try {
+        s = JSON.parse(text);
+      } catch {
+        s = null;
+      }
+    } else if (colon) {
+      s = { kind: "next_n", n: /^\d+$/.test(colon[1]!) ? Number(colon[1]) : colon[1] };
+    } else {
+      s = { kind: text };
     }
   }
   const kind = (s as { kind?: unknown } | null)?.kind;
   const n = (s as { n?: unknown } | null)?.n;
-  const known: ScopeKind = kind === "later_today" || kind === "week" || kind === "next_n" ? kind : "now";
-  return { kind: known, n: Number.isInteger(n) && (n as number) >= 1 ? (n as number) : 3 };
+  if (typeof kind !== "string" || !(SCOPE_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(`design context: unknown scope ${JSON.stringify(raw)}`);
+  }
+  if (kind !== "next_n") return { kind: kind as ScopeKind, n: DEFAULT_NEXT_N };
+  if (n === undefined || n === null) return { kind, n: DEFAULT_NEXT_N };
+  if (!Number.isInteger(n) || (n as number) < 1 || (n as number) > MAX_NEXT_N) {
+    throw new Error(`design context: unknown scope ${JSON.stringify(raw)} (next_n needs 1–${MAX_NEXT_N} workouts)`);
+  }
+  return { kind, n: n as number };
 }
 
 function zoneOrUtc(tz: string): string {
@@ -126,6 +178,29 @@ function zoneOrUtc(tz: string): string {
 /** "07:40" in the athlete's timezone. */
 function localTime(tz: string, at: Date): string {
   return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(at);
+}
+
+/** The instant `date` begins in `tz` (ISO): a timestamp at or after it falls on that local date or later. */
+function startOfLocalDate(tz: string, date: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  /** How far the zone's wall clock is ahead of UTC at `t`. */
+  const offsetAt = (t: number): number => {
+    const p = Object.fromEntries(parts.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+    return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second)) - t;
+  };
+  const midnightUtc = Date.parse(`${date}T00:00:00Z`);
+  // Twice: the offset that applies at local midnight may differ from the one at UTC midnight (a DST change between).
+  const first = midnightUtc - offsetAt(midnightUtc);
+  return new Date(midnightUtc - offsetAt(first)).toISOString();
 }
 
 const ago = (date: string, today: string): string => {
@@ -172,11 +247,12 @@ interface Reads {
 }
 
 async function read(db: Db, userId: string, now: Date, horizonEnd: (today: string) => string): Promise<Reads> {
-  const [profile, prefs] = await Promise.all([loadProfile(db, userId), loadPreferences(db, userId)]);
+  const { profile, prefs } = await loadProfileWithPreferences(db, userId);
   const tz = zoneOrUtc(profile.timezone);
   const today = todayInZone(tz, now);
   const since = addDays(today, -(WINDOW_DAYS - 1));
-  const sinceInstant = new Date(now.getTime() - WINDOW_DAYS * 86_400_000).toISOString();
+  // Proposals are stamped in UTC: the window still starts at the athlete's own midnight, like every other window here.
+  const sinceInstant = startOfLocalDate(tz, since);
   const activeProfiles = profile.conditions.filter((c) => c.active).map((c) => c.profileId);
   const day = sql`substr(coalesce(${activities.startTimeLocal}, ${activities.startTime}), 1, 10)`;
 
@@ -359,11 +435,21 @@ function planItem(w: Reads["plan"][number]): string {
   return `${w.time} ${what}${origin ? `, ${origin}` : ""}${minutes}${state ? ` — ${state}` : ""}`;
 }
 
+/** A profile format's plural, for the line that maps the document's formats onto the profile's. */
+const PROFILE_FORMAT_WORDS: Record<FormatId, string> = {
+  straight: "straight sets", superset: "supersets", circuit: "circuits", ladder: "ladders", flow: "flows", holds: "holds",
+};
+
 function conditionsSection(r: Reads): string[] {
   if (r.activeProfiles.length === 0) return ["Conditions on: none."];
   const modes = EFFORT_LEVELS.map((e) => `${e} → ${modeOfEffort(e)}`).join("; ");
+  // The validator's own mapping (validate.ts reads a part's format through FORMAT_OF_PART), written out.
+  const formats = Object.entries(FORMAT_OF_PART)
+    .filter(([doc, profile]) => doc !== profile)
+    .map(([doc, profile]) => `"${doc}" counts as ${PROFILE_FORMAT_WORDS[profile]}`)
+    .join("; ");
   const out = [
-    `Conditions on: ${r.activeProfiles.map((id) => profileById(id).label).join(", ")}. Each profile's rules below are generated from the profile itself; validate_workout applies them, refusing what a rule refuses and showing the rest as costs. A workout's mode is its effort's: ${modes}. A rule that reads the check uses today's answer; on a later day the check isn't known yet, so a move such a rule could close needs an alternate that passes in recovery mode.`,
+    `Conditions on: ${r.activeProfiles.map((id) => profileById(id).label).join(", ")}. Each profile's lines below are generated from the profile itself. validate_workout refuses what a line marks refused and shows what it marks a cost; the guide lines are how the app's own sessions dose — no tool checks them, so apply them yourself from read_history. A workout's mode is its effort's: ${modes}. A part's format meets the profile's format caps as the validator reads it: ${formats}; every other format as itself. A rule that reads the check uses today's answer; on a later day the check isn't known yet, so a move such a rule could close needs an alternate that passes in recovery mode.`,
   ];
   for (const id of r.activeProfiles) {
     const p = profileById(id);
@@ -371,8 +457,9 @@ function conditionsSection(r: Reads): string[] {
     const reading = latest
       ? `${[latest.value !== null ? String(latest.value) : null, latest.feelingOff ? "feeling off" : null].filter(Boolean).join(", ")} at ${localTime(r.tz, new Date(latest.at))}`
       : "none today — unanswered, so a rule that needs an answered check stays closed";
-    out.push(`${p.label} — today's "${p.check.label}" check: ${reading}.`);
-    for (const line of p.describeRules()) out.push(`- ${line}`);
+    const flag = p.setFlag ? `; during a session a move can be flagged "${p.setFlag.label}"` : "";
+    out.push(`${p.label} — its check is "${p.check.label}", ${p.check.min}–${p.check.max}, before and after a session or on its own${flag}. Today's: ${reading}.`);
+    for (const line of p.describeRules()) out.push(`- ${ENFORCEMENT_LABEL[RULE_ENFORCEMENT[line.rule]]}: ${line.text}`);
   }
   return out;
 }
@@ -399,19 +486,38 @@ function eventsLine(r: Reads, end: string): { line: string; beyond: string[] } {
   return { line: `Events through ${end}: ${text}.`, beyond: beyond.sort() };
 }
 
-function scopeLine(kind: ScopeKind, n: number, r: Reads, time: string, end: string): string {
+/** The scope as the main coach answers it. */
+function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: string): string {
   const p = r.prefs;
   switch (kind) {
     case "now":
-      return `Scope: one workout, to start now (${time}).`;
+      return `one workout, to start now (${time})`;
     case "later_today":
-      return `Scope: one workout, later today — after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}) and say which.`;
+      return `one workout, later today — after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}) and say which`;
     case "week":
-      return `Scope: this week — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set.`;
+      return `this week — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set`;
     case "next_n":
-      return `Scope: the next ${n} workouts, from today (the plan is read through ${end}), planned as a set.`;
+      return `the next ${n} workouts, from today (the plan is read through ${end}), planned as a set`;
   }
 }
+
+/** The scope in each role's own terms: a designer designs one workout of a set, a reviewer judges one draft. */
+function scopeLine(role: DesignRun["role"], kind: ScopeKind, n: number, r: Reads, time: string, end: string): string {
+  const set = kind === "week" ? `this week's set (${r.today} to ${addDays(r.today, 6)})` : kind === "next_n" ? `a set of the next ${n} workouts` : null;
+  if (role === "designer") {
+    return set ? `Scope: one workout of ${set}, designed from its brief.` : `Scope: one workout, designed from its brief; the run asked for ${scopeWords(kind, n, r, time, end)}.`;
+  }
+  if (role === "reviewer") {
+    return set ? `Scope: one drafted workout to review, one of ${set}.` : `Scope: one drafted workout to review; the run asked for ${scopeWords(kind, n, r, time, end)}.`;
+  }
+  return `Scope: ${scopeWords(kind, n, r, time, end)}.`;
+}
+
+const NO_REQUEST: Record<DesignRun["role"], string> = {
+  main: "The athlete gave no request: decide what fits the scope.",
+  designer: "The athlete gave no request: the brief is the request.",
+  reviewer: "The athlete gave no request: judge the draft against the scope and the brief.",
+};
 
 function indexSection(r: Reads, end: string, beyond: string[]): string[] {
   const out = ["What the tools can reach (counts and dates, never contents):"];
@@ -423,16 +529,21 @@ function indexSection(r: Reads, end: string, beyond: string[]): string[] {
     });
     out.push(`- condition checks today: ${per.join(" · ")}`);
   }
-  const byQ = new Map(r.answers.map((a) => [a.questionId, a]));
+  // A question id is named only when it reads as an id; anything else is summed under "other", never dropped.
+  const named = new Map<string, { n: number; last: string | null }>();
+  for (const a of r.answers) {
+    if (FEEDBACK_QUESTIONS.has(a.questionId)) continue;
+    const key = /^[a-z0-9_]{1,40}$/.test(a.questionId) && a.questionId !== "other" ? a.questionId : "other";
+    const sum = named.get(key) ?? { n: 0, last: null };
+    named.set(key, { n: sum.n + a.n, last: [sum.last ?? "", a.last ?? ""].sort().at(-1) || null });
+  }
   const answerWords = (q: string): string => {
-    const a = byQ.get(q);
+    const a = named.get(q);
     return a ? `${q} ${a.n}${lastWords(a.last)}` : `${q} none`;
   };
-  const otherQs = r.answers
-    .filter((a) => !FEEDBACK_QUESTIONS.has(a.questionId) && !(BODY_QUESTIONS as readonly string[]).includes(a.questionId))
-    .map((a) => (/^[a-z0-9_]{1,40}$/.test(a.questionId) ? a.questionId : "other"))
-    .sort();
-  out.push(`- check-in answers in ${WINDOW_DAYS} d: ${[...BODY_QUESTIONS.map(answerWords), ...[...new Set(otherQs)].map(answerWords)].join(" · ")}`);
+  const others = [...named.keys()].filter((q) => !(BODY_QUESTIONS as readonly string[]).includes(q) && q !== "other").sort();
+  const answerList = [...BODY_QUESTIONS, ...others, ...(named.has("other") ? ["other"] : [])].map(answerWords);
+  out.push(`- check-in answers in ${WINDOW_DAYS} d: ${answerList.join(" · ")}`);
   const feedback = r.answers.filter((a) => FEEDBACK_QUESTIONS.has(a.questionId));
   const ratings = feedback.reduce((s, a) => s + a.n, 0);
   const feedbackLast = feedback.map((a) => a.last ?? "").sort().at(-1);
@@ -466,14 +577,16 @@ function indexSection(r: Reads, end: string, beyond: string[]): string[] {
   return out;
 }
 
-const BRIEF_SOURCES: Record<DesignRun["role"], { from: string; label: string }> = {
+const BRIEF_SOURCES: Record<DesignRun["role"], { from: UntrustedSource; label: string }> = {
   main: { from: "parent run", label: "The brief:" },
   designer: { from: "main coach", label: "The main coach's brief for this workout:" },
   reviewer: { from: "designer run", label: "What to review:" },
 };
 
-function header(r: Reads, run: DesignRun, now: Date): string {
-  const { kind, n } = scopeOf(run.scope);
+type Role = DesignRun["role"];
+
+function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; n: number }, now: Date): string {
+  const { kind, n } = scope;
   const end = addDays(r.today, horizonDays(kind, n) - 1);
   const time = localTime(r.tz, now);
   const [hh, mm] = time.split(":").map(Number);
@@ -491,19 +604,15 @@ function header(r: Reads, run: DesignRun, now: Date): string {
     [
       `Today's plan: ${todays.length ? `${todays.map(planItem).join("; ")}.` : "nothing planned."}`,
       events.line,
-      scopeLine(kind, n, r, time, end),
+      scopeLine(role, kind, n, r, time, end),
     ].join("\n"),
     indexSection(r, end, events.beyond).join("\n"),
   ];
   if (run.brief) {
-    const b = BRIEF_SOURCES[run.role] ?? BRIEF_SOURCES.main;
+    const b = BRIEF_SOURCES[role];
     parts.push(`${b.label}\n${markUntrusted(b.from, run.brief)}`);
   }
-  parts.push(
-    run.request
-      ? `The athlete's request, in their own words:\n${athlete(run.request)}`
-      : "The athlete gave no request: decide what fits the scope.",
-  );
+  parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");
 }
 
@@ -512,9 +621,10 @@ function header(r: Reads, run: DesignRun, now: Date): string {
  * message. Reads only the signed-in athlete's rows (`userId` scopes every statement) and only `now` for the clock.
  */
 export async function buildDesignContext(db: Db, _env: Env, userId: string, run: DesignRun, now: Date): Promise<DesignContext> {
-  const { kind, n } = scopeOf(run.scope);
-  const r = await read(db, userId, now, (today) => addDays(today, horizonDays(kind, n) - 1));
-  const role = run.role === "designer" || run.role === "reviewer" ? run.role : "main";
+  // Parsed before any read: a scope it doesn't know costs no statements.
+  const scope = scopeOf(run.scope);
+  const r = await read(db, userId, now, (today) => addDays(today, horizonDays(scope.kind, scope.n) - 1));
+  const role: Role = run.role === "designer" || run.role === "reviewer" ? run.role : "main";
   return {
     system: [
       { type: "text", text: SHARED_PROMPT, cache_control: EPHEMERAL },
@@ -522,6 +632,6 @@ export async function buildDesignContext(db: Db, _env: Env, userId: string, run:
       { type: "text", text: profileBlock(r), cache_control: EPHEMERAL },
       { type: "text", text: memoryBlock(r) },
     ],
-    header: header(r, run, now),
+    header: header(r, run, role, scope, now),
   };
 }

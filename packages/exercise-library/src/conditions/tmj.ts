@@ -1,6 +1,6 @@
 import { isPlyometric } from "../record.js";
 import { FORMAT_IDS, MODE_IDS, type FormatId, type Mode } from "../vocab.js";
-import type { Attrs, AttributeSpec, CheckReading, ConditionProfile, EntryFlags, HistorySession, ProposalCtx, SessionChecks } from "./types.js";
+import type { Attrs, AttributeSpec, CheckReading, ConditionProfile, EntryFlags, HistorySession, ProposalCtx, RuleLine, SessionChecks } from "./types.js";
 
 // TMJ: jaw clenching, neck load, and lying face down. The thresholds and every sentence here are the
 // standalone tool's, unchanged; the plyometric rule (`allowRecord`) is new with the jumping moves. Every threshold is
@@ -102,7 +102,8 @@ const faceDownWords = (allowed: boolean): string => (allowed ? "face-down allowe
 const caps = (c: { clench: number; neckLoad: number; faceDown: boolean }): string =>
   `clench ≤ ${c.clench}, neckLoad ≤ ${c.neckLoad}, ${faceDownWords(c.faceDown)}`;
 
-function describeRules(): string[] {
+/** One line per member the coach needs; the reader says how each member is enforced (`RuleLine`). */
+function describeRules(): RuleLine[] {
   const ratings = Object.entries(ATTRIBUTES).map(([key, s]) => (s.kind === "scale" ? `${key} ${s.min}–${s.max}` : `${key} (yes or no)`));
   const formatCaps = new Map<number, FormatId[]>();
   for (const f of FORMAT_IDS) formatCaps.set(FORMAT_CAPS[f], [...(formatCaps.get(FORMAT_CAPS[f]) ?? []), f]);
@@ -114,19 +115,19 @@ function describeRules(): string[] {
   );
   const calmWords = `today's check answered at ${CALM_MAX_PRE} or less`;
   return [
-    `Ratings: every library move is rated ${list(ratings)}; a move without a rating can't be placed.`,
-    `Never: a move rated clench ${NEVER_CLENCH} or more — refused in every workout.`,
-    `Overhead pressing (the push-v pattern): only in build mode, and only with ${calmWords} — refused otherwise.`,
-    `Plyometric moves (jumps, hops, bounds, landings): never in recovery mode, never while the athlete feels off, otherwise only with ${calmWords} — refused otherwise.`,
-    `Mode caps, a cost when exceeded: ${MODE_IDS.map((m) => `${m} — ${caps(MODE_CAPS[m])}`).join("; ")}.`,
-    `Format caps, a cost when exceeded: ${[...formatCaps].map(([cap, fs]) => `clench ≤ ${cap} in ${list(fs.map((f) => FORMAT_WORDS[f]))}`).join("; ")}.`,
-    `Flare: a check of ${HIGH_PRE} or more. On a flare day keep to flare-safe moves: ${caps(FLARE_SAFE)}.`,
-    `Recovery mode is called for (a harder mode is a cost) when the athlete feels off, today's check is ${HIGH_PRE} or more, the last session's check rose by ${SYMPTOM_RISE} or more, or ${RECOVERY_FLAGS} or more moves were flagged ${flag} last session.`,
-    `Build mode needs (otherwise it is a cost): a check of ${CALM_MAX_PRE} or less — today's, else how the last session ended; no check of ${HIGH_PRE} or more in the past 7 days, and after-session checks averaging ${BUILD_WEEK_POST_MAX} or less; a clean last session — no move flagged ${flag} and a rise of ${BUILD_LAST_RISE_MAX} or less.`,
-    `Progression: a move flagged ${flag}, or every move of a session whose check rose by ${SYMPTOM_RISE} or more, steps down next time; hold rather than progress when today's check is ${HIGH_PRE} or more, or ${SYMPTOM_RISE} or more above the last session's before-check.`,
-    `Rotation: a move flagged ${flag} in ${ROTATE_FLAGS} of its last ${ROTATE_WINDOW} sessions rotates out.`,
-    `Check: "${CHECK.label}", ${CHECK.min}–${CHECK.max}, before and after a session or on its own; during a session a move can be flagged ${flag}.`,
-    `Care: a "${care.label}" part in ${list(care.formats)} — about ${careShares.join(", ")}.`,
+    { rule: "attributes", text: `a move with no rating for this profile. Every library move is rated ${list(ratings)}.` },
+    { rule: "never", text: `a move rated clench ${NEVER_CLENCH} or more, in every workout.` },
+    { rule: "allowPattern", text: `overhead pressing (the push-v pattern), except in build mode with ${calmWords}.` },
+    { rule: "allowRecord", text: `plyometric moves (jumps, hops, bounds, landings) in recovery mode, while the athlete feels off, or without ${calmWords}.` },
+    { rule: "fitsMode", text: `a move above its mode's caps: ${MODE_IDS.map((m) => `${m} — ${caps(MODE_CAPS[m])}`).join("; ")}.` },
+    { rule: "fitsFormat", text: `a move above its format's clench cap: ${[...formatCaps].map(([cap, fs]) => `clench ≤ ${cap} in ${list(fs.map((f) => FORMAT_WORDS[f]))}`).join("; ")}.` },
+    { rule: "flare", text: `on a flare day — a check of ${HIGH_PRE} or more — a move that isn't flare-safe (flare-safe: ${caps(FLARE_SAFE)}).` },
+    { rule: "recoveryReason", text: `a mode above recovery when the athlete feels off, today's check is ${HIGH_PRE} or more, the last session's check rose by ${SYMPTOM_RISE} or more, or ${RECOVERY_FLAGS} or more moves were flagged ${flag} last session.` },
+    { rule: "buildChecks", text: `build mode, unless all of these hold: a check of ${CALM_MAX_PRE} or less — today's, else how the last session ended; no check of ${HIGH_PRE} or more in the past 7 days, and after-session checks averaging ${BUILD_WEEK_POST_MAX} or less; a clean last session — no move flagged ${flag} and a rise of ${BUILD_LAST_RISE_MAX} or less.` },
+    { rule: "stepDownCause", text: `a move flagged ${flag}, or every move of a session whose check rose by ${SYMPTOM_RISE} or more, steps down next time.` },
+    { rule: "holdReason", text: `hold a move rather than progress it when today's check is ${HIGH_PRE} or more, or ${SYMPTOM_RISE} or more above the last session's before-check.` },
+    { rule: "rotateReason", text: `a move flagged ${flag} in ${ROTATE_FLAGS} of its last ${ROTATE_WINDOW} sessions rotates out.` },
+    { rule: "care", text: `a "${care.label}" part in ${list(care.formats)}, about ${careShares.join(", ")}.` },
   ];
 }
 

@@ -22,6 +22,7 @@ import {
   profileUpdateSchema,
   type ProfileDto,
   type ProfilePreferences,
+  type UserPreferences,
 } from "@rg/domain";
 import { MUSCLES, REGIONS } from "@rg/exercise-library";
 import { restoreInProgress } from "./account-state.js";
@@ -83,6 +84,14 @@ async function storedProfile(db: Db, userId: string) {
 }
 
 export async function loadProfile(db: Db, userId: string): Promise<ProfileDto> {
+  return (await loadProfileWithPreferences(db, userId)).profile;
+}
+
+/**
+ * The profile and the user's whole preferences from the same four statements: for a reader that also needs what the
+ * profile DTO leaves out (the scheduling times — the coach designer's "later today"), without reading them twice.
+ */
+export async function loadProfileWithPreferences(db: Db, userId: string): Promise<{ profile: ProfileDto; prefs: UserPreferences }> {
   const [row, prefs, places, conditions] = await Promise.all([
     storedProfile(db, userId),
     loadPreferences(db, userId),
@@ -92,7 +101,7 @@ export async function loadProfile(db: Db, userId: string): Promise<ProfileDto> {
   const preferences = validPreferences(parsedJson(row?.preferences));
   // A default place deleted since is no default: the places service never told the profile.
   if (preferences.defaultPlaceId !== undefined && !places.some((p) => p.id === preferences.defaultPlaceId)) delete preferences.defaultPlaceId;
-  return {
+  const profile: ProfileDto = {
     goals: validEntries(parsedJson(row?.goals), profileGoalSchema),
     focusAreas: validEntries(parsedJson(row?.focusAreas), focusAreaSchema),
     events: validEntries(parsedJson(row?.events), profileEventSchema),
@@ -104,6 +113,7 @@ export async function loadProfile(db: Db, userId: string): Promise<ProfileDto> {
     conditions: conditions.map((c) => ({ profileId: c.profileId, label: c.label, active: c.active, since: c.since })),
     updatedAt: row?.updatedAt ?? null,
   };
+  return { profile, prefs };
 }
 
 /**

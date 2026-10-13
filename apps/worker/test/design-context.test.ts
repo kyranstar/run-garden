@@ -6,11 +6,18 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
-import { newId } from "@rg/domain";
-import { TMJ } from "@rg/exercise-library";
+import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { EXERCISES, TMJ, type ConditionProfile, type DescribedRule } from "@rg/exercise-library";
+import { FORMAT_OF_PART, validateWorkoutDoc } from "@rg/workout";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { buildDesignContext, DESIGN_CONTEXT_STATEMENTS, type DesignRun } from "../src/services/design-context.js";
+import {
+  buildDesignContext,
+  DESIGN_CONTEXT_STATEMENTS,
+  ENFORCEMENT_LABEL,
+  RULE_ENFORCEMENT,
+  type DesignRun,
+} from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS, SHARED_PROMPT, roleBlock } from "../src/services/design-prompt.js";
 import type { SystemBlock } from "../src/services/llm-messages.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -196,6 +203,9 @@ async function seedAthlete() {
     answer("workout_feedback", "2026-03-08", { valueNum: 4, text: "FEEDBACK-SENTINEL", source: "review" }),
     answer("exercise_feedback", "2026-03-08", { valueNum: 1, subjectKind: "exercise", subjectId: "bridge", source: "review" }),
     answer("soreness", "2026-01-02", { valueNum: 3 }),
+    // A question id the index can't name is counted under "other", never dropped.
+    answer("A custom question!", "2026-03-08", { valueNum: 2 }),
+    answer("A custom question!", "2026-03-07", { valueNum: 3 }),
   ]);
 
   await db.insert(schema.dailyHealth).values({
@@ -211,7 +221,14 @@ async function seedAthlete() {
   const proposal = (status: string, createdAt: string) => ({
     id: newId(), userId, title: "PROPOSAL-TITLE-SENTINEL", evidence: "e", rationale: "r", flags: [], ops: [], status, createdAt, expiresAt: createdAt,
   });
-  await db.insert(schema.coachProposals).values([proposal("declined", at("2026-03-05")), proposal("rehearsal", at("2026-03-09"))]);
+  await db.insert(schema.coachProposals).values([
+    proposal("declined", at("2026-03-05")),
+    proposal("rehearsal", at("2026-03-09")),
+    // The window is 30 of the athlete's dates (from 2026-02-09): 2026-02-08 23:30 in Los Angeles is out, 01:00 the next
+    // day is in — though both are within 30 days of now by the clock.
+    proposal("approved", "2026-02-09T07:30:00.000Z"),
+    proposal("approved", "2026-02-09T09:00:00.000Z"),
+  ]);
 }
 
 beforeEach(async () => {
@@ -236,22 +253,35 @@ describe("the opening message: today", () => {
     expect(header).toMatch(/\blb\b/);
   });
 
-  it("carries each active profile's generated rules, with today's reading and its time", async () => {
+  it("carries each active profile's generated rules, each labelled by how it is enforced, with today's reading and its time", async () => {
     const { header } = await build();
-    for (const line of TMJ.describeRules()) expect(header).toContain(line);
+    for (const l of TMJ.describeRules()) expect(header).toContain(`- ${ENFORCEMENT_LABEL[RULE_ENFORCEMENT[l.rule]]}: ${l.text}`);
     expect(header).toContain(`${TMJ.label}`);
+    expect(header).toContain(`"${TMJ.check.label}"`);
+    expect(header).toContain(`"${TMJ.setFlag!.label}"`);
     expect(header).toMatch(/2 at 07:40/);
+    expect(header).toContain(
+      "validate_workout refuses what a line marks refused and shows what it marks a cost; the guide lines are how the app's own sessions dose — no tool checks them, so apply them yourself from read_history.",
+    );
+  });
+
+  it("says how the document's formats map to the profile's format caps, as the validator reads them", async () => {
+    const { header } = await build();
+    const words: Record<string, string> = { straight: "straight sets", circuit: "circuits", superset: "supersets", ladder: "ladders", flow: "flows", holds: "holds" };
+    const mapped = Object.entries(FORMAT_OF_PART).filter(([doc, profile]) => doc !== profile);
+    expect(mapped.length).toBeGreaterThan(0);
+    for (const [doc, profile] of mapped) expect(header).toContain(`"${doc}" counts as ${words[profile]}`);
   });
 
   it('says "none today" when today has no reading, and nothing about rules when no profile is on', async () => {
     await db.delete(schema.conditionChecks);
     const none = await build();
     expect(none.header).toMatch(/none today/);
-    for (const line of TMJ.describeRules()) expect(none.header).toContain(line);
+    for (const l of TMJ.describeRules()) expect(none.header).toContain(l.text);
 
     await db.delete(schema.userConditions);
     const off = await build();
-    for (const line of TMJ.describeRules()) expect(off.header).not.toContain(line);
+    for (const l of TMJ.describeRules()) expect(off.header).not.toContain(l.text);
     expect(off.header).not.toContain(TMJ.label);
   });
 
@@ -279,8 +309,35 @@ describe("the opening message: today", () => {
     expect((await build({ scope: { kind: "later_today" } })).header).toMatch(/Scope: one workout, later today/);
     expect((await build({ scope: { kind: "week" } })).header).toMatch(/Scope: this week/);
     expect((await build({ scope: { kind: "next_n", n: 3 } })).header).toMatch(/Scope: the next 3 workouts/);
-    // The coach_runs column's own text works as well as the parsed object.
+    expect((await build({ scope: { kind: "next_n", n: 4 } })).header).toMatch(/Scope: the next 4 workouts/);
+    // The coach_runs column's own text works as well as the parsed object, and so does the older "next_n:<n>".
     expect((await build({ scope: "later_today" })).header).toMatch(/Scope: one workout, later today/);
+    expect((await build({ scope: '{"kind":"next_n","n":4}' })).header).toMatch(/Scope: the next 4 workouts/);
+    expect((await build({ scope: "next_n:4" })).header).toMatch(/Scope: the next 4 workouts/);
+  });
+
+  it("refuses a scope it doesn't know, never reading it as now", async () => {
+    await expect(build({ scope: { kind: "fortnight" } })).rejects.toThrow(/scope/);
+    await expect(build({ scope: "fortnight" })).rejects.toThrow(/scope/);
+    await expect(build({ scope: "next_n:zero" })).rejects.toThrow(/scope/);
+  });
+
+  it("says the scope and a missing request in each role's own terms", async () => {
+    const designer = await build({ role: "designer", scope: { kind: "week" }, parentId: "run-0", brief: "b", request: null });
+    expect(designer.header).toMatch(/Scope: one workout of this week's set \(2026-03-10 to 2026-03-16\), designed from its brief\./);
+    expect(designer.header).toContain("The athlete gave no request: the brief is the request.");
+    const nextN = await build({ role: "designer", scope: { kind: "next_n", n: 3 }, parentId: "run-0", brief: "b" });
+    expect(nextN.header).toMatch(/Scope: one workout of a set of the next 3 workouts, designed from its brief\./);
+    const reviewer = await build({ role: "reviewer", scope: { kind: "now" }, parentId: "run-2", brief: "draft", request: null });
+    expect(reviewer.header).toMatch(/Scope: one drafted workout to review; the run asked for one workout, to start now \(15:05\)\./);
+    expect(reviewer.header).toContain("The athlete gave no request: judge the draft against the scope and the brief.");
+    expect((await build({ request: null })).header).toContain("The athlete gave no request: decide what fits the scope.");
+  });
+
+  it("dates the day in the athlete's zone when UTC has already moved on", async () => {
+    const { header } = await build({}, new Date("2026-03-11T06:30:00Z"));
+    expect(header).toContain("Tuesday, 2026-03-10, 23:30");
+    expect(header).not.toContain("2026-03-11");
   });
 });
 
@@ -291,6 +348,8 @@ describe("the availability index: counts and dates, never contents", () => {
     expect(index).toMatch(/TMJ 1, last 07:40/);
     expect(index).toMatch(/soreness 1 \(last 2026-03-09\)/);
     expect(index).toMatch(/tightness none/);
+    expect(index).toMatch(/other 2 \(last 2026-03-08\)/);
+    expect(index).not.toContain("A custom question!");
     expect(index).toMatch(/feedback.*2 ratings \(last 2026-03-08\)/);
     expect(index).toMatch(/runs 1 in 30 d \(last 2026-03-08\)/);
     expect(index).toMatch(/strength 1 in 30 d \(last 2026-03-06\)/);
@@ -302,7 +361,7 @@ describe("the availability index: counts and dates, never contents", () => {
     expect(index).toMatch(/sleep last 2026-03-10 \(today\)/);
     expect(index).toMatch(/templates: 2/);
     expect(index).toMatch(/memory beyond the pinned core: \d+/);
-    expect(index).toMatch(/proposals in 30 d: 1 \(last 2026-03-05\)/);
+    expect(index).toMatch(/proposals in 30 d: 2 \(last 2026-03-05\)/);
   });
 
   it("never carries a history row, a note, an answer's words, a title or a figure", async () => {
@@ -426,6 +485,9 @@ describe("the budget", () => {
     await build({}, NOW, empty.userId);
     expect(rich).toBe(DESIGN_CONTEXT_STATEMENTS);
     expect(statements).toBe(DESIGN_CONTEXT_STATEMENTS);
+    // The profile's four (its row, the preferences, the places, the conditions) and seven reads: the preferences are
+    // read once, with the profile.
+    expect(DESIGN_CONTEXT_STATEMENTS).toBe(11);
     expect(DESIGN_CONTEXT_STATEMENTS).toBeLessThanOrEqual(20);
   });
 
@@ -438,5 +500,64 @@ describe("the budget", () => {
     expect(ctx.header).toMatch(/Today's plan: nothing planned/);
     expect(ctx.header).toMatch(/gave no request/);
     expect(ctx.system[3]!.text).toMatch(/none yet/);
+  });
+});
+
+/**
+ * HOW EACH RULE IS ENFORCED, FOUND FROM WHERE IT IS READ. A profile that allows everything, then the same profile with
+ * one member made strict: what the validator adds says how that member is enforced — an error is refused, a warning
+ * is a cost, nothing at all is a guide only the engine's own sessions follow. The label the header prints must be that.
+ */
+describe("the enforcement labels", () => {
+  const probeDoc = (): WorkoutDoc =>
+    workoutDocSchema.parse({
+      version: 1,
+      title: "Probe",
+      intent: { summary: "A probe.", goals: [], focus: [], effort: "develop" },
+      parts: [{ purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "bridge", dose: { sets: 2, reps: 10, restSec: 30 } }] }],
+      source: { kind: "studio" },
+    });
+  const PERMISSIVE: ConditionProfile = {
+    ...TMJ,
+    never: () => false, fitsMode: () => true, fitsFormat: () => true, allowPattern: () => true, allowRecord: () => true,
+    flare: () => false, flareSafe: () => true, recoveryReason: () => null, buildChecks: () => [],
+    stepDownCause: () => null, holdReason: () => null, rotateReason: () => null,
+  };
+  const STRICT: Record<DescribedRule, Partial<ConditionProfile>> = {
+    attributes: { id: "unratedProbe" },
+    never: { never: () => true },
+    allowPattern: { allowPattern: () => false },
+    allowRecord: { allowRecord: () => false },
+    fitsMode: { fitsMode: () => false },
+    fitsFormat: { fitsFormat: () => false },
+    flare: { flare: () => true, flareSafe: () => false },
+    recoveryReason: { recoveryReason: () => "probe" },
+    buildChecks: { buildChecks: () => [[false, "probe"]] },
+    stepDownCause: { stepDownCause: () => "flag" },
+    holdReason: { holdReason: () => "probe" },
+    rotateReason: { rotateReason: () => "probe" },
+    care: { care: { ...TMJ.care!, block: { ...TMJ.care!.block, min: { recovery: 9, consistent: 9, build: 9 } } } },
+  };
+  function enforcedAs(rule: DescribedRule): "refused" | "cost" | "guide" {
+    const issues = (p: ConditionProfile) =>
+      validateWorkoutDoc(probeDoc(), {
+        library: EXERCISES,
+        activeProfiles: [p],
+        day: { date: TODAY, today: TODAY, readings: { [p.id]: { pre: 1, post: null, feelingOff: false } } },
+      });
+    const before = issues(PERMISSIVE);
+    const added = issues({ ...PERMISSIVE, ...STRICT[rule] }).filter(
+      (i) => !before.some((b) => b.code === i.code && b.path === i.path && b.severity === i.severity),
+    );
+    return added.some((i) => i.severity === "error") ? "refused" : added.length > 0 ? "cost" : "guide";
+  }
+
+  it.each(Object.keys(STRICT) as DescribedRule[])("%s is labelled as the validator enforces it", (rule) => {
+    expect(RULE_ENFORCEMENT[rule]).toBe(enforcedAs(rule));
+  });
+
+  it("every rule a profile describes has a label, and the guides say no tool checks them", () => {
+    for (const p of [TMJ]) for (const l of p.describeRules()) expect(RULE_ENFORCEMENT[l.rule], l.rule).toBeDefined();
+    expect(ENFORCEMENT_LABEL).toEqual({ refused: "Refused", cost: "A cost", guide: "A guide (no tool checks this)" });
   });
 });

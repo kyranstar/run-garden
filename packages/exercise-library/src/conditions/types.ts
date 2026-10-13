@@ -141,11 +141,35 @@ export interface ConditionProfile {
   /**
    * The rules above in plain sentences, one per line, for the coach designer's opening context (Stage 3 spec §3).
    * Generated from the same constants the rules read — never written beside them — so the prompt and the code cannot
-   * disagree. Each line says whether its rule is refused (`never`, `allowPattern`, `allowRecord`: the validator's
-   * errors) or a cost shown to the athlete (`fitsMode`, `fitsFormat`, the flare, the mode reasons). It speaks of the
-   * profile and its readings, never of a person.
+   * disagree. Each line names the member it describes (`rule`); how that member is enforced (refused, a cost, or only a
+   * guide the engine's own sessions follow) is the reader's to say from where the member is read, never the line's.
+   * It speaks of the profile and its readings, never of a person.
    */
-  describeRules(): string[];
+  describeRules(): RuleLine[];
+}
+
+/** The members of a profile a `describeRules` line can describe. */
+export type DescribedRule = Extract<
+  keyof ConditionProfile,
+  | "attributes"
+  | "never"
+  | "allowPattern"
+  | "allowRecord"
+  | "fitsMode"
+  | "fitsFormat"
+  | "flare"
+  | "recoveryReason"
+  | "buildChecks"
+  | "stepDownCause"
+  | "holdReason"
+  | "rotateReason"
+  | "care"
+>;
+
+/** One rule in words: the member it is generated from, and a plain sentence (no enforcement word of its own). */
+export interface RuleLine {
+  rule: DescribedRule;
+  text: string;
 }
 
 /** A check nobody answered. */
