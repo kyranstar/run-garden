@@ -12,7 +12,7 @@ import { parseStoredWorkoutDoc } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { hourly } from "../src/index.js";
-import { CRON_DOC_BACKFILL_MAX } from "../src/services/cron-limits.js";
+import { CRON_DOC_BACKFILL_MAX, CRON_DOC_BACKFILL_SKIP_MAX } from "../src/services/cron-limits.js";
 import { backfillLiveDocs } from "../src/services/workout-doc-backfill.js";
 import { reopenedDocColumns } from "../src/services/workout-doc-store.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -127,8 +127,8 @@ describe("the hourly gives a reopened row its document again", () => {
     await row(other, "theirs");
     statements = [];
     const report = await backfillLiveDocs(db, userId, {});
-    // Nothing to do costs one read.
-    expect(statements).toHaveLength(1);
+    // Nothing to do costs two reads: the rows set aside, and the rows.
+    expect(statements).toHaveLength(2);
     expect(report).toMatchObject({ scanned: 0, converted: 0 });
     for (const id of ["completed", "skipped", "missed", "studio", "template", "slot", "rest", "archived", "theirs"]) {
       expect(await docOf(id), id).toBeNull();
@@ -142,6 +142,48 @@ describe("the hourly gives a reopened row its document again", () => {
     const report = await backfillLiveDocs(db, userId, {});
     expect(report.converted).toBe(CRON_DOC_BACKFILL_MAX);
     expect(statements.length).toBeLessThanOrEqual(CRON_DOC_BACKFILL_MAX + 6);
+  });
+
+  it("a row that keeps failing is set aside, so the rows behind it get theirs; tried again once it changes; the list is bounded", async () => {
+    const { userId } = await makeTestUser(db);
+    const sqlite = (db as unknown as { $client: { prepare(q: string): { run(...a: unknown[]): unknown } } }).$client;
+    // The newest rows: as many as a run reads, each with a coach structure no converter can read.
+    const broken = Array.from({ length: CRON_DOC_BACKFILL_MAX }, (_, i) => `broken-${i}`);
+    for (const [i, id] of broken.entries()) {
+      await row(userId, id, { category: "strength", sport: "strength", updatedAt: `2026-10-12T00:00:${String(30 + i).padStart(2, "0")}.000Z` });
+      sqlite.prepare(`update planned_workouts set structured_json = '{not json' where id = ?`).run(id);
+    }
+    // Older rows behind them, which convert.
+    await row(userId, "behind-0", { updatedAt: "2026-10-12T00:00:01.000Z" });
+    await row(userId, "behind-1", { updatedAt: "2026-10-12T00:00:02.000Z" });
+
+    const first = await backfillLiveDocs(db, userId, {});
+    expect(first.failed.map((f) => f.id).sort()).toEqual([...broken].sort());
+    expect(await docOf("behind-0")).toBeNull();
+    // Set aside: the next run reads past them.
+    const second = await backfillLiveDocs(db, userId, {});
+    expect(second.failed).toEqual([]);
+    expect(parseStoredWorkoutDoc(await docOf("behind-0"))).not.toBeNull();
+    expect(parseStoredWorkoutDoc(await docOf("behind-1"))).not.toBeNull();
+    // Nothing else to do: one read of the list, one of the rows.
+    statements = [];
+    expect(await backfillLiveDocs(db, userId, {})).toMatchObject({ scanned: 0, converted: 0 });
+    expect(statements).toHaveLength(2);
+
+    // One changes (its structure readable again): it is tried again, and converts.
+    sqlite.prepare(`update planned_workouts set structured_json = null, updated_at = '2026-10-12T01:00:00.000Z' where id = 'broken-0'`).run();
+    await backfillLiveDocs(db, userId, {});
+    expect(parseStoredWorkoutDoc(await docOf("broken-0"))).not.toBeNull();
+
+    // The list keeps the newest CRON_DOC_BACKFILL_SKIP_MAX.
+    for (let i = 0; i < CRON_DOC_BACKFILL_SKIP_MAX + 3; i++) {
+      const id = `more-${String(i).padStart(3, "0")}`;
+      await row(userId, id, { category: "strength", sport: "strength", updatedAt: `2026-10-13T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z` });
+      sqlite.prepare(`update planned_workouts set structured_json = '{not json' where id = ?`).run(id);
+    }
+    for (let k = 0; k < 20; k++) await backfillLiveDocs(db, userId, {});
+    const [kept] = await db.select().from(schema.providerCursorState).where(eq(schema.providerCursorState.userId, userId));
+    expect((JSON.parse(kept!.value) as unknown[]).length).toBeLessThanOrEqual(CRON_DOC_BACKFILL_SKIP_MAX);
   });
 
   it("waits while another heavy step has the run", { timeout: 60_000 }, async () => {

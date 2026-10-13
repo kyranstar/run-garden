@@ -48,9 +48,10 @@
  * - Size (`docSize`), read from the document's numbers alone, before any step exists — two bounds:
  *   - the app's (`docTooLarge`): more than DOC_MAX_MINUTES (600) minutes or more than DOC_MAX_STEPS (600) steps is too
  *     large to build. The validator's `too_large` error and the player's `DocTooLargeError` are this bound.
- *   - the watch's: within the app's bound but more steps than a push holds (`WATCH_MAX_STEPS`, 200) plays in the app
- *     and can't go to the watch whole — the validator's `too_long_for_watch` warning; the watch path refuses it as
- *     "too long" (its own count of the steps it would send).
+ *   - the watch's: within the app's bound but more steps TO THE WATCH than a push holds (`WATCH_MAX_STEPS`, 200;
+ *     `stepsToWatch`: the library moves only — a run segment or a free-text move never goes) plays in the app and can't
+ *     go to the watch whole — the validator's `too_long_for_watch` warning; the watch path refuses it as "too long"
+ *     (its own count of the steps it would send).
  *
  * SHARED with the player's steps (`playerStepsFromDoc`) and the validator, exported once here: a move's assumed seconds
  * per rep, a run's assumed pace and an open segment's nominal length (`secondsOfRun`), and how a part's format reads as
@@ -399,10 +400,32 @@ export function docSize(doc: WorkoutDoc, library: readonly ExerciseRecord[]): Do
     return { tooLarge: `This workout is too large: about ${estimatedMinutes} minutes, and the most is ${DOC_MAX_MINUTES}.`, tooLongForWatch: null };
   }
   if (watchStepCount > DOC_MAX_STEPS) return { tooLarge: `This workout is too large: ${watchStepCount} steps, and the most is ${DOC_MAX_STEPS}.`, tooLongForWatch: null };
-  if (watchStepCount > WATCH_MAX_STEPS) {
-    return { tooLarge: null, tooLongForWatch: `This workout has ${watchStepCount} steps and a watch takes ${WATCH_MAX_STEPS}, so it can't go to the watch whole.` };
+  const toWatch = stepsToWatch(doc, library);
+  if (toWatch > WATCH_MAX_STEPS) {
+    return { tooLarge: null, tooLongForWatch: `This workout has ${toWatch} steps and a watch takes ${WATCH_MAX_STEPS}, so it can't go to the watch whole.` };
   }
   return { tooLarge: null, tooLongForWatch: null };
+}
+
+/**
+ * The steps that go to the watch: each library move's executions, counted as `watchStepCount` counts them (sets x
+ * rounds x sides) — never a run segment, a free-text move or a move the library cannot name, which play with no move id
+ * and which the watch walk skips (the worker's `watchStepsFromDoc`).
+ */
+export function stepsToWatch(doc: WorkoutDoc, library: readonly ExerciseRecord[]): number {
+  const find = makeLibraryIndex(library);
+  let steps = 0;
+  for (const part of doc.parts) {
+    const rounds = part.rounds ?? 1;
+    for (const item of part.items) {
+      if (item.kind !== "exercise") continue;
+      const rec = find(item.libraryId);
+      if (!rec) continue;
+      const perSide = item.dose.perSide === true && item.side === undefined;
+      steps += (item.dose.sets ?? rec.dose.sets?.[0] ?? 1) * rounds * (perSide ? 2 : 1);
+    }
+  }
+  return steps;
 }
 
 /** Why a document is too large for a Worker to build, in plain words; null when it is within the bound. */

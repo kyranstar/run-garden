@@ -169,7 +169,8 @@ describe("one part per move: it is offered where it fits best", () => {
     }
   });
 
-  it("30 generated documents (seeded builds), whole and as shells around their main work: no move is offered in two parts — two parts of one kind included", () => {
+  // Sixty documents, every part of each: about a second on a quiet runner, and several on a loaded one.
+  it("30 generated documents (seeded builds), whole and as shells around their main work: no move is offered in two parts — two parts of one kind included", { timeout: 60_000 }, () => {
     // The sample the final review found 4 of 30 documents offering one move in two parts: a move ranked fourth where it
     // fits best filled the place another part's move left there, and two parts of one kind (two warm-ups) listed alike.
     const twice: string[] = [];

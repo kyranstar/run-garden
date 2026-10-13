@@ -25,7 +25,7 @@
  */
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
 import { sessionLead } from "@rg/domain";
-import { EXERCISES, PROFILES, isPlyometric, isProfileId, type ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, PROFILES, isPlyometric, isProfileId, onFrontier, type ExerciseRecord } from "@rg/exercise-library";
 import { Swapping, type SlotChoice, type Step } from "@rg/session-engine";
 import {
   DocTooLargeError,
@@ -43,7 +43,7 @@ import {
 import type { BuildItem, BuildPayload, CheckAnswer, ExerciseSlice, SessionView } from "./session-build.js";
 
 /** Bump when a document build's shape or rules change: a stored build of an older version is then built again. */
-export const DOC_BUILD_VERSION = "doc-build-3";
+export const DOC_BUILD_VERSION = "doc-build-4";
 
 /** The issue codes that keep a move out on the day — what an alternate can stand in for. */
 const GATE_CODES: ReadonlySet<DocIssueCode> = new Set(["condition_never", "condition_pattern", "condition_gate", "condition_gate_pending"]);
@@ -105,6 +105,16 @@ function inPlace(item: Exercise, to: string, why: string | undefined, rest: NonN
   return { ...kept, libraryId: to, ...(why ? { why } : {}), ...(rest.length > 0 ? { alternates: rest } : {}) };
 }
 
+/**
+ * A jump the session would hold new — one not done cleanly (`day.done`, the jumps the build was given): the engine's
+ * one-new-or-retried-jump rule, read from the tally a document build has (a rung done cleanly once and flagged since is
+ * not one here, where the engine would retry it). False without a tally: no jump can be among such a build's options.
+ */
+export function freshJump(rec: ExerciseRecord, ctx: ValidateCtx): boolean {
+  const done = ctx.day?.done;
+  return done !== undefined && isPlyometric(rec) && !done.has(rec.id);
+}
+
 /** An issue at one of an item's alternates — an option for a swap, never what is played. */
 const atAlternate = (i: DocIssue): boolean => i.path.includes(".alternates[");
 
@@ -122,6 +132,7 @@ export function gateDoc(doc: WorkoutDoc, ctx: ValidateCtx): GatedDoc {
   const errors = judged.filter((i) => i.severity === "error");
   if (errors.length === 0) return { doc, swaps: [], blocked: [] };
   const find = makeLibraryIndex(ctx.library);
+  const done = ctx.day?.done;
   const swaps: DocSwap[] = [];
   const parts = doc.parts.map((p) => ({ ...p, items: [...p.items] }));
   for (const e of playedErrors(errors)) {
@@ -133,10 +144,14 @@ export function gateDoc(doc: WorkoutDoc, ctx: ValidateCtx): GatedDoc {
     const item = doc.parts[p]?.items[i];
     if (item?.kind !== "exercise") continue;
     const own = find(item.libraryId)?.id ?? item.libraryId;
-    /** An alternate that can stand in: a move the library has, not the item's own, raising nothing `bar` counts. */
+    /**
+     * An alternate that can stand in: a move the library has, not the item's own, on the athlete's jump frontier (when
+     * the build knows it), raising nothing `bar` counts.
+     */
     const standsIn = (bar: (i: DocIssue) => boolean) => (alt: { libraryId: string }, ai: number): boolean => {
       const rec = find(alt.libraryId);
-      return rec !== undefined && rec.id !== own && !judged.some((x) => bar(x) && x.path.startsWith(`${path}.alternates[${ai}].`));
+      if (rec === undefined || rec.id === own || (done && !onFrontier(rec, (id) => done.has(find(id)?.id ?? id)))) return false;
+      return !judged.some((x) => bar(x) && x.path.startsWith(`${path}.alternates[${ai}].`));
     };
     // One that costs nothing (no warning either: the mode, the format, set aside, the gear) first; else the first that
     // the day allows.
@@ -190,6 +205,8 @@ export function dayValidateCtx(o: {
   today: string;
   excluded?: readonly string[];
   equipment?: readonly string[];
+  /** The jumps done cleanly: given, a jump past the athlete's frontier is noted (`progression_jump`). */
+  done?: ReadonlySet<string>;
 }): ValidateCtx {
   return {
     library: EXERCISES,
@@ -198,6 +215,7 @@ export function dayValidateCtx(o: {
       date: o.date,
       today: o.today,
       readings: Object.fromEntries(Object.entries(o.checks).map(([p, a]) => [p, { pre: a.pre, post: null, feelingOff: a.feelingOff }])),
+      ...(o.done ? { done: o.done } : {}),
     },
     ...(o.excluded ? { excluded: o.excluded } : {}),
     ...(o.equipment ? { equipment: o.equipment } : {}),
@@ -416,7 +434,8 @@ function docSlots(
     const costly: SlotOption[] = [];
     for (const p of planned) {
       const issues = issuesOf(at.key, p.to.id) ?? [];
-      if (issues.some((i) => i.severity === "error")) continue;
+      // A jump past the athlete's frontier is never offered, planned or not: the frontier is a safety rule, not a cost.
+      if (issues.some((i) => i.severity === "error" || i.code === "progression_jump")) continue;
       const costs = issues.map((i) => i.message);
       (costs.length > 0 ? costly : clean).push({ to: p.to, why: p.why, reasons: [...(p.why ? [p.why] : []), ...costs] });
     }
@@ -464,6 +483,8 @@ function docSlots(
         steps: played.filter((st) => st.kind !== "rest" && st.slotKey === x.at.key),
         moveKey: Swapping.moveKeyOf(x.option.to),
         pairing: Swapping.pairingOf(x.option.to),
+        // A jump not yet done cleanly is the session's new one: ⇄ takes no second while one is held (`Swapping`).
+        ...(freshJump(x.option.to, judge) ? { fresh: true as const } : {}),
       };
       const slot = (slots[x.at.key] ??= {});
       slot[x.list] = [...(slot[x.list] ?? []), choice];
@@ -521,6 +542,7 @@ export function materializeDocBuild(doc: WorkoutDoc, input: DocBuildInput): Mate
       coreFamily: null,
       isNew: false,
       why: [...s.why],
+      ...(rec && freshJump(rec, input.judge) ? { fresh: true as const } : {}),
     });
   }
   const { slots, records } = docSlots(doc, input.library, input.judge);

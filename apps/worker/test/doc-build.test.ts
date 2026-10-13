@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import { EXERCISES, isPlyometric } from "@rg/exercise-library";
 import { deriveDoc, playerStepsFromDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
 import { GatedError, lockCurrentBuild } from "../src/services/session-build.js";
@@ -296,6 +296,134 @@ describe("building a document workout", () => {
     const other = await makeTestUser(db);
     const theirs = await (await clientFor(db, other.userId))("POST", "/api/workouts", { date: today, doc: calmDoc() });
     expect((await call("POST", `/api/sessions/${theirs.body.workout.id}/build`, {})).status).toBe(404);
+  });
+});
+
+describe("⇄ keeps the athlete's jump frontier and one new jump a session (Stage 2 batch end)", () => {
+  /** A Develop day's snap-down, planned with the tuck jump (two rungs up) and a tempo squat as its alternates. */
+  const snapDownDay = () =>
+    workoutDocSchema.parse({
+      ...landingsDoc(),
+      intent: { summary: "Land softly, then work the legs.", goals: [], focus: [], effort: "develop" },
+      parts: [
+        { purpose: "power", format: "straight", items: [
+          { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5, restSec: 45 }, alternates: [{ libraryId: "tuckJump" }, { libraryId: "tempoSquat" }] },
+        ] },
+        { purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "bwSplitSquat", dose: { sets: 2, reps: 8, perSide: true, restSec: 45 } }] },
+      ],
+    });
+  const jumpOptions = (build: Record<string, any>) =>
+    Object.values(build.fromDoc.slots as Record<string, { alternates?: Array<{ id: string; fresh?: true }>; offers?: Array<{ id: string; fresh?: true }> }>)
+      .flatMap((s) => [...(s.alternates ?? []), ...(s.offers ?? [])])
+      .filter((c) => isPlyometric(EXERCISES.find((e) => e.id === c.id)!));
+  /** A logged session of these moves, done cleanly (no flag), a week ago. */
+  async function doneCleanly(...moves: string[]): Promise<void> {
+    const sid = "6b1f2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    const day = addDays(today, -7);
+    const at = `${day}T18:00:00.000Z`;
+    await db.insert(schema.performedSessions).values({
+      id: sid, userId, workoutId: null, activityId: null, buildId: null, source: "app", sourceRef: null, localDate: day, startedAt: at,
+      endedAt: null, seconds: 1800, plannedSeconds: 1800, minutes: 30, mode: "build", theme: null, locationId: null, blockRef: null,
+      blockNumber: null, completed: true, stepsTotal: null, stepsDone: null, movesDone: moves.map((m) => ({ exerciseId: m, seconds: 60 })),
+      note: null, newMove: null, payloadHash: "h", createdAt: at, updatedAt: at,
+    });
+    await db.insert(schema.performedSets).values(
+      moves.map((m, entryIndex) => ({
+        id: `${sid}-${entryIndex}`, performedSessionId: sid, entryIndex, exerciseId: m, implement: null, format: "straight", perSide: false,
+        setIndex: 0, side: null, reps: 5, seconds: null, loadValue: null, loadUnit: null, loadKg: null, done: true, flags: [],
+      })),
+    );
+  }
+
+  it("a snap-down whose rungs above were never done: the tuck jump is never offered, planned or not; the snap-down is the session's new jump", async () => {
+    await activateTmj(db, userId);
+    await check(1);
+    const id = await create(snapDownDay());
+    const built = await call("POST", `/api/sessions/${id}/build`, { checks: { tmj: { pre: 1, feelingOff: false } } });
+    expect(built.status).toBe(200);
+    const build = built.body.build;
+    expect(build.fromDoc.swaps).toEqual([]);
+    expect(offeredIn(build)).not.toContain("tuckJump");
+    // Every jump ⇄ offers is on the frontier: no easier rung, or one done cleanly — here, none is.
+    for (const c of jumpOptions(build)) expect(EXERCISES.find((e) => e.id === c.id)!.easier, c.id).toEqual([]);
+    expect(offeredIn(build)).toContain("tempoSquat");
+    // The never-done snap-down is the session's one new jump, and every jump offered beside it is new too.
+    expect(build.items.find((i: { exerciseId: string }) => i.exerciseId === "snapDown").fresh).toBe(true);
+    expect(build.items.find((i: { exerciseId: string }) => i.exerciseId === "bwSplitSquat").fresh).toBeUndefined();
+    for (const c of jumpOptions(build)) expect(c.fresh, c.id).toBe(true);
+  });
+
+  it("once the rungs below are done cleanly, the tuck jump is offered — a new jump — and the done rungs are not new", async () => {
+    await activateTmj(db, userId);
+    await check(1);
+    await doneCleanly("snapDown", "boxJumpStepDown");
+    const id = await create(snapDownDay());
+    const build = (await call("POST", `/api/sessions/${id}/build`, { checks: { tmj: { pre: 1, feelingOff: false } } })).body.build;
+    const tuck = build.fromDoc.slots["accessory:0"].alternates.find((a: { id: string }) => a.id === "tuckJump");
+    expect(tuck).toBeDefined();
+    expect(tuck.fresh).toBe(true);
+    expect(build.items.find((i: { exerciseId: string }) => i.exerciseId === "snapDown").fresh).toBeUndefined();
+  });
+
+  it("the day's own swap never stands in a jump past the frontier: the next alternate does", async () => {
+    await activateTmj(db, userId);
+    await check(1);
+    // A press the day keeps out on a Maintain day (overhead pressing is a Develop day's), planned with a box jump the
+    // athlete has not reached (its snap-down never done) and a tempo squat.
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "halfKneelingPress", dose: { sets: 2, reps: 8 }, alternates: [{ libraryId: "boxJumpStepDown" }, { libraryId: "tempoSquat" }] },
+      ] }],
+    });
+    const build = (await call("POST", `/api/sessions/${await create(doc)}/build`, { checks: { tmj: { pre: 1, feelingOff: false } } })).body.build;
+    expect(build.fromDoc.swaps.map((s: { from: string; to: string }) => [s.from, s.to])).toEqual([["halfKneelingPress", "tempoSquat"]]);
+    expect(offeredIn(build)).not.toContain("boxJumpStepDown");
+  });
+
+  it("the jumps done are among the build's inputs: a rung done since makes the stored build stale", async () => {
+    await activateTmj(db, userId);
+    await check(1);
+    const id = await create(snapDownDay());
+    const first = (await call("POST", `/api/sessions/${id}/build`, {})).body.build;
+    await doneCleanly("snapDown", "boxJumpStepDown");
+    const again = (await call("POST", `/api/sessions/${id}/build`, {})).body.build;
+    expect(again.buildId).not.toBe(first.buildId);
+    expect(again.inputsHash).not.toBe(first.inputsHash);
+  });
+
+  it("every path that builds a document stays within 45 statements — build, its currency, Start (stale, then the lock), Send, the preview", async () => {
+    await activateTmj(db, userId);
+    await check(1);
+    const id = await create(snapDownDay());
+    const counted = async (what: string, run: () => Promise<Reply>): Promise<Reply> => {
+      statements.length = 0;
+      const res = await run();
+      console.info(`[budget] ${what}: ${statements.length} statements`);
+      expect(statements.length, what).toBeLessThanOrEqual(45);
+      return res;
+    };
+    const built = await counted("build", () => call("POST", `/api/sessions/${id}/build`, { checks: { tmj: { pre: 1, feelingOff: false } } }));
+    expect(built.status).toBe(200);
+    await counted("currency", () => call("GET", `/api/sessions/${id}/current`));
+    await check(2);
+    const stale = await counted("Start, stale (the fresh build)", () => call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId }));
+    expect(stale.body.error).toBe("stale");
+    const fresh = stale.body.session.build.buildId as string;
+    const other = await create(snapDownDay(), today);
+    const second = await call("POST", `/api/sessions/${other}/build`, {});
+    await counted("Send's lock", async () => {
+      await lockCurrentBuild(db, userId, other, second.body.build.buildId, nowInstant(), { as: "send", prefs });
+      return { status: 200, body: {} } as Reply;
+    });
+    expect((await counted("Start, the lock", () => call("POST", `/api/sessions/${id}/start`, { buildId: fresh }))).status).toBe(200);
+  });
+
+  it("a document with no jump reads no history: the same statements as before", async () => {
+    const id = await create(calmDoc());
+    statements.length = 0;
+    expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(200);
+    expect(statements.filter((s) => /performed_sets/.test(s))).toEqual([]);
   });
 });
 

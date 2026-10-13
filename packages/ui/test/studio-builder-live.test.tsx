@@ -885,7 +885,7 @@ describe("a planned workout that can't change, judged by today", () => {
     expect(startButton()).toBeNull();
     expect(document.querySelector(".stu-build-foot [hidden]")).toBeNull();
     // Nothing here can be fixed, so nothing says "to fix": the count is of notes — the rule-out, and the Develop day's
-    // cost ("Build needs a calm jaw…") — in the neutral style, and the rule-out is a note to a screen reader too.
+    // cost ("A Develop or Peak day needs a calm jaw…") — in the neutral style, and the rule-out is a note to a screen reader too.
     const count = document.querySelector(".stu-sum-count")!;
     expect(count.textContent).toBe("2 notes");
     expect(count.classList.contains("stu-sum-count--error")).toBe(false);

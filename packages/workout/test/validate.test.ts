@@ -337,6 +337,20 @@ describe("too_large (final review I4): a document a Worker cannot afford is refu
     // A template is the same document: its size is its own, whatever the day.
     expect(codes(only(check(steps(41), null), "too_long_for_watch"))).toEqual(["warning:too_long_for_watch@parts"]);
   });
+
+  it("only the steps that go to the watch count: free-text moves and run segments never do, so a mixed workout that fits is not warned", () => {
+    const free = (name: string): WorkoutItem => ({ kind: "free_exercise", name, dose: { sets: 1, holdSec: 5 } }) as WorkoutItem;
+    const run: WorkoutItem = { kind: "run", target: { durationSec: 60 }, effort: "easy" } as WorkoutItem;
+    const moves = ["tempoSquat", "bridge", "deadBug"].map((id) => ex(id, { sets: 1, holdSec: 5 }));
+    // 3 library moves, 3 free-text moves and a run segment, 40 rounds: 280 steps played, 120 to the watch.
+    const mixed = docOf([part("main", "holds", [...moves, free("Wall angels"), free("Toe yoga"), free("Neck rolls"), run], { rounds: 40 })]);
+    expect(only(check(mixed), "too_large")).toEqual([]);
+    expect(only(check(mixed), "too_long_for_watch")).toEqual([]);
+    // 6 library moves and a free-text one, 35 rounds: 210 to the watch — warned with the watch's own count.
+    const six = ["tempoSquat", "bridge", "deadBug", "catCow", "birdDog", "wallSit"].map((id) => ex(id, { sets: 1, holdSec: 5 }));
+    const over = only(check(docOf([part("main", "holds", [...six, free("Wall angels")], { rounds: 35 })])), "too_long_for_watch");
+    expect(over.map((i) => i.message)).toEqual(["This workout has 210 steps and a watch takes 200, so it can't go to the watch whole."]);
+  });
 });
 
 // ── The condition profiles' rules (parity with the engine) ─────────────────────────────────────────────────────────

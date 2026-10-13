@@ -54,6 +54,7 @@ import {
   COVERAGE_TARGETS,
   EXERCISES,
   FORMATS,
+  isPlyometric,
   isProfileId,
   makeEngineData,
   MODES,
@@ -95,7 +96,8 @@ import { conditionView, isAnswer, latestReading, type ConditionView } from "./co
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
 import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, slotsForDay, snapshotErrors, type DocBuildInfo, type DocSlot } from "./doc-build.js";
-import { DocTooLargeError, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { DocTooLargeError, makeLibraryIndex, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { doneCleanlyOf, doneStats } from "./library-view.js";
 
 /**
  * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
@@ -1305,8 +1307,27 @@ interface DocDayInputs {
   context: EngineContext;
   checks: Record<string, CheckAnswer>;
   preChecks: PreCheckWrite[];
+  /**
+   * The jumps the athlete has done cleanly (`doneCleanlyOf` over library-view's one-statement `doneStats`): the frontier
+   * the build's ⇄ honours, and which jump is new. Read only when the document holds a jump (an item or an alternate:
+   * only then can an option be one); empty otherwise.
+   */
+  jumpsDone: ReadonlySet<string>;
   version: string;
   inputsHash: string;
+}
+
+/** The library's jumps: what a document build's frontier is read for. */
+const JUMP_IDS: readonly string[] = EXERCISES.filter(isPlyometric).map((e) => e.id);
+
+/** Whether a document holds a jump — an item or one of its alternates — so that an option of its ⇄ could be one. */
+function docHoldsJump(doc: WorkoutDoc): boolean {
+  const find = makeLibraryIndex(EXERCISES);
+  const jump = (id: string): boolean => {
+    const rec = find(id);
+    return rec !== undefined && isPlyometric(rec);
+  };
+  return doc.parts.some((p) => p.items.some((i) => i.kind === "exercise" && (jump(i.libraryId) || (i.alternates ?? []).some((a) => jump(a.libraryId)))));
 }
 
 /** The place as a session's view carries it: its gear and its implement weights, for the player offline. */
@@ -1326,9 +1347,18 @@ const docExtras = (activeProfiles: readonly string[]): SheetExtras => ({
   choices: { modes: [], themes: [], locations: [] },
 });
 
-/** What the validator reads of the day for a document build (only its errors decide one). */
-const docValidateCtx = (context: EngineContext, checks: Record<string, CheckAnswer>, date: string, today: string): ValidateCtx =>
-  dayValidateCtx({ profiles: context.activeProfiles, checks, date, today, excluded: context.prefs.excluded, equipment: context.location.equipment });
+/**
+ * What the validator reads of the day for a document build: only its errors decide the build; the jumps done cleanly
+ * (`jumpsDone`) keep its ⇄ on the athlete's frontier.
+ */
+const docValidateCtx = (
+  context: EngineContext,
+  checks: Record<string, CheckAnswer>,
+  date: string,
+  today: string,
+  jumpsDone: ReadonlySet<string>,
+): ValidateCtx =>
+  dayValidateCtx({ profiles: context.activeProfiles, checks, date, today, excluded: context.prefs.excluded, equipment: context.location.equipment, done: jumpsDone });
 
 /** The day's checks for a document row (the request's, recorded, over the day's) and its context; reads only. */
 async function docDay(
@@ -1361,14 +1391,21 @@ async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readon
   const doc = parseStoredWorkoutDoc(row.workoutDoc);
   if (!doc) throw new NoDocumentError();
   const { context, checks, preChecks } = await docDay(db, userId, row, req, ctx, doc.setting?.placeId);
+  // One statement, only when an option could be a jump: what the frontier and the one-new-jump rule read.
+  const jumpsDone = docHoldsJump(doc)
+    ? doneCleanlyOf(await doneStats(db, userId, ctx.today, ctx.today), context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]), JUMP_IDS)
+    : new Set<string>();
   const version = await docBuildVersion();
   const rev = row.workoutDocRev ?? null;
   const inputsHash = await sha256Hex(
     JSON.stringify(
-      canonical({ engine: version, date, doc: row.workoutDoc, rev, checks, profiles: context.activeProfiles, location: context.location, unit: context.unit }),
+      canonical({
+        engine: version, date, doc: row.workoutDoc, rev, checks, profiles: context.activeProfiles, location: context.location, unit: context.unit,
+        jumpsDone: [...jumpsDone].sort(),
+      }),
     ),
   );
-  return { date, preview, previous, doc, rev, context, checks, preChecks, version, inputsHash };
+  return { date, preview, previous, doc, rev, context, checks, preChecks, jumpsDone, version, inputsHash };
 }
 
 /**
@@ -1397,7 +1434,7 @@ async function commitDocBuild(
   };
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return reuseStored(db, userId, s, previous, ctx);
 
-  const judge = docValidateCtx(context, checks, date, ctx.today);
+  const judge = docValidateCtx(context, checks, date, ctx.today, inputs.jumpsDone);
   const gated = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, judge);
   let made: ReturnType<typeof materializeDocBuild>;
   try {

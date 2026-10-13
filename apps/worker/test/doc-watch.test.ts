@@ -188,6 +188,28 @@ describe("a document longer than a watch takes (Stage 2 batch end: one bound for
     expect(await call("POST", `${workoutId}/send-to-watch`, { buildId, digest: preview.body.digest })).toEqual({ status: 409, body: { error: "too_long" } });
     expect(await pushOf(buildId)).toBeUndefined();
   });
+
+  it("free-text moves never go to the watch: 240 steps played, 160 sent — the watch takes it, and the document is not warned", async () => {
+    const mixed = workoutDocSchema.parse({
+      ...longDoc(),
+      parts: [{
+        purpose: "main", format: "holds", rounds: 40,
+        items: [
+          ...["catCow", "deadBug", "birdDog", "bridge"].map((libraryId) => ({ kind: "exercise", libraryId, dose: { sets: 1, holdSec: 5 } })),
+          { kind: "free_exercise", name: "Wall angels", dose: { sets: 1, holdSec: 5 } },
+          { kind: "free_exercise", name: "Toe yoga", dose: { sets: 1, holdSec: 5 } },
+        ],
+      }],
+    });
+    const { workout, warnings } = await createDocWorkout(db, userId, { date: DAY, time: "07:00", doc: mixed }, ctx());
+    expect(warnings.filter((w) => w.code === "too_long_for_watch")).toEqual([]);
+    const built = await buildSession(db, userId, workout.id, { checks: { tmj: { pre: 1, feelingOff: false } } }, ctx());
+    expect(built.build!.steps.filter((s) => s.kind !== "rest")).toHaveLength(240);
+    const preview = await call("GET", `${workout.id}/watch-preview`);
+    expect(preview.status).toBe(200);
+    expect(preview.body.refusal).toBeNull();
+    expect(preview.body.steps).toHaveLength(160);
+  });
 });
 
 describe("the budget", () => {

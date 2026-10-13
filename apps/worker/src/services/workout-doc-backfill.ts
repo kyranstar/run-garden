@@ -60,11 +60,11 @@
  * and writes nothing; `convertedBy` says which converter each document came from.
  */
 import { and, asc, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
-import { coachPlans, plannedWorkouts, plannedWorkoutStages, sessionBuilds, syncIntents } from "@rg/database";
+import { coachPlans, plannedWorkouts, plannedWorkoutStages, providerCursorState, sessionBuilds, syncIntents } from "@rg/database";
 import { APP_AUTHORED_ORIGINS, appAuthoredRow, coachSessionSchema, nowInstant, sessionSummaryLine, type CoachSession, type WeightUnit, type WorkoutDoc } from "@rg/domain";
 import type { BuildPayload } from "@rg/workout";
 import { chunkIds, runAtomically, type AtomicStatement, type Db } from "./db.js";
-import { CRON_DOC_BACKFILL_MAX } from "./cron-limits.js";
+import { CRON_DOC_BACKFILL_MAX, CRON_DOC_BACKFILL_SKIP_MAX } from "./cron-limits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { isUpstreamFingerprint } from "./coach-apply.js";
 import {
@@ -145,14 +145,55 @@ export async function backfillWorkoutDocs(db: Db, userId: string, opts: Backfill
  * a few a run, the most recently changed first, through `backfillPlanned`'s own converters, writes and revisions. Only
  * rows a writer would derive: never a frozen row (completed, skipped, missed: what it had is history), never an
  * app-authored row (a programme's slot or an on-demand session — its build carries the document — nor a Studio or
- * template row, whose document is its content and is never derived), never a rest day or an archived row. A row whose
- * conversion fails stays as it is; one that converts leaves the scan. No cursor: the manual backfill's keyset still
- * reaches whatever is older than a run's page.
+ * template row, whose document is its content and is never derived), never a rest day or an archived row. A row that
+ * converts leaves the scan; one whose conversion fails stays as it is and is SET ASIDE as it stands (its id and its
+ * `updated_at`, the newest CRON_DOC_BACKFILL_SKIP_MAX kept in one `provider_cursor_state` value): passed over until it
+ * changes, so rows that keep failing never take every run's page from the rows behind them. One read of the list a run,
+ * one write when a row failed. The manual backfill reaches every row, set aside or not.
  */
 export async function backfillLiveDocs(db: Db, userId: string, opts: { limit?: number; now?: string }): Promise<BackfillReport> {
-  return backfillPlanned(db, userId, { kind: "planned", dryRun: false }, Math.min(opts.limit ?? CRON_DOC_BACKFILL_MAX, BACKFILL_MAX_LIMIT), opts.now ?? nowInstant(), {
+  const now = opts.now ?? nowInstant();
+  const setAside = await loadSetAside(db, userId);
+  const stamps = new Map<string, string>();
+  const report = await backfillPlanned(db, userId, { kind: "planned", dryRun: false }, Math.min(opts.limit ?? CRON_DOC_BACKFILL_MAX, BACKFILL_MAX_LIMIT), now, {
     live: true,
+    setAside,
+    stamps,
   });
+  if (report.failed.length > 0) {
+    const failed = report.failed.flatMap((f): SetAside[] => (stamps.has(f.id) ? [[f.id, stamps.get(f.id)!]] : []));
+    const ids = new Set(failed.map(([id]) => id));
+    const kept = [...setAside.filter(([id]) => !ids.has(id)), ...failed].slice(-CRON_DOC_BACKFILL_SKIP_MAX);
+    await db
+      .insert(providerCursorState)
+      .values({ id: setAsideKey(userId), userId, provider: SET_ASIDE_PROVIDER, cursorKey: SET_ASIDE_KEY, value: JSON.stringify(kept), updatedAt: now })
+      .onConflictDoUpdate({ target: providerCursorState.id, set: { value: JSON.stringify(kept), updatedAt: now } });
+  }
+  return report;
+}
+
+/** A row the hourly's backfill passes over while it stands so: its id and its `updated_at` when its conversion failed. */
+type SetAside = [id: string, updatedAt: string];
+const SET_ASIDE_PROVIDER = "workout_docs";
+const SET_ASIDE_KEY = "cron_backfill_set_aside";
+const setAsideKey = (userId: string): string => `${userId}:${SET_ASIDE_PROVIDER}:${SET_ASIDE_KEY}`;
+
+/** The rows set aside (`backfillLiveDocs`); an unreadable value reads as none. */
+async function loadSetAside(db: Db, userId: string): Promise<SetAside[]> {
+  const [row] = await db
+    .select({ value: providerCursorState.value })
+    .from(providerCursorState)
+    .where(eq(providerCursorState.id, setAsideKey(userId)))
+    .limit(1);
+  if (!row) return [];
+  try {
+    const list: unknown = JSON.parse(row.value);
+    return Array.isArray(list)
+      ? list.filter((e): e is SetAside => Array.isArray(e) && e.length === 2 && typeof e[0] === "string" && typeof e[1] === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 class Tally {
@@ -345,15 +386,18 @@ async function backfillPlanned(
   opts: BackfillOptions,
   limit: number,
   now: string,
-  scope: { live: boolean } = { live: false },
+  scope: { live: boolean; setAside?: readonly SetAside[]; stamps?: Map<string, string> } = { live: false },
 ): Promise<BackfillReport> {
   const pw = plannedWorkouts;
-  // The hourly's live rows (`backfillLiveDocs`): only what a writer would derive, the most recently changed first.
+  // The hourly's live rows (`backfillLiveDocs`): only what a writer would derive, the most recently changed first, and
+  // never a row set aside as it stands (its id and `updated_at`, one bound JSON value however long the list).
+  const setAside = JSON.stringify(scope.setAside ?? []);
   const live = scope.live
     ? [
         ne(pw.category, "rest"),
         or(isNull(pw.completionState), notInArray(pw.completionState, [...FROZEN_STATES])),
         or(isNull(pw.origin), notInArray(pw.origin, [...APP_AUTHORED_ORIGINS])),
+        sql`not exists (select 1 from json_each(${setAside}) s where json_extract(s.value, '$[0]') = ${pw.id} and json_extract(s.value, '$[1]') = ${pw.updatedAt})`,
       ]
     : [];
   const rows = await db
@@ -372,6 +416,7 @@ async function backfillPlanned(
       calendarSeconds: pw.calendarBlockDurationSeconds,
       fingerprint: pw.sourceContentFingerprint,
       coachPlanId: coachPlans.id,
+      updatedAt: pw.updatedAt,
     })
     .from(pw)
     .leftJoin(coachPlans, and(eq(coachPlans.id, pw.planId), eq(coachPlans.userId, pw.userId)))
@@ -382,6 +427,7 @@ async function backfillPlanned(
   const { page } = paging;
   const nextAfter = scope.live ? null : paging.nextAfter;
   const tally = new Tally(opts, page.length, nextAfter);
+  for (const r of page) scope.stamps?.set(r.id, r.updatedAt);
 
   const convertible = page.filter((r) => r.category !== "rest" && !appAuthoredRow(r));
   const stagesOf = new Map<string, StageRow[]>();

@@ -241,7 +241,7 @@ const ratingOf = (v: number | null | undefined): 1 | -1 | null => (v == null || 
 const SAFETY_RANK: Record<Safety, number> = { safe: 0, care: 1, never: 2 };
 
 /** What one move's settled work says: its last day, its sessions in 30 days, and the tally `isDoneCleanly` reads. */
-interface DoneStat {
+export interface DoneStat {
   last: string | null;
   n30: number;
   /** Logged entries (an entry index with a done set), up to today. */
@@ -258,9 +258,10 @@ interface DoneStat {
  *  - the tally `isDoneCleanly` reads, exactly as the engine's history summary counts it (`historyRows`,
  *    engine-inputs.ts): an entry is the sets with one entry index, named by its first set, and it counts only with a
  *    done set; `logged` is the entries up to today, each flag the entries any of whose sets carries it.
- * Legacy ids are merged into the move they now are.
+ * Legacy ids are merged into the move they now are. Shared with a document workout's build (session-build.ts), which
+ * reads the jumps done cleanly from it (`doneCleanlyOf`) for the frontier its ⇄ honours.
  */
-async function doneStats(db: Db, userId: string, since: string, today: string): Promise<Map<string, DoneStat>> {
+export async function doneStats(db: Db, userId: string, since: string, today: string): Promise<Map<string, DoneStat>> {
   const rows = (await db.all(sql`
     with e as (
       -- Logged entries (with a done set). With exactly one MIN() in a query, SQLite takes the bare columns from the
@@ -308,6 +309,16 @@ async function doneStats(db: Db, userId: string, since: string, today: string): 
     } else if (r.kind === "logged") cur.logged += Number(r.n);
     else if (r.flag) cur.flags[r.flag] = (cur.flags[r.flag] ?? 0) + Number(r.n);
     out.set(id, cur);
+  }
+  return out;
+}
+
+/** The moves among `ids` done cleanly (`isDoneCleanly`, the engine's unlock rule), by `doneStats`' tally. */
+export function doneCleanlyOf(stats: ReadonlyMap<string, DoneStat>, profiles: readonly ConditionProfile[], ids: Iterable<string>): Set<string> {
+  const out = new Set<string>();
+  for (const id of ids) {
+    const d = stats.get(id);
+    if (d && isDoneCleanly({ lastDate: d.last, logged: d.logged, flags: d.flags }, profiles)) out.add(id);
   }
   return out;
 }

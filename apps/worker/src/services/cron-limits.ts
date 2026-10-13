@@ -73,3 +73,11 @@ export const COACH_RUN_LEFT_MINUTES = 2;
  * first; anything older the manual backfill still reaches.
  */
 export const CRON_DOC_BACKFILL_MAX = 5;
+
+/**
+ * How many rows the hourly's backfill keeps set aside: a row whose conversion failed, as it stood (its id and its
+ * `updated_at`), is passed over until it changes, so rows that keep failing never take every run's page from the rows
+ * behind them. The newest this many are kept, in one value of `provider_cursor_state` (one read a run, one write when a
+ * row failed); a row pushed off the end is tried again once, and set aside again if it still fails.
+ */
+export const CRON_DOC_BACKFILL_SKIP_MAX = 50;
