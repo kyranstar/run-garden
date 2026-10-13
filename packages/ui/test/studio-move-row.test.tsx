@@ -47,7 +47,7 @@ describe("a move row", () => {
 
   it("line 4: the default dose, the history, today's fit — and the gear, with no place to judge it by", () => {
     const plain = text(line(html, 1));
-    expect(plain).toContain("2 × 7");
+    expect(plain).toContain("2 × 5–8");
     expect(plain).toContain("Last done 6 days ago");
     expect(plain).toContain("3× in 30 days");
     expect(plain).toContain("Fits today");
@@ -77,23 +77,24 @@ describe("a move row", () => {
 
   it("with no profile on and no history, line 4 is the dose alone", () => {
     const bare = text(renderToStaticMarkup(createElement(MoveRow, { rec: goblet, fit: null, prefs: null, today: TODAY })));
-    expect(bare).toContain("2 × 7");
+    expect(bare).toContain("2 × 5–8");
     expect(bare).not.toMatch(/today|Last done/);
   });
 });
 
 describe("the dose line", () => {
-  it("is the dose Add puts in: the record's low sets and the middle of its range, in its own unit", () => {
-    expect(doseLine(rec("gobletSquat"))).toBe("2 × 7");
-    expect(doseLine(rec("gobletCarry"))).toBe("2 × 45 s");
-    expect(doseLine(rec("breath"))).toBe("90 s");
-    expect(doseLine(rec("physiologicalSigh"))).toBe("7 breaths");
+  it("is the dose Add puts in, for its part: the record's low sets (one in a light part) and its range's low end (reps keep the range)", () => {
+    expect(doseLine(rec("gobletSquat"))).toBe("2 × 5–8");
+    expect(doseLine(rec("gobletCarry"))).toBe("2 × 30 s");
+    // Care moves are light: one set.
+    expect(doseLine(rec("breath"))).toBe("1 min");
+    expect(doseLine(rec("physiologicalSigh"))).toBe("5 breaths");
     const oneSided = EXERCISES.find((e) => e.laterality !== "bilateral" && e.dose.type === "reps")!;
     expect(doseLine(oneSided)).toMatch(/ each side$/);
     // One set of reps names its unit: a bare "10" says nothing.
     const single = EXERCISES.find((e) => e.dose.type === "reps" && !e.dose.sets && e.laterality === "bilateral")!;
     const [lo, hi] = single.dose.range;
-    expect(doseLine(single)).toBe(`${Math.round((lo + hi) / 2)} reps`);
+    expect(doseLine(single)).toBe(lo === hi ? `${lo} reps` : `${lo}–${hi} reps`);
   });
 
   it("in a list browsed by a part, a row does not repeat that part (the chip says it once)", () => {

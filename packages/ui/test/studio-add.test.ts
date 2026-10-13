@@ -79,11 +79,11 @@ describe("Add lands by purpose", () => {
     expect(r.doc.parts).toHaveLength(1);
   });
 
-  it("with the dose Add puts in (the library's default)", () => {
+  it("with the dose Add puts in: its part's dose (`doseFor`), as the row said it", () => {
     const r = addMove(mainOnly(), rec("boxSquat"), EXERCISES);
     if ("rejected" in r) throw new Error(r.rejected);
     const item = r.doc.parts[0]!.items[1]!;
-    expect(item).toEqual({ kind: "exercise", libraryId: "boxSquat", dose: { sets: 2, reps: 10, restSec: 45 } });
+    expect(item).toEqual({ kind: "exercise", libraryId: "boxSquat", dose: { sets: 2, reps: { min: 8, max: 12 }, restSec: 45 } });
   });
 
   it("a new workout is warm-up, main and cool-down, the move in its own part", () => {

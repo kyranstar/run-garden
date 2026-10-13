@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { PART_PURPOSES, workoutDocSchema, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
 import { EXERCISES, PURPOSES, type ExerciseRecord } from "@rg/exercise-library";
-import { edit, tryEdit, newDoc, placementFor, redo, toProposable, undo, defaultDose, startEditing, type EditAction, type EditorState } from "../src/index.js";
+import { edit, tryEdit, newDoc, placementFor, redo, toProposable, undo, doseFor, itemFor, suggestedItem, startEditing, type EditAction, type EditorState } from "../src/index.js";
 
 const byId = new Map(EXERCISES.map((e) => [e.id, e]));
 const rec = (id: string): ExerciseRecord => {
@@ -207,12 +207,12 @@ describe("swapItem", () => {
     s = run(s, { type: "swapItem", part: 1, item: 0, libraryId: other.id });
     expect(s.doc.parts[1]!.items[0]).toEqual({ kind: "exercise", libraryId: other.id, dose, cue: "Brace." });
   });
-  it("converts reps to a hold with the new record's default dose, never leaving reps on a time-only move", () => {
+  it("converts reps to a hold with the new record's dose for this part, never leaving reps on a time-only move", () => {
     let s = run(fresh(), { type: "addItem", item: ex(repsRec.id, { sets: 4, reps: 5 }), part: 1 });
     s = run(s, { type: "swapItem", part: 1, item: 0, libraryId: timeRec.id });
     const it = s.doc.parts[1]!.items[0] as { libraryId: string; dose: Record<string, unknown> };
     expect(it.libraryId).toBe(timeRec.id);
-    expect(it.dose).toEqual(defaultDose(timeRec));
+    expect(it.dose).toEqual(doseFor(timeRec, "main"));
     expect(it.dose.reps).toBeUndefined();
     expect(it.dose.holdSec).toBeDefined();
   });
@@ -220,7 +220,7 @@ describe("swapItem", () => {
     let s = run(fresh(), { type: "addItem", item: ex(timeRec.id, { sets: 2, holdSec: 30 }), part: 1 });
     s = run(s, { type: "swapItem", part: 1, item: 0, libraryId: repsRec.id });
     const dose = (s.doc.parts[1]!.items[0] as { dose: Record<string, unknown> }).dose;
-    expect(dose).toEqual(defaultDose(repsRec));
+    expect(dose).toEqual(doseFor(repsRec, "main"));
     expect(dose.holdSec).toBeUndefined();
   });
   it("a carry is held for time: swapping a hold onto a carry keeps it, swapping reps onto one makes a timed carry", () => {
@@ -231,7 +231,7 @@ describe("swapItem", () => {
     s = run(fresh(), { type: "addItem", item: ex(repsRec.id, { sets: 3, reps: 8 }), part: 1 });
     s = run(s, { type: "swapItem", part: 1, item: 0, libraryId: carry.id });
     const dose = (s.doc.parts[1]!.items[0] as { dose: Record<string, unknown> }).dose;
-    expect(dose).toEqual(defaultDose(carry));
+    expect(dose).toEqual(doseFor(carry, "main"));
     expect(dose.holdSec).toBeDefined();
     expect(dose.carryM).toBeUndefined();
   });
@@ -246,7 +246,7 @@ describe("swapItem", () => {
     const legacy = fake({ id: "renamedMove", legacyIds: ["oldMove"], dose: { type: "reps", range: [6, 10] } });
     let s = run(fresh(), { type: "addItem", item: ex("zzz", {}), part: 1 });
     s = edit(s, { type: "swapItem", part: 1, item: 0, libraryId: "oldMove" }, [legacy]);
-    expect(s.doc.parts[1]!.items[0]).toMatchObject({ libraryId: legacy.id, dose: defaultDose(legacy) });
+    expect(s.doc.parts[1]!.items[0]).toMatchObject({ libraryId: legacy.id, dose: doseFor(legacy, "main") });
   });
   it("an unknown record or a non-library item is a no-op", () => {
     const s = run(fresh(), { type: "addItem", item: ex(repsRec.id), part: 1 }, { type: "addItem", item: { kind: "free_exercise", name: "Plank", dose: { holdSec: 30 } }, part: 1 });
@@ -255,18 +255,38 @@ describe("swapItem", () => {
   });
 });
 
-describe("defaultDose", () => {
-  it("uses the record's sets, the middle of its range, its rest", () => {
+describe("doseFor: the one dose a move starts with in a part (Stage 2 whole-branch review M3)", () => {
+  it("its range's low end (reps keep the range), its own sets — one in a light part — each side, its rest", () => {
     const r = fake({ dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60 }, laterality: "bilateral" });
-    expect(defaultDose(r)).toEqual({ sets: 2, reps: 10, restSec: 60 });
-    expect(defaultDose(fake({ dose: { type: "time", range: [20, 40] }, laterality: "bilateral" }))).toEqual({ holdSec: 30 });
-    expect(defaultDose(fake({ dose: { type: "breaths", range: [5, 10] }, laterality: "bilateral" }))).toEqual({ breaths: 8 });
-    // A library carry's range is seconds: its default is a timed carry, never a distance (cross-task ruling, S2 T4 fix 1).
-    expect(defaultDose(fake({ dose: { type: "carry", range: [20, 30] }, laterality: "bilateral" }))).toEqual({ holdSec: 25 });
-    expect(defaultDose(fake({ dose: { type: "reps", range: [6, 6] }, laterality: "unilateral" as never }))).toEqual({ reps: 6, perSide: true });
+    expect(doseFor(r, "main")).toEqual({ sets: 2, reps: { min: 8, max: 12 }, restSec: 60 });
+    expect(doseFor(r, "warmup")).toMatchObject({ sets: 1, reps: { min: 8, max: 12 } });
+    expect(doseFor(fake({ dose: { type: "time", range: [20, 40] }, laterality: "bilateral" }), "main")).toEqual({ sets: 1, holdSec: 20 });
+    expect(doseFor(fake({ dose: { type: "breaths", range: [5, 10] }, laterality: "bilateral" }), "cooldown")).toEqual({ sets: 1, breaths: 5 });
+    // A library carry's range is seconds: a timed carry, never a distance (cross-task ruling, S2 T4 fix 1).
+    expect(doseFor(fake({ dose: { type: "carry", range: [20, 30] }, laterality: "bilateral" }), "main")).toEqual({ sets: 1, holdSec: 20 });
+    expect(doseFor(fake({ dose: { type: "reps", range: [6, 6] }, laterality: "unilateral" as never }), "main")).toEqual({ sets: 1, reps: 6, perSide: true });
   });
-  it("every record's default dose parses", () => {
-    for (const e of EXERCISES) expect(workoutDocSchema.shape.parts.element.shape.items.element.safeParse({ kind: "exercise", libraryId: e.id, dose: defaultDose(e) }).success).toBe(true);
+  it("Add's item, the suggestions' and the picker's are the same dose for the same part: Add's is its own part's", () => {
+    for (const e of EXERCISES.slice(0, 80)) {
+      expect((itemFor(e) as { dose: unknown }).dose).toEqual(doseFor(e, placementFor(e)));
+      expect((suggestedItem(e, "warmup") as { dose: unknown }).dose).toEqual(doseFor(e, "warmup"));
+      expect((suggestedItem(e, "main") as { dose: unknown }).dose).toEqual(doseFor(e, "main"));
+    }
+  });
+  it("a swap's new move takes its dose for the part it is in, not the part it would go to on its own", () => {
+    // A held move of the main part's, with sets of its own, swapped into the warm-up: one set there.
+    const held = EXERCISES.find((e) => e.dose.type === "time" && placementFor(e) === "main" && (e.dose.sets?.[0] ?? 1) > 1)!;
+    const repsRec = EXERCISES.find((e) => e.dose.type === "reps")!;
+    let s = run(fresh(), { type: "addItem", item: ex(repsRec.id, { sets: 4, reps: 5 }), part: 0 });
+    s = run(s, { type: "swapItem", part: 0, item: 0, libraryId: held.id });
+    const dose = (s.doc.parts[0]!.items[0] as { dose: { sets?: number } }).dose;
+    expect(dose).toEqual(doseFor(held, "warmup"));
+    expect(dose.sets).toBe(1);
+  });
+  it("every record's dose parses, in every part", () => {
+    for (const e of EXERCISES)
+      for (const p of ["warmup", "main", "cooldown"] as const)
+        expect(workoutDocSchema.shape.parts.element.shape.items.element.safeParse({ kind: "exercise", libraryId: e.id, dose: doseFor(e, p) }).success).toBe(true);
   });
 });
 
@@ -444,5 +464,5 @@ describe("hardening", () => {
 });
 
 function itemOf(e: ExerciseRecord): WorkoutItem {
-  return { kind: "exercise", libraryId: e.id, dose: defaultDose(e) };
+  return { kind: "exercise", libraryId: e.id, dose: doseFor(e, placementFor(e)) };
 }

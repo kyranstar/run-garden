@@ -101,26 +101,32 @@ export function newDoc(kind: "blank" | "structured", meta: { title: string; sour
 /** Open a document (a stored one, or a new draft) for editing. */
 export const startEditing = (doc: WorkoutDoc): EditorState => ({ doc: asDraft(doc), past: [], future: [] });
 
+/** Parts whose moves are light: one set each. */
+export const LIGHT_PARTS: ReadonlySet<PartPurpose> = new Set<PartPurpose>(["arrive", "warmup", "activation", "cooldown", "care"]);
+
 /**
- * A new move's dose: the record's own sets (the low end), the middle of its range, its rest. A library carry's range is
- * seconds, so its dose is a timed carry (`holdSec`); `carryM` is only ever a distance a source stated.
+ * THE ONE DOSE a library move starts with in a part of `purpose` — the dose the list row and the detail say, that Add
+ * puts in, that the builder's picker and its suggestions put in, and that a swap's new move takes when the old dose
+ * doesn't fit it: its range's low end (reps keep the range: "3 × 8–12"), its own sets — one in a light part — each side
+ * for a one-sided move, and its rest. A library carry's range is seconds: a timed carry (`holdSec`); `carryM` is only
+ * ever a distance a source stated.
  */
-export function defaultDose(rec: ExerciseRecord): WorkoutDose {
+export function doseFor(rec: ExerciseRecord, purpose: PartPurpose): WorkoutDose {
   const [lo, hi] = rec.dose.range;
-  const mid = Math.round((lo + hi) / 2);
+  const sets = LIGHT_PARTS.has(purpose) ? 1 : (rec.dose.sets?.[0] ?? 1);
   const amount: WorkoutDose =
-    rec.dose.type === "time" || rec.dose.type === "carry" ? { holdSec: mid } : rec.dose.type === "breaths" ? { breaths: mid } : { reps: mid };
+    rec.dose.type === "time" || rec.dose.type === "carry" ? { holdSec: lo } : rec.dose.type === "breaths" ? { breaths: lo } : { reps: lo === hi ? lo : { min: lo, max: hi } };
   return {
-    ...(rec.dose.sets ? { sets: rec.dose.sets[0] } : {}),
+    sets,
     ...amount,
     ...(rec.laterality !== "bilateral" ? { perSide: true } : {}),
     ...(rec.dose.restSec !== undefined ? { restSec: rec.dose.restSec } : {}),
   };
 }
 
-/** The item for a library move, as the Add sheet puts it in. */
+/** The item for a library move, as the Add sheet puts it in: in the part it belongs to, with that part's dose. */
 export function itemFor(rec: ExerciseRecord): WorkoutItem {
-  return { kind: "exercise", libraryId: rec.id, dose: defaultDose(rec) };
+  return { kind: "exercise", libraryId: rec.id, dose: doseFor(rec, placementFor(rec)) };
 }
 
 /** Whether a dose already speaks the record's dose type. */
@@ -247,8 +253,9 @@ function apply(doc: WorkoutDoc, action: EditAction, find: Find): Applied {
       if (!next) return "missing";
       return mapItem(doc, action.part, action.item, (it) => {
         if (it.kind !== "exercise") return null;
-        // Same dose shape stays; otherwise the new move's own default (reps <-> hold), never a reps dose on a time-only move.
-        const dose = fitsType(it.dose, next.dose.type) ? it.dose : defaultDose(next);
+        // Same dose shape stays; otherwise the new move's own dose for this part (reps <-> hold), never a reps dose on a
+        // time-only move.
+        const dose = fitsType(it.dose, next.dose.type) ? it.dose : doseFor(next, doc.parts[action.part]!.purpose);
         return { kind: "exercise", libraryId: next.id, dose, ...(it.cue ? { cue: it.cue } : {}) };
       });
     }

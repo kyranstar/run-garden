@@ -69,6 +69,7 @@ import {
 } from "@rg/exercise-library";
 import { Rng } from "@rg/session-engine";
 import { makeLibraryIndex, modeOfEffort } from "./derive.js";
+import { doseFor, LIGHT_PARTS } from "./editor.js";
 import { jumpPlaceableIn, validateWorkoutDoc, type DayContext } from "./validate.js";
 
 export interface SuggestCtx {
@@ -134,8 +135,6 @@ const REASON_MAX = 120;
 /** How many items one probe document holds (a part holds at most 60). */
 const PROBE_CHUNK = 60;
 const LIFT_PURPOSES = new Set(["strength", "power"]);
-/** Parts whose moves are light: one set each. */
-const LIGHT_PARTS = new Set<PartPurpose>(["arrive", "warmup", "activation", "cooldown", "care"]);
 /** Patterns a warm-up can rehearse, in the words of a reason. Mobility, breathing and release are not rehearsed. */
 const PATTERN_WORDS: Partial<Record<Pattern, string>> = {
   squat: "squat", hinge: "hinge", lunge: "lunge", "push-h": "push", "push-v": "press", "pull-h": "row", "pull-v": "pull",
@@ -174,19 +173,9 @@ const warms = (r: ExerciseRecord): boolean => {
 };
 const easierBy = (rec: ExerciseRecord, per = EASIER): number => per * (rec.difficulty - 1);
 
-/** The dose a suggested move starts with: its own range's low end (reps keep the range); one set in a light part. */
-export function suggestedDose(rec: ExerciseRecord, purpose: PartPurpose): WorkoutDose {
-  const [lo, hi] = rec.dose.range;
-  const sets = LIGHT_PARTS.has(purpose) ? 1 : (rec.dose.sets?.[0] ?? 1);
-  const amount: WorkoutDose =
-    // A library carry's range is seconds: a timed carry.
-    rec.dose.type === "time" || rec.dose.type === "carry" ? { holdSec: lo } : rec.dose.type === "breaths" ? { breaths: lo } : { reps: lo === hi ? lo : { min: lo, max: hi } };
-  return { sets, ...amount, ...(rec.laterality !== "bilateral" ? { perSide: true } : {}) };
-}
-
-/** A suggested move as an item for a part of this purpose, with its reason as the item's why. */
+/** A suggested move as an item for a part of this purpose (its dose, `doseFor`), with its reason as the item's why. */
 export function suggestedItem(rec: ExerciseRecord, purpose: PartPurpose, why?: string): WorkoutItem {
-  return { kind: "exercise", libraryId: rec.id, dose: suggestedDose(rec, purpose), ...(why ? { why: why.slice(0, 160) } : {}) };
+  return { kind: "exercise", libraryId: rec.id, dose: doseFor(rec, purpose), ...(why ? { why: why.slice(0, 160) } : {}) };
 }
 
 /** What the rest of the workout answers to. */

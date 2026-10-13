@@ -48,8 +48,8 @@ import {
   type Theme,
 } from "@rg/exercise-library";
 import type { LibraryListDto, PlacesResponse, TodayResponse } from "@rg/api-client";
-import { QUICK_START_MINUTES, defaultDose, quickStartKinds, type QuickStartKind } from "@rg/workout";
-import { secondsText } from "@rg/domain";
+import { QUICK_START_MINUTES, doseFor, placementFor, quickStartKinds, type QuickStartKind } from "@rg/workout";
+import { doseSummary } from "@rg/domain";
 import { formatShortDate } from "../../components.js";
 
 // ── State: the URL ─────────────────────────────────────────────────────────
@@ -457,18 +457,11 @@ export function quickStarts(ctx: StudioCtx): QuickStart[] {
 // ── A row's line 4 ─────────────────────────────────────────────────────────
 
 /**
- * The dose Add puts in (`defaultDose`): "2 × 7", "10 reps", "2 × 45 s", "90 s", "7 breaths", "… each side". A carry
- * is a timed carry — the library's carry range is seconds, so `defaultDose` gives it `holdSec` (a distance, `carryM`,
- * only ever comes from a source that stated one, never from the library).
+ * The dose Add would put in, for the part it would put the move in (`doseFor` in `placementFor`'s part), in the
+ * builder's words: "2 × 8–12", "10 reps", "2 × 45 s", "90 s", "7 breaths", "… each side".
  */
 export function doseLine(rec: ExerciseRecord): string {
-  const d = defaultDose(rec);
-  const reps = typeof d.reps === "number" ? `${d.reps}` : d.reps ? `${d.reps.min}–${d.reps.max}` : null;
-  const amount = reps ?? (d.holdSec !== undefined ? secondsText(d.holdSec) : d.breaths !== undefined ? `${d.breaths} breaths` : "");
-  const sets = d.sets && d.sets > 1 ? `${d.sets} × ` : "";
-  // "2 × 7" reads as reps; a lone "7" does not.
-  const unit = reps !== null && !sets ? " reps" : "";
-  return `${sets}${amount}${unit}${d.perSide ? " each side" : ""}`;
+  return doseSummary(doseFor(rec, placementFor(rec)));
 }
 
 const DAY_MS = 86_400_000;

@@ -509,3 +509,18 @@ describe("what the actions say while Start is off", () => {
 
 /** `BuildCtx` is exported for the components; its shape is the contract above. */
 export type _Ctx = BuildCtx;
+
+describe("the list row's dose (Stage 2 whole-branch review M3)", () => {
+  it("is the dose Add would put in, for the part it would put the move in — in the builder's words", async () => {
+    const { doseLine } = await import("../src/screens/studio/model.js");
+    const { doseFor, itemFor, placementFor } = await import("@rg/workout");
+    const { doseSummary } = await import("@rg/domain");
+    for (const e of EXERCISES.slice(0, 120)) {
+      expect(doseLine(e)).toBe(doseSummary((itemFor(e) as { dose: never }).dose));
+      expect(doseLine(e)).toBe(doseSummary(doseFor(e, placementFor(e))));
+    }
+    // A warm-up move is one set there: "8–12 reps", never "2 × …".
+    const warm = EXERCISES.find((e) => placementFor(e) === "warmup" && e.dose.type === "reps" && (e.dose.sets?.[0] ?? 1) > 1);
+    if (warm) expect(doseLine(warm)).not.toMatch(/ × /);
+  });
+});

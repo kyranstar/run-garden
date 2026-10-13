@@ -7,6 +7,6 @@ export * from "./convert/from-build.js";
 export * from "./adapt/to-stages.js";
 export * from "./adapt/to-player.js";
 export * from "./validate.js";
-export { suggestForPart, suggestedDose, suggestedItem, type SuggestCtx, type Suggestion } from "./suggest.js";
+export { suggestForPart, suggestedItem, type SuggestCtx, type Suggestion } from "./suggest.js";
 export { QUICK_START_KINDS, QUICK_START_MINUTES, quickStartDoc, quickStartKinds, resisted, type QuickStart, type QuickStartKind } from "./quick-start.js";
 export * from "./editor.js";
