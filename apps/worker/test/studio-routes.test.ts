@@ -1252,7 +1252,7 @@ describe("retire, fix round 2", () => {
     expect(await rowOf(stray)).toMatchObject({ status: "failed", error: "wrong_date" });
   });
 
-  it("nothing ahead on the watch: retired here, the writes switch not asked; what was never there is cleared", async () => {
+  it("writes off and nothing ahead on the watch: retired here; what was never there is cleared", async () => {
     const planId = await planBetweenWeeks();
     await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: false });
     const behind = await push(planId, { happenDay: "2026-09-07", sessionTitle: "Full Body — wk 1", ...addressed("21") });
@@ -1327,6 +1327,19 @@ describe("retire, fix round 2", () => {
     expect(await jobs()).toEqual([]);
     expect((await rowOf(renamed)).status).not.toBe("deleted");
     expect(await db.select().from(schema.syncNotes)).toEqual([]);
+  });
+
+  // Fix round 3: with writes on, the push path even when nothing ahead has an address — its heal finds a create that
+  // landed on COROS but never reported, by its stamp on its day, and removes it.
+  it("writes on: a create that landed but never reported is found by its stamp and taken off the watch", async () => {
+    const planId = await planBetweenWeeks();
+    const unheard = await push(planId, { happenDay: "2026-09-14", sessionTitle: "Full Body — wk 2", status: "pending" });
+    await seedObservation({ sourceWorkoutId: "coros-plan:31", title: "Full Body — wk 2", lastVerifiedCorosDate: "2026-09-14" });
+    expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(200);
+    const queued = await jobs();
+    expect(queued.map((j) => [j.kind, j.studioPushId])).toEqual([["delete_scheduled_workout", unheard]]);
+    expect((queued[0]!.payload as { idInPlan: string; corosPlanId: string })).toMatchObject({ idInPlan: "31", corosPlanId: "coros-plan" });
+    expect(await coachList()).toEqual([]);
   });
 });
 

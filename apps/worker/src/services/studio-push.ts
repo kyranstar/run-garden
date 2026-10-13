@@ -1745,15 +1745,18 @@ async function corosWritesOn(db: Db, userId: string): Promise<boolean> {
  * RETIRE A STUDIO PLAN, as a coach plan's Retire does: what is ahead of today leaves the watch, what is behind stays.
  *
  * Kept as it is: everything behind the day that is (or may be) on the watch — verified, pending, or failed with a COROS
- * address (a session COROS filed a day off) — and a session done today. What is ahead goes:
- *  - anything of it with a COROS address through the push path (`desiredOverride: []`, the diff's own removal
- *    machinery), which needs the COROS writes switch on — off, nothing is done (`writes_disabled`);
- *  - with nothing ahead on the watch there is nothing to remove there: the retire is this app's alone, done here
- *    whatever the switch — rows that never reached COROS cleared, a create that never reported said so, as a push says.
+ * address (a session COROS filed a day off) — and a session done today. What is ahead goes through the push path
+ * (`desiredOverride: []`, the diff's own removal machinery, the snapshot's heal first: a create that landed but never
+ * reported is found by its stamp and removed too). With the COROS writes switch off:
+ *  - anything ahead with a COROS address is refused (`writes_disabled`): nothing is done;
+ *  - with nothing ahead on the watch the retire is this app's alone, done here — rows that never reached COROS cleared,
+ *    a create that never reported said so, as a push says.
  *
- * The plan is marked retired (`STUDIO_PLAN_RETIRED`) before anything else is written, and its open notes of sessions
- * edited or removed on COROS are dismissed — a retired plan has nothing to undo. Nothing in the database is deleted. A
- * retire writes nothing a row at a time (`retiring`), so the longest plan stays within one request's budget.
+ * The plan is marked retired (`STUDIO_PLAN_RETIRED`) LAST, once its open notes of sessions edited or removed on COROS
+ * are dismissed — a retired plan has nothing to undo. A retire cut short before the mark leaves the plan listed, and
+ * its Retire runs again: the retire push supersedes the removals already queued and queues them anew. Nothing in the
+ * database is deleted. A retire writes nothing a row at a time (`retiring`), so the longest plan stays within one
+ * request's budget.
  *
  * Callers check that the plan is the account's current one and not over; this only retires. `alreadyRetired`: the
  * plan carries the mark (a retry finishing the retire), so it is not marked twice.
@@ -1762,7 +1765,6 @@ export async function retireStudioPlan(
   db: Db,
   opts: { userId: string; studioPlanId: string; today: LocalDate; alreadyRetired: boolean },
 ): Promise<PushSummary> {
-  const empty: PushSummary = { ok: false, creates: 0, deletes: 0, failures: 0, unchanged: 0, drifted: 0, blocked: 0, healed: 0 };
   const rows: PushRow[] = await db
     .select({
       id: studioPlanPushes.id,
@@ -1800,10 +1802,22 @@ export async function retireStudioPlan(
   const behind = (r: PushRow) => compareLocalDates(r.corosHappenDay ?? r.happenDay, opts.today) < 0 || done.has(sourceOf(r) ?? "");
   const keep = new Set(rows.filter((r) => mayBeThere(r) && behind(r)).map((r) => r.id));
   const ahead = rows.filter((r) => !keep.has(r.id) && r.status !== "deleted" && r.status !== "adopted");
-  const onWatch = ahead.some(addressable);
-  if (onWatch && !(await corosWritesOn(db, opts.userId))) return { ...empty, error: "writes_disabled" };
-
-  if (!opts.alreadyRetired) {
+  // Something ahead on the watch: the push path, which asks the switch itself. Nothing there: the push path still while
+  // the app may write (its heal finds a create that landed unreported), this app's alone when it may not.
+  const pushPath = ahead.some(addressable) || (await corosWritesOn(db, opts.userId));
+  const summary = pushPath
+    ? await pushStudioPlan(db, {
+        userId: opts.userId,
+        studioPlanId: opts.studioPlanId,
+        today: opts.today,
+        desiredOverride: [],
+        keepPushIds: keep,
+        retiring: true,
+      })
+    : await retireHere(db, opts.userId, opts.today, ahead);
+  if (summary.ok && !opts.alreadyRetired) {
+    await dismissStudioPlanNotes(db, opts.userId, opts.studioPlanId);
+    // The mark last: everything before it can run again.
     await db.insert(auditEvents).values({
       id: newId(),
       userId: opts.userId,
@@ -1811,28 +1825,23 @@ export async function retireStudioPlan(
       detail: { studioPlanId: opts.studioPlanId, kept: keep.size, ahead: ahead.length },
       createdAt: nowInstant(),
     });
-    await dismissStudioPlanNotes(db, opts.userId, opts.studioPlanId);
   }
-  if (onWatch) {
-    return pushStudioPlan(db, {
-      userId: opts.userId,
-      studioPlanId: opts.studioPlanId,
-      today: opts.today,
-      desiredOverride: [],
-      keepPushIds: keep,
-      retiring: true,
-    });
-  }
+  return summary;
+}
 
-  // Nothing ahead on the watch: the same diff decides what each row becomes, and nothing reaches COROS.
+/**
+ * A retire with the COROS writes switch off and nothing ahead on the watch: the same diff decides what each row
+ * becomes, and nothing reaches COROS.
+ */
+async function retireHere(db: Db, userId: string, today: LocalDate, ahead: PushRow[]): Promise<PushSummary> {
   const now = nowInstant();
   for (const ids of chunkIds(ahead.map((r) => r.id), 80)) {
     await db
       .update(corosWriteJobs)
       .set({ status: "superseded", completedAt: now, updatedAt: now })
-      .where(and(eq(corosWriteJobs.userId, opts.userId), inArray(corosWriteJobs.studioPushId, ids), inArray(corosWriteJobs.status, [...IN_FLIGHT])));
+      .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.studioPushId, ids), inArray(corosWriteJobs.status, [...IN_FLIGHT])));
   }
-  const batch = planPush({ desired: [], rows: ahead, otherLiveTitles: [], driftedPushIds: new Set(), catalogIds: new Set(), today: opts.today });
+  const batch = planPush({ desired: [], rows: ahead, otherLiveTitles: [], driftedPushIds: new Set(), catalogIds: new Set(), today });
   for (const ids of chunkIds(batch.localDeletes)) {
     await db.update(studioPlanPushes).set({ status: "deleted", error: null, updatedAt: now }).where(inArray(studioPlanPushes.id, ids));
   }
@@ -1840,5 +1849,5 @@ export async function retireStudioPlan(
   for (const ids of chunkIds(failed)) {
     await db.update(studioPlanPushes).set({ status: "failed", error: "unaddressable", updatedAt: now }).where(inArray(studioPlanPushes.id, ids));
   }
-  return { ...empty, ok: true, failures: failed.length };
+  return { ok: true, creates: 0, deletes: 0, failures: failed.length, unchanged: 0, drifted: 0, blocked: 0, healed: 0 };
 }

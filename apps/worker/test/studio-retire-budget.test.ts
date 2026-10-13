@@ -173,6 +173,16 @@ describe("Retire within the budget", () => {
     expect(m.total).toBeLessThanOrEqual(BUDGET);
   });
 
+  it("the same plan with writes on goes the push path — its heal could find a create that landed — still within budget", async () => {
+    const planId = await pushedPlan("2026-10-19", 16, [1, 2, 3, 4, 5, 6], () => neverThere);
+    const m = await retire(planId);
+    console.info(`[budget] studio retire (96 failed ahead, writes on): ${m.d1} D1 + ${m.fetches} COROS = ${m.total}`);
+    expect(m.res.status).toBe(200);
+    const rows = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    expect(rows.every((r) => r.status === "deleted")).toBe(true);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
   it("48 creates that never reported and 48 sessions on the watch ahead", async () => {
     const planId = await pushedPlan("2026-10-19", 16, [1, 2, 3, 4, 5, 6], (i) => (i % 2 ? unheard : {}));
     const m = await retire(planId);

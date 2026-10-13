@@ -130,12 +130,17 @@ export interface BuildFlowsIn {
   noteChecks: (s: SessionDto) => void;
 }
 
-/** The builder's Start now, Schedule and saves. */
-/** Two documents the same as a save would send them (what the builder's own "changed" test compares). */
-function sameDocument(a: WorkoutDoc, b: WorkoutDoc): boolean {
-  return JSON.stringify(toProposable(startEditing(a).doc)) === JSON.stringify(toProposable(startEditing(b).doc));
+/**
+ * Two documents the same as a save would send them (what the builder's own "changed" test compares). One a save could
+ * not send is the same as nothing: never a match.
+ */
+export function sameDocument(a: WorkoutDoc, b: WorkoutDoc): boolean {
+  const x = toProposable(startEditing(a).doc);
+  const y = toProposable(startEditing(b).doc);
+  return x !== null && y !== null && JSON.stringify(x) === JSON.stringify(y);
 }
 
+/** The builder's Start now, Schedule and saves. */
 export function useBuildFlows({
   source,
   key,
