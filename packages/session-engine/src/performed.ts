@@ -111,7 +111,7 @@ export function historyFromPerformed(p: PerformedSessionWire): HistorySession {
   const entries: HistoryEntry[] = [];
   for (const e of p.entries) {
     // A set held a side at a time is a row per side under one number: one set, as the recorder saved it — the shorter
-    // side's seconds, and none when only one side is there (it measures nothing).
+    // side's seconds, and in an app save none when only one side is there (it measures nothing).
     const sets: Array<{ w: HistoryEntry["sets"][number]["w"]; reps: number | null; secs: number | null }> = [];
     const sides: Array<Set<string> | null> = [];
     let last: { setIndex: number; side: boolean } | null = null;
@@ -126,9 +126,13 @@ export function historyFromPerformed(p: PerformedSessionWire): HistorySession {
       sides.push(s.side !== null ? new Set([s.side]) : null);
       last = { setIndex: s.setIndex, side: s.side !== null };
     }
-    sets.forEach((set, i) => {
-      if (sides[i] && sides[i]!.size < 2) set.secs = null;
-    });
+    // Only an app save numbers both sides of a set under one number (the recorder's own), so only there is a side alone a
+    // set with one side done; a watch review numbers each lap as its own set, read at its seconds as it always was.
+    if (p.source === "app") {
+      sets.forEach((set, i) => {
+        if (sides[i] && sides[i]!.size < 2) set.secs = null;
+      });
+    }
     if (sets.length === 0) continue;
     entries.push({
       id: e.exerciseId, implement: e.implement, perSide: e.perSide, format: e.format,

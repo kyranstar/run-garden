@@ -55,6 +55,22 @@ const asHistory = (s: PerformedSessionSave): HistorySession => ({
 /** Through the outbox and the network: JSON, then the server's parse. */
 const overTheWire = (w: PerformedSessionWire): PerformedSessionWire => performedSessionSaveSchema.parse(JSON.parse(JSON.stringify(w)));
 
+describe("a watch review's sides read as they always have (hotfix N-1)", () => {
+  test("a saved watch review numbers each lap as its own set: L30, R28, L32, R30 give their seconds back — the one-side rule is the app's alone", () => {
+    const plan = Builder.build(data, input());
+    const save = Recorder.toSession(Recorder.create(data, plan, meta(plan)), { endedAt: "2026-09-29T18:40:00.000Z" });
+    const wire = toPerformedSave(save, { ratings: {}, excluded: {}, graduations: [] }, { source: "watch_review", sourceRef: null, workoutId: "pw-1", buildId: null });
+    const lap = (setIndex: number, side: "left" | "right", seconds: number) => ({ setIndex, side, reps: null, seconds, load: null, done: true, flags: [] });
+    const review: PerformedSessionWire = {
+      ...wire,
+      entries: [{ exerciseId: "sidePlank", implement: null, format: "holds", perSide: true, sets: [lap(0, "left", 30), lap(1, "right", 28), lap(2, "left", 32), lap(3, "right", 30)] }],
+    };
+    expect(historyFromPerformed(overTheWire(review)).entries[0]!.sets.map((s) => s.secs)).toEqual([30, 28, 32, 30]);
+    // An app save's own: a side alone under its number measures nothing (whole-branch I-2).
+    expect(historyFromPerformed(overTheWire({ ...review, source: "app" })).entries[0]!.sets.map((s) => s.secs)).toEqual([null, null, null, null]);
+  });
+});
+
 describe("a hold to max played a side at a time (Stage 2 Task 8)", () => {
   test("is one set: on the wire a row per side under its one number, each naming its side; read back, one set again", () => {
     const plan = Builder.build(data, input());

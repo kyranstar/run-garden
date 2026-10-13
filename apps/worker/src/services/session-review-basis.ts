@@ -116,15 +116,15 @@ function recordsRows(db: Db, userId: string, opts: { keep: Array<[string, string
   return db.all(sql`
     WITH
     s AS (
-      SELECT id, local_date, started_at, workout_id, block_number, moves_done,
+      SELECT id, source, local_date, started_at, workout_id, block_number, moves_done,
              ROW_NUMBER() OVER (ORDER BY COALESCE(NULLIF(started_at, ''), local_date), local_date, started_at, id) AS ord
       FROM performed_sessions WHERE user_id = ${userId} AND payload_hash <> ${PENDING_HASH}
     ),
     e AS (
       -- Entries with a done set. With exactly one MIN() in the query, SQLite takes the bare columns from the row holding
-      -- it: the entry's first set (its exercise, format and implement, as toWire reads them).
+      -- it: the entry's first set (its exercise, format and implement, as toWire reads them), and its session's source.
       SELECT ps.performed_session_id AS sid, ps.entry_index AS ei, ps.exercise_id AS ex, ps.format AS fmt, ps.implement AS impl,
-             MIN(ps.set_index) AS first_set
+             s.source AS src, MIN(ps.set_index) AS first_set
       FROM s JOIN performed_sets ps ON ps.performed_session_id = s.id
       GROUP BY ps.performed_session_id, ps.entry_index
       HAVING SUM(ps.done) > 0
@@ -132,7 +132,7 @@ function recordsRows(db: Db, userId: string, opts: { keep: Array<[string, string
     k AS (SELECT json_extract(value, '$[0]') AS raw, json_extract(value, '$[1]') AS canon FROM json_each(${JSON.stringify(opts.keep)})),
     ds AS (
       -- The build's moves' done sets that count for bests, under their canonical ids.
-      SELECT e.sid, k.canon, ps.entry_index AS ei, ps.set_index AS si, ps.side, ps.reps, ps.seconds AS secs,
+      SELECT e.sid, e.src, k.canon, ps.entry_index AS ei, ps.set_index AS si, ps.side, ps.reps, ps.seconds AS secs,
              ps.load_value AS v, ps.load_unit AS u, ${sql.raw(KG)} AS kg
       FROM e JOIN k ON k.raw = e.ex
       JOIN performed_sets ps ON ps.performed_session_id = e.sid AND ps.entry_index = e.ei AND ps.done = 1
@@ -207,9 +207,10 @@ function recordsRows(db: Db, userId: string, opts: { keep: Array<[string, string
         ON f.sid = t.sid AND f.canon = t.canon AND f.kg = t.x AND f.rn = 1
       UNION ALL SELECT 'bare', canon, NULL, NULL, NULL, NULL, MAX(reps) FROM ds WHERE kg IS NULL GROUP BY canon
       -- A set held a side at a time is a row per side under one number: one set at its shorter side (as history reads it),
-      -- and only with both sides there — one side alone measures nothing.
+      -- and in an app save — which numbers both sides of a set as one, so a side alone is a set with one side done — only
+      -- with both sides there. A watch review numbers each lap as its own set: read at its seconds, as it always was.
       UNION ALL SELECT 'hold', canon, NULL, NULL, NULL, NULL, MAX(secs) FROM (
-        SELECT canon, CASE WHEN COUNT(side) > 0 AND COUNT(DISTINCT side) < 2 THEN NULL ELSE MIN(secs) END AS secs
+        SELECT canon, CASE WHEN MAX(src) = 'app' AND COUNT(side) > 0 AND COUNT(DISTINCT side) < 2 THEN NULL ELSE MIN(secs) END AS secs
         FROM ds GROUP BY sid, ei, si, canon
       ) WHERE secs > 0 GROUP BY canon
       UNION ALL SELECT DISTINCT 'touched', k.canon, NULL, NULL, NULL, NULL, NULL FROM k JOIN touched t ON t.raw = k.raw

@@ -405,6 +405,15 @@ describe("hold_max", () => {
     });
   });
 
+  it("a watch review's sides, each lap its own set number, read as they always have: their seconds (hotfix N-1)", async () => {
+    const s = await session(day(3), { source: "watch_review" });
+    await sets(s, "wallSit", [
+      { seconds: 30, side: "left", setIndex: 0 }, { seconds: 28, side: "right", setIndex: 1 },
+      { seconds: 32, side: "left", setIndex: 2 }, { seconds: 30, side: "right", setIndex: 3 },
+    ]);
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 32, sampleSize: 1 });
+  });
+
   it("a set with no known prescription (no build, no document) is capped — nothing says it was a max", async () => {
     await sets(await appSession(day(4), null), "wallSit", [{ seconds: 90 }]);
     expect(await measure(WALL_SIT)).toMatchObject({ current: 90, evidence: "capped" });

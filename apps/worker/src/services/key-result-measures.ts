@@ -546,8 +546,9 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
   };
 
   // A set held a side at a time is a row per side under one set number: one set, at its shorter side (as history reads
-  // it — the per-side rows never make a longer hold than both sides held), and only with both sides there: one side
-  // alone (the other skipped) measures nothing.
+  // it — the per-side rows never make a longer hold than both sides held), and in an app save — which numbers both sides
+  // of a set as one — only with both sides there: one side alone (the other skipped) measures nothing. A watch or watch
+  // review session numbers each lap as its own set: read at its seconds, as it always was.
   const sets = new Map<string, (typeof setRows)[number]>();
   const sides = new Map<string, Set<string>>();
   for (const r of setRows) {
@@ -557,7 +558,10 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
     sets.set(key, { ...(held ?? r), seconds });
     if (r.side !== null) sides.set(key, (sides.get(key) ?? new Set()).add(r.side));
   }
-  for (const [key, held] of sides) if (held.size < 2) sets.set(key, { ...sets.get(key)!, seconds: null });
+  for (const [key, held] of sides) {
+    const set = sets.get(key)!;
+    if (held.size < 2 && chosen.get(set.sessionId)?.source === "app") sets.set(key, { ...set, seconds: null });
+  }
   return [...sets.values()]
     .filter((r) => chosen.has(r.sessionId))
     .map((r) => {

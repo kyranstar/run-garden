@@ -44,7 +44,7 @@ import {
 } from "@rg/database";
 import { fingerprint, LB_TO_KG, nowInstant, SPORTS } from "@rg/domain";
 import { CorosApiError } from "@rg/coros";
-import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
 import type { RawCorosActivityDetail, RawCorosLapItem } from "@rg/providers";
 import { fixtureModeEnabled, type Env } from "../env.js";
 import { restoreInProgress } from "./account-state.js";
@@ -79,11 +79,6 @@ export interface DeriveWatchOptions {
   workoutId?: string | null;
   /** An exerciseNameKey → library exercise id, where the reverse COROS mapping knows one. */
   libraryIdFor?: (nameKey: string) => string | null | undefined;
-  /**
-   * A one-sided library move (its laps alternate left and right, each pair one set: a row per side under one set
-   * number, as the app saves a set played a side at a time). None by default.
-   */
-  perSideFor?: (exerciseId: string) => boolean;
 }
 
 export type WatchSessionRow = typeof performedSessions.$inferInsert & {
@@ -211,19 +206,17 @@ export function deriveWatchSession(
       }
     }
     if (logged.length === 0) continue;
-    const perSide = opts.perSideFor?.(exerciseId) ?? false;
-    logged.forEach((l, i) => {
+    logged.forEach((l, setIndex) => {
       sets.push({
-        id: `${sessionId}:${entryIndex}:${i}`,
+        id: `${sessionId}:${entryIndex}:${setIndex}`,
         performedSessionId: sessionId,
         entryIndex,
         exerciseId,
         implement: null,
         format: null,
-        perSide,
-        // A one-sided move: lap i is set ⌊i/2⌋'s left, then its right.
-        setIndex: perSide ? Math.floor(i / 2) : i,
-        side: perSide ? (i % 2 === 0 ? "left" : "right") : null,
+        perSide: false,
+        setIndex,
+        side: null,
         reps: l.reps,
         seconds: l.seconds,
         loadValue: l.load?.value ?? null,
@@ -327,12 +320,6 @@ export type UpsertWatchResult = {
 function libraryResolver(library: readonly ExerciseRecord[] | undefined): (nameKey: string) => string | null {
   const byKey = libraryIdsByKey(library);
   return (nameKey) => byKey.get(nameKey) ?? null;
-}
-
-/** A library move done a side at a time (unilateral): its watch laps pair up, left then right. */
-function perSideResolver(library: readonly ExerciseRecord[] | undefined): (exerciseId: string) => boolean {
-  const ids = new Set((library ?? EXERCISES).filter((e) => e.laterality === "unilateral").map((e) => e.id));
-  return (exerciseId) => ids.has(exerciseId);
 }
 
 /** Delete a watch session and its sets (the app's own session of the same activity owns them: ruling 2b-R3). */
@@ -446,8 +433,7 @@ export async function upsertWatchSession(
 
   const workoutId = input.workoutId === undefined ? (existing?.workoutId ?? null) : input.workoutId;
   const libraryIdFor = libraryResolver(deps.library);
-  const perSideFor = perSideResolver(deps.library);
-  const fresh = deriveWatchSession(input.detail, activity, userId, { now, workoutId, libraryIdFor, perSideFor });
+  const fresh = deriveWatchSession(input.detail, activity, userId, { now, workoutId, libraryIdFor });
   if (!fresh) {
     if (!existing) return { status: "no_sets" };
     await removeWatchSession(db, existing.id);

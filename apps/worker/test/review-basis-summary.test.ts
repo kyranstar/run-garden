@@ -195,6 +195,31 @@ describe("the records state from the database equals Records.baseline over the w
     expect(got.bests[hold]).toMatchObject({ secs: 40 });
   });
 
+  it("a watch review's sides, each lap its own set number, read as they always have: their seconds (hotfix N-1)", async () => {
+    const data = WORLDS[0]!.data;
+    const { userId } = await makeTestUser(db);
+    const hold = EXERCISES.find((e) => e.dose.type === "time")!.id;
+    const date = "2026-06-01";
+    const s: HistorySession = {
+      id: "review-0", date, startedAt: `${date}T18:00:00.000Z`, mode: "build", theme: "t", blockNumber: 1,
+      checks: {}, done: [{ id: hold, secs: 120 }], entries: [{ id: hold, implement: null, perSide: true, format: "holds", flags: [], sets: [{ w: null, reps: null, secs: 30 }] }],
+    };
+    await writeHistory(db, userId, [s], "review");
+    await db.update(schema.performedSessions).set({ source: "watch_review" }).where(eq(schema.performedSessions.id, s.id));
+    await db.delete(schema.performedSets).where(eq(schema.performedSets.performedSessionId, s.id));
+    const row = { performedSessionId: s.id, entryIndex: 0, exerciseId: hold, implement: null, format: "holds", perSide: true, reps: null, loadValue: null, loadUnit: null, loadKg: null, done: true, flags: [] };
+    await db.insert(schema.performedSets).values(
+      ([["left", 30], ["right", 28], ["left", 32], ["right", 30]] as const).map(([side, seconds], setIndex) => ({ ...row, id: newId(), setIndex, side, seconds })),
+    );
+    const whole = await loadHistory(db, userId);
+    expect(whole[0]!.entries[0]!.sets.map((x) => x.secs)).toEqual([30, 28, 32, 30]);
+    const ids = [hold];
+    const later = addDays(date, 3);
+    const got = await recordsBaseline(db, userId, data, { ids, date: later, weeklyGoal: 4 });
+    expect(normal(got, later)).toEqual(normal(Records.baseline(data, whole, { ids, date: later, weeklyGoal: 4 }), later));
+    expect(got.bests[hold]).toMatchObject({ secs: 32 });
+  });
+
   it("is empty for an account with no sessions, as the whole history's is", async () => {
     const { userId } = await makeTestUser(db);
     const data = WORLDS[0]!.data;
