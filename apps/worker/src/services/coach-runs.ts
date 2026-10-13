@@ -681,9 +681,24 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
 }
 
 /**
+ * The spend of a step that died holding a run's claim, for the update that takes that claim back: the step's usage
+ * row(s) — written before its model call, stamped with the claim's own time and fingerprinted with the run — so a
+ * killed call still counts toward the run's ceiling. Evaluated against the row as it was: nothing for a run that is
+ * not `stepping`, so it costs no statement of its own.
+ */
+const DEAD_STEP_SPEND = sql.raw(
+  `CASE WHEN coach_runs.status = 'stepping' THEN COALESCE((` +
+    `SELECT SUM(u.cost_micros) FROM llm_usage u WHERE u.user_id = coach_runs.user_id ` +
+    `AND u.created_at = coach_runs.updated_at ` +
+    `AND substr(u.request_fingerprint, 1, length('run:' || coach_runs.id || ':')) = 'run:' || coach_runs.id || ':'` +
+    `), 0) / 1000000.0 ELSE 0 END`,
+);
+
+/**
  * Expire a run's live tree, past its window or left under a run that is over, with the main run's plain line. Guarded:
- * a run a live step holds is left to that step (which finds the window closed itself); a dead step's is taken. Answers
- * whether the expiry took the run itself. Two statements (one when there is no line to write).
+ * a run a live step holds is left to that step — it finishes its work, and the next step, answer, create or sweep
+ * expires the run — while a dead step's claim is taken, its spend added to the run. Answers whether the expiry took
+ * the run itself. Two statements (one when there is no line to write).
  */
 async function expireTree(
   db: Db,
@@ -698,7 +713,13 @@ async function expireTree(
   if (members.length === 0) return { took: false, events: [] };
   const expired = await db
     .update(coachRuns)
-    .set({ status: "expired", error: "expired", finishedAt: at, updatedAt: at })
+    .set({
+      status: "expired",
+      error: "expired",
+      finishedAt: at,
+      updatedAt: at,
+      costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}`,
+    })
     .where(
       and(
         eq(coachRuns.userId, userId),
@@ -981,7 +1002,7 @@ export async function runStep(
   // A main run that is over steps nothing more — not a sub-run left live under it (the sweep expires those).
   if (!isLive(root.status)) return okStep({ status: root.status, nextDue: null, events: [] });
   // Past its window the run expires here, waiting on a question or not, with its plain line — unless a live step
-  // holds it, which finds the window closed itself.
+  // holds it: that step finishes its work, and the next step, answer, create or sweep expires the run.
   if (windowClosed(root.settings, root.createdAt, now)) {
     const expired = await expireTree(db, userId, root, nodes, now);
     if (!expired.took) return { kind: "busy" };
@@ -994,9 +1015,10 @@ export async function runStep(
   if (due.status === "stepping" && due.updatedAt >= staleBefore) return { kind: "busy" };
 
   const claimAt = now.toISOString();
+  // Taking back a dead step's claim adds its spend (its pre-call usage row) to the run, so the ceiling below sees it.
   const [claimed] = await db
     .update(coachRuns)
-    .set({ status: "stepping", updatedAt: claimAt })
+    .set({ status: "stepping", updatedAt: claimAt, costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}` })
     .where(
       and(
         eq(coachRuns.id, due.id),
@@ -1608,7 +1630,7 @@ export async function sweepCoachRuns(
   if (stale.length > 0) {
     await db
       .update(coachRuns)
-      .set({ status: "active" })
+      .set({ status: "active", costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}` })
       .where(
         and(
           eq(coachRuns.userId, userId),
@@ -1637,7 +1659,8 @@ export async function sweepCoachRuns(
     const root = byId.get(rootId)!;
     const orphaned = root.node.parentId !== null;
     if (orphaned || windowClosed(root.node.settings, root.node.createdAt, now)) {
-      // Guarded: a run a live step holds is left to that step (it finds the window closed, or goes stale first).
+      // Guarded: a run a live step holds is left alone — that step finishes its work, and the next step, answer,
+      // create or sweep expires the run (or, should the step die, its claim goes stale and is taken back first).
       if ((await expireTree(db, userId, root.node, members, now)).took) out.expired += 1;
       continue;
     }

@@ -959,6 +959,80 @@ describe("a step that died mid-call (the phone went to the background)", () => {
     expect(model.requests).toHaveLength(1);
   });
 
+  /** A step that died mid-call: its claim left at `claimAt`, its pre-call usage row stamped with the same time. */
+  async function killedMidCall(runId: string, claimAt: Date, costMicros: number) {
+    await db.update(schema.coachRuns).set({ status: "stepping", updatedAt: claimAt.toISOString() }).where(eq(schema.coachRuns.id, runId));
+    await db.insert(schema.llmUsage).values({
+      id: newId(),
+      userId,
+      kind: "design_main",
+      model: "anthropic/claude-opus-5.5",
+      inputTokens: 1,
+      outputTokens: 16_000,
+      costMicros,
+      cacheHit: false,
+      requestFingerprint: `run:${runId}:1`,
+      createdAt: claimAt.toISOString(),
+    });
+  }
+
+  it("a killed step's spend is added to the run when its claim is taken back, and counts toward the run's ceiling", async () => {
+    const model = scriptedModel([endTurn("Done.")]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), deps(model.callModel)));
+    // An earlier call, already on the run, must not be counted twice.
+    await db.update(schema.coachRuns).set({ costUsd: 0.02 }).where(eq(schema.coachRuns.id, runId));
+    await db.insert(schema.llmUsage).values({
+      id: newId(),
+      userId,
+      kind: "design_main",
+      model: "m",
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicros: 20_000,
+      cacheHit: false,
+      requestFingerprint: `run:${runId}:0`,
+      createdAt: at(1).toISOString(),
+    });
+    await killedMidCall(runId, at(2), 1_500_000);
+    // Another run's call at the same instant is that run's, not this one's.
+    await db.insert(schema.llmUsage).values({
+      id: newId(),
+      userId,
+      kind: "design_main",
+      model: "m",
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicros: 900_000,
+      cacheHit: false,
+      requestFingerprint: "run:another-run:1",
+      createdAt: at(2).toISOString(),
+    });
+    const r = ok(await runStep(db, env, runId, userId, at(2 + (COACH_RUN_STEP_STALE_MINUTES + 1) * 60), deps(model.callModel)));
+    expect(r.status).toBe("stopped_cap"); // 0.02 + 1.50 is past the $1.50 ceiling: no model call
+    expect(model.requests).toHaveLength(0);
+    const row = await runRow(runId);
+    expect(row.error).toBe("run_ceiling");
+    expect(row.costUsd).toBeCloseTo(1.52, 6);
+  });
+
+  it("…and when an expiry or the sweep takes it", async () => {
+    const expired = await newMainRun();
+    ok(await runStep(db, env, expired, userId, at(1), deps(scriptedModel([]).callModel)));
+    await killedMidCall(expired, at(2), 300_000);
+    ok(await runStep(db, env, expired, userId, at(14 * 3600), deps(scriptedModel([]).callModel)));
+    expect(await runRow(expired)).toMatchObject({ status: "expired" });
+    expect((await runRow(expired)).costUsd).toBeCloseTo(0.3, 6);
+
+    const swept = await newMainRun(null, { scope: "week" });
+    ok(await runStep(db, env, swept, userId, at(1), deps(scriptedModel([]).callModel)));
+    await killedMidCall(swept, at(3), 400_000);
+    const out = await sweepCoachRuns(db, env, userId, at(3 + (COACH_RUN_STEP_STALE_MINUTES + 1) * 60), deps(scriptedModel([]).callModel), { maxSteps: 0 });
+    expect(out.reclaimed).toBe(1);
+    expect(await runRow(swept)).toMatchObject({ status: "active" });
+    expect((await runRow(swept)).costUsd).toBeCloseTo(0.4, 6);
+  });
+
   it("a claim younger than the stale limit still answers busy", async () => {
     const model = scriptedModel([]);
     const runId = await newMainRun();
