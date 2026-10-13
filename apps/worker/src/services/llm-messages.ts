@@ -208,8 +208,11 @@ export type MessagesFailure =
   | { ok: false; kind: "no_key"; reason: "no_key" }
   /** 402: the account needs credits. Never retried; `isOutOfCredits(reason)` is true. */
   | { ok: false; kind: "out_of_credits"; reason: typeof OUT_OF_CREDITS_REASON; status: 402 }
-  /** 408, 429, 5xx, a dropped or silent connection, a broken answer: worth another try on a later step. */
-  | { ok: false; kind: "retryable"; reason: string; status?: number }
+  /** 408, 429, 5xx, a dropped or silent connection, a broken answer: worth another try on a later step. When the
+   * answer had begun (a 200 that then stalled, broke off, errored mid-stream or hit the deadline) the call is billed
+   * as far as it got: `usage` is what the stream had reported (message_start / message_delta), else an estimate from
+   * the request's size, and `costMicros` its price. */
+  | { ok: false; kind: "retryable"; reason: string; status?: number; usage?: MessagesUsage; costMicros?: number }
   /** Any other 4xx: the request itself is wrong, and a resend would say the same. */
   | { ok: false; kind: "rejected"; reason: string; status: number };
 
@@ -298,7 +301,12 @@ export async function callMessages(
       contentType.includes("text/event-stream") && response.body
         ? await readStream(response.body, startedAt, controller.signal)
         : await readJson(response, startedAt, controller.signal);
-    if (!answer.ok) return answer;
+    if (!answer.ok) {
+      if (!("cut" in answer)) return answer;
+      // The answer began, so the call was billed: as far as the stream reported, or at an estimate of the input.
+      const usage = cutUsage(answer.usage, body, answer.content);
+      return { ok: false, kind: "retryable", reason: answer.reason, usage, costMicros: messagesCostMicros(model, usage) };
+    }
 
     const usage = usageOf(answer.usage, body, answer.content);
     return {
@@ -337,6 +345,28 @@ function usageOf(raw: RawUsage, requestBody: string, content: ContentBlock[]): M
   };
 }
 
+/** An answer that began (the gateway said 200) and then failed: the reason, with what the stream had said so far. */
+interface Cut {
+  ok: false;
+  cut: true;
+  reason: string;
+  usage: RawUsage;
+  content: unknown[];
+}
+const cutOff = (reason: string, usage: RawUsage = {}, content: unknown[] = []): Cut => ({ ok: false, cut: true, reason, usage, content });
+
+/** A broken-off answer's usage: the counts the stream reported; the input estimated from the request when it never
+ * said; the output at least what arrived (~4 characters a token), zero when nothing did. */
+function cutUsage(raw: RawUsage, requestBody: string, content: unknown[]): MessagesUsage {
+  const arrived = content.length > 0 ? Math.ceil(JSON.stringify(content).length / 4) : 0;
+  return {
+    inputTokens: num(raw.input_tokens) ?? Math.ceil(requestBody.length / 4),
+    cacheReadTokens: num(raw.cache_read_input_tokens) ?? 0,
+    cacheWriteTokens: num(raw.cache_creation_input_tokens) ?? 0,
+    outputTokens: Math.max(num(raw.output_tokens) ?? 0, arrived),
+  };
+}
+
 type RawMessage = { content?: unknown; stop_reason?: unknown; usage?: unknown };
 
 /** How long the next read may take: the stall limit, or what is left of the whole call's deadline if less. */
@@ -348,8 +378,8 @@ function readWait(startedAt: number): number {
  * reads (the abort alone does not cut a body read loose in workerd), so a stalled body can be cancelled:
  * `response.text()` would lock the body and leave nothing to cancel, keeping the connection open until the
  * invocation ends. */
-async function readJson(response: Response, startedAt: number, deadline: AbortSignal): Promise<Answer | MessagesFailure> {
-  if (!response.body) return retryable("gateway_bad_response");
+async function readJson(response: Response, startedAt: number, deadline: AbortSignal): Promise<Answer | Cut> {
+  if (!response.body) return cutOff("gateway_bad_response");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let text = "";
@@ -358,7 +388,7 @@ async function readJson(response: Response, startedAt: number, deadline: AbortSi
       const next = await withTimeout(reader.read(), readWait(startedAt));
       if (next === "timed_out") {
         await reader.cancel().catch(() => undefined);
-        return retryable("llm_timeout");
+        return cutOff("llm_timeout");
       }
       if (next.done) break;
       text += decoder.decode(next.value, { stream: true });
@@ -366,7 +396,7 @@ async function readJson(response: Response, startedAt: number, deadline: AbortSi
     text += decoder.decode();
   } catch {
     // The whole call's deadline aborting the read is a timeout; anything else is the connection failing.
-    return retryable(deadline.aborted ? "llm_timeout" : "llm_error");
+    return cutOff(deadline.aborted ? "llm_timeout" : "llm_error");
   }
   let parsed: RawMessage | null;
   try {
@@ -374,7 +404,7 @@ async function readJson(response: Response, startedAt: number, deadline: AbortSi
   } catch {
     parsed = null;
   }
-  if (!parsed || !Array.isArray(parsed.content)) return retryable("gateway_bad_response");
+  if (!parsed || !Array.isArray(parsed.content)) return cutOff("gateway_bad_response");
   return {
     ok: true,
     content: parsed.content as ContentBlock[],
@@ -416,7 +446,7 @@ async function readStream(
   body: ReadableStream<Uint8Array>,
   startedAt: number,
   deadline: AbortSignal,
-): Promise<Answer | MessagesFailure> {
+): Promise<Answer | Cut> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const blocks: Array<Record<string, unknown> | undefined> = [];
@@ -425,12 +455,13 @@ async function readStream(
   let stopReason: StopReason | null = null;
   let stopped = false;
   let buffered = "";
+  const sofar = (): unknown[] => blocks.filter((b): b is Record<string, unknown> => !!b);
   try {
     for (;;) {
       const next = await withTimeout(reader.read(), readWait(startedAt));
       if (next === "timed_out") {
         await reader.cancel().catch(() => undefined);
-        return retryable("llm_timeout");
+        return cutOff("llm_timeout", usage, sofar());
       }
       if (next.done) break;
       buffered += decoder.decode(next.value, { stream: true });
@@ -488,15 +519,15 @@ async function readStream(
             break;
           case "error":
             await reader.cancel().catch(() => undefined);
-            return retryable(`stream_${event.error?.type ?? "error"}`);
+            return cutOff(`stream_${event.error?.type ?? "error"}`, usage, sofar());
         }
       }
     }
   } catch {
     // The whole call's deadline aborting the read is a timeout; anything else is the connection failing.
-    return retryable(deadline.aborted ? "llm_timeout" : "llm_error");
+    return cutOff(deadline.aborted ? "llm_timeout" : "llm_error", usage, sofar());
   }
-  if (!stopped && stopReason === null) return retryable("gateway_bad_response");
+  if (!stopped && stopReason === null) return cutOff("gateway_bad_response", usage, sofar());
   return {
     ok: true,
     content: blocks.filter((b): b is Record<string, unknown> => !!b) as unknown as ContentBlock[],

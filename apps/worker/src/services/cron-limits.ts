@@ -36,31 +36,33 @@ export const REQUEST_REPLAY_MAX_DAYS = 7;
 
 /**
  * The coach designer's runs (Stage 3 spec §2) are stepped by the client while its screen is open — one model call a
- * request — and the hourly cron looks after the ones nobody is stepping. A step is a model call (seconds to minutes,
- * and real spend), so it is a heavy step in the hourly's sense: at most this many runs are stepped per invocation, in
- * the per-account slot no other heavy step took (index.ts).
+ * request — and the hourly cron looks after the ones nobody is stepping, without ever calling the model for them: it
+ * gives back dead claims, runs a left run's queued tool calls, and expires runs past their window. A step of queued
+ * calls runs up to a step's worth of tool statements, so it is a heavy step in the hourly's sense: at most this many
+ * runs are stepped per invocation, in the per-account slot no other heavy step took (index.ts).
  */
 export const COACH_RUN_SWEEP_MAX = 1;
 
 /**
- * A run nothing has touched for this long — no step, no answer — has been left: the sweep expires it with a plain
- * event, waiting on a question or not. A design for "now" made hours later would be stale, and a live run blocks the
- * athlete's next one (one live main run per athlete).
+ * How long a run for a set (this week, the next N workouts) stays open, from when it began: a day. A run for now or
+ * later today stays open until the end of the athlete's local day it began on — its context (the date, the time,
+ * today's readings) is frozen at its first step, so a design answered tomorrow would be for yesterday. Past its
+ * window a run expires with a plain event, waiting on a question or not: when a step, an answer or the sweep finds it.
  */
-export const COACH_RUN_ORPHAN_MINUTES = 30;
+export const COACH_RUN_SET_WINDOW_HOURS = 24;
 
 /**
- * A step claims its run by setting it `stepping`; a step that died (a killed invocation) leaves it there. Past this,
- * the sweep gives the run back (`active`). Longer than a live step can last: the model call alone may take up to ten
- * minutes (llm-messages.ts' overall deadline), and a live claim must never be taken from under it.
+ * A step claims its run by setting it `stepping`; a step that died (a killed invocation, a phone sent to the
+ * background mid-call) leaves it there. Past this, the next step takes the claim back, and so does the sweep.
+ * Longer than a live step can last: the model call alone may take up to ten minutes (llm-messages.ts' overall
+ * deadline), and a live claim must never be taken from under it.
  */
 export const COACH_RUN_STEP_STALE_MINUTES = 15;
 
 /**
- * An active run nobody has stepped for this long has lost its screen: the client steps again the moment a step
- * answers, so a gap this long means the app closed. The sweep gives such a run one step (which finishes a run that
- * was on its last one); a run still unfinished and untouched COACH_RUN_ORPHAN_MINUTES later expires. Reopening the
- * app resumes stepping before then.
+ * An active run nobody has stepped for this long has been left by its client: the client steps again the moment a
+ * step answers, so a gap this long means the app closed. The sweep runs such a run's queued tool calls (no model);
+ * the rest waits for the athlete to come back.
  */
 export const COACH_RUN_LEFT_MINUTES = 2;
 

@@ -7,7 +7,8 @@
  * signed in or not; then the session is checked. Mounted ahead of `/api/coach` in index.ts so the coach's own sign-in
  * never answers for these paths first.
  *
- *   POST /                  { scope, request?, rehearsal? } → { run, existing }   (one live main run per athlete)
+ *   POST /                  { scope, request?, rehearsal? } → { run, existing }   (one live main run per athlete: a
+ *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start)
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
  *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order)
  *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting)

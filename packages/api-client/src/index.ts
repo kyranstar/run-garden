@@ -902,6 +902,17 @@ export interface CoachRunEventDto {
   at: string;
 }
 
+/** `POST /api/coach/runs`: a new run, or the athlete's live one — nothing about it changed — with what the screen can
+ * offer, and the request it did not start (to offer again once the live run is cancelled). */
+export type CoachRunCreateResult =
+  | { run: CoachRunDto; existing: false }
+  | {
+      run: CoachRunDto;
+      existing: true;
+      offer: "answer_or_cancel" | "continue_or_cancel";
+      ignoredRequest: { scope: CoachRunScope; request: string | null };
+    };
+
 export interface CoachRunStepResult {
   status: CoachRunStatus;
   /** Step again at `at`; null: nothing to step (finished, stopped, or waiting on the athlete). */
@@ -1855,7 +1866,7 @@ export const api = {
   // create answers the live one (`existing`). A step is one model call — minutes at most — so it is never cut off
   // client-side; a 409 means another step holds the run (poll `coachRun` and step again).
   coachRunCreate: (body: { scope: CoachRunScope; request?: string | null; rehearsal?: boolean }) =>
-    post<{ run: CoachRunDto; existing: boolean }>("/api/coach/runs", body),
+    post<CoachRunCreateResult>("/api/coach/runs", body),
   coachRunStep: (id: string) =>
     post<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, {}, AI_TIMEOUT_MS),
   coachRun: (id: string, afterSeq = 0) =>

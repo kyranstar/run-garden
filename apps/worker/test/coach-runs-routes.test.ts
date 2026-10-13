@@ -16,6 +16,7 @@ import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import {
   CONTEXT_STATEMENT_BUDGET,
   MAX_TOOL_CALLS_PER_STEP,
+  EVENTS_PER_INSERT,
   MODEL_STEP_FIXED,
   PENDING_STEP_FIXED,
   ROUTE_OVERHEAD,
@@ -24,6 +25,7 @@ import {
   type RunDeps,
 } from "../src/services/coach-runs.js";
 import type { DesignTool } from "../src/services/design-tools/types.js";
+import { designContextBuilder } from "../src/services/design-context.js";
 import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult } from "../src/services/llm-messages.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -121,9 +123,12 @@ beforeEach(async () => {
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
   turns = [];
   tools = [];
-  context = async () => {
-    await db.all(sql`select 1`);
-    return { system: [{ type: "text", text: "SYSTEM" }], header: "HEADER" };
+  context = {
+    statementCost: 1,
+    async build() {
+      await db.all(sql`select 1`);
+      return { system: [{ type: "text", text: "SYSTEM" }], header: "HEADER" };
+    },
   };
 });
 
@@ -198,7 +203,12 @@ describe("the routes", () => {
     expect(created.status).toBe(200);
     expect(created.body).toMatchObject({ existing: false, run: { status: "active", request: "hips", scope: { kind: "now" } } });
     const id = created.body.run.id as string;
-    expect((await call("POST", "", { scope: { kind: "week" } })).body).toMatchObject({ existing: true, run: { id } });
+    expect((await call("POST", "", { scope: { kind: "week" }, request: "my week" })).body).toEqual({
+      run: expect.objectContaining({ id, request: "hips", scope: { kind: "now" } }),
+      existing: true,
+      offer: "continue_or_cancel",
+      ignoredRequest: { scope: { kind: "week" }, request: "my week" },
+    });
 
     expect((await call("POST", `/${id}/step`)).body).toMatchObject({ status: "active", nextDue: { runId: id, role: "main" } });
     const asked = await call("POST", `/${id}/step`);
@@ -280,9 +290,12 @@ describe("every request within the budget", () => {
   });
 
   it("the context step, with a context that spends its whole allowance", async () => {
-    context = async (cdb) => {
-      for (let i = 0; i < CONTEXT_STATEMENT_BUDGET; i++) await cdb.all(sql`select 1`);
-      return { system: [{ type: "text", text: "S" }], header: "H" };
+    context = {
+      statementCost: CONTEXT_STATEMENT_BUDGET,
+      async build(cdb) {
+        for (let i = 0; i < CONTEXT_STATEMENT_BUDGET; i++) await cdb.all(sql`select 1`);
+        return { system: [{ type: "text", text: "S" }], header: "H" };
+      },
     };
     const id = (await call("POST", "", { scope: { kind: "now" } })).body.run.id as string;
     const step = await measured("POST", `/${id}/step`);
@@ -322,6 +335,56 @@ describe("every request within the budget", () => {
     expect(step.cost).toBeGreaterThanOrEqual(BUDGET - 2);
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, proposalId));
     expect(p!.status).toBe("rehearsal");
+  });
+
+  it("the true worst case: tools fill the room, a rehearsal's finish, and a cancel that lands while the tools run (the claim lost)", async () => {
+    const room = BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
+    const n = MAX_TOOL_CALLS_PER_STEP - 1;
+    const costs = Array.from({ length: n }, (_, i) => Math.floor(room / n) + (i < room % n ? 1 : 0));
+    const proposalId = newId();
+    await db.insert(schema.coachProposals).values({
+      id: proposalId,
+      userId,
+      title: "t",
+      evidence: "",
+      rationale: "",
+      flags: [],
+      ops: [],
+      status: "pending",
+      expiresAt: "2999-01-01",
+      createdAt: new Date().toISOString(),
+    });
+    let runId = "";
+    tools = [
+      // The first tool's last declared statement is the cancel landing (another request's, in life).
+      {
+        ...costly("t0", costs[0]!),
+        async run(ctx) {
+          for (let i = 0; i < costs[0]! - 1; i++) await ctx.db.all(sql`select 1`);
+          await ctx.db.update(schema.coachRuns).set({ status: "cancelled" }).where(eq(schema.coachRuns.id, runId));
+          return { data: {}, summary: "t0" };
+        },
+      },
+      ...costs.slice(1).map((c, i) => costly(`t${i + 1}`, c)),
+      { ...costly("finish", 0), control: "finish", async run() { return { data: { proposalId }, summary: "Done." }; } },
+    ];
+    turns = [answer([...costs.map((_, i) => use(`t${i}`)), use("finish")])];
+    runId = (await call("POST", "", { scope: { kind: "now" }, rehearsal: true })).body.run.id as string;
+    await call("POST", `/${runId}/step`); // context
+    const step = await measured("POST", `/${runId}/step`);
+    expect(step.status).toBe(200);
+    expect(step.body.status).toBe("cancelled");
+    expect(step.cost).toBeLessThanOrEqual(BUDGET);
+    expect(step.cost).toBeGreaterThanOrEqual(BUDGET - 1);
+    expect(step.body.events.length).toBeLessThanOrEqual(EVENTS_PER_INSERT);
+  });
+
+  it("the context step with Task 3's own context", async () => {
+    context = designContextBuilder;
+    const id = (await call("POST", "", { scope: { kind: "next_n", n: 3 }, request: "my next three" })).body.run.id as string;
+    const step = await measured("POST", `/${id}/step`);
+    expect(step.status).toBe(200);
+    expect(step.cost).toBeLessThanOrEqual(BUDGET);
   });
 
   it("a step of queued calls that fill its room", async () => {

@@ -332,9 +332,9 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       }
       if (coachDesignerEnabled(env)) {
         await stillOurs();
-        // The coach designer's runs (Stage 3): a dead step's claim given back and a run left for half an hour
-        // expired, every run (cheap SQL); and one step — a model call — of a run nobody is stepping, only in the slot
-        // no other heavy step took and at most COACH_RUN_SWEEP_MAX in the whole invocation.
+        // The coach designer's runs (Stage 3), never with a model call: a dead step's claim given back and a run past
+        // its window expired, every run (cheap SQL); and one step of queued tool calls for a run its client left, only
+        // in the slot no other heavy step took and at most COACH_RUN_SWEEP_MAX in the whole invocation.
         const maxSteps = heavyStep === null ? Math.max(0, COACH_RUN_SWEEP_MAX - coachRunSteps) : 0;
         const swept = await sweepCoachRuns(db, env, userId, new Date(), defaultRunDeps(), { maxSteps }).catch((e: unknown) => {
           console.error(`coach run sweep failed: ${e instanceof Error ? e.message : "unknown"}`);

@@ -6,7 +6,6 @@
 import { describe, expect, it } from "vitest";
 import { PROFILES } from "@rg/exercise-library";
 import { DOC_ISSUE_CODES, type DocIssueCode } from "@rg/workout";
-import { MAX_TOOL_CALLS_PER_TURN as LOOP_MAX_TOOL_CALLS_PER_TURN } from "../src/services/coach-runs.js";
 import { MAX_TOOL_CALLS_PER_TURN } from "../src/services/design-limits.js";
 import { PROMPT_TOOL_NAMES, REVIEW_DIMENSIONS, SHARED_PROMPT, markUntrusted, roleBlock } from "../src/services/design-prompt.js";
 
@@ -123,9 +122,8 @@ describe("the prompt text", () => {
     expect(fatal).toContain("a past date");
   });
 
-  it("states the loop's own per-turn tool-call limit (one definition until the loop imports design-limits.ts)", () => {
-    expect(MAX_TOOL_CALLS_PER_TURN).toBe(LOOP_MAX_TOOL_CALLS_PER_TURN);
-    expect(SHARED_PROMPT).toContain(`at most ${LOOP_MAX_TOOL_CALLS_PER_TURN} a turn`);
+  it("states the loop's own per-turn tool-call limit (design-limits.ts, the one definition the loop enforces)", () => {
+    expect(SHARED_PROMPT).toContain(`at most ${MAX_TOOL_CALLS_PER_TURN} a turn`);
     expect(SHARED_PROMPT).not.toContain("side by side");
   });
 

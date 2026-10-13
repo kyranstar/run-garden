@@ -606,3 +606,78 @@ describe("callMessages — a buffered answer that stalls", () => {
     expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
   });
 });
+
+describe("callMessages — a failure after the answer began is still billed (Stage 3 Task 2 fix 1)", () => {
+  const START = {
+    type: "message_start",
+    message: { usage: { input_tokens: 1_200, cache_creation_input_tokens: 300, cache_read_input_tokens: 9_000, output_tokens: 1 } },
+  };
+  const TEXT = [
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Checking what fits today." } },
+    { type: "content_block_stop", index: 0 },
+  ];
+  const seen = { inputTokens: 1_200, cacheReadTokens: 9_000, cacheWriteTokens: 300 };
+
+  function billed(result: Awaited<ReturnType<typeof callMessages>>) {
+    expect(result.ok).toBe(false);
+    const r = result as {
+      usage?: { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number };
+      costMicros?: number;
+    };
+    expect(r.usage).toBeDefined();
+    expect(r.costMicros).toBe(messagesCostMicros(DEFAULT_DESIGN_MODEL, r.usage!));
+    return r.usage!;
+  }
+
+  it("a stream cut before the model stopped carries the usage message_start announced, and the output so far", async () => {
+    const { fetchImpl } = scriptedFetch([{ sse: [START, ...TEXT] }]);
+    const result = await callMessages(makeEnv(), request(), fetchImpl);
+    expect(result).toMatchObject({ kind: "retryable", reason: "gateway_bad_response" });
+    const usage = billed(result);
+    expect(usage).toMatchObject(seen);
+    expect(usage.outputTokens).toBeGreaterThanOrEqual(Math.ceil("Checking what fits today.".length / 4));
+  });
+
+  it("…and message_delta's count when it came", async () => {
+    const delta = { type: "message_delta", delta: {}, usage: { output_tokens: 640 } };
+    const { fetchImpl } = scriptedFetch([{ sse: [START, ...TEXT, delta] }]);
+    expect(billed(await callMessages(makeEnv(), request(), fetchImpl))).toEqual({ ...seen, outputTokens: 640 });
+  });
+
+  it("an error event mid-stream is billed as far as it got", async () => {
+    const { fetchImpl } = scriptedFetch([{ sse: [START, ...TEXT, { type: "error", error: { type: "overloaded_error" } }] }]);
+    const result = await callMessages(makeEnv(), request(), fetchImpl);
+    expect(result).toMatchObject({ kind: "retryable", reason: "stream_overloaded_error" });
+    expect(billed(result)).toMatchObject(seen);
+  });
+
+  it("a stream that goes silent is billed as far as it got", async () => {
+    vi.useFakeTimers();
+    const { fetchImpl } = scriptedFetch([{ hangAfter: [START] }]);
+    const pending = callMessages(makeEnv(), request(), fetchImpl);
+    await vi.advanceTimersByTimeAsync(151_000);
+    const result = await pending;
+    expect(result).toMatchObject({ kind: "retryable", reason: "llm_timeout" });
+    expect(billed(result)).toMatchObject(seen);
+  });
+
+  it("a buffered answer that stalls is billed at an estimate of its input", async () => {
+    vi.useFakeTimers();
+    const { fetchImpl, calls } = scriptedFetch([{ hangJson: '{"id":"msg_1","type":"message","content":[{"type":"te' }]);
+    const pending = callMessages(makeEnv(), request(), fetchImpl);
+    await vi.advanceTimersByTimeAsync(151_000);
+    const usage = billed(await pending);
+    expect(usage.inputTokens).toBe(Math.ceil(JSON.stringify(calls[0]!.body).length / 4));
+    expect(usage.outputTokens).toBe(0);
+  });
+
+  it("a failure before any answer carries no usage: nothing was billed", async () => {
+    for (const spec of [{ status: 529, json: { error: "overloaded" } }, { throws: true }, { status: 402, json: {} }]) {
+      const { fetchImpl } = scriptedFetch([spec]);
+      const result = await callMessages(makeEnv(), request(), fetchImpl);
+      expect(result.ok).toBe(false);
+      expect(result).not.toHaveProperty("usage");
+    }
+  });
+});
