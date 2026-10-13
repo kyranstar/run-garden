@@ -425,6 +425,33 @@ describe("a document workout's items, played", () => {
     expect(first!.textContent).toContain(PLANNED_WHY);
   });
 
+  it("a hold to max left running and opened again half an hour later is back at its start, paused, with Resume (whole-branch M-4)", async () => {
+    await start(maxBuild(), docView());
+    await stepTo(4);
+    await until(async () => (await readLive(db!, SLOT))?.stepIndex === 3, "the wall sit kept at once");
+    // The app is killed on the wall sit; opened again 30 minutes later.
+    act(() => root!.unmount());
+    vi.setSystemTime(T0 + 1_800 * S);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const player = createElement(PlayerScreen, {
+      workoutId: SLOT,
+      deps: { db: () => Promise.resolve(db!), getSession: () => Promise.reject(new TypeError("Failed to fetch")), chimes, wake: () => () => undefined },
+    });
+    root = createRoot(host!);
+    act(() => {
+      root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, { initialEntries: [`/session/${SLOT}`] },
+        createElement(Routes, null, createElement(Route, { path: "/session/:workoutId", element: player })))));
+    });
+    await until(() => text().includes("4 of 6"), "the wall sit again");
+    expect(text()).toContain("Get ready");
+    expect(text()).toContain("0:08");
+    expect(text()).toContain("Paused");
+    expect(control("Resume")!.classList.contains("btn-primary")).toBe(true);
+    // Kept that way on the device.
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(async () => (await readLive(db!, SLOT))?.paused === true, "kept paused");
+  });
+
   it("an engine build shows no cue and no target: its hold counts down as before", async () => {
     await start(build({ newMove: null }), view({ newMove: null }));
     await stepTo(3);

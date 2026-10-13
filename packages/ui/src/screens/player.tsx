@@ -50,6 +50,7 @@ import {
   pause,
   playerData,
   prev,
+  reopen,
   resume,
   settle,
   stepView,
@@ -256,7 +257,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const reviewEngine = useMemo(() => reviewData(src, basis), [src, basis]);
   const [auto, setAuto] = useState(readAuto);
   const [now, setNow] = useState(() => Date.now());
-  const [state, setState] = useState<PlayerState>(() => settle(loaded.initial, Date.now(), { autoAdvance: readAuto() }));
+  // Opened again: caught up with the clock, a hold to max run far past its target (the app was away) back at its start.
+  const [state, setState] = useState<PlayerState>(() => reopen(loaded.initial, Date.now(), { autoAdvance: readAuto() }));
   const [panel, setPanel] = useState<Panel>(null);
   const [logOpen, setLogOpen] = useState(false);
   /** A panel paused the countdown: closing it resumes. */

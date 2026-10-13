@@ -11,7 +11,25 @@ import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import type { SlotChoice } from "@rg/session-engine";
 import { playerStepsFromDoc } from "@rg/workout";
-import { beginPlayer, confirmLog, doneHold, heldBefore, logFor, logTarget, next, playerData, saveOf, swapSlot, type PlayerState } from "../../src/player/run.js";
+import {
+  beginPlayer,
+  confirmLog,
+  doneHold,
+  fromLiveSession,
+  heldBefore,
+  logFor,
+  logTarget,
+  next,
+  playerData,
+  prev,
+  reopen,
+  saveOf,
+  stepView,
+  swapSlot,
+  toLiveSession,
+  type PlayerState,
+} from "../../src/player/run.js";
+import { elapsedMs } from "../../src/player/timer.js";
 import { docBuild, docView, exercise, SLOT, T0 } from "./fixtures.js";
 
 const S = 1000;
@@ -76,6 +94,90 @@ describe("a part played in rounds", () => {
     }
     const save = saveOf(s, { endedAt: new Date(at).toISOString() });
     expect(save.entries.find((e) => e.id === "wallSit")!.sets.map((x) => x.secs)).toEqual([50, 45, 40]);
+  });
+});
+
+describe("an open hold: a timed move to max with no target, played as a set (Stage 2 whole-branch M-3)", () => {
+  /** Two sets of a wall sit to max with no hold, a rest between. */
+  const open = () => built(docOf([{ purpose: "main", format: "straight", items: [
+    { kind: "exercise", libraryId: "wallSit", dose: { sets: 2, max: true, restSec: 30 } },
+    { kind: "exercise", libraryId: "birdDog", dose: { sets: 1, reps: 8 } },
+  ] }]), { "core:0": { max: true } });
+
+  it("counts only on Confirm: arrived at, it is not done; skipped, it logs nothing", () => {
+    const s = start(open());
+    expect(s.live.steps[0]).toMatchObject({ kind: "set", exerciseId: "wallSit" });
+    expect(s.live.entries.wallSit!.sets[0]!.done).toBe(false);
+    const skipped = next(s, T0 + 30 * S);
+    const save = saveOf(skipped, { endedAt: new Date(T0 + 40 * S).toISOString() });
+    expect(save.entries.find((e) => e.id === "wallSit")).toBeUndefined();
+    expect(save.done.map((d) => d.id)).not.toContain("wallSit");
+  });
+
+  it("confirmed, it counts at the card's seconds; a second set skipped is never saved with the first's", () => {
+    let s = start(open());
+    s = confirmLog(s, { secs: 95 }, {}, T0 + 95 * S, logFor(s));
+    expect(s.live.entries.wallSit!.sets.map((x) => [x.done, x.secs])).toEqual([[true, 95], [false, 95]]);
+    // The rest, then the second set: skipped.
+    s = next(s, T0 + 100 * S);
+    expect(s.live.steps[s.index]).toMatchObject({ kind: "set", exerciseId: "wallSit", setIndex: 1 });
+    s = next(s, T0 + 110 * S);
+    const save = saveOf(s, { endedAt: new Date(T0 + 120 * S).toISOString() });
+    expect(save.entries.find((e) => e.id === "wallSit")!.sets.map((x) => x.secs)).toEqual([95]);
+  });
+
+  it("going back to one confirmed keeps it", () => {
+    let s = start(open());
+    s = confirmLog(s, { secs: 95 }, {}, T0 + 95 * S, logFor(s));
+    s = prev(s, T0 + 96 * S);
+    expect(s.index).toBe(0);
+    expect(s.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 95 });
+  });
+});
+
+describe("a hold to max reopened far past its target (Stage 2 whole-branch M-4)", () => {
+  /** A rest of 30 s, then a wall sit to max: its 8 s get-ready, a 40 s target. Far past it: 2 × 40 + 120 = 200 s held. */
+  const restThenHold = () => built(docOf([{ purpose: "main", format: "holds", items: [
+    { kind: "exercise", libraryId: "birdDog", dose: { sets: 1, reps: 8 } },
+    { kind: "rest", seconds: 30 },
+    { kind: "exercise", libraryId: "wallSit", dose: { sets: 1, holdSec: 40, max: true } },
+  ] }]), { "core:1": { max: true } });
+  /** Kept on the device at `at` (the app killed then), opened again at `now`. */
+  const reopened = (s: PlayerState, at: number, now: number, b: SessionBuildDto) =>
+    reopen(fromLiveSession(toLiveSession(s, at), { workoutId: SLOT, build: b })!, now, { autoAdvance: true });
+
+  it("killed mid-hold and opened far past the target: back at the hold's start, paused, the session's time stopped where the hold began", () => {
+    const b = restThenHold();
+    let s = next(next(start(b), T0 + 10 * S), T0 + 40 * S);
+    expect(s.live.steps[s.index]!.exerciseId).toBe("wallSit");
+    const back = reopened(s, T0 + 60 * S, T0 + 40 * S + (8 + 201) * S, b);
+    expect(back.index).toBe(s.index);
+    expect(back.paused).toBe(true);
+    expect(stepView(back, T0 + 3_600 * S)).toMatchObject({ phase: "ready", elapsedMs: 0 });
+    expect(elapsedMs(back.session, T0 + 3_600 * S)).toBe(40 * S);
+    // Not that far: the hold carries on, counted.
+    const near = reopened(s, T0 + 60 * S, T0 + 40 * S + (8 + 200) * S, b);
+    expect(near.paused).toBe(false);
+    expect(stepView(near, T0 + 40 * S + 208 * S)).toMatchObject({ phase: "hold", elapsedMs: 208 * S });
+  });
+
+  it("killed mid-rest and opened half an hour later: the hold the clock ran into is back at its start, paused", () => {
+    const b = restThenHold();
+    const s = next(start(b), T0 + 10 * S);
+    expect(s.live.steps[s.index]!.kind).toBe("rest");
+    const back = reopened(s, T0 + 15 * S, T0 + 1_800 * S, b);
+    expect(back.live.steps[back.index]!.exerciseId).toBe("wallSit");
+    expect(back.paused).toBe(true);
+    expect(stepView(back, T0 + 1_900 * S)).toMatchObject({ phase: "ready", elapsedMs: 0 });
+    // The session ran to the end of the rest: 10 s, then 30 s of rest.
+    expect(elapsedMs(back.session, T0 + 1_900 * S)).toBe(40 * S);
+  });
+
+  it("a hold that is not to max is never touched (the clock already ends it)", () => {
+    const b = built(docOf([{ purpose: "main", format: "holds", items: [{ kind: "exercise", libraryId: "wallSit", dose: { sets: 2, holdSec: 40 } }] }]), {});
+    const s = start(b);
+    const back = reopened(s, T0 + 5 * S, T0 + 1_800 * S, b);
+    expect(back.finished).toBe(true);
   });
 });
 

@@ -10,7 +10,8 @@
  *    stopped is the result), never capped at the target, each side on its own when it is played a side at a time;
  *    End by the half-time rule at the time held; moving on without Done (Skip, → or ←) logs nothing of it — a skipped
  *    test is no measure. A timed move to max with no target plays as a set (`openHold`): it counts up from the start,
- *    and Done's log card holds the seconds counted.
+ *    Done's log card holds the seconds counted, and it counts only on that card's Confirm — arrived at and skipped, it
+ *    logs nothing (never the seconds an edit copied forward from the set before).
  *  - Timers are wall-clock anchored (`timer.ts`). `settle` catches up with the clock: a timed step or a rest whose
  *    time has run out ends at the moment it ran out and, with auto-advance on, the next step starts from that moment
  *    — so a phone locked mid-hold resumes on the step the clock says, each hold judged at the time it could be held.
@@ -21,9 +22,9 @@
 import type { SessionBuildDto, SessionViewDto } from "@rg/api-client";
 import type { Weight } from "@rg/domain";
 import { isProfileId, makeEngineData, type CheckReading, type EngineData, type ExerciseRecord } from "@rg/exercise-library";
-import { Recorder, Swapping, type HoldSide, type Live, type LiveEntry, type PerformedSessionSave, type ReviewState, type SlotChoice, type Step } from "@rg/session-engine";
+import { Recorder, Swapping, type HoldSide, type Live, type LiveEntry, type LiveSet, type PerformedSessionSave, type ReviewState, type SlotChoice, type Step } from "@rg/session-engine";
 import type { LiveSession } from "../offline/live.js";
-import { elapsedMs, heldSecs, lengthMs, phaseAt, runningClock, startClock, stopClock, stoppedClock, type PhaseView, type StepClock } from "./timer.js";
+import { elapsedMs, heldSecs, lengthMs, phaseAt, readyMs, runningClock, startClock, stopClock, stoppedClock, type PhaseView, type StepClock } from "./timer.js";
 
 /** What the player plays: a locked build, its view, and the switched-on condition profiles. */
 export interface PlayerSource {
@@ -150,7 +151,15 @@ function leave(s: PlayerState, now: number, how: Leave = "on"): void {
     if (step.exerciseId) Recorder.addSeconds(s.live, step.exerciseId, held);
   } else if (step.kind === "set" && step.exerciseId) {
     Recorder.addSeconds(s.live, step.exerciseId, elapsed / 1000);
+    // An open hold left without its Confirm was no step done.
+    if (openHold(s, step) && !setAt(s.live, step)?.done) s.live.reached.delete(s.index);
   }
+}
+
+/** The set a step logs to, in its move's entry (`Recorder.placeOf`); undefined when it logs none. */
+function setAt(live: Live, step: Step): LiveSet | undefined {
+  const at = step.exerciseId ? Recorder.placeOf(live, step) : -1;
+  return at >= 0 ? live.entries[step.exerciseId!]?.sets[at] : undefined;
 }
 
 /** Arriving at step `i`, its timer starting at `from` (stopped while paused). Past the end, the session is finished. */
@@ -165,7 +174,11 @@ function arrive(s: PlayerState, i: number, from: number, newMove: string | null)
     s.paused = false;
     return;
   }
+  // An open hold counts only on its Confirm (it is timed to max with no target: arriving is no set done); one confirmed
+  // before stays done.
+  const confirmed = openHold(s, step) && !!setAt(s.live, step)?.done;
   Recorder.reach(s.live, i);
+  if (openHold(s, step) && !confirmed) undone(s.live, step);
   s.clock = s.paused ? stoppedClock() : runningClock(from);
   if (newMove && step.exerciseId === newMove && !s.newMoveShown) {
     // The new move's how-to holds the countdown until it is closed.
@@ -237,6 +250,28 @@ export function settle(state: PlayerState, now: number, opts: { autoAdvance: boo
     arrive(s, s.index + 1, endedAt, s.live.meta.newMove);
   }
   return s ?? state;
+}
+
+/**
+ * How far past its target a hold to max may have run when the session is opened again before it is taken for the app's
+ * absence (killed mid-hold, or mid-rest and the clock ran on into the hold), not a hold: more than twice the target and
+ * two minutes more (a 40 s target: 200 s held). Nobody holds a test to max that long past what was asked; a real
+ * best a little past it is kept.
+ */
+export const reopenedFarPastMs = (targetSecs: number): number => (2 * targetSecs + 120) * 1000;
+
+/**
+ * The session opened again from the device: caught up with the clock (`settle`), and a hold to max found running far
+ * past its target (`reopenedFarPastMs`) comes back paused at its start — its time held, and the session's running time
+ * from where the hold began, are the absence's, never a result. Anything else is as `settle` leaves it.
+ */
+export function reopen(state: PlayerState, now: number, opts: { autoAdvance: boolean }): PlayerState {
+  const s = settle(state, now, opts);
+  const step = stepAt(s);
+  if (s.finished || s.paused || !step || !goesToMax(s, step)) return s;
+  const elapsed = elapsedMs(s.clock, now);
+  if (elapsed - readyMs(step) <= reopenedFarPastMs(step.seconds)) return s;
+  return { ...s, paused: true, clock: stoppedClock(), session: stoppedClock(Math.max(0, elapsedMs(s.session, now) - elapsed)) };
 }
 
 /** Next, Skip, → : leave this step (a hold judged by the half-time rule) and go on; past the last step, finished. */
@@ -456,7 +491,12 @@ export function confirmLog(
   const edited = editLog(state, values, flags, held);
   const step = stepAt(edited);
   const here = !held || (!!step && step.exerciseId === held.exerciseId && Recorder.placeOf(edited.live, step) === held.place);
-  return step?.kind === "set" && here ? next(edited, now) : edited;
+  if (step?.kind !== "set" || !here) return edited;
+  // Confirmed: the set is done (an open hold counts only now; any other set already was).
+  return next(withLive(edited, (live) => {
+    const set = setAt(live, step);
+    if (set) set.done = true;
+  }), now);
 }
 
 /** The recorder's save: the session as performed, with its running time. */
