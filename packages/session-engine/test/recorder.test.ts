@@ -527,6 +527,19 @@ describe("a move's sets, one per slot and set number, in play order (Stage 2 who
   });
 });
 
+test("a set asked for a range of reps (a document's \"5–8\") is filled in at the range's low end, never left empty (CUJ B1)", () => {
+  const set = (target: Step["target"]): Step => ({
+    kind: "set", slotKey: "core:0", block: "core", exerciseId: "gobletSquat", side: null, setIndex: 0, setCount: 1, seconds: 40, prepGap: 0,
+    target, format: { id: "straight", group: null, round: null }, why: [], isNew: false, log: true,
+  });
+  const range = { lo: 5, hi: 8, type: "reps" as const, reps: null, secs: null, w: null, note: "" } as unknown as Step["target"];
+  const live = Recorder.create(data, { steps: [set(range)], plannedSeconds: 0 }, meta({ plannedSeconds: 0, newMove: null }));
+  expect(live.entries.gobletSquat!.sets[0]!.reps).toBe(5);
+  // A number asked is that number, as before.
+  const fixed = Recorder.create(data, { steps: [set({ ...range!, reps: 6 })], plannedSeconds: 0 }, meta({ plannedSeconds: 0, newMove: null }));
+  expect(fixed.entries.gobletSquat!.sets[0]!.reps).toBe(6);
+});
+
 // A set played a side at a time measures both sides at the shorter, and only with both (Stage 2 whole-branch I-2, M-1).
 describe("a set played a side at a time (Stage 2 whole-branch I-2, M-1)", () => {
   const side = (s: "Left" | "Right" | null, seconds: number, log = true): Step => ({

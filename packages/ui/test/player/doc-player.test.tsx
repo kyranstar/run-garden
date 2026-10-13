@@ -452,6 +452,17 @@ describe("a document workout's items, played", () => {
     await until(async () => (await readLive(db!, SLOT))?.paused === true, "kept paused");
   });
 
+  it("a set asked for a range of reps shows the range, and its log card starts at the low end (CUJ B1)", async () => {
+    const b = docBuild();
+    const range = { lo: 5, hi: 8, type: "reps" as const, reps: null, secs: null, w: null, note: "" };
+    await start(docBuild({ steps: b.steps.map((s) => (s.kind === "set" && s.exerciseId === "gobletSquat" ? { ...s, target: range } : s)) as typeof b.steps }), docView());
+    await stepTo(3);
+    expect(document.querySelector("h1.player-name")!.textContent).toBe("Goblet squat");
+    expect(document.querySelector(".player-big")!.textContent).toBe("5–8");
+    await click("Done");
+    expect((control("Reps") as HTMLInputElement).value).toBe("5");
+  });
+
   it("an engine build shows no cue and no target: its hold counts down as before", async () => {
     await start(build({ newMove: null }), view({ newMove: null }));
     await stepTo(3);

@@ -6,9 +6,22 @@
  */
 import { describe, expect, it } from "vitest";
 import { WATCH_MAX_STEPS, workoutDocSchema, type PlannedStage, type WorkoutDoc } from "@rg/domain";
-import { isPlyometric, type ExerciseRecord } from "@rg/exercise-library";
+import { EQUIPMENT_IDS, EXERCISES, TMJ, isPlyometric, type ExerciseRecord } from "@rg/exercise-library";
 import type { Step } from "@rg/session-engine";
-import { DOC_MAX_STEPS, DocTooLargeError, deriveDoc, docFromBuild, docSlotKeys, placementFor, playerStepsFromDoc, stagesFromDoc } from "../src/index.js";
+import {
+  DOC_MAX_STEPS,
+  DocTooLargeError,
+  QUICK_START_KINDS,
+  deriveDoc,
+  docFromBuild,
+  docSlotKeys,
+  placementFor,
+  playerStepsFromDoc,
+  quickStartDoc,
+  stagesFromDoc,
+  suggestedItem,
+  type SuggestCtx,
+} from "../src/index.js";
 import { LIBRARY, jumpDayBuilds, seededBuilds, stored } from "./seeded-builds.js";
 
 /** A circuit station: it plays the circuit's work window, whatever hold its move's target suggests. */
@@ -322,5 +335,63 @@ describe("stagesFromDoc — any document", () => {
       note: "4s down · each side · chest tall",
     });
     expect(wallSit).toMatchObject({ parentStageId: null, label: "Wall sit", durationType: "time", durationSeconds: 45, loadBodyweight: true });
+  });
+});
+
+describe("a reps range plays as a range (CUJ B1)", () => {
+  it("an item's range of reps is its steps' target: {type: reps, lo, hi}, never lost", () => {
+    const steps = playerStepsFromDoc(doc([{ purpose: "main", format: "straight", items: [
+      { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: { min: 5, max: 8 }, restSec: 60 } },
+      { kind: "free_exercise", name: "Push-up", dose: { sets: 1, reps: { min: 8, max: 12 } } },
+    ] }]), LIB);
+    expect(steps.filter((s) => s.kind === "set").map((s) => s.target)).toEqual([
+      { lo: 5, hi: 8, type: "reps", reps: null, secs: null, w: null, note: "" },
+      { lo: 5, hi: 8, type: "reps", reps: null, secs: null, w: null, note: "" },
+      { lo: 8, hi: 12, type: "reps", reps: null, secs: null, w: null, note: "" },
+    ]);
+  });
+
+  it("no step of a quick start or of a suggested move loses its target: every move given reps (a number or a range) or a load keeps them", () => {
+    const ctx: SuggestCtx = { activeProfiles: [TMJ], day: null, focusRefs: ["hip-flexors", "thoracic"], recentIds: [], pinned: [], excluded: [], equipment: EQUIPMENT_IDS };
+    /** Every item of the document with reps or a load: each of its steps says them. */
+    const keepsTargets = (d: WorkoutDoc, label: string): number => {
+      const steps = playerStepsFromDoc(d, EXERCISES);
+      let checked = 0;
+      for (const at of docSlotKeys(d)) {
+        const item = d.parts[at.part]!.items[at.item]!;
+        if (item.kind !== "exercise" && item.kind !== "free_exercise") continue;
+        const { reps, load } = item.dose;
+        if (reps === undefined && load === undefined) continue;
+        for (const s of steps.filter((x) => x.slotKey === at.key && x.kind !== "rest")) {
+          checked += 1;
+          expect(s.target, `${label} ${at.key}`).not.toBeNull();
+          if (typeof reps === "number") expect(s.target!.reps, `${label} ${at.key}`).toBe(reps);
+          else if (reps) expect([s.target!.lo, s.target!.hi, s.target!.type], `${label} ${at.key}`).toEqual([reps.min, reps.max, "reps"]);
+        }
+      }
+      return checked;
+    };
+    let ranges = 0;
+    let checked = 0;
+    for (const kind of QUICK_START_KINDS) {
+      for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+        const made = quickStartDoc(kind, EXERCISES, { ...ctx, seed });
+        if ("doc" in made) checked += keepsTargets(made.doc, `${kind} ${seed}`);
+      }
+    }
+    // Every library move as a suggestion, as it goes in each kind of part.
+    for (const purpose of ["warmup", "main", "accessory", "cooldown", "care"] as const) {
+      const items = EXERCISES.map((r) => suggestedItem(r, purpose));
+      ranges += items.filter((i) => i.kind === "exercise" && typeof i.dose.reps === "object").length;
+      for (let at = 0; at < items.length; at += 40) {
+        const d = workoutDocSchema.parse({
+          version: 1, title: "S", intent: { summary: "S", goals: [], focus: [], effort: "maintain" },
+          parts: [{ purpose, format: "straight", items: items.slice(at, at + 40) }], source: { kind: "studio" },
+        });
+        checked += keepsTargets(d, `${purpose} ${at}`);
+      }
+    }
+    expect(ranges).toBeGreaterThan(0);
+    expect(checked).toBeGreaterThan(100);
   });
 });

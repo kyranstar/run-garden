@@ -311,15 +311,21 @@ function windows(slot: Slot & { item: Move }, ctx: Ctx, extra: { setIndex: numbe
   return [one({ side: fixed === "left" ? "Left" : fixed === "right" ? "Right" : null, log: logged })];
 }
 
-/** What a step's target says: null unless the item states a load, reps or a progression note. */
+/**
+ * What a step's target says: null unless the item states a load, reps (a number or a range) or a progression note. A
+ * range of reps is the target's own range — `{ type: "reps", lo, hi }`, no single number — so "5–8" reaches the
+ * player's set, its log card and the sheet (CUJ B1).
+ */
 function targetOf(slot: Slot & { item: Move }, rungReps?: number): Partial<Target> | null {
   const d = slot.item.dose;
   const reps = rungReps ?? (typeof d.reps === "number" ? d.reps : null);
+  const range = rungReps === undefined && d.reps !== undefined && typeof d.reps !== "number" ? d.reps : null;
   const progression = slot.item.kind === "exercise" ? slot.item.progression : undefined;
-  if (d.load === undefined && reps === null && progression === undefined && rungReps === undefined) return null;
+  if (d.load === undefined && reps === null && range === null && progression === undefined && rungReps === undefined) return null;
   const heldByTime = !slot.rec || slot.rec.dose.type === "time" || slot.rec.dose.type === "carry";
   return {
     ...(slot.rec ? { lo: slot.rec.dose.range[0], hi: slot.rec.dose.range[1], type: slot.rec.dose.type } : {}),
+    ...(range ? { lo: range.min, hi: range.max, type: "reps" as const } : {}),
     reps,
     secs: heldByTime ? (d.holdSec ?? null) : null,
     w: weightOfLoad(d.load),

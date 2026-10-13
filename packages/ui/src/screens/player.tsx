@@ -18,7 +18,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api, type MeResponse, type ReviewBasisDto, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
 import { formatWeight, parseWeight, type Weight, type WeightUnit } from "@rg/domain";
 import type { EngineData } from "@rg/exercise-library";
-import { Lib, Prog, type HoldSide, type SlotChoice, type Step } from "@rg/session-engine";
+import { Lib, Prog, type HoldSide, type SlotChoice, type Step, type Target } from "@rg/session-engine";
 import { Sheet, Spinner } from "../components.js";
 import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js";
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
@@ -917,6 +917,10 @@ function setTitle(name: string, t: Pick<LogTarget, "setIndex" | "sides">): strin
 
 const sideWord = (side: Step["side"]) => (side ? `${side} side` : null);
 
+/** A range of reps asked with no single number (a document's "5–8"): "5–8". */
+const rangeOf = (t: Partial<Target>): string | null =>
+  t.reps == null && t.type === "reps" && typeof t.lo === "number" && typeof t.hi === "number" && t.hi > t.lo ? `${t.lo}–${t.hi}` : null;
+
 function doseLine(step: Step, ex: SessionExerciseDto | undefined): string {
   const t = step.target ?? {};
   const each = ex?.laterality === "unilateral" ? " each side" : "";
@@ -1053,7 +1057,7 @@ function StepBody({
             </>
           ) : (
             <>
-              <span className="player-big num">{t.reps ?? t.secs ?? "—"}</span>
+              <span className="player-big num">{t.reps ?? rangeOf(t) ?? t.secs ?? "—"}</span>
               <span className="player-meta">
                 {metric}
                 {each}

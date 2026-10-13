@@ -182,8 +182,10 @@ function create(data: EngineData, plan: PlanSteps, meta: RecorderMeta): Live {
     let at = keys[ex.id]!.indexOf(key);
     if (at < 0) at = keys[ex.id]!.push(key) - 1;
     const t = step.target || {};
+    // A range of reps asked (a document's "5–8": no single number) is filled in at its low end.
+    const ranged = t.reps == null && t.type === "reps" && typeof t.lo === "number" && typeof t.hi === "number" && t.hi > t.lo ? t.lo : null;
     sparse[ex.id]![at] = {
-      w: t.w || null, reps: t.reps ?? null, secs: t.secs || (step.kind === "timed" ? step.seconds : null),
+      w: t.w || null, reps: t.reps ?? ranged, secs: t.secs || (step.kind === "timed" ? step.seconds : null),
       done: false, touched: false,
     };
   }
