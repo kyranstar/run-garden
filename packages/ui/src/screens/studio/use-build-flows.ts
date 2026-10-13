@@ -388,7 +388,7 @@ export function useBuildFlows({
           .catch(() => undefined);
       }
       // A new workout or a quick start, scheduled, is that planned workout now (a second Start never makes another).
-      if (cur.key === "new" || source.kind === "quick" || source.kind === "again") adopt(res.workout, sent);
+      if (cur.key === "new" || source.kind === "quick") adopt(res.workout, sent);
       setScheduling(false);
       setStatus({ text: scheduledText(res.workout, today), link: { to: "/plan", label: "See it in Plan" }, notes: newNotes(res.warnings) });
       focusStatus();
