@@ -2,7 +2,8 @@
  * Quick starts are not plan obligations (CUJ red-team R6, the lead's rulings): Start now books no calendar event — only
  * Schedule does; a Studio workout never started can be removed (`DELETE /api/workouts/:id`), its calendar event and its
  * unsent watch work with it; and a workout started at once and abandoned with nothing logged goes when the player
- * discards it. A removed workout is gone: nothing reads it as missed. Synthetic data only.
+ * discards it, or once its day has ended (the hourly reconcile). A removed workout is gone: nothing reads it as missed.
+ * Synthetic data only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
@@ -67,9 +68,12 @@ let prefs: UserPreferences;
 let today: string;
 let call: (method: string, path: string, body?: unknown) => Promise<Reply>;
 let google: ReturnType<typeof fakeGoogle>;
+/** Runs just before each statement the application executes (a test arms it to land a concurrent write there). */
+let beforeStatement: ((sql: string) => void) | null;
 
 beforeEach(async () => {
-  db = makeTestDb({ boundVariableCap: 100 });
+  beforeStatement = null;
+  db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => beforeStatement?.(s) });
   ({ userId } = await makeTestUser(db));
   await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), calendarId: "cal" });
   prefs = await loadPreferences(db, userId);
@@ -214,6 +218,119 @@ describe("the player's Discard of a workout started at once, nothing logged", ()
     const kept = await call("POST", `/api/sessions/${planned}/unstart`);
     expect(kept.body.removed).toBeUndefined();
     expect(await rowOf(planned)).toMatchObject({ archivedAt: null, contentState: "built" });
+  });
+
+  it("closed without Discard: once its day has ended with nothing logged, the hourly reconcile removes it as Discard would — never asked about, never missed (the lead's ruling)", async () => {
+    // Pinned: 5 PM in the test athlete's zone (America/Los_Angeles, UTC-8 in November) on a Wednesday.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-19T01:00:00Z"));
+      call = await clientFor(db, userId); // signed in at the pinned time
+      const day = todayInZone(prefs.timezone);
+      expect(day).toBe("2026-11-18");
+      const begun = await made({ date: day, time: "17:00", startNow: true });
+      await started(begun);
+      // Its watch work, queued: cancelled with it.
+      await db.insert(corosWriteJobs).values({
+        id: "push:abandoned", userId, workoutId: begun, kind: "program_session_push", expectedContentFingerprint: "fp",
+        originalDate: day, destinationDate: day, requestedAt: nowInstant(), status: "queued", updatedAt: nowInstant(),
+      });
+      // Made, never built: left at once.
+      const left = await made({ date: day, time: "17:05", startNow: true });
+      // Logged: a session saved for it keeps it.
+      const logged = await made({ date: day, time: "17:10", startNow: true });
+      await started(logged);
+      await db.insert(schema.performedSessions).values({
+        id: "p-logged", userId, workoutId: logged, activityId: null, buildId: null, source: "app", sourceRef: null, localDate: day,
+        startedAt: nowInstant(), endedAt: null, seconds: 600, plannedSeconds: 600, minutes: 10, mode: "consistent", theme: null, locationId: null,
+        blockRef: null, blockNumber: null, completed: true, stepsTotal: null, stepsDone: null, movesDone: [], note: null, newMove: null,
+        payloadHash: "h", createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+      // Planned (Schedule), never done: asked about as ever.
+      const planned = await made({ date: day, time: "21:00" });
+
+      // 11:30 PM, the same day: its day has not ended.
+      vi.setSystemTime(new Date("2026-11-19T07:30:00Z"));
+      await reconcileCompletionStates(db, userId, prefs);
+      for (const id of [begun, left, logged, planned]) expect((await rowOf(id)).archivedAt, id).toBeNull();
+
+      // 12:30 AM the next day: the two left with nothing logged are gone, their watch work with them.
+      vi.setSystemTime(new Date("2026-11-19T08:30:00Z"));
+      expect(await reconcileCompletionStates(db, userId, prefs)).toMatchObject({ abandonedRemoved: 2, markedUnresolved: 0 });
+      expect((await rowOf(begun)).archivedAt).not.toBeNull();
+      expect((await rowOf(left)).archivedAt).not.toBeNull();
+      expect((await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, "push:abandoned")))[0]!.status).toBe("superseded");
+      expect((await rowOf(logged)).archivedAt).toBeNull();
+      expect((await rowOf(planned)).archivedAt).toBeNull();
+      // The calendar's half, as Discard's: never booked again (it was booked on none).
+      const barred = await db.select().from(schema.calendarEventSuppressions);
+      expect(barred.filter((s) => s.reason === "user_removed").map((s) => s.workoutId).sort()).toEqual([begun, left].sort());
+
+      // Days on: the planned one needs attention, then is missed; the Start-now ones never read as either.
+      vi.setSystemTime(new Date("2026-11-22T20:00:00Z"));
+      await reconcileCompletionStates(db, userId, prefs);
+      expect((await rowOf(planned)).completionState).toBe("unresolved");
+      vi.setSystemTime(new Date("2026-11-27T20:00:00Z"));
+      await reconcileCompletionStates(db, userId, prefs);
+      expect((await rowOf(planned)).completionState).toBe("missed");
+      for (const id of [begun, left, logged]) expect((await rowOf(id)).completionState, id).toBe("scheduled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("only what is still left with nothing logged goes: not one an activity answered, one marked done, a programme's, or one done while the pass ran", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-19T01:00:00Z"));
+      call = await clientFor(db, userId); // signed in at the pinned time
+      const day = todayInZone(prefs.timezone);
+      const answered = await made({ date: day, time: "17:00", startNow: true });
+      await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, answered));
+      const marked = await made({ date: day, time: "17:05", startNow: true });
+      await db.update(plannedWorkouts).set({ contentState: "done" }).where(eq(plannedWorkouts.id, marked));
+      const theirs = await made({ date: day, time: "17:10", startNow: true });
+      await db.update(plannedWorkouts).set({ origin: "program" }).where(eq(plannedWorkouts.id, theirs));
+      const racing = await made({ date: day, time: "17:15", startNow: true });
+      // The session is saved between the pass's read and its archive: the archive's own condition keeps the row.
+      const sqlite = (db as unknown as { $client: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).$client;
+      beforeStatement = (sql) => {
+        if (!/^update "planned_workouts" set "archived_at"/.test(sql)) return;
+        beforeStatement = null;
+        sqlite.prepare(`update planned_workouts set content_state = 'done' where id = ?`).run(racing);
+      };
+      vi.setSystemTime(new Date("2026-11-19T08:30:00Z"));
+      expect((await reconcileCompletionStates(db, userId, prefs)).abandonedRemoved).toBe(0);
+      expect(beforeStatement).toBeNull();
+      for (const id of [answered, marked, theirs, racing]) expect((await rowOf(id)).archivedAt, id).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("many at once: a pass removes a few, the next the rest — none is asked about meanwhile, rest mode or not", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-19T01:00:00Z"));
+      call = await clientFor(db, userId); // signed in at the pinned time
+      const day = todayInZone(prefs.timezone);
+      expect(day).toBe("2026-11-18");
+      const ids: string[] = [];
+      for (const time of ["17:00", "17:05", "17:10", "17:15"]) ids.push(await made({ date: day, time, startNow: true }));
+      // Days on (the hourly did not run): past the day the question would be asked.
+      vi.setSystemTime(new Date("2026-11-22T20:00:00Z"));
+      const gone = async () => (await Promise.all(ids.map(rowOf))).filter((r) => r.archivedAt !== null).length;
+      await reconcileCompletionStates(db, userId, prefs);
+      expect(await gone()).toBe(2);
+      // The two still here wait for the next pass, never asked about.
+      for (const id of ids) expect((await rowOf(id)).completionState, id).toBe("scheduled");
+      // Rest mode pauses the missed pipeline, not this: the next pass takes the rest.
+      await reconcileCompletionStates(db, userId, { ...prefs, gardenRestMode: true, gardenRestModeUntil: null });
+      expect(await gone()).toBe(4);
+      for (const id of ids) expect((await rowOf(id)).completionState, id).toBe("scheduled");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a session saved for it: Discard is refused as before, and it stays", async () => {

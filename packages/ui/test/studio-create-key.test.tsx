@@ -13,7 +13,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SCHEDULING_PREFERENCES } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
-import { edit, newDoc, startEditing, suggestedItem, type DraftDoc } from "@rg/workout";
+import { edit, newDoc, startEditing, suggestedItem, toProposable, type DraftDoc } from "@rg/workout";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { draftStore } from "../src/studio-drafts.js";
 import { placesDto, primedClient, todayDto, TODAY } from "./studio-fixtures.js";
@@ -37,7 +37,7 @@ afterEach(() => {
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
 /** The server: each create's answer, in turn — `lost` (the request went, its answer never came back) or made. */
-function serve(answers: { workouts?: Array<"lost" | "made">; templates?: Array<"lost" | "made"> }) {
+function serve(answers: { workouts?: Array<"lost" | "made">; templates?: Array<"lost" | "made"> }, kept: unknown[] = []) {
   const bodies: { workouts: Array<{ clientId?: string }>; templates: Array<{ clientId?: string }> } = { workouts: [], templates: [] };
   vi.stubGlobal(
     "fetch",
@@ -46,7 +46,7 @@ function serve(answers: { workouts?: Array<"lost" | "made">; templates?: Array<"
       const path = String(input).split("?")[0]!;
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       if (method === "GET" && path === "/api/plan/workouts") return json({ today: TODAY, plan: null, corosWritesEnabled: false, workouts: [] });
-      if (method === "GET" && path === "/api/templates") return json({ templates: [] });
+      if (method === "GET" && path === "/api/templates") return json({ templates: kept });
       if (method === "POST" && path === "/api/workouts") {
         const n = bodies.workouts.push(body);
         if (answers.workouts?.[n - 1] === "lost") throw new TypeError("Failed to fetch");
@@ -123,6 +123,74 @@ describe("a create's key (clientId)", () => {
     expect(sent.workouts[1]!.clientId).toBe(sent.workouts[0]!.clientId);
     // A Schedule is planned: booked on the calendar as ever.
     expect((sent.workouts[0] as { startNow?: boolean }).startNow).toBeUndefined();
+  });
+
+  it("a reload between a lost Schedule and its retry still sends the same key: it is kept with the draft on the device", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 14, 20) });
+    await draftStore().save(draft());
+    const sent = serve({ workouts: ["lost", "made"] });
+    const schedule = async () => {
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      await click(buttons(dialog("Schedule")!).find((b) => b.textContent === "Schedule"), "Schedule");
+    };
+    mount("/studio/build/new");
+    await schedule();
+    await until(() => sent.workouts.length === 1 && !!dialog("Schedule"), "the refusal");
+    // The page is reloaded: nothing of the last one's memory is left, only the device's draft.
+    act(() => root!.unmount());
+    host!.remove();
+    mount("/studio/build/new");
+    await schedule();
+    await until(() => text().includes("Scheduled for today"), "the line");
+    expect(sent.workouts).toHaveLength(2);
+    expect(sent.workouts[0]!.clientId).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    expect(sent.workouts[1]!.clientId).toBe(sent.workouts[0]!.clientId);
+    // That one landed: the workout is made, and the draft (and its key) is gone from the device.
+    expect(await draftStore().load()).toBeNull();
+  });
+
+  it("a reload between a lost Save as template and its retry still sends the same key", async () => {
+    await draftStore().save(draft());
+    const sent = serve({ templates: ["lost", "made"] });
+    const save = async () => {
+      await until(() => !!button(/^Save/), "Save ▾");
+      await click(button(/^Save/), "Save ▾");
+      await click(document.querySelector('[role="menuitem"]'), "Save as template…");
+      await click(button("Save", dialog("Save as template")!), "Save");
+    };
+    mount("/studio/build/new");
+    await save();
+    await until(() => sent.templates.length === 1, "the lost save");
+    await settle(10);
+    act(() => root!.unmount());
+    host!.remove();
+    mount("/studio/build/new");
+    await save();
+    await until(() => text().includes("as a template."), "the line");
+    expect(sent.templates[1]!.clientId).toBe(sent.templates[0]!.clientId);
+    // It landed: the draft stays, without the template's key.
+    expect((await draftStore().load())?.keys?.template).toBeUndefined();
+  });
+
+  it("a template's Schedule (no draft: its key in the page's memory): a retry after a lost answer sends the same key; scheduled again once it landed, another", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 14, 20) });
+    const doc = toProposable(draft())!;
+    const sent = serve({ workouts: ["lost", "made", "made"] }, [
+      { id: "t1", name: "Hips", doc, pinned: false, uses: 0, lastUsedAt: null, createdAt: "", updatedAt: "", minutes: 20, discipline: "strength" },
+    ]);
+    mount("/studio/build/template/t1");
+    for (const n of [1, 2, 3]) {
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      if (!dialog("Schedule")) await click(button("Schedule…"), "Schedule…");
+      await click(buttons(dialog("Schedule")!).find((b) => b.textContent === "Schedule"), "Schedule");
+      await until(() => sent.workouts.length === n && (n === 1 || !dialog("Schedule")), `Schedule ${n}`);
+    }
+    expect(sent.workouts[0]!.clientId).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    expect(sent.workouts[1]!.clientId).toBe(sent.workouts[0]!.clientId);
+    expect(sent.workouts[2]!.clientId).not.toBe(sent.workouts[0]!.clientId);
+    // No draft was made or keyed on the device.
+    expect(await draftStore().load()).toBeNull();
   });
 
   it("Start now tried again after its create's answer was lost sends the same key", async () => {

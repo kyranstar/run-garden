@@ -60,6 +60,72 @@ describe("the draft store", () => {
     expect(await store.load()).toBeNull();
   });
 
+  it("a create's key is kept with the draft on the device: through a reopen and an edit, until that create lands (whole-branch ruling)", async () => {
+    const browser = new IDBFactory();
+    const store = draftStore(() => openOfflineDb(browser));
+    // No draft: nothing to keep a key with.
+    expect(await store.createKey("workout")).toBeNull();
+    await store.save(structured(), 1);
+    const workout = await store.createKey("workout");
+    expect(workout).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    const template = await store.createKey("template");
+    expect(template).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    expect(template).not.toBe(workout);
+
+    // The page reloads (another store on the same database), the draft is edited: the same keys.
+    const again = draftStore(() => openOfflineDb(browser));
+    await again.save(edit(startEditing(structured()), { type: "addItem", item: { kind: "exercise", libraryId: "catCow", dose: { reps: 6 } } }, EXERCISES).doc, 2);
+    expect(await again.createKey("workout")).toBe(workout);
+    expect(await again.createKey("template")).toBe(template);
+    expect((await again.load())?.keys).toEqual({ workout, template });
+
+    // The template landed: its key goes, the workout's stays, the draft too.
+    await again.createLanded("template");
+    expect((await store.load())?.keys).toEqual({ workout });
+    const next = await store.createKey("template");
+    expect(next).not.toBe(template);
+    expect(await store.createKey("workout")).toBe(workout);
+    expect((await store.load())?.doc.parts[0]!.items).toHaveLength(1);
+
+    // Another draft (Start over clears this one): new keys.
+    await store.clear();
+    await store.save(structured(), 3);
+    expect((await store.load())?.keys).toBeUndefined();
+    expect(await store.createKey("workout")).not.toBe(workout);
+  });
+
+  it("a stored value that is no draft keeps no key, and is left as it is", async () => {
+    const browser = new IDBFactory();
+    const db = await openOfflineDb(browser);
+    const broken = { doc: { title: "x" }, updatedAt: 1 };
+    await db.put("drafts", DRAFT_KEY, broken);
+    const store = draftStore(async () => db);
+    expect(await store.createKey("workout")).toBeNull();
+    expect(await db.get("drafts", DRAFT_KEY)).toEqual(broken);
+    db.close();
+  });
+
+  it("a stored key that is not a key's shape reads as none", () => {
+    const doc = structured();
+    expect(readDraft({ doc, updatedAt: 1, keys: { workout: "ok-key_1", template: "no spaces" } })?.keys).toEqual({ workout: "ok-key_1" });
+    expect(readDraft({ doc, updatedAt: 1, keys: { workout: 7, other: "x" } })?.keys).toBeUndefined();
+    expect(readDraft({ doc, updatedAt: 1, keys: "workout" })?.keys).toBeUndefined();
+  });
+
+  it("with no IndexedDB, the page keeps the keys with its draft", async () => {
+    const store = draftStore(() => Promise.reject(new Error("IndexedDB is unavailable")));
+    await store.clear();
+    expect(await store.createKey("workout")).toBeNull();
+    await store.save(structured(), 1);
+    const key = await store.createKey("workout");
+    expect(key).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    await store.save(structured(), 2);
+    expect(await store.createKey("workout")).toBe(key);
+    await store.createLanded("workout");
+    expect(await store.createKey("workout")).not.toBe(key);
+    await store.clear();
+  });
+
   it("signing out forgets it, with the rest of the offline identity", async () => {
     const browser = new IDBFactory();
     const db = await openOfflineDb(browser);

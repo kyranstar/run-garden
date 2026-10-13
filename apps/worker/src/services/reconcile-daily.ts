@@ -1,8 +1,10 @@
-import { and, eq, inArray, isNull, lt, lte } from "drizzle-orm";
-import { calendarEventSuppressions, plannedWorkouts, syncErrors, syncRuns } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { and, asc, eq, inArray, isNull, lt, lte, ne, notExists, or, type SQL } from "drizzle-orm";
+import { calendarEventSuppressions, performedSessions, plannedWorkouts, syncErrors, syncRuns } from "@rg/database";
+import { addDays, DOC_ORIGINS, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
+import { START_NOW_CALENDAR_STATE } from "./doc-workouts.js";
 import { plannedRowColumns } from "./planned-columns.js";
+import { removeFromPlan } from "./plan-mutations.js";
 
 /**
  * Daily reconciliation of completion states:
@@ -11,6 +13,9 @@ import { plannedRowColumns } from "./planned-columns.js";
  *    COROS sync must never be misread as a missed run.
  *  - Long-unresolved workouts eventually become `missed` (affecting the
  *    garden), still reversible by a later match.
+ *  - A workout started at once (Start now) and closed without Discard, its
+ *    day ended with nothing logged, was never planned: it is removed as the
+ *    player's Discard removes it, never asked about and never missed.
  */
 
 const SYNC_GRACE_DAYS = 1; // window passes → wait one full day before asking
@@ -21,6 +26,30 @@ export const AUTO_MISS_DAYS = 7;
 export interface ReconcileStats {
   markedUnresolved: number;
   autoMissed: number;
+  /** Start-now workouts left with nothing logged, removed once their day ended. */
+  abandonedRemoved: number;
+}
+
+/**
+ * Start-now workouts removed per account per pass: a removal is a handful of statements (`removeFromPlan`), and there
+ * is rarely more than one. The rest wait for the next pass; none is asked about meanwhile (the question skips them).
+ */
+const ABANDONED_START_NOW_MAX = 2;
+
+/**
+ * A workout started at once and left with nothing logged, as the player's Discard judges it (`removeAbandonedStartNow`):
+ * booked on no calendar (Start now's state, which a move to a day of the plan's ends), not done, not answered
+ * (completed, skipped, missed), no session saved for it.
+ */
+function abandonedStartNow(db: Db): SQL {
+  const pw = plannedWorkouts;
+  return and(
+    eq(pw.calendarSyncState, START_NOW_CALENDAR_STATE),
+    inArray(pw.origin, [...DOC_ORIGINS]),
+    inArray(pw.completionState, ["scheduled", "unresolved"]),
+    or(isNull(pw.contentState), ne(pw.contentState, "done")),
+    notExists(db.select({ id: performedSessions.id }).from(performedSessions).where(eq(performedSessions.workoutId, pw.id))),
+  )!;
 }
 
 export async function reconcileCompletionStates(
@@ -31,7 +60,20 @@ export async function reconcileCompletionStates(
 ): Promise<ReconcileStats> {
   const nowIso = nowInstant(now);
   const today = todayInZone(prefs.timezone, now);
-  const stats: ReconcileStats = { markedUnresolved: 0, autoMissed: 0 };
+  const stats: ReconcileStats = { markedUnresolved: 0, autoMissed: 0, abandonedRemoved: 0 };
+
+  // Start now, left with nothing logged, its day ended: removed as Discard removes it (calendar, watch work), only
+  // while it is still so as it is archived. Not the missed pipeline: rest mode does not pause it.
+  const abandoned = await db
+    .select({ id: plannedWorkouts.id })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.userId, userId), lt(plannedWorkouts.effectiveDate, today), isNull(plannedWorkouts.archivedAt), abandonedStartNow(db)))
+    .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.id))
+    .limit(ABANDONED_START_NOW_MAX);
+  for (const w of abandoned) {
+    const removed = await removeFromPlan(db, userId, w.id, { now: nowIso, source: "auto_resolve", prefs, onlyIf: abandonedStartNow(db) });
+    if (removed.removed) stats.abandonedRemoved += 1;
+  }
 
   // Rest-mode pauses the entire missed-workout pipeline.
   if (prefs.gardenRestMode && (!prefs.gardenRestModeUntil || prefs.gardenRestModeUntil >= today)) {
@@ -53,6 +95,8 @@ export async function reconcileCompletionStates(
     );
   for (const w of toAsk) {
     if (w.category === "rest") continue;
+    // Started at once, never planned: never asked about (removed above, or by the next pass).
+    if (w.calendarSyncState === START_NOW_CALENDAR_STATE) continue;
     // The user said "not yet" — honor it until the snooze lapses.
     if (w.snoozedUntil && w.snoozedUntil > today) continue;
     await db

@@ -190,13 +190,22 @@ export function useBuildFlows({
    * A create's key (`clientId`): made once for what is being built — per draft, and per kind of create — and kept
    * until that create lands, so a retry whose answer was lost names the same workout (or template) and the server
    * answers it, never a second; a create that landed lets the next one make another (a template scheduled twice).
+   * The new draft's are kept with it on the device (`StudioDraft.keys`), so a reload between a lost answer and the
+   * retry sends the same; the page's memory holds the rest's, and the draft's when the device keeps none.
    */
   const createKeys = useRef(new Map<string, string>());
-  const keyed = (kind: "workout" | "template", draftKey: string) => {
+  const keyed = async (kind: "workout" | "template", draftKey: string) => {
     const k = `${kind}|${draftKey}`;
-    const id = createKeys.current.get(k) ?? newId();
-    createKeys.current.set(k, id);
-    return { clientId: id, landed: () => createKeys.current.delete(k) };
+    const kept = draftKey === "new" ? await drafts.createKey(kind).catch(() => null) : null;
+    const id = kept ?? createKeys.current.get(k) ?? newId();
+    if (!kept) createKeys.current.set(k, id);
+    return {
+      clientId: id,
+      landed: () => {
+        createKeys.current.delete(k);
+        if (kept) void drafts.createLanded(kind).catch(() => undefined);
+      },
+    };
   };
 
   /** A planned workout this page made (or saved): the builder is on it now, at its own address. */
@@ -261,7 +270,7 @@ export function useBuildFlows({
         }
       } else {
         const sent = forSchedule(doc0, source);
-        const once = keyed("workout", cur.key);
+        const once = await keyed("workout", cur.key);
         const res = await api.createWorkout({ date: today, time: nowHHMM(new Date()), doc: sent, clientId: once.clientId, startNow: true });
         once.landed();
         fresh = newNotes(res.warnings) ?? [];
@@ -368,7 +377,7 @@ export function useBuildFlows({
     if (j.blocked) return j.blocked;
     const sent = forSchedule(j.doc, source);
     try {
-      const once = keyed("workout", cur.key);
+      const once = await keyed("workout", cur.key);
       const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc: sent, clientId: once.clientId });
       once.landed();
       refreshPlan();
@@ -379,7 +388,7 @@ export function useBuildFlows({
           .catch(() => undefined);
       }
       // A new workout or a quick start, scheduled, is that planned workout now (a second Start never makes another).
-      if (cur.key === "new" || source.kind === "quick") adopt(res.workout, sent);
+      if (cur.key === "new" || source.kind === "quick" || source.kind === "again") adopt(res.workout, sent);
       setScheduling(false);
       setStatus({ text: scheduledText(res.workout, today), link: { to: "/plan", label: "See it in Plan" }, notes: newNotes(res.warnings) });
       focusStatus();
@@ -393,7 +402,7 @@ export function useBuildFlows({
     if (!d) return EMPTY_BLOCK;
     try {
       // Pinned as it is made, it is one of the home's quick starts at once (spec §9).
-      const once = keyed("template", live.current!.key);
+      const once = await keyed("template", live.current!.key);
       const res = await api.createTemplate({ name: name.trim(), doc: d, ...(pinned ? { pinned: true } : {}), clientId: once.clientId });
       once.landed();
       void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });

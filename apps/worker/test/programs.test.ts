@@ -7,6 +7,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
+import { EQUIPMENT_IDS, EXERCISES, TMJ } from "@rg/exercise-library";
+import { quickStartDoc } from "@rg/workout";
 import {
   adaptiveConfigSchema,
   addDays,
@@ -147,6 +149,54 @@ describe("the service", () => {
       block: null,
       week: { placed: 3, done: 1, goal: 4 },
     });
+  });
+
+  it("a care-only programme (recovery alone, its care switch on) counts this week's completed Studio condition care; a mixed one does not (CUJ R13)", async () => {
+    const careOnly = await createAdaptiveProgram(db, userId, { name: "Jaw care", config: config({ weeklyGoal: 2, modes: ["recovery"], careProfiles: ["tmj"] }) }, T0);
+    const mixed = await createAdaptiveProgram(db, userId, { name: "Strength", config: config({ weeklyGoal: 3, careProfiles: ["tmj"] }) }, T0);
+    const noSwitch = await createAdaptiveProgram(db, userId, { name: "Easy days", config: config({ weeklyGoal: 2, modes: ["recovery"] }) }, T0);
+    const oneOther = await createAdaptiveProgram(db, userId, { name: "Steady", config: config({ weeklyGoal: 2, modes: ["consistent"], careProfiles: ["tmj"] }) }, T0);
+    const ctx = { activeProfiles: [TMJ], day: null, focusRefs: [], recentIds: [], pinned: [], excluded: [], equipment: EQUIPMENT_IDS, seed: 3 };
+    const care = quickStartDoc("condition_care", EXERCISES, ctx);
+    const hips = quickStartDoc("hip_opener", EXERCISES, ctx);
+    if (!("doc" in care) || !("doc" in hips)) throw new Error("no quick start");
+    const studio = (id: string, date: string, doc: unknown, over: Partial<typeof plannedWorkouts.$inferInsert> = {}) =>
+      db.insert(plannedWorkouts).values({
+        id, userId, planId: `studio-${userId}`, sourceWorkoutId: id, title: "Studio", category: "yoga", sport: "yoga", originalPlanDate: date,
+        lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "07:00", sourceContentFingerprint: "studio", calendarBlockDurationSeconds: 600,
+        corosSyncState: "calendar_only", origin: "studio", contentState: "done", completionState: "completed", workoutDoc: JSON.stringify(doc),
+        createdAt: T0, updatedAt: T0, ...over,
+      });
+    await studio("care-done", addDays(MON, 1), care.doc);
+    await studio("care-template", addDays(MON, 2), care.doc, { origin: "template" });
+    // Not counted: one still to do, one removed, one last week, and a hip opener (no condition care).
+    await studio("care-todo", addDays(MON, 3), care.doc, { contentState: "outline", completionState: "scheduled" });
+    await studio("care-removed", addDays(MON, 1), care.doc, { archivedAt: T0 });
+    await studio("care-last-week", addDays(MON, -2), care.doc);
+    await studio("hips-done", addDays(MON, 1), hips.doc);
+    // Nor a session that is more than care (a main part too), nor a care part holding no care move.
+    const squat = { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: 8 } };
+    await studio("care-and-lifts", addDays(MON, 1), { ...care.doc, parts: [...care.doc.parts, { purpose: "main", format: "straight", items: [squat] }] });
+    await studio("care-of-squats", addDays(MON, 1), { ...care.doc, parts: [{ purpose: "care", format: "straight", items: [squat] }] });
+    // The programme's own slot, done with the same care document: counted once, as its slot.
+    await studio("slot-done", addDays(MON, 2), care.doc, { origin: "program", planId: careOnly });
+    const list = await listPrograms(db, userId, addDays(MON, 3));
+    const week = (id: string) => list.find((p) => p.id === id)!.week;
+    expect(week(careOnly)).toEqual({ placed: 1, done: 3, goal: 2 });
+    // Its lifts and other sessions are not care: a mixed programme counts its own slots alone.
+    expect(week(mixed)).toEqual({ placed: 0, done: 0, goal: 3 });
+    expect(week(noSwitch)).toEqual({ placed: 0, done: 0, goal: 2 });
+    expect(week(oneOther)).toEqual({ placed: 0, done: 0, goal: 2 });
+  });
+
+  it("with no care-only programme, the list reads no Studio sessions", async () => {
+    const seen: string[] = [];
+    const counted = makeTestDb({ boundVariableCap: 100, onStatement: (s) => seen.push(s) });
+    const { userId: u } = await makeTestUser(counted);
+    await createAdaptiveProgram(counted, u, { name: "Strength", config: config({ careProfiles: ["tmj"] }) }, T0);
+    seen.length = 0;
+    await listPrograms(counted, u, addDays(MON, 3));
+    expect(seen.filter((s) => /workout_doc/.test(s))).toEqual([]);
   });
 
   it("summarises the latest block: number, week of weeks, and the core lift per family with its name", async () => {

@@ -11,18 +11,21 @@
  * `RestoreInProgressError`.
  */
 import { z } from "zod";
-import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { plannedWorkouts, programBlocks, programs } from "@rg/database";
 import {
   adaptiveConfigSchema,
   addDays,
   coreBlockIntentSchema,
   daysBetween,
+  DOC_ORIGINS,
   newId,
+  parseStoredWorkoutDoc,
   startOfIsoWeek,
   type AdaptiveConfig,
 } from "@rg/domain";
-import { CORE_FAMILIES, EXERCISES } from "@rg/exercise-library";
+import { CORE_FAMILIES, EXERCISES, isProfileId, PROFILES } from "@rg/exercise-library";
+import { makeLibraryIndex } from "@rg/workout";
 import { restoreInProgress } from "./account-state.js";
 import { chunkIds, type Db } from "./db.js";
 
@@ -159,6 +162,52 @@ function blockSummary(block: typeof programBlocks.$inferSelect | undefined, toda
 /** Bound per statement: the ids, plus this query's own few (user, origin, dates). */
 const PROGRAM_ID_CHUNK = 80;
 
+/** The profiles a programme that is care alone cares for: recovery its only mode, its care switch on. Else none. */
+function careOnlyProfiles(raw: unknown): string[] {
+  const c = adaptiveConfigSchema.safeParse(raw);
+  if (!c.success || c.data.modes.length !== 1 || c.data.modes[0] !== "recovery") return [];
+  return c.data.careProfiles.filter(isProfileId);
+}
+
+/** Parts a condition-care session holds: its care, and what arrives at it or softens after. */
+const CARE_PARTS: ReadonlySet<string> = new Set(["arrive", "care", "cooldown"]);
+
+/**
+ * The week's completed Studio and template sessions that are condition care, each as the `wanted` profiles it is care
+ * for: a document of care parts (arrive, care, cool-down; at least one care part) whose care part holds a move of that
+ * profile's care block (its roles, through the profile's contract, as the quick start's care does). One read.
+ */
+async function studioCareThisWeek(db: Db, userId: string, monday: string, sunday: string, wanted: ReadonlySet<string>): Promise<string[][]> {
+  const pw = plannedWorkouts;
+  const rows = await db
+    .select({ doc: sql<string | null>`${pw.workoutDoc}` })
+    .from(pw)
+    .where(
+      and(
+        eq(pw.userId, userId),
+        inArray(pw.origin, [...DOC_ORIGINS]),
+        isNull(pw.archivedAt),
+        gte(pw.effectiveDate, monday),
+        lte(pw.effectiveDate, sunday),
+        or(eq(pw.completionState, "completed"), eq(pw.contentState, "done")),
+      ),
+    );
+  const find = makeLibraryIndex(EXERCISES);
+  const profiles = [...wanted].filter(isProfileId).map((id) => PROFILES[id]);
+  return rows.flatMap((r) => {
+    const doc = parseStoredWorkoutDoc(r.doc);
+    if (!doc || !doc.parts.every((p) => CARE_PARTS.has(p.purpose))) return [];
+    const care = doc.parts.filter((p) => p.purpose === "care").flatMap((p) => p.items);
+    const of = profiles.filter((p) =>
+      care.some((i) => {
+        const rec = i.kind === "exercise" ? find(i.libraryId) : undefined;
+        return !!rec && p.care !== null && p.blockAssignable(rec) && rec.roles.some((role) => p.care!.block.roles.includes(role));
+      }),
+    );
+    return of.length > 0 ? [of.map((p) => p.id)] : [];
+  });
+}
+
 /** This user's adaptive programs, oldest first, each with its current block and this week's count vs goal. */
 export async function listPrograms(db: Db, userId: string, today: string): Promise<ProgramDto[]> {
   const rows = await db
@@ -201,6 +250,12 @@ export async function listPrograms(db: Db, userId: string, today: string): Promi
     );
     blocks.push(...(await db.select().from(programBlocks).where(inArray(programBlocks.programId, batch))));
   }
+  // A programme that is care alone (recovery only, its care switch on for a profile) counts the week's completed Studio
+  // condition-care sessions of that profile too: they are the care it plans (CUJ R13). One read, only when one is listed.
+  const careOnly = new Map(rows.map((r) => [r.id, careOnlyProfiles(r.config)]));
+  const wanted = new Set([...careOnly.values()].flat());
+  const studioCare = wanted.size > 0 ? await studioCareThisWeek(db, userId, monday, sunday, wanted) : [];
+
   const latestBlock = new Map<string, typeof programBlocks.$inferSelect>();
   for (const b of blocks) {
     const seen = latestBlock.get(b.programId);
@@ -216,6 +271,8 @@ export async function listPrograms(db: Db, userId: string, today: string): Promi
       continue;
     }
     const slots = thisWeek.filter((s) => s.planId === r.id);
+    const ownCare = careOnly.get(r.id) ?? [];
+    const careDone = studioCare.filter((profiles) => profiles.some((p) => ownCare.includes(p))).length;
     out.push({
       id: r.id,
       kind: "adaptive",
@@ -225,7 +282,7 @@ export async function listPrograms(db: Db, userId: string, today: string): Promi
       block: blockSummary(latestBlock.get(r.id), today),
       week: {
         placed: slots.length,
-        done: slots.filter((s) => s.completionState === "completed" || s.contentState === "done").length,
+        done: slots.filter((s) => s.completionState === "completed" || s.contentState === "done").length + careDone,
         goal: config.data.weeklyGoal,
       },
     });

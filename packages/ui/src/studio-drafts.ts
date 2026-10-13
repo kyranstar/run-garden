@@ -11,17 +11,48 @@
  */
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { startEditing, type DraftDoc } from "@rg/workout";
 import { offlineDb, type OfflineDb } from "./offline/idb.js";
 
 /** The one key the current draft is stored under. */
 export const DRAFT_KEY = "current";
 
+/** A create from the draft: a planned workout (Start now, Schedule) or a template (Save as template). */
+export type CreateKind = "workout" | "template";
+export type CreateKeys = Partial<Record<CreateKind, string>>;
+
 export interface StudioDraft {
   doc: DraftDoc;
   /** Epoch ms of the last change. */
   updatedAt: number;
+  /**
+   * The key (`clientId`) of each create from this draft that has not landed, kept with the draft on the device: a
+   * retry whose answer was lost — after a reload too — names the same workout or template, and the server answers that
+   * one, never a second. Edits keep them; the create landing, or the draft going, drops them.
+   */
+  keys?: CreateKeys;
+}
+
+/** What the server takes as a `clientId`. */
+const KEY_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The stored record's keys that still read as keys; undefined when none do. */
+function keysOf(raw: unknown): CreateKeys | undefined {
+  const k: unknown = raw && typeof raw === "object" ? (raw as { keys?: unknown }).keys : undefined;
+  if (!k || typeof k !== "object") return undefined;
+  const out: CreateKeys = {};
+  for (const kind of ["workout", "template"] as const) {
+    const v = (k as Record<string, unknown>)[kind];
+    if (typeof v === "string" && KEY_SHAPE.test(v)) out[kind] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A draft with its keys set to `keys` (none: the field goes). */
+function withKeys<T extends object>(draft: T, keys: CreateKeys | undefined): T & { keys?: CreateKeys } {
+  const { keys: _gone, ...rest } = draft as T & { keys?: unknown };
+  return (keys && Object.keys(keys).length > 0 ? { ...rest, keys } : rest) as T & { keys?: CreateKeys };
 }
 
 /** Stands in for an empty part's missing items, so the schema checks everything else about the part. */
@@ -45,13 +76,18 @@ export function readDraft(raw: unknown): StudioDraft | null {
     ...parsed.data,
     parts: parts.length === 0 ? [] : parsed.data.parts.map((p, i) => (empty[i] ? { ...p, items: [] } : p)),
   };
-  return { doc: startEditing(kept).doc, updatedAt: typeof updatedAt === "number" ? updatedAt : 0 };
+  return withKeys({ doc: startEditing(kept).doc, updatedAt: typeof updatedAt === "number" ? updatedAt : 0 }, keysOf(raw));
 }
 
 export interface DraftStore {
   load(): Promise<StudioDraft | null>;
+  /** Saves the draft's document; its create keys stay. */
   save(doc: DraftDoc, now?: number): Promise<StudioDraft>;
   clear(): Promise<void>;
+  /** The draft's key for a create of `kind`, made and kept with it on first asking; null when there is no draft. */
+  createKey(kind: CreateKind): Promise<string | null>;
+  /** That create landed: its key goes, so the next create from the draft is another. */
+  createLanded(kind: CreateKind): Promise<void>;
 }
 
 /** The page's own copy, for a device with no IndexedDB. */
@@ -67,16 +103,41 @@ export function draftStore(open: () => Promise<OfflineDb> = offlineDb): DraftSto
       return readDraft(await d.get("drafts", DRAFT_KEY).catch(() => undefined));
     },
     async save(doc, now = Date.now()) {
-      const draft: StudioDraft = { doc, updatedAt: now };
+      // Read and written in one transaction: a key asked for meanwhile is never written over.
+      const next = (current: unknown): StudioDraft => withKeys({ doc, updatedAt: now }, keysOf(current));
       const d = await db();
-      if (d) await d.put("drafts", DRAFT_KEY, draft);
-      else memory = draft;
-      return draft;
+      if (!d) return (memory = next(memory));
+      return (await d.update<StudioDraft>("drafts", DRAFT_KEY, next)) ?? next(undefined);
     },
     async clear() {
       const d = await db();
       if (d) await d.delete("drafts", DRAFT_KEY);
       else memory = null;
+    },
+    async createKey(kind) {
+      const fresh = newId();
+      let key: string | null = null;
+      const keep = <T>(current: T | undefined): T | undefined => {
+        if (!readDraft(current)) return current;
+        const keys = keysOf(current) ?? {};
+        key = keys[kind] ?? fresh;
+        return withKeys(current as T & object, { ...keys, [kind]: key }) as T;
+      };
+      const d = await db();
+      if (!d) memory = keep(memory ?? undefined) ?? null;
+      else await d.update<StudioDraft>("drafts", DRAFT_KEY, keep);
+      return key;
+    },
+    async createLanded(kind) {
+      const drop = <T>(current: T | undefined): T | undefined => {
+        const keys = keysOf(current);
+        if (!keys?.[kind]) return current;
+        const { [kind]: _landed, ...rest } = keys;
+        return withKeys(current as T & object, rest) as T;
+      };
+      const d = await db();
+      if (!d) memory = drop(memory ?? undefined) ?? null;
+      else await d.update<StudioDraft>("drafts", DRAFT_KEY, drop);
     },
   };
 }
@@ -97,6 +158,8 @@ export function useStudioDraft(store: DraftStore = deviceDrafts): {
   save: (doc: DraftDoc) => Promise<StudioDraft>;
   clear: () => Promise<void>;
   load: () => Promise<StudioDraft | null>;
+  createKey: DraftStore["createKey"];
+  createLanded: DraftStore["createLanded"];
 } {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: STUDIO_DRAFT_QUERY, queryFn: () => store.load(), networkMode: "always", staleTime: 0 });
@@ -113,6 +176,9 @@ export function useStudioDraft(store: DraftStore = deviceDrafts): {
     qc.setQueryData(STUDIO_DRAFT_QUERY, null);
   }, [qc, store]);
   const load = useCallback(() => store.load(), [store]);
+  // A create's key is the device's alone (nothing shows it): the shared cache is left as it is.
+  const createKey = useCallback((kind: CreateKind) => store.createKey(kind), [store]);
+  const createLanded = useCallback((kind: CreateKind) => store.createLanded(kind), [store]);
   // Read, whatever the answer (a read that failed is no draft): the choices it decides can now be offered.
-  return { draft: q.data ?? null, loaded: q.isSuccess || q.isError, save, clear, load };
+  return { draft: q.data ?? null, loaded: q.isSuccess || q.isError, save, clear, load, createKey, createLanded };
 }
