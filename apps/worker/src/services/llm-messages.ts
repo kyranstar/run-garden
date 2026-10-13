@@ -304,7 +304,7 @@ export async function callMessages(
     if (!answer.ok) {
       if (!("cut" in answer)) return answer;
       // The answer began, so the call was billed: as far as the stream reported, or at an estimate of the input.
-      const usage = cutUsage(answer.usage, body, answer.content);
+      const usage = cutUsage(answer, body, Date.now() - startedAt, req.maxTokens);
       return { ok: false, kind: "retryable", reason: answer.reason, usage, costMicros: messagesCostMicros(model, usage) };
     }
 
@@ -352,18 +352,43 @@ interface Cut {
   reason: string;
   usage: RawUsage;
   content: unknown[];
+  /** A message_delta reported the output count: the real one, not a guess. */
+  outputReported: boolean;
 }
-const cutOff = (reason: string, usage: RawUsage = {}, content: unknown[] = []): Cut => ({ ok: false, cut: true, reason, usage, content });
+const cutOff = (reason: string, usage: RawUsage = {}, content: unknown[] = [], outputReported = false): Cut => ({
+  ok: false,
+  cut: true,
+  reason,
+  usage,
+  content,
+  outputReported,
+});
 
-/** A broken-off answer's usage: the counts the stream reported; the input estimated from the request when it never
- * said; the output at least what arrived (~4 characters a token), zero when nothing did. */
-function cutUsage(raw: RawUsage, requestBody: string, content: unknown[]): MessagesUsage {
-  const arrived = content.length > 0 ? Math.ceil(JSON.stringify(content).length / 4) : 0;
+/** How fast a model is taken to have written while nothing said how much: pessimistic, so the cap trips early. */
+export const PESSIMISTIC_OUTPUT_TOKENS_PER_SECOND = 60;
+
+/**
+ * A broken-off answer's usage: the counts the stream reported; the input estimated from the request when it never
+ * said. The output is the stream's own count when a message_delta reported one; otherwise — cut off, or never seen
+ * (thinking is billed and not shown) — it is taken pessimistically as the larger of what arrived (~4 characters a
+ * token) and 60 tokens a second of the call so far, capped at the call's max_tokens.
+ */
+function cutUsage(cut: Cut, requestBody: string, elapsedMs: number, maxTokens: number): MessagesUsage {
+  const raw = cut.usage;
+  const arrived = cut.content.length > 0 ? Math.ceil(JSON.stringify(cut.content).length / 4) : 0;
+  const reported = num(raw.output_tokens);
+  const outputTokens =
+    cut.outputReported && reported !== null
+      ? Math.max(reported, arrived)
+      : Math.min(
+          maxTokens,
+          Math.max(arrived, reported ?? 0, Math.ceil((Math.max(0, elapsedMs) / 1000) * PESSIMISTIC_OUTPUT_TOKENS_PER_SECOND)),
+        );
   return {
     inputTokens: num(raw.input_tokens) ?? Math.ceil(requestBody.length / 4),
     cacheReadTokens: num(raw.cache_read_input_tokens) ?? 0,
     cacheWriteTokens: num(raw.cache_creation_input_tokens) ?? 0,
-    outputTokens: Math.max(num(raw.output_tokens) ?? 0, arrived),
+    outputTokens,
   };
 }
 
@@ -456,12 +481,13 @@ async function readStream(
   let stopped = false;
   let buffered = "";
   const sofar = (): unknown[] => blocks.filter((b): b is Record<string, unknown> => !!b);
+  let outputReported = false;
   try {
     for (;;) {
       const next = await withTimeout(reader.read(), readWait(startedAt));
       if (next === "timed_out") {
         await reader.cancel().catch(() => undefined);
-        return cutOff("llm_timeout", usage, sofar());
+        return cutOff("llm_timeout", usage, sofar(), outputReported);
       }
       if (next.done) break;
       buffered += decoder.decode(next.value, { stream: true });
@@ -513,21 +539,22 @@ async function readStream(
           case "message_delta":
             if (typeof event.delta?.stop_reason === "string") stopReason = event.delta.stop_reason as StopReason;
             for (const [k, v] of Object.entries(event.usage ?? {})) if (num(v) !== null) usage[k] = v;
+            if (num(event.usage?.output_tokens) !== null) outputReported = true;
             break;
           case "message_stop":
             stopped = true;
             break;
           case "error":
             await reader.cancel().catch(() => undefined);
-            return cutOff(`stream_${event.error?.type ?? "error"}`, usage, sofar());
+            return cutOff(`stream_${event.error?.type ?? "error"}`, usage, sofar(), outputReported);
         }
       }
     }
   } catch {
     // The whole call's deadline aborting the read is a timeout; anything else is the connection failing.
-    return cutOff(deadline.aborted ? "llm_timeout" : "llm_error", usage, sofar());
+    return cutOff(deadline.aborted ? "llm_timeout" : "llm_error", usage, sofar(), outputReported);
   }
-  if (!stopped && stopReason === null) return cutOff("gateway_bad_response", usage, sofar());
+  if (!stopped && stopReason === null) return cutOff("gateway_bad_response", usage, sofar(), outputReported);
   return {
     ok: true,
     content: blocks.filter((b): b is Record<string, unknown> => !!b) as unknown as ContentBlock[],

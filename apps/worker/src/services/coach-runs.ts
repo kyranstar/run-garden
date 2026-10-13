@@ -273,17 +273,19 @@ export function newRunState(
   };
 }
 
-/** A new main run's window: the athlete's local day for now / later today, a day from `now` for a set. */
+/** A new main run's window: the athlete's local day for now / later today, a day from `now` for a set. A timezone
+ * that can't be read counts as UTC. */
 export function runWindow(scope: RunScope, timezone: string, now: Date): RunWindow {
   return scope.kind === "now" || scope.kind === "later_today"
-    ? { kind: "day", date: todayInZone(timezone, now) }
+    ? { kind: "day", date: localDate(timezone, now) }
     : { kind: "until", at: new Date(now.getTime() + COACH_RUN_SET_WINDOW_HOURS * 3_600_000).toISOString() };
 }
 
-/** Has the run's window closed at `now`? A run made without one stays open COACH_RUN_SET_WINDOW_HOURS from its start. */
+/** Has the run's window closed at `now`? A run made without one stays open COACH_RUN_SET_WINDOW_HOURS from its start.
+ * Never throws: a timezone that can't be read counts as UTC, so a bad stored value can't leave a run stuck. */
 export function windowClosed(settings: RunSettings | undefined, createdAt: string, now: Date): boolean {
   const w = settings?.window;
-  if (w?.kind === "day") return todayInZone(settings?.timezone || "UTC", now) > w.date;
+  if (w?.kind === "day") return localDate(settings?.timezone || "UTC", now) > w.date;
   const until = w?.kind === "until" ? Date.parse(w.at) : Date.parse(createdAt) + COACH_RUN_SET_WINDOW_HOURS * 3_600_000;
   return now.getTime() >= until;
 }
@@ -385,10 +387,14 @@ interface RunNode {
   createdAt: string;
   updatedAt: string;
   finishedAt: string | null;
+  /** From the state, read in SQL: its window and timezone (a run's tree is open while its main run's window is). */
+  settings?: RunSettings;
 }
 
-/** Everything but `state`. */
+/** Everything but `state`, and from the state only its settings (read in SQL, so a large state is never read whole;
+ * a state that is not JSON reads as none). */
 const NODE_COLUMNS = {
+  settings: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.settings') END`,
   id: coachRuns.id,
   parentId: coachRuns.parentId,
   role: coachRuns.role,
@@ -421,6 +427,7 @@ function toNode(r: NodeRow): RunNode {
     createdAt: r.createdAt as string,
     updatedAt: r.updatedAt as string,
     finishedAt: (r.finishedAt as string | null) ?? null,
+    settings: parseSettings((r.settings as string | null) ?? null),
   };
 }
 
@@ -607,9 +614,9 @@ export type CreateRunResult =
  * A new main run, unless the athlete already has a live one: then that one comes back (`existing: true`), with what
  * the screen can offer and the words this request carried, so they never vanish silently. One statement decides it
  * (an insert guarded by NOT EXISTS), so two taps can never start two. The run's window and timezone are fixed here.
+ * A live run whose window has closed is not offered: it is expired, with its plain line, and the new run starts.
  */
 export async function createRun(db: Db, userId: string, input: CreateRunInput, now: Date): Promise<CreateRunResult> {
-  const id = newId();
   const at = now.toISOString();
   const request = input.request?.trim().slice(0, REQUEST_MAX_CHARS) || null;
   const timezone = (await loadPreferences(db, userId)).timezone;
@@ -618,15 +625,17 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     timezone,
     window: runWindow(input.scope, timezone, now),
   });
-  const inserted = (await db.all(sql`
-    INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
-    SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(input.scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
-    WHERE NOT EXISTS (
-      SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete')
-    )
-    RETURNING id
-  `)) as Array<{ id: string }>;
-  if (inserted.length > 0) {
+  const insert = async (): Promise<CreateRunResult | null> => {
+    const id = newId();
+    const inserted = (await db.all(sql`
+      INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
+      SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(input.scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete')
+      )
+      RETURNING id
+    `)) as Array<{ id: string }>;
+    if (inserted.length === 0) return null;
     const node: RunNode = {
       id,
       parentId: null,
@@ -643,21 +652,69 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       finishedAt: null,
     };
     return { run: runDto(node, [node]), existing: false };
+  };
+  const live = async () => {
+    const rows = await db
+      .select(NODE_COLUMNS)
+      .from(coachRuns)
+      .where(and(eq(coachRuns.userId, userId), inArray(coachRuns.status, [...LIVE_STATUSES])));
+    const nodes = rows.map((r) => toNode(r as NodeRow));
+    return { nodes, root: nodes.filter((n) => n.parentId === null).sort(byCreated).at(-1) };
+  };
+
+  const created = await insert();
+  if (created) return created;
+  let { nodes, root } = await live();
+  if (root && windowClosed(root.settings, root.createdAt, now) && (await expireTree(db, userId, root, nodes, now)).took) {
+    const fresh = await insert();
+    if (fresh) return fresh;
+    ({ nodes, root } = await live()); // another create won the race: answer that one
   }
-  const rows = await db
-    .select(NODE_COLUMNS)
-    .from(coachRuns)
-    .where(and(eq(coachRuns.userId, userId), inArray(coachRuns.status, [...LIVE_STATUSES])));
-  const nodes = rows.map((r) => toNode(r as NodeRow));
-  const live = nodes.filter((n) => n.parentId === null).sort(byCreated).at(-1);
-  if (!live) throw new Error("coach run: neither created nor found");
-  const run = runDto(live, nodes);
+  if (!root) throw new Error("coach run: neither created nor found");
+  const run = runDto(root, nodes);
   return {
     run,
     existing: true,
     offer: run.status === "waiting_athlete" ? "answer_or_cancel" : "continue_or_cancel",
     ignoredRequest: { scope: input.scope, request },
   };
+}
+
+/**
+ * Expire a run's live tree, past its window or left under a run that is over, with the main run's plain line. Guarded:
+ * a run a live step holds is left to that step (which finds the window closed itself); a dead step's is taken. Answers
+ * whether the expiry took the run itself. Two statements (one when there is no line to write).
+ */
+async function expireTree(
+  db: Db,
+  userId: string,
+  root: RunNode,
+  nodes: RunNode[],
+  now: Date,
+): Promise<{ took: boolean; events: CoachRunEventDto[] }> {
+  const at = now.toISOString();
+  const staleBefore = new Date(now.getTime() - COACH_RUN_STEP_STALE_MINUTES * 60_000).toISOString();
+  const members = subtree(nodes, root).filter((n) => isLive(n.status));
+  if (members.length === 0) return { took: false, events: [] };
+  const expired = await db
+    .update(coachRuns)
+    .set({ status: "expired", error: "expired", finishedAt: at, updatedAt: at })
+    .where(
+      and(
+        eq(coachRuns.userId, userId),
+        inArray(coachRuns.id, members.map((n) => n.id)),
+        or(
+          inArray(coachRuns.status, ["active", "waiting_athlete"]),
+          and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore)),
+        ),
+      ),
+    )
+    .returning({ id: coachRuns.id });
+  for (const n of members) if (expired.some((e) => e.id === n.id)) Object.assign(n, { status: "expired", error: "expired", finishedAt: at, updatedAt: at });
+  const took = expired.some((e) => e.id === root.id);
+  const events =
+    took && root.parentId === null ? await appendEvents(db, userId, root.id, [{ kind: "note", summary: expiredLine(root.settings) }], at) : [];
+  return { took, events };
 }
 
 export async function getRun(
@@ -730,6 +787,11 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
   if (!root) return { kind: "not_found" };
   const waiting = dueRun(nodes, root);
   if (!waiting || waiting.status !== "waiting_athlete") return { kind: "not_waiting", status: treeStatus(root, nodes) };
+  // Past its window the question no longer stands: the run expires (with its line), and the answer is refused.
+  if (windowClosed(root.settings, root.createdAt, now)) {
+    await expireTree(db, userId, root, nodes, now);
+    return { kind: "not_waiting", status: treeStatus(root, nodes) };
+  }
   const claimAt = now.toISOString();
   const [claimed] = await db
     .update(coachRuns)
@@ -746,10 +808,6 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
     status = "failed";
     error = "bad_state";
     events.push({ kind: "error", summary: LINES.badState });
-  } else if (windowClosed(state.settings, waiting.createdAt, now)) {
-    status = "expired";
-    error = "expired";
-    events.push({ kind: "note", summary: expiredLine(state.settings) });
   } else {
     const questions = askedQuestions(state, state.awaiting);
     const answers = input.answers.map((a) => a.trim().slice(0, ANSWER_MAX_CHARS)).filter((a) => a.length > 0);
@@ -832,7 +890,8 @@ interface StepEnd {
   error: string | null;
   proposalId: string | null;
   events: NewEvent[];
-  retryAt?: string;
+  /** After a transient failure: how long after the step's end to step again. */
+  retryInMs?: number;
   /** Nothing to do without a model (the sweep's step): the claim is given back and nothing else is written. */
   idle?: true;
 }
@@ -852,6 +911,8 @@ interface StepCtx {
   storedBytes: number;
   /** False for the sweep: queued calls only, never the model (or a context nobody is waiting for). */
   allowModel: boolean;
+  /** What this step's model call cost, once it is known: kept on the run even if the step then breaks. */
+  spent: number;
 }
 
 const stop = (state: RunState | null, status: RunStatus, error: string, summary: string, kind: RunEventKind = "note", costMicros = 0): StepEnd => ({
@@ -917,6 +978,15 @@ export async function runStep(
   const started = clock();
   const { root, nodes } = await loadTree(db, userId, runId);
   if (!root) return { kind: "not_found" };
+  // A main run that is over steps nothing more — not a sub-run left live under it (the sweep expires those).
+  if (!isLive(root.status)) return okStep({ status: root.status, nextDue: null, events: [] });
+  // Past its window the run expires here, waiting on a question or not, with its plain line — unless a live step
+  // holds it, which finds the window closed itself.
+  if (windowClosed(root.settings, root.createdAt, now)) {
+    const expired = await expireTree(db, userId, root, nodes, now);
+    if (!expired.took) return { kind: "busy" };
+    return okStep({ status: "expired", nextDue: null, events: expired.events });
+  }
   const due = dueRun(nodes, root);
   if (!due) return okStep({ status: root.status, nextDue: null, events: [] });
   if (due.status === "waiting_athlete") return okStep({ status: "waiting_athlete", nextDue: null, events: [] });
@@ -949,27 +1019,28 @@ export async function runStep(
   let advance: Advance;
   if (!state) {
     advance = { kind: "end", end: stop(null, "failed", "bad_state", LINES.badState, "error") };
-  } else if (windowClosed(state.settings, due.createdAt, now)) {
-    advance = { kind: "end", end: stop(null, "expired", "expired", expiredLine(state.settings)) };
   } else {
+    const ctx: StepCtx = {
+      db,
+      env,
+      userId,
+      now,
+      deps,
+      run: due,
+      state,
+      claimAt,
+      storedBytes: bytes(stored),
+      allowModel: opts.model !== false,
+      spent: 0,
+    };
     try {
-      advance = await advanceRun({
-        db,
-        env,
-        userId,
-        now,
-        deps,
-        run: due,
-        state,
-        claimAt,
-        storedBytes: bytes(stored),
-        allowModel: opts.model !== false,
-      });
+      advance = await advanceRun(ctx);
     } catch (e) {
       console.error(
         JSON.stringify({ level: "error", msg: "coach-runs: step failed", run: due.id, error: e instanceof Error ? e.message : "unknown" }),
       );
-      advance = { kind: "end", end: stop(null, "failed", "internal", LINES.internal, "error") };
+      // A call billed before the break is still the run's spend.
+      advance = { kind: "end", end: stop(null, "failed", "internal", LINES.internal, "error", ctx.spent) };
     }
   }
   if (advance.kind === "restoring") return { kind: "restoring" };
@@ -1017,7 +1088,14 @@ export async function runStep(
   const next = dueRun(nodes, root);
   return okStep({
     status: treeStatus(root, nodes),
-    nextDue: next && next.status === "active" ? { runId: next.id, role: next.role, at: next.id === due.id && end.retryAt ? end.retryAt : endAt } : null,
+    nextDue:
+      next && next.status === "active"
+        ? {
+            runId: next.id,
+            role: next.role,
+            at: next.id === due.id && end.retryInMs ? new Date(Date.parse(endAt) + end.retryInMs).toISOString() : endAt,
+          }
+        : null,
     events,
   });
 }
@@ -1112,9 +1190,18 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   if (last) sent = withLastTurnNote(sent);
 
   // ── The call, on the record before it is made ──
+  // Pessimistic, because a step killed mid-call never comes back to correct it: the input estimated from the prompt's
+  // size at the uncached rate, the output at the call's ceiling (a call writes at most max_tokens, and at 60 tokens a
+  // second — PESSIMISTIC_OUTPUT_TOKENS_PER_SECOND — its 10-minute window reaches that ceiling). The real usage replaces
+  // it once the answer is in.
   const model = designModel(env);
   const tools = offeredTools(deps.tools).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
-  const estimate = { inputTokens: Math.ceil((size + JSON.stringify(tools).length) / 4), cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
+  const estimate = {
+    inputTokens: Math.ceil((size + JSON.stringify(tools).length) / 4),
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: settings.maxTokens,
+  };
   const usageId = newId();
   await db.insert(llmUsage).values({
     id: usageId,
@@ -1122,7 +1209,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     kind: USAGE_KIND[run.role],
     model,
     inputTokens: estimate.inputTokens,
-    outputTokens: 0,
+    outputTokens: estimate.outputTokens,
     costMicros: messagesCostMicros(model, estimate),
     cacheHit: false,
     requestFingerprint: `run:${run.id}:${state.calls + 1}`,
@@ -1163,6 +1250,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     )
     .where(eq(llmUsage.id, usageId));
   const spent = billed?.costMicros ?? 0;
+  s.spent = spent;
   if (!ours) return { kind: "lost", costMicros: spent };
 
   if (!result.ok) {
@@ -1176,8 +1264,8 @@ async function modelStep(s: StepCtx): Promise<Advance> {
       case "retryable": {
         state.retries += 1;
         if (state.retries >= MAX_RETRIES) return end(stop(state, "failed", "retries", LINES.retries, "error", spent));
-        const retryAt = new Date(now.getTime() + RETRY_BACKOFF_SECONDS * 1000 * 2 ** (state.retries - 1)).toISOString();
-        return end({ ...stop(state, "active", result.reason, LINES.retrying, "error", spent), retryAt });
+        const retryInMs = RETRY_BACKOFF_SECONDS * 1000 * 2 ** (state.retries - 1);
+        return end({ ...stop(state, "active", result.reason, LINES.retrying, "error", spent), retryInMs });
       }
     }
   }
@@ -1274,22 +1362,16 @@ export function clockLine(timezone: string, now: Date): string {
 }
 
 /**
- * The history with the clock line at the start of its newest (unsent) user message. A message of tool results must
- * open with them, so there the line opens the first result's content — an answer's, when the newest message is the
- * athlete's answer.
+ * The history with the clock line as a block of its own in its newest (unsent) user message, after what is there —
+ * the tool results must lead a results message, and they stay exactly as the tools answered — or as a message of its
+ * own when the newest is the model's. A last-turn note, when there is one, follows it.
  */
 function withClockLine(messages: MessageParam[], line: string): MessageParam[] {
   const newest = messages.at(-1);
   const text = { type: "text" as const, text: line };
   if (!newest || newest.role !== "user") return [...messages, { role: "user", content: [text] }];
   const blocks = typeof newest.content === "string" ? [{ type: "text" as const, text: newest.content }] : newest.content;
-  const first = blocks[0];
-  if (first?.type === "tool_result") {
-    const inner = typeof first.content === "string" ? [{ type: "text" as const, text: first.content }] : first.content;
-    const opened: ToolResultBlock = { ...first, content: [text, ...inner] };
-    return [...messages.slice(0, -1), { role: "user", content: [opened, ...blocks.slice(1)] }];
-  }
-  return [...messages.slice(0, -1), { role: "user", content: [text, ...blocks] }];
+  return [...messages.slice(0, -1), { role: "user", content: [...blocks, text] }];
 }
 
 async function stillOurs(db: Db, id: string, claimAt: string): Promise<boolean> {
@@ -1477,7 +1559,6 @@ function withLastTurnNote(messages: MessageParam[]): MessageParam[] {
  * never read whole) its settings, how many calls are queued, and whether it waits on an answer. */
 const SWEEP_COLUMNS = {
   ...NODE_COLUMNS,
-  settings: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.settings') END`,
   pending: sql<number | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_array_length(${coachRuns.state}, '$.pending') END`,
   awaiting: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.awaiting') END`,
 };
@@ -1494,7 +1575,8 @@ function parseSettings(text: string | null): RunSettings | undefined {
 /**
  * The hourly's care of one athlete's runs (cron-limits.ts). It never calls the model:
  * - a step that died (`stepping` past COACH_RUN_STEP_STALE_MINUTES) gives its run back;
- * - a run past its window expires, with a plain event (written only when the expiry took);
+ * - a run past its window expires, with a plain event (written only when the expiry took), and so does a sub-run left
+ *   live under a main run that is over (a step it was in the middle of first goes stale);
  * - a run its client left (COACH_RUN_LEFT_MINUTES) with tool calls queued gets a step that runs them, at most
  *   `maxSteps` of them. The rest waits for the athlete to come back.
  * One statement when nothing is live.
@@ -1515,7 +1597,6 @@ export async function sweepCoachRuns(
   if (rows.length === 0) return out;
   const live = rows.map((r) => ({
     node: toNode(r as unknown as NodeRow),
-    settings: parseSettings(r.settings),
     pending: Number(r.pending ?? 0),
     awaiting: typeof r.awaiting === "string" && r.awaiting.length > 0,
   }));
@@ -1540,7 +1621,8 @@ export async function sweepCoachRuns(
     out.reclaimed = stale.length;
   }
 
-  // Each live run belongs to the tree of its topmost live ancestor; the tree's window is that run's.
+  // Each live run belongs to the tree of its topmost live ancestor; the tree's window is that run's. A tree topped by a
+  // sub-run has lost its main run (over, or gone): nothing will step it again.
   const byId = new Map(live.map((r) => [r.node.id, r]));
   const top = (n: RunNode): RunNode => {
     let r = n;
@@ -1553,24 +1635,10 @@ export async function sweepCoachRuns(
   const leftBefore = iso(COACH_RUN_LEFT_MINUTES);
   for (const [rootId, members] of trees) {
     const root = byId.get(rootId)!;
-    if (windowClosed(root.settings, root.node.createdAt, now)) {
-      const at = now.toISOString();
-      const expired = await db
-        .update(coachRuns)
-        .set({ status: "expired", error: "expired", finishedAt: at, updatedAt: at })
-        .where(
-          and(
-            eq(coachRuns.userId, userId),
-            inArray(coachRuns.id, members.map((n) => n.id)),
-            inArray(coachRuns.status, ["active", "waiting_athlete"]),
-          ),
-        )
-        .returning({ id: coachRuns.id });
-      if (expired.length === 0) continue; // a live step holds it: the step itself will find the window closed
-      if (root.node.parentId === null && expired.some((e) => e.id === rootId)) {
-        await appendEvents(db, userId, rootId, [{ kind: "note", summary: expiredLine(root.settings) }], at);
-      }
-      out.expired += 1;
+    const orphaned = root.node.parentId !== null;
+    if (orphaned || windowClosed(root.node.settings, root.node.createdAt, now)) {
+      // Guarded: a run a live step holds is left to that step (it finds the window closed, or goes stale first).
+      if ((await expireTree(db, userId, root.node, members, now)).took) out.expired += 1;
       continue;
     }
     if (out.stepped >= opts.maxSteps || root.node.parentId !== null) continue;

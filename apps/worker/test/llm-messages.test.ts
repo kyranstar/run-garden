@@ -652,24 +652,37 @@ describe("callMessages — a failure after the answer began is still billed (Sta
     expect(billed(result)).toMatchObject(seen);
   });
 
-  it("a stream that goes silent is billed as far as it got", async () => {
+  it("a stream that goes silent is billed as far as it got — its unseen output pessimistically, 60 tokens a second", async () => {
     vi.useFakeTimers();
     const { fetchImpl } = scriptedFetch([{ hangAfter: [START] }]);
-    const pending = callMessages(makeEnv(), request(), fetchImpl);
+    const pending = callMessages(makeEnv(), request({ maxTokens: 20_000 }), fetchImpl);
     await vi.advanceTimersByTimeAsync(151_000);
     const result = await pending;
     expect(result).toMatchObject({ kind: "retryable", reason: "llm_timeout" });
-    expect(billed(result)).toMatchObject(seen);
+    const usage = billed(result);
+    expect(usage).toMatchObject(seen);
+    // Cut at the 150 s stall: no count of its output ever came, so it is taken as 150 s × 60 tokens.
+    expect(usage.outputTokens).toBeGreaterThanOrEqual(150 * 60);
+    expect(usage.outputTokens).toBeLessThanOrEqual(151 * 60);
   });
 
-  it("a buffered answer that stalls is billed at an estimate of its input", async () => {
+  it("…but when a message_delta reported the output count before the stall, that count, not a guess", async () => {
+    vi.useFakeTimers();
+    const delta = { type: "message_delta", delta: {}, usage: { output_tokens: 640 } };
+    const { fetchImpl } = scriptedFetch([{ hangAfter: [START, ...TEXT, delta] }]);
+    const pending = callMessages(makeEnv(), request({ maxTokens: 20_000 }), fetchImpl);
+    await vi.advanceTimersByTimeAsync(151_000);
+    expect(billed(await pending).outputTokens).toBe(640);
+  });
+
+  it("a buffered answer that stalls is billed at an estimate of its input, and its output at most the call's ceiling", async () => {
     vi.useFakeTimers();
     const { fetchImpl, calls } = scriptedFetch([{ hangJson: '{"id":"msg_1","type":"message","content":[{"type":"te' }]);
-    const pending = callMessages(makeEnv(), request(), fetchImpl);
+    const pending = callMessages(makeEnv(), request({ maxTokens: 8_000 }), fetchImpl);
     await vi.advanceTimersByTimeAsync(151_000);
     const usage = billed(await pending);
     expect(usage.inputTokens).toBe(Math.ceil(JSON.stringify(calls[0]!.body).length / 4));
-    expect(usage.outputTokens).toBe(0);
+    expect(usage.outputTokens).toBe(8_000); // 150 s × 60 = 9,000, capped at max_tokens
   });
 
   it("a failure before any answer carries no usage: nothing was billed", async () => {

@@ -21,6 +21,8 @@ import {
   runStep,
   sweepCoachRuns,
   newRunState,
+  runWindow,
+  windowClosed,
   defaultRunDeps,
   RUN_LIMITS,
   EVENTS_PER_INSERT,
@@ -40,7 +42,7 @@ import {
 import { COACH_RUN_LEFT_MINUTES, COACH_RUN_SET_WINDOW_HOURS, COACH_RUN_STEP_STALE_MINUTES } from "../src/services/cron-limits.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import type { DesignTool, ToolContext } from "../src/services/design-tools/types.js";
-import type { ContentBlock, MessageParam, MessagesOk, MessagesRequest, MessagesResult } from "../src/services/llm-messages.js";
+import { messagesCostMicros, type ContentBlock, type MessageParam, type MessagesOk, type MessagesRequest, type MessagesResult } from "../src/services/llm-messages.js";
 import { loadOutOfCredits } from "../src/services/ai-credits.js";
 import { LLM_BUDGET } from "../src/services/llm.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -686,7 +688,7 @@ describe("a restore that begins during the model call", () => {
 });
 
 describe("every model call is on the record, even one that dies", () => {
-  it("is recorded before the call at an estimate of its input, so a step killed mid-call still counts toward the cap", async () => {
+  it("is recorded before the call pessimistically — its input estimated, its output at the call's ceiling — so a step killed mid-call still counts toward the cap, never under", async () => {
     let seen: Array<typeof schema.llmUsage.$inferSelect> = [];
     const model = scriptedModel([
       async () => {
@@ -697,9 +699,18 @@ describe("every model call is on the record, even one that dies", () => {
     const runId = await newMainRun();
     await drive(runId, deps(model.callModel));
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ kind: "design_main", outputTokens: 0 });
+    // A killed call's elapsed time is unknown here; × 60 tokens a second over the call's 10-minute window it reaches
+    // the ceiling, so the ceiling is what the row says until the answer replaces it.
+    expect(seen[0]).toMatchObject({ kind: "design_main", outputTokens: RUN_LIMITS.main.maxTokens });
     expect(seen[0]!.inputTokens).toBeGreaterThan(0);
-    expect(seen[0]!.costMicros).toBeGreaterThan(0);
+    expect(seen[0]!.costMicros).toBe(
+      messagesCostMicros("anthropic/claude-opus-5.5", {
+        inputTokens: seen[0]!.inputTokens,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: RUN_LIMITS.main.maxTokens,
+      }),
+    );
     // …and set to the real usage once the answer is in: one row per call, never two.
     const after = await db.select().from(schema.llmUsage);
     expect(after).toHaveLength(1);
@@ -1045,19 +1056,20 @@ describe("an answer that lands after a cancel", () => {
 
 describe("the clock, frozen when the context was built", () => {
   const ask = () => toolTurn(use("ask_athlete", { questions: [{ text: "How long do you have?", chips: ["20 min"] }] }));
-  const firstText = (req: MessagesRequest) => {
-    const results = req.messages.at(-1)!.content as Array<{ content: string | Array<{ text: string }> }>;
-    const content = results[0]!.content;
-    return typeof content === "string" ? content : content[0]!.text;
-  };
+  type Block = { type: string; text?: string; content?: unknown };
 
-  it("an answer more than 30 minutes after the context was built starts with the time now", async () => {
+  it("an answer more than 30 minutes after the context was built is followed by the time now, in a block of its own after the results", async () => {
     const model = scriptedModel([ask(), endTurn("Done.")]);
     const runId = await newMainRun();
     await drive(runId, deps(model.callModel, [askTool()]));
     expect((await answerRun(db, userId, runId, { answers: ["20 min"] }, at(45 * 60))).kind).toBe("ok");
     await drive(runId, deps(model.callModel, [askTool()]), 45 * 60 + 1);
-    const line = firstText(model.requests[1]!);
+    const blocks = stripCache(model.requests[1]!.messages).at(-1)!.content as Block[];
+    // The results lead, untouched (the answer is still exactly its JSON); the clock line follows them.
+    expect(blocks.map((b) => b.type)).toEqual(["tool_result", "text"]);
+    expect(typeof blocks[0]!.content).toBe("string");
+    expect(JSON.parse(blocks[0]!.content as string)).toHaveProperty("answers");
+    const line = blocks[1]!.text!;
     expect(line).toMatch(/^It is now \w+day, \d{1,2} \w+ \d{4}, \d{2}:\d{2}\.$/);
     const local = new Intl.DateTimeFormat("en-GB", {
       timeZone: "America/Los_Angeles",
@@ -1087,6 +1099,137 @@ describe("the clock, frozen when the context was built", () => {
     ok(await runStep(db, env, runId, userId, at(2 + 51 * 60), d));
     expect(JSON.stringify(model.requests[1]!.messages.at(-1))).toMatch(/It is now/);
     expect(JSON.stringify(model.requests[2]!.messages.at(-1))).not.toMatch(/It is now/);
+  });
+});
+
+describe("a run past its window, wherever it is found (fix round 2)", () => {
+  it("a create finds the live run's window closed: it expires that run, with its line, and starts the new one", async () => {
+    const model = scriptedModel([toolTurn(use("ask_athlete", { questions: [{ text: "Gym?", chips: [] }] }))]);
+    const old = await newMainRun();
+    await drive(old, deps(model.callModel, [askTool()]));
+    const child = await insertSubRun(old, "designer", at(2));
+    statements = 0;
+    const created = await createRun(db, userId, { scope: { kind: "now" }, request: "today's session" }, at(14 * 3600));
+    expect(statements).toBeLessThanOrEqual(6);
+    expect(created).toMatchObject({ existing: false, run: { request: "today's session", status: "active" } });
+    expect(created.run.id).not.toBe(old);
+    expect(await runRow(old)).toMatchObject({ status: "expired", error: "expired" });
+    expect((await runRow(child)).status).toBe("expired");
+    expect((await events(old)).at(-1)!.summary).toMatch(/day that has passed/);
+  });
+
+  it("a create finds the live run still open: it answers it as before", async () => {
+    const old = await newMainRun();
+    const again = await createRun(db, userId, { scope: { kind: "now" } }, at(3600));
+    expect(again).toMatchObject({ existing: true, run: { id: old } });
+  });
+
+  it("a step on a run waiting past its window expires it with its line, instead of showing the question again", async () => {
+    const model = scriptedModel([toolTurn(use("ask_athlete", { questions: [{ text: "Gym?", chips: [] }] }))]);
+    const runId = await newMainRun();
+    await drive(runId, deps(model.callModel, [askTool()]));
+    const r = ok(await runStep(db, env, runId, userId, at(14 * 3600), deps(model.callModel)));
+    expect(r).toMatchObject({ status: "expired", nextDue: null });
+    expect(r.events.map((e) => e.summary)).toEqual([expect.stringMatching(/day that has passed/)]);
+    expect(await runRow(runId)).toMatchObject({ status: "expired", error: "expired" });
+  });
+
+  it("a run past its window whose last step died mid-call is expired by the next step (the dead claim is taken)", async () => {
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), deps(scriptedModel([]).callModel)));
+    await db.update(schema.coachRuns).set({ status: "stepping", updatedAt: at(2).toISOString() }).where(eq(schema.coachRuns.id, runId));
+    const r = await runStep(db, env, runId, userId, at(14 * 3600), deps(scriptedModel([]).callModel));
+    expect(ok(r)).toMatchObject({ status: "expired" });
+    expect(await runRow(runId)).toMatchObject({ status: "expired", error: "expired" });
+  });
+
+  it("a waiting run inside its window still answers with the question, reading only", async () => {
+    const model = scriptedModel([toolTurn(use("ask_athlete", { questions: [{ text: "Gym?", chips: [] }] }))]);
+    const runId = await newMainRun();
+    await drive(runId, deps(model.callModel, [askTool()]));
+    statements = 0;
+    expect(ok(await runStep(db, env, runId, userId, at(3600), deps(model.callModel)))).toEqual({ status: "waiting_athlete", nextDue: null, events: [] });
+    expect(statements).toBe(1);
+  });
+});
+
+describe("a sub-run whose main run is over (fix round 2)", () => {
+  async function overWithLiveChild(childStatus: "active" | "stepping", childStamp = at(2)) {
+    const main = await newMainRun();
+    ok(await runStep(db, env, main, userId, at(1), deps(scriptedModel([]).callModel)));
+    const child = await insertSubRun(main, "designer", at(2));
+    await db.update(schema.coachRuns).set({ status: "cancelled", finishedAt: at(3).toISOString() }).where(eq(schema.coachRuns.id, main));
+    await db.update(schema.coachRuns).set({ status: childStatus, updatedAt: childStamp.toISOString() }).where(eq(schema.coachRuns.id, child));
+    return { main, child };
+  }
+
+  it("is never stepped through it", async () => {
+    const { main, child } = await overWithLiveChild("active");
+    const model = scriptedModel([]);
+    expect(ok(await runStep(db, env, main, userId, at(4), deps(model.callModel)))).toEqual({ status: "cancelled", nextDue: null, events: [] });
+    expect(model.requests).toHaveLength(0);
+    expect(await runRow(child)).toMatchObject({ status: "active", steps: 0 });
+  });
+
+  it("is expired by the sweep — once a step it was in the middle of has gone stale", async () => {
+    const { child } = await overWithLiveChild("stepping", at(5));
+    const d = deps(scriptedModel([]).callModel);
+    expect((await sweepCoachRuns(db, env, userId, at(5 + 60), d, { maxSteps: 0 })).expired).toBe(0);
+    expect((await runRow(child)).status).toBe("stepping");
+    const swept = await sweepCoachRuns(db, env, userId, at(5 + (COACH_RUN_STEP_STALE_MINUTES + 1) * 60), d, { maxSteps: 0 });
+    expect(swept).toMatchObject({ reclaimed: 1, expired: 1 });
+    expect(await runRow(child)).toMatchObject({ status: "expired", error: "expired" });
+  });
+
+  it("an idle one is expired by the next sweep", async () => {
+    const { child } = await overWithLiveChild("active");
+    expect((await sweepCoachRuns(db, env, userId, at(60), deps(scriptedModel([]).callModel), { maxSteps: 1 })).expired).toBe(1);
+    expect((await runRow(child)).status).toBe("expired");
+  });
+});
+
+describe("a step's tail (fix round 2)", () => {
+  it("a retry time is measured from the end of the step that failed", async () => {
+    const model = scriptedModel([
+      async () => {
+        clockMs += 95_000;
+        return { ok: false, kind: "retryable", reason: "gateway_529", status: 529 } as MessagesResult;
+      },
+    ]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), deps(model.callModel)));
+    const r = ok(await runStep(db, env, runId, userId, at(2), deps(model.callModel)));
+    expect(r.nextDue!.at).toBe(at(2 + 95 + 10).toISOString());
+  });
+
+  it("a step that breaks after a billed call still adds the spend to the run", async () => {
+    const breaking = {
+      ...readTool("read_day", 0),
+      get statementCost(): number {
+        throw new Error("registry bug");
+      },
+    } as unknown as DesignTool;
+    const model = scriptedModel([toolTurn(use("read_day"))]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), deps(model.callModel, [breaking])));
+    const r = ok(await runStep(db, env, runId, userId, at(2), deps(model.callModel, [breaking])));
+    expect(r.status).toBe("failed");
+    expect(await runRow(runId)).toMatchObject({ error: "internal" });
+    expect((await runRow(runId)).costUsd).toBeCloseTo(0.02, 6);
+  });
+
+  it("a timezone that can't be read never leaves a run stuck: the window and the clock fall back to UTC", async () => {
+    expect(() => windowClosed({ ceilingMicros: 1, maxCalls: 1, effort: "high", maxTokens: 1, rehearsal: false, timezone: "Not/AZone", window: { kind: "day", date: "2000-01-01" } }, at(0).toISOString(), at(0))).not.toThrow();
+    expect(runWindow({ kind: "now" }, "Not/AZone", at(0))).toEqual({ kind: "day", date: at(0).toISOString().slice(0, 10) });
+    const model = scriptedModel([endTurn("Done.")]);
+    const runId = await newMainRun();
+    const row = await runRow(runId);
+    const state = JSON.parse(row.state!) as { settings: { timezone: string } };
+    state.settings.timezone = "Not/AZone";
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, runId));
+    const results = await drive(runId, deps(model.callModel));
+    expect(results.at(-1)!.status).toBe("finished");
+    expect((await runRow(runId)).status).toBe("finished");
   });
 });
 
