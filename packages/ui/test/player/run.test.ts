@@ -23,6 +23,7 @@ import {
   toLiveSession,
   type PlayerState,
 } from "../../src/player/run.js";
+import { Recorder } from "@rg/session-engine";
 import { BUILD_ID, build, SLOT, T0, view } from "./fixtures.js";
 
 const S = 1000;
@@ -233,8 +234,10 @@ describe("a swap mid-session", () => {
     ]);
     expect(s.index).toBe(4);
     expect(s.live.entries.gobletSquat!.sets.filter((x) => x.done)).toHaveLength(1);
-    // The swapped-in set is the one now playing: counted, with the alternative's own target.
-    expect(s.live.entries.splitSquat!.sets[1]).toMatchObject({ done: true, w: { v: 20, u: "lb" }, reps: 8 });
+    // The swapped-in set is the one now playing: counted, with the alternative's own target — the new move's first set
+    // in its entry (its sets are its own, from where it came in: Stage 2 whole-branch I-1).
+    expect(Recorder.placeOf(s.live, s.live.steps[4]!)).toBe(0);
+    expect(s.live.entries.splitSquat!.sets[0]).toMatchObject({ done: true, w: { v: 20, u: "lb" }, reps: 8 });
     expect(s.swaps).toEqual([{ slotKey: "core:0", to: "splitSquat" }]);
   });
 });

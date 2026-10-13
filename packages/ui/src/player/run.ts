@@ -303,12 +303,18 @@ export function swapSlot(state: PlayerState, data: EngineData, slotKey: string, 
   const current = stepAt(s);
   const playing = inSlot(current);
   // The set being played is played as the new move: the old move's set was reached, not done.
-  if (playing && current!.kind === "set" && current!.exerciseId) Recorder.setDone(s.live, current!.exerciseId, current!.setIndex ?? 0, false);
+  if (playing && current!.kind === "set") undone(s.live, current!);
   const steps = Swapping.splice(s.live.plan.steps, slotKey, choice.steps);
   s.live = Recorder.rebase(data, s.live, { steps, plannedSeconds: Swapping.costOf(steps) }, s.index, slotKey);
   s.swaps = [...s.swaps.filter((x) => x.slotKey !== slotKey), { slotKey, to: choice.id }];
   if (playing) arrive(s, s.index, now, null);
   return s;
+}
+
+/** A set reached but not done after all (it is played as another move, or the session ended on it). */
+function undone(live: Live, step: Step): void {
+  const at = step.exerciseId ? Recorder.placeOf(live, step) : -1;
+  if (at >= 0) Recorder.setDone(live, step.exerciseId!, at, false);
 }
 
 /** Stop where it is (the last step done, or ended early): the review is next. */
@@ -322,7 +328,7 @@ export function endSession(state: PlayerState, now: number): PlayerState {
   const notDone = !!step && (step.kind === "set" || (step.kind === "timed" && held < step.seconds / 2));
   leave(s, now, "end");
   if (notDone && step) {
-    if (step.kind === "set" && step.exerciseId) Recorder.setDone(s.live, step.exerciseId, step.setIndex ?? 0, false);
+    if (step.kind === "set") undone(s.live, step);
     s.live.reached.delete(s.index);
   }
   s.finished = true;
@@ -347,7 +353,10 @@ export function stepView(state: PlayerState, now: number): StepView {
 
 export interface LogTarget {
   exerciseId: string;
+  /** The set's own number in its slot (the step's `setIndex`): what the card's title says. */
   setIndex: number;
+  /** Where the set is in its move's entry (`Recorder.placeOf`): what the card writes. */
+  place: number;
   entry: LiveEntry;
   w: Weight | null;
   reps: number | null;
@@ -359,7 +368,10 @@ export interface LogTarget {
 /** Which set a log card was opened on: kept with the card, so it writes there whatever the clock has done since. */
 export interface LogFor {
   exerciseId: string;
+  /** The set's own number in its slot. */
   setIndex: number;
+  /** Where the set is in its move's entry: a move in two items has a set for each (`Recorder.placeOf`). */
+  place: number;
   side: Step["side"];
 }
 
@@ -367,7 +379,8 @@ export interface LogFor {
 export function logFor(state: PlayerState): LogFor | null {
   const k = Recorder.logStepIndex(state.live, state.index);
   const step = k === null ? undefined : state.live.steps[k];
-  return step?.exerciseId ? { exerciseId: step.exerciseId, setIndex: step.setIndex ?? 0, side: step.side } : null;
+  const place = step ? Recorder.placeOf(state.live, step) : -1;
+  return step?.exerciseId && place >= 0 ? { exerciseId: step.exerciseId, setIndex: step.setIndex ?? 0, place, side: step.side } : null;
 }
 
 /** The set the log card edits: the one it was opened on (`held`), else the one it would open on now (`logFor`). */
@@ -375,9 +388,9 @@ export function logTarget(state: PlayerState, held: LogFor | null = null): LogTa
   const at = held ?? logFor(state);
   if (!at) return null;
   const entry = state.live.entries[at.exerciseId];
-  const set = entry?.sets[at.setIndex];
+  const set = entry?.sets[at.place];
   if (!entry || !set) return null;
-  return { exerciseId: at.exerciseId, setIndex: at.setIndex, entry, w: set.w, reps: set.reps, secs: set.secs, sides: set.sides ?? null };
+  return { exerciseId: at.exerciseId, setIndex: at.setIndex, place: at.place, entry, w: set.w, reps: set.reps, secs: set.secs, sides: set.sides ?? null };
 }
 
 /**
@@ -389,7 +402,7 @@ export function heldBefore(state: PlayerState): { secs: number | null; sides: Pa
   const k = Recorder.logStepIndex(state.live, state.index);
   const held = k === null ? undefined : state.live.steps[k];
   const t = logTarget(state);
-  if (!t || !goesToMax(state, held) || !t.entry.sets[t.setIndex]!.done) return null;
+  if (!t || !goesToMax(state, held) || !t.entry.sets[t.place]!.done) return null;
   return { secs: t.secs, sides: t.sides };
 }
 
@@ -416,12 +429,12 @@ export function editLog(
   const t = logTarget(state, held);
   if (!t) return state;
   const s = draft(state);
-  if (values.w !== undefined && !sameWeight(values.w, t.w)) Recorder.update(s.live, t.exerciseId, t.setIndex, "w", values.w);
-  if (values.reps !== undefined && values.reps !== t.reps) Recorder.update(s.live, t.exerciseId, t.setIndex, "reps", values.reps);
-  if (values.secs !== undefined && values.secs !== t.secs) Recorder.update(s.live, t.exerciseId, t.setIndex, "secs", values.secs);
+  if (values.w !== undefined && !sameWeight(values.w, t.w)) Recorder.update(s.live, t.exerciseId, t.place, "w", values.w);
+  if (values.reps !== undefined && values.reps !== t.reps) Recorder.update(s.live, t.exerciseId, t.place, "reps", values.reps);
+  if (values.secs !== undefined && values.secs !== t.secs) Recorder.update(s.live, t.exerciseId, t.place, "secs", values.secs);
   for (const side of ["left", "right"] as const) {
     const v = values.sides?.[side];
-    if (typeof v === "number" && v !== t.sides?.[side]) Recorder.setSide(s.live, t.exerciseId, t.setIndex, side, v);
+    if (typeof v === "number" && v !== t.sides?.[side]) Recorder.setSide(s.live, t.exerciseId, t.place, side, v);
   }
   for (const [flag, on] of Object.entries(flags)) {
     if (s.live.entries[t.exerciseId]!.flags.includes(flag) !== on) Recorder.setFlag(s.live, t.exerciseId, flag, on);
@@ -442,7 +455,7 @@ export function confirmLog(
 ): PlayerState {
   const edited = editLog(state, values, flags, held);
   const step = stepAt(edited);
-  const here = !held || (step?.exerciseId === held.exerciseId && (step.setIndex ?? 0) === held.setIndex);
+  const here = !held || (!!step && step.exerciseId === held.exerciseId && Recorder.placeOf(edited.live, step) === held.place);
   return step?.kind === "set" && here ? next(edited, now) : edited;
 }
 

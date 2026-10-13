@@ -437,6 +437,95 @@ describe("the slot each move was played in (Stage 2 minors)", () => {
   });
 });
 
+// A move's sets are numbered per (slot, set) in play order (Stage 2 whole-branch review I-1): the same move in two items
+// never shares a set, and an engine build — one slot a move, its sets numbered from 0 — keeps its numbers.
+describe("a move's sets, one per slot and set number, in play order (Stage 2 whole-branch I-1)", () => {
+  const timed = (slotKey: string, exerciseId: string, seconds: number, setIndex = 0, setCount = 1, log = true): Step => ({
+    kind: "timed", slotKey, block: "core", exerciseId, side: null, setIndex, setCount, seconds, prepGap: 8, target: null,
+    format: { id: "holds", group: null, round: null }, why: [], isNew: false, log,
+  });
+  const meta0 = meta({ plannedSeconds: 0, newMove: null });
+  const end = (live: Live) => Recorder.toSession(live, { endedAt: "2026-09-29T18:40:00.000Z" });
+
+  test("the same move in a warm-up and the main part keeps a set for each: the warm-up's is never the main's", () => {
+    const plan = { steps: [timed("prep:0", "wallSit", 20), timed("core:0", "wallSit", 45, 0, 2), timed("core:0", "wallSit", 45, 1, 2)], plannedSeconds: 0 };
+    const live = Recorder.create(data, plan, meta0);
+    expect(live.entries.wallSit!.sets.map(s => s.secs)).toEqual([20, 45, 45]);
+    expect(plan.steps.map(s => Recorder.placeOf(live, s))).toEqual([0, 1, 2]);
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 20);
+    // The main's first set skipped, its second held 50 s.
+    Recorder.reach(live, 1);
+    Recorder.finishTimed(live, 1, 0, { toMax: true });
+    Recorder.reach(live, 2);
+    Recorder.finishTimed(live, 2, 50, { toMax: true, done: true });
+    expect(end(live).entries.find(e => e.id === "wallSit")!.sets.map(s => s.secs)).toEqual([20, 50]);
+    expect(live.entries.wallSit!.sets.map(s => s.done)).toEqual([true, false, true]);
+  });
+
+  test("an edit fills the later sets of its own slot only", () => {
+    const plan = { steps: [timed("prep:0", "wallSit", 20), timed("core:0", "wallSit", 45, 0, 2), timed("core:0", "wallSit", 45, 1, 2)], plannedSeconds: 0 };
+    const live = Recorder.create(data, plan, meta0);
+    Recorder.update(live, "wallSit", 0, "secs", 25);
+    expect(live.entries.wallSit!.sets.map(s => s.secs)).toEqual([25, 45, 45]);
+    Recorder.update(live, "wallSit", 1, "secs", 50);
+    expect(live.entries.wallSit!.sets.map(s => s.secs)).toEqual([25, 50, 50]);
+  });
+
+  test("a step of the move that is not logged writes no set (a warm-up window of a move logged elsewhere)", () => {
+    const plan = { steps: [timed("prep:0", "wallSit", 20, 0, 1, false), timed("core:0", "wallSit", 45)], plannedSeconds: 0 };
+    const live = Recorder.create(data, plan, meta0);
+    expect(live.entries.wallSit!.sets).toHaveLength(1);
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 20);
+    expect(live.entries.wallSit!.sets[0]!.done).toBe(false);
+    expect(Recorder.placeOf(live, plan.steps[0]!)).toBe(-1);
+  });
+
+  test("an engine build keeps its numbers: every logged step's set is its own set number", () => {
+    for (const format of ["straight", "superset", "circuit", "ladder"] as const) {
+      for (const minutes of [20, 40]) {
+        const plan = planFor({ theme: themed([format]), minutes });
+        const live = Recorder.create(data, plan, meta(plan));
+        for (const step of plan.steps.filter(s => s.log && s.exerciseId && live.entries[s.exerciseId])) {
+          expect(Recorder.placeOf(live, step), `${format} ${minutes} ${step.slotKey} ${step.setIndex}`).toBe(step.setIndex ?? 0);
+        }
+      }
+    }
+  });
+
+  test("a session kept before sets were numbered this way plays on by the steps' own set numbers", () => {
+    const plan = { steps: [timed("core:0", "wallSit", 45, 0, 2), timed("core:0", "wallSit", 45, 1, 2)], plannedSeconds: 0 };
+    const live = Recorder.create(data, plan, meta0);
+    const { keys: _gone, ...kept } = live;
+    const old = kept as Live;
+    expect(plan.steps.map(s => Recorder.placeOf(old, s))).toEqual([0, 1]);
+    Recorder.reach(old, 1);
+    Recorder.finishTimed(old, 1, 45);
+    expect(old.entries.wallSit!.sets.map(s => s.done)).toEqual([false, true]);
+  });
+
+  test("a swap and a swap back keep every set where it was", () => {
+    const plan = { steps: [timed("core:0", "wallSit", 45, 0, 3), timed("core:0", "wallSit", 45, 1, 3), timed("core:0", "wallSit", 45, 2, 3)], plannedSeconds: 0 };
+    let live = Recorder.create(data, plan, meta0);
+    const swap = (l: Live, i: number, to: string) => {
+      const fresh = [0, 1, 2].map(k => timed("core:0", to, 45, k, 3));
+      const steps = Swapping.splice(l.plan.steps, "core:0", fresh);
+      return Recorder.rebase(data, l, { steps, plannedSeconds: 0 }, i, "core:0");
+    };
+    Recorder.reach(live, 0);
+    Recorder.finishTimed(live, 0, 45);
+    live = swap(live, 1, "splitSquatHold");
+    Recorder.reach(live, 1);
+    Recorder.finishTimed(live, 1, 40);
+    live = swap(live, 2, "wallSit");
+    Recorder.reach(live, 2);
+    Recorder.finishTimed(live, 2, 44);
+    const s = end(live);
+    expect(s.entries.map(e => [e.id, e.sets.map(x => x.secs)])).toEqual([["wallSit", [45, 44]], ["splitSquatHold", [40]]]);
+  });
+});
+
 describe("review: decisions are a pending change set, applied on save (spec §5 change 4)", () => {
   const prefs = { ratings: { a: 1 }, excluded: ["x"], pinned: [] };
 

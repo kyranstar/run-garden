@@ -7,7 +7,7 @@ import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { Swapping } from "@rg/session-engine";
 import { deriveDoc, playerStepsFromDoc, validateWorkoutDoc, type ValidateCtx } from "@rg/workout";
-import { gateDoc, judgeDoc, libraryOffers, materializeDocBuild, slotsForDay, type DocSlot } from "../src/services/doc-build.js";
+import { DOC_BUILD_VERSION, gateDoc, judgeDoc, libraryOffers, materializeDocBuild, slotsForDay, type DocSlot } from "../src/services/doc-build.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -395,6 +395,31 @@ describe("materializeDocBuild", () => {
       // Played as written, the cue stays.
       expect(materializeDocBuild(cued, input(ctxAt(1))).slots["accessory:0"]?.cue).toBe("Land soft.");
     });
+  });
+});
+
+describe("a part played in rounds (Stage 2 whole-branch I-1)", () => {
+  const location = { id: "home", name: "Home", equipment: [], implements: {} };
+  it("⇄'s options are numbered as the slot is, round by round, so a swap in round 2 splices that round on; builds of an older version are made again", () => {
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [{ purpose: "main", format: "holds", rounds: 3, items: [
+        { kind: "exercise", libraryId: "wallSit", dose: { sets: 1, holdSec: 30 }, alternates: [{ libraryId: "splitSquatHold" }] },
+        { kind: "exercise", libraryId: "birdDog", dose: { sets: 1, reps: 8 } },
+      ] }],
+    });
+    const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge: ctxAt(1) });
+    const numbers = (steps: readonly { kind: string; slotKey: string; setIndex: number | null; setCount: number | null }[]) =>
+      steps.filter((s) => s.kind !== "rest" && s.slotKey === "core:0").map((s) => [s.setIndex, s.setCount]);
+    expect(numbers(made.build.steps)).toEqual([[0, 3], [1, 3], [2, 3]]);
+    const options = [...(made.slots["core:0"]?.alternates ?? []), ...(made.slots["core:0"]?.offers ?? [])];
+    expect(options.length).toBeGreaterThan(0);
+    for (const o of options) expect(numbers(o.steps), o.id).toEqual([[0, 3], [1, 3], [2, 3]]);
+    // ⇄ splices set by set: each round's set into its own round, never the three back to back.
+    const spliced = Swapping.splice(made.build.steps, "core:0", options[0]!.steps);
+    const alt = options[0]!.id;
+    expect(spliced.filter((s) => s.kind !== "rest").map((s) => s.exerciseId)).toEqual([alt, "birdDog", alt, "birdDog", alt, "birdDog"]);
+    expect(DOC_BUILD_VERSION).toBe("doc-build-5");
   });
 });
 

@@ -29,7 +29,10 @@
  *   stations as written, and `restBetweenRoundsSec` between rounds.
  * - ladder: `rounds` rungs whose reps step evenly from the reps range's low to its high; round by round the moves in
  *   order, `restBetweenRoundsSec` between rungs.
- * - Any other part with `rounds` plays its sequence that many times, `restBetweenRoundsSec` between.
+ * - Any other part with `rounds` plays its sequence that many times, `restBetweenRoundsSec` between; a slot's sets are
+ *   numbered across the rounds (round r's set s is r × sets + s of rounds × sets; a run segment, its round), as a
+ *   superset's, circuit's and ladder's are — each set a slot plays has its own number (`Round`). An engine build never
+ *   has such a part: its numbers are the build's own (the parity test).
  * - A free-text move or a run segment plays with no move id. A run segment of a duration is a timed window; one of a
  *   distance or an open one is a self-paced step of the derived seconds (`secondsOfRun`: the pace band's middle, else
  *   6:00/km; open, a nominal 10 minutes).
@@ -124,12 +127,12 @@ function partSteps(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx): Step
   if (part.format === "superset" && onlyMoves) return superset(part, slots as Slot[], ctx);
   if (part.format === "ladder" && onlyMoves) return ladder(part, slots as Slot[], ctx);
   if (part.format === "circuit" || part.format === "intervals") return circuit(part, slots, ctx);
-  const once = (round: number | null) => (part.format === "straight" || part.format === "steady" ? straight(part, slots, ctx, round) : sequence(part, slots, ctx, round));
+  const once = (round: Round) => (part.format === "straight" || part.format === "steady" ? straight(part, slots, ctx, round) : sequence(part, slots, ctx, round));
   const rounds = part.rounds ?? 1;
   if (rounds <= 1) return once(null);
   const steps: Step[] = [];
   for (let r = 0; r < rounds; r++) {
-    steps.push(...once(r + 1));
+    steps.push(...once({ at: r, of: rounds }));
     const last = lastKey(slots);
     if (r < rounds - 1 && (part.restBetweenRoundsSec ?? 0) > 0 && last) steps.push(rest(last, part.restBetweenRoundsSec!, ctx));
   }
@@ -139,8 +142,23 @@ function partSteps(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx): Step
 const lastKey = (slots: Array<Slot | null>): string | null => [...slots].reverse().find((s) => s)?.key ?? null;
 const firstKey = (slots: Array<Slot | null>): string | null => slots.find((s) => s)?.key ?? null;
 
+/**
+ * A part played in rounds (holds, flow, straight and any other format with `rounds`): which round this pass is, of how
+ * many. A slot's sets are numbered across the rounds — round r's set s is r × sets + s of rounds × sets — so each set a
+ * slot plays has its own number (the recorder logs a set by it, and ⇄ splices a slot by it); a left and a right window
+ * share theirs. Null when the part is played once.
+ */
+type Round = { at: number; of: number } | null;
+
+/** A slot's set `s` of `sets` in this pass: its number across the rounds (see `Round`). */
+const numbered = (round: Round, s: number, sets: number) =>
+  round === null ? { setIndex: s, setCount: sets } : { setIndex: round.at * sets + s, setCount: round.of * sets };
+/** A run segment's number: its round. */
+const runNumber = (round: Round): Partial<Step> => (round === null ? {} : { setIndex: round.at, setCount: round.of });
+const roundOf = (round: Round): number | null => (round === null ? null : round.at + 1);
+
 /** Holds, flow, and any format without its own rule: each item in order. */
-function sequence(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx, round: number | null): Step[] {
+function sequence(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx, round: Round): Step[] {
   const steps: Step[] = [];
   let prev = firstKey(slots);
   part.items.forEach((item, i) => {
@@ -151,16 +169,16 @@ function sequence(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx, round:
     }
     prev = slot.key;
     if (!isMove(slot)) {
-      steps.push(runStep(slot, ctx, round));
+      steps.push(runStep(slot, ctx, roundOf(round), runNumber(round)));
       return;
     }
     const sets = slot.item.dose.sets ?? 1;
-    for (let s = 0; s < sets; s++) steps.push(...windows(slot, ctx, { setIndex: s, setCount: sets }, round));
+    for (let s = 0; s < sets; s++) steps.push(...windows(slot, ctx, numbered(round, s, sets), roundOf(round)));
   });
   return steps;
 }
 
-function straight(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx, round: number | null): Step[] {
+function straight(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx, round: Round): Step[] {
   const steps: Step[] = [];
   const lastMove = slots.reduce((at, s, i) => (s && isMove(s) ? i : at), -1);
   let prev = firstKey(slots);
@@ -172,12 +190,12 @@ function straight(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx, round:
     }
     prev = slot.key;
     if (!isMove(slot)) {
-      steps.push(runStep(slot, ctx, round));
+      steps.push(runStep(slot, ctx, roundOf(round), runNumber(round)));
       return;
     }
     const sets = slot.item.dose.sets ?? 1;
     for (let s = 0; s < sets; s++) {
-      steps.push(...oneSet(slot, ctx, { setIndex: s, setCount: sets }, round));
+      steps.push(...oneSet(slot, ctx, numbered(round, s, sets), roundOf(round)));
       const seconds = restSeconds(slot);
       if (!(i === lastMove && s === sets - 1) && seconds > 0) steps.push(rest(slot.key, seconds, ctx));
     }

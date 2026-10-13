@@ -79,7 +79,33 @@ export interface Live {
   held?: Record<number, boolean>;
   secs: Record<string, number>;
   runningMs: number;
+  /**
+   * Each logged move's sets, by place in its entry (`entries[id].sets[place]`): the set keys (`setKey`: a slot and its
+   * set number) in the order the session first plays them. A set is its slot's and number's alone — the same move in
+   * two items, or a part played in rounds, never shares one; an engine build (a move in one slot, numbered from 0) keeps
+   * its numbers. Absent on a session kept before it existed: a step's set is then at its set number, as it was.
+   */
+  keys?: Record<string, string[]>;
 }
+
+/** A step's set, as its move's entry knows it: its slot and its set number. */
+const setKey = (step: Pick<Step, "slotKey" | "setIndex">): string => `${step.slotKey}#${step.setIndex ?? 0}`;
+const slotOfKey = (key: string): string => key.slice(0, key.lastIndexOf("#"));
+
+/**
+ * Where a step's set is in its move's entry (`Live.keys`), or -1 when the step is no set of it (a window of the move
+ * that is not logged, where the move is logged elsewhere). A session kept before the keys: the step's set number.
+ */
+function placeOf(live: Pick<Live, "keys">, step: Pick<Step, "exerciseId" | "slotKey" | "setIndex">): number {
+  const keys = step.exerciseId ? live.keys?.[step.exerciseId] : undefined;
+  return keys ? keys.indexOf(setKey(step)) : (step.setIndex ?? 0);
+}
+
+const setOf = (live: Live, step: Step): LiveSet | undefined => {
+  const e = step.exerciseId ? live.entries[step.exerciseId] : undefined;
+  const at = placeOf(live, step);
+  return e && at >= 0 ? e.sets[at] : undefined;
+};
 
 export interface SavedEntry extends HistoryEntry {
   log: LiveEntry["log"];
@@ -130,6 +156,7 @@ function create(data: EngineData, plan: PlanSteps, meta: RecorderMeta): Live {
   const entries: Record<string, LiveEntry> = {};
   const order: string[] = [];
   const sparse: Record<string, Array<LiveSet | undefined>> = {};
+  const keys: Record<string, string[]> = {};
   // A stored plan may name a move the library has since renamed: every step reads its current id, so what you
   // reach and log lands on the entry under that id.
   const steps = plan.steps.map(s => {
@@ -146,16 +173,20 @@ function create(data: EngineData, plan: PlanSteps, meta: RecorderMeta): Live {
         perSide: ex.laterality === "unilateral", format: step.format.id, flags: [], sets: [],
       };
       sparse[ex.id] = [];
+      keys[ex.id] = [];
       order.push(ex.id);
     }
+    const key = setKey(step);
+    let at = keys[ex.id]!.indexOf(key);
+    if (at < 0) at = keys[ex.id]!.push(key) - 1;
     const t = step.target || {};
-    sparse[ex.id]![step.setIndex ?? 0] = {
+    sparse[ex.id]![at] = {
       w: t.w || null, reps: t.reps ?? null, secs: t.secs || (step.kind === "timed" ? step.seconds : null),
       done: false, touched: false,
     };
   }
   for (const id of order) entries[id]!.sets = Array.from(sparse[id]!, s => s || blankSet());
-  return { meta, plan, steps, entries, order, reached: new Set(), held: {}, secs: {}, runningMs: 0 };
+  return { meta, plan, steps, entries, order, reached: new Set(), held: {}, secs: {}, runningMs: 0, keys };
 }
 
 /** Reaching a set counts it; a timed hold only counts when you leave it having held half of it (finishTimed). */
@@ -163,8 +194,7 @@ function reach(live: Live, index: number): void {
   const step = live.steps[index];
   if (!step) return;
   live.reached.add(index);
-  const e = step.exerciseId ? live.entries[step.exerciseId] : undefined;
-  const set = e ? e.sets[step.setIndex ?? 0] : undefined;
+  const set = setOf(live, step);
   if (set && step.kind !== "timed") set.done = true;
 }
 
@@ -181,8 +211,7 @@ function finishTimed(live: Live, index: number, elapsedSecs: number, how: HoldEn
   live.held ??= {};
   if (held) live.held[index] = true;
   else if (live.held[index] !== true) live.held[index] = false;
-  const e = step.exerciseId ? live.entries[step.exerciseId] : undefined;
-  const set = e ? e.sets[step.setIndex ?? 0] : undefined;
+  const set = setOf(live, step);
   if (!set || !held) return;
   set.done = true;
   const side = how.toMax ? sideOf(step) : null;
@@ -230,14 +259,22 @@ const addSeconds = (live: Live, exId: string, secs: number): void => {
   live.secs[exId] = (live.secs[exId] || 0) + secs;
 };
 
-/** Editing a set also updates later sets you haven't touched yet. */
+/**
+ * Editing a set (at its place in the entry) also updates the later sets of its slot you haven't touched yet — never
+ * another item's sets of the same move (a warm-up's seconds are not the main part's).
+ */
 function update<K extends "w" | "reps" | "secs">(live: Live, exId: string, setIndex: number, field: K, value: LiveSet[K]): void {
   const e = live.entries[exId];
   const set = e ? e.sets[setIndex] : undefined;
   if (!e || !set) return;
   set[field] = value;
   set.touched = true;
-  for (let i = setIndex + 1; i < e.sets.length; i++) if (!e.sets[i]!.touched) e.sets[i]![field] = value;
+  const keys = live.keys?.[exId];
+  const slot = keys?.[setIndex] === undefined ? null : slotOfKey(keys[setIndex]!);
+  for (let i = setIndex + 1; i < e.sets.length; i++) {
+    if (slot !== null && (keys![i] === undefined || slotOfKey(keys![i]!) !== slot)) continue;
+    if (!e.sets[i]!.touched) e.sets[i]![field] = value;
+  }
 }
 
 function setDone(live: Live, exId: string, setIndex: number, done: boolean): void {
@@ -250,6 +287,9 @@ function addSet(live: Live, exId: string): void {
   if (!e) return;
   const last = e.sets[e.sets.length - 1] || blankSet();
   e.sets.push({ w: last.w, reps: last.reps, secs: last.secs, done: true, touched: true });
+  // An added set is its last set's slot's, under a number no step has.
+  const keys = live.keys?.[exId];
+  if (keys && keys.length === e.sets.length - 1) keys.push(`${keys.length > 0 ? slotOfKey(keys[keys.length - 1]!) : ""}#added${keys.length}`);
 }
 
 /** Sets or clears a profile's flag (its `setFlag.id`) on a logged exercise. */
@@ -323,6 +363,22 @@ function toSession(live: Live, { endedAt, post = {}, note = "", completed = fals
   };
 }
 
+/**
+ * A move's set keys by place: the session's own (`Live.keys`), or for one kept before them, each logged step's key at its
+ * set number (a place no step names holds a key no step has).
+ */
+function keysOf(live: Live, exId: string): string[] {
+  const held = live.keys?.[exId];
+  if (held) return [...held];
+  const out: string[] = [];
+  for (const s of live.steps) {
+    if (!s.log || s.exerciseId !== exId) continue;
+    const at = s.setIndex ?? 0;
+    out[at] ??= setKey(s);
+  }
+  return Array.from(out, (k, i) => k ?? `#none${i}`);
+}
+
 // A swap mid-session: the swapped slot's remaining sets come from the fresh plan; every other step stays as it was,
 // along with what you reached and logged.
 function rebase(data: EngineData, old: Live, freshPlan: PlanSteps, index: number, slotKey: string): Live {
@@ -339,10 +395,18 @@ function rebase(data: EngineData, old: Live, freshPlan: PlanSteps, index: number
     steps.push(...freshSlot.filter(x => x.setIndex === s.setIndex));
   }
   const live = create(data, { ...freshPlan, steps }, { ...old.meta, plannedSeconds: freshPlan.plannedSeconds });
+  const keys = (live.keys ??= {});
   for (const id of old.order) {
-    if (!live.entries[id] && !old.entries[id]!.sets.some(x => x.done)) continue;
+    const before = old.entries[id]!;
+    if (!live.entries[id] && !before.sets.some(x => x.done)) continue;
     if (!live.entries[id]) live.order.push(id);
-    live.entries[id] = old.entries[id]!;
+    // The entry as it was, every set at its place; a set the new steps hold that it never had goes after them.
+    const was = keysOf(old, id);
+    const fresh = keys[id] ?? [];
+    const freshSets = live.entries[id]?.sets ?? [];
+    const added = fresh.flatMap((k, i) => (was.includes(k) ? [] : [{ k, set: freshSets[i] ?? blankSet() }]));
+    live.entries[id] = added.length === 0 ? before : { ...before, sets: [...before.sets, ...added.map(a => a.set)] };
+    keys[id] = [...was, ...added.map(a => a.k)];
   }
   old.reached.forEach(k => { if (moved.has(k)) live.reached.add(moved.get(k)!); });
   for (const [k, held] of Object.entries(old.held ?? {})) if (moved.has(Number(k))) live.held![moved.get(Number(k))!] = held;
@@ -351,7 +415,7 @@ function rebase(data: EngineData, old: Live, freshPlan: PlanSteps, index: number
   return live;
 }
 
-export const Recorder = { create, reach, finishTimed, addSeconds, update, setDone, addSet, setFlag, setSide, logStepIndex, toSession, rebase, movesDone };
+export const Recorder = { create, reach, finishTimed, addSeconds, update, setDone, addSet, setFlag, setSide, logStepIndex, toSession, rebase, movesDone, placeOf };
 
 // ---- Review: the decisions made on the review screen (ratings, "not for me", graduations) are held as a
 // pending change set and applied on save, never written while reviewing (spec §5 change 4).

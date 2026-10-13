@@ -244,6 +244,35 @@ describe("playerStepsFromDoc — any document", () => {
     ]);
   });
 
+  it("a part played in rounds numbers each slot's sets across the rounds (holds, flow, straight): round r's set s is r×sets+s of rounds×sets; a left and right window share theirs", () => {
+    const numbers = (format: "holds" | "flow" | "straight") =>
+      playerStepsFromDoc(doc([{ purpose: "main", format, rounds: 3, restBetweenRoundsSec: 30, items: [
+        { kind: "exercise", libraryId: "sidePlank", dose: { sets: 1, holdSec: 30, perSide: true } },
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: 8 } },
+      ] }]), LIB)
+        .filter((s) => s.kind !== "rest")
+        .map((s) => [s.exerciseId, s.side, s.setIndex, s.setCount, s.format.round]);
+    for (const format of ["holds", "flow", "straight"] as const) {
+      expect(numbers(format), format).toEqual([
+        ["sidePlank", "Left", 0, 3, 1], ["sidePlank", "Right", 0, 3, 1], ["gobletSquat", null, 0, 6, 1], ["gobletSquat", null, 1, 6, 1],
+        ["sidePlank", "Left", 1, 3, 2], ["sidePlank", "Right", 1, 3, 2], ["gobletSquat", null, 2, 6, 2], ["gobletSquat", null, 3, 6, 2],
+        ["sidePlank", "Left", 2, 3, 3], ["sidePlank", "Right", 2, 3, 3], ["gobletSquat", null, 4, 6, 3], ["gobletSquat", null, 5, 6, 3],
+      ]);
+    }
+    // One round: numbered as before, a slot's own sets.
+    const once = playerStepsFromDoc(doc([{ purpose: "main", format: "holds", items: [
+      { kind: "exercise", libraryId: "sidePlank", dose: { sets: 2, holdSec: 30 } },
+    ] }]), LIB);
+    expect(once.map((s) => [s.setIndex, s.setCount])).toEqual([[0, 2], [1, 2]]);
+  });
+
+  it("a run segment in a part played in rounds is numbered by its round", () => {
+    const steps = playerStepsFromDoc(doc([{ purpose: "run", format: "steady", rounds: 2, items: [
+      { kind: "run", target: { durationSec: 300 }, effort: "easy" },
+    ] }]), LIB);
+    expect(steps.map((s) => [s.kind, s.setIndex, s.setCount, s.format.round])).toEqual([["timed", 0, 2, 1], ["timed", 1, 2, 2]]);
+  });
+
   it("docSlotKeys names each item's slot as its steps name it: its block, in play order within the block (rests none)", () => {
     const d = doc([
       { purpose: "warmup", format: "flow", items: [{ kind: "exercise", libraryId: "sidePlank", dose: { sets: 1, holdSec: 30 } }] },

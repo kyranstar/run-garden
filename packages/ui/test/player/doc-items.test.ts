@@ -171,7 +171,7 @@ describe("holds to max, each with a rest after (maxBuild)", () => {
     // The wall sit held 61 s; the rest after it (30 s) begins at T0+169 s.
     const atRest = doneHold(next(bothSides(), T0 + 100 * S), T0 + 169 * S);
     const held = logFor(atRest);
-    expect(held).toEqual({ exerciseId: "wallSit", setIndex: 0, side: null });
+    expect(held).toEqual({ exerciseId: "wallSit", setIndex: 0, place: 0, side: null });
     // The rest runs out while the card is open: the next step (a set) is the one in play now.
     const moved = settle(atRest, T0 + 260 * S, { autoAdvance: true });
     expect(moved.index).toBe(5);

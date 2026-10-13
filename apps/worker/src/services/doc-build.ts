@@ -43,7 +43,7 @@ import {
 import type { BuildItem, BuildPayload, CheckAnswer, ExerciseSlice, SessionView } from "./session-build.js";
 
 /** Bump when a document build's shape or rules change: a stored build of an older version is then built again. */
-export const DOC_BUILD_VERSION = "doc-build-4";
+export const DOC_BUILD_VERSION = "doc-build-5";
 
 /** The issue codes that keep a move out on the day — what an alternate can stand in for. */
 const GATE_CODES: ReadonlySet<DocIssueCode> = new Set(["condition_never", "condition_pattern", "condition_gate", "condition_gate_pending"]);
