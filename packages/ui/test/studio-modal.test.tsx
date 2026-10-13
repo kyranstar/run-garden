@@ -69,7 +69,7 @@ describe("StudioModal — detail mode", () => {
     plans: [liftPlan],
     onClose: noop,
     onCanned: noop,
-    onRetire: noop,
+    onRetire: async () => null,
     onRename: noop,
   };
   const prime = { key: ["plan-detail", "cp2"], data: detail };

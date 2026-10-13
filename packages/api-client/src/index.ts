@@ -1762,6 +1762,21 @@ async function drainCoach(): Promise<void> {
   }
 }
 
+/** Most drain requests a studio Retire fires; the hourly lane runs whatever is left. */
+export const STUDIO_DRAIN_MAX = 8;
+
+/**
+ * Run queued COROS writes a request at a time (`POST /api/sync/drain-writes` with a cap of one, each within one
+ * invocation's budget) until one runs nothing, at most STUDIO_DRAIN_MAX: a studio Retire queues its removals and runs
+ * none itself. Fired, never waited on.
+ */
+async function drainWrites(): Promise<void> {
+  for (let i = 0; i < STUDIO_DRAIN_MAX; i++) {
+    const { executed } = await post<{ ok: boolean; executed: number }>("/api/sync/drain-writes", { cap: 1 });
+    if (!executed) return;
+  }
+}
+
 /**
  * A path with its query, when it has one. Reads the query's text, not `URLSearchParams.size`, which Safari before 17
  * lacks (there it is undefined, so every query would be dropped).
@@ -1939,7 +1954,12 @@ export const api = {
    * Retire the old generator's current plan (its screens are retired; the plan modal's Retire…): what is ahead leaves
    * the watch, what is behind stays. 409 `not_current` / `already_retired` / `plan_completed`, 412 `writes_disabled`.
    */
-  studioPlanRetire: (id: string) => post<{ ok: true }>(`/api/studio/plans/${encodeURIComponent(id)}/retire`),
+  studioPlanRetire: async (id: string) => {
+    const res = await post<{ ok: true; summary?: { deletes?: number } }>(`/api/studio/plans/${encodeURIComponent(id)}/retire`);
+    // Its removals are queued, not run: drained a request at a time, so they reach the watch soon.
+    if ((res.summary?.deletes ?? 0) > 0) void drainWrites().catch(() => undefined);
+    return res;
+  },
   syncStatus: () => get<SyncStatusDto>("/api/sync/status"),
   syncNotes: () => get<{ notes: SyncNoteDto[] }>("/api/sync/notes"),
   raceHub: () => get<RaceHubResponse>("/api/plan/race"),

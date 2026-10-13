@@ -80,7 +80,7 @@ import {
 } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { appRequestedDates, recordIntent } from "./sync-intents.js";
-import { postSyncNote } from "./sync-notes.js";
+import { dismissStudioPlanNotes, postSyncNote } from "./sync-notes.js";
 
 // ── The plan grid → calendar days ───────────────────────────────────────────
 
@@ -872,6 +872,12 @@ export async function pushStudioPlan(
     suppressDriftPushIds?: Set<string>;
     /** Rows to leave as they are although the desired set drops them (`PlanPushInput.keep`; a retire's). */
     keepPushIds?: Set<string>;
+    /**
+     * A retire's push (`retireStudioPlan`): it only removes, so it reads no plan content and no catalog, and writes
+     * nothing a row at a time — a healed address and a drifted session are taken into account for this pass (a drifted
+     * one is never removed) but not written back, and no note is posted for a plan that is being retired.
+     */
+    retiring?: boolean;
   },
 ): Promise<PushSummary> {
   const now = nowInstant();
@@ -913,8 +919,8 @@ export async function pushStudioPlan(
   // LLM, may have been edited by a patch path, and is about to become writes
   // against the user's real calendar.
   const parsed = liftingPlanSchema.safeParse(planRow.plan);
-  if (!parsed.success) return { ...empty, error: "invalid_plan" };
-  const plan = parsed.data as LiftingPlan;
+  if (!parsed.success && !opts.retiring) return { ...empty, error: "invalid_plan" };
+  const plan = parsed.success ? (parsed.data as LiftingPlan) : null;
 
   const rows: PushRow[] = await db
     .select()
@@ -952,6 +958,7 @@ export async function pushStudioPlan(
     row.corosPlanId = heal.corosPlanId;
     row.corosIdInPlan = heal.corosIdInPlan;
     row.corosProgramId = heal.corosProgramId;
+    if (opts.retiring) continue;
     await db
       .update(studioPlanPushes)
       .set({
@@ -974,6 +981,13 @@ export async function pushStudioPlan(
     // this row; re-adopting it mid-flight would cancel the correction.
     if (opts.suppressDriftPushIds?.has(finding.pushId)) continue;
     const row = rows.find((r) => r.id === finding.pushId)!;
+    if (opts.retiring) {
+      // Retiring: our own move is addressed where it now is; the athlete's edit is left alone — never removed — and
+      // nothing is written or posted about a plan that is going.
+      if (finding.kind === "app_moved") row.corosHappenDay = finding.observedDay ?? row.corosHappenDay;
+      else driftedPushIds.add(finding.pushId);
+      continue;
+    }
     if (finding.kind === "app_moved") {
       // Our own move, recognized from the intent ledger: still ours. Record
       // where the workout actually is so a future delete is addressed right.
@@ -1010,11 +1024,11 @@ export async function pushStudioPlan(
 
   // Live stamps committed by the user's OTHER studio plans. Scoped to the user
   // because the container plan is theirs; "regardless of planId" within that.
-  const otherPlanIds = (
-    await db.select({ id: studioPlans.id }).from(studioPlans).where(eq(studioPlans.userId, opts.userId))
-  )
-    .map((p) => p.id)
-    .filter((id) => id !== opts.studioPlanId);
+  const otherPlanIds = opts.retiring
+    ? []
+    : (await db.select({ id: studioPlans.id }).from(studioPlans).where(eq(studioPlans.userId, opts.userId)))
+        .map((p) => p.id)
+        .filter((id) => id !== opts.studioPlanId);
   const otherLiveTitles: string[] = [];
   for (const ids of chunkIds(otherPlanIds)) {
     const found = await db
@@ -1025,11 +1039,11 @@ export async function pushStudioPlan(
   }
 
   const catalogIds = new Set(
-    (await db.select({ id: corosExercises.id }).from(corosExercises)).map((r) => r.id),
+    opts.retiring ? [] : (await db.select({ id: corosExercises.id }).from(corosExercises)).map((r) => r.id),
   );
 
   const batch = planPush({
-    desired: opts.desiredOverride ?? desiredSessions(plan),
+    desired: opts.desiredOverride ?? desiredSessions(plan!),
     rows,
     otherLiveTitles,
     driftedPushIds,
@@ -1039,56 +1053,19 @@ export async function pushStudioPlan(
   });
 
   const catalogNames = new Map(
-    (await db.select().from(corosExercises)).map((r) => [r.id, r.name] as const),
+    opts.retiring ? [] : (await db.select().from(corosExercises)).map((r) => [r.id, r.name] as const),
   );
   const catalogFor = (session: StudioSession): Array<{ id: string; name: string }> =>
     session.exercises.map((e) => ({ id: e.originId, name: catalogNames.get(e.originId) ?? e.name }));
 
-  // ── Rows ──────────────────────────────────────────────────────────────────
-  for (const id of batch.localDeletes) {
-    await db
-      .update(studioPlanPushes)
-      .set({ status: "deleted", error: null, updatedAt: now })
-      .where(eq(studioPlanPushes.id, id));
-  }
-  for (const failure of batch.failures) {
-    await upsertPushRow(db, {
-      planId: opts.studioPlanId,
-      planVersion: planRow.version,
-      happenDay: failure.happenDay,
-      sessionTitle: failure.sessionTitle,
-      status: "failed",
-      error: failure.error,
-      now,
-    });
-  }
-
-  // ── Jobs. Deletes first: the plan must never hold two workouts under one
-  //    stamp, even for the moment between a delete and its recreate. ─────────
+  // ── Jobs, built and checked before any row is written: a job the bridge would refuse throws here, leaving the
+  //    plan's rows as they were and nothing queued. Deletes first: the plan must never hold two workouts under one
+  //    stamp, even for the moment between a delete and its recreate. ─────────────────────────────────────────────
   const baseMs = Date.parse(now);
   let seq = 0;
   const stamped = (): string => new Date(baseMs + seq++).toISOString();
-  // Queued together at the end, a few to a statement: one statement a job made a plan's retire (every session ahead
-  // removed) cost one D1 statement per session, past the request budget for a long plan.
-  const jobs: StudioJobRow[] = [];
-
-  for (const del of batch.deletes) {
+  const deleteJobs = batch.deletes.map((del) => {
     const followUp = del.followUp;
-    if (followUp) {
-      // Mid-change: the row is no longer "verified as pushed", and its
-      // fingerprint moves to the new content now so a concurrent push does not
-      // re-plan the same change.
-      await db
-        .update(studioPlanPushes)
-        .set({
-          status: "pending",
-          error: null,
-          planVersion: planRow.version,
-          sessionFingerprint: followUp.fingerprint,
-          updatedAt: now,
-        })
-        .where(eq(studioPlanPushes.id, del.row.id));
-    }
     const payload: StoredDeletePayload = {
       pushId: del.row.id,
       happenDay: deleteTargetDay(del.row),
@@ -1108,19 +1085,82 @@ export async function pushStudioPlan(
           }
         : {}),
     };
-    jobs.push(
-      studioJobRow({
-        userId: opts.userId,
-        kind: "delete_scheduled_workout",
-        pushId: del.row.id,
-        happenDay: del.row.happenDay,
-        payload: payload as unknown as Record<string, unknown>,
-        requestedAt: stamped(),
-        now,
-      }),
-    );
+    return studioJobRow({
+      userId: opts.userId,
+      kind: "delete_scheduled_workout",
+      pushId: del.row.id,
+      happenDay: del.row.happenDay,
+      payload: payload as unknown as Record<string, unknown>,
+      requestedAt: stamped(),
+      now,
+    });
+  });
+  const createPayload = (create: PlannedCreate, pushId: string): CreateScheduledWorkoutJob => ({
+    pushId,
+    happenDay: create.desired.happenDay,
+    name: create.desired.sessionTitle,
+    session: create.desired.session,
+    catalog: catalogFor(create.desired.session),
+  });
+  // A create's row id is known only once its row is written; its job is checked now, on the same payload.
+  for (const create of batch.creates) {
+    studioJobRow({
+      userId: opts.userId,
+      kind: "create_scheduled_workout",
+      pushId: "unwritten",
+      happenDay: create.desired.happenDay,
+      payload: createPayload(create, "unwritten") as unknown as Record<string, unknown>,
+      requestedAt: now,
+      now,
+    });
   }
 
+  // ── Rows, a chunk to a statement where the write is the same for each ─────────────────────────────────────────
+  for (const ids of chunkIds(batch.localDeletes)) {
+    await db.update(studioPlanPushes).set({ status: "deleted", error: null, updatedAt: now }).where(inArray(studioPlanPushes.id, ids));
+  }
+  // A failure on a row that exists is that row's (its identity is the row's); one with no row yet makes it.
+  const failedRows = new Map<string, string[]>();
+  for (const failure of batch.failures) {
+    if (failure.pushId) failedRows.set(failure.error, [...(failedRows.get(failure.error) ?? []), failure.pushId]);
+    else {
+      await upsertPushRow(db, {
+        planId: opts.studioPlanId,
+        planVersion: planRow.version,
+        happenDay: failure.happenDay,
+        sessionTitle: failure.sessionTitle,
+        status: "failed",
+        error: failure.error,
+        now,
+      });
+    }
+  }
+  for (const [error, pushIds] of failedRows) {
+    for (const ids of chunkIds(pushIds)) {
+      await db
+        .update(studioPlanPushes)
+        .set({ status: "failed", error, planVersion: planRow.version, updatedAt: now })
+        .where(inArray(studioPlanPushes.id, ids));
+    }
+  }
+  for (const del of batch.deletes) {
+    const followUp = del.followUp;
+    if (!followUp) continue;
+    // Mid-change: the row is no longer "verified as pushed", and its
+    // fingerprint moves to the new content now so a concurrent push does not
+    // re-plan the same change.
+    await db
+      .update(studioPlanPushes)
+      .set({
+        status: "pending",
+        error: null,
+        planVersion: planRow.version,
+        sessionFingerprint: followUp.fingerprint,
+        updatedAt: now,
+      })
+      .where(eq(studioPlanPushes.id, del.row.id));
+  }
+  const createJobs: StudioJobRow[] = [];
   for (const create of batch.creates) {
     const pushId = await upsertPushRow(db, {
       planId: opts.studioPlanId,
@@ -1132,26 +1172,21 @@ export async function pushStudioPlan(
       error: null,
       now,
     });
-    const payload: CreateScheduledWorkoutJob = {
-      pushId,
-      happenDay: create.desired.happenDay,
-      name: create.desired.sessionTitle,
-      session: create.desired.session,
-      catalog: catalogFor(create.desired.session),
-    };
-    jobs.push(
+    createJobs.push(
       studioJobRow({
         userId: opts.userId,
         kind: "create_scheduled_workout",
         pushId,
         happenDay: create.desired.happenDay,
-        payload: payload as unknown as Record<string, unknown>,
+        payload: createPayload(create, pushId) as unknown as Record<string, unknown>,
         requestedAt: stamped(),
         now,
       }),
     );
   }
-  await insertStudioJobs(db, jobs);
+  // Queued together, a few to a statement: one statement a job made a plan's retire (every session ahead removed)
+  // cost one D1 statement per session, past the request budget for a long plan.
+  await insertStudioJobs(db, [...deleteJobs, ...createJobs]);
 
   // `app_moved` is the app recognizing its OWN move — not a genuine adoption
   // — so it must not inflate the reported/audited `drifted` count the way it
@@ -1521,6 +1556,8 @@ export async function applyStudioJobResult(
 export type UndoStudioAdoptionResult =
   | { ok: true; summary: PushSummary }
   | { ok: false; error: "not_found" }
+  /** The session's plan was retired: nothing of it goes back on the watch. */
+  | { ok: false; error: "plan_retired" }
   | { ok: false; error: "undo_unsupported_rename" }
   | { ok: false; error: "writes_disabled" };
 
@@ -1570,7 +1607,7 @@ export async function undoStudioAdoption(
   )[0];
   if (!row || row.status !== "adopted") return { ok: false, error: "not_found" };
   // A retired plan's session is not put back on the watch: the retire took the plan off it.
-  if (await studioPlanRetired(db, userId, row.planId)) return { ok: false, error: "not_found" };
+  if (await studioPlanRetired(db, userId, row.planId)) return { ok: false, error: "plan_retired" };
 
   const now = nowInstant();
 
@@ -1698,34 +1735,52 @@ export async function studioPlanRetired(db: Db, userId: string, planId: string):
   return row !== undefined;
 }
 
+/** Whether the account lets the app write to COROS ("Write date changes back to COROS"). One statement. */
+async function corosWritesOn(db: Db, userId: string): Promise<boolean> {
+  const [row] = await db.select({ prefs: userPreferences.prefs }).from(userPreferences).where(eq(userPreferences.userId, userId)).limit(1);
+  return (row?.prefs as { corosWritesEnabled?: boolean } | undefined)?.corosWritesEnabled === true;
+}
+
 /**
  * RETIRE A STUDIO PLAN, as a coach plan's Retire does: what is ahead of today leaves the watch, what is behind stays.
- * Through the push path — the desired set emptied (`desiredOverride: []`), the diff's own removal machinery deleting
- * every addressable session ahead — with what is behind kept as it is (`keepPushIds`): a session whose day has passed,
- * or one already done today. Nothing in the database is deleted; the plan is marked retired (`STUDIO_PLAN_RETIRED`) so
- * the plan list drops it, and a later retry finishes the retire instead of pushing the plan again.
+ *
+ * Kept as it is: everything behind the day that is (or may be) on the watch — verified, pending, or failed with a COROS
+ * address (a session COROS filed a day off) — and a session done today. What is ahead goes:
+ *  - anything of it with a COROS address through the push path (`desiredOverride: []`, the diff's own removal
+ *    machinery), which needs the COROS writes switch on — off, nothing is done (`writes_disabled`);
+ *  - with nothing ahead on the watch there is nothing to remove there: the retire is this app's alone, done here
+ *    whatever the switch — rows that never reached COROS cleared, a create that never reported said so, as a push says.
+ *
+ * The plan is marked retired (`STUDIO_PLAN_RETIRED`) before anything else is written, and its open notes of sessions
+ * edited or removed on COROS are dismissed — a retired plan has nothing to undo. Nothing in the database is deleted. A
+ * retire writes nothing a row at a time (`retiring`), so the longest plan stays within one request's budget.
  *
  * Callers check that the plan is the account's current one and not over; this only retires. `alreadyRetired`: the
- * plan carries the mark (a retry finishing the retire), so it is not written twice.
+ * plan carries the mark (a retry finishing the retire), so it is not marked twice.
  */
 export async function retireStudioPlan(
   db: Db,
   opts: { userId: string; studioPlanId: string; today: LocalDate; alreadyRetired: boolean },
 ): Promise<PushSummary> {
-  const rows = await db
+  const empty: PushSummary = { ok: false, creates: 0, deletes: 0, failures: 0, unchanged: 0, drifted: 0, blocked: 0, healed: 0 };
+  const rows: PushRow[] = await db
     .select({
       id: studioPlanPushes.id,
+      planId: studioPlanPushes.planId,
       happenDay: studioPlanPushes.happenDay,
-      corosHappenDay: studioPlanPushes.corosHappenDay,
-      corosPlanId: studioPlanPushes.corosPlanId,
+      sessionTitle: studioPlanPushes.sessionTitle,
+      sessionFingerprint: studioPlanPushes.sessionFingerprint,
       corosIdInPlan: studioPlanPushes.corosIdInPlan,
+      corosProgramId: studioPlanPushes.corosProgramId,
+      corosPlanId: studioPlanPushes.corosPlanId,
+      corosHappenDay: studioPlanPushes.corosHappenDay,
       status: studioPlanPushes.status,
+      error: studioPlanPushes.error,
     })
     .from(studioPlanPushes)
     .where(eq(studioPlanPushes.planId, opts.studioPlanId));
   // A session done today is behind the retire too: the workout a push became, completed.
-  const sourceOf = (r: (typeof rows)[number]): string | null =>
-    r.corosPlanId && r.corosIdInPlan ? `${r.corosPlanId}:${r.corosIdInPlan}` : null;
+  const sourceOf = (r: PushRow): string | null => (r.corosPlanId && r.corosIdInPlan ? `${r.corosPlanId}:${r.corosIdInPlan}` : null);
   const todays = rows.filter((r) => (r.corosHappenDay ?? r.happenDay) === opts.today);
   const done = new Set<string>();
   for (const ids of chunkIds(todays.map(sourceOf).filter((k): k is string => k !== null))) {
@@ -1741,29 +1796,49 @@ export async function retireStudioPlan(
       );
     for (const f of found) if (f.key) done.add(f.key);
   }
-  // Kept: what is (or may be) on the watch and behind the day. A failed row is never kept — nothing of it is there to
-  // keep, and the diff clears it as it clears any failed row the plan drops.
-  const keep = new Set(
-    rows
-      .filter((r) => r.status === "verified" || r.status === "pending")
-      .filter((r) => compareLocalDates(r.corosHappenDay ?? r.happenDay, opts.today) < 0 || done.has(sourceOf(r) ?? ""))
-      .map((r) => r.id),
-  );
-  const summary = await pushStudioPlan(db, {
-    userId: opts.userId,
-    studioPlanId: opts.studioPlanId,
-    today: opts.today,
-    desiredOverride: [],
-    keepPushIds: keep,
-  });
-  if (summary.ok && !opts.alreadyRetired) {
+  const mayBeThere = (r: PushRow) => r.status === "verified" || r.status === "pending" || (r.status === "failed" && addressable(r));
+  const behind = (r: PushRow) => compareLocalDates(r.corosHappenDay ?? r.happenDay, opts.today) < 0 || done.has(sourceOf(r) ?? "");
+  const keep = new Set(rows.filter((r) => mayBeThere(r) && behind(r)).map((r) => r.id));
+  const ahead = rows.filter((r) => !keep.has(r.id) && r.status !== "deleted" && r.status !== "adopted");
+  const onWatch = ahead.some(addressable);
+  if (onWatch && !(await corosWritesOn(db, opts.userId))) return { ...empty, error: "writes_disabled" };
+
+  if (!opts.alreadyRetired) {
     await db.insert(auditEvents).values({
       id: newId(),
       userId: opts.userId,
       kind: STUDIO_PLAN_RETIRED,
-      detail: { studioPlanId: opts.studioPlanId, kept: keep.size, deletes: summary.deletes },
+      detail: { studioPlanId: opts.studioPlanId, kept: keep.size, ahead: ahead.length },
       createdAt: nowInstant(),
     });
+    await dismissStudioPlanNotes(db, opts.userId, opts.studioPlanId);
   }
-  return summary;
+  if (onWatch) {
+    return pushStudioPlan(db, {
+      userId: opts.userId,
+      studioPlanId: opts.studioPlanId,
+      today: opts.today,
+      desiredOverride: [],
+      keepPushIds: keep,
+      retiring: true,
+    });
+  }
+
+  // Nothing ahead on the watch: the same diff decides what each row becomes, and nothing reaches COROS.
+  const now = nowInstant();
+  for (const ids of chunkIds(ahead.map((r) => r.id), 80)) {
+    await db
+      .update(corosWriteJobs)
+      .set({ status: "superseded", completedAt: now, updatedAt: now })
+      .where(and(eq(corosWriteJobs.userId, opts.userId), inArray(corosWriteJobs.studioPushId, ids), inArray(corosWriteJobs.status, [...IN_FLIGHT])));
+  }
+  const batch = planPush({ desired: [], rows: ahead, otherLiveTitles: [], driftedPushIds: new Set(), catalogIds: new Set(), today: opts.today });
+  for (const ids of chunkIds(batch.localDeletes)) {
+    await db.update(studioPlanPushes).set({ status: "deleted", error: null, updatedAt: now }).where(inArray(studioPlanPushes.id, ids));
+  }
+  const failed = batch.failures.flatMap((f) => (f.pushId ? [f.pushId] : []));
+  for (const ids of chunkIds(failed)) {
+    await db.update(studioPlanPushes).set({ status: "failed", error: "unaddressable", updatedAt: now }).where(inArray(studioPlanPushes.id, ids));
+  }
+  return { ...empty, ok: true, failures: failed.length };
 }

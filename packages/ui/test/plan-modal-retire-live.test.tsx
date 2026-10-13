@@ -36,7 +36,7 @@ const plan = (over: Partial<CoachPlanDto>): CoachPlanDto => ({
   ...over,
 });
 
-function mount(p: CoachPlanDto, onRetire: (id: string, source: "coach" | "studio") => void) {
+function mount(p: CoachPlanDto, onRetire: (id: string, source: "coach" | "studio") => Promise<string | null>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const detail: PlanDetailResponse = { plan: p, weeks: [], progressions: [], sessions: { planned: 24, done: 7 }, adherencePct: null };
   qc.setQueryData(["plan-detail", p.id], detail);
@@ -66,7 +66,7 @@ const button = (name: string): HTMLButtonElement => {
 
 describe("Retire… in the plan modal", () => {
   it("a plan the old generator made: the same confirmation, and the page is told it is a Studio plan", () => {
-    const onRetire = vi.fn();
+    const onRetire = vi.fn(async () => null);
     mount(plan({ id: "sp1", name: "Generated Block", source: "studio" }), onRetire);
     act(() => button("Retire…").click());
     expect(document.body.textContent).toContain("Retire this plan?");
@@ -76,11 +76,30 @@ describe("Retire… in the plan modal", () => {
   });
 
   it("a coach plan: as before, told it is the coach's", () => {
-    const onRetire = vi.fn();
+    const onRetire = vi.fn(async () => null);
     mount(plan({ id: "cp1" }), onRetire);
     act(() => button("Retire…").click());
     act(() => button("Retire the plan").click());
     expect(onRetire).toHaveBeenCalledWith("cp1", "coach");
+  });
+
+  it("a refused Retire is said in its confirmation, which stays open; it is busy while it waits (fix round 2)", async () => {
+    let answer!: (why: string | null) => void;
+    const onRetire = vi.fn(() => new Promise<string | null>((r) => (answer = r)));
+    mount(plan({ id: "sp1", name: "Generated Block", source: "studio" }), onRetire);
+    act(() => button("Retire…").click());
+    act(() => button("Retire the plan").click());
+    expect(button("Retire the plan").disabled).toBe(true);
+    await act(async () => answer("Writing to COROS is switched off. Turn on “Write date changes back to COROS” in Settings, then retire it."));
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "Writing to COROS is switched off. Turn on “Write date changes back to COROS” in Settings, then retire it.",
+    );
+    expect(document.body.textContent).toContain("Retire this plan?");
+    expect(button("Retire the plan").disabled).toBe(false);
+    // Closed and opened again, it starts fresh.
+    act(() => button("Cancel").click());
+    act(() => button("Retire…").click());
+    expect(document.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("the page asks the Studio's route for a Studio plan and the coach's for a coach plan", async () => {

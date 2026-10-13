@@ -18,6 +18,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { connectMock, makeEnv } from "./watch-push-fixture.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 
 const { corosExercises, corosWriteJobs, studioPlanPushes, studioPlans } = schema;
 
@@ -34,11 +35,19 @@ let userId: string;
 let server: MockCorosServer;
 let statements = 0;
 let fetches = 0;
+/** The statements' text, for what a retire must not read. */
+let said: string[] = [];
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOW));
-  db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (q) => {
+      statements += 1;
+      said.push(q);
+    },
+  });
   ({ userId } = await makeTestUser(db, { corosWritesEnabled: true }));
   server = mockCorosServer({ baseMonday: "2026-10-12" });
   await connectMock(db, userId, server);
@@ -53,8 +62,13 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** The generator's plan from `start` (a Monday), pushed: every session on the watch at its own address. */
-async function pushedPlan(start: string, weeks: number, weekdays: number[]): Promise<string> {
+type Row = Partial<typeof studioPlanPushes.$inferInsert>;
+
+/**
+ * The generator's plan from `start` (a Monday), pushed: every session on the watch at its own address — unless `row`
+ * says otherwise for the i-th session (a failed push, a create that never reported).
+ */
+async function pushedPlan(start: string, weeks: number, weekdays: number[], row: (i: number) => Row = () => ({})): Promise<string> {
   await db.insert(corosExercises).values({ id: SQUAT, name: "Back Squat", raw: {}, updatedAt: nowInstant() });
   const brief: PlanBrief = {
     goal: "strength",
@@ -102,11 +116,17 @@ async function pushedPlan(start: string, weeks: number, weekdays: number[]): Pro
         status: "verified",
         error: null,
         updatedAt: nowInstant(),
+        ...row(slot - 101),
       });
     }
   }
   return planId;
 }
+
+/** Never reached COROS: a failed push, no address. */
+const neverThere: Row = { status: "failed", error: "network", corosIdInPlan: null, corosProgramId: null, corosPlanId: null };
+/** A create that never reported: pending, no address. */
+const unheard: Row = { status: "pending", corosIdInPlan: null, corosProgramId: null, corosPlanId: null };
 
 /** One invocation: the route and everything it handed to waitUntil, counted together. */
 async function retire(planId: string) {
@@ -115,6 +135,7 @@ async function retire(planId: string) {
   const executionCtx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => undefined, props: {} };
   statements = 0;
   fetches = 0;
+  said = [];
   const res = await mountRoutes(db, "/api/studio", studioRoutes).request(
     `/api/studio/plans/${planId}/retire`,
     { method: "POST", headers: { Cookie: cookie } },
@@ -140,10 +161,83 @@ describe("Retire within the budget", () => {
     expect(m.total).toBeLessThanOrEqual(BUDGET);
   });
 
+  it("a plan that never reached COROS — 96 failed pushes ahead — retires here, writes off, nothing a row at a time", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: false });
+    const planId = await pushedPlan("2026-10-19", 16, [1, 2, 3, 4, 5, 6], () => neverThere);
+    const m = await retire(planId);
+    console.info(`[budget] studio retire (96 failed ahead, local): ${m.d1} D1 + ${m.fetches} COROS = ${m.total}`);
+    expect(m.res.status).toBe(200);
+    const rows = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    expect(rows.every((r) => r.status === "deleted")).toBe(true);
+    expect(await queuedRemovals()).toHaveLength(0);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it("48 creates that never reported and 48 sessions on the watch ahead", async () => {
+    const planId = await pushedPlan("2026-10-19", 16, [1, 2, 3, 4, 5, 6], (i) => (i % 2 ? unheard : {}));
+    const m = await retire(planId);
+    console.info(`[budget] studio retire (48 unheard + 48 on the watch): ${m.d1} D1 + ${m.fetches} COROS = ${m.total}`);
+    expect(m.res.status).toBe(200);
+    expect(await queuedRemovals()).toHaveLength(48);
+    const rows = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    expect(rows.filter((r) => r.status === "failed" && r.error === "unaddressable")).toHaveLength(48);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it("48 pushes that never reached COROS among 48 sessions on the watch ahead: cleared a chunk at a time", async () => {
+    const planId = await pushedPlan("2026-10-19", 16, [1, 2, 3, 4, 5, 6], (i) => (i % 2 ? neverThere : {}));
+    const m = await retire(planId);
+    console.info(`[budget] studio retire (48 never there + 48 on the watch): ${m.d1} D1 + ${m.fetches} COROS = ${m.total}`);
+    expect(m.res.status).toBe(200);
+    expect(await queuedRemovals()).toHaveLength(48);
+    const rows = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    expect(rows.filter((r) => r.status === "deleted")).toHaveLength(48);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it("half of 96 sessions ahead edited on COROS: left alone, nothing written or posted for them", async () => {
+    const planId = await pushedPlan("2026-10-19", 16, [1, 2, 3, 4, 5, 6]);
+    const rows = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    // The import's view of COROS: every other session renamed there by the athlete.
+    const [tp] = await db
+      .insert(schema.trainingPlans)
+      .values({ id: newId(), userId, provider: "coros", sourcePlanId: "coros-plan", name: "Plan", status: "active", createdAt: nowInstant(), updatedAt: nowInstant() })
+      .returning();
+    for (const [i, r] of rows.entries()) {
+      if (i % 2) continue;
+      await db.insert(schema.plannedWorkouts).values({
+        id: newId(),
+        userId,
+        planId: tp!.id,
+        sourceWorkoutId: `coros-plan:${r.corosIdInPlan}`,
+        sourceIdInPlan: r.corosIdInPlan,
+        title: `My own ${i}`,
+        category: "strength",
+        sport: "strength",
+        originalPlanDate: r.happenDay,
+        lastVerifiedCorosDate: r.happenDay,
+        effectiveDate: r.happenDay,
+        effectiveTime: "07:00",
+        sourceContentFingerprint: "fp",
+        calendarBlockDurationSeconds: 3600,
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+    }
+    const m = await retire(planId);
+    console.info(`[budget] studio retire (48 edited on COROS + 48 on the watch): ${m.d1} D1 + ${m.fetches} COROS = ${m.total}`);
+    expect(m.res.status).toBe(200);
+    expect(await queuedRemovals()).toHaveLength(48);
+    expect(await db.select().from(schema.syncNotes)).toEqual([]);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
   it("the longest plan the generator could make, retired before its first day (96 sessions ahead)", async () => {
     const planId = await pushedPlan("2026-10-19", 16, [1, 2, 3, 4, 5, 6]);
     const m = await retire(planId);
     console.info(`[budget] studio retire (96 ahead): ${m.d1} D1 + ${m.fetches} COROS = ${m.total}`);
+    // A retire creates nothing: it reads no catalog of COROS exercises.
+    expect(said.filter((q) => q.includes('from "coros_exercises"'))).toEqual([]);
     expect(m.res.status).toBe(200);
     expect(await m.res.json()).toMatchObject({ ok: true, summary: { deletes: 96 } });
     expect(await queuedRemovals()).toHaveLength(96);

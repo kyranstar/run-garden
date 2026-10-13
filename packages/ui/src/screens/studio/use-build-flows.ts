@@ -131,6 +131,11 @@ export interface BuildFlowsIn {
 }
 
 /** The builder's Start now, Schedule and saves. */
+/** Two documents the same as a save would send them (what the builder's own "changed" test compares). */
+function sameDocument(a: WorkoutDoc, b: WorkoutDoc): boolean {
+  return JSON.stringify(toProposable(startEditing(a).doc)) === JSON.stringify(toProposable(startEditing(b).doc));
+}
+
 export function useBuildFlows({
   source,
   key,
@@ -335,12 +340,24 @@ export function useBuildFlows({
     }
   };
   const saveTemplate = async () => {
-    const d = live.current ? toProposable(live.current.editor.doc) : null;
-    if (!tplId || !d) return;
+    const cur = live.current;
+    const d = cur ? toProposable(cur.editor.doc) : null;
+    if (!tplId || !cur || !d) return;
     setSaving(true);
     try {
       // On the version it opened: one changed elsewhere since (or a cached copy it opened) is refused, never overwritten.
-      const res = await api.updateTemplate(tplId, { doc: d, ...(live.current?.base ? { baseUpdatedAt: live.current.base } : {}) });
+      const put = (base: string | undefined) => api.updateTemplate(tplId, { doc: d, ...(base ? { baseUpdatedAt: base } : {}) });
+      let res: Awaited<ReturnType<typeof put>>;
+      try {
+        res = await put(cur.base);
+      } catch (e) {
+        if (errorBody(e)?.error !== "stale_revision") throw e;
+        // Only renamed or pinned elsewhere — its document still the one opened here: saved again on the version there
+        // now, its name and pin as they were made there (only the document is sent). Otherwise it says so, with Reload.
+        const there = (await qc.fetchQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 0 })).templates.find((x) => x.id === tplId);
+        if (!there?.doc || !cur.baseline || !sameDocument(there.doc, cur.baseline)) throw e;
+        res = await put(there.updatedAt);
+      }
       void qc.invalidateQueries({ queryKey: TEMPLATES_QUERY });
       if (live.current) setLoaded({ ...live.current, baseline: d, base: res.template.updatedAt });
       setStatus({ text: "Saved.", notes: newNotes(res.warnings) });

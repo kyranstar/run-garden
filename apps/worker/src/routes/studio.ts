@@ -440,6 +440,7 @@ studioRoutes.post("/generate", async (c) => {
   // now happens ONLY once every other way this request can fail has already
   // succeeded (see below, right before the new plan is persisted).
   const currentPlan = await loadCurrentPlan(db, userId);
+  if (currentPlan && (await studioPlanRetired(db, userId, currentPlan.id))) return c.json({ error: "already_retired" }, 409);
   let retireOldPlan = false;
   if (currentPlan) {
     const oldRows = await db
@@ -543,6 +544,7 @@ studioRoutes.post("/edit", async (c) => {
   // account gets `no_plan`, not a misleading catalog complaint.
   const planRow = await loadCurrentPlan(db, userId);
   if (!planRow) return c.json({ error: "no_plan" }, 404);
+  if (await studioPlanRetired(db, userId, planRow.id)) return c.json({ error: "already_retired" }, 409);
 
   // The stored plan is LLM-authored (and may have been through a prior patch
   // application) — never trusted blindly, same reasoning as
@@ -800,6 +802,8 @@ studioRoutes.post("/push", async (c) => {
   const userId = c.get("userId");
   const planRow = await loadCurrentPlan(db, userId);
   if (!planRow) return c.json({ error: "no_plan" }, 404);
+  // A retired plan is never pushed again: a push would put back every session the retire took off the watch.
+  if (await studioPlanRetired(db, userId, planRow.id)) return c.json({ error: "already_retired" }, 409);
 
   const prefs = await loadPreferences(db, userId);
   // Binding carry-forward (a): the user's local today, never a UTC default —
@@ -834,6 +838,7 @@ studioRoutes.post("/push/retry", async (c) => {
 
   const planRow = await loadCurrentPlan(db, userId);
   if (!planRow) return c.json({ error: "no_plan" }, 404);
+  if (await studioPlanRetired(db, userId, planRow.id)) return c.json({ error: "already_retired" }, 409);
 
   const failedRow = (
     await db
@@ -935,7 +940,10 @@ studioRoutes.post("/adoption/:pushId/undo", async (c) => {
     // `undoStudioAdoption`'s own doc comment) — distinguishing them would let
     // a caller enumerate other users' (or their own non-adopted) push ids by
     // shape alone.
-    return c.json({ error: result.error }, result.error === "undo_unsupported_rename" ? 409 : result.error === "writes_disabled" ? 412 : 404);
+    return c.json(
+      { error: result.error },
+      result.error === "undo_unsupported_rename" || result.error === "plan_retired" ? 409 : result.error === "writes_disabled" ? 412 : 404,
+    );
   }
   return c.json({ ok: result.summary.ok, summary: result.summary });
 });

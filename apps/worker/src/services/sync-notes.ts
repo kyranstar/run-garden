@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { syncNotes } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import type { Db } from "./db.js";
@@ -51,6 +51,24 @@ export async function activeSyncNotes(
         eq(syncNotes.userId, userId),
         isNull(syncNotes.dismissedAt),
         gt(syncNotes.expiresAt, nowInstant()),
+      ),
+    );
+}
+
+/**
+ * Dismiss a studio plan's open notes of sessions edited or removed on COROS: the plan is retired, so there is nothing
+ * to undo (its undo answers `plan_retired`). One statement.
+ */
+export async function dismissStudioPlanNotes(db: Db, userId: string, studioPlanId: string): Promise<void> {
+  await db
+    .update(syncNotes)
+    .set({ dismissedAt: nowInstant() })
+    .where(
+      and(
+        eq(syncNotes.userId, userId),
+        isNull(syncNotes.dismissedAt),
+        inArray(syncNotes.kind, ["adopted_coros_edit", "adopted_coros_removal"]),
+        sql`json_extract(${syncNotes.payload}, '$.studioPlanId') = ${studioPlanId}`,
       ),
     );
 }

@@ -29,8 +29,11 @@ export function StudioModal({
   onClose: () => void;
   /** Sends a canned coach message and opens the coach surface. */
   onCanned: (body: string) => void;
-  /** Retire the plan; `source` says which kind, so the page asks the right route. */
-  onRetire: (id: string, source: "coach" | "studio") => void;
+  /**
+   * Retire the plan; `source` says which kind, so the page asks the right route. Resolves with why it did not happen
+   * (said in the confirmation, which stays open), or null.
+   */
+  onRetire: (id: string, source: "coach" | "studio") => Promise<string | null>;
   onRename: (id: string, name: string) => void;
 }) {
   const units = useUnits();
@@ -43,7 +46,13 @@ export function StudioModal({
     enabled: !isNew,
     staleTime: 60_000,
   });
-  const [confirmingRetire, setConfirmingRetire] = useState(false);
+  const [confirmingRetire, setConfirmingRetireState] = useState(false);
+  const [retiring, setRetiring] = useState(false);
+  const [retireError, setRetireError] = useState<string | null>(null);
+  const setConfirmingRetire = (open: boolean) => {
+    setRetireError(null);
+    setConfirmingRetireState(open);
+  };
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(plan?.name ?? "");
   /** So closing the rename editor hands focus back to what opened it. */
@@ -340,7 +349,14 @@ export function StudioModal({
         onClose={() => setConfirmingRetire(false)}
         title="Retire this plan?"
         confirmLabel="Retire the plan"
-        onConfirm={() => onRetire(planId, source === "studio" ? "studio" : "coach")}
+        busy={retiring}
+        error={retireError}
+        onConfirm={async () => {
+          setRetiring(true);
+          const why = await onRetire(planId, source === "studio" ? "studio" : "coach");
+          setRetiring(false);
+          if (why) setRetireError(why);
+        }}
       >
         “{title}” stops here and every session still ahead of it is archived. Sessions you have
         already done are kept.

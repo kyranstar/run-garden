@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, nowInstant, startOfIsoWeek, todayInZone, type LiftingPlan, type PlanBrief } from "@rg/domain";
+import { createScheduledWorkoutJobSchema, newId, nowInstant, startOfIsoWeek, todayInZone, type LiftingPlan, type PlanBrief } from "@rg/domain";
 import type { AppContext } from "../src/auth/middleware.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -1207,13 +1207,145 @@ describe("POST /api/studio/plans/:id/retire", () => {
     expect((await coachList()).map((p) => p.id)).toEqual([planId]);
   });
 
-  it("a retired plan's adopted session is not put back on the watch by an undo", async () => {
+  it("a retired plan's adopted session is not put back on the watch by an undo: it answers that the plan is retired", async () => {
     const { planId } = await pushedPlan();
     expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(200);
     const adopted = await seedAdoptedPushRow(planId, { happenDay: "2026-09-15", sessionTitle: "Full Body — wk 2b", corosIdInPlan: "23" });
     const before = (await jobs()).length;
     const res = await client().post(`/api/studio/adoption/${adopted}/undo`);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "plan_retired" });
     expect(await jobs()).toHaveLength(before);
+  });
+});
+
+// ── Fix round 2: what is behind stays, nothing on the watch retires locally, the old routes leave a retired plan be ──
+
+describe("retire, fix round 2", () => {
+  vi.setConfig({ testTimeout: 20_000 });
+  const push = async (planId: string, over: Partial<typeof studioPlanPushes.$inferInsert> & { happenDay: string; sessionTitle: string }) => {
+    const id = newId();
+    await db.insert(studioPlanPushes).values({ id, planId, planVersion: 1, status: "verified", error: null, updatedAt: nowInstant(), ...over });
+    return id;
+  };
+  const addressed = (slot: string) => ({ corosIdInPlan: slot, corosProgramId: slot, corosPlanId: "coros-plan", sessionFingerprint: "fp" });
+  const jobs = () => db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
+  const rowOf = async (id: string) => (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, id)))[0]!;
+  const coachList = async () => {
+    const app = mountRoutes(db, "/api/coach", coachRoutes);
+    const res = await app.request("/api/coach/plans", { headers: { Cookie: cookie } }, makeEnv());
+    return ((await res.json()) as { plans: Array<{ id: string; source?: string }> }).plans.filter((p) => p.source === "studio");
+  };
+  async function planBetweenWeeks(): Promise<string> {
+    vi.setSystemTime(new Date("2026-09-10T19:00:00Z"));
+    await seedCatalog();
+    return seedPlan();
+  }
+
+  it("a failed session behind the day that still has a COROS address stays on the watch", async () => {
+    const planId = await planBetweenWeeks();
+    // COROS filed it a day off (`wrong_date`): its ids were saved, so it is there.
+    const stray = await push(planId, { happenDay: "2026-09-07", sessionTitle: "Full Body — wk 1", ...addressed("21"), corosHappenDay: "2026-09-08", status: "failed", error: "wrong_date" });
+    const ahead = await push(planId, { happenDay: "2026-09-14", sessionTitle: "Full Body — wk 2", ...addressed("22") });
+    expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(200);
+    expect((await jobs()).map((j) => j.studioPushId)).toEqual([ahead]);
+    expect(await rowOf(stray)).toMatchObject({ status: "failed", error: "wrong_date" });
+  });
+
+  it("nothing ahead on the watch: retired here, the writes switch not asked; what was never there is cleared", async () => {
+    const planId = await planBetweenWeeks();
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: false });
+    const behind = await push(planId, { happenDay: "2026-09-07", sessionTitle: "Full Body — wk 1", ...addressed("21") });
+    const neverMade = await push(planId, { happenDay: "2026-09-14", sessionTitle: "Full Body — wk 2", status: "failed", error: "day_in_past" });
+    const unheard = await push(planId, { happenDay: "2026-09-15", sessionTitle: "Full Body — wk 2b", status: "pending" });
+    const res = await client().post(`/api/studio/plans/${planId}/retire`);
+    expect(res.status).toBe(200);
+    expect(await jobs()).toEqual([]);
+    expect(await rowOf(behind)).toMatchObject({ status: "verified" });
+    expect(await rowOf(neverMade)).toMatchObject({ status: "deleted" });
+    // A create that never reported may have landed, with no address to remove it by: said, as a push says it.
+    expect(await rowOf(unheard)).toMatchObject({ status: "failed", error: "unaddressable" });
+    expect(await coachList()).toEqual([]);
+  });
+
+  it("a refused Retire marks nothing: with writes off and something ahead on the watch, the plan stays listed", async () => {
+    const planId = await planBetweenWeeks();
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: false });
+    await push(planId, { happenDay: "2026-09-14", sessionTitle: "Full Body — wk 2", ...addressed("22") });
+    const res = await client().post(`/api/studio/plans/${planId}/retire`);
+    expect(res.status).toBe(412);
+    expect((await coachList()).map((p) => p.id)).toEqual([planId]);
+    expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(412);
+  });
+
+  it("dismisses the plan's open notes of sessions edited or removed on COROS — and only that plan's", async () => {
+    const planId = await planBetweenWeeks();
+    await push(planId, { happenDay: "2026-09-14", sessionTitle: "Full Body — wk 2", ...addressed("22") });
+    const note = (studioPlanId: string) => ({
+      id: newId(),
+      userId,
+      workoutId: null,
+      kind: "adopted_coros_edit",
+      payload: { pushId: "p", studioPlanId, sessionTitle: "Full Body — wk 1", happenDay: "2026-09-07" },
+      createdAt: nowInstant(),
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const mine = note(planId);
+    const other = note("another-plan");
+    await db.insert(schema.syncNotes).values([mine, other]);
+    expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(200);
+    const open = (await db.select().from(schema.syncNotes)).filter((n) => n.dismissedAt === null).map((n) => n.id);
+    expect(open).toEqual([other.id]);
+  });
+
+  it("the old generator's routes leave a retired plan be: /push, /push/retry, /edit and /generate answer 409 already_retired", async () => {
+    const planId = await planBetweenWeeks();
+    const ahead = await push(planId, { happenDay: "2026-09-14", sessionTitle: "Full Body — wk 2", ...addressed("22") });
+    await push(planId, { happenDay: "2026-09-21", sessionTitle: "Full Body — wk 3", status: "failed", error: "network" });
+    expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(200);
+    const queued = (await jobs()).length;
+    for (const [path, body] of [
+      ["/api/studio/push", undefined],
+      ["/api/studio/push/retry", { happenDay: "2026-09-21" }],
+      ["/api/studio/edit", { request: "add a day" }],
+      ["/api/studio/generate", { brief: validBriefInput("2026-10-05") }],
+    ] as const) {
+      const res = await client().post(path, body);
+      expect(res.status, path).toBe(409);
+      expect(await res.json(), path).toEqual({ error: "already_retired" });
+    }
+    expect(await jobs()).toHaveLength(queued);
+    expect(await rowOf(ahead)).toMatchObject({ status: "verified" });
+    expect(await db.select().from(studioPlans).where(eq(studioPlans.userId, userId))).toHaveLength(1);
+  });
+
+  it("a session ahead edited on COROS is never deleted by a retire, and nothing is posted about it", async () => {
+    const planId = await planBetweenWeeks();
+    const renamed = await push(planId, { happenDay: "2026-09-14", sessionTitle: "Full Body — wk 2", ...addressed("22") });
+    await seedObservation({ sourceWorkoutId: "coros-plan:22", title: "My own Monday", lastVerifiedCorosDate: "2026-09-14" });
+    expect((await client().post(`/api/studio/plans/${planId}/retire`)).status).toBe(200);
+    expect(await jobs()).toEqual([]);
+    expect((await rowOf(renamed)).status).not.toBe("deleted");
+    expect(await db.select().from(schema.syncNotes)).toEqual([]);
+  });
+});
+
+// Fix round 2: a push's jobs are built and checked before any row is written — a job the bridge would refuse leaves
+// the plan's rows as they were, with nothing queued.
+describe("POST /api/studio/push — nothing half-done", () => {
+  it("a create whose job would be refused: no row written, no job queued", async () => {
+    await seedCatalog();
+    const planId = await seedPlan();
+    const gone = newId();
+    await db.insert(studioPlanPushes).values({ id: gone, planId, planVersion: 1, happenDay: "2026-09-21", sessionTitle: "Gone", status: "failed", error: "network", updatedAt: nowInstant() });
+    const refuse = vi.spyOn(createScheduledWorkoutJobSchema, "safeParse").mockReturnValue({ success: false } as never);
+    try {
+      await client().post("/api/studio/push");
+    } finally {
+      refuse.mockRestore();
+    }
+    expect(await db.select().from(corosWriteJobs)).toEqual([]);
+    const rows = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    expect(rows.map((r) => [r.id, r.status])).toEqual([[gone, "failed"]]);
   });
 });

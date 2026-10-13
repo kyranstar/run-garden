@@ -870,4 +870,18 @@ describe("POST /api/sync/notes/:id/undo", () => {
     )[0]!;
     expect(row.status).toBe("adopted");
   });
+
+  it("a retired plan's session: 409 plan_retired — its own answer, never put back on the watch (Task 9 fix round 2)", async () => {
+    const { planId, pushId } = await seedAdoptedPush();
+    await db.insert(schema.auditEvents).values({ id: newId(), userId, kind: "studio_plan_retired", detail: { studioPlanId: planId }, createdAt: nowInstant() });
+    const noteId = await postSyncNote(db, {
+      userId,
+      kind: "adopted_coros_removal",
+      payload: { pushId, studioPlanId: planId, sessionTitle: "Full Body — wk 1", happenDay: "2026-09-07" },
+    });
+    const res = await client().post(`/api/sync/notes/${noteId}/undo`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "plan_retired" });
+    expect(await db.select().from(corosWriteJobs)).toEqual([]);
+  });
 });

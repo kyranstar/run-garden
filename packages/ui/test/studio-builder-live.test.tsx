@@ -470,6 +470,21 @@ describe("a template's changes (Task 9 fix round 1)", () => {
     await until(() => puts().length === 3, "the third save");
     expect(puts()[2]!.baseUpdatedAt).toBe("2026-10-12T10:00:00Z");
   });
+
+  it("only renamed or pinned elsewhere since it opened: saved again on the version there now, nothing to reload (fix round 2)", async () => {
+    const renamed = { ...tpl("Thursday lift", "2026-10-11T09:00:00Z"), name: "Thursday lift, renamed", pinned: true };
+    const calls = serve({ templates: [[tpl("Thursday lift", "2026-10-01T00:00:00Z")], [renamed]], tplPut: ["stale", "ok"] });
+    mount("/studio/build/template/t1");
+    await until(() => document.querySelector<HTMLInputElement>(".stu-build-title")?.value === "Thursday lift", "the template");
+    await click(effort("develop"), "Develop");
+    await saveTemplate();
+    await until(() => text().includes("Saved."), "Saved.");
+    expect(text()).not.toContain("This template changed elsewhere.");
+    const puts = calls.filter((c) => c.method === "PUT" && c.path === "/api/templates/t1").map((c) => c.body as Record<string, unknown>);
+    expect(puts.map((b) => b.baseUpdatedAt)).toEqual(["2026-10-01T00:00:00Z", "2026-10-11T09:00:00Z"]);
+    // Only the document is sent: the name and pin made elsewhere stay.
+    expect(puts.every((b) => !("name" in b) && !("pinned" in b))).toBe(true);
+  });
 });
 
 // ── Reordering ─────────────────────────────────────────────────────────────

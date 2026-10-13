@@ -29,7 +29,7 @@ import {
 } from "../components.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
-import { SyncPanel } from "./today.js";
+import { SyncPanel, undoRefusalText } from "./today.js";
 import { CoachPanel, pendingByDate } from "./coach-panel.js";
 import { CoachRead } from "./coach-read.js";
 import { CoachWindow } from "./coach-window.js";
@@ -131,14 +131,7 @@ function RunWorkoutDetail({
       // Same copy as today.tsx's SyncPanel: adopted_coros_edit/removal notes
       // forward to the studio-adoption undo, which 409s the same way on a
       // renamed-on-COROS row.
-      const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
-      setUndoErrors((e) => ({
-        ...e,
-        [id]:
-          code === "undo_unsupported_rename"
-            ? "Renamed on COROS — delete it there to re-push."
-            : "Couldn't undo — try again.",
-      }));
+      setUndoErrors((e) => ({ ...e, [id]: undoRefusalText(err) }));
     },
   });
   const retry = useMutation({ mutationFn: () => api.retryCoros(w.id), onSuccess: invalidate });
@@ -762,6 +755,18 @@ export function retirePlan(v: { id: string; source: "coach" | "studio" }): Promi
   return v.source === "studio" ? api.studioPlanRetire(v.id) : api.coachPlanRetire(v.id);
 }
 
+/** Why a Retire did not happen, in plain words — said in its confirmation, which stays open. */
+export function retireRefusalText(e: unknown): string {
+  if (!(e instanceof ApiError)) return "Retiring needs a connection.";
+  const code = (e.body as { error?: string } | null)?.error;
+  if (code === "writes_disabled") return "Writing to COROS is switched off. Turn on “Write date changes back to COROS” in Settings, then retire it.";
+  if (code === "plan_completed") return "This plan is already over.";
+  if (code === "already_retired") return "This plan is already retired.";
+  if (code === "not_current") return "A newer plan has replaced this one.";
+  if (e.status === 404) return "That plan is gone.";
+  return "Couldn't retire it. Try again.";
+}
+
 export function PlanScreen() {
   const [params, setParams] = useSearchParams();
   const isDesktop = useIsDesktop();
@@ -1166,9 +1171,14 @@ export function PlanScreen() {
             closePlan();
             cannedSend(body);
           }}
-          onRetire={(id, source) => {
-            retire.mutate({ id, source });
-            closePlan();
+          onRetire={async (id, source) => {
+            try {
+              await retire.mutateAsync({ id, source });
+              closePlan();
+              return null;
+            } catch (e) {
+              return retireRefusalText(e);
+            }
           }}
           onRename={(id, name) => rename.mutate({ id, name })}
         />

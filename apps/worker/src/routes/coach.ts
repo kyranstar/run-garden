@@ -1091,7 +1091,8 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     };
     const planW1 = startOfIsoWeek(plan.brief.startDate);
     const weekTotal = plan.brief.durationWeeks;
-    const endDate = addDays(planW1, weekTotal * 7 - 1);
+    // The plan list's rule, from the brief the plan was made with (`studioPlanEnd`).
+    const endDate = studioPlanEnd(sp);
     const currentWeek =
       thisMonday >= planW1 && weekIndexOf(planW1, today) <= weekTotal
         ? weekIndexOf(planW1, today)

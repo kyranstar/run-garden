@@ -21,6 +21,15 @@ import { Banner, SyncNotesStack, SyncStatusLine } from "../components.js";
  * `GET /api/sync/status` and `GET /api/sync/notes` rather than each screen's
  * own read of the legacy `TodayResponse.sync` shape.
  */
+/** Why a sync note's Undo did not happen, in plain words (the panel on Garden and on Plan say it alike). */
+export function undoRefusalText(err: unknown): string {
+  const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+  if (code === "undo_unsupported_rename") return "Renamed on COROS — delete it there to re-push.";
+  // The session's plan was retired (Stage 2 Task 9): nothing of it goes back on the watch.
+  if (code === "plan_retired") return "That plan is retired.";
+  return "Couldn't undo — try again.";
+}
+
 export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boolean } = {}) {
   const qc = useQueryClient();
   const status = useQuery({ queryKey: ["sync-status"], queryFn: api.syncStatus, refetchInterval: 30_000 });
@@ -80,14 +89,7 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
       // adopted_coros_edit/removal notes forward to the studio-adoption undo
       // (the retired plan generator's push rows, still reconciled server-side):
       // a renamed-on-COROS row 409s there.
-      const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
-      setUndoErrors((e) => ({
-        ...e,
-        [id]:
-          code === "undo_unsupported_rename"
-            ? "Renamed on COROS — delete it there to re-push."
-            : "Couldn't undo — try again.",
-      }));
+      setUndoErrors((e) => ({ ...e, [id]: undoRefusalText(err) }));
     },
   });
 
