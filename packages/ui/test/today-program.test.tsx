@@ -547,3 +547,12 @@ describe("the check sheet", () => {
     expect(document.body.textContent).toContain("Not saved");
   });
 });
+
+describe("a document build's word on Today (Stage 2 whole-branch review M1)", () => {
+  it("is its effort as the Studio says it — never a mode's — and a programme session keeps its mode", async () => {
+    const { buildWord } = await import("../src/components/today-program.js");
+    expect(buildWord({ mode: "build", effort: "develop" })).toBe("Develop");
+    expect(buildWord({ mode: "consistent", effort: "maintain" })).toBe("Maintain");
+    expect(buildWord({ mode: "build" })).toBe("Build");
+  });
+});

@@ -24,19 +24,21 @@
  * reads the session, and reads it again on a backoff while it is "Sending…" (`WATCH_POLL_S`), for about five minutes.
  */
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   ApiError,
   type BuildSessionRequest,
   type MeResponse,
+  type SessionBuildDto,
   type SessionDto,
   type SessionItemDto,
   type SessionOverrides,
   type WorkoutDto,
 } from "@rg/api-client";
 import { doseText, type DoseStep, type DoseTarget } from "@rg/domain";
+import { label as vocab } from "@rg/exercise-library";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconAlert, IconInfo, IconSwap, IconWatch } from "../icons.js";
@@ -48,6 +50,8 @@ import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
 import { keepStarted } from "./start-session.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
+import { addTargetHref, editableWorkout } from "../screens/studio/add-model.js";
+import type { BuilderArrival } from "../screens/studio/templates-model.js";
 import { continuable, MODE_LABEL } from "./today-program.js";
 import { WatchPreviewSheet } from "./watch-preview-sheet.js";
 
@@ -75,6 +79,40 @@ export function reasonLine(view: {
 }): string {
   const handPicked = Boolean(view.theme) && view.theme?.id !== view.proposedTheme?.id;
   return [...view.modeReasons, ...(handPicked ? view.themeReasons : [])].join(" ");
+}
+
+/**
+ * The moves as the sheet groups them: a document build by its own parts, each named by its purpose as the Studio
+ * names it ("Warm-up", "Main" — never PREP or CORE), in play order; an engine build by its blocks.
+ */
+export function sessionGroups(
+  build: Pick<SessionBuildDto, "steps" | "items" | "exercises" | "fromDoc">,
+  careLabel: string,
+): Array<{ key: string; label: string; items: SessionItemDto[] }> {
+  const parts = build.fromDoc?.parts;
+  if (parts && parts.length > 0) {
+    return parts
+      .map((p, i) => ({
+        key: `part-${i}`,
+        label: p.purpose === "care" ? careLabel : vocab(p.purpose),
+        items: p.keys.flatMap((k) => build.items.filter((it) => it.slotKey === k)),
+      }))
+      .filter((g) => g.items.length > 0);
+  }
+  return blocksInPlayOrder(build)
+    .map((blockId) => {
+      const items = build.items.filter((i) => i.block === blockId);
+      const name = blockId === "care" ? careLabel : blockLabel(blockId, items.map((i) => build.exercises[i.exerciseId]));
+      return { key: blockId, label: name, items };
+    })
+    .filter((g) => g.items.length > 0);
+}
+
+/** A document build's name for the part a slot is in ("Warm-up", "Main"), as the Studio says it; null for an engine build. */
+export function partLabelOf(build: Pick<SessionBuildDto, "fromDoc">, slotKey: string, careLabel: string | null): string | null {
+  const part = build.fromDoc?.parts?.find((p) => p.keys.includes(slotKey));
+  if (!part) return null;
+  return part.purpose === "care" ? (careLabel ?? "Care") : vocab(part.purpose);
 }
 
 /** The blocks in the order the player plays them (a jumping day's jumps come before the core lifts). */
@@ -153,8 +191,10 @@ function itemDose(s: SessionDto, item: SessionItemDto): { text: string; up: bool
   const build = s.build!;
   const target = (build.targets[item.exerciseId] as DoseTarget | undefined) ?? null;
   const steps = build.steps.filter((st) => st.slotKey === item.slotKey && st.kind !== "rest") as unknown as DoseStep[];
+  // A document build says each dose as the builder does ("4 × 5–8"), never the steps' "4 sets".
+  const own = build.fromDoc?.doses?.[item.slotKey];
   return {
-    text: doseText({ sets: item.sets, steps, target, perSide: build.exercises[item.exerciseId]?.laterality === "unilateral" }),
+    text: own ?? doseText({ sets: item.sets, steps, target, perSide: build.exercises[item.exerciseId]?.laterality === "unilateral" }),
     up: target?.action === "up",
   };
 }
@@ -162,6 +202,9 @@ function itemDose(s: SessionDto, item: SessionItemDto): { text: string; up: bool
 export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: string; onClose: () => void }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  // Opened from Today's row (its link says so) or from Plan: the Studio's way back returns there.
+  const cameFrom = (useLocation().state as { from?: string } | null)?.from === "today" ? "today" : "plan";
+  const editable = features.studio && editableWorkout(w, today);
   const key = ["session", w.id];
   const session = useQuery({
     queryKey: key,
@@ -685,6 +728,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           <p className="session-status">Saved on another device. This device still holds a copy of it, which won't be saved.</p>
         ) : null}
         {body}
+        {editable ? (
+          <p className="session-edit">
+            <Link className="btn btn-small" to={addTargetHref({ kind: "workout", id: w.id })} state={{ from: cameFrom } satisfies BuilderArrival}>
+              Edit in Studio
+            </Link>
+          </p>
+        ) : null}
       </div>
       <ConfirmDialog
         open={discardingCopy}
@@ -819,10 +869,18 @@ function BuiltSession({
   const build = s.build!;
   const view = s.view!;
   const careLabel = s.profiles.find((p) => p.care)?.care ?? "Care";
+  // A document workout: its document decides the mode, theme and length (Edit in Studio changes them). The sheet says
+  // its effort in the Studio's word, and offers no picker that the build would ignore.
+  const doc = !!build.fromDoc;
+  const effort = build.fromDoc?.effort;
   const chips: Array<{ picker: Picker; label: string; on?: boolean; can: boolean }> = [
-    { picker: "mode", label: MODE_LABEL[view.mode], on: true, can: s.choices.modes.length > 1 },
-    { picker: "theme", label: view.theme?.name ?? "Theme", can: s.choices.themes.some((t) => t.modes.includes(view.mode)) },
-    { picker: "minutes", label: `${view.minutes} min`, can: true },
+    ...(doc
+      ? effort
+        ? [{ picker: "mode" as const, label: vocab(effort), on: true, can: false }]
+        : []
+      : [{ picker: "mode" as const, label: MODE_LABEL[view.mode], on: true, can: s.choices.modes.length > 1 }]),
+    ...(doc ? [] : [{ picker: "theme" as const, label: view.theme?.name ?? "Theme", can: s.choices.themes.some((t) => t.modes.includes(view.mode)) }]),
+    { picker: "minutes", label: `${view.minutes} min`, can: !doc || s.choices.modes.length > 0 },
     { picker: "place", label: view.location.name, can: s.choices.locations.length > 1 },
   ];
   return (
@@ -848,17 +906,15 @@ function BuiltSession({
       </div>
       {reasonLine(view) ? <p className="session-reason">{reasonLine(view)}</p> : null}
       <div className="session-blocks">
-        {blocksInPlayOrder(build).map((blockId) => {
-          const items = build.items.filter((i) => i.block === blockId);
-          if (items.length === 0) return null;
+        {sessionGroups(build, careLabel).map(({ key: groupKey, label, items }) => {
           const format = FORMAT_LABEL[items[0]!.format];
+          const keys = new Set(items.map((i) => i.slotKey));
           const rounds = Math.max(
             1,
-            ...build.steps.filter((st) => st.block === blockId).map((st) => st.format.round ?? 1),
+            ...build.steps.filter((st) => keys.has(st.slotKey)).map((st) => st.format.round ?? 1),
           );
-          const label = blockId === "care" ? careLabel : blockLabel(blockId, items.map((i) => build.exercises[i.exerciseId]));
           return (
-            <section key={blockId} className="session-block">
+            <section key={groupKey} className="session-block">
               <h3 className="session-block-head">
                 {label}
                 {format ? ` · ${format}${rounds > 1 ? ` × ${rounds}` : ""}` : ""}

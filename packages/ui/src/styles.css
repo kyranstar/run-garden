@@ -2279,6 +2279,10 @@ button.session-chip {
   color: var(--ink-soft);
   font-size: var(--text-sm);
 }
+/* A planned Studio workout's way into the Studio (Edit in Studio). */
+.session-edit {
+  margin: 0;
+}
 .session-blocks {
   display: grid;
 }

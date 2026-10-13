@@ -30,9 +30,22 @@ export const templateHref = (id: string): string => addTargetHref({ kind: "templ
 
 /** What the templates list asks the builder to do once it is open: its Start, or its Schedule… */
 export interface BuilderArrival {
-  /** Came from the templates list: the builder's way back goes there. */
-  from?: "templates";
+  /**
+   * Where the builder was opened from, so its way back goes there: the templates list, Plan or Today (a planned
+   * workout's Edit in Studio), or a Studio search or move (`href`: Add → Open on the line it left).
+   */
+  from?: "templates" | "plan" | "today" | { href: string };
   then?: "start" | "schedule";
+}
+
+/** The builder's way back: to where it was opened from, else the Studio. */
+export function builderBack(from: BuilderArrival["from"]): { href: string; label: string } {
+  if (from === "templates") return { href: TEMPLATES_HREF, label: "Templates" };
+  if (from === "plan") return { href: "/plan", label: "Plan" };
+  if (from === "today") return { href: "/", label: "Today" };
+  // Only a Studio address is a way back from the Studio (the history state is the page's own, but never trusted far).
+  if (typeof from === "object" && from && /^\/studio(?:[/?]|$)/.test(from.href)) return { href: from.href, label: "Studio" };
+  return { href: "/studio", label: "Studio" };
 }
 
 // ── The list ────────────────────────────────────────────────────────────────

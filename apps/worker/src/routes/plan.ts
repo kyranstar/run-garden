@@ -46,6 +46,7 @@ import {
   type WatchCoverageView,
   type WatchSessionShape,
   type WeightUnit,
+  type WorkoutDoc,
   type WorkoutSyncView,
   type WriteLane,
   appAuthoredRow,
@@ -541,6 +542,8 @@ function groupTodaySessions(
               minutes: Number(current.minutes),
               ...(current.place ? { place: current.place } : {}),
               ...(current.lead ? { lead: JSON.parse(current.lead) as SessionLead } : {}),
+              // A document workout's own effort word: Today says it in place of a mode's.
+              ...(current.effort ? { effort: current.effort as WorkoutDoc["intent"]["effort"] } : {}),
             }
           : null,
     };
@@ -594,6 +597,7 @@ const todayBuildFields = {
   minutes: sql<number | null>`json_extract(${sessionBuilds.payload}, '$.view.minutes')`,
   place: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.location.name')`,
   lead: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.lead')`,
+  effort: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.fromDoc.effort')`,
 };
 type TodayBuildFields = {
   buildId: string | null;
@@ -606,6 +610,8 @@ type TodayBuildFields = {
   place: string | null;
   /** `view.lead` as JSON text (json_extract returns an object as text). */
   lead: string | null;
+  /** A document build's effort (`fromDoc.effort`). */
+  effort: string | null;
 };
 
 /** The Today payload: next workout, statuses, readiness, garden preview. */

@@ -39,6 +39,7 @@ import { conditionChecks, corosWriteJobs, exercisePrefs, performedSessions, plan
 import {
   appAuthoredRow,
   docOriginRow,
+  doseSummary,
   newId,
   parseStoredWorkoutDoc,
   sessionLead,
@@ -48,6 +49,7 @@ import {
   type UserPreferences,
   type Weight,
   type WorkoutDoc,
+  type WorkoutPart,
 } from "@rg/domain";
 import {
   CORE_FAMILIES,
@@ -96,7 +98,7 @@ import { conditionView, isAnswer, latestReading, type ConditionView } from "./co
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
 import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, slotsForDay, snapshotErrors, type DocBuildInfo, type DocSlot } from "./doc-build.js";
-import { DocTooLargeError, makeLibraryIndex, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { docSlotKeys, DocTooLargeError, makeLibraryIndex, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { doneCleanlyOf, doneStats } from "./library-view.js";
 
 /**
@@ -209,9 +211,38 @@ export interface BuildPayload {
   params: BuildParams;
   /**
    * A document workout's build (Stage 2, `doc-build.ts`): the revision it was made from, the moves the day swapped for
-   * their alternates, and the errors left (a blocked build is never locked). Absent from an engine build.
+   * their alternates, and the errors left (a blocked build is never locked). Absent from an engine build. With the
+   * document's own words for what it is (`DocFacts`) — absent from a build stored before them.
    */
-  fromDoc?: DocBuildInfo;
+  fromDoc?: DocBuildInfo & Partial<DocFacts>;
+}
+
+/**
+ * What a document build says of its document in the document's own words, so the sheet, Today and the player name it
+ * as the Studio does: its effort (never a mode's word), its parts by purpose with the slot keys each holds (in play
+ * order), and each item's dose as the builder says it ("4 × 5–8", never "4 sets").
+ */
+export interface DocFacts {
+  effort: WorkoutDoc["intent"]["effort"];
+  parts: Array<{ purpose: WorkoutPart["purpose"]; keys: string[] }>;
+  doses: Record<string, string>;
+}
+
+/** `DocFacts` of the document as played. */
+export function docFacts(doc: WorkoutDoc): DocFacts {
+  const keys = docSlotKeys(doc);
+  const doses: Record<string, string> = {};
+  for (const k of keys) {
+    const item = doc.parts[k.part]!.items[k.item]!;
+    if (item.kind === "exercise" || item.kind === "free_exercise") {
+      const words = doseSummary(item.dose);
+      if (words) doses[k.key] = words;
+    }
+  }
+  const parts = doc.parts
+    .map((p, i) => ({ purpose: p.purpose, keys: keys.filter((k) => k.part === i).map((k) => k.key) }))
+    .filter((p) => p.keys.length > 0);
+  return { effort: doc.intent.effort, parts, doses };
 }
 
 export interface SessionResponse {
@@ -1447,6 +1478,7 @@ async function commitDocBuild(
   }
   const refused = await beginWrite(db, userId, s, ctx);
   if (refused) return refused;
+  const facts = docFacts(gated.doc);
   const stored: StoredBuild = {
     build: {
       engineVersion: version,
@@ -1454,9 +1486,10 @@ async function commitDocBuild(
       builtAt: ctx.now,
       blockRef: null,
       ...made.build,
-      fromDoc: { rev, swaps: gated.swaps, blocked: gated.blocked, slots: made.slots },
+      fromDoc: { rev, swaps: gated.swaps, blocked: gated.blocked, slots: made.slots, ...facts },
     },
-    view: made.view,
+    // Today's line of moves says each dose as the builder does.
+    view: { ...made.view, lead: sessionLead(made.build, 2, facts.doses) },
   };
   // The snapshot is the document as played: the day's swaps made, the row's own document untouched.
   return storeBuild(db, userId, s, { engineVersion: version, inputsHash, stored, workoutDoc: storedDocText(gated.doc) }, ctx);

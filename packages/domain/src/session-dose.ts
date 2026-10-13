@@ -79,8 +79,11 @@ export interface SessionLead {
   more: number;
 }
 
-/** A built session in one line: "Goblet squat 3 × 6 @ 30 lb ↑ · KB deadlift 3 × 8 · 12 more". */
-export function sessionLead(build: LeadBuild, max = 2): SessionLead {
+/**
+ * A built session in one line: "Goblet squat 3 × 6 @ 30 lb ↑ · KB deadlift 3 × 8 · 12 more". `doses`: a document
+ * build's own words for each slot's dose (`doseSummary`), said in place of the steps' reading.
+ */
+export function sessionLead(build: LeadBuild, max = 2, doses?: Readonly<Record<string, string>>): SessionLead {
   const ordered = [...build.items.filter((i) => i.block === "core"), ...build.items.filter((i) => i.block !== "core")];
   const moves: SessionLead["moves"] = [];
   for (const item of ordered) {
@@ -90,12 +93,14 @@ export function sessionLead(build: LeadBuild, max = 2): SessionLead {
     const target = build.targets[item.exerciseId] ?? null;
     moves.push({
       name: ex.name,
-      dose: doseText({
-        sets: item.sets,
-        steps: build.steps.filter((s) => s.slotKey === item.slotKey && s.kind !== "rest"),
-        target,
-        perSide: ex.laterality === "unilateral",
-      }),
+      dose:
+        doses?.[item.slotKey] ??
+        doseText({
+          sets: item.sets,
+          steps: build.steps.filter((s) => s.slotKey === item.slotKey && s.kind !== "rest"),
+          target,
+          perSide: ex.laterality === "unilateral",
+        }),
       up: target?.action === "up",
     });
   }

@@ -13,7 +13,7 @@
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
@@ -252,6 +252,8 @@ function mount(
     route?: (call: Call, set: (next: SessionDto) => void) => Response | undefined;
     /** The query defaults, over `retry: false` (the app's own: `refetchOnWindowFocus: false`, `staleTime: 15_000`). */
     queries?: Record<string, unknown>;
+    /** The history entry's state the sheet opens on (Today's links say `{ from: "today" }`). */
+    state?: unknown;
   } = {},
 ) {
   const calls: Call[] = [];
@@ -306,12 +308,13 @@ function mount(
         { client: qc },
         createElement(
           MemoryRouter,
-          { initialEntries: ["/plan"] },
+          { initialEntries: [{ pathname: "/plan", state: opts.state ?? null }] },
           createElement(
             Routes,
             null,
             createElement(Route, { path: "/plan", element: sheet }),
             createElement(Route, { path: "/session/:id", element: createElement("p", null, "the player") }),
+            createElement(Route, { path: "/studio/build/workout/:id", element: createElement(BuilderStub) }),
           ),
         ),
       ),
@@ -1449,5 +1452,120 @@ describe("with the switch off, the sheet is as it was before the watch (audit 3-
       act(() => root?.unmount());
       host?.remove();
     }
+  });
+});
+
+// ── Stage 2 whole-branch review: a document workout in the sheet (I1, I2, M1, M2) ──────────────────────────────────
+
+/** Where Edit in Studio lands: the builder's address, and the way back it was handed. */
+function BuilderStub() {
+  const loc = useLocation();
+  return createElement("p", null, `the builder at ${loc.pathname}, back to ${JSON.stringify((loc.state as { from?: unknown } | null)?.from ?? null)}`);
+}
+
+/** A planned Studio workout today, built from its document: a warm-up and a main part, its effort Develop. */
+function docSession(over: Partial<SessionDto> = {}): SessionDto {
+  const base = session();
+  return session({
+    choices: { modes: [], themes: [], locations: [] },
+    view: { ...base.view!, mode: "build", proposedMode: "build", modeReasons: [], theme: null, proposedTheme: null, block: null, newMove: null, minutes: 25 },
+    build: {
+      ...base.build!,
+      theme: null,
+      blockRef: null,
+      weekOfBlock: null,
+      targets: {},
+      newMove: null,
+      alternatives: {},
+      fromDoc: {
+        rev: 1,
+        swaps: [],
+        blocked: [],
+        effort: "develop",
+        parts: [
+          { purpose: "warmup", keys: ["prep:0"] },
+          { purpose: "main", keys: ["core:0", "core:1"] },
+        ],
+        doses: { "prep:0": "8 reps", "core:0": "3 × 5–8", "core:1": "3 × 10 each side" },
+      },
+      steps: base.build!.steps.filter((s) => ["prep:0", "core:0", "core:1"].includes(s.slotKey)),
+      items: base.build!.items.filter((i) => ["prep:0", "core:0", "core:1"].includes(i.slotKey)),
+    },
+    ...over,
+  } as Partial<SessionDto>);
+}
+const docRow = (over: Partial<WorkoutDto> = {}) => slot({ id: SLOT, origin: "studio", programId: null, title: "Leg day", ...over });
+
+describe("a document workout in the sheet (Stage 2 whole-branch review)", () => {
+  let studioWas = false;
+  beforeEach(() => {
+    studioWas = features.studio;
+    features.studio = true;
+  });
+  afterEach(() => {
+    features.studio = studioWas;
+  });
+
+  it("says its effort as the Studio does — never a mode's word — with no Theme, and its length is no picker it would ignore (M1, I2)", async () => {
+    mount(docSession(), { w: docRow() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    const chips = [...document.querySelectorAll(".session-chip")].map((c) => c.textContent);
+    expect(chips).toEqual(["Develop", "25 min", "Home"]);
+    expect(document.querySelectorAll("button.session-chip").length).toBe(0);
+    expect(body()).not.toContain("Consistent");
+    expect(body()).not.toContain("Theme");
+  });
+
+  it("names its moves by their parts, as the Studio does, each dose in the builder's words (M2)", async () => {
+    mount(docSession(), { w: docRow() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect([...document.querySelectorAll(".session-block-head")].map((h) => h.textContent!.split(" · ")[0])).toEqual(["Warm-up", "Main"]);
+    expect(body()).not.toMatch(/\bCore\b|\bPrep\b/);
+    expect(body()).toContain("3 × 5–8");
+    expect(body()).toContain("3 × 10 each side");
+    expect(body()).not.toContain("3 sets");
+  });
+
+  it("offers Edit in Studio, whose way back is Plan — or Today, when it was opened from there (I1)", async () => {
+    mount(docSession(), { w: docRow() });
+    await until(() => !!button("Edit in Studio"), "Edit in Studio");
+    expect(button("Edit in Studio")!.getAttribute("href")).toBe(`/studio/build/workout/${SLOT}`);
+    await click("Edit in Studio");
+    await until(() => body().includes("the builder at"), "the builder");
+    expect(body()).toContain(`the builder at /studio/build/workout/${SLOT}, back to "plan"`);
+
+    act(() => root?.unmount());
+    host?.remove();
+    mount(docSession(), { w: docRow(), state: { from: "today" } });
+    await until(() => !!button("Edit in Studio"), "Edit in Studio");
+    await click("Edit in Studio");
+    await until(() => body().includes("the builder at"), "the builder");
+    expect(body()).toContain('back to "today"');
+  });
+
+  it("offers no Edit in Studio for what the Studio may not change: a programme session, one under way, one done, the Studio off", async () => {
+    mount(session(), { w: slot() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect(button("Edit in Studio")).toBeUndefined();
+    for (const w of [docRow({ contentState: "started" }), docRow({ completionState: "completed" })]) {
+      act(() => root?.unmount());
+      host?.remove();
+      mount(docSession(), { w });
+      await until(() => body().includes("Goblet squat"), "the build");
+      expect(button("Edit in Studio")).toBeUndefined();
+    }
+    features.studio = false;
+    act(() => root?.unmount());
+    host?.remove();
+    mount(docSession(), { w: docRow() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect(button("Edit in Studio")).toBeUndefined();
+  });
+
+  it("an engine build keeps its mode, theme and time pickers, and its blocks' names", async () => {
+    mount(session(), { w: slot() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect([...document.querySelectorAll("button.session-chip")].map((c) => c.textContent)).toEqual(["Build ▾", "Hips & posture ▾", "30 min ▾", "Home ▾"]);
+    expect([...document.querySelectorAll(".session-block-head")].map((h) => h.textContent!.split(" · ")[0])).toEqual(["Arrive", "Prep", "Core", "Knee care", "Cool-down"]);
   });
 });

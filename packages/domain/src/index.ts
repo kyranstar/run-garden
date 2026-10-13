@@ -29,6 +29,7 @@ export * from "./weights.js";
 export * from "./program.js";
 export * from "./performed.js";
 export * from "./session-dose.js";
+export * from "./doc-dose.js";
 export * from "./standalone-backup.js";
 export * from "./workout-doc.js";
 export * from "./profile.js";

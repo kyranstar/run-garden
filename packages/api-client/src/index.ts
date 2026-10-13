@@ -216,6 +216,8 @@ export interface TodayResponse {
       minutes: number;
       place?: string;
       lead?: SessionLead;
+      /** A document workout's effort: said in place of the mode. */
+      effort?: WorkoutDoc["intent"]["effort"];
     } | null;
     /**
      * The session's sent build is on the watch (Phase 3): its push verified and the row holding the copy's address.
@@ -653,6 +655,12 @@ export interface DocBuildInfoDto {
    * before it (`doc-build-1`): nothing is said.
    */
   slots?: Record<string, DocSlotDto>;
+  /** The document's effort: the sheet's and Today's word for it, never a mode's. Absent from a build stored before it. */
+  effort?: WorkoutDoc["intent"]["effort"];
+  /** The document's parts in play order, by purpose, each with its items' slot keys: the sheet and the player name them. */
+  parts?: Array<{ purpose: WorkoutDoc["parts"][number]["purpose"]; keys: string[] }>;
+  /** Per slot key, the item's dose in the builder's words ("4 × 5–8"). */
+  doses?: Record<string, string>;
 }
 
 /** A saved template (`GET /api/templates`). */

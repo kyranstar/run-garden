@@ -14,7 +14,9 @@ import type { Db } from "../src/services/db.js";
 import { GatedError, lockCurrentBuild } from "../src/services/session-build.js";
 import { savePerformedSession } from "../src/services/session-save.js";
 import { applyMove } from "../src/services/jobs.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { planRoutes } from "../src/routes/plan.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
 
 const { plannedWorkouts, sessionBuilds } = schema;
@@ -563,5 +565,39 @@ describe("Start re-gates with the day's reading", () => {
     statements.length = 0;
     expect((await call("POST", `/api/sessions/${id}/start`, { buildId: stale.body.session.build.buildId })).status).toBe(200);
     expect(statements.length).toBeLessThanOrEqual(45);
+  });
+});
+
+describe("a document build in its own words (Stage 2 whole-branch review M1, M2)", () => {
+  it("carries its effort, its parts by purpose with their slot keys, and each dose as the builder says it — and Today says them", async () => {
+    const base = calmDoc();
+    const doc = workoutDocSchema.parse({
+      ...base,
+      intent: { ...base.intent, effort: "develop" },
+      parts: [{ purpose: "warmup", format: "straight", items: [{ kind: "exercise", libraryId: "catCow", dose: { reps: 8 } }] }, ...base.parts],
+    });
+    const id = await create(doc);
+    const res = await call("POST", `/api/sessions/${id}/build`, {});
+    expect(res.status).toBe(200);
+    expect(res.body.build.fromDoc).toMatchObject({
+      effort: "develop",
+      parts: [
+        { purpose: "warmup", keys: ["prep:0"] },
+        { purpose: "main", keys: ["core:0", "core:1"] },
+      ],
+      doses: { "prep:0": "8 reps", "core:0": "2 × 12", "core:1": "2 × 8" },
+    });
+    // Read again (the stored build): the same.
+    expect((await call("GET", `/api/sessions/${id}`)).body.build.fromDoc.effort).toBe("develop");
+    const plan = mountRoutes(db, "/api/plan", planRoutes);
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const todayRes = await plan.request("/api/plan/today", { headers: { Cookie: cookie } }, { FIXTURE_MODE: "1" } as never);
+    const todayBody = (await todayRes.json()) as { todaySessions: Array<{ workout: { id: string }; build: { effort?: string; lead: { moves: Array<{ name: string; dose: string }> } } }> };
+    const row = todayBody.todaySessions.find((s) => s.workout.id === id)!;
+    expect(row.build.effort).toBe("develop");
+    expect(row.build.lead.moves.map((m) => [m.name, m.dose])).toEqual([
+      ["Glute bridge", "2 × 12"],
+      ["Dead bug", "2 × 8"],
+    ]);
   });
 });

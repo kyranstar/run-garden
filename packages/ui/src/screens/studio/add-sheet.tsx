@@ -30,7 +30,7 @@
  * While a write is under way the sheet stays: ✕ and Escape wait for the answer.
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DocIssueDto, type TemplateDto } from "@rg/api-client";
 import { addDays, type WorkoutDoc } from "@rg/domain";
@@ -51,6 +51,7 @@ import {
   type AddTargetKind,
 } from "./add-model.js";
 import type { StudioCtx } from "./model.js";
+import type { BuilderArrival } from "./templates-model.js";
 import { useMoveSay } from "./prefs.js";
 
 /** How far ahead the sheet looks for planned workouts to add to. */
@@ -526,6 +527,9 @@ export function AddedLine({
   const said = useRef<HTMLDivElement>(null);
   const phase = added?.phase;
   const sent = added?.sent;
+  // Open hands the builder its way back: the search, or the move, the Add was made from.
+  const here = useLocation();
+  const backTo: BuilderArrival = { from: { href: `${here.pathname}${here.search}` } };
   useEffect(() => {
     // The pressed button went (Undo, Send): focus rests on the line rather than falling to the page — and only then;
     // focus the athlete moved elsewhere stays where they put it.
@@ -548,7 +552,7 @@ export function AddedLine({
       </div>
       {acting ? (
         <span className="stu-added-actions">
-          <Link className="linklike tap-pad" to={added.href}>
+          <Link className="linklike tap-pad" to={added.href} state={backTo}>
             Open
           </Link>
           {/* Not `disabled` while it runs: a disabled button drops the focus it holds. */}

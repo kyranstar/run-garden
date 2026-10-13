@@ -22,7 +22,7 @@ import { Lib, Prog, type HoldSide, type SlotChoice, type Step } from "@rg/sessio
 import { Sheet, Spinner } from "../components.js";
 import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js";
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
-import { FORMAT_LABEL, blockLabel } from "../components/session-sheet.js";
+import { FORMAT_LABEL, blockLabel, partLabelOf } from "../components/session-sheet.js";
 import { Stepper } from "../components/set-steppers.js";
 import { IconClose, IconInfo, IconSettings, IconSwap } from "../icons.js";
 import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds.js";
@@ -675,6 +675,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             exercise={ex}
             exercises={src.build.exercises}
             careLabel={careLabel}
+            part={step ? partLabelOf(src.build, step.slotKey, careLabel) : null}
             cue={step.exerciseId === plannedMoveOf(src.build, step.slotKey) ? (src.build.fromDoc?.slots?.[step.slotKey]?.cue ?? null) : null}
             toMax={toMax}
             open={open}
@@ -942,8 +943,9 @@ function nextLine(state: PlayerState, step: Step, exercises: Readonly<Record<str
   return null;
 }
 
-function eyebrow(step: Step, careLabel: string | null, exercise?: { contraction?: readonly string[] }): string {
-  const block = step.kind === "rest" ? "Rest" : step.block === "care" ? (careLabel ?? "Care") : blockLabel(step.block, [exercise]);
+function eyebrow(step: Step, careLabel: string | null, exercise?: { contraction?: readonly string[] }, part?: string | null): string {
+  // A document build names the part, as the Studio does; an engine build its block.
+  const block = step.kind === "rest" ? "Rest" : (part ?? (step.block === "care" ? (careLabel ?? "Care") : blockLabel(step.block, [exercise])));
   if (step.kind === "rest") return block;
   const parts = [block];
   const format = FORMAT_LABEL[step.format.id];
@@ -985,6 +987,7 @@ function StepBody({
   exercise,
   exercises,
   careLabel,
+  part,
   cue,
   toMax,
   open,
@@ -998,6 +1001,8 @@ function StepBody({
   exercise: SessionExerciseDto | undefined;
   exercises: Readonly<Record<string, SessionExerciseDto | undefined>>;
   careLabel: string | null;
+  /** A document build's part name for the step ("Warm-up"); null for an engine build. */
+  part: string | null;
   /** The item's cue (a document workout's), under the move's name: only while the slot plays the move it was said of. */
   cue: string | null;
   /** A hold to max: it counts up past its target. */
@@ -1037,7 +1042,7 @@ function StepBody({
     const metric = exercise?.dose.type === "time" ? "s" : "reps";
     return (
       <>
-        <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise)}</span>
+        <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise, part)}</span>
         <h1 className="display player-name">{name}</h1>
         {cueLine}
         {log ??
@@ -1069,7 +1074,7 @@ function StepBody({
   const over = held !== null && held >= target + 1000 ? held - target : null;
   return (
     <>
-      <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise)}</span>
+      <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise, part)}</span>
       <h1 className="display player-name">{name}</h1>
       {cueLine}
       {step.side ? <span className="player-meta">{sideWord(step.side)}</span> : null}

@@ -117,7 +117,7 @@ import { NameSheet, SaveMenu } from "./save-menu.js";
 import { ScheduleSheet } from "./schedule-sheet.js";
 import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioReads } from "./screen.js";
 import { SummaryCard } from "./summary-card.js";
-import { quickStartFor, TEMPLATES_HREF, type BuilderArrival } from "./templates-model.js";
+import { builderBack, quickStartFor, type BuilderArrival } from "./templates-model.js";
 import { IDLE, useBuildFlows, workoutDocQuery, type Flow, type Loaded, type Status } from "./use-build-flows.js";
 
 /** The readings this page recorded (or the session read gave): a Studio-only athlete's Today carries none. */
@@ -154,6 +154,7 @@ function Builder({ source }: { source: BuildSource }) {
   const location = useLocation();
   /** What the templates list asked of this visit (its Start, its Schedule…), and where its way back goes. */
   const arrived = location.state as BuilderArrival | null;
+  const back = builderBack(arrived?.from);
   const { ctx, settled, profilesKnown } = useStudioReads();
   const today = ctx.today ?? localTodayGuess();
   const unit = useWeightUnit();
@@ -520,9 +521,9 @@ function Builder({ source }: { source: BuildSource }) {
       <div className="stu-build-grid">
         <header className="stu-build-head">
           <div className="stu-build-bar">
-            <Link className="btn stu-build-back" to={arrived?.from === "templates" ? TEMPLATES_HREF : "/studio"}>
+            <Link className="btn stu-build-back" to={back.href}>
               <IconBack size={16} />
-              {arrived?.from === "templates" ? "Templates" : "Studio"}
+              {back.label}
             </Link>
             <span className="stu-build-tools">
               {frozen ? null : (

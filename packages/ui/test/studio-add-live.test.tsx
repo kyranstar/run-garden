@@ -44,9 +44,11 @@ afterEach(() => {
 /** Answers a revise the server is holding ("held"). */
 let releaseHeld: () => void = () => undefined;
 
+let whereState: unknown = null;
 function Where() {
   const loc = useLocation();
   where = `${loc.pathname}${loc.search}`;
+  whereState = loc.state;
   return null;
 }
 
@@ -876,5 +878,17 @@ describe("fix round 2: the watch, the line, the wait, the draft row", () => {
     expect([...sheet()!.querySelectorAll(".stu-choice")].map((l) => l.textContent?.trim())).toEqual(before);
     expect(option("To a new workout")!.checked).toBe(true);
     expect(sheet()!.textContent).not.toContain("Replaces");
+  });
+});
+
+describe("Open on the line (Stage 2 whole-branch review M9)", () => {
+  it("hands the builder its way back: the search the Add was made from", async () => {
+    serve();
+    await openAdd("goblet", "Goblet squat");
+    await click(addButton(), "Add");
+    await until(() => !!line(), "the line");
+    await click([...line()!.querySelectorAll("a")].find((a) => a.textContent === "Open"), "Open");
+    expect(where).toBe("/studio/build/new");
+    expect(whereState).toEqual({ from: { href: "/studio?q=goblet" } });
   });
 });

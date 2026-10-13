@@ -18,6 +18,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import { addDays, appAuthoredRow, type SessionLead } from "@rg/domain";
+import { label as vocab } from "@rg/exercise-library";
 import { CategoryDot, formatDayShort, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
 import { IconWatch } from "../icons.js";
@@ -54,6 +55,14 @@ export const MODE_LABEL: Record<"recovery" | "consistent" | "build", string> = {
   consistent: "Consistent",
   build: "Build",
 };
+
+/**
+ * A build's word on Today: a document workout's own effort as the Studio says it ("Develop"), never a mode's
+ * ("Consistent", "Build"); a programme session's mode.
+ */
+export function buildWord(b: { mode: keyof typeof MODE_LABEL; effort?: string }): string {
+  return b.effort ? vocab(b.effort) : MODE_LABEL[b.mode];
+}
 
 /** A skipped session is not today's to-do: it says "Skipped" and offers nothing to play (ruling 2a-R15). */
 export function sessionSkipped(w: WorkoutDto): boolean {
@@ -92,6 +101,8 @@ export function sessionDone(w: WorkoutDto): boolean {
 
 /** The workout sheet for this session (the session sheet, for an app session). */
 export const sheetHref = (w: WorkoutDto) => `/plan?workout=${encodeURIComponent(w.id)}`;
+/** The sheet opened from Today: its Edit in Studio's way back returns to Today. */
+const FROM_TODAY = { from: "today" } as const;
 /** The player (Phase 2b). */
 export const playerHref = (w: WorkoutDto) => `/session/${encodeURIComponent(w.id)}`;
 
@@ -234,7 +245,7 @@ export function TodayProgramLead({
         {pending
           ? `Done · ${pending.minutes} min · saved, will sync`
           : b
-            ? [MODE_LABEL[b.mode], b.theme, `${b.minutes} min`, b.place].filter(Boolean).join(" · ")
+            ? [buildWord(b), b.theme, `${b.minutes} min`, b.place].filter(Boolean).join(" · ")
             : `${formatTime(w.effectiveTime)} · ${formatMinutes(w.workoutSeconds)}`}
       </p>
       {!pending && b?.lead && b.lead.moves.length > 0 ? (
@@ -247,14 +258,14 @@ export function TodayProgramLead({
         {skipped ? <span className="today-session-skipped">Skipped</span> : null}
         {offer && !pending ? <LogYourSession offer={offer} /> : null}
         {play ? (
-          <Link className="btn btn-primary today-play" to={playHref(w, play)} onClick={play === "Continue" ? unlockAudio : undefined}>
+          <Link className="btn btn-primary today-play" to={playHref(w, play)} state={FROM_TODAY} onClick={play === "Continue" ? unlockAudio : undefined}>
             {play}
           </Link>
         ) : null}
         {!done && !skipped && session.onWatch ? <OnYourWatch /> : null}
         {/* Start already opens the sheet. */}
         {play === "Start" ? null : (
-          <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
+          <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)} state={FROM_TODAY}>
             Open
           </Link>
         )}
@@ -279,7 +290,7 @@ export function TodayProgramLine({
   const b = session.build;
   const play = pending ? null : playAction(w, today);
   const time = formatTime(w.effectiveTime);
-  const meta = b ? `${MODE_LABEL[b.mode]} · ${b.minutes} min · ${time}` : `${formatMinutes(w.workoutSeconds)} · ${time}`;
+  const meta = b ? `${buildWord(b)} · ${b.minutes} min · ${time}` : `${formatMinutes(w.workoutSeconds)} · ${time}`;
   return (
     <div className="today-session">
       <CategoryDot category={w.category} />
@@ -298,16 +309,16 @@ export function TodayProgramLine({
         // Skipped is not today's to-do, but Un-skip is one tap down (2a UI re-review U6).
         <span className="today-session-end">
           <span className="today-session-skipped">Skipped</span>
-          <Link className="btn btn-small" to={sheetHref(w)}>
+          <Link className="btn btn-small" to={sheetHref(w)} state={FROM_TODAY}>
             Open
           </Link>
         </span>
       ) : play ? (
-        <Link className="btn btn-small btn-primary" to={playHref(w, play)} onClick={play === "Continue" ? unlockAudio : undefined}>
+        <Link className="btn btn-small btn-primary" to={playHref(w, play)} state={FROM_TODAY} onClick={play === "Continue" ? unlockAudio : undefined}>
           {play}
         </Link>
       ) : (
-        <Link className="btn btn-small" to={sheetHref(w)}>
+        <Link className="btn btn-small" to={sheetHref(w)} state={FROM_TODAY}>
           Open
         </Link>
       )}

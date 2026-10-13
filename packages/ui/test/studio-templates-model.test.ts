@@ -11,6 +11,7 @@ import { EXERCISES } from "@rg/exercise-library";
 import { quickKindOf, sourceKey, sourceOfPath } from "../src/screens/studio/build-model.js";
 import { emptyStudioCtx, type StudioCtx } from "../src/screens/studio/model.js";
 import { CATEGORY_LABELS } from "../src/components.js";
+import { builderBack } from "../src/screens/studio/templates-model.js";
 import {
   daySeed,
   lastUsedText,
@@ -197,5 +198,19 @@ describe("the builder's address for a quick start", () => {
     expect(quickKindOf("desk_reset")).toBe("desk_reset");
     expect(quickKindOf("nope")).toBeNull();
     expect(templateHref("a b")).toBe("/studio/build/template/a%20b");
+  });
+});
+
+describe("the builder's way back (Stage 2 whole-branch review I1, M9)", () => {
+  it("goes where it was opened from: the templates list, Plan, Today, a Studio search or move — else the Studio", () => {
+    expect(builderBack("templates")).toEqual({ href: "/studio/templates", label: "Templates" });
+    expect(builderBack("plan")).toEqual({ href: "/plan", label: "Plan" });
+    expect(builderBack("today")).toEqual({ href: "/", label: "Today" });
+    expect(builderBack({ href: "/studio?q=goblet" })).toEqual({ href: "/studio?q=goblet", label: "Studio" });
+    expect(builderBack({ href: "/studio/move/gobletSquat?q=goblet" })).toEqual({ href: "/studio/move/gobletSquat?q=goblet", label: "Studio" });
+    // Only a Studio address: anything else the history state might hold goes to the Studio's home.
+    expect(builderBack({ href: "https://example.com/studio" })).toEqual({ href: "/studio", label: "Studio" });
+    expect(builderBack({ href: "/settings" })).toEqual({ href: "/studio", label: "Studio" });
+    expect(builderBack(undefined)).toEqual({ href: "/studio", label: "Studio" });
   });
 });

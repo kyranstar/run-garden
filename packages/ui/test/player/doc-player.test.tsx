@@ -463,3 +463,14 @@ describe("a document workout's items, played", () => {
     expect(document.querySelector(".player-ring-mark")).toBeNull();
   });
 });
+
+describe("a document build names its parts as the Studio does (Stage 2 whole-branch review M2)", () => {
+  it("the eyebrow says the step's part ('Main'), never the engine block's word", async () => {
+    const b = docBuild();
+    const first = b.steps[0]!.slotKey;
+    const keys = [...new Set(b.steps.map((s) => s.slotKey))];
+    await start(docBuild({ fromDoc: { ...b.fromDoc!, parts: [{ purpose: "main", keys: [first] }, { purpose: "cooldown", keys: keys.filter((k) => k !== first) }] } }), docView());
+    const eyebrow = document.querySelector(".player-eyebrow")!.textContent!;
+    expect(eyebrow.split(" · ")[0]).toBe("Main");
+  });
+});
