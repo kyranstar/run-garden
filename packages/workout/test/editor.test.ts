@@ -259,7 +259,10 @@ describe("doseFor: the one dose a move starts with in a part (Stage 2 whole-bran
   it("its range's low end (reps keep the range), its own sets — one in a light part — each side, its rest", () => {
     const r = fake({ dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60 }, laterality: "bilateral" });
     expect(doseFor(r, "main")).toEqual({ sets: 2, reps: { min: 8, max: 12 }, restSec: 60 });
-    expect(doseFor(r, "warmup")).toMatchObject({ sets: 1, reps: { min: 8, max: 12 } });
+    // One set in a light part, and no rest between sets it doesn't have — only the transition (CUJ R16).
+    expect(doseFor(r, "warmup")).toEqual({ sets: 1, reps: { min: 8, max: 12 } });
+    expect(doseFor(r, "cooldown")).toEqual({ sets: 1, reps: { min: 8, max: 12 } });
+    expect(doseFor(fake({ dose: { type: "reps", range: [8, 12], sets: [1, 2], restSec: 45 }, laterality: "bilateral" }), "main")).toEqual({ sets: 1, reps: { min: 8, max: 12 } });
     expect(doseFor(fake({ dose: { type: "time", range: [20, 40] }, laterality: "bilateral" }), "main")).toEqual({ sets: 1, holdSec: 20 });
     expect(doseFor(fake({ dose: { type: "breaths", range: [5, 10] }, laterality: "bilateral" }), "cooldown")).toEqual({ sets: 1, breaths: 5 });
     // A library carry's range is seconds: a timed carry, never a distance (cross-task ruling, S2 T4 fix 1).

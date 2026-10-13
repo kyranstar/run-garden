@@ -356,6 +356,21 @@ export function ItemSheet({ doc, part, item, rec, notes, unit, bc, ctx, library,
                     {loadError}
                   </p>
                 ) : null}
+                {kind === "hold" ? (
+                  // A hold to max (CUJ R17): the hold is a floor to go past, its best kept as a result.
+                  <button
+                    type="button"
+                    className="chipbtn stu-sides"
+                    aria-pressed={dose.max === true}
+                    onClick={() => {
+                      const { max: _m, ...rest } = dose;
+                      setDose(dose.max ? rest : { ...rest, max: true });
+                    }}
+                  >
+                    {dose.max ? <IconCheck /> : null}
+                    To max
+                  </button>
+                ) : null}
                 {sided ? (
                   <button
                     type="button"

@@ -108,8 +108,9 @@ export const LIGHT_PARTS: ReadonlySet<PartPurpose> = new Set<PartPurpose>(["arri
  * THE ONE DOSE a library move starts with in a part of `purpose` — the dose the list row and the detail say, that Add
  * puts in, that the builder's picker and its suggestions put in, and that a swap's new move takes when the old dose
  * doesn't fit it: its range's low end (reps keep the range: "3 × 8–12"), its own sets — one in a light part — each side
- * for a one-sided move, and its rest. A library carry's range is seconds: a timed carry (`holdSec`); `carryM` is only
- * ever a distance a source stated.
+ * for a one-sided move, and its rest between sets when it has more than one (a one-set move has none: only the
+ * transition, CUJ R16). A library carry's range is seconds: a timed carry (`holdSec`); `carryM` is only ever a distance
+ * a source stated.
  */
 export function doseFor(rec: ExerciseRecord, purpose: PartPurpose): WorkoutDose {
   const [lo, hi] = rec.dose.range;
@@ -120,7 +121,7 @@ export function doseFor(rec: ExerciseRecord, purpose: PartPurpose): WorkoutDose 
     sets,
     ...amount,
     ...(rec.laterality !== "bilateral" ? { perSide: true } : {}),
-    ...(rec.dose.restSec !== undefined ? { restSec: rec.dose.restSec } : {}),
+    ...(sets > 1 && rec.dose.restSec !== undefined ? { restSec: rec.dose.restSec } : {}),
   };
 }
 

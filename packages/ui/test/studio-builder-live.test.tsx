@@ -1220,3 +1220,26 @@ describe("focus after Schedule and Save changes (Stage 2 whole-branch review M4)
     expect(document.activeElement).toBe(document.querySelector(".stu-build-status-text"));
   });
 });
+
+describe("a hold to max in the item's sheet (CUJ R17)", () => {
+  it("a timed hold offers To max, which writes the dose's max — and takes it off again; a move of reps doesn't", async () => {
+    const hold = EXERCISES.find((e) => e.dose.type === "time" && e.laterality === "bilateral" && e.purposes.includes("strength"))!;
+    await draftStore().save(draft(into(1, hold.id), into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new");
+    await until(() => partsShown()[1]?.[1]?.length === 2, "the workout");
+    await click(document.querySelector('[data-at="1-0"]'), "the hold's row");
+    const sheet = dialog(hold.name)!;
+    const toMax = () => buttons(sheet).find((b) => b.textContent?.trim() === "To max")!;
+    expect(toMax().getAttribute("aria-pressed")).toBe("false");
+    await click(toMax(), "To max");
+    expect(toMax().getAttribute("aria-pressed")).toBe("true");
+    await until(() => true, "");
+    expect(((await saved())!.parts[1]!.items[0] as { dose: { max?: true } }).dose.max).toBe(true);
+    await click(toMax(), "To max");
+    expect(((await saved())!.parts[1]!.items[0] as { dose: { max?: true } }).dose.max).toBeUndefined();
+    await click(button("Close", sheet), "Close");
+    await click(document.querySelector('[data-at="1-1"]'), "the squat's row");
+    expect(buttons(dialog("Goblet squat")!).some((b) => b.textContent?.trim() === "To max")).toBe(false);
+  });
+});
