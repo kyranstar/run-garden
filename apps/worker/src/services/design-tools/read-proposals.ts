@@ -1,0 +1,96 @@
+/**
+ * read_proposals(status?) — past proposals and how each ended (Stage 3 spec §4, §8): newest first, with the day it
+ * was made, its status (pending, approved, declined, superseded, expired) and the day it was resolved, and what it
+ * proposed — each change's kind, day and, for a designed workout, its title. A rehearsal (the live scenario suite) is
+ * never one of them. The title, rationale and a designed workout's title are a past run's words: marked. One
+ * statement: the athlete with one page of proposals.
+ */
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { coachProposals } from "@rg/database";
+import type { DesignTool } from "./types.js";
+import {
+  answer,
+  CURSOR_SCHEMA,
+  cursorField,
+  isErr,
+  limitField,
+  limitSchema,
+  localDateOf,
+  offsetOf,
+  parsedArray,
+  parseInput,
+  READ_ROLES,
+  readAthlete,
+  sqlPage,
+  untrusted,
+  untrustedOrNull,
+} from "./read-common.js";
+
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 30;
+/** Changes listed per proposal; the rest are counted. */
+const OPS_SHOWN = 6;
+const STATUSES = ["pending", "approved", "declined", "superseded", "expired"] as const;
+
+const input = z.object({ status: z.enum(STATUSES).optional(), limit: limitField(MAX_LIMIT).optional(), cursor: cursorField.optional() }).strict();
+
+export const readProposals: DesignTool = {
+  name: "read_proposals",
+  description: "Past proposals, newest first, with how each ended (approved, declined, superseded, expired, or still pending) and what each proposed.",
+  inputSchema: {
+    type: "object",
+    properties: { status: { type: "string", enum: [...STATUSES] }, limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },
+    additionalProperties: false,
+  },
+  statementCost: 1,
+  roles: READ_ROLES,
+  async run(ctx, raw) {
+    const p = parseInput(input, raw, "optionally status, limit and cursor");
+    if (isErr(p)) return p;
+    const offset = offsetOf(p.cursor);
+    const limit = p.limit ?? DEFAULT_LIMIT;
+    const c = coachProposals;
+    const op = (path: string) => sql.raw(`json_extract(o.value, '${path}')`);
+    const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
+      proposals: sql`(select json_group_array(json_object('id', id, 'title', title, 'rationale', rationale, 'status', status, 'createdAt', created_at,
+          'resolvedAt', resolved_at, 'ops', ops)) from (
+          select ${c.id} as id, ${c.title} as title, ${c.rationale} as rationale, ${c.status} as status, ${c.createdAt} as created_at,
+            ${c.resolvedAt} as resolved_at,
+            (select json_group_array(json_object('kind', ${op("$.kind")}, 'date', coalesce(${op("$.date")}, ${op("$.toDate")}),
+              'title', ${op("$.doc.title")}))
+              from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
+          from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}
+          order by ${c.createdAt} desc, ${c.id} limit ${limit + 1} offset ${offset}))`,
+    });
+    const rows = (parsedArray(extra.proposals) as Array<Record<string, unknown>>).sort(
+      (a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(a.id).localeCompare(String(b.id)),
+    );
+    const page = sqlPage(rows, offset, limit);
+    const proposals = page.items.map((r) => {
+      const ops = parsedArray(r.ops).map((o) => o as Record<string, unknown>);
+      const rationale = untrustedOrNull(r.rationale);
+      return {
+        id: r.id,
+        created: localDateOf(athlete.tz, r.createdAt),
+        status: r.status,
+        resolved: localDateOf(athlete.tz, r.resolvedAt),
+        ops: ops.slice(0, OPS_SHOWN).map((o) => ({
+          kind: typeof o.kind === "string" ? o.kind : "unknown",
+          ...(typeof o.date === "string" ? { date: o.date } : {}),
+          ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),
+        })),
+        ...(ops.length > OPS_SHOWN ? { moreOps: ops.length - OPS_SHOWN } : {}),
+        title: untrusted(typeof r.title === "string" ? r.title : ""),
+        ...(rationale ? { rationale } : {}),
+      };
+    });
+    return answer({
+      source: "the coach's proposals and how the athlete resolved them",
+      now: ctx.now,
+      missing: proposals.length === 0 && offset === 0 ? [p.status ? `no ${p.status} proposals` : "no proposals yet"] : [],
+      data: { proposals, nextCursor: page.nextCursor },
+      summary: proposals.length ? `Read ${proposals.length} past proposals` : "No past proposals",
+    });
+  },
+};

@@ -1,0 +1,259 @@
+/**
+ * list_workouts(from, to, q?) and get_workout(id) — document workouts (Stage 3 spec §4).
+ *
+ *  - list_workouts: the planned rows with a document between two dates, newest first, with their intent — the
+ *    Studio's searchable list ("like last week's"; `q` matches the title or the intent, as the list route does with
+ *    `likePatternOf`). One statement.
+ *  - get_workout: one workout's document (every word in it marked: a document's `source` is written by the client, so
+ *    nothing tells the athlete's words from the app's), its revision, what is derived from it (`deriveDoc`), what was
+ *    done in it (read_history's lines) and the feedback on it. Archived rows and other accounts' are not found. Two
+ *    statements: the athlete with the row, then what was done and the feedback in one read.
+ */
+import { and, between, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { z } from "zod";
+import { activities, athleteAnswers, performedSessions, plannedWorkouts } from "@rg/database";
+import { parseStoredWorkoutDoc, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
+import { EXERCISES } from "@rg/exercise-library";
+import { deriveDoc } from "@rg/workout";
+import { likePatternOf } from "../../routes/workouts.js";
+import type { DesignTool } from "./types.js";
+import {
+  answer,
+  checkRange,
+  CURSOR_SCHEMA,
+  cursorField,
+  DATE_SCHEMA,
+  dateField,
+  isErr,
+  limitField,
+  limitSchema,
+  offsetOf,
+  parsedJson,
+  parseInput,
+  READ_ROLES,
+  readAthlete,
+  readTagged,
+  refuse,
+  sqlPage,
+  untrusted,
+  type Untrusted,
+} from "./read-common.js";
+import { INTENT_SQL, ORIGIN_WORDS, STATUS_WORDS } from "./read-plan.js";
+import { doneEntries, doneTerms, sessionsWhere } from "./read-sessions.js";
+
+const pw = plannedWorkouts;
+const DEFAULT_LIMIT = 15;
+const MAX_LIMIT = 50;
+const MINUTES = sql<number | null>`coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}, ${pw.calendarBlockDurationSeconds})`;
+
+const listInput = z
+  .object({ from: dateField, to: dateField, q: z.string().max(80).optional(), limit: limitField(MAX_LIMIT).optional(), cursor: cursorField.optional() })
+  .strict();
+
+export const listWorkouts: DesignTool = {
+  name: "list_workouts",
+  description: "Document workouts (past and planned) between two dates, newest first, with their intent; q searches titles and intents.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      from: DATE_SCHEMA,
+      to: DATE_SCHEMA,
+      q: { type: "string", description: "Words in the title or intent." },
+      limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT),
+      cursor: CURSOR_SCHEMA,
+    },
+    required: ["from", "to"],
+    additionalProperties: false,
+  },
+  statementCost: 1,
+  roles: READ_ROLES,
+  async run(ctx, raw) {
+    const p = parseInput(listInput, raw, "from and to (YYYY-MM-DD), and optionally q, limit and cursor");
+    if (isErr(p)) return p;
+    const bad = checkRange(p.from, p.to);
+    if (bad) return bad;
+    const like = likePatternOf(p.q);
+    const offset = offsetOf(p.cursor);
+    const limit = p.limit ?? DEFAULT_LIMIT;
+    const rows = await ctx.db
+      .select({
+        id: pw.id,
+        date: pw.effectiveDate,
+        time: pw.effectiveTime,
+        title: pw.title,
+        intent: INTENT_SQL,
+        state: pw.completionState,
+        origin: pw.origin,
+        rev: pw.workoutDocRev,
+        seconds: MINUTES,
+      })
+      .from(pw)
+      .where(
+        and(
+          eq(pw.userId, ctx.userId),
+          isNull(pw.archivedAt),
+          isNotNull(pw.workoutDoc),
+          between(pw.effectiveDate, p.from, p.to),
+          ...(like ? [or(sql`${pw.title} LIKE ${like} ESCAPE '\\'`, sql`${INTENT_SQL} LIKE ${like} ESCAPE '\\'`)!] : []),
+        ),
+      )
+      .orderBy(desc(pw.effectiveDate), desc(pw.effectiveTime), pw.id)
+      .limit(limit + 1)
+      .offset(offset);
+    const page = sqlPage(rows, offset, limit);
+    const workouts = page.items.map((r) => ({
+      id: r.id,
+      date: r.date,
+      time: r.time,
+      minutes: typeof r.seconds === "number" && r.seconds > 0 ? Math.round(r.seconds / 60) : null,
+      status: STATUS_WORDS[r.state] ?? r.state,
+      ...(r.origin ? { origin: ORIGIN_WORDS[r.origin] ?? r.origin } : {}),
+      rev: r.rev,
+      title: untrusted(r.title),
+      intent: untrusted(typeof r.intent === "string" ? r.intent : ""),
+    }));
+    return answer({
+      source: "the plan's document workouts",
+      now: ctx.now,
+      missing: workouts.length === 0 && offset === 0 ? [`no document workouts from ${p.from} to ${p.to}${p.q ? ` matching "${p.q}"` : ""}`] : [],
+      data: { from: p.from, to: p.to, workouts, nextCursor: page.nextCursor },
+      summary: `Listed ${workouts.length} workouts from ${p.from} to ${p.to}${p.q ? " matching the search" : ""}`,
+    });
+  },
+};
+
+// ── One workout ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+const marked = (key: string, text: string | undefined): Record<string, Untrusted> => (text ? { [key]: untrusted(text) } : {});
+
+function markItem(item: WorkoutItem): Record<string, unknown> {
+  switch (item.kind) {
+    case "exercise":
+      return {
+        kind: item.kind,
+        libraryId: item.libraryId,
+        dose: item.dose,
+        ...(item.side ? { side: item.side } : {}),
+        ...(item.test ? { test: item.test } : {}),
+        ...(item.alternates ? { alternates: item.alternates.map((a) => ({ libraryId: a.libraryId, ...marked("why", a.why) })) } : {}),
+        ...marked("why", item.why),
+        ...marked("progression", item.progression),
+        ...marked("cue", item.cue),
+      };
+    case "free_exercise":
+      return { kind: item.kind, dose: item.dose, ...(item.coros ? { coros: item.coros } : {}), name: untrusted(item.name), ...marked("why", item.why), ...marked("cue", item.cue) };
+    case "run": {
+      const { typed, ...target } = item.target;
+      return { kind: item.kind, effort: item.effort, target: { ...target, ...marked("typed", typed) }, ...marked("why", item.why), ...marked("cue", item.cue) };
+    }
+    case "rest":
+      return { ...item };
+  }
+}
+
+/** The document with every word in it marked as data; its structure as it is. */
+export function markedDoc(doc: WorkoutDoc): Record<string, unknown> {
+  return {
+    title: untrusted(doc.title),
+    intent: {
+      summary: untrusted(doc.intent.summary),
+      goals: doc.intent.goals,
+      focus: doc.intent.focus,
+      effort: doc.intent.effort,
+      ...(doc.intent.objectiveIds ? { objectiveIds: doc.intent.objectiveIds } : {}),
+    },
+    ...(doc.setting ? { setting: doc.setting } : {}),
+    parts: doc.parts.map((part) => ({
+      purpose: part.purpose,
+      format: part.format,
+      ...(part.rounds !== undefined ? { rounds: part.rounds } : {}),
+      ...(part.restBetweenRoundsSec !== undefined ? { restBetweenRoundsSec: part.restBetweenRoundsSec } : {}),
+      ...marked("why", part.why),
+      items: part.items.map(markItem),
+    })),
+    source: doc.source,
+    ...(doc.basedOn ? { basedOn: doc.basedOn } : {}),
+    ...marked("notes", doc.notes),
+  };
+}
+
+const getInput = z.object({ id: z.string().min(1).max(120) }).strict();
+
+const notFound = (id: string) =>
+  refuse("not_found", `No workout with id ${JSON.stringify(id)} in the athlete's plan.`, "Use an id from list_workouts or read_plan.");
+
+export const getWorkout: DesignTool = {
+  name: "get_workout",
+  description: "One planned workout: its document, revision, derived minutes, what was done in it and the feedback on it.",
+  inputSchema: {
+    type: "object",
+    properties: { id: { type: "string", description: "A workout id from list_workouts or read_plan." } },
+    required: ["id"],
+    additionalProperties: false,
+  },
+  statementCost: 2,
+  roles: READ_ROLES,
+  async run(ctx, raw) {
+    const p = parseInput(getInput, raw, "the workout's id");
+    if (isErr(p)) return p;
+    const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
+      row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'origin', ${pw.origin},
+          'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'doc', ${pw.workoutDoc})
+          from ${pw} where ${pw.id} = ${p.id} and ${pw.userId} = ${ctx.userId} and ${pw.archivedAt} is null)`,
+    });
+    const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null } | null;
+    if (!row || typeof row.date !== "string") return notFound(p.id);
+
+    const scope = sessionsWhere(ctx.userId, sql`${performedSessions.workoutId} = ${p.id}`);
+    const a = athleteAnswers;
+    const rows = await readTagged(ctx.db, [
+      ...doneTerms(ctx.userId, scope, {
+        activitiesWhere: sql`${activities.id} in (select ${performedSessions.activityId} from ${performedSessions} where ${scope})`,
+      }),
+      sql`select 'f' as t, json_object('date', ${a.localDate}, 'at', ${a.at}, 'q', ${a.questionId}, 'num', ${a.valueNum}, 'choice', ${a.valueChoice},
+          'text', ${a.text}, 'source', ${a.source}) as j
+          from ${a} where ${a.userId} = ${ctx.userId} and (${a.workoutId} = ${p.id} or (${a.subjectKind} = 'workout' and ${a.subjectId} = ${p.id}))`,
+    ]);
+    const actuals = doneEntries(
+      { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
+      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit },
+    )
+      .filter((e) => e.kind === "sessions")
+      .map((e) => e.entry);
+    const feedback = (rows.get("f") ?? [])
+      .sort((x, y) => String(y.at).localeCompare(String(x.at)))
+      .map((f) => ({
+        date: f.date,
+        question: f.q,
+        ...(typeof f.num === "number" ? { value: f.num } : {}),
+        ...(typeof f.choice === "string" ? { choice: f.choice } : {}),
+        ...(typeof f.text === "string" && f.text.trim() ? { text: untrusted(f.text) } : {}),
+        source: f.source,
+      }));
+
+    const doc = parseStoredWorkoutDoc(row.doc ?? null);
+    const missing: string[] = [];
+    if (!doc) {
+      missing.push(row.doc ? "the stored document does not read" : row.content === "outline" ? "no document: an outline built on its day" : "no document");
+    }
+    const derived = doc ? deriveDoc(doc, EXERCISES) : null;
+    return answer({
+      source: "the workout's row and document, logged sessions and the athlete's feedback",
+      now: ctx.now,
+      missing,
+      data: {
+        id: p.id,
+        date: row.date,
+        time: row.time,
+        status: STATUS_WORDS[row.state ?? ""] ?? row.state,
+        ...(row.origin ? { origin: ORIGIN_WORDS[row.origin] ?? row.origin } : {}),
+        rev: row.rev ?? null,
+        derived: derived ? { minutes: derived.estimatedMinutes, discipline: derived.discipline, category: derived.category, mode: derived.mode } : null,
+        actuals,
+        feedback,
+        document: doc ? markedDoc(doc) : null,
+      },
+      summary: `Read the workout on ${row.date}${actuals.length ? " and what was done in it" : ""}`,
+    });
+  },
+};
