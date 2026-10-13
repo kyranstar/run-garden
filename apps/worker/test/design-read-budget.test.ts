@@ -115,7 +115,8 @@ describe("the shared reads refuse what would break them", () => {
   it("readAthlete will not let an extra read take the athlete's own column; readTagged holds D1's five terms", async () => {
     await expect(readAthlete(db, rich.userId, NOW, { prefs: sql`(select 1)` })).rejects.toThrow(/athlete's own column/);
     const term = sql`select 'x' as t, '{}' as j`;
-    await expect(readTagged(db, Array.from({ length: MAX_TAGGED_TERMS + 1 }, () => term))).rejects.toThrow(/6 terms/);
+    // Refused before it reaches the database (whose own refusal would come only on D1).
+    await expect(readTagged(db, Array.from({ length: MAX_TAGGED_TERMS + 1 }, () => term))).rejects.toThrow(/^readTagged: 6 terms$/);
     expect((await readTagged(db, Array.from({ length: MAX_TAGGED_TERMS }, () => term))).get("x")).toHaveLength(MAX_TAGGED_TERMS);
   });
 });

@@ -6,7 +6,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
-import { EXERCISES, hasEquipment } from "@rg/exercise-library";
+import { EXERCISES, hasEquipment, TMJ } from "@rg/exercise-library";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
@@ -124,6 +124,22 @@ describe("read_day", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({ source: "app", workoutId: rich.pastDocId, hr: 112, checks: [{ profile: "TMJ", before: 2, after: 2 }] });
     expect(JSON.stringify(data)).not.toContain("sentinelWatchCopyMove");
+  });
+
+  it("a day's readings are that day's: a session's check given after midnight is the next day's reading, and still the session's", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    await db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: day(30), settings: {} });
+    const id = newId();
+    await db.insert(schema.performedSessions).values({
+      id, userId, source: "app", localDate: day(2), startedAt: at(day(2), "23:00"), seconds: 1500, movesDone: [], payloadHash: "h", createdAt: at(day(2), "23:30"), updatedAt: at(day(2), "23:30"),
+    });
+    await db.insert(schema.conditionChecks).values([
+      { id: newId(), userId, profileId: "tmj", kind: "pre", value: 1, localDate: day(2), at: at(day(2), "22:58"), performedSessionId: id },
+      { id: newId(), userId, profileId: "tmj", kind: "post", value: 3, localDate: day(1), at: at(day(1), "00:20"), performedSessionId: id },
+    ]);
+    const { data } = await ok("read_day", { date: day(2) }, { user: userId });
+    expect(data.readings).toEqual([{ profile: "TMJ", kind: "pre", value: 1, feelingOff: false, time: "22:58" }]);
+    expect(data.done[0].checks).toEqual([{ profile: "TMJ", before: 1, after: 3 }]);
   });
 
   it("refuses a date that is not one", async () => {
@@ -438,6 +454,34 @@ describe("search_library and get_exercise", () => {
     const unanswered = await fits(none);
     expect(unanswered.some((f: string) => / not /.test(f))).toBe(true);
     expect(await fits(lateLastNight)).toEqual(unanswered);
+    // "Fits today" leaves out exactly the moves today's reading rules out.
+    const all = await ok("search_library", { query: "jump", limit: 30 }, { user: none });
+    const fitOnly = await ok("search_library", { query: "jump", filters: { fitToday: true }, limit: 30 }, { user: none });
+    const notToday = all.data.moves.filter((m: { fit: string }) => m.fit === "not").map((m: { id: string }) => m.id);
+    expect(notToday.length).toBeGreaterThan(0);
+    expect(fitOnly.data.moves.map((m: { id: string }) => m.id)).toEqual(all.data.moves.map((m: { id: string }) => m.id).filter((id: string) => !notToday.includes(id)));
+  });
+
+  it("on a flare day only what the profile allows in recovery fits today, and the reason names the reading", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    await db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: day(30), settings: {} });
+    await db.insert(schema.conditionChecks).values({ id: newId(), userId, profileId: "tmj", kind: "daily", value: 9, localDate: TODAY, at: at(TODAY, "07:00") });
+    const moves: Array<{ id: string; fit: string; fitWhy: string }> = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await ok("search_library", { limit: 30, ...(cursor ? { cursor } : {}) }, { user: userId });
+      moves.push(...page.data.moves);
+      cursor = page.data.nextCursor;
+    } while (cursor);
+    expect(moves).toHaveLength(EXERCISES.length);
+    const allowedInRecovery = (id: string) => {
+      const ex = EXERCISES.find((e) => e.id === id)!;
+      const a = ex.conditions.tmj!;
+      const r = { pre: 9, post: null, feelingOff: false };
+      return TMJ.fitsMode(a, "recovery") && ex.patterns.every((p) => TMJ.allowPattern(p, "recovery", r)) && (TMJ.allowRecord?.(ex, "recovery", r) ?? true);
+    };
+    for (const m of moves) if (m.fit !== "not") expect(allowedInRecovery(m.id), m.id).toBe(true);
+    expect(moves.some((m) => m.fitWhy === "Not with jaw / head at 9 today.")).toBe(true);
   });
 
   it("one move whole, with the athlete's history and best", async () => {
