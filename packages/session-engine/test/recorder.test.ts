@@ -506,6 +506,24 @@ describe("a move's sets, one per slot and set number, in play order (Stage 2 who
     expect(old.entries.wallSit!.sets.map(s => s.done)).toEqual([false, true]);
   });
 
+  test("a swap mid-item keeps the move's other item's sets at their places: each later set is filled in from its own item", () => {
+    // The goblet squat warms up (2 × 5 @ 10 kg) and is the main lift (2 × 8 @ 20 kg); the warm-up's second set swapped.
+    const set = (slotKey: string, exerciseId: string, i: number, reps: number, kg: number): Step => ({
+      ...timed(slotKey, exerciseId, 40, i, 2), kind: "set", format: { id: "straight", group: null, round: null },
+      target: { lo: 5, hi: 8, type: "reps", reps, secs: null, w: { v: kg, u: "kg" }, graduate: null, last: null, lastDate: null, action: "hold", note: "" },
+    });
+    const steps = [set("prep:0", "gobletSquat", 0, 5, 10), set("prep:0", "gobletSquat", 1, 5, 10), set("core:0", "gobletSquat", 0, 8, 20), set("core:0", "gobletSquat", 1, 8, 20)];
+    let live = Recorder.create(data, { steps, plannedSeconds: 0 }, meta0);
+    Recorder.reach(live, 0);
+    const fresh = [0, 1].map(k => set("prep:0", "bwSplitSquat", k, 5, 0));
+    const spliced = Swapping.splice(live.plan.steps, "prep:0", fresh);
+    live = Recorder.rebase(data, live, { steps: spliced, plannedSeconds: 0 }, 1, "prep:0");
+    expect(live.steps.map(s => [s.slotKey, s.exerciseId])).toEqual([["prep:0", "gobletSquat"], ["prep:0", "bwSplitSquat"], ["core:0", "gobletSquat"], ["core:0", "gobletSquat"]]);
+    for (const k of [2, 3]) Recorder.reach(live, k);
+    const saved = end(live).entries.find(e => e.id === "gobletSquat")!.sets.map(s => [s.reps, s.w?.v]);
+    expect(saved).toEqual([[5, 10], [8, 20], [8, 20]]);
+  });
+
   test("a swap and a swap back keep every set where it was", () => {
     const plan = { steps: [timed("core:0", "wallSit", 45, 0, 3), timed("core:0", "wallSit", 45, 1, 3), timed("core:0", "wallSit", 45, 2, 3)], plannedSeconds: 0 };
     let live = Recorder.create(data, plan, meta0);

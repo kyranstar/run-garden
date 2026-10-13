@@ -112,6 +112,8 @@ describe("an open hold: a timed move to max with no target, played as a set (Sta
     const save = saveOf(skipped, { endedAt: new Date(T0 + 40 * S).toISOString() });
     expect(save.entries.find((e) => e.id === "wallSit")).toBeUndefined();
     expect(save.done.map((d) => d.id)).not.toContain("wallSit");
+    // No step done either: the rest after it is no step.
+    expect(save.stepsDone).toBe(0);
   });
 
   it("confirmed, it counts at the card's seconds; a second set skipped is never saved with the first's", () => {
