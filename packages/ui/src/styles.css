@@ -10506,6 +10506,27 @@ textarea.stu-field {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
 }
+/* The line's "＋ Add": the row's last chip, drawn as the names are, in a box that keeps the 44px floor of its own. */
+.stu-sug-names li.stu-sug-more {
+  padding: 0;
+  border: 0;
+}
+.stu-sug-add--chip:hover {
+  background: none;
+}
+.stu-sug-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.stu-sug-add--chip:hover .stu-sug-chip {
+  background: var(--green-soft);
+}
 /* A planned workout that can't change: its rows are words, not buttons. */
 .stu-item--still {
   cursor: default;

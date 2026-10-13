@@ -264,6 +264,14 @@ describe("suggestions, once a part has a move", () => {
     expect(/\.stu-sug-names li \{[^}]*border: 1px solid var\(--border(-strong)?\);[^}]*border-radius: var\(--radius-pill\);/.exec(css)).not.toBeNull();
     // One control per action (the spec's mock): the line's ＋ is the part's Add a move, and there is no second one.
     expect((warmup.match(/aria-label="Add [^"]*"/g) ?? [])).toEqual(['aria-label="Add a move to Warm-up"']);
+    // …and it is the row's last chip, "＋ Add", wrapping with the names — never a ＋ left alone on a line of its own.
+    expect(names).toMatch(/<li class="stu-sug-more"><button type="button" class="stu-sug-add stu-sug-add--chip" aria-label="Add a move to Warm-up"><span class="stu-sug-chip" aria-hidden="true"><svg[^]*<\/svg>Add<\/span><\/button><\/li>$/);
+    const line = warmup.slice(warmup.indexOf('<div class="stu-sug-line">'));
+    expect(line.slice(line.indexOf("</ul>"), line.indexOf("</div>"))).toBe("</ul>");
+    // Drawn as the names are (an outline), in a box that keeps the 44px floor of its own.
+    expect(/\.stu-sug-chip \{[^}]*border: 1px solid var\(--border-strong\);[^}]*border-radius: var\(--radius-pill\);/.exec(css)).not.toBeNull();
+    // Its item is no pill of its own (the chip inside is): one outline, not two.
+    expect(css).toMatch(/\.stu-sug-names li\.stu-sug-more \{\s*padding: 0;\s*border: 0;\s*\}/);
     expect(warmup).not.toContain("Add a move</button>");
     // The empty cool-down still lists its suggestions a row each, each with its own ＋.
     const cool = html.slice(html.indexOf('data-part="2"'));

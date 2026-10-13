@@ -923,8 +923,8 @@ function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: 
 /**
  * Once a part has a move, its suggestions fold to one line (the spec's mock: "Suggested: Hip airplane · Ankle rocks ＋"):
  * a list, each name its own item that explains itself, told apart by its own outline — never by a "·", which a
- * library name can hold itself ("Active pigeon · back-leg lift") — and ＋, the part's one Add a move, opens the picker,
- * where they come first, each a tap to add.
+ * library name can hold itself ("Active pigeon · back-leg lift") — and, its last chip, "＋ Add": the part's one Add a
+ * move, which opens the picker, where they come first, each a tap to add.
  */
 function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[]; partName: string; onPick: () => void }) {
   const hid = useId();
@@ -941,10 +941,16 @@ function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[
             <Tooltip term={rec.name} tip={sentence(why)} />
           </li>
         ))}
+        {/* The row's last chip, wrapping with the names: never a ＋ left alone on a line of its own. */}
+        <li className="stu-sug-more">
+          <button type="button" className="stu-sug-add stu-sug-add--chip" aria-label={`Add a move to ${partName}`} onClick={onPick}>
+            <span className="stu-sug-chip" aria-hidden="true">
+              <IconPlus size={14} />
+              Add
+            </span>
+          </button>
+        </li>
       </ul>
-      <button type="button" className="stu-sug-add" aria-label={`Add a move to ${partName}`} onClick={onPick}>
-        <IconPlus size={16} />
-      </button>
     </div>
   );
 }
