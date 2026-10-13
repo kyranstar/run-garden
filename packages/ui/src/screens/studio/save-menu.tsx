@@ -114,8 +114,8 @@ export function NameSheet({ initial, onSave, onClose }: { initial: string; onSav
           }}
         />
       </label>
-      {/* The Studio's choice row (the Add sheet's): a 44px label, its box first. */}
-      <label className="stu-add-choice">
+      {/* The Studio's shared choice row (the Add sheet's, Schedule's): a 44px label, its box first. */}
+      <label className="stu-choice">
         <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
         Pin to quick starts
       </label>

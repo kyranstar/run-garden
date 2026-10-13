@@ -39,12 +39,13 @@ export function NoteRow({
   /** The workout can't change: the note is said, with nothing to do about it here. */
   readOnly?: boolean;
 }) {
-  const error = note.severity === "error";
+  // Read-only, nothing is to fix: every note wears the neutral note marker (a circle, never the red triangle).
+  const error = note.severity === "error" && !readOnly;
   return (
-    <li className={`stu-note stu-note--${note.severity}`}>
+    <li className={`stu-note stu-note--${readOnly ? "note" : note.severity}`}>
       <span className="stu-note-icon">{error ? <IconAlert /> : <IconInfo />}</span>
       <span className="stu-note-text">
-        <span className="visually-hidden">{error && !readOnly ? "To fix: " : "Note: "}</span>
+        <span className="visually-hidden">{error ? "To fix: " : "Note: "}</span>
         {note.message}
       </span>
       {!readOnly && (note.check || note.fix) ? (

@@ -14,7 +14,7 @@
 import { deriveDoc, quickStartDoc, type QuickStart, type QuickStartKind } from "@rg/workout";
 import { EXERCISES, type CheckReading } from "@rg/exercise-library";
 import type { TemplateDto } from "@rg/api-client";
-import { formatShortDate } from "../../components.js";
+import { CATEGORY_LABELS, formatShortDate } from "../../components.js";
 import { addTargetHref } from "./add-model.js";
 import { buildCtxOf, suggestCtxOf } from "./build-model.js";
 import { quickStarts, type StudioCtx } from "./model.js";
@@ -68,9 +68,6 @@ export function lastUsedText(iso: string | null, today: string): string {
   return `Used ${formatShortDate(day)}`;
 }
 
-/** A workout's discipline (`deriveDoc`'s axis) in a word — the builder summary's word for a strength or yoga one. */
-const DISCIPLINE_WORD: Readonly<Record<string, string>> = { run: "Run", strength: "Strength", yoga: "Yoga" };
-
 /**
  * A template's minutes and kind: the server's (derived from its document there), so the list and the home's tile say
  * the same. Worked out here only for a row the server said nothing of but whose document reads; with no document,
@@ -86,7 +83,8 @@ export function templateShape(t: TemplateDto): { minutes: number | null; discipl
 export function templateFacts(t: TemplateDto, today: string): string[] {
   if (!t.doc) return ["Can't be opened"];
   const { minutes, discipline } = templateShape(t);
-  const kind = discipline ? (DISCIPLINE_WORD[discipline] ?? null) : null;
+  // The app's one word for a kind — the builder's summary says the same (`CATEGORY_LABELS`).
+  const kind = discipline ? (CATEGORY_LABELS[discipline] ?? null) : null;
   return [minutes !== null ? `${minutes} min` : null, kind, lastUsedText(t.lastUsedAt, today)].filter((x): x is string => !!x);
 }
 

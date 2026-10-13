@@ -113,34 +113,42 @@ export const sentence = (s: string): string => `${s.charAt(0).toUpperCase()}${s.
 
 // ── Edits ──────────────────────────────────────────────────────────────────
 
-/** A bound the schema must write (an edit is refused by the schema's own rules, so its reason quotes them). */
-function bound(n: number | null | undefined, what: string): number {
-  if (n === null || n === undefined) throw new Error(`the workout schema no longer bounds ${what}`);
-  return n;
+/**
+ * A bound the schema writes, read from it only when a refusal is said (an edit is refused by the schema's own rules,
+ * so its reason quotes them) — never as the app loads, and never a throw: a schema, or a zod, that no longer says it
+ * reads as null, and the message says the same without the number.
+ */
+function bound(read: () => number | null | undefined): number | null {
+  try {
+    const n = read();
+    return typeof n === "number" && Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
 }
-const listBound = (s: { _def: { maxLength: { value: number } | null } }, what: string): number => bound(s._def.maxLength?.value, what);
-/** The schema's bounds an edit can meet, read from the schema itself. */
-const BOUNDS = (() => {
-  const part = partSchema.shape;
-  const intent = workoutDocSchema.shape.intent.shape;
-  const rounds = part.rounds.unwrap();
-  return {
-    rounds: [bound(rounds.minValue, "rounds"), bound(rounds.maxValue, "rounds")] as const,
-    restSec: bound(part.restBetweenRoundsSec.unwrap().maxValue, "rest between rounds"),
-    partWhy: bound(part.why.unwrap().maxLength, "a part's why"),
-    moves: listBound(part.items, "a part's moves"),
-    title: bound(workoutDocSchema.shape.title.maxLength, "the title"),
-    summary: bound(intent.summary.maxLength, "the summary"),
-    goals: listBound(intent.goals, "goals"),
-    focus: listBound(intent.focus, "focus"),
-    parts: listBound(workoutDocSchema.shape.parts, "parts"),
-  };
-})();
-/** A cue's bound, for the kind of item it is on (an exercise's when the kind is unknown). */
-function cueBound(kind: string | undefined): number {
-  const variant = itemSchema.options.find((o) => o.shape.kind.value === kind) ?? itemSchema.options[0];
-  return bound("cue" in variant.shape ? variant.shape.cue.unwrap().maxLength : null, "a cue");
-}
+/** A list's most, where zod keeps it. */
+const listMax = (s: unknown): number | undefined => (s as { _def?: { maxLength?: { value?: number } | null } } | undefined)?._def?.maxLength?.value;
+/** The schema's bounds an edit can meet, each read when asked. */
+const BOUNDS = {
+  roundsMin: () => bound(() => partSchema.shape.rounds.unwrap().minValue),
+  roundsMax: () => bound(() => partSchema.shape.rounds.unwrap().maxValue),
+  restSec: () => bound(() => partSchema.shape.restBetweenRoundsSec.unwrap().maxValue),
+  partWhy: () => bound(() => partSchema.shape.why.unwrap().maxLength),
+  moves: () => bound(() => listMax(partSchema.shape.items)),
+  title: () => bound(() => workoutDocSchema.shape.title.maxLength),
+  summary: () => bound(() => workoutDocSchema.shape.intent.shape.summary.maxLength),
+  goals: () => bound(() => listMax(workoutDocSchema.shape.intent.shape.goals)),
+  focus: () => bound(() => listMax(workoutDocSchema.shape.intent.shape.focus)),
+  parts: () => bound(() => listMax(workoutDocSchema.shape.parts)),
+  /** A cue's, for the kind of item it is on (an exercise's when the kind is unknown). */
+  cue: (kind: string | undefined) =>
+    bound(() => {
+      const variant = itemSchema.options.find((o) => o.shape.kind.value === kind) ?? itemSchema.options[0];
+      return "cue" in variant.shape ? variant.shape.cue.unwrap().maxLength : null;
+    }),
+};
+/** The words with the bound in them, or — when the schema no longer says it — the same in words alone. */
+const withBound = (n: number | null, line: (n: number) => string, otherwise: string): string => (n === null ? otherwise : line(n));
 
 /**
  * Several actions as ONE edit — one Undo takes them all back: each applied to the last one's result; the first refusal
@@ -166,8 +174,11 @@ export function editRefusal(action: EditAction, r: Rejection, doc?: WorkoutDoc):
   if (r === "unchanged") return "Nothing changed.";
   if (r === "full") {
     // A move with no part named goes to its purpose's part, made if need be: refused full, there was no room for one.
-    const noPart = action.type === "addPart" || (action.type === "addItem" && action.part === undefined && (doc?.parts.length ?? 0) >= BOUNDS.parts);
-    return noPart ? `A workout holds at most ${BOUNDS.parts} parts.` : `A part holds at most ${BOUNDS.moves} moves.`;
+    const parts = BOUNDS.parts();
+    const noPart = action.type === "addPart" || (action.type === "addItem" && action.part === undefined && parts !== null && (doc?.parts.length ?? 0) >= parts);
+    return noPart
+      ? withBound(parts, (n) => `A workout holds at most ${n} parts.`, "That's more parts than a workout holds.")
+      : withBound(BOUNDS.moves(), (n) => `A part holds at most ${n} moves.`, "That part is full.");
   }
   switch (action.type) {
     case "setDose":
@@ -177,25 +188,30 @@ export function editRefusal(action: EditAction, r: Rejection, doc?: WorkoutDoc):
       const it = doc?.parts[action.part]?.items[action.item];
       if (it && !itemSchema.safeParse(it).success) return "Fix this item first.";
       if (action.type === "setDose") return "That dose is more than a workout takes.";
-      if (action.type === "setCue") return `A cue takes at most ${cueBound(it?.kind)} characters.`;
+      if (action.type === "setCue") return withBound(BOUNDS.cue(it?.kind), (n) => `A cue takes at most ${n} characters.`, "That cue is too long.");
       return "That move can't stand in here.";
     }
     case "setPart": {
       const p = action.patch;
-      if (p.rounds !== undefined) return `Rounds go from ${BOUNDS.rounds[0]} to ${BOUNDS.rounds[1]}.`;
-      if (p.restBetweenRoundsSec !== undefined) return `Rest between rounds goes up to ${secondsText(BOUNDS.restSec)}.`;
-      if (p.why !== undefined) return `A part's why takes at most ${BOUNDS.partWhy} characters.`;
+      if (p.rounds !== undefined) {
+        const [lo, hi] = [BOUNDS.roundsMin(), BOUNDS.roundsMax()];
+        return lo !== null && hi !== null ? `Rounds go from ${lo} to ${hi}.` : "That number of rounds doesn't fit.";
+      }
+      if (p.restBetweenRoundsSec !== undefined) {
+        return withBound(BOUNDS.restSec(), (n) => `Rest between rounds goes up to ${secondsText(n)}.`, "That rest is longer than a part takes.");
+      }
+      if (p.why !== undefined) return withBound(BOUNDS.partWhy(), (n) => `A part's why takes at most ${n} characters.`, "That why is too long.");
       return "That doesn't fit this part.";
     }
     case "setIntent": {
       const i = action.intent;
-      if (i.goals !== undefined) return `A workout serves at most ${BOUNDS.goals} goals.`;
-      if (i.focus !== undefined) return `A workout has at most ${BOUNDS.focus} focus areas.`;
-      if (i.summary !== undefined) return `The why takes at most ${BOUNDS.summary} characters.`;
+      if (i.goals !== undefined) return withBound(BOUNDS.goals(), (n) => `A workout serves at most ${n} goals.`, "That's more goals than a workout serves.");
+      if (i.focus !== undefined) return withBound(BOUNDS.focus(), (n) => `A workout has at most ${n} focus areas.`, "That's more focus areas than a workout has.");
+      if (i.summary !== undefined) return withBound(BOUNDS.summary(), (n) => `The why takes at most ${n} characters.`, "That why is too long.");
       return "That can't be set for this workout.";
     }
     case "setTitle":
-      return action.title.trim() ? `A title takes at most ${BOUNDS.title} characters.` : "The title can't be empty.";
+      return action.title.trim() ? withBound(BOUNDS.title(), (n) => `A title takes at most ${n} characters.`, "That title is too long.") : "The title can't be empty.";
     case "addItem":
       return "That move can't go in this part.";
     default:

@@ -369,7 +369,7 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhi
   // would be remounted (and lose focus) on each change.
   const option = (k: AddTargetKind, label: string, extra?: ReactNode, offered = true) => (
     <div key={k} className={`stu-add-opt${kind === k ? " stu-add-opt--on" : ""}`}>
-      <label className="stu-add-choice">
+      <label className="stu-choice">
         <input type="radio" name={name} value={k} checked={kind === k} disabled={!offered} onChange={() => pick(k)} />
         <span>{label}</span>
       </label>

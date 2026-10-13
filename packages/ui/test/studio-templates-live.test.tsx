@@ -116,9 +116,10 @@ function built(id: string): SessionDto {
  * A templates server that keeps what it is told; `fail` makes the named writes fail with no connection (`start`: the
  * session's start); `library` is the athlete's library read, answered after `ms`.
  */
-function serve(initial: TemplateDto[] = [], fail: { delete?: boolean; start?: boolean } = {}, library?: { dto: unknown; ms: number }): Call[] {
+function serve(initial: TemplateDto[] = [], fail: { delete?: boolean; start?: boolean; reads?: number } = {}, library?: { dto: unknown; ms: number }): Call[] {
   const calls: Call[] = [];
   let templates = [...initial];
+  let failedReads = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -126,7 +127,13 @@ function serve(initial: TemplateDto[] = [], fail: { delete?: boolean; start?: bo
       const path = String(input).split("?")[0]!;
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, path, body });
-      if (method === "GET" && path === "/api/templates") return json({ templates });
+      if (method === "GET" && path === "/api/templates") {
+        if (failedReads < (fail.reads ?? 0)) {
+          failedReads++;
+          return json({ error: "internal" }, 500);
+        }
+        return json({ templates });
+      }
       if (method === "POST" && path === "/api/templates") {
         const made = tpl("t-made", body.name, { doc: body.doc, pinned: body.pinned ?? false });
         templates = [...templates, made];
@@ -343,13 +350,25 @@ describe("the list with no connection", () => {
       mount("/studio/templates");
       await until(() => text().includes("Your templates need a connection."), "the reason");
       expect(text()).not.toContain("Loading your templates");
-      expect(button("Try again")).not.toBeNull();
+      // No Try again: a paused read can't be pushed (it would do nothing), and it goes on by itself.
+      expect(button("Try again")).toBeNull();
     } finally {
       await act(async () => {
         onlineManager.setOnline(true);
       });
     }
     await until(() => rowNames().length === 1, "the list");
+  });
+});
+
+describe("the list's read failing", () => {
+  it("says so, and Try again reads it again", async () => {
+    const calls = serve([tpl("t1", "Hips & posture")], { reads: 1 });
+    mount("/studio/templates");
+    await until(() => text().includes("Couldn't load your templates."), "the failure");
+    await click(button("Try again"), "Try again");
+    await until(() => rowNames().length === 1, "the list");
+    expect(calls.filter((c) => c.method === "GET" && c.path === "/api/templates").length).toBe(2);
   });
 });
 

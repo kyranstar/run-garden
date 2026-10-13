@@ -10,6 +10,7 @@ import { newDoc, suggestedItem, edit, startEditing, toProposable, type QuickStar
 import { EXERCISES } from "@rg/exercise-library";
 import { quickKindOf, sourceKey, sourceOfPath } from "../src/screens/studio/build-model.js";
 import { emptyStudioCtx, type StudioCtx } from "../src/screens/studio/model.js";
+import { CATEGORY_LABELS } from "../src/components.js";
 import {
   daySeed,
   lastUsedText,
@@ -75,6 +76,14 @@ describe("a template's row", () => {
     // The document is a goblet squat (a strength workout of another length): the server's numbers are what is said.
     expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Yoga", "Not used yet"]);
     expect(templateFacts(tpl("a", { minutes: 45, discipline: "run" }), TODAY)).toEqual(["45 min", "Run", "Not used yet"]);
+    // One map says a kind's word, the builder's summary's too (CATEGORY_LABELS): rename a kind there, and it is renamed here.
+    const was = CATEGORY_LABELS.yoga;
+    CATEGORY_LABELS.yoga = "Mobility";
+    try {
+      expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Mobility", "Not used yet"]);
+    } finally {
+      CATEGORY_LABELS.yoga = was!;
+    }
     // Only a row the server said nothing of is worked out on the device.
     const derived = templateFacts(tpl("a", { minutes: null, discipline: null }), TODAY);
     expect(derived[0]).toMatch(/^\d+ min$/);

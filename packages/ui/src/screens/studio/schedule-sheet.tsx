@@ -53,6 +53,9 @@ export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onChe
   // Today with no time goes to the usual window: once that has gone by, a time later today is asked for instead.
   const usualPassed = when.date === today && when.time === null && usual !== null && timeHasPassed(usual, new Date());
   const disabled = busy || !valid || passed || usualPassed || !!judged.blocked || asking.length > 0;
+  const timeWhy = passed ? "That time has passed." : usualPassed ? "Your usual time today has passed. Pick a time later today." : null;
+  // A check that could answer it is asked for instead (above); otherwise why the day refuses it.
+  const dayWhy = asking.length ? null : judged.blocked;
 
   const go = async () => {
     if (disabled) return;
@@ -65,7 +68,7 @@ export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onChe
 
   const option = (k: "later" | "day", text: string, extra: ReactNode) => (
     <div className={`stu-add-opt${choice === k ? " stu-add-opt--on" : ""}`}>
-      <label className="stu-add-choice">
+      <label className="stu-choice">
         <input type="radio" name={name} value={k} checked={choice === k} onChange={() => setChoice(k)} />
         <span>{text}</span>
       </label>
@@ -132,15 +135,11 @@ export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onChe
           </span>,
         )}
       </fieldset>
-      {passed ? (
-        <p className="stu-build-why" role="status">
-          That time has passed.
-        </p>
-      ) : usualPassed ? (
-        <p className="stu-build-why" role="status">
-          Your usual time today has passed. Pick a time later today.
-        </p>
-      ) : null}
+      {/* Each status line is in the page from the start, visually hidden while it has nothing to say — never mounted
+          with its words, which a screen reader can miss — as the Studio's other status lines are. */}
+      <p className={timeWhy ? "stu-build-why" : "stu-build-why visually-hidden"} role="status">
+        {timeWhy}
+      </p>
       {asking.length ? (
         <div className="stu-sched-check">
           <p className="stu-build-why">{judged.notes.find((n) => n.check)?.message}</p>
@@ -150,11 +149,10 @@ export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onChe
             </button>
           ))}
         </div>
-      ) : judged.blocked ? (
-        <p className="stu-build-why" role="status">
-          {judged.blocked}
-        </p>
       ) : null}
+      <p className={dayWhy ? "stu-build-why" : "stu-build-why visually-hidden"} role="status">
+        {dayWhy}
+      </p>
       {error ? (
         <p className="stu-build-error" role="alert">
           {error}

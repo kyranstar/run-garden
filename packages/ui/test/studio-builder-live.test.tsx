@@ -131,6 +131,8 @@ interface Server {
   templates?: TemplateDto[][];
   /** PUT /api/templates/:id, in turn (the last repeats): `stale` (409 stale_revision), else OK. */
   tplPut?: Array<"stale" | "ok">;
+  /** PUT /api/workouts/:id/doc says the watch holds an older copy. */
+  watchHasOlder?: boolean;
 }
 
 function serve(s: Server = {}): Call[] {
@@ -166,7 +168,7 @@ function serve(s: Server = {}): Call[] {
       if (doc && method === "PUT") {
         const a = s.revise?.[Math.min(revised++, (s.revise?.length ?? 1) - 1)] ?? "ok";
         if (a !== "ok") return json({ error: a.error, rev: body.baseRev + 1 }, a.status);
-        return json({ workout: { id: doc[1], date: TODAY, time: "18:00", title: body.doc.title, docRev: body.baseRev + 1 }, rev: body.baseRev + 1, watchHasOlder: false, warnings: [] });
+        return json({ workout: { id: doc[1], date: TODAY, time: "18:00", title: body.doc.title, docRev: body.baseRev + 1 }, rev: body.baseRev + 1, watchHasOlder: s.watchHasOlder ?? false, warnings: [] });
       }
       if (method === "POST" && path === "/api/workouts") {
         return json(
@@ -888,9 +890,16 @@ describe("a planned workout that can't change, judged by today", () => {
     expect(count.textContent).toBe("2 notes");
     expect(count.classList.contains("stu-sum-count--error")).toBe(false);
     expect(document.querySelector('.stu-sum [role="status"]')!.textContent).toBe("2 notes");
-    expect(document.querySelector(".stu-note--error .stu-note-text .visually-hidden")!.textContent).toBe("Note: ");
+    expect(document.querySelector(".stu-note .stu-note-text .visually-hidden")!.textContent).toBe("Note: ");
     expect(text()).not.toContain("to fix");
     expect(text()).not.toContain("To fix");
+    // …and no red triangle anywhere: each note, and the move it is about, wears the neutral note marker.
+    expect(document.querySelector(".stu-note--error")).toBeNull();
+    expect([...document.querySelectorAll(".stu-note")].every((n) => n.classList.contains("stu-note--note"))).toBe(true);
+    const flag = document.querySelector(".stu-item-flag")!;
+    expect(flag.classList.contains("stu-item-flag--note")).toBe(true);
+    expect(flag.textContent).toBe(", has a note");
+    expect(text()).not.toContain("needs a fix");
   });
 
   it("…and today's check unanswered: the note says so, with no check to answer from here", async () => {
@@ -936,23 +945,46 @@ describe("the footer, after an edit", () => {
     await until(() => partsShown()[1]?.[1]?.length === 1, "the workout");
     await click(button(/^Save/), "Save ▾");
     await click(document.querySelector('[role="menuitem"]'), "Save as template…");
+    // Its pin row is the Studio's shared choice row (the Add sheet's too), named for neither.
+    expect(dialog("Save as template")!.querySelector("label.stu-choice input[type=checkbox]")).not.toBeNull();
+    expect(dialog("Save as template")!.querySelector(".stu-add-choice")).toBeNull();
     await click(button("Save", dialog("Save as template")!), "Save");
     await until(() => text().includes("as a template."), "the line");
     await click(effort("develop"), "Develop");
     expect(text()).not.toContain("as a template.");
   });
+
+  it("…but the watch's offer stays until the new version is sent or the workout is saved again", async () => {
+    serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [plannedRow("w1", "2026-10-15")], watchHasOlder: true });
+    mount("/studio/build/workout/w1");
+    await until(() => titleField()?.value === "Thursday lift", "the workout");
+    await click(effort("develop"), "Develop");
+    await click(button("Save changes"), "Save changes");
+    await until(() => !!button("Send the new version"), "the offer");
+    expect(document.querySelector(".stu-build-status")!.textContent).toContain("Saved. Your watch has the older version.");
+    // An edit: "Saved." is no longer true and goes; the watch still holds the older copy, and the offer stays.
+    await click(effort("maintain"), "Maintain");
+    expect(text()).not.toContain("Saved.");
+    expect(document.querySelector(".stu-build-status-text")!.textContent).toBe("Your watch has the older version.");
+    expect(button("Send the new version")).not.toBeNull();
+    // Saved again: the save's own line, and its own word on the watch.
+    await click(effort("peak"), "Peak");
+    await click(button("Save changes"), "Save changes");
+    await until(() => text().includes("Saved."), "Saved. again");
+    expect(document.querySelector(".stu-build-status-text")!.textContent).toBe("Saved. Your watch has the older version.");
+  });
 });
 
 describe("the activation prompt's ✕", () => {
-  it("hands focus to the builder's heading, not the page", async () => {
+  it("hands focus to the next part's options — a control a keyboard user can see — not the page or a hidden heading", async () => {
     await draftStore().save(draft(into(1, "deadlift")));
     serve();
     mount("/studio/build/new");
     await until(() => !!document.querySelector(".stu-part--ghost"), "the prompt");
     await press(button("No activation part"), "✕");
     expect(document.querySelector(".stu-part--ghost")).toBeNull();
-    expect(document.activeElement).toBe(document.querySelector("h1"));
-    expect(document.activeElement!.textContent).toBe("Hips & posture");
+    expect(document.activeElement).toBe(button("Main: options"));
+    expect(document.querySelector("h1")!.hasAttribute("tabindex")).toBe(false);
   });
 });
 
@@ -979,6 +1011,35 @@ describe("Schedule, another day set to today", () => {
       await type(sheet.querySelector('input[aria-label="Day"]'), "2026-10-13", "the day");
       expect(sheet.textContent).not.toContain("Your usual time today has passed.");
       expect(scheduleBtn().disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("its lines are status regions in the page from the start — hidden while empty — so the first thing said is heard", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 14, 20) });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      serve();
+      mount("/studio/build/new");
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      const sheet = dialog("Schedule")!;
+      const statuses = () => [...sheet.querySelectorAll<HTMLElement>('[role="status"]')];
+      // Nothing to say yet: both regions are there, empty and visually hidden.
+      expect(statuses().length).toBe(2);
+      for (const s of statuses()) {
+        expect(s.textContent).toBe("");
+        expect(s.classList.contains("visually-hidden")).toBe(true);
+      }
+      const [timeLine, dayLine] = statuses();
+      await type(sheet.querySelector('input[aria-label="Time today"]'), "13:00", "the time");
+      // The same node speaks: it was in the page all along.
+      expect(statuses()[0]).toBe(timeLine);
+      expect(timeLine!.textContent).toBe("That time has passed.");
+      expect(timeLine!.classList.contains("visually-hidden")).toBe(false);
+      expect(statuses()[1]).toBe(dayLine);
+      expect(dayLine!.textContent).toBe("");
     } finally {
       vi.useRealTimers();
     }

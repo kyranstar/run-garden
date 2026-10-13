@@ -79,7 +79,7 @@ import { checkWord, ConditionCheckSheet } from "../../components/condition-check
 import { Tooltip } from "../../components/tooltip.js";
 import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { features } from "../../features.js";
-import { IconAlert, IconBack, IconChevron, IconClose, IconMore, IconPlus, IconRedo, IconUndo } from "../../icons.js";
+import { IconAlert, IconBack, IconChevron, IconClose, IconInfo, IconMore, IconPlus, IconRedo, IconUndo } from "../../icons.js";
 import { useStudioDraft } from "../../studio-drafts.js";
 import { useWeightUnit } from "../../use-units.js";
 import { freshDoc } from "./add-model.js";
@@ -221,9 +221,10 @@ function Builder({ source }: { source: BuildSource }) {
       if (next.key === "new") void drafts.save(editor.doc).catch(() => undefined);
       // An edit moves on from what the footer said of the last state: a refusal, a build shown before it locked, the
       // offer to undo a removal, "Saved." (A start under way, and a started session this device could not keep, stay;
-      // an edit that says something of its own — "Removed …" — says it after this.)
+      // an edit that says something of its own — "Removed …" — says it after this.) The watch's offer stays: the
+      // saved version is still newer than the watch's copy, until it is sent or the workout is saved again.
       setFlow((f) => (f.step === "busy" || f.step === "notKept" ? f : IDLE));
-      setStatus(null);
+      setStatus((s) => (s?.watch && !s.sent ? { text: "", watch: s.watch } : null));
     },
     [drafts, setLoaded],
   );
@@ -442,10 +443,10 @@ function Builder({ source }: { source: BuildSource }) {
     focusNext.current = [`[data-at="${p}-${at}"]`, `[data-part="${p}"] .stu-sug-add`, `[data-part="${p}"] .stu-add-move`];
     return r;
   };
-  /** The activation prompt, declined: it goes, its ✕ with it, so focus goes to the page's heading. */
+  /** The activation prompt, declined: it goes, its ✕ with it, so focus goes to the part it stood before (its ⋯), else the title. */
   const dismissGhost = () => {
     setGhostOff(true);
-    focusNext.current = [".stu-build-h1"];
+    focusNext.current = [`[data-part="${ghostAt}"] .stu-part-menu`, ".stu-build-title"];
   };
   const removeItem = (p: number, i: number) => {
     const it = doc.parts[p]?.items[i];
@@ -534,9 +535,7 @@ function Builder({ source }: { source: BuildSource }) {
             </span>
           </div>
           {isWorkout && row ? <p className="stu-build-when">{`${row.date === today ? "Today" : formatDayShort(row.date)} · ${formatTime(row.time)}`}</p> : null}
-          <h1 className="visually-hidden stu-build-h1" tabIndex={-1}>
-            {doc.title}
-          </h1>
+          <h1 className="visually-hidden">{doc.title}</h1>
           <CommitField label="Title" className="stu-build-title display" value={doc.title} maxLength={80} onCommit={setTitle} readOnly={frozen} />
           <CommitField
             label="Why"
@@ -629,7 +628,9 @@ function Builder({ source }: { source: BuildSource }) {
           {status ? (
             <>
               <span className="stu-build-status-text">
-                {status.watch ? `${status.text} ${status.sent ? "Sending the new version to your watch." : "Your watch has the older version."}` : status.text}
+                {status.watch
+                  ? [status.text, status.sent ? "Sending the new version to your watch." : "Your watch has the older version."].filter(Boolean).join(" ")
+                  : status.text}
               </span>
               {status.undoAt !== undefined ? (
                 <button
@@ -917,8 +918,9 @@ function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: 
 
 /**
  * Once a part has a move, its suggestions fold to one line (the spec's mock: "Suggested: Hip airplane · Ankle rocks ＋"):
- * a list, each name its own item that explains itself (the dots between are drawn, not read), and ＋ — the part's one
- * Add a move — opens the picker, where they come first, each a tap to add.
+ * a list, each name its own item that explains itself, told apart by its own outline — never by a "·", which a
+ * library name can hold itself ("Active pigeon · back-leg lift") — and ＋, the part's one Add a move, opens the picker,
+ * where they come first, each a tap to add.
  */
 function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[]; partName: string; onPick: () => void }) {
   const hid = useId();
@@ -930,13 +932,8 @@ function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[
         Suggested:
       </span>
       <ul className="stu-sug-names" aria-labelledby={hid}>
-        {recs.map(({ rec, why }, i) => (
+        {recs.map(({ rec, why }) => (
           <li key={rec.id}>
-            {i > 0 ? (
-              <span className="stu-sep" aria-hidden="true">
-                ·
-              </span>
-            ) : null}
             <Tooltip term={rec.name} tip={sentence(why)} />
           </li>
         ))}
@@ -1002,10 +999,17 @@ function PartBlock({
                 <span className="stu-item-name">
                   {itemName(it, rec)}
                   {flagged(i) ? (
-                    <span className="stu-item-flag">
-                      <IconAlert size={14} />
-                      <span className="visually-hidden">, needs a fix</span>
-                    </span>
+                    readOnly ? (
+                      <span className="stu-item-flag stu-item-flag--note">
+                        <IconInfo size={14} />
+                        <span className="visually-hidden">, has a note</span>
+                      </span>
+                    ) : (
+                      <span className="stu-item-flag">
+                        <IconAlert size={14} />
+                        <span className="visually-hidden">, needs a fix</span>
+                      </span>
+                    )
                   ) : null}
                 </span>
                 <span className="stu-item-dose">{dose}</span>

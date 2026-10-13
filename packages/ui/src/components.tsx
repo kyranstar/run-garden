@@ -838,7 +838,12 @@ export function CompletionPill({ state }: { state: CompletionState }) {
   }
 }
 
+/**
+ * A kind of workout in a word: a session's category, and — `run`, `strength`, `yoga` — a document's discipline (the
+ * Studio's templates and its builder's summary). The one place each word is said.
+ */
 export const CATEGORY_LABELS: Record<string, string> = {
+  run: "Run",
   recovery: "Recovery",
   easy: "Easy",
   long: "Long run",

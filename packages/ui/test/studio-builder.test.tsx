@@ -3,6 +3,8 @@
  * suggestions in each; a part that loads a hinge prompts a glute activation; an error keeps Start off with its reason
  * beside it and a Fix; the item sheet reorders by buttons. Static renders of the real screen, its queries primed.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -235,18 +237,31 @@ describe("the summary", () => {
   });
 });
 
+describe("the neutral note marker (a workout that can't change)", () => {
+  it("is quiet: the note's circle and the move's marker in the soft ink, never the danger colour", () => {
+    const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+    expect(css).toMatch(/\.stu-note--note \.stu-note-icon \{\s*color: var\(--ink-soft\);/);
+    expect(css).toMatch(/\.stu-item-flag--note \{\s*color: var\(--ink-soft\);/);
+    expect(css).not.toMatch(/\.stu-note--note[^{]*\{[^}]*--danger/);
+  });
+});
+
 describe("suggestions, once a part has a move", () => {
   it("fold to one line — names that explain themselves, and one ＋ that opens the part's Add a move; an empty part keeps its rows", () => {
     const html = renderBuilder("/studio/build/new", { draft: draft(into(0, "catCow")) });
     const warmup = html.slice(html.indexOf('data-part="0"'), html.indexOf("</section>", html.indexOf('data-part="0"')));
     expect(warmup).toMatch(/<div class="stu-sug-line"><span class="stu-sugs-k" id="([^"]+)">Suggested:<\/span><ul class="stu-sug-names" aria-labelledby="\1">/);
     expect(warmup).not.toContain("stu-sug-list");
-    // Each name its own item — a list a screen reader counts, never one string run together; the dots are drawn, not read.
+    // Each name its own item — a list a screen reader counts, never one string run together — and told apart by its
+    // own outline, never by a character: a library name can hold " · " itself ("Active pigeon · back-leg lift").
     const names = warmup.slice(warmup.indexOf('<ul class="stu-sug-names"'), warmup.indexOf("</ul>", warmup.indexOf('<ul class="stu-sug-names"')));
     const items = names.split("<li>").slice(1);
     expect(items.length).toBeGreaterThan(1);
     for (const li of items) expect((li.match(/class="term"/g) ?? []).length).toBe(1);
-    expect(text(names.replace(/<span class="stu-sep" aria-hidden="true">·<\/span>/g, ""))).not.toContain("·");
+    expect(names).not.toContain("stu-sep");
+    expect(names).not.toContain("·");
+    const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+    expect(/\.stu-sug-names li \{[^}]*border: 1px solid var\(--border(-strong)?\);[^}]*border-radius: var\(--radius-pill\);/.exec(css)).not.toBeNull();
     // One control per action (the spec's mock): the line's ＋ is the part's Add a move, and there is no second one.
     expect((warmup.match(/aria-label="Add [^"]*"/g) ?? [])).toEqual(['aria-label="Add a move to Warm-up"']);
     expect(warmup).not.toContain("Add a move</button>");

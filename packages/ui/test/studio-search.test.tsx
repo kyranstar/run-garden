@@ -415,14 +415,31 @@ describe("typing filters, live", () => {
 
   it("the query reaches the URL after a pause, not on every keystroke", async () => {
     mount("/studio");
-    await type("g", { settle: false });
-    await type("go", { settle: false });
-    await type("gob", { settle: false });
-    // The list follows the field at once; the address waits.
-    expect(body()).not.toContain("Quick starts");
-    expect(where).toBe("/studio");
-    await wait(URL_WRITE_MS + 40);
-    expect(where).toBe("/studio?q=gob");
+    // The pause on a clock the test moves: however slow the machine, keystrokes are as far apart as the test says —
+    // here each just inside the pause, so every one restarts it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const el = input();
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      for (const v of ["g", "go", "gob"]) {
+        await act(async () => {
+          set.call(el, v);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await act(async () => {
+          vi.advanceTimersByTime(URL_WRITE_MS - 1);
+        });
+        // The list follows the field at once; the address waits.
+        expect(where).toBe("/studio");
+      }
+      expect(body()).not.toContain("Quick starts");
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(where).toBe("/studio?q=gob");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("emptying the field after a search goes back to the home entry, so Back does not show the home twice", async () => {

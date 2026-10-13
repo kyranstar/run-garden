@@ -227,7 +227,7 @@ const offered = (label: string) => {
   return o && !o.disabled ? o : null;
 };
 const option = (label: string) =>
-  [...sheet()!.querySelectorAll<HTMLLabelElement>(".stu-add-choice")].find((l) => l.textContent?.trim() === label)?.querySelector("input") ?? null;
+  [...sheet()!.querySelectorAll<HTMLLabelElement>(".stu-choice")].find((l) => l.textContent?.trim() === label)?.querySelector("input") ?? null;
 const addButton = () => sheet()!.querySelector<HTMLButtonElement>(".stu-add-go");
 
 /** Open the Add sheet from the row of `name` in a list for `q`, and wait for its reads. */
@@ -251,7 +251,7 @@ describe("the choices the sheet offers", () => {
     serve();
     await openAdd("goblet", "Goblet squat");
     expect(sheet()!.querySelector("h2")!.textContent).toBe("Add Goblet squat");
-    const choices = [...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim());
+    const choices = [...sheet()!.querySelectorAll(".stu-choice")].map((l) => l.textContent?.trim());
     expect(choices).toEqual(["To a planned workout", "To a new workout", "To a template"]);
     expect(option("To a new workout")!.checked).toBe(true);
     expect(option("To a planned workout")!.disabled).toBe(true);
@@ -266,7 +266,7 @@ describe("the choices the sheet offers", () => {
     serve({ workouts: [programSession, planned({ id: "w1" }), planned({ id: "done", completionState: "completed" })], templates: [template()] });
     await openAdd("goblet", "Goblet squat");
     await until(() => !!offered("To a template"), "the templates");
-    const choices = [...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim());
+    const choices = [...sheet()!.querySelectorAll(".stu-choice")].map((l) => l.textContent?.trim());
     expect(choices).toEqual(["To the workout I'm building", "To a planned workout", "To a new workout", "To a template"]);
     expect(option("To the workout I'm building")!.checked).toBe(true);
     expect(sheet()!.textContent).toContain("“Hips & posture”");
@@ -821,6 +821,46 @@ describe("fix round 2: the watch, the line, the wait, the draft row", () => {
     expect(document.activeElement).toBe(field);
   });
 
+  it("a slow answer for a line a newer Add has replaced arms nothing: focus never jumps there later", async () => {
+    SAVE_PATIENCE.ms = 60;
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: ["held"] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => sheet()?.textContent?.includes("Still saving…") ?? false, "Still saving");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    expect(sheet()).toBeNull();
+    // A newer Add, from another row, to a new workout: its line replaces the slow one.
+    await click(host!.querySelector('[aria-label="Add Goblet carry"]'), "Add Goblet carry");
+    await until(() => !!sheet(), "the second Add sheet");
+    await settle(20);
+    await click(option("To a new workout"), "a new workout");
+    await click(addButton(), "Add");
+    await until(() => !sheet() && !!line() && line()!.querySelector(".stu-added-text")!.textContent !== "Still saving…", "the newer line");
+    const newer = line()!.querySelector(".stu-added-said");
+    // The first answer lands while focus is back on its row's ＋ — but its line is gone.
+    const plus = host!.querySelector<HTMLElement>('[aria-label="Add Goblet squat"]')!;
+    plus.focus();
+    await act(async () => releaseHeld());
+    await settle(20);
+    expect(document.activeElement).toBe(plus);
+    // Later renders (the athlete types on) leave focus where it is.
+    const field = host!.querySelector<HTMLInputElement>('input[type="search"]')!;
+    field.focus();
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(field, "goblet c");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle(20);
+    expect(document.activeElement).toBe(field);
+    expect(document.activeElement).not.toBe(newer);
+  });
+
   it("the draft row is the first read's, for the sheet's life: a draft appearing later adds no row", async () => {
     serve();
     const held = { draft: null as StudioDraft | null };
@@ -828,12 +868,12 @@ describe("fix round 2: the watch, the line, the wait, the draft row", () => {
     const client = mountSheet(store);
     await act(async () => answer());
     await until(() => option("To a new workout")?.checked === true, "a new workout");
-    const before = [...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim());
+    const before = [...sheet()!.querySelectorAll(".stu-choice")].map((l) => l.textContent?.trim());
     await act(async () => {
       client.setQueryData(["studio-draft"], { doc: draftDoc("Started in another tab"), updatedAt: 3 });
     });
     await settle(10);
-    expect([...sheet()!.querySelectorAll(".stu-add-choice")].map((l) => l.textContent?.trim())).toEqual(before);
+    expect([...sheet()!.querySelectorAll(".stu-choice")].map((l) => l.textContent?.trim())).toEqual(before);
     expect(option("To a new workout")!.checked).toBe(true);
     expect(sheet()!.textContent).not.toContain("Replaces");
   });

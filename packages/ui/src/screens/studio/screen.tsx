@@ -130,8 +130,8 @@ type FocusTo =
   | { to: "move"; id: string }
   /** The Add that made a dismissed confirmation. */
   | { to: "add"; id: string; from: "detail" | "list" }
-  /** The confirmation line on the page, after an Add from the list. */
-  | { to: "line" };
+  /** The confirmation line on the page, after an Add from the list — that Add's (`n`): a newer one's line disarms it. */
+  | { to: "line"; n: number };
 
 export function StudioScreen() {
   const [params, setParams] = useSearchParams();
@@ -325,6 +325,11 @@ export function StudioScreen() {
       target = rowOf(want.id)?.querySelector<HTMLElement>(".stu-move-open") ?? (listing ? heading.current : title.current);
       if (!target && listing) return;
     } else if (want.to === "line") {
+      // Meant for a line a newer Add has replaced: nothing to go to, now or later.
+      if (added?.n !== want.n) {
+        focusNext.current = null;
+        return;
+      }
       // After an Add from the list: the line's words, Open and Undo the next Tab stops.
       target = r.querySelector<HTMLElement>(".stu-added--on .stu-added-said");
       if (!target) return;
@@ -456,7 +461,7 @@ export function StudioScreen() {
             setAdding(null);
             // From the list, the line is far from the ＋ in Tab order: focus goes to it, so Open and Undo are next. (From
             // the detail it sits right above the Add that focus returns to.)
-            if (adding.from === "list") focusNext.current = { to: "line" };
+            if (adding.from === "list") focusNext.current = { to: "line", n: adding.n };
           }}
           onLeaveWhileSaving={(writing) => {
             // Closed past the wait: the page keeps the write — "Still saving…", then where it went, or why not.
@@ -472,7 +477,7 @@ export function StudioScreen() {
                 const plus = [...(root.current?.querySelectorAll<HTMLElement>(".stu-move") ?? [])]
                   .find((el) => el.dataset.id === rec.id)
                   ?.querySelector(".stu-move-add");
-                if (from === "list" && (!a || a === document.body || a === plus)) focusNext.current = { to: "line" };
+                if (from === "list" && (!a || a === document.body || a === plus)) focusNext.current = { to: "line", n };
                 settle({ ...done, n, rec, from, phase: "done" });
               },
               (e) => settle({ ...base, phase: "failed", error: writeErrorText(e) }),

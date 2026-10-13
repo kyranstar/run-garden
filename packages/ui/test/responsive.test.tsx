@@ -794,9 +794,11 @@ describe("the Studio exists at every width (Stage 2 Task 4)", () => {
 
   it("the move's detail, the Add sheet and the confirmation line are styled in the base layer too (Task 5)", () => {
     for (const cls of [".stu-main", ".stu-detail", ".stu-detail-body", ".stu-detail-foot", ".stu-detail-content", ".stu-detail-sec",
-      ".stu-ladder", ".stu-add-targets", ".stu-add-opt", ".stu-add-choice", ".stu-add-select", ".stu-added--on", ".stu-added-actions"]) {
+      ".stu-ladder", ".stu-add-targets", ".stu-add-opt", ".stu-choice", ".stu-add-select", ".stu-added--on", ".stu-added-actions"]) {
       expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>.\\[]`));
     }
+    // The shared choice row (the Add sheet's, Schedule's, Save as template's) is a tap's height under its own name.
+    expect(baseLayer).toMatch(/\.stu-choice \{[^}]*min-height: var\(--tap\);/);
     // With a move open the main area is two columns — a state, not a width: the pane only exists from md.
     expect(baseLayer).toMatch(/\.stu--detail \.stu-main \{[^}]*grid-template-columns: minmax\(0, 3fr\) minmax\(0, 2fr\)/);
   });

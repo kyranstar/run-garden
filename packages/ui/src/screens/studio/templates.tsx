@@ -170,9 +170,13 @@ export function TemplatesScreen() {
   else if (!q.data && (waiting || q.isError)) {
     body = (
       <EmptyState title={waiting ? "Your templates need a connection." : "Couldn't load your templates."}>
-        <button type="button" className="btn" onClick={() => void q.refetch()}>
-          Try again
-        </button>
+        {/* A paused read can't be pushed (Try again would do nothing): it goes on by itself once the connection is
+            back. A read that failed can be asked again. */}
+        {waiting ? null : (
+          <button type="button" className="btn" onClick={() => void q.refetch()}>
+            Try again
+          </button>
+        )}
       </EmptyState>
     );
   } else if (list.length === 0) {
