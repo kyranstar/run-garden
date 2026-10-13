@@ -25,8 +25,8 @@
  */
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
 import { sessionLead } from "@rg/domain";
-import { EXERCISES, PROFILES, isPlyometric, isProfileId, onFrontier, type ExerciseRecord } from "@rg/exercise-library";
-import { Swapping, type SlotChoice, type Step } from "@rg/session-engine";
+import { EXERCISES, PROFILES, isPlyometric, isProfileId, label, onFrontier, type ExerciseRecord } from "@rg/exercise-library";
+import { Swapping, type SlotChoice, type Step, type Target } from "@rg/session-engine";
 import {
   DocTooLargeError,
   deriveDoc,
@@ -343,6 +343,11 @@ function judgeInPlace(
  * or breaths: the item's dose stays), never a jump in a move's place that is not one, never a move `away` names: a
  * version of a move the document holds elsewhere (`keys`: family and regions, so the document's own moves too), or one
  * the item already plans as an alternate (`ids`).
+ *
+ * A gentle move (`gentleMove`: mobility, release, breathing, condition care) is offered only what eases the same: a move
+ * of a region and a purpose it has — a shared pattern alone is no reason (CUJ R9) — then, after its patterns' moves,
+ * such moves of any pattern. Each says why honestly: "The same movement" only when it shares the pattern AND the region;
+ * otherwise what it eases (a gentle move's: "Also eases the neck") or works ("Also works the hips"), in plain words.
  */
 export function libraryOffers(
   rec: ExerciseRecord,
@@ -353,12 +358,23 @@ export function libraryOffers(
   const kind = (r: ExerciseRecord): string => (r.dose.type === "carry" ? "time" : r.dose.type);
   const seen = new Set<string>([rec.id]);
   const out: Array<{ to: ExerciseRecord; reason: string }> = [];
-  const take = (r: ExerciseRecord | undefined, reason: string): void => {
+  const soft = gentleMove(rec);
+  const areas = (r: ExerciseRecord): string[] => r.regions.filter((g) => rec.regions.includes(g));
+  /** A gentle move's offer eases what it eases: a region and a purpose it has. */
+  const eases = (r: ExerciseRecord): boolean => areas(r).length > 0 && r.purposes.some((p) => rec.purposes.includes(p));
+  const take = (r: ExerciseRecord | undefined, reason: string | ((r: ExerciseRecord) => string)): void => {
     if (!r || seen.has(r.id) || out.length >= OFFER_CANDIDATES) return;
     seen.add(r.id);
     if (away.ids.has(r.id) || away.keys.has(Swapping.moveKeyOf(r)) || kind(r) !== kind(rec)) return;
     if (isPlyometric(r) && !isPlyometric(rec)) return;
-    out.push({ to: r, reason });
+    if (soft && !eases(r)) return;
+    out.push({ to: r, reason: typeof reason === "string" ? reason : reason(r) });
+  };
+  /** What a move offered for its region says: what it eases (a gentle move's) or works, in plain words. */
+  const plainly = (r: ExerciseRecord): string => {
+    const area = areas(r)[0];
+    if (area) return `Also ${soft ? "eases" : "works"} the ${areaWords(area)}`;
+    return `Works the ${areaWords(r.regions[0] ?? "full-body")}`;
   };
   let frontier = [...rec.easier];
   for (let depth = 0; depth < 2 && frontier.length > 0; depth++) {
@@ -372,9 +388,24 @@ export function libraryOffers(
     frontier = next;
   }
   for (const r of library) if (r.family === rec.family) take(r, "Another version");
-  for (const r of library) if (r.patterns.some((p) => rec.patterns.includes(p))) take(r, "The same movement");
+  for (const r of library) {
+    if (r.patterns.some((p) => rec.patterns.includes(p))) take(r, (x) => (areas(x).length > 0 ? "The same movement" : plainly(x)));
+  }
+  if (soft) for (const r of library) if (eases(r)) take(r, plainly);
   return out;
 }
+
+/** Patterns and purposes of the gentle work: mobility, release, breathing, stretching and condition care. */
+const GENTLE_PATTERNS: ReadonlySet<string> = new Set(["mobility", "breathe", "release"]);
+const GENTLE_PURPOSES: ReadonlySet<string> = new Set(["mobility", "stretch", "condition-care"]);
+
+/** A move of the gentle work: its offers must ease what it eases (`libraryOffers`). */
+export const gentleMove = (r: ExerciseRecord): boolean =>
+  r.patterns.some((p) => GENTLE_PATTERNS.has(p)) || r.purposes.some((p) => GENTLE_PURPOSES.has(p));
+
+/** A region as the Studio's suggestions say it (`areaWord`): "neck", "upper spine", "low back". */
+const areaWords = (region: string): string =>
+  region === "thoracic" ? "upper spine" : region === "full-body" ? "whole body" : label(region).toLowerCase();
 
 /**
  * What each slot's item says beside its steps: its cue, a hold to max, and the moves ⇄ offers — its planned
@@ -527,6 +558,38 @@ export function slotsForDay(slots: Readonly<Record<string, DocSlot>>, snapshot: 
   return out;
 }
 
+/**
+ * Each move's target from its item's dose (CUJ R4), in an engine build's shape — by move id, the first item that plays
+ * it — so the sheet's dose line, Today's lead and the how-to read a document build as the builder says it: reps (a
+ * number; or a range, `type: "reps"` with `lo`–`hi` and no `reps`), its load as typed, a hold's seconds, the item's
+ * progression note. Nothing of history: no last session, no graduation, and the action "hold" (the dose as written).
+ */
+function docTargets(doc: WorkoutDoc, steps: readonly Step[], find: (id: string) => ExerciseRecord | undefined): BuildPayload["targets"] {
+  const out: BuildPayload["targets"] = {};
+  for (const at of docSlotKeys(doc)) {
+    const item = doc.parts[at.part]!.items[at.item]!;
+    if (item.kind !== "exercise") continue;
+    const rec = find(item.libraryId);
+    if (!rec || out[rec.id]) continue;
+    const said: Partial<Target> | null = steps.find((s) => s.slotKey === at.key && s.kind !== "rest" && s.target)?.target ?? null;
+    const timed = rec.dose.type === "time" || rec.dose.type === "carry";
+    out[rec.id] = {
+      lo: said?.lo ?? rec.dose.range[0],
+      hi: said?.hi ?? rec.dose.range[1],
+      type: said?.type ?? rec.dose.type,
+      w: said?.w ?? null,
+      reps: said?.reps ?? null,
+      secs: said?.secs ?? (timed ? (item.dose.holdSec ?? null) : null),
+      graduate: null,
+      last: null,
+      lastDate: null,
+      action: "hold",
+      note: said?.note ?? "",
+    };
+  }
+  return out;
+}
+
 /** The build the player plays, made from a (gated) document (see the header). */
 export function materializeDocBuild(doc: WorkoutDoc, input: DocBuildInput): MaterializedBuild {
   const find = makeLibraryIndex(input.library);
@@ -557,7 +620,7 @@ export function materializeDocBuild(doc: WorkoutDoc, input: DocBuildInput): Mate
   for (const rec of records) if (!exercises[rec.id]) exercises[rec.id] = sliceOf(rec);
   const mode = modeOfEffort(doc.intent.effort);
   const minutes = deriveDoc(doc, input.library).estimatedMinutes;
-  const targets: BuildPayload["targets"] = {};
+  const targets: BuildPayload["targets"] = docTargets(doc, steps, find);
   return {
     build: {
       date: input.date,

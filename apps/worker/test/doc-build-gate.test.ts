@@ -3,7 +3,7 @@
  * build the player plays from it (`materializeDocBuild`). Fixed dates; synthetic documents.
  */
 import { describe, expect, it } from "vitest";
-import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { sessionLead, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { Swapping } from "@rg/session-engine";
 import { deriveDoc, playerStepsFromDoc, validateWorkoutDoc, type ValidateCtx } from "@rg/workout";
@@ -398,6 +398,45 @@ describe("materializeDocBuild", () => {
   });
 });
 
+describe("a document build's targets (CUJ R4)", () => {
+  const location = { id: "home", name: "Home", equipment: [], implements: {} };
+  it("each move's target is its item's dose — reps, a range, a load, a hold — so the sheet and Today read as the builder does", () => {
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [
+        { purpose: "main", format: "straight", items: [
+          { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 3, reps: 8, load: { typed: "25 lb", kg: 11.34 } }, progression: "Add a rep next time." },
+          { kind: "exercise", libraryId: "bwSplitSquat", dose: { sets: 3, reps: { min: 5, max: 8 }, perSide: true } },
+        ] },
+        { purpose: "accessory", format: "holds", items: [{ kind: "exercise", libraryId: "wallSit", dose: { sets: 1, holdSec: 45 } }] },
+      ],
+    });
+    const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge: ctxAt(1) });
+    const recOf = (id: string) => EXERCISES.find((e) => e.id === id)!;
+    const blank = { graduate: null, last: null, lastDate: null, action: "hold" };
+    expect(made.build.targets).toEqual({
+      gobletSquat: { lo: recOf("gobletSquat").dose.range[0], hi: recOf("gobletSquat").dose.range[1], type: "reps", reps: 8, secs: null, w: { v: 25, u: "lb" }, note: "Add a rep next time.", ...blank },
+      bwSplitSquat: { lo: 5, hi: 8, type: "reps", reps: null, secs: null, w: null, note: "", ...blank },
+      wallSit: { lo: recOf("wallSit").dose.range[0], hi: recOf("wallSit").dose.range[1], type: "time", reps: null, secs: 45, w: null, note: "", ...blank },
+    });
+    // The lines the targets make, as Today's lead and the sheet say them with no words of the document's own.
+    const lead = sessionLead({ ...made.build, items: made.build.items }, 3);
+    expect(lead.moves.map((m) => m.dose)).toEqual(["3 × 8 @ 25 lb", "3 × 5–8 each side", "45 s"]);
+  });
+
+  it("a move in two items has the first's target (the targets are by move, as an engine build's are)", () => {
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [
+        { purpose: "warmup", format: "straight", items: [{ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, reps: 5 } }] },
+        { purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 3, reps: 8 } }] },
+      ],
+    });
+    const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge: ctxAt(1) });
+    expect(made.build.targets.gobletSquat).toMatchObject({ reps: 5 });
+  });
+});
+
 describe("a part played in rounds (Stage 2 whole-branch I-1)", () => {
   const location = { id: "home", name: "Home", equipment: [], implements: {} };
   it("⇄'s options are numbered as the slot is, round by round, so a swap in round 2 splices that round on; builds of an older version are made again", () => {
@@ -448,6 +487,43 @@ describe("libraryOffers (the library's usual offers for a slot)", () => {
     const first = libraryOffers(rec, EXERCISES, find, none)[0]!.to;
     expect(libraryOffers(rec, EXERCISES, find, { ids: new Set([first.id]), keys: new Set() }).map((o) => o.to.id)).not.toContain(first.id);
     expect(libraryOffers(rec, EXERCISES, find, { ids: new Set(), keys: new Set([Swapping.moveKeyOf(first)]) }).map((o) => o.to.id)).not.toContain(first.id);
+  });
+
+  // CUJ R9: a mobility, release, breathing or condition-care move is offered what eases the same area for the same end.
+  const GENTLE = new Set(["mobility", "breathe", "release"]);
+  const gentle = (r: (typeof EXERCISES)[number]) =>
+    r.patterns.some((p) => GENTLE.has(p)) || r.purposes.some((p) => p === "mobility" || p === "stretch" || p === "condition-care");
+  const shares = <T,>(a: readonly T[], b: readonly T[]) => a.some((x) => b.includes(x));
+
+  it("a gentle move (mobility, release, breathing, condition care) is offered only moves of a region and a purpose it has (CUJ R9)", () => {
+    const soft = EXERCISES.filter(gentle);
+    expect(soft.length).toBeGreaterThan(20);
+    let offered = 0;
+    for (const rec of soft) {
+      for (const o of libraryOffers(rec, EXERCISES, find, none)) {
+        offered += 1;
+        expect(shares(o.to.regions, rec.regions), `${rec.id} → ${o.to.id}: a region`).toBe(true);
+        expect(shares(o.to.purposes, rec.purposes), `${rec.id} → ${o.to.id}: a purpose`).toBe(true);
+      }
+    }
+    expect(offered).toBeGreaterThan(50);
+  });
+
+  it("says why honestly: \"The same movement\" only when the pattern and the region are the move's too; else what it eases or works, in plain words (CUJ R9)", () => {
+    const reasons = new Set<string>();
+    for (const rec of EXERCISES) {
+      for (const o of libraryOffers(rec, EXERCISES, find, none)) {
+        reasons.add(o.reason);
+        if (o.reason === "The same movement") {
+          expect(shares(o.to.patterns, rec.patterns) && shares(o.to.regions, rec.regions), `${rec.id} → ${o.to.id}`).toBe(true);
+        }
+      }
+    }
+    for (const r of reasons) expect(r, r).toMatch(/^(An easier version|Another version|The same movement|Also eases the [a-z ]+|Also works the [a-z ]+|Works the [a-z ]+)$/);
+    expect([...reasons].some((r) => r.startsWith("Also eases the "))).toBe(true);
+    // A neck move's: the neck by name.
+    const neck = EXERCISES.filter((r) => gentle(r) && r.regions.includes("neck"));
+    expect(neck.flatMap((r) => libraryOffers(r, EXERCISES, find, none)).map((o) => o.reason)).toContain("Also eases the neck");
   });
 });
 
