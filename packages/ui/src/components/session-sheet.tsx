@@ -23,7 +23,7 @@
  * (ruling 3-R11): right after either, the sheet asks for the drain (a request of its own that runs the job) and then
  * reads the session, and reads it again on a backoff while it is "Sending…" (`WATCH_POLL_S`), for about five minutes.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
