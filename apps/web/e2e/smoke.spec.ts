@@ -70,7 +70,9 @@ test("Plan renders the week calendar with no COROS warning", async ({ page }) =>
 
 test("Garden renders a scene and opens the species collection", async ({ page }) => {
   await page.goto("/garden");
-  await expect(page.locator("svg[role=img]").first()).toBeVisible();
+  // The scene is drawn after the garden's reads land; a cold start on a shared CI runner has taken longer than the
+  // default 5 s (a green re-run of the same commit confirmed the flake).
+  await expect(page.locator("svg[role=img]").first()).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: /Collection — \d+ of \d+ species/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByText(/Growing next/i).first()).toBeVisible();
