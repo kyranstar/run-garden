@@ -8,7 +8,7 @@ import { z } from "zod";
 import { daysBetween, todayInZone } from "@rg/domain";
 import { loadProfileWithPreferences } from "../profile.js";
 import type { DesignTool } from "./types.js";
-import { answer, isErr, parseInput, READ_ROLES, untrusted, untrustedOrNull } from "./read-common.js";
+import { answer, isErr, parseInput, plural, READ_ROLES, untrusted, untrustedOrNull } from "./read-common.js";
 
 const input = z.object({}).strict();
 /** `trainingDays` count from Monday (0). */
@@ -25,10 +25,12 @@ export const readProfile: DesignTool = {
     if (isErr(p)) return p;
     const { profile } = await loadProfileWithPreferences(ctx.db, ctx.userId);
     let today: string;
+    let zoneUnknown = false;
     try {
       today = todayInZone(profile.timezone, ctx.now);
     } catch {
       today = todayInZone("UTC", ctx.now);
+      zoneUnknown = true;
     }
     const events = profile.events
       .filter((e) => (e.end ?? e.start) >= today)
@@ -65,7 +67,7 @@ export const readProfile: DesignTool = {
         defaultPlaceId: prefs.defaultPlaceId ?? null,
       },
     };
-    const missing: string[] = [];
+    const missing: string[] = zoneUnknown ? ["timezone unknown — using UTC"] : [];
     if (data.goals.length === 0) missing.push("no goals recorded");
     if (data.focusAreas.length === 0) missing.push("no focus areas recorded");
     if (data.places.length === 0) missing.push("no places set up");
@@ -76,7 +78,7 @@ export const readProfile: DesignTool = {
       now: ctx.now,
       missing,
       data,
-      summary: `Read the profile — ${data.goals.length} goals, ${data.focusAreas.length} focus areas, ${events.length} upcoming events`,
+      summary: `Read the profile — ${plural(data.goals.length, "goal")}, ${plural(data.focusAreas.length, "focus area")}, ${plural(events.length, "upcoming event")}`,
     });
   },
 };

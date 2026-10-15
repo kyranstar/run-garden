@@ -13,7 +13,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { PROMPT_TOOL_NAMES } from "../src/services/design-prompt.js";
 import { allTools, READ_TOOLS } from "../src/services/design-tools/index.js";
-import { MAX_TAGGED_TERMS, readAthlete, readTagged } from "../src/services/design-tools/read-common.js";
+import { encodeCursor, MAX_TAGGED_TERMS, readAthlete, readTagged, RESULT_BUDGET_BYTES, type ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type DesignTool, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { TOOL_RESULT_MAX_BYTES } from "../src/services/coach-runs.js";
 import { at, day, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
@@ -62,29 +62,50 @@ function scenarios(): Record<string, unknown[]> {
   return {
     read_profile: [{}],
     read_day: [{}, { date: day(3) }, { date: day(-3) }, { date: "bad" }],
-    read_plan: [{ from: TODAY, to: day(-6) }, { from: day(30), to: day(-60), limit: 50 }, { from: day(30), to: day(-60), limit: 5, cursor: "5" }, { from: TODAY, to: day(200) }],
-    list_workouts: [{ from: day(30), to: day(-30) }, { from: day(60), to: day(-30), q: "studio", limit: 50 }, { from: day(60), to: day(-30), limit: 3, cursor: "3" }],
+    read_plan: [
+      { from: TODAY, to: day(-6) },
+      { from: day(30), to: day(-60), limit: 50 },
+      { from: day(30), to: day(-60), limit: 5, cursor: encodeCursor([day(-4), "07:00", ""]) },
+      { from: TODAY, to: day(200) },
+      { from: TODAY, to: day(-6), cursor: "bad" },
+    ],
+    list_workouts: [
+      { from: day(30), to: day(-30) },
+      { from: day(60), to: day(-30), q: "studio hips rows", limit: 50 },
+      { from: day(60), to: day(-30), limit: 3, cursor: encodeCursor([day(5), "07:00", "~"]) },
+    ],
     get_workout: [{ id: rich.pastDocId }, { id: rich.todayDocId }, { id: rich.outlineToday }, { id: "no-such" }, {}],
-    read_history: [{ from: day(14), to: TODAY }, { from: day(91), to: TODAY, limit: 30 }, { from: day(60), to: TODAY, kind: "runs" }, { from: day(120), to: TODAY }],
+    read_history: [
+      { from: day(14), to: TODAY },
+      { from: day(91), to: TODAY, limit: 30 },
+      { from: day(60), to: TODAY, kind: "run" },
+      { from: day(60), to: TODAY, cursor: encodeCursor([`${day(20)} 23:59 ~`]) },
+      { from: day(120), to: TODAY },
+    ],
     read_balance: [{ from: day(28), to: TODAY }, { from: day(91), to: TODAY }],
     read_readiness: [{}, { days: 30 }, { days: 1 }],
-    read_answers: [{}, { since: day(91), limit: 50 }, { question: "soreness", area: "calves" }, { cursor: "5", limit: 5 }],
-    read_objectives: [{}, { limit: 1 }, { limit: 1, cursor: "1" }],
+    read_answers: [
+      {},
+      { since: day(91), limit: 50 },
+      { question: "soreness", area: "region:calves" },
+      { limit: 5, cursor: encodeCursor([day(5), at(day(5), "08:00"), "~"]) },
+    ],
+    read_objectives: [{}, { limit: 1 }, { limit: 1, cursor: encodeCursor([1]) }],
     search_library: [{}, { query: "squat" }, { query: "hip", filters: { fitToday: true, place: rich.gymId, purpose: "mobility" }, limit: 30 }, { filters: { place: "nope" } }],
-    get_exercise: [{ id: "gobletSquat" }, { id: "deadBug" }, { id: "catCow" }, { id: "nope" }],
-    list_templates: [{}, { limit: 50 }, { limit: 5, cursor: "15" }],
-    read_proposals: [{}, { status: "approved" }, { limit: 30 }],
-    recall_memory: [{}, { query: "hills", kind: "note" }, { limit: 30, cursor: "4" }],
+    get_exercise: [{ id: "gobletSquat" }, { id: "deadBug", howTo: true }, { id: "catCow" }, { id: "nope" }],
+    list_templates: [{}, { limit: 50 }, { limit: 5, cursor: encodeCursor([15]) }],
+    read_proposals: [{}, { status: "approved" }, { limit: 30 }, { cursor: encodeCursor([at(day(9), "10:00"), "~"]) }],
+    recall_memory: [{}, { query: "hills likes", kind: "note" }, { limit: 30, cursor: encodeCursor([at(day(25)), "~"]) }],
   };
 }
 
 describe("the registry", () => {
-  it("names every read tool the prompt promises, once each; allTools is the read tools until the act tools land", () => {
+  it("names every read tool the prompt promises, once each; allTools offers the read tools first (the act tools follow)", () => {
     const names = READ_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     expect([...names].sort()).toEqual([...READ_NAMES].sort());
     for (const n of names) expect(PROMPT_TOOL_NAMES as readonly string[]).toContain(n);
-    expect(allTools().map((t) => t.name)).toEqual(names);
+    expect(allTools().map((t) => t.name).slice(0, names.length)).toEqual(names);
   });
 
   it("every read tool is for every role, small to describe, with a strict object schema", () => {
@@ -150,15 +171,66 @@ describe("size", () => {
       search_library: { query: "" },
     };
     expect(DEFAULT_RESULT_MAX_BYTES).toBeLessThan(TOOL_RESULT_MAX_BYTES);
+    expect(RESULT_BUDGET_BYTES).toBe(DEFAULT_RESULT_MAX_BYTES);
     for (const name of READ_NAMES) {
       const { result } = await measured(name, defaults[name] ?? {});
       expect(isToolErr(result), name).toBe(false);
-      const { summary: _s, ...forModel } = result as ToolOk;
-      const bytes = new TextEncoder().encode(JSON.stringify(forModel)).length;
-      expect(bytes, name).toBeLessThanOrEqual(DEFAULT_RESULT_MAX_BYTES);
+      expect(bytesForModel(result as ToolOk), name).toBeLessThanOrEqual(DEFAULT_RESULT_MAX_BYTES);
+    }
+  });
+
+  it("at every list's maximum limit too: a page holds what fits and its cursor goes on, so the loop's cut never takes rows or the cursor", async () => {
+    const widest: Record<string, Record<string, unknown>> = {
+      read_plan: { from: day(30), to: day(-60), limit: 50 },
+      list_workouts: { from: day(45), to: day(-45), limit: 50 },
+      read_history: { from: day(91), to: TODAY, limit: 30 },
+      read_answers: { since: day(91), limit: 50 },
+      read_objectives: { limit: 12 },
+      search_library: { limit: 30 },
+      list_templates: { limit: 50 },
+      read_proposals: { limit: 30 },
+      recall_memory: { limit: 30 },
+    };
+    for (const [name, input] of Object.entries(widest)) {
+      const seen: string[] = [];
+      let cursor: string | null | undefined;
+      let pages = 0;
+      do {
+        const { result } = await measured(name, { ...input, ...(cursor ? { cursor } : {}) });
+        expect(isToolErr(result), name).toBe(false);
+        const r = result as ReadOk & { data: Record<string, unknown[]> };
+        expect(bytesForModel(r), `${name} page ${pages}`).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+        const list = Object.values(r.data).find(Array.isArray) as unknown[];
+        expect(list.length, name).toBeGreaterThan(0);
+        seen.push(...list.map((x) => JSON.stringify(x)));
+        cursor = r.nextCursor;
+        pages += 1;
+      } while (cursor && pages < 20);
+      // Every row once: trimming a page to the budget never drops one.
+      expect(new Set(seen).size, name).toBe(seen.length);
+      if (name === "read_history") {
+        // Thirty session lines would pass the budget: the first page holds fewer, and says where the rest begin.
+        const { result } = await measured(name, input);
+        expect((result as ReadOk & { data: { entries: unknown[] } }).data.entries.length).toBeLessThan(30);
+        expect(typeof (result as ReadOk).nextCursor).toBe("string");
+      }
+      const all: string[] = [];
+      let c: string | null | undefined;
+      do {
+        const { result } = await measured(name, { ...input, limit: 3, ...(c ? { cursor: c } : {}) });
+        const r = result as ReadOk & { data: Record<string, unknown[]> };
+        all.push(...(Object.values(r.data).find(Array.isArray) as unknown[]).map((x) => JSON.stringify(x)));
+        c = r.nextCursor;
+      } while (c);
+      expect(seen, name).toEqual(all);
     }
   });
 });
+
+const bytesForModel = (r: ToolOk): number => {
+  const { summary: _s, ...forModel } = r;
+  return new TextEncoder().encode(JSON.stringify(forModel)).length;
+};
 
 describe("untrusted text", () => {
   it("a long text is always marked, the marker first, so a cut by bytes never leaves it unmarked", async () => {
@@ -179,7 +251,8 @@ describe("untrusted text", () => {
     await db.insert(schema.plannedWorkouts).values({
       id: planned, userId, planId: "p", sourceWorkoutId: planned, title: long("title"), category: "strength", sport: "strength", originalPlanDate: day(-1),
       lastVerifiedCorosDate: day(-1), effectiveDate: day(-1), effectiveTime: "07:00", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1800,
-      workoutDoc: JSON.stringify(studioDoc({ why: long("why").slice(0, 160) })), workoutDocRev: 1, createdAt: at(day(1)), updatedAt: at(day(1)),
+      workoutDoc: JSON.stringify({ ...studioDoc({ why: long("why").slice(0, 160) }), source: { kind: "studio", ref: long("ref").slice(0, 200) } }),
+      workoutDocRev: 1, createdAt: at(day(1)), updatedAt: at(day(1)),
     });
     const checks: Array<[string, unknown, string]> = [
       ["read_history", { from: day(2), to: TODAY }, "LONG-note"],
@@ -188,14 +261,25 @@ describe("untrusted text", () => {
       ["list_templates", {}, "LONG-template"],
       ["read_plan", { from: TODAY, to: day(-2) }, "LONG-title"],
       ["get_workout", { id: planned }, "LONG-why"],
+      ["get_workout", { id: planned }, "LONG-ref"],
     ];
     for (const [name, input, start] of checks) {
-      const { result } = await measured(name, input, userId);
-      const { summary: _s, ...forModel } = result as ToolOk;
-      const text = JSON.stringify(forModel);
-      const found = [...text.matchAll(new RegExp(start, "g"))];
-      expect(found.length, name).toBeGreaterThan(0);
-      for (const m of found) expect(text.slice(m.index! - 26, m.index), name).toBe('{"untrusted":true,"text":"');
+      // A text this long starts a page of its own (a page holds what fits), so read on until it shows.
+      let found = 0;
+      let cursor: string | null | undefined;
+      let pages = 0;
+      do {
+        const { result } = await measured(name, { ...(input as object), ...(cursor ? { cursor } : {}) }, userId);
+        const { summary: _s, ...forModel } = result as ReadOk;
+        const text = JSON.stringify(forModel);
+        for (const m of text.matchAll(new RegExp(start, "g"))) {
+          found += 1;
+          expect(text.slice(m.index! - 26, m.index), name).toBe('{"untrusted":true,"text":"');
+        }
+        cursor = (result as ReadOk).nextCursor;
+        pages += 1;
+      } while (cursor && pages < 5);
+      expect(found, name).toBeGreaterThan(0);
     }
   });
 });

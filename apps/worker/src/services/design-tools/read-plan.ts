@@ -2,7 +2,8 @@
  * read_plan(from, to) — the plan over a range (Stage 3 spec §4): planned workouts by date and time with what each
  * is, its minutes, where it came from, whether it is done, whether it is still an outline the programme builds on its
  * day, and a document workout's intent and revision; plus each active programme's current block (its week and core
- * lifts). Archived rows are not workouts. Two statements: the athlete, then the rows and programmes in one read.
+ * lifts). Archived rows are not workouts. A page that fits, paged by key. Two statements: the athlete, then the rows
+ * and programmes in one read.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -10,22 +11,23 @@ import { plannedWorkouts, programBlocks, programs } from "@rg/database";
 import { daysBetween } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
-  answer,
   checkRange,
   CURSOR_SCHEMA,
   cursorField,
   DATE_SCHEMA,
   dateField,
+  encodeCursor,
   isErr,
+  keyCursor,
   limitField,
   limitSchema,
-  offsetOf,
+  pagedAnswer,
   parsedJson,
   parseInput,
+  plural,
   READ_ROLES,
   readAthlete,
   readTagged,
-  sqlPage,
   untrusted,
   untrustedOrNull,
 } from "./read-common.js";
@@ -36,15 +38,15 @@ const pw = plannedWorkouts;
 export const INTENT_SQL = sql`case when json_valid(${pw.workoutDoc}) and json_extract(${pw.workoutDoc}, '$.version') = 1
   and json_type(${pw.workoutDoc}, '$.intent.summary') = 'text' then json_extract(${pw.workoutDoc}, '$.intent.summary') end`;
 
-/** Planned rows as `readTagged` reads them (tag `p`), by date, time and id, `limit` rows from `offset`. */
-export function planTerm(userId: string, where: SQL, page?: { limit: number; offset: number }): SQL {
+/** Planned rows as `readTagged` reads them (tag `p`), by date, time and id; at most `limit` of them. */
+export function planTerm(userId: string, where: SQL, limit?: number): SQL {
   const rows = sql`select 'p' as t, json_object('id', ${pw.id}, 'date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'title', ${pw.title},
       'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'state', ${pw.completionState},
       'content', ${pw.contentState}, 'seconds', coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}, ${pw.calendarBlockDurationSeconds}),
       'intent', ${INTENT_SQL}, 'rev', ${pw.workoutDocRev}) as j
     from ${pw} where ${pw.userId} = ${userId} and ${pw.archivedAt} is null and (${where})
     order by ${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id}`;
-  return page ? sql`select t, j from (${rows} limit ${page.limit + 1} offset ${page.offset})` : sql`select t, j from (${rows})`;
+  return limit !== undefined ? sql`select t, j from (${rows} limit ${limit})` : sql`select t, j from (${rows})`;
 }
 
 const RUN_CATEGORIES = new Set(["recovery", "easy", "long", "quality", "race"]);
@@ -133,22 +135,31 @@ export const readPlan: DesignTool = {
     if (isErr(p)) return p;
     const bad = checkRange(p.from, p.to);
     if (bad) return bad;
+    // A page starts at its cursor's row (date, time, id), so a workout written meanwhile never shifts it.
+    const at = keyCursor(p.cursor, 3);
+    if (isErr(at)) return at;
     const { athlete } = await readAthlete(ctx.db, ctx.userId, ctx.now);
-    const offset = offsetOf(p.cursor);
     const limit = p.limit ?? DEFAULT_LIMIT;
     const rows = await readTagged(ctx.db, [
-      planTerm(ctx.userId, sql`${pw.effectiveDate} between ${p.from} and ${p.to}`, { limit, offset }),
+      planTerm(
+        ctx.userId,
+        sql`${pw.effectiveDate} between ${p.from} and ${p.to}${at ? sql` and (${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id}) >= (${at[0]}, ${at[1]}, ${at[2]})` : sql``}`,
+        limit + 1,
+      ),
       programmesTerm(ctx.userId),
     ]);
     const ordered = (rows.get("p") ?? []).sort((a, b) => `${a.date} ${a.time} ${a.id}`.localeCompare(`${b.date} ${b.time} ${b.id}`));
-    const page = sqlPage(ordered, offset, limit);
     const programmes = (rows.get("b") ?? []).map((r) => programmeOf(r, athlete.today));
-    return answer({
+    return pagedAnswer({
       source: "the plan (planned workouts) and the athlete's programmes",
       now: ctx.now,
-      missing: [],
-      data: { from: p.from, to: p.to, workouts: page.items.map(planItem), programmes, nextCursor: page.nextCursor },
-      summary: page.items.length || offset ? `Read the plan from ${p.from} to ${p.to}` : `Nothing planned from ${p.from} to ${p.to}`,
+      missing: athlete.missing,
+      rows: ordered,
+      limit,
+      render: planItem,
+      cursorOf: (r) => encodeCursor([String(r.date), String(r.time), String(r.id)]),
+      data: (workouts) => ({ from: p.from, to: p.to, workouts, programmes }),
+      summary: (shown) => (shown || at ? `Read ${plural(shown, "planned workout")} from ${p.from} to ${p.to}` : `Nothing planned from ${p.from} to ${p.to}`),
     });
   },
 };

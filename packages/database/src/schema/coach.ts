@@ -17,7 +17,8 @@ export const coachMemory = sqliteTable(
     body: text("body").notNull(),
     provenance: text("provenance", { mode: "json" })
       .notNull()
-      .$type<{ source: string; messageId?: string; at: string }>(),
+      /** `rehearsal`: written by a rehearsal run (the live scenario suite) — never the athlete's memory (memory-core.ts). */
+      .$type<{ source: string; messageId?: string; at: string; rehearsal?: boolean }>(),
     learnedAt: text("learned_at").notNull(),
     expiresAt: text("expires_at"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),

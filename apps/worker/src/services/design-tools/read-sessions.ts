@@ -18,19 +18,27 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import { activities, conditionChecks, performedSessions, performedSets } from "@rg/database";
-import type { WeightUnit } from "@rg/domain";
+import { addDays, type WeightUnit } from "@rg/domain";
 import { EXERCISES, PROFILES, isProfileId, profileById, THEMES } from "@rg/exercise-library";
 import { readingsBySession, sessionPerActivity, type CheckRowLike } from "../logged-sets.js";
 import { COROS_EXERCISE_PREFIX, PENDING_HASH } from "../watch-sets.js";
-import { distanceWords, localTimeOf, minutesOf, paceWords, parsedArray, untrusted, weightWords, type Untrusted } from "./read-common.js";
+import { activityDateOf, distanceWords, localTimeOf, minutesOf, paceWords, parsedArray, untrusted, weightWords, type Untrusted } from "./read-common.js";
 
 const ps = performedSessions;
 const pset = performedSets;
 const cc = conditionChecks;
 const act = activities;
 
-/** An activity's local date: the device's local start, else the UTC one. */
-export const ACTIVITY_DAY = sql`substr(coalesce(${act.startTimeLocal}, ${act.startTime}), 1, 10)`;
+/** An activity's date as SQL can tell it: the device's local start, else the UTC one — within a day of the local date. */
+const ACTIVITY_DAY = sql`substr(coalesce(${act.startTimeLocal}, ${act.startTime}), 1, 10)`;
+
+/**
+ * The activities that may fall on local dates `from`..`to`: a day either side in SQL (a start with no local time is a
+ * UTC instant), held to the athlete's own dates in `activityRows`.
+ */
+export function activitiesAround(from: string, to: string): SQL {
+  return sql`${ACTIVITY_DAY} between ${addDays(from, -1)} and ${addDays(to, 1)}`;
+}
 
 /** The sessions of a scope that are there (not being written): a condition on `performed_sessions`. */
 export function sessionsWhere(userId: string, where: SQL): SQL {
@@ -62,7 +70,7 @@ export function doneTerms(userId: string, scope: SQL, o: { activitiesWhere: SQL;
           (${cc.kind} in ('pre', 'post') and ${cc.performedSessionId} in ${ids})
           or (${cc.kind} = 'pre' and ${cc.performedSessionId} is null and ${cc.workoutId} in ${slots})
           ${o.moreChecks ? sql`or (${o.moreChecks})` : sql``})`,
-    sql`select 'a' as t, json_object('id', ${act.id}, 'date', ${ACTIVITY_DAY}, 'start', ${act.startTime}, 'sport', ${act.sport},
+    sql`select 'a' as t, json_object('id', ${act.id}, 'local', ${act.startTimeLocal}, 'start', ${act.startTime}, 'sport', ${act.sport},
         'sec', ${act.durationSeconds}, 'm', ${act.distanceMeters}, 'hr', ${act.avgHeartRate}, 'pace', ${act.avgPaceSecPerKm},
         'load', ${act.trainingLoad}, 'feel', ${telemetry("$.feelRating")}, 'note', ${telemetry("$.sportNote")}) as j
         from ${act} where ${act.userId} = ${userId} and (${o.activitiesWhere})`,
@@ -161,11 +169,12 @@ export function checkRows(raw: Raw[] = []): CheckRowLike[] {
   });
 }
 
-export function activityRows(raw: Raw[] = []): ActivityRow[] {
+/** The activities, each on its local date in `tz`; with `range`, only those whose local date is in it. */
+export function activityRows(raw: Raw[] = [], tz: string, range?: { from: string; to: string }): ActivityRow[] {
   return raw.flatMap((r) => {
     const id = str(r.id);
-    const date = str(r.date);
-    if (!id || !date) return [];
+    const date = activityDateOf(tz, r.local, r.start);
+    if (!id || !date || (range && (date < range.from || date > range.to))) return [];
     return [{
       id, date, start: str(r.start) ?? "", sport: (str(r.sport) ?? "other").toLowerCase(), seconds: num(r.sec) ?? 0, meters: num(r.m), hr: num(r.hr),
       pace: num(r.pace), load: num(r.load), feel: num(r.feel), note: str(r.note),
@@ -259,19 +268,26 @@ export interface DoneCtx {
   weightUnit: WeightUnit;
 }
 
-export type DoneKind = "sessions" | "runs" | "other";
+/** A line's kind, as the model filters by it: a logged session, a run, or another sport (its `sport` says which). */
+export type DoneKind = "session" | "run" | "other";
+export const DONE_KINDS = ["session", "run", "other"] as const satisfies readonly DoneKind[];
 
 export interface DoneEntry {
-  /** For ordering: the day, then the time, newest first. */
+  /** For ordering, newest first, and for a page to start at: the day, the local time, the id. */
   key: string;
   kind: DoneKind;
   entry: Record<string, unknown>;
 }
 
-/** Every line of what was done in the rows, newest first. */
+/**
+ * Every line of what was done in the rows, newest first. Each line carries its id — a session's, or a run's or other
+ * sport's activity id — so a design can say what it is based on. With `range`, activities outside it (by their local
+ * date) are left out.
+ */
 export function doneEntries(
   raw: { sessions?: Raw[]; sets?: Raw[]; checks?: Raw[]; activities?: Raw[] },
   ctx: DoneCtx,
+  range?: { from: string; to: string },
 ): DoneEntry[] {
   const all = sessionRows(raw.sessions);
   const chosen = sessionsOnce(all);
@@ -280,7 +296,8 @@ export function doneEntries(
     chosen.map((s) => ({ id: s.id, workoutId: s.workoutId, localDate: s.date })),
     checkRows(raw.checks),
   );
-  const activitiesById = new Map(activityRows(raw.activities).map((a) => [a.id, a]));
+  // A session's own activity joins it whatever its date; the rest are the range's.
+  const activitiesById = new Map(activityRows(raw.activities, ctx.tz).map((a) => [a.id, a]));
   const logged = new Set(all.map((s) => s.activityId).filter((id): id is string => id !== null));
   const out: DoneEntry[] = [];
 
@@ -294,7 +311,7 @@ export function doneEntries(
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([profileId, r]) => ({ profile: profileById(profileId).label, before: r.pre, after: r.post }));
     const a = s.activityId ? activitiesById.get(s.activityId) : undefined;
-    const entry: Record<string, unknown> = { date: s.date, kind: "session", source: s.source, minutes: minutesOf(s.seconds) };
+    const entry: Record<string, unknown> = { id: s.id, date: s.date, kind: "session", source: s.source, minutes: minutesOf(s.seconds) };
     if (s.mode) entry.mode = s.mode;
     if (s.theme) entry.theme = THEME_NAME.get(s.theme) ?? untrusted(s.theme);
     if (s.workoutId) entry.workoutId = s.workoutId;
@@ -304,14 +321,14 @@ export function doneEntries(
     if (a?.hr) entry.hr = Math.round(a.hr);
     if (a?.load) entry.load = Math.round(a.load);
     if (s.note && s.note.trim()) entry.note = untrusted(s.note);
-    out.push({ key: `${s.date} ${localTimeOf(ctx.tz, s.startedAt ?? s.createdAt) ?? ""} ${s.id}`, kind: "sessions", entry });
+    out.push({ key: `${s.date} ${localTimeOf(ctx.tz, s.startedAt ?? s.createdAt) ?? ""} ${s.id}`, kind: "session", entry });
   }
 
   for (const a of activitiesById.values()) {
-    if (logged.has(a.id)) continue;
+    if (logged.has(a.id) || (range && (a.date < range.from || a.date > range.to))) continue;
     const key = `${a.date} ${localTimeOf(ctx.tz, a.start) ?? ""} ${a.id}`;
     if (a.sport === "run") {
-      const entry: Record<string, unknown> = { date: a.date, kind: "run", minutes: minutesOf(a.seconds) };
+      const entry: Record<string, unknown> = { id: a.id, date: a.date, kind: "run", minutes: minutesOf(a.seconds) };
       if (a.meters && a.meters > 0) entry.distance = distanceWords(a.meters, ctx.units);
       const pace = a.pace && a.pace > 0 ? a.pace : a.meters && a.meters > 0 && a.seconds > 0 ? a.seconds / (a.meters / 1000) : null;
       if (pace) entry.pace = paceWords(pace, ctx.units);
@@ -319,9 +336,9 @@ export function doneEntries(
       if (a.load) entry.load = Math.round(a.load);
       if (a.feel) entry.feel = `${a.feel} of 5`;
       if (a.note && a.note.trim()) entry.note = untrusted(a.note);
-      out.push({ key, kind: "runs", entry });
+      out.push({ key, kind: "run", entry });
     } else {
-      const entry: Record<string, unknown> = { date: a.date, kind: a.sport, minutes: minutesOf(a.seconds) };
+      const entry: Record<string, unknown> = { id: a.id, date: a.date, kind: "other", sport: a.sport, minutes: minutesOf(a.seconds) };
       if (a.hr) entry.hr = Math.round(a.hr);
       if (a.load) entry.load = Math.round(a.load);
       out.push({ key, kind: "other", entry });

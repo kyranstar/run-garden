@@ -1,42 +1,42 @@
 /**
  * recall_memory(query?, kind?) — memory beyond the pinned core (Stage 3 spec §4, §9; principles §6.7). The opening
- * context carries the core: pinned items, then the most recent facts and rules, twenty at most (design-context.ts,
- * `MEMORY_CORE`) — this reads the rest, newest first, each with its kind, confidence (stated, inferred — the coach's
- * own inference, not yet confirmed — or confirmed), where it came from, when it was learned, when it expires, and its
- * evidence. Never a superseded, switched-off or expired item, nor one a rehearsal run wrote (`provenance.rehearsal`).
- * Bodies and evidence are memory: marked. Two statements: the athlete (for today), then the page.
+ * context carries the core; this reads the rest of what is live (memory-core.ts: one definition for both — never a
+ * superseded, switched-off or expired item, nor one a rehearsal run wrote), newest first, each with its kind,
+ * confidence (stated, inferred — the coach's own inference, not yet confirmed — or confirmed), where it came from, when
+ * it was learned, when it expires, and its evidence. `query` matches every word. Bodies and evidence are memory:
+ * marked. A page that fits, paged by key (a memory the run writes meanwhile never shifts the next page). Two
+ * statements: the athlete (for today), then the page.
  */
-import { and, asc, desc, eq, gte, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachMemory } from "@rg/database";
-import { likePatternOf } from "../../routes/workouts.js";
+import { likeWordPatterns } from "../like-pattern.js";
+import { liveMemoryWhere, memoryCore } from "../memory-core.js";
 import type { DesignTool } from "./types.js";
 import {
-  answer,
   CURSOR_SCHEMA,
   cursorField,
+  encodeCursor,
   isErr,
+  keyCursor,
   limitField,
   limitSchema,
   localDateOf,
-  offsetOf,
+  pagedAnswer,
   parseInput,
+  plural,
   READ_ROLES,
   readAthlete,
-  sqlPage,
   untrusted,
   untrustedOrNull,
 } from "./read-common.js";
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 30;
-/** The pinned core's size: the opening context's `MEMORY_CORE` (design-context.ts), read the same way here. */
-const MEMORY_CORE = 20;
 const KINDS = ["fact", "rule", "note", "observation"] as const;
 const m = coachMemory;
-
-/** A row a rehearsal run wrote: never memory the athlete has. */
-export const REHEARSAL_MEMORY = sql`coalesce(case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.rehearsal') end, 0) = 1`;
+/** Newest first: the latest learning or update. */
+const LEARNED = sql<string>`coalesce(${m.updatedAt}, ${m.learnedAt})`;
 
 const input = z
   .object({ query: z.string().max(80).optional(), kind: z.enum(KINDS).optional(), limit: limitField(MAX_LIMIT).optional(), cursor: cursorField.optional() })
@@ -48,7 +48,7 @@ export const recallMemory: DesignTool = {
   inputSchema: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Words the memory says." },
+      query: { type: "string", description: "Words the memory says (every one)." },
       kind: { type: "string", enum: [...KINDS] },
       limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT),
       cursor: CURSOR_SCHEMA,
@@ -60,18 +60,11 @@ export const recallMemory: DesignTool = {
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally query, kind, limit and cursor");
     if (isErr(p)) return p;
+    const at = keyCursor(p.cursor, 2);
+    if (isErr(at)) return at;
     const { athlete } = await readAthlete(ctx.db, ctx.userId, ctx.now);
     const today = athlete.today;
-    const live: SQL = and(eq(m.userId, ctx.userId), eq(m.active, true), isNull(m.supersededBy), or(isNull(m.expiresAt), gte(m.expiresAt, today)))!;
-    // The opening context's core, exactly as it reads it.
-    const core = ctx.db
-      .select({ id: m.id })
-      .from(m)
-      .where(and(live, or(eq(m.pinned, true), sql`${m.kind} in ('fact', 'rule')`)))
-      .orderBy(desc(m.pinned), desc(sql`coalesce(${m.updatedAt}, ${m.learnedAt})`), asc(m.id))
-      .limit(MEMORY_CORE);
-    const like = likePatternOf(p.query);
-    const offset = offsetOf(p.cursor);
+    const words = likeWordPatterns(p.query);
     const limit = p.limit ?? DEFAULT_LIMIT;
     const rows = await ctx.db
       .select({
@@ -81,6 +74,7 @@ export const recallMemory: DesignTool = {
         confidence: m.confidence,
         pinned: m.pinned,
         learnedAt: m.learnedAt,
+        latest: LEARNED,
         expiresAt: m.expiresAt,
         evidence: m.evidence,
         source: sql<string | null>`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.source') end`,
@@ -88,39 +82,39 @@ export const recallMemory: DesignTool = {
       .from(m)
       .where(
         and(
-          live,
-          sql`not ${REHEARSAL_MEMORY}`,
-          notInArray(m.id, core),
+          liveMemoryWhere(ctx.userId, today),
+          // The opening context's core, exactly as it reads it (memory-core.ts).
+          notInArray(m.id, memoryCore(ctx.db, ctx.userId, today, { id: m.id })),
           ...(p.kind ? [eq(m.kind, p.kind)] : []),
-          ...(like ? [sql`${m.body} LIKE ${like} ESCAPE '\\'`] : []),
+          ...words.map((like) => sql`${m.body} LIKE ${like} ESCAPE '\\'`),
+          ...(at ? [sql`(${LEARNED}, ${m.id}) <= (${at[0]}, ${at[1]})`] : []),
         ),
       )
-      .orderBy(desc(sql`coalesce(${m.updatedAt}, ${m.learnedAt})`), asc(m.id))
-      .limit(limit + 1)
-      .offset(offset);
-    const page = sqlPage(rows, offset, limit);
-    const memories = page.items.map((r) => {
-      const evidence = untrustedOrNull(r.evidence);
-      return {
-        id: r.id,
-        kind: r.kind,
-        confidence: r.confidence,
-        ...(r.pinned ? { pinned: true } : {}),
-        ...(r.source ? { source: r.source } : {}),
-        learned: localDateOf(athlete.tz, r.learnedAt),
-        ...(r.expiresAt ? { expires: localDateOf(athlete.tz, r.expiresAt) } : {}),
-        ...(evidence ? { evidence } : {}),
-        body: untrusted(r.body),
-      };
-    });
-    const missing: string[] = [];
-    if (memories.length === 0 && offset === 0) missing.push(p.query ? `no memory matches "${p.query}"` : "no memory beyond the pinned core");
-    return answer({
+      .orderBy(desc(LEARNED), desc(m.id))
+      .limit(limit + 1);
+    return pagedAnswer({
       source: "the coach's memory of the athlete, beyond the pinned core",
       now: ctx.now,
-      missing,
-      data: { memories, nextCursor: page.nextCursor },
-      summary: memories.length ? `Recalled ${memories.length} memories${p.query ? " matching the search" : ""}` : "Nothing more remembered",
+      missing: [...athlete.missing, ...(rows.length === 0 && !at ? [p.query ? `no memory matches "${p.query}"` : "no memory beyond the pinned core"] : [])],
+      rows,
+      limit,
+      render: (r) => {
+        const evidence = untrustedOrNull(r.evidence);
+        return {
+          id: r.id,
+          kind: r.kind,
+          confidence: r.confidence,
+          ...(r.pinned ? { pinned: true } : {}),
+          ...(r.source ? { source: r.source } : {}),
+          learned: localDateOf(athlete.tz, r.learnedAt),
+          ...(r.expiresAt ? { expires: localDateOf(athlete.tz, r.expiresAt) } : {}),
+          ...(evidence ? { evidence } : {}),
+          body: untrusted(r.body),
+        };
+      },
+      cursorOf: (r) => encodeCursor([r.latest, r.id]),
+      data: (memories) => ({ memories }),
+      summary: (shown) => (shown ? `Recalled ${plural(shown, "memory", "memories")}${p.query ? " matching the search" : ""}` : "Nothing more remembered"),
     });
   },
 };

@@ -2,7 +2,7 @@ import { UNANSWERED, type Attrs, type CheckReading, type ConditionProfile } from
 import type { EngineData } from "./engine-data.js";
 import { isPlyometric, type ExerciseRecord } from "./record.js";
 import type { Theme } from "./themes.js";
-import type { Mode } from "./vocab.js";
+import { MODE_IDS, type Mode } from "./vocab.js";
 
 // Whether an exercise can appear: equipment, the mode's general limits, and every active condition
 // profile's rules. The session engine's Lib delegates here; validation's coverage check uses the same rules.
@@ -106,4 +106,55 @@ export function coreFamilyOf(data: EngineData, ex: ExerciseRecord | null | undef
   if (!ex || !ex.roles.includes("core")) return null;
   const fam = data.coreFamilies.find(f => f.patterns.some(p => ex.patterns.includes(p)));
   return fam ? fam.id : null;
+}
+
+// ── Today's fit ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** How a move fits today: fits (safe even on a flare day) · care (allowed today, within the profile's limits) · not. */
+export type FitState = "fits" | "care" | "not";
+/** Lower is better: the worst profile decides, and a search ranks by it. */
+export const FIT_RANK: Readonly<Record<FitState, number>> = { fits: 0, care: 1, not: 2 };
+
+function allowedIn(rec: ExerciseRecord, p: ConditionProfile, modes: readonly Mode[], r: CheckReading): boolean {
+  const a = attrsOf(rec, p)!;
+  return modes.some(
+    (m) => p.fitsMode(a, m) && rec.patterns.every((pt) => p.allowPattern(pt, m, r)) && (p.allowRecord?.(rec, m, r) ?? true),
+  );
+}
+
+function profileFit(rec: ExerciseRecord, p: ConditionProfile, r: CheckReading): { state: FitState; reason: string } {
+  const a = attrsOf(rec, p);
+  // An unrated move fails closed, as everywhere else in the library.
+  if (!a || p.never(a)) return { state: "not", reason: `${p.label} rules this move out.` };
+  // A flare day, or feeling off, is a recovery day.
+  const easy = p.flare(r) || r.feelingOff;
+  if (allowedIn(rec, p, easy ? ["recovery"] : MODE_IDS, r)) {
+    return recordFlareSafe(p, rec)
+      ? { state: "fits", reason: `Safe for ${p.label}, even on a flare day.` }
+      : { state: "care", reason: `Fine today, within ${p.label} limits.` };
+  }
+  const own = p.recordReason?.(rec, "build", r) ?? null;
+  if (own) return { state: "not", reason: own };
+  const check = p.check.label.toLowerCase();
+  if (r.feelingOff) return { state: "not", reason: "Not while you're feeling off." };
+  if (r.pre === null) return { state: "not", reason: `Needs today's ${check} check.` };
+  return { state: "not", reason: `Not with ${check} at ${r.pre} today.` };
+}
+
+/**
+ * A move against every switched-on condition profile for TODAY's reading — the one rule the Studio's list and the
+ * coach's library search share: the worst profile decides, with the reason in plain words (the profile's own where it
+ * has them). Null with no profile on: nothing to say. A profile with no reading today is unanswered.
+ */
+export function fitToday(
+  rec: ExerciseRecord,
+  profiles: readonly ConditionProfile[],
+  readings: Readonly<Record<string, CheckReading>>,
+): { state: FitState; reason: string } | null {
+  let worst: { state: FitState; reason: string } | null = null;
+  for (const p of profiles) {
+    const f = profileFit(rec, p, readings[p.id] ?? UNANSWERED);
+    if (!worst || FIT_RANK[f.state] > FIT_RANK[worst.state]) worst = f;
+  }
+  return worst;
 }

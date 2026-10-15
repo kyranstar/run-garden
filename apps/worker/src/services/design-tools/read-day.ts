@@ -11,7 +11,7 @@ import { isProfileId, profileById } from "@rg/exercise-library";
 import type { DesignTool } from "./types.js";
 import { answer, dateField, isErr, localTimeOf, parseInput, READ_ROLES, readAthlete, readTagged, weekdayOf } from "./read-common.js";
 import { planItem, planTerm } from "./read-plan.js";
-import { ACTIVITY_DAY, checkRows, doneEntries, doneTerms, sessionsWhere } from "./read-sessions.js";
+import { activitiesAround, checkRows, doneEntries, doneTerms, sessionsWhere } from "./read-sessions.js";
 
 const input = z.object({ date: dateField.optional() }).strict();
 
@@ -33,12 +33,13 @@ export const readDay: DesignTool = {
     const date = p.date ?? athlete.today;
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.localDate} = ${date}`);
     const rows = await readTagged(ctx.db, [
-      ...doneTerms(ctx.userId, scope, { activitiesWhere: sql`${ACTIVITY_DAY} = ${date}`, moreChecks: sql`${conditionChecks.localDate} = ${date}` }),
+      ...doneTerms(ctx.userId, scope, { activitiesWhere: activitiesAround(date, date), moreChecks: sql`${conditionChecks.localDate} = ${date}` }),
       planTerm(ctx.userId, sql`${plannedWorkouts.effectiveDate} = ${date}`),
     ]);
     const done = doneEntries(
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
       { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit },
+      { from: date, to: date },
     );
     const readings = checkRows(rows.get("c"))
       .filter((c) => c.localDate === date && isProfileId(c.profileId) && (c.value !== null || c.feelingOff))
@@ -55,9 +56,10 @@ export const readDay: DesignTool = {
     }
     Object.assign(data, { readings, plan, done: done.map((d) => d.entry) });
 
-    const missing: string[] = [];
-    if (athlete.profiles.length > 0 && readings.length === 0) missing.push("no condition check that day");
-    if (done.length === 0 && date <= athlete.today) missing.push(isToday ? "nothing logged yet today" : "nothing logged that day");
+    // A day still to come has no checks and nothing done yet: that is not missing, it is the future.
+    const missing: string[] = [...athlete.missing];
+    if (date <= athlete.today && athlete.profiles.length > 0 && readings.length === 0) missing.push(isToday ? "no condition check yet today" : "no condition check that day");
+    if (date <= athlete.today && done.length === 0) missing.push(isToday ? "nothing logged yet today" : "nothing logged that day");
     return answer({
       source: "the day's condition checks, the plan, logged sessions and the watch's activities",
       now: ctx.now,

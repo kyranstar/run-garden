@@ -16,31 +16,29 @@
  *   doseLine / historyLine     line 4 of a row: the dose Add puts in, the athlete's history with the move.
  */
 import {
-  attrsOf,
   CONTRACTIONS,
   EQUIPMENT,
   EQUIPMENT_IDS,
+  FIT_RANK,
+  fitToday as libraryFitToday,
   hasEquipment,
   isProfileId,
   label,
   LOCATION_PRESETS,
-  MODE_IDS,
   MUSCLES,
   PROFILES,
   PURPOSES,
-  recordFlareSafe,
   REGIONS,
   searchLibrary,
   TAGS,
   THEMES,
-  UNANSWERED,
   type CheckReading,
   type ConditionProfile,
   type Contraction,
   type EquipmentId,
   type ExerciseRecord,
+  type FitState as LibraryFitState,
   type LibraryFilters,
-  type Mode,
   type MuscleId,
   type Purpose,
   type Region,
@@ -212,7 +210,7 @@ export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, p
 
 // ── Today's condition fit ──────────────────────────────────────────────────
 
-export type FitState = "fits" | "care" | "not";
+export type FitState = LibraryFitState;
 export interface Fit {
   state: FitState;
   /** The status word, always shown beside the colour. */
@@ -222,47 +220,15 @@ export interface Fit {
 }
 
 export const FIT_WORD: Readonly<Record<FitState, string>> = { fits: "Fits today", care: "With care", not: "Not today" };
-const FIT_RANK: Readonly<Record<FitState, number>> = { fits: 0, care: 1, not: 2 };
 
-function allowedIn(rec: ExerciseRecord, p: ConditionProfile, modes: readonly Mode[], r: CheckReading): boolean {
-  const a = attrsOf(rec, p)!;
-  return modes.some(
-    (m) => p.fitsMode(a, m) && rec.patterns.every((pt) => p.allowPattern(pt, m, r)) && (p.allowRecord?.(rec, m, r) ?? true),
-  );
-}
-
-function profileFit(rec: ExerciseRecord, p: ConditionProfile, r: CheckReading): { state: FitState; reason: string } {
-  const a = attrsOf(rec, p);
-  // An unrated move fails closed, as everywhere else in the library.
-  if (!a || p.never(a)) return { state: "not", reason: `${p.label} rules this move out.` };
-  // A flare day, or feeling off, is a recovery day.
-  const easy = p.flare(r) || r.feelingOff;
-  if (allowedIn(rec, p, easy ? ["recovery"] : MODE_IDS, r)) {
-    return recordFlareSafe(p, rec)
-      ? { state: "fits", reason: `Safe for ${p.label}, even on a flare day.` }
-      : { state: "care", reason: `Fine today, within ${p.label} limits.` };
-  }
-  const own = p.recordReason?.(rec, "build", r) ?? null;
-  if (own) return { state: "not", reason: own };
-  const check = p.check.label.toLowerCase();
-  if (r.feelingOff) return { state: "not", reason: "Not while you're feeling off." };
-  if (r.pre === null) return { state: "not", reason: `Needs today's ${check} check.` };
-  return { state: "not", reason: `Not with ${check} at ${r.pre} today.` };
-}
-
-/** The move against every switched-on profile for today's readings; null with no profile on (nothing to say). */
+/** The library's one fit-today rule (the coach's search reads it too), with the status word the list shows. */
 export function fitToday(
   rec: ExerciseRecord,
   profiles: readonly ConditionProfile[],
   readings: Readonly<Record<string, CheckReading>>,
 ): Fit | null {
-  if (profiles.length === 0) return null;
-  let worst: { state: FitState; reason: string } | null = null;
-  for (const p of profiles) {
-    const f = profileFit(rec, p, readings[p.id] ?? UNANSWERED);
-    if (!worst || FIT_RANK[f.state] > FIT_RANK[worst.state]) worst = f;
-  }
-  return { state: worst!.state, word: FIT_WORD[worst!.state], reason: worst!.reason };
+  const f = libraryFitToday(rec, profiles, readings);
+  return f ? { state: f.state, word: FIT_WORD[f.state], reason: f.reason } : null;
 }
 
 const fitCache = new WeakMap<StudioCtx, Map<string, Fit | null>>();

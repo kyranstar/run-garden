@@ -2,20 +2,22 @@
  * list_workouts(from, to, q?) and get_workout(id) — document workouts (Stage 3 spec §4).
  *
  *  - list_workouts: the planned rows with a document between two dates, newest first, with their intent — the
- *    Studio's searchable list ("like last week's"; `q` matches the title or the intent, as the list route does with
- *    `likePatternOf`). One statement.
- *  - get_workout: one workout's document (every word in it marked: a document's `source` is written by the client, so
- *    nothing tells the athlete's words from the app's), its revision, what is derived from it (`deriveDoc`), what was
- *    done in it (read_history's lines) and the feedback on it. Archived rows and other accounts' are not found. Two
- *    statements: the athlete with the row, then what was done and the feedback in one read.
+ *    Studio's searchable list ("like last week's"; every word of `q` in the title or the intent). A page that fits,
+ *    paged by key. One statement.
+ *  - get_workout: one workout's document — every word in it marked (a document is written by the client, its `source`
+ *    too, so nothing tells the athlete's words from the app's), and every id or vocabulary value that is not plainly
+ *    one (a move the library does not know, an id with spaces in it) marked as well — its revision, what is derived
+ *    from it (`deriveDoc`), what was done in it (read_history's lines, with their ids) and the feedback on it. Archived
+ *    rows and other accounts' are not found. Two statements: the athlete with the row, then what was done and the
+ *    feedback in one read.
  */
 import { and, between, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { activities, athleteAnswers, performedSessions, plannedWorkouts } from "@rg/database";
-import { parseStoredWorkoutDoc, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
+import { parseStoredWorkoutDoc, type WorkoutDoc, type WorkoutDose, type WorkoutItem } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
-import { likePatternOf } from "../../routes/workouts.js";
+import { likeWordPatterns } from "../like-pattern.js";
 import type { DesignTool } from "./types.js";
 import {
   answer,
@@ -24,22 +26,24 @@ import {
   cursorField,
   DATE_SCHEMA,
   dateField,
+  encodeCursor,
   isErr,
+  keyCursor,
   limitField,
   limitSchema,
-  offsetOf,
+  pagedAnswer,
   parsedJson,
   parseInput,
+  plural,
   READ_ROLES,
   readAthlete,
   readTagged,
   refuse,
-  sqlPage,
   untrusted,
   type Untrusted,
 } from "./read-common.js";
 import { INTENT_SQL, ORIGIN_WORDS, STATUS_WORDS } from "./read-plan.js";
-import { doneEntries, doneTerms, sessionsWhere } from "./read-sessions.js";
+import { doneEntries, doneTerms, knownMove, sessionsWhere } from "./read-sessions.js";
 
 const pw = plannedWorkouts;
 const DEFAULT_LIMIT = 15;
@@ -72,8 +76,10 @@ export const listWorkouts: DesignTool = {
     if (isErr(p)) return p;
     const bad = checkRange(p.from, p.to);
     if (bad) return bad;
-    const like = likePatternOf(p.q);
-    const offset = offsetOf(p.cursor);
+    // A page starts at its cursor's row (date, time, id; newest first), so a workout written meanwhile never shifts it.
+    const at = keyCursor(p.cursor, 3);
+    if (isErr(at)) return at;
+    const words = likeWordPatterns(p.q);
     const limit = p.limit ?? DEFAULT_LIMIT;
     const rows = await ctx.db
       .select({
@@ -94,30 +100,33 @@ export const listWorkouts: DesignTool = {
           isNull(pw.archivedAt),
           isNotNull(pw.workoutDoc),
           between(pw.effectiveDate, p.from, p.to),
-          ...(like ? [or(sql`${pw.title} LIKE ${like} ESCAPE '\\'`, sql`${INTENT_SQL} LIKE ${like} ESCAPE '\\'`)!] : []),
+          // Every word, in the title or the intent.
+          ...words.map((like) => or(sql`${pw.title} LIKE ${like} ESCAPE '\\'`, sql`${INTENT_SQL} LIKE ${like} ESCAPE '\\'`)!),
+          ...(at ? [sql`(${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id}) <= (${at[0]}, ${at[1]}, ${at[2]})`] : []),
         ),
       )
-      .orderBy(desc(pw.effectiveDate), desc(pw.effectiveTime), pw.id)
-      .limit(limit + 1)
-      .offset(offset);
-    const page = sqlPage(rows, offset, limit);
-    const workouts = page.items.map((r) => ({
-      id: r.id,
-      date: r.date,
-      time: r.time,
-      minutes: typeof r.seconds === "number" && r.seconds > 0 ? Math.round(r.seconds / 60) : null,
-      status: STATUS_WORDS[r.state] ?? r.state,
-      ...(r.origin ? { origin: ORIGIN_WORDS[r.origin] ?? r.origin } : {}),
-      rev: r.rev,
-      title: untrusted(r.title),
-      intent: untrusted(typeof r.intent === "string" ? r.intent : ""),
-    }));
-    return answer({
+      .orderBy(desc(pw.effectiveDate), desc(pw.effectiveTime), desc(pw.id))
+      .limit(limit + 1);
+    return pagedAnswer({
       source: "the plan's document workouts",
       now: ctx.now,
-      missing: workouts.length === 0 && offset === 0 ? [`no document workouts from ${p.from} to ${p.to}${p.q ? ` matching "${p.q}"` : ""}`] : [],
-      data: { from: p.from, to: p.to, workouts, nextCursor: page.nextCursor },
-      summary: `Listed ${workouts.length} workouts from ${p.from} to ${p.to}${p.q ? " matching the search" : ""}`,
+      missing: rows.length === 0 && !at ? [`no document workouts from ${p.from} to ${p.to}${p.q ? ` matching "${p.q}"` : ""}`] : [],
+      rows,
+      limit,
+      render: (r) => ({
+        id: r.id,
+        date: r.date,
+        time: r.time,
+        minutes: typeof r.seconds === "number" && r.seconds > 0 ? Math.round(r.seconds / 60) : null,
+        status: STATUS_WORDS[r.state] ?? r.state,
+        ...(r.origin ? { origin: ORIGIN_WORDS[r.origin] ?? r.origin } : {}),
+        rev: r.rev,
+        title: untrusted(r.title),
+        intent: untrusted(typeof r.intent === "string" ? r.intent : ""),
+      }),
+      cursorOf: (r) => encodeCursor([r.date, r.time, r.id]),
+      data: (workouts) => ({ from: p.from, to: p.to, workouts }),
+      summary: (shown) => `Listed ${plural(shown, "workout")} from ${p.from} to ${p.to}${p.q ? " matching the search" : ""}`,
     });
   },
 };
@@ -126,22 +135,41 @@ export const listWorkouts: DesignTool = {
 
 const marked = (key: string, text: string | undefined): Record<string, Untrusted> => (text ? { [key]: untrusted(text) } : {});
 
+/** An id or vocabulary value as the document holds it: plain when it reads as one, marked when it does not. */
+const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+const idOr = (s: string): string | Untrusted => (ID.test(s) ? s : untrusted(s));
+/** A move id: plain when the library (or the COROS catalog) knows it, marked when it does not. */
+const moveId = (id: string): string | Untrusted => (knownMove(id) ? id : untrusted(id));
+
+/** A dose as it is, but the weight as the athlete typed it ("35 lb") marked. */
+function markDose(dose: WorkoutDose): Record<string, unknown> {
+  const { load, ...rest } = dose;
+  return { ...rest, ...(load === undefined ? {} : load === "bodyweight" ? { load } : { load: { typed: untrusted(load.typed), kg: load.kg } }) };
+}
+
 function markItem(item: WorkoutItem): Record<string, unknown> {
   switch (item.kind) {
     case "exercise":
       return {
         kind: item.kind,
-        libraryId: item.libraryId,
-        dose: item.dose,
+        libraryId: moveId(item.libraryId),
+        dose: markDose(item.dose),
         ...(item.side ? { side: item.side } : {}),
-        ...(item.test ? { test: item.test } : {}),
-        ...(item.alternates ? { alternates: item.alternates.map((a) => ({ libraryId: a.libraryId, ...marked("why", a.why) })) } : {}),
+        ...(item.test ? { test: item.test.keyResultId !== undefined ? { keyResultId: idOr(item.test.keyResultId) } : {} } : {}),
+        ...(item.alternates ? { alternates: item.alternates.map((a) => ({ libraryId: moveId(a.libraryId), ...marked("why", a.why) })) } : {}),
         ...marked("why", item.why),
         ...marked("progression", item.progression),
         ...marked("cue", item.cue),
       };
     case "free_exercise":
-      return { kind: item.kind, dose: item.dose, ...(item.coros ? { coros: item.coros } : {}), name: untrusted(item.name), ...marked("why", item.why), ...marked("cue", item.cue) };
+      return {
+        kind: item.kind,
+        dose: markDose(item.dose),
+        ...(item.coros ? { coros: item.coros.key !== undefined ? { key: idOr(item.coros.key) } : {} } : {}),
+        name: untrusted(item.name),
+        ...marked("why", item.why),
+        ...marked("cue", item.cue),
+      };
     case "run": {
       const { typed, ...target } = item.target;
       return { kind: item.kind, effort: item.effort, target: { ...target, ...marked("typed", typed) }, ...marked("why", item.why), ...marked("cue", item.cue) };
@@ -151,18 +179,31 @@ function markItem(item: WorkoutItem): Record<string, unknown> {
   }
 }
 
-/** The document with every word in it marked as data; its structure as it is. */
+/**
+ * The document as the model may read it: its structure and numbers as they are, every word marked, and every id or
+ * vocabulary value that is not plainly one marked too (the stored document passed its schema, which bounds lengths,
+ * not words).
+ */
 export function markedDoc(doc: WorkoutDoc): Record<string, unknown> {
+  const { setting, basedOn, source } = doc;
   return {
     title: untrusted(doc.title),
     intent: {
       summary: untrusted(doc.intent.summary),
       goals: doc.intent.goals,
-      focus: doc.intent.focus,
+      focus: doc.intent.focus.map(idOr),
       effort: doc.intent.effort,
-      ...(doc.intent.objectiveIds ? { objectiveIds: doc.intent.objectiveIds } : {}),
+      ...(doc.intent.objectiveIds ? { objectiveIds: doc.intent.objectiveIds.map(idOr) } : {}),
     },
-    ...(doc.setting ? { setting: doc.setting } : {}),
+    ...(setting
+      ? {
+          setting: {
+            ...(setting.placeId !== undefined ? { placeId: idOr(setting.placeId) } : {}),
+            ...(setting.equipment ? { equipment: setting.equipment.map(idOr) } : {}),
+            ...(setting.targetMinutes !== undefined ? { targetMinutes: setting.targetMinutes } : {}),
+          },
+        }
+      : {}),
     parts: doc.parts.map((part) => ({
       purpose: part.purpose,
       format: part.format,
@@ -171,8 +212,8 @@ export function markedDoc(doc: WorkoutDoc): Record<string, unknown> {
       ...marked("why", part.why),
       items: part.items.map(markItem),
     })),
-    source: doc.source,
-    ...(doc.basedOn ? { basedOn: doc.basedOn } : {}),
+    source: { kind: source.kind, ...marked("ref", source.ref) },
+    ...(basedOn ? { basedOn: { kind: basedOn.kind, id: idOr(basedOn.id), ...(basedOn.rev !== undefined ? { rev: basedOn.rev } : {}) } } : {}),
     ...marked("notes", doc.notes),
   };
 }
@@ -218,7 +259,7 @@ export const getWorkout: DesignTool = {
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
       { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit },
     )
-      .filter((e) => e.kind === "sessions")
+      .filter((e) => e.kind === "session")
       .map((e) => e.entry);
     const feedback = (rows.get("f") ?? [])
       .sort((x, y) => String(y.at).localeCompare(String(x.at)))
@@ -226,7 +267,7 @@ export const getWorkout: DesignTool = {
         date: f.date,
         question: f.q,
         ...(typeof f.num === "number" ? { value: f.num } : {}),
-        ...(typeof f.choice === "string" ? { choice: f.choice } : {}),
+        ...(typeof f.choice === "string" ? { choice: idOr(f.choice) } : {}),
         ...(typeof f.text === "string" && f.text.trim() ? { text: untrusted(f.text) } : {}),
         source: f.source,
       }));

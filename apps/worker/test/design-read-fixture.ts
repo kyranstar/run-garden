@@ -53,10 +53,12 @@ interface SeedIds {
   programId: string;
   /** Today's 18:00 Studio workout (a document, revision 2). */
   todayDocId: string;
-  /** A done Studio workout 4 days ago, with its session and feedback. */
+  /** A done Studio workout 3 days ago, with its session and feedback. */
   pastDocId: string;
   archivedDocId: string;
   outlineToday: string;
+  /** The app session 3 days ago (the one that did pastDocId, its strength activity's own record). */
+  sessionDay3: string;
 }
 
 /** The rich athlete. */
@@ -92,6 +94,8 @@ async function seedRows(db: Db, userId: string, tag: string): Promise<SeedIds> {
     focusAreas: [
       { id: "upper-back", label: t("Upper back"), refs: ["upper-back", "thoracic"], note: t("Stiff after long meetings") },
       { id: "calves", label: t("Calves"), refs: ["calves"] },
+      // A region and one of its own muscles: a set that trains both counts once.
+      { id: "mid-back", label: t("Mid-back"), refs: ["upper-back", "rhomboids"] },
     ],
     events: [
       { id: "ev-half", label: t("Spring half"), kind: "race", start: "2026-06-20", priority: "A", taper: true },
@@ -261,7 +265,7 @@ async function seedRows(db: Db, userId: string, tag: string): Promise<SeedIds> {
   });
   const answers = [
     answer({ q: "soreness", date: day(1), kind: "region", subject: "calves", num: 6, text: "Calves tight after the hills" }),
-    answer({ q: "soreness", date: day(1), kind: "region", subject: "hamstrings", num: 3 }),
+    answer({ q: "soreness", date: day(1), kind: "region", subject: "hamstrings", num: 3, hhmm: "07:59" }),
     answer({ q: "tightness", date: day(2), kind: "region", subject: "hips", num: 5, text: "Tight after the long drive" }),
     answer({ q: "pain", date: day(5), kind: "region", subject: "low-back", num: 2 }),
     answer({ q: "exercise_feedback", date: day(3), kind: "exercise", subject: "gobletSquat", choice: "loved", text: "Felt great", source: "session_post" }),
@@ -348,7 +352,7 @@ async function seedRows(db: Db, userId: string, tag: string): Promise<SeedIds> {
   ]);
   await db.insert(schema.exerciseProvenance).values({ id: newId(), userId, exerciseId: "deadBug", sourceType: "video", url: null, creator: null, createdAt: at(day(50)) });
 
-  return { placeId, gymId, programId, todayDocId, pastDocId, archivedDocId, outlineToday };
+  return { placeId, gymId, programId, todayDocId, pastDocId, archivedDocId, outlineToday, sessionDay3: day3.id };
 }
 
 const eqId = (id: string) => eq(schema.performedSessions.id, id);

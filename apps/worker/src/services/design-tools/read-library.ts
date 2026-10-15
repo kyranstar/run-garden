@@ -3,46 +3,42 @@
  *
  *  - search_library: the Studio's own search (`searchLibrary`, @rg/exercise-library: text tiers, then condition fit,
  *    then the athlete's lean) over the whole library, with the vocabulary filters, a place's gear, and "fits today".
- *    Each move: its card line, purposes, contraction, primary muscles, gear, difficulty, how it fits today with the
- *    reason (every switched-on profile against today's reading: the Studio's `fitToday` rule — fits even on a flare
- *    day · with care, within the profile's limits · not today), when the athlete last did it, how often in 30 days,
- *    whether they have done it cleanly (`isDoneCleanly`, the validator's unlock rule, over `doneStats`), and their
- *    rating and pin. Moves the athlete set aside ("not for me") are left out and counted. A move they saved from
- *    outside has its name marked. Two statements.
- *  - get_exercise: one record whole — how-to, dose, notes for the switched-on profiles, safety and today's fit,
- *    easier and harder by name — with the athlete's history: their rating, pin and set-aside, how many sessions, the
- *    last five sessions' sets, and their best. Three statements.
+ *    Each move: its card line, patterns, purposes, contraction, primary muscles, dose range, gear, difficulty, how it
+ *    fits today with the reason (the library's one `fitToday` rule, the Studio's too: every switched-on profile
+ *    against today's reading — fits even on a flare day · with care, within the profile's limits · not today), when
+ *    the athlete last did it, how often in 30 days, whether they have done it cleanly (`isDoneCleanly`, the
+ *    validator's unlock rule, over `doneStats`), and their rating and pin. Moves the athlete set aside ("not for me")
+ *    are left out and counted. A move they saved from outside has its name marked. A page that fits, paged by
+ *    position (the library does not change during a run). Two statements.
+ *  - get_exercise: one record — dose, notes for the switched-on profiles, safety and today's fit, easier and harder by
+ *    name; the how-to text only with `howTo` — with the athlete's history: their rating, pin and set-aside, how many
+ *    sessions, the last five sessions' sets, and their best. Three statements.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { exercisePrefs, exerciseProvenance, locations, performedSessions, performedSets } from "@rg/database";
 import { addDays } from "@rg/domain";
 import {
-  attrsOf,
   CONTRACTIONS,
   EQUIPMENT_IDS,
   EXERCISES,
+  FIT_RANK,
+  fitToday,
   hasEquipment,
   isDoneCleanly,
   LATERALITY,
   LOCATION_PRESETS,
-  MODE_IDS,
   MUSCLES,
   PATTERNS,
   POSITIONS,
   PURPOSES,
-  recordFlareSafe,
   REGIONS,
   ROLES,
   searchLibrary,
   TAGS,
   THEMES,
-  UNANSWERED,
-  type CheckReading,
-  type ConditionProfile,
   type ExerciseRecord,
   type LibraryFilters,
-  type Mode,
 } from "@rg/exercise-library";
 import { doneStats, safetyFor } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
@@ -51,15 +47,17 @@ import {
   answer,
   CURSOR_SCHEMA,
   cursorField,
+  encodeCursor,
   isErr,
   jsonList,
   limitField,
   limitSchema,
-  offsetOf,
-  pageOf,
+  offsetCursor,
+  pagedAnswer,
   parsedArray,
   parsedJson,
   parseInput,
+  plural,
   READ_ROLES,
   readAthlete,
   refuse,
@@ -71,41 +69,16 @@ import { movesOf, sessionRows, sessionsOnce, setRows } from "./read-sessions.js"
 
 const byId = new Map(EXERCISES.map((e) => [e.id, e]));
 
-// ── Today's fit (the Studio's rule, packages/ui/src/screens/studio/model.ts `fitToday`, on the server) ─────────────────
+/** Today's fit for the athlete: the library's one rule (`fitToday`, the Studio's list reads it too). */
+const fitFor = (rec: ExerciseRecord, athlete: Pick<Athlete, "profiles" | "readings">) => fitToday(rec, athlete.profiles, athlete.readings);
 
-export type FitState = "fits" | "care" | "not";
-const FIT_RANK: Record<FitState, number> = { fits: 0, care: 1, not: 2 };
+const DOSE_UNIT: Record<ExerciseRecord["dose"]["type"], string> = { reps: "reps", time: "s", breaths: "breaths", carry: "s carried" };
 
-function allowedIn(rec: ExerciseRecord, p: ConditionProfile, modes: readonly Mode[], r: CheckReading): boolean {
-  const a = attrsOf(rec, p)!;
-  return modes.some((m) => p.fitsMode(a, m) && rec.patterns.every((pt) => p.allowPattern(pt, m, r)) && (p.allowRecord?.(rec, m, r) ?? true));
-}
-
-function profileFit(rec: ExerciseRecord, p: ConditionProfile, r: CheckReading): { state: FitState; why: string } {
-  const a = attrsOf(rec, p);
-  if (!a || p.never(a)) return { state: "not", why: `${p.label} rules this move out.` };
-  const easy = p.flare(r) || r.feelingOff;
-  if (allowedIn(rec, p, easy ? ["recovery"] : MODE_IDS, r)) {
-    return recordFlareSafe(p, rec)
-      ? { state: "fits", why: `Safe for ${p.label}, even on a flare day.` }
-      : { state: "care", why: `Fine today, within ${p.label} limits.` };
-  }
-  const own = p.recordReason?.(rec, "build", r) ?? null;
-  if (own) return { state: "not", why: own };
-  const check = p.check.label.toLowerCase();
-  if (r.feelingOff) return { state: "not", why: "Not while feeling off." };
-  if (r.pre === null) return { state: "not", why: `Needs today's ${check} check.` };
-  return { state: "not", why: `Not with ${check} at ${r.pre} today.` };
-}
-
-/** The move against every switched-on profile for today's reading; null with no profile on. The worst profile decides. */
-export function fitToday(rec: ExerciseRecord, athlete: Pick<Athlete, "profiles" | "readings">): { state: FitState; why: string } | null {
-  let worst: { state: FitState; why: string } | null = null;
-  for (const p of athlete.profiles) {
-    const f = profileFit(rec, p, athlete.readings[p.id] ?? UNANSWERED);
-    if (!worst || FIT_RANK[f.state] > FIT_RANK[worst.state]) worst = f;
-  }
-  return worst;
+/** The record's dose as a range: "5–8 reps, 2–4 sets", "30–45 s". */
+function doseWords(dose: ExerciseRecord["dose"]): string {
+  const [lo, hi] = dose.range;
+  const sets = dose.sets ? `, ${dose.sets[0] === dose.sets[1] ? dose.sets[0] : `${dose.sets[0]}–${dose.sets[1]}`} sets` : "";
+  return `${lo === hi ? lo : `${lo}–${hi}`} ${DOSE_UNIT[dose.type]}${sets}`;
 }
 
 // ── The athlete's own marks on moves ────────────────────────────────────────────────────────────────────────────────
@@ -175,7 +148,8 @@ const enumSchema = (values: readonly string[]) => ({ type: "string", enum: [...v
 
 export const searchLibraryTool: DesignTool = {
   name: "search_library",
-  description: "Search the exercise library by text and filters, best match first: each move with purposes, contraction, muscles, gear, today's fit and the athlete's history with it.",
+  description:
+    "Search the exercise library by text and filters, best match first: each move with patterns, purposes, contraction, muscles, dose range, gear, today's fit and the athlete's history with it. Pages by position.",
   inputSchema: {
     type: "object",
     properties: {
@@ -210,6 +184,8 @@ export const searchLibraryTool: DesignTool = {
   async run(ctx, raw) {
     const p = parseInput(searchInput, raw, "optionally query, filters (the listed vocabulary), limit and cursor");
     if (isErr(p)) return p;
+    const offset = offsetCursor(p.cursor);
+    if (isErr(offset)) return offset;
     const f = p.filters ?? {};
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       movePrefs: PREFS_SQL(ctx.userId),
@@ -230,9 +206,9 @@ export const searchLibraryTool: DesignTool = {
     const saved = new Set(parsedArray(extra.saved).filter((x): x is string => typeof x === "string"));
     const done = await doneStats(ctx.db, ctx.userId, addDays(athlete.today, -29), athlete.today);
 
-    const fits = new Map<string, ReturnType<typeof fitToday>>();
+    const fits = new Map<string, ReturnType<typeof fitFor>>();
     const fitOf = (ex: ExerciseRecord) => {
-      if (!fits.has(ex.id)) fits.set(ex.id, fitToday(ex, athlete));
+      if (!fits.has(ex.id)) fits.set(ex.id, fitFor(ex, athlete));
       return fits.get(ex.id)!;
     };
     const { place: _place, fitToday: onlyFit, ...vocab } = f;
@@ -250,36 +226,42 @@ export const searchLibraryTool: DesignTool = {
     const matches = searchLibrary(EXERCISES, query, libFilters, ctxOf(false));
     const setAside = EXERCISES.filter((ex) => prefs.get(ex.id)?.excluded);
     const setAsideHidden = setAside.length ? searchLibrary(setAside, query, libFilters, ctxOf(true)).length : 0;
-    const page = pageOf(matches, offsetOf(p.cursor), p.limit ?? DEFAULT_LIMIT);
-    const moves = page.items.map((ex) => {
-      const d = done.get(ex.id);
-      const pr = prefs.get(ex.id);
-      const fit = fitOf(ex);
-      return {
-        id: ex.id,
-        name: nameOf(ex, saved),
-        summary: ex.text.summary,
-        purposes: ex.purposes,
-        contraction: ex.contraction,
-        muscles: ex.muscles.primary,
-        gear: gearWords(ex),
-        difficulty: ex.difficulty,
-        ...(fit ? { fit: fit.state, fitWhy: fit.why } : {}),
-        lastDone: d?.last ?? null,
-        done30d: d?.n30 ?? 0,
-        doneCleanly: isDoneCleanly(d ? { lastDate: d.last, logged: d.logged, flags: d.flags } : null, athlete.profiles),
-        ...(pr?.rating ? { rating: pr.rating } : {}),
-        ...(pr?.pinned ? { pinned: true } : {}),
-      };
-    });
-    const missing: string[] = [];
+    const limit = p.limit ?? DEFAULT_LIMIT;
+    const missing: string[] = [...athlete.missing];
     if (matches.length === 0) missing.push(`no move matches${query ? ` "${query}"` : ""} with these filters`);
-    return answer({
+    // Paged by position: the library and the athlete's marks on it do not change during a run.
+    return pagedAnswer({
       source: "the exercise library, today's condition checks and the athlete's logged sets and exercise preferences",
       now: ctx.now,
       missing,
-      data: { query, matched: matches.length, setAsideHidden, moves, nextCursor: page.nextCursor },
-      summary: `Searched the library${query ? ` for "${query}"` : ""} — ${matches.length} moves`,
+      rows: matches.slice(offset, offset + limit + 1),
+      limit,
+      render: (ex) => {
+        const d = done.get(ex.id);
+        const pr = prefs.get(ex.id);
+        const fit = fitOf(ex);
+        return {
+          id: ex.id,
+          name: nameOf(ex, saved),
+          summary: ex.text.summary,
+          patterns: ex.patterns,
+          purposes: ex.purposes,
+          contraction: ex.contraction,
+          muscles: ex.muscles.primary,
+          dose: doseWords(ex.dose),
+          gear: gearWords(ex),
+          difficulty: ex.difficulty,
+          ...(fit ? { fit: fit.state, fitWhy: fit.reason } : {}),
+          lastDone: d?.last ?? null,
+          done30d: d?.n30 ?? 0,
+          doneCleanly: isDoneCleanly(d ? { lastDate: d.last, logged: d.logged, flags: d.flags } : null, athlete.profiles),
+          ...(pr?.rating ? { rating: pr.rating } : {}),
+          ...(pr?.pinned ? { pinned: true } : {}),
+        };
+      },
+      cursorOf: (_ex, i) => encodeCursor([offset + i]),
+      data: (moves) => ({ query, matched: matches.length, setAsideHidden, moves }),
+      summary: () => `Searched the library${query ? ` for "${query}"` : ""} — ${plural(matches.length, "move")}`,
     });
   },
 };
@@ -290,21 +272,25 @@ const RECENT_SESSIONS = 5;
 /** Sessions read for the recent list: room for a watch copy of a session the athlete also logged. */
 const RECENT_READ = 8;
 
-const exerciseInput = z.object({ id: z.string().min(1).max(80) }).strict();
+const exerciseInput = z.object({ id: z.string().min(1).max(80), howTo: z.boolean().optional() }).strict();
 
 export const getExercise: DesignTool = {
   name: "get_exercise",
-  description: "One library move whole — how-to, dose, condition notes, safety and today's fit, easier and harder moves — with the athlete's history and best.",
+  description:
+    "One library move whole — dose, condition notes, safety and today's fit, easier and harder moves — with the athlete's history and best; its how-to text only when asked.",
   inputSchema: {
     type: "object",
-    properties: { id: { type: "string", description: "A library id from search_library." } },
+    properties: {
+      id: { type: "string", description: "A library id from search_library." },
+      howTo: { type: "boolean", description: "Also the how-to: setup, steps, focus, mistakes, breathing, why. Default: the one-line summary only." },
+    },
     required: ["id"],
     additionalProperties: false,
   },
   statementCost: 3,
   roles: READ_ROLES,
   async run(ctx, raw) {
-    const p = parseInput(exerciseInput, raw, "a library id");
+    const p = parseInput(exerciseInput, raw, "a library id, and optionally howTo");
     if (isErr(p)) return p;
     const ex = byId.get(p.id) ?? EXERCISES.find((e) => e.legacyIds.includes(p.id));
     if (!ex) return refuse("not_found", `The library has no move with id ${JSON.stringify(p.id)}.`, "Use an id from search_library.");
@@ -353,11 +339,11 @@ export const getExercise: DesignTool = {
     else if (totals.reps) best.push(`most reps ${totals.reps}`);
     if ((ex.dose.type === "time" || ex.dose.type === "carry") && totals.secs) best.push(`longest ${totals.secs} s`);
     const d = done.get(ex.id);
-    const fit = fitToday(ex, athlete);
-    const { conditions: notes, ...text } = ex.text;
+    const fit = fitFor(ex, athlete);
+    const { conditions: notes, ...howTo } = ex.text;
     const named = (list: readonly string[]) => list.flatMap((id) => (byId.has(id) ? [{ id, name: byId.get(id)!.name }] : []));
 
-    const missing: string[] = [];
+    const missing: string[] = [...athlete.missing];
     if (!totals.sessions) missing.push("the athlete has not logged this move");
     return answer({
       source: "the exercise library, today's condition checks and the athlete's logged sets and exercise preferences",
@@ -381,7 +367,8 @@ export const getExercise: DesignTool = {
         difficulty: ex.difficulty,
         tags: ex.tags,
         safety: Object.fromEntries(athlete.profiles.map((pr) => [pr.id, safetyFor(pr, ex)])),
-        ...(fit ? { fit: fit.state, fitWhy: fit.why } : {}),
+        ...(fit ? { fit: fit.state, fitWhy: fit.reason } : {}),
+        summary: ex.text.summary,
         conditionNotes: athlete.profiles.flatMap((pr) => (notes[pr.id] ? [{ profile: pr.label, note: notes[pr.id] }] : [])),
         easier: named(ex.easier),
         harder: named(ex.harder),
@@ -398,9 +385,9 @@ export const getExercise: DesignTool = {
           best: best.length ? best.join("; ") : null,
           recent,
         },
-        text,
+        ...(p.howTo ? { howTo } : {}),
       },
-      summary: `Read ${ex.name}${totals.sessions ? ` and ${totals.sessions} sessions of history` : ""}`,
+      summary: `Read ${ex.name}${totals.sessions ? ` and ${plural(totals.sessions, "session")} of history` : ""}`,
     });
   },
 };

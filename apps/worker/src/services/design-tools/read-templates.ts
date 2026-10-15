@@ -12,19 +12,20 @@ import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import type { DesignTool } from "./types.js";
 import {
-  answer,
   CURSOR_SCHEMA,
   cursorField,
+  encodeCursor,
   isErr,
   limitField,
   limitSchema,
   localDateOf,
-  offsetOf,
+  offsetCursor,
+  pagedAnswer,
   parsedArray,
   parseInput,
+  plural,
   READ_ROLES,
   readAthlete,
-  sqlPage,
   untrusted,
 } from "./read-common.js";
 
@@ -35,7 +36,7 @@ const input = z.object({ limit: limitField(MAX_LIMIT).optional(), cursor: cursor
 
 export const listTemplates: DesignTool = {
   name: "list_templates",
-  description: "The athlete's saved workouts, pinned and most used first: name, minutes, discipline and intent.",
+  description: "The athlete's saved workouts, pinned and most used first: name, minutes, discipline and intent. Pages by position.",
   inputSchema: {
     type: "object",
     properties: { limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },
@@ -46,7 +47,9 @@ export const listTemplates: DesignTool = {
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally limit and cursor");
     if (isErr(p)) return p;
-    const offset = offsetOf(p.cursor);
+    // Paged by position: a run never writes templates, so nothing shifts between pages.
+    const offset = offsetCursor(p.cursor);
+    if (isErr(offset)) return offset;
     const limit = p.limit ?? DEFAULT_LIMIT;
     const t = workoutTemplates;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
@@ -66,27 +69,29 @@ export const listTemplates: DesignTool = {
         String(a.name).localeCompare(String(b.name)) ||
         String(a.id).localeCompare(String(b.id)),
     );
-    const page = sqlPage(rows, offset, limit);
-    const templates = page.items.map((r) => {
-      const doc = parseStoredWorkoutDoc(r.doc);
-      const derived = doc ? deriveDoc(doc, EXERCISES) : null;
-      return {
-        id: r.id,
-        minutes: derived?.estimatedMinutes ?? null,
-        discipline: derived?.discipline ?? null,
-        pinned: r.pinned === 1,
-        uses: typeof r.uses === "number" ? r.uses : 0,
-        lastUsed: localDateOf(athlete.tz, r.lastUsedAt),
-        name: untrusted(typeof r.name === "string" ? r.name : ""),
-        ...(doc ? { intent: untrusted(doc.intent.summary) } : {}),
-      };
-    });
-    return answer({
+    return pagedAnswer({
       source: "the athlete's saved templates",
       now: ctx.now,
-      missing: templates.length === 0 && offset === 0 ? ["no saved templates"] : [],
-      data: { templates, nextCursor: page.nextCursor },
-      summary: templates.length ? `Listed ${templates.length} saved templates` : "No saved templates",
+      missing: [...athlete.missing, ...(rows.length === 0 && offset === 0 ? ["no saved templates"] : [])],
+      rows,
+      limit,
+      render: (r) => {
+        const doc = parseStoredWorkoutDoc(r.doc);
+        const derived = doc ? deriveDoc(doc, EXERCISES) : null;
+        return {
+          id: r.id,
+          minutes: derived?.estimatedMinutes ?? null,
+          discipline: derived?.discipline ?? null,
+          pinned: r.pinned === 1,
+          uses: typeof r.uses === "number" ? r.uses : 0,
+          lastUsed: localDateOf(athlete.tz, r.lastUsedAt),
+          name: untrusted(typeof r.name === "string" ? r.name : ""),
+          ...(doc ? { intent: untrusted(doc.intent.summary) } : {}),
+        };
+      },
+      cursorOf: (_r, i) => encodeCursor([offset + i]),
+      data: (templates) => ({ templates }),
+      summary: (shown) => (rows.length ? `Listed ${plural(shown, "saved template")}` : "No saved templates"),
     });
   },
 };

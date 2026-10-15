@@ -2,27 +2,29 @@
  * read_proposals(status?) — past proposals and how each ended (Stage 3 spec §4, §8): newest first, with the day it
  * was made, its status (pending, approved, declined, superseded, expired) and the day it was resolved, and what it
  * proposed — each change's kind, day and, for a designed workout, its title. A rehearsal (the live scenario suite) is
- * never one of them. The title, rationale and a designed workout's title are a past run's words: marked. One
- * statement: the athlete with one page of proposals.
+ * never one of them. The title, rationale and a designed workout's title are a past run's words: marked. A page that
+ * fits, paged by key. One statement: the athlete with one page of proposals.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
+import { isLocalDate } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
-  answer,
   CURSOR_SCHEMA,
   cursorField,
+  encodeCursor,
   isErr,
+  keyCursor,
   limitField,
   limitSchema,
   localDateOf,
-  offsetOf,
+  pagedAnswer,
   parsedArray,
   parseInput,
+  plural,
   READ_ROLES,
   readAthlete,
-  sqlPage,
   untrusted,
   untrustedOrNull,
 } from "./read-common.js";
@@ -48,7 +50,9 @@ export const readProposals: DesignTool = {
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally status, limit and cursor");
     if (isErr(p)) return p;
-    const offset = offsetOf(p.cursor);
+    // A page starts at its cursor's proposal (made, id; newest first), so one the run proposes meanwhile never shifts it.
+    const at = keyCursor(p.cursor, 2);
+    if (isErr(at)) return at;
     const limit = p.limit ?? DEFAULT_LIMIT;
     const c = coachProposals;
     const op = (path: string) => sql.raw(`json_extract(o.value, '${path}')`);
@@ -61,36 +65,40 @@ export const readProposals: DesignTool = {
               'title', ${op("$.doc.title")}))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}
-          order by ${c.createdAt} desc, ${c.id} limit ${limit + 1} offset ${offset}))`,
+            ${at ? sql`and (${c.createdAt}, ${c.id}) <= (${at[0]}, ${at[1]})` : sql``}
+          order by ${c.createdAt} desc, ${c.id} desc limit ${limit + 1}))`,
     });
+    // The page's own order (an aggregate's input order is SQLite's to choose).
     const rows = (parsedArray(extra.proposals) as Array<Record<string, unknown>>).sort(
-      (a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(a.id).localeCompare(String(b.id)),
+      (a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(b.id).localeCompare(String(a.id)),
     );
-    const page = sqlPage(rows, offset, limit);
-    const proposals = page.items.map((r) => {
-      const ops = parsedArray(r.ops).map((o) => o as Record<string, unknown>);
-      const rationale = untrustedOrNull(r.rationale);
-      return {
-        id: r.id,
-        created: localDateOf(athlete.tz, r.createdAt),
-        status: r.status,
-        resolved: localDateOf(athlete.tz, r.resolvedAt),
-        ops: ops.slice(0, OPS_SHOWN).map((o) => ({
-          kind: typeof o.kind === "string" ? o.kind : "unknown",
-          ...(typeof o.date === "string" ? { date: o.date } : {}),
-          ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),
-        })),
-        ...(ops.length > OPS_SHOWN ? { moreOps: ops.length - OPS_SHOWN } : {}),
-        title: untrusted(typeof r.title === "string" ? r.title : ""),
-        ...(rationale ? { rationale } : {}),
-      };
-    });
-    return answer({
+    return pagedAnswer({
       source: "the coach's proposals and how the athlete resolved them",
       now: ctx.now,
-      missing: proposals.length === 0 && offset === 0 ? [p.status ? `no ${p.status} proposals` : "no proposals yet"] : [],
-      data: { proposals, nextCursor: page.nextCursor },
-      summary: proposals.length ? `Read ${proposals.length} past proposals` : "No past proposals",
+      missing: [...athlete.missing, ...(rows.length === 0 && !at ? [p.status ? `no ${p.status} proposals` : "no proposals yet"] : [])],
+      rows,
+      limit,
+      render: (r) => {
+        const ops = parsedArray(r.ops).map((o) => o as Record<string, unknown>);
+        const rationale = untrustedOrNull(r.rationale);
+        return {
+          id: r.id,
+          created: localDateOf(athlete.tz, r.createdAt),
+          status: r.status,
+          resolved: localDateOf(athlete.tz, r.resolvedAt),
+          ops: ops.slice(0, OPS_SHOWN).map((o) => ({
+            kind: typeof o.kind === "string" ? o.kind : "unknown",
+            ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date } : {}),
+            ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),
+          })),
+          ...(ops.length > OPS_SHOWN ? { moreOps: ops.length - OPS_SHOWN } : {}),
+          title: untrusted(typeof r.title === "string" ? r.title : ""),
+          ...(rationale ? { rationale } : {}),
+        };
+      },
+      cursorOf: (r) => encodeCursor([String(r.createdAt), String(r.id)]),
+      data: (proposals) => ({ proposals }),
+      summary: (shown) => (rows.length ? `Read ${plural(shown, "past proposal")}` : "No past proposals"),
     });
   },
 };

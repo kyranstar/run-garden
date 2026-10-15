@@ -17,17 +17,18 @@ import { KEY_RESULT_UNITS, keyResultMeasureSchema, type KeyResultMeasure, type K
 import { measureKeyResults } from "../key-result-measures.js";
 import type { DesignTool } from "./types.js";
 import {
-  answer,
   CURSOR_SCHEMA,
   cursorField,
+  encodeCursor,
   isErr,
   limitField,
   limitSchema,
-  offsetOf,
-  pageOf,
+  offsetCursor,
+  pagedAnswer,
   parsedArray,
   parsedJson,
   parseInput,
+  plural,
   READ_ROLES,
   readAthlete,
   untrusted,
@@ -73,7 +74,8 @@ const nOrNull = (v: unknown): number | null => (typeof v === "number" && Number.
 
 export const readObjectives: DesignTool = {
   name: "read_objectives",
-  description: "Objectives (active first) and their key results, each measured from logged data: current value, target, recent points and how good the evidence is.",
+  description:
+    "Objectives (active first) and their key results, each measured from logged data: current value, target, recent points and how good the evidence is. Pages by position.",
   inputSchema: {
     type: "object",
     properties: { limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },
@@ -84,6 +86,8 @@ export const readObjectives: DesignTool = {
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally limit and cursor");
     if (isErr(p)) return p;
+    const offset = offsetCursor(p.cursor);
+    if (isErr(offset)) return offset;
     const o = objectives;
     const k = keyResults;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
@@ -102,8 +106,10 @@ export const readObjectives: DesignTool = {
         String(a.createdAt).localeCompare(String(b.createdAt)) ||
         String(a.id).localeCompare(String(b.id)),
     );
-    const page = pageOf(all, offsetOf(p.cursor), p.limit ?? DEFAULT_LIMIT);
-    const onPage = new Set(page.items.map((x) => s(x.id)));
+    const limit = p.limit ?? DEFAULT_LIMIT;
+    // Paged by position: a run never writes objectives, so nothing shifts between pages.
+    const candidates = all.slice(offset, offset + limit + 1);
+    const onPage = new Set(candidates.slice(0, limit).map((x) => s(x.id)));
     const krs = (parsedArray(extra.keyResults) as Row[])
       .filter((x) => onPage.has(s(x.objectiveId)))
       .sort((a, b) => (nOrNull(a.position) ?? 0) - (nOrNull(b.position) ?? 0) || String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.id).localeCompare(String(b.id)))
@@ -118,9 +124,9 @@ export const readObjectives: DesignTool = {
       : [];
     const byKr = new Map(measurable.map((x, i) => [x.row, progress[i]!]));
 
-    const missing: string[] = [];
+    const missing: string[] = [...athlete.missing];
     if (all.length === 0) missing.push("no objectives recorded");
-    const data = page.items.map((obj) => {
+    const render = (obj: Row) => {
       const goals = parsedArray(parsedJson(obj.goals)).filter((g): g is string => typeof g === "string");
       const why = untrustedOrNull(obj.why);
       return {
@@ -151,13 +157,17 @@ export const readObjectives: DesignTool = {
             };
           }),
       };
-    });
-    return answer({
+    };
+    return pagedAnswer({
       source: "the athlete's objectives and key results, measured from logged sessions, runs and the watch's threshold pace",
       now: ctx.now,
       missing,
-      data: { objectives: data, nextCursor: page.nextCursor },
-      summary: all.length ? `Read ${data.length} objectives and their progress` : "No objectives recorded",
+      rows: candidates,
+      limit,
+      render,
+      cursorOf: (_obj, i) => encodeCursor([offset + i]),
+      data: (objectives) => ({ objectives }),
+      summary: (shown) => (all.length ? `Read ${plural(shown, "objective")} and their progress` : "No objectives recorded"),
     });
   },
 };
