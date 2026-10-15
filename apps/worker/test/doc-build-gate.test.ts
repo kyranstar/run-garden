@@ -458,7 +458,7 @@ describe("a part played in rounds (Stage 2 whole-branch I-1)", () => {
     const spliced = Swapping.splice(made.build.steps, "core:0", options[0]!.steps);
     const alt = options[0]!.id;
     expect(spliced.filter((s) => s.kind !== "rest").map((s) => s.exerciseId)).toEqual([alt, "birdDog", alt, "birdDog", alt, "birdDog"]);
-    expect(DOC_BUILD_VERSION).toBe("doc-build-5");
+    expect(DOC_BUILD_VERSION).toBe("doc-build-6");
   });
 });
 
