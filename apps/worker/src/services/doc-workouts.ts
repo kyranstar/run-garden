@@ -47,7 +47,7 @@ import { restoreInProgress } from "./account-state.js";
 import { runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
-import { defaultPlace, namedPlace } from "./default-place.js";
+import { placeOrDefault } from "./default-place.js";
 import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
 import { bookedSeconds, pushJobId, sentBuildIdOf, slotChecks } from "./session-build.js";
@@ -235,8 +235,8 @@ export function recentOf(sessions: readonly HistorySession[], today: string): { 
  * What a document for `date` is validated with: the active profiles, the day's reading (the row's own pre-check and
  * the day's checks, as its session sheet reads them — none for a day ahead), what was done cleanly and the recent
  * sessions, the moves set aside, and the gear of the place the document names, by default-place.ts's one rule (as its
- * build and the coach's validate_workout read it): one of the athlete's places, a preset, or "No equipment" (a bare
- * room's own props); none named, the athlete's default place; an id that is no place: not checked. One statement.
+ * build reads it, `placeOrDefault`): one of the athlete's places, a preset, or "No equipment" (a bare room's own
+ * props); none named, or one deleted since, the athlete's default place.
  */
 export async function docDayContext(
   db: Db,
@@ -245,7 +245,7 @@ export async function docDayContext(
 ): Promise<ValidateCtx> {
   const [{ active, profiles, excluded }, place, history] = await Promise.all([
     profilesAndSetAside(db, userId),
-    o.placeId ? namedPlace(db, userId, o.placeId) : defaultPlace(db, userId),
+    placeOrDefault(db, userId, o.placeId),
     loadBuildHistory(db, userId, o.today, null),
   ]);
   const checks = o.date <= o.today && active.length > 0 ? await slotChecks(db, userId, o.workoutId, o.date, o.today, active) : {};
@@ -260,7 +260,7 @@ export async function docDayContext(
       recent: recentOf(history.sessions, o.today),
     },
     excluded,
-    ...(place ? { equipment: [...place.equipment] } : {}),
+    equipment: [...place.equipment],
   };
 }
 

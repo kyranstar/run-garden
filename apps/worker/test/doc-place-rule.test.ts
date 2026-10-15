@@ -114,6 +114,13 @@ describe("the Studio's save and the coach's validate_workout judge gear at the s
     }
   });
 
+  it("a place deleted since is the default place on save, as in the build — the save never skips the gear check (lead M1)", async () => {
+    const moves = ["gobletSquat", "wallAngels", "bwSplitSquat"];
+    const atDefault = await saveGear(rich.userId, moves);
+    expect(atDefault).toHaveLength(1);
+    expect(await saveGear(rich.userId, moves, "a-place-deleted-since")).toEqual(atDefault);
+  });
+
   it("the profile's chosen default place is the default for the save, the coach and the engine alike", async () => {
     // The Gym, chosen in the profile, though the Garage is the place marked default.
     expect(await coachGear(chose.userId, ["gobletSquat"])).toEqual([]);

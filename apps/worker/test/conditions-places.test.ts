@@ -21,6 +21,7 @@ import { settingsRoutes } from "../src/routes/misc.js";
 import { listConditions, setCondition } from "../src/services/user-conditions.js";
 import { createPlace, deletePlace, listPlaces, PlaceInUseError, PlaceNotFoundError, updatePlace } from "../src/services/places.js";
 import { RestoreInProgressError } from "../src/services/programs.js";
+import { loadProfile, updateProfile } from "../src/services/profile.js";
 import { loadEngineContext } from "../src/services/engine-inputs.js";
 import { todayConditions } from "../src/services/condition-views.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
@@ -175,6 +176,42 @@ describe("places and equipment", () => {
     ]);
     await updatePlace(db, userId, gym, { isDefault: true }, T2);
     expect((await listPlaces(db, userId)).map((p) => [p.name, p.isDefault])).toEqual([["Gym", true], ["Home", false]]);
+  });
+
+  it("the default place is one setting with the profile's choice: marking one writes it there, deleting the place it names clears it (lead M2)", async () => {
+    await updateProfile(db, userId, { preferences: { trainingDays: [1] } }, T0);
+    const chosen = async () => (await loadProfile(db, userId)).preferences.defaultPlaceId;
+    const home = await createPlace(db, userId, { name: "Home", equipment: ["mat"] }, T0);
+    // The first place is the default, so it is the profile's too.
+    expect(await chosen()).toBe(home);
+    const gym = await createPlace(db, userId, { name: "Gym", equipment: ["mat", "kettlebell"] }, T1);
+    expect(await chosen()).toBe(home);
+    // Marked default in Settings: one request, every write in one batch.
+    statements.length = 0;
+    await updatePlace(db, userId, gym, { isDefault: true }, T2);
+    expect(statements.filter(isWrite)).toHaveLength(3);
+    expect(statements.length).toBeLessThanOrEqual(8);
+    expect(await chosen()).toBe(gym);
+    expect((await loadEngineContext(db, userId, null, {})).location.id).toBe(gym);
+    const studio = await createPlace(db, userId, { name: "Studio", equipment: ["mat"], isDefault: true }, T2);
+    expect(await chosen()).toBe(studio);
+    // The profile's place deleted: its choice goes; the place marked default next is the default.
+    await deletePlace(db, userId, studio);
+    expect(await chosen()).toBeUndefined();
+    expect((await db.select().from(schema.athleteProfiles).where(eq(schema.athleteProfiles.userId, userId)))[0]!.preferences).toEqual({ trainingDays: [1] });
+    const next = (await listPlaces(db, userId)).find((p) => p.isDefault)!.id;
+    expect((await loadEngineContext(db, userId, null, {})).location.id).toBe(next);
+    // Deleting a place the profile does not name leaves its choice be.
+    await updatePlace(db, userId, gym, { isDefault: true }, T2);
+    await deletePlace(db, userId, home);
+    expect(await chosen()).toBe(gym);
+  });
+
+  it("the profile choosing its default place marks that place default too (lead M2)", async () => {
+    const home = await createPlace(db, userId, { name: "Home", equipment: ["mat"] }, T0);
+    const gym = await createPlace(db, userId, { name: "Gym", equipment: ["mat", "kettlebell"] }, T1);
+    await updateProfile(db, userId, { preferences: { defaultPlaceId: gym } }, T2);
+    expect((await listPlaces(db, userId)).map((p) => [p.id, p.isDefault])).toEqual([[gym, true], [home, false]]);
   });
 
   it("Review Focus 3: an implement list is stored exactly as typed, and the build reads each weight in its own unit", async () => {

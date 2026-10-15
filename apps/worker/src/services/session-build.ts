@@ -1588,7 +1588,9 @@ async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: B
   if (!snapshot) return null;
   const profiles = await activeProfilesOf(db, userId);
   const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, profiles);
-  // "No equipment" is the room's props here too: what ⇄ may offer is judged with them alone (a named place's is not read again).
+  // "No equipment" is the room's props here too. Gear the place lacks is a warning, so it never refuses Start (the
+  // snapshot's errors alone do); it takes off an offer that needs more (an offer is only ever a clean one) and adds the
+  // cost to a planned alternate's reasons (`slotsForDay`). A named place's gear is not read again.
   const bare = snapshot.setting?.placeId === NO_EQUIPMENT.id;
   const day = dayValidateCtx({ profiles, checks, date: row.effectiveDate, today, ...(bare ? { equipment: NO_EQUIPMENT.equipment } : {}) });
   const errors = snapshotErrors(snapshot, day);

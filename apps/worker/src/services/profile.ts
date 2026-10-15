@@ -27,8 +27,8 @@ import {
 import { MUSCLES, REGIONS } from "@rg/exercise-library";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
-import type { Db } from "./db.js";
-import { listPlaces } from "./places.js";
+import { runAtomically, type Db } from "./db.js";
+import { listPlaces, markDefault } from "./places.js";
 import { RestoreInProgressError } from "./programs.js";
 import { listConditions } from "./user-conditions.js";
 
@@ -152,7 +152,7 @@ export async function updateProfile(db: Db, userId: string, input: unknown, now:
     ...(p.preferences !== undefined ? { preferences: p.preferences } : {}),
     updatedAt: now,
   };
-  await db
+  const upsert = db
     .insert(athleteProfiles)
     .values({
       id: userId,
@@ -165,5 +165,8 @@ export async function updateProfile(db: Db, userId: string, input: unknown, now:
     })
     // One profile per account: the unique user_id holds it, whatever id an older or restored row carries.
     .onConflictDoUpdate({ target: athleteProfiles.userId, set: changed });
+  // A default place chosen here is the place marked default too: one setting (places.ts).
+  if (placeId !== undefined) await runAtomically(db, [upsert, ...markDefault(db, userId, placeId, now)]);
+  else await upsert;
   return loadProfile(db, userId);
 }

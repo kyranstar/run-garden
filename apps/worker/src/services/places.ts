@@ -8,13 +8,16 @@
  * toggling Weights never changes what it means (Audit 2c-A MINOR-4). A list for gear the place does not have is not
  * kept, and an empty one is no list.
  *
- * One place is the default: the first one made, or the one last marked; deleting it promotes the oldest other.
- * A place an active program builds at (`config.defaultLocationId`) cannot be deleted. Every write is refused while a
+ * One place is the default: the first one made, or the one last marked; deleting it promotes the oldest other. It is
+ * one setting with the profile's `preferences.defaultPlaceId` (which default-place.ts reads first): marking a place
+ * the default writes it there too, and deleting the place it names clears it (the place marked default is then the
+ * default); the profile choosing one marks it (`markDefault`). A place an active program builds at
+ * (`config.defaultLocationId`) cannot be deleted. Every write is refused while a
  * restore is replacing the account (ruling B2), and each one that touches two rows lands as one transaction.
  */
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import { locations, programs } from "@rg/database";
+import { athleteProfiles, locations, programs } from "@rg/database";
 import { formatWeight, newId, weightListProblem, withWeightUnit, type Weight, type WeightUnit } from "@rg/domain";
 import { EQUIPMENT_IDS, LOAD_IMPLEMENTS } from "@rg/exercise-library";
 import { restoreInProgress } from "./account-state.js";
@@ -145,6 +148,32 @@ const clearOtherDefaults = (db: Db, userId: string, keep: string, now: string): 
     .set({ isDefault: false, updatedAt: now })
     .where(and(eq(locations.userId, userId), ne(locations.id, keep), eq(locations.isDefault, true)));
 
+/** The profile's chosen default place is `id` too (one setting); a profile not yet made, or unreadable, is left be. */
+const profileChooses = (db: Db, userId: string, id: string): AtomicStatement =>
+  db
+    .update(athleteProfiles)
+    .set({ preferences: sql`json_set(${athleteProfiles.preferences}, '$.defaultPlaceId', ${id})` })
+    .where(and(eq(athleteProfiles.userId, userId), sql`json_valid(${athleteProfiles.preferences})`));
+
+/** The place `id` is gone: the profile no longer chooses it (the place marked default is then the default). */
+const profileForgets = (db: Db, userId: string, id: string): AtomicStatement =>
+  db
+    .update(athleteProfiles)
+    .set({ preferences: sql`json_remove(${athleteProfiles.preferences}, '$.defaultPlaceId')` })
+    .where(
+      and(
+        eq(athleteProfiles.userId, userId),
+        sql`json_valid(${athleteProfiles.preferences})`,
+        sql`json_extract(${athleteProfiles.preferences}, '$.defaultPlaceId') = ${id}`,
+      ),
+    );
+
+/** The profile chose `id` as its default place: it is the place marked default too, and no other is. */
+export const markDefault = (db: Db, userId: string, id: string, now: string): AtomicStatement[] => [
+  db.update(locations).set({ isDefault: true, updatedAt: now }).where(and(eq(locations.id, id), eq(locations.userId, userId))),
+  clearOtherDefaults(db, userId, id, now),
+];
+
 export async function createPlace(db: Db, userId: string, input: PlaceCreate, now: string): Promise<string> {
   const p = placeCreateSchema.parse(input);
   await refuseWhileRestoring(db, userId);
@@ -164,6 +193,7 @@ export async function createPlace(db: Db, userId: string, input: PlaceCreate, no
     }),
   ];
   if (isDefault && any) statements.push(clearOtherDefaults(db, userId, id, now));
+  if (isDefault) statements.push(profileChooses(db, userId, id));
   await runAtomically(db, statements);
   return id;
 }
@@ -186,7 +216,7 @@ export async function updatePlace(db: Db, userId: string, id: string, input: Pla
       })
       .where(and(eq(locations.id, id), eq(locations.userId, userId))),
   ];
-  if (p.isDefault) statements.push(clearOtherDefaults(db, userId, id, now));
+  if (p.isDefault) statements.push(clearOtherDefaults(db, userId, id, now), profileChooses(db, userId, id));
   await runAtomically(db, statements);
 }
 
@@ -206,7 +236,10 @@ export async function deletePlace(db: Db, userId: string, id: string): Promise<v
   const row = await ownRow(db, userId, id);
   const program = await programAt(db, userId, id);
   if (program) throw new PlaceInUseError(program);
-  const statements: AtomicStatement[] = [db.delete(locations).where(and(eq(locations.id, id), eq(locations.userId, userId)))];
+  const statements: AtomicStatement[] = [
+    db.delete(locations).where(and(eq(locations.id, id), eq(locations.userId, userId))),
+    profileForgets(db, userId, id),
+  ];
   if (row.isDefault) {
     const [next] = await db
       .select({ id: locations.id })

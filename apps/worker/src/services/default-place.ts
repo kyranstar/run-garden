@@ -92,6 +92,14 @@ export async function defaultPlace(db: Db, userId: string): Promise<PlaceGear> {
   return defaultFromRow(row?.place ?? null);
 }
 
+/**
+ * A workout document's place, as its save (`docDayContext`) and its build (`loadDocEngineContext`) read it: the place
+ * it names, else — none named, or one deleted since — the default. One statement; two for an id that is no place.
+ */
+export async function placeOrDefault(db: Db, userId: string, id: string | undefined): Promise<PlaceGear> {
+  return (id ? await namedPlace(db, userId, id) : null) ?? defaultPlace(db, userId);
+}
+
 /** A named place (see the module comment), or null when the id is none. One statement. */
 export async function namedPlace(db: Db, userId: string, id: string): Promise<PlaceGear | null> {
   const [row] = (await db.all(sql`select ${ownPlaceSql(userId, id)} as place`)) as Array<{ place: unknown }>;
