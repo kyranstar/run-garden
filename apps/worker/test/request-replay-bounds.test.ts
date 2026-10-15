@@ -28,7 +28,7 @@ import { coachRoutes } from "../src/routes/coach.js";
 import { CRON_GARDEN_MAX_DAYS, REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import { advanceGarden, ensureGarden, recordReplayFrom, resimulateFrom } from "../src/services/garden-sync.js";
 import { recordChunk } from "../src/services/backfill.js";
-import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes, untilDone } from "./helpers.js";
 import { gardenTimeline, replayMarker } from "./garden-compare.js";
 
 const CAP = REQUEST_REPLAY_MAX_DAYS;
@@ -329,7 +329,11 @@ describe("a request walks at most REQUEST_REPLAY_MAX_DAYS of garden, whatever is
     await match![1](reference);
     const garden = (db: Db) => mountRoutes(db, "/api/garden", gardenRoutes).request("/api/garden", { headers: { Cookie: w.cookie } }, ENV);
     // The match leaves the rest of its replay on record; one uncapped walk finishes it, then the page's own heals.
-    while ((await replayMarker(reference, w.userId)) !== null) await advanceGarden(reference, w.userId, w.prefs);
+    await untilDone(async () => {
+      if ((await replayMarker(reference, w.userId)) === null) return true;
+      await advanceGarden(reference, w.userId, w.prefs);
+      return false;
+    }, { what: "the reference's uncapped replay" });
     await garden(reference);
     const expected = await gardenTimeline(reference, w.userId, { mondayCheckpointsOnly: true });
 

@@ -40,7 +40,11 @@ const engineSrc = () => ({ workoutId: SLOT, build: build({ newMove: null }), vie
 /** At the wall sit (step 7), its timer started at `at`. */
 function atWallSit(src: ReturnType<typeof docSrc>, at = T0): PlayerState {
   let s = beginPlayer(src, playerData(src), { performedId: "perf-1", now: T0 });
-  while (s.index < 7) s = next(s, at);
+  for (let presses = 0; s.index < 7; presses++) {
+    // A Next that never moves on fails here rather than spinning forever.
+    if (presses >= 50) throw new Error("Next did not reach the wall sit in 50 presses — it is not advancing");
+    s = next(s, at);
+  }
   expect(s.live.steps[7]!.exerciseId).toBe("wallSit");
   return s;
 }

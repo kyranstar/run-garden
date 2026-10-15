@@ -105,7 +105,9 @@ async function oneStep(page: Page) {
 }
 
 async function playTo(page: Page, step: number) {
-  while ((await stepNumber(page)) < step) await oneStep(page);
+  // Bounded: a step that never moves on fails here rather than stepping until the test's timeout.
+  for (let i = 0; i < 50 && (await stepNumber(page)) < step; i++) await oneStep(page);
+  expect(await stepNumber(page)).toBeGreaterThanOrEqual(step);
 }
 
 async function playToReview(page: Page) {

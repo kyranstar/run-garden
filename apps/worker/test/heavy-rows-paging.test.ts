@@ -15,7 +15,7 @@ import { canonicalJson, hashTable, wipeAccountData } from "../src/services/accou
 import { exportTablePage } from "../src/services/account-export.js";
 import { checkRestorePage, openCheckSession } from "../src/services/account-restore.js";
 import { copyFinished, copyStep, initialCopyState, verifyCopy } from "../src/copier/copy.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { everyPage, makeTestDb, makeTestUser } from "./helpers.js";
 import { heavyPayload, seedHeavyBuilds } from "./heavy-payload.js";
 import { exportAll, manifestOf, restoreAll, TEST_SECRET } from "./restore-driver.js";
 
@@ -31,14 +31,8 @@ function withinCeiling(rows: Row[]): boolean {
 }
 
 async function exportPages(db: Db, userId: string, table: string): Promise<Row[][]> {
-  const pages: Row[][] = [];
-  let cursor: string | null = null;
-  do {
-    const page = await exportTablePage(db, userId, table, cursor);
-    pages.push(page.rows);
-    cursor = page.nextCursor;
-  } while (cursor !== null);
-  return pages;
+  const pages = await everyPage((cursor) => exportTablePage(db, userId, table, cursor ?? null), { what: `export of ${table}` });
+  return pages.map((page) => page.rows);
 }
 
 describe("heavy rows are paged by bytes (Ruling 2a-R9)", () => {

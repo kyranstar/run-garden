@@ -239,3 +239,34 @@ export function mountRoutes(db: Db, path: string, routes: Hono<AppContext>): Hon
   app.route(path, routes);
   return app;
 }
+
+/** The most iterations a test's page or step loop runs by default before it fails. */
+export const MAX_LOOP_ITERATIONS = 50;
+
+/**
+ * Runs `step` until it answers true (done), and fails past `max` iterations: a cursor or a step that never advances —
+ * a bug, or a mutant of one — must fail the test, not loop forever. One unbounded loop once grew a test's array to
+ * 32 GB in an orphaned worker. A loop that needs more than MAX_LOOP_ITERATIONS says its own bound, and why.
+ * Answers how many iterations it took.
+ */
+export async function untilDone(step: (iteration: number) => Promise<boolean> | boolean, opts: { max?: number; what?: string } = {}): Promise<number> {
+  const max = opts.max ?? MAX_LOOP_ITERATIONS;
+  for (let i = 0; i < max; i++) if (await step(i)) return i + 1;
+  throw new Error(`${opts.what ?? "loop"}: not done after ${max} iterations — it is not advancing`);
+}
+
+/** Every page of a list, following its cursor (`nextCursor`, a string or none) until there is none — `untilDone`'s bound. */
+export async function everyPage<P extends { nextCursor?: string | null }>(
+  read: (cursor: string | undefined) => Promise<P>,
+  opts: { max?: number; what?: string } = {},
+): Promise<P[]> {
+  const pages: P[] = [];
+  let cursor: string | undefined;
+  await untilDone(async () => {
+    const page = await read(cursor);
+    pages.push(page);
+    cursor = page.nextCursor ?? undefined;
+    return !page.nextCursor;
+  }, { what: "paging", ...opts });
+  return pages;
+}

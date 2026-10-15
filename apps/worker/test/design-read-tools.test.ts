@@ -16,8 +16,8 @@ import type { ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
 import { LIKE_WORDS_MAX, likeWordPatterns } from "../src/services/like-pattern.js";
 import { memoryCore } from "../src/services/memory-core.js";
-import { at, day, everyPage, NOW, OTHER_SENTINEL, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { at, day, NOW, OTHER_SENTINEL, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
+import { everyPage, makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
 let db: Db;

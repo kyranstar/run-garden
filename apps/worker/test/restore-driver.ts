@@ -7,6 +7,7 @@
  */
 import { nowInstant } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
+import { everyPage } from "./helpers.js";
 import { exportManifest, exportTablePage } from "../src/services/account-export.js";
 import {
   beginRestore,
@@ -36,14 +37,8 @@ export async function exportAll(db: Db, userId: string, pageSize = 100): Promise
   const manifest = await exportManifest(db, userId);
   const tables: Record<string, Row[]> = {};
   for (const { name } of manifest.tables) {
-    const rows: Row[] = [];
-    let cursor: string | null = null;
-    do {
-      const page = await exportTablePage(db, userId, name, cursor, pageSize);
-      rows.push(...page.rows);
-      cursor = page.nextCursor;
-    } while (cursor !== null);
-    tables[name] = rows;
+    const pages = await everyPage((cursor) => exportTablePage(db, userId, name, cursor ?? null, pageSize), { what: `export of ${name}` });
+    tables[name] = pages.flatMap((page) => page.rows);
   }
   return { format: manifest.format, schemaVersion: manifest.schemaVersion, exportedAt: nowInstant(), tables };
 }

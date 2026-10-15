@@ -47,7 +47,7 @@ import {
   type BackfillReport,
 } from "../src/services/workout-doc-backfill.js";
 import { withStageTargets, type StageRowLike } from "../src/services/workout-doc-store.js";
-import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes, untilDone } from "./helpers.js";
 
 /** The stages converter throws for this one title: the row whose conversion fails. */
 const BREAKS = "Breaks the converter";
@@ -961,14 +961,15 @@ describe("the budget: every call ≤ 45 statements", () => {
     const counted = cloneTestDb(db, { boundVariableCap: 100, onStatement: () => void n++ });
     let after: string | undefined;
     const reports: BackfillReport[] = [];
-    for (;;) {
+    await untilDone(async () => {
       n = 0;
       const r = await backfillWorkoutDocs(counted, userId, { kind: "planned", dryRun: false, limit: 1000, now: NOW, ...(after ? { after } : {}) });
       counts.push(n);
       reports.push(r);
-      if (r.nextAfter === null) break;
+      if (r.nextAfter === null) return true;
       after = r.nextAfter;
-    }
+      return false;
+    }, { what: "backfill pages" });
     expect(reports.map((r) => [r.scanned, r.converted])).toEqual([[20, 20], [6, 6]]);
     // The page, its stages, the content intents of its rows outside coach plans, the weight unit (once: coach sessions
     // are on it), a row per document, and one revision statement per label (coach, import); the second page has no

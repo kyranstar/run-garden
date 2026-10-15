@@ -32,7 +32,7 @@ import {
 } from "../src/services/account-restore.js";
 import { deleteAllUserData, settingsRoutes } from "../src/routes/misc.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { everyPage, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { seedFullAccount, SEED_PLANNED_WORKOUTS } from "./account-fixture.js";
 import { checkFile, exportAll, pagesOf, restoreAll, TEST_SECRET, type ExportFile } from "./restore-driver.js";
 
@@ -114,13 +114,9 @@ describe("export → wipe → restore → export", () => {
     expect(first.rows).toHaveLength(SEED_PLANNED_WORKOUTS); // ≤ 500 per page
     expect(first.nextCursor).toBeNull();
 
-    const pages: Row[][] = [];
-    let cursor: string | null = null;
-    do {
-      const page = await exportTablePage(db, userId, "planned_workouts", cursor, 100);
-      pages.push(page.rows);
-      cursor = page.nextCursor;
-    } while (cursor !== null);
+    const pages: Row[][] = (await everyPage((cursor) => exportTablePage(db, userId, "planned_workouts", cursor ?? null, 100))).map(
+      (page) => page.rows,
+    );
     expect(pages.map((p) => p.length)).toEqual([100, 100, 50]);
     const ids = pages.flat().map((r) => String(r.id));
     expect(ids).toEqual(first.rows.map((r) => String(r.id)));

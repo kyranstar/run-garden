@@ -34,7 +34,11 @@ const begin = (now = T0) => beginPlayer(src(), data, { performedId: "perf-1", no
 /** Walk forward with Next until the step `index` is current, each Next at `at`. */
 function walkTo(state: PlayerState, index: number, at: number): PlayerState {
   let s = state;
-  while (s.index < index) s = next(s, at);
+  for (let presses = 0; s.index < index; presses++) {
+    // A Next that never moves on fails here rather than spinning forever.
+    if (presses >= 50) throw new Error(`Next did not reach step ${index} in 50 presses — it is not advancing`);
+    s = next(s, at);
+  }
   return s;
 }
 

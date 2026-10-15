@@ -16,8 +16,8 @@ import { allTools, READ_TOOLS } from "../src/services/design-tools/index.js";
 import { encodeCursor, MAX_TAGGED_TERMS, readAthlete, readTagged, RESULT_BUDGET_BYTES, type ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type DesignTool, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { TOOL_RESULT_MAX_BYTES } from "../src/services/coach-runs.js";
-import { at, day, everyPage, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
-import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+import { at, day, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
+import { everyPage, isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
 const READ_NAMES = [

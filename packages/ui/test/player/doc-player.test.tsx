@@ -119,7 +119,11 @@ async function at(ms: number) {
   });
 }
 async function stepTo(n: number) {
-  while (!text().includes(`${n} of ${total}`)) await press("ArrowRight");
+  for (let presses = 0; !text().includes(`${n} of ${total}`); presses++) {
+    // An arrow that never moves on fails here rather than pressing forever.
+    if (presses >= 50) throw new Error(`ArrowRight did not reach step ${n} in 50 presses — it is not advancing`);
+    await press("ArrowRight");
+  }
 }
 /** What sits right under the move's name. */
 const underName = () => document.querySelector("h1.player-name")?.nextElementSibling ?? null;

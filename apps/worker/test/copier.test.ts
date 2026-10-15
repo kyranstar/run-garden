@@ -38,12 +38,18 @@ import {
 } from "../src/copier/copy.js";
 import { copierApp, type CopierEnv } from "../src/copier/index.js";
 import { seedFullAccount } from "./account-fixture.js";
-import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser, untilDone } from "./helpers.js";
 
 // Slow on a loaded runner (ruling 2b-R14): each case seeds two full accounts and copies them. A per-file timeout, not a cost question.
 vi.setConfig({ testTimeout: 120_000 });
 
 const CAP = { boundVariableCap: 100 } as const;
+/**
+ * The most steps a whole copy may take here before the test fails. Above the shared 50 because two seeded accounts at
+ * 7 rows a step take 112 steps (the most any test here takes; 8 at 100 rows, 2 at 500) — 250 leaves room for the seed
+ * to grow and still fails fast on a copy that never advances.
+ */
+const COPY_STEPS_MAX = 250;
 
 /** A row for a table no account owns, every column filled. */
 function catalogRow(entry: AccountTable, i: number): Record<string, unknown> {
@@ -80,12 +86,10 @@ async function seedSource(opts: { onStatement?: (sql: string) => void } = {}) {
 
 async function copyAll(src: Db, dst: Db, maxRows: number): Promise<{ state: CopyState; steps: number }> {
   let state = initialCopyState();
-  let steps = 0;
-  while (!copyFinished(state)) {
+  const steps = await untilDone(async () => {
     state = await copyStep(src, dst, state, { maxRows });
-    steps += 1;
-    if (steps > 5000) throw new Error("copy did not finish");
-  }
+    return copyFinished(state);
+  }, { max: COPY_STEPS_MAX, what: `copy at ${maxRows} rows a step` });
   return { state, steps };
 }
 
@@ -176,7 +180,11 @@ describe("copyStep — whole tables, small pages, D1's bind limit", () => {
     // the step before it runs again over rows already copied.
     const replay = await copyStep(src, dst, JSON.parse(JSON.stringify(previous)) as CopyState, { maxRows: 7 });
     expect(replay).toEqual(resumed);
-    while (!copyFinished(resumed)) resumed = await copyStep(src, dst, resumed, { maxRows: 7 });
+    await untilDone(async () => {
+      if (copyFinished(resumed)) return true;
+      resumed = await copyStep(src, dst, resumed, { maxRows: 7 });
+      return false;
+    }, { max: COPY_STEPS_MAX, what: "the resumed copy" });
 
     const checks = await verifyCopy(src, dst);
     expect(checks.filter((c) => !c.ok)).toEqual([]);
@@ -363,17 +371,13 @@ describe("the copier Worker", () => {
     const env = makeCopierEnv();
     const responses: unknown[] = [];
 
-    let finished = false;
-    let steps = 0;
-    while (!finished) {
+    const steps = await untilDone(async () => {
       const res = await post(app, `/step?${DST_Q}&maxRows=40`, env);
       expect(res.status).toBe(200);
       const body = (await res.json()) as { finished: boolean; tablesDone: number; tables: number };
       responses.push(body);
-      finished = body.finished;
-      steps += 1;
-      expect(steps).toBeLessThan(500);
-    }
+      return body.finished;
+    }, { what: "/step at 40 rows a step" });
     expect(steps).toBeGreaterThan(10);
     const saved = await loadCopyState(dst);
     expect(saved && copyFinished(saved)).toBe(true);
@@ -424,8 +428,10 @@ describe("the copier Worker", () => {
       rowsTotal: number;
     };
     expect(first).toMatchObject({ tablesDone: 0, rowsTotal: 1 });
-    let finished = false;
-    while (!finished) finished = ((await (await post(app, `/step?${DST_Q}&maxRows=500`, env)).json()) as { finished: boolean }).finished;
+    await untilDone(
+      async () => ((await (await post(app, `/step?${DST_Q}&maxRows=500`, env)).json()) as { finished: boolean }).finished,
+      { what: "/step at 500 rows a step" },
+    );
     const verified = (await (await post(app, `/verify?${DST_Q}`, env)).json()) as { ok: boolean };
     expect(verified.ok).toBe(true);
     // The sentinel table itself is staging's own; restart keeps it.
