@@ -53,6 +53,14 @@ describe("today's condition fit", () => {
     expect(fitToday({ ...rec("gobletSquat"), conditions: {} }, tmj, reading(0))).toEqual({ state: "not", reason: "TMJ rules this move out." });
   });
 
+  it("with more than one profile on, the worst decides, whatever their order", () => {
+    // A stricter profile that rates no move: every move fails closed for it.
+    const strict = { ...PROFILES.tmj, id: "strict", label: "Strict" };
+    const goblet = rec("gobletSquat");
+    expect(fitToday(goblet, [PROFILES.tmj, strict], reading(1))).toEqual({ state: "not", reason: "Strict rules this move out." });
+    expect(fitToday(goblet, [strict, PROFILES.tmj], reading(1))).toEqual({ state: "not", reason: "Strict rules this move out." });
+  });
+
   it("ranks fits before care before not", () => {
     expect(FIT_RANK.fits).toBeLessThan(FIT_RANK.care);
     expect(FIT_RANK.care).toBeLessThan(FIT_RANK.not);

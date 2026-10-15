@@ -286,6 +286,8 @@ describe("read_balance", () => {
   it("nothing logged is said, never balanced as zeros", async () => {
     const { data, missing } = await ok("read_balance", { from: day(13), to: TODAY }, { user: empty });
     expect(data.balance).toBeNull();
+    // Unknown, not every region untrained.
+    expect(data.untrained).toBeNull();
     expect(missing).toContain(`nothing logged from ${day(13)} to ${TODAY}`);
   });
 });
@@ -687,6 +689,18 @@ describe("the pinned core and rehearsal memory (memory-core.ts)", () => {
     expect((await memoryCore(db, userId, TODAY, { body: schema.coachMemory.body })).map((r) => r.body)).toEqual(["Owns a kettlebell"]);
     expect(JSON.stringify(await ok("recall_memory", { limit: 30 }, { user: userId }))).not.toContain("REHEARSAL-FACT");
   });
+
+  it("the core is pinned items and facts and rules: a newer note stays beyond it, for recall", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    for (let i = 0; i < 20; i++) {
+      await db.insert(schema.coachMemory).values({ id: newId(), userId, kind: "fact", body: `fact ${i}`, provenance: { source: "message", at: at(day(2)) }, learnedAt: at(day(2)) });
+    }
+    await db.insert(schema.coachMemory).values({ id: newId(), userId, kind: "note", body: "Newest, a note", provenance: { source: "message", at: at(day(0)) }, learnedAt: at(day(0)) });
+    const core = await memoryCore(db, userId, TODAY, { kind: schema.coachMemory.kind });
+    expect(core.map((r) => r.kind)).toEqual(Array(20).fill("fact"));
+    const recalled = (await ok("recall_memory", { limit: 30 }, { user: userId })).data.memories.map((m: { body: { text: string } }) => m.body.text);
+    expect(recalled).toEqual(["Newest, a note"]);
+  });
 });
 
 describe("settings that do not read", () => {
@@ -697,6 +711,8 @@ describe("settings that do not read", () => {
     await db.update(schema.userPreferences).set({ prefs: { units: "furlongs" } as unknown as Record<string, unknown> }).where(eq(schema.userPreferences.userId, broken.userId));
     const r = await ok("read_history", { from: day(3), to: TODAY }, { user: broken.userId });
     expect(r.missing[0]).toBe("the athlete's settings do not read: timezone unknown — using UTC; units are the defaults");
+    // UTC indeed: 16:30 there, so 7 h 30 min of the day left (not a default zone's guess).
+    expect((await ok("read_day", {}, { user: broken.userId })).data.timeLeft).toBe("7 h 30 min");
   });
 });
 
