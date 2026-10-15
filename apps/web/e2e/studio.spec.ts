@@ -47,13 +47,16 @@ const detailOf = (page: Page, name: string): Locator =>
   page.getByRole("dialog", { name }).or(page.getByRole("complementary", { name }));
 
 /**
- * Start now (or the templates list's Start) → the player. On the way, the builder may first show a swap the day's
- * check made, or — when the same quick start or template was already started today (the other project shares the
- * fixture account) — offer to continue that one. Each is accepted, at most twice, then the player opens.
+ * Start now (or the templates list's Start) → the player. On the way, the builder may first offer today's before
+ * reading (skipped here), show a swap the day's check made, or — when the same quick start or template was already
+ * started today (the other project shares the fixture account) — offer to continue that one. Each is accepted, at
+ * most three times, then the player opens.
  */
 async function intoThePlayer(page: Page) {
-  const goOn = page.getByRole("button", { name: /^(Start with these changes|Start anyway|Continue it)$/ });
-  for (let i = 0; i < 2 && !/\/session\//.test(page.url()); i++) {
+  const goOn = page
+    .getByRole("button", { name: /^(Start with these changes|Start anyway|Continue it)$/ })
+    .or(page.getByRole("dialog").getByRole("button", { name: "Skip", exact: true }));
+  for (let i = 0; i < 3 && !/\/session\//.test(page.url()); i++) {
     await Promise.race([page.waitForURL(/\/session\//, { timeout: 30_000 }), goOn.first().waitFor({ timeout: 30_000 })]);
     if (!/\/session\//.test(page.url())) await goOn.first().click();
   }
