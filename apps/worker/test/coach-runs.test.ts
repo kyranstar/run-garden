@@ -1184,7 +1184,8 @@ describe("a run past its window, wherever it is found (fix round 2)", () => {
     const child = await insertSubRun(old, "designer", at(2));
     statements = 0;
     const created = await createRun(db, userId, { scope: { kind: "now" }, request: "today's session" }, at(14 * 3600));
-    expect(statements).toBeLessThanOrEqual(6);
+    // + one since Task 6: the expired run's design proposal is closed while still unreviewed.
+    expect(statements).toBeLessThanOrEqual(7);
     expect(created).toMatchObject({ existing: false, run: { request: "today's session", status: "active" } });
     expect(created.run.id).not.toBe(old);
     expect(await runRow(old)).toMatchObject({ status: "expired", error: "expired" });

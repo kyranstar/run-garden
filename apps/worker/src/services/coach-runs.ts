@@ -23,12 +23,15 @@ import {
   type ToolUseBlock,
 } from "./llm-messages.js";
 import { COACH_RUN_LEFT_MINUTES, COACH_RUN_SET_WINDOW_HOURS, COACH_RUN_STEP_STALE_MINUTES } from "./cron-limits.js";
+import { closeUnreviewed, resumeAfterReview, reviewPacket, toolRecords } from "./design-review.js";
 import { allTools } from "./design-tools/index.js";
+import { designProposalId } from "./design-tools/propose.js";
 import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
 import {
   isToolErr,
   type DesignTool,
-  type ReviewDraft,
+  type ReviewHooks,
+  type ReviewOf,
   type RunScope,
   type RunScopeKind,
   type ToolContext,
@@ -97,6 +100,20 @@ import {
  * header (the opening user message) inside a marked block; the loop never puts it in a system block. An answer goes
  * back to the model as `{ text, untrusted }`. An answer to a question that declared a check-in is also kept as the
  * athlete's answer (record-answer.ts `askedAnswerRows`; never a rehearsal's), in one insert once the answer stands.
+ *
+ * REVIEW (design-review.ts; ruling 4). With `deps.review`, a draft propose_workout stores is reviewed by an independent
+ * REVIEWER SUB-RUN before anything reaches the athlete: the call starts it (`ReviewHooks.start`: one insert, its state
+ * fresh — its root's window, timezone, ceiling and rehearsal, the clock the run was last told, and the review packet
+ * built from this run's tool results, never its reasoning) and the run pauses, `waiting_review`. The next steps advance
+ * the reviewer (a parent waits for its live sub-runs); its `submit_review` is its finish. The reviewer is never offered
+ * a finish of its own; a review that can't be read gets one repair, then the reviewer ends and the validator's view
+ * stands. Once the reviewer is over, the designer's own next step resumes it — no model call — with the review as its
+ * propose_workout call's result.
+ *
+ * SPEND ROLLS UP THE TREE. A run's ceiling holds its whole tree: before a model call, every run from the due one up to
+ * the main run is checked against its own ceiling with the spend of everything under it, finished sub-runs included
+ * (`loadTree` reads the main run's whole tree). A money stop — a ceiling, the weekly cap, the account out of credits, no
+ * key — stops the whole live tree with one line. The run's cost (`CoachRunDto.costUsd`) is the tree's.
  */
 
 // ── Vocabulary ──────────────────────────────────────────────────────────
@@ -105,6 +122,8 @@ export type RunStatus =
   | "active"
   | "stepping"
   | "waiting_athlete"
+  /** Its draft is with the reviewer sub-run it started; it resumes once that run is over. */
+  | "waiting_review"
   | "finished"
   | "failed"
   | "cancelled"
@@ -112,8 +131,12 @@ export type RunStatus =
   | "stopped_cap";
 
 /** A run still in play: it holds the athlete's one live main run. */
-export const LIVE_STATUSES = ["active", "stepping", "waiting_athlete"] as const satisfies readonly RunStatus[];
+export const LIVE_STATUSES = ["active", "stepping", "waiting_athlete", "waiting_review"] as const satisfies readonly RunStatus[];
 const isLive = (status: string): boolean => (LIVE_STATUSES as readonly string[]).includes(status);
+/** A live run nobody else holds and no answer is awaited for, that a step may claim (a waiting_review run is due only
+ * once its reviewer is over: `dueRun` never returns a run with a live sub-run). */
+const CLAIMABLE = ["active", "waiting_review"] as const satisfies readonly RunStatus[];
+const steppable = (status: string): boolean => (CLAIMABLE as readonly string[]).includes(status);
 
 export type RunEventKind = "tool_call" | "tool_result" | "draft" | "review" | "revision" | "question" | "note" | "error";
 
@@ -244,18 +267,40 @@ export interface RunState {
   lastCall: "step_cap" | "state_cap" | null;
   /** When the model was last told the time: the opening context's build, or the last clock line. */
   toldAt: string | null;
+  /** What `awaiting` waits on: the athlete's answer (absent), or the review of the draft that call proposed. */
+  awaitingKind?: "review";
+  /** The review awaited: the proposal the draft is in, and the reviewer sub-run reviewing it. */
+  awaitingReview?: { proposalId: string; reviewRunId: string; round: number };
+  /** A reviewer's repairs used: a review that couldn't be read, or an answer with no review (one is allowed). */
+  repairs?: number;
+  /** A reviewer's packet (design-review.ts), until its opening context is built from it. */
+  packet?: string;
+  /** A reviewer's draft: what its submit_review stores the review against. */
+  reviewOf?: ReviewOf;
 }
 
 /** A fresh state for a run of `role` (sub-runs start here too: a history of their own, the parent's window). */
 export function newRunState(
   role: ToolRole,
   scope: RunScope,
-  opts: { rehearsal?: boolean; ceilingMicros?: number; brief?: string; timezone?: string; window?: RunWindow } = {},
+  opts: {
+    rehearsal?: boolean;
+    ceilingMicros?: number;
+    brief?: string;
+    timezone?: string;
+    window?: RunWindow;
+    /** A sub-run: the clock its parent was last told (its own context tells it again when built). */
+    toldAt?: string | null;
+    packet?: string;
+    reviewOf?: ReviewOf;
+  } = {},
 ): RunState {
   const limits = RUN_LIMITS[role];
   return {
     v: 1,
     ...(opts.brief ? { brief: opts.brief } : {}),
+    ...(opts.packet ? { packet: opts.packet } : {}),
+    ...(opts.reviewOf ? { reviewOf: opts.reviewOf } : {}),
     settings: {
       ceilingMicros: opts.ceilingMicros ?? RUN_CEILING_MICROS[scope.kind],
       maxCalls: limits.maxCalls,
@@ -273,7 +318,7 @@ export function newRunState(
     calls: 0,
     retries: 0,
     lastCall: null,
-    toldAt: null,
+    toldAt: opts.toldAt ?? null,
   };
 }
 
@@ -326,6 +371,11 @@ export function readRunState(text: string | null): RunState | null {
     retries: typeof s.retries === "number" ? s.retries : 0,
     lastCall: s.lastCall === "step_cap" || s.lastCall === "state_cap" ? s.lastCall : null,
     toldAt: typeof s.toldAt === "string" ? s.toldAt : null,
+    ...(s.awaitingKind === "review" ? { awaitingKind: "review" as const } : {}),
+    ...(s.awaitingReview && typeof s.awaitingReview === "object" ? { awaitingReview: s.awaitingReview } : {}),
+    ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
+    ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
+    ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
   };
 }
 
@@ -351,6 +401,8 @@ export interface ContextRun {
   request: string | null;
   parentId: string | null;
   brief?: string;
+  /** A reviewer's packet: composed by the app (design-review.ts), its outside texts already marked. */
+  packet?: string;
 }
 
 /**
@@ -367,14 +419,17 @@ export interface RunDeps {
   callModel: (env: Env, req: MessagesRequest) => Promise<MessagesResult>;
   buildContext: ContextBuilder;
   tools: DesignTool[];
-  /** The independent review of a draft, handed to the tools (`ToolContext.reviewDraft`; Task 6 fills it). */
-  reviewDraft?: ReviewDraft;
+  /**
+   * Drafts are reviewed by an independent reviewer sub-run before the athlete sees them (design-review.ts): the
+   * default deps always. Off — the act tools' own tests — a draft is stored unreviewed, and so never becomes pending.
+   */
+  review?: boolean;
   /** Milliseconds, for how long a step took (its stamp is its `now` plus that). Default: the real clock. */
   clock?: () => number;
 }
 
 export function defaultRunDeps(): RunDeps {
-  return { callModel: (env, req) => callMessages(env, req), buildContext: designContextBuilder, tools: allTools() };
+  return { callModel: (env, req) => callMessages(env, req), buildContext: designContextBuilder, tools: allTools(), review: true };
 }
 
 // ── Runs as rows ────────────────────────────────────────────────────────
@@ -437,13 +492,24 @@ function toNode(r: NodeRow): RunNode {
   };
 }
 
-/** The main run `rootId` (never a sub-run: the routes address main runs) and every live run of the athlete, which
- * holds its live sub-runs. One statement. */
+/** How deep a run's tree is read (main → designer → reviewer is two). */
+const TREE_DEPTH_MAX = 8;
+
+/** The ids of the run `rootId` and every run under it, finished or not (a subquery). */
+const treeIds = (userId: string, rootId: string) => sql`(
+  WITH RECURSIVE tree(id, depth) AS (
+    SELECT id, 0 FROM coach_runs WHERE id = ${rootId} AND user_id = ${userId}
+    UNION
+    SELECT c.id, t.depth + 1 FROM coach_runs c JOIN tree t ON c.parent_id = t.id WHERE c.user_id = ${userId} AND t.depth < ${TREE_DEPTH_MAX}
+  ) SELECT id FROM tree)`;
+
+/** The main run `rootId` (never a sub-run: the routes address main runs) with its whole tree — finished sub-runs too,
+ * whose spend counts toward the ceilings — and every live run of the athlete. One statement. */
 async function loadTree(db: Db, userId: string, rootId: string): Promise<{ root: RunNode | null; nodes: RunNode[] }> {
   const rows = await db
     .select(NODE_COLUMNS)
     .from(coachRuns)
-    .where(and(eq(coachRuns.userId, userId), or(eq(coachRuns.id, rootId), inArray(coachRuns.status, [...LIVE_STATUSES]))));
+    .where(and(eq(coachRuns.userId, userId), or(inArray(coachRuns.id, treeIds(userId, rootId)), inArray(coachRuns.status, [...LIVE_STATUSES]))));
   const nodes = rows.map((r) => toNode(r as NodeRow));
   const root = nodes.find((n) => n.id === rootId && n.parentId === null) ?? null;
   return { root, nodes };
@@ -467,16 +533,42 @@ function dueRun(nodes: RunNode[], root: RunNode): RunNode | null {
   return walk(root, 0);
 }
 
-/** The run's status as the athlete sees it: a finished main run's own, else what its due run is doing. */
+/** The run's status as the athlete sees it: a finished main run's own, else what its due run is doing (a run waiting
+ * on a review that is over is about to go on: active). */
 function treeStatus(root: RunNode, nodes: RunNode[]): RunStatus {
   if (!isLive(root.status)) return root.status;
-  return dueRun(nodes, root)?.status ?? root.status;
+  const status = dueRun(nodes, root)?.status ?? root.status;
+  return status === "waiting_review" ? "active" : status;
 }
 
 function subtree(nodes: RunNode[], root: RunNode): RunNode[] {
   const out = [root];
   for (let i = 0; i < out.length && i < 64; i++) out.push(...nodes.filter((n) => n.parentId === out[i]!.id));
   return out;
+}
+
+/** What a run and everything under it have spent, in micros. */
+const treeSpendMicros = (nodes: RunNode[], top: RunNode): number =>
+  subtree(nodes, top).reduce((sum, n) => sum + Math.round(n.costUsd * 1_000_000), 0);
+
+/** The run and its parents up to the main run, nearest first. */
+function lineage(nodes: RunNode[], run: RunNode): RunNode[] {
+  const out = [run];
+  for (let i = 0; i < 16; i++) {
+    const parent = nodes.find((n) => n.id === out.at(-1)!.parentId);
+    if (!parent) break;
+    out.push(parent);
+  }
+  return out;
+}
+
+/** The first ceiling the run's spend reaches — its own, or a parent's with everything under that parent — or null. */
+function ceilingReached(nodes: RunNode[], run: RunNode, own: RunSettings): number | null {
+  for (const n of lineage(nodes, run)) {
+    const ceiling = n === run ? own.ceilingMicros : n.settings?.ceilingMicros;
+    if (typeof ceiling === "number" && treeSpendMicros(nodes, n) >= ceiling) return ceiling;
+  }
+  return null;
 }
 
 // ── DTOs ────────────────────────────────────────────────────────────────
@@ -533,7 +625,7 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
     request: root.request,
     status: treeStatus(root, nodes),
     steps: root.steps,
-    costUsd: root.costUsd,
+    costUsd: treeSpendMicros(nodes, root) / 1_000_000,
     proposalId: root.proposalId,
     error: root.error,
     createdAt: root.createdAt,
@@ -645,7 +737,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
       SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(input.scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
       WHERE NOT EXISTS (
-        SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete')
+        SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review')
       )
       RETURNING id
     `)) as Array<{ id: string }>;
@@ -712,7 +804,8 @@ const DEAD_STEP_SPEND = sql.raw(
  * Expire a run's live tree, past its window or left under a run that is over, with the main run's plain line. Guarded:
  * a run a live step holds is left to that step — it finishes its work, and the next step, answer, create or sweep
  * expires the run — while a dead step's claim is taken, its spend added to the run. Answers whether the expiry took
- * the run itself. Two statements (one when there is no line to write).
+ * the run itself. A main run's design proposal still unreviewed is closed with it: nothing half-made is ever shown.
+ * Three statements (one when the run itself did not expire).
  */
 async function expireTree(
   db: Db,
@@ -739,7 +832,7 @@ async function expireTree(
         eq(coachRuns.userId, userId),
         inArray(coachRuns.id, members.map((n) => n.id)),
         or(
-          inArray(coachRuns.status, ["active", "waiting_athlete"]),
+          inArray(coachRuns.status, ["active", "waiting_athlete", "waiting_review"]),
           and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore)),
         ),
       ),
@@ -747,6 +840,7 @@ async function expireTree(
     .returning({ id: coachRuns.id });
   for (const n of members) if (expired.some((e) => e.id === n.id)) Object.assign(n, { status: "expired", error: "expired", finishedAt: at, updatedAt: at });
   const took = expired.some((e) => e.id === root.id);
+  if (took && root.parentId === null) await closeUnreviewed(db, userId, designProposalId(root.id), "expired", at);
   const events =
     took && root.parentId === null ? await appendEvents(db, userId, root.id, [{ kind: "note", summary: expiredLine(root.settings) }], at) : [];
   return { took, events };
@@ -774,8 +868,9 @@ export async function getRun(
 
 // ── Cancel ──────────────────────────────────────────────────────────────
 
-/** Cancel the run and every live run under it. A step in flight keeps only its spend (it writes under its claim,
- * which this takes). Idempotent: a run that is over comes back as it is. */
+/** Cancel the run and every live run under it, and close its design proposal if it is still unreviewed (nothing
+ * half-made is ever shown). A step in flight keeps only its spend (it writes under its claim, which this takes).
+ * Idempotent: a run that is over comes back as it is. */
 export async function cancelRun(db: Db, userId: string, runId: string, now: Date): Promise<{ run: CoachRunDto } | null> {
   const { root, nodes } = await loadTree(db, userId, runId);
   if (!root) return null;
@@ -793,6 +888,7 @@ export async function cancelRun(db: Db, userId: string, runId: string, now: Date
       ),
     );
   for (const n of live) Object.assign(n, { status: "cancelled", finishedAt: at, updatedAt: at });
+  await closeUnreviewed(db, userId, designProposalId(root.id), "cancelled", at);
   await appendEvents(db, userId, root.id, [{ kind: "note", summary: "Cancelled." }], at);
   return { run: runDto(root, nodes) };
 }
@@ -965,6 +1061,8 @@ interface StepEnd {
   retryInMs?: number;
   /** Nothing to do without a model (the sweep's step): the claim is given back and nothing else is written. */
   idle?: true;
+  /** A money stop (a ceiling, the weekly cap, no credits, no key): every other live run of the tree stops with it. */
+  stopTree?: true;
 }
 
 type Advance = { kind: "end"; end: StepEnd } | { kind: "lost"; costMicros: number } | { kind: "restoring" };
@@ -976,6 +1074,9 @@ interface StepCtx {
   now: Date;
   deps: RunDeps;
   run: RunNode;
+  /** The main run, and its tree as read at the step's start (a reviewer this step starts joins it). */
+  root: RunNode;
+  nodes: RunNode[];
   state: RunState;
   claimAt: string;
   /** The stored state's size as it was read: what the step started from, measured once. */
@@ -1017,6 +1118,17 @@ const LINES = {
   expiredSet: "This design was left open for a day — it stopped. Start a new one when you're ready.",
 } as const;
 
+/** The reviewer's own lines on the trail. */
+const REVIEWER_LINES = {
+  context: "Reviewing the draft.",
+  stepCap: "The review reached its step limit — the validator's view stands.",
+  unreadable: "The review couldn't be read — the validator's view stands.",
+} as const;
+
+/** A reviewer that answered in words instead of calling submit_review: its one repair. */
+export const REVIEW_NUDGE =
+  "Your review wasn't submitted. Return it by calling submit_review: a whole score from 1 to 5 and a one-line note for every dimension, the must-fix items and the improvements.";
+
 /** The plain line for a run that outlived its window. */
 export function expiredLine(settings: RunSettings | undefined): string {
   return settings?.window?.kind === "day" ? LINES.expiredDay : LINES.expiredSet;
@@ -1025,6 +1137,8 @@ export function expiredLine(settings: RunSettings | undefined): string {
 /** Told to the model on its last call, in the newest (not yet sent) user message. */
 export const LAST_TURN_NOTE =
   "This is your last turn in this run. Finish now with what you have (call finish), or say plainly what is still missing.";
+/** The reviewer's last-turn note: it has no finish; its review is its end. */
+export const REVIEWER_LAST_TURN_NOTE = "This is your last turn in this run. Submit your review now with submit_review, from what you have read.";
 
 export interface StepOptions {
   /** False: the sweep's step — run queued calls, never the model. */
@@ -1073,7 +1187,7 @@ export async function runStep(
       and(
         eq(coachRuns.id, due.id),
         eq(coachRuns.userId, userId),
-        or(eq(coachRuns.status, "active"), and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore))),
+        or(inArray(coachRuns.status, [...CLAIMABLE]), and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore))),
       ),
     )
     .returning({ state: coachRuns.state, costUsd: coachRuns.costUsd });
@@ -1099,6 +1213,8 @@ export async function runStep(
       now,
       deps,
       run: due,
+      root,
+      nodes,
       state,
       claimAt,
       storedBytes: bytes(stored),
@@ -1151,6 +1267,7 @@ export async function runStep(
     .returning({ id: coachRuns.id });
   if (written) {
     Object.assign(due, { status: end.status, steps: due.steps + 1, updatedAt: endAt, finishedAt: terminal ? endAt : null, error: end.error });
+    if (end.stopTree) await stopLiveTree(db, userId, root, nodes, due, end, endAt, staleBefore);
   } else {
     // A cancel took the claim while the tools ran: what they did is on the trail below, the cancel's status stands.
     due.status = await addSpend(db, due.id, end.costMicros);
@@ -1161,7 +1278,7 @@ export async function runStep(
   return okStep({
     status: treeStatus(root, nodes),
     nextDue:
-      next && next.status === "active"
+      next && steppable(next.status)
         ? {
             runId: next.id,
             role: next.role,
@@ -1176,7 +1293,32 @@ const okStep = (result: StepResult): StepOutcome => ({ kind: "ok", result });
 
 function nextDueOf(nodes: RunNode[], root: RunNode, at: string): StepResult["nextDue"] {
   const next = dueRun(nodes, root);
-  return next && next.status === "active" ? { runId: next.id, role: next.role, at } : null;
+  return next && steppable(next.status) ? { runId: next.id, role: next.role, at } : null;
+}
+
+/**
+ * A money stop reaches every run of the tree: no call of theirs could be paid for either. The other live runs end
+ * with the due run's status and reason (its one line says why); a run a live step holds is left to that step, which
+ * stops the same way at its next call. One statement, only when there is another live run.
+ */
+async function stopLiveTree(db: Db, userId: string, root: RunNode, nodes: RunNode[], due: RunNode, end: StepEnd, at: string, staleBefore: string): Promise<void> {
+  const others = subtree(nodes, root).filter((n) => n.id !== due.id && isLive(n.status));
+  if (others.length === 0) return;
+  const stopped = await db
+    .update(coachRuns)
+    .set({ status: end.status, error: end.error, finishedAt: at, updatedAt: at, costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}` })
+    .where(
+      and(
+        eq(coachRuns.userId, userId),
+        inArray(coachRuns.id, others.map((n) => n.id)),
+        or(
+          inArray(coachRuns.status, ["active", "waiting_athlete", "waiting_review"]),
+          and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore)),
+        ),
+      ),
+    )
+    .returning({ id: coachRuns.id });
+  for (const n of others) if (stopped.some((x) => x.id === n.id)) Object.assign(n, { status: end.status, error: end.error, finishedAt: at, updatedAt: at });
 }
 
 /** Add a step's spend to a run whose claim was taken; answers the run's status now. */
@@ -1211,6 +1353,7 @@ function guardStateSize(end: StepEnd): { end: StepEnd; json: string | null } {
 async function advanceRun(s: StepCtx): Promise<Advance> {
   const { state } = s;
   const end = (e: StepEnd): Advance => ({ kind: "end", end: e });
+  if (state.awaiting && state.awaitingKind === "review") return end(await resumeReview(s));
   if (state.awaiting) return end({ status: "waiting_athlete", state, costMicros: 0, error: null, proposalId: null, events: [] });
   if (state.pending.length > 0 && state.system !== null) {
     const ran = await runTools(s, STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED);
@@ -1221,6 +1364,27 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
   return modelStep(s);
 }
 
+/**
+ * The designer's run, resumed once its reviewer is over (design-review.ts `resumeAfterReview`): the review — or the
+ * validator's view, written now when the reviewer left none — becomes its propose_workout call's result. No model call:
+ * the next step calls it. At most two statements beyond the step's own.
+ */
+async function resumeReview(s: StepCtx): Promise<StepEnd> {
+  const { state } = s;
+  const callId = state.awaiting!;
+  const w = state.awaitingReview;
+  const reviewer = w ? s.nodes.find((n) => n.id === w.reviewRunId) : undefined;
+  const { result, lines } = w
+    ? await resumeAfterReview(s.db, s.userId, { proposalId: w.proposalId, designerRunId: s.run.id, toolUseId: callId, reviewerError: reviewer?.error ?? null, now: s.now })
+    : { result: { data: { review: null, note: "The review could not be found; the validator's view stands." } } as ToolOk, lines: [] };
+  state.results.push(okResult(callId, result));
+  state.awaiting = null;
+  delete state.awaitingKind;
+  delete state.awaitingReview;
+  if (state.pending.length === 0) flushResults(state);
+  return { status: "active", state, costMicros: 0, error: null, proposalId: null, events: lines.map((summary) => ({ kind: "note" as const, summary })) };
+}
+
 async function contextStep(s: StepCtx): Promise<StepEnd> {
   const run: ContextRun = {
     id: s.run.id,
@@ -1229,12 +1393,16 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     request: s.run.request,
     parentId: s.run.parentId,
     ...(s.state.brief ? { brief: s.state.brief } : {}),
+    ...(s.state.packet ? { packet: s.state.packet } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;
   s.state.messages = [{ role: "user", content: [{ type: "text", text: built.header }] }];
   s.state.toldAt = s.now.toISOString();
-  return { status: "active", state: s.state, costMicros: 0, error: null, proposalId: null, events: [{ kind: "note", summary: LINES.context }] };
+  // The packet is in the opening message now: kept twice it would only weigh on every later step.
+  delete s.state.packet;
+  const line = s.run.role === "reviewer" ? REVIEWER_LINES.context : LINES.context;
+  return { status: "active", state: s.state, costMicros: 0, error: null, proposalId: null, events: [{ kind: "note", summary: line }] };
 }
 
 async function modelStep(s: StepCtx): Promise<Advance> {
@@ -1242,16 +1410,18 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   const end = (e: StepEnd): Advance => ({ kind: "end", end: e });
   const settings = state.settings;
 
-  // ── Before the call: the run's ceiling, its step and state caps, the weekly cap ──
-  if (Math.round(run.costUsd * 1_000_000) >= settings.ceilingMicros) {
-    return end(stop(state, "stopped_cap", "run_ceiling", `This design reached its spending limit (${usd(settings.ceilingMicros)}) — the coach stopped here.`));
+  // ── Before the call: the tree's ceilings, the run's step and state caps, the weekly cap ──
+  const ceiling = ceilingReached(s.nodes, run, settings);
+  if (ceiling !== null) {
+    return end({ ...stop(state, "stopped_cap", "run_ceiling", `This design reached its spending limit (${usd(ceiling)}) — the coach stopped here.`), stopTree: true });
   }
   const size = s.storedBytes;
   if (state.lastCall !== null || state.calls >= settings.maxCalls || size > STATE_MAX_BYTES) {
     const cap = state.lastCall ?? (size > STATE_MAX_BYTES ? "state_cap" : "step_cap");
-    return end(stop(state, "stopped_cap", cap, cap === "state_cap" ? LINES.stateCap : LINES.stepCap));
+    const capLine = cap === "state_cap" ? LINES.stateCap : run.role === "reviewer" ? REVIEWER_LINES.stepCap : LINES.stepCap;
+    return end(stop(state, "stopped_cap", cap, capLine));
   }
-  if ((await llmBudgetStatus(db, userId)).cutoff) return end(stop(state, "stopped_cap", "weekly_cap", LINES.weeklyCap));
+  if ((await llmBudgetStatus(db, userId)).cutoff) return end({ ...stop(state, "stopped_cap", "weekly_cap", LINES.weeklyCap), stopTree: true });
 
   // ── The newest (unsent) message: the time now if the frozen clock has drifted, the last-turn note at a cap ──
   const timezone = settings.timezone || "UTC";
@@ -1259,7 +1429,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   const last = state.calls + 1 >= settings.maxCalls ? "step_cap" : size > STATE_LAST_CALL_BYTES ? "state_cap" : null;
   let sent = state.messages;
   if (tellTime) sent = withClockLine(sent, clockLine(timezone, now));
-  if (last) sent = withLastTurnNote(sent);
+  if (last) sent = withLastTurnNote(sent, run.role === "reviewer" ? REVIEWER_LAST_TURN_NOTE : LAST_TURN_NOTE);
 
   // ── The call, on the record before it is made ──
   // Pessimistic, because a step killed mid-call never comes back to correct it: the input estimated from the prompt's
@@ -1328,9 +1498,9 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   if (!result.ok) {
     switch (result.kind) {
       case "out_of_credits":
-        return end(stop(state, "failed", OUT_OF_CREDITS_REASON, LINES.outOfCredits, "error", spent));
+        return end({ ...stop(state, "failed", OUT_OF_CREDITS_REASON, LINES.outOfCredits, "error", spent), stopTree: true });
       case "no_key":
-        return end(stop(state, "failed", "no_key", LINES.noKey, "error", spent));
+        return end({ ...stop(state, "failed", "no_key", LINES.noKey, "error", spent), stopTree: true });
       case "rejected":
         return end(stop(state, "failed", result.reason, LINES.rejected, "error", spent));
       case "retryable": {
@@ -1386,6 +1556,15 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     return end({ ...base, status: "active", events });
   }
   if (uses.length === 0) {
+    if (run.role === "reviewer") {
+      // A review written as words is a review that can't be read: one nudge to submit it, then the validator's view.
+      state.repairs = (state.repairs ?? 0) + 1;
+      if (state.repairs > 1) {
+        return end({ ...base, status: "failed", error: "review_unreadable", events: [...events, { kind: "note", summary: REVIEWER_LINES.unreadable }] });
+      }
+      state.messages.push({ role: "user", content: [{ type: "text", text: REVIEW_NUDGE }] });
+      return end({ ...base, status: "active", events });
+    }
     return end({ ...base, status: "finished", events: events.length > 0 ? events : [{ kind: "note", summary: LINES.finished }] });
   }
   state.pending = uses.map((u, i) => ({ id: u.id, name: u.name, input: u.input, ...(i >= MAX_TOOL_CALLS_PER_TURN ? { overflow: true } : {}) }));
@@ -1469,7 +1648,7 @@ function offeredTools(tools: DesignTool[]): DesignTool[] {
 async function runTools(
   s: StepCtx,
   room: number,
-): Promise<{ status: RunStatus; events: NewEvent[]; proposalId: string | null }> {
+): Promise<{ status: RunStatus; events: NewEvent[]; proposalId: string | null; error?: string }> {
   const { state, run } = s;
   const offered = offeredTools(s.deps.tools);
   const mine = offered.filter((t) => t.roles.includes(run.role));
@@ -1479,7 +1658,8 @@ async function runTools(
     userId: s.userId,
     run: { id: run.id, role: run.role, scope: run.scope, parentId: run.parentId, rehearsal: state.settings.rehearsal },
     now: s.now,
-    ...(s.deps.reviewDraft ? { reviewDraft: s.deps.reviewDraft } : {}),
+    ...(s.deps.review && run.role !== "reviewer" ? { review: reviewHooks(s) } : {}),
+    ...(state.reviewOf ? { reviewOf: state.reviewOf } : {}),
   };
   const events: NewEvent[] = [];
   let executed = 0;
@@ -1509,13 +1689,28 @@ async function runTools(
     const result: ToolOk | ToolErr = tool
       ? await runTool(tool, { ...ctx, toolUseId: call.id }, call.input)
       : named
-        ? { error: "not_for_role", why: `${call.name} is not a tool for the ${run.role}.`, fix }
+        ? run.role === "reviewer" && call.name === "finish"
+          ? REVIEWER_HAS_NO_FINISH
+          : { error: "not_for_role", why: `${call.name} is not a tool for the ${run.role}.`, fix }
         : { error: "unknown_tool", why: `There is no tool named ${call.name}.`, fix };
     const ok = !isToolErr(result);
     if (tool?.control === "ask" && ok) {
       state.awaiting = call.id;
       events.push({ kind: "question", summary: result.summary ?? "The coach has a question.", payload: { tool: call.name, data: result.data } });
       return { status: "waiting_athlete", events, proposalId: null };
+    }
+    if (ok && result.control === "review") {
+      // The draft is with its reviewer: this run waits, and the call's result is the review, once it is in.
+      const d = result.data as { proposalId?: unknown; reviewRunId?: unknown; round?: unknown };
+      state.awaiting = call.id;
+      state.awaitingKind = "review";
+      state.awaitingReview = { proposalId: String(d.proposalId), reviewRunId: String(d.reviewRunId), round: Number(d.round) || 1 };
+      events.push({
+        kind: state.awaitingReview.round > 1 ? "revision" : "draft",
+        summary: result.summary ?? "A draft, sent for review.",
+        payload: { tool: call.name, input: bounded(call.input, 1_500), ...(result.receipt ? { receipt: result.receipt } : {}) },
+      });
+      return { status: "waiting_review", events, proposalId: null };
     }
     if (tool?.control === "finish" && ok) {
       state.pending = [];
@@ -1544,7 +1739,8 @@ async function runTools(
           );
       }
       const payload = { ...(proposalId ? { proposalId } : {}), ...(result.receipt ? { receipt: result.receipt } : {}) };
-      events.push({ kind: "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });
+      // A reviewer's finish is its review.
+      events.push({ kind: run.role === "reviewer" ? "review" : "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });
       return { status: "finished", events, proposalId };
     }
     state.results.push(ok ? okResult(call.id, result) : errorResult(call.id, result));
@@ -1558,9 +1754,78 @@ async function runTools(
         ...(ok ? { provenance: result.provenance, missing: result.missing, ...(result.receipt ? { receipt: result.receipt } : {}) } : { error: result.error }),
       },
     });
+    if (!ok && run.role === "reviewer" && result.error === "invalid_review") {
+      // A review that can't be read gets one repair (this error, with what was wrong); a second ends the reviewer, and
+      // its designer goes on with the validator's view.
+      state.repairs = (state.repairs ?? 0) + 1;
+      if (state.repairs > 1) {
+        state.pending = [];
+        state.results = [];
+        events.push({ kind: "note", summary: REVIEWER_LINES.unreadable });
+        return { status: "failed", error: "review_unreadable", events, proposalId: null };
+      }
+    }
   }
   if (state.pending.length === 0) flushResults(state);
   return { status: "active", events, proposalId: null };
+}
+
+/** The reviewer's finish is its review: a call to finish is answered with what to call instead. */
+const REVIEWER_HAS_NO_FINISH: ToolErr = {
+  error: "not_for_role",
+  why: "The reviewer has no finish: its run ends when its review is in.",
+  fix: "Call submit_review with a whole score from 1 to 5 and a one-line note for every dimension, the must-fix items and the improvements.",
+};
+
+/**
+ * The review hooks a designing run's tools are given (ToolContext.review): `start` puts the reviewer sub-run in place —
+ * a fresh history, the root's window, timezone and ceiling, this run's rehearsal and last-told clock, and the review
+ * packet from this run's tool results (never its reasoning) — in one insert keyed on the round's id, and adds it to
+ * the step's tree so the step answers it as the run due next.
+ */
+function reviewHooks(s: StepCtx): ReviewHooks {
+  return {
+    async start(req) {
+      const { state, run, root } = s;
+      const at = s.now.toISOString();
+      const packet = reviewPacket({ round: req.round, draft: req.draft, records: toolRecords(state.messages, state.results), ...(state.brief ? { brief: state.brief } : {}) });
+      const rootSettings = root.settings ?? state.settings;
+      const reviewerState = newRunState("reviewer", run.scope, {
+        rehearsal: state.settings.rehearsal,
+        ceilingMicros: rootSettings.ceilingMicros ?? state.settings.ceilingMicros,
+        timezone: rootSettings.timezone ?? state.settings.timezone,
+        window: rootSettings.window ?? state.settings.window,
+        toldAt: state.toldAt,
+        packet,
+        reviewOf: { proposalId: req.proposalId, designerRunId: run.id, toolUseId: req.toolUseId, round: req.round },
+      });
+      const inserted = (await s.db.all(sql`
+        INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
+        VALUES (${req.reviewRunId}, ${s.userId}, ${run.id}, 'reviewer', ${JSON.stringify(run.scope)}, ${root.request}, 'active',
+          ${JSON.stringify(reviewerState)}, 0, 0, ${at}, ${at})
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `)) as Array<{ id: string }>;
+      if (inserted.length === 0) return false;
+      s.nodes.push({
+        id: req.reviewRunId,
+        parentId: run.id,
+        role: "reviewer",
+        scope: run.scope,
+        request: root.request,
+        status: "active",
+        steps: 0,
+        costUsd: 0,
+        proposalId: null,
+        error: null,
+        createdAt: at,
+        updatedAt: at,
+        finishedAt: null,
+        settings: reviewerState.settings,
+      });
+      return true;
+    },
+  };
 }
 
 const label = (name: string): string => name.replace(/_/g, " ");
@@ -1577,7 +1842,7 @@ async function runTool(tool: DesignTool, ctx: ToolContext, input: unknown): Prom
 }
 
 function okResult(id: string, r: ToolOk): ToolResultBlock {
-  const { summary: _summary, receipt: _receipt, ...forModel } = r;
+  const { summary: _summary, receipt: _receipt, control: _control, ...forModel } = r;
   return { type: "tool_result", tool_use_id: id, content: capResult(JSON.stringify(forModel)) };
 }
 
@@ -1634,8 +1899,8 @@ function withMessageBreakpoint(messages: MessageParam[]): MessageParam[] {
 
 /** The history with the last-turn note added to its newest user message (not yet sent) — or as a message of its own
  * when the newest is the model's. Returns a new list; the stored one changes only once the call is made. */
-function withLastTurnNote(messages: MessageParam[]): MessageParam[] {
-  const note = { type: "text" as const, text: LAST_TURN_NOTE };
+function withLastTurnNote(messages: MessageParam[], text: string): MessageParam[] {
+  const note = { type: "text" as const, text };
   const lastMsg = messages.at(-1);
   if (!lastMsg || lastMsg.role !== "user") return [...messages, { role: "user", content: [note] }];
   const blocks = typeof lastMsg.content === "string" ? [{ type: "text" as const, text: lastMsg.content }] : lastMsg.content;

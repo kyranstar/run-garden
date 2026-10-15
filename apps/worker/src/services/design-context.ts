@@ -18,7 +18,8 @@
  * (counts and dates, never contents), and the request.
  *
  * Untrusted text — the request, the athlete's words in the profile, memory items, a sub-run's brief — goes in only
- * through `markUntrusted`, the one marker the shared prefix explains; nothing inside it can close its block.
+ * through `markUntrusted`, the one marker the shared prefix explains; nothing inside it can close its block. A
+ * reviewer's packet (design-review.ts) is composed by the app with its own markers already in place.
  *
  * Budget: `DESIGN_CONTEXT_STATEMENTS` D1 statements, whatever the account holds (a counting test pins it), well inside
  * the step's 45 with the model call and the tool calls.
@@ -90,8 +91,13 @@ export interface DesignRun {
   /** The athlete's words; null when they only tapped Now or Later today. */
   request: string | null;
   parentId: string | null;
-  /** A sub-run's brief from the run that started it: the main coach's for a designer, the draft for a reviewer. */
+  /** A sub-run's brief from the run that started it: the main coach's for a designer. Model-written: marked whole. */
   brief?: string | null;
+  /**
+   * A reviewer's packet (design-review.ts `reviewPacket`): the draft and the facts it was built from, composed by the
+   * app with every text in it that came from a model or the athlete already marked — placed in the header as it is.
+   */
+  packet?: string | null;
 }
 
 export interface DesignContext {
@@ -595,7 +601,9 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
     ].join("\n"),
     indexSection(r, end, events.beyond).join("\n"),
   ];
-  if (run.brief) {
+  if (role === "reviewer" && run.packet) {
+    parts.push(run.packet);
+  } else if (run.brief) {
     const b = BRIEF_SOURCES[role];
     parts.push(`${b.label}\n${markUntrusted(b.from, run.brief)}`);
   }

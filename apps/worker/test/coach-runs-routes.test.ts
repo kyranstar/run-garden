@@ -289,7 +289,7 @@ describe("every request within the budget", () => {
     expect(again.cost).toBeLessThanOrEqual(BUDGET);
   });
 
-  it("create over a live run whose window closed: the run expired with its line, the new one started — about eight", async () => {
+  it("create over a live run whose window closed: the run expired with its line and its unreviewed proposal closed, the new one started — about nine", async () => {
     const id = (await call("POST", "", { scope: { kind: "now" } })).body.run.id as string;
     const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     const state = JSON.parse(row!.state!) as { settings: Record<string, unknown> };
@@ -297,7 +297,7 @@ describe("every request within the budget", () => {
     await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, id));
     const created = await measured("POST", "", { scope: { kind: "now" }, request: "today" });
     expect(created.body).toMatchObject({ existing: false, run: { request: "today" } });
-    expect(created.cost).toBeLessThanOrEqual(8);
+    expect(created.cost).toBeLessThanOrEqual(9);
     const [old] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     expect(old!.status).toBe("expired");
   });

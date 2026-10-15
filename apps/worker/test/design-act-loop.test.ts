@@ -23,6 +23,7 @@ import { answerRun, createRun, defaultRunDeps, newRunState, ROUTE_OVERHEAD, runS
 import { designContextBuilder } from "../src/services/design-context.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
+import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult, ToolResultBlock } from "../src/services/llm-messages.js";
 import { at, day, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -112,6 +113,14 @@ const textOf = (b: ToolResultBlock | undefined): string => (typeof b?.content ==
 async function events(runId: string) {
   return db.select().from(schema.coachRunEvents).where(eq(schema.coachRunEvents.runId, runId)).orderBy(schema.coachRunEvents.seq);
 }
+
+/** A review as submit_review takes it: every dimension 5, with a note. */
+const fullReview = {
+  scores: Object.fromEntries(REVIEW_DIMENSIONS.map((d) => [d.id, 5])),
+  notes: Object.fromEntries(REVIEW_DIMENSIONS.map((d) => [d.id, "Clear."])),
+  mustFix: [] as string[],
+  improvements: [] as string[],
+};
 
 const boxJumps = () => ({
   ...calmDoc({ title: "Box jumps, as asked" }),
@@ -388,22 +397,32 @@ describe("finish, and a step of act tools", () => {
     expect(JSON.stringify(requests.map((r) => r.messages))).not.toMatch(/receipt/);
   });
 
-  it("a reviewer given in the deps reaches propose_workout; the main run's finish — never propose — makes a reviewed proposal pending", async () => {
+  it("with deps that review, propose_workout's reviewer runs before the finish; the main run's finish — never propose — makes the reviewed proposal pending", async () => {
     const proposalOf = async (runId: string) =>
       (await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(runId))))[0]!;
-    const review = { scores: { intent: 5 }, notes: { intent: "Clear." }, mustFix: [], improvements: [] };
     for (const rehearsal of [false, true]) {
       const a = await athlete();
       const runId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: null, rehearsal }, NOW)).run.id;
-      const { deps } = scripted([turn(use("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } })), turn(use("finish", { summary: "Done." }))]);
-      const d = { ...deps, reviewDraft: async () => review };
-      await runStep(db, env, runId, a.userId, NOW, d); // the opening context
-      await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 1000), d); // propose
+      const { deps } = scripted([
+        turn(use("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } })),
+        turn(use("submit_review", fullReview)),
+        turn(use("finish", { summary: "Done." })),
+      ]);
+      const d = { ...deps, review: true };
+      const at = (i: number) => new Date(NOW.getTime() + i * 1000);
+      await runStep(db, env, runId, a.userId, at(0), d); // the opening context
+      await runStep(db, env, runId, a.userId, at(1), d); // propose: the reviewer is started
       const proposed = await proposalOf(runId);
-      expect((proposed.ops as Array<{ review: unknown }>)[0]!.review).toEqual(review);
+      expect((proposed.ops as Array<{ review: unknown }>)[0]!.review).toBeNull();
       expect(proposed.status).toBe(rehearsal ? "rehearsal" : "unreviewed");
-      await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 2000), d); // finish
-      expect((await proposalOf(runId)).status).toBe(rehearsal ? "rehearsal" : "pending");
+      await runStep(db, env, runId, a.userId, at(2), d); // the reviewer's context
+      await runStep(db, env, runId, a.userId, at(3), d); // its review
+      expect((await proposalOf(runId)).status).toBe(rehearsal ? "rehearsal" : "unreviewed");
+      await runStep(db, env, runId, a.userId, at(4), d); // the main run resumed with its review
+      await runStep(db, env, runId, a.userId, at(5), d); // finish
+      const done = await proposalOf(runId);
+      expect((done.ops as Array<{ review: unknown }>)[0]!.review).toEqual({ ...fullReview, rounds: 1, changes: [] });
+      expect(done.status).toBe(rehearsal ? "rehearsal" : "pending");
     }
   });
 
@@ -416,14 +435,20 @@ describe("finish, and a step of act tools", () => {
       state: JSON.stringify(newRunState("designer", { kind: "week" }, { timezone: "America/Los_Angeles" })), steps: 0, costUsd: 0,
       createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
     });
-    const review = { scores: { intent: 5 }, notes: { intent: "Clear." }, mustFix: [], improvements: [] };
-    const { deps } = scripted([turn(use("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } })), turn(use("finish", { summary: "Done." }))]);
-    const d = { ...deps, reviewDraft: async () => review };
-    for (let i = 0; i < 3; i++) await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + i * 1000), d); // the designer: context, propose, finish
+    const { deps } = scripted([
+      turn(use("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } })),
+      turn(use("submit_review", fullReview)),
+      turn(use("finish", { summary: "Done." })),
+    ]);
+    const d = { ...deps, review: true };
+    // The designer's context and propose; its reviewer's context and review; the designer resumed, then its finish.
+    for (let i = 0; i < 6; i++) await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + i * 1000), d);
     const [designer] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, designerId));
     expect(designer!.status).toBe("finished");
+    const [reviewer] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.parentId, designerId));
+    expect(reviewer).toMatchObject({ role: "reviewer", status: "finished" });
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(mainId)));
-    expect((p!.ops as Array<{ review: unknown }>)[0]!.review).toEqual(review);
+    expect((p!.ops as Array<{ review: unknown }>)[0]!.review).toEqual({ ...fullReview, rounds: 1, changes: [] });
     expect(p!.status).toBe("unreviewed");
   });
 

@@ -6,10 +6,12 @@
  *
  * The names, and what each tool is for, are the ones the prompt promises (design-prompt.ts `PROMPT_TOOL_NAMES` and
  * "Using the tools well"); the descriptions stay short because the prompt already explains when to reach for which.
- * The read tools serve all three roles; the act tools follow them (`ACT_TOOLS`, each with its own roles). Two tools the
- * prompt names arrive with later tasks — `submit_review` (Task 6) and `plan_set` (Task 7) — and are listed in
- * `PENDING_TOOL_NAMES` until they do, so a test holds the registry plus that list to the prompt's names exactly.
+ * The read tools serve all three roles; the act tools follow them (`ACT_TOOLS`, each with its own roles), the
+ * reviewer's `submit_review` (design-review.ts) among them. One tool the prompt names arrives with a later task —
+ * `plan_set` (Task 7) — and is listed in `PENDING_TOOL_NAMES` until it does, so a test holds the registry plus that
+ * list to the prompt's names exactly.
  */
+import { submitReview } from "../design-review.js";
 import { askAthlete } from "./ask.js";
 import { finish } from "./finish.js";
 import { proposeWorkout } from "./propose.js";
@@ -51,10 +53,10 @@ export const READ_TOOLS: DesignTool[] = [
 ];
 
 /** The act tools, in the prompt's order. */
-export const ACT_TOOLS: DesignTool[] = [validateWorkout, askAthlete, recordAnswer, remember, proposeWorkout, finish];
+export const ACT_TOOLS: DesignTool[] = [validateWorkout, askAthlete, recordAnswer, remember, proposeWorkout, submitReview, finish];
 
 /** Tools the prompt names that later tasks add: each leaves this list when it joins the registry. */
-export const PENDING_TOOL_NAMES = ["submit_review", "plan_set"] as const;
+export const PENDING_TOOL_NAMES = ["plan_set"] as const;
 
 /** Every tool a run is offered. */
 export function allTools(): DesignTool[] {

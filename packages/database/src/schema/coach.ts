@@ -96,7 +96,7 @@ export const coachProposals = sqliteTable(
     rationale: text("rationale").notNull(),
     flags: text("flags", { mode: "json" }).notNull().$type<string[]>(),
     ops: text("ops", { mode: "json" }).notNull().$type<unknown[]>(),
-    status: text("status").notNull(), // pending | approved | declined | superseded | expired
+    status: text("status").notNull(), // pending | approved | declined | superseded | expired | unreviewed | rehearsal | cancelled
     createdAt: text("created_at").notNull(),
     expiresAt: text("expires_at").notNull(),
     resolvedAt: text("resolved_at"),
@@ -219,7 +219,8 @@ export const coachRuns = sqliteTable(
     /** { kind: 'now' | 'later_today' | 'week' | 'next_n', n?, from?, to? } */
     scope: text("scope", { mode: "json" }).notNull().$type<Record<string, unknown>>(),
     request: text("request"),
-    /** 'active' | 'stepping' | 'waiting_athlete' | 'finished' | 'failed' | 'cancelled' | 'expired' | 'stopped_cap'
+    /** 'active' | 'stepping' | 'waiting_athlete' | 'waiting_review' | 'finished' | 'failed' | 'cancelled' | 'expired' |
+     * 'stopped_cap'
      * (services/coach-runs.ts; 'stepping' is a step's claim) */
     status: text("status").notNull(),
     /**

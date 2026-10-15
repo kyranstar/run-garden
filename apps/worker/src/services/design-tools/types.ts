@@ -49,8 +49,14 @@ export interface ToolContext {
    * a replay with what the first call stored (propose_workout, record_answer, remember). Absent outside the loop.
    */
   toolUseId?: string;
-  /** The independent review of a draft (spec §5; Task 6 fills it): propose_workout calls it before it stores. */
-  reviewDraft?: ReviewDraft;
+  /**
+   * The independent review of a stored draft (spec §5; ruling 4), set by the loop when its deps review drafts:
+   * propose_workout starts a reviewer sub-run through it and pauses. Absent outside the loop (and in deps without
+   * review): a draft is stored unreviewed and never becomes pending.
+   */
+  review?: ReviewHooks;
+  /** A reviewer's run: the draft it reviews (the loop sets it from the sub-run's state). */
+  reviewOf?: ReviewOf;
 }
 
 export interface ToolOk {
@@ -67,17 +73,33 @@ export interface ToolOk {
    * memory's id. The loop puts it in the call's event payload. Never shown to the model. Small, bounded JSON.
    */
   receipt?: Record<string, unknown>;
+  /**
+   * `review`: the run pauses (`waiting_review`) while the reviewer sub-run this call started reviews its draft; the
+   * call's result for the model is that review, given when the run resumes (design-review.ts).
+   */
+  control?: "review";
 }
 
-// ── Review (spec §5): the seam Task 6 fills ─────────────────────────────────────────────────────────────────────────
+// ── Review (spec §5; ruling 4; design-review.ts) ────────────────────────────────────────────────────────────────────
 
 /** An independent review of a draft: a 1–5 score and a one-line note per dimension (design-prompt.ts
- * `REVIEW_DIMENSIONS`), the must-fix items and the improvements. */
+ * `REVIEW_DIMENSIONS`), the must-fix items and the improvements. The reviewer's own words: model-written text. */
 export interface DesignReview {
   scores: Record<string, number>;
   notes: Record<string, string>;
   mustFix: string[];
   improvements: string[];
+}
+
+/**
+ * The review a proposal's workout carries, for the athlete (Task 9 shows it): the kept version's review — or, when
+ * it couldn't be read, empty scores and a `note` saying the validator's view stands — with how many drafts were
+ * reviewed and what changed between them. Plain text only.
+ */
+export interface OpReview extends DesignReview {
+  rounds: number;
+  changes: string[];
+  note?: string;
 }
 
 /** What propose_workout hands the reviewer: the draft as it would be stored, before it is. */
@@ -87,14 +109,38 @@ export interface DraftForReview {
   date: string;
   /** The validated document. */
   doc: WorkoutDoc;
-  /** The validator's advisory issues (errors never reach review: they refuse the draft). */
-  issues: DocIssue[];
+  /** The validator's advisory issues, as the op keeps them (errors never reach review: they refuse the draft). */
+  issues: Array<Pick<DocIssue, "path" | "code" | "message" | "fix">>;
   derived: Record<string, unknown>;
   changeNote?: string;
 }
 
-/** Reviews a draft; null when no review could be had (the draft is then stored unreviewed). */
-export type ReviewDraft = (ctx: ToolContext, draft: DraftForReview) => Promise<DesignReview | null>;
+/** What starts a draft's review: the reviewer sub-run's id, the round, the call that proposed it, and the draft. */
+export interface ReviewStart {
+  reviewRunId: string;
+  proposalId: string;
+  round: number;
+  toolUseId: string;
+  draft: DraftForReview;
+}
+
+/** The loop's side of a review (coach-runs.ts). */
+export interface ReviewHooks {
+  /**
+   * Start the independent review of a stored draft: a reviewer sub-run under this run, with a fresh history and the
+   * packet built from this run's tool results (never its reasoning). One statement: the sub-run's insert, keyed on
+   * `reviewRunId` — answers false, inserting nothing, when that run already exists.
+   */
+  start(req: ReviewStart): Promise<boolean>;
+}
+
+/** The draft a reviewer run reviews: the proposal, the designer's run, and the call that proposed the draft. */
+export interface ReviewOf {
+  proposalId: string;
+  designerRunId: string;
+  toolUseId: string;
+  round: number;
+}
 
 /** A teachable error: the model sees all three and can correct itself. */
 export interface ToolErr {
@@ -107,8 +153,10 @@ export interface ToolErr {
  * A tool with a loop-level effect, once it answers `ToolOk`:
  * - `ask`: the run pauses (`waiting_athlete`) with the question as an event; the tool's result for the model is the
  *   athlete's answer, given when they answer (`POST /api/coach/runs/:id/answer`).
- * - `finish`: the run ends. `data.proposalId` (a string), when present, becomes the run's proposal.
- * (A spawning control for sub-runs comes with the orchestration, Task 7.)
+ * - `finish`: the run ends. `data.proposalId` (a string), when present, becomes the run's proposal. The reviewer's
+ *   `submit_review` is its finish.
+ * A call that started a review pauses its run through its result instead (`ToolOk.control`). (A spawning control
+ * for designer sub-runs comes with the orchestration, Task 7.)
  */
 export type ToolControl = "ask" | "finish";
 

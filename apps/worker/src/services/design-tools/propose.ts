@@ -14,18 +14,17 @@
  *    alternate stand in; a proposal never leans on that);
  *  - a document whose discipline is a run (`run_unsupported`: the app can't play one yet, so it could never be
  *    approved);
- *  - a revision of a workout another run of this design already revises (`target_taken`).
+ *  - a revision of a workout another run of this design already revises (`target_taken`);
+ *  - a third draft from one run, once two rounds of review are done (`rounds_done`: ruling 4).
  * Everything else — the validator's warnings — goes with the draft as its costs.
  *
  * THE PROPOSAL. One per main run, its id derived from the run's (`designProposalId`), so a designer appends to its main
  * run's without asking for it. Each workout is one op of kind `doc_workout` (`DocWorkoutOp`): its target, date and
  * time, the document (written by the coach, `source.ref` the run), the change note, the review (null until one is
  * had), the validator's warnings and what is derived from the document — the manifest is computed from these, never
- * from prose (Task 8 applies them through the Studio's create / revise path). A run's later draft REPLACES its earlier
- * op, whatever its target (each run designs one workout; a second draft is a revision round). The call's tool-use id
- * is on its op, and the ids of the drafts it replaced go with it (`replaces`): a replay — a step that died after this
- * wrote — finds its id and answers what it stored, or that a later draft replaced it, writing nothing (so a reviewer
- * never reviews the same draft twice).
+ * from prose (Task 8 applies them through the Studio's create / revise path). Each run holds ONE op, whatever its
+ * target (each run designs one workout; a second draft is a revision round). The call's tool-use id is on its op: a
+ * replay — a step that died after this wrote — finds its id and answers what it stored, writing nothing new.
  *
  * A free-text move is refused (act-common.ts `freeTextRefusal`): no condition rule can judge it. A revision may keep
  * one its workout's current document already holds, unchanged.
@@ -34,12 +33,18 @@
  * (`pending` is the only status the app lists). propose never writes `pending`: the main run's finish does, once every
  * op carries its review (coach-runs.ts; Task 6 has the reviews written).
  *
- * REVIEW (Task 6 fills the seam): with `ctx.reviewDraft`, the draft is reviewed before it is stored and the review is
- * the result; without one — or when the reviewer has no verdict — it is stored unreviewed and says so.
+ * REVIEW (design-review.ts; ruling 4). With the loop's review hooks (`ctx.review`), the draft is stored unreviewed, a
+ * reviewer sub-run is started for it, and the call answers `control: "review"`: the run pauses, and the call's result
+ * for the model is the review, once it is in. A first draft is the op itself; a revision of a reviewed draft waits
+ * beside it (`candidate`) while its review runs, so the op always holds the best-scoring version so far, and each
+ * round is logged (`reviewLog`). REVIEW_ROUNDS drafts are reviewed at most. A replay of a call whose draft is under
+ * review starts its reviewer only if it never was (the sub-run's id is the round's); one whose reviewer is over without
+ * a review settles the validator's view; one whose review is in answers it. Without the hooks (tests of this tool
+ * alone), a later draft replaces the earlier and nothing is reviewed: the proposal never becomes pending.
  *
- * Seven statements: the athlete (with the gear, set-aside moves, recent sessions' ids, the target row, the proposal and
- * the restore marker), the moves done cleanly, the recent sessions (four), then one write — an upsert guarded by the
- * ops it read, so a write that raced another is refused rather than lost.
+ * Eight statements: the athlete (with the gear, set-aside moves, recent sessions' ids, the target row, the proposal and
+ * the restore marker), the moves done cleanly, the recent sessions (four), one write — an upsert guarded by the ops it
+ * read, so a write that raced another is refused rather than lost — and the reviewer sub-run's insert.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -48,7 +53,18 @@ import { docOriginRow, parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain
 import type { DocIssue } from "@rg/workout";
 import { LOCKED_CONTENT } from "../doc-workouts.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
-import type { DesignReview, DesignTool, DraftForReview, ToolContext, ToolOk } from "./types.js";
+import {
+  applyVerdict,
+  designerResult,
+  draftOf,
+  NOTE_NOT_DONE,
+  OPEN_PROPOSAL_STATUSES,
+  proposalFields,
+  REVIEW_ROUNDS,
+  reviewerRunId,
+  updateOps,
+} from "../design-review.js";
+import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolContext, ToolErr, ToolOk } from "./types.js";
 import {
   coachDoc,
   derivedSummary,
@@ -72,7 +88,8 @@ export const designProposalId = (mainRunId: string): string => `dp-${mainRunId}`
 
 export type DocWorkoutTarget = { kind: "new"; date: string; time?: string } | { kind: "revise"; workoutId: string; baseRev: number };
 
-/** One designed workout of a proposal (spec §8). Task 8 applies it; the run view and the manifest read it. */
+/** One designed workout of a proposal (spec §8). Task 8 applies it; the run view and the manifest read it. Its
+ * top-level fields are the version the proposal holds: the best-scoring one reviewed so far (design-review.ts). */
 export interface DocWorkoutOp {
   kind: "doc_workout";
   target: DocWorkoutTarget;
@@ -81,8 +98,9 @@ export interface DocWorkoutOp {
   time?: string;
   doc: WorkoutDoc;
   changeNote?: string;
-  /** The independent review; null until one is had. */
-  review: DesignReview | null;
+  /** The independent review of the version held, for the athlete — with the rounds and what changed; null until one
+   * is had (a review that couldn't be read is one: its `note` says the validator's view stands). */
+  review: OpReview | null;
   /** The validator's warnings for the day: the costs shown beside Approve. */
   issues: Array<ReturnType<typeof issueOut>>;
   derived: Record<string, unknown>;
@@ -90,9 +108,49 @@ export interface DocWorkoutOp {
   by: { runId: string; role: "main" | "designer" };
   /** The model's call that proposed it: a replay of the call finds it. */
   toolUseId: string;
-  /** The calls whose drafts this one replaced (a replay of one of them writes nothing). */
+  /** The calls whose drafts this one replaced, without review (a replay of one of them writes nothing). */
   replaces?: string[];
   at: string;
+  /** The version held's round of review (1-based). */
+  round?: number;
+  /** The version held's reviewer sub-run. */
+  reviewRunId?: string;
+  /** A later draft of the run's, while its review runs: held apart, so the version above stays the best so far. */
+  candidate?: DraftVersion;
+  /** One entry per draft sent for review, in order. */
+  reviewLog?: ReviewRound[];
+}
+
+/** A draft as an op holds it beside the version it keeps (`candidate`). */
+export interface DraftVersion {
+  round: number;
+  toolUseId: string;
+  reviewRunId: string;
+  target: DocWorkoutTarget;
+  date: string;
+  time?: string;
+  doc: WorkoutDoc;
+  changeNote?: string;
+  issues: Array<ReturnType<typeof issueOut>>;
+  derived: Record<string, unknown>;
+  at: string;
+}
+
+/** One draft's round of review: under way, reviewed, or over without a review that could be read. */
+export interface ReviewRound {
+  round: number;
+  toolUseId: string;
+  reviewRunId: string;
+  status: "reviewing" | "reviewed" | "unread";
+  review?: DesignReview;
+  mean?: number | null;
+  /** Why there is no review (the op's note). */
+  note?: string;
+  changeNote?: string;
+  /** Whether this round's version is the one the op holds, once judged. */
+  kept?: boolean;
+  /** A revision's line in the op's change list, once judged: what changed, and why it wasn't kept if it wasn't. */
+  change?: string;
 }
 
 export type DesignProposalStatus = "unreviewed" | "pending" | "rehearsal";
@@ -103,7 +161,7 @@ export function proposalStatusOf(rehearsal: boolean): Exclude<DesignProposalStat
 }
 
 /** Statuses a design's proposal is still open in: a later draft may still change it. */
-const OPEN = ["unreviewed", "pending", "rehearsal"] as const;
+const OPEN = OPEN_PROPOSAL_STATUSES;
 
 const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 const target = z.discriminatedUnion("kind", [
@@ -111,8 +169,6 @@ const target = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("revise"), workoutId: z.string().min(1).max(120), baseRev: z.number().int().min(0) }).strict(),
 ]);
 const input = z.object({ doc: objectField, target, changeNote: z.string().trim().min(1).max(200).optional() }).strict();
-
-const CHANGE_NOTE_SHOWN = 500;
 
 /** The guidance for a draft the validator refused. */
 function invalidFix(errors: readonly DocIssue[], today: boolean): string {
@@ -169,7 +225,7 @@ export const proposeWorkout: DesignTool = {
     required: ["doc", "target"],
     additionalProperties: false,
   },
-  statementCost: 7,
+  statementCost: 8,
   roles: ["main", "designer"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, "doc (a workout document), target ({ kind: new, date, time? } or { kind: revise, workoutId, baseRev }) and optionally changeNote");
@@ -205,17 +261,12 @@ export const proposeWorkout: DesignTool = {
     const opsText = typeof a.extra.propOps === "string" ? a.extra.propOps : null;
     const ops = ((opsText ? parsedJson(opsText) : null) as DocWorkoutOp[] | null) ?? [];
     const status = typeof a.extra.propStatus === "string" ? a.extra.propStatus : null;
+    const mine = ops.find((o) => o.by.runId === ctx.run.id);
 
-    // A replay of this very call: what it stored, again — or, when a later draft of the run's replaced it, that.
+    // A replay of this very call: what it stored, or its review — or, when a later draft of the run's replaced it, that.
     if (ctx.toolUseId) {
-      const replayed = ops.find((o) => o.toolUseId === ctx.toolUseId);
-      if (replayed) return storedAnswer(proposalId, replayed, false);
-      if (ops.some((o) => o.replaces?.includes(ctx.toolUseId!))) {
-        return {
-          data: { stored: true, proposalId, superseded: true, note: "a later draft from this run replaced this one" },
-          summary: "An earlier draft, already replaced",
-        };
-      }
+      const replayed = await replay(ctx, proposalId, ops, opsText, mine, ctx.toolUseId);
+      if (replayed) return replayed;
     }
 
     if (status !== null && !(OPEN as readonly string[]).includes(status)) {
@@ -223,6 +274,19 @@ export const proposeWorkout: DesignTool = {
     }
     if (typeof a.extra.restoring === "string" && a.extra.restoring.length > 0) {
       return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the design can be asked for again once the restore is done.");
+    }
+    // A round still `reviewing` when a NEW call comes is one whose reviewer never got going (its call failed after
+    // storing the draft): this run is stepping, so no reviewer of its is live, and a review that ended was settled when
+    // the run resumed. It is no round: dropped, its draft with it.
+    const kept = mine ? withoutAbandoned(mine) : undefined;
+    // Two rounds at most (ruling 4): a third draft is never reviewed, so it is never proposed.
+    const log = kept?.reviewLog ?? [];
+    if (ctx.review && log.length >= REVIEW_ROUNDS) {
+      return refuse(
+        "rounds_done",
+        `Two rounds of revision are done: ${REVIEW_ROUNDS} drafts were reviewed, and the proposal keeps the best-scoring one, with its review.`,
+        "Call finish, with one plain line on what was proposed.",
+      );
     }
 
     let date: string;
@@ -273,43 +337,136 @@ export const proposeWorkout: DesignTool = {
     const draftTarget: DocWorkoutTarget =
       p.target.kind === "new" ? { kind: "new", date, ...(time ? { time } : {}) } : { kind: "revise", workoutId: p.target.workoutId, baseRev: p.target.baseRev };
     const derived = derivedSummary(judged.derived);
+    const issues = judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut);
     const draft: DraftForReview = {
       proposalId,
       target: draftTarget,
       date,
       doc: judged.doc,
-      issues: judged.warnings,
+      issues,
       derived,
       ...(p.changeNote ? { changeNote: p.changeNote } : {}),
     };
-    const review = ctx.reviewDraft ? await reviewOrNull(ctx, draft) : null;
-
     const at = ctx.now.toISOString();
-    const op: DocWorkoutOp = {
-      kind: "doc_workout",
+    const toolUseId = ctx.toolUseId ?? `call-${at}`;
+    const version = {
       target: draftTarget,
       date,
       ...(time ? { time } : {}),
       doc: judged.doc,
       ...(p.changeNote ? { changeNote: p.changeNote } : {}),
-      review,
-      issues: judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut),
+      issues,
       derived,
-      by: { runId: ctx.run.id, role: ctx.run.role === "designer" ? "designer" : "main" },
-      toolUseId: ctx.toolUseId ?? `call-${at}`,
+      toolUseId,
       at,
     };
-    const earlier = ops.filter((o) => o.by.runId === ctx.run.id);
-    const replaced = earlier.length > 0;
-    if (replaced) op.replaces = earlier.flatMap((o) => [...(o.replaces ?? []), o.toolUseId]);
+    const by: DocWorkoutOp["by"] = { runId: ctx.run.id, role: ctx.run.role === "designer" ? "designer" : "main" };
+
+    let op: DocWorkoutOp;
+    let replaced = false;
+    const round = log.length + 1;
+    const reviewRunId = reviewerRunId(ctx.run.id, round);
+    const entry: ReviewRound = { round, toolUseId, reviewRunId, status: "reviewing", ...(p.changeNote ? { changeNote: p.changeNote } : {}) };
+    if (ctx.review && kept?.review) {
+      // A revision of a reviewed draft: held apart while its review runs; the op keeps the best so far.
+      op = { ...kept, candidate: { ...version, round, reviewRunId }, reviewLog: [...log, entry] };
+    } else if (ctx.review) {
+      op = { kind: "doc_workout", ...version, review: null, by, round, reviewRunId, reviewLog: [...log, entry] };
+    } else {
+      // No reviewer here: a later draft replaces the earlier, unreviewed.
+      op = { kind: "doc_workout", ...version, review: null, by };
+      replaced = !!mine;
+      if (mine) op.replaces = [...(mine.replaces ?? []), mine.toolUseId];
+    }
     const next = [...ops.filter((o) => o.by.runId !== ctx.run.id), op];
     const written = await upsertProposal(ctx, proposalId, next, opsText, at);
     if (!written) {
       return refuse("proposal_changed", "The proposal changed while this draft was being stored.", "Call propose_workout again with the same draft.");
     }
-    return storedAnswer(proposalId, op, replaced);
+    if (!ctx.review) return storedAnswer(proposalId, op, replaced);
+    try {
+      await ctx.review.start({ reviewRunId, proposalId, round, toolUseId, draft });
+    } catch (e) {
+      // Stored, never shown: unreviewed, it is never pending. The next call drops this round and starts afresh.
+      console.error(JSON.stringify({ level: "error", msg: "propose_workout: the reviewer could not be started", error: e instanceof Error ? e.message : "unknown" }));
+      return refuse("review_unavailable", "The draft is stored, but its reviewer couldn't be started.", "Call propose_workout again with the same draft.");
+    }
+    return reviewingAnswer(proposalId, { ...version, round, reviewRunId });
   },
 };
+
+/** The op without a round whose reviewer never got going: its log entry, and its draft when that was a candidate. */
+function withoutAbandoned(op: DocWorkoutOp): DocWorkoutOp {
+  const log = op.reviewLog ?? [];
+  if (!log.some((r) => r.status === "reviewing")) return op;
+  const { candidate, ...rest } = op;
+  const keepCandidate = candidate && !log.some((r) => r.toolUseId === candidate.toolUseId && r.status === "reviewing");
+  return { ...rest, ...(keepCandidate ? { candidate } : {}), reviewLog: log.filter((r) => r.status !== "reviewing") };
+}
+
+/**
+ * A replay of the call `toolUseId` (a step that died after it ran), or null when it is not one. Its draft under
+ * review: its reviewer is started if it never was (and the run pauses again); a reviewer that is over without a review
+ * (this run is stepping, so its reviewer is not live) leaves the validator's view, written now. Its draft reviewed:
+ * the review. A draft stored without review: what was stored; one a later draft replaced: that.
+ */
+async function replay(
+  ctx: ToolContext,
+  proposalId: string,
+  ops: DocWorkoutOp[],
+  opsText: string | null,
+  mine: DocWorkoutOp | undefined,
+  toolUseId: string,
+): Promise<ToolOk | ToolErr | null> {
+  const entry = mine?.reviewLog?.find((r) => r.toolUseId === toolUseId);
+  if (mine && entry) {
+    if (entry.status === "reviewing") {
+      const draft = draftOf(mine, toolUseId, proposalId);
+      if (ctx.review && draft && (await ctx.review.start({ reviewRunId: entry.reviewRunId, proposalId, round: entry.round, toolUseId, draft }))) {
+        const v = mine.toolUseId === toolUseId ? mine : mine.candidate!;
+        return reviewingAnswer(proposalId, { ...v, round: entry.round, reviewRunId: entry.reviewRunId });
+      }
+      const settled = applyVerdict(mine, toolUseId, { note: NOTE_NOT_DONE });
+      if (!settled) return null;
+      const written = await updateOps(ctx.db, ctx.userId, proposalId, ops.map((o) => (o === mine ? settled : o)), opsText);
+      if (!written) return refuse("proposal_changed", "The proposal changed while this draft's review was being settled.", "Call propose_workout again with the same draft.");
+      return reviewedAnswer(settled, toolUseId, ctx.now);
+    }
+    return reviewedAnswer(mine, toolUseId, ctx.now);
+  }
+  const stored = ops.find((o) => o.toolUseId === toolUseId);
+  if (stored) return storedAnswer(proposalId, stored, false);
+  if (ops.some((o) => o.replaces?.includes(toolUseId))) {
+    return {
+      data: { stored: true, proposalId, superseded: true, note: "a later draft from this run replaced this one" },
+      summary: "An earlier draft, already replaced",
+    };
+  }
+  return null;
+}
+
+/** The review of a draft, as its propose_workout call answers it. */
+function reviewedAnswer(op: DocWorkoutOp, toolUseId: string, now: Date): ToolOk {
+  return {
+    data: designerResult(op, toolUseId) ?? { review: null, note: NOTE_NOT_DONE },
+    provenance: { source: "the independent reviewer's review of this draft", asOf: now.toISOString() },
+    summary: "The draft's review, again",
+  };
+}
+
+/** A draft stored and sent for review: the run pauses until the review is in (the call's result, then). */
+function reviewingAnswer(
+  proposalId: string,
+  v: { doc: WorkoutDoc; derived: Record<string, unknown>; date: string; time?: string; round: number; reviewRunId: string },
+): ToolOk {
+  const minutes = v.derived.minutes as number;
+  return {
+    data: { stored: true, proposalId, round: v.round, reviewRunId: v.reviewRunId, reviewing: true },
+    summary: `${v.round > 1 ? "Revised" : "Draft"} — "${v.doc.title}": ${minutes} min — sent for review`,
+    receipt: { proposalId, title: v.doc.title, date: v.date, ...(v.time ? { time: v.time } : {}), minutes, round: v.round, reviewed: false },
+    control: "review",
+  };
+}
 
 /** Why a workout can't be revised, or null when it can (doc-workouts.ts `reviseDocWorkout`'s own rules). */
 function whyNotEditable(row: TargetRow): string | null {
@@ -323,27 +480,13 @@ function whyNotEditable(row: TargetRow): string | null {
   return null;
 }
 
-async function reviewOrNull(ctx: ToolContext, draft: DraftForReview): Promise<DesignReview | null> {
-  try {
-    return (await ctx.reviewDraft!(ctx, draft)) ?? null;
-  } catch (e) {
-    console.error(JSON.stringify({ level: "error", msg: "propose_workout: review failed", error: e instanceof Error ? e.message : "unknown" }));
-    return null;
-  }
-}
-
 /**
  * Write the proposal with `ops`: made, or updated while it is still open and still holds the ops this call read
  * (`readOps`, null for none). One statement; false when nothing was written (another write came between).
  */
 async function upsertProposal(ctx: ToolContext, id: string, ops: DocWorkoutOp[], readOps: string | null, at: string): Promise<boolean> {
   const status = proposalStatusOf(ctx.run.rehearsal);
-  const title = ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`;
-  const rationale = ops
-    .map((o) => o.changeNote ?? o.doc.intent.summary)
-    .join(" · ")
-    .slice(0, CHANGE_NOTE_SHOWN);
-  const expiresAt = ops.map((o) => o.date).sort().at(-1)!;
+  const { title, rationale, expiresAt } = proposalFields(ops);
   const json = JSON.stringify(ops);
   const rows = (await ctx.db.all(sql`
     INSERT INTO coach_proposals (id, user_id, plan_id, title, evidence, rationale, flags, ops, status, created_at, expires_at)

@@ -1,9 +1,10 @@
 /**
  * THE ACT TOOLS' REGISTRY AND BUDGETS (Stage 3 Task 5; spec §2, §4; principles §6.11). The registry offers every tool
- * the prompt names, except the two later tasks add (each named in `PENDING_TOOL_NAMES` until it lands). Each act tool's
+ * the prompt names, except the one a later task adds (named in `PENDING_TOOL_NAMES` until it lands). Each act tool's
  * declared statement cost is the most it runs — measured over every path the rich fixture, an empty account and the
- * refusals reach, as strict as D1 about binds — and propose_workout, the heaviest (the validator's reads, then its one
- * write), fits a model step's tool room with room to spare. Behaviour is design-act-tools.test.ts.
+ * refusals reach, as strict as D1 about binds — and propose_workout, the heaviest (the validator's reads, its one
+ * write, and the reviewer it starts: Task 6), fits a model step's tool room with room to spare. Behaviour is
+ * design-act-tools.test.ts; the review loop is design-review.test.ts.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
@@ -15,13 +16,15 @@ import { MAX_TOOL_STATEMENT_COST, MODEL_STEP_FIXED, ROUTE_OVERHEAD, STEP_BUDGET,
 import { PROMPT_TOOL_NAMES } from "../src/services/design-prompt.js";
 import { WORKOUT_DOC_JSON_SCHEMA } from "../src/services/design-tools/act-common.js";
 import { ACT_TOOLS, allTools, PENDING_TOOL_NAMES, READ_TOOLS } from "../src/services/design-tools/index.js";
-import { isToolErr, type DesignTool, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
+import { isToolErr, type DesignTool, type ReviewHooks, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
+import { designProposalId } from "../src/services/design-tools/propose.js";
+import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { at, day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -48,11 +51,18 @@ async function runRow(userId: string, o: { role?: ToolRole; parentId?: string; r
 
 const tool = (name: string): DesignTool => ACT_TOOLS.find((t) => t.name === name)!;
 
-async function measured(name: string, input: unknown, userId: string, r: ToolContext["run"], toolUseId = `toolu_${++seq}`): Promise<{ result: ToolOk | ToolErr; count: number }> {
+async function measured(
+  name: string,
+  input: unknown,
+  userId: string,
+  r: ToolContext["run"],
+  toolUseId = `toolu_${++seq}`,
+  extra: Partial<ToolContext> = {},
+): Promise<{ result: ToolOk | ToolErr; count: number }> {
   count = 0;
   counting = true;
   try {
-    const result = await tool(name).run({ db, env: ENV, userId, run: r, now: NOW, toolUseId }, input);
+    const result = await tool(name).run({ db, env: ENV, userId, run: r, now: NOW, toolUseId, ...extra }, input);
     return { result, count };
   } finally {
     counting = false;
@@ -60,10 +70,10 @@ async function measured(name: string, input: unknown, userId: string, r: ToolCon
 }
 
 describe("the registry", () => {
-  it("offers the read tools, then the act tools; with the two still to come, exactly the tools the prompt names", () => {
+  it("offers the read tools, then the act tools; with the one still to come, exactly the tools the prompt names", () => {
     expect(ACT_TOOLS.map((t) => t.name)).toEqual(ACT_NAMES);
     expect(allTools().map((t) => t.name)).toEqual([...READ_TOOLS, ...ACT_TOOLS].map((t) => t.name));
-    expect([...PENDING_TOOL_NAMES]).toEqual(["submit_review", "plan_set"]);
+    expect([...PENDING_TOOL_NAMES]).toEqual(["plan_set"]);
     const offered = [...allTools().map((t) => t.name), ...PENDING_TOOL_NAMES];
     expect(new Set(offered).size).toBe(offered.length);
     expect([...offered].sort()).toEqual([...PROMPT_TOOL_NAMES].sort());
@@ -77,10 +87,12 @@ describe("the registry", () => {
       record_answer: ["main"],
       remember: ["main", "designer"],
       propose_workout: ["main", "designer"],
+      submit_review: ["reviewer"],
       finish: ["main", "designer"],
     });
     expect(ACT_TOOLS.filter((t) => t.control).map((t) => [t.name, t.control])).toEqual([
       ["ask_athlete", "ask"],
+      ["submit_review", "finish"],
       ["finish", "finish"],
     ]);
     for (const t of ACT_TOOLS) {
@@ -145,8 +157,59 @@ describe("each act tool's declared statement cost is the most it runs", () => {
       { input: { doc: calmDoc(), target: { kind: "new", date: TODAY } }, userId: empty },
       { input: { doc: calmDoc(), target: { kind: "new", date: TODAY } }, run: await runRow(rich.userId, { scope: "week" }) },
     ]);
-    expect(n).toBe(tool("propose_workout").statementCost);
+    // Without a reviewer (the act tools' own tests): the validator's reads and the one write.
     expect(n).toBe(7);
+  });
+
+  it("propose_workout with the loop's review hooks: one statement more, the reviewer's insert — and its replays fit too", async () => {
+    // The loop's hooks start the reviewer with one insert (keyed on its id: a second start inserts nothing).
+    const hooks: ReviewHooks = {
+      async start(req) {
+        const rows = await db
+          .insert(schema.coachRuns)
+          .values({ id: req.reviewRunId, userId: rich.userId, parentId: "x", role: "reviewer", scope: { kind: "now" }, request: null, status: "active", state: null, steps: 0, costUsd: 0, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString() })
+          .onConflictDoNothing()
+          .returning({ id: schema.coachRuns.id });
+        return rows.length > 0;
+      },
+    };
+    const main = await runRow(rich.userId);
+    const use = `toolu_hooked_${seq}`;
+    const input = { doc: calmDoc(), target: { kind: "new", date: TODAY } };
+    const first = await measured("propose_workout", input, rich.userId, main, use, { review: hooks });
+    expect((first.result as ToolOk).control).toBe("review");
+    // Replayed while its reviewer is over without a review: the read, the insert that finds it there, the settled op.
+    const replay = await measured("propose_workout", input, rich.userId, main, use, { review: hooks });
+    expect((replay.result as ToolOk).data).toMatchObject({ review: null, round: 1 });
+    const revised = await measured("propose_workout", { ...input, changeNote: "Again." }, rich.userId, main, `toolu_hooked2_${seq}`, { review: hooks });
+    expect((revised.result as ToolOk).control).toBe("review");
+    const n = Math.max(first.count, replay.count, revised.count);
+    expect(first.count).toBe(8);
+    expect(n).toBe(tool("propose_workout").statementCost);
+    expect(n).toBe(8);
+  });
+
+  it("submit_review: the proposal, then the op with its review", async () => {
+    const main = await runRow(rich.userId);
+    const hooks: ReviewHooks = { start: async () => true };
+    const use = `toolu_reviewed_${seq}`;
+    await measured("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } }, rich.userId, main, use, { review: hooks });
+    const reviewer = await runRow(rich.userId, { role: "reviewer", parentId: main.id });
+    const review = {
+      scores: Object.fromEntries(REVIEW_DIMENSIONS.map((d) => [d.id, 4])),
+      notes: Object.fromEntries(REVIEW_DIMENSIONS.map((d) => [d.id, "Fine."])),
+      mustFix: [],
+      improvements: [],
+    };
+    const of = { reviewOf: { proposalId: designProposalId(main.id), designerRunId: main.id, toolUseId: use, round: 1 } };
+    const counts = [
+      (await measured("submit_review", { scores: {} }, rich.userId, reviewer, undefined, of)).count,
+      (await measured("submit_review", review, rich.userId, reviewer, undefined, of)).count,
+      // Settled already: read, nothing to write.
+      (await measured("submit_review", review, rich.userId, reviewer, undefined, of)).count,
+    ];
+    expect(counts).toEqual([0, 2, 1]);
+    expect(tool("submit_review").statementCost).toBe(2);
   });
 
   it("record_answer: the athlete with the request and focus areas, then one insert", async () => {
@@ -190,10 +253,11 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(tool("finish").statementCost).toBe(1);
   });
 
-  it("propose_workout fits a model step's tool room four times over, and every act tool fits the loop's per-tool cap", () => {
+  it("propose_workout fits a model step's tool room three times over, and every act tool fits the loop's per-tool cap", () => {
     const room = STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
     expect(room).toBe(30);
-    expect(tool("propose_workout").statementCost * 4).toBeLessThanOrEqual(room);
+    // With its reviewer (Task 6) a draft pauses the run: no call after it runs in the same step.
+    expect(tool("propose_workout").statementCost * 3).toBeLessThanOrEqual(room);
     for (const t of ACT_TOOLS) expect(t.statementCost, t.name).toBeLessThanOrEqual(MAX_TOOL_STATEMENT_COST);
   });
 });

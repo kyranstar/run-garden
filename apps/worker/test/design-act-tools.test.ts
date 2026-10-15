@@ -23,7 +23,7 @@ import { designProposalId, type DocWorkoutOp } from "../src/services/design-tool
 import { markedDoc } from "../src/services/design-tools/read-workouts.js";
 import { recallMemory } from "../src/services/design-tools/read-memory.js";
 import { readAnswers } from "../src/services/design-tools/read-answers.js";
-import { isToolErr, type DesignReview, type DesignTool, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
+import { isToolErr, type DesignReview, type DesignTool, type ReviewHooks, type ReviewStart, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
 import { docDayContext } from "../src/services/doc-workouts.js";
 import { at, day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
@@ -637,28 +637,48 @@ describe("propose_workout", () => {
     expect(err((await call("propose_workout", ctxOf(rr), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result).error).toBe("restoring");
     expect(await proposal(rr.id)).toBeUndefined();
 
-    // Another designer's draft lands between this call's read and its write (here, while it is reviewed).
+    // Another designer's draft lands between this call's read and its write: just before the write reaches the database.
     const main = await run({ scope: { kind: "week" } });
     const one = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
     const two = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
-    const racing = ctxOf(one, {
-      reviewDraft: async () => {
-        await tool("propose_workout").run(ctxOf(two), { doc: calmDoc({ title: "Two's" }), target: { kind: "new", date: day(-2) } });
-        return null;
+    let raced = false;
+    const racingDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== "all" || typeof value !== "function") return value;
+        return async (q: { queryChunks?: Array<{ value?: unknown }> }) => {
+          const text = (q.queryChunks ?? []).map((c) => (Array.isArray(c?.value) ? c.value.join("") : "")).join("");
+          if (!raced && text.includes("INSERT INTO coach_proposals")) {
+            raced = true;
+            await tool("propose_workout").run(ctxOf(two), { doc: calmDoc({ title: "Two's" }), target: { kind: "new", date: day(-2) } });
+          }
+          return (value as (q: unknown) => Promise<unknown>).call(target, q);
+        };
       },
     });
+    const racing = { ...ctxOf(one), db: racingDb };
     const lost = err((await tool("propose_workout").run(racing, { doc: calmDoc({ title: "One's" }), target: { kind: "new", date: day(-1) } })));
+    expect(raced).toBe(true);
     expect(lost.error).toBe("proposal_changed");
     expect((await proposal(main.id))!.ops.map((o) => o.doc.title)).toEqual(["Two's"]);
   });
 
-  it("a reviewer that fails leaves the draft stored, unreviewed", async () => {
+  it("a reviewer that can't be started leaves the draft stored, unreviewed — and the next call starts afresh, the round not counted", async () => {
     const r = await run();
     const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => quiet.mockRestore());
-    const out = ok((await call("propose_workout", ctxOf(r, { reviewDraft: async () => { throw new Error("reviewer down"); } }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
-    expect(out.data).toMatchObject({ stored: true, review: null, note: "not reviewed yet" });
-    expect((await proposal(r.id))!.status).toBe("unreviewed");
+    const down: ReviewHooks = { start: async () => { throw new Error("reviewer down"); } };
+    const refused = err((await call("propose_workout", ctxOf(r, { review: down }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect(refused).toMatchObject({ error: "review_unavailable" });
+    const stored = (await proposal(r.id))!;
+    expect(stored.status).toBe("unreviewed");
+    expect(stored.ops[0]!.review).toBeNull();
+    const started: ReviewStart[] = [];
+    const up: ReviewHooks = { start: async (req) => (started.push(req), true) };
+    const again = ok((await call("propose_workout", ctxOf(r, { review: up }), { doc: calmDoc({ title: "Again" }), target: { kind: "new", date: TODAY } })).result);
+    expect(again.control).toBe("review");
+    expect(started.map((x) => x.round)).toEqual([1]);
+    expect((await proposal(r.id))!.ops[0]!.reviewLog!.map((x) => [x.round, x.status])).toEqual([[1, "reviewing"]]);
   });
 
   it("a rehearsal run's proposal is stored as a rehearsal", async () => {
@@ -667,30 +687,37 @@ describe("propose_workout", () => {
     expect((await proposal(r.id))!.status).toBe("rehearsal");
   });
 
-  it("with a reviewer wired in, the draft is reviewed before it is stored, and the review is its result", async () => {
+  it("with the loop's review hooks: the draft is stored unreviewed, its reviewer started with the draft, and the call pauses for the review", async () => {
     const r = await run();
-    const review: DesignReview = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: ["Add a cue."] };
-    const seen: unknown[] = [];
-    const c = ctxOf(r, {
-      reviewDraft: async (_ctx, draft) => {
-        seen.push(draft);
-        return review;
-      },
-    });
+    const started: ReviewStart[] = [];
+    const hooks: ReviewHooks = { start: async (req) => (started.push(req), true) };
+    const c = ctxOf(r, { review: hooks });
     const out = ok((await call("propose_workout", c, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ proposalId: designProposalId(r.id), date: TODAY, doc: { title: "Reviewed" }, target: { kind: "new", date: TODAY } });
-    expect(out.data).toMatchObject({ stored: true, review });
-    expect((out.data as Record<string, unknown>).note).toBeUndefined();
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({
+      reviewRunId: `rv1-${r.id}`,
+      proposalId: designProposalId(r.id),
+      round: 1,
+      toolUseId: c.toolUseId,
+      draft: { proposalId: designProposalId(r.id), date: TODAY, doc: { title: "Reviewed" }, target: { kind: "new", date: TODAY } },
+    });
+    expect(out.control).toBe("review");
+    expect(out.data).toMatchObject({ stored: true, proposalId: designProposalId(r.id), round: 1, reviewRunId: `rv1-${r.id}`, reviewing: true });
+    expect(out.summary).toMatch(/^Draft — "Reviewed": \d+ min — sent for review$/);
     const p = (await proposal(r.id))!;
-    expect(p.ops[0]!.review).toEqual(review);
+    expect(p.ops[0]).toMatchObject({ review: null, round: 1, reviewRunId: `rv1-${r.id}`, reviewLog: [{ round: 1, status: "reviewing", toolUseId: c.toolUseId }] });
     // Reviewed or not, propose never makes a proposal pending: the main run's finish does, once every op is reviewed.
     expect(p.status).toBe("unreviewed");
-    // No reviewer's verdict to be had: stored, unreviewed.
-    const r2 = await run();
-    const none = ok((await call("propose_workout", ctxOf(r2, { reviewDraft: async () => null }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
-    expect(none.data).toMatchObject({ review: null, note: "not reviewed yet" });
-    expect((await proposal(r2.id))!.status).toBe("unreviewed");
+    // Replayed when its reviewer was never started (the step died between the write and the start): started now, once —
+    // the round is the same — and the run waits again.
+    const again = ok((await call("propose_workout", { ...c, review: { start: async (req) => (started.push(req), true) } }, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
+    expect(again.control).toBe("review");
+    expect((await proposal(r.id))!.ops[0]!.reviewLog).toHaveLength(1);
+    // Replayed once its reviewer is over without a review: the validator's view stands, written now.
+    const over = ok((await call("propose_workout", { ...c, review: { start: async () => false } }, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
+    expect(over.control).toBeUndefined();
+    expect(over.data).toMatchObject({ review: null, round: 1, roundsLeft: 1 });
+    expect((await proposal(r.id))!.ops[0]!.review).toMatchObject({ rounds: 1, note: expect.stringContaining("the validator's view stands") });
   });
 });
 
@@ -711,7 +738,14 @@ describe("finish", () => {
   it("a proposal whose every workout is reviewed is not said to be kept back (the run's finish makes it pending)", async () => {
     const r = await run();
     const review: DesignReview = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [] };
-    ok((await call("propose_workout", ctxOf(r, { reviewDraft: async () => review }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    // Reviewed as the review loop leaves it (design-review.test.ts drives the loop itself).
+    const reviewed = async (mainRunId: string) => {
+      const p = (await proposal(mainRunId))!;
+      const ops = p.ops.map((o) => ({ ...o, review: { ...review, rounds: 1, changes: [] } }));
+      await db.update(schema.coachProposals).set({ ops }).where(eq(schema.coachProposals.id, designProposalId(mainRunId)));
+    };
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    await reviewed(r.id);
     const out = ok((await call("finish", ctxOf(r), { summary: "A calm half hour." })).result);
     expect(out.summary).toBe("A calm half hour.");
     expect(out.data).toEqual({ proposalId: designProposalId(r.id) });
@@ -720,7 +754,8 @@ describe("finish", () => {
     // A designer's finish promotes nothing: its receipt says unreviewed.
     const main = await run({ scope: { kind: "week" } });
     const designer = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
-    ok((await call("propose_workout", ctxOf(designer, { reviewDraft: async () => review }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    ok((await call("propose_workout", ctxOf(designer), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    await reviewed(main.id);
     expect(ok((await call("finish", ctxOf(designer), { summary: "Done." })).result).receipt).toMatchObject({ proposal: { status: "unreviewed" } });
   });
 
