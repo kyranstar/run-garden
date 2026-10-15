@@ -20,7 +20,7 @@ import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { draftStore } from "../src/studio-drafts.js";
 import { offlineDb } from "../src/offline/idb.js";
 import { loadExtras } from "../src/player/stored.js";
-import { libraryDto, placesDto, primedClient, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { libraryDto, placesDto, primedClient, profileDto, todayDto, twoPlacesDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -1390,5 +1390,73 @@ describe("Start offers today's before reading (CUJ R5)", () => {
     await click(startButton(), "Start now");
     await until(() => text().includes("the player"), "the player");
     expect(calls.some((c) => c.path === "/api/conditions/checks")).toBe(false);
+  });
+});
+
+describe("the place (CUJ R8)", () => {
+  const chip = () => document.querySelector<HTMLButtonElement>(".stu-place-btn");
+  const choices = () => [...document.querySelectorAll<HTMLElement>('.stu-place-menu [role="menuitemradio"]')];
+  const choice = (name: string) => choices().find((c) => c.textContent === name);
+  const sumLine = () => document.querySelector(".stu-sum-line")?.textContent ?? "";
+
+  it("the chip says the default place; No equipment judges bodyweight only, suggests nothing that needs gear, and is kept with the workout", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve();
+    mount("/studio/build/new", { places: twoPlacesDto(HOME_GEAR) });
+    await until(() => !!chip(), "the chip");
+    expect(chip()!.textContent).toContain("Home");
+    expect(chip()!.getAttribute("aria-label")).toBe("Place: Home");
+    expect(text()).not.toContain("which this place doesn't have");
+    await click(chip(), "the chip");
+    expect(choices().map((c) => c.textContent)).toEqual(["Home", "Gym", "No equipment"]);
+    expect(choices().map((c) => c.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    await click(choice("No equipment"), "No equipment");
+    await until(() => text().includes("Goblet squat needs kettlebell or dumbbells, which this place doesn't have."), "the gear note");
+    expect(chip()!.textContent).toContain("No equipment");
+    expect(sumLine()).toContain("No equipment");
+    const sugs = [...document.querySelectorAll(".stu-sug-name, .stu-sug .term")].map((n) => n.textContent?.trim());
+    for (const name of sugs) {
+      const r = EXERCISES.find((e) => e.name === name);
+      if (r) expect(r.equipment.all.length + r.equipment.oneOf.length, name).toBe(0);
+    }
+    await settle(400);
+    expect((await saved())?.setting?.placeId).toBe("none");
+    // One edit: Undo is the default place again.
+    await click(button("Undo"), "Undo");
+    expect(chip()!.textContent).toContain("Home");
+    expect(text()).not.toContain("which this place doesn't have");
+  });
+
+  it("a place picked is the one judged and the one sent: the gym's cable machine, and its id on Start", async () => {
+    await draftStore().save(draft(into(1, "cableRow")));
+    const calls = serve();
+    mount("/studio/build/new", { places: twoPlacesDto(HOME_GEAR) });
+    await until(() => text().includes("Seated cable row needs cable machine, which this place doesn't have."), "Home's gear note");
+    await click(chip(), "the chip");
+    await click(choice("Gym"), "Gym");
+    await until(() => !text().includes("which this place doesn't have"), "the gym's gear");
+    expect(sumLine()).toContain("Gym");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    const made = calls.find((c) => c.method === "POST" && c.path === "/api/workouts")!;
+    expect((made.body as { doc: WorkoutDoc }).doc.setting?.placeId).toBe("p2");
+  });
+
+  it("a workout that can't change says its place, with nothing to choose", async () => {
+    serve({ docs: [{ doc: { ...storedDoc("Thursday lift"), setting: { placeId: "p2" } }, rev: 2 }], planned: [{ ...plannedRow("w1"), contentState: "started" } as WorkoutDto] });
+    mount("/studio/build/workout/w1", { places: twoPlacesDto(HOME_GEAR) });
+    await until(() => text().includes("This workout is under way, so it can't be changed."), "the line");
+    expect(chip()).toBeNull();
+    expect(document.querySelector(".stu-build-place")!.textContent).toContain("Gym");
+  });
+});
+
+describe("the athlete's focus areas (CUJ R7)", () => {
+  it("are read with the Studio's other reads and kept for offline: GET /api/profile", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    const calls = serve();
+    mount("/studio/build/new");
+    await until(() => calls.some((c) => c.method === "GET" && c.path === "/api/profile"), "the profile read");
   });
 });

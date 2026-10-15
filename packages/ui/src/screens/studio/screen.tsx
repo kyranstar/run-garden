@@ -109,8 +109,10 @@ export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKn
   const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: 200 }), staleTime: 60_000 });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces, staleTime: 60_000 });
-  const ctx = useMemo(() => studioCtxFrom(library.data, today.data, places.data), [library.data, today.data, places.data]);
-  const settled = [library, today, places].every((q) => !q.isPending || q.fetchStatus === "paused");
+  // The focus areas (CUJ R7): what the suggestions and the quick starts lean to.
+  const profile = useQuery({ queryKey: ["profile"], queryFn: api.getProfile, staleTime: 60_000 });
+  const ctx = useMemo(() => studioCtxFrom(library.data, today.data, places.data, profile.data), [library.data, today.data, places.data, profile.data]);
+  const settled = [library, today, places, profile].every((q) => !q.isPending || q.fetchStatus === "paused");
   return { ctx, settled, profilesKnown: library.data !== undefined };
 }
 

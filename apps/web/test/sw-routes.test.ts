@@ -74,8 +74,8 @@ describe("the read cache (rg-read-cache)", () => {
    * knew online, and a quick start is built at once rather than after its reads fail through their retries. One entry
    * each: the lists only, never a move's or a workout's own read, and never a typed search of the workouts.
    */
-  it("answers the Studio's list reads offline: templates, workouts, the library view, places", () => {
-    for (const path of ["/api/templates", "/api/workouts", "/api/workouts?from=2026-10-12&to=2026-11-09", "/api/library", "/api/library?limit=200", "/api/places"]) {
+  it("answers the Studio's list reads offline: templates, workouts, the library view, places, the profile", () => {
+    for (const path of ["/api/templates", "/api/workouts", "/api/workouts?from=2026-10-12&to=2026-11-09", "/api/library", "/api/library?limit=200", "/api/places", "/api/profile"]) {
       expect(matches(path), path).toBe(true);
     }
   });

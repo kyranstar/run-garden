@@ -48,6 +48,7 @@ import {
   type Theme,
 } from "@rg/exercise-library";
 import type { LibraryListDto, PlacesResponse, TodayResponse } from "@rg/api-client";
+import type { ProfileDto } from "@rg/domain";
 import { QUICK_START_MINUTES, doseFor, placementFor, quickStartKinds, type QuickStartKind } from "@rg/workout";
 import { doseSummary } from "@rg/domain";
 import { formatShortDate } from "../../components.js";
@@ -160,21 +161,25 @@ export interface StudioCtx {
   readings: Readonly<Record<string, CheckReading>>;
   /** Per move id; empty offline (the list still works). */
   prefs: ReadonlyMap<string, MovePrefs>;
-  /** The default place and its gear; null until known (then no gear filter applies). */
-  place: { name: string; equipment: readonly string[] } | null;
+  /** The default place and its gear (its id, unless it is the library's Home: no place saved); null until known (then no gear filter applies). */
+  place: { id?: string; name: string; equipment: readonly string[] } | null;
+  /** The athlete's places, the default first; empty until known, or with none saved (CUJ R8). */
+  places: ReadonlyArray<{ id: string; name: string; equipment: readonly string[] }>;
+  /** The profile's focus areas, as the region and muscle ids they name, each once; empty until known (CUJ R7). */
+  focusRefs: readonly string[];
   /** The athlete's today (their timezone), for "last done". */
   today: string | null;
 }
 
-export const emptyStudioCtx: StudioCtx = { profiles: [], readings: {}, prefs: new Map(), place: null, today: null };
+export const emptyStudioCtx: StudioCtx = { profiles: [], readings: {}, prefs: new Map(), place: null, places: [], focusRefs: [], today: null };
 
 /**
- * The context from the three reads the Studio makes, each optional: offline, or before they answer, the list still
+ * The context from the four reads the Studio makes, each optional: offline, or before they answer, the list still
  * renders from the bundled library and simply knows less. The switched-on profiles come from the library read and
  * from today's (which the service worker keeps offline); the place is the account's default, else the first, else the
- * library's Home — as the server judges it.
+ * library's Home — as the server judges it; the focus areas come from the profile.
  */
-export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, places?: PlacesResponse): StudioCtx {
+export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, places?: PlacesResponse, profile?: ProfileDto): StudioCtx {
   const ids = [...new Set([...(library?.profiles ?? []).map((p) => p.profileId), ...(today?.conditions ?? []).map((c) => c.profileId)])];
   const readings: Record<string, CheckReading> = {};
   for (const c of today?.conditions ?? []) {
@@ -191,13 +196,16 @@ export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, p
   if (places) {
     const own = places.places.find((p) => p.isDefault) ?? places.places[0];
     const preset = LOCATION_PRESETS.find((p) => p.id === "home") ?? LOCATION_PRESETS[0]!;
-    place = own ? { name: own.name, equipment: own.equipment } : { name: preset.name, equipment: preset.equipment };
+    place = own ? { id: own.id, name: own.name, equipment: own.equipment } : { name: preset.name, equipment: preset.equipment };
   }
+  const own = places?.places ?? [];
   return {
     profiles: ids.filter(isProfileId).map((id) => PROFILES[id]),
     readings,
     prefs,
     place,
+    places: [...own.filter((p) => p.isDefault), ...own.filter((p) => !p.isDefault)].map((p) => ({ id: p.id, name: p.name, equipment: p.equipment })),
+    focusRefs: [...new Set((profile?.focusAreas ?? []).flatMap((f) => f.refs))],
     today: today?.today ?? null,
   };
 }

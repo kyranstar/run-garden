@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createPath, Router, type To } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LibraryListDto, LibraryRowDto, PlacesResponse, TodayResponse } from "@rg/api-client";
+import type { ProfileDto } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 
 export const TODAY = "2026-10-11";
@@ -73,10 +74,38 @@ export function placesDto(equipment: string[], name = "Home"): PlacesResponse {
   return { places: [{ id: "p1", name, equipment, implements: {}, isDefault: true }], equipment: [] };
 }
 
+/** Two places: Home (the default, the given gear) and a gym with a cable machine. */
+export function twoPlacesDto(home: string[]): PlacesResponse {
+  return {
+    places: [
+      { id: "p1", name: "Home", equipment: home, implements: {}, isDefault: true },
+      { id: "p2", name: "Gym", equipment: [...home, "cable", "pull-up-bar"], implements: {}, isDefault: false },
+    ],
+    equipment: [],
+  };
+}
+
+/** `GET /api/profile`, as much as the Studio reads: the focus areas (generic ones). */
+export function profileDto(focus: Array<{ id: string; refs: string[] }> = []): ProfileDto {
+  return {
+    goals: [],
+    focusAreas: focus.map((f) => ({ id: f.id, label: f.id, refs: f.refs })),
+    events: [],
+    preferences: {},
+    units: { distance: "km", weight: "kg", temperature: "C" },
+    timezone: "UTC",
+    race: null,
+    places: [],
+    conditions: [],
+    updatedAt: null,
+  };
+}
+
 export interface Primed {
   library?: LibraryListDto;
   today?: TodayResponse;
   places?: PlacesResponse;
+  profile?: ProfileDto;
 }
 
 export function primedClient(p: Primed = {}): QueryClient {
@@ -84,6 +113,7 @@ export function primedClient(p: Primed = {}): QueryClient {
   if (p.library) qc.setQueryData(["library", "studio"], p.library);
   if (p.today) qc.setQueryData(["today"], p.today);
   if (p.places) qc.setQueryData(["places"], p.places);
+  if (p.profile) qc.setQueryData(["profile"], p.profile);
   return qc;
 }
 

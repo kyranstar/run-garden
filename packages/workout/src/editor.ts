@@ -43,7 +43,9 @@ export type EditAction =
   | { type: "moveItem"; from: [number, number]; to: [number, number] }
   | { type: "setDose"; part: number; item: number; dose: WorkoutDose }
   | { type: "swapItem"; part: number; item: number; libraryId: string }
-  | { type: "setCue"; part: number; item: number; cue: string | undefined };
+  | { type: "setCue"; part: number; item: number; cue: string | undefined }
+  /** Where it is done (`setting.placeId`): one of the athlete's places, "none" (no equipment), or none named (the default). */
+  | { type: "setPlace"; placeId: string | undefined };
 
 export interface EditorState {
   doc: DraftDoc;
@@ -259,6 +261,14 @@ function apply(doc: WorkoutDoc, action: EditAction, find: Find): Applied {
         const dose = fitsType(it.dose, next.dose.type) ? it.dose : doseFor(next, doc.parts[action.part]!.purpose);
         return { kind: "exercise", libraryId: next.id, dose, ...(it.cue ? { cue: it.cue } : {}) };
       });
+    }
+    case "setPlace": {
+      const { placeId: _drop, ...rest }: NonNullable<WorkoutDoc["setting"]> = doc.setting ?? {};
+      const setting = action.placeId === undefined ? rest : { ...rest, placeId: action.placeId };
+      if (!workoutDocSchema.shape.setting.safeParse(setting).success) return "invalid";
+      if (Object.keys(setting).length) return { ...doc, setting };
+      const { setting: _gone, ...bare } = doc;
+      return bare;
     }
     case "setCue": {
       const cue = action.cue?.trim().slice(0, 160);

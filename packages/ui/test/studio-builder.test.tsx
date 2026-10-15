@@ -11,15 +11,16 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SCHEDULING_PREFERENCES, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
-import { edit, newDoc, startEditing, suggestedItem, type DraftDoc, type EditAction } from "@rg/workout";
+import { edit, newDoc, startEditing, suggestedItem, suggestForPart, type DraftDoc, type EditAction } from "@rg/workout";
 import { features } from "../src/features.js";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { STUDIO_DRAFT_QUERY } from "../src/studio-drafts.js";
 import { TEMPLATES_QUERY } from "../src/screens/studio/add-sheet.js";
 import { ItemSheet } from "../src/screens/studio/item-sheet.js";
-import { buildCtxOf, judgeDraft } from "../src/screens/studio/build-model.js";
-import { emptyStudioCtx } from "../src/screens/studio/model.js";
-import { libraryDto, placesDto, primedClient, staticRouter, text, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { buildCtxOf, judgeDraft, suggestCtxOf } from "../src/screens/studio/build-model.js";
+import { emptyStudioCtx, studioCtxFrom } from "../src/screens/studio/model.js";
+import { localTodayGuess } from "../src/components.js";
+import { libraryDto, placesDto, primedClient, profileDto, staticRouter, text, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 const rec = (id: string) => EXERCISES.find((r) => r.id === id)!;
 const HOME_GEAR = ["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"];
@@ -324,5 +325,23 @@ describe("the day's advice to ease off (CUJ R15)", () => {
     const inView = html.slice(html.indexOf('class="stu-sum"'), body);
     expect(text(html.slice(body))).toMatch(/flare/);
     expect(text(inView)).not.toMatch(/isn&#x27;t flare-safe|isn't flare-safe/);
+  });
+});
+
+describe("the athlete's focus areas (CUJ R7)", () => {
+  it("with nothing built yet, the cool-down suggests easing them, as the suggestions are told", () => {
+    const d = draft();
+    const profile = profileDto([{ id: "neck", refs: ["neck"] }]);
+    const html = renderBuilder("/studio/build/new", { draft: d, primed: { profile } });
+    const today = localTodayGuess();
+    const want = (p?: typeof profile) => {
+      const ctx = studioCtxFrom(undefined, undefined, placesDto(HOME_GEAR), p);
+      const cool = d.parts.findIndex((x) => x.purpose === "cooldown");
+      return suggestForPart(d, cool, EXERCISES, suggestCtxOf(buildCtxOf(ctx, today), today)).map((s) => EXERCISES.find((r) => r.id === s.libraryId)!.name);
+    };
+    const shown = parts(html).find((p) => p.name === "Cool-down")!.suggested;
+    expect(want(profile)).not.toEqual(want());
+    expect(shown).toEqual(want(profile).slice(0, shown.length));
+    expect(shown.length).toBeGreaterThan(0);
   });
 });

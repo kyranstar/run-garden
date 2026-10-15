@@ -26,6 +26,7 @@ import {
   amountValue,
   formatWeight,
   itemSchema,
+  NO_EQUIPMENT_PLACE,
   parseWeight,
   partSchema,
   secondsText,
@@ -236,8 +237,10 @@ export interface BuildCtx {
   pinned: string[];
   /** Done in the last week: they give way to the others. */
   recent: string[];
-  /** The place's gear; null until it is known (then gear is not judged). */
+  /** The gear where it is done (`placeOf`); null until it is known (then gear is not judged). */
   equipment: readonly string[] | null;
+  /** The profile's focus areas (region and muscle ids): what the suggestions lean to. */
+  focusRefs: readonly string[];
   /** Done cleanly (the library read's `doneCleanly`); undefined before that read answers, or when it does not say. */
   done: ReadonlySet<string> | undefined;
   today: string;
@@ -247,7 +250,26 @@ export interface BuildCtx {
 export const RECENT_DAYS = 7;
 const DAY_MS = 86_400_000;
 
-export function buildCtxOf(ctx: StudioCtx, today: string, recorded: Readonly<Record<string, CheckReading>> = {}): BuildCtx {
+/** "No equipment", as the builder's place chip and its summary say it. */
+export const NO_EQUIPMENT_NAME = "No equipment";
+
+/**
+ * Where a document is done (CUJ R8): the place it names (`setting.placeId`) — one of the athlete's places, or none at
+ * all ("No equipment": bodyweight only) — else the default place. A place it names that isn't known here (gone, or not
+ * read yet) is the default too, as the chip says.
+ */
+export function placeOf(ctx: StudioCtx, placeId: string | undefined): { id?: string; name: string; equipment: readonly string[] } | null {
+  if (placeId === NO_EQUIPMENT_PLACE) return { id: NO_EQUIPMENT_PLACE, name: NO_EQUIPMENT_NAME, equipment: [] };
+  return (placeId ? ctx.places.find((p) => p.id === placeId) : undefined) ?? ctx.place;
+}
+
+/** What the place chip offers: the athlete's places (the default first), else the library's Home; then No equipment. */
+export function placeChoices(ctx: StudioCtx): Array<{ id: string | undefined; name: string }> {
+  const own = ctx.places.length ? ctx.places.map((p) => ({ id: p.id as string | undefined, name: p.name })) : ctx.place ? [{ id: ctx.place.id, name: ctx.place.name }] : [];
+  return [...own, { id: NO_EQUIPMENT_PLACE, name: NO_EQUIPMENT_NAME }];
+}
+
+export function buildCtxOf(ctx: StudioCtx, today: string, recorded: Readonly<Record<string, CheckReading>> = {}, placeId?: string): BuildCtx {
   const prefs = [...ctx.prefs];
   const recent = prefs
     .filter(([, p]) => p.lastDoneOn !== null && (Date.parse(today) - Date.parse(p.lastDoneOn)) / DAY_MS < RECENT_DAYS)
@@ -262,7 +284,8 @@ export function buildCtxOf(ctx: StudioCtx, today: string, recorded: Readonly<Rec
     excluded: prefs.filter(([, p]) => p.excluded).map(([id]) => id),
     pinned: prefs.filter(([, p]) => p.pinned).map(([id]) => id),
     recent,
-    equipment: ctx.place ? ctx.place.equipment : null,
+    equipment: placeOf(ctx, placeId)?.equipment ?? null,
+    focusRefs: ctx.focusRefs,
     done,
     today,
   };
@@ -282,7 +305,7 @@ export function suggestCtxOf(bc: BuildCtx, date: string): SuggestCtx {
   return {
     activeProfiles: bc.profiles,
     day: dayFor(bc, date),
-    focusRefs: [],
+    focusRefs: bc.focusRefs,
     recentIds: bc.recent,
     pinned: bc.pinned,
     excluded: bc.excluded,

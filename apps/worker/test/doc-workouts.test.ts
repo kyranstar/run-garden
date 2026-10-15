@@ -213,6 +213,23 @@ describe("POST /api/workouts", () => {
     expect(await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).toEqual([]);
   });
 
+  it("at No equipment (`setting.placeId` none) a move that needs gear is a warning; a place that isn't the athlete's is not judged (CUJ R8)", async () => {
+    const goblet = (placeId?: string) => ({
+      ...calmDoc(),
+      ...(placeId ? { setting: { placeId } } : {}),
+      parts: [{ purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: 8, restSec: 60 } }] }],
+    });
+    const gear = { code: "equipment_unavailable", severity: "warning", path: "parts[0].items[0].libraryId" };
+    const bare = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: goblet("none") });
+    expect(bare.status).toBe(201);
+    expect(bare.body.warnings).toContainEqual(expect.objectContaining(gear));
+    for (const doc of [goblet(), goblet("not-a-place")]) {
+      const res = await call("POST", "/api/workouts", { date: addDays(today, 1), doc });
+      expect(res.status).toBe(201);
+      expect(res.body.warnings).not.toContainEqual(expect.objectContaining({ code: "equipment_unavailable" }));
+    }
+  });
+
   it("warnings are returned and never block", async () => {
     await db.insert(exercisePrefs).values({ id: `${userId}:deadBug`, userId, exerciseId: "deadBug", rating: null, excluded: true, pinned: false, introducedOn: null, updatedAt: nowInstant() });
     const res = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc() });

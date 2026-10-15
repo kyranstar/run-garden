@@ -469,3 +469,29 @@ describe("hardening", () => {
 function itemOf(e: ExerciseRecord): WorkoutItem {
   return { kind: "exercise", libraryId: e.id, dose: doseFor(e, placementFor(e)) };
 }
+
+describe("setPlace (CUJ R8)", () => {
+  it("writes the place the workout is done at, keeps the rest of the setting, and is one Undo", () => {
+    const s0 = run(fresh(), { type: "addItem", item: ex("gobletSquat") });
+    const s1 = run(s0, { type: "setPlace", placeId: "p2" });
+    expect(s1.doc.setting).toEqual({ placeId: "p2" });
+    expect(undo(s1).doc.setting).toBeUndefined();
+    const kept = startEditing({ ...s0.doc, setting: { equipment: ["mat"], targetMinutes: 20 } });
+    expect(run(kept, { type: "setPlace", placeId: "none" }).doc.setting).toEqual({ equipment: ["mat"], targetMinutes: 20, placeId: "none" });
+  });
+
+  it("no place is the default place: the key goes, and an empty setting with it", () => {
+    const s = run(fresh(), { type: "setPlace", placeId: "p2" }, { type: "setPlace", placeId: undefined });
+    expect(s.doc.setting).toBeUndefined();
+    expect("setting" in s.doc).toBe(false);
+    const kept = startEditing({ ...fresh().doc, setting: { placeId: "p2", targetMinutes: 20 } });
+    expect(run(kept, { type: "setPlace", placeId: undefined }).doc.setting).toEqual({ targetMinutes: 20 });
+  });
+
+  it("refuses an id the schema would, and says unchanged for the same place", () => {
+    const s = run(fresh(), { type: "setPlace", placeId: "p2" });
+    expect(tryEdit(s, { type: "setPlace", placeId: "" }, lib).rejected).toBe("invalid");
+    expect(tryEdit(s, { type: "setPlace", placeId: "x".repeat(81) }, lib).rejected).toBe("invalid");
+    expect(tryEdit(s, { type: "setPlace", placeId: "p2" }, lib).rejected).toBe("unchanged");
+  });
+});

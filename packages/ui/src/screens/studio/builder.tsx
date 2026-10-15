@@ -99,6 +99,8 @@ import {
   laterToday,
   usualTime,
   partMinutes,
+  placeChoices,
+  placeOf,
   readOnlyWhy,
   sentence,
   showsSuggestions,
@@ -113,6 +115,7 @@ import { CommitField, ItemSheet, itemName } from "./item-sheet.js";
 import { MovePicker } from "./move-picker.js";
 import { GoalsSheet } from "./goals-sheet.js";
 import { formatLine, PartMenu } from "./part-menu.js";
+import { PlaceMenu } from "./place-menu.js";
 import { NameSheet, SaveMenu } from "./save-menu.js";
 import { ScheduleSheet } from "./schedule-sheet.js";
 import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioReads } from "./screen.js";
@@ -261,7 +264,10 @@ function Builder({ source }: { source: BuildSource }) {
 
   // ── What it is judged and suggested with ──
   const recorded = recordedQ.data;
-  const bc = useMemo(() => buildCtxOf(ctx, today, recorded), [ctx, today, recorded]);
+  // Judged and suggested with at the place the document names (CUJ R8), else the default place.
+  const placeId = doc?.setting?.placeId;
+  const bc = useMemo(() => buildCtxOf(ctx, today, recorded, placeId), [ctx, today, recorded, placeId]);
+  const here = placeOf(ctx, placeId);
   const plannedRow: WorkoutDto | undefined = wid ? planned.data?.workouts.find((w) => w.id === wid) : undefined;
   const row = ready?.row ?? (plannedRow ? { date: plannedRow.effectiveDate, time: plannedRow.effectiveTime } : null);
   const isWorkout = key.startsWith("workout:");
@@ -566,6 +572,15 @@ function Builder({ source }: { source: BuildSource }) {
             readOnly={frozen}
           />
           <EffortPicker value={doc.intent.effort} disabled={frozen} onPick={(effort) => say({ type: "setIntent", intent: { effort } })} />
+          {here ? (
+            <PlaceMenu
+              name={here.name}
+              chosen={here.id}
+              choices={placeChoices(ctx)}
+              readOnly={frozen}
+              onPick={(id) => say({ type: "setPlace", placeId: id })}
+            />
+          ) : null}
           <div className="stu-build-goals">
             <span className="stu-build-k">Goals</span>
             <span className="stu-build-goal-list">
@@ -583,7 +598,7 @@ function Builder({ source }: { source: BuildSource }) {
         <div className="stu-build-sum" hidden={!judged.doc}>
           <SummaryCard
             judged={judged}
-            place={ctx.place?.name ?? null}
+            place={here?.name ?? null}
             open={open}
             onToggle={() => setSumOpen(!open)}
             onFix={onFix}

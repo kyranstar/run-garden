@@ -28,9 +28,12 @@ import {
   laterToday,
   loadFrom,
   moveTarget,
+  placeChoices,
+  placeOf,
   readOnlyWhy,
   showsSuggestions,
   sourceOfPath,
+  suggestCtxOf,
   stepAmount,
   stepSets,
   swapOptions,
@@ -40,7 +43,7 @@ import {
   type BuildCtx,
 } from "../src/screens/studio/build-model.js";
 import { emptyStudioCtx, studioCtxFrom, type MovePrefs, type StudioCtx } from "../src/screens/studio/model.js";
-import { libraryDto, row } from "./studio-fixtures.js";
+import { libraryDto, profileDto, row, twoPlacesDto } from "./studio-fixtures.js";
 
 const TODAY = "2026-10-12";
 const rec = (id: string) => EXERCISES.find((r) => r.id === id)!;
@@ -542,5 +545,46 @@ describe("Do it again's address (CUJ B2)", () => {
   it("opens a planned workout's document as the start of a new one", () => {
     expect(sourceOfPath("/studio/build/again/w1")).toEqual({ kind: "again", id: "w1" });
     expect(sourceOfPath("/studio/build/again/")).toBeNull();
+  });
+});
+
+describe("the athlete's focus areas and places reach the Studio (CUJ R7, R8)", () => {
+  const ctx = studioCtxFrom(undefined, undefined, twoPlacesDto(["mat"]), profileDto([{ id: "calf", refs: ["calves", "soleus"] }, { id: "hips", refs: ["hips", "calves"] }]));
+
+  it("the profile's focus areas are the suggestions' focus: each region or muscle once", () => {
+    expect(ctx.focusRefs).toEqual(["calves", "soleus", "hips"]);
+    expect(suggestCtxOf(buildCtxOf(ctx, "2026-10-11"), "2026-10-11").focusRefs).toEqual(["calves", "soleus", "hips"]);
+    // Before the profile is read: none.
+    expect(studioCtxFrom().focusRefs).toEqual([]);
+  });
+
+  it("the places, the default first, each with its id; the default place carries its id", () => {
+    const flipped = studioCtxFrom(undefined, undefined, { ...twoPlacesDto(["mat"]), places: [...twoPlacesDto(["mat"]).places].reverse() });
+    expect(flipped.places.map((p) => p.id)).toEqual(["p1", "p2"]);
+    expect(ctx.place).toEqual({ id: "p1", name: "Home", equipment: ["mat"] });
+    expect(studioCtxFrom(undefined, undefined, { places: [], equipment: [] }).place?.id).toBeUndefined();
+  });
+
+  it("a document's place is the one judged: No equipment is bodyweight only, a place its own gear, none named the default", () => {
+    expect(buildCtxOf(ctx, "2026-10-11", {}, "none").equipment).toEqual([]);
+    expect(buildCtxOf(ctx, "2026-10-11", {}, "p2").equipment).toContain("cable");
+    expect(buildCtxOf(ctx, "2026-10-11").equipment).toEqual(["mat"]);
+    // A place gone (or not known here): the default's gear, as the chip says.
+    expect(buildCtxOf(ctx, "2026-10-11", {}, "p9").equipment).toEqual(["mat"]);
+    expect(placeOf(ctx, "none")?.name).toBe("No equipment");
+    expect(placeOf(ctx, "p2")?.name).toBe("Gym");
+    expect(placeOf(ctx, undefined)?.name).toBe("Home");
+  });
+
+  it("the chip's choices: the athlete's places, else the library's Home; then No equipment", () => {
+    expect(placeChoices(ctx)).toEqual([
+      { id: "p1", name: "Home" },
+      { id: "p2", name: "Gym" },
+      { id: "none", name: "No equipment" },
+    ]);
+    expect(placeChoices(studioCtxFrom(undefined, undefined, { places: [], equipment: [] }))).toEqual([
+      { id: undefined, name: "Home" },
+      { id: "none", name: "No equipment" },
+    ]);
   });
 });

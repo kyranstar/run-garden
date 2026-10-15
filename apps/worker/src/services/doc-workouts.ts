@@ -34,6 +34,7 @@ import {
   DOC_ORIGINS,
   docOriginRow,
   newId,
+  NO_EQUIPMENT_PLACE,
   parseStoredWorkoutDoc,
   workoutDocSchema,
   type UserPreferences,
@@ -233,16 +234,18 @@ function recentOf(sessions: readonly HistorySession[], today: string): { last: H
 /**
  * What a document for `date` is validated with: the active profiles, the day's reading (the row's own pre-check and
  * the day's checks, as its session sheet reads them — none for a day ahead), what was done cleanly and the recent
- * sessions, the moves set aside, and the gear of the place the document names (none named: not checked).
+ * sessions, the moves set aside, and the gear of the place the document names: one of the athlete's places, its gear;
+ * "No equipment" (`NO_EQUIPMENT_PLACE`), none at all; none named, or a place that is not the athlete's: not checked.
  */
 export async function docDayContext(
   db: Db,
   userId: string,
   o: { date: string; today: string; workoutId: string; placeId?: string },
 ): Promise<ValidateCtx> {
+  const bare = o.placeId === NO_EQUIPMENT_PLACE;
   const [{ active, profiles, excluded }, places, history] = await Promise.all([
     profilesAndSetAside(db, userId),
-    o.placeId
+    o.placeId && !bare
       ? db.select({ equipment: locations.equipment }).from(locations).where(and(eq(locations.id, o.placeId), eq(locations.userId, userId))).limit(1)
       : Promise.resolve([]),
     loadBuildHistory(db, userId, o.today, null),
@@ -260,7 +263,7 @@ export async function docDayContext(
       recent: recentOf(history.sessions, o.today),
     },
     excluded,
-    ...(place ? { equipment: [...place.equipment] } : {}),
+    ...(bare ? { equipment: [] } : place ? { equipment: [...place.equipment] } : {}),
   };
 }
 

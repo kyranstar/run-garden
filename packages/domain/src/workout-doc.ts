@@ -19,6 +19,8 @@ export const RUN_EFFORTS = ["easy", "recovery", "steady", "long", "tempo", "thre
 export const EFFORT_LEVELS = ["recover", "maintain", "develop", "peak"] as const;
 export const DOC_SOURCES = ["engine", "coach", "studio", "coros_import", "standalone_import", "athlete", "template"] as const;
 export const BASED_ON_KINDS = ["workout", "template", "performed", "proposal"] as const;
+/** `setting.placeId` for "No equipment": bodyweight only, wherever it is done (CUJ R8). Never a place's own id. */
+export const NO_EQUIPMENT_PLACE = "none";
 
 // An empty dose is deliberately NOT a schema error: a stored document must never vanish on parse for a soft problem. Task 8's validator warns on it.
 export const doseSchema = z.object({

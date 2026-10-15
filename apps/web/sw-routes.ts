@@ -57,7 +57,8 @@ export const runtimeCaching: RuntimeCaching[] = [
     // and the sheet it opens reads the basis Today read ahead. Its save re-checks the activity and the build server-side,
     // so a basis from the cache cannot write wrong data. Nothing else of a session is kept.
     // The Studio's reads too (Stage 2 spec §12): its templates, the planned workouts, the athlete's side of the library
-    // (pins, ratings, history) and the places' gear — the moves themselves are in the bundle. With them a Studio opened
+    // (pins, ratings, history), the places' gear and the profile (its focus areas, CUJ R7) — the moves themselves are in
+    // the bundle. With them a Studio opened
     // offline, a cold start included, knows what it knew online, and a quick start is built at once instead of after its
     // reads fail through their retries. The lists one entry each — the library's only as the Studio reads it (all, or a
     // page), never filtered, and the workouts' never a typed search: each filter or query would be an entry of its own,
@@ -65,7 +66,7 @@ export const runtimeCaching: RuntimeCaching[] = [
     urlPattern: ({ url }) =>
       url.pathname.match(/^\/api\/(plan\/today|plan\/workouts|garden|insights|settings)/) !== null ||
       /^\/api\/sessions\/[^/]+\/watch-review$/.test(url.pathname) ||
-      /^\/api\/(templates|places)$/.test(url.pathname) ||
+      /^\/api\/(templates|places|profile)$/.test(url.pathname) ||
       (url.pathname === "/api/library" && [...url.searchParams.keys()].every((k) => k === "limit")) ||
       (url.pathname === "/api/workouts" && !url.searchParams.has("q")),
     handler: "NetworkFirst",
