@@ -22,7 +22,9 @@
  *   hold, for a move held by time: a reps move's window is the format's, not its target); a ladder rung always has one.
  * - holds, flow (and any other format): each move's sets of windows, in order; rest items as rests.
  * - straight (and steady): each move's sets, a rest after every set but the last of the part (the item's `restSec`,
- *   else the record's, else 60; zero means none).
+ *   else the record's, else 60; zero means none) — but a light part's one-set move (`LIGHT_PARTS`: warm-up,
+ *   activation, care, cool-down) goes straight on to the next, as the derived minutes count it, unless its item states
+ *   a rest.
  * - superset: each move plays its sets x rounds; round by round, the moves in order, then the rest between rounds
  *   (`restBetweenRoundsSec`, else the longest of the moves' rests).
  * - circuit (and intervals): round by round, each station one window (or a run segment), the rest items between
@@ -42,6 +44,7 @@ import type { BlockId, ExerciseRecord, FormatId } from "@rg/exercise-library";
 import { Builder, type Step, type Target } from "@rg/session-engine";
 import { DEFAULT_SECS_PER_REP, DocTooLargeError, FORMAT_OF_PART, docTooLarge, makeLibraryIndex, secondsOfRun } from "../derive.js";
 import { WHY_SEPARATOR } from "../convert/from-build.js";
+import { LIGHT_PARTS } from "../editor.js";
 import { weightOfLoad } from "../convert/shared.js";
 
 const DEFAULT_REST_SECONDS = 60;
@@ -194,9 +197,12 @@ function straight(part: WorkoutPart, slots: Array<Slot | null>, ctx: Ctx, round:
       return;
     }
     const sets = slot.item.dose.sets ?? 1;
+    // A light part's one-set move (warm-up, activation, care, cool-down) goes straight on to the next: it has no sets
+    // to rest between, only the transition — unless its item states a rest (CUJ R16).
+    const goesOn = sets === 1 && LIGHT_PARTS.has(part.purpose) && slot.item.dose.restSec === undefined;
     for (let s = 0; s < sets; s++) {
       steps.push(...oneSet(slot, ctx, numbered(round, s, sets), roundOf(round)));
-      const seconds = restSeconds(slot);
+      const seconds = goesOn ? 0 : restSeconds(slot);
       if (!(i === lastMove && s === sets - 1) && seconds > 0) steps.push(rest(slot.key, seconds, ctx));
     }
   });

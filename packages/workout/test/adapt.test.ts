@@ -338,6 +338,56 @@ describe("stagesFromDoc — any document", () => {
   });
 });
 
+describe("a light part's one-set moves rest only in the transition (CUJ R16)", () => {
+  it("a warm-up's (or any light part's) one-set moves follow one another with no set rest; a rest the item states, or a main part's, stays", () => {
+    const light = (purpose: "warmup" | "activation" | "care" | "cooldown" | "arrive", restSec?: number) =>
+      playerStepsFromDoc(doc([{ purpose, format: "straight", items: [
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, reps: 8, ...(restSec !== undefined ? { restSec } : {}) } },
+        { kind: "exercise", libraryId: "sidePlank", dose: { sets: 1, holdSec: 20 } },
+      ] }]), LIB).map((s) => [s.kind, s.exerciseId]);
+    for (const purpose of ["warmup", "activation", "care", "cooldown", "arrive"] as const) {
+      expect(light(purpose), purpose).toEqual([["set", "gobletSquat"], ["timed", "sidePlank"]]);
+      // A rest the item states is the athlete's: it stays.
+      expect(light(purpose, 30), purpose).toEqual([["set", "gobletSquat"], ["rest", null], ["timed", "sidePlank"]]);
+    }
+    // The main part's one-set move keeps its rest (the record's, else 60 s); a light part's move of two sets rests between them.
+    const main = playerStepsFromDoc(doc([{ purpose: "main", format: "straight", items: [
+      { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, reps: 8 } },
+      { kind: "exercise", libraryId: "sidePlank", dose: { sets: 1, holdSec: 20 } },
+    ] }]), LIB);
+    expect(main.map((s) => [s.kind, s.seconds])).toEqual([["set", 34], ["rest", 60], ["timed", 20]]);
+    const twice = playerStepsFromDoc(doc([{ purpose: "warmup", format: "straight", items: [{ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: 8 } }] }]), LIB);
+    expect(twice.map((s) => s.kind)).toEqual(["set", "rest", "set"]);
+  });
+
+  it("no quick start rests a one-set move of a light part before the next move (every kind, many days)", () => {
+    const ctx: SuggestCtx = { activeProfiles: [TMJ], day: null, focusRefs: ["hip-flexors", "thoracic"], recentIds: [], pinned: [], excluded: [], equipment: EQUIPMENT_IDS };
+    let played = 0;
+    for (const kind of QUICK_START_KINDS) {
+      for (let seed = 1; seed <= 20; seed++) {
+        const made = quickStartDoc(kind, EXERCISES, { ...ctx, seed });
+        if (!("doc" in made)) continue;
+        const keys = docSlotKeys(made.doc);
+        const itemOf = (slotKey: string) => {
+          const at = keys.find((k) => k.key === slotKey)!;
+          return { part: made.doc.parts[at.part]!, item: made.doc.parts[at.part]!.items[at.item]! };
+        };
+        const steps = playerStepsFromDoc(made.doc, EXERCISES);
+        steps.forEach((s, i) => {
+          if (s.kind !== "rest") return;
+          const before = steps[i - 1];
+          if (!before || before.kind === "rest") return;
+          const { part, item } = itemOf(before.slotKey);
+          const oneSet = item.kind !== "run" && item.kind !== "rest" && (item.dose.sets ?? 1) === 1 && item.dose.restSec === undefined;
+          expect(oneSet && ["arrive", "warmup", "activation", "care", "cooldown"].includes(part.purpose), `${kind} ${seed}: a rest after ${before.exerciseId}`).toBe(false);
+        });
+        played += 1;
+      }
+    }
+    expect(played).toBeGreaterThan(20);
+  });
+});
+
 describe("a reps range plays as a range (CUJ B1)", () => {
   it("an item's range of reps is its steps' target: {type: reps, lo, hi}, never lost", () => {
     const steps = playerStepsFromDoc(doc([{ purpose: "main", format: "straight", items: [
