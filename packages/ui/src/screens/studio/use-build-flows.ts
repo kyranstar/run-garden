@@ -146,6 +146,8 @@ export interface BuildFlowsIn {
   noteChecks: (s: SessionDto) => void;
   /** Focus goes to the line that says what a Schedule or a save did (its link, else its words), once it shows. */
   focusStatus: () => void;
+  /** The account's timezone (its settings); null until known — then the device's clock. */
+  timeZone: string | null;
 }
 
 /**
@@ -191,6 +193,7 @@ export function useBuildFlows({
   newNotes,
   noteChecks,
   focusStatus,
+  timeZone,
 }: BuildFlowsIn) {
   /** Changed since it was saved: the two read alike through the schema (its key order, its empty parts dropped). */
   const dirtyOf = (l: Loaded | null): boolean =>
@@ -281,7 +284,13 @@ export function useBuildFlows({
       } else {
         const sent = forSchedule(doc0, source);
         const once = await keyed("workout", cur.key);
-        const res = await api.createWorkout({ date: today, time: nowHHMM(new Date()), doc: sent, clientId: once.clientId, startNow: true });
+        // The account's now (CUJ R14): today as the server reads it at this moment — a Today read kept overnight is
+        // yesterday's — and the time on the account's clock, not the device's.
+        const day = await qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0, retry: false }).then(
+          (t) => t.today,
+          () => today,
+        );
+        const res = await api.createWorkout({ date: day, time: nowHHMM(new Date(), timeZone), doc: sent, clientId: once.clientId, startNow: true });
         once.landed();
         fresh = newNotes(res.warnings) ?? [];
         if (source.kind === "template") void api.useTemplate(source.id).catch(() => undefined);

@@ -16,7 +16,7 @@ import { EXERCISES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, suggestedItem, toProposable, type DraftDoc } from "@rg/workout";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { draftStore } from "../src/studio-drafts.js";
-import { placesDto, primedClient, todayDto, TODAY } from "./studio-fixtures.js";
+import { DEVICE_PREFS, placesDto, primedClient, todayDto, TODAY } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -68,7 +68,7 @@ function mount(path: string) {
   document.body.appendChild(host);
   root = createRoot(host);
   const qc = primedClient({ places: placesDto(["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"]), today: todayDto(null, false) });
-  qc.setQueryData(["settings"], { prefs: DEFAULT_SCHEDULING_PREFERENCES });
+  qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
   act(() => {
     root!.render(
       createElement(

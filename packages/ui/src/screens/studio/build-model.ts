@@ -734,7 +734,26 @@ const isWeekend = (date: string): boolean => {
 };
 
 /** The device's time of day, "HH:MM". */
-export const nowHHMM = (now: Date): string => hhmm(now.getHours() * 60 + now.getMinutes());
+/**
+ * The account's clock at `now` (CUJ R14): its date, and its minute of the day, in `timeZone` — the account's, as the
+ * server keeps it — or the device's own when no zone is known, or the zone is one this runtime doesn't know.
+ */
+export function clockIn(now: Date, timeZone?: string | null): { date: string; minutes: number } {
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(now);
+      const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+      return { date: `${part("year")}-${part("month")}-${part("day")}`, minutes: Number(part("hour")) * 60 + Number(part("minute")) };
+    } catch {
+      // A zone this runtime doesn't know: the device's clock.
+    }
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return { date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`, minutes: now.getHours() * 60 + now.getMinutes() };
+}
+
+/** "HH:MM" now, on the account's clock (`clockIn`). */
+export const nowHHMM = (now: Date, timeZone?: string | null): string => hhmm(clockIn(now, timeZone).minutes);
 
 /** How far ahead "Later today" must be, in minutes: a slot that soon is now, not later. */
 export const LATER_LEAD_MIN = 15;
@@ -754,8 +773,8 @@ export function usualTime(prefs: SchedulingPreferences | null, date: string): st
  * `LATER_LEAD_MIN` ahead, else the next whole hour and one more — so long as a workout of `minutes` started then
  * finishes by their latest evening finish (Settings); null when no such slot is left today.
  */
-export function laterToday(now: Date, prefs: SchedulingPreferences | null, today: string, minutes = 0): string | null {
-  const mins = now.getHours() * 60 + now.getMinutes();
+export function laterToday(now: Date, prefs: SchedulingPreferences | null, today: string, minutes = 0, timeZone?: string | null): string | null {
+  const mins = clockIn(now, timeZone).minutes;
   const finish = prefs && /^\d{2}:\d{2}$/.test(prefs.latestEveningFinish) ? minutesOf(prefs.latestEveningFinish) : 24 * 60;
   const fits = (start: number) => start < 24 * 60 && start + minutes <= finish;
   const usual = usualTime(prefs, today);
@@ -764,8 +783,8 @@ export function laterToday(now: Date, prefs: SchedulingPreferences | null, today
   return fits(next) ? hhmm(next) : null;
 }
 
-/** Whether "HH:MM" today is already past at `now` (a time chosen for today must be ahead). */
-export const timeHasPassed = (time: string, now: Date): boolean => minutesOf(time) <= now.getHours() * 60 + now.getMinutes();
+/** Whether "HH:MM" today is already past at `now`, on the account's clock (a time chosen for today must be ahead). */
+export const timeHasPassed = (time: string, now: Date, timeZone?: string | null): boolean => minutesOf(time) <= clockIn(now, timeZone).minutes;
 
 /**
  * Why a planned workout opens read-only — the rule `editableWorkout` keeps (done, skipped, missed, under way, gone, its

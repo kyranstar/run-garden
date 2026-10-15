@@ -162,6 +162,8 @@ function Builder({ source }: { source: BuildSource }) {
   const today = ctx.today ?? localTodayGuess();
   const unit = useWeightUnit();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
+  // The account's timezone: "now" is read on its clock, as the server reads it (CUJ R14).
+  const timeZone = settings.data?.prefs?.timezone ?? null;
   const wide = useMinWidth(DETAIL_PANE_MIN_PX);
   const drafts = useStudioDraft();
   const key = sourceKey(source);
@@ -395,6 +397,7 @@ function Builder({ source }: { source: BuildSource }) {
     focusStatus: () => {
       focusNext.current = [".stu-build-status a", ".stu-build-status-text"];
     },
+    timeZone,
   });
 
   // ── Not ready ──
@@ -860,13 +863,14 @@ function Builder({ source }: { source: BuildSource }) {
       {scheduling ? (
         <ScheduleSheet
           today={today}
-          later={laterToday(new Date(), settings.data?.prefs ?? null, today, judged.derived?.estimatedMinutes ?? 0)}
+          later={laterToday(new Date(), settings.data?.prefs ?? null, today, judged.derived?.estimatedMinutes ?? 0, timeZone)}
           usual={usualTime(settings.data?.prefs ?? null, today)}
           judgeFor={(d) => judgeDraft(doc, bc, d)}
           checkLabel={checkLabel}
           onCheck={onCheck}
           onSchedule={schedule}
           onClose={() => setScheduling(false)}
+          timeZone={timeZone}
         />
       ) : null}
       {naming ? <NameSheet initial={doc.title} onSave={saveAsTemplate} onClose={() => setNaming(false)} /> : null}

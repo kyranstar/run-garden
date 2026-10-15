@@ -18,6 +18,7 @@ import {
   balanceRows,
   blockedLine,
   buildCtxOf,
+  clockIn,
   doseSummary,
   editAll,
   editRefusal,
@@ -28,6 +29,7 @@ import {
   laterToday,
   loadFrom,
   moveTarget,
+  nowHHMM,
   placeChoices,
   placeOf,
   readOnlyWhy,
@@ -586,5 +588,30 @@ describe("the athlete's focus areas and places reach the Studio (CUJ R7, R8)", (
       { id: undefined, name: "Home" },
       { id: "none", name: "No equipment" },
     ]);
+  });
+});
+
+describe("the account's clock (CUJ R14)", () => {
+  // One instant: 03:30 UTC on Oct 11 — the evening before in Los Angeles, lunchtime in Tokyo.
+  const at = new Date("2026-10-11T03:30:00Z");
+
+  it("its date and minute of the day are the account's timezone's, whatever the device's", () => {
+    expect(clockIn(at, "America/Los_Angeles")).toEqual({ date: "2026-10-10", minutes: 20 * 60 + 30 });
+    expect(clockIn(at, "Asia/Tokyo")).toEqual({ date: "2026-10-11", minutes: 12 * 60 + 30 });
+    expect(nowHHMM(at, "Asia/Tokyo")).toBe("12:30");
+  });
+
+  it("no zone known, or one this runtime doesn't know: the device's clock", () => {
+    const device = { date: `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`, minutes: at.getHours() * 60 + at.getMinutes() };
+    expect(clockIn(at, null)).toEqual(device);
+    expect(clockIn(at, "Not/AZone")).toEqual(device);
+    expect(nowHHMM(at)).toBe(`${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`);
+  });
+
+  it("Later today and a time gone by are read on the account's clock", () => {
+    expect(laterToday(at, null, "2026-10-11", 0, "Asia/Tokyo")).toBe("14:00");
+    expect(laterToday(at, null, "2026-10-10", 0, "America/Los_Angeles")).toBe("22:00");
+    expect(timeHasPassed("13:00", at, "Asia/Tokyo")).toBe(false);
+    expect(timeHasPassed("13:00", at, "America/Los_Angeles")).toBe(true);
   });
 });

@@ -7,10 +7,16 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createPath, Router, type To } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LibraryListDto, LibraryRowDto, PlacesResponse, TodayResponse } from "@rg/api-client";
-import type { ProfileDto } from "@rg/domain";
+import { DEFAULT_SCHEDULING_PREFERENCES, type ProfileDto } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 
 export const TODAY = "2026-10-11";
+
+/**
+ * The scheduling preferences, with the account's timezone the device's: the tests' clock (`new Date(y, m, d, h, mm)`,
+ * faked) is the device's, and the builder reads "now" on the account's clock (CUJ R14).
+ */
+export const DEVICE_PREFS = { ...DEFAULT_SCHEDULING_PREFERENCES, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
 
 /** A library row for one record, with the athlete's say on it. */
 export function row(id: string, over: Partial<LibraryRowDto> = {}): LibraryRowDto {

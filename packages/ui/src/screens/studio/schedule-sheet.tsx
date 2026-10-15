@@ -33,9 +33,11 @@ export interface ScheduleSheetProps {
   /** Schedule it; resolves with why it did not happen, or null. */
   onSchedule: (date: string, time: string | null) => Promise<string | null>;
   onClose: () => void;
+  /** The account's timezone: "now" is read on its clock (CUJ R14); the device's when unknown. */
+  timeZone?: string | null;
 }
 
-export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onCheck, onSchedule, onClose }: ScheduleSheetProps) {
+export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onCheck, onSchedule, onClose, timeZone = null }: ScheduleSheetProps) {
   const name = useId();
   const tomorrow = addDays(today, 1);
   const [choice, setChoice] = useState<"later" | "day">(later ? "later" : "day");
@@ -49,9 +51,9 @@ export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onChe
   const judged = judgeFor(when.date);
   const valid = choice === "later" ? /^\d{2}:\d{2}$/.test(laterTime) : /^\d{4}-\d{2}-\d{2}$/.test(date) && date >= today;
   const asking = when.date === today ? judged.checks : [];
-  const passed = when.date === today && when.time !== null && timeHasPassed(when.time, new Date());
+  const passed = when.date === today && when.time !== null && timeHasPassed(when.time, new Date(), timeZone);
   // Today with no time goes to the usual window: once that has gone by, a time later today is asked for instead.
-  const usualPassed = when.date === today && when.time === null && usual !== null && timeHasPassed(usual, new Date());
+  const usualPassed = when.date === today && when.time === null && usual !== null && timeHasPassed(usual, new Date(), timeZone);
   const disabled = busy || !valid || passed || usualPassed || !!judged.blocked || asking.length > 0;
   const timeWhy = passed ? "That time has passed." : usualPassed ? "Your usual time today has passed. Pick a time later today." : null;
   // A check that could answer it is asked for instead (above); otherwise why the day refuses it.

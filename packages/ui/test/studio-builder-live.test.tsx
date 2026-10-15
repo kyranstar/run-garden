@@ -20,7 +20,7 @@ import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { draftStore } from "../src/studio-drafts.js";
 import { offlineDb } from "../src/offline/idb.js";
 import { loadExtras } from "../src/player/stored.js";
-import { libraryDto, placesDto, primedClient, profileDto, todayDto, twoPlacesDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { DEVICE_PREFS, libraryDto, placesDto, primedClient, profileDto, todayDto, twoPlacesDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -134,6 +134,8 @@ interface Server {
   tplPut?: Array<"stale" | "ok">;
   /** PUT /api/workouts/:id/doc says the watch holds an older copy. */
   watchHasOlder?: boolean;
+  /** GET /api/plan/today, as the server reads it now (Start now asks before it makes the workout, CUJ R14). */
+  todayNow?: string;
   /** POST /api/workouts with `startNow` answers 409 `started_today` with this row (I3). */
   startedToday?: { id: string; contentState: "outline" | "built" | "started" };
 }
@@ -190,6 +192,7 @@ function serve(s: Server = {}): Call[] {
         );
       }
       if (method === "POST" && path === "/api/conditions/checks") return json({ check: { ...body, date: TODAY } });
+      if (method === "GET" && path === "/api/plan/today" && s.todayNow) return json({ ...todayDto(null, false), today: s.todayNow });
       // The session under way that Start now's 409 names: started (on this device or another), as the server reads it.
       if (method === "GET" && s.startedToday?.contentState === "started" && path === `/api/sessions/${s.startedToday.id}`) {
         return json({ ...built(s.startedToday.id), contentState: "started", locked: true });
@@ -210,7 +213,7 @@ function serve(s: Server = {}): Call[] {
 
 // ── Mounting and driving ───────────────────────────────────────────────────
 
-function mount(path: string, primed: Primed = {}, prefs: typeof DEFAULT_SCHEDULING_PREFERENCES = DEFAULT_SCHEDULING_PREFERENCES) {
+function mount(path: string, primed: Primed = {}, prefs: typeof DEFAULT_SCHEDULING_PREFERENCES = DEVICE_PREFS) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -654,7 +657,7 @@ describe("Schedule", () => {
       await draftStore().save(draft(into(1, "gobletSquat")));
       serve();
       // The next slot is 8 PM; a finish at 8:01 leaves no room for a workout of a few minutes.
-      mount("/studio/build/new", {}, { ...DEFAULT_SCHEDULING_PREFERENCES, latestEveningFinish: "20:01" });
+      mount("/studio/build/new", {}, { ...DEVICE_PREFS, latestEveningFinish: "20:01" });
       await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
       await click(button("Schedule…"), "Schedule…");
       const sheet = dialog("Schedule")!;
@@ -1458,5 +1461,43 @@ describe("the athlete's focus areas (CUJ R7)", () => {
     const calls = serve();
     mount("/studio/build/new");
     await until(() => calls.some((c) => c.method === "GET" && c.path === "/api/profile"), "the profile read");
+  });
+});
+
+describe("the account's now (CUJ R14)", () => {
+  const kiritimati = { ...DEFAULT_SCHEDULING_PREFERENCES, timezone: "Pacific/Kiritimati" };
+
+  it("Start now's workout is for today as the server says it now, at the account's time — not a Today cached overnight, nor the device's clock", async () => {
+    // 12:00 UTC: already 02:00 on the 12th on Kiritimati (UTC+14), the account's zone; the Today read kept says the 11th.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-11T12:00:00Z") });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      const calls = serve({ todayNow: "2026-10-12" });
+      mount("/studio/build/new", {}, kiritimati);
+      await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+      await click(startButton(), "Start now");
+      await until(() => text().includes("the player"), "the player");
+      expect(calls.find((c) => c.method === "POST" && c.path === "/api/workouts")!.body).toMatchObject({ date: "2026-10-12", time: "02:00", startNow: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Later today is the account's later today", async () => {
+    // 20:20 UTC is 10:20 the next morning on Kiritimati: past the usual 8 AM, so the next whole hour and one more.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-11T20:20:00Z") });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      serve();
+      mount("/studio/build/new", {}, kiritimati);
+      await until(() => !!button("Schedule…") && !button("Schedule…")!.disabled, "Schedule…");
+      await click(button("Schedule…"), "Schedule…");
+      expect(dialog("Schedule")!.querySelector<HTMLInputElement>('input[aria-label="Time today"]')!.value).toBe("12:00");
+      // …and it is ahead on the account's clock, whatever the device's says: Schedule is on.
+      expect(text()).not.toContain("That time has passed.");
+      expect(buttons(dialog("Schedule")!).find((b) => b.textContent === "Schedule")!.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -23,6 +23,7 @@ import { draftStore } from "../src/studio-drafts.js";
 import { quickStartFor } from "../src/screens/studio/templates-model.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { libraryDto, placesDto, primedClient, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { DEVICE_PREFS } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -187,7 +188,7 @@ function mount(path: string, primed: Primed & { templates?: TemplateDto[]; stric
   document.body.appendChild(host);
   root = createRoot(host);
   const qc = primedClient({ places: placesDto(HOME_GEAR), today: todayDto(null, false), library: libraryDto(), ...primed });
-  qc.setQueryData(["settings"], { prefs: DEFAULT_SCHEDULING_PREFERENCES });
+  qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
   if (primed.templates) qc.setQueryData(["templates"], { templates: primed.templates });
   const app = createElement(
     QueryClientProvider,
