@@ -187,6 +187,16 @@ function withoutTheme(title: string, theme: string | null | undefined): string {
   return suffix && title.endsWith(suffix) ? title.slice(0, -suffix.length) : title;
 }
 
+/**
+ * What a session read from the server is named by, where the device keeps nothing of it — as Start names it: a Studio
+ * or template workout by its own title, a programme's session by its programme (the row's title without the theme
+ * its build appended). A read from before the title: its theme, else "Session".
+ */
+export function sessionTitle(s: SessionDto): string {
+  if (s.title) return docOriginRow({ origin: s.origin ?? null }) ? s.title : withoutTheme(s.title, s.view?.theme?.name);
+  return s.view?.theme?.name ?? "Session";
+}
+
 function itemDose(s: SessionDto, item: SessionItemDto): { text: string; up: boolean } {
   const build = s.build!;
   const target = (build.targets[item.exerciseId] as DoseTarget | undefined) ?? null;

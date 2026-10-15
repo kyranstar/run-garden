@@ -1302,6 +1302,12 @@ export interface SessionDto {
   date: string;
   contentState: "outline" | "built" | "started" | "done";
   locked: boolean;
+  /**
+   * The planned workout's own title, and its kind (`origin`): what the player names the session by on a device that
+   * keeps nothing of it. Absent from a session read before them (a cached answer).
+   */
+  title?: string;
+  origin?: string | null;
   /** The slot's day's checks per profile: its own pre-checks, else today's daily check. */
   checks: Record<string, SessionCheckAnswer>;
   build: SessionBuildDto | null;

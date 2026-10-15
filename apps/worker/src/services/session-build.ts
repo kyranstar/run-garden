@@ -250,6 +250,12 @@ export interface SessionResponse {
   date: string;
   contentState: "outline" | "built" | "started" | "done";
   locked: boolean;
+  /**
+   * The planned workout's own title, and its kind (`origin`: a programme's slot, a Studio or template workout): what
+   * the player names the session by on a device that keeps nothing of it, where this read is all it has.
+   */
+  title: string;
+  origin: string | null;
   /** The slot's day's checks: the latest answer of its own pre-check and that day's daily check (today only), per
    * ruling 2a-R13. */
   checks: Record<string, CheckAnswer>;
@@ -842,6 +848,8 @@ function respond(
     date: row.effectiveDate,
     contentState: contentStateOf(row),
     locked: lockedOf(row, builds),
+    title: row.title,
+    origin: row.origin ?? null,
     checks,
     build: shown?.build ?? null,
     view: shown?.view ?? null,

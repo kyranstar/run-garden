@@ -449,6 +449,29 @@ describe("what a tap changes is kept at once (ruling 2b-R13)", () => {
   });
 });
 
+describe("a session this device keeps nothing of (started on another, opened from Today, a link or a reload)", () => {
+  const started = (over: Record<string, unknown> = {}) => ({ workoutId: SLOT, contentState: "started", build: build(), view: view(), profiles: profiles(), ...over }) as unknown as SessionDto;
+  const banner = () => document.querySelector(".player-count-title")?.textContent;
+
+  it("a Studio workout is named by its own title, as Start names it — never \"Session\"", async () => {
+    mount({ getSession: async () => started({ title: "Leg day", origin: "studio" }) });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(banner()).toBe("Leg day · ");
+  });
+
+  it("a programme's session by its programme: the row's title without the theme its build appended", async () => {
+    mount({ getSession: async () => started({ title: "Garden program · Desk unwind", origin: "program" }) });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(banner()).toBe("Garden program · ");
+  });
+
+  it("a read from a server before the title: the theme, as before", async () => {
+    mount({ getSession: async () => started() });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(banner()).toBe("Desk unwind · ");
+  });
+});
+
 describe("a device with no IndexedDB (audit 2b-B I-2)", () => {
   it("plays the session started online — and says from the first moment that it isn't being kept here", async () => {
     const started = { workoutId: SLOT, contentState: "started", build: build(), view: view(), profiles: profiles() } as unknown as SessionDto;

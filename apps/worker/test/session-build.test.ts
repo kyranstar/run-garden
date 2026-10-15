@@ -751,6 +751,13 @@ describe("building today's session", () => {
     expect(JSON.stringify(stored!.payload)).toContain(`"${disliked}"`);
   });
 
+  it("the read names its slot by the row it already reads — its title and its kind — and reads it once", async () => {
+    const id = await seedSlot(TODAY);
+    statements.length = 0;
+    expect(await loadSession(db, userId, id, TODAY)).toMatchObject({ title: "Mobility", origin: "program" });
+    expect(statements.filter((s) => /from "planned_workouts"/.test(s))).toHaveLength(1);
+  });
+
   it("another user's workout, a non-program row, an archived slot → not found", async () => {
     const { userId: other } = await makeTestUser(db);
     const theirProgram = await seedProgram(other);
@@ -985,6 +992,9 @@ describe("Start (Review Focus 3)", () => {
       date: TODAY,
       contentState: "outline",
       locked: false,
+      // The planned workout's own title and kind: what a device that keeps nothing of it names the session by.
+      title: "Mobility",
+      origin: "program",
       checks: {},
       build: null,
       view: null,

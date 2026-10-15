@@ -171,6 +171,15 @@ describe("building a document workout", () => {
     expect(basis.body.prefs.ratings).toEqual({ tempoSquat: 1 });
   });
 
+  it("the session read names its planned workout — its title and its kind — for a device that keeps nothing of it", async () => {
+    const id = await create(calmDoc());
+    const built = await call("POST", `/api/sessions/${id}/build`, {});
+    await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
+    const read = await call("GET", `/api/sessions/${id}`);
+    expect(read.status).toBe(200);
+    expect(read.body).toMatchObject({ contentState: "started", title: "Hips and back", origin: "studio" });
+  });
+
   it("Start locks it, and the build after Start is the locked one", async () => {
     const id = await create(calmDoc());
     const built = await call("POST", `/api/sessions/${id}/build`, {});

@@ -22,7 +22,7 @@ import { Lib, Prog, type HoldSide, type SlotChoice, type Step, type Target } fro
 import { Sheet, Spinner } from "../components.js";
 import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js";
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
-import { FORMAT_LABEL, blockLabel, partLabelOf } from "../components/session-sheet.js";
+import { FORMAT_LABEL, blockLabel, partLabelOf, sessionTitle } from "../components/session-sheet.js";
 import { Stepper } from "../components/set-steppers.js";
 import { IconClose, IconInfo, IconSettings, IconSwap } from "../icons.js";
 import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds.js";
@@ -152,7 +152,8 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
     stored = { workoutId, build: session.build, view: session.view, savedAt: Date.now() };
     // The signed-in account it is played for: its save, and Today's "Session in progress", are that account's.
     const userId = await deps.whoAmI().catch(() => null);
-    extras = { workoutId, title: session.view.theme?.name ?? "Session", profiles: session.profiles, userId, savedAt: Date.now() };
+    // Named by its planned workout, as Start names it (the read says which, and its kind), never "Session".
+    extras = { workoutId, title: sessionTitle(session), profiles: session.profiles, userId, savedAt: Date.now() };
     if (db) {
       await saveBuild(db, session).catch(() => undefined);
       await saveExtras(db, extras).catch(() => undefined);
