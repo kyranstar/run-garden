@@ -1,34 +1,54 @@
 /**
  * record_answer(answers) — what the athlete's request itself states, kept as check-in answers so the next design knows
  * it (Stage 3 spec §4; principles §5.3): soreness, tightness and pain by area, energy on its own — the check-ins'
- * question ids, and their areas (a library region or muscle, or one of the athlete's focus areas). Each answer quotes
- * the request's own words, and a quote the request doesn't hold is refused: this keeps what was SAID; what the coach
- * concluded goes to `remember`, marked as inferred. Rows are `athlete_answers` with `source 'request'` on the athlete's
- * local today, the quote as the athlete's words.
+ * question ids (`CHECKIN_QUESTIONS`, with how long an answer stays fresh), and their areas (a library region or
+ * muscle, or one of the athlete's focus areas). Each answer QUOTES the request — whole words of it, compared without
+ * case or punctuation — and a quote the request doesn't hold is refused: this keeps what was SAID; what the coach
+ * concluded goes to `remember`, marked as inferred. A value is kept only when the athlete gave that number ("a 6",
+ * "six"): "wrecked" is no 8. Rows are `athlete_answers` with `source 'request'` on the athlete's local today, the quote
+ * as the athlete's words, fresh for the question's days.
  *
- * Undo: every row of one call shares the call's handle (`ra:<main run>:<tool-use id>`, each row `<handle>:<n>`), which
- * the call's receipt carries to the run view; `POST /api/coach/runs/:id/undo-answer { handle }` takes them back
- * (`undoRecordedAnswers`). A replayed call writes the same ids, so nothing doubles. Two statements: the athlete (with the
- * run's request and the focus areas), then one insert.
+ * A rehearsal run writes nothing: it answers as it would (`{ recorded, rehearsal: true }`, the same receipt).
+ *
+ * Answers to ask_athlete's check-in questions are kept by the same rules (`askedAnswerRows`, written by the answer
+ * route), as `source 'ask_athlete'`.
+ *
+ * Undo: every row of one call shares the call's handle (`ra:<main run>:<tool-use id>` — `aa:` for an asked question's
+ * — each row `<handle>:<n>`), which the call's receipt carries to the run view; `POST /api/coach/runs/:id/undo-answer
+ * { handle }` takes them back (`undoRecordedAnswers`). A replayed call writes the same ids, so nothing doubles. Two
+ * statements: the athlete (with the run's request and the focus areas), then one insert.
  */
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { athleteAnswers, athleteProfiles, coachRuns } from "@rg/database";
+import { addDays } from "@rg/domain";
 import { MUSCLES, REGIONS } from "@rg/exercise-library";
 import type { Db } from "../db.js";
 import type { DesignTool } from "./types.js";
 import { isErr, parseAct } from "./act-common.js";
 import { parsedArray, readAthlete, refuse } from "./read-common.js";
 
-/** The check-ins' questions a request can state (principles §5.3; Stage 4 owns the registry). */
-export const REQUEST_QUESTIONS = ["soreness", "tightness", "pain", "energy"] as const;
-/** The questions answered by area. */
-const BY_AREA = new Set<string>(["soreness", "tightness", "pain"]);
+/**
+ * The check-ins' questions the coach keeps answers to (principles §5.3; Stage 4 owns the full registry): whether each
+ * is answered by area, and for how many days an answer stays fresh (its last fresh day is `expiresAt`).
+ */
+export const CHECKIN_QUESTIONS = {
+  soreness: { byArea: true, freshDays: 3 },
+  tightness: { byArea: true, freshDays: 3 },
+  pain: { byArea: true, freshDays: 3 },
+  energy: { byArea: false, freshDays: 1 },
+} as const;
+export type CheckinQuestion = keyof typeof CHECKIN_QUESTIONS;
+export const CHECKIN_IDS = Object.keys(CHECKIN_QUESTIONS) as [CheckinQuestion, ...CheckinQuestion[]];
+
 const MAX_ANSWERS = 6;
 const QUOTE_MAX = 200;
 
 const REGION_SET = new Set<string>(REGIONS);
 const MUSCLE_SET = new Set<string>(MUSCLES);
+
+/** The last day an answer given on `date` stays fresh. */
+export const freshThrough = (q: CheckinQuestion, date: string): string => addDays(date, CHECKIN_QUESTIONS[q].freshDays - 1);
 
 const input = z
   .object({
@@ -36,7 +56,7 @@ const input = z
       .array(
         z
           .object({
-            question: z.enum(REQUEST_QUESTIONS),
+            question: z.enum(CHECKIN_IDS),
             area: z.string().min(1).max(80).optional(),
             value: z.number().int().min(0).max(10).optional(),
             quote: z.string().trim().min(1).max(QUOTE_MAX),
@@ -48,18 +68,57 @@ const input = z
   })
   .strict();
 
-/** Words compared without case, punctuation or spacing. */
-const words = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+/** Words, lower case, without punctuation: " my calf is sore " (padded, so a phrase matches only whole words). */
+const words = (s: string): string => ` ${s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+/** Is the quote whole words of the request (`empty`: no words at all; `absent`: not in it)? */
+export function quoteIn(request: string, quote: string): "ok" | "empty" | "absent" {
+  const quoted = words(quote);
+  if (quoted.trim() === "") return "empty";
+  return request && words(request).includes(quoted) ? "ok" : "absent";
+}
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+/** Does the quote give this number — as digits or as a word? */
+const givesNumber = (quote: string, n: number): boolean => words(quote).includes(` ${n} `) || words(quote).includes(` ${NUMBER_WORDS[n]} `);
 
 /** The handle an undo names; the run's own id is in it, so an undo can only reach its own run's answers. */
-export const answerHandle = (mainRunId: string, toolUseId: string): string => `ra:${mainRunId}:${toolUseId}`;
-const HANDLE = /^ra:([^:]{1,120}):([A-Za-z0-9_-]{1,120})$/;
+export const answerHandle = (mainRunId: string, toolUseId: string, from: "request" | "ask_athlete" = "request"): string =>
+  `${from === "request" ? "ra" : "aa"}:${mainRunId}:${toolUseId}`;
+const HANDLE = /^(ra|aa):([^:]{1,120}):([A-Za-z0-9_-]{1,120})$/;
 /** The main run a handle belongs to, or null for a handle that isn't one. */
-export const handleRunId = (handle: string): string | null => HANDLE.exec(handle)?.[1] ?? null;
+export const handleRunId = (handle: string): string | null => HANDLE.exec(handle)?.[2] ?? null;
+const handleSource = (handle: string): "request" | "ask_athlete" => (handle.startsWith("aa:") ? "ask_athlete" : "request");
 
-type Subject = { kind: "region" | "muscle" | "focus_area"; id: string; words: string };
+export interface Subject {
+  kind: "region" | "muscle" | "focus_area";
+  id: string;
+  words: string;
+}
 
 const areaWords = (id: string): string => id.replace(/-/g, " ");
+
+/** An area's subject: a library region, else a muscle, else one of the athlete's focus areas (`focus`: id → label). */
+export function subjectOf(area: string, focus: ReadonlyMap<string, string>): Subject | null {
+  if (REGION_SET.has(area)) return { kind: "region", id: area, words: areaWords(area) };
+  if (MUSCLE_SET.has(area)) return { kind: "muscle", id: area, words: areaWords(area) };
+  if (focus.has(area)) return { kind: "focus_area", id: area, words: focus.get(area)! };
+  return null;
+}
+
+/** Is an area the library's own (no focus-area read needed to know it)? */
+export const libraryArea = (area: string): boolean => REGION_SET.has(area) || MUSCLE_SET.has(area);
+
+/** The athlete's focus areas as id → label, from the profile's JSON. */
+export function focusAreasOf(raw: unknown): Map<string, string> {
+  return new Map(
+    parsedArray(raw).flatMap((f) => {
+      const x = f as { id?: unknown; label?: unknown };
+      return typeof x.id === "string" ? [[x.id, typeof x.label === "string" ? x.label : x.id] as const] : [];
+    }),
+  );
+}
+
+/** The fix for an area that is none: the ids it can be. */
+export const AREA_FIX = `Use a region id (${REGIONS.join(", ")}), a muscle id from the library, or a focus-area id from read_profile.`;
 
 /** "soreness — calves 8, hamstrings 3 · energy 3" */
 export function answeredLine(rows: Array<{ questionId: string; subjectWords: string | null; valueNum: number | null }>): string {
@@ -69,14 +128,26 @@ export function answeredLine(rows: Array<{ questionId: string; subjectWords: str
     groups.set(r.questionId, [...(groups.get(r.questionId) ?? []), bit]);
   }
   return [...groups]
-    .map(([q, bits]) => (BY_AREA.has(q) ? `${q} — ${bits.join(", ")}` : `${q}${bits.filter(Boolean).length ? ` ${bits.join(", ")}` : ""}`))
+    .map(([q, bits]) =>
+      (CHECKIN_QUESTIONS as Record<string, { byArea: boolean }>)[q]?.byArea ? `${q} — ${bits.join(", ")}` : `${q}${bits.filter(Boolean).length ? ` ${bits.join(", ")}` : ""}`,
+    )
     .join(" · ");
+}
+
+type AnswerRow = typeof athleteAnswers.$inferInsert & { subjectWords: string | null };
+
+/** The insert for `rows` (≤ 6 rows, one statement under D1's 100 binds); a replay's rows exist already and are left. */
+export function insertAnswers(db: Db, rows: readonly AnswerRow[]) {
+  return db
+    .insert(athleteAnswers)
+    .values(rows.map(({ subjectWords: _w, ...row }) => row))
+    .onConflictDoNothing();
 }
 
 export const recordAnswer: DesignTool = {
   name: "record_answer",
   description:
-    "Keep what the request itself states as check-in answers, so the next design knows it: soreness, tightness or pain by area (a region, muscle or focus-area id), energy on its own, 0–10 when stated, each quoting the request's words.",
+    "Keep what the request itself states as check-in answers, so the next design knows it: soreness, tightness or pain by area (a region, muscle or focus-area id), energy on its own, each quoting the request's words; value 0–10 only a number the athlete gave.",
   inputSchema: {
     type: "object",
     properties: {
@@ -87,9 +158,9 @@ export const recordAnswer: DesignTool = {
         items: {
           type: "object",
           properties: {
-            question: { type: "string", enum: [...REQUEST_QUESTIONS] },
+            question: { type: "string", enum: [...CHECKIN_IDS] },
             area: { type: "string", description: "soreness, tightness, pain: a region or muscle id, or one of the athlete's focus-area ids. Not for energy." },
-            value: { type: "integer", minimum: 0, maximum: 10 },
+            value: { type: "integer", minimum: 0, maximum: 10, description: "Only a number the athlete gave (\"a 6\", \"six\"); a word like \"wrecked\" is no number — leave it out." },
             quote: { type: "string", minLength: 1, maxLength: QUOTE_MAX, description: "The request's own words that state it, copied exactly." },
           },
           required: ["question", "quote"],
@@ -103,37 +174,38 @@ export const recordAnswer: DesignTool = {
   statementCost: 2,
   roles: ["main"],
   async run(ctx, raw) {
-    const p = parseAct(input, raw, `answers: 1–${MAX_ANSWERS}, each { question, area?, value? (0–10), quote }`);
+    const p = parseAct(input, raw, `answers: 1–${MAX_ANSWERS}, each { question, area?, value? (0–10, only a number given), quote }`);
     if (isErr(p)) return p;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       runRequest: sql`(select ${coachRuns.request} from ${coachRuns} where ${coachRuns.id} = ${ctx.run.id} and ${coachRuns.userId} = ${ctx.userId})`,
       focusAreas: sql`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${ctx.userId})`,
     });
     const request = typeof extra.runRequest === "string" ? extra.runRequest : "";
-    const said = words(request);
-    const focus = new Map(
-      parsedArray(extra.focusAreas).flatMap((f) => {
-        const x = f as { id?: unknown; label?: unknown };
-        return typeof x.id === "string" ? [[x.id, typeof x.label === "string" ? x.label : x.id] as const] : [];
-      }),
-    );
-    const rows: Array<typeof athleteAnswers.$inferInsert & { subjectWords: string | null }> = [];
+    const focus = focusAreasOf(extra.focusAreas);
+    const rows: AnswerRow[] = [];
     const handle = answerHandle(ctx.run.id, ctx.toolUseId ?? `call-${ctx.now.getTime()}`);
     for (const [i, a] of p.answers.entries()) {
-      if (!said || !said.includes(words(a.quote))) {
+      const found = quoteIn(request, a.quote);
+      if (found === "empty") return refuse("bad_quote", `answers.${i}.quote has no words.`, "Quote the request's own words that state it.");
+      if (found === "absent") {
         return refuse(
           "not_in_request",
-          request ? `answers.${i}.quote "${a.quote}" is not in the athlete's request.` : "This run has no request: the athlete only tapped to start it.",
+          request ? `answers.${i}.quote "${a.quote}" is not words of the athlete's request.` : "This run has no request: the athlete only tapped to start it.",
           "Quote the request's own words exactly. For what you concluded rather than read, use remember with confidence inferred.",
         );
       }
+      if (a.value !== undefined && !givesNumber(a.quote, a.value)) {
+        return refuse(
+          "value_not_stated",
+          `answers.${i}: the quote gives no ${a.value}; a value is only a number the athlete gave.`,
+          "Leave value out (the quote keeps their words), or quote the words that give the number.",
+        );
+      }
       let subject: Subject | null = null;
-      if (BY_AREA.has(a.question)) {
-        if (!a.area) return refuse("bad_area", `answers.${i}: ${a.question} is recorded by area.`, "Give the area: a region or muscle id, or a focus-area id from read_profile.");
-        if (REGION_SET.has(a.area)) subject = { kind: "region", id: a.area, words: areaWords(a.area) };
-        else if (MUSCLE_SET.has(a.area)) subject = { kind: "muscle", id: a.area, words: areaWords(a.area) };
-        else if (focus.has(a.area)) subject = { kind: "focus_area", id: a.area, words: focus.get(a.area)! };
-        else return refuse("bad_area", `answers.${i}.area "${a.area}" is no region, muscle or focus area.`, "Use a region or muscle id from the library, or a focus-area id from read_profile.");
+      if (CHECKIN_QUESTIONS[a.question].byArea) {
+        if (!a.area) return refuse("bad_area", `answers.${i}: ${a.question} is recorded by area.`, AREA_FIX);
+        subject = subjectOf(a.area, focus);
+        if (!subject) return refuse("bad_area", `answers.${i}.area "${a.area}" is no region, muscle or focus area.`, AREA_FIX);
       } else if (a.area) {
         return refuse("bad_area", `answers.${i}: ${a.question} is not by area.`, "Leave area out for energy.");
       }
@@ -149,17 +221,15 @@ export const recordAnswer: DesignTool = {
         source: "request",
         localDate: athlete.today,
         at: ctx.now.toISOString(),
+        expiresAt: freshThrough(a.question, athlete.today),
         subjectWords: subject?.words ?? null,
       });
     }
-    // 12 bound values a row, six rows at most: one statement under D1's 100.
-    await ctx.db
-      .insert(athleteAnswers)
-      .values(rows.map(({ subjectWords: _w, ...row }) => row))
-      .onConflictDoNothing();
+    // A rehearsal is never the athlete's record.
+    if (!ctx.run.rehearsal) await insertAnswers(ctx.db, rows);
     const line = answeredLine(rows.map((r) => ({ questionId: r.questionId, subjectWords: r.subjectWords, valueNum: r.valueNum ?? null })));
     return {
-      data: { recorded: rows.length, date: athlete.today, source: "request" },
+      data: ctx.run.rehearsal ? { recorded: rows.length, rehearsal: true } : { recorded: rows.length, date: athlete.today, source: "request" },
       summary: `Noted from your request: ${line}`,
       receipt: {
         undo: { handle },
@@ -169,15 +239,81 @@ export const recordAnswer: DesignTool = {
   },
 };
 
+// ── An asked check-in question's answer (ask_athlete; the answer route writes it) ──────────────────────────────────
+
+/** What ask_athlete stored of a question that declares a check-in: the question, its area, and each chip's mapping. */
+export interface AskedCheckin {
+  question: CheckinQuestion;
+  area?: string;
+  chips: Array<{ label: string; value?: number; area?: string }>;
+}
+
+/** The check-in a question asked, read from the ask call's own input (null for a question that declares none). */
+export function askedCheckin(q: unknown): AskedCheckin | null {
+  const x = q as { checkin?: { question?: unknown; area?: unknown }; chips?: unknown } | null;
+  const question = x?.checkin?.question;
+  if (typeof question !== "string" || !(question in CHECKIN_QUESTIONS)) return null;
+  const chips = (Array.isArray(x!.chips) ? x!.chips : []).flatMap((c) => {
+    if (typeof c === "string") return [{ label: c }];
+    const o = c as { label?: unknown; value?: unknown; area?: unknown } | null;
+    if (!o || typeof o.label !== "string") return [];
+    return [{ label: o.label, ...(typeof o.value === "number" ? { value: o.value } : {}), ...(typeof o.area === "string" ? { area: o.area } : {}) }];
+  });
+  return { question: question as CheckinQuestion, ...(typeof x!.checkin!.area === "string" ? { area: x!.checkin!.area } : {}), chips };
+}
+
 /**
- * Take back the answers one record_answer call kept (its `handle`), for `userId` only: deletes them and answers what
- * they were, or null when there were none (already taken back, or never this athlete's). One statement.
+ * The rows the answers to an ask call keep: one per question that declares a check-in (the others stay in the run's
+ * own record). A tapped chip gives its value and area (its own, else the question's), its label as the choice; words
+ * typed instead are the text, with no value. `source 'ask_athlete'`, ids `aa:<main run>:<tool-use id>:<n>` (n the
+ * question's place), fresh for the question's days. The areas were checked when the question was asked.
+ */
+export function askedAnswerRows(o: {
+  userId: string;
+  mainRunId: string;
+  toolUseId: string;
+  questions: readonly unknown[];
+  answers: readonly string[];
+  localDate: string;
+  at: string;
+}): { handle: string; rows: AnswerRow[] } {
+  const handle = answerHandle(o.mainRunId, o.toolUseId, "ask_athlete");
+  const rows: AnswerRow[] = [];
+  o.answers.forEach((text, n) => {
+    const c = askedCheckin(o.questions[n]);
+    if (!c) return;
+    const chip = c.chips.find((ch) => ch.label.trim().toLowerCase() === text.trim().toLowerCase());
+    const area = chip?.area ?? c.area;
+    const subject = CHECKIN_QUESTIONS[c.question].byArea && area ? subjectOf(area, new Map([[area, area]])) : null;
+    rows.push({
+      id: `${handle}:${n}`,
+      userId: o.userId,
+      questionId: c.question,
+      subjectKind: subject?.kind ?? null,
+      subjectId: subject?.id ?? null,
+      valueNum: chip?.value ?? null,
+      valueChoice: chip ? chip.label : null,
+      text: chip ? null : text,
+      source: "ask_athlete",
+      localDate: o.localDate,
+      at: o.at,
+      expiresAt: freshThrough(c.question, o.localDate),
+      subjectWords: subject?.words ?? null,
+    });
+  });
+  return { handle, rows };
+}
+
+/**
+ * Take back the answers one call kept (its `handle`: record_answer's, or an asked question's), for `userId` only:
+ * deletes them and answers what they were, or null when there were none (already taken back, or never this
+ * athlete's). One statement.
  */
 export async function undoRecordedAnswers(db: Db, userId: string, handle: string): Promise<{ line: string; count: number } | null> {
   const a = athleteAnswers;
   const gone = await db
     .delete(a)
-    .where(and(eq(a.userId, userId), eq(a.source, "request"), sql`substr(${a.id}, 1, ${handle.length + 1}) = ${`${handle}:`}`))
+    .where(and(eq(a.userId, userId), eq(a.source, handleSource(handle)), sql`substr(${a.id}, 1, ${handle.length + 1}) = ${`${handle}:`}`))
     .returning({ id: a.id, questionId: a.questionId, subjectKind: a.subjectKind, subjectId: a.subjectId, valueNum: a.valueNum });
   if (gone.length === 0) return null;
   gone.sort((x, y) => Number(x.id.split(":").at(-1)) - Number(y.id.split(":").at(-1)));

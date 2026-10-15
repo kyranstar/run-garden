@@ -148,8 +148,8 @@ describe("each act tool's declared statement cost is the most it runs", () => {
 
   it("record_answer: the athlete with the request and focus areas, then one insert", async () => {
     const n = await most("record_answer", [
-      { input: { answers: [{ question: "soreness", area: "calves", value: 6, quote: "Calves sore" }, { question: "energy", value: 3, quote: "energy is low" }] } },
-      { input: { answers: [{ question: "soreness", area: "calves", value: 6, quote: "not in it" }] } },
+      { input: { answers: [{ question: "soreness", area: "calves", quote: "Calves sore" }, { question: "energy", quote: "energy is low" }] } },
+      { input: { answers: [{ question: "soreness", area: "calves", quote: "not in it" }] } },
       { input: { answers: [] } },
     ]);
     expect(n).toBe(tool("record_answer").statementCost);
@@ -171,9 +171,16 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(n).toBe(3);
   });
 
-  it("ask_athlete runs none (the loop writes its question); finish reads the run's proposal once", async () => {
-    expect(await most("ask_athlete", [{ input: { questions: [{ text: "How long do you have?", chips: ["20 min", "40 min"], why: "Time decides the design." }] } }])).toBe(0);
-    expect(tool("ask_athlete").statementCost).toBe(0);
+  it("ask_athlete reads the focus areas only for a check-in area the library doesn't hold (the loop writes its question); finish reads the run's proposal once", async () => {
+    const q = { text: "How tight is it?", chips: [{ label: "a little", value: 2 }, { label: "a lot", value: 7 }], why: "It sets the range." };
+    expect(
+      await most("ask_athlete", [
+        { input: { questions: [{ text: "How long do you have?", chips: ["20 min", "40 min"], why: "Time decides the design." }] } },
+        { input: { questions: [{ ...q, checkin: { question: "tightness", area: "calves" } }] } },
+        { input: { questions: [{ ...q, checkin: { question: "tightness", area: "desk-neck" } }] } },
+      ]),
+    ).toBe(1);
+    expect(tool("ask_athlete").statementCost).toBe(1);
     const main = await runRow(rich.userId);
     await measured("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } }, rich.userId, main);
     expect(await most("finish", [{ input: { summary: "Done." }, run: main }, { input: { summary: "Done." } }, { input: { summary: "" } }])).toBe(1);
@@ -215,50 +222,107 @@ describe("the document's JSON schema the model is given is the domain's", () => 
     expect(S.properties.intent.properties.effort.enum).toEqual([...EFFORT_LEVELS]);
     expect(part.properties.purpose.enum).toEqual([...PART_PURPOSES]);
     expect(part.properties.format.enum).toEqual([...PART_FORMATS]);
-    expect(part.properties.items.items.anyOf[2].properties.effort.enum).toEqual([...RUN_EFFORTS]);
+    expect(part.properties.items.items.anyOf[1].properties.effort.enum).toEqual([...RUN_EFFORTS]);
     expect(S.properties.basedOn.properties.kind.enum).toEqual([...BASED_ON_KINDS]);
     expect(S.properties.setting.properties.equipment.items.enum).toEqual([...EQUIPMENT_IDS]);
-    expect(part.properties.items.items.anyOf.map((i: any) => i.properties.kind.const)).toEqual(["exercise", "free_exercise", "run", "rest"]);
+    expect(part.properties.items.items.anyOf.map((i: any) => i.properties.kind.const)).toEqual(["exercise", "run", "rest"]);
   });
 
-  it("each bound it states is the zod schema's: the value at it passes, one past it fails", () => {
-    const base = () => structuredClone(calmDoc()) as any;
-    const probes: Array<{ name: string; bound: number; set: (d: any, v: unknown) => void; past: (n: number) => unknown; at: (n: number) => unknown }> = [];
-    const text = (name: string, bound: number, set: (d: any, v: unknown) => void) =>
-      probes.push({ name, bound, set, at: (n) => "x".repeat(n), past: (n) => "x".repeat(n + 1) });
-    const count = (name: string, bound: number, set: (d: any, v: unknown) => void) => probes.push({ name, bound, set, at: (n) => n, past: (n) => n + 1 });
-    text("title", S.properties.title.maxLength, (d, v) => (d.title = v));
-    text("intent.summary", S.properties.intent.properties.summary.maxLength, (d, v) => (d.intent.summary = v));
-    text("notes", S.properties.notes.maxLength, (d, v) => (d.notes = v));
-    text("part why", part.properties.why.maxLength, (d, v) => (d.parts[0].why = v));
-    text("item why", exercise.properties.why.maxLength, (d, v) => (d.parts[0].items[0].why = v));
-    text("item cue", exercise.properties.cue.maxLength, (d, v) => (d.parts[0].items[0].cue = v));
-    text("item progression", exercise.properties.progression.maxLength, (d, v) => (d.parts[0].items[0].progression = v));
-    text("libraryId", exercise.properties.libraryId.maxLength, (d, v) => (d.parts[0].items[0].libraryId = v));
-    count("sets", dose.properties.sets.maximum, (d, v) => (d.parts[0].items[0].dose.sets = v));
-    count("restSec", dose.properties.restSec.maximum, (d, v) => (d.parts[0].items[0].dose.restSec = v));
-    count("holdSec", dose.properties.holdSec.maximum, (d, v) => (d.parts[0].items[0].dose.holdSec = v));
-    count("rounds", part.properties.rounds.maximum, (d, v) => (d.parts[0].rounds = v));
-    count("targetMinutes", S.properties.setting.properties.targetMinutes.maximum, (d, v) => (d.setting = { targetMinutes: v }));
-    for (const p of probes) {
-      const ok = base();
-      p.set(ok, p.at(p.bound));
-      expect(workoutDocSchema.safeParse(ok).success, `${p.name} at ${p.bound}`).toBe(true);
-      const bad = base();
-      p.set(bad, p.past(p.bound));
-      expect(workoutDocSchema.safeParse(bad).success, `${p.name} past ${p.bound}`).toBe(false);
-    }
-    const list = (name: string, max: number, set: (d: any, n: number) => void) => {
-      const ok = base();
-      set(ok, max);
-      expect(workoutDocSchema.safeParse(ok).success, `${name} at ${max}`).toBe(true);
-      const bad = base();
-      set(bad, max + 1);
-      expect(workoutDocSchema.safeParse(bad).success, `${name} past ${max}`).toBe(false);
+  /**
+   * A document holding every field the schema names (each union by every branch it has), at values well inside every
+   * bound — and where two fields must keep an order (a pace's fast ≤ slow, a heart-rate range, a range of reps), each
+   * at the far end of its own, so that moving one to its own bound never crosses the other.
+   */
+  function fullDoc(): any {
+    const everyDose = {
+      sets: 3, reps: { min: 1, max: 200 }, holdSec: 30, breaths: 5, carryM: 20, perSide: true, max: true,
+      tempo: { eccentricSec: 3, pauseSec: 1, concentricSec: 1 }, load: { typed: "35 lb", kg: 16 }, restSec: 60,
     };
-    list("parts", S.properties.parts.maxItems, (d, n) => (d.parts = Array.from({ length: n }, () => structuredClone(d.parts[0]))));
-    list("items", part.properties.items.maxItems, (d, n) => (d.parts[0].items = Array.from({ length: n }, () => structuredClone(d.parts[0].items[0]))));
-    list("alternates", exercise.properties.alternates.maxItems, (d, n) => (d.parts[0].items[0].alternates = Array.from({ length: n }, () => ({ libraryId: "bridge" }))));
-    list("goals", S.properties.intent.properties.goals.maxItems, (d, n) => (d.intent.goals = Array.from({ length: n }, (_, i) => GOAL_IDS[i % GOAL_IDS.length])));
+    return {
+      version: 1,
+      title: "Every field",
+      intent: { summary: "Every field the schema names.", goals: ["strength"], focus: ["glutes"], effort: "develop", objectiveIds: ["obj-1"] },
+      setting: { placeId: "home", equipment: ["mat"], targetMinutes: 40 },
+      parts: [
+        {
+          purpose: "main", why: "Load.", format: "straight", rounds: 2, restBetweenRoundsSec: 60,
+          items: [
+            { kind: "exercise", libraryId: "bridge", dose: everyDose, side: "left", why: "Why.", progression: "Up one.", cue: "Cue.", alternates: [{ libraryId: "deadBug", why: "Why." }], test: { keyResultId: "kr-1" } },
+            { kind: "exercise", libraryId: "deadBug", dose: { reps: 8, load: "bodyweight" } },
+            {
+              kind: "run", effort: "easy", why: "Easy.", cue: "Relax.",
+              target: { durationSec: 600, distanceM: 2000, typed: "2 km", open: true, pace: { fastSecPerKm: 120, slowSecPerKm: 1800 }, hr: { low: 30, high: 230 }, zone: { kind: "hr", index: 2 } },
+            },
+            { kind: "rest", seconds: 60 },
+          ],
+        },
+      ],
+      basedOn: { kind: "workout", id: "w-1", rev: 2 },
+      // Not in the schema the model is given: the tool sets it.
+      source: { kind: "coach" },
+      notes: "Notes.",
+    };
+  }
+
+  type Path = Array<string | number>;
+  const getAt = (o: any, path: Path): any => path.reduce((v, k) => (v === undefined || v === null ? undefined : v[k]), o);
+  function setAt(o: any, path: Path, value: unknown): any {
+    const copy = structuredClone(o);
+    const parent = getAt(copy, path.slice(0, -1));
+    parent[path[path.length - 1]!] = value;
+    return copy;
+  }
+  /** The branch of a union a value takes: by its `kind`, its constant, or its type. */
+  const takes = (branch: any, v: unknown): boolean => {
+    if (branch.const !== undefined) return v === branch.const;
+    if (branch.type === "object") {
+      const kind = branch.properties?.kind?.const;
+      return !!v && typeof v === "object" && !Array.isArray(v) && (kind === undefined || (v as { kind?: unknown }).kind === kind);
+    }
+    if (branch.type === "integer" || branch.type === "number") return typeof v === "number";
+    return typeof v === branch.type;
+  };
+
+  interface Probe { name: string; path: Path; ok: unknown; bad: unknown }
+  /** Every bound the schema states, walked alongside the full document: the value at the bound, and one past it. */
+  function probesOf(schema: any, path: Path, doc: any, out: Probe[]): Probe[] {
+    const here = getAt(doc, path);
+    const name = path.join(".");
+    if (schema.anyOf) {
+      for (const branch of schema.anyOf) if (takes(branch, here)) probesOf(branch, path, doc, out);
+      return out;
+    }
+    if (schema.type === "string") {
+      if (schema.maxLength !== undefined) out.push({ name: `${name} maxLength`, path, ok: "x".repeat(schema.maxLength), bad: "x".repeat(schema.maxLength + 1) });
+      if (schema.minLength !== undefined) out.push({ name: `${name} minLength`, path, ok: "x".repeat(schema.minLength), bad: "x".repeat(schema.minLength - 1) });
+    }
+    if (schema.type === "number" || schema.type === "integer") {
+      if (schema.maximum !== undefined) out.push({ name: `${name} maximum`, path, ok: schema.maximum, bad: schema.maximum + 1 });
+      if (schema.minimum !== undefined) out.push({ name: `${name} minimum`, path, ok: schema.minimum, bad: schema.minimum - 1 });
+    }
+    if (schema.type === "array") {
+      const many = (n: number) => Array.from({ length: n }, () => structuredClone(here[0]));
+      if (schema.maxItems !== undefined) out.push({ name: `${name} maxItems`, path, ok: many(schema.maxItems), bad: many(schema.maxItems + 1) });
+      if (schema.minItems !== undefined) out.push({ name: `${name} minItems`, path, ok: many(schema.minItems), bad: many(schema.minItems - 1) });
+      (here as unknown[]).forEach((_, i) => probesOf(schema.items, [...path, i], doc, out));
+    }
+    if (schema.type === "object" && schema.properties) {
+      for (const [key, sub] of Object.entries(schema.properties)) if (here?.[key] !== undefined) probesOf(sub, [...path, key], doc, out);
+    }
+    return out;
+  }
+
+  it("every bound it states is the zod schema's: the value at it passes, one past it fails — walked over every field", () => {
+    const doc = fullDoc();
+    expect(workoutDocSchema.safeParse(doc).error?.issues ?? []).toEqual([]);
+    const probes = probesOf(S, [], doc, []);
+    // Every bounded field the schema names is reached (the walk can't pass by skipping them).
+    expect(probes.length).toBeGreaterThanOrEqual(60);
+    const wrong: string[] = [];
+    for (const p of probes) {
+      if (!workoutDocSchema.safeParse(setAt(doc, p.path, p.ok)).success) wrong.push(`${p.name}: the bound itself is refused`);
+      if (workoutDocSchema.safeParse(setAt(doc, p.path, p.bad)).success) wrong.push(`${p.name}: one past it is accepted`);
+    }
+    expect(wrong).toEqual([]);
   });
 });

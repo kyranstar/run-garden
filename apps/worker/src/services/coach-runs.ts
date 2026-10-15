@@ -24,6 +24,7 @@ import {
 } from "./llm-messages.js";
 import { COACH_RUN_LEFT_MINUTES, COACH_RUN_SET_WINDOW_HOURS, COACH_RUN_STEP_STALE_MINUTES } from "./cron-limits.js";
 import { allTools } from "./design-tools/index.js";
+import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
 import {
   isToolErr,
   type DesignTool,
@@ -94,7 +95,8 @@ import {
  *
  * UNTRUSTED TEXT. The athlete's request is stored as data and handed to the context builder, which places it in the
  * header (the opening user message) inside a marked block; the loop never puts it in a system block. An answer goes
- * back to the model as `{ text, untrusted }`.
+ * back to the model as `{ text, untrusted }`. An answer to a question that declared a check-in is also kept as the
+ * athlete's answer (record-answer.ts `askedAnswerRows`; never a rehearsal's), in one insert once the answer stands.
  */
 
 // ── Vocabulary ──────────────────────────────────────────────────────────
@@ -149,7 +151,7 @@ export const ROUTE_OVERHEAD = 2;
 const BASE_FIXED = 4;
 /** Reserved: the spend added to a run whose claim a cancel took (the run write then matched nothing). */
 const LOST_CLAIM_WRITE = 1;
-/** Reserved: a rehearsal's proposal marked when its run finishes. */
+/** Reserved: the proposal's one write when its run finishes — a rehearsal's marked, or a reviewed one made pending. */
 const FINISH_WRITE = 1;
 export const PENDING_STEP_FIXED = BASE_FIXED + LOST_CLAIM_WRITE + FINISH_WRITE;
 /** + the weekly-cap read, the usage row before the call, the model call, the restore marker, the still-ours read,
@@ -837,6 +839,8 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
   let status: RunStatus = "active";
   let error: string | null = null;
   const events: NewEvent[] = [];
+  /** The athlete's answers to check-in questions, to keep once the answer stands (one insert). */
+  let kept: { handle: string; rows: ReturnType<typeof askedAnswerRows>["rows"] } | null = null;
   if (!state || !state.awaiting) {
     status = "failed";
     error = "bad_state";
@@ -851,13 +855,28 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
             note: "The athlete skipped the question. Go on with your best judgement, and say what you assumed.",
           }
         : { answers: answers.map((text, i) => ({ question: questions[i] ?? null, answer: { text, untrusted: true } })) };
+    // An answer to a question that declared a check-in is kept as the athlete's answer (ruling 3) — never a rehearsal's.
+    if (!("dismissed" in content) && !state.settings.rehearsal) {
+      const given = input.answers.map((a) => a.trim().slice(0, ANSWER_MAX_CHARS));
+      const asked = askedAnswerRows({
+        userId,
+        mainRunId: root.id,
+        toolUseId: state.awaiting,
+        questions: askedQuestionInputs(state, state.awaiting),
+        answers: given,
+        localDate: localDate(state.settings.timezone || "UTC", now),
+        at: claimAt,
+      });
+      const rows = asked.rows.filter((r) => given[Number(r.id.split(":").at(-1))]!.length > 0);
+      if (rows.length > 0) kept = { handle: asked.handle, rows };
+    }
     state.results.push({ type: "tool_result", tool_use_id: state.awaiting, content: JSON.stringify(content) });
     state.awaiting = null;
     if (state.pending.length === 0) flushResults(state);
     events.push(
       "dismissed" in content
         ? { kind: "note", summary: "You skipped the question." }
-        : { kind: "note", summary: `You answered: ${answers.join(" · ")}`, payload: { answers } },
+        : { kind: "note", summary: `You answered: ${answers.join(" · ")}`, payload: { answers, ...(kept ? { receipt: { undo: { handle: kept.handle } } } : {}) } },
     );
   }
   const terminal = !isLive(status);
@@ -874,6 +893,7 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
   // A cancel (or an expiry) took the run while the answer was being written: nothing of the answer stands, so the
   // trail says nothing of it either.
   if (!written) return { kind: "not_waiting", status: await currentStatus(db, root, nodes, waiting) };
+  if (kept) await insertAnswers(db, kept.rows);
   const by = waiting.id === root.id ? undefined : { runId: waiting.id, role: waiting.role };
   await appendEvents(db, userId, root.id, events.map((e) => withBy(e, by)), claimAt);
   waiting.status = status;
@@ -888,17 +908,25 @@ async function currentStatus(db: Db, root: RunNode, nodes: RunNode[], run: RunNo
   return treeStatus(root, nodes);
 }
 
-/** The questions an ask call put, in order, read from the assistant turn that made it. */
-function askedQuestions(state: RunState, toolUseId: string): string[] {
+/** The questions an ask call put, in order, as the call gave them, read from the assistant turn that made it. */
+function askedQuestionInputs(state: RunState, toolUseId: string): unknown[] {
   for (let i = state.messages.length - 1; i >= 0; i--) {
     const m = state.messages[i]!;
     if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
     const use = m.content.find((b) => b.type === "tool_use" && (b as ToolUseBlock).id === toolUseId) as ToolUseBlock | undefined;
     if (!use) continue;
-    const qs = (use.input as { questions?: Array<{ text?: unknown }> } | null)?.questions;
-    return Array.isArray(qs) ? qs.map((q) => (typeof q?.text === "string" ? q.text : "")) : [];
+    const qs = (use.input as { questions?: unknown } | null)?.questions;
+    return Array.isArray(qs) ? qs : [];
   }
   return [];
+}
+
+/** The questions' texts, in order. */
+function askedQuestions(state: RunState, toolUseId: string): string[] {
+  return askedQuestionInputs(state, toolUseId).map((q) => {
+    const text = (q as { text?: unknown } | null)?.text;
+    return typeof text === "string" ? text : "";
+  });
 }
 
 function withBy(e: NewEvent, by: { runId: string; role: ToolRole } | undefined): NewEvent {
@@ -1488,7 +1516,22 @@ async function runTools(
         await s.db
           .update(coachProposals)
           .set({ status: "rehearsal" })
-          .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, s.userId), eq(coachProposals.status, "pending")));
+          .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, s.userId), inArray(coachProposals.status, ["pending", "unreviewed"])));
+      } else if (proposalId && run.role === "main") {
+        // Review comes before the athlete sees anything (spec §5): a design's proposal becomes `pending` — the only
+        // status the app lists — when its main run finishes, and only when every workout in it carries its review.
+        await s.db
+          .update(coachProposals)
+          .set({ status: "pending" })
+          .where(
+            and(
+              eq(coachProposals.id, proposalId),
+              eq(coachProposals.userId, s.userId),
+              eq(coachProposals.status, "unreviewed"),
+              sql`json_valid(${coachProposals.ops}) and json_array_length(${coachProposals.ops}) > 0`,
+              sql`not exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.review') is null)`,
+            ),
+          );
       }
       const payload = { ...(proposalId ? { proposalId } : {}), ...(result.receipt ? { receipt: result.receipt } : {}) };
       events.push({ kind: "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });

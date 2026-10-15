@@ -23,10 +23,16 @@
  * had), the validator's warnings and what is derived from the document — the manifest is computed from these, never
  * from prose (Task 8 applies them through the Studio's create / revise path). A run's later draft REPLACES its earlier
  * op, whatever its target (each run designs one workout; a second draft is a revision round). The call's tool-use id
- * is on its op: a replay — a step that died after this wrote — finds it and answers what it stored, writing nothing.
+ * is on its op, and the ids of the drafts it replaced go with it (`replaces`): a replay — a step that died after this
+ * wrote — finds its id and answers what it stored, or that a later draft replaced it, writing nothing (so a reviewer
+ * never reviews the same draft twice).
  *
- * Its status (`proposalStatusOf`): `rehearsal` for a rehearsal run, never listed; `unreviewed` while any op has no
- * review — never shown to the athlete (`pending` is the only status the app lists); `pending` once every op is reviewed.
+ * A free-text move is refused (act-common.ts `freeTextRefusal`): no condition rule can judge it. A revision may keep
+ * one its workout's current document already holds, unchanged.
+ *
+ * Its status: `rehearsal` for a rehearsal run, never listed; otherwise `unreviewed` — never shown to the athlete
+ * (`pending` is the only status the app lists). propose never writes `pending`: the main run's finish does, once every
+ * op carries its review (coach-runs.ts; Task 6 has the reviews written).
  *
  * REVIEW (Task 6 fills the seam): with `ctx.reviewDraft`, the draft is reviewed before it is stored and the review is
  * the result; without one — or when the reviewer has no verdict — it is stored unreviewed and says so.
@@ -38,8 +44,9 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, plannedWorkouts } from "@rg/database";
-import { docOriginRow, type WorkoutDoc } from "@rg/domain";
+import { docOriginRow, parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain";
 import type { DocIssue } from "@rg/workout";
+import { LOCKED_CONTENT } from "../doc-workouts.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
 import type { DesignReview, DesignTool, DraftForReview, ToolContext, ToolOk } from "./types.js";
 import {
@@ -48,6 +55,7 @@ import {
   docPlaceId,
   docValidateCtx,
   errorsLine,
+  freeTextRefusal,
   isErr,
   issueOut,
   judge,
@@ -82,15 +90,16 @@ export interface DocWorkoutOp {
   by: { runId: string; role: "main" | "designer" };
   /** The model's call that proposed it: a replay of the call finds it. */
   toolUseId: string;
+  /** The calls whose drafts this one replaced (a replay of one of them writes nothing). */
+  replaces?: string[];
   at: string;
 }
 
 export type DesignProposalStatus = "unreviewed" | "pending" | "rehearsal";
 
-/** A proposal's status from its ops (see the module comment). */
-export function proposalStatusOf(ops: readonly DocWorkoutOp[], rehearsal: boolean): DesignProposalStatus {
-  if (rehearsal) return "rehearsal";
-  return ops.length > 0 && ops.every((o) => o.review !== null) ? "pending" : "unreviewed";
+/** The status propose writes: never `pending` — the main run's finish promotes a fully reviewed proposal. */
+export function proposalStatusOf(rehearsal: boolean): Exclude<DesignProposalStatus, "pending"> {
+  return rehearsal ? "rehearsal" : "unreviewed";
 }
 
 /** Statuses a design's proposal is still open in: a later draft may still change it. */
@@ -122,6 +131,8 @@ interface TargetRow {
   content: string | null;
   rev: number | null;
   archived: string | null;
+  /** The row's current document, as stored (JSON text). */
+  doc: string | null;
 }
 
 export const proposeWorkout: DesignTool = {
@@ -184,7 +195,7 @@ export const proposeWorkout: DesignTool = {
         targetRow:
           p.target.kind === "revise"
             ? sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'origin', ${pw.origin}, 'completion', ${pw.completionState},
-                'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt})
+                'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt}, 'doc', ${pw.workoutDoc})
                 from ${pw} where ${pw.id} = ${p.target.workoutId} and ${pw.userId} = ${ctx.userId})`
             : sql`null`,
       },
@@ -195,9 +206,17 @@ export const proposeWorkout: DesignTool = {
     const ops = ((opsText ? parsedJson(opsText) : null) as DocWorkoutOp[] | null) ?? [];
     const status = typeof a.extra.propStatus === "string" ? a.extra.propStatus : null;
 
-    // A replay of this very call: what it stored, again.
-    const replayed = ctx.toolUseId ? ops.find((o) => o.toolUseId === ctx.toolUseId) : undefined;
-    if (replayed) return storedAnswer(proposalId, replayed, false);
+    // A replay of this very call: what it stored, again — or, when a later draft of the run's replaced it, that.
+    if (ctx.toolUseId) {
+      const replayed = ops.find((o) => o.toolUseId === ctx.toolUseId);
+      if (replayed) return storedAnswer(proposalId, replayed, false);
+      if (ops.some((o) => o.replaces?.includes(ctx.toolUseId!))) {
+        return {
+          data: { stored: true, proposalId, superseded: true, note: "a later draft from this run replaced this one" },
+          summary: "An earlier draft, already replaced",
+        };
+      }
+    }
 
     if (status !== null && !(OPEN as readonly string[]).includes(status)) {
       return refuse("proposal_closed", `This design's proposal is already ${status}.`, "Finish: say what you would change, and the athlete can ask again.");
@@ -208,6 +227,7 @@ export const proposeWorkout: DesignTool = {
 
     let date: string;
     let time: string | undefined;
+    let base: WorkoutDoc | null = null;
     if (p.target.kind === "new") {
       date = p.target.date;
       time = p.target.time;
@@ -233,8 +253,11 @@ export const proposeWorkout: DesignTool = {
       }
       date = row.date;
       time = row.time;
+      base = parseStoredWorkoutDoc(row.doc);
     }
 
+    const free = freeTextRefusal(doc, base);
+    if (free) return free;
     const judged = judge(doc, await docValidateCtx(ctx, a, date));
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
       return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, date === today));
@@ -276,7 +299,9 @@ export const proposeWorkout: DesignTool = {
       toolUseId: ctx.toolUseId ?? `call-${at}`,
       at,
     };
-    const replaced = ops.some((o) => o.by.runId === ctx.run.id);
+    const earlier = ops.filter((o) => o.by.runId === ctx.run.id);
+    const replaced = earlier.length > 0;
+    if (replaced) op.replaces = earlier.flatMap((o) => [...(o.replaces ?? []), o.toolUseId]);
     const next = [...ops.filter((o) => o.by.runId !== ctx.run.id), op];
     const written = await upsertProposal(ctx, proposalId, next, opsText, at);
     if (!written) {
@@ -294,7 +319,7 @@ function whyNotEditable(row: TargetRow): string | null {
       : "It isn't a Studio or template workout, so its content can't be proposed.";
   }
   if ((FROZEN_STATES as readonly string[]).includes(row.completion)) return `It is already ${row.completion}.`;
-  if (row.content === "started" || row.content === "done") return "Its session is already under way.";
+  if ((LOCKED_CONTENT as readonly (string | null)[]).includes(row.content)) return "Its session is already under way.";
   return null;
 }
 
@@ -312,7 +337,7 @@ async function reviewOrNull(ctx: ToolContext, draft: DraftForReview): Promise<De
  * (`readOps`, null for none). One statement; false when nothing was written (another write came between).
  */
 async function upsertProposal(ctx: ToolContext, id: string, ops: DocWorkoutOp[], readOps: string | null, at: string): Promise<boolean> {
-  const status = proposalStatusOf(ops, ctx.run.rehearsal);
+  const status = proposalStatusOf(ctx.run.rehearsal);
   const title = ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`;
   const rationale = ops
     .map((o) => o.changeNote ?? o.doc.intent.summary)

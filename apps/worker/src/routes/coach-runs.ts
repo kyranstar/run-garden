@@ -11,9 +11,11 @@
  *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start)
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
  *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order)
- *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting)
+ *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting; an answer to a check-in
+ *                           question is kept as the athlete's answer — 7 statements in all, pinned)
  *   POST /:id/cancel        → { run }
- *   POST /:id/undo-answer   { handle } → { undone }       (what record_answer kept from the request, taken back; the
+ *   POST /:id/undo-answer   { handle } → { undone }       (what record_answer kept from the request, or a check-in
+ *                           question's kept answer, taken back; the
  *                           handle is the call's receipt's, and names this run: another run's is 400, one already taken
  *                           back 404)
  */

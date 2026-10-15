@@ -26,8 +26,8 @@
  * "Unlocks": a move the default place's gear cannot do now, that the gear would make doable, that the athlete has not
  * set aside and that no switched-on profile rules out.
  */
-import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import { exercisePrefs, exerciseProvenance, locations, performedSessions, performedSets } from "@rg/database";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { exercisePrefs, exerciseProvenance, performedSessions, performedSets } from "@rg/database";
 import { addDays, todayInZone, toKg, type Weight } from "@rg/domain";
 import {
   bestDay,
@@ -36,7 +36,6 @@ import {
   EXERCISES,
   hasEquipment,
   isDoneCleanly,
-  LOCATION_PRESETS,
   MODE_IDS,
   profileById,
   recordFlareSafe,
@@ -50,6 +49,7 @@ import { restoreInProgress } from "./account-state.js";
 import { activeProfileIds } from "./condition-views.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkIds, type Db } from "./db.js";
+import { defaultPlace as sharedDefaultPlace, namedPlace } from "./default-place.js";
 import { RestoreInProgressError } from "./programs.js";
 import { PENDING_HASH } from "./watch-sets.js";
 
@@ -200,30 +200,17 @@ export function safetyFor(profile: ConditionProfile, ex: ExerciseRecord): Safety
 const safetyOf = (profiles: readonly ConditionProfile[], ex: ExerciseRecord): Record<string, Safety> =>
   Object.fromEntries(profiles.map((p) => [p.id, safetyFor(p, ex)]));
 
-/** The default place's id, name and gear: the marked default, else the first set up, else the library's Home. */
+/** The default place's id, name and gear (default-place.ts: the one rule every reader shares). */
 async function defaultPlace(db: Db, userId: string): Promise<{ id: string; name: string; equipment: string[] }> {
-  const [row] = await db
-    .select({ id: locations.id, name: locations.name, equipment: locations.equipment })
-    .from(locations)
-    .where(eq(locations.userId, userId))
-    .orderBy(desc(locations.isDefault), asc(locations.createdAt), asc(locations.id))
-    .limit(1);
-  if (row) return { id: row.id, name: row.name, equipment: [...row.equipment] };
-  const home = LOCATION_PRESETS.find((l) => l.id === "home")!;
-  return { id: home.id, name: home.name, equipment: [...home.equipment] };
+  const p = await sharedDefaultPlace(db, userId);
+  return { id: p.id, name: p.name, equipment: p.equipment };
 }
 
-/** A place's gear by id: one of this user's places, or one of the library's presets. */
+/** A place's gear by id: one of this user's places, a library preset, or "No equipment" (default-place.ts). */
 async function placeEquipment(db: Db, userId: string, id: string): Promise<string[]> {
-  const [row] = await db
-    .select({ equipment: locations.equipment })
-    .from(locations)
-    .where(and(eq(locations.userId, userId), eq(locations.id, id)))
-    .limit(1);
-  if (row) return [...row.equipment];
-  const preset = LOCATION_PRESETS.find((l) => l.id === id);
-  if (preset) return [...preset.equipment];
-  throw new UnknownPlaceError();
+  const p = await namedPlace(db, userId, id);
+  if (!p) throw new UnknownPlaceError();
+  return p.equipment;
 }
 
 function missingGear(ex: ExerciseRecord, have: readonly string[]): LibraryRow["unlocksWith"] {

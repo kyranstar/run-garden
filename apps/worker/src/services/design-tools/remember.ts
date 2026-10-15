@@ -5,7 +5,10 @@
  * `confirmed`, which only the athlete gives. Where it came from goes with it (the athlete's words or the coach's
  * inference, the run, when), and a rehearsal run's item is marked as one (`provenance.rehearsal`) so no run ever reads
  * it as the athlete's. `replaces` updates an item by its id: the new one is written and the old one kept, superseded
- * by it — but an inference never replaces what the athlete confirmed.
+ * by it — but an inference never replaces what the athlete confirmed, and what they state replaces it only with their
+ * own words from the request (`quote`). Only a note expires: after today, within a year.
+ *
+ * A rehearsal run writes its marked row and NEVER supersedes the athlete's item (it answers that it would have).
  *
  * At most MEMORY_PER_RUN items per run, counted over the main run's whole tree. Keyed on the call's tool-use id: a
  * replay writes nothing new and answers the same. The body is the athlete's (or the coach's) words — data — and comes
@@ -15,11 +18,12 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { addDays, newId } from "@rg/domain";
-import { coachMemory } from "@rg/database";
+import { coachMemory, coachRuns } from "@rg/database";
 import { runAtomically } from "../db.js";
 import { COACH_CONFIDENCES, MEMORY_KINDS, memoryWrites } from "../coach-memory.js";
 import type { DesignTool } from "./types.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
+import { quoteIn } from "./record-answer.js";
 import { dateField, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 
 /** Items one run (with its sub-runs) may write. */
@@ -38,6 +42,7 @@ const input = z
     evidence: z.array(z.string().trim().min(1).max(EVIDENCE_MAX)).min(1).max(EVIDENCE_ITEMS).optional(),
     expires: dateField.optional(),
     replaces: z.string().min(1).max(120).optional(),
+    quote: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 
@@ -56,6 +61,7 @@ export const remember: DesignTool = {
       evidence: { type: "array", minItems: 1, maxItems: EVIDENCE_ITEMS, items: { type: "string", minLength: 1, maxLength: EVIDENCE_MAX }, description: "What supports it: required for an observation." },
       expires: { type: "string", description: "A note's last day, YYYY-MM-DD: required for a note." },
       replaces: { type: "string", description: "The id of the item this one updates (the old one is kept as history)." },
+      quote: { type: "string", maxLength: 200, description: "Replacing an item the athlete confirmed: the request's own words that change it." },
     },
     required: ["kind", "body", "confidence"],
     additionalProperties: false,
@@ -70,7 +76,7 @@ export const remember: DesignTool = {
         "Write it as stated (the athlete said it) or inferred (you concluded it); the athlete can confirm it in Settings.",
       );
     }
-    const p = parseAct(input, raw, "kind, body, confidence (stated or inferred), and optionally evidence, expires and replaces");
+    const p = parseAct(input, raw, "kind, body, confidence (stated or inferred), and optionally evidence, expires, replaces and quote");
     if (isErr(p)) return p;
     const rootId = mainRunIdOf(ctx);
     if (!rootId) return refuse("no_main_run", "This run has no main run to remember for.", "Finish with what you have.");
@@ -84,11 +90,13 @@ export const remember: DesignTool = {
         ? sql`(select json_object('confidence', ${m.confidence}, 'active', ${m.active}, 'superseded', ${m.supersededBy})
             from ${m} where ${m.id} = ${p.replaces} and ${m.userId} = ${ctx.userId})`
         : sql`null`,
+      memRequest: sql`(select ${coachRuns.request} from ${coachRuns} where ${coachRuns.id} = ${rootId} and ${coachRuns.userId} = ${ctx.userId})`,
     });
     const answerFor = (body: string, kind: string, confidence: string, expires: string | null) => ({
       data: {
         remembered: { id, kind, confidence, body: untrusted(body), ...(expires ? { expires } : {}) },
         ...(p.replaces ? { replaced: p.replaces } : {}),
+        ...(ctx.run.rehearsal ? { rehearsal: true } : {}),
       },
       summary: `Remembered (${confidence}): ${body}`,
       receipt: { memoryId: id, kind, confidence, ...(p.replaces ? { replaced: p.replaces } : {}) },
@@ -97,6 +105,9 @@ export const remember: DesignTool = {
     if (replay) return answerFor(replay.body, replay.kind, replay.confidence, replay.expires);
 
     const today = athlete.today;
+    if (p.kind !== "note" && p.expires) {
+      return refuse("only_notes_expire", `Only a note expires; a ${p.kind} lasts until it is replaced.`, "Leave expires out, or keep it as a note.");
+    }
     if (p.kind === "note" && (!p.expires || p.expires <= today || p.expires > addDays(today, NOTE_DAYS_MAX))) {
       return refuse("needs_expiry", `A note is time-boxed: give expires, a day after today (${today}) and within a year.`, "Add expires (YYYY-MM-DD), or keep it as a fact or rule.");
     }
@@ -111,12 +122,18 @@ export const remember: DesignTool = {
       if (!old || !old.active || old.superseded) {
         return refuse("not_found", `No live memory item has id ${JSON.stringify(p.replaces)}.`, "Use an id from the pinned memory or recall_memory, or leave replaces out.");
       }
-      if (old.confidence === "confirmed" && p.confidence === "inferred") {
-        return refuse(
-          "confirmed_by_athlete",
-          "The athlete confirmed that item; an inference can't replace it.",
-          "Ask the athlete (ask_athlete), or write what they stated with confidence stated.",
-        );
+      if (old.confidence === "confirmed") {
+        if (p.confidence === "inferred" || !p.quote) {
+          return refuse(
+            "confirmed_by_athlete",
+            "The athlete confirmed that item: only their own words replace it.",
+            "Give quote — the request's words that change it — with confidence stated, or ask the athlete (ask_athlete).",
+          );
+        }
+        const request = typeof extra.memRequest === "string" ? extra.memRequest : "";
+        if (quoteIn(request, p.quote) !== "ok") {
+          return refuse("not_in_request", `quote "${p.quote}" is not words of the athlete's request.`, "Quote the request's own words exactly, or ask the athlete.");
+        }
       }
     }
     const at = ctx.now.toISOString();
@@ -129,7 +146,7 @@ export const remember: DesignTool = {
         body: p.body,
         confidence: p.confidence,
         evidence: p.evidence ?? null,
-        expiresAt: p.kind === "note" ? p.expires! : (p.expires ?? null),
+        expiresAt: p.kind === "note" ? p.expires! : null,
         provenance: {
           source: p.confidence === "stated" ? "athlete_words" : "coach_inference",
           runId: rootId,
@@ -137,9 +154,10 @@ export const remember: DesignTool = {
           at,
           ...(ctx.run.rehearsal ? { rehearsal: true as const } : {}),
         },
-        ...(p.replaces ? { replaces: p.replaces } : {}),
+        // A rehearsal never supersedes the athlete's item.
+        ...(p.replaces && !ctx.run.rehearsal ? { replaces: p.replaces } : {}),
       }),
     );
-    return answerFor(p.body, p.kind, p.confidence, p.kind === "note" ? p.expires! : (p.expires ?? null));
+    return answerFor(p.body, p.kind, p.confidence, p.kind === "note" ? p.expires! : null);
   },
 };

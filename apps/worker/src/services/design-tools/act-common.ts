@@ -11,34 +11,38 @@
  *    (doc-workouts.ts `docDayContext`) in a fixed number of statements: the switched-on profiles; the day's reading —
  *    the one rule the opening context's header reads (`readingsOfDay`, through `readAthlete`), on the day itself, and
  *    none for a day ahead; the moves done cleanly (`doneCleanlyOf` over `doneStats`, the library's unlock rule); the
- *    last session and the last seven days' (`recentOf`'s own choice, from those sessions read by id); the moves set
- *    aside; and the gear of the place the document names (one of the athlete's, a preset, or the Studio's "No
- *    equipment" — no gear at all) — else the athlete's default place (their chosen default, else the place marked
- *    default), else none and gear goes unchecked. At most 1 + 1 + 4 statements.
- *  - Issues go back to the model as `{ path, code, message, fix? }`, capped and counted.
+ *    last session and the last seven days' (doc-workouts.ts `recentOf`, over the sessions it can pick, read by id);
+ *    the moves set aside; and the gear of the place the document names, else the default place — both by the one rule
+ *    default-place.ts holds for every worker reader (the athlete's place, a preset, or "No equipment"; the default: the
+ *    profile's choice, the place marked default, the first made, the Home preset). At most 1 + 1 + 4 statements.
+ *  - A free-text move is refused (`freeTextRefusal`): no rule can judge a move with no library record. A revision may
+ *    keep one its workout already holds, unchanged.
+ *  - Issues go back to the model as `{ path, code, message, fix? }`, capped and counted; a refusal's line names each
+ *    error's code.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
-import { athleteProfiles, exercisePrefs, locations, performedSessions } from "@rg/database";
+import { exercisePrefs, performedSessions } from "@rg/database";
 import {
   addDays,
   BASED_ON_KINDS,
   EFFORT_LEVELS,
   GOAL_IDS,
-  NO_EQUIPMENT_PLACE,
+  itemSchema,
   PART_FORMATS,
   PART_PURPOSES,
   RUN_EFFORTS,
   workoutDocSchema,
   type WorkoutDoc,
 } from "@rg/domain";
-import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS } from "@rg/exercise-library";
-import { Hist } from "@rg/session-engine";
+import { EQUIPMENT_IDS, EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { defaultFromRow, defaultPlaceSql, namedFromRow, ownPlaceSql, type PlaceGear } from "../default-place.js";
+import { recentOf } from "../doc-workouts.js";
 import { loadSessionsById } from "../engine-inputs.js";
 import { doneCleanlyOf, doneStats } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
-import { parsedArray, parsedJson, readAthlete, refuse, type Athlete } from "./read-common.js";
+import { parsedArray, readAthlete, refuse, type Athlete } from "./read-common.js";
 import type { ToolContext, ToolErr } from "./types.js";
 
 // ── Input ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -92,7 +96,8 @@ export function docPlaceId(doc: Record<string, unknown>): string | undefined {
 }
 
 // The document's JSON schema, for the model (the tools' `inputSchema`): the domain's own vocabularies and bounds
-// (packages/domain/src/workout-doc.ts — a test holds every enum and bound to the zod schema's).
+// (packages/domain/src/workout-doc.ts — a test holds every enum to the domain's, and walks every bound stated here
+// against the zod schema). No free-text move: the coach adds library moves only (`freeTextRefusal`).
 const str = (max: number, description?: string) => ({ type: "string", minLength: 1, maxLength: max, ...(description ? { description } : {}) });
 const num = (min: number, max: number, integer = false) => ({ type: integer ? "integer" : "number", minimum: min, maximum: max });
 const DOSE = {
@@ -146,12 +151,6 @@ const ITEM = {
         test: { type: "object", properties: { keyResultId: str(80) }, additionalProperties: false },
       },
       required: ["kind", "libraryId", "dose"],
-      additionalProperties: false,
-    },
-    {
-      type: "object",
-      properties: { kind: { const: "free_exercise" }, name: str(80), dose: DOSE, why: { type: "string", maxLength: 160 }, cue: { type: "string", maxLength: 160 } },
-      required: ["kind", "name", "dose"],
       additionalProperties: false,
     },
     {
@@ -210,7 +209,7 @@ export const WORKOUT_DOC_JSON_SCHEMA = {
         additionalProperties: false,
       },
     },
-    basedOn: { type: "object", properties: { kind: { enum: [...BASED_ON_KINDS] }, id: str(80), rev: num(0, 1_000_000, true) }, required: ["kind", "id"], additionalProperties: false },
+    basedOn: { type: "object", properties: { kind: { enum: [...BASED_ON_KINDS] }, id: str(80), rev: { type: "integer", minimum: 0 } }, required: ["kind", "id"], additionalProperties: false },
     notes: { type: "string", maxLength: 500 },
   },
   required: ["title", "intent", "parts"],
@@ -219,17 +218,19 @@ export const WORKOUT_DOC_JSON_SCHEMA = {
 
 // ── The day ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The gear a document is checked against: a place of the athlete's (or a preset), and whether it was the default. */
+/** The gear a document is checked against (default-place.ts), and whether it was the default place. */
 export interface DocPlace {
   id: string;
   equipment: string[];
   default: boolean;
+  /** One of the athlete's places, a library preset, or "No equipment". */
+  kind: PlaceGear["kind"];
 }
 
 export interface DocAthlete {
   athlete: Athlete;
   extra: Record<string, unknown>;
-  place: DocPlace | null;
+  place: DocPlace;
   setAside: string[];
   /** Sessions that hold the last one and the last seven days' (by id; at most RECENT_IDS_MAX). */
   recentIds: string[];
@@ -237,18 +238,6 @@ export interface DocAthlete {
 
 /** Enough for a week of sessions and the last before it, under one chunk of `loadSessionsById` (90). */
 const RECENT_IDS_MAX = 60;
-
-const equipmentJson = (col: SQL) => sql`case when json_valid(${col}) then json(${col}) else json('[]') end`;
-
-function placeSql(userId: string, placeId: string | undefined): SQL {
-  const l = locations;
-  if (placeId) {
-    return sql`(select json_object('id', ${l.id}, 'equipment', ${equipmentJson(sql`${l.equipment}`)}) from ${l} where ${l.userId} = ${userId} and ${l.id} = ${placeId})`;
-  }
-  const chosen = sql`(select json_extract(${athleteProfiles.preferences}, '$.defaultPlaceId') from ${athleteProfiles} where ${athleteProfiles.userId} = ${userId})`;
-  return sql`(select json_object('id', ${l.id}, 'equipment', ${equipmentJson(sql`${l.equipment}`)}) from ${l} where ${l.userId} = ${userId}
-    order by (${l.id} = coalesce(${chosen}, '')) desc, ${l.isDefault} desc, ${l.createdAt} asc, ${l.id} asc limit 1)`;
-}
 
 /**
  * The sessions `recentOf` can pick, by id, for any timezone's today (the UTC day either side holds it): those dated in
@@ -268,33 +257,30 @@ function recentSql(userId: string, now: Date): SQL {
 
 /**
  * The athlete a document is judged for, in ONE statement: `readAthlete` (preferences, profiles, today's reading) with
- * the moves set aside, the place's gear, the recent sessions' ids, and the caller's own `extras`. A place the document
- * names that is neither the athlete's nor a preset is refused.
+ * the moves set aside, the place's gear (default-place.ts: the place the document names, else the default place), the
+ * recent sessions' ids, and the caller's own `extras`. A place the document names that is no place is refused.
  */
 export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; extras?: Record<string, SQL> }): Promise<DocAthlete | ToolErr> {
   const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
     actSetAside: sql`(select json_group_array(${exercisePrefs.exerciseId}) from ${exercisePrefs} where ${exercisePrefs.userId} = ${ctx.userId} and ${exercisePrefs.excluded} = 1)`,
-    actPlace: placeSql(ctx.userId, o.placeId),
+    actPlace: o.placeId ? ownPlaceSql(ctx.userId, o.placeId) : defaultPlaceSql(ctx.userId),
     actRecent: recentSql(ctx.userId, ctx.now),
     ...o.extras,
   });
-  const own = parsedJson(extra.actPlace) as { id?: unknown; equipment?: unknown } | null;
-  let place: DocPlace | null = null;
-  if (own && typeof own.id === "string") {
-    place = { id: own.id, equipment: parsedArray(own.equipment).filter((g): g is string => typeof g === "string"), default: !o.placeId };
-  } else if (o.placeId === NO_EQUIPMENT_PLACE) {
-    // The Studio's "No equipment" place: no gear at all (the create path's docDayContext reads it so too).
-    place = { id: NO_EQUIPMENT_PLACE, equipment: [], default: false };
-  } else if (o.placeId) {
-    const preset = LOCATION_PRESETS.find((l) => l.id === o.placeId);
-    if (!preset) {
+  let place: DocPlace;
+  if (o.placeId) {
+    const named = namedFromRow(o.placeId, extra.actPlace);
+    if (!named) {
       return refuse(
         "unknown_place",
         `setting.placeId ${JSON.stringify(o.placeId)} is not one of the athlete's places.`,
         'Use a place id from read_profile (or home, gym, mat, or "none" for no equipment), or leave placeId out to use the default place.',
       );
     }
-    place = { id: preset.id, equipment: [...preset.equipment], default: false };
+    place = { id: named.id, equipment: named.equipment, default: false, kind: named.kind };
+  } else {
+    const d = defaultFromRow(extra.actPlace);
+    place = { id: d.id, equipment: d.equipment, default: true, kind: d.kind };
   }
   return {
     athlete,
@@ -315,9 +301,6 @@ export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: stri
   const stats = await doneStats(ctx.db, ctx.userId, addDays(today, -29), today);
   const done = doneCleanlyOf(stats, a.athlete.profiles, stats.keys());
   const sessions = a.recentIds.length > 0 ? await loadSessionsById(ctx.db, ctx.userId, a.recentIds) : [];
-  // recentOf (doc-workouts.ts), over the sessions it can pick.
-  const past = Hist.sorted(sessions).filter((s) => s.date <= today);
-  const recent = { last: past[past.length - 1] ?? null, week: past.filter((s) => Hist.daysBetween(s.date, today) < 7) };
   const readings =
     date === today
       ? Object.fromEntries(Object.entries(a.athlete.readings).map(([id, r]) => [id, { pre: r.pre, post: null, feelingOff: r.feelingOff }]))
@@ -325,9 +308,9 @@ export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: stri
   return {
     library: EXERCISES,
     activeProfiles: a.athlete.profiles,
-    day: { date, today, readings, done, recent },
+    day: { date, today, readings, done, recent: recentOf(sessions, today) },
     excluded: a.setAside,
-    ...(a.place ? { equipment: a.place.equipment } : {}),
+    equipment: a.place.equipment,
   };
 }
 
@@ -341,8 +324,56 @@ export function dayMissing(a: DocAthlete, date: string): string[] {
   } else if (a.athlete.profiles.length > 0) {
     out.push(`${date} is ahead: its check isn't known, so a move a check could close needs an alternate that passes in recovery`);
   }
-  if (!a.place) out.push("no place set: gear not checked");
+  if (a.place.default && a.place.kind === "preset") out.push("no place set up: gear checked against the library's Home preset");
   return out;
+}
+
+// ── Free-text moves ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Keys sorted at every level: two items are the same item when this text is. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v as object)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
+/** Each free-text move of a document (its own name, no library record), as the schema reads it. */
+function freeMoves(doc: unknown): Array<{ path: string; name: string; key: string }> {
+  const parts = (doc as { parts?: unknown } | null)?.parts;
+  if (!Array.isArray(parts)) return [];
+  const out: Array<{ path: string; name: string; key: string }> = [];
+  parts.forEach((part, p) => {
+    const items = (part as { items?: unknown } | null)?.items;
+    if (!Array.isArray(items)) return;
+    items.forEach((item, i) => {
+      if ((item as { kind?: unknown } | null)?.kind !== "free_exercise") return;
+      const parsed = itemSchema.safeParse(item);
+      const name = typeof (item as { name?: unknown }).name === "string" ? (item as { name: string }).name : "";
+      out.push({ path: `parts[${p}].items[${i}]`, name, key: canonical(parsed.success ? parsed.data : item) });
+    });
+  });
+  return out;
+}
+
+/**
+ * A free-text move has no library record, so no condition rule, gate or gear check can judge it (`validateWorkoutDoc`
+ * never reads one): the coach never adds one. The one exception is a revision that keeps a free-text move its base
+ * document already holds, exactly as it is (`base`, the workout's current document). A refusal names every other one.
+ */
+export function freeTextRefusal(doc: unknown, base: WorkoutDoc | null): ToolErr | null {
+  const kept = new Set(freeMoves(base).map((m) => m.key));
+  const added = freeMoves(doc).filter((m) => !kept.has(m.key));
+  if (added.length === 0) return null;
+  return refuse(
+    "free_text_move",
+    `${added.map((m) => `${m.path} (${JSON.stringify(m.name)})`).join(", ")} ${added.length === 1 ? "is a free-text move" : "are free-text moves"}: no condition rule or gear check can judge a move that isn't in the library.`,
+    'Find the move with search_library and put it in as { kind: "exercise", libraryId }. A revision may keep a free-text move its workout already has, unchanged.',
+  );
 }
 
 // ── Judging ─────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -397,7 +428,7 @@ export function derivedSummary(d: DocDerived): Record<string, unknown> {
 
 /** The validator's errors, as one teachable line (the first few, then how many more). */
 export function errorsLine(errors: readonly DocIssue[], shown = 6): string {
-  const head = errors.slice(0, shown).map((e) => `${e.path}: ${e.message}${e.fix !== undefined ? ` (fix: ${e.fix})` : ""}`);
+  const head = errors.slice(0, shown).map((e) => `${e.path} (${e.code}): ${e.message}${e.fix !== undefined ? ` (fix: ${e.fix})` : ""}`);
   return `${head.join("; ")}${errors.length > shown ? `; and ${errors.length - shown} more` : ""}`;
 }
 

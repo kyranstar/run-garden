@@ -5,8 +5,9 @@
  * call's receipt, and makes `data.proposalId` the run's proposal — the main run's design proposal when it has one, or
  * for a designer, when it added a workout to it.
  *
- * Review comes before the athlete sees anything (spec §5): a proposal that still has an unreviewed workout stays
- * `unreviewed` — never listed — and the line says it is kept back. One statement: the proposal.
+ * Review comes before the athlete sees anything (spec §5): the loop's finish makes the main run's proposal `pending`
+ * only when every workout in it carries its review; one that still has an unreviewed workout stays `unreviewed` —
+ * never listed — and the line says it is kept back. One statement: the proposal.
  */
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -47,7 +48,8 @@ export const finish: DesignTool = {
     const ops = (Array.isArray(row?.ops) ? row.ops : []) as DocWorkoutOp[];
     const mine = row && (ctx.run.role === "main" ? ops.length > 0 : ops.some((o) => o.by?.runId === ctx.run.id));
     if (!row || !mine || !proposalId) return { data: {}, summary: p.summary, receipt: { final: true } };
-    const unreviewed = row.status === "unreviewed";
+    // Kept back while any workout lacks its review: the loop's finish makes the rest pending (coach-runs.ts).
+    const unreviewed = row.status === "unreviewed" && ops.some((o) => !o.review);
     const line = unreviewed
       ? `${p.summary.length + KEPT_BACK.length > LINE_MAX ? `${p.summary.slice(0, LINE_MAX - KEPT_BACK.length - 1)}…` : p.summary}${KEPT_BACK}`
       : p.summary;

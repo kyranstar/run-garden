@@ -5,7 +5,7 @@
  *
  * Synthetic data only: the made-up athlete of design-read-fixture.ts, on its fixed clock.
  */
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, NO_EQUIPMENT_PLACE, workoutDocSchema } from "@rg/domain";
@@ -15,7 +15,10 @@ import type { Db } from "../src/services/db.js";
 import { readingsOfDay } from "../src/services/condition-views.js";
 import { buildDesignContext } from "../src/services/design-context.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
-import { docValidateCtx, readDocAthlete, unwrapUntrusted } from "../src/services/design-tools/act-common.js";
+import { docValidateCtx, readDocAthlete, unwrapUntrusted, WORKOUT_DOC_JSON_SCHEMA } from "../src/services/design-tools/act-common.js";
+import { searchLibraryTool } from "../src/services/design-tools/read-library.js";
+import { defaultPlace } from "../src/services/default-place.js";
+import { listLibrary } from "../src/services/library-view.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import { markedDoc } from "../src/services/design-tools/read-workouts.js";
 import { recallMemory } from "../src/services/design-tools/read-memory.js";
@@ -280,7 +283,7 @@ describe("ask_athlete", () => {
 // ── record_answer ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 describe("record_answer", () => {
-  const REQUEST = "My calves are wrecked after the hills and my hamstrings are a bit sore. Energy is low today.";
+  const REQUEST = "My calves are wrecked after the hills, an 8, and my hamstrings are a bit sore, maybe 3. Energy is low today, a 3.";
 
   it("keeps what the request states as check-in answers (source request), by area, with an undo handle and a receipt", async () => {
     // A focus area of the athlete's own that is no library region.
@@ -293,9 +296,9 @@ describe("record_answer", () => {
     const c = ctxOf(r);
     const { result } = await call("record_answer", c, {
       answers: [
-        { question: "soreness", area: "calves", value: 8, quote: "My calves are wrecked after the hills" },
-        { question: "soreness", area: "hamstrings", value: 3, quote: "my hamstrings are a bit sore" },
-        { question: "energy", value: 3, quote: "Energy is low today." },
+        { question: "soreness", area: "calves", value: 8, quote: "My calves are wrecked after the hills, an 8" },
+        { question: "soreness", area: "hamstrings", value: 3, quote: "my hamstrings are a bit sore, maybe 3" },
+        { question: "energy", value: 3, quote: "Energy is low today, a 3" },
         { question: "tightness", area: "desk-neck", quote: "my hamstrings are a bit sore" },
       ],
     });
@@ -307,7 +310,7 @@ describe("record_answer", () => {
     expect(rows).toHaveLength(4);
     expect(rows.every((row) => row.source === "request" && row.localDate === TODAY && row.userId === rich.userId)).toBe(true);
     const calves = rows.find((row) => row.subjectId === "calves")!;
-    expect(calves).toMatchObject({ questionId: "soreness", subjectKind: "region", valueNum: 8, text: "My calves are wrecked after the hills" });
+    expect(calves).toMatchObject({ questionId: "soreness", subjectKind: "region", valueNum: 8, text: "My calves are wrecked after the hills, an 8", expiresAt: day(-2) });
     expect(rows.find((row) => row.questionId === "energy")).toMatchObject({ subjectKind: null, subjectId: null, valueNum: 3 });
     // A focus area of the athlete's is its own kind of subject.
     expect(rows.find((row) => row.questionId === "tightness")).toMatchObject({ subjectKind: "focus_area", subjectId: "desk-neck", valueNum: null });
@@ -321,7 +324,7 @@ describe("record_answer", () => {
   it("a replayed call (the same tool-use id) writes no second set of rows", async () => {
     const r = await run({ request: REQUEST });
     const c = ctxOf(r);
-    const input = { answers: [{ question: "soreness", area: "calves", value: 8, quote: "calves are wrecked" }] };
+    const input = { answers: [{ question: "soreness", area: "calves", quote: "calves are wrecked" }] };
     await call("record_answer", c, input);
     await call("record_answer", c, input);
     expect(await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${r.id}:%`))).toHaveLength(1);
@@ -333,8 +336,8 @@ describe("record_answer", () => {
     const invented = await refused({ question: "soreness", area: "quads", value: 6, quote: "my quads are sore" });
     expect(invented.error).toBe("not_in_request");
     expect(invented.fix).toMatch(/remember/);
-    expect((await refused({ question: "energy", area: "calves", value: 3, quote: "Energy is low today." })).error).toBe("bad_area");
-    const noArea = await refused({ question: "soreness", value: 3, quote: "calves are wrecked" });
+    expect((await refused({ question: "energy", area: "calves", quote: "Energy is low today" })).error).toBe("bad_area");
+    const noArea = await refused({ question: "soreness", quote: "calves are wrecked" });
     expect(noArea.error).toBe("bad_area");
     expect(noArea.why).toMatch(/recorded by area/);
     expect((await refused({ question: "soreness", area: "elbowz", quote: "calves are wrecked" })).error).toBe("bad_area");
@@ -651,6 +654,8 @@ describe("propose_workout", () => {
 
   it("a reviewer that fails leaves the draft stored, unreviewed", async () => {
     const r = await run();
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => quiet.mockRestore());
     const out = ok((await call("propose_workout", ctxOf(r, { reviewDraft: async () => { throw new Error("reviewer down"); } }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
     expect(out.data).toMatchObject({ stored: true, review: null, note: "not reviewed yet" });
     expect((await proposal(r.id))!.status).toBe("unreviewed");
@@ -679,6 +684,8 @@ describe("propose_workout", () => {
     expect((out.data as Record<string, unknown>).note).toBeUndefined();
     const p = (await proposal(r.id))!;
     expect(p.ops[0]!.review).toEqual(review);
+    // Reviewed or not, propose never makes a proposal pending: the main run's finish does, once every op is reviewed.
+    expect(p.status).toBe("unreviewed");
     // No reviewer's verdict to be had: stored, unreviewed.
     const r2 = await run();
     const none = ok((await call("propose_workout", ctxOf(r2, { reviewDraft: async () => null }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
@@ -701,6 +708,15 @@ describe("finish", () => {
     expect((await proposal(r.id))!.status).toBe("unreviewed");
   });
 
+  it("a proposal whose every workout is reviewed is not said to be kept back (the run's finish makes it pending)", async () => {
+    const r = await run();
+    const review: DesignReview = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [] };
+    ok((await call("propose_workout", ctxOf(r, { reviewDraft: async () => review }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    const out = ok((await call("finish", ctxOf(r), { summary: "A calm half hour." })).result);
+    expect(out.summary).toBe("A calm half hour.");
+    expect(out.data).toEqual({ proposalId: designProposalId(r.id) });
+  });
+
   it("without a proposal: the line alone; a designer names its main run's proposal only when it added to it", async () => {
     const r = await run();
     const out = ok((await call("finish", ctxOf(r), { summary: "Rest is the right call today." })).result);
@@ -720,5 +736,186 @@ describe("finish", () => {
     expect(err((await call("finish", ctxOf(r), { summary: "  " })).result).error).toBe("invalid_input");
     expect(err((await call("finish", ctxOf(r), { summary: "x".repeat(301) })).result).error).toBe("invalid_input");
     expect(tool("finish").roles).toEqual(["main", "designer"]);
+  });
+});
+
+// ── Fix round 1 ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** A Studio workout today whose document carries a free-text move (an import's own name, kept by the athlete). */
+async function withFreeMove(userId: string, name = "Farmer carry, heavy"): Promise<string> {
+  const id = newId();
+  const doc = docOf([item("bridge", { sets: 2, reps: 12 }), { kind: "free_exercise", name, dose: { sets: 2, holdSec: 30 } }], { title: "Kept from an import" });
+  await db.insert(schema.plannedWorkouts).values({
+    id, userId, planId: `studio-${userId}`, sourceWorkoutId: id, title: "Kept from an import", category: "strength", sport: "strength",
+    originalPlanDate: TODAY, lastVerifiedCorosDate: TODAY, effectiveDate: TODAY, effectiveTime: "19:00", sourceContentFingerprint: "studio",
+    calendarBlockDurationSeconds: 1800, completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc),
+    workoutDocRev: 1, createdAt: at(day(1)), updatedAt: at(day(1)),
+  });
+  return id;
+}
+
+describe("fix round 1 — a free-text move is no way past the hard rules", () => {
+  const free = (name: string) => ({ kind: "free_exercise", name, dose: { sets: 3, reps: 5 } });
+
+  it("the document's schema offers no free-text move; validate_workout and propose_workout refuse one, teachably", async () => {
+    const items = (WORKOUT_DOC_JSON_SCHEMA as any).properties.parts.items.properties.items.items.anyOf as Array<{ properties: { kind: { const: string } } }>;
+    expect(items.map((i) => i.properties.kind.const)).toEqual(["exercise", "run", "rest"]);
+    const r = await run({ userId: high.userId });
+    for (const name of ["validate_workout", "propose_workout"]) {
+      const doc = docOf([item("bridge"), free("Box jumps")]);
+      const input = name === "validate_workout" ? { doc, date: TODAY } : { doc, target: { kind: "new", date: TODAY } };
+      const { result, writes } = await call(name, ctxOf(r), input);
+      const e = err(result);
+      expect(e.error, name).toBe("free_text_move");
+      expect(e.why, name).toContain('parts[0].items[1] ("Box jumps")');
+      expect(e.fix, name).toMatch(/search_library/);
+      expect(writes, name).toEqual([]);
+    }
+  });
+
+  it("a revision may keep a free-text move its base document already has, unchanged — never a new or changed one", async () => {
+    const r = await run();
+    const workoutId = await withFreeMove(rich.userId);
+    const [row] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, workoutId));
+    const base = JSON.parse(row!.workoutDoc!) as Record<string, any>;
+    const kept: Record<string, any> = { ...base, title: "Kept, with a cue" };
+    // validate_workout, told which workout it revises, judges it as propose will.
+    expect(data((await call("validate_workout", ctxOf(r), { doc: kept, date: TODAY, workoutId })).result).valid).toBe(true);
+    expect(err((await call("validate_workout", ctxOf(r), { doc: kept, date: TODAY })).result).error).toBe("free_text_move");
+    expect(err((await call("validate_workout", ctxOf(r), { doc: kept, date: TODAY, workoutId: rich.todayDocId })).result).error).toBe("free_text_move");
+    // Copied back from get_workout, marked: still the same move.
+    ok((await call("propose_workout", ctxOf(r), { doc: markedDoc(kept as never), target: { kind: "revise", workoutId, baseRev: 1 } })).result);
+    const renamed = structuredClone(kept);
+    renamed.parts[0].items[1].name = "Box jumps";
+    const r2 = await run();
+    expect(err((await call("propose_workout", ctxOf(r2), { doc: renamed, target: { kind: "revise", workoutId, baseRev: 1 } })).result).error).toBe("free_text_move");
+    const redosed = structuredClone(kept);
+    redosed.parts[0].items[1].dose = { sets: 5, holdSec: 60 };
+    expect(err((await call("propose_workout", ctxOf(r2), { doc: redosed, target: { kind: "revise", workoutId, baseRev: 1 } })).result).error).toBe("free_text_move");
+  });
+});
+
+describe("fix round 1 — a rehearsal run never changes the athlete's records", () => {
+  it("remember writes its marked row and supersedes nothing", async () => {
+    const r = await run({ rehearsal: true });
+    const old = newId();
+    await db.insert(schema.coachMemory).values({
+      id: old, userId: rich.userId, kind: "rule", body: "Trains mornings (rehearsal test)", provenance: { source: "message", at: at(day(9)) }, learnedAt: at(day(9)),
+      active: true, pinned: false, confidence: "stated", updatedAt: null,
+    });
+    const out = ok((await call("remember", ctxOf(r), { kind: "rule", body: "Trains evenings now", confidence: "stated", replaces: old })).result);
+    expect(out.data).toMatchObject({ rehearsal: true });
+    const [prior] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, old));
+    expect(prior!.supersededBy).toBeNull();
+    const [mine] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, (out.receipt as { memoryId: string }).memoryId));
+    expect((mine!.provenance as Record<string, unknown>).rehearsal).toBe(true);
+  });
+
+  it("record_answer writes nothing, and answers as it would with the same receipt", async () => {
+    const r = await run({ rehearsal: true, request: "My calves are sore after the hills." });
+    const c = ctxOf(r);
+    const out = ok((await call("record_answer", c, { answers: [{ question: "soreness", area: "calves", quote: "calves are sore" }] })).result);
+    expect(out.data).toEqual({ recorded: 1, rehearsal: true });
+    expect(out.receipt).toMatchObject({ undo: { handle: `ra:${r.id}:${c.toolUseId}` }, recorded: [{ question: "soreness", area: "calves" }] });
+    expect(await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${r.id}:%`))).toEqual([]);
+  });
+});
+
+describe("fix round 1 — record_answer keeps only what was said", () => {
+  it("a quote must be words of the request, whole words: punctuation alone or part of a word is not", async () => {
+    const r = await run({ request: "My calf is sore, and energy is a 4 today." });
+    const refused = async (a: Record<string, unknown>) => err((await call("record_answer", ctxOf(r), { answers: [a] })).result);
+    expect((await refused({ question: "soreness", area: "calves", quote: "!!!" })).error).toBe("bad_quote");
+    expect((await refused({ question: "soreness", area: "calves", quote: "alf" })).error).toBe("not_in_request");
+    ok((await call("record_answer", ctxOf(r), { answers: [{ question: "soreness", area: "calves", quote: "calf is sore" }] })).result);
+  });
+
+  it("a value is recorded only when the athlete gave that number; an area that isn't one is answered with the ids", async () => {
+    const r = await run({ request: "Calves are wrecked. Hamstrings maybe a 6, energy six out of ten." });
+    const refused = async (a: Record<string, unknown>) => err((await call("record_answer", ctxOf(r), { answers: [a] })).result);
+    const invented = await refused({ question: "soreness", area: "calves", value: 8, quote: "Calves are wrecked" });
+    expect(invented.error).toBe("value_not_stated");
+    expect(invented.fix).toMatch(/leave value out/i);
+    ok((await call("record_answer", ctxOf(r), { answers: [{ question: "soreness", area: "hamstrings", value: 6, quote: "Hamstrings maybe a 6" }] })).result);
+    ok((await call("record_answer", ctxOf(r), { answers: [{ question: "energy", value: 6, quote: "energy six out of ten" }] })).result);
+    ok((await call("record_answer", ctxOf(r), { answers: [{ question: "soreness", area: "calves", quote: "Calves are wrecked" }] })).result);
+    const unknown = await refused({ question: "soreness", area: "shins", quote: "Calves are wrecked" });
+    expect(unknown.error).toBe("bad_area");
+    expect(unknown.fix).toContain("calves");
+    expect(unknown.fix).toContain("upper-back");
+    expect(tool("record_answer").description).toMatch(/only a number the athlete gave/);
+  });
+});
+
+describe("fix round 1 — remember's rules, consistent", () => {
+  it("only a note expires, and never on a day gone", async () => {
+    const r = await run();
+    expect(err((await call("remember", ctxOf(r), { kind: "fact", body: "Has a bench", confidence: "stated", expires: day(-5) })).result).error).toBe("only_notes_expire");
+    expect(err((await call("remember", ctxOf(r), { kind: "note", body: "Trip", confidence: "stated", expires: day(3) })).result).error).toBe("needs_expiry");
+  });
+
+  it("what the athlete confirmed is replaced by what they state only with their words from the request", async () => {
+    const r = await run({ request: "I sold the bench last week, so no bench now." });
+    const confirmed = newId();
+    await db.insert(schema.coachMemory).values({
+      id: confirmed, userId: rich.userId, kind: "fact", body: "Has a bench (confirmed test)", provenance: { source: "message", at: at(day(9)) }, learnedAt: at(day(9)),
+      active: true, pinned: false, confidence: "confirmed", updatedAt: null,
+    });
+    const bare = err((await call("remember", ctxOf(r), { kind: "fact", body: "No bench", confidence: "stated", replaces: confirmed })).result);
+    expect(bare.error).toBe("confirmed_by_athlete");
+    expect(bare.fix).toMatch(/quote/);
+    expect(err((await call("remember", ctxOf(r), { kind: "fact", body: "No bench", confidence: "stated", replaces: confirmed, quote: "bench is broken" })).result).error).toBe("not_in_request");
+    const out = ok((await call("remember", ctxOf(r), { kind: "fact", body: "No bench", confidence: "stated", replaces: confirmed, quote: "no bench now" })).result);
+    const [prior] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, confirmed));
+    expect(prior!.supersededBy).toBe((out.receipt as { memoryId: string }).memoryId);
+  });
+});
+
+describe("fix round 1 — propose_workout: a replay of a call a later draft replaced does nothing", () => {
+  it("writes nothing and says a later draft replaced it", async () => {
+    const r = await run();
+    const first = { ...ctxOf(r), toolUseId: `toolu_first_${r.id}` };
+    ok((await call("propose_workout", first, { doc: calmDoc({ title: "First" }), target: { kind: "new", date: TODAY } })).result);
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "Second" }), target: { kind: "new", date: TODAY } })).result);
+    const { result, writes } = await call("propose_workout", first, { doc: calmDoc({ title: "First" }), target: { kind: "new", date: TODAY } });
+    expect(writes).toEqual([]);
+    expect(ok(result).data).toMatchObject({ stored: true, superseded: true });
+    const p = (await proposal(r.id))!;
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Second"]);
+    expect(p.ops[0]!.replaces).toEqual([`toolu_first_${r.id}`]);
+  });
+});
+
+describe("fix round 1 — one default place", () => {
+  it("the profile's choice, else the place marked default, else the first made, else the Home preset", async () => {
+    const userId = (await makeTestUser(db, { timezone: "America/Los_Angeles" })).userId;
+    const place = (id: string, created: number, isDefault: boolean, equipment: string[]) => ({
+      id, userId, name: id, equipment, implements: {}, isDefault, createdAt: at(day(created)), updatedAt: at(day(created)),
+    });
+    const [p1, p2, p3] = [`${userId}-first`, `${userId}-marked`, `${userId}-chosen`];
+    const placeOf = async () => data((await call("validate_workout", ctxOf(await run({ userId })), { doc: calmDoc(), date: TODAY })).result).place;
+    expect(await placeOf()).toEqual({ id: "home", default: true });
+    expect(await defaultPlace(db, userId)).toMatchObject({ id: "home" });
+    await db.insert(schema.locations).values([place(p1, 30, false, ["mat"]), place(p3, 10, false, ["band"])]);
+    expect(await placeOf()).toEqual({ id: p1, default: true });
+    await db.insert(schema.locations).values(place(p2, 20, true, ["bench"]));
+    expect(await placeOf()).toEqual({ id: p2, default: true });
+    await db.insert(schema.athleteProfiles).values({ id: userId, userId, preferences: { defaultPlaceId: p3 }, updatedAt: at(day(1)) });
+    expect(await placeOf()).toEqual({ id: p3, default: true });
+    expect(await defaultPlace(db, userId)).toMatchObject({ id: p3, equipment: ["band"] });
+    // The Studio's library judges its gear at the same place.
+    expect((await listLibrary(db, userId, { limit: 1 })).place).toMatchObject({ id: p3 });
+  });
+
+  it("search_library's place filter and validate_workout judge a place's gear the same way: the athlete's, a preset, or none at all", async () => {
+    const r = await run();
+    const kettle = EXERCISES.find((e) => e.equipment.all.length === 1 && e.equipment.all[0] === "kettlebell")!;
+    for (const place of [rich.placeId, rich.gymId, "gym", "mat", NO_EQUIPMENT_PLACE]) {
+      const found = data(await searchLibraryTool.run(ctxOf(r), { query: kettle.name, filters: { place }, limit: 30 }));
+      const offered = (found.moves as Array<{ id: string }>).some((m) => m.id === kettle.id);
+      const v = data((await call("validate_workout", ctxOf(r), { doc: docOf([item(kettle.id)], { setting: { placeId: place } }), date: TODAY })).result);
+      const lacking = (v.warnings as Array<{ code: string }>).some((w) => w.code === "equipment_unavailable");
+      expect(offered, String(place)).toBe(!lacking);
+    }
   });
 });

@@ -61,7 +61,7 @@ export const studioProgramId = (userId: string): string => `studio-${userId}`;
 const STUDIO_PROGRAM_NAME = "Studio";
 
 /** A session already under way, or done: its content is locked. */
-const LOCKED_CONTENT = ["started", "done"] as const;
+export const LOCKED_CONTENT = ["started", "done"] as const;
 
 /** A document that fails validation: every issue, errors and warnings. */
 export class DocInvalidError extends Error {
@@ -226,7 +226,7 @@ export function doneCleanly(summary: HistorySummary, profiles: readonly Conditio
 }
 
 /** The last session and the last seven days', as the engine's mode proposal reads them. */
-function recentOf(sessions: readonly HistorySession[], today: string): { last: HistorySession | null; week: HistorySession[] } {
+export function recentOf(sessions: readonly HistorySession[], today: string): { last: HistorySession | null; week: HistorySession[] } {
   const past = Hist.sorted(sessions).filter((s) => s.date <= today);
   return { last: past[past.length - 1] ?? null, week: past.filter((s) => Hist.daysBetween(s.date, today) < 7) };
 }

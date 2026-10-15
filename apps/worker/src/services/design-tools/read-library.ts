@@ -16,7 +16,7 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { exercisePrefs, exerciseProvenance, locations, performedSessions, performedSets } from "@rg/database";
+import { exercisePrefs, exerciseProvenance, performedSessions, performedSets } from "@rg/database";
 import { addDays } from "@rg/domain";
 import {
   CONTRACTIONS,
@@ -27,7 +27,6 @@ import {
   hasEquipment,
   isDoneCleanly,
   LATERALITY,
-  LOCATION_PRESETS,
   MUSCLES,
   PATTERNS,
   POSITIONS,
@@ -40,6 +39,7 @@ import {
   type ExerciseRecord,
   type LibraryFilters,
 } from "@rg/exercise-library";
+import { namedFromRow, ownPlaceSql } from "../default-place.js";
 import { doneStats, safetyFor } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
 import type { DesignTool } from "./types.js";
@@ -169,7 +169,7 @@ export const searchLibraryTool: DesignTool = {
           position: enumSchema(POSITIONS),
           laterality: enumSchema(LATERALITY),
           maxDifficulty: { type: "integer", minimum: 1, maximum: 5 },
-          place: { type: "string", description: "A place id (read_profile) or home, gym, mat: only moves its gear allows." },
+          place: { type: "string", description: "A place id (read_profile), home, gym, mat, or \"none\" for no equipment: only moves its gear allows." },
           fitToday: { type: "boolean", description: "Only moves today's condition readings allow." },
         },
         additionalProperties: false,
@@ -190,17 +190,16 @@ export const searchLibraryTool: DesignTool = {
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       movePrefs: PREFS_SQL(ctx.userId),
       saved: SAVED_SQL(ctx.userId),
-      ...(f.place
-        ? { place: sql`(select ${locations.equipment} from ${locations} where ${locations.userId} = ${ctx.userId} and ${locations.id} = ${f.place})` }
-        : {}),
+      ...(f.place ? { place: ownPlaceSql(ctx.userId, f.place) } : {}),
     });
+    // A place's gear by the one rule validate_workout reads it by (default-place.ts).
     let gear: string[] | null = null;
     if (f.place) {
-      const own = parsedJson(extra.place);
-      const preset = LOCATION_PRESETS.find((l) => l.id === f.place);
-      if (Array.isArray(own)) gear = own.filter((g): g is string => typeof g === "string");
-      else if (preset) gear = [...preset.equipment];
-      else return refuse("unknown_place", `No place with id ${JSON.stringify(f.place)}.`, "Use a place id from read_profile, or home, gym or mat.");
+      const place = namedFromRow(f.place, extra.place);
+      if (!place) {
+        return refuse("unknown_place", `No place with id ${JSON.stringify(f.place)}.`, 'Use a place id from read_profile, home, gym or mat, or "none" for no equipment.');
+      }
+      gear = place.equipment;
     }
     const prefs = prefsOf(extra.movePrefs);
     const saved = new Set(parsedArray(extra.saved).filter((x): x is string => typeof x === "string"));
