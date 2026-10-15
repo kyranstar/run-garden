@@ -93,6 +93,9 @@ async function fromThePage<T>(page: Page, method: "GET" | "DELETE", path: string
 }
 
 test.describe("on the fixture stack", () => {
+  // Whole journeys (search → detail → Add → builder → Schedule → Plan) cross half a dozen screens; on a shared CI runner
+  // the default 30 s ran out on the last navigation of an otherwise green run. Three times the budget, not a retry.
+  test.slow();
   test.beforeEach(async ({ page, context, baseURL }) => {
     await signIn(context, baseURL);
     // Mid-morning: "Later today" and today's check stay off the day's edges.
