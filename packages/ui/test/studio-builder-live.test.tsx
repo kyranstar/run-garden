@@ -19,6 +19,7 @@ import { edit, newDoc, startEditing, suggestedItem, type DraftDoc, type EditActi
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { draftStore } from "../src/studio-drafts.js";
 import { offlineDb } from "../src/offline/idb.js";
+import { loadExtras } from "../src/player/stored.js";
 import { libraryDto, placesDto, primedClient, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -189,6 +190,10 @@ function serve(s: Server = {}): Call[] {
         );
       }
       if (method === "POST" && path === "/api/conditions/checks") return json({ check: { ...body, date: TODAY } });
+      // The session under way that Start now's 409 names: started (on this device or another), as the server reads it.
+      if (method === "GET" && s.startedToday?.contentState === "started" && path === `/api/sessions/${s.startedToday.id}`) {
+        return json({ ...built(s.startedToday.id), contentState: "started", locked: true });
+      }
       const session = /^\/api\/sessions\/([^/]+)\/(build|start)$/.exec(path);
       if (session && method === "POST" && session[2] === "build") return json(s.build ?? built(session[1]!));
       if (session && method === "POST" && session[2] === "start") {
@@ -1149,7 +1154,20 @@ describe("Start now of what today already holds (Stage 2 whole-branch review I3)
     expect(where).toBe("/session/w-old");
     expect(calls.filter((c) => c.method === "POST" && c.path === "/api/workouts")).toHaveLength(1);
     // Under way already: nothing is built or started again — the player picks it up where it is.
-    expect(calls.some((c) => c.path.startsWith("/api/sessions/w-old/"))).toBe(false);
+    expect(calls.some((c) => c.method === "POST" && c.path.startsWith("/api/sessions/w-old/"))).toBe(false);
+  });
+
+  it("under way on another device: Continue it leaves it on this one under the workout's title, as Start does — never \"Session\"", async () => {
+    await draftStore().save(draft(into(1, "gobletSquat")));
+    serve({ startedToday: { id: "w-old", contentState: "started" } });
+    mount("/studio/build/new");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!button("Continue it"), "Continue it");
+    await click(button("Continue it"), "Continue it");
+    await until(() => text().includes("the player"), "the player");
+    // What the player names it by: the workout's title, kept with the session on this device.
+    expect((await loadExtras(await offlineDb(), "w-old"))?.title).toBe("Hips & posture");
   });
 
   it("not started yet: Continue it builds and starts that one", async () => {

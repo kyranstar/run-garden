@@ -320,6 +320,14 @@ export function useBuildFlows({
   /** Continue the one today already holds: back into its session when it is under way, else started now. */
   const continueToday = async (w: DocWorkoutDto): Promise<void> => {
     if (w.contentState === "started") {
+      // Under way — on this device, or on another: what the player plays is left here first, under the workout's own
+      // title, as Start leaves it. Read from the server alone, the session names no workout (the player said "Session").
+      setFlow({ step: "busy", what: "Opening…" });
+      const s = await api.getSession(w.id).catch(() => null);
+      if (s && s.contentState === "started" && !(await keepStarted(s, w.title, userId()))) {
+        setFlow({ step: "notKept", workoutId: w.id });
+        return;
+      }
       setFlow(IDLE);
       navigate(`/session/${encodeURIComponent(w.id)}`);
       return;
