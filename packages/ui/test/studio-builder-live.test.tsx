@@ -1297,3 +1297,80 @@ describe("Do it again (CUJ B2)", () => {
     await until(() => text().includes("This workout can't be opened in the Studio."), "the problem");
   });
 });
+
+describe("Start offers today's before reading (CUJ R5)", () => {
+  // A calm move nothing waits on: TMJ on, Today carrying its chip, today unanswered.
+  const calm = () => draftStore().save(draft(into(1, "catCow")));
+
+  it("unanswered, though nothing waits on it: offered first, in place — Save keeps it, then Start goes on", async () => {
+    await calm();
+    const calls = serve();
+    mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto(null) });
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    const sheet = dialog("Jaw / head")!;
+    expect(sheet.textContent).toContain("Before you start, so this session has a before and an after.");
+    expect(calls.some((c) => c.method === "POST" && c.path === "/api/workouts")).toBe(false);
+    await click(buttons(sheet).find((b) => b.textContent === "2"), "2");
+    await click(button("Save", sheet), "Save");
+    await until(() => text().includes("the player"), "the player");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual([
+      "/api/conditions/checks",
+      "/api/workouts",
+      "/api/sessions/w-new/build",
+      "/api/sessions/w-new/start",
+    ]);
+    expect(calls.find((c) => c.path === "/api/conditions/checks")!.body).toEqual({ profileId: "tmj", value: 2, feelingOff: false });
+  });
+
+  it("one tap skips it: Start goes on without it, and nothing is recorded", async () => {
+    await calm();
+    const calls = serve();
+    mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto(null) });
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    await click(button("Skip", dialog("Jaw / head")!), "Skip");
+    await until(() => text().includes("the player"), "the player");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/workouts", "/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+  });
+
+  it("closed instead, nothing starts, and the next Start offers it again", async () => {
+    await calm();
+    const calls = serve();
+    mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto(null) });
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    await click(button("Close", dialog("Jaw / head")!), "Close");
+    await settle(20);
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    expect(text()).not.toContain("the player");
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check again");
+    await click(button("Skip", dialog("Jaw / head")!), "Skip");
+    await until(() => text().includes("the player"), "the player");
+  });
+
+  it("a check today's errors wait on is asked, never offered: no Skip", async () => {
+    await draftStore().save(draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress")));
+    serve();
+    mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto(null) });
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    expect(button("Skip", dialog("Jaw / head")!)).toBeNull();
+    expect(dialog("Jaw / head")!.textContent).not.toContain("Before you start");
+  });
+
+  it("answered today already, or no profile on: Start asks nothing", async () => {
+    await calm();
+    const calls = serve();
+    mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto({ value: 1 }) });
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    expect(calls.some((c) => c.path === "/api/conditions/checks")).toBe(false);
+  });
+});

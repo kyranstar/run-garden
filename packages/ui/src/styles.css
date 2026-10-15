@@ -2288,6 +2288,12 @@ button.session-chip {
   gap: var(--tap-clear);
   margin: 0;
 }
+/* The check offered before a Start (the builder's): what it is for, in one line above the scale. */
+.check-sheet-lead {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
 /* Why Start waits (today's check keeps a move out), and the moves today's check stood in for, one line each. */
 .session-refused {
   margin: 0;

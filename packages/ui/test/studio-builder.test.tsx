@@ -306,3 +306,23 @@ describe("Stage 2 whole-branch review: the 44 px floor and activation offered on
     expect(text(renderBuilder("/studio/build/new").slice(renderBuilder("/studio/build/new").indexOf("stu-add-parts")))).toContain("Activation");
   });
 });
+
+describe("the day's advice to ease off (CUJ R15)", () => {
+  it("a flare day's go-Recover stays in view on a phone, beside the errors; the other costs fold away", () => {
+    const d = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "proneYTW"));
+    const html = renderBuilder("/studio/build/new", { draft: d, primed: { library: libraryDto({ tmj: true }), today: todayDto({ value: 6 }) } });
+    // Folded, a phone's default…
+    expect(html).toMatch(/class="stu-sum-body" hidden=""/);
+    const body = html.indexOf('class="stu-sum-body"');
+    // …and the advice is above the fold, with its Fix.
+    const advice = html.indexOf("Jaw/head is at 6 right now.");
+    expect(advice).toBeGreaterThan(-1);
+    expect(advice).toBeLessThan(body);
+    expect(html.split("Jaw/head is at 6 right now.").length - 1).toBe(1);
+    expect(html.slice(advice, body)).toMatch(/<button[^>]*class="btn btn-small stu-note-fix"[^>]*>[^<]*Recover[^<]*<\/button>/);
+    // A cost that isn't the day's advice still folds away.
+    const inView = html.slice(html.indexOf('class="stu-sum"'), body);
+    expect(text(html.slice(body))).toMatch(/flare/);
+    expect(text(inView)).not.toMatch(/isn&#x27;t flare-safe|isn't flare-safe/);
+  });
+});

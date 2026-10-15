@@ -118,7 +118,7 @@ import { ScheduleSheet } from "./schedule-sheet.js";
 import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioReads } from "./screen.js";
 import { SummaryCard } from "./summary-card.js";
 import { builderBack, quickStartFor, type BuilderArrival } from "./templates-model.js";
-import { IDLE, useBuildFlows, workoutDocQuery, type Flow, type Loaded, type Status } from "./use-build-flows.js";
+import { IDLE, useBuildFlows, workoutDocQuery, type CheckAsked, type Flow, type Loaded, type Status } from "./use-build-flows.js";
 
 /** The readings this page recorded (or the session read gave): a Studio-only athlete's Today carries none. */
 const readingsQuery = (today: string) => ["studio", "readings", today] as const;
@@ -284,7 +284,7 @@ function Builder({ source }: { source: BuildSource }) {
   const [scheduling, setScheduling] = useState(false);
   const [naming, setNaming] = useState(false);
   const [freshAsk, setFreshAsk] = useState(false);
-  const [asking, setAsking] = useState<{ profileId: string; then: "start" | null } | null>(null);
+  const [asking, setAsking] = useState<CheckAsked | null>(null);
   const [resume, setResume] = useState(false);
   const [sumOpen, setSumOpen] = useState<boolean | null>(null);
   const [ghostOff, setGhostOff] = useState(false);
@@ -354,7 +354,7 @@ function Builder({ source }: { source: BuildSource }) {
     if (Object.keys(known).length) qc.setQueryData<Record<string, CheckReading>>(readingsQuery(today), (old) => ({ ...(old ?? {}), ...known }));
   };
 
-  const { dirtyOf, lock, startNow, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver } = useBuildFlows({
+  const { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver } = useBuildFlows({
     source,
     key,
     tplId,
@@ -856,7 +856,12 @@ function Builder({ source }: { source: BuildSource }) {
       ) : null}
       {naming ? <NameSheet initial={doc.title} onSave={saveAsTemplate} onClose={() => setNaming(false)} /> : null}
       {asked ? (
-        <ConditionCheckSheet condition={checkViewOf(asked)} onSaved={onCheckSaved} onClose={() => setAsking(null)} />
+        <ConditionCheckSheet
+          condition={checkViewOf(asked)}
+          onSaved={onCheckSaved}
+          onClose={() => setAsking(null)}
+          onSkip={asking?.offered ? () => skipCheck(asked.id) : undefined}
+        />
       ) : null}
       {sendingWatch ? (
         <WatchPreviewSheet

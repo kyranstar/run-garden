@@ -24,7 +24,7 @@ import { chimes } from "../../player/audio.js";
 import type { useStudioDraft } from "../../studio-drafts.js";
 import { addTargetHref, freshDoc } from "./add-model.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
-import { EMPTY_BLOCK, forSchedule, judgeDraft, nowHHMM, type BuildCtx, type BuildSource, type Judged } from "./build-model.js";
+import { answered, EMPTY_BLOCK, forSchedule, judgeDraft, nowHHMM, type BuildCtx, type BuildSource, type Judged } from "./build-model.js";
 import type { BuilderArrival } from "./templates-model.js";
 
 /** A planned workout's document, read fresh (`GET /api/workouts/:id/doc`). */
@@ -100,6 +100,16 @@ function scheduledText(w: DocWorkoutDto, today: string): string {
   return `Scheduled for ${day} at ${formatTime(w.time)}.`;
 }
 
+/**
+ * A check the builder asks for: from a note (`then: null`), or by Start — one today's errors wait on, or one it only
+ * offers (`offered`: today unanswered, nothing waiting on it; skippable, CUJ R5).
+ */
+export interface CheckAsked {
+  profileId: string;
+  then: "start" | null;
+  offered?: true;
+}
+
 /** What the builder hands its flows: its state, and the setters they move it on with. */
 export interface BuildFlowsIn {
   source: BuildSource;
@@ -125,7 +135,7 @@ export interface BuildFlowsIn {
   setSaving: Dispatch<SetStateAction<boolean>>;
   setScheduling: Dispatch<SetStateAction<boolean>>;
   setNaming: Dispatch<SetStateAction<boolean>>;
-  setAsking: Dispatch<SetStateAction<{ profileId: string; then: "start" | null } | null>>;
+  setAsking: Dispatch<SetStateAction<CheckAsked | null>>;
   setFreshAsk: Dispatch<SetStateAction<boolean>>;
   resume: boolean;
   setResume: Dispatch<SetStateAction<boolean>>;
@@ -344,7 +354,22 @@ export function useBuildFlows({
       setAsking({ profileId: judged.checks[0]!, then: "start" });
       return;
     }
+    // Today's check unanswered, though nothing waits on it: offered first, so the session has a before as well as an
+    // after (CUJ R5) — the same sheet, one tap to go on without it.
+    const offer = bc.profiles.find((p) => !answered(bc.readings[p.id]) && !skipped.current.has(p.id));
+    if (offer) {
+      setAsking({ profileId: offer.id, then: "start", offered: true });
+      return;
+    }
     await runStart();
+  };
+  /** The checks Start offered that were skipped: not offered again on this page. */
+  const skipped = useRef(new Set<string>());
+  /** Start without the offered check: it goes on at once. */
+  const skipCheck = (profileId: string) => {
+    skipped.current.add(profileId);
+    setAsking(null);
+    setResume(true);
   };
   // A check asked for by Start, answered: Start goes on with the reading (or stops where it now blocks).
   useEffect(() => {
@@ -510,5 +535,5 @@ export function useBuildFlows({
     setFlow({ step: "idle" });
   };
 
-  return { dirtyOf, lock, startNow, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver };
+  return { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver };
 }

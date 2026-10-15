@@ -11,8 +11,9 @@
  *   ⓘ You set Goblet squat aside as not for you.
  *
  * The line and the count are the toggle; the errors stay in view whatever it is set to, because they are what stops
- * Start — each with its Fix where the validator has one, or the check that could answer it. The balance, the areas
- * and the warnings (costs, never blocks) fold away. Every level has its number beside it, and every note its shape
+ * Start — each with its Fix where the validator has one, or the check that could answer it. So does the day's advice
+ * to ease off (`mode_above_day`: "Jaw/head is at 6 right now." → Recover), the day's most important cost (CUJ R15). The
+ * balance, the areas and the other warnings (costs, never blocks) fold away. Every level has its number beside it, and every note its shape
  * (a triangle to fix, a circle for a cost) and a word for a screen reader: status is never colour alone. A workout
  * that can't change (done, under way, its day passed) still says what it would be judged by, but offers nothing to do:
  * no Fix, no check — and nothing says "to fix": its notes are counted as notes, in the neutral style, every one of
@@ -24,6 +25,9 @@ import { CATEGORY_LABELS } from "../../components.js";
 import { Tooltip } from "../../components/tooltip.js";
 import { IconAlert, IconChevron, IconInfo } from "../../icons.js";
 import { areasWorked, BALANCE_LEVELS, balanceRows, type Judged, type Note } from "./build-model.js";
+
+/** The warnings kept in view beside the errors, folded or not: the day's advice to ease off (CUJ R15). */
+const IN_VIEW: ReadonlySet<Note["code"]> = new Set<Note["code"]>(["mode_above_day"]);
 
 export function NoteRow({
   note,
@@ -98,8 +102,8 @@ export function SummaryCard({
   const fixing = readOnly ? 0 : errors.length;
   const count = fixing ? `${fixing} to fix` : readOnly && judged.notes.length ? notesWord(judged.notes.length) : warnings.length ? notesWord(warnings.length) : "";
   const areas = d ? areasWorked(d) : [];
-  const inView = readOnly ? judged.notes : errors;
-  const folded = readOnly ? [] : warnings;
+  const inView = readOnly ? judged.notes : [...errors, ...warnings.filter((n) => IN_VIEW.has(n.code))];
+  const folded = readOnly ? [] : warnings.filter((n) => !IN_VIEW.has(n.code));
   const row = (n: Note, i: number) => <NoteRow key={`${n.code}-${i}`} note={n} onFix={onFix} onCheck={onCheck} checkLabel={checkLabel} readOnly={readOnly} />;
   return (
     <section className="stu-sum" aria-labelledby={`${id}-h`}>
@@ -118,8 +122,8 @@ export function SummaryCard({
       <span className="visually-hidden" role="status">
         {readOnly ? count : fixing ? `${fixing} to fix` : "Nothing to fix."}
       </span>
-      {/* In view whatever the toggle says: the errors (what stops Start) — and, read-only, every note, so the count of
-          notes beside them is of what is listed here, none folded out of sight. */}
+      {/* In view whatever the toggle says: the errors (what stops Start) and the day's advice to ease off — and,
+          read-only, every note, so the count of notes beside them is of what is listed here, none folded out of sight. */}
       {inView.length ? <ul className="stu-notes">{inView.map(row)}</ul> : null}
       <div id={`${id}-b`} className="stu-sum-body" hidden={!open}>
         {d ? (

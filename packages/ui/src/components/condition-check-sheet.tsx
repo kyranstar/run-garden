@@ -138,11 +138,14 @@ export function ConditionCheckSheet({
   condition,
   onClose,
   onSaved,
+  onSkip,
 }: {
   condition: ConditionViewDto & { today: TodayReading | null };
   onClose: () => void;
   /** The check as recorded, before the sheet closes (the Studio's builder judges with it at once). */
   onSaved?: (check: ConditionCheckDto) => void;
+  /** Offered before a Start (the builder's, CUJ R5): one tap goes on without it. Absent, there is no Skip. */
+  onSkip?: () => void;
 }) {
   const qc = useQueryClient();
   const [value, setValue] = useState<number | null>(condition.today?.value ?? null);
@@ -166,17 +169,25 @@ export function ConditionCheckSheet({
       onClose={onClose}
       title={condition.check.label}
       footer={
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={(value === null && !off) || save.isPending}
-          onClick={() => save.mutate()}
-        >
-          Save
-        </button>
+        <div className="btn-row">
+          {onSkip ? (
+            <button type="button" className="btn" disabled={save.isPending} onClick={onSkip}>
+              Skip
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={(value === null && !off) || save.isPending}
+            onClick={() => save.mutate()}
+          >
+            Save
+          </button>
+        </div>
       }
     >
       <div className="stack check-sheet">
+        {onSkip ? <p className="check-sheet-lead">Before you start, so this session has a before and an after.</p> : null}
         <CheckScale
           label={condition.check.label}
           min={condition.check.min}
