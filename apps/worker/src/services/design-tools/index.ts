@@ -6,8 +6,13 @@
  *
  * The names, and what each tool is for, are the ones the prompt promises (design-prompt.ts `PROMPT_TOOL_NAMES` and
  * "Using the tools well"); the descriptions stay short because the prompt already explains when to reach for which.
- * The read tools serve all three roles; the act tools (Task 5) join `allTools()`.
+ * The read tools serve all three roles; the act tools follow them (`ACT_TOOLS`, each with its own roles). Two tools the
+ * prompt names arrive with later tasks — `submit_review` (Task 6) and `plan_set` (Task 7) — and are listed in
+ * `PENDING_TOOL_NAMES` until they do, so a test holds the registry plus that list to the prompt's names exactly.
  */
+import { askAthlete } from "./ask.js";
+import { finish } from "./finish.js";
+import { proposeWorkout } from "./propose.js";
 import { readAnswers } from "./read-answers.js";
 import { readBalance } from "./read-balance.js";
 import { readDay } from "./read-day.js";
@@ -21,7 +26,10 @@ import { readProposals } from "./read-proposals.js";
 import { readReadiness } from "./read-readiness.js";
 import { listTemplates } from "./read-templates.js";
 import { getWorkout, listWorkouts } from "./read-workouts.js";
+import { recordAnswer } from "./record-answer.js";
+import { remember } from "./remember.js";
 import type { DesignTool } from "./types.js";
+import { validateWorkout } from "./validate.js";
 
 /** The read tools, in the prompt's order. */
 export const READ_TOOLS: DesignTool[] = [
@@ -42,7 +50,13 @@ export const READ_TOOLS: DesignTool[] = [
   recallMemory,
 ];
 
+/** The act tools, in the prompt's order. */
+export const ACT_TOOLS: DesignTool[] = [validateWorkout, askAthlete, recordAnswer, remember, proposeWorkout, finish];
+
+/** Tools the prompt names that later tasks add: each leaves this list when it joins the registry. */
+export const PENDING_TOOL_NAMES = ["submit_review", "plan_set"] as const;
+
 /** Every tool a run is offered. */
 export function allTools(): DesignTool[] {
-  return [...READ_TOOLS];
+  return [...READ_TOOLS, ...ACT_TOOLS];
 }

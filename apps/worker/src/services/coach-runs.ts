@@ -23,9 +23,11 @@ import {
   type ToolUseBlock,
 } from "./llm-messages.js";
 import { COACH_RUN_LEFT_MINUTES, COACH_RUN_SET_WINDOW_HOURS, COACH_RUN_STEP_STALE_MINUTES } from "./cron-limits.js";
+import { allTools } from "./design-tools/index.js";
 import {
   isToolErr,
   type DesignTool,
+  type ReviewDraft,
   type RunScope,
   type RunScopeKind,
   type ToolContext,
@@ -363,12 +365,14 @@ export interface RunDeps {
   callModel: (env: Env, req: MessagesRequest) => Promise<MessagesResult>;
   buildContext: ContextBuilder;
   tools: DesignTool[];
+  /** The independent review of a draft, handed to the tools (`ToolContext.reviewDraft`; Task 6 fills it). */
+  reviewDraft?: ReviewDraft;
   /** Milliseconds, for how long a step took (its stamp is its `now` plus that). Default: the real clock. */
   clock?: () => number;
 }
 
 export function defaultRunDeps(): RunDeps {
-  return { callModel: (env, req) => callMessages(env, req), buildContext: designContextBuilder, tools: [] };
+  return { callModel: (env, req) => callMessages(env, req), buildContext: designContextBuilder, tools: allTools() };
 }
 
 // ── Runs as rows ────────────────────────────────────────────────────────
@@ -577,6 +581,14 @@ async function appendEvents(db: Db, userId: string, rootId: string, events: NewE
     for (const r of rows.sort((a, b) => a.seq - b.seq)) out.push({ ...r, seq: Number(r.seq), payload: parsePayload(r.payload) });
   }
   return out;
+}
+
+/**
+ * One plain line on a main run's trail from outside a step — what the athlete did from the run view (an answer taken
+ * back). The caller has established the run is the athlete's. One statement.
+ */
+export async function noteOnTrail(db: Db, userId: string, rootId: string, summary: string, payload: unknown, now: Date): Promise<void> {
+  await appendEvents(db, userId, rootId, [{ kind: "note", summary, ...(payload === undefined ? {} : { payload }) }], now.toISOString());
 }
 
 function parsePayload(text: string | null): unknown {
@@ -1429,6 +1441,7 @@ async function runTools(
     userId: s.userId,
     run: { id: run.id, role: run.role, scope: run.scope, parentId: run.parentId, rehearsal: state.settings.rehearsal },
     now: s.now,
+    ...(s.deps.reviewDraft ? { reviewDraft: s.deps.reviewDraft } : {}),
   };
   const events: NewEvent[] = [];
   let executed = 0;
@@ -1456,7 +1469,7 @@ async function runTools(
 
     const fix = mine.length > 0 ? `Use one of: ${mine.map((t) => t.name).join(", ")}.` : "No tools are yours here: finish with what you have.";
     const result: ToolOk | ToolErr = tool
-      ? await runTool(tool, ctx, call.input)
+      ? await runTool(tool, { ...ctx, toolUseId: call.id }, call.input)
       : named
         ? { error: "not_for_role", why: `${call.name} is not a tool for the ${run.role}.`, fix }
         : { error: "unknown_tool", why: `There is no tool named ${call.name}.`, fix };
@@ -1477,7 +1490,8 @@ async function runTools(
           .set({ status: "rehearsal" })
           .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, s.userId), eq(coachProposals.status, "pending")));
       }
-      events.push({ kind: "note", summary: result.summary ?? LINES.finished, ...(proposalId ? { payload: { proposalId } } : {}) });
+      const payload = { ...(proposalId ? { proposalId } : {}), ...(result.receipt ? { receipt: result.receipt } : {}) };
+      events.push({ kind: "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });
       return { status: "finished", events, proposalId };
     }
     state.results.push(ok ? okResult(call.id, result) : errorResult(call.id, result));
@@ -1488,7 +1502,7 @@ async function runTools(
         tool: call.name,
         input: bounded(call.input, 1_500),
         ok,
-        ...(ok ? { provenance: result.provenance, missing: result.missing } : { error: result.error }),
+        ...(ok ? { provenance: result.provenance, missing: result.missing, ...(result.receipt ? { receipt: result.receipt } : {}) } : { error: result.error }),
       },
     });
   }
@@ -1510,7 +1524,7 @@ async function runTool(tool: DesignTool, ctx: ToolContext, input: unknown): Prom
 }
 
 function okResult(id: string, r: ToolOk): ToolResultBlock {
-  const { summary: _summary, ...forModel } = r;
+  const { summary: _summary, receipt: _receipt, ...forModel } = r;
   return { type: "tool_result", tool_use_id: id, content: capResult(JSON.stringify(forModel)) };
 }
 

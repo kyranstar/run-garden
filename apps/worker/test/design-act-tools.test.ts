@@ -1,0 +1,724 @@
+/**
+ * THE COACH DESIGNER'S ACT TOOLS (Stage 3 Task 5; spec §4 "Act", §5, §7, §8, §9; principles §6.1, §6.2, §6.7): what each
+ * one does, and every way each one refuses. Called directly with the loop's context (design-tools/types.ts); the loop
+ * around them is design-act-loop.test.ts, the registry and the budgets design-act-budget.test.ts.
+ *
+ * Synthetic data only: the made-up athlete of design-read-fixture.ts, on its fixed clock.
+ */
+import { beforeAll, describe, expect, it } from "vitest";
+import { and, eq, like } from "drizzle-orm";
+import { schema } from "@rg/database";
+import { newId, NO_EQUIPMENT_PLACE, workoutDocSchema } from "@rg/domain";
+import { EXERCISES } from "@rg/exercise-library";
+import type { Env } from "../src/env.js";
+import type { Db } from "../src/services/db.js";
+import { readingsOfDay } from "../src/services/condition-views.js";
+import { buildDesignContext } from "../src/services/design-context.js";
+import { ACT_TOOLS } from "../src/services/design-tools/index.js";
+import { docValidateCtx, readDocAthlete, unwrapUntrusted } from "../src/services/design-tools/act-common.js";
+import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
+import { markedDoc } from "../src/services/design-tools/read-workouts.js";
+import { recallMemory } from "../src/services/design-tools/read-memory.js";
+import { readAnswers } from "../src/services/design-tools/read-answers.js";
+import { isToolErr, type DesignReview, type DesignTool, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
+import { docDayContext } from "../src/services/doc-workouts.js";
+import { at, day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
+import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
+import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+
+const ENV = {} as Env;
+
+let db: Db;
+const statements: string[] = [];
+let rich: Awaited<ReturnType<typeof seedRichAthlete>>;
+/** The same athlete, with a pre-check of 7 at 08:30 today: jumps are closed today (TMJ: calm is 2 or less). */
+let high: Awaited<ReturnType<typeof seedRichAthlete>>;
+
+beforeAll(async () => {
+  db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
+  rich = await seedRichAthlete(db);
+  high = await seedRichAthlete(db);
+  await db.insert(schema.conditionChecks).values([
+    { id: newId(), userId: high.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "08:30") },
+    // Later, but no answer: never the day's reading.
+    { id: newId(), userId: high.userId, profileId: "tmj", kind: "daily", value: null, feelingOff: false, localDate: TODAY, at: at(TODAY, "09:00") },
+  ]);
+});
+
+const tool = (name: string): DesignTool => ACT_TOOLS.find((t) => t.name === name)!;
+
+let runSeq = 0;
+/** A run row of the athlete's (the tools read the request and the run's tree from it). */
+async function run(
+  o: { userId?: string; role?: ToolRole; request?: string | null; scope?: ToolContext["run"]["scope"]; parentId?: string | null; rehearsal?: boolean } = {},
+): Promise<ToolContext["run"] & { userId: string }> {
+  const id = `run-${++runSeq}-${newId().slice(0, 8)}`;
+  const userId = o.userId ?? rich.userId;
+  const role = o.role ?? "main";
+  const scope = o.scope ?? { kind: "now" };
+  await db.insert(schema.coachRuns).values({
+    id, userId, parentId: o.parentId ?? null, role, scope: { ...scope }, request: o.request === undefined ? "a short session at home" : o.request,
+    status: "active", state: null, steps: 0, costUsd: 0, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+  });
+  return { id, role, scope, parentId: o.parentId ?? null, rehearsal: o.rehearsal === true, userId };
+}
+
+let useSeq = 0;
+function ctxOf(r: Awaited<ReturnType<typeof run>>, extra: Partial<ToolContext> = {}): ToolContext {
+  const { userId, ...runPart } = r;
+  return { db, env: ENV, userId, run: runPart, now: NOW, toolUseId: `toolu_${++useSeq}`, ...extra };
+}
+
+async function call(name: string, c: ToolContext, input: unknown): Promise<{ result: ToolOk | ToolErr; writes: string[]; count: number }> {
+  statements.length = 0;
+  const result = await tool(name).run(c, input);
+  return { result, writes: statements.filter(isWrite), count: statements.length };
+}
+
+const ok = (r: ToolOk | ToolErr): ToolOk => {
+  if (isToolErr(r)) throw new Error(`refused: ${r.error} — ${r.why}`);
+  return r;
+};
+const err = (r: ToolOk | ToolErr): ToolErr => {
+  if (!isToolErr(r)) throw new Error(`expected a refusal, got ${JSON.stringify(r.data).slice(0, 300)}`);
+  return r;
+};
+const data = (r: ToolOk | ToolErr): any => ok(r).data;
+
+const item = (libraryId: string, dose: Record<string, unknown> = { sets: 2, reps: 8, restSec: 45 }) => ({ kind: "exercise", libraryId, dose });
+function docOf(items: unknown[], over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    version: 1,
+    title: "Coach test",
+    intent: { summary: "Wake the hips, then load the legs.", goals: ["strength"], focus: [], effort: "maintain" },
+    parts: [{ purpose: "main", format: "straight", items }],
+    source: { kind: "coach" },
+    ...over,
+  };
+}
+
+async function proposal(mainRunId: string) {
+  const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(mainRunId)));
+  return p ? { ...p, ops: p.ops as DocWorkoutOp[] } : undefined;
+}
+
+// ── The day a document is checked for ───────────────────────────────────────────────────────────────────────────────
+
+describe("the day's reading — one rule for the opening context and the validator", () => {
+  it("readingsOfDay is the latest answered check per profile; a later unanswered one never counts", () => {
+    const rows = [
+      { id: "a", profileId: "tmj", at: "2026-05-13T14:40:00Z", value: 2, feelingOff: false },
+      { id: "b", profileId: "tmj", at: "2026-05-13T15:30:00Z", value: 7, feelingOff: false },
+      { id: "c", profileId: "tmj", at: "2026-05-13T16:00:00Z", value: null, feelingOff: false },
+      { id: "d", profileId: "other", at: "2026-05-13T17:00:00Z", value: 1, feelingOff: false },
+    ];
+    expect(readingsOfDay(rows, ["tmj"]).get("tmj")?.id).toBe("b");
+    expect([...readingsOfDay(rows, ["tmj"]).keys()]).toEqual(["tmj"]);
+    expect(readingsOfDay([{ ...rows[2]! }], ["tmj"]).has("tmj")).toBe(false);
+  });
+
+  it("the header says 7 at 08:30, and the validator's day reads 7: a jump is refused today, as the header's rule says", async () => {
+    const r = await run({ userId: high.userId });
+    const context = await buildDesignContext(db, ENV, high.userId, { id: r.id, role: "main", scope: { kind: "now" }, request: null, parentId: null }, NOW);
+    expect(context.header).toContain("Today's: 7 at 08:30.");
+    const a = await readDocAthlete(ctxOf(r), {});
+    if ("error" in a) throw new Error(a.why);
+    const vctx = await docValidateCtx(ctxOf(r), a, TODAY);
+    expect(vctx.day?.readings.tmj).toEqual({ pre: 7, post: null, feelingOff: false });
+    const v = data((await call("validate_workout", ctxOf(r), { doc: landingsDoc(), date: TODAY })).result);
+    expect(v.valid).toBe(false);
+    expect(v.errors.map((e: { path: string; code: string }) => `${e.path} ${e.code}`)).toContain("parts[0].items[0].libraryId condition_gate");
+    // The calm athlete (2 at 07:40): the same jump is allowed today.
+    const calm = await run();
+    expect(data((await call("validate_workout", ctxOf(calm), { doc: landingsDoc(), date: TODAY })).result).valid).toBe(true);
+  });
+
+  it("an athlete whose last session was weeks ago: the last session is still the create path's, and the week is empty", async () => {
+    const userId = (await makeTestUser(db, { timezone: "America/Los_Angeles" })).userId;
+    for (const n of [40, 20]) {
+      await db.insert(schema.performedSessions).values({
+        id: newId(), userId, source: "app", localDate: day(n), startedAt: at(day(n), "07:00"), seconds: 900, minutes: 15, completed: true,
+        movesDone: [{ exerciseId: "catCow", seconds: 120 }], payloadHash: `old-${n}`, createdAt: at(day(n)), updatedAt: at(day(n)),
+      });
+    }
+    const r = await run({ userId });
+    const a = await readDocAthlete(ctxOf(r), {});
+    if ("error" in a) throw new Error(a.why);
+    const mine = await docValidateCtx(ctxOf(r), a, TODAY);
+    const theirs = await docDayContext(db, userId, { date: TODAY, today: TODAY, workoutId: "none" });
+    expect(mine.day!.recent!.last?.date).toBe(day(20));
+    expect(JSON.stringify(mine.day!.recent)).toBe(JSON.stringify(theirs.day!.recent));
+    expect(mine.day!.recent!.week).toEqual([]);
+  });
+
+  it("done and recent are the create path's own (docDayContext): the same moves done cleanly, the same last session and week", async () => {
+    const r = await run();
+    const a = await readDocAthlete(ctxOf(r), {});
+    if ("error" in a) throw new Error(a.why);
+    const mine = await docValidateCtx(ctxOf(r), a, TODAY);
+    const theirs = await docDayContext(db, rich.userId, { date: TODAY, today: TODAY, workoutId: "none" });
+    expect([...(mine.day!.done ?? [])].sort()).toEqual([...(theirs.day!.done ?? [])].sort());
+    expect(mine.day!.done!.size).toBeGreaterThan(0);
+    expect(JSON.stringify(mine.day!.recent)).toBe(JSON.stringify(theirs.day!.recent));
+    expect(mine.day!.recent!.week.length).toBeGreaterThan(1);
+    expect(mine.excluded).toEqual(["splitSquat"]);
+  });
+});
+
+// ── validate_workout ────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("validate_workout", () => {
+  it("a sound draft: no errors, its derived minutes and balance, provenance — and it writes nothing", async () => {
+    const r = await run();
+    const { result, writes } = await call("validate_workout", ctxOf(r), { doc: calmDoc(), date: TODAY });
+    const v = data(result);
+    expect(writes).toEqual([]);
+    expect(v).toMatchObject({ date: TODAY, valid: true, errors: [] });
+    expect(v.derived.minutes).toBeGreaterThan(0);
+    expect(v.derived.discipline).toBeTruthy();
+    expect(Object.keys(v.derived.balance).length).toBeGreaterThan(0);
+    expect(ok(result).provenance?.source).toMatch(/validator/);
+    expect(ok(result).summary).toMatch(/no errors/i);
+  });
+
+  it("is idempotent: the same call answers the same", async () => {
+    const r = await run();
+    const one = data((await call("validate_workout", ctxOf(r), { doc: landingsDoc(), date: day(-2) })).result);
+    const two = data((await call("validate_workout", ctxOf(r), { doc: landingsDoc(), date: day(-2) })).result);
+    expect(two).toEqual(one);
+  });
+
+  it("an unknown exercise is an error with a fix; a set-aside move and missing gear are advisory", async () => {
+    const r = await run();
+    const kettle = EXERCISES.find((e) => e.equipment.all.length === 1 && e.equipment.all[0] === "kettlebell")!;
+    const v = data(
+      (await call("validate_workout", ctxOf(r), { doc: docOf([item("Goblet Squatt"), item("splitSquat", { sets: 2, reps: 8, perSide: true }), item(kettle.id)]), date: day(-1) })).result,
+    );
+    expect(v.valid).toBe(false);
+    expect(v.errors).toContainEqual(expect.objectContaining({ path: "parts[0].items[0].libraryId", code: "unknown_exercise" }));
+    expect(v.warnings).toContainEqual(expect.objectContaining({ path: "parts[0].items[1].libraryId", code: "excluded_by_athlete" }));
+    // The default place (the Garage) has no kettlebell…
+    expect(v.warnings).toContainEqual(expect.objectContaining({ path: "parts[0].items[2].libraryId", code: "equipment_unavailable" }));
+    expect(v.place).toMatchObject({ id: rich.placeId, default: true });
+    // …the gym does.
+    const gym = data(
+      (await call("validate_workout", ctxOf(r), { doc: docOf([item(kettle.id)], { setting: { placeId: rich.gymId } }), date: day(-1) })).result,
+    );
+    expect(gym.warnings.filter((w: { code: string }) => w.code === "equipment_unavailable")).toEqual([]);
+    expect(gym.place).toMatchObject({ id: rich.gymId });
+  });
+
+  it("a place that isn't the athlete's (or a preset) is refused, teachably; a preset is checked as itself", async () => {
+    const r = await run();
+    const e = err((await call("validate_workout", ctxOf(r), { doc: docOf([item("bridge")], { setting: { placeId: "nowhere" } }), date: TODAY })).result);
+    expect(e.error).toBe("unknown_place");
+    expect(e.fix).toMatch(/read_profile/);
+    const preset = data((await call("validate_workout", ctxOf(r), { doc: docOf([item("bridge")], { setting: { placeId: "gym" } }), date: TODAY })).result);
+    expect(preset.place).toMatchObject({ id: "gym" });
+    // The Studio's "No equipment" place: no gear at all, as the create path checks it.
+    const kettle = EXERCISES.find((e) => e.equipment.all.length === 1 && e.equipment.all[0] === "kettlebell")!;
+    const bare = data((await call("validate_workout", ctxOf(r), { doc: docOf([item(kettle.id)], { setting: { placeId: NO_EQUIPMENT_PLACE } }), date: TODAY })).result);
+    expect(bare.place).toEqual({ id: NO_EQUIPMENT_PLACE, default: false });
+    expect(bare.warnings).toContainEqual(expect.objectContaining({ path: "parts[0].items[0].libraryId", code: "equipment_unavailable" }));
+  });
+
+  it("a day gone is refused; a document that isn't one comes back as its schema errors, never a throw", async () => {
+    const r = await run();
+    expect(err((await call("validate_workout", ctxOf(r), { doc: calmDoc(), date: day(1) })).result).error).toBe("past_date");
+    const bad = data((await call("validate_workout", ctxOf(r), { doc: { title: "" }, date: TODAY })).result);
+    expect(bad.valid).toBe(false);
+    expect(bad.errors.every((e: { code: string }) => e.code === "bounds")).toBe(true);
+    expect(bad.derived).toBeNull();
+    expect(err((await call("validate_workout", ctxOf(r), { doc: calmDoc() })).result).error).toBe("invalid_input");
+  });
+
+  it("a document copied back from get_workout — every text marked untrusted — reads as its own text", async () => {
+    const r = await run();
+    const marked = markedDoc(studioDoc());
+    expect(JSON.stringify(marked)).toContain('"untrusted":true');
+    const v = data((await call("validate_workout", ctxOf(r), { doc: marked, date: TODAY })).result);
+    expect(v.errors).toEqual([]);
+    expect(unwrapUntrusted(marked)).toMatchObject({ title: "Strong hips, easy back", intent: { summary: expect.any(String) } });
+    // Only the marker's exact shape is unwrapped.
+    expect(unwrapUntrusted({ untrusted: true, text: "x", more: 1 })).toEqual({ untrusted: true, text: "x", more: 1 });
+    expect(unwrapUntrusted([{ untrusted: true, text: "a" }, "b"])).toEqual(["a", "b"]);
+  });
+});
+
+// ── ask_athlete ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("ask_athlete", () => {
+  const q = (over: Record<string, unknown> = {}) => ({ text: "How long do you have — and at home or the gym?", chips: ["20 min, home", "40 min, gym"], why: "Time and place decide the design.", ...over });
+
+  it("puts one or two questions, each with chips, free text always allowed, and why — the payload the run view shows", async () => {
+    const r = await run();
+    expect(tool("ask_athlete").control).toBe("ask");
+    const { result, count } = await call("ask_athlete", ctxOf(r), { questions: [q(), q({ text: "How are your calves after Sunday?", chips: ["fine", "a bit sore", "very sore"] })] });
+    expect(count).toBe(0);
+    expect(data(result)).toEqual({
+      questions: [
+        { text: q().text, chips: q().chips, allowFreeText: true, why: q().why },
+        { text: "How are your calves after Sunday?", chips: ["fine", "a bit sore", "very sore"], allowFreeText: true, why: q().why },
+      ],
+    });
+    expect(ok(result).summary).toBe(`${q().text} · How are your calves after Sunday?`);
+  });
+
+  it("refuses three questions, seven chips, a long question, a chip twice, no chips, or free text switched off", async () => {
+    const r = await run();
+    const refused = async (input: unknown) => err((await call("ask_athlete", ctxOf(r), input)).result);
+    expect((await refused({ questions: [q(), q(), q()] })).why).toMatch(/2/);
+    expect((await refused({ questions: [q({ chips: ["1", "2", "3", "4", "5", "6", "7"] })] })).why).toMatch(/6/);
+    expect((await refused({ questions: [q({ text: "x".repeat(201) })] })).error).toBe("invalid_input");
+    expect((await refused({ questions: [q({ chips: ["same", "same"] })] })).why).toMatch(/twice/);
+    expect((await refused({ questions: [q({ chips: [] })] })).error).toBe("invalid_input");
+    expect((await refused({ questions: [q({ allowFreeText: false })] })).error).toBe("invalid_input");
+    expect((await refused({ questions: [] })).error).toBe("invalid_input");
+  });
+});
+
+// ── record_answer ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("record_answer", () => {
+  const REQUEST = "My calves are wrecked after the hills and my hamstrings are a bit sore. Energy is low today.";
+
+  it("keeps what the request states as check-in answers (source request), by area, with an undo handle and a receipt", async () => {
+    // A focus area of the athlete's own that is no library region.
+    const [profile] = await db.select().from(schema.athleteProfiles).where(eq(schema.athleteProfiles.userId, rich.userId));
+    await db
+      .update(schema.athleteProfiles)
+      .set({ focusAreas: [...(profile!.focusAreas as unknown[]), { id: "desk-neck", label: "Desk neck", refs: ["neck"] }] })
+      .where(eq(schema.athleteProfiles.userId, rich.userId));
+    const r = await run({ request: REQUEST });
+    const c = ctxOf(r);
+    const { result } = await call("record_answer", c, {
+      answers: [
+        { question: "soreness", area: "calves", value: 8, quote: "My calves are wrecked after the hills" },
+        { question: "soreness", area: "hamstrings", value: 3, quote: "my hamstrings are a bit sore" },
+        { question: "energy", value: 3, quote: "Energy is low today." },
+        { question: "tightness", area: "desk-neck", quote: "my hamstrings are a bit sore" },
+      ],
+    });
+    const out = ok(result);
+    const handle = `ra:${r.id}:${c.toolUseId}`;
+    expect(out.receipt).toMatchObject({ undo: { handle } });
+    expect(out.summary).toBe("Noted from your request: soreness — calves 8, hamstrings 3 · energy 3 · tightness — Desk neck");
+    const rows = await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `${handle}:%`));
+    expect(rows).toHaveLength(4);
+    expect(rows.every((row) => row.source === "request" && row.localDate === TODAY && row.userId === rich.userId)).toBe(true);
+    const calves = rows.find((row) => row.subjectId === "calves")!;
+    expect(calves).toMatchObject({ questionId: "soreness", subjectKind: "region", valueNum: 8, text: "My calves are wrecked after the hills" });
+    expect(rows.find((row) => row.questionId === "energy")).toMatchObject({ subjectKind: null, subjectId: null, valueNum: 3 });
+    // A focus area of the athlete's is its own kind of subject.
+    expect(rows.find((row) => row.questionId === "tightness")).toMatchObject({ subjectKind: "focus_area", subjectId: "desk-neck", valueNum: null });
+    // A library region wins over a focus area of the same id ("calves" is both here).
+    expect(calves.subjectKind).toBe("region");
+    // The next design reads it.
+    const read = data(await readAnswers.run(c, { question: "soreness", area: "calves", since: TODAY }));
+    expect(read.answers[0]).toMatchObject({ value: 8, source: "request", text: { untrusted: true } });
+  });
+
+  it("a replayed call (the same tool-use id) writes no second set of rows", async () => {
+    const r = await run({ request: REQUEST });
+    const c = ctxOf(r);
+    const input = { answers: [{ question: "soreness", area: "calves", value: 8, quote: "calves are wrecked" }] };
+    await call("record_answer", c, input);
+    await call("record_answer", c, input);
+    expect(await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${r.id}:%`))).toHaveLength(1);
+  });
+
+  it("refuses words the request doesn't hold, energy by area, soreness with no area, an unknown area, a value off the scale", async () => {
+    const r = await run({ request: REQUEST });
+    const refused = async (a: Record<string, unknown>) => err((await call("record_answer", ctxOf(r), { answers: [a] })).result);
+    const invented = await refused({ question: "soreness", area: "quads", value: 6, quote: "my quads are sore" });
+    expect(invented.error).toBe("not_in_request");
+    expect(invented.fix).toMatch(/remember/);
+    expect((await refused({ question: "energy", area: "calves", value: 3, quote: "Energy is low today." })).error).toBe("bad_area");
+    const noArea = await refused({ question: "soreness", value: 3, quote: "calves are wrecked" });
+    expect(noArea.error).toBe("bad_area");
+    expect(noArea.why).toMatch(/recorded by area/);
+    expect((await refused({ question: "soreness", area: "elbowz", quote: "calves are wrecked" })).error).toBe("bad_area");
+    expect((await refused({ question: "soreness", area: "calves", value: 11, quote: "calves are wrecked" })).error).toBe("invalid_input");
+    expect((await refused({ question: "mood", value: 3, quote: "Energy is low today." })).error).toBe("invalid_input");
+    // No request at all: nothing to record.
+    const tapped = await run({ request: null });
+    expect(err((await call("record_answer", ctxOf(tapped), { answers: [{ question: "energy", value: 3, quote: "low" }] })).result).error).toBe("not_in_request");
+    expect(await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${r.id}:%`))).toHaveLength(0);
+  });
+
+  it("is the main coach's alone (a designer has a brief, not the request)", () => {
+    expect(tool("record_answer").roles).toEqual(["main"]);
+  });
+});
+
+// ── remember ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("remember", () => {
+  it("writes memory v2 — kind, confidence, evidence, where it came from — and marks the body as data", async () => {
+    const r = await run();
+    const c = ctxOf(r);
+    const { result } = await call("remember", c, {
+      kind: "observation",
+      body: "Activation before goblet squats: no clenched sets in 3 of 3 sessions",
+      confidence: "inferred",
+      evidence: ["3 sessions since day 9, none flagged"],
+    });
+    const out = ok(result);
+    const id = (out.receipt as { memoryId: string }).memoryId;
+    const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, id));
+    expect(row).toMatchObject({ userId: rich.userId, kind: "observation", confidence: "inferred", active: true, pinned: false, supersededBy: null });
+    expect(JSON.parse(row!.evidence!)).toEqual(["3 sessions since day 9, none flagged"]);
+    expect(row!.provenance).toMatchObject({ source: "coach_inference", runId: r.id, role: "main", at: NOW.toISOString() });
+    expect((row!.provenance as Record<string, unknown>).rehearsal).toBeUndefined();
+    expect(out.data).toMatchObject({ remembered: { id, confidence: "inferred", body: { untrusted: true } } });
+    expect(out.summary).toMatch(/^Remembered \(inferred\)/);
+    // recall_memory finds it, marked as the coach's inference.
+    const recalled = data(await recallMemory.run(c, { query: "Activation before goblet", kind: "observation" }));
+    expect(recalled.memories[0]).toMatchObject({ id, confidence: "inferred" });
+  });
+
+  it("names a smuggled field first, however much else is wrong with the call", async () => {
+    const r = await run();
+    const e = err((await call("remember", ctxOf(r), { evidence: [], expires: "soon", replaces: "", confirmedByAthlete: true })).result);
+    expect(e.error).toBe("invalid_input");
+    expect(e.why.startsWith('unknown field "confirmedByAthlete"')).toBe(true);
+  });
+
+  it("never writes confirmed: only the athlete confirms", async () => {
+    const r = await run();
+    const e = err((await call("remember", ctxOf(r), { kind: "fact", body: "Has a pull-up bar", confidence: "confirmed" })).result);
+    expect(e.error).toBe("not_yours_to_confirm");
+    expect(e.fix).toMatch(/stated|inferred/);
+  });
+
+  it("a stated fact is the athlete's words: source athlete_words", async () => {
+    const r = await run();
+    const out = ok((await call("remember", ctxOf(r), { kind: "fact", body: "Trains in a garage", confidence: "stated" })).result);
+    const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, (out.receipt as { memoryId: string }).memoryId));
+    expect(row!.confidence).toBe("stated");
+    expect(row!.provenance).toMatchObject({ source: "athlete_words" });
+  });
+
+  it("a rehearsal run's memory is marked as one (provenance.rehearsal), and recall never shows it", async () => {
+    const r = await run({ rehearsal: true });
+    const out = ok((await call("remember", ctxOf(r), { kind: "note", body: "REHEARSAL-ONLY note", confidence: "stated", expires: day(-10) })).result);
+    const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, (out.receipt as { memoryId: string }).memoryId));
+    expect((row!.provenance as Record<string, unknown>).rehearsal).toBe(true);
+    expect(JSON.stringify(data(await recallMemory.run(ctxOf(r), { query: "REHEARSAL-ONLY" })))).not.toContain("REHEARSAL-ONLY");
+  });
+
+  it("a note needs an expiry ahead; an observation needs evidence; evidence is bounded", async () => {
+    const r = await run();
+    const refused = async (input: unknown) => err((await call("remember", ctxOf(r), input)).result);
+    expect((await refused({ kind: "note", body: "Trip next week", confidence: "stated" })).error).toBe("needs_expiry");
+    expect((await refused({ kind: "note", body: "Trip next week", confidence: "stated", expires: TODAY })).error).toBe("needs_expiry");
+    expect((await refused({ kind: "observation", body: "Squats go better late", confidence: "inferred" })).error).toBe("needs_evidence");
+    expect((await refused({ kind: "observation", body: "x", confidence: "inferred", evidence: Array.from({ length: 6 }, () => "e") })).error).toBe("invalid_input");
+    expect((await refused({ kind: "observation", body: "x", confidence: "inferred", evidence: ["e".repeat(201)] })).error).toBe("invalid_input");
+    expect((await refused({ kind: "fact", body: "x".repeat(301), confidence: "stated" })).error).toBe("invalid_input");
+  });
+
+  it("replaces an item by its id — the old one superseded, history kept — but an inference never replaces what the athlete confirmed", async () => {
+    const r = await run();
+    const old = newId();
+    const confirmed = newId();
+    const base = { userId: rich.userId, provenance: { source: "message", at: at(day(9)) }, learnedAt: at(day(9)), active: true, pinned: false, updatedAt: null };
+    await db.insert(schema.coachMemory).values([
+      { ...base, id: old, kind: "rule", body: "Trains mornings", confidence: "stated" },
+      { ...base, id: confirmed, kind: "fact", body: "Has a bench", confidence: "confirmed" },
+    ]);
+    const out = ok((await call("remember", ctxOf(r), { kind: "rule", body: "Trains evenings now", confidence: "stated", replaces: old })).result);
+    const id = (out.receipt as { memoryId: string }).memoryId;
+    const [prior] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, old));
+    expect(prior).toMatchObject({ supersededBy: id, body: "Trains mornings" });
+    expect(out.data).toMatchObject({ replaced: old });
+    expect(err((await call("remember", ctxOf(r), { kind: "fact", body: "No bench", confidence: "inferred", replaces: confirmed })).result).error).toBe("confirmed_by_athlete");
+    expect(err((await call("remember", ctxOf(r), { kind: "rule", body: "Again", confidence: "stated", replaces: old })).result).error).toBe("not_found");
+  });
+
+  it("at most five per run, counted over the run's whole tree; a replay of one call writes once", async () => {
+    const main = await run();
+    const designer = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const c = ctxOf(main);
+    for (let n = 0; n < 3; n++) ok((await call("remember", { ...c, toolUseId: `toolu_m${n}-${main.id}` }, { kind: "fact", body: `Fact ${n}`, confidence: "stated" })).result);
+    // A replay of the last: no sixth row, and no count used.
+    ok((await call("remember", { ...c, toolUseId: `toolu_m2-${main.id}` }, { kind: "fact", body: "Fact 2", confidence: "stated" })).result);
+    for (let n = 3; n < 5; n++) ok((await call("remember", ctxOf(designer), { kind: "fact", body: `Fact ${n}`, confidence: "stated" })).result);
+    const capped = err((await call("remember", ctxOf(designer), { kind: "fact", body: "One too many", confidence: "stated" })).result);
+    expect(capped.error).toBe("memory_cap");
+    // A replay of a call that was written is its answer again, cap or no cap.
+    const again = ok((await call("remember", { ...c, toolUseId: `toolu_m0-${main.id}` }, { kind: "fact", body: "Fact 0", confidence: "stated" })).result);
+    expect(again.receipt).toMatchObject({ memoryId: `mem:${main.id}:toolu_m0-${main.id}` });
+    const rows = await db.select().from(schema.coachMemory).where(and(eq(schema.coachMemory.userId, rich.userId), like(schema.coachMemory.body, "Fact %")));
+    expect(rows.filter((m) => (m.provenance as { runId?: string }).runId === main.id)).toHaveLength(5);
+  });
+});
+
+// ── propose_workout ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("propose_workout", () => {
+  it("main, for now: stores the draft as a doc_workout op of the run's one proposal — unreviewed, never pending", async () => {
+    const r = await run();
+    const c = ctxOf(r);
+    const { result } = await call("propose_workout", c, { doc: calmDoc({ title: "Hips and back" }), target: { kind: "new", date: TODAY, time: "17:30" }, changeNote: "First draft." });
+    const out = ok(result);
+    expect(out.data).toMatchObject({ stored: true, proposalId: designProposalId(r.id), review: null, note: "not reviewed yet" });
+    expect(out.receipt).toMatchObject({ proposalId: designProposalId(r.id), title: "Hips and back", date: TODAY });
+    expect(out.summary).toMatch(/^Draft — "Hips and back": \d+ min/);
+    const p = (await proposal(r.id))!;
+    expect(p).toMatchObject({ userId: rich.userId, status: "unreviewed", title: "Hips and back", expiresAt: TODAY });
+    expect(p.ops).toHaveLength(1);
+    const op = p.ops[0]!;
+    expect(op).toMatchObject({
+      kind: "doc_workout",
+      target: { kind: "new", date: TODAY, time: "17:30" },
+      date: TODAY,
+      time: "17:30",
+      changeNote: "First draft.",
+      review: null,
+      toolUseId: c.toolUseId,
+      by: { runId: r.id, role: "main" },
+    });
+    // The coach wrote it, whatever the draft said.
+    expect(op.doc.source).toEqual({ kind: "coach", ref: `run:${r.id}` });
+    expect(workoutDocSchema.safeParse(op.doc).success).toBe(true);
+    expect(op.derived).toMatchObject({ minutes: expect.any(Number), discipline: expect.any(String) });
+    expect(Array.isArray(op.issues)).toBe(true);
+  });
+
+  it("a second draft from the same run replaces its op (a revision round); a replayed call adds nothing and answers the same", async () => {
+    const r = await run();
+    const c = ctxOf(r);
+    const first = ok((await call("propose_workout", c, { doc: calmDoc({ title: "One" }), target: { kind: "new", date: TODAY } })).result);
+    const replay = ok((await call("propose_workout", c, { doc: calmDoc({ title: "One" }), target: { kind: "new", date: TODAY } })).result);
+    expect(replay.data).toEqual(first.data);
+    expect((await proposal(r.id))!.ops).toHaveLength(1);
+    const { result, writes } = await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "Two" }), target: { kind: "new", date: TODAY }, changeNote: "Swapped the order." });
+    expect(ok(result).data).toMatchObject({ stored: true, replaced: true });
+    expect(writes).toHaveLength(1);
+    const p = (await proposal(r.id))!;
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Two"]);
+    expect(p.title).toBe("Two");
+  });
+
+  it("revises a Studio workout at its current revision; the copy get_workout returned (marked) is accepted as its text", async () => {
+    const r = await run();
+    const marked = markedDoc(studioDoc({ title: "Strong hips, easy back" }));
+    const out = ok((await call("propose_workout", ctxOf(r), { doc: marked, target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result);
+    expect(out.data).toMatchObject({ stored: true });
+    const op = (await proposal(r.id))!.ops[0]!;
+    expect(op).toMatchObject({ target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 }, date: TODAY, time: "18:00" });
+    expect(op.doc.title).toBe("Strong hips, easy back");
+    expect(JSON.stringify(op.doc)).not.toContain("untrusted");
+  });
+
+  describe("refuses, teachably", () => {
+    const refused = async (r: Awaited<ReturnType<typeof run>>, input: unknown) => {
+      const { result, writes } = await call("propose_workout", ctxOf(r), input);
+      expect(writes).toEqual([]);
+      return err(result);
+    };
+
+    it("main for a week or the next few (designers propose those); the reviewer never", async () => {
+      const week = await run({ scope: { kind: "week" } });
+      const e = await refused(week, { doc: calmDoc(), target: { kind: "new", date: TODAY } });
+      expect(e.error).toBe("not_for_scope");
+      expect(e.fix).toMatch(/plan_set/);
+      expect((await refused(await run({ scope: { kind: "next_n", n: 3 } }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).error).toBe("not_for_scope");
+      expect(tool("propose_workout").roles).toEqual(["main", "designer"]);
+    });
+
+    it("a day gone, in the athlete's own zone — a new workout's, or a revised one's still left to do", async () => {
+      const r = await run();
+      const e = await refused(r, { doc: calmDoc(), target: { kind: "new", date: day(1) } });
+      expect(e.error).toBe("past_date");
+      expect(e.why).toContain(TODAY);
+      const missed = newId();
+      await db.insert(schema.plannedWorkouts).values({
+        id: missed, userId: rich.userId, planId: `studio-${rich.userId}`, sourceWorkoutId: missed, title: "Left to do", category: "strength", sport: "strength",
+        originalPlanDate: day(2), lastVerifiedCorosDate: day(2), effectiveDate: day(2), effectiveTime: "12:00", sourceContentFingerprint: "studio",
+        calendarBlockDurationSeconds: 1800, completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(studioDoc()),
+        workoutDocRev: 1, createdAt: at(day(3)), updatedAt: at(day(3)),
+      });
+      const gone = await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: missed, baseRev: 1 } });
+      expect(gone.error).toBe("past_date");
+      expect(gone.why).toContain(day(2));
+    });
+
+    it("a stale base revision, saying the current one", async () => {
+      const e = await refused(await run(), { doc: studioDoc(), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 1 } });
+      expect(e.error).toBe("stale_base");
+      expect(e.why).toMatch(/revision 2/);
+      expect(e.fix).toMatch(/get_workout/);
+    });
+
+    it("a programme's session, a resolved workout, one under way, an archived or unknown one", async () => {
+      const r = await run();
+      const programme = await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: rich.outlineToday, baseRev: 0 } });
+      expect(programme.error).toBe("not_editable");
+      expect(programme.why).toMatch(/programme/);
+      const done = await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: rich.pastDocId, baseRev: 1 } });
+      expect(done.error).toBe("not_editable");
+      expect(done.why).toMatch(/completed/);
+      const underWay = newId();
+      await db.insert(schema.plannedWorkouts).values({
+        id: underWay, userId: rich.userId, planId: `studio-${rich.userId}`, sourceWorkoutId: underWay, title: "Under way", category: "strength", sport: "strength",
+        originalPlanDate: TODAY, lastVerifiedCorosDate: TODAY, effectiveDate: TODAY, effectiveTime: "12:00", sourceContentFingerprint: "studio",
+        calendarBlockDurationSeconds: 1800,
+        completionState: "scheduled", origin: "studio", contentState: "started", workoutDoc: JSON.stringify(studioDoc()), workoutDocRev: 1,
+        createdAt: at(day(1)), updatedAt: at(day(1)),
+      });
+      expect((await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: underWay, baseRev: 1 } })).why).toMatch(/under way/);
+      expect((await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: rich.archivedDocId, baseRev: 1 } })).error).toBe("not_found");
+      expect((await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: "no-such", baseRev: 1 } })).error).toBe("not_found");
+      // Another athlete's workout is not found either.
+      expect((await refused(await run({ userId: high.userId }), { doc: studioDoc(), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).error).toBe("not_found");
+    });
+
+    it("an unknown exercise, with the validator's fix", async () => {
+      const e = await refused(await run(), { doc: docOf([item("gobletSquatt")]), target: { kind: "new", date: TODAY } });
+      expect(e.error).toBe("invalid_workout");
+      expect(e.why).toContain("parts[0].items[0].libraryId");
+      expect(e.why).toContain("gobletSquat");
+    });
+
+    it("a move the day closes, even inside a revision with an alternate the day allows: swap it in this revision", async () => {
+      const r = await run({ userId: high.userId });
+      const e = await refused(r, { doc: landingsDoc(), target: { kind: "revise", workoutId: high.todayDocId, baseRev: 2 } });
+      expect(e.error).toBe("invalid_workout");
+      expect(e.why).toContain("parts[0].items[0].libraryId");
+      expect(e.fix).toMatch(/swap/i);
+      expect(await proposal(r.id)).toBeUndefined();
+    });
+
+    it("a run document (the app can't play one yet), a malformed one, an unknown field", async () => {
+      const r = await run();
+      const runDoc = docOf([{ kind: "run", target: { durationSec: 1800 }, effort: "easy" }], { parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: 1800 }, effort: "easy" }] }] });
+      expect((await refused(r, { doc: runDoc, target: { kind: "new", date: TODAY } })).error).toBe("run_unsupported");
+      expect((await refused(r, { doc: { title: "x" }, target: { kind: "new", date: TODAY } })).error).toBe("invalid_workout");
+      // A review is never the designer's to write (an instruction to "mark it reviewed" has no field to land in).
+      const e = await refused(r, { doc: calmDoc(), target: { kind: "new", date: TODAY }, review: { scores: { intent: 5 } } });
+      expect(e.error).toBe("invalid_input");
+      expect(e.why).toContain('"review"');
+      expect((await refused(r, { doc: calmDoc(), target: { kind: "new", date: TODAY, time: "25:00" } })).error).toBe("invalid_input");
+    });
+  });
+
+  it("a designer appends to its main run's proposal; a revise another run already proposes is refused", async () => {
+    const main = await run({ scope: { kind: "week" } });
+    const one = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const two = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    ok((await call("propose_workout", ctxOf(one), { doc: calmDoc({ title: "Monday" }), target: { kind: "new", date: day(-1) } })).result);
+    ok((await call("propose_workout", ctxOf(two), { doc: calmDoc({ title: "Wednesday" }), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result);
+    const p = (await proposal(main.id))!;
+    expect(p.ops.map((o) => [o.doc.title, o.by.runId])).toEqual([
+      ["Monday", one.id],
+      ["Wednesday", two.id],
+    ]);
+    expect(p.title).toBe("2 workouts");
+    expect(p.expiresAt).toBe(day(-1));
+    const taken = err((await call("propose_workout", ctxOf(one), { doc: studioDoc(), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result);
+    expect(taken.error).toBe("target_taken");
+  });
+
+  it("refuses into a proposal the athlete already settled, and during a restore; a write that raced another is refused, nothing lost", async () => {
+    const r = await run();
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    await db.update(schema.coachProposals).set({ status: "approved" }).where(eq(schema.coachProposals.id, designProposalId(r.id)));
+    expect(err((await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "Later" }), target: { kind: "new", date: TODAY } })).result).error).toBe("proposal_closed");
+    expect((await proposal(r.id))!.ops.map((o) => o.doc.title)).toEqual(["Hips and back"]);
+
+    const restoring = await seedRichAthlete(db);
+    await db.insert(schema.accountState).values({ userId: restoring.userId, restoreId: "restore-1", updatedAt: NOW.toISOString() });
+    const rr = await run({ userId: restoring.userId });
+    expect(err((await call("propose_workout", ctxOf(rr), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result).error).toBe("restoring");
+    expect(await proposal(rr.id)).toBeUndefined();
+
+    // Another designer's draft lands between this call's read and its write (here, while it is reviewed).
+    const main = await run({ scope: { kind: "week" } });
+    const one = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const two = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const racing = ctxOf(one, {
+      reviewDraft: async () => {
+        await tool("propose_workout").run(ctxOf(two), { doc: calmDoc({ title: "Two's" }), target: { kind: "new", date: day(-2) } });
+        return null;
+      },
+    });
+    const lost = err((await tool("propose_workout").run(racing, { doc: calmDoc({ title: "One's" }), target: { kind: "new", date: day(-1) } })));
+    expect(lost.error).toBe("proposal_changed");
+    expect((await proposal(main.id))!.ops.map((o) => o.doc.title)).toEqual(["Two's"]);
+  });
+
+  it("a reviewer that fails leaves the draft stored, unreviewed", async () => {
+    const r = await run();
+    const out = ok((await call("propose_workout", ctxOf(r, { reviewDraft: async () => { throw new Error("reviewer down"); } }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect(out.data).toMatchObject({ stored: true, review: null, note: "not reviewed yet" });
+    expect((await proposal(r.id))!.status).toBe("unreviewed");
+  });
+
+  it("a rehearsal run's proposal is stored as a rehearsal", async () => {
+    const r = await run({ rehearsal: true });
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect((await proposal(r.id))!.status).toBe("rehearsal");
+  });
+
+  it("with a reviewer wired in, the draft is reviewed before it is stored, and the review is its result", async () => {
+    const r = await run();
+    const review: DesignReview = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: ["Add a cue."] };
+    const seen: unknown[] = [];
+    const c = ctxOf(r, {
+      reviewDraft: async (_ctx, draft) => {
+        seen.push(draft);
+        return review;
+      },
+    });
+    const out = ok((await call("propose_workout", c, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ proposalId: designProposalId(r.id), date: TODAY, doc: { title: "Reviewed" }, target: { kind: "new", date: TODAY } });
+    expect(out.data).toMatchObject({ stored: true, review });
+    expect((out.data as Record<string, unknown>).note).toBeUndefined();
+    const p = (await proposal(r.id))!;
+    expect(p.ops[0]!.review).toEqual(review);
+    // No reviewer's verdict to be had: stored, unreviewed.
+    const r2 = await run();
+    const none = ok((await call("propose_workout", ctxOf(r2, { reviewDraft: async () => null }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect(none.data).toMatchObject({ review: null, note: "not reviewed yet" });
+    expect((await proposal(r2.id))!.status).toBe("unreviewed");
+  });
+});
+
+// ── finish ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("finish", () => {
+  it("ends with one plain line; with an unreviewed proposal it names it and says it is kept back", async () => {
+    expect(tool("finish").control).toBe("finish");
+    const r = await run();
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    const out = ok((await call("finish", ctxOf(r), { summary: "A calm half hour for the hips, before tonight's run." })).result);
+    expect(out.data).toMatchObject({ proposalId: designProposalId(r.id), unreviewed: true });
+    expect(out.summary).toBe("A calm half hour for the hips, before tonight's run. (Not reviewed yet — kept back until it is.)");
+    expect(out.receipt).toMatchObject({ final: true, proposal: { id: designProposalId(r.id), status: "unreviewed", workouts: 1 } });
+    expect((await proposal(r.id))!.status).toBe("unreviewed");
+  });
+
+  it("without a proposal: the line alone; a designer names its main run's proposal only when it added to it", async () => {
+    const r = await run();
+    const out = ok((await call("finish", ctxOf(r), { summary: "Rest is the right call today." })).result);
+    expect(out.data).toEqual({});
+    expect(out.summary).toBe("Rest is the right call today.");
+    const main = await run({ scope: { kind: "week" } });
+    const designer = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const sibling = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    ok((await call("propose_workout", ctxOf(sibling), { doc: calmDoc({ title: "Sibling's" }), target: { kind: "new", date: day(-2) } })).result);
+    expect(ok((await call("finish", ctxOf(designer), { summary: "Couldn't fit it." })).result).data).toEqual({});
+    ok((await call("propose_workout", ctxOf(designer), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect(ok((await call("finish", ctxOf(designer), { summary: "Done." })).result).data).toMatchObject({ proposalId: designProposalId(main.id) });
+  });
+
+  it("refuses an empty or long line", async () => {
+    const r = await run();
+    expect(err((await call("finish", ctxOf(r), { summary: "  " })).result).error).toBe("invalid_input");
+    expect(err((await call("finish", ctxOf(r), { summary: "x".repeat(301) })).result).error).toBe("invalid_input");
+    expect(tool("finish").roles).toEqual(["main", "designer"]);
+  });
+});

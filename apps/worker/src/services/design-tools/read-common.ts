@@ -31,7 +31,7 @@ import { z } from "zod";
 import { conditionChecks, userConditions, userPreferences } from "@rg/database";
 import { addDays, daysBetween, isLocalDate, isoWeekday, todayInZone, userPreferencesSchema, weightInUnit, type UserPreferences, type WeightUnit } from "@rg/domain";
 import { isProfileId, profileById, UNANSWERED, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
-import { latestReading } from "../condition-views.js";
+import { readingsOfDay } from "../condition-views.js";
 import type { Db } from "../db.js";
 import type { ToolErr, ToolOk, ToolRole } from "./types.js";
 
@@ -314,8 +314,9 @@ export async function readAthlete(
       : [];
   });
   const readings: Athlete["readings"] = {};
+  const day = readingsOfDay(checks, active);
   for (const id of active) {
-    const latest = latestReading(checks.filter((c) => c.profileId === id));
+    const latest = day.get(id);
     readings[id] = latest ? { pre: latest.value, post: null, feelingOff: latest.feelingOff, at: latest.at } : { ...UNANSWERED, at: null };
   }
   const extra: Record<string, unknown> = {};

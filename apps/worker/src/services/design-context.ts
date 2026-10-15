@@ -41,7 +41,7 @@ import { EFFORT_LEVELS, addDays, daysBetween, isoWeekday, todayInZone, type Prof
 import { EQUIPMENT, profileById, type DescribedRule, type EquipmentId, type FormatId } from "@rg/exercise-library";
 import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
 import type { Env } from "../env.js";
-import { latestReading } from "./condition-views.js";
+import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
 import { liveMemoryWhere, memoryCore } from "./memory-core.js";
 import { SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
@@ -443,9 +443,10 @@ function conditionsSection(r: Reads): string[] {
   const out = [
     `Conditions on: ${r.activeProfiles.map((id) => profileById(id).label).join(", ")}. Each profile's lines below are generated from the profile itself. validate_workout refuses what a line marks refused and shows what it marks a cost; the guide lines are how the app's own sessions dose — no tool checks them, so apply them yourself from read_history. A workout's mode is its effort's: ${modes}. A part's format meets the profile's format caps as the validator reads it: ${formats}; every other format as itself. A rule that reads the check uses today's answer; on a later day the check isn't known yet, so a move such a rule could close needs an alternate that passes in recovery mode.`,
   ];
+  const day = readingsOfDay(r.checks, r.activeProfiles);
   for (const id of r.activeProfiles) {
     const p = profileById(id);
-    const latest = latestReading(r.checks.filter((c) => c.profileId === id));
+    const latest = day.get(id);
     const reading = latest
       ? `${[latest.value !== null ? String(latest.value) : null, latest.feelingOff ? "feeling off" : null].filter(Boolean).join(", ")} at ${localTime(r.tz, new Date(latest.at))}`
       : "none today — unanswered, so a rule that needs an answered check stays closed";

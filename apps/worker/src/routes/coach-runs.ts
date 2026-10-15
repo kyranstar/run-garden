@@ -13,6 +13,9 @@
  *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order)
  *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting)
  *   POST /:id/cancel        → { run }
+ *   POST /:id/undo-answer   { handle } → { undone }       (what record_answer kept from the request, taken back; the
+ *                           handle is the call's receipt's, and names this run: another run's is 400, one already taken
+ *                           back 404)
  */
 import { Hono } from "hono";
 import type { AppContext } from "../auth/middleware.js";
@@ -26,10 +29,12 @@ import {
   createRun,
   defaultRunDeps,
   getRun,
+  noteOnTrail,
   parseRunScope,
   runStep,
   type RunDeps,
 } from "../services/coach-runs.js";
+import { handleRunId, undoRecordedAnswers } from "../services/design-tools/record-answer.js";
 
 /** The routes, over `deps` (the model, the opening context, the tools); tests pass scripted ones. */
 export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<AppContext> {
@@ -107,6 +112,16 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   routes.post("/:id/cancel", async (c) => {
     const cancelled = await cancelRun(c.get("db"), c.get("userId"), c.req.param("id"), new Date());
     return cancelled ? c.json(cancelled) : c.json({ error: "not_found" }, 404);
+  });
+
+  routes.post("/:id/undo-answer", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { handle?: unknown } | null;
+    const handle = body?.handle;
+    if (typeof handle !== "string" || handle.length > 300 || handleRunId(handle) !== c.req.param("id")) return c.json({ error: "bad_handle" }, 400);
+    const undone = await undoRecordedAnswers(c.get("db"), c.get("userId"), handle);
+    if (!undone) return c.json({ error: "not_found" }, 404);
+    await noteOnTrail(c.get("db"), c.get("userId"), c.req.param("id"), `Taken back: ${undone.line}`, { undo: { handle, count: undone.count } }, new Date());
+    return c.json({ undone: undone.count });
   });
 
   return routes;

@@ -1,3 +1,5 @@
+import type { WorkoutDoc } from "@rg/domain";
+import type { DocIssue } from "@rg/workout";
 import type { Env } from "../../env.js";
 import type { Db } from "../db.js";
 
@@ -41,6 +43,14 @@ export interface ToolContext {
     rehearsal: boolean;
   };
   now: Date;
+  /**
+   * The model's id for this call (`tool_use.id`), set by the loop. A step that died after a tool wrote and before
+   * the state was stored replays the call with the same id, so a tool that writes keys its write on it and answers
+   * a replay with what the first call stored (propose_workout, record_answer, remember). Absent outside the loop.
+   */
+  toolUseId?: string;
+  /** The independent review of a draft (spec §5; Task 6 fills it): propose_workout calls it before it stores. */
+  reviewDraft?: ReviewDraft;
 }
 
 export interface ToolOk {
@@ -52,7 +62,39 @@ export interface ToolOk {
   /** One plain line for the run view ("Checked recent work — legs last trained 5 days ago"). The loop writes a
    * generic line when a tool gives none. Never shown to the model. */
   summary?: string;
+  /**
+   * What the run view needs of this call beyond its line — an undo handle, the proposal a draft went into, a
+   * memory's id. The loop puts it in the call's event payload. Never shown to the model. Small, bounded JSON.
+   */
+  receipt?: Record<string, unknown>;
 }
+
+// ── Review (spec §5): the seam Task 6 fills ─────────────────────────────────────────────────────────────────────────
+
+/** An independent review of a draft: a 1–5 score and a one-line note per dimension (design-prompt.ts
+ * `REVIEW_DIMENSIONS`), the must-fix items and the improvements. */
+export interface DesignReview {
+  scores: Record<string, number>;
+  notes: Record<string, string>;
+  mustFix: string[];
+  improvements: string[];
+}
+
+/** What propose_workout hands the reviewer: the draft as it would be stored, before it is. */
+export interface DraftForReview {
+  proposalId: string;
+  target: { kind: "new"; date: string; time?: string } | { kind: "revise"; workoutId: string; baseRev: number };
+  date: string;
+  /** The validated document. */
+  doc: WorkoutDoc;
+  /** The validator's advisory issues (errors never reach review: they refuse the draft). */
+  issues: DocIssue[];
+  derived: Record<string, unknown>;
+  changeNote?: string;
+}
+
+/** Reviews a draft; null when no review could be had (the draft is then stored unreviewed). */
+export type ReviewDraft = (ctx: ToolContext, draft: DraftForReview) => Promise<DesignReview | null>;
 
 /** A teachable error: the model sees all three and can correct itself. */
 export interface ToolErr {

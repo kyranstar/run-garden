@@ -41,6 +41,24 @@ export function latestReading<R extends { id: string; at: string; value: number 
     .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
 }
 
+/**
+ * THE COACH DESIGNER'S READING OF A DAY: per switched-on profile, `latestReading` over that profile's rows — which must
+ * be the day's daily and pre checks, nothing else. One function, so the opening context's header (design-context.ts),
+ * the read tools' athlete (`readAthlete`) and the validator's day for `validate_workout` / `propose_workout` can never
+ * read the day two ways. A profile with no answer today is absent.
+ */
+export function readingsOfDay<R extends { id: string; profileId: string; at: string; value: number | null; feelingOff: boolean }>(
+  rows: readonly R[],
+  profileIds: readonly string[],
+): Map<string, R> {
+  const out = new Map<string, R>();
+  for (const id of profileIds) {
+    const latest = latestReading(rows.filter((r) => r.profileId === id));
+    if (latest) out.set(id, latest);
+  }
+  return out;
+}
+
 export function conditionView(profileId: string): ConditionView {
   const p = profileById(profileId);
   return {
