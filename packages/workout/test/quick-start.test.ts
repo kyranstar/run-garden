@@ -77,6 +77,28 @@ describe("what each one holds", () => {
     }
   });
 
+  it("condition care: done seated or standing (the release is always doable at a desk), and its care part holds at least two moves for the condition's own area (CUJ re-walk)", () => {
+    const own = Object.keys(TMJ.care!.coverageTargets.regions ?? {});
+    expect(own).toEqual(["jaw"]);
+    for (const [name, day] of Object.entries(DAYS)) {
+      for (const seed of SEEDS) {
+        const doc = make("condition_care", seed, { day });
+        for (const id of itemIds(doc)) expect(["seated", "standing"], `${name} ${seed}: ${id}`).toContain(rec(id).position);
+        const care = doc.parts.find((p) => p.purpose === "care")!;
+        const forTheJaw = care.items.filter((i) => i.kind === "exercise" && rec(i.libraryId).regions.some((g) => own.includes(g)));
+        expect(forTheJaw.length, `${name} ${seed}`).toBeGreaterThanOrEqual(2);
+      }
+    }
+  });
+
+  it("condition care: a lying-down move only when the seated and standing ones fall short of the length", () => {
+    // With every seated or standing care move set aside, the lying ones fill it.
+    const atDesk = EXERCISES.filter((r) => r.purposes.includes("condition-care") && (r.position === "seated" || r.position === "standing")).map((r) => r.id);
+    const doc = make("condition_care", 1, { excluded: atDesk });
+    expect(itemIds(doc).length).toBeGreaterThan(0);
+    for (const id of itemIds(doc)) expect(["seated", "standing"]).not.toContain(rec(id).position);
+  });
+
   it("desk reset: desk-relief and posture moves — even when every one of them was done recently", () => {
     const deskMoves = EXERCISES.filter((e) => e.tags.includes("desk-relief") || e.tags.includes("posture")).map((e) => e.id);
     for (const recentIds of [[], deskMoves]) {

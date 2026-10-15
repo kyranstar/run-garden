@@ -9,8 +9,10 @@
  *   active profile that has care content (`quickStartKinds` leaves it out then), or nothing in the library fits.
  * - Condition care: recovery mode. Its moves have the condition-care purpose: the profiles' care moves
  *   (`careProfileOf`, through the profile contract — this file never names a profile) first, in the block's format,
- *   then the passive ones to let go. Titled by the profile's care block ("… care"; with several profiles,
- *   "Condition care").
+ *   then the passive ones to let go. Done seated or standing, so it is always doable at a desk: a move in another
+ *   position (lying down) only when those fall short of the length. Its care part takes first the best two moves that
+ *   work the profiles' own area (their care coverage regions), when the library has them. Titled by the profile's care
+ *   block ("… care"; with several profiles, "Condition care").
  * - Desk reset: desk-relief and posture moves done standing or seated (at the desk); a move in another position only
  *   when those fall short of the length. Hip opener: hip-opening moves (weight 3) and moves for the athlete's focus
  *   areas that serve mobility (weight 1; `focusMet`), the moves only for a focus area at most a third of the items.
@@ -93,6 +95,8 @@ interface Slot {
   /** How the summary says this part. */
   phrase: string;
   take: (rec: ExerciseRecord) => Take | null;
+  /** Moves this part takes first, best first, before the parts are filled in turn (`count` of those `test` keeps). */
+  first?: { count: number; test: (rec: ExerciseRecord) => boolean };
 }
 
 interface Plan {
@@ -145,6 +149,8 @@ function planFor(kind: QuickStartKind, mode: Mode, ctx: SuggestCtx): Plan | null
     const name = carers.length === 1 ? carers[0]!.care!.block.label : label("condition-care");
     const care = (rec: ExerciseRecord): boolean => rec.purposes.includes("condition-care");
     const careRegions = [...new Set(carers.flatMap((p) => Object.keys(p.care!.coverageTargets.regions ?? {})))].filter((g) => REGION_SET.has(g));
+    /** Not seated or standing: only when the moves done at a desk fall short of the length. */
+    const away = (rec: ExerciseRecord): boolean => !AT_THE_DESK.has(rec.position);
     return {
       title: name,
       lead: name,
@@ -158,15 +164,17 @@ function planFor(kind: QuickStartKind, mode: Mode, ctx: SuggestCtx): Plan | null
           phrase: "gentle moves first",
           take: (rec) => {
             const p = care(rec) && !passiveOnly(rec) ? careProfileOf(rec, carers) : undefined;
-            return p ? { fit: 1, why: `part of your ${p.care!.block.label.toLowerCase()}` } : null;
+            return p ? { fit: 1, why: `part of your ${p.care!.block.label.toLowerCase()}`, fallback: away(rec) } : null;
           },
+          // The condition's own area, twice, whenever the library has the moves.
+          first: { count: 2, test: (rec) => rec.regions.some((g) => careRegions.includes(g)) },
         },
         {
           purpose: "cooldown",
           format: formatFor(mode, ["holds"]),
           why: "Then let everything soften.",
           phrase: "then let everything soften",
-          take: (rec) => (care(rec) && passiveOnly(rec) ? { fit: 1, why: "lets everything soften" } : null),
+          take: (rec) => (care(rec) && passiveOnly(rec) ? { fit: 1, why: "lets everything soften", fallback: away(rec) } : null),
         },
       ],
     };
@@ -290,10 +298,13 @@ function build(kind: QuickStartKind, effort: Effort, library: readonly ExerciseR
   let count = 0;
   let focusOnly = 0;
 
-  /** Adds the best move of slot `k` in this phase that keeps the workout within its length + OVER; false when none. */
-  const addTo = (k: number, fallback: boolean): boolean => {
+  /**
+   * Adds the best move of slot `k` in this phase (of those `only` keeps) that keeps the workout within its length + OVER;
+   * false when none.
+   */
+  const addTo = (k: number, fallback: boolean, only: (rec: ExerciseRecord) => boolean = () => true): boolean => {
     for (const c of pools[k]!) {
-      if (used.has(c) || Boolean(c.fallback) !== fallback) continue;
+      if (used.has(c) || Boolean(c.fallback) !== fallback || !only(c.rec)) continue;
       if (families.has(c.rec.family)) {
         used.add(c);
         continue;
@@ -314,7 +325,14 @@ function build(kind: QuickStartKind, effort: Effort, library: readonly ExerciseR
 
   for (const fallback of [false, true]) {
     if (fallback && minutes() >= target) break;
-    if (!fallback) for (let k = 0; k < plan.slots.length; k++) addTo(k, false);
+    if (!fallback) {
+      // A part's first moves (condition care: its own area's — done at a desk, else as the library has them), then one
+      // move for each part that has none yet.
+      plan.slots.forEach((slot, k) => {
+        for (let n = 0; n < (slot.first?.count ?? 0); n++) if (!addTo(k, false, slot.first!.test) && !addTo(k, true, slot.first!.test)) break;
+      });
+      for (let k = 0; k < plan.slots.length; k++) if (items[k]!.length === 0) addTo(k, false);
+    }
     const open = new Set(plan.slots.map((_, k) => k));
     while (open.size && minutes() < target) {
       for (const k of [...open]) {
