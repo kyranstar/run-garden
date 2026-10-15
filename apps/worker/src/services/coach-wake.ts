@@ -53,6 +53,7 @@ import {
   type CoachTriggerKind,
 } from "./coach-triggers.js";
 import { claimUserLock, releaseUserLock, touchUserLock } from "./locks.js";
+import { coachOpsOf } from "./proposal-kinds.js";
 import { disciplineOf } from "@rg/analytics";
 
 /**
@@ -1658,7 +1659,8 @@ export async function wake(
         ]),
       ];
 
-      // Supersede: at most one live proposal per affected day.
+      // Supersede: at most one live proposal per affected day. A designed workout's proposal (Stage 3) is never
+      // superseded from the thread: the athlete asked for it in the Studio, and settles it there — its ops are skipped.
       const affected = new Set(p.ops.flatMap((op) => opAffectedDates(op, workoutDates)));
       const live = await db
         .select()
@@ -1666,7 +1668,7 @@ export async function wake(
         .where(and(eq(coachProposals.userId, userId), eq(coachProposals.status, "pending")));
       const id = newId();
       for (const old of live) {
-        const oldAffected = (old.ops as CoachOp[]).flatMap((op) => opAffectedDates(op, workoutDates));
+        const oldAffected = coachOpsOf(old.ops).flatMap((op) => opAffectedDates(op, workoutDates));
         if (oldAffected.some((d) => affected.has(d))) {
           await db
             .update(coachProposals)

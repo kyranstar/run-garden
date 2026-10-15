@@ -52,6 +52,7 @@ import {
 } from "../services/coach-wake.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
+import { hasDocWorkout } from "../services/proposal-kinds.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 
 /**
@@ -99,7 +100,8 @@ export async function sweepStaleQuestions(db: Db, userId: string, now: string): 
   return stale.length;
 }
 
-/** Expire pending proposals whose day passed or TTL lapsed (spec §3). */
+/** Expire pending proposals whose day passed or TTL lapsed (spec §3) — and a design's proposal still unreviewed
+ * (Stage 3 Task 6), silently: the athlete never saw it, so there is nothing to say. */
 export async function sweepExpiredProposals(db: Db, userId: string, today: string): Promise<number> {
   const stale = await db
     .select()
@@ -107,7 +109,7 @@ export async function sweepExpiredProposals(db: Db, userId: string, today: strin
     .where(
       and(
         eq(coachProposals.userId, userId),
-        eq(coachProposals.status, "pending"),
+        inArray(coachProposals.status, ["pending", "unreviewed"]),
         lt(coachProposals.expiresAt, today),
       ),
     );
@@ -116,8 +118,8 @@ export async function sweepExpiredProposals(db: Db, userId: string, today: strin
     await db
       .update(coachProposals)
       .set({ status: "expired", resolvedAt: now })
-      .where(eq(coachProposals.id, p.id));
-    await receipt(db, userId, `Expired — the moment passed: ${p.title}`, p.id);
+      .where(and(eq(coachProposals.id, p.id), eq(coachProposals.status, p.status)));
+    if (p.status === "pending") await receipt(db, userId, `Expired — the moment passed: ${p.title}`, p.id);
   }
   return stale.length;
 }
@@ -244,10 +246,12 @@ coachRoutes.get("/state", async (c) => {
   const outOfCredits = await loadOutOfCredits(db, userId);
   const coachThinking = lockFresh || (pendingReply && !outOfCredits);
 
+  // A designed workout's proposal (Stage 3) is approved on its own surface, never as a thread card: both lists leave it
+  // out, so nothing here ever renders a `doc_workout` op.
   return c.json({
     messages: [...msgs].reverse(),
-    pendingProposals: pending,
-    settledProposals: settled,
+    pendingProposals: pending.filter((p) => !hasDocWorkout(p.ops)),
+    settledProposals: settled.filter((p) => !hasDocWorkout(p.ops)),
     openQuestion: openQuestion ?? null,
     memoryCount: memoryRows.length,
     lastCoachAt: lastCoach?.at ?? null,
@@ -428,6 +432,8 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
+  // A designed workout's proposal is approved through the Studio's create path (Stage 3 Task 8), never as CoachOps.
+  if (hasDocWorkout(p.ops)) return c.json({ error: "not_yet" }, 409);
 
   const prefs = await loadPreferences(db, userId);
   // A PROPOSAL WHOSE MOMENT HAS PASSED IS NOT APPROVABLE, whether or not a
@@ -513,6 +519,8 @@ coachRoutes.post("/proposals/:id/decline", async (c) => {
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
+  // Declined on its own surface too (Stage 3 Task 8), with what the coach learns from it.
+  if (hasDocWorkout(p.ops)) return c.json({ error: "not_yet" }, 409);
   await db
     .update(coachProposals)
     .set({ status: "declined", resolvedAt: nowInstant() })

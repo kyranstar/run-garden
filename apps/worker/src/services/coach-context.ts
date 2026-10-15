@@ -51,6 +51,7 @@ import { findRaceConflict } from "./race-conflict.js";
 import { buildRaceHub } from "./race-hub.js";
 import { buildReadiness } from "./readiness.js";
 import { plannedRowColumns } from "./planned-columns.js";
+import { docWorkoutDates, hasDocWorkout } from "./proposal-kinds.js";
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
@@ -1025,7 +1026,12 @@ export async function buildDossier(
   push("OPEN ITEMS", [
     `sanctioned rest used ${Math.min(sanctionedThisWeek, 1)} of 1 this rolling week (${sanctionedThisWeek} total sanctioned skips in window)`,
     ...(pendingProps.length
-      ? pendingProps.map((p) => `pending proposal [${p.id}]: ${p.title} (${p.evidence})`)
+      ? pendingProps.map((p) =>
+          // A designed workout's proposal (Stage 3) is the athlete's to settle in the Studio: named, never acted on.
+          hasDocWorkout(p.ops)
+            ? `pending proposal [${p.id}]: ${p.title} (a designed workout for ${docWorkoutDates(p.ops).join(", ") || "a day to come"}, waiting for the athlete in the Studio)`
+            : `pending proposal [${p.id}]: ${p.title} (${p.evidence})`,
+        )
       : ["no pending proposals"]),
     ...openQs.map(
       (q) =>
