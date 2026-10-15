@@ -38,7 +38,7 @@ import {
   type WorkoutDto,
 } from "@rg/api-client";
 import { docOriginRow, doseText, type DoseStep, type DoseTarget } from "@rg/domain";
-import { label as vocab } from "@rg/exercise-library";
+import { EXERCISES, label as vocab } from "@rg/exercise-library";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconAlert, IconInfo, IconSwap, IconWatch } from "../icons.js";
@@ -921,6 +921,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   );
 }
 
+/** A move by name: the build's own, else the library's — the move a stand-in replaced is no longer in the build. */
+function moveName(build: NonNullable<SessionDto["build"]>, id: string): string {
+  return build.exercises[id]?.name ?? EXERCISES.find((r) => r.id === id)?.name ?? id;
+}
+
 /** What was built: the chips, the reason line, and the moves by block. */
 function BuiltSession({
   s,
@@ -980,7 +985,7 @@ function BuiltSession({
       {build.fromDoc?.swaps.length ? (
         <ul className="session-swaps" aria-label="Today's check changes this workout">
           {build.fromDoc.swaps.map((x) => (
-            <li key={x.path}>{`${build.exercises[x.from]?.name ?? x.from} → ${build.exercises[x.to]?.name ?? x.to}: ${x.reason}`}</li>
+            <li key={x.path}>{`${moveName(build, x.from)} → ${moveName(build, x.to)}: ${x.reason}`}</li>
           ))}
         </ul>
       ) : null}

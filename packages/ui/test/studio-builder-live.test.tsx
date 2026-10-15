@@ -1413,6 +1413,8 @@ describe("the place (CUJ R8)", () => {
     await click(chip(), "the chip");
     expect(choices().map((c) => c.textContent)).toEqual(["Home", "Gym", "No equipment"]);
     expect(choices().map((c) => c.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    // Seen as well as heard: a check beside the chosen place, and only there.
+    expect(choices().map((c) => !!c.querySelector(".stu-place-check svg"))).toEqual([true, false, false]);
     await click(choice("No equipment"), "No equipment");
     await until(() => text().includes("Goblet squat needs kettlebell or dumbbells, which this place doesn't have."), "the gear note");
     expect(chip()!.textContent).toContain("No equipment");

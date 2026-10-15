@@ -1605,6 +1605,12 @@ describe("a document workout in the sheet, CUJ wave", () => {
     expect(document.querySelector(".session-swaps")!.getAttribute("aria-label")).toBe("Today's check changes this workout");
   });
 
+  it("a move stood in for is named by the library when the build no longer holds it, never by its id (B3)", async () => {
+    mount(gatedOn({ swaps: [{ path: "parts[1].items[0]", from: "halfKneelingPress", to: "boxSquat", reason: "today's check" }] }), { w: docRow() });
+    await until(() => !!document.querySelector(".session-swaps li"), "the swap");
+    expect(document.querySelector(".session-swaps li")!.textContent).toMatch(/^Half-kneeling one-arm press → /);
+  });
+
   it("a Start the day's check refuses (409 gated) is said, never swallowed (B3)", async () => {
     const why = "Supported row isn't allowed with today's Knee / hip check at 7.";
     mount(docSession(), {

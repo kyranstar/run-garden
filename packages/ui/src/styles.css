@@ -9870,6 +9870,18 @@ a.stu-qs:hover {
   right: auto;
   left: 0;
 }
+/* The chosen place: a check beside it (seen, as aria-checked is heard); the others keep its room, so names align. */
+.stu-place-menu .stu-save-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.stu-place-check {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  color: var(--green);
+}
 .stu-place-name {
   color: var(--ink);
 }

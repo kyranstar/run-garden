@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { useEscapeKey } from "../../components.js";
-import { IconChevron } from "../../icons.js";
+import { IconCheck, IconChevron } from "../../icons.js";
 
 export interface PlaceChoice {
   /** The place's id; "none" for no equipment; undefined for the library's Home (no place saved). */
@@ -91,6 +91,9 @@ export function PlaceMenu({
                   onPick(c.id);
                 }}
               >
+                <span className="stu-place-check" aria-hidden="true">
+                  {c.id === chosen ? <IconCheck size={14} /> : null}
+                </span>
                 {c.name}
               </button>
             ))}
