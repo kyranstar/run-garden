@@ -91,6 +91,16 @@ describe("what each one holds", () => {
     }
   });
 
+  it("condition care: a lying-down move gives way to a seated one even when it is pinned and the rest were done recently", () => {
+    const lying = EXERCISES.filter((r) => r.purposes.includes("condition-care") && r.position !== "seated" && r.position !== "standing").map((r) => r.id);
+    expect(lying.length).toBeGreaterThan(0);
+    const others = EXERCISES.filter((r) => r.purposes.includes("condition-care") && !lying.includes(r.id)).map((r) => r.id);
+    for (const seed of SEEDS) {
+      const ids = itemIds(make("condition_care", seed, { pinned: lying, recentIds: others }));
+      for (const id of lying) expect(ids, `seed ${seed}`).not.toContain(id);
+    }
+  });
+
   it("condition care: a lying-down move only when the seated and standing ones fall short of the length", () => {
     // With every seated or standing care move set aside, the lying ones fill it.
     const atDesk = EXERCISES.filter((r) => r.purposes.includes("condition-care") && (r.position === "seated" || r.position === "standing")).map((r) => r.id);
