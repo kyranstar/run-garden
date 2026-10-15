@@ -16,7 +16,7 @@ import { allTools, READ_TOOLS } from "../src/services/design-tools/index.js";
 import { encodeCursor, MAX_TAGGED_TERMS, readAthlete, readTagged, RESULT_BUDGET_BYTES, type ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type DesignTool, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { TOOL_RESULT_MAX_BYTES } from "../src/services/coach-runs.js";
-import { at, day, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
+import { at, day, everyPage, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
@@ -191,21 +191,19 @@ describe("size", () => {
       read_proposals: { limit: 30 },
       recall_memory: { limit: 30 },
     };
+    const page = async (name: string, input: Record<string, unknown>, cursor: string | undefined) => {
+      const { result } = await measured(name, { ...input, ...(cursor ? { cursor } : {}) });
+      expect(isToolErr(result), name).toBe(false);
+      return result as ReadOk & { data: Record<string, unknown[]> };
+    };
+    const rowsOf = (r: ReadOk & { data: Record<string, unknown[]> }) => (Object.values(r.data).find(Array.isArray) as unknown[]).map((x) => JSON.stringify(x));
     for (const [name, input] of Object.entries(widest)) {
-      const seen: string[] = [];
-      let cursor: string | null | undefined;
-      let pages = 0;
-      do {
-        const { result } = await measured(name, { ...input, ...(cursor ? { cursor } : {}) });
-        expect(isToolErr(result), name).toBe(false);
-        const r = result as ReadOk & { data: Record<string, unknown[]> };
-        expect(bytesForModel(r), `${name} page ${pages}`).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
-        const list = Object.values(r.data).find(Array.isArray) as unknown[];
-        expect(list.length, name).toBeGreaterThan(0);
-        seen.push(...list.map((x) => JSON.stringify(x)));
-        cursor = r.nextCursor;
-        pages += 1;
-      } while (cursor && pages < 20);
+      const pages = await everyPage((cursor) => page(name, input, cursor));
+      pages.forEach((r, i) => {
+        expect(bytesForModel(r), `${name} page ${i}`).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+        expect(rowsOf(r).length, name).toBeGreaterThan(0);
+      });
+      const seen = pages.flatMap(rowsOf);
       // Every row once: trimming a page to the budget never drops one.
       expect(new Set(seen).size, name).toBe(seen.length);
       if (name === "read_history") {
@@ -214,15 +212,9 @@ describe("size", () => {
         expect((result as ReadOk & { data: { entries: unknown[] } }).data.entries.length).toBeLessThan(30);
         expect(typeof (result as ReadOk).nextCursor).toBe("string");
       }
-      const all: string[] = [];
-      let c: string | null | undefined;
-      do {
-        const { result } = await measured(name, { ...input, limit: 3, ...(c ? { cursor: c } : {}) });
-        const r = result as ReadOk & { data: Record<string, unknown[]> };
-        all.push(...(Object.values(r.data).find(Array.isArray) as unknown[]).map((x) => JSON.stringify(x)));
-        c = r.nextCursor;
-      } while (c);
-      expect(seen, name).toEqual(all);
+      // The same rows, in the same order, a few at a time (the whole library, ten at a time: well inside the page bound).
+      const small = await everyPage((cursor) => page(name, { ...input, limit: name === "search_library" ? 10 : 3 }, cursor));
+      expect(seen, name).toEqual(small.flatMap(rowsOf));
     }
   });
 });
@@ -264,21 +256,17 @@ describe("untrusted text", () => {
       ["get_workout", { id: planned }, "LONG-ref"],
     ];
     for (const [name, input, start] of checks) {
-      // A text this long starts a page of its own (a page holds what fits), so read on until it shows.
+      // A text this long starts a page of its own (a page holds what fits), so read every page.
+      const pages = await everyPage(async (cursor) => (await measured(name, { ...(input as object), ...(cursor ? { cursor } : {}) }, userId)).result as ReadOk);
       let found = 0;
-      let cursor: string | null | undefined;
-      let pages = 0;
-      do {
-        const { result } = await measured(name, { ...(input as object), ...(cursor ? { cursor } : {}) }, userId);
-        const { summary: _s, ...forModel } = result as ReadOk;
+      for (const r of pages) {
+        const { summary: _s, ...forModel } = r;
         const text = JSON.stringify(forModel);
         for (const m of text.matchAll(new RegExp(start, "g"))) {
           found += 1;
           expect(text.slice(m.index! - 26, m.index), name).toBe('{"untrusted":true,"text":"');
         }
-        cursor = (result as ReadOk).nextCursor;
-        pages += 1;
-      } while (cursor && pages < 5);
+      }
       expect(found, name).toBeGreaterThan(0);
     }
   });

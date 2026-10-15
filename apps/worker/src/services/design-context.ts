@@ -266,13 +266,7 @@ async function read(db: Db, userId: string, now: Date, horizonEnd: (today: strin
       .from(objectives)
       .where(and(eq(objectives.userId, userId), eq(objectives.status, "active")))
       .orderBy(asc(objectives.sort), asc(objectives.createdAt), asc(objectives.id)),
-    memoryCore(db, userId, today, {
-      id: coachMemory.id,
-      kind: coachMemory.kind,
-      body: coachMemory.body,
-      pinned: coachMemory.pinned,
-      confidence: coachMemory.confidence,
-    }),
+    memoryCore(db, userId, today),
     db
       .select({
         id: plannedWorkouts.id,

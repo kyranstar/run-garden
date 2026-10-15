@@ -17,6 +17,25 @@ export const TODAY = "2026-05-13";
 export const TZ = "America/Los_Angeles";
 export const OTHER_SENTINEL = "OTHER-SENTINEL";
 
+/** The most pages a test follows a list's cursor for: past it, the cursor is not advancing and the test fails. */
+export const MAX_PAGES = 50;
+
+/**
+ * Every page of a list, following `nextCursor` until there is none — and failing past MAX_PAGES, so a cursor that never
+ * advances (a broken page, or a mutant of one) fails the test instead of paging forever into an ever-growing array.
+ */
+export async function everyPage<P extends { nextCursor?: string | null }>(read: (cursor: string | undefined) => Promise<P>): Promise<P[]> {
+  const pages: P[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    if (pages.length >= MAX_PAGES) throw new Error(`still paging after ${MAX_PAGES} pages: the cursor does not advance`);
+    const page = await read(cursor);
+    pages.push(page);
+    if (!page.nextCursor) return pages;
+    cursor = page.nextCursor;
+  }
+}
+
 /** `n` days before today (negative: after). */
 export const day = (n: number): string => addDays(TODAY, -n);
 /** An instant on a local date in Los Angeles (PDT): `hhmm` local. */

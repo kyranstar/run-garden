@@ -14,8 +14,9 @@ import { buildDesignContext } from "../src/services/design-context.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
 import type { ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
+import { LIKE_WORDS_MAX, likeWordPatterns } from "../src/services/like-pattern.js";
 import { memoryCore } from "../src/services/memory-core.js";
-import { at, day, NOW, OTHER_SENTINEL, seedOtherAthlete, seedRichAthlete, TODAY } from "./design-read-fixture.js";
+import { at, day, everyPage, NOW, OTHER_SENTINEL, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
@@ -569,13 +570,8 @@ describe("search_library and get_exercise", () => {
     const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
     await db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: day(30), settings: {} });
     await db.insert(schema.conditionChecks).values({ id: newId(), userId, profileId: "tmj", kind: "daily", value: 9, localDate: TODAY, at: at(TODAY, "07:00") });
-    const moves: Array<{ id: string; fit: string; fitWhy: string }> = [];
-    let cursor: string | null | undefined;
-    do {
-      const page = await ok("search_library", { limit: 30, ...(cursor ? { cursor } : {}) }, { user: userId });
-      moves.push(...page.data.moves);
-      cursor = page.nextCursor;
-    } while (cursor);
+    const pages = await everyPage((cursor) => ok("search_library", { limit: 30, ...(cursor ? { cursor } : {}) }, { user: userId }));
+    const moves: Array<{ id: string; fit: string; fitWhy: string }> = pages.flatMap((page) => page.data.moves);
     expect(moves).toHaveLength(EXERCISES.length);
     const allowedInRecovery = (id: string) => {
       const ex = EXERCISES.find((e) => e.id === id)!;
@@ -686,7 +682,7 @@ describe("the pinned core and rehearsal memory (memory-core.ts)", () => {
     expect(all).toContain("Owns a kettlebell");
     expect(all).not.toContain("REHEARSAL-FACT");
     expect(ctx.header).toContain("- memory beyond the pinned core: 0");
-    expect((await memoryCore(db, userId, TODAY, { body: schema.coachMemory.body })).map((r) => r.body)).toEqual(["Owns a kettlebell"]);
+    expect((await memoryCore(db, userId, TODAY)).map((r) => r.body)).toEqual(["Owns a kettlebell"]);
     expect(JSON.stringify(await ok("recall_memory", { limit: 30 }, { user: userId }))).not.toContain("REHEARSAL-FACT");
   });
 
@@ -696,7 +692,7 @@ describe("the pinned core and rehearsal memory (memory-core.ts)", () => {
       await db.insert(schema.coachMemory).values({ id: newId(), userId, kind: "fact", body: `fact ${i}`, provenance: { source: "message", at: at(day(2)) }, learnedAt: at(day(2)) });
     }
     await db.insert(schema.coachMemory).values({ id: newId(), userId, kind: "note", body: "Newest, a note", provenance: { source: "message", at: at(day(0)) }, learnedAt: at(day(0)) });
-    const core = await memoryCore(db, userId, TODAY, { kind: schema.coachMemory.kind });
+    const core = await memoryCore(db, userId, TODAY);
     expect(core.map((r) => r.kind)).toEqual(Array(20).fill("fact"));
     const recalled = (await ok("recall_memory", { limit: 30 }, { user: userId })).data.memories.map((m: { body: { text: string } }) => m.body.text);
     expect(recalled).toEqual(["Newest, a note"]);
@@ -713,6 +709,110 @@ describe("settings that do not read", () => {
     expect(r.missing[0]).toBe("the athlete's settings do not read: timezone unknown — using UTC; units are the defaults");
     // UTC indeed: 16:30 there, so 7 h 30 min of the day left (not a default zone's guess).
     expect((await ok("read_day", {}, { user: broken.userId })).data.timeLeft).toBe("7 h 30 min");
+  });
+});
+
+describe("pages in SQL's own order (byte by byte, never by locale)", () => {
+  it("templates tied on everything but a mixed-case name: each once, at two a page", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    for (const name of ["abs day", "Core", "Back day"]) {
+      await db.insert(schema.workoutTemplates).values({ id: newId(), userId, name, doc: JSON.stringify(studioDoc()), createdAt: at(day(9)), updatedAt: at(day(9)) });
+    }
+    const pages = await everyPage((cursor) => ok("list_templates", { limit: 2, ...(cursor ? { cursor } : {}) }, { user: userId }));
+    expect(pages.flatMap((p) => p.data.templates.map((t: { name: { text: string } }) => t.name.text))).toEqual(["Back day", "Core", "abs day"]);
+  });
+
+  it("planned workouts at one date and time, and proposals made at one instant, with mixed-case ids: each once", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    for (const id of ["alpha", "Zed-1", "Beta"]) {
+      await db.insert(schema.plannedWorkouts).values({
+        id, userId, planId: "coros-plan", sourceWorkoutId: id, title: id, category: "easy", originalPlanDate: day(-1), lastVerifiedCorosDate: day(-1),
+        effectiveDate: day(-1), effectiveTime: "18:00", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1800, createdAt: at(day(1)), updatedAt: at(day(1)),
+      });
+      await db.insert(schema.coachProposals).values({
+        id, userId, title: id, evidence: "e", rationale: "r", flags: [], ops: [], status: "declined", createdAt: at(day(1), "10:00"), expiresAt: at(day(-5)),
+      });
+    }
+    const plan = await everyPage((cursor) => ok("read_plan", { from: day(-1), to: day(-1), limit: 2, ...(cursor ? { cursor } : {}) }, { user: userId }));
+    expect(plan.flatMap((p) => p.data.workouts.map((w: { id: string }) => w.id))).toEqual(["Beta", "Zed-1", "alpha"]);
+    const proposals = await everyPage((cursor) => ok("read_proposals", { limit: 2, ...(cursor ? { cursor } : {}) }, { user: userId }));
+    expect(proposals.flatMap((p) => p.data.proposals.map((x: { id: string }) => x.id))).toEqual(["alpha", "Zed-1", "Beta"]);
+  });
+});
+
+describe("pages by key: a row written between two pages never shifts the next one", () => {
+  it("read_answers, list_workouts and read_proposals", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    const answer = (n: number) =>
+      db.insert(schema.athleteAnswers).values({ id: `a-${n}`, userId, questionId: "energy", valueNum: 5, source: "checkin", localDate: day(n), at: at(day(n)) });
+    const workout = (n: number) =>
+      db.insert(schema.plannedWorkouts).values({
+        id: `w-${n}`, userId, planId: `studio-${userId}`, sourceWorkoutId: `w-${n}`, title: `Workout ${n}`, category: "strength", sport: "strength",
+        originalPlanDate: day(n), lastVerifiedCorosDate: day(n), effectiveDate: day(n), effectiveTime: "07:00", sourceContentFingerprint: "fp",
+        calendarBlockDurationSeconds: 1800, origin: "studio", workoutDoc: JSON.stringify(studioDoc()), workoutDocRev: 1, createdAt: at(day(9)), updatedAt: at(day(9)),
+      });
+    const proposal = (n: number) =>
+      db.insert(schema.coachProposals).values({
+        id: `p-${n}`, userId, title: `Proposal ${n}`, evidence: "e", rationale: "r", flags: [], ops: [], status: "declined", createdAt: at(day(n), "10:00"), expiresAt: at(day(-5)),
+      });
+    for (let n = 1; n <= 6; n++) {
+      await answer(n);
+      await workout(n);
+      await proposal(n);
+    }
+    const ids = (r: { data: Record<string, Array<{ id?: string; date?: string }>> }, key: string) => r.data[key]!.map((x) => x.id ?? x.date);
+    const cases: Array<{ tool: string; input: Record<string, unknown>; key: string; write: () => Promise<unknown>; expected: string[] }> = [
+      { tool: "read_answers", input: {}, key: "answers", write: () => answer(0), expected: [day(4), day(5), day(6)] },
+      { tool: "list_workouts", input: { from: day(10), to: TODAY }, key: "workouts", write: () => workout(0), expected: ["w-4", "w-5", "w-6"] },
+      { tool: "read_proposals", input: {}, key: "proposals", write: () => proposal(0), expected: ["p-4", "p-5", "p-6"] },
+    ];
+    for (const c of cases) {
+      const first = await ok(c.tool, { ...c.input, limit: 3 }, { user: userId });
+      await c.write(); // newer than every row on the first page
+      const second = await ok(c.tool, { ...c.input, limit: 3, cursor: first.nextCursor }, { user: userId });
+      expect(ids(second, c.key), c.tool).toEqual(c.expected);
+    }
+  });
+});
+
+describe("local dates", () => {
+  it("an activity with no local start time falls on its date in the athlete's zone, not the UTC one", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    // 03:00 UTC on the 12th is 20:00 on the 11th in Los Angeles.
+    await db.insert(schema.activities).values({
+      id: newId(), userId, startTime: `${day(1)}T03:00:00.000Z`, sport: "run", durationSeconds: 1800, distanceMeters: 5000, createdAt: at(day(1)), updatedAt: at(day(1)),
+    });
+    expect((await ok("read_history", { from: day(2), to: day(2) }, { user: userId })).data.entries.map((e: { kind: string }) => e.kind)).toEqual(["run"]);
+    expect((await ok("read_history", { from: day(1), to: day(1) }, { user: userId })).data.entries).toEqual([]);
+    expect((await ok("read_day", { date: day(2) }, { user: userId })).data.done).toHaveLength(1);
+  });
+
+  it("an answer has expired when its expiry's local date is before today, whatever the UTC date says", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    // 03:00 UTC today is 20:00 yesterday in Los Angeles: expired. 08:00 UTC today is 01:00 today there: not yet.
+    await db.insert(schema.athleteAnswers).values({ id: "x-1", userId, questionId: "soreness", valueNum: 4, source: "checkin", localDate: day(1), at: at(day(1)), expiresAt: `${TODAY}T03:00:00.000Z` });
+    await db.insert(schema.athleteAnswers).values({ id: "x-2", userId, questionId: "tightness", valueNum: 4, source: "checkin", localDate: day(1), at: at(day(1), "07:00"), expiresAt: `${TODAY}T08:00:00.000Z` });
+    const answers = (await ok("read_answers", {}, { user: userId })).data.answers;
+    expect(answers.find((a: { question: string }) => a.question === "soreness").expired).toBe(true);
+    expect(answers.find((a: { question: string }) => a.question === "tightness").expired).toBeUndefined();
+  });
+});
+
+describe("likeWordPatterns", () => {
+  it("one pattern a word, each word once, at most six", () => {
+    expect(likeWordPatterns("hip hip hop")).toEqual(["%hip%", "%hop%"]);
+    expect(likeWordPatterns("a b c d e f g h")).toEqual(["%a%", "%b%", "%c%", "%d%", "%e%", "%f%"]);
+    expect(LIKE_WORDS_MAX).toBe(6);
+    expect(likeWordPatterns("   ")).toEqual([]);
+    expect(likeWordPatterns("50%_off")).toEqual(["%50\\%\\_off%"]);
+  });
+});
+
+describe("memoryCore is a finished query", () => {
+  it("a second where, which would replace the core's own, does not type-check", () => {
+    const core = memoryCore(db, "u", TODAY);
+    // @ts-expect-error — the core's predicate cannot be replaced
+    expect(() => core.where).not.toThrow();
   });
 });
 

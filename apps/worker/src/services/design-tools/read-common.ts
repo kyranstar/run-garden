@@ -201,6 +201,19 @@ export function pagedAnswer<R>(o: {
 
 // ── SQL ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * SQLite's own text order (BINARY: by the UTF-8 bytes, which is by code point), for putting rows back in the order SQL
+ * paged them by. Never locale order: it disagrees with SQL on case and accents ("Core" before "abs day" in SQL, after
+ * it by locale), and a page re-sorted that way skips one row and repeats another.
+ */
+export function byBytes(a: string, b: string): number {
+  if (a === b) return 0;
+  const x = Array.from(a, (c) => c.codePointAt(0)!);
+  const y = Array.from(b, (c) => c.codePointAt(0)!);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+  return x.length - y.length;
+}
+
 /** A list of values as one bound JSON value, for `IN (…)`: one bind whatever its length (D1 allows 100 a statement). */
 export const jsonList = (values: readonly string[]): SQL => sql`(select value from json_each(${JSON.stringify(values)}))`;
 
@@ -240,7 +253,9 @@ export async function readTagged(db: Db, terms: SQL[]): Promise<Map<string, Arra
   for (const r of rows) {
     const row = parsedJson(r.j);
     if (!row || typeof row !== "object") continue;
-    out.set(r.t, [...(out.get(r.t) ?? []), row as Record<string, unknown>]);
+    const list = out.get(r.t);
+    if (list) list.push(row as Record<string, unknown>);
+    else out.set(r.t, [row as Record<string, unknown>]);
   }
   return out;
 }
@@ -337,7 +352,19 @@ export function localTimeOf(tz: string, iso: unknown): string | null {
   if (typeof iso !== "string") return null;
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return null;
-  return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(t));
+  return formatterOf(TIME_FORMATS, tz, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }, "en-GB").format(new Date(t));
+}
+
+/** Formatters by timezone, made once: building one is the costly part of formatting (most of a long list's CPU). */
+const TIME_FORMATS = new Map<string, Intl.DateTimeFormat>();
+const DATE_FORMATS = new Map<string, Intl.DateTimeFormat>();
+function formatterOf(cache: Map<string, Intl.DateTimeFormat>, tz: string, options: Intl.DateTimeFormatOptions, locale: string): Intl.DateTimeFormat {
+  let f = cache.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, { timeZone: tz, ...options });
+    cache.set(tz, f);
+  }
+  return f;
 }
 
 /** An instant's local date in the athlete's timezone; null for no instant. */
@@ -345,7 +372,8 @@ export function localDateOf(tz: string, iso: unknown): string | null {
   if (typeof iso !== "string") return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
   const t = Date.parse(iso);
-  return Number.isFinite(t) ? todayInZone(tz, new Date(t)) : null;
+  // en-CA writes YYYY-MM-DD (todayInZone's own format, with its formatter kept).
+  return Number.isFinite(t) ? formatterOf(DATE_FORMATS, tz, { year: "numeric", month: "2-digit", day: "2-digit" }, "en-CA").format(new Date(t)) : null;
 }
 
 /** An activity's local date: the device's own local start, else its start instant in the athlete's timezone. */

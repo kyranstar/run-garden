@@ -11,6 +11,7 @@ import { plannedWorkouts, programBlocks, programs } from "@rg/database";
 import { daysBetween } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
+  byBytes,
   checkRange,
   CURSOR_SCHEMA,
   cursorField,
@@ -148,7 +149,10 @@ export const readPlan: DesignTool = {
       ),
       programmesTerm(ctx.userId),
     ]);
-    const ordered = (rows.get("p") ?? []).sort((a, b) => `${a.date} ${a.time} ${a.id}`.localeCompare(`${b.date} ${b.time} ${b.id}`));
+    // As SQL ordered and keyed them (date, time, id), compared byte by byte.
+    const ordered = (rows.get("p") ?? []).sort(
+      (a, b) => byBytes(String(a.date), String(b.date)) || byBytes(String(a.time), String(b.time)) || byBytes(String(a.id), String(b.id)),
+    );
     const programmes = (rows.get("b") ?? []).map((r) => programmeOf(r, athlete.today));
     return pagedAnswer({
       source: "the plan (planned workouts) and the athlete's programmes",

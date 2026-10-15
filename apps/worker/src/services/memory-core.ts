@@ -10,7 +10,6 @@
  * recently learned or updated — at most MEMORY_CORE.
  */
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import type { SelectedFields } from "drizzle-orm/sqlite-core";
 import { coachMemory } from "@rg/database";
 import type { Db } from "./db.js";
 
@@ -41,10 +40,22 @@ export function memoryCoreWhere(userId: string, today: string): SQL {
 /** The core's order: pinned first, then the most recently learned or updated. */
 export const MEMORY_CORE_ORDER: SQL[] = [desc(m.pinned), desc(sql`coalesce(${m.updatedAt}, ${m.learnedAt})`), asc(m.id)];
 
-/** The core with `columns`: one statement when awaited, or a subquery (`notInArray(id, memoryCore(…, { id }))`). */
-export function memoryCore<C extends SelectedFields>(db: Db, userId: string, today: string, columns: C) {
-  const query = db.select(columns).from(m);
-  // The same builder throughout; TypeScript cannot follow a generic selection through the chain, so it is named once.
-  type Chain = { where(w: SQL): { orderBy(...order: SQL[]): { limit(n: number): typeof query } } };
-  return (query as unknown as Chain).where(memoryCoreWhere(userId, today)).orderBy(...MEMORY_CORE_ORDER).limit(MEMORY_CORE);
+/**
+ * The core as the opening context lists it: one statement when awaited. A finished query, never a builder to go on
+ * with — a second `.where()` (which would replace the core's own) is a type error, held by a test. Built for its
+ * columns rather than any caller's: drizzle cannot carry a generic selection through the chain (nor through
+ * `$dynamic()`, whose builder would take a second `.where()` anyway).
+ */
+export function memoryCore(db: Db, userId: string, today: string) {
+  return db
+    .select({ id: m.id, kind: m.kind, body: m.body, pinned: m.pinned, confidence: m.confidence })
+    .from(m)
+    .where(memoryCoreWhere(userId, today))
+    .orderBy(...MEMORY_CORE_ORDER)
+    .limit(MEMORY_CORE);
+}
+
+/** The core's ids, as a subquery (`notInArray(id, memoryCoreIds(…))`): the same rows as `memoryCore`. */
+export function memoryCoreIds(db: Db, userId: string, today: string) {
+  return db.select({ id: m.id }).from(m).where(memoryCoreWhere(userId, today)).orderBy(...MEMORY_CORE_ORDER).limit(MEMORY_CORE);
 }

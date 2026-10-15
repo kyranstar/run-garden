@@ -11,6 +11,7 @@ import { coachProposals } from "@rg/database";
 import { isLocalDate } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
+  byBytes,
   CURSOR_SCHEMA,
   cursorField,
   encodeCursor,
@@ -68,9 +69,9 @@ export const readProposals: DesignTool = {
             ${at ? sql`and (${c.createdAt}, ${c.id}) <= (${at[0]}, ${at[1]})` : sql``}
           order by ${c.createdAt} desc, ${c.id} desc limit ${limit + 1}))`,
     });
-    // The page's own order (an aggregate's input order is SQLite's to choose).
+    // The page's own order (an aggregate's input order is SQLite's to choose), compared as SQL compares, byte by byte.
     const rows = (parsedArray(extra.proposals) as Array<Record<string, unknown>>).sort(
-      (a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(b.id).localeCompare(String(a.id)),
+      (a, b) => byBytes(String(b.createdAt), String(a.createdAt)) || byBytes(String(b.id), String(a.id)),
     );
     return pagedAnswer({
       source: "the coach's proposals and how the athlete resolved them",

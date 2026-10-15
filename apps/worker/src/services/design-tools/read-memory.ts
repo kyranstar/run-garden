@@ -11,7 +11,7 @@ import { and, desc, eq, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachMemory } from "@rg/database";
 import { likeWordPatterns } from "../like-pattern.js";
-import { liveMemoryWhere, memoryCore } from "../memory-core.js";
+import { liveMemoryWhere, memoryCoreIds } from "../memory-core.js";
 import type { DesignTool } from "./types.js";
 import {
   CURSOR_SCHEMA,
@@ -84,9 +84,11 @@ export const recallMemory: DesignTool = {
         and(
           liveMemoryWhere(ctx.userId, today),
           // The opening context's core, exactly as it reads it (memory-core.ts).
-          notInArray(m.id, memoryCore(ctx.db, ctx.userId, today, { id: m.id })),
+          notInArray(m.id, memoryCoreIds(ctx.db, ctx.userId, today)),
           ...(p.kind ? [eq(m.kind, p.kind)] : []),
           ...words.map((like) => sql`${m.body} LIKE ${like} ESCAPE '\\'`),
+          // Keyed on when an item was learned or last updated: one the run itself updates between two pages moves above
+          // the cursor and is not read again. Accepted — the run wrote it, so it knows what it says.
           ...(at ? [sql`(${LEARNED}, ${m.id}) <= (${at[0]}, ${at[1]})`] : []),
         ),
       )

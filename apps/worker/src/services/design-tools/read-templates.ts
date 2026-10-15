@@ -12,6 +12,7 @@ import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import type { DesignTool } from "./types.js";
 import {
+  byBytes,
   CURSOR_SCHEMA,
   cursorField,
   encodeCursor,
@@ -59,15 +60,15 @@ export const listTemplates: DesignTool = {
           order by ${t.pinned} desc, ${t.uses} desc, ${t.lastUsedAt} is null, ${t.lastUsedAt} desc, ${t.name}, ${t.id}
           limit ${limit + 1} offset ${offset}))`,
     });
-    // The page's own order (an aggregate's input order is SQLite's to choose).
+    // The page's own order (an aggregate's input order is SQLite's to choose), compared as SQL compares, byte by byte.
     const rows = (parsedArray(extra.templates) as Array<Record<string, unknown>>).sort(
       (a, b) =>
         Number(b.pinned) - Number(a.pinned) ||
         Number(b.uses) - Number(a.uses) ||
         (a.lastUsedAt === null ? 1 : 0) - (b.lastUsedAt === null ? 1 : 0) ||
-        String(b.lastUsedAt ?? "").localeCompare(String(a.lastUsedAt ?? "")) ||
-        String(a.name).localeCompare(String(b.name)) ||
-        String(a.id).localeCompare(String(b.id)),
+        byBytes(String(b.lastUsedAt ?? ""), String(a.lastUsedAt ?? "")) ||
+        byBytes(String(a.name), String(b.name)) ||
+        byBytes(String(a.id), String(b.id)),
     );
     return pagedAnswer({
       source: "the athlete's saved templates",
