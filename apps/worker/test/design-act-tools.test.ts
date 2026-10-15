@@ -715,6 +715,13 @@ describe("finish", () => {
     const out = ok((await call("finish", ctxOf(r), { summary: "A calm half hour." })).result);
     expect(out.summary).toBe("A calm half hour.");
     expect(out.data).toEqual({ proposalId: designProposalId(r.id) });
+    // The receipt says what the proposal is once this finish lands: pending (the loop promotes it, N1).
+    expect(out.receipt).toMatchObject({ proposal: { status: "pending" } });
+    // A designer's finish promotes nothing: its receipt says unreviewed.
+    const main = await run({ scope: { kind: "week" } });
+    const designer = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    ok((await call("propose_workout", ctxOf(designer, { reviewDraft: async () => review }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect(ok((await call("finish", ctxOf(designer), { summary: "Done." })).result).receipt).toMatchObject({ proposal: { status: "unreviewed" } });
   });
 
   it("without a proposal: the line alone; a designer names its main run's proposal only when it added to it", async () => {
@@ -917,5 +924,53 @@ describe("fix round 1 — one default place", () => {
       const lacking = (v.warnings as Array<{ code: string }>).some((w) => w.code === "equipment_unavailable");
       expect(offered, String(place)).toBe(!lacking);
     }
+  });
+});
+
+// ── Follow-up minors (re-review N2, N3, N6) ─────────────────────────────────────────────────────────────────────────
+
+describe("follow-up — a kept free-text move is kept, never multiplied, and only from the athlete's own live workout", () => {
+  it("a draft can't hold the base's free-text move twice (N2)", async () => {
+    const r = await run();
+    const workoutId = await withFreeMove(rich.userId, "Sandbag carry");
+    const [row] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, workoutId));
+    const base = JSON.parse(row!.workoutDoc!) as Record<string, any>;
+    const twice: Record<string, any> = structuredClone(base);
+    twice.parts[0].items.push(structuredClone(base.parts[0].items[1]));
+    const e = err((await call("validate_workout", ctxOf(r), { doc: twice, date: TODAY, workoutId })).result);
+    expect(e.error).toBe("free_text_move");
+    expect(e.why).toContain("parts[0].items[2]");
+    expect(err((await call("propose_workout", ctxOf(r), { doc: twice, target: { kind: "revise", workoutId, baseRev: 1 } })).result).error).toBe("free_text_move");
+    // Once, as it was: kept.
+    expect(data((await call("validate_workout", ctxOf(r), { doc: base, date: TODAY, workoutId })).result).valid).toBe(true);
+  });
+
+  it("validate_workout's base is the athlete's own workout, not archived (N3)", async () => {
+    const r = await run();
+    const theirs = await withFreeMove(high.userId, "Sled push");
+    const [row] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, theirs));
+    const doc = JSON.parse(row!.workoutDoc!) as Record<string, any>;
+    // Another athlete's workout holding the same free move lends it nothing.
+    expect(err((await call("validate_workout", ctxOf(r), { doc, date: TODAY, workoutId: theirs })).result).error).toBe("free_text_move");
+    // An archived workout of the athlete's own lends it nothing either.
+    const mine = await withFreeMove(rich.userId, "Sled push");
+    await db.update(schema.plannedWorkouts).set({ archivedAt: at(day(1)) }).where(eq(schema.plannedWorkouts.id, mine));
+    expect(err((await call("validate_workout", ctxOf(r), { doc, date: TODAY, workoutId: mine })).result).error).toBe("free_text_move");
+  });
+});
+
+describe("follow-up — remember's quote is for one thing only (N6)", () => {
+  it("is refused without replaces, or when the item it replaces isn't one the athlete confirmed", async () => {
+    const r = await run({ request: "I train evenings now." });
+    const stated = newId();
+    await db.insert(schema.coachMemory).values({
+      id: stated, userId: rich.userId, kind: "rule", body: "Trains mornings (quote test)", provenance: { source: "message", at: at(day(9)) }, learnedAt: at(day(9)),
+      active: true, pinned: false, confidence: "stated", updatedAt: null,
+    });
+    const alone = err((await call("remember", ctxOf(r), { kind: "rule", body: "Trains evenings", confidence: "stated", quote: "I train evenings now" })).result);
+    expect(alone.error).toBe("quote_unused");
+    expect(alone.fix).toMatch(/confirmed/);
+    expect(err((await call("remember", ctxOf(r), { kind: "rule", body: "Trains evenings", confidence: "stated", replaces: stated, quote: "I train evenings now" })).result).error).toBe("quote_unused");
+    expect((tool("remember").inputSchema as any).properties.quote.description).toMatch(/only when replacing an item the athlete confirmed/i);
   });
 });

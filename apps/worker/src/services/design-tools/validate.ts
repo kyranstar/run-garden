@@ -12,7 +12,7 @@
  * Six statements at most: the athlete (with the gear, the set-aside moves, the recent sessions' ids and the revised
  * workout's document), the moves done cleanly, and the recent sessions (four).
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { plannedWorkouts } from "@rg/database";
 import { parseStoredWorkoutDoc } from "@rg/domain";
@@ -63,7 +63,7 @@ export const validateWorkout: DesignTool = {
     const a = await readDocAthlete(ctx, {
       placeId: docPlaceId(doc),
       ...(p.workoutId
-        ? { extras: { baseDoc: sql`(select ${pw.workoutDoc} from ${pw} where ${and(eq(pw.id, p.workoutId), eq(pw.userId, ctx.userId))})` } }
+        ? { extras: { baseDoc: sql`(select ${pw.workoutDoc} from ${pw} where ${and(eq(pw.id, p.workoutId), eq(pw.userId, ctx.userId), isNull(pw.archivedAt))})` } }
         : {}),
     });
     if (isErr(a)) return a;

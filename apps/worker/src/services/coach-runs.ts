@@ -893,7 +893,17 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
   // A cancel (or an expiry) took the run while the answer was being written: nothing of the answer stands, so the
   // trail says nothing of it either.
   if (!written) return { kind: "not_waiting", status: await currentStatus(db, root, nodes, waiting) };
-  if (kept) await insertAnswers(db, kept.rows);
+  if (kept) {
+    // The answer stood (the run's write above): a keep that fails is logged, never the route's error — the athlete's
+    // answer still reaches the model, only its copy among their check-ins is lost.
+    try {
+      await insertAnswers(db, kept.rows);
+    } catch (e) {
+      console.error(
+        JSON.stringify({ level: "error", msg: "coach-runs: answer kept failed", run: root.id, error: e instanceof Error ? e.message : "unknown" }),
+      );
+    }
+  }
   const by = waiting.id === root.id ? undefined : { runId: waiting.id, role: waiting.role };
   await appendEvents(db, userId, root.id, events.map((e) => withBy(e, by)), claimAt);
   waiting.status = status;

@@ -61,7 +61,11 @@ export const remember: DesignTool = {
       evidence: { type: "array", minItems: 1, maxItems: EVIDENCE_ITEMS, items: { type: "string", minLength: 1, maxLength: EVIDENCE_MAX }, description: "What supports it: required for an observation." },
       expires: { type: "string", description: "A note's last day, YYYY-MM-DD: required for a note." },
       replaces: { type: "string", description: "The id of the item this one updates (the old one is kept as history)." },
-      quote: { type: "string", maxLength: 200, description: "Replacing an item the athlete confirmed: the request's own words that change it." },
+      quote: {
+        type: "string",
+        maxLength: 200,
+        description: "Only when replacing an item the athlete confirmed (and then required): the request's own words that change it. Refused anywhere else.",
+      },
     },
     required: ["kind", "body", "confidence"],
     additionalProperties: false,
@@ -78,6 +82,12 @@ export const remember: DesignTool = {
     }
     const p = parseAct(input, raw, "kind, body, confidence (stated or inferred), and optionally evidence, expires, replaces and quote");
     if (isErr(p)) return p;
+    const quoteUnused = refuse(
+      "quote_unused",
+      "quote is only for replacing an item the athlete confirmed: their own words from the request that change it.",
+      "Leave quote out (an item's body keeps what was said); give it only with replaces of an item the athlete confirmed.",
+    );
+    if (p.quote && !p.replaces) return quoteUnused;
     const rootId = mainRunIdOf(ctx);
     if (!rootId) return refuse("no_main_run", "This run has no main run to remember for.", "Finish with what you have.");
     const id = `mem:${ctx.run.id}:${ctx.toolUseId ?? newId()}`;
@@ -122,6 +132,7 @@ export const remember: DesignTool = {
       if (!old || !old.active || old.superseded) {
         return refuse("not_found", `No live memory item has id ${JSON.stringify(p.replaces)}.`, "Use an id from the pinned memory or recall_memory, or leave replaces out.");
       }
+      if (p.quote && old.confidence !== "confirmed") return quoteUnused;
       if (old.confidence === "confirmed") {
         if (p.confidence === "inferred" || !p.quote) {
           return refuse(

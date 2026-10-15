@@ -116,6 +116,9 @@ describe("each act tool's declared statement cost is the most it runs", () => {
       { input: { doc: calmDoc(), date: TODAY } },
       { input: { doc: landingsDoc(), date: day(-3) } },
       { input: { doc: { ...calmDoc(), setting: { placeId: rich.gymId } }, date: TODAY } },
+      // Judged as a revision: the workout's document is read in the first statement.
+      { input: { doc: calmDoc(), date: TODAY, workoutId: rich.todayDocId } },
+      { input: { doc: calmDoc(), date: TODAY, workoutId: "no-such" } },
       { input: { doc: { ...calmDoc(), setting: { placeId: "nowhere" } }, date: TODAY } },
       { input: { doc: calmDoc(), date: day(2) } },
       { input: { doc: { title: "" }, date: TODAY } },

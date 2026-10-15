@@ -11,8 +11,8 @@
  *
  * Synthetic data only: the made-up athlete of design-read-fixture.ts, on its fixed clock.
  */
-import { beforeAll, describe, expect, it } from "vitest";
-import { eq, like } from "drizzle-orm";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, like, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -265,6 +265,39 @@ describe("an answer to a check-in question is kept as the athlete's answer", () 
     const { rows } = await askAndAnswer({ questions: [where], answers: ["calves"] });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ questionId: "tightness", subjectKind: "region", subjectId: "calves", valueNum: 5, valueChoice: "calves" });
+    // Words typed instead name no area of the question's: soreness and tightness are kept by area, so this one stays
+    // in the run's own record (N5).
+    const typed = await askAndAnswer({ questions: [where], answers: ["mostly my neck"] });
+    expect(typed.rows).toEqual([]);
+    const note = (await events(typed.runId)).find((e) => e.summary.startsWith("You answered"))!;
+    expect(note.summary).toBe("You answered: mostly my neck");
+    expect((note.payload as { receipt?: unknown }).receipt).toBeUndefined();
+  });
+
+  it("an answer that stood is never lost to a failed keep: the route answers, the failure is logged, the cost is pinned (N4)", async () => {
+    const a = await athlete();
+    const runId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: null }, new Date())).run.id;
+    await drive(a.userId, runId, scripted([turn(use("ask_athlete", { questions: [sore] }))]).deps);
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, a.userId)}`;
+    const app = mountRoutes(db, "/api/coach/runs", makeCoachRunRoutes(() => scripted([]).deps));
+    const on = { ...env, COACH_DESIGNER: "1", SESSION_SECRET: "s" } as Env;
+    await db.run(sql`create trigger keep_fails before insert on athlete_answers when new.source = 'ask_athlete' begin select raise(abort, 'simulated'); end`);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      statements = 0;
+      const res = await app.request(`/api/coach/runs/${runId}/answer`, { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify({ answers: ["very sore"] }) }, on);
+      expect(res.status).toBe(200);
+      expect(statements).toBe(7);
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0]![0])).toContain("answer kept");
+      // The answer stood: the run goes on, and the trail says what was answered.
+      const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, runId));
+      expect(row!.status).toBe("active");
+      expect((await events(runId)).at(-1)!.summary).toBe("You answered: very sore");
+    } finally {
+      logged.mockRestore();
+      await db.run(sql`drop trigger keep_fails`);
+    }
   });
 
   it("nothing is kept when the athlete skips, or on a rehearsal run", async () => {

@@ -53,10 +53,12 @@ export const finish: DesignTool = {
     const line = unreviewed
       ? `${p.summary.length + KEPT_BACK.length > LINE_MAX ? `${p.summary.slice(0, LINE_MAX - KEPT_BACK.length - 1)}…` : p.summary}${KEPT_BACK}`
       : p.summary;
+    // What the proposal is once this finish lands: the loop's finish makes a main run's fully reviewed one pending.
+    const promoted = ctx.run.role === "main" && row.status === "unreviewed" && ops.length > 0 && ops.every((o) => o.review);
     return {
       data: { proposalId, ...(unreviewed ? { unreviewed: true } : {}) },
       summary: line,
-      receipt: { final: true, proposal: { id: proposalId, status: row.status, workouts: ops.length } },
+      receipt: { final: true, proposal: { id: proposalId, status: promoted ? "pending" : row.status, workouts: ops.length } },
     };
   },
 };

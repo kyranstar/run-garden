@@ -265,7 +265,8 @@ export function askedCheckin(q: unknown): AskedCheckin | null {
 /**
  * The rows the answers to an ask call keep: one per question that declares a check-in (the others stay in the run's
  * own record). A tapped chip gives its value and area (its own, else the question's), its label as the choice; words
- * typed instead are the text, with no value. `source 'ask_athlete'`, ids `aa:<main run>:<tool-use id>:<n>` (n the
+ * typed instead are the text, with no value — kept only when the question names its area, as soreness, tightness and
+ * pain are kept by area. `source 'ask_athlete'`, ids `aa:<main run>:<tool-use id>:<n>` (n the
  * question's place), fresh for the question's days. The areas were checked when the question was asked.
  */
 export function askedAnswerRows(o: {
@@ -284,6 +285,9 @@ export function askedAnswerRows(o: {
     if (!c) return;
     const chip = c.chips.find((ch) => ch.label.trim().toLowerCase() === text.trim().toLowerCase());
     const area = chip?.area ?? c.area;
+    // Soreness, tightness and pain are kept by area (principles §5.3): words typed to a question whose areas are only
+    // on its chips name none of them, so they stay in the run's own record.
+    if (CHECKIN_QUESTIONS[c.question].byArea && !area) return;
     const subject = CHECKIN_QUESTIONS[c.question].byArea && area ? subjectOf(area, new Map([[area, area]])) : null;
     rows.push({
       id: `${handle}:${n}`,

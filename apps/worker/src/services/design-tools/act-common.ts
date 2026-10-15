@@ -366,8 +366,15 @@ function freeMoves(doc: unknown): Array<{ path: string; name: string; key: strin
  * document already holds, exactly as it is (`base`, the workout's current document). A refusal names every other one.
  */
 export function freeTextRefusal(doc: unknown, base: WorkoutDoc | null): ToolErr | null {
-  const kept = new Set(freeMoves(base).map((m) => m.key));
-  const added = freeMoves(doc).filter((m) => !kept.has(m.key));
+  // Counted, not a set: a draft keeps each of the base's free-text moves as often as the base holds it, never more.
+  const kept = new Map<string, number>();
+  for (const m of freeMoves(base)) kept.set(m.key, (kept.get(m.key) ?? 0) + 1);
+  const added = freeMoves(doc).filter((m) => {
+    const left = kept.get(m.key) ?? 0;
+    if (left === 0) return true;
+    kept.set(m.key, left - 1);
+    return false;
+  });
   if (added.length === 0) return null;
   return refuse(
     "free_text_move",
