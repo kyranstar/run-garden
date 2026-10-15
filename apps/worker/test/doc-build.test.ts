@@ -7,8 +7,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, nowInstant, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES, isPlyometric } from "@rg/exercise-library";
+import { addDays, NO_EQUIPMENT_PLACE, nowInstant, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import { EXERCISES, hasEquipment, isPlyometric, NO_EQUIPMENT_GEAR } from "@rg/exercise-library";
 import { deriveDoc, playerStepsFromDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
 import { GatedError, lockCurrentBuild } from "../src/services/session-build.js";
@@ -159,6 +159,73 @@ describe("building a document workout", () => {
     expect(planned.map((a) => a.id)).toEqual(["birdDog", "bandPallofPress"]);
     expect(planned[1]!.reasons[0]).toBe("Resists the twist.");
     expect(planned[1]!.reasons[1]).toMatch(/band/i);
+  });
+
+  it('"No equipment" (setting.placeId "none") is bodyweight only in the build as on save: ⇄ offers nothing gear-bound, a planned move that needs gear says so, and the build is at no place\'s gear (CUJ R8)', async () => {
+    const items = [{ kind: "exercise", libraryId: "bwSplitSquat", dose: { sets: 2, reps: 8 }, alternates: [{ libraryId: "gobletSquat", why: "Hold a weight." }] }];
+    const atDefault = workoutDocSchema.parse({ ...calmDoc(), parts: [{ purpose: "main", format: "straight", items }] });
+    const bare = workoutDocSchema.parse({ ...atDefault, setting: { ...atDefault.setting, placeId: NO_EQUIPMENT_PLACE } });
+    const gearBound = (id: string) => !hasEquipment(EXERCISES.find((r) => r.id === id)!, NO_EQUIPMENT_GEAR);
+    const offersOf = (build: { fromDoc: { slots: Record<string, { offers?: Array<{ id: string }> }> } }) =>
+      Object.values(build.fromDoc.slots).flatMap((s) => (s.offers ?? []).map((c) => c.id));
+
+    // At the default place (home: a kettlebell, a bench), ⇄ offers moves that need its gear; the goblet squat is clean.
+    const home = (await call("POST", `/api/sessions/${await create(atDefault)}/build`, {})).body.build;
+    expect(offersOf(home).filter(gearBound)).not.toEqual([]);
+    expect(home.fromDoc.slots["core:0"].alternates[0]).toMatchObject({ id: "gobletSquat", reasons: ["Hold a weight."] });
+
+    // No equipment: no offer needs gear, and the planned goblet squat comes with what it needs.
+    const noneRead = (await call("POST", `/api/sessions/${await create(bare)}/build`, {})).body;
+    const none = noneRead.build;
+    // The view says the place as the builder does — never the default place's name (the sheet's chip, Today's card).
+    expect(noneRead.view.location).toEqual({ id: NO_EQUIPMENT_PLACE, name: "No equipment", equipment: [...NO_EQUIPMENT_GEAR], implements: {} });
+    expect(offersOf(none).length).toBeGreaterThan(0);
+    expect(offersOf(none).filter(gearBound)).toEqual([]);
+    const goblet = (none.fromDoc.slots["core:0"].alternates as Array<{ id: string; reasons: string[] }>).find((a) => a.id === "gobletSquat")!;
+    expect(goblet.reasons[0]).toBe("Hold a weight.");
+    expect(goblet.reasons[1]).toMatch(/kettlebell|dumbbell/i);
+    expect(none.locationId).toBe(NO_EQUIPMENT_PLACE);
+
+    // The save reads the place by the same rule: a move that needs gear is noted with no equipment, not at home.
+    const lift = [{ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: 8 } }];
+    const save = (doc: unknown) => call("POST", "/api/workouts", { date: today, doc });
+    const gearNotes = (res: Reply) => (res.body.warnings as Array<{ code: string }>).filter((w) => w.code === "equipment_unavailable");
+    expect(gearNotes(await save({ ...atDefault, parts: [{ purpose: "main", format: "straight", items: lift }] }))).toEqual([]);
+    expect(gearNotes(await save({ ...bare, parts: [{ purpose: "main", format: "straight", items: lift }] }))).toHaveLength(1);
+    // A hotel room's workout — wall angels, a chair's incline plank and thoracic extension, on the floor — needs nothing more.
+    const room = ["wallAngels", "inclinePlank", "chairThoracicExtension", "deadBug"].map((libraryId) => ({ kind: "exercise", libraryId, dose: { sets: 2, reps: 8 } }));
+    expect(gearNotes(await save({ ...bare, parts: [{ purpose: "main", format: "straight", items: room }] }))).toEqual([]);
+    // A place of the athlete's named is read for its own gear (a mat only): noted there too.
+    await db.insert(schema.locations).values({
+      id: "place-flat", userId, name: "Flat", equipment: ["mat"], implements: {}, isDefault: false, createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    const flat = { ...atDefault, setting: { ...atDefault.setting, placeId: "place-flat" }, parts: [{ purpose: "main", format: "straight", items: lift }] };
+    expect(gearNotes(await save(flat))).toHaveLength(1);
+  });
+
+  it('Start of a sent "No equipment" build takes off an offer that needs gear (one a build of an older version held)', async () => {
+    const items = [{ kind: "exercise", libraryId: "bwSplitSquat", dose: { sets: 2, reps: 8 } }];
+    const doc = workoutDocSchema.parse({ ...calmDoc(), setting: { ...calmDoc().setting, placeId: NO_EQUIPMENT_PLACE }, parts: [{ purpose: "main", format: "straight", items }] });
+    const id = await create(doc);
+    const built = (await call("POST", `/api/sessions/${id}/build`, {})).body.build;
+    const offers = built.fromDoc.slots["core:0"].offers as Array<{ id: string }>;
+    expect(offers.length).toBeGreaterThan(0);
+    await lockCurrentBuild(db, userId, id, built.buildId, nowInstant(), { as: "send", prefs });
+    await db.insert(schema.corosWriteJobs).values({
+      id: `push:${built.buildId}`, userId, workoutId: id, kind: "program_session_push", expectedContentFingerprint: "fp",
+      originalDate: today, destinationDate: today, requestedAt: nowInstant(), updatedAt: nowInstant(), status: "verified",
+    });
+    // As the build before this one offered at the default place: a split squat with a kettlebell.
+    const heavy = { ...offers[0]!, id: "splitSquat", name: "Split squat" };
+    await db
+      .update(sessionBuilds)
+      .set({ payload: sql`json_set(${sessionBuilds.payload}, '$.build.fromDoc.slots."core:0".offers', json(${JSON.stringify([...offers, heavy])}))` })
+      .where(eq(sessionBuilds.id, built.buildId));
+    expect(hasEquipment(EXERCISES.find((r) => r.id === "splitSquat")!, NO_EQUIPMENT_GEAR)).toBe(false);
+    const started = await call("POST", `/api/sessions/${id}/start`, { buildId: built.buildId });
+    expect(started.status).toBe(200);
+    expect(offeredIn(started.body.build)).not.toContain("splitSquat");
+    expect(started.body.build.fromDoc.slots["core:0"].offers.map((c: { id: string }) => c.id)).toEqual(offers.map((c) => c.id));
   });
 
   it("the review's basis reads a document's planned alternates too (a move ⇄ may bring in)", async () => {

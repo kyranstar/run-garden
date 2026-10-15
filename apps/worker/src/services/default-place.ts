@@ -1,13 +1,14 @@
 /**
  * WHERE A WORKOUT HAPPENS, AS ITS GEAR IS JUDGED — one rule for the worker's readers (Stage 3 Task 5, fix round 1):
  * the coach's validate_workout and propose_workout (design-tools/act-common.ts), search_library's place filter
- * (design-tools/read-library.ts) and the Studio's library (library-view.ts).
+ * (design-tools/read-library.ts), the Studio's library (library-view.ts), a workout document's save
+ * (`docDayContext`) and its build (`loadDocEngineContext`), and the engine's place (`loadEngineContext`).
  *
  *  - THE DEFAULT PLACE: the profile's chosen default (`athlete_profiles.preferences.defaultPlaceId`, while it is still
  *    one of the athlete's places), else the place marked default, else the first made; with no place at all, the
  *    library's Home preset.
  *  - A NAMED PLACE: one of the athlete's places; else a preset (home, gym, mat); else "No equipment"
- *    (`NO_EQUIPMENT_PLACE`): no gear at all. Any other id is no place.
+ *    (`NO_EQUIPMENT_PLACE`): a bare room's own props. Any other id is no place.
  *
  * Each read is one scalar subquery (`defaultPlaceSql`, `ownPlaceSql`), so a caller folds it into a statement it already
  * runs; `defaultPlace` / `namedPlace` are the one-statement forms.
@@ -15,7 +16,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { athleteProfiles, locations } from "@rg/database";
 import { NO_EQUIPMENT_PLACE } from "@rg/domain";
-import { LOCATION_PRESETS } from "@rg/exercise-library";
+import { LOCATION_PRESETS, NO_EQUIPMENT_GEAR, noEquipmentPlace } from "@rg/exercise-library";
 import type { Db } from "./db.js";
 
 export interface PlaceGear {
@@ -29,12 +30,19 @@ export interface PlaceGear {
 const l = locations;
 const asJson = sql`json_object('id', ${l.id}, 'name', ${l.name}, 'equipment', case when json_valid(${l.equipment}) then json(${l.equipment}) else json('[]') end)`;
 
-/** The athlete's default place among their own, as one row of JSON text ({ id, name, equipment }), or null. */
-export function defaultPlaceSql(userId: string): SQL {
+/**
+ * The athlete's places in the default place's order — the first is the default: the profile's chosen default, the
+ * place marked default, the first made. The engine's place read orders by it too (`loadEngineContext`).
+ */
+export function defaultPlaceOrder(userId: string): SQL[] {
   const p = athleteProfiles;
   const chosen = sql`(select case when json_valid(${p.preferences}) then json_extract(${p.preferences}, '$.defaultPlaceId') end from ${p} where ${p.userId} = ${userId})`;
-  return sql`(select ${asJson} from ${l} where ${l.userId} = ${userId}
-    order by (${l.id} = coalesce(${chosen}, '')) desc, ${l.isDefault} desc, ${l.createdAt} asc, ${l.id} asc limit 1)`;
+  return [sql`(${l.id} = coalesce(${chosen}, '')) desc`, sql`${l.isDefault} desc`, sql`${l.createdAt} asc`, sql`${l.id} asc`];
+}
+
+/** The athlete's default place among their own, as one row of JSON text ({ id, name, equipment }), or null. */
+export function defaultPlaceSql(userId: string): SQL {
+  return sql`(select ${asJson} from ${l} where ${l.userId} = ${userId} order by ${sql.join(defaultPlaceOrder(userId), sql`, `)} limit 1)`;
 }
 
 /** One of the athlete's places by id, as one row of JSON text, or null. */
@@ -62,8 +70,8 @@ const presetOf = (id: string): PlaceGear | null => {
   return p ? { id: p.id, name: p.name, equipment: [...p.equipment], kind: "preset" } : null;
 };
 
-/** "No equipment": bodyweight only, wherever it is done. */
-export const NO_EQUIPMENT: PlaceGear = Object.freeze({ id: NO_EQUIPMENT_PLACE, name: "No equipment", equipment: [], kind: "none" }) as PlaceGear;
+/** "No equipment": bodyweight plus a bare room's own props, wherever it is done (the library's `noEquipmentPlace`). */
+export const NO_EQUIPMENT: PlaceGear = Object.freeze({ ...noEquipmentPlace(), equipment: [...NO_EQUIPMENT_GEAR], kind: "none" }) as PlaceGear;
 
 /** The default place from `defaultPlaceSql`'s row: that place, or (no place at all) the Home preset. */
 export function defaultFromRow(row: unknown): PlaceGear {
@@ -74,7 +82,7 @@ export function defaultFromRow(row: unknown): PlaceGear {
 export function namedFromRow(id: string, row: unknown): PlaceGear | null {
   const own = ownFrom(row);
   if (own) return own;
-  if (id === NO_EQUIPMENT_PLACE) return { ...NO_EQUIPMENT, equipment: [] };
+  if (id === NO_EQUIPMENT_PLACE) return { ...NO_EQUIPMENT, equipment: [...NO_EQUIPMENT.equipment] };
   return presetOf(id);
 }
 

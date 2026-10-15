@@ -88,6 +88,7 @@ import type { Db } from "./db.js";
 import { separateDayCollisions } from "./day-placement.js";
 import {
   loadBuildHistory,
+  loadDocEngineContext,
   loadEngineContext,
   loadProgramState,
   saveProgramState,
@@ -98,6 +99,7 @@ import { conditionView, isAnswer, latestReading, type ConditionView } from "./co
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
 import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, slotsForDay, snapshotErrors, type DocBuildInfo, type DocSlot } from "./doc-build.js";
+import { NO_EQUIPMENT } from "./default-place.js";
 import { docSlotKeys, DocTooLargeError, makeLibraryIndex, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { doneCleanlyOf, doneStats } from "./library-view.js";
 
@@ -1409,7 +1411,7 @@ async function docDay(
   placeId: string | undefined,
 ): Promise<Pick<DocDayInputs, "context" | "checks" | "preChecks">> {
   const date = row.effectiveDate;
-  const context = await loadEngineContext(db, userId, null, { ...(placeId ? { locationId: placeId } : {}), prefs: ctx.prefs });
+  const context = await loadDocEngineContext(db, userId, placeId, ctx.prefs);
   const asked = req.checks ?? {};
   if (Object.keys(asked).some((p) => !context.activeProfiles.includes(p))) throw new UnknownProfileError();
   if (date > ctx.today) return { context, checks: canonical(answeredOnly(asked)) as Record<string, CheckAnswer>, preChecks: [] };
@@ -1586,7 +1588,9 @@ async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: B
   if (!snapshot) return null;
   const profiles = await activeProfilesOf(db, userId);
   const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, profiles);
-  const day = dayValidateCtx({ profiles, checks, date: row.effectiveDate, today });
+  // "No equipment" is the room's props here too: what ⇄ may offer is judged with them alone (a named place's is not read again).
+  const bare = snapshot.setting?.placeId === NO_EQUIPMENT.id;
+  const day = dayValidateCtx({ profiles, checks, date: row.effectiveDate, today, ...(bare ? { equipment: NO_EQUIPMENT.equipment } : {}) });
   const errors = snapshotErrors(snapshot, day);
   if (errors.length > 0) throw new GatedError(errors);
   const stored = storedOf(sent);

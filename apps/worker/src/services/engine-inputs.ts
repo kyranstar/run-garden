@@ -57,6 +57,7 @@ import {
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkIds, type Db } from "./db.js";
+import { defaultPlaceOrder, namedFromRow, type PlaceGear } from "./default-place.js";
 import { PENDING_HASH } from "./watch-sets.js";
 
 type SessionRow = typeof performedSessions.$inferSelect;
@@ -577,6 +578,22 @@ function toEngineLocation(row: LocationRow, unit: WeightUnit): EngineLocation {
 
 const sortedUnique = (xs: Iterable<string>): string[] => [...new Set(xs)].sort();
 
+/** A place that is not one of the athlete's (a preset, or "No equipment") as the engine reads one: its gear, no implements. */
+const engineLocationOf = (p: PlaceGear): EngineLocation => ({ id: p.id, name: p.name, equipment: [...p.equipment], implements: {} });
+
+/**
+ * A document workout's build context at its document's place (`setting.placeId`), by default-place.ts's one rule — as
+ * its save (`docDayContext`) and the coach read it: one of the athlete's places; else a preset; else "No equipment"
+ * (bodyweight plus a bare room's own props, `NO_EQUIPMENT_GEAR`, whatever the default holds — CUJ R8); none named, or
+ * an id that is no place, the default place. So its ⇄ offers, its day's swaps and its view's place are the document's.
+ */
+export async function loadDocEngineContext(db: Db, userId: string, placeId: string | undefined, prefs: UserPreferences): Promise<EngineContext> {
+  const context = await loadEngineContext(db, userId, null, { ...(placeId ? { locationId: placeId } : {}), prefs });
+  if (!placeId || context.location.id === placeId) return context;
+  const other = namedFromRow(placeId, null);
+  return other ? { ...context, location: engineLocationOf(other) } : context;
+}
+
 /**
  * Prefs, saved ids, the place, the unit and the profiles for one build of `programId` (this user's). `null` — a
  * document workout's build, which no programme's settings shape — reads no programme and takes the defaults.
@@ -607,11 +624,12 @@ export async function loadEngineContext(
       .where(and(eq(userConditions.userId, userId), eq(userConditions.active, true))),
     db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId)),
     db.select({ exerciseId: exerciseProvenance.exerciseId }).from(exerciseProvenance).where(eq(exerciseProvenance.userId, userId)),
+    // In the default place's order (default-place.ts): the first is the account's default.
     db
       .select()
       .from(locationsTable)
       .where(eq(locationsTable.userId, userId))
-      .orderBy(asc(locationsTable.createdAt), asc(locationsTable.id)),
+      .orderBy(...defaultPlaceOrder(userId)),
     opts.prefs ? Promise.resolve(opts.prefs) : loadPreferences(db, userId),
   ]);
   const unit = userPrefs.weightUnit;
@@ -628,13 +646,14 @@ export async function loadEngineContext(
   };
   const savedIds = sortedUnique(savedRows.map((r) => r.exerciseId));
 
-  const places = placeRows.map((r) => toEngineLocation(r, unit));
-  if (places.length === 0) {
+  if (placeRows.length === 0) {
     const home = presetHome();
     return { prefs, savedIds, location: home, locations: [home], unit, activeProfiles, careProfiles, config };
   }
-  const defaultRow = placeRows.find((r) => r.isDefault) ?? placeRows[0]!;
-  const ordered = [places.find((p) => p.id === defaultRow.id)!, ...places.filter((p) => p.id !== defaultRow.id)];
+  // The default first (the profile's choice, the place marked default, the first made), then the rest as they were made.
+  const [defaultRow, ...rest] = placeRows;
+  rest.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  const ordered = [defaultRow!, ...rest].map((r) => toEngineLocation(r, unit));
   const pick = (id: string | null | undefined) => (id ? ordered.find((p) => p.id === id) : undefined);
   const location = pick(opts.locationId) ?? pick(config.defaultLocationId) ?? ordered[0]!;
   return { prefs, savedIds, location, locations: ordered, unit, activeProfiles, careProfiles, config };

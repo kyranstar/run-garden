@@ -29,12 +29,11 @@
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
 import { and, eq, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
-import { corosWriteJobs, exercisePrefs, locations, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions } from "@rg/database";
+import { corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions } from "@rg/database";
 import {
   DOC_ORIGINS,
   docOriginRow,
   newId,
-  NO_EQUIPMENT_PLACE,
   parseStoredWorkoutDoc,
   workoutDocSchema,
   type UserPreferences,
@@ -48,6 +47,7 @@ import { restoreInProgress } from "./account-state.js";
 import { runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
+import { defaultPlace, namedPlace } from "./default-place.js";
 import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
 import { bookedSeconds, pushJobId, sentBuildIdOf, slotChecks } from "./session-build.js";
@@ -234,24 +234,21 @@ export function recentOf(sessions: readonly HistorySession[], today: string): { 
 /**
  * What a document for `date` is validated with: the active profiles, the day's reading (the row's own pre-check and
  * the day's checks, as its session sheet reads them — none for a day ahead), what was done cleanly and the recent
- * sessions, the moves set aside, and the gear of the place the document names: one of the athlete's places, its gear;
- * "No equipment" (`NO_EQUIPMENT_PLACE`), none at all; none named, or a place that is not the athlete's: not checked.
+ * sessions, the moves set aside, and the gear of the place the document names, by default-place.ts's one rule (as its
+ * build and the coach's validate_workout read it): one of the athlete's places, a preset, or "No equipment" (a bare
+ * room's own props); none named, the athlete's default place; an id that is no place: not checked. One statement.
  */
 export async function docDayContext(
   db: Db,
   userId: string,
   o: { date: string; today: string; workoutId: string; placeId?: string },
 ): Promise<ValidateCtx> {
-  const bare = o.placeId === NO_EQUIPMENT_PLACE;
-  const [{ active, profiles, excluded }, places, history] = await Promise.all([
+  const [{ active, profiles, excluded }, place, history] = await Promise.all([
     profilesAndSetAside(db, userId),
-    o.placeId && !bare
-      ? db.select({ equipment: locations.equipment }).from(locations).where(and(eq(locations.id, o.placeId), eq(locations.userId, userId))).limit(1)
-      : Promise.resolve([]),
+    o.placeId ? namedPlace(db, userId, o.placeId) : defaultPlace(db, userId),
     loadBuildHistory(db, userId, o.today, null),
   ]);
   const checks = o.date <= o.today && active.length > 0 ? await slotChecks(db, userId, o.workoutId, o.date, o.today, active) : {};
-  const place = places[0];
   return {
     library: EXERCISES,
     activeProfiles: profiles,
@@ -263,7 +260,7 @@ export async function docDayContext(
       recent: recentOf(history.sessions, o.today),
     },
     excluded,
-    ...(bare ? { equipment: [] } : place ? { equipment: [...place.equipment] } : {}),
+    ...(place ? { equipment: [...place.equipment] } : {}),
   };
 }
 
