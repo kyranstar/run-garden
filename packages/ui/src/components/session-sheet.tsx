@@ -37,7 +37,7 @@ import {
   type SessionOverrides,
   type WorkoutDto,
 } from "@rg/api-client";
-import { docOriginRow, doseText, type DoseStep, type DoseTarget } from "@rg/domain";
+import { docOriginRow, doseText, newId, type DoseStep, type DoseTarget } from "@rg/domain";
 import { EXERCISES, label as vocab } from "@rg/exercise-library";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
@@ -52,6 +52,8 @@ import { keepStarted } from "./start-session.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
 import { addTargetHref, editableWorkout } from "../screens/studio/add-model.js";
 import type { BuilderArrival } from "../screens/studio/templates-model.js";
+import { refusalText } from "../screens/studio/use-build-flows.js";
+import { focusAfterRemove } from "../screens/week-view.js";
 import { continuable, MODE_LABEL } from "./today-program.js";
 import { WatchPreviewSheet } from "./watch-preview-sheet.js";
 
@@ -181,6 +183,26 @@ function useSendingPoll(sending: boolean, read: () => void, drain: () => Promise
 /** The watch states of a SENT build (its push queued, running, failed or verified). */
 const SENT_STATES: ReadonlyArray<string> = ["sending", "on_watch", "failed", "off_watch"];
 
+/** The plan's reads, read again once a workout leaves it. */
+const PLAN_QUERIES = ["today", "plan", "plan-week", "programs"] as const;
+
+/** A workout with no document of its own: nothing to keep as a template. */
+class NoTemplateDoc extends Error {}
+
+/** Why Remove didn't happen, and what to do (re-review N5): the server's reason, a workout gone, no connection. */
+export function removeRefusal(e: unknown): string {
+  if (e instanceof ApiError) {
+    const reason = (e.body as { reason?: string } | null)?.reason;
+    if (reason === "started") return "It's under way. Open it and discard it first, then remove it.";
+    if (reason === "done") return "It's done, so it stays on your plan. Close this to see it there.";
+    if (reason === "sending") return "It's being sent to your watch. Try again once it's there.";
+    if (reason === "not_studio") return "Only a workout made in the Studio can be removed. Skip this one instead.";
+    if (e.status === 404) return "It's gone already. Close this to see your plan.";
+    return "Couldn't remove it. Try again.";
+  }
+  return "Removing needs a connection — try again once you're online.";
+}
+
 /** The program's name: the row's title without the theme a build appends. */
 function withoutTheme(title: string, theme: string | null | undefined): string {
   const suffix = theme ? ` · ${theme}` : null;
@@ -224,22 +246,33 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const [removing, setRemoving] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteWorkout(w.id),
-    onSuccess: () => {
+    onSuccess: async () => {
       setRemoving(false);
-      refreshPlan();
       onClose();
+      // Its card goes once the plan is read again: focus moves on to the next card of its day, else the day's heading,
+      // never to the page (re-review N3).
+      await Promise.all(PLAN_QUERIES.map((k) => qc.invalidateQueries({ queryKey: [k] }))).catch(() => undefined);
+      setTimeout(() => focusAfterRemove(w.effectiveDate, w.id), 0);
     },
   });
-  const [templateSaid, setTemplateSaid] = useState("");
+  // Saved once (re-review N4): the button gives way to the line, which takes focus (N3); a retry whose answer was lost
+  // names the same template, so the server answers it, never a second.
+  const [templateLine, setTemplateLine] = useState<{ text: string; saved: boolean } | null>(null);
+  const templateKey = useRef(newId());
+  const templateLineRef = useRef<HTMLParagraphElement>(null);
   const saveAsTemplate = useMutation({
     mutationFn: async () => {
       const r = await api.workoutDoc(w.id);
-      if (!r.doc) throw new Error("no document");
-      return api.createTemplate({ name: r.doc.title, doc: r.doc });
+      if (!r.doc) throw new NoTemplateDoc();
+      return api.createTemplate({ name: r.doc.title, doc: r.doc, clientId: templateKey.current });
     },
-    onSuccess: (res) => setTemplateSaid(`Saved “${res.template.name}” as a template.`),
-    onError: (e) => setTemplateSaid(e instanceof ApiError ? "Couldn't save it as a template. Try again." : "Saving needs a connection — try again once you're online."),
+    onSuccess: (res) => setTemplateLine({ text: `Saved “${res.template.name}” as a template.`, saved: true }),
+    onError: (e) =>
+      setTemplateLine({ text: e instanceof NoTemplateDoc ? "This workout can't be kept as a template." : refusalText(e, "save"), saved: false }),
   });
+  useEffect(() => {
+    if (templateLine?.saved) templateLineRef.current?.focus();
+  }, [templateLine]);
   /** Start refused because today's check keeps a move out (409 `gated`): said, never swallowed (CUJ B3). */
   const [startRefused, setStartRefused] = useState<string | null>(null);
   const key = ["session", w.id];
@@ -793,14 +826,16 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
             <Link className="btn btn-small" to={`/studio/build/again/${encodeURIComponent(w.id)}`} state={{ from: cameFrom } satisfies BuilderArrival}>
               Do it again
             </Link>
-            <button type="button" className="btn btn-small" disabled={saveAsTemplate.isPending} onClick={() => saveAsTemplate.mutate()}>
-              Save as template
-            </button>
+            {templateLine?.saved ? null : (
+              <button type="button" className="btn btn-small" disabled={saveAsTemplate.isPending} onClick={() => saveAsTemplate.mutate()}>
+                Save as template
+              </button>
+            )}
           </p>
         ) : null}
         {doneWith ? (
-          <p className={templateSaid ? "session-status" : "session-status visually-hidden"} role="status">
-            {templateSaid}
+          <p ref={templateLineRef} tabIndex={-1} className={templateLine ? "session-status" : "session-status visually-hidden"} role="status">
+            {templateLine?.text ?? ""}
           </p>
         ) : null}
       </div>
@@ -811,9 +846,9 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         confirmLabel="Remove"
         busy={remove.isPending}
         onConfirm={() => remove.mutate()}
-        error={remove.isError ? "Couldn't remove it — try again." : null}
+        error={remove.isError ? removeRefusal(remove.error) : null}
       >
-        It comes off your plan and your calendar.
+        {s?.watch?.state === "on_watch" ? "It comes off your plan, your calendar and your watch." : "It comes off your plan and your calendar."}
       </ConfirmDialog>
       <ConfirmDialog
         open={discardingCopy}

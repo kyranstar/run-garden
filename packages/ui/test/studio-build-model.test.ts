@@ -237,6 +237,9 @@ describe("a dose in words, and its steppers", () => {
     expect(say({ sets: 3, holdSec: 90 })).toBe("3 × 90 s");
     expect(say({ breaths: 6 })).toBe("6 breaths");
     expect(say({ holdSec: 30, max: true })).toBe("30 s, to max");
+    // Each side, then to max (re-review N6).
+    expect(say({ holdSec: 30, max: true, perSide: true })).toBe("30 s each side, to max");
+    expect(say({ max: true, perSide: true })).toBe("each side, to max");
   });
 
   it("the amount follows the dose, else the move", () => {

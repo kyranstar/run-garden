@@ -264,6 +264,20 @@ export function useBuildFlows({
       setFlow({ step: "refused", text: refusalText(e, "start") });
     }
   };
+  /** The check Start offers (CUJ R5): a switched-on profile unanswered today, not skipped here already. */
+  const offered = () => bc.profiles.find((p) => !answered(bc.readings[p.id]) && !skipped.current.has(p.id));
+  /**
+   * A quick start's or a template's new workout: today may already hold one from the same start, which only the create
+   * can say (I3). Its check is offered once the create has made it — never before the offer to continue the one today
+   * already holds (re-review N2).
+   */
+  const startsOnce = (cur: Loaded | null): boolean => {
+    const doc = cur && !cur.key.startsWith("workout:") ? toProposable(cur.editor.doc) : null;
+    const sent = doc ? forSchedule(doc, source) : null;
+    return !!sent && (sent.basedOn?.kind === "template" || !!sent.source.ref?.startsWith("quick_start:"));
+  };
+  /** The server's warnings at a create whose check was offered before its build: shown with that build. */
+  const heldNotes = useRef<string[]>([]);
   const runStart = async (): Promise<void> => {
     const cur = live.current;
     const doc0 = cur ? toProposable(cur.editor.doc) : null;
@@ -273,7 +287,7 @@ export function useBuildFlows({
     try {
       let id: string;
       // The server's own warnings (what this page could not see) are shown with the build, before it locks.
-      let fresh: string[] = [];
+      let fresh: string[] = heldNotes.current.splice(0);
       if (cur.key.startsWith("workout:")) {
         id = cur.key.slice("workout:".length);
         if (dirtyOf(cur)) {
@@ -296,6 +310,15 @@ export function useBuildFlows({
         if (source.kind === "template") void api.useTemplate(source.id).catch(() => undefined);
         adopt(res.workout, sent);
         id = res.workout.id;
+        // Made now, today's check unanswered: offered before it is built (N2), then Start goes on with it.
+        const later = offered();
+        if (later) {
+          heldNotes.current = fresh;
+          refreshPlan();
+          setFlow(IDLE);
+          setAsking({ profileId: later.id, then: "start", offered: true });
+          return;
+        }
       }
       refreshPlan();
       const built = await api.buildSession(id, {});
@@ -372,9 +395,10 @@ export function useBuildFlows({
       return;
     }
     // Today's check unanswered, though nothing waits on it: offered first, so the session has a before as well as an
-    // after (CUJ R5) — the same sheet, one tap to go on without it.
-    const offer = bc.profiles.find((p) => !answered(bc.readings[p.id]) && !skipped.current.has(p.id));
-    if (offer) {
+    // after (CUJ R5) — the same sheet, one tap to go on without it. A quick start's or template's comes after the
+    // create (N2).
+    const offer = offered();
+    if (offer && !startsOnce(live.current)) {
       setAsking({ profileId: offer.id, then: "start", offered: true });
       return;
     }

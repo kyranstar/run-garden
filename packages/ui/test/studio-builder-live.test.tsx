@@ -1331,7 +1331,8 @@ describe("Start offers today's before reading (CUJ R5)", () => {
     await click(startButton(), "Start now");
     await until(() => !!dialog("Jaw / head"), "the check");
     const sheet = dialog("Jaw / head")!;
-    expect(sheet.textContent).toContain("Before you start, so this session has a before and an after.");
+    expect(sheet.textContent).not.toContain("Before you start");
+    expect(button("Skip", sheet)).not.toBeNull();
     expect(calls.some((c) => c.method === "POST" && c.path === "/api/workouts")).toBe(false);
     await click(buttons(sheet).find((b) => b.textContent === "2"), "2");
     await click(button("Save", sheet), "Save");
@@ -1382,7 +1383,6 @@ describe("Start offers today's before reading (CUJ R5)", () => {
     await click(startButton(), "Start now");
     await until(() => !!dialog("Jaw / head"), "the check");
     expect(button("Skip", dialog("Jaw / head")!)).toBeNull();
-    expect(dialog("Jaw / head")!.textContent).not.toContain("Before you start");
   });
 
   it("answered today already, or no profile on: Start asks nothing", async () => {
@@ -1501,5 +1501,42 @@ describe("the account's now (CUJ R14)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Start now of a quick start, today's check unanswered (re-review N2, N3)", () => {
+  const tmj = { library: libraryDto({ tmj: true }), today: todayDto(null) };
+
+  it("today already holds it: the offer to continue comes first — never the check — and focus is on Continue it", async () => {
+    const calls = serve({ startedToday: { id: "w-old", contentState: "started" } });
+    mount("/studio/build/quick/desk_reset", tmj);
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("You've started this today already."), "the offer");
+    expect(dialog("Jaw / head")).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Continue it");
+    expect(calls.some((c) => c.path === "/api/conditions/checks")).toBe(false);
+  });
+
+  it("a template today already holds: the offer to continue it, never the check first", async () => {
+    const t1: TemplateDto = { id: "t1", name: "Thursday lift", doc: storedDoc("Thursday lift"), pinned: false, uses: 0, lastUsedAt: null, createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", minutes: 20, discipline: "strength" };
+    serve({ templates: [[t1]], startedToday: { id: "w-old", contentState: "built" } });
+    mount("/studio/build/template/t1", tmj);
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("Today already has this one."), "the offer");
+    expect(dialog("Jaw / head")).toBeNull();
+  });
+
+  it("today doesn't hold it: made first, then the check offered before it is built — Skip goes on", async () => {
+    const calls = serve();
+    mount("/studio/build/quick/desk_reset", tmj);
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/workouts"]);
+    await click(button("Skip", dialog("Jaw / head")!), "Skip");
+    await until(() => text().includes("the player"), "the player");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/workouts", "/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
   });
 });

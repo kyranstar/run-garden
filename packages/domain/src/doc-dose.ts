@@ -40,15 +40,15 @@ export function amountText(dose: WorkoutDose, kind: AmountKind): string {
   return kind === "hold" ? secondsText(dose.holdSec!) : kind === "distance" ? `${v} m` : v;
 }
 
-/** "3 × 8 · 25 lb", "10 reps", "30 s each side", "6 breaths". */
+/** "3 × 8 · 25 lb", "10 reps", "30 s each side", "30 s each side, to max", "6 breaths". */
 export function doseSummary(dose: WorkoutDose): string {
   const kind = amountKind(dose);
   const amount = amountText(dose, kind);
   const sets = dose.sets ?? 1;
   const unit = kind === "breaths" ? " breaths" : kind === "reps" && sets <= 1 && amount ? " reps" : "";
   const body = `${sets > 1 && amount ? `${sets} × ` : ""}${amount}${unit}`;
-  const max = dose.max ? `${body ? ", " : ""}to max` : "";
-  const sides = dose.perSide ? " each side" : "";
+  const sides = dose.perSide ? `${body ? " " : ""}each side` : "";
+  const max = dose.max ? `${body || sides ? ", " : ""}to max` : "";
   const load = dose.load && dose.load !== "bodyweight" ? ` · ${dose.load.typed}` : "";
-  return `${body}${max}${sides}${load}`;
+  return `${body}${sides}${max}${load}`;
 }

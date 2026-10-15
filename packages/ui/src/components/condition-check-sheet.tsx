@@ -187,7 +187,6 @@ export function ConditionCheckSheet({
       }
     >
       <div className="stack check-sheet">
-        {onSkip ? <p className="check-sheet-lead">Before you start, so this session has a before and an after.</p> : null}
         <CheckScale
           label={condition.check.label}
           min={condition.check.min}

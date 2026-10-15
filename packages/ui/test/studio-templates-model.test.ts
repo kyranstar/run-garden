@@ -203,7 +203,8 @@ describe("the builder's way back (Stage 2 whole-branch review I1, M9)", () => {
   it("goes where it was opened from: the templates list, Plan, Today, a Studio search or move — else the Studio", () => {
     expect(builderBack("templates")).toEqual({ href: "/studio/templates", label: "Templates" });
     expect(builderBack("plan")).toEqual({ href: "/plan", label: "Plan" });
-    expect(builderBack("today")).toEqual({ href: "/", label: "Today" });
+    // The nav's own word for that screen (re-review N7).
+    expect(builderBack("today")).toEqual({ href: "/", label: "Garden" });
     expect(builderBack({ href: "/studio?q=goblet" })).toEqual({ href: "/studio?q=goblet", label: "Studio" });
     expect(builderBack({ href: "/studio/move/gobletSquat?q=goblet" })).toEqual({ href: "/studio/move/gobletSquat?q=goblet", label: "Studio" });
     // Only a Studio address: anything else the history state might hold goes to the Studio's home.

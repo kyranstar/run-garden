@@ -302,6 +302,10 @@ function Builder({ source }: { source: BuildSource }) {
   const [flow, setFlow] = useState<Flow>({ step: "idle" });
   const [sendingWatch, setSendingWatch] = useState<{ workoutId: string; minutes: number } | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  // Start now turned into the offer to continue today's (I3): focus is on Continue it, never left on the page (N3).
+  useEffect(() => {
+    if (flow.step === "again") root.current?.querySelector<HTMLElement>(".stu-build-continue")?.focus();
+  }, [flow.step]);
   /** Where focus goes once the next render lands: the first of these on the page. */
   const focusNext = useRef<readonly string[] | null>(null);
   const whyId = useId();
@@ -775,7 +779,7 @@ function Builder({ source }: { source: BuildSource }) {
             </>
           ) : flow.step === "again" ? (
             <>
-              <button type="button" className="btn btn-primary" onClick={() => void continueToday(flow.workout)}>
+              <button type="button" className="btn btn-primary stu-build-continue" onClick={() => void continueToday(flow.workout)}>
                 Continue it
               </button>
               <button type="button" className="btn" onClick={() => setFlow(IDLE)}>

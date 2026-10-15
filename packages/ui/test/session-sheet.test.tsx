@@ -16,9 +16,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
+import { ApiError, type ReviewBasisDto, type SessionDto, type SessionExerciseDto, type WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { SessionSheet, blockLabel, blocksInPlayOrder, reasonLine, sendingPollClock } from "../src/components/session-sheet.js";
+import { SessionSheet, blockLabel, blocksInPlayOrder, reasonLine, removeRefusal, sendingPollClock } from "../src/components/session-sheet.js";
+import { focusAfterRemove } from "../src/screens/week-view.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
@@ -1668,8 +1669,73 @@ describe("a document workout in the sheet, CUJ wave", () => {
     expect(button("Do it again")!.getAttribute("href")).toBe(`/studio/build/again/${SLOT}`);
     await click("Save as template");
     await until(() => body().includes("Saved “Leg day” as a template."), "the line");
-    expect(calls.find((c) => c.method === "POST" && c.path === "/api/templates")!.body).toMatchObject({ name: "Leg day", doc });
+    expect(calls.find((c) => c.method === "POST" && c.path === "/api/templates")!.body).toMatchObject({ name: "Leg day", doc, clientId: expect.any(String) });
+    // Saved once: the button gives way to the line, and focus is on it (re-review N3, N4).
+    expect(button("Save as template")).toBeUndefined();
+    expect(document.activeElement?.textContent).toBe("Saved “Leg day” as a template.");
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/api/templates")).toHaveLength(1);
   });
+
+  it("Save as template at the templates' limit says what to do, as the builder does, and keeps the button (re-review N5)", async () => {
+    const done = docRow({ completionState: "completed", contentState: "done" });
+    const doc = { version: 1, title: "Leg day", intent: { summary: "Leg day", goals: [], focus: [], effort: "develop" }, parts: [], source: { kind: "studio" } };
+    mount(docSession({ contentState: "done", locked: true }), {
+      w: done,
+      route: (call) => {
+        const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+        if (call.path === `/api/workouts/${SLOT}/doc`) return json({ doc, rev: 1, derived: null });
+        if (call.method === "POST" && call.path === "/api/templates") return json({ error: "too_many" }, 409);
+        return undefined;
+      },
+    });
+    await until(() => !!button("Save as template"), "Save as template");
+    await click("Save as template");
+    await until(() => body().includes("You have as many templates as you can keep. Delete one first."), "the refusal");
+    expect(button("Save as template")).toBeDefined();
+  });
+
+  it("a Remove the server refuses says why and what to do, in the confirm (re-review N5)", async () => {
+    mount(docSession(), {
+      w: docRow(),
+      route: (call) =>
+        call.method === "DELETE" ? new Response(JSON.stringify({ error: "not_removable", reason: "started" }), { status: 409, headers: { "Content-Type": "application/json" } }) : undefined,
+    });
+    await until(() => !!button("Remove"), "Remove");
+    await click("Remove");
+    const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter((b) => b.textContent === "Remove").pop()!;
+    await act(async () => confirm.click());
+    await until(() => body().includes("It's under way. Open it and discard it first, then remove it."), "the refusal");
+  });
+
+  it("Remove's confirm says the watch too when the workout is on it (re-review N5)", async () => {
+    mount({ ...docSession(), watch: { state: "on_watch" } } as SessionDto, { w: docRow() });
+    await until(() => !!button("Remove") && body().includes("Goblet squat"), "the session read");
+    await click("Remove");
+    await until(() => body().includes("Remove this workout?"), "the confirm");
+    expect(body()).toContain("It comes off your plan, your calendar and your watch.");
+  });
+
+  it("removed: focus goes to the next card of its day, never to the page (re-review N3)", async () => {
+    // The Plan's week, as the sheet leaves it: the day's cell, this workout's card and another.
+    const week = document.createElement("div");
+    week.className = "plan-week-grid";
+    week.innerHTML = `<div data-date="${TODAY}"><div class="plan-week-date" tabindex="-1">MON 5</div><div class="plan-week-items"><button class="cal-card" data-workout="${SLOT}">Leg day</button><button class="cal-card" data-workout="w-other">Easy run</button></div></div>`;
+    document.body.appendChild(week);
+    try {
+      mount(docSession(), {
+        w: docRow(),
+        route: (call) => (call.method === "DELETE" ? new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }) : undefined),
+      });
+      await until(() => !!button("Remove"), "Remove");
+      await click("Remove");
+      const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter((b) => b.textContent === "Remove").pop()!;
+      await act(async () => confirm.click());
+      await until(() => document.activeElement?.textContent === "Easy run", "focus on the next card");
+    } finally {
+      week.remove();
+    }
+  });
+
 
   it("a Studio workout whose day passed undone can be done again too (B2)", async () => {
     mount(docSession(), { w: docRow({ effectiveDate: "2026-10-04", originalPlanDate: "2026-10-04" }) });
@@ -1691,5 +1757,43 @@ describe("a document workout in the sheet, CUJ wave", () => {
     await act(async () => new Promise((r) => setTimeout(r, 20)));
     expect(button("Do it again")).toBeUndefined();
     expect(button("Save as template")).toBeUndefined();
+  });
+});
+
+describe("Remove's refusals say what to do (re-review N5)", () => {
+  it("each reason, a gone workout and no connection, in plain words", () => {
+    const refused = (status: number, body: unknown) => removeRefusal(new ApiError(status, body));
+    expect(refused(409, { error: "not_removable", reason: "started" })).toBe("It's under way. Open it and discard it first, then remove it.");
+    expect(refused(409, { error: "not_removable", reason: "done" })).toBe("It's done, so it stays on your plan. Close this to see it there.");
+    expect(refused(409, { error: "not_removable", reason: "sending" })).toBe("It's being sent to your watch. Try again once it's there.");
+    expect(refused(409, { error: "not_removable", reason: "not_studio" })).toBe("Only a workout made in the Studio can be removed. Skip this one instead.");
+    expect(refused(404, { error: "not_found" })).toBe("It's gone already. Close this to see your plan.");
+    expect(refused(500, { error: "internal" })).toBe("Couldn't remove it. Try again.");
+    expect(removeRefusal(new TypeError("Failed to fetch"))).toBe("Removing needs a connection — try again once you're online.");
+  });
+});
+
+describe("focus after a workout is removed from the week (re-review N3)", () => {
+  const week = (cards: string[]) => {
+    const el = document.createElement("div");
+    el.className = "plan-week-grid";
+    el.innerHTML = `<h2 class="plan-week-title" tabindex="-1">Oct 12–18</h2><div data-date="2026-10-15"><div class="plan-week-date" tabindex="-1">THU 15</div><div class="plan-week-items">${cards.map((id) => `<button class="cal-card" data-workout="${id}">${id}</button>`).join("")}</div></div>`;
+    document.body.appendChild(el);
+    return el;
+  };
+
+  it("the next card of the day, else the day's heading, else the week's", () => {
+    let el = week(["gone", "next"]);
+    focusAfterRemove("2026-10-15", "gone");
+    expect(document.activeElement?.textContent).toBe("next");
+    el.remove();
+    el = week(["gone"]);
+    focusAfterRemove("2026-10-15", "gone");
+    expect(document.activeElement?.textContent).toBe("THU 15");
+    el.remove();
+    el = week([]);
+    focusAfterRemove("2026-10-20", "gone");
+    expect(document.activeElement?.textContent).toBe("Oct 12–18");
+    el.remove();
   });
 });

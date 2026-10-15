@@ -42,7 +42,8 @@ export interface BuilderArrival {
 export function builderBack(from: BuilderArrival["from"]): { href: string; label: string } {
   if (from === "templates") return { href: TEMPLATES_HREF, label: "Templates" };
   if (from === "plan") return { href: "/plan", label: "Plan" };
-  if (from === "today") return { href: "/", label: "Today" };
+  // Named as the nav names that screen (re-review N7).
+  if (from === "today") return { href: "/", label: "Garden" };
   // Only a Studio address is a way back from the Studio (the history state is the page's own, but never trusted far).
   if (typeof from === "object" && from && /^\/studio(?:[/?]|$)/.test(from.href)) return { href: from.href, label: "Studio" };
   return { href: "/studio", label: "Studio" };

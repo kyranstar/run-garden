@@ -56,6 +56,7 @@ export function WorkoutCell({
   return (
     <button
       className={`cal-card ${done ? "done" : ""} ${faded ? "faded" : ""} ${asks ? "asks" : ""}`}
+      data-workout={w.id}
       onClick={onOpen}
       title={w.corosName ?? w.title}
     >
@@ -204,7 +205,7 @@ export function WeekView({
             ›
           </button>
         </span>
-        <h2 className="plan-week-title">
+        <h2 className="plan-week-title" tabIndex={-1}>
           {offCurrent ? null : <span className="pw-wide">This week · </span>}
           {weekRangeLabel(week.weekStart)}
         </h2>
@@ -265,8 +266,8 @@ export function WeekView({
             .filter(Boolean)
             .join(" ");
           return (
-            <div key={day.date} className={classes}>
-              <div className="plan-week-date">
+            <div key={day.date} className={classes} data-date={day.date}>
+              <div className="plan-week-date" tabIndex={-1}>
                 <span className="plan-week-dow">{WEEKDAY_HEADERS[i]}</span>
                 <span className="plan-week-dom num">{dayOfMonth(day.date)}</span>
               </div>
@@ -293,4 +294,15 @@ export function WeekView({
       </div>
     </section>
   );
+}
+
+/**
+ * Where focus goes once a workout's card has left the week (its sheet's Remove, re-review N3): the next card of its
+ * day, else the day's heading, else the week's — never the page.
+ */
+export function focusAfterRemove(date: string, workoutId: string): void {
+  const day = document.querySelector<HTMLElement>(`[data-date="${date}"]`);
+  const next = [...(day?.querySelectorAll<HTMLElement>(".cal-card") ?? [])].find((c) => c.dataset.workout !== workoutId);
+  const to = next ?? day?.querySelector<HTMLElement>(".plan-week-date") ?? document.querySelector<HTMLElement>(".plan-week-title");
+  to?.focus();
 }
