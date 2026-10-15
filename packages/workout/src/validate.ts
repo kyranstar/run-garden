@@ -53,7 +53,7 @@
  * - equipment_unavailable (warning): the move needs gear `equipment` (the place's) lacks.
  * - progression_jump (warning): with `day.done`, a jump past the athlete's frontier (the library's `onFrontier`: an
  *   easier variant must have been done cleanly); `fix` is the first move down its easier variants that is on the
- *   frontier.
+ *   frontier and that the day does not refuse in that part (none, and no move named, when every one is refused).
  * - format_mismatch: a superset needs exactly two exercises (error); a circuit holds 3–6 moves (warning: the engine's
  *   own builds must validate clean); intervals need a run or a timed move (error).
  * - dose_mismatch (warning): an exercise with no amount (none of reps, holdSec, breaths, carryM, max); reps on a timed
@@ -400,8 +400,11 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     return best?.id;
   }
 
-  /** The first move down a jump's easier variants that is on the athlete's frontier. */
-  function frontierStep(rec: ExerciseRecord): ExerciseRecord | undefined {
+  /**
+   * The first move down a jump's easier variants that is on the athlete's frontier and that the day does not refuse
+   * here (no error of its own in this part: a jump a gated day keeps out is never the fix).
+   */
+  function frontierStep(rec: ExerciseRecord, format: DocFormat): ExerciseRecord | undefined {
     const seen = new Set([rec.id]);
     let level = [...rec.easier];
     for (let depth = 0; depth < FRONTIER_DEPTH && level.length; depth++) {
@@ -410,7 +413,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         const r = find(id);
         if (!r || seen.has(r.id)) continue;
         seen.add(r.id);
-        if (onFrontier(r, isDone)) return r;
+        if (onFrontier(r, isDone) && !judge(r, format).some((f) => f.severity === "error")) return r;
         next.push(...r.easier);
       }
       level = next;
@@ -556,7 +559,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
       }
     }
     if (done && !onFrontier(rec, isDone)) {
-      const step = frontierStep(rec);
+      const step = frontierStep(rec, part.format);
       add({
         path: idAt, code: "progression_jump",
         message: step ? `${name} is a step past the jumps you've done; ${step.name} comes first.` : `${name} is a step past the jumps you've done.`,

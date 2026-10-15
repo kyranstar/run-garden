@@ -678,6 +678,19 @@ describe("progression_jump", () => {
     expect(check(hop("tuckJump", "develop"), done("broadJumpStick"))).toEqual([]);
   });
 
+  it("its fix is never a move the day refuses: at a jaw of 6 the snap-down is a jump kept out too, so it is not offered (CUJ re-walk)", () => {
+    const gated = dayOf(reading(6), { done: new Set<string>() });
+    const refused = (id: string) => check(hop(id), gated).some((i) => i.severity === "error" && i.path === `${P0}.libraryId`);
+    expect(refused("snapDown")).toBe(true);
+    const jump = check(hop("pogoHop"), gated).find((i) => i.code === "progression_jump")!;
+    expect(jump).toBeDefined();
+    expect(jump.fix).not.toBe("snapDown");
+    expect(jump.message).not.toContain("Snap-down");
+    if (jump.fix) expect(refused(jump.fix)).toBe(false);
+    // On a calm day it is still the frontier move.
+    expect(check(hop("pogoHop"), done())[0]).toMatchObject({ code: "progression_jump", fix: "snapDown" });
+  });
+
   it("reads a done move by any id it has gone by", () => {
     const lib = LIBRARY.map((e) => (e.id === "snapDown" ? { ...e, legacyIds: [...e.legacyIds, "oldSnapDown"] } : e));
     const issues = validateWorkoutDoc(hop("pogoHop"), { library: lib, activeProfiles: [TMJ], day: dayOf(CALM, { done: new Set(["oldSnapDown"]) }) });
