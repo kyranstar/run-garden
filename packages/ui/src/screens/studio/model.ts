@@ -179,10 +179,19 @@ export interface StudioCtx {
 export const emptyStudioCtx: StudioCtx = { profiles: [], readings: {}, prefs: new Map(), place: null, places: [], focusRefs: [], today: null };
 
 /**
+ * The default place, in the server's order (apps/worker/src/services/default-place.ts): the profile's chosen default
+ * while it is still one of the athlete's places, else the place marked default, else the first made — `GET /api/places`
+ * lists the marked default first, then by creation. Null with no place at all (the caller's Home preset then).
+ */
+export function defaultPlaceOf<P extends { id: string; isDefault: boolean }>(places: readonly P[], chosenId: string | undefined): P | null {
+  return (chosenId ? places.find((p) => p.id === chosenId) : undefined) ?? places.find((p) => p.isDefault) ?? places[0] ?? null;
+}
+
+/**
  * The context from the four reads the Studio makes, each optional: offline, or before they answer, the list still
  * renders from the bundled library and simply knows less. The switched-on profiles come from the library read and
- * from today's (which the service worker keeps offline); the place is the account's default, else the first, else the
- * library's Home — as the server judges it; the focus areas come from the profile.
+ * from today's (which the service worker keeps offline); the place is the default place in the server's order
+ * (`defaultPlaceOf`), else the library's Home; the focus areas come from the profile.
  */
 export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, places?: PlacesResponse, profile?: ProfileDto): StudioCtx {
   const ids = [...new Set([...(library?.profiles ?? []).map((p) => p.profileId), ...(today?.conditions ?? []).map((c) => c.profileId)])];
@@ -198,18 +207,18 @@ export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, p
     ]),
   );
   let place: StudioCtx["place"] = null;
+  const list = places?.places ?? [];
+  const chosen = defaultPlaceOf(list, profile?.preferences.defaultPlaceId);
   if (places) {
-    const own = places.places.find((p) => p.isDefault) ?? places.places[0];
     const preset = LOCATION_PRESETS.find((p) => p.id === "home") ?? LOCATION_PRESETS[0]!;
-    place = own ? { id: own.id, name: own.name, equipment: own.equipment } : { name: preset.name, equipment: preset.equipment };
+    place = chosen ? { id: chosen.id, name: chosen.name, equipment: chosen.equipment } : { name: preset.name, equipment: preset.equipment };
   }
-  const own = places?.places ?? [];
   return {
     profiles: ids.filter(isProfileId).map((id) => PROFILES[id]),
     readings,
     prefs,
     place,
-    places: [...own.filter((p) => p.isDefault), ...own.filter((p) => !p.isDefault)].map((p) => ({ id: p.id, name: p.name, equipment: p.equipment })),
+    places: (chosen ? [chosen, ...list.filter((p) => p !== chosen)] : list).map((p) => ({ id: p.id, name: p.name, equipment: p.equipment })),
     focusRefs: [...new Set((profile?.focusAreas ?? []).flatMap((f) => f.refs))],
     today: today?.today ?? null,
   };

@@ -619,3 +619,28 @@ describe("the account's clock (CUJ R14)", () => {
     expect(timeHasPassed("13:00", at, "America/Los_Angeles")).toBe(true);
   });
 });
+
+describe("the default place, in the server's order (apps/worker/src/services/default-place.ts)", () => {
+  /** As `GET /api/places` lists them: the place marked default first, then by creation. */
+  const places = (...ps: Array<[string, boolean]>) => ({
+    places: ps.map(([id, isDefault]) => ({ id, name: id, equipment: [], implements: {}, isDefault })),
+    equipment: [],
+  });
+  const choosing = (id?: string) => ({ ...profileDto(), preferences: id ? { defaultPlaceId: id } : {} });
+  const at = (...a: Parameters<typeof studioCtxFrom>) => studioCtxFrom(...a).place;
+
+  it("the profile's chosen default while it is one of the places; else the one marked default; else the first made; else Home", () => {
+    expect(at(undefined, undefined, places(["gym", true], ["home", false], ["cabin", false]), choosing("cabin"))?.id).toBe("cabin");
+    // A choice that is no longer one of the places is no choice.
+    expect(at(undefined, undefined, places(["gym", true], ["home", false]), choosing("gone"))?.id).toBe("gym");
+    expect(at(undefined, undefined, places(["gym", true], ["home", false]), choosing())?.id).toBe("gym");
+    expect(at(undefined, undefined, places(["first", false], ["second", false]))?.id).toBe("first");
+    const home = at(undefined, undefined, places());
+    expect(home?.id).toBeUndefined();
+    expect(home?.name).toBe("Home");
+  });
+
+  it("the default leads the place chip's list", () => {
+    expect(studioCtxFrom(undefined, undefined, places(["gym", true], ["home", false], ["cabin", false]), choosing("cabin")).places.map((p) => p.id)).toEqual(["cabin", "gym", "home"]);
+  });
+});
