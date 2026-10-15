@@ -12,7 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EXERCISES, PROFILES, label } from "@rg/exercise-library";
+import { EXERCISES, hasEquipment, NO_EQUIPMENT_GEAR, PROFILES, label } from "@rg/exercise-library";
 import { StudioScreen, URL_WRITE_MS } from "../src/screens/studio/screen.js";
 import {
   activeChips,
@@ -20,6 +20,7 @@ import {
   loosenings,
   readStudio,
   studioResults,
+  studioSearch,
   type StudioCtx,
 } from "../src/screens/studio/model.js";
 import { libraryDto, placesDto, primedClient, text, todayDto, type Primed } from "./studio-fixtures.js";
@@ -69,6 +70,28 @@ describe("studioResults", () => {
     expect(kb.every((r) => [...r.equipment.all, ...r.equipment.oneOf].includes("kettlebell"))).toBe(true);
   });
 
+  it("a place chosen is the gear judged: another place's, or bodyweight only — a hotel search finds what fits (CUJ re-walk §2.3)", () => {
+    const ctx: StudioCtx = {
+      ...emptyStudioCtx,
+      place: { id: "p1", name: "Home", equipment: ["mat"] },
+      places: [
+        { id: "p1", name: "Home", equipment: ["mat"] },
+        { id: "p2", name: "Gym", equipment: ["mat", "cable", "kettlebell", "dumbbells"] },
+      ],
+    };
+    expect(studioResults(EXERCISES, "goblet", {}, ctx)).toEqual([]);
+    expect(names(studioResults(EXERCISES, "goblet", { place: "p2" }, ctx))).toContain("Goblet squat");
+    const bare = studioResults(EXERCISES, "", { place: "none" }, ctx);
+    expect(bare.length).toBeGreaterThan(0);
+    expect(bare.every((r) => hasEquipment(r, NO_EQUIPMENT_GEAR))).toBe(true);
+    expect(names(bare)).toContain("Wall angels");
+    // Its chip says it, and taking it off is the default place again.
+    const chips = activeChips({ place: "none" }, ctx);
+    expect(chips.map((c) => c.label)).toEqual(["Bodyweight only"]);
+    expect(chips[0]!.without).toEqual({});
+    expect(activeChips({ place: "p2" }, ctx).map((c) => c.label)).toEqual(["At Gym"]);
+  });
+
   it("pinned and not-for-me read the athlete's own say", () => {
     const ctx: StudioCtx = {
       ...emptyStudioCtx,
@@ -86,6 +109,12 @@ describe("studioResults", () => {
 });
 
 describe("the URL is the state", () => {
+  it("a place is in the URL, and back", () => {
+    expect(readStudio(new URLSearchParams("place=none")).filters).toEqual({ place: "none" });
+    expect(readStudio(new URLSearchParams("place=p2&part=strength")).filters).toEqual({ part: "strength", place: "p2" });
+    expect(studioSearch("", { place: "p2" })).toBe("?place=p2");
+  });
+
   it("reads the query and the filters; unknown values are ignored", () => {
     const s = readStudio(new URLSearchParams("q=squat&part=strength&how=nope&tag=ski&max=2&fit=0&gear=any"));
     expect(s.q).toBe("squat");

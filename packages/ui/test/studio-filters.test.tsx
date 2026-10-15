@@ -102,6 +102,9 @@ describe("one value per facet", () => {
     expect(named("At Home")!.getAttribute("aria-pressed")).toBe("true");
     c.tap("Any equipment");
     expect(c.now()).toEqual({ gear: "any" });
+    // One piece of gear is one tap down: the places come first (the sheet kept short).
+    expect(named("Kettlebell")!.closest("[hidden]")).not.toBeNull();
+    c.tap("More equipment");
     c.tap("Kettlebell");
     expect(c.now()).toEqual({ gear: "kettlebell" });
     c.tap("Kettlebell");
@@ -197,5 +200,36 @@ describe("the sheet", () => {
     await act(async () => show.click());
     expect(where).toBe("/studio?all=1");
     expect(host!.querySelector(".stu-list")).not.toBeNull();
+  });
+});
+
+describe("the places in the Equipment facet (CUJ re-walk §2.3)", () => {
+  const ctx: StudioCtx = {
+    ...emptyStudioCtx,
+    place: { id: "p1", name: "Home", equipment: ["mat"] },
+    places: [
+      { id: "p1", name: "Home", equipment: ["mat"] },
+      { id: "p2", name: "Gym", equipment: ["mat", "cable"] },
+    ],
+  };
+
+  it("each place, Bodyweight only and Any equipment, the default place first; a place again goes back to the default", () => {
+    const c = controls({}, ctx);
+    const chips = [...facet("Equipment").querySelectorAll<HTMLButtonElement>("button")].filter((b) => !b.closest("[hidden]")).map((b) => (b.textContent ?? "").trim());
+    expect(chips.slice(0, 5)).toEqual(["At Home", "At Gym", "Bodyweight only", "Any equipment", "More equipment"]);
+    c.tap("At Gym");
+    expect(c.now()).toEqual({ place: "p2" });
+    expect(named("At Gym")!.getAttribute("aria-pressed")).toBe("true");
+    expect(named("At Home")!.getAttribute("aria-pressed")).toBe("false");
+    c.tap("Bodyweight only");
+    expect(c.now()).toEqual({ place: "none" });
+    c.tap("Bodyweight only");
+    expect(c.now()).toEqual({});
+    c.tap("At Gym");
+    c.tap("Any equipment");
+    expect(c.now()).toEqual({ gear: "any" });
+    c.tap("At Gym");
+    c.tap("At Home");
+    expect(c.now()).toEqual({});
   });
 });

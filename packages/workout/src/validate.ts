@@ -223,6 +223,40 @@ const guessEquipment = guesser(EQUIPMENT_IDS.flatMap((id) => [[id, id], [EQUIPME
  */
 const effortWord = (e: WorkoutDoc["intent"]["effort"]): string => label(e);
 const worstDay = (p: ConditionProfile): CheckReading => ({ pre: p.check.max, post: p.check.max, feelingOff: true });
+
+/**
+ * The day's advice on a workout's effort (`mode_above_day`), for a workout above Recover on its own day: the day's
+ * "feeling off" (the engine's own sentence), else each profile's own words for its reading and the recent sessions —
+ * its `recoveryReason` (Recover), or for a Develop or Peak day the first failed `buildChecks` line (Maintain). The
+ * validator's, and the session sheet's for a document built today (one voice, CUJ re-walk §2.6).
+ */
+export function effortAdvice(
+  effort: WorkoutDoc["intent"]["effort"],
+  profiles: readonly ConditionProfile[],
+  day: Pick<DayContext, "date" | "readings" | "feelingOff" | "recent">,
+): Array<{ message: string; fix: WorkoutDoc["intent"]["effort"] }> {
+  const mode = modeOfEffort(effort);
+  if (mode === "recovery") return [];
+  if (day.feelingOff) return [{ message: FEELING_OFF, fix: "recover" }];
+  const last = day.recent?.last ?? null;
+  const week = day.recent?.week ?? [];
+  const byId = new Map<string, HistorySession>();
+  for (const s of [...week, ...(last ? [last] : [])]) if (s.date <= day.date) byId.set(s.id, s);
+  const past = [...byId.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const out: Array<{ message: string; fix: WorkoutDoc["intent"]["effort"] }> = [];
+  for (const p of profiles) {
+    const pctx: ProposalCtx = { today: day.date, reading: day.readings[p.id] ?? UNANSWERED, past, last, week };
+    const why = p.recoveryReason(pctx);
+    if (why) {
+      out.push({ message: why, fix: "recover" });
+      continue;
+    }
+    if (mode !== "build") continue;
+    const failed = p.buildChecks(pctx).find(([ok]) => !ok);
+    if (failed) out.push({ message: failed[1], fix: "maintain" });
+  }
+  return out;
+}
 const patternOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => rec.patterns.every((pt) => p.allowPattern(pt, mode, r));
 const recordOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => !p.allowRecord || p.allowRecord(rec, mode, r);
 /** A reading that says something: a "before" number, or "feeling off". */
@@ -435,27 +469,8 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   });
 
   // ── The day's mode: the day's "feeling off", else each profile's own words ──
-  if (phase === "today" && mode !== "recovery") {
-    if (day!.feelingOff) {
-      add({ path: "intent.effort", code: "mode_above_day", message: FEELING_OFF, fix: "recover", severity: "warning" });
-    } else {
-      const last = day!.recent?.last ?? null;
-      const week = day!.recent?.week ?? [];
-      const byId = new Map<string, HistorySession>();
-      for (const s of [...week, ...(last ? [last] : [])]) if (s.date <= day!.date) byId.set(s.id, s);
-      const past = [...byId.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-      for (const p of profiles) {
-        const pctx: ProposalCtx = { today: day!.date, reading: readingOf(p) ?? UNANSWERED, past, last, week };
-        const why = p.recoveryReason(pctx);
-        if (why) {
-          add({ path: "intent.effort", code: "mode_above_day", message: why, fix: "recover", severity: "warning" });
-          continue;
-        }
-        if (mode !== "build") continue;
-        const failed = p.buildChecks(pctx).find(([ok]) => !ok);
-        if (failed) add({ path: "intent.effort", code: "mode_above_day", message: failed[1], fix: "maintain", severity: "warning" });
-      }
-    }
+  if (phase === "today") {
+    for (const a of effortAdvice(doc.intent.effort, profiles, day!)) add({ path: "intent.effort", code: "mode_above_day", message: a.message, fix: a.fix, severity: "warning" });
   }
 
   // ── Parts ──

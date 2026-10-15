@@ -1269,10 +1269,12 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
   };
   const advance = async (ms: number) => {
     const end = clock.now + ms;
-    for (;;) {
+    // Bounded (5048df5): a timer that keeps scheduling itself at the same moment fails the test, never loops forever.
+    for (let runs = 0; ; runs++) {
       clock.due.sort((a, b) => a.at - b.at);
       const next = clock.due[0];
       if (!next || next.at > end) break;
+      if (runs >= 50) throw new Error(`the fake clock ran 50 timers before ${end} — it is not advancing`);
       clock.due.shift();
       clock.now = next.at;
       next.run();
@@ -1705,6 +1707,24 @@ describe("a document workout in the sheet, CUJ wave", () => {
     const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter((b) => b.textContent === "Remove").pop()!;
     await act(async () => confirm.click());
     await until(() => body().includes("It's under way. Open it and discard it first, then remove it."), "the refusal");
+  });
+
+  it("on a flare day, a document above Recover says the day's go-Recover line, as the builder does, with Edit in Studio (CUJ re-walk §2.6)", async () => {
+    const tmjView = { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care" };
+    mount(docSession({ profiles: [tmjView], checks: { tmj: { pre: 6, feelingOff: false } } } as Partial<SessionDto>), { w: docRow() });
+    await until(() => body().includes("Jaw/head is at 6 right now."), "the line");
+    const line = document.querySelector(".session-advice")!;
+    expect(line.textContent).toContain("Jaw/head is at 6 right now.");
+    expect(line.querySelector("a")!.textContent).toBe("Edit in Studio");
+  });
+
+  it("…and none at Recover, nor on a calm day", async () => {
+    const tmjView = { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care" };
+    const recover = docSession({ profiles: [tmjView], checks: { tmj: { pre: 6, feelingOff: false } } } as Partial<SessionDto>);
+    recover.build!.fromDoc!.effort = "recover";
+    mount(recover, { w: docRow() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect(document.querySelector(".session-advice")).toBeNull();
   });
 
   it("Remove's confirm says the watch too when the workout is on it (re-review N5)", async () => {

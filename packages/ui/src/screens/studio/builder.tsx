@@ -61,6 +61,7 @@ import { addDays, EFFORT_LEVELS, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, GLOSSARY, label, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
 import {
   makeLibraryIndex,
+  HISTORY_LIMIT,
   placementFor,
   redo,
   startEditing,
@@ -121,7 +122,7 @@ import { ScheduleSheet } from "./schedule-sheet.js";
 import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioReads } from "./screen.js";
 import { SummaryCard } from "./summary-card.js";
 import { builderBack, quickStartFor, type BuilderArrival } from "./templates-model.js";
-import { IDLE, useBuildFlows, workoutDocQuery, type CheckAsked, type Flow, type Loaded, type Status } from "./use-build-flows.js";
+import { IDLE, sameDocument, useBuildFlows, workoutDocQuery, type CheckAsked, type Flow, type Loaded, type Status } from "./use-build-flows.js";
 
 /** The readings this page recorded (or the session read gave): a Studio-only athlete's Today carries none. */
 const readingsQuery = (today: string) => ["studio", "readings", today] as const;
@@ -507,6 +508,30 @@ function Builder({ source }: { source: BuildSource }) {
     setStatus({ text: `Removed ${label(part.purpose)}.`, undoAt: live.current?.editor.past.length ?? 0 });
   };
   /** An edit whose refusal is said in the footer's line. */
+  /** A quick start as it is made at a place (`placeId`: the default's when absent), carrying that place. */
+  const quickAt = (placeId: string | undefined): WorkoutDoc | null => {
+    if (!quick) return null;
+    const made = quickStartFor(quick, { ...ctx, place: placeOf(ctx, placeId) }, today, recordedQ.data);
+    if (!("doc" in made)) return null;
+    return placeId === undefined ? made.doc : { ...made.doc, setting: { ...made.doc.setting, placeId } };
+  };
+  /**
+   * The place chosen (CUJ R8). A quick start not edited since it was made is made again at the new place — its moves,
+   * its doses — as if its tile had opened there (CUJ re-walk §2.3); edited, it stays as it is, and its notes say what
+   * the place lacks. One edit either way: Undo is what was there.
+   */
+  const pickPlace = (placeId: string | undefined) => {
+    const cur = live.current;
+    if (cur && quick) {
+      const asMade = quickAt(cur.editor.doc.setting?.placeId);
+      const next = asMade && sameDocument(cur.editor.doc, asMade) ? quickAt(placeId) : null;
+      if (next) {
+        commit({ doc: startEditing(next).doc, past: [...cur.editor.past, cur.editor.doc].slice(-HISTORY_LIMIT), future: [] });
+        return;
+      }
+    }
+    say({ type: "setPlace", placeId });
+  };
   const say = (action: EditAction) => {
     const r = edit(action);
     if (r) setStatus({ text: editRefusal(action, r, doc) });
@@ -585,7 +610,7 @@ function Builder({ source }: { source: BuildSource }) {
               chosen={here.id}
               choices={placeChoices(ctx)}
               readOnly={frozen}
-              onPick={(id) => say({ type: "setPlace", placeId: id })}
+              onPick={pickPlace}
             />
           ) : null}
           <div className="stu-build-goals">

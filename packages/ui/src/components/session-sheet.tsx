@@ -38,7 +38,8 @@ import {
   type WorkoutDto,
 } from "@rg/api-client";
 import { docOriginRow, doseText, newId, type DoseStep, type DoseTarget } from "@rg/domain";
-import { EXERCISES, label as vocab } from "@rg/exercise-library";
+import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
+import { effortAdvice } from "@rg/workout";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconAlert, IconInfo, IconSwap, IconWatch } from "../icons.js";
@@ -182,6 +183,18 @@ function useSendingPoll(sending: boolean, read: () => void, drain: () => Promise
 }
 /** The watch states of a SENT build (its push queued, running, failed or verified). */
 const SENT_STATES: ReadonlyArray<string> = ["sending", "on_watch", "failed", "off_watch"];
+
+/**
+ * The day's go-Recover line for a document built for today above Recover (CUJ re-walk §2.6): the builder's own words
+ * (`effortAdvice`), from the day's readings; null when the day asks nothing of it.
+ */
+export function goRecoverLine(s: SessionDto, today: string): string | null {
+  const effort = s.build?.fromDoc?.effort;
+  if (!effort || s.date !== today) return null;
+  const profiles = s.profiles.flatMap((v) => (isProfileId(v.profileId) ? [PROFILES[v.profileId]] : []));
+  const readings = Object.fromEntries(Object.entries(s.checks).map(([id, a]) => [id, { pre: a.pre, post: null, feelingOff: a.feelingOff }]));
+  return effortAdvice(effort, profiles, { date: today, readings }).find((a) => a.fix === "recover")?.message ?? null;
+}
 
 /** The plan's reads, read again once a workout leaves it. */
 const PLAN_QUERIES = ["today", "plan", "plan-week", "programs"] as const;
@@ -774,7 +787,28 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     );
   } else {
     // A day gone keeps the build it had, read-only: it can no longer be rebuilt (only moved to today).
-    body = <BuiltSession s={s} locked={locked || past} onPick={setPicker} onSwap={setSwapping} onHowto={setHowto} />;
+    const recover = !locked && !past ? goRecoverLine(s, today) : null;
+    body = (
+      <BuiltSession
+        s={s}
+        locked={locked || past}
+        onPick={setPicker}
+        onSwap={setSwapping}
+        onHowto={setHowto}
+        advice={
+          recover ? (
+            <p className="session-advice">
+              {recover}{" "}
+              {editable ? (
+                <Link to={addTargetHref({ kind: "workout", id: w.id })} state={{ from: cameFrom } satisfies BuilderArrival}>
+                  Edit in Studio
+                </Link>
+              ) : null}
+            </p>
+          ) : null
+        }
+      />
+    );
   }
 
   const items = s?.build?.items ?? [];
@@ -978,12 +1012,15 @@ function BuiltSession({
   onPick,
   onSwap,
   onHowto,
+  advice = null,
 }: {
   s: SessionDto;
   locked: boolean;
   onPick: (p: Picker) => void;
   onSwap: (slotKey: string) => void;
   onHowto: (slotKey: string) => void;
+  /** The day's go-Recover line, with its way to change it (a document built today above Recover). */
+  advice?: ReactNode;
 }) {
   const build = s.build!;
   const view = s.view!;
@@ -1024,6 +1061,7 @@ function BuiltSession({
         )}
       </div>
       {reasonLine(view) ? <p className="session-reason">{reasonLine(view)}</p> : null}
+      {advice}
       {build.fromDoc?.blocked.length ? (
         <p className="session-refused">{build.fromDoc.blocked[0]!.message} Start waits until it can.</p>
       ) : null}

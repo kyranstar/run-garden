@@ -8,14 +8,14 @@
  *
  * Kept short: the long, less-used facets (tags, theme, difficulty) show a first row and keep the rest one tap down
  * (`ChipRow`); a chosen value always shows. Chips are toggle buttons (`aria-pressed`) and a pressed chip shows a check,
- * so the choice never rests on colour. Equipment is the one facet that always has a value: the place's gear by
- * default, any equipment, or one piece.
+ * so the choice never rests on colour. Equipment is the one facet that always has a value: the default place's gear,
+ * another place's, bodyweight only, any equipment, or one piece — the places first, one piece of gear one tap down.
  */
 import { useId } from "react";
-import { CONTRACTIONS, EQUIPMENT, EQUIPMENT_IDS, EXERCISES, label, MUSCLE_REGION, MUSCLES, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
+import { CONTRACTIONS, EQUIPMENT, EQUIPMENT_IDS, EXERCISES, label, MUSCLE_REGION, MUSCLES, NO_EQUIPMENT_PLACE_ID, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
 import { Sheet, countNoun } from "../../components.js";
 import { ChipRow, type ChipSpec } from "./chip-row.js";
-import { browseParts, browseTags, difficultyLabel, visibleThemes, type Mine, type StudioCtx, type StudioFilters } from "./model.js";
+import { browseParts, browseTags, difficultyLabel, placeWord, visibleThemes, type Mine, type StudioCtx, type StudioFilters } from "./model.js";
 
 const has = (pred: (r: ExerciseRecord) => boolean): boolean => EXERCISES.some(pred);
 const AREAS = REGIONS.filter((g) => has((r) => r.regions.includes(g)));
@@ -82,8 +82,17 @@ export function FilterControls({
   };
   const setGear = (gear: StudioFilters["gear"]) => {
     const next = { ...f };
+    delete next.place;
     if (gear === undefined) delete next.gear;
     else next.gear = gear;
+    onChange(next);
+  };
+  /** Another place's gear (CUJ re-walk §2.3); that place again goes back to the default. */
+  const setPlace = (place: string) => {
+    const next = { ...f };
+    delete next.gear;
+    if (f.place === place) delete next.place;
+    else next.place = place;
     onChange(next);
   };
   const choice = <K extends keyof StudioFilters>(key: K, value: StudioFilters[K], text: string): ChipSpec => ({
@@ -92,11 +101,14 @@ export function FilterControls({
     on: f[key] === value,
     onClick: () => pick(key, value),
   });
-  const gear: ChipSpec[] = [
-    ...(ctx.place ? [{ key: "place", label: `At ${ctx.place.name}`, on: f.gear === undefined, onClick: () => setGear(undefined) }] : []),
-    { key: "any", label: "Any equipment", on: f.gear === "any" || (f.gear === undefined && !ctx.place), onClick: () => setGear("any") },
-    ...GEAR.map((g) => ({ key: g, label: EQUIPMENT[g], on: f.gear === g, onClick: () => setGear(f.gear === g ? undefined : g) })),
+  const others = ctx.places.filter((p) => p.id !== ctx.place?.id);
+  const places: ChipSpec[] = [
+    ...(ctx.place ? [{ key: "place", label: `At ${ctx.place.name}`, on: f.gear === undefined && f.place === undefined, onClick: () => setGear(undefined) }] : []),
+    ...others.map((p) => ({ key: `at:${p.id}`, label: placeWord(p.id, ctx), on: f.place === p.id, onClick: () => setPlace(p.id) })),
+    { key: "bodyweight", label: placeWord(NO_EQUIPMENT_PLACE_ID, ctx), on: f.place === NO_EQUIPMENT_PLACE_ID, onClick: () => setPlace(NO_EQUIPMENT_PLACE_ID) },
+    { key: "any", label: "Any equipment", on: f.gear === "any" || (f.gear === undefined && f.place === undefined && !ctx.place), onClick: () => setGear("any") },
   ];
+  const gear: ChipSpec[] = [...places, ...GEAR.map((g) => ({ key: g, label: EQUIPMENT[g], on: f.gear === g, onClick: () => setGear(f.gear === g ? undefined : g) }))];
   const muscles = f.area ? musclesIn(f.area) : [];
   return (
     <div className="stu-facets-body">
@@ -106,7 +118,7 @@ export function FilterControls({
         <Facet level={level} title={`${label(f.area)}: muscle`} chips={muscles.map((m) => choice("muscle", m, label(m)))} />
       ) : null}
       <Facet level={level} title="Contraction" chips={HOWS.map((c) => choice("how", c, label(c)))} />
-      <Facet level={level} title="Equipment" chips={gear} />
+      <Facet level={level} title="Equipment" chips={gear} limit={places.length} more="More equipment" less="Less equipment" />
       <Facet
         level={level}
         title="Tags"

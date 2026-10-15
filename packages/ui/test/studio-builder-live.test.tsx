@@ -14,7 +14,9 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DocIssueDto, SessionDto, TemplateDto, WorkoutDto } from "@rg/api-client";
 import { DEFAULT_SCHEDULING_PREFERENCES, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import { EXERCISES, hasEquipment, NO_EQUIPMENT_GEAR } from "@rg/exercise-library";
+import { quickStartFor } from "../src/screens/studio/templates-model.js";
+import { studioCtxFrom } from "../src/screens/studio/model.js";
 import { edit, newDoc, startEditing, suggestedItem, type DraftDoc, type EditAction } from "@rg/workout";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { draftStore } from "../src/studio-drafts.js";
@@ -1422,7 +1424,7 @@ describe("the place (CUJ R8)", () => {
     const sugs = [...document.querySelectorAll(".stu-sug-name, .stu-sug .term")].map((n) => n.textContent?.trim());
     for (const name of sugs) {
       const r = EXERCISES.find((e) => e.name === name);
-      if (r) expect(r.equipment.all.length + r.equipment.oneOf.length, name).toBe(0);
+      if (r) expect(hasEquipment(r, NO_EQUIPMENT_GEAR), name).toBe(true);
     }
     await settle(400);
     expect((await saved())?.setting?.placeId).toBe("none");
@@ -1538,5 +1540,59 @@ describe("Start now of a quick start, today's check unanswered (re-review N2, N3
     await click(button("Skip", dialog("Jaw / head")!), "Skip");
     await until(() => text().includes("the player"), "the player");
     expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/workouts", "/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+  });
+});
+
+describe("the place chip on a quick start (CUJ re-walk §2.3)", () => {
+  // A home with a band and nothing else: "No equipment" (a bare room's wall, chair, floor and towel) is another place.
+  const BAND_ONLY = ["band"];
+  const ctxAt = (placeId?: string) => {
+    const ctx = studioCtxFrom(undefined, todayDto(null, false), twoPlacesDto(BAND_ONLY));
+    const place = placeId === "none" ? { id: "none", name: "No equipment", equipment: [...NO_EQUIPMENT_GEAR] } : ctx.place;
+    return { ...ctx, place };
+  };
+  const namesOf = (doc: WorkoutDoc) => doc.parts.flatMap((p) => p.items.map((i) => (i.kind === "exercise" ? EXERCISES.find((r) => r.id === i.libraryId)!.name : "")));
+  const madeAt = (placeId?: string) => {
+    const made = quickStartFor("hip_opener", ctxAt(placeId), TODAY);
+    if (!("doc" in made)) throw new Error(made.reason);
+    return made.doc;
+  };
+  const shown = () => [...document.querySelectorAll(".stu-item-name")].map((n) => n.textContent);
+  const chip = () => document.querySelector<HTMLButtonElement>(".stu-place-btn");
+  const pick = async (name: string) => {
+    await click(chip(), "the chip");
+    await click([...document.querySelectorAll<HTMLElement>('.stu-place-menu [role="menuitemradio"]')].find((c) => c.textContent === name), name);
+  };
+
+  it("not edited since it was made: made again at the new place — what it says matches what it would be, built there", async () => {
+    // The precondition that makes this a test: the hip opener at Home is not the hip opener with no equipment.
+    expect(namesOf(madeAt("none"))).not.toEqual(namesOf(madeAt()));
+    const calls = serve();
+    mount("/studio/build/quick/hip_opener", { places: twoPlacesDto(BAND_ONLY) });
+    await until(() => shown().length > 0, "the quick start");
+    expect(shown()).toEqual(namesOf(madeAt()));
+    await pick("No equipment");
+    await until(() => JSON.stringify(shown()) === JSON.stringify(namesOf(madeAt("none"))), "the quick start made again");
+    expect(text()).not.toContain("which this place doesn't have");
+    // One edit: Undo is the quick start as it was.
+    await click(button("Undo"), "Undo");
+    expect(shown()).toEqual(namesOf(madeAt()));
+    await pick("No equipment");
+    await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    const made = calls.find((c) => c.method === "POST" && c.path === "/api/workouts")!;
+    expect((made.body as { doc: WorkoutDoc }).doc.setting?.placeId).toBe("none");
+  });
+
+  it("edited: kept as it is at the new place — its notes say what the place lacks", async () => {
+    serve();
+    mount("/studio/build/quick/hip_opener", { places: twoPlacesDto(BAND_ONLY) });
+    await until(() => shown().length > 0, "the quick start");
+    await click(effort("develop"), "Develop");
+    const before = shown();
+    await pick("No equipment");
+    await until(() => chip()!.textContent!.includes("No equipment"), "the chip");
+    expect(shown()).toEqual(before);
   });
 });

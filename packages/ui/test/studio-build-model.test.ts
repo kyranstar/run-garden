@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { WorkoutDto } from "@rg/api-client";
 import type { WorkoutDoc, WorkoutDose } from "@rg/domain";
 import { DEFAULT_SCHEDULING_PREFERENCES, itemSchema, partSchema, secondsText, workoutDocSchema } from "@rg/domain";
-import { EXERCISES, PROFILES } from "@rg/exercise-library";
+import { EXERCISES, NO_EQUIPMENT_GEAR, PROFILES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, suggestedItem, undo, type DraftDoc, type EditAction } from "@rg/workout";
 import {
   activationAt,
@@ -571,7 +571,8 @@ describe("the athlete's focus areas and places reach the Studio (CUJ R7, R8)", (
   });
 
   it("a document's place is the one judged: No equipment is bodyweight only, a place its own gear, none named the default", () => {
-    expect(buildCtxOf(ctx, "2026-10-11", {}, "none").equipment).toEqual([]);
+    // "No equipment" is the library's own place: bodyweight plus what any room has (a wall, a chair, the floor).
+    expect(buildCtxOf(ctx, "2026-10-11", {}, "none").equipment).toEqual([...NO_EQUIPMENT_GEAR]);
     expect(buildCtxOf(ctx, "2026-10-11", {}, "p2").equipment).toContain("cable");
     expect(buildCtxOf(ctx, "2026-10-11").equipment).toEqual(["mat"]);
     // A place gone (or not known here): the default's gear, as the chip says.

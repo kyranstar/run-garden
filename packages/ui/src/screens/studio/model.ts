@@ -25,6 +25,8 @@ import {
   isProfileId,
   label,
   LOCATION_PRESETS,
+  NO_EQUIPMENT_PLACE_ID,
+  noEquipmentPlace,
   MUSCLES,
   PROFILES,
   PURPOSES,
@@ -64,8 +66,10 @@ export interface StudioFilters {
   /** A body area (region); `muscle` narrows it. */
   area?: Region;
   muscle?: MuscleId;
-  /** `any`, or a move that uses this gear. Absent: the moves the place's gear can do. */
+  /** `any`, or a move that uses this gear. Absent (and no `place`): the moves the default place's gear can do. */
   gear?: "any" | EquipmentId;
+  /** The moves another place's gear can do: one of the athlete's places, or "none" — bodyweight only (CUJ re-walk §2.3). */
+  place?: string;
   tag?: Tag;
   theme?: string;
   /** The hardest difficulty shown (1–4). */
@@ -107,6 +111,8 @@ export function readStudio(params: URLSearchParams): StudioState {
   if (area) f.area = area;
   if (muscle) f.muscle = muscle;
   if (gear) f.gear = gear;
+  const place = params.get("place");
+  if (place && place.length <= 80 && !gear) f.place = place;
   if (tag) f.tag = tag;
   if (theme && THEME_IDS.has(theme)) f.theme = theme;
   if (Number.isInteger(max) && max >= 1 && max <= 4) f.max = max;
@@ -127,6 +133,7 @@ export function studioSearch(q: string, f: StudioFilters, all = false): string {
   if (f.area) p.set("area", f.area);
   if (f.muscle) p.set("muscle", f.muscle);
   if (f.gear) p.set("gear", f.gear);
+  if (f.place) p.set("place", f.place);
   if (f.tag) p.set("tag", f.tag);
   if (f.theme) p.set("theme", f.theme);
   if (f.max) p.set("max", String(f.max));
@@ -245,7 +252,13 @@ export function fitOf(rec: ExerciseRecord, ctx: StudioCtx): Fit | null {
 /** "Fits today" is in force: a profile is on and the athlete has not turned it off. */
 export const fitFilterOn = (f: StudioFilters, ctx: StudioCtx): boolean => f.fit !== false && ctx.profiles.length > 0;
 const fitOn = fitFilterOn;
-const placeGearOn = (f: StudioFilters, ctx: StudioCtx): boolean => f.gear === undefined && ctx.place !== null;
+const placeGearOn = (f: StudioFilters, ctx: StudioCtx): boolean => f.gear === undefined && f.place === undefined && ctx.place !== null;
+
+/** A place by its id: one of the athlete's, or the library's "No equipment" (bodyweight plus a bare room's props). */
+export function placeById(ctx: StudioCtx, id: string): { id?: string; name: string; equipment: readonly string[] } | null {
+  if (id === NO_EQUIPMENT_PLACE_ID) return noEquipmentPlace();
+  return ctx.places.find((p) => p.id === id) ?? null;
+}
 
 /** The athlete's lean for ties: a pin and a thumbs-up lift a move, a thumbs-down lowers it, "not for me" sinks it. */
 function lean(ctx: StudioCtx): (id: string) => number {
@@ -269,9 +282,12 @@ export function studioResults(records: readonly ExerciseRecord[], q: string, f: 
   };
   const byFit = fitOn(f, ctx);
   const byPlace = placeGearOn(f, ctx);
+  // Another place chosen: its gear (one not known here yet, the default's).
+  const chosen = f.place !== undefined ? (placeById(ctx, f.place) ?? ctx.place) : null;
   return searchLibrary(records, q, lib, {
     accepts: (rec) =>
       (!byPlace || hasEquipment(rec, ctx.place!.equipment)) &&
+      (!chosen || hasEquipment(rec, chosen.equipment)) &&
       (!byFit || fitOf(rec, ctx)?.state !== "not") &&
       (f.mine !== "pinned" || ctx.prefs.get(rec.id)?.pinned === true) &&
       (f.mine !== "set-aside" || ctx.prefs.get(rec.id)?.excluded === true),
@@ -312,6 +328,7 @@ export function activeChips(f: StudioFilters, ctx: StudioCtx): Chip[] {
   if (f.area) add("area", label(f.area), omit(f, "area", "muscle"));
   if (f.muscle) add("muscle", label(f.muscle), omit(f, "muscle"));
   if (f.gear && f.gear !== "any") add("gear", EQUIPMENT[f.gear], { ...f, gear: "any" });
+  if (f.place !== undefined) add("at", placeWord(f.place, ctx), omit(f, "place"));
   if (f.tag) add("tag", label(f.tag), omit(f, "tag"));
   if (f.theme) add("theme", themeName(f.theme), omit(f, "theme"));
   if (f.max) add("max", difficultyLabel(f.max), omit(f, "max"));
@@ -319,6 +336,12 @@ export function activeChips(f: StudioFilters, ctx: StudioCtx): Chip[] {
   if (placeGearOn(f, ctx)) add("place", `At ${ctx.place!.name}`, { ...f, gear: "any" }, true);
   if (fitOn(f, ctx)) add("fit", FIT_WORD.fits, { ...f, fit: false }, true);
   return out;
+}
+
+/** A chosen place as its chip and the filters say it: "Bodyweight only", else "At Gym". */
+export function placeWord(id: string, ctx: StudioCtx): string {
+  if (id === NO_EQUIPMENT_PLACE_ID) return "Bodyweight only";
+  return `At ${placeById(ctx, id)?.name ?? ctx.place?.name ?? "your place"}`;
 }
 
 /** How many filters the athlete set (the defaults are not counted): the Filters button's badge. */

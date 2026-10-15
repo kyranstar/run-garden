@@ -26,7 +26,6 @@ import {
   amountValue,
   formatWeight,
   itemSchema,
-  NO_EQUIPMENT_PLACE,
   parseWeight,
   partSchema,
   secondsText,
@@ -46,6 +45,8 @@ import {
   hasEquipment,
   isPlyometric,
   label,
+  NO_EQUIPMENT_PLACE_ID,
+  noEquipmentPlace,
   type CheckReading,
   type ConditionProfile,
   type ExerciseRecord,
@@ -71,7 +72,7 @@ import {
   type SuggestCtx,
 } from "@rg/workout";
 import type { ConditionViewDto, WorkoutDto } from "@rg/api-client";
-import type { StudioCtx } from "./model.js";
+import { placeById, type StudioCtx } from "./model.js";
 
 type PartPurpose = WorkoutPart["purpose"];
 type Library = readonly ExerciseRecord[];
@@ -250,23 +251,19 @@ export interface BuildCtx {
 export const RECENT_DAYS = 7;
 const DAY_MS = 86_400_000;
 
-/** "No equipment", as the builder's place chip and its summary say it. */
-export const NO_EQUIPMENT_NAME = "No equipment";
-
 /**
  * Where a document is done (CUJ R8): the place it names (`setting.placeId`) — one of the athlete's places, or none at
  * all ("No equipment": bodyweight only) — else the default place. A place it names that isn't known here (gone, or not
  * read yet) is the default too, as the chip says.
  */
 export function placeOf(ctx: StudioCtx, placeId: string | undefined): { id?: string; name: string; equipment: readonly string[] } | null {
-  if (placeId === NO_EQUIPMENT_PLACE) return { id: NO_EQUIPMENT_PLACE, name: NO_EQUIPMENT_NAME, equipment: [] };
-  return (placeId ? ctx.places.find((p) => p.id === placeId) : undefined) ?? ctx.place;
+  return (placeId ? placeById(ctx, placeId) : null) ?? ctx.place;
 }
 
 /** What the place chip offers: the athlete's places (the default first), else the library's Home; then No equipment. */
 export function placeChoices(ctx: StudioCtx): Array<{ id: string | undefined; name: string }> {
   const own = ctx.places.length ? ctx.places.map((p) => ({ id: p.id as string | undefined, name: p.name })) : ctx.place ? [{ id: ctx.place.id, name: ctx.place.name }] : [];
-  return [...own, { id: NO_EQUIPMENT_PLACE, name: NO_EQUIPMENT_NAME }];
+  return [...own, { id: NO_EQUIPMENT_PLACE_ID, name: noEquipmentPlace().name }];
 }
 
 export function buildCtxOf(ctx: StudioCtx, today: string, recorded: Readonly<Record<string, CheckReading>> = {}, placeId?: string): BuildCtx {

@@ -2294,6 +2294,12 @@ button.session-chip {
   color: var(--ink);
   font-size: var(--text-sm);
 }
+/* The day's go-Recover line on a document above Recover, beside its way into the Studio. */
+.session-advice {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
 .session-swaps {
   margin: 0;
   padding-left: var(--space-6);
