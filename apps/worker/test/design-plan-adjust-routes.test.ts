@@ -276,6 +276,15 @@ describe("fix round: decline while a change is applying, and ten changes at once
     expect(await db.select().from(coachMessages).where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "receipt")))).toEqual([]);
   });
 
+  it("a decline naming a change in flight and an op decided before answers 200: not every op named was in flight", async () => {
+    const { id, opIds } = await withSkipApplying();
+    // The workout was approved earlier: its op is settled.
+    expect((await invoke("POST", `/api/coach/proposals/${id}/approve`, { opIds })).json.applied).toHaveLength(1);
+    const res = await invoke("POST", `/api/coach/proposals/${id}/decline`, { opIds: [...opIds, planAdjustId("w-1-07:00")] });
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ ok: true, declined: [], inFlight: [planAdjustId("w-1-07:00")], settled: [{ opId: opIds[0], outcome: "applied" }] });
+  });
+
   it("a proposal of ten changes (the most one holds) approves whole, every request within 45 and its opIds within the route's cap", async () => {
     const changes = Array.from({ length: 10 }, (_, i) => skip(`w-${i + 1}-07:00`));
     const { id } = await designed({ changes });
