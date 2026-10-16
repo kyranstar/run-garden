@@ -4,6 +4,7 @@
  * message (today, the conditions' generated rules and today's reading, today's plan, the events, the scope, the
  * availability index, the request as data). A made-up athlete; every date is relative to a fixed clock.
  */
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
@@ -21,6 +22,7 @@ import {
 } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS, SHARED_PROMPT, roleBlock } from "../src/services/design-prompt.js";
 import { RUN_LIMITS } from "../src/services/coach-runs.js";
+import { RUN_LIMITS as ROLE_CAPS } from "../src/services/design-limits.js";
 import type { SystemBlock } from "../src/services/llm-messages.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -626,5 +628,18 @@ describe("3A-B — the opening message says what the code holds", () => {
       expect(ctx.system[1]!.text, role).toBe(roleBlock(role, RUN_LIMITS[role].maxCalls));
       expect(ctx.system[1]!.text, role).toContain(`You have about ${RUN_LIMITS[role].maxCalls} turns`);
     }
+  });
+});
+
+// ── Batch 3A end fix wave, round 2 (B-M9) ───────────────────────────────────────────────────────────────────────────
+
+describe("round 2 — the role caps live where nothing imports back (B-M9)", () => {
+  const source = (file: string) => readFileSync(new URL(`../src/services/${file}`, import.meta.url), "utf8");
+
+  it("RUN_LIMITS is design-limits.ts's — a module with no imports — re-exported by the loop; the opening context and the prompt never import the loop", () => {
+    expect(RUN_LIMITS).toBe(ROLE_CAPS);
+    expect(source("design-limits.ts")).not.toMatch(/^\s*import\s/m);
+    expect(source("design-context.ts")).not.toMatch(/from "\.\/coach-runs\.js"/);
+    expect(source("design-prompt.ts")).not.toMatch(/from "\.\/coach-runs\.js"/);
   });
 });

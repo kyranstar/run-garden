@@ -7,7 +7,7 @@ import type { Db } from "./db.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder } from "./design-context.js";
-import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, REVIEWER_MAX_CALLS, SET_REDO_ROUNDS } from "./design-limits.js";
+import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
 import {
   designerStopLine,
@@ -190,13 +190,9 @@ export type RunEventKind = "tool_call" | "tool_result" | "draft" | "review" | "r
 const SCOPE_KINDS: readonly RunScopeKind[] = ["now", "later_today", "week", "next_n"];
 const ROLES: readonly ToolRole[] = ["main", "designer", "reviewer"];
 
-/** A run's limits by role: model calls (the step cap), the effort every call asks for, the output ceiling per call.
- * Effort is always sent: omitted, Opus 5.5 takes `medium`. */
-export const RUN_LIMITS: Readonly<Record<ToolRole, { maxCalls: number; effort: Effort; maxTokens: number }>> = {
-  main: { maxCalls: 12, effort: "high", maxTokens: 16_000 },
-  designer: { maxCalls: 10, effort: "high", maxTokens: 16_000 },
-  reviewer: { maxCalls: REVIEWER_MAX_CALLS, effort: "high", maxTokens: 16_000 },
-};
+/** A run's limits by role — model calls (the step cap), effort, output ceiling — defined in design-limits.ts, which the
+ * prompt and the opening context read without importing the loop (fix wave 3A round 2, B-M9). */
+export { RUN_LIMITS };
 
 /** A run's own spending ceiling, by scope (spec §2): $1.50 for now / later today, $6 for a set. */
 export const RUN_CEILING_MICROS: Readonly<Record<RunScopeKind, number>> = {

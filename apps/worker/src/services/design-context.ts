@@ -42,12 +42,10 @@ import { EFFORT_LEVELS, addDays, daysBetween, isoWeekday, todayInZone, type Prof
 import { EQUIPMENT, profileById, type ConditionProfile, type DescribedRule, type EquipmentId, type FormatId } from "@rg/exercise-library";
 import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
 import type { Env } from "../env.js";
-// The step loop imports this module (its context builder): an import cycle, safe because RUN_LIMITS is read only when
-// a context is built, never while either module loads. (design-prompt.ts can't import the loop: the loop's review
-// module reads the prompt's rubric as it loads.)
-import { RUN_LIMITS } from "./coach-runs.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
+// The role caps from the module with no imports (the step loop imports this one: it never imports the loop back).
+import { RUN_LIMITS } from "./design-limits.js";
 import { liveMemoryWhere, memoryCore } from "./memory-core.js";
 import { SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
 import type { SystemBlock } from "./llm-messages.js";

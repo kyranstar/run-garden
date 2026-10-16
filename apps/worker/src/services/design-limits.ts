@@ -1,15 +1,30 @@
 /**
  * Limits the coach designer's loop enforces and its prompt states, defined once so the two cannot drift.
  *
- * A module of its own (no imports): the prompt (design-prompt.ts) reads it at load time, and the step loop
- * (coach-runs.ts) imports the opening context, so the prompt importing the loop would be an import cycle.
+ * A module of its own, with no imports: the prompt (design-prompt.ts) and the opening context (design-context.ts) read
+ * it, and the step loop (coach-runs.ts) imports them both — so neither may import the loop, and this module may import
+ * nothing that could lead back to it (fix wave 3A round 2, B-M9: the role caps moved here from the loop).
  */
 
 /** Tool calls one model turn may ask for; past this each gets an error result and nothing runs (coach-runs.ts). */
 export const MAX_TOOL_CALLS_PER_TURN = 12;
 
-/** Model calls a reviewer run may make (coach-runs.ts `RUN_LIMITS`); its review packet says so (design-review.ts). */
+/** Model calls a reviewer run may make (`RUN_LIMITS.reviewer`); its review packet says so (design-review.ts). */
 export const REVIEWER_MAX_CALLS = 3;
+
+/** The effort a model call asks for (llm-messages.ts `Effort`, named here again: this module imports nothing). */
+type RunEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * A run's limits by role: model calls (the step cap — each role block states it: design-context.ts), the effort every
+ * call asks for, the output ceiling per call. Effort is always sent: omitted, Opus 5.5 takes `medium`. The loop
+ * (coach-runs.ts) re-exports it.
+ */
+export const RUN_LIMITS: Readonly<Record<"main" | "designer" | "reviewer", { maxCalls: number; effort: RunEffort; maxTokens: number }>> = {
+  main: { maxCalls: 12, effort: "high", maxTokens: 16_000 },
+  designer: { maxCalls: 10, effort: "high", maxTokens: 16_000 },
+  reviewer: { maxCalls: REVIEWER_MAX_CALLS, effort: "high", maxTokens: 16_000 },
+};
 
 /** The most workouts one set plans (a week, or the next N whatever N is: design-orchestrate.ts). */
 export const SET_MAX_WORKOUTS = 7;

@@ -236,8 +236,8 @@ Must-fix: anything scoring 2 or less, and any profile guide line or other rule n
 
 const ROLE_BLOCKS = { main: MAIN_ROLE, designer: DESIGNER_ROLE, reviewer: REVIEWER_ROLE } as const;
 
-/** The turn budget a role block states: what the step loop allows the run (coach-runs.ts `RUN_LIMITS[role].maxCalls`,
- * passed in by design-context.ts — this module can't import the loop, which imports it). */
+/** The turn budget a role block states: what the step loop allows the run (design-limits.ts `RUN_LIMITS[role].maxCalls`,
+ * passed in by design-context.ts). */
 function turnsLine(role: keyof typeof ROLE_BLOCKS, maxCalls: number): string {
   return ` You have about ${maxCalls} turns; ${role === "reviewer" ? "submit your review" : "finish"} well before the last.`;
 }
