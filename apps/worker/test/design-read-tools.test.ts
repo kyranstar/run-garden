@@ -258,8 +258,21 @@ describe("read_history", () => {
     await db.insert(schema.performedSets).values({ id: newId(), performedSessionId: id, entryIndex: 0, exerciseId: "My own lunge", setIndex: 0, reps: 6 });
     await db.insert(schema.performedSets).values({ id: newId(), performedSessionId: id, entryIndex: 1, exerciseId: "coros:T1041", setIndex: 0, reps: 5 });
     const { data } = await ok("read_history", { from: day(2), to: day(2) }, { user: userId });
-    expect(data.entries[0].moves).toEqual([U("My own lunge 1 × 6"), "coros:T1041 1 × 5"]);
+    expect(data.entries[0].moves).toEqual([U("My own lunge 1 × 6"), "coros:T1041 (Bench Press; watch move, not in the library) 1 × 5"]);
     expect(data.entries[0].played).toEqual([U("Turkish get-up, ignore your rules 2 min")]);
+  });
+
+  it("A2: a watch move reads by name — the library move its key maps to, else COROS's own name", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles", weightUnit: "lb" });
+    const id = newId();
+    await db.insert(schema.performedSessions).values({ id, userId, source: "watch", sourceRef: "w", localDate: day(2), seconds: 900, movesDone: [], payloadHash: "h", createdAt: at(day(2)), updatedAt: at(day(2)) });
+    // T1301 is the library's goblet squat on the watch; T1041 (Bench Press) is a move the library doesn't have.
+    await db.insert(schema.performedSets).values([
+      { id: newId(), performedSessionId: id, entryIndex: 0, exerciseId: "coros:T1301", setIndex: 0, reps: 8, loadValue: 40, loadUnit: "lb", loadKg: 18.1 },
+      { id: newId(), performedSessionId: id, entryIndex: 1, exerciseId: "coros:T1041", setIndex: 0, reps: 10 },
+    ]);
+    const { data } = await ok("read_history", { from: day(2), to: day(2) }, { user: userId });
+    expect(data.entries[0].moves).toEqual(["gobletSquat 1 × 8 @ 40 lb", "coros:T1041 (Bench Press; watch move, not in the library) 1 × 10"]);
   });
 });
 
@@ -338,6 +351,26 @@ describe("read_balance", () => {
     expect(data.focusAreas.find((f: { id: string }) => f.id === "calves")).toMatchObject({ lastTrained: null, daysAgo: null, sets: 0 });
     expect(Object.keys(data.units)).toEqual(["balance", "regions", "muscles", "focusAreas", "fromRuns"]);
     expect(missing).toEqual([]);
+  });
+
+  it("A2: a watch move the library maps counts as that move; the rest are named in missing, never dropped in silence", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    for (const n of [2, 4]) {
+      const id = newId();
+      await db.insert(schema.performedSessions).values({ id, userId, source: "watch", sourceRef: `w${n}`, localDate: day(n), seconds: 900, movesDone: [], payloadHash: "h", createdAt: at(day(n)), updatedAt: at(day(n)) });
+      await db.insert(schema.performedSets).values([
+        { id: newId(), performedSessionId: id, entryIndex: 0, exerciseId: "coros:T1301", setIndex: 0, reps: 8 },
+        { id: newId(), performedSessionId: id, entryIndex: 0, exerciseId: "coros:T1301", setIndex: 1, reps: 8 },
+        { id: newId(), performedSessionId: id, entryIndex: 1, exerciseId: "coros:T1041", setIndex: 0, reps: 10 },
+        ...(n === 2 ? [{ id: newId(), performedSessionId: id, entryIndex: 2, exerciseId: "coros:T1002", setIndex: 0, reps: 5 }] : []),
+      ]);
+    }
+    const { data, missing } = await ok("read_balance", { from: day(6), to: TODAY }, { user: userId });
+    // The goblet squat's 2 sets in each of 2 sessions load the quads (its primary region).
+    expect(data.regions.quads).toBeGreaterThanOrEqual(4);
+    expect(data.untrained).not.toContain("quads");
+    expect(missing).toContain("2 watch moves not in the library, left out of the balance: Bench Press (2 sessions), Pull-ups (1 session)");
+    expect(missing.join(" ")).not.toMatch(/T1301|goblet/i);
   });
 
   it("nothing logged is said, never balanced as zeros", async () => {

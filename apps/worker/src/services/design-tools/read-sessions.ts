@@ -11,7 +11,8 @@
  * One physical session counts once: an activity's sessions go through `sessionPerActivity` (the athlete's own record
  * over the watch's copy), and an activity a session logged is that session's (its heart rate and load join it), never
  * a line of its own. A session still being written (`PENDING_HASH`) is not there yet. Weights are in the athlete's
- * unit, distances and paces in theirs. A move id the library does not know (an import's own name) is marked.
+ * unit, distances and paces in theirs. A move id the library does not know (an import's own name) is marked; a watch
+ * move reads as the library move its key maps to, else by COROS's own name (`moveLine`, fix wave 13, A2).
  *
  * The rows come from ONE statement (`readTagged`): the sessions in scope, their done sets, their checks, and the
  * activities — four terms; a caller may add a fifth.
@@ -20,7 +21,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { activities, conditionChecks, performedSessions, performedSets } from "@rg/database";
 import { addDays, type WeightUnit } from "@rg/domain";
 import { EXERCISES, PROFILES, isProfileId, profileById, THEMES } from "@rg/exercise-library";
-import { readingsBySession, sessionPerActivity, type CheckRowLike } from "../logged-sets.js";
+import { readingsBySession, sessionPerActivity, watchMove, type CheckRowLike } from "../logged-sets.js";
 import { COROS_EXERCISE_PREFIX, PENDING_HASH } from "../watch-sets.js";
 import { activityDateOf, dayWords, distanceWords, localTimeOf, minutesOf, paceWords, parsedArray, untrusted, weightWords, type Untrusted } from "./read-common.js";
 
@@ -197,8 +198,18 @@ const FLAG_LABEL = new Map(Object.values(PROFILES).flatMap((p) => (p.setFlag ? [
 export const knownMove = (id: string): boolean =>
   LIBRARY.has(id) || (id.startsWith(COROS_EXERCISE_PREFIX) && /^[A-Za-z0-9]{1,20}$/.test(id.slice(COROS_EXERCISE_PREFIX.length)));
 
-/** A move and its words: plain for a move the app knows, marked for one it does not (an import's own name). */
-export const moveLine = (id: string, words: string): string | Untrusted => (knownMove(id) ? `${id} ${words}` : untrusted(`${id} ${words}`));
+/**
+ * A move and its words: plain for a move the app knows, marked for one it does not (an import's own name). A watch
+ * move reads by name (fix wave 13, A2): the library move its key maps to, else its key with COROS's own name — never a
+ * bare code the coach can't read.
+ */
+export function moveLine(id: string, words: string): string | Untrusted {
+  if (!knownMove(id)) return untrusted(`${id} ${words}`);
+  const watch = watchMove(id);
+  if (!watch) return `${id} ${words}`;
+  if ("libraryId" in watch) return `${watch.libraryId} ${words}`;
+  return `${id} (${watch.corosName ? `${watch.corosName}; ` : ""}watch move, not in the library) ${words}`;
+}
 
 interface OneSet {
   reps: number | null;

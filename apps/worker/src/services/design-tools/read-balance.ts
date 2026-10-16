@@ -6,7 +6,9 @@
  * regions not trained at all (null when nothing was logged), and for each of the athlete's focus areas the last day it
  * was trained and its working sets (each set of a move that trains it, once). The units are in the answer. One
  * physical session counts once; a session's played-only moves count as played, once. Nothing logged is said, never
- * balanced as zeros. Two statements: the athlete with the focus areas, then the range in one read.
+ * balanced as zeros. A watch move counts as the library move its key maps to; one the library has no record for is
+ * named in `missing` by COROS's own name, with how many sessions logged it (fix wave 13, A2) — never dropped in
+ * silence. Two statements: the athlete with the focus areas, then the range in one read.
  *
  * RUNS LOAD THE LEGS (audit I5). A run is no working set, so the regions above are the sessions' alone; what runs
  * loaded is said apart (`fromRuns`: each region a run loads — RUN_REGIONS — with the runs in the range and the last
@@ -21,10 +23,13 @@ import { EXERCISES, MUSCLE_REGION, REGIONS, type MuscleId, type Region } from "@
 import { derivePerformed, type BalanceProfile, type PerformedInput } from "@rg/workout";
 import type { DesignTool } from "./types.js";
 import { answer, checkRange, DATE_SCHEMA, dateField, isErr, parsedArray, parseInput, plural, READ_ROLES, readAthlete, readTagged, untrusted } from "./read-common.js";
+import { watchMove } from "../logged-sets.js";
 import { activitiesAround, activityRows, doneTerms, sessionRows, sessionsOnce, sessionsWhere, setRows } from "./read-sessions.js";
 
 const TOP_REGIONS = 10;
 const TOP_MUSCLES = 12;
+/** Watch moves named in `missing`, at most (the rest are counted). */
+const WATCH_NAMED = 8;
 const LIBRARY = new Set(EXERCISES.map((e) => e.id));
 const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
 
@@ -85,6 +90,21 @@ export const readBalance: DesignTool = {
     const muscles = new Map<string, number>();
     const focusSeen = new Map<string, { last: string | null; sets: number }>(focus.map((f) => [f.id, { last: null, sets: 0 }]));
     const unknown = new Set<string>();
+    /** Watch moves the library has no record for: COROS's name → the sessions that logged it (fix wave 13, A2). */
+    const watchUnknown = new Map<string, Set<string>>();
+    /** A logged move as the balance counts it: a watch key the library maps is that library move. */
+    const asLibrary = (id: string): string => {
+      const w = watchMove(id);
+      return w && "libraryId" in w ? w.libraryId : id;
+    };
+    const noteUnknown = (id: string, sessionId: string): void => {
+      if (LIBRARY.has(id)) return;
+      const w = watchMove(id);
+      if (w && "key" in w) {
+        const name = w.corosName ?? w.key;
+        watchUnknown.set(name, (watchUnknown.get(name) ?? new Set()).add(sessionId));
+      } else unknown.add(id);
+    };
     const add = (input: PerformedInput) => {
       const d = derivePerformed(input, EXERCISES);
       for (const k of Object.keys(balance) as Array<keyof BalanceProfile>) balance[k] += d.balance[k];
@@ -112,12 +132,12 @@ export const readBalance: DesignTool = {
     };
 
     for (const s of chosen) {
-      const mine = sets.filter((x) => x.session === s.id);
+      const mine = sets.filter((x) => x.session === s.id).map((x) => ({ ...x, exerciseId: asLibrary(x.exerciseId), logged: x.exerciseId }));
       const entries = new Map<string, PerformedInput["entries"][number]>();
       /** Working sets per move: a set done a side at a time (a row per side) is one set. */
       const working = new Map<string, Set<string>>();
       for (const x of mine) {
-        if (!LIBRARY.has(x.exerciseId)) unknown.add(x.exerciseId);
+        noteUnknown(x.logged, s.id);
         const key = `${x.entry}:${x.exerciseId}:${x.perSide}`;
         const e = entries.get(key) ?? { exerciseId: x.exerciseId, perSide: x.perSide, sets: [] };
         e.sets.push({ reps: x.reps, seconds: x.seconds, loadKg: null, done: true, flags: x.flags });
@@ -125,8 +145,8 @@ export const readBalance: DesignTool = {
         working.set(x.exerciseId, (working.get(x.exerciseId) ?? new Set()).add(`${x.entry}:${x.index}`));
       }
       const loggedIds = new Set(mine.map((x) => x.exerciseId));
-      const played = s.movesDone.filter((m) => !loggedIds.has(m.exerciseId));
-      for (const m of played) if (!LIBRARY.has(m.exerciseId)) unknown.add(m.exerciseId);
+      const played = s.movesDone.map((m) => ({ ...m, exerciseId: asLibrary(m.exerciseId), logged: m.exerciseId })).filter((m) => !loggedIds.has(m.exerciseId));
+      for (const m of played) noteUnknown(m.logged, s.id);
       const a = s.activityId ? acts.get(s.activityId) : undefined;
       add({ entries: [...entries.values()], movesDone: played, activity: a ? { sport: a.sport, durationSeconds: a.seconds, distanceMeters: a.meters } : null });
       for (const [exerciseId, n] of working) countFocus(exerciseId, n.size, s.date);
@@ -150,6 +170,14 @@ export const readBalance: DesignTool = {
     const minutes = (sec: number) => Math.round(sec / 60);
     const missing: string[] = [...athlete.missing];
     if (nothing) missing.push(`nothing logged from ${p.from} to ${p.to}`);
+    if (watchUnknown.size) {
+      const named = [...watchUnknown.entries()]
+        .sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0]))
+        .map(([name, sessions]) => `${name} (${plural(sessions.size, "session")})`);
+      const shown = named.slice(0, WATCH_NAMED);
+      const more = named.length > WATCH_NAMED ? `, and ${named.length - WATCH_NAMED} more` : "";
+      missing.push(`${plural(watchUnknown.size, "watch move")} not in the library, left out of the balance: ${shown.join(", ")}${more}`);
+    }
     if (unknown.size) missing.push(`${plural(unknown.size, "logged move")} the library does not know, left out of the balance`);
     return answer({
       source: "derivePerformed over logged sessions (app and watch) and the watch's activities",

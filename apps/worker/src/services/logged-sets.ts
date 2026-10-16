@@ -57,6 +57,18 @@ export function exerciseDisplayName(id: string): string {
   return id;
 }
 
+/**
+ * A move the watch logged (`coros:T1041`) as the coach designer reads it (fix wave 13, A2): the library move its key
+ * maps to (`libraryIdsByKey`, the reverse of what the watch is sent — a set derived before a mapping existed keeps its
+ * key), else COROS's own English name for it (null when the catalog has none). Null for an id that is no watch key.
+ */
+export function watchMove(id: string): { libraryId: string } | { key: string; corosName: string | null } | null {
+  if (!id.startsWith(COROS_EXERCISE_PREFIX)) return null;
+  const key = id.slice(COROS_EXERCISE_PREFIX.length);
+  const libraryId = libraryIdsByKey().get(key);
+  return libraryId ? { libraryId } : { key, corosName: COROS_EXERCISE_NAMES[key] ?? null };
+}
+
 /** Lower wins: the athlete's own record before the derived watch copy. */
 const SOURCE_RANK: Record<string, number> = { app: 0, watch_review: 1, import: 2, [WATCH_SOURCE]: 3 };
 const rank = (source: string): number => SOURCE_RANK[source] ?? 4;
