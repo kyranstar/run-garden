@@ -557,7 +557,7 @@ const NOTE = { type: "string", minLength: 1, maxLength: REVIEW_NOTE_MAX } as con
 export const submitReview: DesignTool = {
   name: "submit_review",
   description:
-    "The reviewer's verdict on the draft, given once — the reviewer's tool, which ends its run: a whole score from 1 to 5 and a one-line note for every dimension; the must-fix items (anything scoring 2 or less, and any hard rule the validator missed — the validator enforces hard rules whatever the scores); the few improvements that matter most; and `accepted`, at most 3 of { dimension, why }: a dimension whose low score is a cost the athlete chose in their own words, with their reason — never a must-fix. A cost the document explains (in an item's why, its notes or the change note) is judged on that explanation, not re-flagged.",
+    "The reviewer's verdict, given once; it ends your run. Every dimension scored 1–5 with a one-line note; must-fix: anything at 2 or less, and any hard rule the validator missed; the improvements that matter. A cost the document explains (an item's why, its notes) is judged on that explanation. `accepted`, at most 3 { dimension, why }: a cost the athlete chose in their own words — never a must-fix.",
   inputSchema: {
     type: "object",
     properties: {
