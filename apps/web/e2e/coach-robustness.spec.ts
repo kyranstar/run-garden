@@ -13,13 +13,13 @@ import { test, expect } from "./fixtures.js";
  *
  *   1. leaving the Studio mid-step (and during a question): the run goes on stepping on the Plan — the app's run keeper —
  *      and the Studio tab's ● says so; back, the suggestion is there;
- *   2. the tab closed mid-step: the step finishes on the server with no client at all, plus at most one more, then the
- *      run rests (the model is called only for someone watching); opened again, the coach is at work and finishes;
+ *   2. the tab closed mid-step: the run goes on with no client at all, to its end (Task 13, §2.12: a run the athlete
+ *      started keeps going unwatched, within its lease's window); opened again, its suggestion is there;
  *  2c. the worker killed mid-step: the run's object takes the step back once no call could still be running (the model's
  *      deadline — 30 s on this stack, FIXTURE_MODEL_TIMEOUT_MS — and a minute), never sooner and never after a
  *      15-minute stale wait; the dead call counts at an estimate, so the run isn't stopped by its limit: it finishes;
  *  1b, 2b. the same between an answer over 16 KB and the next step, which runs its queued calls (the `big` script):
- *      left for the Plan, the calls run there; the tab closed, the run rests and finishes once it's opened — no model
+ *      left for the Plan, the calls run there; the tab closed, the run goes on to its end with no client — no model
  *      asked again;
  *   3. a reload mid-step, during Approve and during Decline: the run finishes; the decision lands once, never twice;
  *      after the reload the card says what came of it;
@@ -97,28 +97,6 @@ async function fresh(request: APIRequestContext, baseURL: string | undefined) {
   await model("/use/");
   await model("/delay/");
   await model("/calls/reset");
-}
-
-/**
- * The run once it has come to rest with no client: the same status, steps and spend, and the same model calls begun,
- * for `quietMs` in a row (read through /current, which tells the run's object nothing — no lease).
- */
-async function atRest(request: APIRequestContext, baseURL: string | undefined, quietMs = 8_000): Promise<{ run: NonNullable<Current["run"]>; begun: number }> {
-  let last = "";
-  let since = Date.now();
-  for (const deadline = Date.now() + 90_000; Date.now() < deadline; ) {
-    const run = (await current(request, baseURL)).run!;
-    const begun = (await model("/calls")).begun;
-    const now = JSON.stringify([run.status, run.steps, run.costUsd, begun]);
-    if (now !== last) {
-      last = now;
-      since = Date.now();
-    } else if (Date.now() - since >= quietMs) {
-      return { run, begun };
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`the run never came to rest: ${last}`);
 }
 
 /** The PIDs `lsof` names for `args` (none: lsof answers 1). */
@@ -243,7 +221,7 @@ test("1. leaving the Studio mid-step, the coach goes on — on the Plan, and thr
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 60_000 });
 });
 
-test("2. the tab closed mid-step: the step finishes on the server, plus at most one more; opened again, the run finishes", async ({ context, baseURL }) => {
+test("2. the tab closed mid-step: the coach goes on with no client at all, to its end; opened again, its suggestion is there", async ({ context, baseURL }) => {
   test.setTimeout(180_000);
   await fresh(context.request, baseURL);
   await model("/delay/20000");
@@ -253,19 +231,16 @@ test("2. the tab closed mid-step: the step finishes on the server, plus at most 
   await model("/delay/");
   await page.close();
 
-  // No client at all: the step in flight finishes on the server — its call answered, the run no longer held.
-  await expect.poll(async () => (await model("/calls")).answered, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
-  // …and at most one more step, then the run rests: the model is called only for someone watching.
-  const rest = await atRest(context.request, baseURL);
-  expect(rest.begun).toBeLessThanOrEqual(2);
-  expect(LIVE).toContain(rest.run.status);
-  expect(rest.run.status).not.toBe("stepping");
+  // No client at all (Task 13, §2.12: a run the athlete started keeps going unwatched until it ends or waits for them,
+  // within its lease's window): the run over, every call of the script made — read through /current, which keeps no
+  // lease. (Read until it ends: the step at work holds its 20 s call first, quiet all that time.)
+  await expect.poll(async () => (await current(context.request, baseURL)).run?.status, { timeout: 120_000, intervals: [1_000] }).toBe("finished");
+  expect((await model("/calls")).begun).toBe(4);
 
-  // Opened again: the coach is at work (its ●), and the run finishes.
+  // Opened again: its suggestion is there, and no model asked again.
   page = await context.newPage();
   await page.goto("/studio");
-  await expect(page.locator(".coach-line--now")).toBeVisible({ timeout: 15_000 });
-  await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 90_000 });
+  await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 30_000 });
   expect((await model("/calls")).begun).toBe(4);
 });
 
@@ -354,7 +329,7 @@ test("1b. between a big answer's two steps: the athlete leaves for the Plan — 
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 20_000 });
 });
 
-test("2b. between a big answer's two steps: the tab is closed — the run rests, and finishes once it's opened again", async ({ context, baseURL }) => {
+test("2b. between a big answer's two steps: the tab is closed — the run goes on to its end with no client", async ({ context, baseURL }) => {
   test.setTimeout(180_000);
   await fresh(context.request, baseURL);
   await model("/use/big");
@@ -363,13 +338,12 @@ test("2b. between a big answer's two steps: the tab is closed — the run rests,
   await start(page, "a short, gentle hips session");
   await expect.poll(seen, { timeout: 60_000 }).toBe(true);
   await page.close();
-  // With nobody watching, the step at work and at most one more: the run rests, live, short of its end.
-  const rest = await atRest(context.request, baseURL);
-  expect(LIVE).toContain(rest.run.status);
-  expect(rest.begun).toBeLessThan(4);
+  // With nobody watching, the queued calls run and the run goes on to its end (Task 13, §2.12) — no model asked again.
+  await expect.poll(async () => (await current(context.request, baseURL)).run?.status, { timeout: 120_000, intervals: [1_000] }).toBe("finished");
+  expect((await model("/calls")).begun).toBe(4);
   page = await context.newPage();
   await page.goto("/studio");
-  await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 90_000 });
+  await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 30_000 });
   expect((await model("/calls")).begun).toBe(4);
 });
 
