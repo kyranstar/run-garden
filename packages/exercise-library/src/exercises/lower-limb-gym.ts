@@ -455,7 +455,9 @@ export const LOWER_LIMB_GYM = defineExercises([
     purposes: ["strength"],
     tags: [],
     themes: ["fullBody", "hipsPosture"],
-    providers: { coros: { key: "T1061", confidence: "exact", method: "curated" } }, // COROS: Squats
+    // COROS: Squats — any squat picked from its list (bodyweight, goblet), so only close: exact would read every
+    // watch-logged squat back as this barbell lift. It goes to the watch as free text under its own name.
+    providers: { coros: { key: "T1061", confidence: "close", method: "curated" } },
     easier: ["gobletSquat"],
     text: {
       summary: "With the bar across your upper back, sit down between your heels and stand back up.",

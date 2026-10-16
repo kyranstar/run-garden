@@ -132,7 +132,9 @@ describe("the added records", () => {
 
   test("COROS: the gym lifts the catalog holds go to the watch as its steps; the band changes the pull-up, so it doesn't", () => {
     const coros = (id: string) => rec(id).providers?.coros ?? null;
-    expect(coros("barbellBackSquat")).toEqual({ key: "T1061", confidence: "exact", method: "curated" }); // Squats
+    // COROS's "Squats" is any squat picked from its list (bodyweight, goblet): exact would make every watch-logged squat
+    // barbell history, a heavy clench-2 lift read as accustomed (round 2, Minor 3). Close: free text under its own name.
+    expect(coros("barbellBackSquat")).toEqual({ key: "T1061", confidence: "close", method: "curated" }); // Squats
     expect(coros("barbellRdl")).toEqual({ key: "T1287", confidence: "exact", method: "curated" }); // Romanian Deadlift
     expect(coros("latPulldown")).toEqual({ key: "T1342", confidence: "exact", method: "curated" }); // Lat Pulldowns
     expect(coros("legPress")).toEqual({ key: "T1065", confidence: "exact", method: "curated" }); // Incline Leg Press

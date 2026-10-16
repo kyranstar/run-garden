@@ -1,9 +1,10 @@
 /**
- * HOW TASK 13'S NEW LIBRARY MOVES REACH THE WATCH (A9, R9). The gym lifts the COROS catalog holds go as its steps (a
- * curated `exact` mapping); the band-assisted pull-up is curated `close` (COROS's Pull-ups is the unassisted lift), so
- * it goes as free text; the stretches and the slow-lowering moves name nothing in the catalog and go as free text under
- * their library names — the push's own fallback for an unmapped move, pinned here for these moves. The live COROS
- * catalog's T-codes under synthesized ids; no personal data.
+ * HOW TASK 13'S NEW LIBRARY MOVES REACH THE WATCH (A9, R9). The gym lifts the COROS catalog holds as the same lift go as
+ * its steps (a curated `exact` mapping); the back squat and the band-assisted pull-up are curated `close` — COROS's
+ * "Squats" is any squat (round 2, Minor 3: a watch-logged bodyweight or goblet squat must not become barbell history),
+ * its Pull-ups the unassisted lift — so they go as free text; the stretches and the slow-lowering moves name nothing in
+ * the catalog and go as free text under their library names — the push's own fallback for an unmapped move, pinned here
+ * for these moves. The live COROS catalog's T-codes under synthesized ids; no personal data.
  */
 import { describe, expect, it } from "vitest";
 import { WATCH_NAME_MAX, WATCH_SIDE_LABEL, workoutDocSchema } from "@rg/domain";
@@ -17,19 +18,22 @@ const deps: WatchPlanDeps = { catalogIdByKey: catalogIdsByKey(liveExerciseCatalo
 const name = (id: string) => EXERCISES.find((e) => e.id === id)!.name;
 
 /** The new moves the catalog holds, by the T-code each goes to the watch as. */
-const CATALOG: Record<string, string> = { barbellBackSquat: "T1061", barbellRdl: "T1287", latPulldown: "T1342", legPress: "T1065" };
+const CATALOG: Record<string, string> = { barbellRdl: "T1287", latPulldown: "T1342", legPress: "T1065" };
 /** The new moves that go as free text. */
 const FREE = [
-  "bandAssistedPullUp", "eccentricPullUp", "standingHamstringStretch", "halfKneelingHamstringStretch", "standingQuadStretch", "sideLyingQuadStretch",
+  "barbellBackSquat", "bandAssistedPullUp", "eccentricPullUp", "standingHamstringStretch", "halfKneelingHamstringStretch", "standingQuadStretch", "sideLyingQuadStretch",
   "adductorRockBack", "frogStretch", "bentKneeHeelDrop", "eccentricPushup", "singleLegBoxSit", "hamstringSlideOut",
 ];
 
 describe("Task 13's new moves on the watch", () => {
-  it("each new move's key: the catalog's step for the four gym lifts, none for the rest; no name match was left unreviewed", () => {
+  it("each new move's key: the catalog's step for three gym lifts, none for the rest; no name match was left unreviewed", () => {
     for (const [id, key] of Object.entries(CATALOG)) {
       expect(corosKeyOf(id), id).toBe(key);
       expect(libraryIdsByKey().get(key), key).toBe(id);
     }
+    // A watch-logged "Squats" (T1061) reads back as no library move at all — never the barbell back squat.
+    expect(libraryIdsByKey().has("T1061")).toBe(false);
+    expect([...libraryIdsByKey().values()]).not.toContain("barbellBackSquat");
     for (const id of FREE) {
       expect(EXERCISES.some((e) => e.id === id), id).toBe(true);
       expect(corosKeyOf(id), id).toBeNull();
@@ -49,7 +53,7 @@ describe("Task 13's new moves on the watch", () => {
     expect(plan.refusal).toBeNull();
     const sided = (id: string) => EXERCISES.find((e) => e.id === id)!.laterality === "unilateral";
     expect(plan.steps).toHaveLength(ids.reduce((n, id) => n + (sided(id) ? 2 : 1), 0));
-    // The four gym lifts are both-sided, so each is one catalog step under its T-code.
+    // The three catalog lifts are both-sided, so each is one catalog step under its T-code.
     expect(plan.steps.filter((s) => s.originId !== "0").map((s) => s.name)).toEqual(Object.values(CATALOG));
     // Every other move as free text: its library name, cut to the watch's room as the push cuts any name (leaving a
     // one-sided move room for its side label), in the build's order.
