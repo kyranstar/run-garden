@@ -86,6 +86,13 @@ export function StudioHome({
         </div>
       </Section>
 
+      {/* The objectives board (Stage 3 Task 11), with the coach: one quiet link, sitting with Templates. */}
+      {coachOn() ? (
+        <Link className="linklike stu-tpl-link stu-obj-link" to="/studio/objectives">
+          Objectives
+          <IconChevron size={16} />
+        </Link>
+      ) : null}
       <div className="stu-build-row">
         <BuildEntry />
         <Link className="linklike stu-tpl-link" to={TEMPLATES_HREF}>

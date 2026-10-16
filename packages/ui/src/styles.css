@@ -11360,3 +11360,374 @@ a.stu-tpl-open:focus-visible::before {
     min-height: var(--tap);
   }
 }
+
+/* ── The objectives board (Stage 3 Task 11) ───────────────────────────────
+   One column at every width: a card per objective — its ring, title, why and
+   facts, then each key result (its words, its numbers, its trend), what served
+   it, and the coach's line. Gentle by construction: nothing here is red, a
+   state is always a word, and the ring only moves for a reader who has not
+   asked for less motion. */
+.obj {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  max-width: 48rem;
+}
+.obj-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.obj-head h1 {
+  margin: 0;
+}
+.obj-new {
+  gap: var(--space-2);
+}
+.obj-status {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.obj-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.obj-done {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.obj-done > h2 {
+  margin: 0;
+}
+.obj-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.obj-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.obj-card-titles {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.obj-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.obj-why {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.obj-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.obj-goals {
+  overflow-wrap: anywhere;
+}
+.obj-streak {
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
+.obj-more {
+  flex: none;
+}
+/* Paused and completed: the same facts, the ink a step quieter. */
+.obj-card--paused .obj-title,
+.obj-card--done .obj-title {
+  color: var(--ink-soft);
+}
+.obj-card--paused .obj-ring-arc,
+.obj-card--done .obj-ring-arc {
+  stroke: var(--ink-faint);
+}
+
+/* The ring: a 44px mark, its share in its middle. */
+.obj-ring {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: var(--tap);
+  height: var(--tap);
+}
+.obj-ring svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.obj-ring-track {
+  fill: none;
+  stroke: var(--chart-track);
+  stroke-width: 4;
+}
+.obj-ring-arc {
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+.obj-ring-pct {
+  position: relative;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .obj-ring-arc {
+    animation: obj-ring-sweep 0.7s ease-out both;
+  }
+}
+@keyframes obj-ring-sweep {
+  from {
+    stroke-dashoffset: var(--obj-ring-c);
+  }
+}
+
+/* A key result: its name and evidence, its words, its numbers, its trend. */
+.obj-krs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.obj-kr {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.obj-kr-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.obj-kr-label {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.obj-ev {
+  flex: none;
+  background: var(--bg-sunken);
+  color: var(--ink-soft);
+  border-color: var(--border);
+}
+.obj-ev--measured {
+  background: var(--green-soft);
+  color: var(--green-ink);
+  border-color: color-mix(in srgb, var(--green) 30%, transparent);
+}
+.obj-kr-facts {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.obj-kr-nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-6);
+  margin: 0;
+}
+.obj-kr-nums > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.obj-kr-nums dt {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.obj-kr-nums dd {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.obj-best {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.obj-best-glyph {
+  color: var(--chart-3);
+}
+.obj-quiet {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* What served it, and the coach's line. */
+.obj-served {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.obj-served > h3 {
+  margin: 0;
+}
+.obj-served ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.obj-served-link {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.obj-note {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.obj-note-who {
+  font-weight: var(--weight-medium);
+  color: var(--ink-soft);
+}
+
+/* The sheet: the objective, then one key result at a time. */
+.obj-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.obj-sheet-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.obj-sheet-sec > h3 {
+  margin: 0;
+}
+.obj-sheet-krs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.obj-sheet-kr {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-4);
+  row-gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+}
+.obj-sheet-kr + .obj-sheet-kr {
+  border-top: 1px solid var(--border);
+}
+.obj-sheet-kr-name {
+  grid-column: 1;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.obj-sheet-kr-what {
+  grid-column: 1;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.obj-sheet-kr-acts {
+  display: inline-flex;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-items: center;
+  gap: var(--space-2);
+}
+.obj-sheet-add {
+  align-self: flex-start;
+  gap: var(--space-2);
+}
+.obj-sheet-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.obj-sheet-row > .stu-field-row {
+  flex: 1 1 9rem;
+}
+.obj-sheet-errors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.obj-sheet-errors p {
+  margin: 0;
+}
+/* The Studio home's way to the board: its own line, right-aligned to sit with
+   Templates (the row's end) and drawn up to it, so the two read as a pair. */
+.stu-obj-link {
+  align-self: flex-end;
+  margin-bottom: calc(var(--space-4) - var(--space-7));
+}
+
+@media (min-width: 640px) {
+  .obj-card {
+    padding: var(--space-6);
+  }
+}
