@@ -39,6 +39,23 @@ const ANTHROPIC_VERSION = "2023-06-01";
 // alone was live-verified not to cut loose an in-progress body read in workerd (studio-llm.ts).
 const TIMEOUT_MS = 600_000;
 const STREAM_STALL_MS = 150_000;
+/** A design call's own deadline (TIMEOUT_MS): the run's stepper waits it out before it takes back a step it can't know
+ * is dead (coach-run-stepper.ts). */
+export const DESIGN_MODEL_TIMEOUT_MS = TIMEOUT_MS;
+/** The shortest deadline the fixture stack may name (`FIXTURE_MODEL_TIMEOUT_MS`). */
+const FIXTURE_TIMEOUT_MIN_MS = 5_000;
+
+/**
+ * A design call's deadline here: TIMEOUT_MS — or, in fixture mode only (the fixture stack and local dev; production is
+ * never fixture mode, pinned), `FIXTURE_MODEL_TIMEOUT_MS` when it names a shorter one. A test seam: the e2e takes the
+ * worker down mid-step, and the run's object takes that step back only once no call could still be running (this
+ * deadline, and a minute) — with 10 minutes that is an 11-minute journey. The call and the takeback read the same value.
+ */
+export function designModelTimeoutMs(env: Pick<Env, "FIXTURE_MODE" | "FIXTURE_MODEL_TIMEOUT_MS"> | undefined): number {
+  if (env?.FIXTURE_MODE !== "1") return TIMEOUT_MS;
+  const ms = Number(env.FIXTURE_MODEL_TIMEOUT_MS);
+  return Number.isInteger(ms) && ms >= FIXTURE_TIMEOUT_MIN_MS && ms < TIMEOUT_MS ? ms : TIMEOUT_MS;
+}
 
 /**
  * The fixture stack's scripted model (Task 9): `AI_DESIGN_MODEL=scripted:<name>` names a script its stand-in model on
@@ -275,8 +292,9 @@ export async function callMessages(
   });
 
   const startedAt = Date.now();
+  const timeoutMs = designModelTimeoutMs(env);
   const controller = new AbortController();
-  const deadline = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const deadline = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let response: Response;
     try {
@@ -312,8 +330,8 @@ export async function callMessages(
     const contentType = response.headers.get("content-type") ?? "";
     const answer =
       contentType.includes("text/event-stream") && response.body
-        ? await readStream(response.body, startedAt, controller.signal)
-        : await readJson(response, startedAt, controller.signal);
+        ? await readStream(response.body, startedAt, controller.signal, timeoutMs)
+        : await readJson(response, startedAt, controller.signal, timeoutMs);
     if (!answer.ok) {
       if (!("cut" in answer)) return answer;
       // The answer began, so the call was billed: as far as the stream reported, or at an estimate of the input.
@@ -408,8 +426,8 @@ function cutUsage(cut: Cut, requestBody: string, elapsedMs: number, maxTokens: n
 type RawMessage = { content?: unknown; stop_reason?: unknown; usage?: unknown };
 
 /** How long the next read may take: the stall limit, or what is left of the whole call's deadline if less. */
-function readWait(startedAt: number): number {
-  return Math.max(1000, Math.min(STREAM_STALL_MS, TIMEOUT_MS - (Date.now() - startedAt)));
+function readWait(startedAt: number, timeoutMs: number): number {
+  return Math.max(1000, Math.min(STREAM_STALL_MS, timeoutMs - (Date.now() - startedAt)));
 }
 
 /**
@@ -429,7 +447,7 @@ interface StallGuard {
   stop(): void;
 }
 
-function stallGuard(reader: ReadableStreamDefaultReader<Uint8Array>, startedAt: number): StallGuard {
+function stallGuard(reader: ReadableStreamDefaultReader<Uint8Array>, startedAt: number, timeoutMs: number): StallGuard {
   let began = 0;
   let wait = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -449,7 +467,7 @@ function stallGuard(reader: ReadableStreamDefaultReader<Uint8Array>, startedAt: 
   return {
     reading() {
       began = Date.now();
-      wait = readWait(startedAt);
+      wait = readWait(startedAt, timeoutMs);
       timer ??= setTimeout(check, wait);
     },
     get stalled() {
@@ -467,10 +485,10 @@ function stallGuard(reader: ReadableStreamDefaultReader<Uint8Array>, startedAt: 
  * reads (the abort alone does not cut a body read loose in workerd), so a stalled body can be cancelled:
  * `response.text()` would lock the body and leave nothing to cancel, keeping the connection open until the
  * invocation ends. */
-async function readJson(response: Response, startedAt: number, deadline: AbortSignal): Promise<Answer | Cut> {
+async function readJson(response: Response, startedAt: number, deadline: AbortSignal, timeoutMs: number): Promise<Answer | Cut> {
   if (!response.body) return cutOff("gateway_bad_response");
   const reader = response.body.getReader();
-  const guard = stallGuard(reader, startedAt);
+  const guard = stallGuard(reader, startedAt, timeoutMs);
   const decoder = new TextDecoder();
   let text = "";
   try {
@@ -553,9 +571,10 @@ export async function readStream(
   body: ReadableStream<Uint8Array>,
   startedAt: number,
   deadline: AbortSignal,
+  timeoutMs: number = TIMEOUT_MS,
 ): Promise<Answer | Cut> {
   const reader = body.getReader();
-  const guard = stallGuard(reader, startedAt);
+  const guard = stallGuard(reader, startedAt, timeoutMs);
   const decoder = new TextDecoder();
   const blocks: Array<Record<string, unknown> | undefined> = [];
   const toolJson: string[] = [];

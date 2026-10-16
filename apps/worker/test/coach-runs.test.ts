@@ -836,11 +836,45 @@ describe("a restore that begins during the model call", () => {
     expect(await runStep(db, env, runId, userId, at(2), deps(model.callModel, [tool]))).toEqual({ kind: "restoring" });
     expect(tool.calls).toHaveLength(0);
     expect(await events(runId)).toEqual(before);
-    // Only the row written before the call (the spend may be real; it stays at its estimate), nothing after.
+    // Only the row written before the call (the spend may be real; it stays at its estimate), nothing after: its
+    // settle, first after the call (M2), stands down for the restore in its own statement.
     const usage = await db.select().from(schema.llmUsage);
     expect(usage).toHaveLength(1);
     expect(usage[0]!.costMicros).toBeGreaterThan(0);
+    expect(usage[0]!.outputTokens).toBe(RUN_LIMITS.main.maxTokens);
+    expect(usage[0]!.requestFingerprint).toMatch(/;est=\d+$/);
     expect((await runRow(runId)).steps).toBe(1);
+  });
+});
+
+describe("a call's usage is settled first after it answers (the go-live review, M2)", () => {
+  it("a step that dies right after the answer — at the next statement — has its real cost on record, not its estimate", async () => {
+    // The run's standing (the restore marker, the claim) is read after the settle: a database that fails that read.
+    let failStanding = false;
+    const tdb = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (text) => {
+        if (failStanding && /restore_id/.test(text) && /AS restoreId/i.test(text)) {
+          failStanding = false;
+          throw new Error("the invocation died here");
+        }
+      },
+    });
+    const user = await makeTestUser(tdb);
+    const runId = (await createRun(tdb, user.userId, { scope: { kind: "now" }, request: null }, at(0))).run.id;
+    const model = scriptedModel([
+      () => {
+        failStanding = true;
+        return toolTurn(use("read_day"));
+      },
+    ]);
+    const d = deps(model.callModel, [readTool("read_day", 1)]);
+    ok(await runStep(tdb, env, runId, user.userId, at(1), d));
+    await runStep(tdb, env, runId, user.userId, at(2), d).catch(() => undefined);
+    const [row] = await tdb.select().from(schema.llmUsage);
+    expect(row!.requestFingerprint).toBe(`run:${runId}:1`);
+    expect(row!.costMicros).toBe(20_000);
+    expect(row!.outputTokens).toBe(500);
   });
 });
 
@@ -1499,7 +1533,7 @@ describe("a step's tail (fix round 2)", () => {
   });
 
   it("a step that breaks between the call and its usage update still adds the call's spend to the run (fix wave 3A, A12)", async () => {
-    // A database that fails the first statement after the call (the restore marker's read) once.
+    // A database that fails the first statement after the call (its usage settle, since M2) once.
     let armed = false;
     const tdb = makeTestDb({
       boundVariableCap: 100,

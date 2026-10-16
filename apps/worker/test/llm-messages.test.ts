@@ -13,6 +13,8 @@ import { wakeGateway } from "../src/services/gateway-route.js";
 import {
   callMessages,
   DEFAULT_DESIGN_MODEL,
+  DESIGN_MODEL_TIMEOUT_MS,
+  designModelTimeoutMs,
   designModel,
   messagesCostMicros,
   MODEL_PRICES,
@@ -584,6 +586,64 @@ describe("callMessages — the streamed answer", () => {
     const pending = callMessages(makeEnv(), request(), fetchImpl);
     await vi.advanceTimersByTimeAsync(601_000);
     expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+  });
+});
+
+describe("a design call's deadline (the go-live fix wave: the fixture stack's short one)", () => {
+  it("is 10 minutes outside fixture mode, whatever FIXTURE_MODEL_TIMEOUT_MS says", () => {
+    expect(DESIGN_MODEL_TIMEOUT_MS).toBe(600_000);
+    expect(designModelTimeoutMs(makeEnv({ FIXTURE_MODEL_TIMEOUT_MS: "20000" }))).toBe(600_000);
+    expect(designModelTimeoutMs(undefined)).toBe(600_000);
+  });
+
+  it("in fixture mode, a shorter one it names (5 s at least, whole ms); anything else, 10 minutes", () => {
+    const fixture = (v?: string) => designModelTimeoutMs(makeEnv({ FIXTURE_MODE: "1", ...(v === undefined ? {} : { FIXTURE_MODEL_TIMEOUT_MS: v }) }));
+    expect(fixture("30000")).toBe(30_000);
+    expect(fixture("5000")).toBe(5_000);
+    for (const v of [undefined, "", "abc", "4999", "30000.5", "600000", "1200000", "-1"]) expect(fixture(v), String(v)).toBe(600_000);
+  });
+
+  it("the call is cut at it: in fixture mode with 30 s, a stream that keeps pinging says timeout at 30 s", async () => {
+    vi.useFakeTimers();
+    const { fetchImpl } = scriptedFetch([{ pingEveryMs: 10_000 }]);
+    const env = makeEnv({ FIXTURE_MODE: "1", FIXTURE_MODEL_TIMEOUT_MS: "30000", FIXTURE_MODEL_URL: "http://127.0.0.1:9" });
+    const pending = callMessages(env, request(), fetchImpl);
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+  });
+
+  it("…and a gateway whose headers never come is cut at it: the call's own abort, not the stall guard (no body yet)", async () => {
+    vi.useFakeTimers();
+    // A connection that never answers, and lets go only when the request is aborted.
+    const fetchImpl = ((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError"))))) as unknown as typeof fetch;
+    const env = makeEnv({ FIXTURE_MODE: "1", FIXTURE_MODEL_TIMEOUT_MS: "30000", FIXTURE_MODEL_URL: "http://127.0.0.1:9" });
+    const pending = callMessages(env, request(), fetchImpl);
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(settled).toBe(true);
+    expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+  });
+
+  it("…and a stream gone silent is cut at it too, not at the 150 s stall limit", async () => {
+    vi.useFakeTimers();
+    const begun = { type: "message_start", message: { id: "msg_f", type: "message", role: "assistant", content: [], usage: { input_tokens: 10, output_tokens: 1 } } };
+    const { fetchImpl, bodies } = scriptedFetch([{ hangAfter: [begun] }]);
+    const env = makeEnv({ FIXTURE_MODE: "1", FIXTURE_MODEL_TIMEOUT_MS: "30000", FIXTURE_MODEL_URL: "http://127.0.0.1:9" });
+    const pending = callMessages(env, request(), fetchImpl);
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(settled).toBe(true);
+    expect(await pending).toMatchObject({ ok: false, kind: "retryable", reason: "llm_timeout" });
+    expect(letGo(bodies[0])).toBe(true);
   });
 });
 

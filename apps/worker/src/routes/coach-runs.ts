@@ -27,7 +27,8 @@
  *                           athlete's check, dated their today and saved after the question (400 otherwise; another
  *                           athlete's, or none, 404) — 7 statements, pinned (with the step alarm on, and one request
  *                           to the run's object: the run it resumes is armed)
- *   POST /:id/cancel        → { run }
+ *   POST /:id/cancel        → { run }                       (with the step alarm on, and one request to the run's
+ *                           object: it forgets the run)
  *   POST /:id/undo-answer   { handle } → { undone }       (what record_answer kept from the request, or a check-in
  *                           question's kept answer, taken back; the
  *                           handle is the call's receipt's, and names this run: another run's is 400, one already taken
@@ -202,7 +203,10 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
 
   routes.post("/:id/cancel", async (c) => {
     const cancelled = await cancelRun(c.get("db"), c.get("userId"), c.req.param("id"), new Date());
-    return cancelled ? c.json(cancelled) : c.json({ error: "not_found" }, 404);
+    if (!cancelled) return c.json({ error: "not_found" }, 404);
+    // Over by the athlete's hand: its object forgets it at once, nothing left armed (the go-live review, M5).
+    if (stepAlarmOn(c.env)) await tellQuietly(c.env, cancelled.run.id, c.get("userId"), "forget");
+    return c.json(cancelled);
   });
 
   routes.post("/:id/undo-answer", async (c) => {

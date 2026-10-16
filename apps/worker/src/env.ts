@@ -27,6 +27,10 @@ export interface Env {
   COACH_STEP_ALARM?: string;
   /** The coach's run stepper, one object per main run (`CoachRunStepper`, SQLite-backed). Absent: the switch is off. */
   COACH_RUN_STEPPER?: DurableObjectNamespace;
+  /** Fixture mode only (the fixture stack, local dev): a design call's deadline in ms, shorter than the 10 minutes
+   * (llm-messages.ts `designModelTimeoutMs`), so the e2e's takeover of a step that died waits seconds, not 11 minutes.
+   * Ignored outside fixture mode; never set in wrangler.toml (pinned). Var. */
+  FIXTURE_MODEL_TIMEOUT_MS?: string;
 
   // Secrets
   SESSION_SECRET: string;

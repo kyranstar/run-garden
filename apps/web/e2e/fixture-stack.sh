@@ -75,7 +75,9 @@ MODEL_VARS=()
 if [ -n "$DESIGN_MODEL" ]; then
   node "$ROOT/apps/web/e2e/coach-design-model.mjs" "$MODEL_PORT" >"$STATE/model.log" 2>&1 &
   echo $! >>"$PIDS"
-  MODEL_VARS=(--var "AI_DESIGN_MODEL:$DESIGN_MODEL" --var "FIXTURE_MODEL_URL:http://127.0.0.1:$MODEL_PORT" --var AI_GATEWAY_API_KEY:stub)
+  # A 30 s model deadline (fixture mode only): the run's object takes back a step that died once no call could still
+  # be running — this deadline and a minute — so the e2e's worker-killed journey waits about 90 s, not 11 minutes.
+  MODEL_VARS=(--var "AI_DESIGN_MODEL:$DESIGN_MODEL" --var "FIXTURE_MODEL_URL:http://127.0.0.1:$MODEL_PORT" --var AI_GATEWAY_API_KEY:stub --var FIXTURE_MODEL_TIMEOUT_MS:30000)
 fi
 
 supervise_worker() {

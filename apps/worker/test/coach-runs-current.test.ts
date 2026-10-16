@@ -344,7 +344,7 @@ describe("GET /api/coach/runs/current", () => {
     }
   });
 
-  it("…never a suggestion the athlete didn't decide (superseded, expired), nor a rehearsal's; the newer of a decided and an open one", async () => {
+  it("…never a suggestion the athlete didn't decide (superseded, expired), nor a rehearsal's; an open one before a decided one, even a newer one (M6)", async () => {
     const now = new Date();
     const recent = new Date(now.getTime() - 60_000).toISOString();
     for (const status of ["superseded", "expired", "cancelled"]) {
@@ -369,9 +369,11 @@ describe("GET /api/coach/runs/current", () => {
     const decided = await run({ status: "finished" });
     await proposal(decided, "approved", ["applied"]);
     await db.update(schema.coachProposals).set({ resolvedAt: recent }).where(sql`id = ${designProposalId(decided)}`);
+    // The open one is still the athlete's to decide: it comes first, though the decided one is newer.
+    expect((await currentRun(db, userId, now))?.run.id).toBe(open);
+    // Once it is decided too (declined, now), the newer decided one shows: the newest of the two.
+    await db.update(schema.coachProposals).set({ status: "declined", resolvedAt: recent, ops: [] }).where(sql`id = ${designProposalId(open)}`);
     expect((await currentRun(db, userId, now))?.run.id).toBe(decided);
-    // Once it has had its moment, the open one is the athlete's to decide.
-    expect((await currentRun(db, userId, new Date(now.getTime() + 11 * 60_000)))?.run.id).toBe(open);
     // A live run still comes first.
     const live = await run({ status: "active" });
     expect((await currentRun(db, userId, now))?.run.id).toBe(live);

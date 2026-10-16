@@ -1211,7 +1211,7 @@ const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially
  * (Task 8) or being applied (8b) — dated today or later in the athlete's zone, the proposal not past its own day (a
  * proposal the sweep hasn't expired yet is not shown as open: fix round, M8) — or whose proposal the athlete decided
  * (approved, partly, declined) in the last CURRENT_DECIDED_MINUTES, so a reload during Approve opens on what came of it
- * (the newest of these); else null. Never a rehearsal's (its lane is
+ * (an open one first: the go-live review, M6); else null. Never a rehearsal's (its lane is
  * its own: fix wave 3A, A15), never a sub-run. With its last CURRENT_RUN_EVENTS events, oldest first, and the proposal
  * it holds open. CURRENT_RUN_STATEMENTS: the pick — one statement, the proposals and the athlete's preferences (their
  * timezone: their today) read with it — then the tree and the events; the pick alone when there is none.
@@ -1248,7 +1248,8 @@ export async function currentRun(
   const openToday = (c: (typeof candidates)[number]): boolean =>
     !!c.proposalId && (c.expiresAt ?? "") >= today && stringsOf(c.openDays).some((d) => d >= today);
   const decidedNow = (c: (typeof candidates)[number]): boolean => !!c.proposalId && Number(c.decided) === 1;
-  const pick = candidates.find((c) => Number(c.live) === 1) ?? candidates.find((c) => openToday(c) || decidedNow(c));
+  // A live run first; then a suggestion still the athlete's to decide; then one they decided in the last minutes (M6).
+  const pick = candidates.find((c) => Number(c.live) === 1) ?? candidates.find(openToday) ?? candidates.find(decidedNow);
   if (!pick) return null;
   const { root, nodes } = await loadTree(db, userId, pick.id);
   if (!root) return null;
@@ -2182,11 +2183,10 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   s.spent = spent;
   if (billed) state.outputs = [...(state.outputs ?? []), billed.usage.outputTokens].slice(-OUTPUTS_KEPT);
 
-  // ── After the call: every writer stands down for a restore; the claim may have been cancelled meanwhile ──
-  const { restoring, ours } = await standing(db, userId, run.id, s.claimAt);
-  if (restoring) return { kind: "restoring" };
-  if (result.ok) await clearOutOfCredits(db, userId);
-  else if (result.kind === "out_of_credits") await recordOutOfCredits(db, userId, s.claimAt);
+  // ── After the call: its usage settled first — as close to the answer as it can be, so a step that dies now leaves its
+  // real cost on record, not the estimate (the go-live review, M2) — unless a restore is under way: every writer stands
+  // down for one, and that guard is in the statement itself, so settling first costs no statement. Then the claim, which
+  // a cancel may have taken meanwhile. ──
   await db
     .update(llmUsage)
     .set(
@@ -2201,7 +2201,11 @@ async function modelStep(s: StepCtx): Promise<Advance> {
           }
         : { inputTokens: 0, outputTokens: 0, costMicros: 0, cacheHit: false, requestFingerprint: callFingerprint(run.id, state.calls + 1) },
     )
-    .where(eq(llmUsage.id, usageId));
+    .where(and(eq(llmUsage.id, usageId), NOT_RESTORING(userId)));
+  const { restoring, ours } = await standing(db, userId, run.id, s.claimAt);
+  if (restoring) return { kind: "restoring" };
+  if (result.ok) await clearOutOfCredits(db, userId);
+  else if (result.kind === "out_of_credits") await recordOutOfCredits(db, userId, s.claimAt);
   if (!ours) return { kind: "lost", costMicros: spent };
 
   if (!result.ok) {
@@ -2352,6 +2356,10 @@ function withClockLine(messages: MessageParam[], line: string): MessageParam[] {
  * writer stands down for it), and whether the run's claim is still this step's (a cancel or an expiry that landed
  * meanwhile took it).
  */
+/** No restore is under way for the athlete (`standing`'s marker, as a statement's own condition). */
+const NOT_RESTORING = (userId: string) =>
+  sql`NOT EXISTS (SELECT 1 FROM ${accountState} WHERE ${accountState.userId} = ${userId} AND coalesce(${accountState.restoreId}, '') <> '')`;
+
 async function standing(db: Db, userId: string, runId: string, claimAt: string): Promise<{ restoring: boolean; ours: boolean }> {
   const [row] = (await db.all(sql`
     SELECT (SELECT ${accountState.restoreId} FROM ${accountState} WHERE ${accountState.userId} = ${userId} LIMIT 1) AS restoreId,

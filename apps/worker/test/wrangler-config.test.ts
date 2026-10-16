@@ -55,6 +55,12 @@ describe("the coach's step alarm: a Durable Object per run (the robustness pass,
     expect(staging).not.toMatch(/COACH_STEP_ALARM/);
   });
 
+  it("the model's deadline is 10 minutes everywhere but the fixture stack, which shortens it to 30 s (fixture mode only)", () => {
+    expect(toml).not.toMatch(/FIXTURE_MODEL_TIMEOUT_MS/);
+    expect(readFileSync(new URL("../wrangler.dev.toml", import.meta.url), "utf8")).not.toMatch(/FIXTURE_MODEL_TIMEOUT_MS/);
+    expect(readFileSync(new URL("../../web/e2e/fixture-stack.sh", import.meta.url), "utf8")).toContain("--var FIXTURE_MODEL_TIMEOUT_MS:30000");
+  });
+
   it("local dev and the fixture stack run it on, with the same binding and class", () => {
     const dev = readFileSync(new URL("../wrangler.dev.toml", import.meta.url), "utf8");
     expect(dev).toMatch(/^COACH_STEP_ALARM = "1"$/m);

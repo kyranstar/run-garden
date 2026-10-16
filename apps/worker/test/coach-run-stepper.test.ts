@@ -32,13 +32,15 @@ import {
   STEPPER_BUSY_RETRY_MS,
   STEPPER_LEASE_MS,
   STEPPER_MAX_DEATHS,
+  STEPPER_TAKEBACK_GRACE_MS,
+  stepTakebackAt,
   stepAlarmOn,
   type StepperAnswer,
 } from "../src/services/coach-run-stepper.js";
 import { COACH_RUN_STEP_STALE_MINUTES } from "../src/services/cron-limits.js";
 import { StagingOutboundBlocked, uninstallStagingGuardForTests } from "../src/services/staging.js";
 import type { DesignTool } from "../src/services/design-tools/types.js";
-import { messagesCostMicros, PRICE_CEILING, type ContentBlock, type MessagesOk, type MessagesResult } from "../src/services/llm-messages.js";
+import { DESIGN_MODEL_TIMEOUT_MS, messagesCostMicros, PRICE_CEILING, type ContentBlock, type MessagesOk, type MessagesResult } from "../src/services/llm-messages.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 /** The most recent 20:00 UTC (midday for the test athlete): within the last day, which the weekly cap reads. */
@@ -216,7 +218,8 @@ function stepper(runId: string, model: ReturnType<typeof scriptedModel>, env: En
       deps: () => runDeps(model),
     });
   let instance = make();
-  const tell = async (op: "arm" | "touch", who = userId): Promise<StepperAnswer> => {
+  let retryPending = false;
+  const tell = async (op: "arm" | "touch" | "forget", who = userId): Promise<StepperAnswer> => {
     const res = await instance.fetch(new Request(`https://coach-run-stepper/${op}`, { method: "POST", body: JSON.stringify({ runId, userId: who }) }));
     return (await res.json()) as StepperAnswer;
   };
@@ -225,17 +228,26 @@ function stepper(runId: string, model: ReturnType<typeof scriptedModel>, env: En
     arm: () => tell("arm"),
     touch: () => tell("touch"),
     tell,
-    /** The platform fires the alarm that is due: during the handler, none is set unless the handler sets one. */
+    /** The platform fires the alarm that is due: during the handler, none is set unless the handler sets one. The alarm
+     * it set again after an invocation that died is a retry (`alarmInfo.isRetry`); any other is not. */
     fire: async () => {
       if (storage.alarm === null || storage.alarm > nowMs) throw new Error(`no alarm due (alarm ${storage.alarm}, now ${nowMs})`);
       storage.alarm = null;
-      await instance.alarm();
+      const isRetry = retryPending;
+      retryPending = false;
+      await instance.alarm({ isRetry, retryCount: isRetry ? 1 : 0, scheduledTime: nowMs });
     },
-    /** The invocation at work dies (a deploy resets the object): a fresh instance over the same storage, and the
-     * platform's retry of the alarm it was running, `afterMs` later. */
+    /** The invocation at work dies (a crash, an eviction): a fresh instance over the same storage, and the platform's
+     * retry of the alarm it was running, `afterMs` later (none: its retries are spent). */
     kill: (retryAfterMs: number | null = 2_000) => {
       instance = make();
+      retryPending = retryAfterMs !== null;
       storage.alarm = retryAfterMs === null ? null : nowMs + retryAfterMs;
+    },
+    /** A deploy: new requests go to a fresh instance, while the old one's invocation runs on — it touches the object's
+     * storage only once its step is done (Cloudflare: in-flight requests finish if they don't access storage). */
+    deploy: () => {
+      instance = make();
     },
   };
 }
@@ -514,16 +526,16 @@ describe("an alarm that dies mid-step (a deploy, an eviction)", () => {
     await w.touch();
     void w.fire().catch(() => undefined);
     await begun.promise;
-    w.kill(null);
+    w.kill();
     advance(STEPPER_LEASE_MS + 1);
-    w.storage.alarm = nowMs; // a late retry
+    w.storage.alarm = nowMs; // the platform's retry, late
     await w.fire();
     expect(model.calls).toBe(1);
     expect((await runRow(runId)).status).toBe("active");
     expect(w.storage.alarm).toBeNull();
   });
 
-  it("a read finds a step that died with no retry left, and has it taken back now", async () => {
+  it("anything but the platform's retry finds the step within the model's deadline: armed for its claim + the deadline + a minute, and no model is called before then (I2)", async () => {
     const runId = await newRun();
     const begun = deferred();
     const model = scriptedModel([hang(begun.resolve), finishTurn()]);
@@ -531,13 +543,67 @@ describe("an alarm that dies mid-step (a deploy, an eviction)", () => {
     await w.arm();
     await w.fire();
     await w.touch();
+    const claimAt = new Date(nowMs).toISOString();
     void w.fire().catch(() => undefined);
     await begun.promise;
-    w.kill(null); // the platform's retries spent: no alarm
+    w.kill(null); // no retry: a fresh instance knows nothing of how the step ended
+    const takeback = stepTakebackAt(BASE_ENV, claimAt);
+    expect(takeback).toBe(Date.parse(claimAt) + DESIGN_MODEL_TIMEOUT_MS + STEPPER_TAKEBACK_GRACE_MS);
+    expect(DESIGN_MODEL_TIMEOUT_MS).toBe(600_000); // production's model deadline: 10 minutes, pinned
+    // A client's read on the fresh instance: armed for then, not now.
     advance(5_000);
     expect(await w.touch()).toMatchObject({ armed: true, working: false });
-    expect(w.storage.alarm).toBe(nowMs);
+    expect(w.storage.alarm).toBe(takeback);
+    // An alarm that is no retry, before then (one set earlier, say): it arms for then and steps nothing.
+    w.storage.alarm = nowMs;
     await w.fire();
+    expect(w.storage.alarm).toBe(takeback);
+    expect(model.calls).toBe(1);
+    expect((await runRow(runId)).status).toBe("stepping");
+    // Then: the claim taken back, the run goes on.
+    nowMs = takeback;
+    await w.touch();
+    await w.fire();
+    expect(model.calls).toBe(2);
+    expect((await runRow(runId)).status).toBe("finished");
+  });
+
+  it("a deploy mid-step: the old invocation runs on and finishes it, and the new instance never steps it a second time (I2)", async () => {
+    const runId = await newRun();
+    let answer!: (r: MessagesResult) => void;
+    const begun = deferred();
+    const model = scriptedModel([
+      () => {
+        begun.resolve();
+        return new Promise<MessagesResult>((r) => (answer = r));
+      },
+      finishTurn(),
+    ]);
+    const w = stepper(runId, model);
+    await w.arm();
+    await w.fire();
+    await w.touch();
+    const old = w.fire(); // the step, on the old instance
+    await begun.promise;
+    w.deploy();
+    // The client reads on, every 2 s, from the new instance: nothing is stepped there.
+    for (let i = 0; i < 30; i++) {
+      advance(2_000);
+      await w.touch();
+    }
+    expect(model.calls).toBe(1);
+    expect(w.storage.alarm).toBeGreaterThan(nowMs);
+    // The old call answers; its invocation finishes the step.
+    answer(toolTurn(use("read_day")));
+    await old;
+    expect((await runRow(runId)).status).toBe("active");
+    // The next step, whenever its alarm fires, is the next — not this one again.
+    nowMs = Math.max(nowMs, w.storage.alarm ?? nowMs);
+    await w.touch();
+    if (w.storage.alarm !== null && w.storage.alarm <= nowMs) await w.fire();
+    nowMs = Math.max(nowMs, w.storage.alarm ?? nowMs);
+    if (w.storage.alarm !== null) await w.fire();
+    expect(model.calls).toBe(2);
     expect((await runRow(runId)).status).toBe("finished");
   });
 
@@ -565,21 +631,32 @@ describe("an alarm that dies mid-step (a deploy, an eviction)", () => {
     expect(w.storage.data.size).toBe(0);
   });
 
-  it("a step that keeps dying before it claims anything: at STEPPER_MAX_DEATHS the object stops trying; a client's arm starts it again", async () => {
+  it("a step that keeps dying: at STEPPER_MAX_DEATHS the object stops taking it back as its own — a read arms the stale window's takeover for its claim's stale time (M3)", async () => {
     const runId = await newRun();
     const model = scriptedModel([]);
     const w = stepper(runId, model);
     await w.arm();
-    // As invocations leave it that died before any claim: a step on record whose claim the run never saw.
+    // The run held by a claim nobody will finish, and the object's record of it after deaths in a row.
+    const claimAt = new Date(nowMs - 1_000).toISOString();
+    await db.update(schema.coachRuns).set({ status: "stepping", updatedAt: claimAt }).where(eq(schema.coachRuns.id, runId));
     const record = (await w.storage.get<Record<string, unknown>>("run"))!;
-    await w.storage.put("run", { ...record, step: { claimAt: new Date(nowMs - 1).toISOString(), startedAt: nowMs - 1 }, deaths: STEPPER_MAX_DEATHS - 1 });
+    await w.storage.put("run", { ...record, step: { claimAt, startedAt: Date.parse(claimAt) }, deaths: STEPPER_MAX_DEATHS - 1 });
+    w.kill(0); // the platform's retry of the last death
     await w.fire();
-    expect((await runRow(runId)).steps).toBe(0);
-    expect(w.storage.alarm).toBeNull();
     expect(STEPPER_MAX_DEATHS).toBeGreaterThan(MAX_TAKEOVERS); // A14 fails a step that dies after its claim first
-    await w.arm();
+    expect(model.calls).toBe(0);
+    expect((await runRow(runId)).status).toBe("stepping");
+    // A client still reading: the takeover armed for the claim's stale time — never not at all, never every read.
+    const staleAt = Date.parse(claimAt) + COACH_RUN_STEP_STALE_MINUTES * 60_000;
+    advance(2_000);
+    expect(await w.touch()).toMatchObject({ armed: true });
+    expect(w.storage.alarm).toBe(staleAt);
+    nowMs = staleAt + 1;
+    await w.touch(); // the client, still reading (every 2 s while the run is at work)
     await w.fire();
-    expect((await runRow(runId)).steps).toBe(1);
+    const row = await runRow(runId);
+    expect(row.status).toBe("active");
+    expect(row.steps).toBe(1); // taken over as a stale claim: the context step ran
   });
 
   it("in staging, an alarm installs the outbound guard the Worker's own requests get (an alarm is no request)", async () => {
@@ -596,7 +673,19 @@ describe("an alarm that dies mid-step (a deploy, an eviction)", () => {
     }
   });
 
-  it("answers only its two words, with a body it can read", async () => {
+  it("`forget`: the run's record and alarm gone at once; another athlete's word to forget is refused (M5)", async () => {
+    const runId = await newRun();
+    const w = stepper(runId, scriptedModel([]));
+    await w.arm();
+    const other = await makeTestUser(db);
+    expect(await w.tell("forget", other.userId)).toMatchObject({ refused: true });
+    expect(w.storage.data.size).toBe(1);
+    expect(await w.tell("forget")).toMatchObject({ armed: false });
+    expect(w.storage.data.size).toBe(0);
+    expect(w.storage.alarm).toBeNull();
+  });
+
+  it("answers only its words, with a body it can read", async () => {
     const runId = await newRun();
     const storage = new FakeStorage();
     const s = new CoachRunStepper({ storage } as unknown as DurableObjectState, BASE_ENV, { db, clock });
@@ -898,6 +987,30 @@ describe("the routes with the switch on (COACH_STEP_ALARM = 1)", () => {
     expect(res.fetches).toBe(1); // the object: one request more than the answer's own
     expect(res.cost - res.fetches).toBeLessThanOrEqual(7); // the answer's own statements: 7 at most, pinned (A8)
     expect(o.storage.alarm).toBe(nowMs);
+  });
+});
+
+describe("a cancel (M5)", () => {
+  it("tells the run's object to forget it — nothing left armed for a run that is over — for one request more than the cancel's own", async () => {
+    const model = scriptedModel([]);
+    const on = await routesWith({ COACH_STEP_ALARM: "1" }, model);
+    const runId = await newRun();
+    await on.call("POST", `/${runId}/step`);
+    const o = on.space.object(runId);
+    expect(o.storage.alarm).not.toBeNull();
+    const cancelled = await on.call("POST", `/${runId}/cancel`);
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.run.status).toBe("cancelled");
+    expect(o.storage.data.size).toBe(0);
+    expect(o.storage.alarm).toBeNull();
+    expect(cancelled.fetches).toBe(1);
+
+    const off = await routesWith({}, model);
+    const other = await newRun();
+    await db.update(schema.coachRuns).set({ status: "cancelled" }).where(eq(schema.coachRuns.id, runId));
+    const plain = await off.call("POST", `/${other}/cancel`);
+    expect(plain.fetches).toBe(0);
+    expect(cancelled.cost).toBe(plain.cost + 1);
   });
 });
 
