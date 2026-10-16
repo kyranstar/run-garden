@@ -24,7 +24,7 @@
  *    every POLL_MS while it can be stepped — each read keeps the server's lease, so the coach goes on while someone
  *    watches — shows it at work (its ●) throughout, and stops when it waits on the athlete or is over. A run the reads
  *    find quiet (steppable, nothing at work) for STEP_LOST_MS is armed again; reads failing MAX_FAILURES in a row say
- *    `lost`, and the network back arms it again. Hidden, nothing is read: the server's lease runs out and the coach
+ *    `lost` and are then made only every LOST_RETRY_MS, and the network back arms it again; a 404 ends the watch (`gone`). Hidden, nothing is read: the server's lease runs out and the coach
  *    rests after the step at work and at most one more.
  *
  * Who owns the loop: the app's run keeper (run-keeper.tsx) when the app mounts one — the run goes on stepping on any
@@ -507,7 +507,11 @@ export class CoachRunLoop {
       await this.readArmed();
       this.polling = false;
     }
-    if (this.armed && !this.disposed && this.snap.inFlight && this.pollTimer === null) this.pollTimer = this.deps.setTimeout(() => void this.poll(), POLL_MS);
+    // Lost, it reads only every LOST_RETRY_MS, as the direct path tries a step (Retry and the network coming back go on
+    // at once): a failing server is never read every POLL_MS for good (the go-live review, I1).
+    if (this.armed && !this.disposed && this.snap.inFlight && this.pollTimer === null) {
+      this.pollTimer = this.deps.setTimeout(() => void this.poll(), this.snap.lost ? LOST_RETRY_MS : POLL_MS);
+    }
   }
 
   /**
@@ -519,8 +523,14 @@ export class CoachRunLoop {
     let res: { run: CoachRunDto; events: CoachRunEventDto[] };
     try {
       res = await this.deps.read(this.runId, lastSeq(this.snap.events));
-    } catch {
+    } catch (e) {
       if (this.disposed || !this.armed) return;
+      // The run is gone (a 404: deleted, or the server's coach switched off under an open tab): nothing more to read.
+      if (stepErrorKind(e) === "gone") {
+        this.endWatch();
+        this.set({ inFlight: false, gone: true });
+        return;
+      }
       this.failures += 1;
       if (this.failures >= MAX_FAILURES && !this.snap.lost) this.set({ lost: true });
       return;

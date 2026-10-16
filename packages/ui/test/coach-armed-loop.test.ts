@@ -7,10 +7,10 @@
  * Synthetic data only.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, type CoachRunDto, type CoachRunEventDto, type CoachRunStepResult } from "@rg/api-client";
+import { api, ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunStepResult } from "@rg/api-client";
 import { toStepResult } from "../src/screens/studio/coach-tolerance.js";
 import { browserDeps, CoachRunLoop, type LoopDeps } from "../src/screens/studio/use-coach-run.js";
-import { MAX_FAILURES, POLL_MS, STEP_LOST_MS } from "../src/screens/studio/run-model.js";
+import { LOST_RETRY_MS, MAX_FAILURES, POLL_MS, STEP_LOST_MS } from "../src/screens/studio/run-model.js";
 
 const T0 = Date.parse("2026-10-16T08:00:00.000Z");
 
@@ -216,7 +216,8 @@ describe("an armed answer: the server steps the run, the loop reads it", () => {
     await h.clock.advance(POLL_MS * MAX_FAILURES);
     expect(loop.snapshot).toMatchObject({ lost: true, inFlight: true });
     down = false;
-    await h.clock.advance(POLL_MS);
+    // Lost, the next read is LOST_RETRY_MS on (I1).
+    await h.clock.advance(LOST_RETRY_MS);
     expect(loop.snapshot).toMatchObject({ lost: false, inFlight: true, status: "stepping" });
   });
 
@@ -286,6 +287,73 @@ describe("an armed answer: the server steps the run, the loop reads it", () => {
     expect(loop.snapshot).toMatchObject({ status: "waiting_athlete", inFlight: false });
     expect(h.calls.steps).toHaveLength(1);
     expect(h.calls.reads).toHaveLength(1); // one read, for its figures — and no watch
+  });
+});
+
+describe("reads that keep failing never poll for good (the go-live review, I1)", () => {
+  const HOUR = 60 * 60_000;
+
+  it("a 404 — the run gone (deleted, or the coach switched off under an open tab): the watch ends, `gone`, and nothing more is asked", async () => {
+    const h = harness({ reads: () => new ApiError(404, { error: "not_found" }) });
+    const loop = start(h);
+    await h.clock.advance(POLL_MS);
+    expect(loop.snapshot).toMatchObject({ gone: true, inFlight: false });
+    await h.clock.advance(HOUR);
+    expect(h.calls.reads).toHaveLength(1);
+    expect(h.calls.steps).toHaveLength(1);
+  });
+
+  it("a 503 for an hour: lost after MAX_FAILURES reads, then one read every LOST_RETRY_MS — never one every POLL_MS", async () => {
+    const h = harness({ reads: () => new ApiError(503, null) });
+    const loop = start(h);
+    await h.clock.advance(POLL_MS * MAX_FAILURES);
+    expect(loop.snapshot.lost).toBe(true);
+    const lostReads = h.calls.reads.length;
+    expect(lostReads).toBe(MAX_FAILURES);
+    await h.clock.advance(HOUR);
+    const later = h.calls.reads.length - lostReads;
+    expect(later).toBeLessThanOrEqual(HOUR / LOST_RETRY_MS + 1);
+    expect(later).toBeGreaterThanOrEqual(HOUR / LOST_RETRY_MS - 1);
+    // Lost but not gone: still the coach's run, its ● kept (the server may be at work).
+    expect(loop.snapshot).toMatchObject({ lost: true, gone: false, inFlight: true });
+  });
+
+  it("a 401 (the session expired) is a failure like a 503: lost, and read only every LOST_RETRY_MS", async () => {
+    const h = harness({ reads: () => new ApiError(401, { error: "unauthenticated" }) });
+    const loop = start(h);
+    await h.clock.advance(HOUR);
+    expect(loop.snapshot.lost).toBe(true);
+    expect(h.calls.reads.length).toBeLessThanOrEqual(MAX_FAILURES + HOUR / LOST_RETRY_MS + 1);
+  });
+
+  it("lost, then the server answers again: back to a read every POLL_MS", async () => {
+    let down = true;
+    const h = harness({ reads: () => (down ? new ApiError(503, null) : read("stepping")) });
+    const loop = start(h);
+    await h.clock.advance(POLL_MS * MAX_FAILURES);
+    expect(loop.snapshot.lost).toBe(true);
+    down = false;
+    await h.clock.advance(LOST_RETRY_MS);
+    expect(loop.snapshot).toMatchObject({ lost: false, status: "stepping" });
+    const n = h.calls.reads.length;
+    await h.clock.advance(POLL_MS * 5);
+    expect(h.calls.reads.length - n).toBe(5);
+  });
+
+  it("lost offline, then the network back: armed again at once, and read every POLL_MS", async () => {
+    let offline = true;
+    const h = harness({ reads: () => (offline ? new TypeError("Failed to fetch") : read("stepping")) });
+    const loop = start(h);
+    await h.clock.advance(POLL_MS * MAX_FAILURES);
+    expect(loop.snapshot.lost).toBe(true);
+    offline = false;
+    h.online();
+    await h.clock.advance(1);
+    expect(h.calls.steps).toHaveLength(2);
+    const n = h.calls.reads.length;
+    await h.clock.advance(POLL_MS * 3);
+    expect(h.calls.reads.length - n).toBe(3);
+    expect(loop.snapshot.lost).toBe(false);
   });
 });
 
