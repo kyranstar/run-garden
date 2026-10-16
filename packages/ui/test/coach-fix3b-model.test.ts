@@ -175,6 +175,22 @@ describe("a refused call is a neutral note (B-I4)", () => {
     for (const raw of ["parts[", "unknown_exercise", "search_library", "Refusal", "Fix"]) expect(words).not.toContain(raw);
   });
 
+  it("the model's fix written into the why itself — '(fix: …)', as the server sends it — is never shown either", () => {
+    const [line] = runLines([
+      ev(10, "note", "Adjusted the draft.", {
+        tool: "propose_workout",
+        ok: false,
+        error: "invalid_doc",
+        refusal: {
+          error: "invalid_doc",
+          why: "parts[0].items[0].libraryId (unknown_exercise): There's no move \"notAMoveAnywhere\" in the library. (fix: Find the move with search_library and use an id it shows)",
+        },
+      }),
+    ]);
+    const why = detailOf(line!).flatMap((s) => s.rows).find((r) => r.key === "Why not")!.value;
+    expect(why).toBe("There's no move \"notAMoveAnywhere\" in the library.");
+  });
+
   it("an error line is still an error: the loop's own stop, a tool result that failed", () => {
     expect(runLines([ev(1, "error", "The AI account is out of credits — the coach stopped here.")])[0]!.glyph).toBe("error");
     expect(runLines([ev(2, "tool_result", "Couldn't use search", { tool: "search_library", ok: false, error: "no_match" })])[0]!.glyph).toBe("error");

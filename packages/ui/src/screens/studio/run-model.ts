@@ -438,6 +438,8 @@ function setRows(set: readonly unknown[]): DetailRow[] {
 
 /** A validator's issue as the server words it for the model: "parts[0].items[1].dose (bad_dose): …" — where, and its code. */
 const ISSUE_PREFIX = /(?:^|;\s*)[\w.[\]]+ \([a-z_]+\):\s*/g;
+/** The model's instruction the server writes into an issue: "(fix: Find the move with search_library …)". */
+const FIX_NOTE = /\s*\(fix: [^)]*\)/g;
 
 /**
  * Why a call was refused: the server's own words when it gave them — top-level, or in Part S's `refusal` (fix wave 3B,
@@ -446,7 +448,7 @@ const ISSUE_PREFIX = /(?:^|;\s*)[\w.[\]]+ \([a-z_]+\):\s*/g;
  */
 function whyNot(p: Record<string, unknown>): DetailRow {
   const raw = typeof p.why === "string" ? p.why : record(p.refusal)?.why;
-  const why = typeof raw === "string" ? raw.replace(ISSUE_PREFIX, " ").replace(/\.\s*\./g, ".").replace(/\s+/g, " ").trim() : "";
+  const why = typeof raw === "string" ? raw.replace(FIX_NOTE, "").replace(ISSUE_PREFIX, " ").replace(/\.\s*\./g, ".").replace(/\s+/g, " ").trim() : "";
   return { key: "Why not", value: why ? clip(why) : keyWords(String(p.error ?? "refused")) };
 }
 
