@@ -64,6 +64,8 @@ interface Ctx extends SelectCtx {
   fillingJumps: boolean;
   /** The moves eligible today (gear, mode, exclusions, checks): the same for every slot of one build, so judged once. */
   eligibleIds: Set<string> | null;
+  /** Each block and format's moves on the build's own terms (`slotPool`): the same for every slot, so judged once. */
+  slotPools: Map<string, readonly ExerciseRecord[]>;
 }
 
 function fmt(data: EngineData, id: FormatId): Format {
@@ -348,16 +350,29 @@ function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx,
     .map(x => x.r);
 }
 
+/**
+ * The moves a block and format may take on the build's own terms — the jumps rule (while the jumps block fills, or
+ * not), the block, today's eligibility, the format — in the library's order. None of these changes while one build
+ * fills its slots, so each is worked out once a build; `candidates` then leaves out what the plan already holds.
+ */
+function slotPool(block: BlockId, formatId: FormatId, ctx: Ctx): readonly ExerciseRecord[] {
+  const key = `${block}|${formatId}|${ctx.fillingJumps}`;
+  let pool = ctx.slotPools.get(key);
+  if (!pool) {
+    pool = Lib.all(ctx.data).filter(ex =>
+      jumpRule(ex, ctx.fillingJumps, ctx) &&
+      fitsBlock(ctx, ex, block) &&
+      eligibleToday(ctx, ex) &&
+      accepts(ctx.data, formatId, ex));
+    ctx.slotPools.set(key, pool);
+  }
+  return pool;
+}
+
 // The day's checks apply (Lib.eligible with checks): e.g. overhead pressing needs an answered, calm check.
 function candidates(block: BlockId, formatId: FormatId, ctx: Ctx): ExerciseRecord[] {
   const taken = movesInPlan(ctx);
-  return Lib.all(ctx.data).filter(ex =>
-    !taken.has(moveKey(ex)) &&
-    jumpRule(ex, ctx.fillingJumps, ctx) &&
-    fitsBlock(ctx, ex, block) &&
-    eligibleToday(ctx, ex) &&
-    !ctx.used.has(ex.id) &&
-    accepts(ctx.data, formatId, ex));
+  return slotPool(block, formatId, ctx).filter(ex => !taken.has(moveKey(ex)) && !ctx.used.has(ex.id));
 }
 
 const pairable = (a: ExerciseRecord, b: ExerciseRecord): boolean =>
@@ -520,6 +535,7 @@ function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): 
     jumpDay: plyometricDay(input.theme),
     fillingJumps: false,
     eligibleIds: null,
+    slotPools: new Map(),
     memo: { deps: null, map: new Map() },
     coreRegions: null,
     targets: new Map(),
@@ -528,8 +544,16 @@ function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): 
   };
 }
 
-function buildPlan(data: EngineData, input: BuildInput, hist?: HistIndex): Plan {
-  const ctx = makeContext(data, input, hist);
+/**
+ * `makeContext` again for the same input, without working its facts out twice: `ctx`'s terms and everything worked
+ * out from them (the history's facts, today's eligible moves, the slot pools, the targets, the score parts — none of
+ * which filling a plan changes) with a fresh plan state (nothing used, the new move open again, a fresh rng).
+ */
+const freshContext = (ctx: Ctx): Ctx => ({
+  ...ctx, rng: Rng.create(ctx.seed), used: new Set(), newMoveOpen: ctx.newMoveWeek, fillingJumps: false, coreRegions: null,
+});
+
+function buildPlan(data: EngineData, input: BuildInput, ctx: Ctx): Plan {
   const budget = input.minutes * 60;
   const shares = ctx.skeleton.shares;
   const mins = ctx.skeleton.min;
@@ -854,8 +878,10 @@ const SWAP_SLACK_SECONDS = Swapping.SLACK_SECONDS;
 function prepare(data: EngineData, input: BuildInput, _k = 3, history?: HistIndex): Prepared {
   // One history index for the plan and the swap pools (the history is the same; only the plan's own state differs).
   const hist = HistIndex.for(data, input.sessions || [], history, input.summary);
-  const base = buildPlan(data, input, hist);
-  const ctx = makeContext(data, input, hist);
+  const planned = makeContext(data, input, hist);
+  const base = buildPlan(data, input, planned);
+  // The swap pools' context: the plan's terms and what was worked out from them, none of the plan's own state.
+  const ctx = freshContext(planned);
   const slots: Record<string, SwapSlot> = {};
   const current: Record<string, SlotChoice> = {};
   // A move scores the same in every slot (no position or prep context in the ranking), so score it once.

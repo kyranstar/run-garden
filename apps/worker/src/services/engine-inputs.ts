@@ -16,7 +16,7 @@
  * Every list comes back in a fixed order, so the same rows always make the same inputs (and the same inputs hash).
  * Reads only, apart from `saveProgramState` — a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, Column, desc, eq, getTableColumns, inArray, isNull, ne, sql, type InferSelectModel, type Table } from "drizzle-orm";
 import {
   conditionChecks,
   exercisePrefs,
@@ -343,6 +343,35 @@ function toSummary(rows: readonly HistoryRow[], asOf: string): HistorySummary {
   return { asOf, moves: out };
 }
 
+/**
+ * A table's rows from the raw values of a whole-row `select().from(table)`, mapped exactly as drizzle maps them — its
+ * select runs these same values through `mapResultRow`: each column's own `mapFromDriverValue` (a column that maps
+ * nothing is read as it comes, and a JSON column's empty list is an empty list), NULL kept null, the keys in the
+ * table's column order — without that function's generic work on every cell, which was half the CPU of a build's read.
+ */
+export function rowsOf<T extends Table>(table: T): (raw: readonly unknown[][]) => InferSelectModel<T>[] {
+  const columns: ReadonlyArray<readonly [string, Column]> = Object.entries(getTableColumns(table));
+  const keys = columns.map(([key]) => key);
+  const decoders = columns.map(([, column]) =>
+    column.mapFromDriverValue === Column.prototype.mapFromDriverValue ? null
+      : column.columnType === "SQLiteTextJson" ? (value: unknown) => (value === "[]" ? [] : column.mapFromDriverValue(value))
+      : (value: unknown) => column.mapFromDriverValue(value),
+  );
+  return (raw) =>
+    raw.map((values) => {
+      const row: Record<string, unknown> = {};
+      for (let i = 0; i < keys.length; i++) {
+        const value = values[i];
+        const decode = decoders[i];
+        row[keys[i]!] = value === null || !decode ? value : decode(value);
+      }
+      return row as InferSelectModel<T>;
+    });
+}
+const sessionRows = rowsOf(performedSessions);
+const setRows = rowsOf(performedSets);
+const checkRows = rowsOf(conditionChecks);
+
 /** One query per chunk of ids, results in chunk order. */
 async function byChunks<T>(ids: readonly string[], read: (chunk: string[]) => Promise<T[]>): Promise<T[]> {
   const parts = await Promise.all(chunkIds([...ids], ID_CHUNK).map(read));
@@ -369,41 +398,53 @@ export async function loadBuildHistory(
   if (held.length === 0) return { sessions: [], summary };
   const ids = held.map((r) => r.raw);
   const slots = [...new Set(held.map((r) => r.a).filter((w): w is string => w !== null))];
-  const [sessionRows, sets, linked, sheet] = await Promise.all([
-    byChunks(ids, (chunk) => db.select().from(performedSessions).where(and(eq(performedSessions.userId, userId), inArray(performedSessions.id, chunk)))),
-    byChunks(ids, (chunk) =>
-      db
-        .select()
-        .from(performedSets)
-        .where(inArray(performedSets.performedSessionId, chunk))
-        .orderBy(asc(performedSets.performedSessionId), asc(performedSets.entryIndex), asc(performedSets.setIndex)),
+  // Each select's raw values, mapped by `rowsOf` (what its own mapping makes of them, for less CPU).
+  const [heldRows, sets, linked, sheet] = await Promise.all([
+    byChunks(ids, async (chunk) =>
+      sessionRows(await db.select().from(performedSessions).where(and(eq(performedSessions.userId, userId), inArray(performedSessions.id, chunk))).values()),
+    ),
+    byChunks(ids, async (chunk) =>
+      setRows(
+        await db
+          .select()
+          .from(performedSets)
+          .where(inArray(performedSets.performedSessionId, chunk))
+          .orderBy(asc(performedSets.performedSessionId), asc(performedSets.entryIndex), asc(performedSets.setIndex))
+          .values(),
+      ),
     ),
     // A session's own checks, and a slot's pre-check recorded before its save (each kept in the order loadHistory
     // reads them: within one session or one slot, by time).
-    byChunks(ids, (chunk) =>
-      db
-        .select()
-        .from(conditionChecks)
-        .where(and(eq(conditionChecks.userId, userId), inArray(conditionChecks.kind, ["pre", "post"]), inArray(conditionChecks.performedSessionId, chunk)))
-        .orderBy(asc(conditionChecks.at), asc(conditionChecks.id)),
+    byChunks(ids, async (chunk) =>
+      checkRows(
+        await db
+          .select()
+          .from(conditionChecks)
+          .where(and(eq(conditionChecks.userId, userId), inArray(conditionChecks.kind, ["pre", "post"]), inArray(conditionChecks.performedSessionId, chunk)))
+          .orderBy(asc(conditionChecks.at), asc(conditionChecks.id))
+          .values(),
+      ),
     ),
-    byChunks(slots, (chunk) =>
-      db
-        .select()
-        .from(conditionChecks)
-        .where(
-          and(
-            eq(conditionChecks.userId, userId),
-            eq(conditionChecks.kind, "pre"),
-            isNull(conditionChecks.performedSessionId),
-            inArray(conditionChecks.workoutId, chunk),
-          ),
-        )
-        .orderBy(asc(conditionChecks.at), asc(conditionChecks.id)),
+    byChunks(slots, async (chunk) =>
+      checkRows(
+        await db
+          .select()
+          .from(conditionChecks)
+          .where(
+            and(
+              eq(conditionChecks.userId, userId),
+              eq(conditionChecks.kind, "pre"),
+              isNull(conditionChecks.performedSessionId),
+              inArray(conditionChecks.workoutId, chunk),
+            ),
+          )
+          .orderBy(asc(conditionChecks.at), asc(conditionChecks.id))
+          .values(),
+      ),
     ),
   ]);
   const place = new Map(ids.map((id, i) => [id, i]));
-  const sessions = [...sessionRows].sort((x, y) => place.get(x.id)! - place.get(y.id)!);
+  const sessions = [...heldRows].sort((x, y) => place.get(x.id)! - place.get(y.id)!);
   return { sessions: toHistory(sessions, bySession(sets), [...linked, ...sheet]), summary };
 }
 
