@@ -376,7 +376,8 @@ describe("remember", () => {
     expect(row!.provenance).toMatchObject({ source: "coach_inference", runId: r.id, role: "main", at: NOW.toISOString() });
     expect((row!.provenance as Record<string, unknown>).rehearsal).toBeUndefined();
     expect(out.data).toMatchObject({ remembered: { id, confidence: "inferred", body: { untrusted: true } } });
-    expect(out.summary).toMatch(/^Remembered \(inferred\)/);
+    // In the Settings list's words (Task 10).
+    expect(out.summary).toMatch(/^Remembered \(the coach inferred\)/);
     // recall_memory finds it, marked as the coach's inference.
     const recalled = data(await recallMemory.run(c, { query: "Activation before goblet", kind: "observation" }));
     expect(recalled.memories[0]).toMatchObject({ id, confidence: "inferred" });

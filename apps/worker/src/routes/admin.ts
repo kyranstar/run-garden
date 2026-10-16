@@ -11,6 +11,9 @@
  * `/api/admin/workout-docs/backfill` (Stage 1 Task 14) lives behind the same
  * switch and sign-in: one bounded step of the workout document backfill
  * (services/workout-doc-backfill.ts), counts and ids only.
+ *
+ * `/api/admin/coach-memory-migration` (Stage 3 Task 10) lives behind it too, for the owner's own account only: the
+ * one-time move of profile-shaped memories into the profile, a dry run unless asked to apply.
  */
 import { Hono, type Context, type ExecutionContext } from "hono";
 import type { Env } from "../env.js";
@@ -22,6 +25,7 @@ import { canonicalJson } from "../services/account-tables.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { calendarHash, gardenHash, jobCounts, ParityRefused, tableHashes } from "../services/parity.js";
 import { BACKFILL_KINDS, backfillWorkoutDocs, type BackfillKind } from "../services/workout-doc-backfill.js";
+import { migrationApply, migrationDryRun } from "../services/coach-memory-migration.js";
 
 /** Hands a request to the app itself, in-process (index.ts passes `app.fetch`). */
 export type AppDispatch = (req: Request, env: Env, ctx?: ExecutionContext) => Response | Promise<Response>;
@@ -232,6 +236,30 @@ export function adminRoutes(dispatch: AppDispatch): Hono<AppContext> {
       console.error(`workout doc backfill failed: ${name}`);
       return c.json({ error: "backfill_failed", name }, 500);
     }
+  });
+
+  /**
+   * The one-time move of profile-shaped memories into the profile (Stage 3 Task 10; services/coach-memory-migration.ts),
+   * for the owner's own account only (`ALLOWED_GOOGLE_EMAIL`, compared as sign-in compares it; any other account is a
+   * 404). `{}` answers the dry run — reads only. `{ apply: true, fingerprint }` applies exactly the plan that dry run
+   * reported, and refuses (409, with the fresh report) a plan that changed since. The report is the answer only:
+   * nothing here logs it (the handler below logs an error's kind).
+   */
+  routes.post("/coach-memory-migration", async (c) => {
+    const owner = (c.env.ALLOWED_GOOGLE_EMAIL ?? "").toLowerCase();
+    if (!owner || (c.get("userEmail") ?? "").toLowerCase() !== owner) return c.notFound();
+    const body = (await c.req.json().catch(() => ({}))) as { apply?: unknown; fingerprint?: unknown } | null;
+    if (body?.apply !== undefined && typeof body.apply !== "boolean") return c.json({ error: "bad_apply" }, 400);
+    const db = c.get("db");
+    const userId = c.get("userId");
+    if (body?.apply !== true) return c.json(await migrationDryRun(db, userId));
+    if (typeof body.fingerprint !== "string" || !/^[0-9a-f]{32}$/.test(body.fingerprint)) {
+      return c.json({ error: "needs_fingerprint", why: "Run the dry run first, and send its fingerprint with apply." }, 400);
+    }
+    const out = await migrationApply(db, userId, body.fingerprint);
+    if (out.kind === "changed") return c.json({ error: "changed_since_dry_run", report: out.report }, 409);
+    if (out.kind === "too_large") return c.json({ error: "too_large", statements: out.statements }, 413);
+    return c.json(out.report);
   });
 
   // The kind only, as the copier does (Audit 2 M6): Hono's default handler

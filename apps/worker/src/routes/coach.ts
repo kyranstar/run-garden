@@ -57,7 +57,7 @@ import { isDesignedProposal } from "../services/proposal-kinds.js";
 import { expiryOfClaims, SWEEP_REJUDGES } from "../services/design-approve.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
-import { liveMemoryWhere } from "../services/memory-core.js";
+import { liveMemoryWhere, MEMORY_PIN_CAP, memoryHistoryWhere, REHEARSAL_MEMORY } from "../services/memory-core.js";
 import { LIVE_STATUSES } from "../services/coach-runs.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 
@@ -625,24 +625,68 @@ coachRoutes.get("/memory", async (c) => {
   // timezone (loading one would be a statement more), so an expiry is judged against the earliest local date anywhere
   // now (UTC−12): an item still live somewhere is listed, and the hourly sweep retires one that lapsed in the
   // athlete's own zone (`sweepUserProposals`), as it always has.
+  // Memory v2 (Stage 3 Task 10): the same read also brings the superseded history (`memoryHistoryWhere`), which the list
+  // shows under the item that replaced it; `memory` stays exactly the live items, as before.
   const rows = await db
     .select()
     .from(coachMemory)
-    .where(liveMemoryWhere(userId, todayInZone(EARLIEST_ZONE)))
+    .where(or(liveMemoryWhere(userId, todayInZone(EARLIEST_ZONE)), memoryHistoryWhere(userId)))
     .orderBy(desc(coachMemory.learnedAt));
-  return c.json({ memory: rows });
+  return c.json({ memory: rows.filter((r) => r.supersededBy === null), history: rows.filter((r) => r.supersededBy !== null) });
 });
 
+/** A memory item's words, at most (an edit; the coach's own `remember` keeps the same). */
+const MEMORY_BODY_MAX = 300;
+
+/**
+ * Edit, pin or confirm one of the athlete's live items (memory v2, Stage 3 Task 10): `{ body?, pinned?, confirm? }`, at
+ * least one. `confirm: true` makes the coach's inference the athlete's confirmed item (what they said stays theirs). A
+ * pin past MEMORY_PIN_CAP live pinned items is refused (409). Only their own live item — never another athlete's, a
+ * superseded or deleted one, or a rehearsal's (404). One guarded write; a refusal reads once more to say which.
+ */
 coachRoutes.patch("/memory/:id", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const { body } = await c.req.json<{ body?: string }>().catch(() => ({ body: undefined }));
-  if (!body || body.length > 300) return c.json({ error: "bad_request" }, 400);
-  await db
-    .update(coachMemory)
-    .set({ body })
-    .where(and(eq(coachMemory.id, c.req.param("id")), eq(coachMemory.userId, userId)));
-  return c.json({ ok: true });
+  const id = c.req.param("id");
+  const raw = (await c.req.json().catch(() => null)) as { body?: unknown; pinned?: unknown; confirm?: unknown } | null;
+  const body = raw?.body;
+  const pinned = raw?.pinned;
+  const confirm = raw?.confirm;
+  if (
+    !raw ||
+    (body === undefined && pinned === undefined && confirm === undefined) ||
+    (body !== undefined && (typeof body !== "string" || !body || body.length > MEMORY_BODY_MAX)) ||
+    (pinned !== undefined && typeof pinned !== "boolean") ||
+    (confirm !== undefined && confirm !== true)
+  ) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const m = coachMemory;
+  const live = liveMemoryWhere(userId, todayInZone(EARLIEST_ZONE));
+  // A new pin only while the live pinned items are under the cap (an item already pinned is no new pin).
+  const roomToPin =
+    pinned === true
+      ? sql`(${m.pinned} = 1 or (select count(*) from ${m} where ${and(live, eq(m.pinned, true))}) < ${MEMORY_PIN_CAP})`
+      : sql`1 = 1`;
+  const [item] = await db
+    .update(m)
+    .set({
+      ...(typeof body === "string" ? { body } : {}),
+      ...(typeof pinned === "boolean" ? { pinned } : {}),
+      ...(confirm === true ? { confidence: sql`case when ${m.confidence} = 'inferred' then 'confirmed' else ${m.confidence} end` } : {}),
+      updatedAt: nowInstant(),
+    })
+    .where(and(eq(m.id, id), eq(m.userId, userId), eq(m.active, true), isNull(m.supersededBy), sql`not ${REHEARSAL_MEMORY}`, roomToPin))
+    .returning();
+  if (item) return c.json({ ok: true, item });
+  // Which refusal: the item is no live item of theirs, or the pins are full.
+  const [mine] = await db
+    .select({ id: m.id })
+    .from(m)
+    .where(and(eq(m.id, id), eq(m.userId, userId), eq(m.active, true), isNull(m.supersededBy), sql`not ${REHEARSAL_MEMORY}`))
+    .limit(1);
+  if (!mine) return c.json({ error: "not_found" }, 404);
+  return c.json({ error: "pin_cap", max: MEMORY_PIN_CAP, why: `You can pin up to ${MEMORY_PIN_CAP}. Unpin one first.` }, 409);
 });
 
 coachRoutes.delete("/memory/:id", async (c) => {

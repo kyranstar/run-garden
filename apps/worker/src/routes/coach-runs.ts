@@ -44,7 +44,8 @@ import {
   runStep,
   type RunDeps,
 } from "../services/coach-runs.js";
-import { handleRunId, undoRecordedAnswers } from "../services/design-tools/record-answer.js";
+import { handleRunId, isMemoryHandle, undoRecordedAnswers } from "../services/design-tools/record-answer.js";
+import { undoRemembered } from "../services/design-tools/remember.js";
 
 /** A condition check's id, at most (ids are the app's own: `newId`). */
 const CHECK_ID_MAX_CHARS = 100;
@@ -152,7 +153,10 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     const body = (await c.req.json().catch(() => null)) as { handle?: unknown } | null;
     const handle = body?.handle;
     if (typeof handle !== "string" || handle.length > 300 || handleRunId(handle) !== c.req.param("id")) return c.json({ error: "bad_handle" }, 400);
-    const undone = await undoRecordedAnswers(c.get("db"), c.get("userId"), handle);
+    // remember's handle takes back the item it kept (Task 10); the others, the answers a call kept.
+    const undone = isMemoryHandle(handle)
+      ? await undoRemembered(c.get("db"), c.get("userId"), handle)
+      : await undoRecordedAnswers(c.get("db"), c.get("userId"), handle);
     if (!undone) return c.json({ error: "not_found" }, 404);
     await noteOnTrail(c.get("db"), c.get("userId"), c.req.param("id"), `Taken back: ${undone.line}`, { undo: { handle, count: undone.count } }, new Date());
     return c.json({ undone: undone.count });

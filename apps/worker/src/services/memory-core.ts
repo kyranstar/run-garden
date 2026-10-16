@@ -9,12 +9,19 @@
  * athlete's memory). The core: live items that are pinned, or are facts or rules — pinned first, then the most
  * recently learned or updated — at most MEMORY_CORE.
  */
-import { and, asc, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { coachMemory } from "@rg/database";
 import type { Db } from "./db.js";
 
 /** The pinned core's size: pinned items, then recent facts and rules. */
 export const MEMORY_CORE = 20;
+
+/**
+ * Pinned items, at most (Stage 3 Task 10): every one rides in the core — inside its MEMORY_CORE items, so the cached
+ * memory block stays the size the opening context already allows — with room left for recent facts and rules. A pin
+ * past it is refused (`PATCH /api/coach/memory/:id`).
+ */
+export const MEMORY_PIN_CAP = 12;
 
 const m = coachMemory;
 
@@ -30,6 +37,12 @@ export function liveMemoryWhere(userId: string, today: string): SQL {
     or(isNull(m.expiresAt), gte(m.expiresAt, today)),
     sql`not ${REHEARSAL_MEMORY}`,
   )!;
+}
+
+/** The account's superseded history (Task 10: the memory list shows it under the item that replaced it): items a newer
+ * one superseded, never a rehearsal's, never one the athlete deleted. */
+export function memoryHistoryWhere(userId: string): SQL {
+  return and(eq(m.userId, userId), eq(m.active, true), isNotNull(m.supersededBy), sql`not ${REHEARSAL_MEMORY}`)!;
 }
 
 /** The core's rows: live, and pinned or a fact or rule. */

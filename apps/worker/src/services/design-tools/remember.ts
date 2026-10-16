@@ -11,15 +11,16 @@
  * A rehearsal run writes its marked row and NEVER supersedes the athlete's item (it answers that it would have).
  *
  * At most MEMORY_PER_RUN items per run, counted over the main run's whole tree. Keyed on the call's tool-use id: a
- * replay writes nothing new and answers the same. The body is the athlete's (or the coach's) words — data — and comes
+ * replay writes nothing new and answers the same. Its line carries an undo handle (record_answer's design, Task 10):
+ * the run view's Undo takes the item back and puts back what it replaced (`undoRemembered`). The body is the athlete's (or the coach's) words — data — and comes
  * back marked. Three statements: the athlete (with the run's count, a replay's row and the replaced item), then the
  * insert and the supersede, as one batch.
  */
-import { sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { addDays, newId } from "@rg/domain";
 import { coachMemory, coachRuns } from "@rg/database";
-import { runAtomically } from "../db.js";
+import { runAtomically, type Db } from "../db.js";
 import { COACH_CONFIDENCES, MEMORY_KINDS, memoryWrites } from "../coach-memory.js";
 import type { DesignTool } from "./types.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
@@ -47,6 +48,48 @@ const input = z
   .strict();
 
 const m = coachMemory;
+
+/** A confidence as the run view and the Settings list both say it. */
+const CONFIDENCE_WORDS: Record<string, string> = { stated: "you said", inferred: "the coach inferred", confirmed: "confirmed" };
+
+/**
+ * The handle an undo names (record_answer's design, `rm:<main run>:<tool-use id>`): the run view's Undo posts it to
+ * `POST /api/coach/runs/:id/undo-answer`, which only takes back a handle naming that run.
+ */
+export const memoryHandle = (mainRunId: string, callId: string): string => `rm:${mainRunId}:${callId}`;
+
+/**
+ * Take back what one `remember` call kept (its handle), for `userId` only: the item is deleted as the Settings list
+ * deletes one (`active` off), and what it replaced is live again — unless the item had itself been replaced since,
+ * when the history stays as it is. Null when there is nothing to take back (already taken back, or never this
+ * athlete's). Two statements, the replaced item first: should the second fail, both are live — a repeat, never a loss —
+ * and the undo can be tried again.
+ */
+export async function undoRemembered(db: Db, userId: string, handle: string): Promise<{ line: string; count: number } | null> {
+  const parsed = /^rm:([^:]{1,120}):([A-Za-z0-9_-]{1,120})$/.exec(handle);
+  if (!parsed) return null;
+  const [, rootId, callId] = parsed as unknown as [string, string, string];
+  const suffix = `:${callId}`;
+  // The item: this athlete's, written in that main run's tree (`provenance.runId`), by that call (`mem:<run>:<call>`).
+  const theItem = and(
+    eq(m.userId, userId),
+    sql`substr(${m.id}, 1, 4) = 'mem:'`,
+    sql`substr(${m.id}, length(${m.id}) - ${suffix.length} + 1) = ${suffix}`,
+    sql`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.runId') end = ${rootId}`,
+  )!;
+  const now = new Date().toISOString();
+  await db
+    .update(m)
+    .set({ supersededBy: null, updatedAt: now })
+    .where(
+      and(
+        eq(m.userId, userId),
+        sql`${m.supersededBy} = (select ${m.id} from ${m} where ${and(theItem, eq(m.active, true), isNull(m.supersededBy))} limit 1)`,
+      ),
+    );
+  const [gone] = await db.update(m).set({ active: false, updatedAt: now }).where(and(theItem, eq(m.active, true))).returning({ body: m.body });
+  return gone ? { line: `the memory "${gone.body}"`, count: 1 } : null;
+}
 
 export const remember: DesignTool = {
   name: "remember",
@@ -90,7 +133,8 @@ export const remember: DesignTool = {
     if (p.quote && !p.replaces) return quoteUnused;
     const rootId = mainRunIdOf(ctx);
     if (!rootId) return refuse("no_main_run", "This run has no main run to remember for.", "Finish with what you have.");
-    const id = `mem:${ctx.run.id}:${ctx.toolUseId ?? newId()}`;
+    const callId = ctx.toolUseId ?? newId();
+    const id = `mem:${ctx.run.id}:${callId}`;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       memUsed: sql`(select count(*) from ${m} where ${m.userId} = ${ctx.userId}
         and case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.runId') end = ${rootId})`,
@@ -108,8 +152,8 @@ export const remember: DesignTool = {
         ...(p.replaces ? { replaced: p.replaces } : {}),
         ...(ctx.run.rehearsal ? { rehearsal: true } : {}),
       },
-      summary: `Remembered (${confidence}): ${body}`,
-      receipt: { memoryId: id, kind, confidence, ...(p.replaces ? { replaced: p.replaces } : {}) },
+      summary: `Remembered (${CONFIDENCE_WORDS[confidence] ?? confidence}): ${body}`,
+      receipt: { memoryId: id, kind, confidence, ...(p.replaces ? { replaced: p.replaces } : {}), undo: { handle: memoryHandle(rootId, callId) } },
     });
     const replay = parsedJson(extra.memReplay) as { kind: string; confidence: string; body: string; expires: string | null } | null;
     if (replay) return answerFor(replay.body, replay.kind, replay.confidence, replay.expires);

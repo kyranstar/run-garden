@@ -83,9 +83,12 @@ const givesNumber = (quote: string, n: number): boolean => words(quote).includes
 /** The handle an undo names; the run's own id is in it, so an undo can only reach its own run's answers. */
 export const answerHandle = (mainRunId: string, toolUseId: string, from: "request" | "ask_athlete" = "request"): string =>
   `${from === "request" ? "ra" : "aa"}:${mainRunId}:${toolUseId}`;
-const HANDLE = /^(ra|aa):([^:]{1,120}):([A-Za-z0-9_-]{1,120})$/;
+/** `ra` record_answer's, `aa` an asked question's, `rm` remember's (Task 10: remember.ts `memoryHandle`). */
+const HANDLE = /^(ra|aa|rm):([^:]{1,120}):([A-Za-z0-9_-]{1,120})$/;
 /** The main run a handle belongs to, or null for a handle that isn't one. */
 export const handleRunId = (handle: string): string | null => HANDLE.exec(handle)?.[2] ?? null;
+/** Does a handle take back a memory (`remember`'s) rather than answers? */
+export const isMemoryHandle = (handle: string): boolean => HANDLE.exec(handle)?.[1] === "rm";
 const handleSource = (handle: string): "request" | "ask_athlete" => (handle.startsWith("aa:") ? "ask_athlete" : "request");
 
 export interface Subject {
