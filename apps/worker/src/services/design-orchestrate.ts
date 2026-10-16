@@ -158,12 +158,13 @@ export function reviewMeanOf(op: DocWorkoutOp): number | null {
   return meanScore(r);
 }
 
-/** A derived balance (design-tools/act-common.ts `derivedSummary`: seconds and counts) in read_balance's units. */
+/** A derived balance (design-tools/act-common.ts `derivedSummary`: seconds and counts) in read_balance's units; what is
+ * not trained is left out, never written as 0 (any time at all is at least a minute). */
 export function balanceInUnits(b: Record<string, unknown> | undefined): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(b ?? {})) {
     if (typeof v !== "number" || v <= 0) continue;
-    if (k.endsWith("Sec")) out[`${k.slice(0, -3)}Min`] = Math.round(v / 60);
+    if (k.endsWith("Sec")) out[`${k.slice(0, -3)}Min`] = Math.max(1, Math.round(v / 60));
     else out[k] = Math.round(v * 10) / 10;
   }
   return out;

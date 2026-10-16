@@ -748,6 +748,29 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
     expect(thu.review!.changes).toEqual(["Shorter rests — not reviewed: its designer stopped before the review was in."]);
   });
 
+  it("the set's ceiling reached while a revision is under review: the revision is dropped, the reviewed version proposed", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
+    const s = await stateOf(mainId);
+    s.settings.ceilingMicros = 1_000_000;
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
+    const { deps } = scripted([
+      t(planSet([brief("thu", THU), brief("mon", MON)])),
+      turn([propose("Thursday hips", THU)], { cost: 100_000 }),
+      turn([submit(verdict(3, { mustFix: ["Shorter rests."] }))], { cost: 100_000 }),
+      turn([use("propose_workout", { doc: calmDoc({ title: "Thursday hips, shorter rests" }), target: { kind: "new", date: THU }, changeNote: "Shorter rests." })], { cost: 900_000 }),
+    ]);
+    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+    const p = (await proposalOf(mainId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops).toHaveLength(1);
+    expect(p.ops[0]!.doc.title).toBe("Thursday hips");
+    expect(p.ops[0]!.candidate).toBeUndefined();
+    expect(p.ops[0]!.review!.changes).toEqual(["Shorter rests — not reviewed: the coach stopped before its review was in."]);
+    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling]);
+  });
+
   it("a rehearsal set stopped at its ceiling stays a rehearsal: nothing is made pending", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId, { rehearsal: true });
@@ -860,6 +883,9 @@ describe("plan_set's checks", () => {
     expect(isToolErr(ok), JSON.stringify(ok)).toBe(false);
     expect((ok as ToolOk).control).toBe("set");
     expect(started).toHaveLength(3);
+    // The reason travels with the brief: its designer is told why a second session that day.
+    expect((started[1] as { brief: string }).brief).toContain("A second session that day, because: Ten minutes of mobility after work.");
+    expect((started[0] as { brief: string }).brief).not.toContain("A second session that day");
     const dup = refusal(await tool("plan_set").run((await ctxFor(a.userId, { kind: "next_n", n: 3 })).ctx, { briefs: [brief("a", THU), brief("a", MON)] }));
     expect(dup.why).toContain('"a"');
   });
@@ -903,7 +929,8 @@ describe("plan_set's checks", () => {
     const a = await athlete();
     const { ctx } = await ctxFor(a.userId, { kind: "week" });
     const mainId = ctx.run.id;
-    const { deps, requests } = scripted([t(planSet([brief("thu", THU)])), t(use("plan_set", { briefs: [brief("x", MON)] })), t(finish("Done.")), t(finish("Set."))]);
+    const plan = planSet([brief("thu", THU)]);
+    const { deps, requests } = scripted([t(plan), t(use("plan_set", { briefs: [brief("x", MON)] })), t(finish("Done.")), t(finish("Set."))]);
     // The main coach plans; its one designer tries to plan a set of its own.
     const steps = await drive(a.userId, mainId, deps);
     expect(steps.at(-1)!.status).toBe("finished");
@@ -912,6 +939,25 @@ describe("plan_set's checks", () => {
     const errs = [...resultsSent(requests).values()].filter((b) => b.is_error).map((b) => JSON.parse(textOf(b)).error);
     expect(errs).toContain("not_for_role");
     expect(await designersOf(mainId)).toHaveLength(1);
+    // Its designer finished without proposing: the slot is left out, saying so, with the designer's own words.
+    expect(sentData(requests, plan).set[0]).toMatchObject({ outcome: "left_out", reason: "the designer finished without proposing a workout", designerSaid: { untrusted: true, text: "Done." } });
+  });
+
+  it("a set whose only workout is left out keeps its proposal's title and day, holds no workout, and is never made pending", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const { deps } = scripted([
+      t(planSet([brief("thu", THU)])),
+      t(propose("Thursday hips", THU)),
+      { ok: false, kind: "rejected", reason: "invalid_request", status: 400 } as MessagesResult, // its reviewer
+      t(finish("Leaving it.")),
+      t(finish("Nothing this week.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    const p = (await proposalOf(mainId))!;
+    expect(p.ops).toEqual([]);
+    expect(p).toMatchObject({ status: "unreviewed", title: "Thursday hips", expiresAt: THU });
+    expect(p.flags).toEqual([expect.stringMatching(/^No workout for Thursday 14 May: its review couldn't be done/)]);
   });
 });
 
@@ -1006,6 +1052,8 @@ describe("read_set", () => {
     expect(data.hardDaysInARow).toMatchObject({ count: 2, pairs: [[TODAY, THU], [day(-4), MON]] });
     expect(data.combined.minutes).toBe(7 * 30);
     expect(data.combined.balance).toEqual(expect.objectContaining({ isotonicReps: expect.any(Number) }));
+    // What the set doesn't train is left out, never written as 0.
+    expect(Object.values(data.combined.balance).every((v) => (v as number) > 0)).toBe(true);
     expect(data.notes).toEqual(["Left out “Friday” (Friday 15 May): too much."]);
   });
 

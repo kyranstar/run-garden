@@ -407,7 +407,7 @@ export function readRunState(text: string | null): RunState | null {
     ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
     ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds) ? { set: { rounds: s.set.rounds } } : {}),
     ...(s.estimate && typeof s.estimate === "object" ? { estimate: s.estimate } : {}),
-    ...(typeof s.final === "string" ? { final: s.final } : {}),
+    // (`final` is written once, at a designer's finish, and read in SQL: never read back here.)
   };
 }
 
