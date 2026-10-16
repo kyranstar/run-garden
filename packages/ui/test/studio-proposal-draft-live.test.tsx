@@ -422,6 +422,49 @@ describe("fix wave 3B: Edit before approve (B-I8) and the goal line (A-M2, LIVE)
     expect(approvals(calls)[0]!.body).toMatchObject({ edit: { opId: "run-a", date: TODAY, time } });
   });
 
+  it("an edit whose time has passed (422 past_time): said plainly in the sheet, the edits kept, the draft still the coach's to approve", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    const calls = serve({ draft: draftOf(), approve: [{ error: "past_time", status: 422 }, workout("w-9", TUESDAY, "17:30", "")] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await retype(titleField()!, "My hips");
+    await click(button("Approve my version…"), "Approve my version…");
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
+    await until(() => text().includes("That time has passed — pick a later time."), "the plain words");
+    expect(text()).not.toContain("Couldn't schedule it");
+    // Nothing lost: the athlete's version, the draft, the sheet to pick again in.
+    expect(titleField()!.value).toBe("My hips");
+    expect(where).toBe("/studio/build/proposal/dp-1/run-a");
+    expect(dialog("Schedule")).not.toBeNull();
+    expect(button("Schedule it as a new workout")).toBeNull();
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version again");
+    await until(() => where === "/studio/build/workout/w-9", "the workout");
+    expect(approvals(calls)).toHaveLength(2);
+  });
+
+  it("no time left today (422 no_time_today): said plainly, the edits kept", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    serve({ draft: draftOf(), approve: [{ error: "no_time_today", status: 422 }] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await retype(titleField()!, "My hips");
+    await click(button("Approve my version…"), "Approve my version…");
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
+    await until(() => text().includes("There's no time left today — pick another day."), "the plain words");
+    expect(titleField()!.value).toBe("My hips");
+  });
+
+  it("a revision whose time has passed (422 past_time): said plainly, the edits kept, and taking them as a new workout offered", async () => {
+    serve({ draft: draftOf({ target: { kind: "revise", workoutId: "w1", baseRev: 3 }, date: TODAY, time: "08:00" }), approve: [{ error: "past_time", status: 422 }] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await retype(titleField()!, "My hips");
+    await click(button("Approve my version"), "Approve my version");
+    await until(() => text().includes("This workout's time today has passed, so the draft can't be applied now."), "the plain words");
+    expect(titleField()!.value).toBe("My hips");
+    expect(button("Schedule it as a new workout")).not.toBeNull();
+  });
+
   it("the goal line names each goal in plain words (GOAL_LABELS), never its id", async () => {
     const doc = { ...coachDoc("Coach's hips"), intent: { ...coachDoc("x").intent, goals: ["aerobic-base", "condition-care"] as WorkoutDoc["intent"]["goals"] } };
     serve({ draft: draftOf({ doc }) });

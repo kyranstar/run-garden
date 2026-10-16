@@ -88,6 +88,11 @@ export function draftRefusal(e: unknown, revises: boolean): Status | null {
   if (!body) return null;
   if (body.error === "stale_revision") return { text: "This workout changed after the coach drafted this, so the draft can't be applied.", asNew: true };
   if (body.error === "past_date" && revises) return { text: "This workout's day has passed, so the draft can't be applied any more.", asNew: true };
+  // A revision keeps its workout's time, which has gone by today (Part S's 422 past_time / no_time_today): no time to
+  // pick here, so its version can go in as a new workout (fix wave 3B, the re-review's polish).
+  if ((body.error === "past_time" || body.error === "no_time_today") && revises) {
+    return { text: "This workout's time today has passed, so the draft can't be applied now.", asNew: true };
+  }
   if (body.error === "not_pending" || body.error === "not_yet") return { text: "This draft isn't open any more, so it can't be approved.", asNew: true };
   // A revision's draft was loaded, so what is gone is the workout it revises.
   if (e instanceof ApiError && e.status === 404) return { text: revises ? "The workout this draft revises is no longer in your plan." : "This draft is gone.", asNew: true };
@@ -109,6 +114,9 @@ export function refusalText(e: unknown, what: "start" | "schedule" | "save"): st
     if (body.error === "invalid_doc" || body.error === "gated" || body.error === "too_large") return issue ?? "This workout can't be used as it is — change it, then try again.";
     if (body.error === "run_unsupported") return body.message ?? "Runs can't be planned in the Studio yet.";
     if (body.error === "past_date") return "That day has passed — pick today or a later day.";
+    // A time today gone by, or none left (a coach's draft approved with the athlete's edit: Part S's 422).
+    if (body.error === "past_time") return "That time has passed — pick a later time.";
+    if (body.error === "no_time_today") return "There's no time left today — pick another day.";
     if (body.error === "stale_revision") return "This workout changed elsewhere — reload it to see the new version.";
     if (body.error === "not_editable") return "This workout can't be changed now — it's under way or done. Save it as a template to change a copy.";
     if (body.error === "too_many") return "You have as many templates as you can keep. Delete one first.";
