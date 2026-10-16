@@ -22,6 +22,7 @@ import { ConfirmDialog } from "../../components.js";
 import { ConditionCheckSheet } from "../../components/condition-check-sheet.js";
 import { IconChevron, IconClock } from "../../icons.js";
 import {
+  answerFresh,
   askedOf,
   CANCEL_CONFIRM_ABOVE_USD,
   checkAskLabel,
@@ -32,7 +33,6 @@ import {
   isMemoryHandle,
   isSlow,
   LOST_LINE,
-  PAUSE_LINE,
   QUICK_BELOW_LINE,
   runLines,
   SLOW_LINE,
@@ -88,6 +88,9 @@ export interface RunViewProps {
   focusKey?: string | number | null;
   /** What the week's AI budget has left (Task 13, D11): beside a set's estimate when it is the tighter limit. */
   weekLeftUsd?: number | null;
+  /** The athlete's today and zone (Task 13, R13): an answer the coach noted keeps its Undo while it is fresh. */
+  today?: string | null;
+  timeZone?: string | null;
 }
 
 export function RunView({
@@ -105,6 +108,8 @@ export function RunView({
   notice,
   focusKey = null,
   weekLeftUsd = null,
+  today = null,
+  timeZone = null,
 }: RunViewProps) {
   const headingId = useId();
   const trailId = useId();
@@ -184,6 +189,8 @@ export function RunView({
           nowWord={elsewhere ? null : word}
           runId={run.id}
           onRefresh={onRefresh}
+          today={today}
+          timeZone={timeZone}
         />
       </div>
       {slow ? (
@@ -191,7 +198,6 @@ export function RunView({
           {SLOW_LINE}
         </p>
       ) : null}
-      {live ? <p className="coach-run-note">{PAUSE_LINE}</p> : null}
       {lost ? (
         <div className="coach-run-lost" role="status">
           <span>{LOST_LINE}</span>
@@ -214,6 +220,8 @@ function RunLines({
   nowWord,
   runId,
   onRefresh,
+  today,
+  timeZone,
 }: {
   lines: RunLine[];
   live: boolean;
@@ -222,6 +230,8 @@ function RunLines({
   nowWord: string | null;
   runId: string;
   onRefresh?: () => void;
+  today: string | null;
+  timeZone: string | null;
 }) {
   const qc = useQueryClient();
   const oneTap = useOneTap();
@@ -244,11 +254,13 @@ function RunLines({
   if (lines.length === 0 && !inFlight) return null;
   // The main run's own lines at the top; a set's days under their headings (fix wave 3B, B-I7).
   const { main, days } = trailSections(lines);
+  // Undo while the run is live; a memory's whatever the run's status; an answer the coach noted while it is fresh (R13).
+  const undoable = (line: RunLine) => !!line.undo && !undone.has(line.undo) && (live || isMemoryHandle(line.undo) || answerFresh(line, today, timeZone));
   const item = (line: RunLine) => (
     <LineItem
       key={line.key}
       line={line}
-      undo={line.undo && !undone.has(line.undo) && (live || isMemoryHandle(line.undo)) ? () => oneTap(() => undo.mutateAsync(line.undo!)) : null}
+      undo={undoable(line) ? () => oneTap(() => undo.mutateAsync(line.undo!)) : null}
       undoing={undo.isPending && undo.variables === line.undo}
     />
   );

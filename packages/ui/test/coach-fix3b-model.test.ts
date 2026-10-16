@@ -14,7 +14,6 @@ import {
   EXISTING_LINE,
   fallbackTiles,
   foldLines,
-  PAUSE_LINE,
   REVIEW_LABELS,
   reviewLabel,
   runLines,
@@ -338,10 +337,8 @@ describe("the words (M4, M6, M10)", () => {
     expect(checkAskLabel("TMJ pain")).toBe("Do the TMJ check");
   });
 
-  it("the existing run's notice says how to ask for something new; the coach pauses only while the app is closed", () => {
+  it("the existing run's notice says how to ask for something new", () => {
     expect(EXISTING_LINE).toBe("You already have the coach working on something. Here it is. Cancel it to ask for something new.");
-    // The app's run keeper steps it on every screen (the robustness pass): leaving the Studio no longer pauses it.
-    expect(PAUSE_LINE).toBe("The coach pauses while the app is closed.");
   });
 });
 

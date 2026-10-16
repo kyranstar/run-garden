@@ -25,7 +25,7 @@ import { StudioCoach } from "../src/screens/studio/composer.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { ProposalCard } from "../src/screens/studio/proposal-card.js";
 import { CoachKeeper, CoachNavMark } from "../src/screens/studio/run-keeper.js";
-import { LOST_LINE, PAUSE_LINE, SLOW_LINE, STILL_WORKING_LINE } from "../src/screens/studio/run-model.js";
+import { LOST_LINE, SLOW_LINE, STILL_WORKING_LINE } from "../src/screens/studio/run-model.js";
 import { RunView } from "../src/screens/studio/run-view.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
 import { primedClient, todayDto, TODAY } from "./studio-fixtures.js";
@@ -404,8 +404,7 @@ describe("recovery: never a ● with nothing said", () => {
     expect(view(t0 + DESIGN_MODEL_DEADLINE_MS + 1_000, { inFlight: false, status: "waiting_athlete" })).not.toContain(SLOW_LINE);
   });
 
-  it("the words: the coach pauses only while the app is closed; a lost connection keeps trying", () => {
-    expect(PAUSE_LINE).toBe("The coach pauses while the app is closed.");
+  it("the words: a lost connection keeps trying (no pause line: the coach goes on with the app closed, Task 13 §2.12)", () => {
     expect(LOST_LINE).toBe("Can't reach the coach right now. It keeps trying.");
   });
 });

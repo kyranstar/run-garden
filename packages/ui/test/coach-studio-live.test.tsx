@@ -23,7 +23,7 @@ import type { CoachRunDto, CoachRunEventDto, CoachRunStepResult, TemplateDto, To
 import { StudioCoach, COACH_CURRENT_QUERY, COUNTER_FROM, REQUEST_MAX_CHARS } from "../src/screens/studio/composer.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
-import { EXISTING_LINE, NOT_AVAILABLE_LINE, QUICK_BELOW_LINE, TRAIL_FOLD_LINE } from "../src/screens/studio/run-model.js";
+import { EXISTING_LINE, EXISTING_WAITING_LINE, NOT_AVAILABLE_LINE, QUICK_BELOW_LINE, TRAIL_FOLD_LINE } from "../src/screens/studio/run-model.js";
 import { primedClient, todayDto, TODAY } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -281,7 +281,8 @@ describe("the composer", () => {
     await until(() => !!field(), "the composer");
     await type(field()!, "my new words");
     await click(button("Now"), "Now");
-    await until(() => text().includes(EXISTING_LINE), "the line");
+    // It waits on the athlete: the line says so (Task 13, R12).
+    await until(() => text().includes(EXISTING_WAITING_LINE), "the line");
     expect(text()).toContain("“an older request”");
     expect(posts(calls, "/api/coach/runs")).toHaveLength(1);
     await click(button("Copy my words back"), "Copy my words back");
@@ -862,7 +863,8 @@ describe("a run that stopped with what was reviewed", () => {
     await until(() => text().includes("Hips, reviewed"), "the card");
     const failure = document.querySelector(".coach-run-failure")!;
     const card = document.querySelector(".coach-pc")!;
-    expect(failure.textContent).toBe("This design reached its spending limit. Start a new one when you're ready.");
+    // The card is the answer (Task 13, R3): what stopped, and no advice to start again.
+    expect(failure.textContent).toBe("This design reached its spending limit.");
     expect(failure.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(card.textContent).toContain(note);
     expect(document.querySelector(".coach-fallback")).toBeNull();

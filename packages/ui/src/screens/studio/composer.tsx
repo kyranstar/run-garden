@@ -45,7 +45,7 @@ import type { StudioCtx } from "./model.js";
 import { cardShows, designProposalQuery, ProposalCard } from "./proposal-card.js";
 import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
 import {
-  EXISTING_LINE,
+  existingLine,
   failureOf,
   fallbackTiles,
   isLive,
@@ -56,6 +56,7 @@ import {
   WEEK_USED_UP_LINE,
   weekBudgetOf,
   weekBudgetRefusal,
+  type ExistingOffer,
   type FallbackTile,
   type WeekBudget,
 } from "./run-model.js";
@@ -139,7 +140,7 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const [shown, setShown] = useState<Shown | null>(null);
   const [draft, setDraft] = useState(() => (typeof arrival?.request === "string" ? arrival.request.slice(0, REQUEST_MAX_CHARS) : ""));
   /** The run an `existing` answer opened: its line shows while it is live. */
-  const [existingRun, setExistingRun] = useState<string | null>(null);
+  const [existingRun, setExistingRun] = useState<{ id: string; offer: ExistingOffer } | null>(null);
   /** The words a tap carried that the coach didn't start: offered back until taken, or a new run starts (M4). */
   const [ignored, setIgnored] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -188,7 +189,7 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
       setShown(res.existing ? { run: res.run } : { run: res.run, events: [] });
       // The words went with the tap; a live run already there answers instead, and they are offered back.
       setDraft("");
-      setExistingRun(res.existing ? res.run.id : null);
+      setExistingRun(res.existing ? { id: res.run.id, offer: res.offer } : null);
       setIgnored(res.existing ? res.ignoredRequest.request : null);
       // A live run already there keeps the composer on screen, the focus where it was.
       setStarted(res.existing ? null : res.run.id);
@@ -256,14 +257,15 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
       Copy my words back
     </button>
   ) : null;
-  const existingLive = existingRun !== null && run?.id === existingRun && live;
+  const existingLive = existingRun !== null && run?.id === existingRun.id && live;
   const notice = existingLive ? (
     <p className="coach-run-notice" role="status">
-      {EXISTING_LINE}
+      {existingLine(existingRun.offer, status)}
       {wordsBack ? <> {wordsBack}</> : null}
     </p>
   ) : null;
-  const failure = run && over ? failureOf({ status: status!, error: run.error }) : null;
+  // A run that proposed is answered by its card (R3): never "Try a shorter request" over it.
+  const failure = run && over ? failureOf({ status: status!, error: run.error }, { proposed }) : null;
   // The ways to train now wait for the reads they are made from, so the tiles never change under the athlete's finger.
   const tilesReady = !templates.isPending && !today.isPending;
   // Each piece in a boundary of its own (the robustness pass): one that fails to draw says so, the others stand.
@@ -302,6 +304,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
             notice={notice}
             focusKey={started !== null && run.id === started ? started : null}
             weekLeftUsd={budget?.leftUsd ?? null}
+            today={ctx.today}
+            timeZone={ctx.timeZone}
           />
         </CoachBoundary>
       ) : null}

@@ -19,6 +19,7 @@
  */
 import {
   ApiError,
+  type CoachRunCreateResult,
   type CoachRunDto,
   type CoachRunEventDto,
   type CoachRunRole,
@@ -28,7 +29,7 @@ import {
   type DesignChangeBeforeDto,
   type TodayResponse,
 } from "@rg/api-client";
-import { dayLabel } from "@rg/domain";
+import { dayLabel, todayInZone } from "@rg/domain";
 import { formatTime, weekdayShort } from "../../components.js";
 import { kindWords } from "../settings/coach-memory-model.js";
 
@@ -197,6 +198,31 @@ export function undoHandleOf(e: CoachRunEventDto): string | null {
  */
 export const isMemoryHandle = (handle: string): boolean => handle.startsWith("rm:");
 
+/** The athlete's day an instant falls on, in their zone (the device's when none is known); null when it can't be read. */
+function dayOf(iso: string, timeZone: string | null): string | null {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  try {
+    return todayInZone(timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", new Date(ms));
+  } catch {
+    return todayInZone("UTC", new Date(ms));
+  }
+}
+
+/**
+ * Whether what the coach noted from an answer is still fresh on `today` (Task 13, R13), so its Undo stays once the run
+ * is over: through the last fresh day its receipt says (`receipt.undo.expiresAt`); none said, through the day it was
+ * given — every answer stays fresh at least that long. No today known: not fresh.
+ */
+export function answerFresh(line: Pick<RunLine, "undo" | "events">, today: string | null, timeZone: string | null = null): boolean {
+  if (!line.undo || !today) return false;
+  const e = line.events.find((x) => undoHandleOf(x) === line.undo);
+  if (!e) return false;
+  const until = record(record(record(e.payload)?.receipt)?.undo)?.expiresAt;
+  if (isDay(until)) return today <= until;
+  return dayOf(e.at, timeZone) === today;
+}
+
 /** A line that says something went wrong: the loop's errors, and a tool the coach couldn't use. */
 function isErrorEvent(e: CoachRunEventDto): boolean {
   return e.kind === "error" || (e.kind === "tool_result" && record(e.payload)?.ok === false);
@@ -277,10 +303,6 @@ export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boo
 
 /** Once the run is over, the trail folds to this one line (fix wave 3B, B-I7): the card's Approve sits high on a phone. */
 export const TRAIL_FOLD_LINE = "How the coach made this";
-
-/** The line under a live run (M10): it moves only while the app is open — the client is what steps it, on any screen
- * (the app's run keeper, the robustness pass). */
-export const PAUSE_LINE = "The coach pauses while the app is closed.";
 
 /** The trail's last line while another request's step is at work (another tab or device, or a step this page sent
  * before it was reloaded): never a ● with nothing said (the robustness pass). */
@@ -524,8 +546,54 @@ const FIX_NOTE = /\s*\(fix: [^)]*\)/g;
  */
 function whyNot(p: Record<string, unknown>): DetailRow {
   const raw = typeof p.why === "string" ? p.why : record(p.refusal)?.why;
+  const error = String(p.error ?? record(p.refusal)?.error ?? "refused");
+  // A call the tool's schema refused (Task 13, M1): its words are the schema's, said plainly — never quoted.
+  if (error === "invalid_input" && typeof raw === "string" && raw.trim()) return { key: "Why not", value: clip(inputWords(raw)) };
   const why = typeof raw === "string" ? raw.replace(FIX_NOTE, "").replace(ISSUE_PREFIX, " ").replace(/\.\s*\./g, ".").replace(/\s+/g, " ").trim() : "";
-  return { key: "Why not", value: why ? clip(why) : keyWords(String(p.error ?? "refused")) };
+  return { key: "Why not", value: why ? clip(why) : keyWords(error) };
+}
+
+/** The server's teachable words for a text past its ceiling: "summary is 1,410 characters; at most 300 — about 45 words". */
+const PAST_CEILING = /([\w.[\]]+) is [\d,]+ characters; at most [\d,]+(?: — about [\d,]+ words)?/g;
+
+/** A schema's message as a few plain words (Task 13, M1). */
+function schemaWords(message: string): string {
+  if (/^too long$|at most \d+ character/i.test(message)) return "too long";
+  if (/at least 1 character/i.test(message)) return "empty";
+  if (/at least \d+ character/i.test(message)) return "too short";
+  if (/^Required$|received undefined/i.test(message)) return "missing";
+  if (/Invalid enum value|Invalid literal/i.test(message)) return "not one of the choices";
+  if (/Array must contain at most/i.test(message)) return "too many";
+  if (/Array must contain at least/i.test(message)) return "too few";
+  if (/less than or equal|less than \d/i.test(message)) return "too high";
+  if (/greater than or equal|greater than \d/i.test(message)) return "too low";
+  if (/^Expected \w+, received \w+/i.test(message)) return "the wrong kind of value";
+  return "";
+}
+
+/**
+ * A refusal of the tool's input (`invalid_input`), as the athlete would say it (M1): each issue its field's words and
+ * what was wrong — "What changed: too long · Date: missing" — never the schema's own words; what can't be read plainly,
+ * "Not in the form the tool takes".
+ */
+function inputWords(why: string): string {
+  const issues = why
+    .replace(FIX_NOTE, "")
+    .replace(PAST_CEILING, (_m, path: string) => `${path}: too long`)
+    .split(/;\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const said = issues.map((issue) => {
+    if (/^unknown fields? /i.test(issue)) return "A detail the tool doesn't take";
+    const at = issue.indexOf(": ");
+    const path = at > 0 ? issue.slice(0, at) : "";
+    const words = schemaWords(at > 0 ? issue.slice(at + 2).trim() : issue);
+    // The field's own words: its last part that isn't a position ("questions.0.why" → Why); the whole input, none.
+    const field = path && path !== "input" ? path.split(/[.[\]]/).filter((s) => s && !/^\d+$/.test(s)).at(-1) : undefined;
+    if (!words) return field ? `${keyWords(field)}: not in the form the tool takes` : "Not in the form the tool takes";
+    return field ? `${keyWords(field)}: ${words}` : `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+  });
+  return [...new Set(said)].join(" · ") || "Not in the form the tool takes";
 }
 
 /**
@@ -651,6 +719,20 @@ export const LOST_LINE = "Can't reach the coach right now. It keeps trying.";
 export const NOT_AVAILABLE_LINE = "The coach isn't available here.";
 /** The line the composer shows when the athlete already has the coach working on something — and how to ask anew (M10). */
 export const EXISTING_LINE = "You already have the coach working on something. Here it is. Cancel it to ask for something new.";
+/** The same, when the run it opened is waiting on the athlete (Task 13, R12): its question is the card below. */
+export const EXISTING_WAITING_LINE = "The coach is waiting for your answer below. Answer or skip it — or cancel to ask for something new.";
+
+/** What the server offers for the live run a create answered instead of starting (`existing`). */
+export type ExistingOffer = Extract<CoachRunCreateResult, { existing: true }>["offer"];
+
+/**
+ * The existing run's line (R12): it follows the offer — "answer or cancel" while the run waits on the athlete — and
+ * then the run as it goes on (answered, it is the coach working on something again).
+ */
+export function existingLine(offer: ExistingOffer, status: CoachRunStatus | null): string {
+  const waiting = status === null ? offer === "answer_or_cancel" : status === "waiting_athlete";
+  return waiting ? EXISTING_WAITING_LINE : EXISTING_LINE;
+}
 
 // ── Failures ────────────────────────────────────────────────────────────────
 
@@ -663,8 +745,21 @@ export interface Failure {
   credits: boolean;
 }
 
-/** What stopped a run that is over, and what happens next; null for one that finished, or was cancelled. */
-export function failureOf(run: Pick<CoachRunDto, "status" | "error">): Failure | null {
+/** A stop the card answers (Task 13, R3): the run proposed what was reviewed, so no advice to start again or ask less. */
+const ANSWERED_BY_THE_CARD = new Set(["state_cap", "step_cap", "run_ceiling"]);
+
+/**
+ * What stopped a run that is over, and what happens next; null for one that finished, or was cancelled. A run that
+ * proposed (`proposed`: its card shows) stopped at one of its own limits is answered by its card (R3): no "Try a shorter
+ * request", and a run out of room says only that it ran out before its last word.
+ */
+export function failureOf(run: Pick<CoachRunDto, "status" | "error">, o: { proposed?: boolean } = {}): Failure | null {
+  const f = failureWords(run);
+  if (!f || !o.proposed || !ANSWERED_BY_THE_CARD.has(run.error ?? "") || run.status === "expired") return f;
+  return run.error === "state_cap" ? { what: "The coach ran out of room before its last word.", next: null, credits: false } : { ...f, next: null };
+}
+
+function failureWords(run: Pick<CoachRunDto, "status" | "error">): Failure | null {
   if (run.status === "finished" || run.status === "cancelled" || !OVER_STATUSES.includes(run.status)) return null;
   if (run.status === "expired") return { what: "This design ran out of time.", next: "Start a new one when you're ready.", credits: false };
   switch (run.error) {

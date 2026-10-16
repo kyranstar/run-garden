@@ -304,3 +304,51 @@ describe("the week's budget (R11, M6, D11, §2.11)", () => {
     expect(document.querySelector(".coach-run-estimate")!.textContent).toBe("About $4.23; $2.10 left this week");
   });
 });
+
+// ── The run's lines in the Studio ───────────────────────────────────────────
+
+describe("the existing run's line follows what it waits on (R12)", () => {
+  const field = () => document.querySelector<HTMLTextAreaElement>(".coach-composer-field");
+  const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === name) ?? null;
+
+  it("waiting on the athlete: the coach is waiting for their answer below — never 'working on something'", async () => {
+    const live = run({ id: "run-live", request: "an older request", status: "waiting_athlete", proposalId: null, finishedAt: null });
+    serve({
+      "GET /api/coach/runs/current": { run: null },
+      "POST /api/coach/runs": () => json({ run: live, existing: true, offer: "answer_or_cancel", ignoredRequest: { scope: { kind: "now" }, request: null } }),
+    });
+    mount({ loop: quietLoop(() => live) });
+    await until(() => !!field(), "the composer");
+    await click(button("Now"), "Now");
+    await until(() => !!document.querySelector(".coach-run-notice"), "the line");
+    expect(document.querySelector(".coach-run-notice")!.textContent).toBe("The coach is waiting for your answer below. Answer or skip it — or cancel to ask for something new.");
+  });
+
+  it("at work: the coach is working on something, as before", async () => {
+    const live = run({ id: "run-live", request: "an older request", status: "active", proposalId: null, finishedAt: null });
+    serve({
+      "GET /api/coach/runs/current": { run: null },
+      "POST /api/coach/runs": () => json({ run: live, existing: true, offer: "continue_or_cancel", ignoredRequest: { scope: { kind: "now" }, request: null } }),
+    });
+    mount({ loop: quietLoop(() => live) });
+    await until(() => !!field(), "the composer");
+    await click(button("Now"), "Now");
+    await until(() => !!document.querySelector(".coach-run-notice"), "the line");
+    expect(document.querySelector(".coach-run-notice")!.textContent).toBe("You already have the coach working on something. Here it is. Cancel it to ask for something new.");
+  });
+});
+
+describe("a stop over a suggestion (R3)", () => {
+  it("out of room with its card: no 'Try a shorter request', no 'grew too long' — the card below", async () => {
+    serve({
+      "GET /api/coach/runs/current": { run: run({ status: "stopped_cap", error: "state_cap" }), events: [], proposal: { id: "dp-1", status: "pending", flags: [] } },
+      "GET /api/coach/proposals/dp-1": proposal("dp-1", [line("op-1", "Leg day")]),
+      "GET /api/templates": { templates: [] },
+    });
+    mount();
+    await until(() => text().includes("Leg day") && !!document.querySelector(".coach-run-failure"), "the card and the stop");
+    expect(document.querySelector(".coach-run-failure")!.textContent).toBe("The coach ran out of room before its last word.");
+    expect(text()).not.toContain("shorter request");
+    expect(text()).not.toContain("grew too long");
+  });
+});

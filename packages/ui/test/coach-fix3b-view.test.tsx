@@ -10,7 +10,7 @@ import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { CoachRunDto, CoachRunEventDto } from "@rg/api-client";
 import { RunView, StoppedLine } from "../src/screens/studio/run-view.js";
-import { failureOf, PAUSE_LINE, QUICK_BELOW_LINE, TRAIL_FOLD_LINE, type FallbackTile } from "../src/screens/studio/run-model.js";
+import { failureOf, QUICK_BELOW_LINE, TRAIL_FOLD_LINE, type FallbackTile } from "../src/screens/studio/run-model.js";
 import { renderAt, text, todayDto } from "./studio-fixtures.js";
 
 const run = (over: Partial<CoachRunDto> = {}): CoachRunDto => ({
@@ -105,9 +105,9 @@ describe("the header, and the line under a live run (M4, M10)", () => {
     expect(view(run(), setTrail).words).toContain("Coach · planning the set Spent $0.21");
   });
 
-  it("a live run says the coach pauses while the athlete is away; a run over says nothing of it", () => {
-    expect(view(run(), setTrail).words).toContain(PAUSE_LINE);
-    expect(view(run({ status: "finished" }), setTrail).words).not.toContain(PAUSE_LINE);
+  it("no line about pausing, live or over: the coach goes on with the app closed (Task 13, §2.12)", () => {
+    expect(view(run(), setTrail).words).not.toMatch(/pauses/);
+    expect(view(run({ status: "finished" }), setTrail).words).not.toMatch(/pauses/);
   });
 });
 
