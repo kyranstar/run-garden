@@ -532,6 +532,39 @@ describe("a promote that loses to a late verdict reads again before it gives up 
     expect(trail).not.toContain(LINES.proposed);
   });
 
+  it("a set's expiry: its proposal is read again and proposed, the verdict kept — and only its own designers are read", async () => {
+    const a = await athlete();
+    // Another main run's designer that failed on Friday, long ago: never this set's, so never named by its stop.
+    await db.insert(schema.coachRuns).values({
+      id: `ds-elsewhere-${a.userId}`,
+      userId: a.userId,
+      parentId: "another-main-run",
+      role: "designer",
+      scope: { kind: "week" },
+      request: null,
+      status: "failed",
+      state: JSON.stringify({ day: day(-2) }),
+      steps: 1,
+      costUsd: 0,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+    const mainId = await weekRun(a.userId);
+    const [thu, sat] = [day(-1), day(-3)];
+    const { deps } = scripted([t(planSet([brief("thu", thu), brief("sat", sat)])), ...designed("Thursday trunk", thu), ...designed("Saturday reset", sat), t(ask())]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("waiting_athlete");
+    const r = racing(designProposalId(mainId));
+    const out = await runStep(r.db, env, mainId, a.userId, new Date(NOW.getTime() + DAY_AND_AN_HOUR), deps);
+    expect(out.kind === "ok" && out.result.status).toBe("expired");
+    expect(r.raced()).toBe(true);
+    const p = (await proposalOf(mainId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday trunk", "Saturday reset"]);
+    expect(p.ops[0]!.review!.note).toBe("A verdict that landed late.");
+    expect(p.flags).toEqual([STOPPED_NOTES.expired]);
+    expect((await lines(mainId)).slice(-2)).toEqual([LINES.expiredSet, LINES.proposed]);
+  });
+
   it("a stop: the proposal is read again and proposed, the verdict kept", async () => {
     const a = await athlete();
     const runId = await nowRun(a.userId);
