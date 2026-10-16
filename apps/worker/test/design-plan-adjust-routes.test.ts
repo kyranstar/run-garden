@@ -273,6 +273,10 @@ describe("fix round: decline while a change is applying, and ten changes at once
     expect(meanwhile.status).toBe(409);
     expect(meanwhile.json).toEqual({ error: "in_flight", opIds: [planAdjustId("w-1-07:00")], status: "pending", applied: [], changed: [], refused: [], settled: [], remaining: [] });
     expect((await rowOf("w-1-07:00")).completionState).toBe("scheduled");
+    // Named with the workout the decline settled: 200, that op settled as it was, the change in flight.
+    const both = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(both.status).toBe(200);
+    expect(both.json).toMatchObject({ ok: true, inFlight: [planAdjustId("w-1-07:00")], settled: [{ opId: opIds[0], outcome: "declined" }] });
     // Past the window its request died: the approve takes it over, and records it applied.
     await claimedAt(id, stale());
     const again = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
@@ -288,6 +292,20 @@ describe("fix round: decline while a change is applying, and ten changes at once
     expect(res.json.applied.map((a: { opId: string }) => a.opId)).toEqual(opIds);
     expect((await rowOf("w-1-07:00")).completionState).toBe("scheduled");
     expect(((await proposalOf(id)).ops as Array<{ kind: string; outcome?: unknown }>).find((o) => o.kind === "plan_adjust")!.outcome).toMatchObject({ status: "applying" });
+  });
+
+  it("an approve applying one change while another approve holds the other: 200, the one changed, the other in flight", async () => {
+    const { id } = await designed({ changes: [skip("w-1-07:00"), skip("w-2-07:00")] });
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const ops = (p!.ops as PlanAdjustOp[]).map((o) =>
+      o.op.workoutId === "w-1-07:00" ? { ...o, outcome: { status: "applying", at: nowInstant(), before: { date: addDays(today, 1), time: "07:00", title: "Easy run", minutes: 30 } } } : o,
+    );
+    await db.update(coachProposals).set({ ops }).where(eq(coachProposals.id, id));
+    const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ ok: true, inFlight: [planAdjustId("w-1-07:00")], applied: [], refused: [], settled: [], remaining: [] });
+    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("w-2-07:00")]);
+    expect((await rowOf("w-1-07:00")).completionState).toBe("scheduled");
   });
 
   it("a decline re-judging a claim past the window costs at most DECLINE_COST: not made, declined — made, recorded applied with its day's replay", async () => {

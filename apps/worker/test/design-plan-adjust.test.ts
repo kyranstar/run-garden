@@ -1048,27 +1048,35 @@ describe("fix round 1: a change is claimed before the applier runs", () => {
       await claimedAgo(a.id, 1000);
       await claimedAgo(b.id);
       await claimedAgo(c.id);
-      // b's move was made before its request died; c's skip never was.
+      // b's move and c's skip were made before their requests died (the applier's own writes); a's length never was.
       await db.update(plannedWorkouts).set({ effectiveDate: day(-4) }).where(eq(plannedWorkouts.id, prog));
-      const bBefore = ((await changeOf(b.id, prog)).outcome as Extract<PlanOpOutcome, { status: "applying" }>).before;
+      await db.update(plannedWorkouts).set({ completionState: "skipped", resolutionDate: TODAY }).where(eq(plannedWorkouts.id, rich.outlineToday));
+      const claimBefore = async (id: string, workoutId: string) => ((await changeOf(id, workoutId)).outcome as Extract<PlanOpOutcome, { status: "applying" }>).before;
+      const bBefore = await claimBefore(b.id, prog);
+      const cBefore = await claimBefore(c.id, rich.outlineToday);
       await db.update(coachProposals).set({ expiresAt: TODAY }).where(inArray(coachProposals.id, [a.id, b.id, c.id]));
-      statements.length = 0;
-      expect(await sweepExpiredProposals(db, rich.userId, later)).toBe(1);
-      // The read, the one re-judged (its plan read and replay), its expiry and receipt.
-      expect(statements.length).toBeLessThanOrEqual(1 + REJUDGE_COST + 2);
-      expect(await sweepExpiredProposals(db, rich.userId, later)).toBe(1);
-      expect(await sweepExpiredProposals(db, rich.userId, later)).toBe(0);
+      const counts: number[] = [];
+      for (const expired of [1, 1, 0]) {
+        statements.length = 0;
+        expect(await sweepExpiredProposals(db, rich.userId, later)).toBe(expired);
+        counts.push(statements.length);
+      }
+      // A sweep: its read, the one proposal it re-judged (the plan read, and c's replay), its expiry and receipt.
+      expect(Math.max(...counts)).toBeLessThanOrEqual(1 + REJUDGE_COST + 2);
       expect((await proposalOf(a.id))!.status).toBe("pending");
       expect((await changeOf(a.id, run)).outcome).toMatchObject({ status: "applying" });
       expect((await proposalOf(b.id))!.status).toBe("expired");
       expect((await changeOf(b.id, prog)).outcome).toEqual({ status: "applied", at: NOW.toISOString(), workoutId: prog, before: bBefore });
       expect((await proposalOf(c.id))!.status).toBe("expired");
-      expect((await changeOf(c.id, rich.outlineToday)).outcome).toBeUndefined();
+      expect((await changeOf(c.id, rich.outlineToday)).outcome).toEqual({ status: "applied", at: NOW.toISOString(), workoutId: rich.outlineToday, before: cBefore });
+      const [account] = await db.select().from(schema.accountState).where(eq(schema.accountState.userId, rich.userId));
+      expect(account?.gardenChangedFrom).toBe(TODAY);
       // Past its window, a's claim is re-judged too: never made, released.
       await claimedAgo(a.id);
       expect(await sweepExpiredProposals(db, rich.userId, later)).toBe(1);
       expect((await proposalOf(a.id))!.status).toBe("expired");
       expect((await changeOf(a.id, run)).outcome).toBeUndefined();
+      expect((await rowOf(run)).fallbackEstimatedDurationSeconds).toBeNull();
     });
 
     it("a claim written between the sweep's read and its write wins: the proposal is not expired under it", async () => {
