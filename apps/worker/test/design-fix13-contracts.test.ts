@@ -185,7 +185,7 @@ describe("no empty revisions (§2.3)", () => {
   });
 
   it("allowed when the change note names an open validator note's code, or the review has a must-fix", async () => {
-    const issue = { path: "parts[0].format", code: "mode_limits", message: "A Recover day doesn't use straight sets." };
+    const issue = { path: "parts[0].format", code: "mode_limits" as const, message: "A Recover day doesn't use straight sets." };
     const named = await reviewed({ issues: [issue] });
     const fixed = await proposeWorkout.run(ctxOf(named.run, named.h.review), { doc: doc({ reps: 10 }), target: { kind: "new", date: TODAY }, changeNote: "Holds, for mode_limits." });
     expect(ok(fixed).control).toBe("review");
