@@ -110,9 +110,9 @@ describe("the Studio home", () => {
   it("tags: the vocabulary's tags that have moves, by their labels", () => {
     const plain = text(section(home(), "Tags"));
     for (const t of ["posture", "ski", "hip-opening", "single-leg", "landing", "desk-relief"]) expect(plain).toContain(label(t));
-    // No move carries these yet: no chip that would open an empty list.
-    expect(plain).not.toContain("Isometric hold");
-    expect(plain).not.toContain("Rotational");
+    // A tag no move carries: no chip that would open an empty list (read from the library, which gains tags as it grows).
+    const unused = TAGS.filter((t) => !EXERCISES.some((e) => e.tags.includes(t as never)));
+    for (const t of unused) expect(plain).not.toContain(label(t));
   });
 
   it("tags: the eight most used show; the rest are one tap down behind More tags", () => {
