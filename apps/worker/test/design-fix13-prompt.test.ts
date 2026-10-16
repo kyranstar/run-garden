@@ -75,13 +75,14 @@ describe("the shared prefix (every role)", () => {
   });
 
   it("13c R8: a suggestion read back is built on with basedOn kind proposal", () => {
-    expect(line("list_workouts and get_workout")).toContain("or proposal for a suggestion read back with get_workout");
+    expect(line("list_workouts and get_workout")).toContain("or proposal for a suggestion, read back with get_workout({ proposalId, opId }).");
   });
 });
 
 describe("the main coach's block", () => {
   it("13a A8: the open suggestions first — one that answers the request is the answer", () => {
-    expect(main).toContain("Read the open suggestions first (read_proposals). One that already answers the request is the answer");
+    // The opening index lists them (S3, 13b §1): the line points there first.
+    expect(main).toContain('Read the open suggestions first: the index\'s "open suggestions" line, read_proposals for more. One that already answers the request is the answer');
   });
 
   it("13c R7: a request bigger than the scope gets what the scope allows, and Plan ahead named", () => {
@@ -117,6 +118,11 @@ describe("the reviewer's block (13a A4, 13b I5, I8, 13c R5, R15)", () => {
   it("its words are the athlete's: 'you', moves by name, never ids, tools or app words", () => {
     expect(reviewer).toContain('Your notes, must-fix items, improvements and accepted reasons are shown to the athlete: write to them ("you"), name moves by their names — never ids, tools, fields or app words.');
     expect(reviewer).toContain("the draft (each move named, with its condition ratings)");
+  });
+
+  it("13b I9: the days around the draft's day are in its opening message, so it doesn't re-read the plan", () => {
+    expect(reviewer).toContain("the days around the draft's day (planned and done — no need to read the plan for them)");
+    expect(REVIEW_DIMENSIONS.find((d) => d.id === "recovery")!.question).toContain("the days either side (in your opening message)");
   });
 });
 
