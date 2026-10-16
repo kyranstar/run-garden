@@ -1,9 +1,12 @@
 /**
  * read_proposals(status?) — past proposals and how each ended (Stage 3 spec §4, §8): newest first, with the day it
- * was made, its status (pending, approved, declined, superseded, expired) and the day it was resolved, and what it
- * proposed — each change's kind, day and, for a designed workout, its title. A rehearsal (the live scenario suite) is
- * never one of them. The title, rationale and a designed workout's title are a past run's words: marked. A page that
- * fits, paged by key. One statement: the athlete with one page of proposals.
+ * was made, its status (pending, approved, partially_approved, declined, superseded, expired) and the day it was
+ * resolved, and what it proposed — each change's kind, day and, for a designed workout, its title and how the athlete
+ * decided it (design-approve.ts): `approved` as the coach proposed it, `edited` (the athlete changed the draft, then
+ * approved theirs), `declined` (with the athlete's reason, when they gave one), or `not_applied` (the server refused
+ * it at approval, with why). A rehearsal (the live scenario suite) is never one of them. The title, rationale, a
+ * designed workout's title and a decline's reason are others' words: marked. A page that fits, paged by key. One
+ * statement: the athlete with one page of proposals.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -34,13 +37,28 @@ const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 30;
 /** Changes listed per proposal; the rest are counted. */
 const OPS_SHOWN = 6;
-const STATUSES = ["pending", "approved", "declined", "superseded", "expired"] as const;
+const STATUSES = ["pending", "approved", "partially_approved", "declined", "superseded", "expired"] as const;
 
 const input = z.object({ status: z.enum(STATUSES).optional(), limit: limitField(MAX_LIMIT).optional(), cursor: cursorField.optional() }).strict();
 
+/** How the athlete decided a designed workout (design-approve.ts's outcome), in the tool's words; nothing while open. */
+function decided(o: Record<string, unknown>): Record<string, unknown> {
+  switch (o.outcome) {
+    case "applied":
+      return { outcome: o.edited === 1 || o.edited === true ? "edited" : "approved" };
+    case "declined":
+      return { outcome: "declined", ...(typeof o.reason === "string" ? { reason: untrusted(o.reason) } : {}) };
+    case "refused":
+      return { outcome: "not_applied", ...(typeof o.why === "string" ? { why: o.why } : {}) };
+    default:
+      return {};
+  }
+}
+
 export const readProposals: DesignTool = {
   name: "read_proposals",
-  description: "Past proposals, newest first, with how each ended (approved, declined, superseded, expired, or still pending) and what each proposed.",
+  description:
+    "Past proposals, newest first: how each ended (approved, partly approved, declined, superseded, expired, pending), what each proposed, and whether each designed workout was approved as it was, edited first, or declined.",
   inputSchema: {
     type: "object",
     properties: { status: { type: "string", enum: [...STATUSES] }, limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },
@@ -63,7 +81,8 @@ export const readProposals: DesignTool = {
           select ${c.id} as id, ${c.title} as title, ${c.rationale} as rationale, ${c.status} as status, ${c.createdAt} as created_at,
             ${c.resolvedAt} as resolved_at,
             (select json_group_array(json_object('kind', ${op("$.kind")}, 'date', coalesce(${op("$.date")}, ${op("$.toDate")}),
-              'title', ${op("$.doc.title")}))
+              'title', ${op("$.doc.title")}, 'outcome', ${op("$.outcome.status")}, 'edited', ${op("$.outcome.edited")},
+              'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}
             ${at ? sql`and (${c.createdAt}, ${c.id}) <= (${at[0]}, ${at[1]})` : sql``}
@@ -91,6 +110,7 @@ export const readProposals: DesignTool = {
             kind: typeof o.kind === "string" ? o.kind : "unknown",
             ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date } : {}),
             ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),
+            ...decided(o),
           })),
           ...(ops.length > OPS_SHOWN ? { moreOps: ops.length - OPS_SHOWN } : {}),
           title: untrusted(typeof r.title === "string" ? r.title : ""),

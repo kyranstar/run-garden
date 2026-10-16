@@ -78,7 +78,8 @@ const createSchema = z
   .strict();
 const reviseSchema = z.object({ doc: docField, baseRev: z.number().int().min(0) }).strict();
 
-function refusal(c: Context<AppContext>, e: unknown): Response {
+/** A document workout's refusal, as these routes answer it — and the coach's Edit before approve (design-proposals.ts). */
+export function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof DocInvalidError) return c.json({ error: "invalid_doc", issues: e.issues }, 422);
   if (e instanceof PastDateError) return c.json({ error: "past_date" }, 422);
   if (e instanceof PlayedOfflineRefusedError) return c.json({ error: "played_offline_refused", why: e.why }, 422);

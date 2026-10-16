@@ -117,8 +117,9 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 
 /** "Thu 20 Aug" — for the few lines whose prose must name ANOTHER day than
  * their own (a swap's partner, a move's origin). Every other date reaches the
- * UI as `line.date`, which the UI formats however it likes. */
-function dayLabel(iso: string): string {
+ * UI as `line.date`, which the UI formats however it likes. A designed workout's receipt names its days the same way
+ * (the worker's design-manifest.ts). */
+export function dayLabel(iso: string): string {
   const d = new Date(`${iso}T12:00:00Z`);
   if (Number.isNaN(d.getTime())) return iso;
   return `${WEEKDAYS[isoWeekday(iso) - 1]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;

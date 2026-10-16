@@ -119,8 +119,10 @@ export const workoutDocSchema = z.object({
   parts: z.array(partSchema).min(1).max(20),
   /** Who wrote it. */
   source: z.object({ kind: z.enum(DOC_SOURCES), ref: z.string().max(200).optional() }),
-  /** Lineage: what it was derived from. */
-  basedOn: z.object({ kind: z.enum(BASED_ON_KINDS), id: z.string().min(1).max(80), rev: z.number().int().min(0).optional() }).optional(),
+  /** Lineage: what it was derived from. A coach's proposal names the op (one designed workout) it approved: `opId`. */
+  basedOn: z
+    .object({ kind: z.enum(BASED_ON_KINDS), id: z.string().min(1).max(80), rev: z.number().int().min(0).optional(), opId: z.string().min(1).max(120).optional() })
+    .optional(),
   notes: z.string().max(500).optional(),
 });
 

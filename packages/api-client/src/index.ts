@@ -587,6 +587,55 @@ export interface DocWorkoutDto {
   minutes: number;
 }
 
+// ── A designed workout's proposal (Stage 3 Task 8; the worker's routes/design-proposals.ts) ──
+
+/** Where a designed workout goes: a new workout on a day, or the next revision of a planned one. */
+export type DesignTargetDto = { kind: "new"; date: string; time?: string } | { kind: "revise"; workoutId: string; baseRev: number };
+
+/** How the athlete decided one designed workout; null while it is theirs to decide. */
+export type DesignOutcomeDto =
+  | { status: "applied"; at: string; workoutId: string; rev: number | null; edited?: true }
+  | { status: "refused"; at: string; error: string; why: string; issues?: DocIssueDto[] }
+  | { status: "declined"; at: string; reason?: string };
+
+/** `GET /api/coach/proposals/:id/ops/:opId/draft`: the op's document, as the builder loads a workout's, and where it goes. */
+export interface DesignDraftResponse {
+  proposalId: string;
+  opId: string;
+  /** The proposal's status: `pending` or `partially_approved` while the athlete is deciding it. */
+  status: string;
+  doc: WorkoutDoc;
+  derived: { estimatedMinutes: number; discipline: string; category: string; mode: string; watchStepCount: number } & Record<string, unknown>;
+  rev: null;
+  target: DesignTargetDto;
+  date: string;
+  time: string | null;
+  outcome: DesignOutcomeDto | null;
+}
+
+/** `POST /api/coach/proposals/:id/approve` for a designed proposal: some ops (none named: all), or one op's edited draft. */
+export interface DesignApproveRequest {
+  opIds?: string[];
+  /** Edit before approve: the athlete's version of one op's draft; a new workout's day and time may be theirs. */
+  edit?: { opId: string; doc: WorkoutDoc; date?: string; time?: string | null };
+}
+
+/**
+ * Its answer. `remaining`: the ops this request had no room for — call again with `{ opIds: remaining }` until it is
+ * empty. With `edit`, a refusal is the Studio save's own error (422 `invalid_doc` with every issue, `past_date`; 409
+ * `stale_revision` with `rev`, `not_editable`; 404). Other errors: 400 `unknown_op`; 409 `not_pending` with `status`,
+ * `proposal_changed` (ask again), `not_yet` (the coach designer is off).
+ */
+export interface DesignApproveResponse {
+  ok: true;
+  status: "pending" | "partially_approved" | "approved" | "declined";
+  applied: Array<{ opId: string; workout: DocWorkoutDto; warnings: DocIssueDto[]; edited?: true; watchHasOlder?: true }>;
+  refused: Array<{ opId: string; error: string; why: string; issues?: DocIssueDto[] }>;
+  /** Decided before: nothing done. */
+  settled: Array<{ opId: string; outcome: "applied" | "declined"; workoutId?: string }>;
+  remaining: string[];
+}
+
 /** `POST /api/workouts`: a document workout for a day (today or later). `time` left out: the athlete's window. */
 export interface CreateDocWorkoutRequest {
   date: string;
@@ -1880,6 +1929,18 @@ export const api = {
     get<{ id: string; status: CoachProposalDto["status"]; resolvedAt: string | null }>(`/api/coach/proposals/${proposalId}`),
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
+  /** A designed workout's draft, for Edit before approve (404 unless the coach designer is on). */
+  coachDesignDraft: (proposalId: string, opId: string) =>
+    get<DesignDraftResponse>(`/api/coach/proposals/${encodeURIComponent(proposalId)}/ops/${encodeURIComponent(opId)}/draft`),
+  /** Approve a designed proposal's workouts (see `DesignApproveResponse` for `remaining`), or one op's edited draft. */
+  coachDesignApprove: (proposalId: string, body: DesignApproveRequest) =>
+    post<DesignApproveResponse>(`/api/coach/proposals/${encodeURIComponent(proposalId)}/approve`, body),
+  /** Decline a designed proposal, or some of its workouts; the reason is the athlete's own words. */
+  coachDesignDecline: (proposalId: string, body: { opIds?: string[]; reason?: string }) =>
+    post<{ ok: true; status: DesignApproveResponse["status"]; declined: string[]; settled: DesignApproveResponse["settled"] }>(
+      `/api/coach/proposals/${encodeURIComponent(proposalId)}/decline`,
+      body,
+    ),
   coachAnswerQuestion: (questionId: string, answer: string) =>
     post<{ ok: boolean; wake?: CoachWakeResult }>(`/api/coach/questions/${questionId}/answer`, { answer }, NO_DEADLINE),
   coachDismissQuestion: (questionId: string) =>

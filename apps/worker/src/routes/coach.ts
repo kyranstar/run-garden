@@ -54,6 +54,7 @@ import { chunkIds, type Db } from "../services/db.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
 import { hasDocWorkout } from "../services/proposal-kinds.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
+import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -436,9 +437,10 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
     .where(and(eq(coachProposals.id, id), eq(coachProposals.userId, userId)))
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
+  // A designed workout's proposal is approved op by op through the Studio's create and revise path (Stage 3 Task 8),
+  // never as CoachOps.
+  if (hasDocWorkout(p.ops)) return approveDesigned(c, p, (today) => sweepExpiredProposals(db, userId, today));
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
-  // A designed workout's proposal is approved through the Studio's create path (Stage 3 Task 8), never as CoachOps.
-  if (hasDocWorkout(p.ops)) return c.json({ error: "not_yet" }, 409);
 
   const prefs = await loadPreferences(db, userId);
   // A PROPOSAL WHOSE MOMENT HAS PASSED IS NOT APPROVABLE, whether or not a
@@ -500,18 +502,24 @@ coachRoutes.post("/drain", async (c) => {
 
 /**
  * One proposal's status — what the card reads after a tap whose answer never came back (a dropped connection, a
- * 5xx), before it says anything: the approve may well have applied. 404 `not_found`.
+ * 5xx), before it says anything: the approve may well have applied. A designed workout's proposal answers its manifest
+ * `lines` too, each with how its op ended (Stage 3 Task 8). 404 `not_found`.
  */
 coachRoutes.get("/proposals/:id", async (c) => {
   const [p] = await c
     .get("db")
-    .select({ id: coachProposals.id, status: coachProposals.status, resolvedAt: coachProposals.resolvedAt })
+    .select({ id: coachProposals.id, status: coachProposals.status, resolvedAt: coachProposals.resolvedAt, ops: coachProposals.ops })
     .from(coachProposals)
     .where(and(eq(coachProposals.id, c.req.param("id")), eq(coachProposals.userId, c.get("userId"))))
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
-  return c.json(p);
+  const { ops, ...status } = p;
+  const lines = hasDocWorkout(ops) ? await designedLines(c, ops) : undefined;
+  return c.json(lines ? { ...status, lines } : status);
 });
+
+/** A designed workout's draft, for Edit before approve (Stage 3 Task 8; routes/design-proposals.ts). */
+coachRoutes.get("/proposals/:id/ops/:opId/draft", designedDraft);
 
 coachRoutes.post("/proposals/:id/decline", async (c) => {
   const db = c.get("db");
@@ -523,9 +531,9 @@ coachRoutes.post("/proposals/:id/decline", async (c) => {
     .where(and(eq(coachProposals.id, id), eq(coachProposals.userId, userId)))
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
+  // Declined op by op too (Stage 3 Task 8), with the athlete's reason kept for the coach.
+  if (hasDocWorkout(p.ops)) return declineDesigned(c, p);
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
-  // Declined on its own surface too (Stage 3 Task 8), with what the coach learns from it.
-  if (hasDocWorkout(p.ops)) return c.json({ error: "not_yet" }, 409);
   await db
     .update(coachProposals)
     .set({ status: "declined", resolvedAt: nowInstant() })
