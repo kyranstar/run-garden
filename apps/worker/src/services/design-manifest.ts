@@ -32,7 +32,7 @@ import { REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
-import { describeChange, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
+import { describeChange, isDocWorkoutOp, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
 export interface DocWorkoutLine {
@@ -60,6 +60,16 @@ export interface DocWorkoutLine {
   parts: string[];
   /** Each move with its dose: "Glute bridge 2 × 12". */
   detail: string[];
+  /** What the workout is for, in one sentence: the document's intent summary, in the athlete's words (`athleteText`;
+   * Task 13's fix wave, §2.8 — the card's line under the title, 13d D1); null when it has none. */
+  intent: string | null;
+  /** Each move's why, parallel to `detail` (null where it has none: a rest, a move without one). */
+  whys: Array<string | null>;
+  /** The moves the coach weighed instead of each one, parallel to `detail` — each its name and why ([] where none; 13d
+   * D3: what the coach weighed, one tap down). */
+  alternates: Array<Array<{ name: string; why: string | null }>>;
+  /** A "now" design (§2.6): placed at the moment of the approve, never a time gone by — the card reads it as now. */
+  atNow?: true;
   /** The review's mean score (1–5; `reviewMeanOf`); null when there is none to average. */
   reviewMean: number | null;
   /** The review of the version held, as the card's expanded line shows it (Task 9); null when there is none. */
@@ -179,6 +189,17 @@ function itemLine(it: WorkoutItem): string {
   }
 }
 
+/** A move's why as the athlete reads it, or null (a rest has none). */
+function itemWhy(it: WorkoutItem): string | null {
+  return it.kind !== "rest" && it.why ? athleteText(it.why) : null;
+}
+
+/** The moves weighed instead of a move: each by its library name, with its why in the athlete's words. */
+function itemAlternates(it: WorkoutItem): Array<{ name: string; why: string | null }> {
+  if (it.kind !== "exercise" || !it.alternates) return [];
+  return it.alternates.map((a) => ({ name: find(a.libraryId)?.name ?? athleteText(a.libraryId), why: a.why ? athleteText(a.why) : null }));
+}
+
 /** What an applied op wrote, as a line says it; null for any other outcome (or an applied one recorded without it). */
 function writtenLine(o: OpOutcome | undefined): DocWorkoutLine["written"] {
   if (o?.status !== "applied" || !o.written) return null;
@@ -212,6 +233,7 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
     const derived = deriveDoc(doc, EXERCISES);
     const minutes = derived.estimatedMinutes;
     const when = lineTime(op, derived.category, at);
+    const items = doc.parts.flatMap((p) => p.items);
     return {
       opId: opIdOf(op),
       kind: op.target.kind,
@@ -219,13 +241,17 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
       date: op.date,
       time: when.time,
       ...(when.passed && (!op.outcome || op.outcome.status === "refused") ? { timePassed: true as const } : {}),
+      ...(op.target.kind === "new" && (op.target as { atNow?: boolean }).atNow ? { atNow: true as const } : {}),
       title: doc.title,
       minutes,
       summary: summaryLine(doc.title, minutes),
       effort: label(doc.intent.effort),
       place: placeName(doc.setting?.placeId),
       parts: doc.parts.map(partLine),
-      detail: doc.parts.flatMap((p) => p.items.map(itemLine)),
+      detail: items.map(itemLine),
+      intent: doc.intent.summary ? athleteText(doc.intent.summary) : null,
+      whys: items.map(itemWhy),
+      alternates: items.map(itemAlternates),
       reviewMean: reviewMeanOf(op),
       review: lineReview(op.review),
       issues: (op.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
@@ -300,14 +326,16 @@ export async function manifestReads(
   userId: string,
   /** The plan's rows the lines' times are placed among (design-placement.ts `dayRowsSql`), in the same statement. */
   dayRows: SQL = sql`null`,
-): Promise<{ placeName: PlaceNamer; prefs: UserPreferences; dayRows: unknown }> {
+  /** A set's other sessions in its days (`setContextSql`), in the same statement. */
+  context: SQL = sql`null`,
+): Promise<{ placeName: PlaceNamer; prefs: UserPreferences; dayRows: unknown; context: SetContextRow[] | null }> {
   const l = locations;
   const [row] = (await db.all(
     sql`select ${defaultPlaceSql(userId)} as fallback,
       (select json_group_array(json_object('id', ${l.id}, 'name', ${l.name})) from ${l} where ${l.userId} = ${userId}) as own,
       (select ${userPreferences.prefs} from ${userPreferences} where ${userPreferences.userId} = ${userId}) as prefs,
-      ${dayRows} as dayRows`,
-  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown; dayRows: unknown }>;
+      ${dayRows} as dayRows, ${context} as context`,
+  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown; dayRows: unknown; context: unknown }>;
   let stored: unknown = {};
   try {
     stored = typeof row?.prefs === "string" ? JSON.parse(row.prefs) : (row?.prefs ?? {});
@@ -331,5 +359,78 @@ export async function manifestReads(
     if (id === NO_EQUIPMENT_PLACE) return noEquipmentPlace().name;
     return LOCATION_PRESETS.find((p) => p.id === id)?.name ?? fallback;
   };
-  return { placeName, prefs, dayRows: row?.dayRows ?? null };
+  return { placeName, prefs, dayRows: row?.dayRows ?? null, context: contextRows(row?.context ?? null) };
+}
+
+// ── A set's other sessions (Task 13's fix wave, §2.9; 13d D7) ───────────────────────────────────────────────────────
+
+/** One of the plan's other sessions in a set's days, as the card shows it among the set's workouts. */
+export interface SetContextRow {
+  date: string;
+  /** "HH:MM". */
+  time: string | null;
+  /** What it is, as a word: "run", "programme", "workout" or "rest". */
+  kind: string;
+  title: string;
+  minutes: number | null;
+}
+
+/** A set's other sessions shown, at most (a week holds about a dozen). */
+export const SET_CONTEXT_MAX = 40;
+
+const RUN_CATEGORIES = ["recovery", "easy", "long", "quality", "race"];
+
+/**
+ * A set's context, as a column of the manifest's one statement: for a proposal made by a `week` or `next_n` run, the
+ * plan's other rows — runs, programme sessions, other workouts, rest days — in the set's date span (its first workout's
+ * day to its last's), in day and time order: never the proposal's own (a revision's workout, a change's session, a
+ * workout an approve of it wrote), nor one archived or skipped. `null` for any other proposal (no row is read). `runId`:
+ * the main run whose design proposal it is (its scope says whether it is a set's).
+ */
+export function setContextSql(userId: string, runId: string | null, ops: readonly unknown[]): SQL {
+  const workouts = ops.filter((o): o is DesignedOp => isDocWorkoutOp(o));
+  if (!runId || workouts.length === 0) return sql`null`;
+  const dates = workouts.map((w) => w.date).sort();
+  const own = new Set<string>();
+  for (const op of ops) {
+    if (isPlanAdjustOp(op)) own.add((op as DesignedPlanOp).op.workoutId);
+    if (!isDocWorkoutOp(op)) continue;
+    const w = op as DesignedOp;
+    if (w.target.kind === "revise") own.add(w.target.workoutId);
+    if (w.outcome?.status === "applied") own.add(w.outcome.workoutId);
+  }
+  const pw = sql.raw("pw");
+  const notOwn = own.size > 0 ? sql`AND ${pw}.id NOT IN (${sql.join([...own].slice(0, 60).map((id) => sql`${id}`), sql`, `)})` : sql``;
+  const kind = sql`CASE WHEN ${pw}.category = 'rest' THEN 'rest'
+      WHEN ${pw}.category IN (${sql.join(RUN_CATEGORIES.map((c) => sql`${c}`), sql`, `)}) THEN 'run'
+      WHEN ${pw}.origin = 'program' THEN 'programme' ELSE 'workout' END`;
+  return sql`CASE WHEN (SELECT CASE WHEN json_valid(r.scope) THEN json_extract(r.scope, '$.kind') END FROM coach_runs r
+      WHERE r.id = ${runId} AND r.user_id = ${userId}) IN ('week', 'next_n')
+    THEN (SELECT json_group_array(json_object('date', c.date, 'time', c.time, 'kind', c.kind, 'title', c.title, 'seconds', c.seconds)) FROM (
+      SELECT ${pw}.effective_date AS date, ${pw}.effective_time AS time, ${kind} AS kind, ${pw}.title AS title,
+        CASE WHEN ${pw}.category = 'rest' THEN NULL
+          ELSE coalesce(${pw}.source_estimated_duration_seconds, ${pw}.fallback_estimated_duration_seconds) END AS seconds
+      FROM planned_workouts ${pw}
+      WHERE ${pw}.user_id = ${userId} AND ${pw}.archived_at IS NULL AND ${pw}.completion_state <> 'skipped'
+        AND ${pw}.effective_date BETWEEN ${dates[0]!} AND ${dates.at(-1)!} ${notOwn}
+      ORDER BY ${pw}.effective_date, ${pw}.effective_time, ${pw}.id
+      LIMIT ${SET_CONTEXT_MAX}) c) END`;
+}
+
+/** `setContextSql`'s column, read; null when the proposal is no set's. */
+function contextRows(column: unknown): SetContextRow[] | null {
+  if (column === null || column === undefined) return null;
+  let rows: unknown = column;
+  try {
+    if (typeof column === "string") rows = JSON.parse(column);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(rows)) return null;
+  return rows.flatMap((r) => {
+    const x = r as { date?: unknown; time?: unknown; kind?: unknown; title?: unknown; seconds?: unknown } | null;
+    if (typeof x?.date !== "string") return [];
+    const seconds = typeof x.seconds === "number" && x.seconds > 0 ? x.seconds : null;
+    return [{ date: x.date, time: typeof x.time === "string" ? x.time : null, kind: typeof x.kind === "string" ? x.kind : "workout", title: typeof x.title === "string" ? x.title : "", minutes: seconds === null ? null : Math.round(seconds / 60) }];
+  });
 }

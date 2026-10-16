@@ -24,7 +24,8 @@
  *   GET  /api/coach/proposals/:id/ops/:opId/draft → the op's document as the builder loads one (`doc`, `derived`,
  *        `rev: null`) with its `target`, `date`, `time`, `outcome` and the proposal's `status`
  *   GET  /api/coach/proposals/:id (routes/coach.ts) → for a designed proposal, also its manifest: the workouts' `lines`
- *        and its changes to sessions already on the plan (`changes`, Task 8b) — a change has no draft (404)
+ *        and its changes to sessions already on the plan (`changes`, Task 8b) — a change has no draft (404) — and, for a
+ *        set's (a week or the next N), `context`: the plan's other sessions in its days (Task 13's fix wave, §2.9)
  *
  * 400 `unknown_op` (an op id the proposal doesn't hold) and `bad_request`; 409 `not_pending` with the status (a
  * proposal no longer the athlete's: expired — its day passed, as a thread proposal's — declined, approved, or never
@@ -51,7 +52,8 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, manifestReads, planChangeLines } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, planChangeLines, setContextSql } from "../services/design-manifest.js";
+import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
 import type { Db } from "../services/db.js";
@@ -176,15 +178,23 @@ export async function designedLines(c: C, ops: unknown, proposalId: string) {
 /**
  * A designed proposal's manifest as the athlete reads it at `now`: each workout's line — its time where the approve will
  * put it, the day's other sessions and the proposal's own changes weighed (design-placement.ts `placedTimes`, B-I1) —
- * and each change's. One statement: the places' names, the athlete's settings and the plan's rows the times are placed
- * among (none for a proposal of changes alone).
+ * and each change's; and, for a set's (a `week` or `next_n` run's), `context`: the plan's other sessions in the set's
+ * days (Task 13's fix wave, §2.9 — "plan my week" showed three workouts and nothing of the other days). One statement:
+ * the places' names, the athlete's settings, the plan's rows the times are placed among and a set's context (none for a
+ * proposal of changes alone).
  */
 export async function designedManifest(db: Db, userId: string, proposalId: string, ops: unknown, now: Date) {
   const all = Array.isArray(ops) ? (ops as unknown[]) : [];
   const workouts = designedOps(ops);
   if (workouts.length === 0) return { lines: [], changes: planChangeLines(all) };
-  const reads = await manifestReads(db, userId, dayRowsSql(userId, all));
+  const prefix = designProposalId("");
+  const runId = proposalId.startsWith(prefix) ? proposalId.slice(prefix.length) : null;
+  const reads = await manifestReads(db, userId, dayRowsSql(userId, all), setContextSql(userId, runId, all));
   const today = clockIn(reads.prefs.timezone, now).date;
   const placed = await placedTimes(userId, proposalId, all, reads.dayRows, { now, today, prefs: reads.prefs });
-  return { lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }), changes: planChangeLines(all) };
+  return {
+    lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }),
+    changes: planChangeLines(all),
+    ...(reads.context ? { context: reads.context } : {}),
+  };
 }
