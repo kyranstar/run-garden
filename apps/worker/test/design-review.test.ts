@@ -269,16 +269,23 @@ describe("a must-fix sends the draft back; the revision is reviewed again", () =
   it("a winning revision is measured against the version held, not the round before it (which may have lost)", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId);
-    const { deps } = scripted([
+    const two = propose("Two", "Longer rests.");
+    const { deps, requests } = scripted([
       t(propose("One")),
       t(submit(verdict(4, { mustFix: ["Shorter rests."] }))),
-      t(propose("Two", "Longer rests.")),
+      t(two),
       t(submit(verdict(3))),
       t(propose("Three", "Shorter rests, as asked.")),
       t(submit(verdict(5))),
       t(finish()),
     ]);
     expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
+    // The losing revision's designer is pointed back at the held draft, and what must still change in it.
+    expect(sentData(requests, two)).toMatchObject({
+      reviseFrom: 'round 1\'s draft ("One"), the one the proposal holds — not this one',
+      heldMustFix: ["Shorter rests."],
+      next: "Revise the held draft against its must-fix items, validate again, then call propose_workout again with a changeNote.",
+    });
     const lines = (await events(runId)).map((e) => e.summary).filter((s) => s.startsWith("Kept"));
     expect(lines).toEqual(["Kept round 1's version — it scored 4.0 against 3.0.", "Kept the revision — it scored 5.0 against round 1's 4.0."]);
     const op = (await proposalOf(runId))!.ops[0]!;
@@ -1107,6 +1114,56 @@ describe("fix round 1 — a reviewer that crashed is not a review", () => {
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");
     expect(p.ops[0]!.review).toEqual({ ...verdict(4), rounds: 1, changes: [] });
+  });
+
+  it("a dropped round never uses up the limit: after it, three drafts are still reviewed", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const must = verdict({ recovery: 2 }, { mustFix: ["Ease the second block."] });
+    const last = propose("Three", "Eased it again.");
+    const { deps, requests } = scripted([
+      t(propose("One")),
+      { ok: false, kind: "rejected", reason: "invalid_request", status: 400 },
+      t(propose("One, again")),
+      t(submit(must)),
+      t(propose("Two", "Eased the second block.")),
+      t(submit(must)),
+      t(last),
+      t(submit(verdict(4))),
+      t(finish()),
+    ]);
+    expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
+    expect(sentData(requests, last)).toMatchObject({ round: 3, roundsLeft: 0 });
+    expect(await reviewersOf(runId)).toHaveLength(4);
+    expect((await proposalOf(runId))!.ops[0]!.doc.title).toBe("Three");
+  });
+
+  it("a replayed draft whose reviewer used all its turns: the validator's view, as the resume would give it", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const first = propose("Calm hips");
+    const read = () => use("read_day", {});
+    const { deps, requests } = scripted([t(first), t(read()), t(read()), t(read()), t(finish())]);
+    await runStep(db, env, runId, a.userId, NOW, deps);
+    await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 1000), deps); // propose → paused
+    // The step "died" after the tool ran: the call is queued again, its claim stale.
+    const row = await runRow(runId);
+    const state = JSON.parse(row.state!) as { pending: unknown[]; awaiting: string | null; awaitingKind?: string; messages: Array<{ role: string; content: Array<{ type: string; id?: string; name?: string; input?: unknown }> }> };
+    const call = state.messages.at(-1)!.content.find((b) => b.type === "tool_use")!;
+    state.pending = [{ id: call.id, name: call.name, input: call.input }];
+    state.awaiting = null;
+    delete state.awaitingKind;
+    await db.update(schema.coachRuns).set({ status: "stepping", state: JSON.stringify(state), updatedAt: new Date(NOW.getTime() - 3_600_000).toISOString() }).where(eq(schema.coachRuns.id, runId));
+    await untilDone(
+      async (i) => {
+        const out = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + (2 + i) * 1000), deps);
+        return out.kind === "ok" && out.result.status === "finished";
+      },
+      { max: 12, what: "the replayed run" },
+    );
+    expect((await reviewersOf(runId))[0]).toMatchObject({ status: "stopped_cap", error: "step_cap" });
+    expect(sentData(requests, first)).toMatchObject({ review: null, note: NOTE_NOT_DONE, round: 1 });
+    expect((await proposalOf(runId))!.status).toBe("pending");
   });
 
   it("a reviewer that used its turns, or whose review couldn't be read, still leaves the validator's view", () => {
