@@ -22,12 +22,17 @@ test.skip(!process.env.RG_E2E_BUILT, "needs the built app with its service worke
 // offline reload); the phone is covered by the owner's iPhone steps in the spike report.
 test.skip(({ browserName }) => browserName !== "chromium", "offline reload through a service worker needs Chromium in Playwright");
 
-/** What Start leaves in IndexedDB (packages/ui/src/offline: database rg-offline, version 1, store `live`). */
+/**
+ * What Start leaves in IndexedDB (packages/ui/src/offline: database rg-offline, store `live`). Opened at whatever
+ * version the app made it (asked for version 1, a database the app already opened at a later one — version 2 since the
+ * Studio's drafts — fails with VersionError); made here only when the app has not, with version 1's stores, which the
+ * app's upgrade then builds on.
+ */
 async function putLiveSession(page: import("@playwright/test").Page) {
   await page.evaluate(
     () =>
       new Promise<void>((resolve, reject) => {
-        const open = indexedDB.open("rg-offline", 1);
+        const open = indexedDB.open("rg-offline");
         open.onupgradeneeded = () => {
           for (const store of ["builds", "live", "outbox", "meta"]) open.result.createObjectStore(store);
         };

@@ -165,6 +165,13 @@ describe("a quick start started offline, in the player (R11)", () => {
     expect(saves.map((s) => [s.workoutId, s.buildId])).toEqual([["w-server", null]]);
   });
 
+  it("its build gone from the device: the player says it isn't here, and never asks the server (it has nothing under that id)", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    const { getSession } = mount({ online: true });
+    await until(() => text().includes("This session isn't on this device."), "the line");
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
   it("Discard keeps nothing and asks the server nothing", async () => {
     await startedOffline();
     const { unstartSession, createWorkout, savePerformed } = mount({ online: true });
