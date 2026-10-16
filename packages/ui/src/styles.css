@@ -6295,6 +6295,124 @@ button.session-chip {
 }
 .memory-row:last-child { border-bottom: 0; }
 
+/* Memory v2 (Stage 3 Task 10): an item is its words and actions, one line saying what it is, and — one tap down —
+   the versions it replaced. On a narrow row the actions wrap under the words, never squeezing them. */
+.memory-item {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+.memory-group .memory-item:last-child { border-bottom: 0; }
+.memory-item .memory-row {
+  flex-wrap: wrap;
+  padding: 0;
+  border-bottom: 0;
+}
+.memory-body,
+.memory-edit {
+  flex: 1 1 14rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.memory-actions {
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin-left: auto;
+}
+.memory-meta {
+  margin: var(--space-1) 0 0;
+}
+.memory-history {
+  margin-top: var(--space-2);
+}
+.memory-history > summary {
+  width: fit-content;
+  color: var(--green-ink);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.memory-history ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-6);
+}
+.memory-history li {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.memory-refusal {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-sm);
+}
+
+/* Settings → Coach (Stage 3 Task 10): the row grammar of the cards above, and a block for a choice with its own
+   label — the scope (two by two on a phone, one row from 640), the times, the limits. */
+.coach-setting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+.card-title + .coach-setting {
+  border-top: 0;
+}
+.coach-setting-label {
+  font-weight: var(--weight-medium);
+}
+.coach-scope-seg {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 640px) {
+  .coach-scope-seg {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.coach-setting .setting-row {
+  padding: 0;
+  border-top: 0;
+}
+.coach-n,
+.coach-limit-field input,
+.coach-time-row input {
+  min-height: var(--tap);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+}
+.coach-limit-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.coach-limit-field input {
+  width: 6.5rem;
+}
+.coach-limit .coach-setting-why {
+  grid-column: 1 / -1;
+}
+.coach-time-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+.coach-setting > .btn {
+  align-self: flex-start;
+}
+.coach-setting-value {
+  color: var(--ink-soft);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.coach-setting-why {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
 /* ── Mobile fullscreen garden: the scene can take the whole viewport. The
    toggle is one of the scene chips now (the row positions it); from lg the
    scene IS the viewport, so the toggle hides. */

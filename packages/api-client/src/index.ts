@@ -520,11 +520,45 @@ export interface CoachQuestionDto {
 
 export interface CoachMemoryItem {
   id: string;
-  kind: "fact" | "rule" | "note";
+  /** `observation`: what the coach noticed from outcomes, with its evidence (memory v2). */
+  kind: "fact" | "rule" | "note" | "observation";
   body: string;
-  provenance: { source: string; messageId?: string; at: string };
+  /** Where it came from: the thread coach's cause (message, question, open, manual), a coach run's (athlete_words,
+   * coach_inference, with its run), or the old Studio's brief (studio_brief). */
+  provenance: { source: string; messageId?: string; runId?: string; planId?: string; at: string };
   learnedAt: string;
   expiresAt: string | null;
+  // Memory v2 (Stage 3 Task 10): the list's read has always carried these columns; typed now that it shows them.
+  pinned?: boolean;
+  confidence?: "stated" | "inferred" | "confirmed";
+  /** The item that replaced this one (history), or null for a live item. */
+  supersededBy?: string | null;
+  updatedAt?: string | null;
+}
+
+/** `GET /api/coach/memory`: the live items, and the history a newer item superseded (memory v2). */
+export interface CoachMemoryListDto {
+  memory: CoachMemoryItem[];
+  history?: CoachMemoryItem[];
+}
+
+/** `GET/PUT /api/coach/preferences` (Settings → Coach, Stage 3 Task 10; 404 unless the coach designer is on). */
+export interface CoachPreferencesDto {
+  /** What the athlete set (`{}` when nothing). */
+  coach: import("@rg/domain").CoachPreferences;
+  /** The settings in force: what they set, else the defaults. */
+  settings: import("@rg/domain").CoachSettings;
+  /** The model the coach designer runs on, and its name in plain words. */
+  model: { id: string; name: string };
+}
+
+/** `GET /api/coach/spend`: the rolling week's AI spend — the figure the weekly cap is checked against. */
+export interface CoachSpendDto {
+  since: string;
+  spentMicros: number;
+  spentUsd: number;
+  warnMicros: number;
+  cutoffMicros: number;
 }
 
 export interface CoachPlanDto {
@@ -2088,9 +2122,19 @@ export const api = {
     post<{ ok: boolean; wake?: CoachWakeResult }>(`/api/coach/questions/${questionId}/answer`, { answer }, NO_DEADLINE),
   coachDismissQuestion: (questionId: string) =>
     post<{ ok: boolean }>(`/api/coach/questions/${questionId}/dismiss`),
-  coachMemoryList: () => get<{ memory: CoachMemoryItem[] }>("/api/coach/memory"),
+  coachMemoryList: () => get<CoachMemoryListDto>("/api/coach/memory"),
   coachMemoryUpdate: (id: string, body: string) =>
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),
+  /** Edit, pin or unpin, or confirm the coach's inference (memory v2). 409 `pin_cap` past the pinned items' cap. */
+  coachMemoryPatch: (id: string, patch: { body?: string; pinned?: boolean; confirm?: true }) =>
+    request<{ ok: boolean; item: CoachMemoryItem }>(`/api/coach/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  /** Settings → Coach (404 unless the coach designer is on). */
+  coachPreferences: () => get<CoachPreferencesDto>("/api/coach/preferences"),
+  /** The settings, whole: what is left out is its default again. 400 for a limit raised past its default. */
+  coachPreferencesUpdate: (coach: import("@rg/domain").CoachPreferences) =>
+    request<CoachPreferencesDto>("/api/coach/preferences", { method: "PUT", body: JSON.stringify(coach) }),
+  /** The rolling week's AI spend against the cap. */
+  coachSpend: () => get<CoachSpendDto>("/api/coach/spend"),
   coachMemoryDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "DELETE" }),
   // The coach designer's runs (Stage 3; 404 unless the server turned them on). One live run per athlete: a second
