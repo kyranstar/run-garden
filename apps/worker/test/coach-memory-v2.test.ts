@@ -417,5 +417,17 @@ describe("a pin travels with its item (fix wave 3B, A-M1)", () => {
     await insertRows(Array.from({ length: MEMORY_PIN_CAP - 1 }, (_, i) => row(`pin-${i}`, { pinned: true })));
     expect((await undo(runId, handleOf(out))).status).toBe(200);
     expect(await one("pinned-before")).toMatchObject({ pinned: true, supersededBy: null });
+    // Nothing came back unpinned, so the line says nothing of it.
+    expect((await trailOf(runId)).at(-1)).toBe('Taken back: the memory "Evenings"');
+  });
+
+  it("an item that wasn't pinned comes back as it was, whatever the cap: the line claims no unpinning", async () => {
+    await db.insert(schema.coachMemory).values(row("plain-before", { kind: "rule", body: "Mornings" }));
+    const runId = (await createRun(db, userId, { scope: { kind: "now" }, request: "I train evenings now" }, new Date())).run.id;
+    const out = await remembered(runId, { toolUseId: "toolu_pin6", input: { kind: "rule", body: "Evenings", confidence: "stated", replaces: "plain-before" } });
+    await insertRows(Array.from({ length: MEMORY_PIN_CAP }, (_, i) => row(`pin-${i}`, { pinned: true })));
+    expect((await undo(runId, handleOf(out))).status).toBe(200);
+    expect(await one("plain-before")).toMatchObject({ pinned: false, active: true, supersededBy: null });
+    expect((await trailOf(runId)).at(-1)).toBe('Taken back: the memory "Evenings"');
   });
 });
