@@ -362,13 +362,15 @@ describe("a three-workout set, end to end", () => {
     }
   });
 
-  it("a now run's reviewer is no set's: its lines name no day", async () => {
+  it("a now run's reviewers are no set's: their lines name no day, a revision round's included", async () => {
     const a = await athlete();
     const runId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: "Something calm." }, NOW)).run.id;
-    const { deps } = scripted([t(use("propose_workout", { doc: calmDoc({ title: "Calm" }), target: { kind: "new", date: TODAY, time: "17:00" } })), t(submit(verdict(4))), t(finish("A calm half hour."))]);
+    const draft = (title: string) => use("propose_workout", { doc: calmDoc({ title }), target: { kind: "new", date: TODAY, time: "17:00" }, ...(title === "Calm" ? {} : { changeNote: "Slower." }) });
+    const { deps } = scripted([t(draft("Calm")), t(submit(verdict(3, { mustFix: ["Slow the bridges."] }))), t(draft("Calm, slower")), t(submit(verdict(4))), t(finish("A calm half hour."))]);
     expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
     const trail = await events(runId);
-    expect(trail.some((e) => (e.payload as { by?: { role: string } } | null)?.by?.role === "reviewer")).toBe(true);
+    const reviewerRuns = new Set(trail.flatMap((e) => ((e.payload as { by?: { role: string; runId: string } } | null)?.by?.role === "reviewer" ? [(e.payload as { by: { runId: string } }).by.runId] : [])));
+    expect(reviewerRuns.size).toBe(2);
     for (const e of trail) {
       expect((e.payload as { forDay?: string } | null)?.forDay, e.summary).toBeUndefined();
       expect((e.payload as { forTitle?: string } | null)?.forTitle, e.summary).toBeUndefined();
