@@ -6301,17 +6301,26 @@ button.session-chip {
   padding: var(--space-3) 0;
   border-bottom: 1px solid var(--border);
 }
+.memory-group {
+  margin-top: var(--space-4);
+}
 .memory-group .memory-item:last-child { border-bottom: 0; }
 .memory-item .memory-row {
   flex-wrap: wrap;
   padding: 0;
   border-bottom: 0;
 }
-.memory-body,
-.memory-edit {
+/* The words and the line saying what they are, together: on a narrow row the actions wrap under both. */
+.memory-main {
   flex: 1 1 14rem;
   min-width: 0;
+}
+.memory-body {
+  display: block;
   overflow-wrap: anywhere;
+}
+.memory-edit {
+  width: 100%;
 }
 .memory-actions {
   flex-wrap: wrap;

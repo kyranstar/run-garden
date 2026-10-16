@@ -42,20 +42,23 @@ export function MemoryItem({
   return (
     <div className="memory-item">
       <div className="memory-row">
-        {editing ? (
-          <input
-            value={draft}
-            onChange={(e) => onDraft(e.target.value)}
-            aria-label="Edit memory"
-            className="memory-edit"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && draft.trim()) onSave(draft.trim());
-              if (e.key === "Escape") onCancel();
-            }}
-          />
-        ) : (
-          <span className="memory-body">{item.body}</span>
-        )}
+        <div className="memory-main">
+          {editing ? (
+            <input
+              value={draft}
+              onChange={(e) => onDraft(e.target.value)}
+              aria-label="Edit memory"
+              className="memory-edit"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && draft.trim()) onSave(draft.trim());
+                if (e.key === "Escape") onCancel();
+              }}
+            />
+          ) : (
+            <span className="memory-body">{item.body}</span>
+          )}
+          <p className="memory-meta faint">{metaLine(item)}</p>
+        </div>
         <span className="row memory-actions">
           {item.confidence === "inferred" ? (
             <button type="button" className="linklike" disabled={busy} onClick={onConfirm}>
@@ -73,7 +76,6 @@ export function MemoryItem({
           </button>
         </span>
       </div>
-      <p className="memory-meta faint">{metaLine(item)}</p>
       {history.length > 0 ? (
         <details className="memory-history">
           <summary className="tap-pad">Earlier versions ({history.length})</summary>
