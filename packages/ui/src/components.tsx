@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CompletionState, SyncAction, WatchCoverageView, WorkoutSyncView } from "@rg/domain";
+import { todayInZone, type CompletionState, type SyncAction, type WatchCoverageView, type WorkoutSyncView } from "@rg/domain";
 import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
   IconAlert,
@@ -204,8 +204,31 @@ export function formatShortDate(date: string): string {
  * of Greenwich (audit#3 T3). A guess only: the server's `today` (account
  * timezone) is authoritative wherever a response already carries it. */
 export function localTodayGuess(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return dateInZone(new Date(), null);
+}
+
+/**
+ * An instant's calendar date in `timeZone` — the account's, as the server keeps its days; the device's own when the
+ * zone is unknown or not one this runtime knows. A traveller's phone, or a browser in another zone, reads the account's
+ * days, never its own (CUJ J34).
+ */
+export function dateInZone(at: Date, timeZone: string | null | undefined): string {
+  if (timeZone) {
+    try {
+      return todayInZone(timeZone, at);
+    } catch {
+      // A zone this runtime doesn't know: the device's own date.
+    }
+  }
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * The account's today, as well as this device can tell it: the server's own word (`today`, a Today read's), else the
+ * date on the account's clock (`timeZone`, its settings or profile), else — neither known — the device's own date.
+ */
+export function accountTodayGuess(today: string | null | undefined, timeZone: string | null | undefined, now: Date = new Date()): string {
+  return today || dateInZone(now, timeZone);
 }
 
 // ── Display units (2026-08-14) ────────────────────────────────────────────

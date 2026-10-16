@@ -27,7 +27,7 @@ import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type TemplateDto } from "@rg/api-client";
-import { ConfirmDialog, EmptyState, localTodayGuess, Sheet, Spinner } from "../../components.js";
+import { accountTodayGuess, ConfirmDialog, EmptyState, Sheet, Spinner } from "../../components.js";
 import { features } from "../../features.js";
 import { IconBack, IconMore, IconPin } from "../../icons.js";
 import { requestPersistentStorage } from "../../offline/live.js";
@@ -57,7 +57,10 @@ export function TemplatesScreen() {
   const navigate = useNavigate();
   const q = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000 });
   const todayQ = useQuery({ queryKey: ["today"], queryFn: api.today });
-  const today = todayQ.data?.today ?? localTodayGuess();
+  // The account's days, as the server keeps them: its zone reads "used today" too (CUJ J34).
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
+  const timeZone = settings.data?.prefs?.timezone ?? null;
+  const today = accountTodayGuess(todayQ.data?.today, timeZone);
   const list = useMemo(() => sortTemplates(q.data?.templates ?? []), [q.data]);
   const [menuId, setMenuId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<TemplateDto | null>(null);
@@ -190,7 +193,7 @@ export function TemplatesScreen() {
     body = (
       <ul className="stu-tpl-list">
         {list.map((t) => {
-          const facts = [...(t.pinned ? ["Pinned"] : []), ...templateFacts(t, today)];
+          const facts = [...(t.pinned ? ["Pinned"] : []), ...templateFacts(t, today, timeZone)];
           return (
             <li key={t.id} className="stu-tpl" data-id={t.id}>
               <h2 className="stu-tpl-name">

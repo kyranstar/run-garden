@@ -7,6 +7,7 @@
  * and tested directly here.
  */
 import { describe, expect, it } from "vitest";
+import { accountTodayGuess, dateInZone } from "../src/components.js";
 import { sessionNoun } from "@rg/analytics";
 import {
   countNoun,
@@ -138,5 +139,26 @@ describe("syncActionCopy (2026-08-17)", () => {
       "Send it to COROS.",
     );
     expect(syncActionShort(undefined)).toBeNull();
+  });
+});
+
+describe("the account's date, never the device's (CUJ J34)", () => {
+  // 00:36 UTC on Oct 16: still Oct 15 in Los Angeles, already Oct 16 on Kiritimati.
+  const at = new Date("2026-10-16T00:36:00Z");
+  const device = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+
+  it("an instant's date is the account zone's", () => {
+    expect(dateInZone(at, "America/Los_Angeles")).toBe("2026-10-15");
+    expect(dateInZone(at, "Pacific/Kiritimati")).toBe("2026-10-16");
+    // No zone known, or one this runtime doesn't know: the device's own date.
+    expect(dateInZone(at, null)).toBe(device);
+    expect(dateInZone(at, "Not/AZone")).toBe(device);
+  });
+
+  it("today: the server's word, else the account's clock, else the device's", () => {
+    expect(accountTodayGuess("2026-10-14", "Pacific/Kiritimati", at)).toBe("2026-10-14");
+    expect(accountTodayGuess(null, "America/Los_Angeles", at)).toBe("2026-10-15");
+    expect(accountTodayGuess(undefined, "Pacific/Kiritimati", at)).toBe("2026-10-16");
+    expect(accountTodayGuess(null, null, at)).toBe(device);
   });
 });

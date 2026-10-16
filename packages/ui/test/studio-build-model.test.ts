@@ -644,3 +644,10 @@ describe("the default place, in the server's order (apps/worker/src/services/def
     expect(studioCtxFrom(undefined, undefined, places(["gym", true], ["home", false], ["cabin", false]), choosing("cabin")).places.map((p) => p.id)).toEqual(["cabin", "gym", "home"]);
   });
 });
+
+describe("the account's zone in the Studio's context (CUJ J34)", () => {
+  it("comes with the profile; unknown before it", () => {
+    expect(studioCtxFrom(undefined, undefined, undefined, { ...profileDto(), timezone: "America/Los_Angeles" }).timeZone).toBe("America/Los_Angeles");
+    expect(studioCtxFrom().timeZone).toBeNull();
+  });
+});

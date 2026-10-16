@@ -1596,3 +1596,21 @@ describe("the place chip on a quick start (CUJ re-walk §2.3)", () => {
     expect(shown()).toEqual(before);
   });
 });
+
+describe("the builder's today with no Today read: the account's, never the device's (CUJ J34)", () => {
+  it("Start now's workout is for the account's date when Today can't be read", async () => {
+    // 12:00 UTC on Oct 15: still the 15th on this device (Los Angeles or UTC), already the 16th on Kiritimati, the account's.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-15T12:00:00Z") });
+    try {
+      await draftStore().save(draft(into(1, "gobletSquat")));
+      const calls = serve();
+      mount("/studio/build/new", { today: undefined }, { ...DEFAULT_SCHEDULING_PREFERENCES, timezone: "Pacific/Kiritimati" });
+      await until(() => !!startButton() && !startButton()!.disabled, "Start now");
+      await click(startButton(), "Start now");
+      await until(() => text().includes("the player"), "the player");
+      expect(calls.find((c) => c.method === "POST" && c.path === "/api/workouts")!.body).toMatchObject({ date: "2026-10-16" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

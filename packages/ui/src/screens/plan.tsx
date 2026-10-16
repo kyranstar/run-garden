@@ -17,7 +17,7 @@ import {
   formatMinutes,
   formatDistance,
   formatTime,
-  localTodayGuess,
+  accountTodayGuess,
   revealInView,
   settling,
   Sheet,
@@ -806,7 +806,10 @@ export function PlanScreen() {
   const plan = useQuery({
     queryKey: ["plan", windowAnchor ?? "boot"],
     queryFn: () => {
-      const anchor = windowAnchor ?? localTodayGuess();
+      // Before its week is read: the account's today (a Today read's, else its clock), never the device's (CUJ J34).
+      const anchor =
+        windowAnchor ??
+        accountTodayGuess(qc.getQueryData<{ today?: string }>(["today"])?.today, qc.getQueryData<{ prefs?: { timezone?: string } }>(["settings"])?.prefs?.timezone);
       return api.workouts(addDays(startOfIsoWeek(anchor), -28), addDays(startOfIsoWeek(anchor), 34));
     },
     // The window re-anchors as the user pages weeks — sliding it must reuse

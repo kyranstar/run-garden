@@ -8,7 +8,7 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type ConditionCheckDto, type ConditionViewDto } from "@rg/api-client";
-import { Banner, localTodayGuess, Sheet } from "../components.js";
+import { accountTodayGuess, Banner, Sheet } from "../components.js";
 
 export interface TodayReading {
   value: number | null;
@@ -162,7 +162,9 @@ export function ConditionCheckSheet({
         return await api.recordCheck({ profileId: condition.profileId, value, feelingOff: off });
       } catch (e) {
         if (!keepOffline || e instanceof ApiError) throw e;
-        return { check: { profileId: condition.profileId, date: localTodayGuess(), value, feelingOff: off } };
+        // The account's day, as the server would have dated it (CUJ J34).
+        const date = accountTodayGuess(qc.getQueryData<{ today?: string }>(["today"])?.today, qc.getQueryData<{ prefs?: { timezone?: string } }>(["settings"])?.prefs?.timezone);
+        return { check: { profileId: condition.profileId, date, value, feelingOff: off } };
       }
     },
     onSuccess: (res) => {

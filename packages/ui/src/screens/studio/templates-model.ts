@@ -14,7 +14,7 @@
 import { deriveDoc, quickStartDoc, type QuickStart, type QuickStartKind } from "@rg/workout";
 import { EXERCISES, type CheckReading } from "@rg/exercise-library";
 import type { TemplateDto } from "@rg/api-client";
-import { CATEGORY_LABELS, formatShortDate, localTodayGuess } from "../../components.js";
+import { accountTodayGuess, CATEGORY_LABELS, dateInZone, formatShortDate } from "../../components.js";
 import { addTargetHref } from "./add-model.js";
 import { buildCtxOf, suggestCtxOf } from "./build-model.js";
 import { quickStarts, type StudioCtx } from "./model.js";
@@ -62,18 +62,18 @@ export function sortTemplates(list: readonly TemplateDto[]): TemplateDto[] {
   );
 }
 
-/** The device's calendar date of an instant. */
-function localDateOf(iso: string): string | null {
+/** An instant's calendar date in the account's zone (the device's when it is unknown), as `today` is. */
+function dateOf(iso: string, timeZone: string | null | undefined): string | null {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return dateInZone(d, timeZone);
 }
 
 const DAY_MS = 86_400_000;
 
-/** "Used today", "Used yesterday", "Used 3 days ago", "Used Aug 2" — or "Not used yet". */
-export function lastUsedText(iso: string | null, today: string): string {
-  const day = iso ? localDateOf(iso) : null;
+/** "Used today", "Used yesterday", "Used 3 days ago", "Used Aug 2" — or "Not used yet". The day is the account's. */
+export function lastUsedText(iso: string | null, today: string, timeZone?: string | null): string {
+  const day = iso ? dateOf(iso, timeZone) : null;
   if (!day) return "Not used yet";
   const days = Math.round((Date.parse(today) - Date.parse(day)) / DAY_MS);
   if (days <= 0) return "Used today";
@@ -94,12 +94,12 @@ export function templateShape(t: TemplateDto): { minutes: number | null; discipl
 }
 
 /** A row's facts: "34 min", "Strength", "Used 3 days ago". A template whose document no longer reads says so. */
-export function templateFacts(t: TemplateDto, today: string): string[] {
+export function templateFacts(t: TemplateDto, today: string, timeZone?: string | null): string[] {
   if (!t.doc) return ["Can't be opened"];
   const { minutes, discipline } = templateShape(t);
   // The app's one word for a kind — the builder's summary says the same (`CATEGORY_LABELS`).
   const kind = discipline ? (CATEGORY_LABELS[discipline] ?? null) : null;
-  return [minutes !== null ? `${minutes} min` : null, kind, lastUsedText(t.lastUsedAt, today)].filter((x): x is string => !!x);
+  return [minutes !== null ? `${minutes} min` : null, kind, lastUsedText(t.lastUsedAt, today, timeZone)].filter((x): x is string => !!x);
 }
 
 // ── Quick starts ────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ export interface QuickTile {
 export function quickTiles(ctx: StudioCtx, templates: readonly TemplateDto[] = []): QuickTile[] {
   const own = sortTemplates(templates.filter((t) => t.pinned && t.doc !== null));
   const minutesOf = (kind: QuickStartKind): number | null => {
-    const made = quickStartFor(kind, ctx, ctx.today ?? localTodayGuess());
+    const made = quickStartFor(kind, ctx, accountTodayGuess(ctx.today, ctx.timeZone));
     return "doc" in made ? deriveDoc(made.doc, EXERCISES).estimatedMinutes : null;
   };
   return [

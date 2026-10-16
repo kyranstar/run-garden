@@ -19,7 +19,7 @@ import { TEMPLATES_QUERY } from "../src/screens/studio/add-sheet.js";
 import { ItemSheet } from "../src/screens/studio/item-sheet.js";
 import { buildCtxOf, judgeDraft, suggestCtxOf } from "../src/screens/studio/build-model.js";
 import { emptyStudioCtx, studioCtxFrom } from "../src/screens/studio/model.js";
-import { localTodayGuess } from "../src/components.js";
+import { accountTodayGuess } from "../src/components.js";
 import { libraryDto, placesDto, primedClient, profileDto, staticRouter, text, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 const rec = (id: string) => EXERCISES.find((r) => r.id === id)!;
@@ -333,7 +333,8 @@ describe("the athlete's focus areas (CUJ R7)", () => {
     const d = draft();
     const profile = profileDto([{ id: "neck", refs: ["neck"] }]);
     const html = renderBuilder("/studio/build/new", { draft: d, primed: { profile } });
-    const today = localTodayGuess();
+    // The builder's today with no Today read: the account's (its settings' zone), as the seed reads it.
+    const today = accountTodayGuess(null, DEFAULT_SCHEDULING_PREFERENCES.timezone);
     const want = (p?: typeof profile) => {
       const ctx = studioCtxFrom(undefined, undefined, placesDto(HOME_GEAR), p);
       const cool = d.parts.findIndex((x) => x.purpose === "cooldown");

@@ -174,9 +174,11 @@ export interface StudioCtx {
   focusRefs: readonly string[];
   /** The athlete's today (their timezone), for "last done". */
   today: string | null;
+  /** The account's timezone (the profile's): its days, where no Today read says which one it is (CUJ J34). */
+  timeZone: string | null;
 }
 
-export const emptyStudioCtx: StudioCtx = { profiles: [], readings: {}, prefs: new Map(), place: null, places: [], focusRefs: [], today: null };
+export const emptyStudioCtx: StudioCtx = { profiles: [], readings: {}, prefs: new Map(), place: null, places: [], focusRefs: [], today: null, timeZone: null };
 
 /**
  * The default place, in the server's order (apps/worker/src/services/default-place.ts): the profile's chosen default
@@ -221,6 +223,7 @@ export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, p
     places: (chosen ? [chosen, ...list.filter((p) => p !== chosen)] : list).map((p) => ({ id: p.id, name: p.name, equipment: p.equipment })),
     focusRefs: [...new Set((profile?.focusAreas ?? []).flatMap((f) => f.refs))],
     today: today?.today ?? null,
+    timeZone: profile?.timezone ?? null,
   };
 }
 

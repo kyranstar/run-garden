@@ -75,7 +75,7 @@ import {
   type SuggestCtx,
   type Suggestion,
 } from "@rg/workout";
-import { ConfirmDialog, EmptyState, formatDayShort, formatTime, localTodayGuess, Spinner } from "../../components.js";
+import { accountTodayGuess, ConfirmDialog, EmptyState, formatDayShort, formatTime, Spinner } from "../../components.js";
 import { checkWord, ConditionCheckSheet } from "../../components/condition-check-sheet.js";
 import { Tooltip } from "../../components/tooltip.js";
 import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
@@ -160,11 +160,12 @@ function Builder({ source }: { source: BuildSource }) {
   const arrived = location.state as BuilderArrival | null;
   const back = builderBack(arrived?.from);
   const { ctx, settled, profilesKnown } = useStudioReads();
-  const today = ctx.today ?? localTodayGuess();
   const unit = useWeightUnit();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   // The account's timezone: "now" is read on its clock, as the server reads it (CUJ R14).
-  const timeZone = settings.data?.prefs?.timezone ?? null;
+  const timeZone = settings.data?.prefs?.timezone ?? ctx.timeZone;
+  // Today is the server's; with no Today read, the account's own date — never the device's (CUJ J34).
+  const today = accountTodayGuess(ctx.today, timeZone);
   const wide = useMinWidth(DETAIL_PANE_MIN_PX);
   const drafts = useStudioDraft();
   const key = sourceKey(source);

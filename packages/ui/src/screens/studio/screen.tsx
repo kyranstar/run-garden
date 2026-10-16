@@ -38,7 +38,7 @@ import { Navigate, useLocation, useMatch, useNavigate, useSearchParams } from "r
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { localTodayGuess } from "../../components.js";
+import { accountTodayGuess } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { IconFilters } from "../../icons.js";
@@ -360,7 +360,7 @@ export function StudioScreen() {
   const setFilters = (f: StudioFilters) => write(text, f, url.all);
 
   const set = setFilterCount(url.filters, ctx);
-  const today = ctx.today ?? localTodayGuess();
+  const today = accountTodayGuess(ctx.today, ctx.timeZone);
   // A move the library does not have (an old link): the list, without it.
   if (openId && !openRec) return <Navigate to={{ pathname: "/studio", search: search ? `?${search}` : "" }} replace />;
 

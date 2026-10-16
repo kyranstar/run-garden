@@ -77,6 +77,8 @@ describe("a template's row", () => {
     // The document is a goblet squat (a strength workout of another length): the server's numbers are what is said.
     expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Yoga", "Not used yet"]);
     expect(templateFacts(tpl("a", { minutes: 45, discipline: "run" }), TODAY)).toEqual(["45 min", "Run", "Not used yet"]);
+    // Its "used" day is the account's (CUJ J34): 20:00 UTC on Oct 15 is already Oct 16 on Kiritimati.
+    expect(templateFacts(tpl("a", { minutes: 45, discipline: "run", lastUsedAt: "2026-10-15T20:00:00.000Z" }), "2026-10-16", "Pacific/Kiritimati")).toContain("Used today");
     // One map says a kind's word, the builder's summary's too (CATEGORY_LABELS): rename a kind there, and it is renamed here.
     const was = CATEGORY_LABELS.yoga;
     CATEGORY_LABELS.yoga = "Mobility";
@@ -111,6 +113,9 @@ describe("a template's row", () => {
     expect(lastUsedText("2026-09-12T12:00:00.000Z", TODAY)).toBe("Used 29 days ago");
     expect(lastUsedText("2026-08-02T12:00:00.000Z", TODAY)).toBe("Used Aug 2");
     expect(lastUsedText("not a date", TODAY)).toBe("Not used yet");
+    // The day it was used is the account's, never the device's: 01:00 UTC on Oct 16 is Oct 15 in Los Angeles.
+    expect(lastUsedText("2026-10-16T01:00:00.000Z", "2026-10-15", "America/Los_Angeles")).toBe("Used today");
+    expect(lastUsedText("2026-10-15T20:00:00.000Z", "2026-10-16", "Pacific/Kiritimati")).toBe("Used today");
   });
 });
 
