@@ -18,8 +18,8 @@
  * refusal is said the same way, and the sheet stays open.
  */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { GOAL_IDS, MAX_KEY_RESULTS } from "@rg/domain";
-import { EXERCISES, label, searchLibrary } from "@rg/exercise-library";
+import { GOAL_IDS, GOAL_LABELS, MAX_KEY_RESULTS } from "@rg/domain";
+import { EXERCISES, searchLibrary } from "@rg/exercise-library";
 import { Sheet } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconClose, IconPlus } from "../../icons.js";
@@ -187,7 +187,7 @@ export function ObjectiveSheet({
           <div className="stu-chipset">
             {GOAL_IDS.map((g) => (
               <button key={g} type="button" className="chipbtn stu-toggle" aria-pressed={draft.goalIds.includes(g)} onClick={() => toggleGoal(g)}>
-                {label(g)}
+                {GOAL_LABELS[g]}
               </button>
             ))}
           </div>

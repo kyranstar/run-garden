@@ -13,6 +13,19 @@ import { z } from "zod";
 export const WORKOUT_DOC_VERSION = 1;
 
 export const GOAL_IDS = ["ski", "posture", "athleticism", "alignment", "condition-care", "aerobic-base", "speed", "strength", "mobility", "recovery"] as const;
+/** Each goal in plain words, for every screen that names one (never the id itself). */
+export const GOAL_LABELS: Record<(typeof GOAL_IDS)[number], string> = {
+  ski: "Ski",
+  posture: "Posture",
+  athleticism: "Athleticism",
+  alignment: "Alignment",
+  "condition-care": "Condition care",
+  "aerobic-base": "Aerobic base",
+  speed: "Speed",
+  strength: "Strength",
+  mobility: "Mobility",
+  recovery: "Recovery",
+};
 export const PART_PURPOSES = ["arrive", "warmup", "activation", "main", "power", "accessory", "conditioning", "run", "care", "cooldown"] as const;
 export const PART_FORMATS = ["straight", "superset", "circuit", "flow", "intervals", "steady", "ladder", "holds"] as const;
 export const RUN_EFFORTS = ["easy", "recovery", "steady", "long", "tempo", "threshold", "interval", "hills", "strides", "race", "by_feel"] as const;

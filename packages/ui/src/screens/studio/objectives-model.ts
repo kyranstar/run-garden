@@ -5,8 +5,10 @@
  *  - A key result's values are in its own unit (`KeyResultDto.unit`, the athlete's when it was made): a hold in seconds,
  *    a race time or a pace as a clock, a load in the athlete's weight unit. The athlete types them the way they are shown.
  *  - Evidence is said in read_objectives' four words (measured, sparse, capped, none) — never a colour alone.
- *  - Progress toward a target runs from the start (`baseline`) when there is one, else from zero — or, for a key result
- *    where lower is better, as the target over the current value. The ring is the mean of the key results that can say.
+ *  - Progress toward a target runs from the start (`baseline`) to it, clamped to 0–100% — so a pace at or below its
+ *    target is 100%, never more. A key result with no start can't say how far it has come ("from zero" means nothing
+ *    for a time or a pace, and little for a hold), nor can one whose target lies the wrong way from its start: neither
+ *    counts. The ring is the mean of the key results that can say; with none, there is no ring.
  *  - Never guilt: a streak shows from one week; a stalled objective is noticed only after four weeks, and only when it
  *    is active and has had four weeks to be worked on.
  */
@@ -15,6 +17,7 @@ import {
   canonicalUnitOf,
   defaultUnitFor,
   GOAL_IDS,
+  GOAL_LABELS,
   KG_TO_LB,
   unitsFor,
   type KeyResultDirection,
@@ -26,7 +29,7 @@ import {
   type ObjectiveBoardCard,
   type ObjectiveDto,
 } from "@rg/domain";
-import { EXERCISES, label, type ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { ApiError } from "@rg/api-client";
 import { formatDistance, type Units } from "../../components.js";
 
@@ -160,10 +163,10 @@ export function streakWords(weeks: number): string | null {
   return weeks === 1 ? "1 week" : `${weeks} weeks in a row`;
 }
 
-/** The goals' labels (the vocabularies' LABELS), in the order the goal list has them. */
+/** The goals in plain words (`GOAL_LABELS`), in the order the goal list has them. */
 export const goalWords = (ids: readonly string[]): string =>
   GOAL_IDS.filter((g) => ids.includes(g))
-    .map((g) => label(g))
+    .map((g) => GOAL_LABELS[g])
     .join(" · ");
 
 // ── Progress ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -171,14 +174,15 @@ export const goalWords = (ids: readonly string[]): string =>
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 
 /**
- * How far a key result is toward its target, 0–1: from its start when it has one, else from zero (or, where lower is
- * better, the target over the current value). Null without a target or a current value.
+ * How far a key result has come from its start toward its target, 0–1 (at or past the target is 1, never more). Null —
+ * it can't say — without a start, a target or a current value, or when the target doesn't lie the key result's own way
+ * from its start (higher for "up", lower for "down").
  */
 export function krFraction(k: Pick<KeyResultDto, "baseline" | "target" | "direction">, current: number | null): number | null {
-  if (k.target === null || current === null) return null;
-  if (k.baseline !== null && k.baseline !== k.target) return clamp01((current - k.baseline) / (k.target - k.baseline));
-  if (k.direction === "up") return k.target <= 0 ? null : clamp01(current / k.target);
-  return current <= 0 ? null : clamp01(k.target / current);
+  if (k.target === null || k.baseline === null || current === null) return null;
+  const span = k.target - k.baseline;
+  if (span === 0 || (k.direction === "up" ? span < 0 : span > 0)) return null;
+  return clamp01((current - k.baseline) / span);
 }
 
 /** The ring: the mean of the key results that can say; null when none can. */

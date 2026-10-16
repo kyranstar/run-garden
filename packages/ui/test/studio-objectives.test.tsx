@@ -34,6 +34,9 @@ import { features } from "../src/features.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { COACH_CURRENT_QUERY } from "../src/screens/studio/composer.js";
 import { ObjectivesScreen, OBJECTIVE_BOARD_QUERY } from "../src/screens/studio/objectives.js";
+import { ObjectiveSheet } from "../src/screens/studio/objectives-sheet.js";
+import { GoalsSheet } from "../src/screens/studio/goals-sheet.js";
+import { newDoc } from "@rg/workout";
 import {
   evidenceWord,
   formatKr,
@@ -122,7 +125,11 @@ const LEGS_CARD = card(LEGS, {
 });
 
 const UNTRUSTED = card(objective("o2", "<script>alert(1)</script> Posture", { status: "paused", why: "<b>sit tall</b> at work", goalIds: ["posture"] }));
-const DONE = card(objective("o3", "Run a half marathon", { status: "done" }), { streakWeeks: 0 });
+const DONE = card(objective("o3", "Run a half marathon", { status: "done", goalIds: ["aerobic-base", "condition-care"] }), { streakWeeks: 0 });
+/** Measured, with targets, but no start: no key result can say how far it has come. */
+const NO_START = card(objective("o5", "Faster 5K", { keyResults: [FIVE_K] }), {
+  keyResults: [{ keyResult: FIVE_K, progress: progress([["2026-10-05", 1530], ["2026-10-09", 1500], ["2026-10-12", 1490]]), best: null }],
+});
 const STALLED = card(objective("o4", "Mobility every week", { keyResults: [WALL] }), {
   keyResults: [{ keyResult: WALL, progress: progress([["2026-08-20", 70]]), best: null }],
   served: [{ workoutId: "w9", date: "2026-08-20", title: "Old mobility", source: "studio" }],
@@ -200,21 +207,43 @@ describe("the board's words and numbers", () => {
     expect((["measured", "sparse", "capped", "none"] as const).map(evidenceWord)).toEqual(["Measured", "Sparse", "Capped", "None"]);
   });
 
-  it("measures progress toward the target from the start, either way, clamped; without a start, from zero (or the target's side)", () => {
+  it("measures progress from the start to the target, either way, clamped to 0–100%", () => {
     const up = { ...WALL, baseline: 60, target: 120 };
     expect(krFraction(up, 90)).toBe(0.5);
     expect(krFraction(up, 150)).toBe(1);
     expect(krFraction(up, 40)).toBe(0);
     expect(krFraction({ ...FIVE_K, baseline: 1600, target: 1400 }, 1500)).toBe(0.5);
-    expect(krFraction({ ...WALL, baseline: null, target: 120 }, 60)).toBe(0.5);
-    expect(krFraction({ ...FIVE_K, baseline: null, target: 1440 }, 1600)).toBe(0.9);
     expect(krFraction({ ...WALL, target: null }, 60)).toBeNull();
     expect(krFraction(up, null)).toBeNull();
   });
 
-  it("an objective's ring is the mean of its key results that can say; none can, no ring", () => {
-    expect(objectiveFraction(LEGS_CARD)).toBeCloseTo((35 / 60 + 1440 / 1530 + 32.5 / 40) / 3, 5);
+  it("a key result with no start can't say how far it has come: it counts for nothing, either way", () => {
+    // Lower is better: "from zero" means nothing for a time or a pace.
+    expect(krFraction({ ...FIVE_K, baseline: null, target: 1440 }, 1600)).toBeNull();
+    expect(krFraction({ ...EASY, baseline: null, target: 360 }, 350)).toBeNull();
+    // Higher is better: only loosely meaningful, so not counted either.
+    expect(krFraction({ ...WALL, baseline: null, target: 120 }, 60)).toBeNull();
+  });
+
+  it("a pace at or below its target is 100%, and never more", () => {
+    const pace = { ...EASY, direction: "down" as const, baseline: 400, target: 360 };
+    expect(krFraction(pace, 360)).toBe(1);
+    expect(krFraction(pace, 340)).toBe(1);
+    expect(krFraction(pace, 380)).toBe(0.5);
+    expect(krFraction(pace, 420)).toBe(0);
+  });
+
+  it("a start on the wrong side of its target for the key result's way counts for nothing", () => {
+    expect(krFraction({ ...EASY, direction: "down" as const, baseline: 360, target: 400 }, 380)).toBeNull();
+    expect(krFraction({ ...WALL, direction: "up" as const, baseline: 120, target: 60 }, 90)).toBeNull();
+    expect(krFraction({ ...WALL, baseline: 120, target: 120 }, 120)).toBeNull();
+  });
+
+  it("an objective's ring is the mean of the key results that can say: here only the one with a start", () => {
+    // The 5K and the squat have no start; the easy pace has no current value.
+    expect(objectiveFraction(LEGS_CARD)).toBeCloseTo(35 / 60, 5);
     expect(objectiveFraction(UNTRUSTED)).toBeNull();
+    expect(objectiveFraction(NO_START)).toBeNull();
   });
 
   it("what is sent: the title trimmed, an empty why null, the goals in the goal list's order", () => {
@@ -323,9 +352,14 @@ describe("the board", () => {
 
   it("a quiet progress ring, its share in words for a screen reader", () => {
     const c = cardOf(boardHtml(), "o1");
-    const pct = Math.round(objectiveFraction(LEGS_CARD)! * 100);
-    expect(c).toContain(`aria-label="${pct}% of the way to its targets"`);
+    expect(c).toContain('aria-label="58% of the way to its targets"');
     expect(c).toContain('class="obj-ring"');
+  });
+
+  it("with no key result that can say, no ring at all", () => {
+    const c = cardOf(boardHtml({ today: TODAY, objectives: [NO_START] }), "o5");
+    expect(c).not.toContain("obj-ring");
+    expect(c).not.toContain("of the way");
   });
 
   it("the streak in words; at zero nothing at all — no count, no alarm, no red", () => {
@@ -367,6 +401,39 @@ describe("the board", () => {
     expect(html).not.toContain("<b>sit tall</b>");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt; Posture");
     expect(html).toContain("&lt;b&gt;sit tall&lt;/b&gt; at work");
+  });
+
+  it("goals in plain words, never their ids", () => {
+    const c = text(cardOf(boardHtml(), "o3"));
+    expect(c).toContain("Condition care · Aerobic base");
+    expect(c).not.toMatch(/aerobic-base|Aerobic-base/);
+  });
+
+  it("the edit sheet's goals and the Studio's goals sheet say them in the same words", () => {
+    const qc = primedClient();
+    const sheet = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: qc },
+        staticRouter(
+          "/studio/objectives",
+          createElement(ObjectiveSheet, {
+            initial: { title: "T", why: "", goalIds: ["aerobic-base"], krs: [] },
+            editing: true,
+            units: { units: "km", weightUnit: "kg" },
+            onSave: async () => null,
+            onClose: () => undefined,
+          }),
+        ),
+      ),
+    );
+    expect(sheet).toMatch(/aria-pressed="true"[^>]*>Aerobic base<\/button>/);
+    expect(text(sheet)).toContain("Condition care");
+    const goals = renderToStaticMarkup(
+      createElement(GoalsSheet, { doc: newDoc("structured", { title: "T", source: { kind: "studio" } }), onEdit: () => undefined, onClose: () => undefined }),
+    );
+    expect(text(goals)).toContain("Aerobic base");
+    expect(goals).not.toContain(">Aerobic-base<");
   });
 
   it("the title, the why and the goals (their LABELS)", () => {

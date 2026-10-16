@@ -3,7 +3,7 @@
  * is one editor action; one the document can't take (a seventh goal, a thirteenth area) says why.
  */
 import { useState } from "react";
-import { GOAL_IDS, type WorkoutDoc } from "@rg/domain";
+import { GOAL_IDS, GOAL_LABELS, type WorkoutDoc } from "@rg/domain";
 import { label, REGIONS } from "@rg/exercise-library";
 import type { EditAction, Rejection } from "@rg/workout";
 import { Sheet } from "../../components.js";
@@ -30,7 +30,7 @@ export function GoalsSheet({ doc, onEdit, onClose }: { doc: WorkoutDoc; onEdit: 
                 aria-pressed={doc.intent.goals.includes(g)}
                 onClick={() => run({ type: "setIntent", intent: { goals: toggle(doc.intent.goals, g) as WorkoutDoc["intent"]["goals"] } })}
               >
-                {label(g)}
+                {GOAL_LABELS[g]}
               </button>
             ))}
           </div>
