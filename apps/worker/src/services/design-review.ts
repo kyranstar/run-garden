@@ -59,6 +59,7 @@ import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
 import { markUntrusted, REVIEW_DIMENSIONS } from "./design-prompt.js";
 import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/propose.js";
+import { capInWords, PROSE_CEILING, proseTooLong } from "./design-tools/act-common.js";
 import { refuse, untrusted } from "./design-tools/read-common.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolOk } from "./design-tools/types.js";
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
@@ -98,18 +99,10 @@ export const REVIEW_ITEM_MAX = 240;
 export const MUST_FIX_MAX = 8;
 export const IMPROVEMENTS_MAX = 6;
 
-/** How far past its cap a free-text field is still taken (×): beyond it, refused with its length (§2.1). */
-export const PROSE_CEILING = 4;
-
-/** A cap as the model can aim at it: "about 35 words (240 characters)" — a model can't count characters (13b I1). */
-export const capInWords = (max: number): string => `about ${Math.max(5, Math.round(max / 6.5 / 5) * 5)} words (${max} characters)`;
-
 /** Why `text` at `field` is past its ceiling — "notes.recovery is 1,410 characters; at most 240 — about 35 words" — or
- * null while it is within PROSE_CEILING times `max`. */
+ * null while it is within PROSE_CEILING times `max` (the tool contract's one rule for free text, act-common.ts). */
 export function overCeiling(field: string, text: string, max: number): string | null {
-  const n = text.length;
-  if (n <= max * PROSE_CEILING) return null;
-  return `${field} is ${n.toLocaleString("en-US")} characters; at most ${max} — about ${Math.max(5, Math.round(max / 6.5 / 5) * 5)} words`;
+  return text.length <= max * PROSE_CEILING ? null : proseTooLong(field, text.length, max);
 }
 
 /** The reviewer sub-run of a designer's draft, keyed on the call that proposed it: starting it twice inserts it once,
@@ -179,7 +172,7 @@ const reviewInput = z
 
 const ACCEPTABLE_IDS = DIMENSION_IDS.filter((d) => d !== NEVER_ACCEPTED);
 
-const REVIEW_FIX = `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (${capInWords(REVIEW_NOTE_MAX)}) for each of ${DIMENSION_IDS.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change in ${capInWords(REVIEW_ITEM_MAX)}; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why } — never ${NEVER_ACCEPTED}.`;
+const REVIEW_FIX = `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (${capInWords(REVIEW_NOTE_MAX)}) for each of ${DIMENSION_IDS.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why } — never ${NEVER_ACCEPTED}.`;
 
 /** A dimension's id in plain words, for one no label names: "pace_feel" → "Pace feel" — never shown raw. */
 export function idInWords(id: string): string {
@@ -696,13 +689,13 @@ export const submitReview: DesignTool = {
       scores: { type: "object", properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, SCORE])), required: [...DIMENSION_IDS], additionalProperties: false },
       notes: {
         type: "object",
-        description: `One line per dimension, written to the athlete: at most ${capInWords(REVIEW_NOTE_MAX)} each.`,
+        description: `One line per dimension, written to the athlete: ${capInWords(REVIEW_NOTE_MAX)} each.`,
         properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, NOTE])),
         required: [...DIMENSION_IDS],
         additionalProperties: false,
       },
-      mustFix: { type: "array", maxItems: MUST_FIX_MAX, description: `Each one concrete change, at most ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
-      improvements: { type: "array", maxItems: IMPROVEMENTS_MAX, description: `Each one concrete change, at most ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
+      mustFix: { type: "array", maxItems: MUST_FIX_MAX, description: `Each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
+      improvements: { type: "array", maxItems: IMPROVEMENTS_MAX, description: `Each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
       accepted: {
         type: "array",
         maxItems: ACCEPTED_MAX,
