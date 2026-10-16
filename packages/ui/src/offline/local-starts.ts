@@ -134,7 +134,7 @@ export async function recordedWorkoutId(db: OfflineDb, api: LocalStartApi, local
  */
 export async function standAlone(db: OfflineDb, localId: string): Promise<void> {
   await db.update<LocalStart>("starts", localId, (current) => {
-    if (!current || current.own) return current;
+    if (!current) return current;
     const { workoutId: _workoutId, joined: _joined, ...rest } = current;
     return { ...rest, clientId: `${current.clientId}-own`, own: true };
   });

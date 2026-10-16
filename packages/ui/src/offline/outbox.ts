@@ -222,9 +222,10 @@ function classifyCreate(error: unknown): Outcome {
 /**
  * Send one entry: onto the workout recorded for it first, when it was played under a provisional id. One that joined
  * today's same start on another device, which saved first (409 `slot_done`), is kept by a workout of its own, made and
- * sent onto at once (`standAlone`; R11 fix round 2): no conflict is left, and nothing done is lost.
+ * sent onto at once (`standAlone`; R11 fix round 2): no conflict is left, and nothing done is lost. Once at most: a
+ * start made its own is no longer `joined`, and never joins again.
  */
-async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry, alone = false): Promise<Outcome> {
+async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry): Promise<Outcome> {
   let payload = entry.payload;
   if (isLocalId(payload.workoutId)) {
     const createWorkout = api.createWorkout?.bind(api);
@@ -241,10 +242,10 @@ async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry, alone = f
   } catch (e) {
     const outcome = classify(e);
     const localId = entry.payload.workoutId;
-    if (!alone && outcome.kind === "conflict" && outcome.why === SLOT_DONE && isLocalId(localId)) {
+    if (outcome.kind === "conflict" && outcome.why === SLOT_DONE && isLocalId(localId)) {
       if ((await loadLocalStart(db, localId).catch(() => undefined))?.joined) {
         await standAlone(db, localId);
-        return send(db, api, entry, true);
+        return send(db, api, entry);
       }
     }
     return outcome;

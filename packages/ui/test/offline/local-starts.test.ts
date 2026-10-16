@@ -219,6 +219,18 @@ describe("the outbox records a start made offline, then its session (R11)", () =
     db.close();
   });
 
+  it("…and its own workout refused as slot_done too: the slot's ordinary conflict, sent once more and no further", async () => {
+    const db = await freshDb();
+    await rememberLocalStart(db, start());
+    await enqueue(db, save("p1"), ME, 2000);
+    const { api, creates, saves } = server({ create: ["started_today", "ok"], save: ["slot_done", "slot_done"] });
+    expect(await drain(db, api, { userId: ME })).toMatchObject({ saved: 0, conflicts: 1 });
+    expect(creates).toHaveLength(2);
+    expect(saves).toHaveLength(2);
+    expect((await outboxEntries(db))[0]).toMatchObject({ state: "conflict", lastError: "slot_done" });
+    db.close();
+  });
+
   it("…and today holding yet another unfinished start of it: its own create is refused, the entry failed (Retry, Discard) — never joined twice", async () => {
     const db = await freshDb();
     await rememberLocalStart(db, start());
