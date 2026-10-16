@@ -96,7 +96,8 @@ export const THEMES: readonly Theme[] = [
   },
   {
     // Never a recovery theme: its moves are plyometric, and condition profiles decide the days they may appear. The day's
-    // proposal offers it only on a day the condition gate lets a jump through (session-engine `Proposal.theme`).
+    // proposal offers it only when today's jumps block has a jump to take (session-engine `Builder.jumpsAvailable`), and
+    // a proposed day whose plan still holds none is proposed again without it; a pick by hand stands, with no jumps.
     id: "plyoIntro", name: "Jumps and landings", blurb: "Land softly first, then add a little spring: small hops and stuck landings, with plenty of rest.",
     modes: ["consistent", "build"],
     emphasis: { regions: { calves: 1, ankles: 1 }, tags: { landing: 2, elastic: 2, deceleration: 1 }, contractions: { plyometric: 3 } },

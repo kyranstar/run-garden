@@ -1,9 +1,9 @@
 import {
-  UNANSWERED, isPlyometric, label, plyometricDay, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme,
+  UNANSWERED, label, plyometricDay, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme,
 } from "@rg/exercise-library";
+import { Builder, type JumpsInput } from "./builder.js";
 import { Coverage } from "./coverage.js";
 import { Hist, HistIndex } from "./hist.js";
-import { Lib } from "./lib.js";
 import { Rng } from "./rng.js";
 
 // Today's mode (recovery / consistent / build) and theme, each with plain-language reasons. The active
@@ -62,34 +62,34 @@ export interface ThemeArgs {
   today: string;
   lastThemeId?: string | null;
   /**
-   * The readings today's build rules with (the planner's: the day's checks, its own "feeling off" joined in). A jumping
-   * day is proposed only when they let a jump through the condition gate (`jumpsAllowed`). Left out, nothing is
-   * answered: a profile that needs a check keeps the jumping day out.
+   * What today's jumps block reads, beside the day (`JumpTerms`). A jumping day is proposed only when that block has a
+   * jump to take (`Builder.jumpsAvailable`). Left out, it has none: no jumping day.
    */
-  checks?: Readonly<Record<string, CheckReading>>;
+  jumps?: JumpTerms;
 }
+
+/**
+ * What today's jumps block reads, beside the day and the history: the place, the moves set aside, the readings the
+ * build rules with (the planner's: the day's checks, its own "feeling off" joined in), a trimmed history's summary.
+ */
+export type JumpTerms = Omit<JumpsInput, "today" | "mode" | "sessions">;
 
 export interface ThemeProposal {
   theme: Theme | null;
   reasons: string[];
 }
 
-/**
- * Whether today's condition gate lets a jump through in this mode: a plyometric move fits the mode with today's readings
- * — the builder's own rule (`Lib.fitsMode`, every active profile's), so a proposed jumping day has jumps it may place.
- */
-const jumpsAllowed = (data: EngineData, m: Mode, checks: Readonly<Record<string, CheckReading>>): boolean =>
-  data.exercises.some(ex => isPlyometric(ex) && Lib.fitsMode(data, ex, m, checks));
-
-function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null, checks = {} }: ThemeArgs, hist?: HistIndex): ThemeProposal {
-  // Themes marked `inRotation: false` are for the Studio and the coach; the day's proposal never picks them. A jumping
-  // day (a theme that emphasises plyometric work) is an option only when today's gate lets a jump through, so the day
-  // is never a jumping day without jumps; a manual pick of one stands, and its reason line says why it has none.
-  let jumps: boolean | undefined;
-  const options = data.themes.filter(t =>
-    t.modes.includes(m) && t.inRotation !== false && (!plyometricDay(t) || (jumps ??= jumpsAllowed(data, m, checks))));
-  if (!options.length) return { theme: null, reasons: [] };
+function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null, jumps: terms }: ThemeArgs, hist?: HistIndex): ThemeProposal {
   const h = HistIndex.for(data, sessions, hist);
+  // Themes marked `inRotation: false` are for the Studio and the coach; the day's proposal never picks them. A jumping
+  // day (a theme that emphasises plyometric work) is an option only when today's jumps block has a jump to take — the
+  // block's own rule (`Builder.jumpsAvailable`: the readings, the gear, the moves set aside, the next rung, a rung's rest
+  // after a flagged set). The planner catches what only the build knows; a pick by hand stands, its reason line saying
+  // why it has no jumps.
+  let jumps: boolean | undefined;
+  const jumpsToday = (): boolean => (jumps ??= terms != null && Builder.jumpsAvailable(data, { today, mode: m, sessions, ...terms }, h));
+  const options = data.themes.filter(t => t.modes.includes(m) && t.inRotation !== false && (!plyometricDay(t) || jumpsToday()));
+  if (!options.length) return { theme: null, reasons: [] };
   const debt = Coverage.debtIn(h, today);
   const rng = Rng.create(`${today}|${m}|theme`);
   const previous = h.sorted().filter(s => s.date < today && s.theme).pop();

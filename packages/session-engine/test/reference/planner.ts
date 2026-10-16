@@ -128,11 +128,11 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   });
   const proposal = Proposal.mode(data, { checks: t.checks, feelingOff: Boolean(t.feelingOff), sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal });
   const mode = t.override.mode || proposal.mode;
-  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today, checks: readingsOf(data, t) });
+  const location = locationOf(program.locations, t.override.location || program.settings.location);
+  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today, jumps: { location, prefs: program.prefs, checks: readingsOf(data, t) } });
   const chosen = t.override.theme ? data.themes.find(th => th.id === t.override.theme && th.modes.includes(mode)) ?? null : null;
   const theme = chosen || themeProposal.theme;
   const minutes = t.override.minutes || program.settings.defaultMinutes;
-  const location = locationOf(program.locations, t.override.location || program.settings.location);
   const buildInput: BuildInput = {
     today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
     sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: readingsOf(data, t), swaps: t.swaps,
@@ -148,10 +148,20 @@ function readingsOf(data: EngineData, t: DayState): Readonly<Record<string, Chec
   return out;
 }
 
+type Context = ReturnType<typeof context>;
+
+/** Same as the live engine: a proposed jumping day whose plan holds no jump is proposed again without one, and built again. */
+function settled(data: EngineData, c: Context): { c: Context; plan: BuildResult } {
+  const plan = Builder.build(data, c.buildInput);
+  if (c.chosen || !plyometricDay(c.theme) || plan.items.some(it => isPlyometric(it.exercise))) return { c, plan };
+  const themeProposal = Proposal.theme(data, { mode: c.mode, sessions: c.buildInput.sessions, today: c.buildInput.today });
+  const next: Context = { ...c, themeProposal, theme: themeProposal.theme, buildInput: { ...c.buildInput, theme: themeProposal.theme } };
+  return { c: next, plan: Builder.build(data, next.buildInput) };
+}
+
 /** The day's proposal, the upkept block and the built plan. `blockUpdate` is null when the block didn't change. */
 function planToday(data: EngineData, input: PlanTodayInput, program: ProgramState): { view: TodayView; blockUpdate: BlockUpdate | null } {
-  const c = context(data, input, program);
-  const plan = Builder.build(data, c.buildInput);
+  const { c, plan } = settled(data, context(data, input, program));
   const view: TodayView = {
     today: c.t,
     mode: c.mode, proposedMode: c.proposal.mode, modeReasons: c.proposal.reasons,
@@ -168,7 +178,7 @@ function planToday(data: EngineData, input: PlanTodayInput, program: ProgramStat
 }
 
 const alternatives = (data: EngineData, input: PlanTodayInput, program: ProgramState, slotKey: string, k = 3): Alternative[] =>
-  Builder.alternatives(data, context(data, input, program).buildInput, slotKey, k);
+  Builder.alternatives(data, settled(data, context(data, input, program)).c.buildInput, slotKey, k);
 
 /** "I'm feeling off" today: recovery, whatever profiles are active. */
 const setFeelingOff = (day: DayState | null | undefined, today: string, value: boolean): DayState => withDay(day, today, { feelingOff: Boolean(value) });

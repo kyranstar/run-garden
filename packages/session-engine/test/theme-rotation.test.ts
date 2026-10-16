@@ -1,13 +1,16 @@
 import { addDays } from "@rg/domain";
 import { EXERCISES, isPlyometric, makeEngineData, type CheckReading, type HistorySession, type Mode } from "@rg/exercise-library";
-import { describe, expect, test } from "vitest";
-import { Planner, Proposal, Rng, type DayState, type ProgramState } from "../src/index.js";
+import { describe, expect, test, vi } from "vitest";
+import { Builder, Planner, Proposal, Rng, type DayState, type JumpTerms, type ProgramState, type TodayView } from "../src/index.js";
 import { data, home } from "./builder-fixtures.js";
 
 // The day's theme rotation. Every theme is in it (the owner, 2026-10-16: Ski prep, Athletic base and Jumps and landings
-// joined the others). A jumping day (plyoIntro) is proposed only on a day today's condition gate lets a jump through —
-// the jaw profile's: an answered check of 2 or less, and not feeling off — so the day is never a jumping day without
-// jumps. A theme marked `inRotation: false` is still never proposed, and can still be chosen by hand.
+// joined the others). A jumping day (plyoIntro) is proposed only when today's jumps block has a jump to take
+// (`Builder.jumpsAvailable`, the block's own rule): the jaw profile's gate — an answered check of 2 or less, not feeling
+// off — the place's gear, the moves set aside, the next rung unlocked, no rung resting after a clench. What the proposal
+// can't know (a session too short for the block) is caught after the build: a proposed jumping day that still holds no
+// jump is proposed again without one. A hand pick stands. A theme marked `inRotation: false` is still never proposed,
+// and can still be chosen by hand.
 
 const calm: CheckReading = { pre: 1, post: null, feelingOff: false };
 const program = (over: Partial<ProgramState> = {}): ProgramState => ({
@@ -112,12 +115,16 @@ describe("every theme is in the rotation", () => {
   });
 });
 
+// Every day of the seeded years, proposed again with the same history and mode under another reading (and, below,
+// other terms of the jumps block: the moves set aside).
+const historyOf = (x: Day): HistorySession[] => years[x.seed]!.sessions.slice(0, x.before);
+const theme = (x: Day, checks?: Readonly<Record<string, CheckReading>>, over: Partial<JumpTerms> = {}) =>
+  Proposal.theme(data, { mode: x.mode, sessions: historyOf(x), today: x.today, ...(checks ? { jumps: { location: home, checks, ...over } } : {}) }).theme?.id;
+const jumpable = allDays.filter(x => x.mode !== "recovery");
+/** The days a calm check proposes a jumping day. */
+const calmPicks = jumpable.filter(x => theme(x, { tmj: calm }) === "plyoIntro");
+
 describe("a jumping day only when today's gate lets a jump through", () => {
-  // Every day of the seeded years, proposed again with the same history and mode under another reading.
-  const theme = (x: Day, checks?: Readonly<Record<string, CheckReading>>) =>
-    Proposal.theme(data, { mode: x.mode, sessions: years[x.seed]!.sessions.slice(0, x.before), today: x.today, ...(checks ? { checks } : {}) }).theme?.id;
-  const jumpable = allDays.filter(x => x.mode !== "recovery");
-  const calmPicks = jumpable.filter(x => theme(x, { tmj: calm }) === "plyoIntro");
 
   test("a calm check can pick plyoIntro", () => {
     expect(calmPicks.length).toBeGreaterThan(10);
@@ -129,7 +136,7 @@ describe("a jumping day only when today's gate lets a jump through", () => {
       ["a check of 4", { tmj: { ...calm, pre: 4 } }],
       ["no check", { tmj: { ...calm, pre: null } }],
       ["no reading at all", {}],
-      ["no readings passed", undefined],
+      ["nothing of the jumps block passed", undefined],
       ["feeling off", { tmj: { ...calm, feelingOff: true } }],
     ];
     const bad: string[] = [];
@@ -151,7 +158,7 @@ describe("a jumping day only when today's gate lets a jump through", () => {
 
   test("with no profile active the gate lets jumps through: plyoIntro is an option without any check", () => {
     const open = makeEngineData({ activeProfiles: [], careProfiles: [], exercises: EXERCISES });
-    const picked = jumpable.some(x => Proposal.theme(open, { mode: x.mode, sessions: years[x.seed]!.sessions.slice(0, x.before), today: x.today, checks: {} }).theme?.id === "plyoIntro");
+    const picked = jumpable.some(x => Proposal.theme(open, { mode: x.mode, sessions: years[x.seed]!.sessions.slice(0, x.before), today: x.today, jumps: { location: home, checks: {} } }).theme?.id === "plyoIntro");
     expect(picked).toBe(true);
   });
 
@@ -182,7 +189,7 @@ describe("a theme marked out of the rotation", () => {
 
   test("is never proposed", () => {
     for (const x of allDays.filter(d => d.mode !== "recovery").slice(0, 200)) {
-      const t = Proposal.theme(held, { mode: x.mode, sessions: years[x.seed]!.sessions.slice(0, x.before), today: x.today, checks: { tmj: calm } }).theme?.id;
+      const t = Proposal.theme(held, { mode: x.mode, sessions: years[x.seed]!.sessions.slice(0, x.before), today: x.today, jumps: { location: home, checks: { tmj: calm } } }).theme?.id;
       expect(t, `${x.seed} ${x.today}`).not.toBe("skiPrep");
     }
     expect(allDays.some(x => x.theme === "skiPrep")).toBe(true);
@@ -195,5 +202,133 @@ describe("a theme marked out of the rotation", () => {
     expect(view.plan.theme?.id).toBe("skiPrep");
     expect(view.plan.items.length).toBeGreaterThan(0);
     expect(Planner.planToday(held, { today: "2026-03-02", day: { ...day, override: { mode: "build" } } }, program()).view.proposedTheme?.id).not.toBe("skiPrep");
+  });
+});
+
+describe("a proposed jumping day has a jump: the proposal and the jumps block read one rule (`Builder.jumpsAvailable`)", () => {
+  const PLYO = data.exercises.filter(isPlyometric).map(e => e.id);
+  const BOTTOM = ["landingStick", "snapDown"];
+  const hasJump = (v: TodayView) => v.plan.items.some(i => isPlyometric(i.exercise));
+  /** The day through the planner, as the year met it, on other terms. */
+  const view = (x: Day, o: { excluded?: string[]; minutes?: number; sessions?: HistorySession[]; theme?: string; check?: CheckReading } = {}) =>
+    Planner.planToday(data, {
+      today: x.today, day: { date: x.today, checks: { tmj: o.check ?? calm }, override: { mode: x.mode, ...(o.theme ? { theme: o.theme } : {}) }, swaps: {} },
+    }, program({
+      programId: `rotation-${x.seed}`, sessions: o.sessions ?? historyOf(x), prefs: { ratings: {}, excluded: o.excluded ?? [], pinned: [] },
+      settings: { unit: "lb", weeklyGoal: 4, blockWeeks: 5, defaultMinutes: o.minutes ?? 30, location: "home" },
+    })).view;
+  /** How many plans the planner built for the day: one, unless a proposed jumping day ended with no jump. */
+  const builds = (f: () => TodayView): { v: TodayView; n: number } => {
+    const spy = vi.spyOn(Builder, "build");
+    try {
+      const v = f();
+      return { v, n: spy.mock.calls.length };
+    } finally {
+      spy.mockRestore();
+    }
+  };
+  const available = (x: Day, o: { excluded?: string[]; sessions?: HistorySession[] } = {}) => Builder.jumpsAvailable(data, {
+    today: x.today, mode: x.mode, location: home, sessions: o.sessions ?? historyOf(x), prefs: { excluded: o.excluded ?? [] }, checks: { tmj: calm },
+  });
+
+  test("on every calm day the year proposed a jumping day, the block has a jump to take", () => {
+    expect(calmPicks.length).toBeGreaterThan(10);
+    expect(calmPicks.filter(x => !available(x)).map(x => `${x.seed} ${x.today}`)).toEqual([]);
+  });
+
+  test("every jump set aside: the proposal never offers a jumping day, and the planner's day has none — in one plan", () => {
+    const bad: string[] = [];
+    for (const x of calmPicks) {
+      if (available(x, { excluded: PLYO })) bad.push(`${x.seed} ${x.today}: available`);
+      if (theme(x, { tmj: calm }, { prefs: { excluded: PLYO } }) === "plyoIntro") bad.push(`${x.seed} ${x.today}: proposed`);
+      // The planner's own gate keeps it out (one plan): not the second look after a jumpless build.
+      const { v, n } = builds(() => view(x, { excluded: PLYO }));
+      if (v.theme?.id === "plyoIntro" || v.proposedTheme?.id === "plyoIntro") bad.push(`${x.seed} ${x.today}: planned`);
+      if (n !== 1) bad.push(`${x.seed} ${x.today}: ${n} plans`);
+    }
+    expect(bad).toEqual([]);
+  });
+
+  test("the bottom rungs set aside: a jumping day only where a harder rung is unlocked — and then it has a jump", () => {
+    let refused = 0;
+    let kept = 0;
+    const bad: string[] = [];
+    for (const x of calmPicks) {
+      const open = available(x, { excluded: BOTTOM });
+      const proposed = theme(x, { tmj: calm }, { prefs: { excluded: BOTTOM } }) === "plyoIntro";
+      if (proposed && !open) bad.push(`${x.seed} ${x.today}: proposed with nothing to take`);
+      if (!open) refused += 1;
+      const { v, n } = builds(() => view(x, { excluded: BOTTOM }));
+      if (n !== 1) bad.push(`${x.seed} ${x.today}: ${n} plans`);
+      if (v.theme?.id === "plyoIntro") {
+        kept += 1;
+        if (!hasJump(v)) bad.push(`${x.seed} ${x.today}: a jumping day without a jump`);
+      }
+    }
+    expect(bad).toEqual([]);
+    // Both happen in the year: days with no harder rung unlocked yet, and days with one.
+    expect([refused > 0, kept > 0]).toEqual([true, true]);
+  });
+
+  test("the bottom rungs clenched last time and resting: no jumping day until they have rested", () => {
+    // The year's history with no jump in it, its last session then logging both bottom rungs — cleanly, or clenched.
+    const withRungs = (x: Day, flags: string[]): HistorySession[] => {
+      const past = historyOf(x).map(s => ({ ...s, done: s.done.filter(d => !PLYO.includes(d.id)) }));
+      const last = past[past.length - 1]!;
+      return [...past.slice(0, -1), {
+        ...last, done: [...last.done, ...BOTTOM.map(id => ({ id, secs: 60 }))],
+        entries: BOTTOM.map(id => ({ id, implement: null, perSide: false, format: "straight" as const, flags, sets: [{ w: null, reps: 5, secs: null }] })),
+      }];
+    };
+    let cleanDays = 0;
+    const bad: string[] = [];
+    for (const x of calmPicks) {
+      const clean = withRungs(x, []);
+      const clenched = withRungs(x, ["clenched"]);
+      if (!available(x, { sessions: clean })) bad.push(`${x.seed} ${x.today}: clean rungs, nothing to take`);
+      if (available(x, { sessions: clenched })) bad.push(`${x.seed} ${x.today}: resting rungs, still available`);
+      const { v, n } = builds(() => view(x, { sessions: clenched }));
+      if (v.theme?.id === "plyoIntro" || v.proposedTheme?.id === "plyoIntro") bad.push(`${x.seed} ${x.today}: resting rungs, planned`);
+      if (n !== 1) bad.push(`${x.seed} ${x.today}: ${n} plans`);
+      if (view(x, { sessions: clean }).theme?.id === "plyoIntro") cleanDays += 1;
+    }
+    expect(bad).toEqual([]);
+    // The clean history proposes the same jumping days, so the rest is what kept them out.
+    expect(cleanDays).toBeGreaterThan(0);
+  });
+
+  test("a 10-minute session, too short for the jumps block: the proposed jumping day is proposed again without one", () => {
+    let fellBack = 0;
+    const bad: string[] = [];
+    for (const x of calmPicks) {
+      const { v, n } = builds(() => view(x, { minutes: 10 }));
+      if (v.theme?.id === "plyoIntro") {
+        if (!hasJump(v)) bad.push(`${x.seed} ${x.today}: a jumping day without a jump`);
+        if (n !== 1) bad.push(`${x.seed} ${x.today}: ${n} plans`);
+        continue;
+      }
+      fellBack += 1;
+      // One plan more, only that day.
+      if (n !== 2) bad.push(`${x.seed} ${x.today}: ${n} plans`);
+      // The proposal again, with no jumping day; nothing was chosen by hand.
+      const again = Proposal.theme(data, { mode: x.mode, sessions: historyOf(x), today: x.today });
+      if (v.proposedTheme?.id !== again.theme?.id || v.themeOverridden || JSON.stringify(v.themeReasons) !== JSON.stringify(again.reasons)) {
+        bad.push(`${x.seed} ${x.today}: ${v.proposedTheme?.id} ≠ ${again.theme?.id}`);
+      }
+      if (v.plan.theme?.id !== v.theme?.id) bad.push(`${x.seed} ${x.today}: built for another theme`);
+    }
+    expect(bad).toEqual([]);
+    expect(fellBack).toBeGreaterThan(0);
+  });
+
+  test("a hand pick of plyoIntro on a day with every jump set aside stands, as before: no jump, and the reason line as before", () => {
+    const x = calmPicks[0]!;
+    const calmDay = view(x, { excluded: PLYO, theme: "plyoIntro" });
+    expect([calmDay.theme?.id, calmDay.themeOverridden, hasJump(calmDay)]).toEqual(["plyoIntro", true, false]);
+    // The jaw allows jumps today: no profile has a reason to give (what the line said before this change).
+    expect(calmDay.themeReasons).toEqual([]);
+    const four = view(x, { excluded: PLYO, theme: "plyoIntro", check: { ...calm, pre: 4 } });
+    expect([four.theme?.id, four.themeOverridden, hasJump(four)]).toEqual(["plyoIntro", true, false]);
+    expect(four.themeReasons).toEqual(["Jumps need a calm jaw (2 or less) — you're at 4."]);
   });
 });

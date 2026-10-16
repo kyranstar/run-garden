@@ -1,10 +1,11 @@
 import {
-  UNANSWERED, isPlyometric, label, plyometricDay, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme,
+  UNANSWERED, label, plyometricDay, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme,
 } from "@rg/exercise-library";
+import { Builder } from "./builder.js";
 import { Coverage } from "./coverage.js";
 import { Hist } from "./hist.js";
-import { Lib } from "./lib.js";
 import { Rng } from "./rng.js";
+import type { BuildInput } from "./types.js";
 
 // Today's mode (recovery / consistent / build) and theme, each with plain-language reasons. The active
 // profiles decide recovery and the condition's build gates, in their own words; the general rules follow.
@@ -61,7 +62,7 @@ export interface ThemeArgs {
   sessions?: readonly HistorySession[];
   today: string;
   lastThemeId?: string | null;
-  checks?: Readonly<Record<string, CheckReading>>;
+  jumps?: Pick<BuildInput, "location"> & Partial<Pick<BuildInput, "prefs" | "checks">>;
 }
 
 export interface ThemeProposal {
@@ -69,10 +70,10 @@ export interface ThemeProposal {
   reasons: string[];
 }
 
-function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null, checks = {} }: ThemeArgs): ThemeProposal {
+function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null, jumps: terms }: ThemeArgs): ThemeProposal {
   // Same rules as the live engine: out-of-rotation themes (inRotation: false) are never proposed, and a jumping day only
-  // when today's readings let a plyometric move fit the mode (owner, 2026-10-16).
-  const jumps = data.exercises.some(ex => isPlyometric(ex) && Lib.fitsMode(data, ex, m, checks));
+  // when today's jumps block has a jump to take (the owner, 2026-10-16, and the rotation review).
+  const jumps = terms != null && Builder.jumpsAvailable(data, { today, mode: m, sessions, ...terms });
   const options = data.themes.filter(t => t.modes.includes(m) && t.inRotation !== false && (!plyometricDay(t) || jumps));
   if (!options.length) return { theme: null, reasons: [] };
   const debt = Coverage.debt(data, sessions, today);

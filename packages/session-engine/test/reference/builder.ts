@@ -315,6 +315,26 @@ function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx,
     .map(x => x.r);
 }
 
+/**
+ * Same rule as the live engine's `Builder.jumpsAvailable` (the owner's rotation review, 2026-10-16): today's jumps block
+ * has a jump to take — a plyometric move on the frontier, that the accessory block and a jumps format take and today
+ * allows, and that isn't resting after a flagged exposure.
+ */
+function jumpsAvailable(data: EngineData, input: Pick<BuildInput, "today" | "mode" | "location" | "sessions"> & Partial<Pick<BuildInput, "prefs" | "checks">>): boolean {
+  const ctx = makeContext(data, { ...input, theme: null, minutes: 0, unit: "lb", block: null });
+  const modeFormats = data.modes[ctx.mode].formats;
+  const formats = (ctx.skeleton.blocks.accessory?.formats ?? []).filter(f => modeFormats.includes(f) && JUMP_FORMATS.includes(f));
+  const done = doneBy(ctx);
+  const flagged = lastFlaggedBy(ctx);
+  const resting = restingBy(ctx);
+  return formats.some(f => Lib.all(data).some(ex =>
+    jumpRule(ex, true, ctx) &&
+    fitsBlock(ctx, ex, "accessory") &&
+    Lib.eligible(data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks }) &&
+    accepts(data, f, ex) &&
+    !(done(ex.id) && flagged(ex.id) && resting(ex.id))));
+}
+
 // The day's checks apply (Lib.eligible with checks): e.g. overhead pressing needs an answered, calm check.
 function candidates(block: BlockId, formatId: FormatId, ctx: Ctx): ExerciseRecord[] {
   const taken = movesInPlan(ctx);
@@ -893,4 +913,4 @@ function alternatives(data: EngineData, input: BuildInput, slotKey: string, k = 
   return Swapping.offered(built.swapState, built.steps, slotKey, k);
 }
 
-export const Builder = { build, prepare, finish, alternatives, groupSteps, costOf, PREP_SECONDS, CHIME_SECONDS };
+export const Builder = { build, prepare, finish, alternatives, jumpsAvailable, groupSteps, costOf, PREP_SECONDS, CHIME_SECONDS };

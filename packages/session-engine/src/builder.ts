@@ -62,8 +62,8 @@ interface Ctx extends SelectCtx {
   jumpDay: boolean;
   /** While the jumps block is being filled: candidates are plyometric moves on the frontier, and only those. */
   fillingJumps: boolean;
-  /** The moves eligible today (gear, mode, exclusions, checks): the same for every slot of one build, so judged once. */
-  eligibleIds: Set<string> | null;
+  /** Each move's eligibility today (gear, mode, exclusions, checks): the same for every slot of one build, so judged once a move. */
+  eligible: Map<string, boolean>;
   /** Each block and format's moves on the build's own terms (`slotPool`): the same for every slot, so judged once. */
   slotPools: Map<string, readonly ExerciseRecord[]>;
 }
@@ -216,13 +216,17 @@ function movesInPlan(ctx: Ctx): Set<string> {
   return keys;
 }
 
-/** Whether a move is eligible today: `Lib.eligible` with the day's gear, mode, exclusions and checks, judged once a build. */
+/**
+ * Whether a move is eligible today: `Lib.eligible` with the day's gear, mode, exclusions and checks, judged once a move
+ * a build — so the proposal's gate, which asks of the jumps alone (`jumpsAvailable`), judges only those.
+ */
 function eligibleToday(ctx: Ctx, ex: ExerciseRecord): boolean {
-  if (!ctx.eligibleIds) {
-    ctx.eligibleIds = new Set(Lib.all(ctx.data).filter(x =>
-      Lib.eligible(ctx.data, x, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks })).map(x => x.id));
+  let ok = ctx.eligible.get(ex.id);
+  if (ok === undefined) {
+    ok = Lib.eligible(ctx.data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks });
+    ctx.eligible.set(ex.id, ok);
   }
-  return ctx.eligibleIds.has(ex.id);
+  return ok;
 }
 
 /** Whether the athlete has done this move (on or before the build's day). */
@@ -306,6 +310,17 @@ const restingBy = (ctx: Ctx) => {
 };
 
 /**
+ * A rung the jumps block leaves out today: done, its last logged exposure flagged, and still resting (`restingBy`). It
+ * retries once it has rested; a move never done, or last done cleanly, is never left out for this.
+ */
+const restingOutBy = (ctx: Ctx) => {
+  const done = doneBy(ctx);
+  const flagged = lastFlaggedBy(ctx);
+  const resting = restingBy(ctx);
+  return (id: string): boolean => done(id) && flagged(id) && resting(id);
+};
+
+/**
  * The rotation's floor, worked out once from every move the block's first slot could take: the top two difficulty
  * tiers of the moves last done cleanly, widened a tier at a time while they hold no more moves than the block has
  * slots (two moves in two slots can't rotate), but never down to the lowest tier.
@@ -335,10 +350,10 @@ function rotationFloor(pool: readonly ExerciseRecord[], slots: number, ctx: Ctx)
 function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx, floor: number): Scored[] {
   const done = doneBy(ctx);
   const flagged = lastFlaggedBy(ctx);
-  const resting = restingBy(ctx);
+  const restingOut = restingOutBy(ctx);
   const fresh = (id: string): boolean => !done(id) || flagged(id);
   const freshPlaced = placed.some(it => fresh(it.exercise.id));
-  const pool = ranked.filter(r => !fresh(r.ex.id) || (!freshPlaced && !(done(r.ex.id) && resting(r.ex.id))));
+  const pool = ranked.filter(r => !fresh(r.ex.id) || (!freshPlaced && !restingOut(r.ex.id)));
   const group = (ex: ExerciseRecord): number => (flagged(ex.id) && done(ex.id) ? 0 : !done(ex.id) ? 1 : ex.difficulty >= floor ? 2 : 3);
   const key = (ex: ExerciseRecord): number => {
     const g = group(ex);
@@ -355,18 +370,45 @@ function rankJumps(ranked: readonly Scored[], placed: readonly Item[], ctx: Ctx,
  * not), the block, today's eligibility, the format — in the library's order. None of these changes while one build
  * fills its slots, so each is worked out once a build; `candidates` then leaves out what the plan already holds.
  */
-function slotPool(block: BlockId, formatId: FormatId, ctx: Ctx): readonly ExerciseRecord[] {
-  const key = `${block}|${formatId}|${ctx.fillingJumps}`;
+function slotPool(block: BlockId, formatId: FormatId, ctx: Ctx, jumps = ctx.fillingJumps): readonly ExerciseRecord[] {
+  const key = `${block}|${formatId}|${jumps}`;
   let pool = ctx.slotPools.get(key);
   if (!pool) {
     pool = Lib.all(ctx.data).filter(ex =>
-      jumpRule(ex, ctx.fillingJumps, ctx) &&
+      jumpRule(ex, jumps, ctx) &&
       fitsBlock(ctx, ex, block) &&
       eligibleToday(ctx, ex) &&
       accepts(ctx.data, formatId, ex));
     ctx.slotPools.set(key, pool);
   }
   return pool;
+}
+
+/** The formats the jumps block may take today: straight sets or a superset, where the mode and the skeleton allow them. */
+function jumpFormatsOf(ctx: Ctx): FormatId[] {
+  const modeFormats = ctx.data.modes[ctx.mode].formats;
+  return (ctx.skeleton.blocks.accessory?.formats ?? []).filter(f => modeFormats.includes(f) && JUMP_FORMATS.includes(f));
+}
+
+/**
+ * Whether today's jumps block has a jump to take — the block's own rule, before the plan holds anything: a plyometric
+ * move on the athlete's frontier (`jumpRule`: no easier rung, or one done cleanly), that the accessory block and a
+ * jumps format take and today allows (`eligibleToday`: the place's gear, the mode, the moves set aside, the readings),
+ * and that isn't resting after a flagged exposure (`restingOutBy`). The jumps block opens only then (`fillAccessory`);
+ * the day's proposal offers a jumping day only then (`jumpsAvailable`). What only the build knows — the time the block
+ * gets, a superset's pair — the planner catches after the build.
+ */
+function jumpsAvailableIn(ctx: Ctx): boolean {
+  const restingOut = restingOutBy(ctx);
+  return jumpFormatsOf(ctx).some(f => slotPool("accessory", f, ctx, true).some(ex => !restingOut(ex.id)));
+}
+
+/** What today's jumps block reads, beside the day: the place, the moves set aside, the readings, a trimmed history's summary. */
+export type JumpsInput = Pick<BuildInput, "today" | "mode" | "location" | "sessions"> & Partial<Pick<BuildInput, "prefs" | "checks" | "summary">>;
+
+/** `jumpsAvailableIn` for a day before its build: the proposal's gate. With the build's history index, nothing is read twice. */
+function jumpsAvailable(data: EngineData, input: JumpsInput, history?: HistIndex): boolean {
+  return jumpsAvailableIn(makeContext(data, { ...input, theme: null, minutes: 0, unit: "lb", block: null }, history));
 }
 
 // The day's checks apply (Lib.eligible with checks): e.g. overhead pressing needs an answered, calm check.
@@ -534,7 +576,7 @@ function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): 
     newMoveOpen: newMoveWeek,
     jumpDay: plyometricDay(input.theme),
     fillingJumps: false,
-    eligibleIds: null,
+    eligible: new Map(),
     slotPools: new Map(),
     memo: { deps: null, map: new Map() },
     coreRegions: null,
@@ -609,9 +651,10 @@ function fillAccessory(budget: number, ctx: Ctx): { groups: Group[]; spent: numb
     }
     return { groups: [group], spent: costOf(groupSteps(ctx.data, group)) };
   };
-  // A jumping day: the accessory block becomes the jumps block when today allows a jump; otherwise ordinary accessory work.
-  if (ctx.jumpDay) {
-    const jumpFormats = allowed.filter(f => JUMP_FORMATS.includes(f));
+  // A jumping day: the accessory block becomes the jumps block when it has a jump to take (`jumpsAvailableIn`, the rule
+  // the proposal reads too); otherwise ordinary accessory work.
+  if (ctx.jumpDay && jumpsAvailableIn(ctx)) {
+    const jumpFormats = jumpFormatsOf(ctx);
     for (const formatId of [...themed.filter(f => jumpFormats.includes(f)), ...jumpFormats.filter(f => !themed.includes(f))]) {
       ctx.fillingJumps = true;
       const group = tryFormat(formatId, budget, ctx);
@@ -849,12 +892,10 @@ function slotCandidates(ctx: Ctx, item: Item): ExerciseRecord[] {
       .filter(ex => Lib.coreFamilyOf(ctx.data, ex) === item.coreFamily && Lib.fitsMode(ctx.data, ex, ctx.mode, ctx.checks));
   }
   const jumps = isPlyometric(item.exercise);
-  const done = doneBy(ctx);
-  const flagged = lastFlaggedBy(ctx);
-  const resting = restingBy(ctx);
+  const restingOut = restingOutBy(ctx);
   return Lib.all(ctx.data).filter(ex =>
     jumpRule(ex, jumps, ctx) &&
-    !(jumps && done(ex.id) && flagged(ex.id) && resting(ex.id)) &&
+    !(jumps && restingOut(ex.id)) &&
     fitsBlock(ctx, ex, item.block) &&
     eligibleToday(ctx, ex) &&
     accepts(ctx.data, item.format, ex));
@@ -968,4 +1009,4 @@ function alternatives(data: EngineData, input: BuildInput, slotKey: string, k = 
   return Swapping.offered(built.swapState, built.steps, slotKey, k);
 }
 
-export const Builder = { build, prepare, finish, alternatives, groupSteps, costOf, windowSeconds, setSeconds, PREP_SECONDS, CHIME_SECONDS };
+export const Builder = { build, prepare, finish, alternatives, jumpsAvailable, groupSteps, costOf, windowSeconds, setSeconds, PREP_SECONDS, CHIME_SECONDS };

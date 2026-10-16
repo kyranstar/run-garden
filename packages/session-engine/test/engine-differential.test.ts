@@ -1,4 +1,5 @@
 import { addDays } from "@rg/domain";
+import { plyometricDay, type Theme } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import {
   Blocks, Builder, Coverage, Hist, Planner, Prog, Proposal, Rng, Select,
@@ -28,6 +29,17 @@ function same(label: string, got: unknown, want: unknown): void {
 }
 
 const MODES: Mode[] = ["recovery", "consistent", "build"];
+
+/** The library with its jumping day weighted to win on score, so the gate is what decides it (memoised per library). */
+const jumpsFirstOf = new WeakMap<object, unknown>();
+function jumpsFirst<D extends { themes: readonly Theme[] }>(data: D): D {
+  let out = jumpsFirstOf.get(data) as D | undefined;
+  if (!out) {
+    out = { ...data, themes: data.themes.map(t => (plyometricDay(t) ? { ...t, emphasis: { ...t.emphasis, regions: { ...t.emphasis.regions, calves: 50, ankles: 50 } } } : t)) };
+    jumpsFirstOf.set(data, out);
+  }
+  return out;
+}
 
 /** The program with its history trimmed to what a build on `today` reads, plus the summary of the rest (ruling 2a-R6). */
 const trimmedOf = (program: ProgramState, today: string): ProgramState =>
@@ -149,7 +161,16 @@ for (const world of WORLDS) {
           const checks = { tmj: { pre: Math.floor(rng() * 7), post: null, feelingOff: false } };
           const mode = Proposal.mode(data, { checks, sessions, today, weeklyGoal: 4 });
           same(`${label}: mode`, mode, Ref.Proposal.mode(data, { checks, sessions, today, weeklyGoal: 4 }));
-          same(`${label}: theme`, Proposal.theme(data, { mode: mode.mode, sessions, today }), Ref.Proposal.theme(data, { mode: mode.mode, sessions, today }));
+          // The case's place and readings reach both proposals, so the jumping day's gate is compared too.
+          const jumps = { location: LOCATIONS[0]!, prefs: h.prefs, checks };
+          same(`${label}: theme`, Proposal.theme(data, { mode: mode.mode, sessions, today, jumps }), Ref.Proposal.theme(data, { mode: mode.mode, sessions, today, jumps }));
+          same(`${label}: jumps available`, Builder.jumpsAvailable(data, { today, mode: mode.mode, sessions, ...jumps }), Ref.Builder.jumpsAvailable(data, { today, mode: mode.mode, sessions, ...jumps }));
+          // These histories rarely make a jumping day the best fit, so one that wins on score is asked too: the gate alone
+          // then decides between it and the next theme, and both engines must decide alike.
+          for (const m of ["consistent", "build"] as const) {
+            same(`${label}: theme, a jumping day ahead on score (${m})`,
+              Proposal.theme(jumpsFirst(data), { mode: m, sessions, today, jumps }), Ref.Proposal.theme(jumpsFirst(data), { mode: m, sessions, today, jumps }));
+          }
           const block = h.blocks[Math.min(cut, h.blocks.length - 1)] ?? null;
           const ctx = { today, equipment: LOCATIONS[0]!.equipment, prefs: h.prefs, weeks: 5, sessions, kbWeights: [{ v: 12, u: "kg" as const }], unit: "kg" as const };
           same(`${label}: ensure`, Blocks.ensure(data, block, ctx), Ref.Blocks.ensure(data, block, ctx));
@@ -158,7 +179,7 @@ for (const world of WORLDS) {
             same(`${label}: familiesForSession`, Blocks.familiesForSession(data, block, famArgs(Rng.create(label))), Ref.Blocks.familiesForSession(data, block, famArgs(Rng.create(label))));
           }
           const input = {
-            today, mode: mode.mode, theme: Proposal.theme(data, { mode: mode.mode, sessions, today }).theme, minutes: 30, location: LOCATIONS[0]!,
+            today, mode: mode.mode, theme: Proposal.theme(data, { mode: mode.mode, sessions, today, jumps }).theme, minutes: 30, location: LOCATIONS[0]!,
             unit: "lb" as const, sessions, prefs: h.prefs, savedIds: [], block, checks, swaps: {},
           };
           same(`${label}: Builder.build`, Builder.build(data, input), Ref.Builder.build(data, input));

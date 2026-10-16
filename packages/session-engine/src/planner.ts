@@ -5,7 +5,7 @@ import { Builder } from "./builder.js";
 import { Graduation, type GraduationOffer } from "./graduation.js";
 import { HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
-import { Proposal } from "./proposal.js";
+import { Proposal, type JumpTerms } from "./proposal.js";
 import type { Alternative, Block, BuildInput, BuildResult, EngineLocation, HistorySummary, Prefs, Swaps } from "./types.js";
 
 // Today's session from stored state: the proposal (with the day's overrides), block upkeep, and the built
@@ -130,13 +130,15 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   }, hist);
   const proposal = Proposal.mode(data, { checks: t.checks, feelingOff: Boolean(t.feelingOff), sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal }, hist);
   const mode = t.override.mode || proposal.mode;
-  // The readings the build rules with: the proposal offers a jumping day only when they let a jump through.
+  // The place and the readings the build rules with (neither depends on the theme): the proposal offers a jumping day
+  // only when today's jumps block has a jump to take on these terms (`Builder.jumpsAvailable`).
+  const location = locationOf(program.locations, t.override.location || program.settings.location);
   const readings = readingsOf(data, t);
-  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today, checks: readings }, hist);
+  const jumps: JumpTerms = { location, prefs: program.prefs, checks: readings, ...(program.summary ? { summary: program.summary } : {}) };
+  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today, jumps }, hist);
   const chosen = t.override.theme ? data.themes.find(th => th.id === t.override.theme && th.modes.includes(mode)) ?? null : null;
   const theme = chosen || themeProposal.theme;
   const minutes = t.override.minutes || program.settings.defaultMinutes;
-  const location = locationOf(program.locations, t.override.location || program.settings.location);
   const buildInput: BuildInput = {
     today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
     sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: readings, swaps: t.swaps,
@@ -157,10 +159,25 @@ function readingsOf(data: EngineData, t: DayState): Readonly<Record<string, Chec
   return out;
 }
 
+type Context = ReturnType<typeof context>;
+
+/**
+ * The day's plan, and the context it was planned in. A PROPOSED jumping day whose plan still holds no jump — what the
+ * proposal can't know beforehand, a session too short for the jumps block or a superset with no pair — is proposed
+ * again without a jumping day and built again: one more plan, only that day. A jumping day chosen by hand stands, its
+ * reason line saying why it has no jumps.
+ */
+function settled(data: EngineData, c: Context): { c: Context; plan: BuildResult } {
+  const plan = Builder.build(data, c.buildInput, c.hist);
+  if (c.chosen || !plyometricDay(c.theme) || plan.items.some(it => isPlyometric(it.exercise))) return { c, plan };
+  const themeProposal = Proposal.theme(data, { mode: c.mode, sessions: c.buildInput.sessions, today: c.buildInput.today }, c.hist);
+  const next: Context = { ...c, themeProposal, theme: themeProposal.theme, buildInput: { ...c.buildInput, theme: themeProposal.theme } };
+  return { c: next, plan: Builder.build(data, next.buildInput, c.hist) };
+}
+
 /** The day's proposal, the upkept block and the built plan. `blockUpdate` is null when the block didn't change. */
 function planToday(data: EngineData, input: PlanTodayInput, program: ProgramState): { view: TodayView; blockUpdate: BlockUpdate | null } {
-  const c = context(data, input, program);
-  const plan = Builder.build(data, c.buildInput, c.hist);
+  const { c, plan } = settled(data, context(data, input, program));
   const view: TodayView = {
     today: c.t,
     mode: c.mode, proposedMode: c.proposal.mode, modeReasons: c.proposal.reasons,
@@ -177,7 +194,9 @@ function planToday(data: EngineData, input: PlanTodayInput, program: ProgramStat
 }
 
 function alternatives(data: EngineData, input: PlanTodayInput, program: ProgramState, slotKey: string, k = 3): Alternative[] {
-  const c = context(data, input, program);
+  const first = context(data, input, program);
+  // The plan the day shows: a proposed jumping day with no jump is the day proposed again (`settled`).
+  const c = !first.chosen && plyometricDay(first.theme) ? settled(data, first).c : first;
   return Builder.alternatives(data, c.buildInput, slotKey, k, c.hist);
 }
 
