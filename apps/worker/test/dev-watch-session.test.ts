@@ -37,9 +37,17 @@ function stackEnv(overrides: Partial<Env> = {}): Env {
   };
 }
 
+/**
+ * The slot this test moves to today is the week's program slot, two days on from the account's today (Los Angeles).
+ * On a Saturday or a Sunday that day is in next week, the week holds no slot, and the test failed every weekend — so
+ * the clock is pinned to a Wednesday morning (Date only; timers stay real): the same week whatever day it runs.
+ */
+const PINNED_NOW = new Date("2026-10-14T16:00:00Z");
+
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  vi.useRealTimers();
 });
 
 async function call(env: Env, method: string, path: string, opts: { cookie?: string; body?: unknown } = {}): Promise<Response> {
@@ -62,6 +70,8 @@ describe("POST /api/dev/watch-session", () => {
   });
 
   it("fixture mode: today's sent session done on the watch → the review offered, saved once, counted once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    vi.setSystemTime(PINNED_NOW);
     // No network at all: the fixture's COROS connection holds no credentials, and nothing else may be asked.
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       throw new Error(`unexpected network call: ${String(input instanceof Request ? input.url : input)}`);

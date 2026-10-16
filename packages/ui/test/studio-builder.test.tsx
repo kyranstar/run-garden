@@ -41,7 +41,10 @@ function renderBuilder(path: string, opts: { draft?: DraftDoc | null; primed?: P
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter(path, createElement(BuilderRoute))));
 }
 
-/** Each part as drawn: its name, and the moves it suggests (by their ＋'s names). */
+/**
+ * Each part as drawn: its name, and the moves it suggests (by their ＋'s names), entities decoded — the suggestions
+ * follow the day, and on a day one is "Child's pose" the markup says `Child&#x27;s`.
+ */
 function parts(html: string): Array<{ name: string; ghost: boolean; suggested: string[]; items: string[] }> {
   return html
     .split('<section class="stu-part')
@@ -50,10 +53,10 @@ function parts(html: string): Array<{ name: string; ghost: boolean; suggested: s
       const body = chunk.slice(0, chunk.indexOf("</section>"));
       return {
         // The name is a term that explains itself: the button's own word, not its popover's sentence.
-        name: /<span class="stu-part-name eyebrow">(?:<span class="term-wrap"><button[^>]*>)?([^<]+)/.exec(body)?.[1] ?? "",
+        name: text(/<span class="stu-part-name eyebrow">(?:<span class="term-wrap"><button[^>]*>)?([^<]+)/.exec(body)?.[1] ?? ""),
         ghost: chunk.startsWith(" stu-part--ghost"),
-        suggested: [...body.matchAll(/aria-label="Add ([^"]+)"/g)].map((m) => m[1]!),
-        items: [...body.matchAll(/<span class="stu-item-name">([^<]+)/g)].map((m) => m[1]!),
+        suggested: [...body.matchAll(/aria-label="Add ([^"]+)"/g)].map((m) => text(m[1]!)),
+        items: [...body.matchAll(/<span class="stu-item-name">([^<]+)/g)].map((m) => text(m[1]!)),
       };
     });
 }
