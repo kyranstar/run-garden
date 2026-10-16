@@ -12,6 +12,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
+import { addDays, dayLabel } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createRun, LAST_TURN_NOTE, LINES, readRunState, runStep, type RunDeps } from "../src/services/coach-runs.js";
@@ -107,6 +108,66 @@ async function runRow(id: string) {
   const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
   return row!;
 }
+
+describe("the trail's lines (§2.13, M2) and each call's usage (M5)", () => {
+  it("a refused finish, ask or read writes no athlete line — its refusal kept in the event; a refused draft is 'Adjusted the draft.'", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, 12);
+    const { deps } = scripted([
+      t(use("search_library", { nonsense: true })),
+      t(use("ask_athlete", { questions: [{ text: "Gym?", chips: [{ label: "Yes", value: 3 }], why: "Sets the gear." }] })),
+      t(use("propose_workout", { doc: { title: "Broken" }, target: { kind: "new", date: TODAY } })),
+      t(propose("Calm hips")),
+      t(submit(verdict(4))),
+      t(use("finish", { summary: "Done.", extra: true })),
+      t(use("finish", { summary: "Calm hips is ready." })),
+    ]);
+    expect((await drive(userId, runId, deps)).at(-1)!.status).toBe("finished");
+    const events = await trail(runId);
+    const refused = events.filter((e) => (e.payload as { ok?: unknown } | null)?.ok === false);
+    expect(refused.map((e) => [(e.payload as { tool: string }).tool, e.summary])).toEqual([
+      ["search_library", ""],
+      ["ask_athlete", ""],
+      ["propose_workout", "Adjusted the draft."],
+      ["finish", ""],
+    ]);
+    for (const e of refused) expect(e.payload).toMatchObject({ refusal: { error: expect.any(String), why: expect.any(String) } });
+    expect(events.at(-1)!.summary).toBe("Calm hips is ready.");
+  });
+
+  it("every model call's usage rides on its step's first event — input, cache read and write, output — and is no line of its own", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, 12);
+    const { deps, requests } = scripted([t(propose("Calm hips")), t(submit(verdict(4))), t(use("finish", { summary: "Calm hips is ready." }))]);
+    await drive(userId, runId, deps);
+    const withUsage = (await trail(runId)).filter((e) => (e.payload as { usage?: unknown } | null)?.usage !== undefined);
+    expect(withUsage).toHaveLength(requests.length);
+    for (const e of withUsage) {
+      expect((e.payload as { usage: unknown }).usage).toEqual({ input: 100, cacheRead: 60, cacheWrite: 50, output: 40 });
+      expect(e.summary).not.toBe("");
+    }
+  });
+
+  it("a set's designer opens with the brief's day; a refused plan is 'Adjusted the plan.'", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const mainId = (await createRun(db, userId, { scope: { kind: "week" }, request: "Plan my week." }, NOW)).run.id;
+    const brief = (key: string, date: string) => ({ key, date, purpose: "Hips.", emphasis: "Control.", constraints: "Home.", why: "Spaced out.", sameDayWhy: "A short one." });
+    const day = addDays(TODAY, 1);
+    const { deps } = scripted([
+      t(use("plan_set", { briefs: [brief("a", addDays(TODAY, -3))] })),
+      t(use("plan_set", { briefs: [brief("a", day)] })),
+      t(use("propose_workout", { doc: calmDoc({ title: "Day hips" }), target: { kind: "new", date: day } })),
+      t(submit(verdict(4))),
+      t(use("finish", {})),
+      t(use("finish", { summary: "One workout for the week." })),
+    ]);
+    expect((await drive(userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    const lines = (await trail(mainId)).map((e) => e.summary);
+    expect(lines).toContain("Adjusted the plan.");
+    expect(lines).toContain(`Read the brief for ${dayLabel(day)}.`);
+    expect(lines).toContain("Designed “Day hips”.");
+  });
+});
 
 describe("R3: the last turn never loses a finished design", () => {
   it("a last-turn finish of 500 characters ends the run finished: the proposal pending, the line clipped at a sentence, the whole kept", async () => {

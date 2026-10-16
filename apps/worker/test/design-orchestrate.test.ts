@@ -345,7 +345,7 @@ describe("a three-workout set, end to end", () => {
       const draftAt = mine.findIndex((e) => e.kind === "draft");
       expect(draftAt, runId).toBeGreaterThanOrEqual(0);
       // Before the turn that drafted it — its context, a read — there is no title yet (that turn's own words have it).
-      const before = mine.slice(0, draftAt).filter((e) => e.summary === "Read your request and today's plan." || (e.payload as { tool?: string }).tool === "read_day");
+      const before = mine.slice(0, draftAt).filter((e) => e.summary.startsWith("Read the brief for ") || (e.payload as { tool?: string }).tool === "read_day");
       expect(before.length, runId).toBeGreaterThan(0);
       expect(before.every((e) => payloadOf(e)!.forTitle === undefined && payloadOf(e)!.forDay === day), runId).toBe(true);
       for (const e of mine.slice(draftAt)) expect(payloadOf(e)).toMatchObject({ forDay: day, forTitle: titleOfDay.get(day) });

@@ -186,7 +186,9 @@ describe("an instruction in the request, or in a note a tool read back, does not
     const refusedLines = trail.filter((e) => (e.payload as { refusal?: unknown } | null)?.refusal);
     expect(refusedLines.filter((e) => (e.payload as { tool?: string }).tool === "propose_workout")).toHaveLength(4);
     for (const e of refusedLines) {
-      expect(e).toMatchObject({ kind: "note", summary: "Adjusted the draft." });
+      // A refused draft says the coach adjusted it; any other refusal is no line of the athlete's (Task 13's fix wave, §2.13).
+      const draft = ["propose_workout", "validate_workout"].includes((e.payload as { tool?: string }).tool ?? "");
+      expect(e).toMatchObject({ kind: "note", summary: draft ? "Adjusted the draft." : "" });
       expect((e.payload as { ok: boolean; refusal: { error: string; why: string; fix: string } }).ok).toBe(false);
       expect((e.payload as { refusal: { error: string; why: string; fix: string } }).refusal).toEqual({
         error: expect.any(String),

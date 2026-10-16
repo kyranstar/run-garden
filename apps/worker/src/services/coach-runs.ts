@@ -4,6 +4,7 @@ import {
   ceilingKindOf,
   COACH_CEILING_DEFAULTS_USD,
   coachSettings,
+  dayLabel,
   newId,
   todayInZone,
   userPreferencesSchema,
@@ -848,6 +849,9 @@ interface NewEvent {
   kind: RunEventKind;
   summary: string;
   payload?: unknown;
+  /** No athlete line: kept for the record with an empty summary (a refusal no one adjusted a draft after, §2.13; a
+   * model call's usage with nothing else to ride on, M5). The run view shows no line for it. */
+  quiet?: true;
 }
 
 const line = (text: string): string => {
@@ -871,7 +875,7 @@ async function appendEvents(db: Db, userId: string, rootId: string, events: NewE
     const chunk = events.slice(i, i + EVENTS_PER_INSERT);
     const values = chunk.map(
       (e, j) =>
-        sql`(${sql.raw(String(j + 1))}, ${e.kind}, ${line(e.summary) || "…"}, ${e.payload === undefined ? null : JSON.stringify(bounded(e.payload))})`,
+        sql`(${sql.raw(String(j + 1))}, ${e.kind}, ${e.quiet ? "" : line(e.summary) || "…"}, ${e.payload === undefined ? null : JSON.stringify(bounded(e.payload))})`,
     );
     const rows = (await db.all(sql`
       INSERT INTO coach_run_events (id, user_id, run_id, seq, kind, summary, payload, at)
@@ -1733,6 +1737,8 @@ interface StepCtx {
   /** The week's spend as the step's model call read it before the call, and that call's worst case (§2.11: plan_set
    * weighs the week from it). Absent in a step that made no model call. */
   week?: { spentMicros: number; worstMicros: number };
+  /** The step's model call's usage, once billed (M5): its tokens, on the step's first event. */
+  usage?: { input: number; cacheRead: number; cacheWrite: number; output: number };
 }
 
 const stop = (state: RunState | null, status: RunStatus, error: string, summary: string, kind: RunEventKind = "note", costMicros = 0): StepEnd => ({
@@ -1777,6 +1783,10 @@ export const LINES = {
   nothingProposed: "Nothing was suggested.",
 } as const;
 
+/** A set's designer's first line (Task 13's fix wave, M2): "Read the brief for Thu 14 May." — its brief's day. */
+export const designerContextLine = (day: string | undefined): string =>
+  day && /^\d{4}-\d{2}-\d{2}$/.test(day) ? `Read the brief for ${dayLabel(day)}.` : "Read the brief.";
+
 /** The reviewer's own lines on the trail — in the athlete's words, as every line is (fix wave 3B, B-I3). */
 export const REVIEWER_LINES = {
   context: "Reviewing the draft.",
@@ -1785,14 +1795,22 @@ export const REVIEWER_LINES = {
 } as const;
 
 /**
- * A refused tool call on the trail (fix wave 3B, B-I4): no alarm, no machinery — the coach adjusted its draft. A quiet
- * note; the refusal itself (its code, why and fix: what the model was told) rides in the payload, one tap down.
+ * A refused tool call on the trail (fix wave 3B, B-I4; Task 13's fix wave, §2.13): no alarm, no machinery. A draft the
+ * coach then adjusted says so ("Adjusted the draft."), a plan or a change to the plan "Adjusted the plan."; any other
+ * refusal — a review, a finish, a question, a read, a call answered "not run" behind a pause — writes NO athlete line:
+ * the event is kept for the record with no summary (the run view shows no line for one). Its refusal (its code, why and
+ * fix: what the model was told) rides in the payload either way.
  */
 export const ADJUSTED_LINE = "Adjusted the draft.";
+export const ADJUSTED_PLAN_LINE = "Adjusted the plan.";
+const DRAFT_TOOLS: readonly string[] = ["propose_workout", "validate_workout"];
+const PLAN_TOOLS: readonly string[] = ["plan_set", "adjust_plan", "drop_workout"];
 function refusedLine(tool: string, refusal: ToolErr, input?: unknown): NewEvent {
+  const shown = refusal.error === "not_run" ? null : DRAFT_TOOLS.includes(tool) ? ADJUSTED_LINE : PLAN_TOOLS.includes(tool) ? ADJUSTED_PLAN_LINE : null;
   return {
     kind: "note",
-    summary: ADJUSTED_LINE,
+    summary: shown ?? "",
+    ...(shown ? {} : { quiet: true as const }),
     payload: { tool, ...(input === undefined ? {} : { input: bounded(input, 1_500) }), ok: false, error: refusal.error, refusal: { error: refusal.error, why: refusal.why, fix: refusal.fix } },
   };
 }
@@ -2165,7 +2183,20 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
   }
   if (!s.allowModel) return end(IDLE);
   if (state.system === null) return end(await contextStep(s));
-  return modelStep(s);
+  return withUsage(await modelStep(s), s.usage);
+}
+
+/**
+ * A model call's usage on the step's first event (Task 13's fix wave, M5: the cache's rate can be measured without a
+ * schema change): `{ input, cacheRead, cacheWrite, output }` tokens, in the payload — internal, never a line of its own:
+ * with no event to ride on, it is a quiet one.
+ */
+function withUsage(advance: Advance, usage: StepCtx["usage"]): Advance {
+  if (!usage || advance.kind !== "end") return advance;
+  const [first, ...rest] = advance.end.events;
+  if (!first) return { ...advance, end: { ...advance.end, events: [{ kind: "note", summary: "", quiet: true, payload: { usage } }] } };
+  const payload = first.payload && typeof first.payload === "object" && !Array.isArray(first.payload) ? first.payload : first.payload === undefined ? {} : { value: first.payload };
+  return { ...advance, end: { ...advance.end, events: [{ ...first, payload: { ...(payload as Record<string, unknown>), usage } }, ...rest] } };
 }
 
 /**
@@ -2252,7 +2283,8 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
   s.state.toldAt = s.now.toISOString();
   // The packet is in the opening message now: kept twice it would only weigh on every later step.
   delete s.state.packet;
-  const line = s.run.role === "reviewer" ? REVIEWER_LINES.context : LINES.context;
+  // A set's designer reads its brief, for its day (M2: never "your request", which only the main coach read).
+  const line = s.run.role === "reviewer" ? REVIEWER_LINES.context : s.run.role === "designer" ? designerContextLine(s.state.day) : LINES.context;
   return { status: "active", state: s.state, costMicros: 0, error: null, proposalId: null, events: [{ kind: "note", summary: line }] };
 }
 
@@ -2339,6 +2371,10 @@ async function modelStep(s: StepCtx): Promise<Advance> {
       : null;
   const spent = billed?.costMicros ?? 0;
   s.spent = spent;
+  if (billed) {
+    const u = billed.usage;
+    s.usage = { input: u.inputTokens, cacheRead: u.cacheReadTokens, cacheWrite: u.cacheWriteTokens, output: u.outputTokens };
+  }
   if (billed) state.outputs = [...(state.outputs ?? []), billed.usage.outputTokens].slice(-OUTPUTS_KEPT);
 
   // ── After the call: its usage settled first — as close to the answer as it can be, so a step that dies now leaves its

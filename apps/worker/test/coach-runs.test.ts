@@ -556,9 +556,10 @@ describe("tool calls that do not fit one step's budget", () => {
     expect(result!.is_error).toBe(true);
     expect(result!.content).not.toContain("SQLITE");
     expect(result!.content).not.toContain("secret");
-    // The trail says the coach adjusted its draft (fix wave 3B, B-I4); the refusal it rides with is plain words.
+    // A read that failed is no line of the athlete's (Task 13's fix wave, §2.13): its event has no summary; the refusal
+    // it rides with is plain words.
     const refused = (await events(runId)).find((e) => (e.payload as { refusal?: unknown } | null)?.refusal)!;
-    expect(refused).toMatchObject({ kind: "note", summary: "Adjusted the draft." });
+    expect(refused).toMatchObject({ kind: "note", summary: "" });
     expect(JSON.stringify(refused.payload)).not.toContain("SQLITE");
   });
 

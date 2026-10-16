@@ -1236,10 +1236,11 @@ describe("fix round 1 — nothing runs before the review is read", () => {
     const back = resumed.messages.at(-1)!.content as ToolResultBlock[];
     expect(back.map((b) => b.tool_use_id)).toEqual([idOf(draft), idOf(early)]);
     expect(JSON.parse(textOf(back[1]))).toEqual({ error: "not_run", why: "Not run: propose_workout's review comes first.", fix: "Call it again after reading the review." });
-    // Answered "not run" — on the trail, a quiet note with the refusal in its payload (fix wave 3B, B-I4).
+    // Answered "not run" — on the trail, no athlete line: a note with no summary, the refusal in its payload (fix wave 3B,
+    // B-I4; Task 13's fix wave, §2.13).
     expect(
       (await events(runId)).some(
-        (e) => e.kind === "note" && e.summary === "Adjusted the draft." && (e.payload as { tool?: string; refusal?: { error?: string } }).tool === "finish" && (e.payload as { refusal?: { error?: string } }).refusal?.error === "not_run",
+        (e) => e.kind === "note" && e.summary === "" && (e.payload as { tool?: string; refusal?: { error?: string } }).tool === "finish" && (e.payload as { refusal?: { error?: string } }).refusal?.error === "not_run",
       ),
     ).toBe(true);
     expect((await events(runId)).at(-1)!.summary).toBe("A calm half hour.");
