@@ -11299,7 +11299,8 @@ a.stu-tpl-open:focus-visible::before {
 .coach-also-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  /* Each line is a 44 px row already: a small gap, so the lines read as one list. */
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
