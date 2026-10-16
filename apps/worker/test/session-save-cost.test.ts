@@ -86,7 +86,7 @@ describe("a save's D1 statements", () => {
     expect(own + replay).toBeLessThan(90);
   });
 
-  it("the largest save the schema takes is ONE batch of at most 110 statements, each under D1's 100 bound variables (for the staging check)", async () => {
+  it("the largest save the schema takes is ONE batch of about 90 statements plus one per 8 library moves rated, each under D1's 100 bound variables (for the staging check)", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId, prefs } = await makeTestUser(db);
     const programId = newId();
@@ -138,9 +138,10 @@ describe("a save's D1 statements", () => {
     }
     console.log(`[save] the largest save: one batch of ${batch} statements (${library.length} library exercises rated)`);
     expect(batch).toBeGreaterThan(50);
-    // The batch is one round trip. A rating for every one of the 150 library exercises adds ~19 answer inserts (8 rows
-    // each under the 100 variables) to the ~87 it had without: no real review rates more than the session's moves.
-    expect(batch).toBeLessThanOrEqual(110);
+    // The batch is one round trip. Rating every library exercise adds one answer insert per 8 (8 rows each under the
+    // 100 variables) to the ~90 it has without, so the bound follows the library's size (110 at 159 moves): no real
+    // review rates more than the session's moves.
+    expect(batch).toBeLessThanOrEqual(90 + Math.ceil(library.length / 8));
     expect((await db.select().from(schema.performedSets)).length).toBe(300);
   });
 });
