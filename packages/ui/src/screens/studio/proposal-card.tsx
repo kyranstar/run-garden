@@ -3,9 +3,14 @@
  * changes to sessions already on the plan (Task 8b) — read from the server's manifest (`GET /api/coach/proposals/:id`:
  * computed from the documents, never from prose), decided workout by workout.
  *
- *  - Each workout: its title; its day and time, minutes, effort word, place and review mean; one tap opens its review
- *    (each dimension's score and note, what changed between drafts) and the validator's costs for the day. Edit opens
- *    the draft in the builder (Task 8's route): saving it there approves the athlete's version.
+ *  - Each workout: its title, and under it what it is for (its intent, one line; Task 13, D1); its day and time — "Now"
+ *    for a now design (§2.6) — minutes, effort word, place and review mean; the validator's costs for the day. One tap on
+ *    the title opens its moves, each with its why and the moves the coach weighed instead ("or <name> — <why>"; D3);
+ *    one tap on "See the review" its review (each dimension's score and note, what changed between drafts, and the
+ *    ideas the coach didn't use — never on the face: R5, D2). Edit opens the draft in the builder (Task 8's route):
+ *    saving it there approves the athlete's version.
+ *  - A set's suggestion shows the plan's other sessions in its days (`context`; D7) as quiet lines among its workouts,
+ *    by day, each saying it is on the plan — in words, never by its colour alone.
  *  - Each change: its own plain line ("Tue: Strength — skipped — why"), its own checkbox, no Edit.
  *  - With more than one to decide, each has a checkbox, all chosen at first. Approve sends the chosen ones (none named:
  *    all) and asks again while the server says some `remaining` — at most APPROVE_ROUNDS_MAX times — once more after a
@@ -26,8 +31,10 @@ import {
   ApiError,
   DESIGN_APPLYING_STALE_MS,
   type DesignApproveRequest,
+  type DesignAlternateDto,
   type DesignApproveResponse,
   type DesignChangeLineDto,
+  type DesignContextRowDto,
   type DesignLineDto,
 } from "@rg/api-client";
 import { features } from "../../features.js";
@@ -81,6 +88,38 @@ export type ProposalRead = Awaited<ReturnType<typeof api.coachProposal>>;
 export function cardShows(data: ProposalRead | null | undefined): boolean {
   if (!data || HIDDEN_STATUSES.has(data.status)) return false;
   return (data.lines?.length ?? 0) + (data.changes?.length ?? 0) > 0;
+}
+
+/** One row of the card's list: a change, a workout, or a set's other session on the plan. */
+export type CardRow =
+  | { date: string; change: DesignChangeLineDto; line: null; context: null }
+  | { date: string; change: null; line: DesignLineDto; context: null }
+  | { date: string; change: null; line: null; context: DesignContextRowDto };
+
+/**
+ * The card's rows, by day: a set's changes among its workouts on their own day (M7) — a change the server holds no day
+ * for, first — and the set's other sessions on the plan (`context`, D7) among them: each before the first of the
+ * suggestion's own rows on a later day, or later the same day (both timed); else after them.
+ */
+export function cardRows(changes: readonly DesignChangeLineDto[], lines: readonly DesignLineDto[], context: readonly DesignContextRowDto[]): CardRow[] {
+  const rows: CardRow[] = [
+    ...changes.map((c) => ({ date: c.date ?? "", change: c, line: null, context: null }) as const),
+    ...lines.map((l) => ({ date: l.date, change: null, line: l, context: null }) as const),
+  ].sort((a, b) => a.date.localeCompare(b.date));
+  const timeOf = (r: CardRow): string | null => r.change?.time ?? r.line?.time ?? null;
+  const others = [...context].sort((a, b) => a.date.localeCompare(b.date) || (a.time ?? "~").localeCompare(b.time ?? "~"));
+  for (const x of others) {
+    const at = rows.findIndex((r) => r.context === null && (r.date > x.date || (r.date === x.date && x.time !== null && (timeOf(r) ?? "") > x.time)));
+    const row: CardRow = { date: x.date, change: null, line: null, context: x };
+    if (at < 0) rows.push(row);
+    else rows.splice(at, 0, row);
+  }
+  return rows;
+}
+
+/** A set's other session on the plan, in words (D7): "Sun 8 AM · Long run · 90 min · on your plan". */
+export function contextLine(x: Pick<DesignContextRowDto, "date" | "time" | "title" | "minutes">): string {
+  return [dayAndTime(x.date, x.time), x.title, x.minutes !== null ? `${x.minutes} min` : null, "on your plan"].filter(Boolean).join(" · ");
 }
 
 /** A change an approve is applying can't be declined: said by the ops a decline named. */
@@ -242,10 +281,7 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
   const some = picked.length < openIds.length ? picked : undefined;
   // A decline that met every one in flight says so on their lines, not here.
   const error = approve.isError ? decisionError(approve.error) : decline.isError && met.size === 0 ? decisionError(decline.error) : null;
-  // By day, a set's changes among its workouts on their own day (M7); a change the server holds no day for, first.
-  const items = [...changes.map((c) => ({ date: c.date ?? "", change: c, line: null })), ...lines.map((l) => ({ date: l.date, change: null, line: l }))].sort((a, b) =>
-    a.date.localeCompare(b.date),
-  );
+  const items = cardRows(changes, lines, data.context ?? []);
   return (
     <section ref={card} className="coach-pc" aria-labelledby={headingId}>
       <h2 id={headingId} className="coach-pc-title-h">
@@ -258,8 +294,13 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
       ))}
       {data.status === "expired" ? <p className="coach-pc-flag">This suggestion's day has passed.</p> : null}
       <ul className="coach-pc-list">
-        {items.map(({ change: c, line: l }) =>
-          c ? (
+        {items.map(({ change: c, line: l, context: x }, i) =>
+          x ? (
+            // Another session on the plan these days (D7): quiet, no controls, and said in words.
+            <li key={`context-${i}`} className="coach-pc-context">
+              {contextLine(x)}
+            </li>
+          ) : c ? (
             <ChangeItem
               key={c.opId}
               line={c}
@@ -431,7 +472,8 @@ function WorkoutItem({
   const detailId = useId();
   const reviewId = useId();
   const r = line.review;
-  const hasReview = !!r && (r.dimensions.length > 0 || r.changes.length > 0 || r.mustFix.length > 0 || r.accepted.length > 0 || !!r.note);
+  const hasReview =
+    !!r && (r.dimensions.length > 0 || r.changes.length > 0 || r.mustFix.length > 0 || r.accepted.length > 0 || r.improvements.length > 0 || !!r.note);
   const applied =
     line.outcome?.status === "applied"
       ? { date: line.written?.date ?? line.date, time: line.written?.time ?? line.time, workoutId: line.outcome.workoutId, edited: line.written?.edited }
@@ -439,10 +481,12 @@ function WorkoutItem({
   // Once applied, the plan's own figures: where the approve put it, and the athlete's version's minutes after an edit
   // (M3) — never the coach's proposal beside the line that says where it went.
   const minutes = applied && line.written ? line.written.minutes : line.minutes;
+  // A now design is placed at the moment of the approve (§2.6): while open it reads as now — never a time gone by.
+  const now = line.atNow === true && !applied && isOpen(line.outcome);
   // A time the approve would refuse is never shown as if it stood (the re-review): the day alone, and a line saying so.
-  const timePassed = line.timePassed === true && !applied && isOpen(line.outcome);
+  const timePassed = line.timePassed === true && !now && !applied && isOpen(line.outcome);
   const facts = [
-    applied ? dayAndTime(applied.date, applied.time) : dayAndTime(line.date, timePassed ? null : line.time),
+    applied ? dayAndTime(applied.date, applied.time) : now ? "Now" : dayAndTime(line.date, timePassed ? null : line.time),
     `${minutes} min`,
     line.effort,
     line.place,
@@ -457,20 +501,12 @@ function WorkoutItem({
         <button type="button" className="coach-pc-name" aria-expanded={open} aria-controls={detailId} onClick={() => setOpen((v) => !v)}>
           {line.title}
         </button>
+        {/* What it is for, in one line under its title (D1). */}
+        {line.intent ? <p className="coach-pc-intent">{line.intent}</p> : null}
         <p className="coach-pc-facts">{facts.join(" · ")}</p>
         {timePassed ? <p className="coach-pc-outcome coach-pc-time-passed">{TIME_PASSED_LINE}</p> : null}
         <OutcomeLine outcome={line.outcome} applied={applied} />
-        {/* On the card, no tap (lead's QA, Q1): a tip from the review, and the day's costs — the two alike (M1, M7). */}
-        {r && r.improvements.length > 0 ? (
-          <div className="coach-pc-sub">
-            <h3 className="coach-detail-title">Tip</h3>
-            <ul className="coach-pc-better">
-              {r.improvements.map((x, i) => (
-                <li key={i}>{x}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
+        {/* On the card, no tap: the day's costs (M1, M7). The reviewer's ideas are one tap down, in the review (R5, D2). */}
         {line.issues.length > 0 ? (
           <div className="coach-pc-sub">
             <h3 className="coach-detail-title">Worth knowing</h3>
@@ -503,7 +539,7 @@ function WorkoutItem({
           {line.detail.length > 0 ? (
             <ul className="coach-pc-moves">
               {line.detail.map((d, i) => (
-                <li key={i}>{d}</li>
+                <MoveItem key={i} move={d} why={line.whys?.[i] ?? null} alternates={line.alternates?.[i] ?? []} />
               ))}
             </ul>
           ) : null}
@@ -519,8 +555,28 @@ function WorkoutItem({
 }
 
 /**
+ * A move as the expanded workout says it (D1, D3): its name and dose; under it, why it is there; and the moves the coach
+ * weighed instead, "or <name> — <why>".
+ */
+function MoveItem({ move, why, alternates }: { move: string; why: string | null; alternates: readonly DesignAlternateDto[] }) {
+  if (!why && alternates.length === 0) return <li>{move}</li>;
+  return (
+    <li>
+      <span className="coach-pc-move">{move}</span>
+      {why ? <span className="coach-pc-move-why">{why}</span> : null}
+      {alternates.map((a, i) => (
+        <span key={i} className="coach-pc-alt">
+          {a.why ? `or ${a.name} — ${a.why}` : `or ${a.name}`}
+        </span>
+      ))}
+    </li>
+  );
+}
+
+/**
  * The review, one tap down: every dimension's score and note — under its heading, in the rubric's plainer words (M2) —
- * what changed between drafts, must-fix, kept costs.
+ * what changed between drafts, must-fix, kept costs, and the reviewer's ideas the designer didn't take (R5, D2: never on
+ * the card's face).
  */
 function ReviewDetail({ review: r }: { review: NonNullable<DesignLineDto["review"]> }) {
   return (
@@ -544,6 +600,7 @@ function ReviewDetail({ review: r }: { review: NonNullable<DesignLineDto["review
         ["What changed", r.changes],
         ["Must fix", r.mustFix],
         ["Kept as you asked", r.accepted],
+        ["Ideas the coach didn't use", r.improvements],
       ] as const).map(([title, items]) =>
         items.length > 0 ? (
           <div key={title} className="coach-pc-sub">

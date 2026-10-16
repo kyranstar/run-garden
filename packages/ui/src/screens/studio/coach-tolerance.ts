@@ -18,7 +18,9 @@ import {
   type CoachRunEventDto,
   type CoachRunStatus,
   type CoachRunStepResult,
+  type DesignAlternateDto,
   type DesignChangeLineDto,
+  type DesignContextRowDto,
   type DesignLineDto,
 } from "@rg/api-client";
 
@@ -28,6 +30,10 @@ const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : n
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const texts = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+/** Words worth showing: a text with something in it, trimmed; else null. */
+const words = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+/** "YYYY-MM-DD", nothing else. */
+const isDay = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
 /** A run as the screens read it: every field its type promises, whatever came. */
 export function toRun(v: unknown): CoachRunDto {
@@ -136,13 +142,26 @@ const toIssues = (v: unknown): Array<{ code: string; message: string }> =>
     return i && typeof i.message === "string" ? [{ code: text(i.code), message: i.message }] : [];
   });
 
+/** The moves weighed instead of one: each with a name, its why words or none. */
+const toAlternates = (v: unknown): DesignAlternateDto[] =>
+  list(v).flatMap((x) => {
+    const a = record(x);
+    const name = words(a?.name);
+    return name ? [{ name, why: words(a!.why) }] : [];
+  });
+
 function toLine(v: unknown): DesignLineDto | null {
   const l = record(v);
   if (!l || typeof l.opId !== "string" || !l.opId) return null;
   const written = record(l.written);
   const outcome = toOutcome(l.outcome);
+  // The whys and the alternates as the moves are (parallel to `detail`), whatever came: a missing one none.
+  const detail = texts(l.detail);
+  const whys = list(l.whys);
+  const alternates = list(l.alternates);
+  const { atNow: _atNow, ...rest } = l;
   return {
-    ...(l as unknown as DesignLineDto),
+    ...(rest as unknown as DesignLineDto),
     opId: l.opId,
     kind: (text(l.kind) || "new") as DesignLineDto["kind"],
     date: text(l.date),
@@ -153,7 +172,12 @@ function toLine(v: unknown): DesignLineDto | null {
     effort: text(l.effort),
     place: text(l.place),
     parts: texts(l.parts),
-    detail: texts(l.detail),
+    detail,
+    intent: words(l.intent),
+    whys: detail.map((_, i) => words(whys[i])),
+    alternates: detail.map((_, i) => toAlternates(alternates[i])),
+    // Now only when the server says so in so many words.
+    ...(l.atNow === true ? { atNow: true as const } : {}),
     reviewMean: num(l.reviewMean),
     review: toReview(l.review),
     issues: toIssues(l.issues),
@@ -192,17 +216,29 @@ function toChange(v: unknown): DesignChangeLineDto | null {
   };
 }
 
+/** A set's other row on the plan: one with a day and a title to say; its time and minutes when they can be read. */
+function toContextRow(v: unknown): DesignContextRowDto | null {
+  const c = record(v);
+  const title = words(c?.title);
+  if (!c || !isDay(c.date) || !title) return null;
+  const time = typeof c.time === "string" && /^\d{1,2}:\d{2}/.test(c.time) ? c.time : null;
+  const minutes = num(c.minutes);
+  return { date: c.date, time, kind: text(c.kind), title, minutes: minutes !== null && minutes > 0 ? Math.round(minutes) : null };
+}
+
 /** A suggestion's read, every line and change with the fields the card reads. */
 export function toProposal(v: unknown): ProposalRead {
   const r = record(v) ?? {};
   const lines = list(r.lines).map(toLine).filter((l): l is DesignLineDto => l !== null);
   const changes = list(r.changes).map(toChange).filter((c): c is DesignChangeLineDto => c !== null);
+  const context = list(r.context).map(toContextRow).filter((c): c is DesignContextRowDto => c !== null);
   return {
     id: text(r.id),
     status: text(r.status) as ProposalRead["status"],
     resolvedAt: textOrNull(r.resolvedAt),
     ...(r.lines !== undefined ? { lines } : {}),
     ...(r.changes !== undefined ? { changes } : {}),
+    ...(r.context !== undefined ? { context } : {}),
   };
 }
 

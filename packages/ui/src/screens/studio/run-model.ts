@@ -322,7 +322,8 @@ const KEY_WORDS: Readonly<Record<string, string>> = {
 
 /**
  * The review's rubric, in plainer words (fix wave 3B, M2) — the card's scores and the trail's alike, keyed by the
- * dimension's id (the ids stay the server's).
+ * dimension's id (the ids stay the server's). Task 13 (§2.10) merged `time_fit` and `equipment_fit` into `fit` and added
+ * `request` and `words`; the two retired ids keep their labels, for the reviews written before.
  */
 export const REVIEW_LABELS: Readonly<Record<string, string>> = {
   intent: "Clear purpose",
@@ -333,10 +334,14 @@ export const REVIEW_LABELS: Readonly<Record<string, string>> = {
   diversity: "Variety",
   recovery: "Room to recover",
   condition_safety: "Safe for your condition",
-  time_fit: "Fits your time",
-  equipment_fit: "Fits your equipment",
+  fit: "Fits your time and place",
+  request: "Answers what you asked",
+  words: "Clear words",
   specificity: "Made for you",
   honesty: "Honest explanation",
+  // Retired (Task 13): an older review's dimensions.
+  time_fit: "Fits your time",
+  equipment_fit: "Fits your equipment",
 };
 
 /** A dimension's plainer label; one the map doesn't hold keeps the words it came with. */

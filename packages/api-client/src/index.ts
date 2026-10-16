@@ -703,6 +703,51 @@ export interface DesignLineDto {
    * card says so and offers Edit, never the old time as if valid (fix wave 3B, the re-review).
    */
   timePassed?: true;
+  /**
+   * What the workout is for, in one sentence (the document's intent summary, in the athlete's words; Task 13, D1); null
+   * when it has none. Absent from a server before Task 13's fix wave.
+   */
+  intent?: string | null;
+  /** Each move's why, parallel to `detail` (null where it has none). */
+  whys?: Array<string | null>;
+  /** The moves the coach weighed instead of each one, parallel to `detail` ([] where none). */
+  alternates?: DesignAlternateDto[][];
+  /**
+   * A "now" design (Task 13, §2.6): placed at the moment of the approve, never a time gone by — the card reads it as
+   * now. Absent where the server doesn't say.
+   */
+  atNow?: true;
+}
+
+/** A move the coach weighed instead of one in the workout, and why it was the other choice. */
+export interface DesignAlternateDto {
+  name: string;
+  why: string | null;
+}
+
+/**
+ * A set's suggestion (from a week or next-workouts request; Task 13, D7): one of the plan's other rows in the set's date
+ * span — a run, a programme session, another workout — that isn't one of the suggestion's own.
+ */
+export interface DesignContextRowDto {
+  date: string;
+  /** "HH:MM". */
+  time: string | null;
+  /** What kind of session it is, as a word. */
+  kind: string;
+  title: string;
+  minutes: number | null;
+}
+
+/** `GET /api/coach/proposals/:id`: a suggestion's status and, for a designed one, its manifest. */
+export interface DesignProposalReadDto {
+  id: string;
+  status: CoachProposalDto["status"];
+  resolvedAt: string | null;
+  lines?: DesignLineDto[];
+  changes?: DesignChangeLineDto[];
+  /** A set's: the plan's other rows in its date span; absent otherwise. */
+  context?: DesignContextRowDto[];
 }
 
 /** A designed workout's review, as the athlete reads it: each dimension by the rubric's label, in its order; what changed
@@ -2134,10 +2179,7 @@ export const api = {
   /** One proposal's status: what a tap whose answer never came back reads before it says anything — and for a designed
    * proposal (with the coach designer on), its manifest: the workouts' `lines` and the changes' (`changes`), each with
    * how it ended. */
-  coachProposal: (proposalId: string) =>
-    get<{ id: string; status: CoachProposalDto["status"]; resolvedAt: string | null; lines?: DesignLineDto[]; changes?: DesignChangeLineDto[] }>(
-      `/api/coach/proposals/${proposalId}`,
-    ),
+  coachProposal: (proposalId: string) => get<DesignProposalReadDto>(`/api/coach/proposals/${proposalId}`),
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   /** A designed workout's draft, for Edit before approve (404 unless the coach designer is on). */

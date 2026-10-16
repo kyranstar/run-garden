@@ -285,11 +285,13 @@ describe("the athlete's answers never fold into earlier lines (M10)", () => {
 
 describe("the review's labels, from one map (M2)", () => {
   it("each rubric dimension in plainer words; its id stays the key", () => {
-    for (const id of ["intent", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "time_fit", "equipment_fit", "specificity", "honesty"]) {
+    // Task 13 (§2.10): `fit`, `request` and `words` joined; the retired `time_fit` and `equipment_fit` keep their labels.
+    const ids = ["intent", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "fit", "request", "words", "specificity", "honesty", "time_fit", "equipment_fit"];
+    for (const id of ids) {
       expect(REVIEW_LABELS[id], id).toBeTruthy();
       expect(REVIEW_LABELS[id]).not.toMatch(/_|\bvs\b/);
     }
-    expect(Object.keys(REVIEW_LABELS)).toHaveLength(12);
+    expect(Object.keys(REVIEW_LABELS)).toHaveLength(ids.length);
     expect(reviewLabel("intent", "Intent clarity")).toBe(REVIEW_LABELS.intent);
     expect(reviewLabel("something_new", "Something new")).toBe("Something new");
   });

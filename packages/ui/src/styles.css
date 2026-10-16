@@ -11428,6 +11428,34 @@ a.stu-tpl-open:focus-visible::before {
   padding-left: var(--space-6);
   font-size: var(--text-sm);
 }
+/* What the workout is for, one line under its title (Task 13, D1). */
+.coach-pc-intent {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+/* A move, its why under it, and the moves weighed instead (D1, D3). */
+.coach-pc-moves > li + li {
+  margin-top: var(--space-2);
+}
+.coach-pc-move,
+.coach-pc-move-why,
+.coach-pc-alt {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.coach-pc-move-why,
+.coach-pc-alt {
+  color: var(--ink-soft);
+}
+/* A set's other session on the plan (D7): a quiet line among the suggested workouts — it says so in words too. */
+.coach-pc-context {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
 .coach-pc-sub {
   display: flex;
   flex-direction: column;

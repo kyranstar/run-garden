@@ -154,17 +154,17 @@ const posts = (calls: Call[], what: string) => calls.filter((c) => c.method === 
 const pending = (lines: DesignLineDto[], changes: DesignChangeLineDto[] = [], status = "pending") => ({ id: "dp-1", status, resolvedAt: null, lines, changes });
 
 describe("a designed suggestion's card", () => {
-  it("each workout's line: day and time, minutes, effort, place, the review's mean and what could be better; the scores one tap down; Edit opens its draft", async () => {
+  it("each workout's line: day and time, minutes, effort, place, the review's mean and the day's costs; the scores and the ideas one tap down; Edit opens its draft", async () => {
     serve({ reads: [pending([line("op-a", { review: { ...line("op-a").review!, improvements: ["Hold the last bridge for a slow count of three."] } })])] });
     mount(["The coach stopped at this design's spending limit; this is what had been reviewed by then."]);
     await until(() => text().includes("Workout op-a"), "the card");
     expect(text()).toContain("The coach stopped at this design's spending limit; this is what had been reviewed by then.");
     expect(text()).toContain("Thu 6 PM · 24 min · Develop · Home · Reviewed 4.3 of 5");
-    // On the card, no tap: what could be better, and the day's costs.
+    // On the card, no tap: the day's costs. The reviewer's ideas are one tap down, in the review (Task 13, R5).
     const card = document.querySelector<HTMLElement>(".coach-pc")!;
     const shown = (el: Element | null) => !!el && !el.closest("[hidden]");
     const better = [...card.querySelectorAll("li")].find((li) => li.textContent === "Hold the last bridge for a slow count of three.");
-    expect(shown(better!)).toBe(true);
+    expect(shown(better!)).toBe(false);
     const cost = [...card.querySelectorAll("p, li")].find((el) => el.textContent === "The test move isn't one its key result reads.");
     expect(shown(cost!)).toBe(true);
     // One workout to decide: no checkbox.
@@ -505,12 +505,12 @@ describe("fix wave 3B: a change's line and what it did (B-I5)", () => {
 });
 
 describe("fix wave 3B: the workout's line (M1, M2, M3, M7, M8, M10)", () => {
-  it("Tip, not 'Could be better'; Worth knowing styled the same", async () => {
+  it("Worth knowing alone on the face — no Tip, no 'Could be better' (Task 13, R5: the ideas are in the review)", async () => {
     serve({ reads: [pending([line("op-a", { review: { ...line("op-a").review!, improvements: ["Hold the last bridge for a slow count of three."] } })])] });
     mount();
     await until(() => text().includes("Workout op-a"), "the card");
     const titles = [...document.querySelectorAll(".coach-pc-main > .coach-pc-sub > .coach-detail-title")].map((h) => h.textContent);
-    expect(titles).toEqual(["Tip", "Worth knowing"]);
+    expect(titles).toEqual(["Worth knowing"]);
     expect(text()).not.toContain("Could be better");
     for (const ul of document.querySelectorAll(".coach-pc-main > .coach-pc-sub > ul")) expect(ul.className).toBe("coach-pc-better");
   });
