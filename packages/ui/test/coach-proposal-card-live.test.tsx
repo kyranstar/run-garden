@@ -375,6 +375,49 @@ describe("a designed suggestion's card", () => {
     expect(text()).not.toContain("Couldn't reach the coach");
   });
 
+  it("an approve that met a change in flight (the 200's `inFlight`): that change is being changed, the others approved — none said to have failed", async () => {
+    const applied = line("op-a", {
+      outcome: { status: "applied", at: "", workoutId: "w-9", rev: 1, written: { date: THU, time: "18:00", title: "Workout op-a", minutes: 24 } },
+    });
+    // The read after the approve raced the other approve's claim: the change is still undecided on it.
+    const calls = serve({
+      reads: [pending([line("op-a")], [change("adj-1")]), pending([applied], [change("adj-1")], "partially_approved")],
+      approve: [{ applied: [], remaining: [], inFlight: ["adj-1"], status: "partially_approved" }],
+    });
+    mount();
+    await until(() => !!button("Approve"), "Approve");
+    await click(button("Approve"), "Approve");
+    await until(() => text().includes("On your plan for"), "the workout approved");
+    await until(() => text().includes("Being changed"), "the change in flight");
+    expect(text()).not.toMatch(/Couldn't|being changed right now|being added right now|Not changed|Didn't finish|try again/);
+    expect(document.querySelector(".coach-pc-error")).toBeNull();
+    expect(posts(calls, "approve")).toHaveLength(1);
+  });
+
+  it("an approve that met every change in flight (409 in_flight) says they're being changed, on the server's word — never an error, whatever this device's clock says", async () => {
+    // Stale by this device's clock; the server, whose window it is, says the approve that claimed it is applying it still.
+    const stale = new Date(Date.now() - DESIGN_APPLYING_STALE_MS - 60_000).toISOString();
+    const claimed = change("adj-1", { outcome: { status: "applying", at: stale, before: { date: "2026-10-13", time: "07:00", title: "Strength A", minutes: 35 } } });
+    const approves: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      const path = String(input).split("?")[0]!;
+      if ((init?.method ?? "GET") === "GET" && path === "/api/coach/proposals/dp-1") return json(pending([], [claimed]));
+      if (path === "/api/coach/proposals/dp-1/approve") {
+        approves.push(init?.body);
+        return json({ error: "in_flight", opIds: ["adj-1"], status: "pending", applied: [], changed: [], refused: [], settled: [], remaining: [] }, 409);
+      }
+      return json({ error: "offline" }, 503);
+    }));
+    mount();
+    await until(() => text().includes("Didn't finish — approve or decline"), "the claim, stale by this clock");
+    await click(button("Approve"), "Approve");
+    await until(() => text().includes("Being changed"), "the server's word");
+    expect(text()).not.toContain("Didn't finish");
+    expect(text()).not.toMatch(/Couldn't|right now|try again/);
+    expect(document.querySelector(".coach-pc-error")).toBeNull();
+    expect(approves).toHaveLength(1);
+  });
+
   it("a change's advisory note shows as its message", async () => {
     serve({ reads: [pending([], [change("adj-1", { issues: [{ code: "sanctioned_rest", message: "This would be the second sanctioned skip in a rolling week." }] })])] });
     mount();

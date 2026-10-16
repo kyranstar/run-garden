@@ -43,6 +43,8 @@ export const APPROVE_ROUNDS_MAX = 12;
 const HIDDEN_STATUSES = new Set(["unreviewed", "cancelled", "rehearsal"]);
 
 type Outcome = DesignLineDto["outcome"] | DesignChangeLineDto["outcome"];
+/** Which decision met a change in flight (another approve applying it). */
+type InFlightBy = "approve" | "decline";
 /**
  * Still the athlete's to decide: no outcome; refused (it stays open: the day can change); or a change an approve is
  * applying (Task 8b: claimed, in flight — Approve asked again finishes it; it can't be declined).
@@ -67,7 +69,9 @@ export const IN_FLIGHT_LINE = "Already being changed — it can't be declined no
 
 /**
  * Approve the chosen ops (none named: all) until nothing remains: each answer's `remaining` asked for again; a 409
- * `proposal_changed` (another request wrote first) once more after `reread`. Answers every answer, in order.
+ * `proposal_changed` (another request wrote first) once more after `reread`; a 409 `in_flight` (every one named is being
+ * applied by another approve — Task 8b) is an answer, not a failure: those ops in its `inFlight`, nothing else done.
+ * Answers every answer, in order.
  */
 export async function approveUntilDone(
   approve: (body: DesignApproveRequest) => Promise<DesignApproveResponse>,
@@ -87,6 +91,11 @@ export async function approveUntilDone(
         await reread();
         continue;
       }
+      const flying = inFlightOf(e);
+      if (flying) {
+        answers.push(flying);
+        return answers;
+      }
       throw e;
     }
     answers.push(res);
@@ -96,12 +105,23 @@ export async function approveUntilDone(
   throw new Error("approve_unfinished");
 }
 
+/** A 409 `in_flight` read as the answer it is (nothing done, these ops being applied elsewhere); anything else, null. */
+function inFlightOf(e: unknown): DesignApproveResponse | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  const body = e.body as { error?: unknown; opIds?: unknown; status?: unknown } | null;
+  if (body?.error !== "in_flight" || !Array.isArray(body.opIds)) return null;
+  const status = typeof body.status === "string" ? (body.status as DesignApproveResponse["status"]) : "pending";
+  const inFlight = body.opIds.filter((x): x is string => typeof x === "string");
+  return { ok: true, status, applied: [], changed: [], refused: [], settled: [], remaining: [], inFlight };
+}
+
 /** What went wrong with an approve or a decline, in plain words. */
 function decisionError(e: unknown): string {
   if (e instanceof ApiError) {
     const error = (e.body as { error?: unknown } | null)?.error;
     if (error === "not_pending" || error === "not_yet") return "This suggestion isn't open any more.";
-    if (error === "in_flight") return "One of these is being added right now — look again in a moment.";
+    // Read as an answer wherever it names its ops (`inFlightOf`); this is one that named none.
+    if (error === "in_flight") return "One of these is being changed right now — look again in a moment.";
     if (error === "proposal_changed") return "This suggestion changed meanwhile — look again and try once more.";
   }
   if (e instanceof Error && e.message === "approve_unfinished") return "Not everything was added yet — try again.";
@@ -116,8 +136,12 @@ export function ProposalCard({ proposalId, flags = [] }: { proposalId: string; f
   const [chosen, setChosen] = useState<ReadonlySet<string> | null>(null);
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState("");
-  /** Changes a decline met in flight (an approve is applying them): never declined, said on their lines. */
-  const [inFlight, setInFlight] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * Changes a decision met in flight (another approve is applying them), by the decision that met them: an approve's are
+   * being changed, on the server's word; a decline's can't be declined now. Said on their lines until the next decision.
+   */
+  const [met, setMet] = useState<ReadonlyMap<string, InFlightBy>>(new Map());
+  const meeting = (by: InFlightBy, ids: readonly string[] | undefined) => setMet(new Map((ids ?? []).map((id) => [id, by])));
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(proposalId) });
   const afterDecision = async () => {
     setChosen(null);
@@ -127,24 +151,28 @@ export function ProposalCard({ proposalId, flags = [] }: { proposalId: string; f
   const approve = useMutation({
     networkMode: "always",
     mutationFn: (opIds: string[] | undefined) => {
-      setInFlight(new Set());
+      setMet(new Map());
       return approveUntilDone((body) => api.coachDesignApprove(proposalId, body), opIds, reread);
     },
+    // Met in flight (a 200's `inFlight`, or the 409 that named every one): being changed — never failed.
+    onSuccess: (answers) => meeting("approve", answers.flatMap((a) => a.inFlight ?? [])),
     onSettled: afterDecision,
   });
   const decline = useMutation({
     networkMode: "always",
-    mutationFn: (v: { opIds: string[] | undefined; reason: string }) =>
-      api.coachDesignDecline(proposalId, { ...(v.opIds ? { opIds: v.opIds } : {}), ...(v.reason.trim() ? { reason: v.reason.trim() } : {}) }),
+    mutationFn: (v: { opIds: string[] | undefined; reason: string }) => {
+      setMet(new Map());
+      return api.coachDesignDecline(proposalId, { ...(v.opIds ? { opIds: v.opIds } : {}), ...(v.reason.trim() ? { reason: v.reason.trim() } : {}) });
+    },
     onSuccess: (res) => {
       setDeclining(false);
       setReason("");
-      setInFlight(new Set(res.inFlight ?? []));
+      meeting("decline", res.inFlight);
     },
     onError: (e) => {
       // Every one named was in flight: nothing declined (409 in_flight, naming them).
-      const opIds = e instanceof ApiError ? (e.body as { error?: unknown; opIds?: unknown } | null) : null;
-      if (opIds?.error === "in_flight" && Array.isArray(opIds.opIds)) setInFlight(new Set(opIds.opIds.filter((x): x is string => typeof x === "string")));
+      const flying = inFlightOf(e);
+      if (flying) meeting("decline", flying.inFlight);
     },
     onSettled: afterDecision,
   });
@@ -164,7 +192,7 @@ export function ProposalCard({ proposalId, flags = [] }: { proposalId: string; f
   const busy = approve.isPending || decline.isPending;
   const some = picked.length < openIds.length ? picked : undefined;
   // A decline that met every one in flight says so on their lines, not here.
-  const error = approve.isError ? decisionError(approve.error) : decline.isError && inFlight.size === 0 ? decisionError(decline.error) : null;
+  const error = approve.isError ? decisionError(approve.error) : decline.isError && met.size === 0 ? decisionError(decline.error) : null;
   return (
     <section className="coach-pc" aria-labelledby={headingId}>
       <h2 id={headingId} className="coach-pc-title-h">
@@ -185,7 +213,7 @@ export function ProposalCard({ proposalId, flags = [] }: { proposalId: string; f
             checked={picked.includes(c.opId)}
             onToggle={() => toggle(c.opId)}
             busy={busy}
-            inFlight={inFlight.has(c.opId)}
+            inFlight={met.get(c.opId)}
           />
         ))}
         {lines.map((l) => (
@@ -454,12 +482,16 @@ function ChangeItem({
   checked: boolean;
   onToggle: () => void;
   busy: boolean;
-  /** A decline met it in flight: it can't be declined now. */
-  inFlight: boolean;
+  /**
+   * A decision met it in flight — the server's word, whatever this device's clock makes of the claim — so, while the
+   * read still has it open, it is being changed; a decline's also can't be declined now.
+   */
+  inFlight: InFlightBy | undefined;
 }) {
   const day = line.date ? dayAndTime(line.date, line.time) : null;
   const text = [day ? `${day}: ${line.summary}` : line.summary, line.was ? `was ${line.was}` : null, line.effect].filter(Boolean).join(" · ");
   const before = line.outcome?.status === "applied" ? line.outcome.before : null;
+  const flying = inFlight !== undefined && isOpen(line.outcome);
   return (
     <li className="coach-pc-item coach-pc-item--change">
       {picking ? <Pick label={`Include: ${line.summary}`} checked={checked} onToggle={onToggle} busy={busy} /> : null}
@@ -474,10 +506,12 @@ function ChangeItem({
             Done · it was {dayAndTime(before.date, before.time)}
             {before.minutes !== null ? `, ${before.minutes} min` : ""}
           </p>
+        ) : flying ? (
+          <p className="coach-pc-outcome">Being changed</p>
         ) : (
           <OutcomeLine outcome={line.outcome} applied={null} change />
         )}
-        {inFlight ? <p className="coach-pc-outcome coach-pc-outcome--refused">{IN_FLIGHT_LINE}</p> : null}
+        {inFlight === "decline" ? <p className="coach-pc-outcome coach-pc-outcome--refused">{IN_FLIGHT_LINE}</p> : null}
         {(line.issues ?? []).map((i, k) => (
           <p key={k} className="coach-pc-note">
             {i.message}

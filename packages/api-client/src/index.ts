@@ -783,6 +783,11 @@ export interface DesignApproveResponse {
   remaining: string[];
   /** A watch job a change queued waits: the client drains it, as after the thread's approve. */
   coachDrain?: true;
+  /**
+   * Changes another approve is applying (its claim inside the server's window, Task 8b): never applied twice, never a
+   * failure — they are being changed. Only when nothing else was answered is it a 409 `in_flight` naming them (`opIds`).
+   */
+  inFlight?: string[];
 }
 
 /** `POST /api/workouts`: a document workout for a day (today or later). `time` left out: the athlete's window. */
