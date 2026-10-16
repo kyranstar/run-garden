@@ -67,8 +67,9 @@ describe("the added records", () => {
       expect(rec(id).roles, id).toContain("stretch");
       expect(rec(id).load, id).toBe("none");
     }
+    // The rock-back moves in and out of its stretch to warm the hips: a warm-up drill, never a cool-down's held stretch.
     expect(rec("adductorRockBack").contraction).toEqual(["isotonic"]);
-    expect(rec("adductorRockBack").purposes).toEqual(expect.arrayContaining(["mobility", "stretch"]));
+    expect([...rec("adductorRockBack").purposes].sort()).toEqual(["mobility", "warmup"]);
     // Hamstrings, quads and inner thighs, each where its muscle sits.
     for (const id of ["standingHamstringStretch", "halfKneelingHamstringStretch"]) expect(rec(id).muscles.primary, id).toEqual(["hamstrings"]);
     for (const id of ["standingQuadStretch", "sideLyingQuadStretch"]) expect(rec(id).muscles.primary, id).toEqual(["quads"]);

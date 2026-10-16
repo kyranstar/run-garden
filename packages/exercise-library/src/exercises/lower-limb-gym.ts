@@ -169,7 +169,8 @@ export const LOWER_LIMB_GYM = defineExercises([
     tags: ["hip-opening"],
     contraction: ["isotonic"],
     muscles: { primary: ["adductors"], secondary: ["hamstrings", "glute-max"] },
-    purposes: ["mobility", "warmup", "stretch"],
+    // A drill that rocks in and out of the stretch to warm the hips: a warm-up, not a held cool-down stretch.
+    purposes: ["mobility", "warmup"],
     themes: ["hipsPosture", "gentleMobility"],
     harder: ["frogStretch"],
     text: {
