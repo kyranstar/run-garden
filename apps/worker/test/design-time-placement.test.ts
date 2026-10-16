@@ -117,6 +117,9 @@ describe("later today: the main coach's workout needs a time at least 15 minutes
     expect((soon.result as ToolErr).fix).toContain("09:46");
     const fine = await propose({ kind: "later_today" }, { kind: "new", date: TODAY, time: "09:45" }, la("09:30"));
     expect(isToolErr(fine.result)).toBe(false);
+    // A later day the request names is not held to today's clock.
+    const tomorrow = await propose({ kind: "later_today" }, { kind: "new", date: addDays(TODAY, 1), time: "09:35" }, la("09:30"));
+    expect(isToolErr(tomorrow.result)).toBe(false);
   });
 
   it("no time left today: refused, and it says to plan another day", async () => {
@@ -209,5 +212,17 @@ describe("approve: never a time already past", () => {
     const untimed = await designed({ kind: "week" }, { kind: "new", date: TODAY }, la("09:20"));
     const nearMidnight = await approveAt(untimed.id, la("23:50"));
     expect(nearMidnight.refused).toEqual([expect.objectContaining({ error: "past_time", why: "There's no time left today." })]);
+  });
+
+  it("found again after a crash, a time the approve placed is no move of the athlete's", async () => {
+    const { id } = await designed({ kind: "now" }, { kind: "new", date: TODAY }, la("09:31"));
+    const [untouched] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const first = await approveAt(id, la("09:32"));
+    expect(first.applied[0]).toMatchObject({ workout: { time: "09:35" } });
+    expect(first.applied[0]!.moved).toBeUndefined();
+    // The proposal's record lost: the plan read finds the workout, pinned at the approve's own time — not moved.
+    await db.update(coachProposals).set({ ops: untouched!.ops, status: "pending", resolvedAt: null }).where(eq(coachProposals.id, id));
+    const again = await approveAt(id, la("09:40"));
+    expect(again.applied.map((x) => [x.workout.time, x.moved ?? false])).toEqual([["09:35", false]]);
   });
 });
