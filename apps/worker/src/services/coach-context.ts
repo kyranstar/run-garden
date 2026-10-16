@@ -52,6 +52,7 @@ import { buildRaceHub } from "./race-hub.js";
 import { buildReadiness } from "./readiness.js";
 import { plannedRowColumns } from "./planned-columns.js";
 import { docWorkoutDates, hasDocWorkout } from "./proposal-kinds.js";
+import { liveMemoryWhere } from "./memory-core.js";
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
@@ -268,11 +269,9 @@ export async function buildDossier(
     blocks.push({ name, body });
   };
 
-  // 1 · ATHLETE — memory verbatim, grouped, with ids the model can update.
-  const memory = await db
-    .select()
-    .from(coachMemory)
-    .where(and(eq(coachMemory.userId, userId), eq(coachMemory.active, true)));
+  // 1 · ATHLETE — memory verbatim, grouped, with ids the model can update. Live memory only (memory-core.ts): never a
+  // rehearsal run's, never an item a newer one superseded.
+  const memory = await db.select().from(coachMemory).where(liveMemoryWhere(userId, today));
   const memLines = (kind: string, label: string) => {
     const rows = memory.filter((m) => m.kind === kind);
     return rows.length === 0

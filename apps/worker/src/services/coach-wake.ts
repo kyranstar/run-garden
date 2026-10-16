@@ -35,6 +35,7 @@ import type { Env } from "../env.js";
 import { wakeGateway } from "./gateway-route.js";
 import { chunkIds, type Db } from "./db.js";
 import { plannedRowColumns } from "./planned-columns.js";
+import { liveMemoryWhere } from "./memory-core.js";
 import { restoreInProgress } from "./account-state.js";
 import { isOutOfCredits, loadOutOfCredits, noteGatewayOutcome, outOfCreditsWithin } from "./ai-credits.js";
 import { llmBudgetStatus } from "./llm.js";
@@ -1041,10 +1042,8 @@ export async function guardrailCtx(
       .map((w) => w.date)
       .sort()
       .at(-1) ?? today;
-  const memories = await db
-    .select()
-    .from(coachMemory)
-    .where(and(eq(coachMemory.userId, userId), eq(coachMemory.active, true)));
+  // Live memory only (memory-core.ts): a rehearsal run's items and superseded ones set no anchor day and no event.
+  const memories = await db.select().from(coachMemory).where(liveMemoryWhere(userId, today));
   const rules = memories
     .filter((r) => r.kind === "rule")
     .flatMap((r) => {

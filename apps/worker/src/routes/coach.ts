@@ -55,6 +55,10 @@ import { plannedRowColumns } from "../services/planned-columns.js";
 import { hasDocWorkout } from "../services/proposal-kinds.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
+import { liveMemoryWhere } from "../services/memory-core.js";
+
+/** The zone whose local date is the earliest anywhere at any moment (UTC−12; POSIX's sign is inverted). */
+const EARLIEST_ZONE = "Etc/GMT+12";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -203,10 +207,8 @@ coachRoutes.get("/state", async (c) => {
     .from(coachQuestions)
     .where(and(eq(coachQuestions.userId, userId), isNull(coachQuestions.answeredAt)))
     .limit(1);
-  const memoryRows = await db
-    .select()
-    .from(coachMemory)
-    .where(and(eq(coachMemory.userId, userId), eq(coachMemory.active, true)));
+  // Live memory only (memory-core.ts): never a rehearsal run's, never an item a newer one superseded.
+  const memoryRows = await db.select().from(coachMemory).where(liveMemoryWhere(userId, today));
   const triggers = await pendingTriggers(db, userId);
   const [lastCoach] = await db
     .select()
@@ -595,10 +597,14 @@ coachRoutes.post("/questions/:id/dismiss", async (c) => {
 coachRoutes.get("/memory", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
+  // Live memory only (memory-core.ts): never a rehearsal run's, never an item a newer one superseded. This read has no
+  // timezone (loading one would be a statement more), so an expiry is judged against the earliest local date anywhere
+  // now (UTC−12): an item still live somewhere is listed, and the hourly sweep retires one that lapsed in the
+  // athlete's own zone (`sweepUserProposals`), as it always has.
   const rows = await db
     .select()
     .from(coachMemory)
-    .where(and(eq(coachMemory.userId, userId), eq(coachMemory.active, true)))
+    .where(liveMemoryWhere(userId, todayInZone(EARLIEST_ZONE)))
     .orderBy(desc(coachMemory.learnedAt));
   return c.json({ memory: rows });
 });
