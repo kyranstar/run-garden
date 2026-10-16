@@ -230,6 +230,17 @@ describe("the coach switch", () => {
     await until(() => !!document.querySelector(".coach-composer-field"), "the composer");
     expect(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!.value).toBe("Plan a test so I can measure: Wall sit");
   });
+
+  it("a stalled objective: 'Ask the coach' opens the composer with a request toward it filled in (Task 13, D13)", async () => {
+    serve([objective("o1", "Stronger legs for ski season")]);
+    mount("/studio/objectives");
+    await until(() => !!cardOf("Stronger legs for ski season"), "the card");
+    expect(cardOf("Stronger legs for ski season")!.textContent).toContain("Nothing done toward this");
+    await click([...document.querySelectorAll("a")].find((a) => a.textContent === "Ask the coach"), "Ask the coach");
+    await until(() => where === "/studio", "the Studio");
+    await until(() => !!document.querySelector(".coach-composer-field"), "the composer");
+    expect(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!.value).toBe("Plan a session toward my objective: Stronger legs for ski season");
+  });
 });
 
 // ── Writes ─────────────────────────────────────────────────────────────────

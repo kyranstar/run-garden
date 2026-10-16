@@ -26,8 +26,8 @@
  * Gentle (§2.10): a streak from one week and never at zero; a best ever only when it is on the trend (an old one is not
  * brought up); a stalled objective only its facts and one neutral line with a next step; no red anywhere. Evidence in
  * plain words — Measured, Few readings, At least, Not measured yet — and one not measured yet offers to ask the coach for
- * a test (fix wave 3B, B-I11). A key result is a "measure" to the athlete. The athlete's words and the coach's line are
- * text.
+ * a test (fix wave 3B, B-I11); a stalled objective's "Ask the coach" opens the composer with a request toward it (Task
+ * 13, D13). A key result is a "measure" to the athlete. The athlete's words and the coach's line are text.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
@@ -51,6 +51,7 @@ import {
   objectiveFraction,
   pointsWords,
   stalled,
+  stalledRequest,
   STALL_DAYS,
   streakWords,
   testRequest,
@@ -397,7 +398,10 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
       {stalled(card, today) ? (
         <p className="obj-quiet">
           {`Nothing done toward this in the last ${STALL_DAYS / 7} weeks. `}
-          <Link to="/studio">Ask the coach</Link>
+          {/* The composer opens with a request toward it in the field (Task 13, D13), as the test link does. */}
+          <Link className="tap-pad" to="/studio" state={{ coach: "compose", request: stalledRequest(card.objective.title) } satisfies CoachArrival}>
+            Ask the coach
+          </Link>
         </p>
       ) : null}
       {card.note ? (

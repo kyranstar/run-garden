@@ -158,6 +158,8 @@ const EVIDENCE_WORD: Record<KeyResultEvidence, string> = { measured: "Measured",
 
 /** What "Ask the coach for a test" puts in the composer for a measure not measured yet (B-I11): the athlete's to send. */
 export const testRequest = (label: string): string => `Plan a test so I can measure: ${label.trim()}`;
+/** The request a stalled objective's "Ask the coach" starts the composer with (Task 13, D13): the athlete's to send. */
+export const stalledRequest = (title: string): string => `Plan a session toward my objective: ${title.trim()}`;
 /** read_objectives' legend's own four words. */
 export const evidenceWord = (e: KeyResultEvidence): string => EVIDENCE_WORD[e];
 
