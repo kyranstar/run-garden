@@ -19,7 +19,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createRun, CUT_OFF_NOTE, LAST_TURN_NOTE, NO_TOOL_NUDGE, ROUTE_OVERHEAD, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
-import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
+import { REVIEW_DIMENSIONS, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { STOPPED_NOTES } from "../src/services/design-review.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
@@ -133,10 +133,11 @@ describe("the main run: a turn with no tool", () => {
     expect(steps.at(-1)!.status).toBe("finished");
     // The nudge went to the model as the newest message of the call after the first prose reply.
     expect(newest(requests.at(-1)!)).toContain(NO_TOOL_NUDGE);
-    expect(NO_TOOL_NUDGE).toMatch(/called no tool/);
-    expect(NO_TOOL_NUDGE).toMatch(/A turn that calls no tool ends your run, and nothing you drafted reaches the athlete\./);
-    expect(NO_TOOL_NUDGE).toMatch(/ask_athlete/);
-    expect(NO_TOOL_NUDGE).toMatch(/finish/);
+    // What the loop does, said as it is (round 2, A-M5 and B-M1) — the shared prompt's own line.
+    expect(NO_TOOL_NUDGE).toBe(
+      "A turn without a tool call shows the athlete nothing. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).",
+    );
+    expect(SHARED_PROMPT).toContain(NO_TOOL_NUDGE);
     // Pending through the finish's own promotion, the run's proposal set, no stop note.
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");

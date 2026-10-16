@@ -9,6 +9,8 @@ import { DOC_ISSUE_CODES, type DocIssueCode } from "@rg/workout";
 import { MAX_TOOL_CALLS_PER_TURN } from "../src/services/design-limits.js";
 import { PROMPT_TOOL_NAMES, REVIEW_DIMENSIONS, SHARED_PROMPT, markUntrusted, roleBlock } from "../src/services/design-prompt.js";
 import { RUN_LIMITS } from "../src/services/coach-runs.js";
+import { submitReview } from "../src/services/design-review.js";
+import { proposeWorkout } from "../src/services/design-tools/propose.js";
 
 const ROLES = ["main", "designer", "reviewer"] as const;
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map(roleBlock)].join("\n");
@@ -153,8 +155,11 @@ describe("3A-B — the prompt agrees with the code", () => {
   const fatal = SHARED_PROMPT.slice(SHARED_PROMPT.indexOf("Fatal only when wrong"));
   const line = (tool: string): string => SHARED_PROMPT.split("\n").find((l) => l.startsWith(`- ${tool}:`)) ?? "";
 
-  it("B1: a turn with no tool call — the line the loop's nudge agrees with", () => {
-    expect(SHARED_PROMPT).toContain("A turn that calls no tool ends your run, and nothing you drafted reaches the athlete. To ask, call ask_athlete. To end, call finish");
+  it("B1: a turn with no tool call — the line the loop's nudge agrees with, made true (round 2, A-M5 and B-M1)", () => {
+    expect(SHARED_PROMPT).toContain(
+      "A turn without a tool call shows the athlete nothing. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).",
+    );
+    expect(SHARED_PROMPT).not.toContain("nothing you drafted reaches the athlete");
     // The reviewer has no finish: the shared line names its end.
     expect(SHARED_PROMPT).toMatch(/To end, call finish \(a reviewer ends with submit_review\)\./);
   });
@@ -184,7 +189,11 @@ describe("3A-B — the prompt agrees with the code", () => {
 
   it("B5: the main coach asks for today's condition check when a gate needs it — before plan_set in a set", () => {
     expect(SHARED_PROMPT).toContain('ask_athlete({ check: "condition", why }) — the athlete logs it in the app; validate again after.');
-    expect(roleBlock("main")).toMatch(/today's condition check among it\) before plan_set/);
+    // Only when a workout today needs it: today's check opens today's gates, never a later day's (round 2, B-I1).
+    expect(roleBlock("main")).toContain(
+      "ask what the set needs (today's condition check, only when a workout today needs a move its gate closes) before plan_set",
+    );
+    expect(roleBlock("main")).not.toMatch(/among it\)/);
   });
 
   it("B7: count what the plan holds; a programme session is its programme's; programme sessions count toward the week", () => {
@@ -213,7 +222,8 @@ describe("3A-B — the prompt agrees with the code", () => {
   });
 
   it("B10: the revise path, in one line of the main block", () => {
-    expect(roleBlock("main")).toContain("a Studio workout is revised with target revise from get_workout's rev; a programme session can't be edited yet");
+    // A template's workout is revised as a Studio one is (round 2, B-M6).
+    expect(roleBlock("main")).toContain("a Studio or template workout is revised with target revise from get_workout's rev; a programme session can't be edited yet");
   });
 
   it("B11: each role states its turn budget from RUN_LIMITS — and the block without a budget stays the same text", () => {
@@ -226,7 +236,10 @@ describe("3A-B — the prompt agrees with the code", () => {
   });
 
   it("B12: objectives and tests — what a test is, how to schedule one, when its evidence counts", () => {
-    expect(SHARED_PROMPT).toContain("To measure one, schedule a test: a move to max — dose.max makes reps or a hold a floor, not a cap — with test.keyResultId naming the key result. It counts only once the athlete does it and it is logged.");
+    // The move is one its measure reads (round 2, B-M10): validate and propose say so when it isn't.
+    expect(SHARED_PROMPT).toContain(
+      "To measure one, schedule a test: a move its measure reads (read_objectives shows it), to max — dose.max makes reps or a hold a floor, not a cap — with test.keyResultId naming the key result. It counts only once the athlete does it and it is logged.",
+    );
     expect(line("read_objectives")).toContain("a legend says what each flag means");
   });
 
@@ -244,5 +257,29 @@ describe("3A-B — the prompt agrees with the code", () => {
   it("stays within its size: the shared prefix and each role block with its budget", () => {
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(1500);
+  });
+});
+
+// ── Batch 3A end fix wave, round 2 (both re-reviews) ────────────────────────────────────────────────────────────────
+
+describe("3A round 2 — the prompt's remaining words", () => {
+  it("B-M4: the reviewer's must-fix items are what scores 2 or less, and the guide lines and rules no tool checks", () => {
+    expect(roleBlock("reviewer")).toContain("Must-fix: anything scoring 2 or less, and any profile guide line or other rule no tool checks — each as one concrete change");
+    expect(roleBlock("reviewer")).not.toContain("any hard rule the validator missed");
+    // The hard rules stay the validator's, whatever the scores.
+    expect(roleBlock("reviewer")).toContain("Hard rules are enforced by the validator regardless of your scores.");
+    // submit_review's description says the same, within the registry's 400 characters.
+    expect(submitReview.description).toContain("must-fix: anything at 2 or less, and any guide line or rule no tool checks;");
+    expect(submitReview.description).not.toContain("the validator missed");
+    expect(submitReview.description.length).toBeLessThanOrEqual(400);
+  });
+
+  it("B-I1: the main coach asks for today's check only when a workout today needs it", () => {
+    expect(roleBlock("main")).toContain("(today's condition check, only when a workout today needs a move its gate closes)");
+  });
+
+  it("B-M3: propose_workout's document is the draft — not one validated first", () => {
+    const doc = (proposeWorkout.inputSchema as { properties: { doc: { description: string } } }).properties.doc;
+    expect(doc.description).toBe("The draft: a workout document exactly as validate_workout takes it.");
   });
 });

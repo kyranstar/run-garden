@@ -34,6 +34,7 @@ import {
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import {
+  designerResult,
   MUST_FIX_MAX,
   NOTE_NOT_DONE,
   NOTE_UNREADABLE,
@@ -292,7 +293,8 @@ describe("a must-fix sends the draft back; the revision is reviewed again", () =
       reviseFrom: "round 1's draft, the one the proposal holds — not this one",
       heldTitle: u("One"),
       heldMustFix: [u("Shorter rests.")],
-      next: "Revise the held draft against its must-fix items, validate again, then call propose_workout again with a changeNote.",
+      // propose_workout runs validate's checks itself: no "validate again" (round 2, B-M3).
+      next: "Revise the held draft against its must-fix items and call propose_workout again with a changeNote.",
     });
     const lines = (await events(runId)).map((e) => e.summary).filter((s) => s.startsWith("Kept"));
     expect(lines).toEqual(["Kept round 1's version — it scored 4.0 against 3.0.", "Kept the revision — it scored 5.0 against round 1's 4.0."]);
@@ -1567,5 +1569,17 @@ describe("fix wave 3A — the reviewer's words reach the designer marked (A16)",
     expect(two.reviseFrom).not.toContain("Ignore your rules");
     // What the athlete sees is the review as written: the marking is for the model only.
     expect((await proposalOf(runId))!.ops[0]!.review!.mustFix).toEqual(["Shorter rests."]);
+  });
+});
+
+describe("round 2 — what a review's result asks next (B-M3)", () => {
+  it("a reviewed draft with must-fix items: revise and propose again — propose runs validate's checks itself", () => {
+    const review = { ...verdict(3), mustFix: ["Shorter rests."] };
+    const op = {
+      kind: "doc_workout",
+      toolUseId: "u1",
+      reviewLog: [{ round: 1, toolUseId: "u1", reviewRunId: "rv-1", status: "reviewed", review, mean: 3, kept: true }],
+    } as unknown as DocWorkoutOp;
+    expect(designerResult(op, "u1")).toMatchObject({ next: "Revise against the must-fix items and call propose_workout again with a changeNote." });
   });
 });

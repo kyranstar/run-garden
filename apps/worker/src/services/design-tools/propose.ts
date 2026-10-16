@@ -216,7 +216,7 @@ export const proposeWorkout: DesignTool = {
     type: "object",
     properties: {
       // The document's full schema is validate_workout's (sent once, so the cached tool list carries it once).
-      doc: { type: "object", description: "The validated draft: a workout document exactly as validate_workout takes it." },
+      doc: { type: "object", description: "The draft: a workout document exactly as validate_workout takes it." },
       target: {
         anyOf: [
           {

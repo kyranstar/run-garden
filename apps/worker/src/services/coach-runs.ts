@@ -8,6 +8,7 @@ import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder } from "./design-context.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, REVIEWER_MAX_CALLS, SET_REDO_ROUNDS } from "./design-limits.js";
+import { NO_TOOL_LINE } from "./design-prompt.js";
 import {
   designerStopLine,
   isSetScope,
@@ -1380,9 +1381,9 @@ export function expiredLine(settings: RunSettings | undefined): string {
  * to answer in words, which would end the run with nothing shown). */
 export const LAST_TURN_NOTE = "This is your last turn in this run. Call finish now, with one plain line for the athlete.";
 
-/** A main run's or a designer's turn that called no tool: its one repair (fix wave 3A, A3; the reviewer has its own). */
-export const NO_TOOL_NUDGE =
-  "That turn called no tool. A turn that calls no tool ends your run, and nothing you drafted reaches the athlete. If you meant to ask the athlete something, call ask_athlete. If the work is done, call finish, with one plain line for the athlete.";
+/** A main run's or a designer's turn that called no tool: its one repair (fix wave 3A, A3; the reviewer has its own) —
+ * the shared prompt's own line, which says what this loop does (round 2, A-M5 and B-M1). */
+export const NO_TOOL_NUDGE = NO_TOOL_LINE;
 
 /** An answer cut off at the output limit (fix wave 3A, A4): the thinking used the room, and the document is not the
  * problem — never a hint to make it smaller. */

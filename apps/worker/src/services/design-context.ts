@@ -443,7 +443,7 @@ export function gatesReadTheCheck(p: Pick<ConditionProfile, "describeRules">): b
   return p.describeRules().some((l) => l.rule === "allowPattern" || l.rule === "allowRecord");
 }
 
-function conditionsSection(r: Reads): string[] {
+function conditionsSection(r: Reads, role: Role): string[] {
   if (r.activeProfiles.length === 0) return ["Conditions on: none."];
   const modes = EFFORT_LEVELS.map((e) => `${e} → ${modeOfEffort(e)}`).join("; ");
   // The validator's own mapping (validate.ts reads a part's format through FORMAT_OF_PART), written out.
@@ -464,8 +464,9 @@ function conditionsSection(r: Reads): string[] {
     const flag = p.setFlag ? `; during a session a move can be flagged "${p.setFlag.label}"` : "";
     out.push(`${p.label} — its check is "${p.check.label}", ${p.check.min}–${p.check.max}, before and after a session or on its own${flag}. Today's: ${reading}.`);
     for (const line of p.describeRules()) out.push(`- ${ENFORCEMENT_LABEL[RULE_ENFORCEMENT[line.rule]]}: ${line.text}`);
-    // Only on such a day: no check yet, and a gate that reads it (the prompt says who asks for one, and how).
-    if (!latest && gatesReadTheCheck(p)) out.push(`No ${p.label} check is logged today: the moves its gates close stay closed until the athlete logs one.`);
+    // Only on such a day — no check yet, and a gate that reads it — and only to the main coach, who asks for one (the
+    // prompt says how): a designer can't ask, and a reviewer judges what it is given (round 2, B-M12).
+    if (role === "main" && !latest && gatesReadTheCheck(p)) out.push(`No ${p.label} check is logged today: the moves its gates close stay closed today unless the athlete logs a check that allows them; a later day's gates wait on that day's check.`);
   }
   return out;
 }
@@ -611,7 +612,7 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
       `Today is ${WEEKDAYS[isoWeekday(r.today) - 1]}, ${r.today}, ${time} in ${r.tz}; ${Math.floor(left / 60)} h ${left % 60} min of the day are left.`,
       `Units: ${distance}; weights in ${r.prefs.weightUnit}. Write every figure in prose — the intent, the whys, cues, notes and the finish line — in these; the document's own fields keep theirs (load.kg, carryM, distanceM, seconds per km), with load.typed as the athlete writes it.`,
     ].join("\n"),
-    conditionsSection(r).join("\n"),
+    conditionsSection(r, role).join("\n"),
     [
       `Today's plan: ${todays.length ? `${todays.map(planItem).join("; ")}.` : "nothing planned."}`,
       events.line,

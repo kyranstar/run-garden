@@ -342,7 +342,7 @@ describe("a run, step by step, to finish", () => {
     const results = await drive(runId, deps(model.callModel, []));
     expect(results.map((r) => r.status)).toEqual(["active", "active", "finished"]);
     expect(results.at(-1)).toMatchObject({ status: "finished", nextDue: null });
-    expect(JSON.stringify(model.requests[1]!.messages.at(-1))).toContain("That turn called no tool");
+    expect(JSON.stringify(model.requests[1]!.messages.at(-1))).toContain("A turn without a tool call shows the athlete nothing.");
     // No proposal was ever drafted: the finish's guard keeps nothing back, and nothing was proposed.
     expect((await events(runId)).map((e) => e.summary).slice(-2)).toEqual(["Nothing to design today — rest is the right call.", LINES.nothingProposed]);
   });

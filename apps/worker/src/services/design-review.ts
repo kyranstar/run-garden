@@ -407,8 +407,8 @@ export function designerResult(op: DocWorkoutOp, toolUseId: string, why?: string
       ? "No rounds of revision are left: call finish."
       : outstanding.length > 0
         ? isHeld
-          ? "Revise against the must-fix items, validate again, then call propose_workout again with a changeNote."
-          : "Revise the held draft against its must-fix items, validate again, then call propose_workout again with a changeNote."
+          ? "Revise against the must-fix items and call propose_workout again with a changeNote."
+          : "Revise the held draft against its must-fix items and call propose_workout again with a changeNote."
         : "Nothing must change: call finish.";
   if (entry.status === "reviewed" && entry.review) {
     return { ...markedReview(entry.review), round: entry.round, roundsLeft, kept, ...reviseFrom, next };
@@ -557,7 +557,7 @@ const NOTE = { type: "string", minLength: 1, maxLength: REVIEW_NOTE_MAX } as con
 export const submitReview: DesignTool = {
   name: "submit_review",
   description:
-    "The reviewer's verdict, given once; it ends your run. Every dimension scored 1–5 with a one-line note; must-fix: anything at 2 or less, and any hard rule the validator missed; the improvements that matter. A cost the document explains (an item's why, its notes) is judged on that explanation. `accepted`, at most 3 { dimension, why }: a cost the athlete chose in their own words — never a must-fix.",
+    "The reviewer's verdict, given once; it ends your run. Every dimension scored 1–5 with a one-line note; must-fix: anything at 2 or less, and any guide line or rule no tool checks; the key improvements. A cost the document explains (an item's why, its notes) is judged on that explanation. `accepted`, at most 3 { dimension, why }: a cost the athlete chose in their own words — never a must-fix.",
   inputSchema: {
     type: "object",
     properties: {

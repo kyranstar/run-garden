@@ -575,13 +575,21 @@ describe("the enforcement labels", () => {
 // ── Batch 3A end fix wave, part B (audit-3a-agent-design.md) ────────────────────────────────────────────────────────
 
 describe("3A-B — the opening message says what the code holds", () => {
-  const noCheck = `No ${TMJ.label} check is logged today: the moves its gates close stay closed until the athlete logs one.`;
+  // Round 2 (B-I1): today's check opens today's gates only; a later day's wait on that day's.
+  const noCheck = `No ${TMJ.label} check is logged today: the moves its gates close stay closed today unless the athlete logs a check that allows them; a later day's gates wait on that day's check.`;
 
-  it("B5: with no condition check today and a profile whose gates read it, one line says so — only on such a day", async () => {
+  it("B5: with no condition check today and a profile whose gates read it, one line says so — only on such a day, and only to the main coach (round 2, B-M12)", async () => {
     expect((await build()).header).not.toContain(noCheck);
     await db.delete(schema.conditionChecks);
     const none = await build();
     expect(none.header.split("\n").filter((l) => l === noCheck)).toHaveLength(1);
+    expect(none.header).not.toMatch(/stay closed until the athlete logs one/);
+    // The main coach asks for it; a designer can't, and a reviewer judges what it is given.
+    for (const role of ["designer", "reviewer"] as const) {
+      const other = await build({ role, scope: { kind: "week" }, parentId: "run-0", brief: "b", request: null });
+      expect(other.header, role).not.toContain(`No ${TMJ.label} check is logged today`);
+      expect(other.header, role).toContain("none today — unanswered, so a rule that needs an answered check stays closed");
+    }
     // A profile with no gate that reads the check needs no check to open one.
     const ungated: ConditionProfile = { ...TMJ, describeRules: () => TMJ.describeRules().filter((l) => l.rule !== "allowPattern" && l.rule !== "allowRecord") };
     expect(gatesReadTheCheck(TMJ)).toBe(true);
