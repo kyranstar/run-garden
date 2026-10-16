@@ -63,14 +63,25 @@ describe("a cool-down after a run, with the calves as a focus area", () => {
 });
 
 describe("sore calves and hamstrings after a long run (J04)", () => {
-  it("the cool-down eases both areas at every place and on every day's seed: a calf move and a hamstring move", () => {
+  it("the cool-down eases both areas at every place and on every day's seed: a calf STRETCH, and a hamstring move", () => {
     for (const [place, equipment] of PLACES) {
       for (const seed of [undefined, ...SEEDS]) {
         const s = suggestForPart(AFTER_A_RUN, COOLDOWN, EXERCISES, { ...CTX, equipment, focusRefs: ["calves", "hamstrings"], ...(seed === undefined ? {} : { seed }) });
-        const reasons = s.map((x) => x.reason);
-        expect(reasons, `${place} ${seed}`).toContain("eases your calves, a focus area");
-        expect(reasons, `${place} ${seed}`).toContain("eases your hamstrings, a focus area");
+        const ids = s.map((x) => x.libraryId);
+        // Not just a reason that names the calves: a calf stretch itself, in every list.
+        expect(ids.some(calfStretch), `${place} ${seed}: ${ids.join(", ")}`).toBe(true);
+        expect(s.find((x) => calfStretch(x.libraryId))!.reason, `${place} ${seed}`).toBe("eases your calves, a focus area");
+        expect(s.map((x) => x.reason), `${place} ${seed}`).toContain("eases your hamstrings, a focus area");
         for (const x of s) expect(eases(rec(x.libraryId)), `${place} ${x.libraryId}`).toBe(true);
+      }
+    }
+  });
+
+  it("the ankle circles never meet a calves focus, so they never take a calf stretch's place", () => {
+    for (const [place, equipment] of PLACES) {
+      for (const seed of [undefined, ...SEEDS]) {
+        const s = suggestForPart(AFTER_A_RUN, COOLDOWN, EXERCISES, { ...CTX, equipment, focusRefs: ["calves", "hamstrings"], ...(seed === undefined ? {} : { seed }) });
+        expect(s.map((x) => x.libraryId), `${place} ${seed}`).not.toContain("ankleCircles");
       }
     }
   });

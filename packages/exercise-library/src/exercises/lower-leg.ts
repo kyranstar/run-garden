@@ -43,7 +43,11 @@ export const LOWER_LEG = defineExercises([
         "Hold and breathe, easing a little further only as the calf lets go.",
         "Step the feet together, then switch sides."
       ],
-      focus: ["Back knee straight, back heel down.", "The hips move toward the wall; the body stays in one long line."],
+      focus: [
+        "Back knee straight, back heel down.",
+        "The hips move toward the wall; the body stays in one long line.",
+        "If the tendon at the back of the heel is sore, keep this gentle or skip it."
+      ],
       mistakes: ["Letting the back heel lift.", "Turning the back foot out.", "Bouncing into the stretch."],
       breathing: "Slow breaths with long, easy exhales.",
       conditions: { tmj: "Nothing here loads the jaw; keep the face and shoulders soft while the calf lets go." },
@@ -82,7 +86,11 @@ export const LOWER_LEG = defineExercises([
         "Hold and breathe, letting the knee sink a little further as it eases.",
         "Stand up, then switch sides."
       ],
-      focus: ["The back heel stays down.", "A short stance: the bend in the knee makes the stretch, not the length of the step."],
+      focus: [
+        "The back heel stays down.",
+        "A short stance: the bend in the knee makes the stretch, not the length of the step.",
+        "If the tendon at the back of the heel is sore, keep this gentle or skip it."
+      ],
       mistakes: ["Lifting the back heel to sink lower.", "Letting the back knee fall inward.", "Stepping back so far that the knee can't bend."],
       breathing: "Slow breaths with long, easy exhales.",
       conditions: { tmj: "No effort in the face or jaw at all; let the hands rest lightly on the wall." },
@@ -192,7 +200,7 @@ export const LOWER_LEG = defineExercises([
     easier: ["calfRaise"],
     harder: ["singleLegCalfRaise"],
     text: {
-      summary: "Rise on both feet at a step's edge, then lower slowly on one until the heel dips below.",
+      summary: "Rise on both feet at a step's edge, lower slowly on one: strength for calf and Achilles.",
       setup: [
         "Stand with the balls of both feet on the edge of a low, stable step or the bottom stair, heels hanging off.",
         "Fingertips on a wall or rail for balance. No step? Do it on flat floor, lowering until the heel touches down."
@@ -351,9 +359,11 @@ export const LOWER_LEG = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    // The ankle mobility family (with the knee-to-wall ankle rocks) names the muscle the move loosens: seated with the knee
-    // bent, the deep calf limits the circle's top; the shin and outer-shin muscles lengthen on its other arcs.
-    muscles: { primary: ["soleus"], secondary: ["gastrocnemius", "tibialis", "peroneals"] },
+    // The muscles that move the foot. A lifted foot hangs pointed, so lifting it and turning it out work against gravity;
+    // the calf only lets it point. (The ankle family's other convention, naming the muscle a move loosens, is for
+    // weight-bearing mobility only: the knee-to-wall ankle rocks, where body weight takes the ankle into its stretch.
+    // Named primary here, the calf would make the circles meet a "calves" focus and take a calf stretch's place.)
+    muscles: { primary: ["tibialis", "peroneals"], secondary: ["gastrocnemius", "soleus"] },
     purposes: ["mobility", "warmup", "recovery"],
     tags: ["ankle"],
     themes: ["gentleMobility"],

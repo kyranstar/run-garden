@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-  EXERCISES, GLOSSARY, LOCATION_PRESETS, NO_EQUIPMENT_GEAR, PATTERNS, TAGS, TMJ, hasEquipment, label, makeEngineData, recordFlareSafe, searchLibrary,
-  validateLibrary, type ExerciseRecord,
+  EQUIPMENT, EXERCISES, GLOSSARY, LOCATION_PRESETS, MUSCLE_REGION, NO_EQUIPMENT_GEAR, PATTERNS, TAGS, TMJ, hasEquipment, label, makeEngineData,
+  recordFlareSafe, searchLibrary, validateLibrary, type ExerciseRecord,
 } from "../src/index.js";
 
 // R10 (CUJ J04, sore calves and hamstrings after a long run): the library's lower leg. Searching "calf" used to find only
@@ -72,11 +72,21 @@ describe("the lower-leg records", () => {
     for (const id of LOWER_LEG) expect(rec(id).regions.some((g) => g === "calves" || g === "ankles"), id).toBe(true);
   });
 
-  test("the ankle mobility family names one thing: the muscle the move loosens, the deep calf first", () => {
-    for (const id of ["ankleRocks", "ankleCircles"]) {
-      expect(rec(id).family, id).toBe("ankleMobility");
-      expect(rec(id).muscles.primary, id).toEqual(["soleus"]);
-      expect(rec(id).muscles.secondary, id).toEqual(expect.arrayContaining(["gastrocnemius", "tibialis"]));
+  test("the ankle family: weight-bearing rocks name the muscle they loosen; circles name the muscles that move the foot", () => {
+    for (const id of ["ankleRocks", "ankleCircles"]) expect(rec(id).family, id).toBe("ankleMobility");
+    // Body weight takes the ankle into its stretch: the deep calf that limits it.
+    expect(rec("ankleRocks").muscles.primary).toEqual(["soleus"]);
+    // A lifted foot: the shin and outer-shin muscles move it; the calf only lets it point.
+    expect(rec("ankleCircles").muscles.primary).toEqual(["tibialis", "peroneals"]);
+    expect(rec("ankleCircles").muscles.secondary).toEqual(expect.arrayContaining(["gastrocnemius", "soleus"]));
+    // So the circles never meet a "calves" focus (a region, or a primary muscle under it).
+    expect(rec("ankleCircles").regions).not.toContain("calves");
+    expect(rec("ankleCircles").muscles.primary.some((m) => MUSCLE_REGION[m] === "calves")).toBe(false);
+  });
+
+  test("both calf stretches say what to do with a sore tendon at the back of the heel", () => {
+    for (const id of STRETCHES) {
+      expect(Object.values(rec(id).text).flat().join(" "), id).toContain("If the tendon at the back of the heel is sore, keep this gentle or skip it.");
     }
   });
 
@@ -209,7 +219,13 @@ describe("searching for the lower leg", () => {
     expect(ids("foam roll")).toContain("calfRelease");
     expect(ids("heel drop")[0]).toBe("eccentricHeelDrop");
     expect(ids("heel raise")[0]).toBe("calfRaise");
-    expect(ids("achilles")).toEqual(expect.arrayContaining(["eccentricHeelDrop", ...STRETCHES]));
+    // "achilles" alone: the loading the evidence backs, the heel drop, first; then the rest of the calf work.
+    expect(ids("achilles")[0]).toBe("eccentricHeelDrop");
+    expect(ids("achilles")).toEqual(expect.arrayContaining(STRETCHES));
+    // A sore one: what eases, the stretches among them, each carrying the tendon's caution.
+    const sore = searchLibrary(EXERCISES, "sore achilles");
+    expect(sore.map((e) => e.id)).toEqual(expect.arrayContaining([...STRETCHES, "calfRelease"]));
+    expect(sore.filter(loads).map((e) => e.id)).toEqual([]);
     expect(ids("ankle circles")[0]).toBe("ankleCircles");
     expect(ids("running")).toEqual(expect.arrayContaining(["calfRaise", "singleLegCalfRaise", "eccentricHeelDrop", "tibialisRaise", "pogoHop"]));
   });
@@ -227,6 +243,36 @@ describe("searching for the lower leg", () => {
       expect(first?.regions.some((g) => g === "low-back" || g === "upper-back"), `${q}: ${first?.id}`).toBe(true);
     }
     expect(searchLibrary(EXERCISES, "sore lower back")[0]!.regions, "sore lower back").toContain("low-back");
+  });
+
+  test("\"lower\" stands for \"low\" only in \"lower back\": \"lower jaw\" and \"lower leg\" search as they always did", () => {
+    // As before the phrase: a hit says a word that starts "lower" (lower traps, lower slowly) or is one typo from it
+    // ("power"), never merely a word that starts "low".
+    const oneEdit = (a: string, b: string): boolean => {
+      if (Math.abs(a.length - b.length) > 1) return false;
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      if (a.length === b.length) return a.slice(i + 1) === b.slice(i + 1) || (a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2));
+      return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+    };
+    const saysLower = (e: ExerciseRecord): boolean => {
+      const gear = [...e.equipment.all, ...e.equipment.oneOf];
+      const words = [
+        e.name, e.text.summary, e.id, e.family, ...e.contraction, ...gear, ...gear.map((g) => EQUIPMENT[g]), ...e.tags, ...e.tags.map(label),
+        ...e.purposes, ...e.purposes.map(label), ...e.regions, ...e.regions.map(label), ...e.muscles.primary, ...e.muscles.primary.map(label),
+        ...e.muscles.secondary, ...e.muscles.secondary.map(label),
+      ].join(" ").replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/);
+      return words.some((w) => w.startsWith("lower") || oneEdit("lower", w));
+    };
+    for (const q of ["lower jaw", "lower leg", "lower traps"]) {
+      const hits = searchLibrary(EXERCISES, q);
+      expect(hits.length, q).toBeGreaterThan(0);
+      for (const e of hits) expect(saysLower(e), `${q}: ${e.id}`).toBe(true);
+    }
+    // "lower back" is the library's low back.
+    const back = searchLibrary(EXERCISES, "lower back");
+    expect(back.filter((e) => e.regions.includes("low-back")).length).toBeGreaterThan(3);
+    expect(back[0]!.regions).toContain("low-back");
     // Sore shins: what eases the shin muscle, not the hip stretches whose card lines rest a shin somewhere.
     const shins = searchLibrary(EXERCISES, "sore shins");
     expect(shins.map((e) => e.id)).toContain("ankleCircles");

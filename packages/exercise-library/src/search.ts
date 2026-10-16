@@ -63,14 +63,20 @@ const EASING: readonly string[] = ["stretch", "passive", "recovery"];
 
 /**
  * Everyday words for the vocabulary's: a query word standing for another, or for any of a few. "achilles": the tendon
- * of the calves; "lower" (back): the library's "low back" (and still every word "lower" starts).
+ * of the calves.
  */
 const ALIASES: Readonly<Record<string, string | readonly string[]>> = {
   calf: "calves", ab: "core", abs: "core", ham: "hamstrings", hammies: "hamstrings", butt: "glutes", bum: "glutes",
-  delts: "deltoids", shin: "tibialis", shins: "tibialis", tspine: "thoracic", achilles: "calves", lower: "low",
+  delts: "deltoids", shin: "tibialis", shins: "tibialis", tspine: "thoracic", achilles: "calves",
   sore: EASING, soreness: EASING, tight: EASING,
 };
-const hasAlias = (w: string): boolean => Object.prototype.hasOwnProperty.call(ALIASES, w);
+/**
+ * Everyday words that stand for the vocabulary's only before the next word: "lower back" is the library's "low back",
+ * while "lower jaw", "lower leg" and "lower traps" search as written.
+ */
+const PHRASE_ALIASES: Readonly<Record<string, string>> = { "lower back": "low" };
+const ownKey = (table: object, key: string): boolean => Object.prototype.hasOwnProperty.call(table, key);
+const hasAlias = (w: string): boolean => ownKey(ALIASES, w);
 
 /**
  * Where a word of the record says something, as a rank: lower is stronger. The class (tens) says which field: 0 the
@@ -161,9 +167,10 @@ function variants(w: string): string[] {
 }
 
 /** The strongest rank at which the record says this query word, or null. */
-function rankOfWord(words: ReadonlyMap<string, number>, w: string): number | null {
+function rankOfWord(words: ReadonlyMap<string, number>, w: string, next?: string): number | null {
   let best: number | null = null;
-  const vs = variants(w);
+  const phrase = next === undefined ? undefined : `${w} ${next}`;
+  const vs = phrase !== undefined && ownKey(PHRASE_ALIASES, phrase) ? [PHRASE_ALIASES[phrase]!] : variants(w);
   for (const [x, rank] of words) if (vs.some(v => x.startsWith(v)) && (best === null || rank < best)) best = rank;
   if (best !== null) return best;
   if (w.length < TYPO_MIN_LETTERS) return null;
@@ -180,8 +187,8 @@ export function wordRank(ex: ExerciseRecord, query: string): number | null {
   if (qs.length === 0) return null;
   const words = wordsOfRecord(ex);
   let worst = 0;
-  for (const w of qs) {
-    const r = rankOfWord(words, w);
+  for (let i = 0; i < qs.length; i++) {
+    const r = rankOfWord(words, qs[i]!, qs[i + 1]);
     if (r === null) return null;
     worst = Math.max(worst, r);
   }
