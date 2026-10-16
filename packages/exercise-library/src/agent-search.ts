@@ -186,7 +186,7 @@ function gearWords(id: string): string {
 }
 
 /** "a, b or c". */
-const either = (xs: readonly string[]): string => (xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} or ${xs.at(-1)}`);
+const either = (xs: readonly string[]): string => (xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} or ${xs[xs.length - 1]}`);
 
 /** What no move doing `values` of a facet would be, after "no move in the library" / "none". */
 function facetPhrase(facet: SearchFacet, values: readonly string[]): string {
