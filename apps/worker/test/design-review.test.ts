@@ -308,7 +308,8 @@ describe("the proposal keeps the best-scoring version", () => {
   it("a later, worse-scoring revision is not kept: the earlier version stays, and the change list says why", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId);
-    const good = verdict(4, { improvements: ["A longer final hold."] });
+    // A must-fix, so a full revision may spend a round (Task 13's fix wave, §2.3).
+    const good = verdict(4, { mustFix: ["A longer final hold."], improvements: ["A cue for the bridge."] });
     const worse = verdict(3);
     const second = propose("Calm hips, as a flow", "Swapped the holds for a flow.");
     const { deps, requests } = scripted([t(propose("Calm hips")), t(submit(good)), t(second), t(submit(worse)), t(finish())]);
@@ -325,8 +326,7 @@ describe("the proposal keeps the best-scoring version", () => {
       kept: expect.stringContaining("round 1"),
       reviseFrom: "round 1's draft, the one the proposal holds — not this one",
       heldTitle: u("Calm hips"),
-      heldMustFix: [],
-      next: "Nothing must change: call finish.",
+      heldMustFix: [u("A longer final hold.")],
     });
     expect((await events(runId)).some((e) => e.summary === "Kept round 1's version — it scored 4.0 against 3.0.")).toBe(true);
   });
@@ -336,11 +336,13 @@ describe("the proposal keeps the best-scoring version", () => {
     const a = await athlete();
     const one = await newRun(a.userId);
     const unreadable = submit({ scores: {} });
-    const first = scripted([t(propose("Scored")), t(submit(verdict(3))), t(propose("Unread", "Shorter.")), t(unreadable), t(unreadable), t(finish())]);
+    // A must-fix, so a full revision may spend a round (Task 13's fix wave, §2.3).
+    const scored = verdict(3, { mustFix: ["Shorter."] });
+    const first = scripted([t(propose("Scored")), t(submit(scored)), t(propose("Unread", "Shorter.")), t(unreadable), t(unreadable), t(finish())]);
     expect((await drive(a.userId, one, first.deps)).at(-1)!.status).toBe("finished");
     const kept = (await proposalOf(one))!.ops[0]!;
     expect(kept.doc.title).toBe("Scored");
-    expect(kept.review).toMatchObject({ ...verdict(3), rounds: 2, changes: ["Shorter — not kept: its review couldn't be read."] });
+    expect(kept.review).toMatchObject({ ...scored, rounds: 2, changes: ["Shorter — not kept: its review couldn't be read."] });
     expect((await events(one)).some((e) => e.summary === "Kept round 1's version — the revision's review couldn't be read.")).toBe(true);
 
     // Round 1 unreadable, round 2 scored: round 2 wins.
@@ -357,7 +359,9 @@ describe("the proposal keeps the best-scoring version", () => {
   it("a tie goes to the later version", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId);
-    const { deps } = scripted([t(propose("One")), t(submit(verdict(4))), t(propose("Two", "Tightened the timing.")), t(submit(verdict(4))), t(finish())]);
+    // A must-fix in each, so a full revision may spend a round (Task 13's fix wave, §2.3).
+    const tie = verdict(4, { mustFix: ["Tighter timing."] });
+    const { deps } = scripted([t(propose("One")), t(submit(tie)), t(propose("Two", "Tightened the timing.")), t(submit(tie)), t(finish())]);
     await drive(a.userId, runId, deps);
     const op = (await proposalOf(runId))!.ops[0]!;
     expect(op.doc.title).toBe("Two");
@@ -1329,7 +1333,8 @@ describe("follow-up — the stops that propose, counted (N1, N2)", () => {
     const runId = await newRun(a.userId);
     const { deps } = scripted([
       turn([propose("Calm hips")], { cost: 100_000 }),
-      turn([submit(verdict(4))], { cost: 100_000 }),
+      // A must-fix, so the revision may spend a round (Task 13's fix wave, §2.3).
+      turn([submit(verdict(4, { mustFix: ["Again."] }))], { cost: 100_000 }),
       turn([propose("Calm hips, again", "Again.")], { cost: 100_000 }),
       turn([use("read_day", {})], { cost: 1_300_000 }),
     ]);
@@ -1369,9 +1374,9 @@ describe("follow-up — the stops that propose, counted (N1, N2)", () => {
     for (let i = 0; i < 5; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // to the resume
     const stop = await countedStep(a.userId, runId, deps, 6);
     expect(stop.status).toBe("stopped_cap");
-    // The tree, the claim, the run's write, the proposal read and its write (still a rehearsal), the older plans' days
-    // (a rehearsal supersedes none), the lines.
-    expect(stop.cost).toBe(2 + 7);
+    // The tree, the claim, the run's write, the proposal read and its write (still a rehearsal), the lines — no older
+    // plans' days: a rehearsal supersedes none, so that statement isn't run (f1a454a).
+    expect(stop.cost).toBe(2 + 6);
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("rehearsal");
     expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling]);

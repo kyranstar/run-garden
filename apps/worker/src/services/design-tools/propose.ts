@@ -22,8 +22,21 @@
  *  - a proposal already with the athlete (`proposal_pending`: the main run's finish made it pending; "call finish");
  *  - a revision of a workout another run of this design already revises (`target_taken`) — but not the first version a
  *    set's redo replaces (`ctx.replaces`) — or that a change of the proposal's skips or moves (adjust_plan, Task 8b);
- *  - a third draft from one run, once two rounds of review are done (`rounds_done`: ruling 4).
+ *  - a third draft from one run, once two rounds of review are done (`rounds_done`: ruling 4);
+ *  - a draft whose minutes run past its own `setting.targetMinutes` by more than max(TOO_LONG_MIN_OVER, 15%) — before
+ *    any review, using no round (`too_long`; Task 13's fix wave, §2.4: two of thirteen first drafts were sent to review
+ *    far over the asked length);
+ *  - a full revision of a reviewed draft whose review asked for nothing (`nothing_to_fix`, using no round; §2.3) — unless
+ *    its changeNote names an open validator note's code: a text fix is an amend;
+ *  - a changeNote past PROSE_CEILING × its cap (act-common.ts `prose`: it is kept whole up to there, as only a model
+ *    reads it), saying its length.
  * Everything else — the validator's warnings — goes with the draft as its costs.
+ *
+ * AN AMEND (Task 13's fix wave, §2.2; audit 13a, A3): `amend: true` fixes the text of the run's reviewed draft — its
+ * title, intent summary and notes, and any part's or move's why or cue (and an alternate's why) — without a review
+ * round: the validator runs again, no reviewer is started, the review stands, and the changeNote joins the review's
+ * changes (an `amended` entry in the review log, which counts as no round). Any other difference is refused
+ * (`amend_not_text`), naming the first path that differs; a run with no reviewed draft has nothing to amend.
  *
  * THE PROPOSAL. One per main run, its id derived from the run's (`designProposalId`), so a designer appends to its main
  * run's without asking for it. Each workout is one op of kind `doc_workout` (`DocWorkoutOp`): its target, date and
@@ -81,6 +94,7 @@ import {
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolContext, ToolErr, ToolOk } from "./types.js";
 import {
   ASK_FOR_CHECK,
+  capInWords,
   coachDoc,
   derivedSummary,
   docPlaceId,
@@ -95,11 +109,13 @@ import {
   noCheckToday,
   objectField,
   parseAct,
+  prose,
   readDocAthlete,
   runUnsupported,
   WARNINGS_SHOWN,
   withFocusRefs,
   type CoachIssue,
+  type DocAthlete,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, parsedJson, refuse } from "./read-common.js";
 import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
@@ -165,12 +181,13 @@ export interface DraftVersion {
 
 /** One draft's round of review: under way; reviewed; over with the validator's view (its reviewer had its turns and
  * gave no review it could be read by); or dropped (its reviewer gave none at all, or the run stopped first) — a dropped
- * round counts against nothing. */
+ * round counts against nothing. Or an AMEND of the version held (`amended`, Task 13's fix wave §2.2: its text fixed,
+ * no review, no round): its `round` is the version it amended, its `change` the line the review's changes keep. */
 export interface ReviewRound {
   round: number;
   toolUseId: string;
   reviewRunId: string;
-  status: "reviewing" | "reviewed" | "unread" | "dropped";
+  status: "reviewing" | "reviewed" | "unread" | "dropped" | "amended";
   /** A revision's: the version the op held when it was judged, and that version's mean. */
   against?: { round: number; mean: number | null };
   review?: DesignReview;
@@ -199,7 +216,12 @@ const target = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("new"), date: dateField, time: z.string().regex(CLOCK, "must be a time like 17:30").optional() }).strict(),
   z.object({ kind: z.literal("revise"), workoutId: z.string().min(1).max(120), baseRev: z.number().int().min(0) }).strict(),
 ]);
-const input = z.object({ doc: objectField, target, changeNote: z.string().trim().min(1).max(200).optional() }).strict();
+/** A change note's cap: kept whole up to PROSE_CEILING × this (only a model reads it whole). */
+export const CHANGE_NOTE_MAX = 200;
+/** A draft is too long when its minutes pass its own target by more than this, or by 15% of the target if more. */
+export const TOO_LONG_MIN_OVER = 5;
+export const TOO_LONG_SHARE_OVER = 0.15;
+const input = z.object({ doc: objectField, target, changeNote: prose(CHANGE_NOTE_MAX).optional(), amend: z.boolean().optional() }).strict();
 
 /** The guidance for a draft the validator refused: today, a move the day closes is swapped in the draft itself — or,
  * with no check logged yet, the main coach may ask for one (fix wave 3A round 2, B-M8). */
@@ -226,7 +248,7 @@ interface TargetRow {
 export const proposeWorkout: DesignTool = {
   name: "propose_workout",
   description:
-    "The main coach (now or later today) and designers: a draft and where it goes — a new workout on a date (today or later), or a revision of one that can still change, from its current revision. validate_workout's checks first (errors refuse it, using no round), then an independent review. A revised draft is reviewed too: the proposal keeps the better-scoring version.",
+    "The main coach (now or later today) and designers: a draft and where it goes — a new workout on a date, or a revision of one from its current revision. Errors, or minutes well past its own targetMinutes, refuse it using no round; then an independent review, revisions too (the better-scoring version is kept). A text-only fix of a reviewed draft is amend: true — no new review.",
   inputSchema: {
     type: "object",
     properties: {
@@ -259,7 +281,12 @@ export const proposeWorkout: DesignTool = {
           },
         ],
       },
-      changeNote: { type: "string", maxLength: 200, description: "What changed from your last draft, and why (a revision round)." },
+      changeNote: { type: "string", description: `What changed from your last draft, and why (a revision, or an amend): ${capInWords(CHANGE_NOTE_MAX)}.` },
+      amend: {
+        type: "boolean",
+        description:
+          "true: fix only the text of your reviewed draft — title, intent.summary, notes, a part's or a move's why or cue, an alternate's why — the same target, moves and doses. No review round: the review stands and changeNote joins its changes. Any other change needs a full revision.",
+      },
     },
     required: ["doc", "target"],
     additionalProperties: false,
@@ -268,7 +295,7 @@ export const proposeWorkout: DesignTool = {
   cpuWeight: 1.6,
   roles: ["main", "designer"],
   async run(ctx, raw) {
-    const p = parseAct(input, raw, "doc (a workout document), target ({ kind: new, date, time? } or { kind: revise, workoutId, baseRev }) and optionally changeNote");
+    const p = parseAct(input, raw, "doc (a workout document), target ({ kind: new, date, time? } or { kind: revise, workoutId, baseRev }) and optionally changeNote and amend");
     if (isErr(p)) return p;
     if (ctx.run.role === "main" && ctx.run.scope.kind !== "now" && ctx.run.scope.kind !== "later_today") {
       return refuse(
@@ -325,6 +352,8 @@ export const proposeWorkout: DesignTool = {
     // storing the draft): this run is stepping, so no reviewer of its is live, and a review that ended was settled when
     // the run resumed. It is no round: dropped, its draft with it.
     const kept = mine ? withoutAbandoned(mine) : undefined;
+    // An amend: the reviewed draft's text fixed, no round, no reviewer (§2.2) — whatever rounds are left.
+    if (p.amend) return amendDraft(ctx, { a, doc, target: p.target, changeNote: p.changeNote, kept, all, opsText, proposalId, today });
     // The draft and two revisions at most (ruling 4): a further draft is never reviewed, so it is never proposed.
     const log = kept?.reviewLog ?? [];
     if (ctx.review && countedRounds(log) >= REVIEW_ROUNDS) {
@@ -332,6 +361,19 @@ export const proposeWorkout: DesignTool = {
         "rounds_done",
         `${REVIEW_ROUNDS - 1} rounds of revision are done: ${REVIEW_ROUNDS} drafts were reviewed, and the proposal keeps the best-scoring one, with its review.`,
         "Call finish, with one plain line on what was proposed.",
+      );
+    }
+    // A full revision of a reviewed draft costs a round: only when something must change (§2.3) — a must-fix of its
+    // review, or an open validator note the changeNote names.
+    const held = kept ? log.find((r) => r.toolUseId === kept.toolUseId) : undefined;
+    if (ctx.review && kept?.review && held?.status === "reviewed" && kept.review.mustFix.length === 0 && !namesOpenNote(p.changeNote, kept.issues)) {
+      const open = [...new Set(kept.issues.map((i) => i.code))];
+      return refuse(
+        "nothing_to_fix",
+        "Nothing must change in the reviewed draft: call finish — or propose_workout with amend: true for text-only fixes. A full revision costs a review round; it is allowed when changeNote names an open validator note's code.",
+        open.length > 0
+          ? `Call finish; or amend the text; or name the note the revision fixes in changeNote (open: ${open.join(", ")}).`
+          : "Call finish; or amend the text with amend: true.",
       );
     }
 
@@ -393,6 +435,9 @@ export const proposeWorkout: DesignTool = {
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
       return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, date === today, noCheckToday(vctx)));
     }
+    // Well past its own target length: trimmed or explained before any review, using no round (§2.4).
+    const long = tooLong(judged.derived.estimatedMinutes, judged.doc.setting?.targetMinutes);
+    if (long) return long;
 
     const draftTarget: DocWorkoutTarget =
       p.target.kind === "new"
@@ -490,6 +535,8 @@ async function replay(
   toolUseId: string,
 ): Promise<ToolOk | ToolErr | null> {
   const entry = mine?.reviewLog?.find((r) => r.toolUseId === toolUseId);
+  // An amend this call made: what it stored (the op holds it) — nothing written twice.
+  if (mine && entry?.status === "amended") return amendedAnswer(proposalId, mine);
   if (mine && entry) {
     if (entry.status === "reviewing") {
       const draft = draftOf(mine, toolUseId, proposalId);
@@ -595,6 +642,135 @@ export async function upsertProposal(ctx: ToolContext, id: string, ops: readonly
     RETURNING id
   `)) as Array<{ id: string }>;
   return rows.length > 0;
+}
+
+/** Whether a change note names the code of one of the held draft's open validator notes (§2.3: a revision that fixes
+ * it may spend a round). */
+function namesOpenNote(changeNote: string | undefined, issues: ReadonlyArray<{ code: string }>): boolean {
+  if (!changeNote) return false;
+  const said = changeNote.toLowerCase();
+  return issues.some((i) => said.includes(i.code.toLowerCase()));
+}
+
+/** A draft whose minutes pass its own target by more than max(TOO_LONG_MIN_OVER, 15%): refused (§2.4); else null. */
+export function tooLong(minutes: number, target: number | undefined): ToolErr | null {
+  if (typeof target !== "number" || !(target > 0) || !Number.isFinite(minutes)) return null;
+  if (minutes - target <= Math.max(TOO_LONG_MIN_OVER, target * TOO_LONG_SHARE_OVER)) return null;
+  return refuse(
+    "too_long",
+    `${Math.round(minutes)} min against its target ${target}: trim it, or raise the target and say why in notes.`,
+    `Trim parts, sets or holds until it is near ${target} min — or raise setting.targetMinutes and say why in notes. It used no round.`,
+  );
+}
+
+/** The text an amend may change (§2.2), as document paths: the title, the intent's summary, the notes, a part's or a
+ * move's why and cue, an alternate's why. */
+const AMENDABLE: readonly RegExp[] = [
+  /^title$/,
+  /^intent\.summary$/,
+  /^notes$/,
+  /^parts\[\d+\]\.(why|cue)$/,
+  /^parts\[\d+\]\.items\[\d+\]\.(why|cue)$/,
+  /^parts\[\d+\]\.items\[\d+\]\.alternates\[\d+\]\.why$/,
+];
+
+/** The first path at which `b` differs from `a` other than in amendable text, or null when only text differs. */
+export function firstNonTextDiff(a: unknown, b: unknown, path = ""): string | null {
+  if (path && AMENDABLE.some((r) => r.test(path))) return null;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if (i >= a.length || i >= b.length) return `${path}[${i}]`;
+      const d = firstNonTextDiff(a[i], b[i], `${path}[${i}]`);
+      if (d) return d;
+    }
+    return null;
+  }
+  if (a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      const d = firstNonTextDiff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], path ? `${path}.${k}` : k);
+      if (d) return d;
+    }
+    return null;
+  }
+  return Object.is(a, b) ? null : path || "doc";
+}
+
+/**
+ * An amend (§2.2): the run's reviewed draft with its text fixed — judged again (an error refuses it as a draft's would),
+ * no reviewer, no round; the review stands and the changeNote joins its changes. Beyond the athlete's read: the
+ * validator's context (five at most) and the proposal's write — within propose's declared cost.
+ */
+async function amendDraft(
+  ctx: ToolContext,
+  o: {
+    a: DocAthlete;
+    doc: Record<string, unknown>;
+    target: z.infer<typeof target>;
+    changeNote: string | undefined;
+    kept: DocWorkoutOp | undefined;
+    all: unknown[];
+    opsText: string | null;
+    proposalId: string;
+    today: string;
+  },
+): Promise<ToolOk | ToolErr> {
+  const { kept } = o;
+  if (!kept || !kept.review) {
+    return refuse(
+      "nothing_to_amend",
+      "There is no reviewed draft of yours to amend: an amend fixes the text of a draft that has its review.",
+      "Propose the draft without amend: it is reviewed first.",
+    );
+  }
+  const sameTarget =
+    o.target.kind === "new"
+      ? kept.target.kind === "new" && o.target.date === kept.date
+      : kept.target.kind === "revise" && o.target.workoutId === kept.target.workoutId;
+  if (!sameTarget) {
+    return refuse("amend_not_text", "target differs from the reviewed draft's: an amend changes text only.", "Keep the reviewed draft's target — or propose a full revision without amend.");
+  }
+  const free = freeTextRefusal(o.doc, kept.doc);
+  if (free) return free;
+  const ids = idsRefusal(o.doc, o.a);
+  if (ids) return ids;
+  const vctx = await docValidateCtx(ctx, o.a, kept.date);
+  const judged = judge(o.doc, vctx, { keyResults: o.a.keyResultMeasures });
+  if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
+    return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, kept.date === o.today, noCheckToday(vctx)));
+  }
+  const diff = firstNonTextDiff(kept.doc, judged.doc);
+  if (diff) {
+    return refuse(
+      "amend_not_text",
+      `${diff} differs from the reviewed draft: an amend changes only the title, intent.summary, notes, and a part's or a move's why or cue.`,
+      "Put it back as reviewed and amend the text alone — or, if it must change, propose a full revision without amend (a review round).",
+    );
+  }
+  const toolUseId = ctx.toolUseId ?? `call-${ctx.now.toISOString()}`;
+  const note = o.changeNote ?? "Clearer wording.";
+  const change = `${note.replace(/[\s.;:]+$/, "")}.`;
+  const entry: ReviewRound = { round: kept.round ?? 1, toolUseId, reviewRunId: kept.reviewRunId ?? "", status: "amended", changeNote: note, change };
+  const op: DocWorkoutOp = {
+    ...kept,
+    doc: judged.doc,
+    issues: judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut),
+    derived: derivedSummary(judged.derived),
+    reviewLog: [...(kept.reviewLog ?? []), entry],
+    review: { ...kept.review, changes: [...kept.review.changes, change] },
+  };
+  const next = [...o.all.filter((x) => !isDocWorkoutOp(x) || (x as DocWorkoutOp).by.runId !== ctx.run.id), op];
+  const written = await upsertProposal(ctx, o.proposalId, next, o.opsText, ctx.now.toISOString());
+  if (!written) return refuse("proposal_changed", "The proposal changed while this amend was being stored.", "Call propose_workout again with the same amend.");
+  return amendedAnswer(o.proposalId, op);
+}
+
+/** An amend, as its call answers it: stored, with what the validator now says of the draft. */
+function amendedAnswer(proposalId: string, op: DocWorkoutOp): ToolOk {
+  return {
+    data: { stored: true, amended: true, proposalId, derived: op.derived, issues: op.issues },
+    summary: `Polished the wording — "${op.doc.title}"`,
+    receipt: { proposalId, title: op.doc.title, date: op.date, ...(op.time ? { time: op.time } : {}), minutes: op.derived.minutes, amended: true },
+  };
 }
 
 function storedAnswer(proposalId: string, op: DocWorkoutOp, replaced: boolean): ToolOk {

@@ -59,17 +59,53 @@ import type { ToolContext, ToolErr } from "./types.js";
 
 // ── Input ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * SOFT CAPS FOR FREE TEXT (Task 13's fix wave, §2.1; audit 13b, I1). A model can't count characters: the live suite's 39
+ * refused calls were nearly all a line a little over its cap. A free-text field is accepted whole up to PROSE_CEILING
+ * times its cap — what the athlete reads is clipped to the cap where it is stored (design-prose.ts `clipProse`), what
+ * only a model reads is kept whole — and refused only past that, saying its length and the cap in words. Each schema
+ * description states its cap in words (`capInWords`).
+ */
+export const PROSE_CEILING = 4;
+
+/** About how many words a cap of `chars` characters holds (a word and its space: about 6.5 characters). */
+export const capWords = (chars: number): number => Math.max(5, Math.round(chars / 6.5 / 5) * 5);
+
+/** "at most about 45 words (300 characters)": a cap as a schema's description says it. */
+export const capInWords = (chars: number): string => `at most about ${capWords(chars)} words (${chars} characters)`;
+
+const thousands = (n: number): string => n.toLocaleString("en-US");
+
+/** "summary is 1,410 characters; at most 300 — about 45 words": a text past its ceiling, in a refusal's words. */
+export const proseTooLong = (field: string, length: number, cap: number): string =>
+  `${field} is ${thousands(length)} characters; at most ${thousands(cap)} — about ${capWords(cap)} words`;
+
+/** A free-text field: trimmed and not empty, accepted whole up to PROSE_CEILING × `cap`, refused past it in words. */
+export const prose = (cap: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .superRefine((text, c) => {
+      if (text.length > cap * PROSE_CEILING) c.addIssue({ code: z.ZodIssueCode.custom, message: "too long", params: { prose: { length: text.length, cap } } });
+    });
+
 function issueText(i: z.ZodIssue): string {
   if (i.code === "unrecognized_keys") return `unknown field${i.keys.length === 1 ? "" : "s"} ${i.keys.map((k) => `"${k}"`).join(", ")}`;
-  return `${i.path.length ? i.path.join(".") : "input"}: ${i.message}`;
+  const path = i.path.length ? i.path.join(".") : "input";
+  const long = i.code === "custom" ? (i.params as { prose?: { length: number; cap: number } } | undefined)?.prose : undefined;
+  if (long) return proseTooLong(path, long.length, long.cap);
+  return `${path}: ${i.message}`;
 }
 
-/** The input as the tool's schema reads it, or a teachable refusal naming the problems — an unknown field first. */
+/** The input as the tool's schema reads it, or a teachable refusal naming the problems — an unknown field first; a text
+ * past its ceiling says its length and its cap in words, and the fix says to shorten it. */
 export function parseAct<S extends z.ZodTypeAny>(schema: S, input: unknown, fields: string): z.output<S> | ToolErr {
   const parsed = schema.safeParse(input ?? {});
   if (parsed.success) return parsed.data as z.output<S>;
   const issues = [...parsed.error.issues].sort((a, b) => Number(b.code === "unrecognized_keys") - Number(a.code === "unrecognized_keys"));
-  return refuse("invalid_input", issues.slice(0, 4).map(issueText).join("; "), `Call it again with ${fields}.`);
+  const long = issues.some((i) => i.code === "custom" && (i.params as { prose?: unknown } | undefined)?.prose);
+  return refuse("invalid_input", issues.slice(0, 4).map(issueText).join("; "), `Call it again with ${fields}${long ? " — each text within its cap: say it in fewer words" : ""}.`);
 }
 
 export const isErr = (x: unknown): x is ToolErr => typeof (x as ToolErr | null)?.error === "string" && typeof (x as ToolErr).fix === "string";
