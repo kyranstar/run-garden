@@ -3,8 +3,10 @@
  * the coach works, the run view.
  *
  *   [ What would help today?                       ]
- *   [ Now ]  [ Later today ]  [ Plan ahead ▾ ]          ← This week · Next 3 workouts
+ *   [ Now ]  [ Later today ]  [ Plan ahead ▾ ]          ← This week · Next N workouts
  *
+ *  - Settings → Coach (Task 10) decides the primary button — the athlete's default scope; for this week or the next
+ *    workouts, Plan ahead, its item marked — and N. Unreadable (a 404, offline): Now, and the next three.
  *  - Opening the Studio finds the athlete's run (`GET /api/coach/runs/current`): a live one shows in place of the empty
  *    composer and goes on stepping; one that is over with a suggestion still open shows under the composer, its card
  *    with it. Rehearsals never come back.
@@ -22,7 +24,9 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "rea
 import { useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type CoachOpenProposalDto, type CoachRunDto, type CoachRunEventDto, type CoachRunScope } from "@rg/api-client";
+import { COACH_NEXT_N, coachSettings, type CoachScopeKind } from "@rg/domain";
 import { useEscapeKey } from "../../components.js";
+import { COACH_PREFERENCES_QUERY } from "../settings/coach-settings.js";
 import { IconChevron } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import type { StudioCtx } from "./model.js";
@@ -44,8 +48,8 @@ import { useCoachRun, type LoopDeps } from "./use-coach-run.js";
 export const REQUEST_MAX_CHARS = 2_000;
 /** The counter shows from here. */
 export const COUNTER_FROM = 1_800;
-/** How many workouts "Next N" plans until Settings → Coach says (Task 10). */
-export const NEXT_N_DEFAULT = 3;
+/** How many workouts "Next N" plans until Settings → Coach says otherwise (Task 10). */
+export const NEXT_N_DEFAULT = COACH_NEXT_N.default;
 
 /** The current run's read. */
 export const COACH_CURRENT_QUERY = ["coach-run-current"] as const;
@@ -82,6 +86,9 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const location = useLocation();
   const compose = (location.state as CoachArrival | null)?.coach === "compose";
   const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: api.coachRunCurrent, retry: false, staleTime: 0 });
+  // Settings → Coach's read (Task 10), shared with its card: a 404 (or no read yet) is the defaults.
+  const prefs = useQuery({ queryKey: COACH_PREFERENCES_QUERY, queryFn: api.coachPreferences, retry: false });
+  const settings = prefs.data?.settings ?? coachSettings(null);
   const [shown, setShown] = useState<Shown | null>(null);
   const [draft, setDraft] = useState("");
   /** The run an `existing` answer opened: its line shows while it is live. */
@@ -203,6 +210,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
           busy={start.isPending}
           error={startError}
           focus={compose && !live}
+          defaultScope={settings.defaultScope}
+          nextN={settings.nextN}
           wordsBack={existingLive ? null : wordsBack}
         />
       ) : null}
@@ -236,6 +245,7 @@ export function Composer({
   busy = false,
   error = null,
   focus = false,
+  defaultScope = "now",
   nextN = NEXT_N_DEFAULT,
   wordsBack = null,
 }: {
@@ -246,6 +256,9 @@ export function Composer({
   error?: string | null;
   /** Focus the field once (the Plan coach sheet's link). */
   focus?: boolean;
+  /** The athlete's default (Settings → Coach): its button is the primary one — Plan ahead's for a set, its item marked. */
+  defaultScope?: CoachScopeKind;
+  /** How many "Next N workouts" plans (Settings → Coach). */
   nextN?: number;
   /** The words a tap carried that the coach didn't start, offered back ("Copy my words back"; M4). */
   wordsBack?: ReactNode;
@@ -279,13 +292,13 @@ export function Composer({
       ) : null}
       {wordsBack ? <p className="coach-composer-back">{wordsBack}</p> : null}
       <div className="coach-composer-actions">
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => onStart({ kind: "now" })}>
+        <button type="button" className={btnFor(defaultScope === "now")} disabled={busy} onClick={() => onStart({ kind: "now" })}>
           Now
         </button>
-        <button type="button" className="btn" disabled={busy} onClick={() => onStart({ kind: "later_today" })}>
+        <button type="button" className={btnFor(defaultScope === "later_today")} disabled={busy} onClick={() => onStart({ kind: "later_today" })}>
           Later today
         </button>
-        <ScopeMenu nextN={nextN} busy={busy} onPick={onStart} />
+        <ScopeMenu nextN={nextN} defaultScope={defaultScope} busy={busy} onPick={onStart} />
       </div>
       {error ? (
         <p className="coach-composer-error" role="status">
@@ -300,8 +313,24 @@ export function Composer({
 const SCOPE_MENU_MIN_PX = 208;
 const SCOPE_MENU_GUTTER_PX = 16;
 
-/** "Plan ahead": This week · Next N workouts — a menu as the Studio's others are (Escape, a tap elsewhere, the arrows). */
-function ScopeMenu({ nextN, busy, onPick }: { nextN: number; busy: boolean; onPick: (scope: CoachRunScope) => void }) {
+/** A scope's button: the primary one for the athlete's default. */
+const btnFor = (isDefault: boolean): string => (isDefault ? "btn btn-primary" : "btn");
+
+/**
+ * "Plan ahead": This week · Next N workouts — a menu as the Studio's others are (Escape, a tap elsewhere, the arrows).
+ * The athlete's default a set: Plan ahead is the primary button, and the default's item says so.
+ */
+function ScopeMenu({
+  nextN,
+  defaultScope,
+  busy,
+  onPick,
+}: {
+  nextN: number;
+  defaultScope: CoachScopeKind;
+  busy: boolean;
+  onPick: (scope: CoachRunScope) => void;
+}) {
   const [open, setOpen] = useState(false);
   /** The menu opens toward the side with room: from the button's left edge, or — near the right edge — its right. */
   const [toEnd, setToEnd] = useState(false);
@@ -330,7 +359,7 @@ function ScopeMenu({ nextN, busy, onPick }: { nextN: number; busy: boolean; onPi
       <button
         ref={button}
         type="button"
-        className="btn"
+        className={btnFor(defaultScope === "week" || defaultScope === "next_n")}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={id}
@@ -367,12 +396,14 @@ function ScopeMenu({ nextN, busy, onPick }: { nextN: number; busy: boolean; onPi
             type="button"
             role="menuitem"
             className="stu-save-item"
+            aria-current={c.scope.kind === defaultScope ? true : undefined}
             onClick={() => {
               setOpen(false);
               onPick(c.scope);
             }}
           >
             {c.label}
+            {c.scope.kind === defaultScope ? <span className="coach-scope-default"> · your default</span> : null}
           </button>
         ))}
       </div>

@@ -10963,6 +10963,11 @@ a.stu-tpl-open:focus-visible::before {
   right: auto;
   left: 0;
 }
+/* The athlete's default scope among Plan ahead's items (Settings → Coach). */
+.coach-scope-default {
+  color: var(--ink-soft);
+  font-weight: var(--weight-regular);
+}
 /* Near the viewport's right edge (composer.tsx measures): it opens leftward from the button's right edge. */
 .coach-scope-menu--end {
   right: 0;
@@ -11362,8 +11367,13 @@ a.stu-tpl-open:focus-visible::before {
 }
 
 /* The 44 px touch floor (fix round, M5): a trail line that opens to its detail and a suggestion's workout are list rows,
-   which can't be padded without stealing from their neighbours — so the row grows, on a touch screen. */
+   which can't be padded without stealing from their neighbours — so the row grows, on a touch screen. Every trail line
+   grows with it, whether it opens or not, its words centred in the row: one rhythm down the trail (the lead's ruling). */
 @media (pointer: coarse) {
+  .coach-line {
+    min-height: var(--tap);
+    align-items: center;
+  }
   .coach-line-open,
   .coach-pc-name {
     min-height: var(--tap);

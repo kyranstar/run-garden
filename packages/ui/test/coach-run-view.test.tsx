@@ -170,6 +170,20 @@ describe("the run view, by status", () => {
     expect(words).not.toContain("Line 4 ");
   });
 
+  it("a Remembered line offers Undo whatever the run's status — the memory outlives the run — and never says its ids", () => {
+    const remembered = ev(6, "tool_result", "Remembered (you said): Knees like a long warm-up.", {
+      tool: "remember",
+      ok: true,
+      receipt: { memoryId: "mem-8f2a", kind: "fact", confidence: "stated", replaced: "mem-41c0", undo: { handle: "rm:run-1:toolu_9" } },
+    });
+    for (const status of ["active", "waiting_athlete", "finished", "failed", "cancelled"] as const) {
+      expect(view(run({ status }), [...trail, remembered]).words, status).toContain("Undo");
+    }
+    const { words } = view(run({ status: "finished" }), [...trail, remembered]);
+    expect(words).not.toContain("mem-8f2a");
+    expect(words).not.toContain("mem-41c0");
+  });
+
   it("a kept answer's line offers Undo while the run is live, and not once it is over", () => {
     const answered = ev(6, "note", "You answered: tight", { answers: ["tight"], receipt: { undo: { handle: "run-1:toolu_1" } } });
     expect(view(run(), [...trail, answered]).words).toContain("Undo");
@@ -185,6 +199,18 @@ describe("the touch floor (fix round, M5)", () => {
     expect(ours).toBeDefined();
     expect(ours).toContain(".coach-pc-name");
     expect(ours).toContain("min-height: var(--tap)");
+  });
+
+  it("every trail line is the same 44 px row on a touch screen, whether it opens or not: one rhythm (the lead's ruling)", () => {
+    const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+    const blocks = [...css.matchAll(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]!);
+    const ours = blocks.find((b) => b.includes(".coach-line-open"))!;
+    const line = /(?:^|\n)\s*\.coach-line \{([^}]*)\}/.exec(ours)?.[1];
+    expect(line, "a rule for every line, not only the ones that open").toBeDefined();
+    expect(line).toContain("min-height: var(--tap)");
+    expect(line).toContain("align-items: center");
+    // No pad reaching past a line into its neighbours'.
+    expect(ours).not.toMatch(/\.coach-line[\w-]*::(?:after|before)/);
   });
 });
 

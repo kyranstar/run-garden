@@ -16,7 +16,7 @@
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus } from "@rg/api-client";
 import { ConfirmDialog } from "../../components.js";
 import { ConditionCheckSheet, ConditionChips } from "../../components/condition-check-sheet.js";
@@ -27,6 +27,7 @@ import {
   detailOf,
   estimateLine,
   isLive,
+  isMemoryHandle,
   LOST_LINE,
   OUT_OF_CREDITS_FALLBACK,
   runLines,
@@ -123,6 +124,7 @@ function RunLines({
   onRefresh?: () => void;
 }) {
   const [all, setAll] = useState(false);
+  const qc = useQueryClient();
   const [undone, setUndone] = useState<ReadonlySet<string>>(new Set());
   const hidden = all ? 0 : Math.max(0, lines.length - LINES_SHOWN);
   const undo = useMutation({
@@ -130,9 +132,16 @@ function RunLines({
     mutationFn: (handle: string) => api.coachRunUndoAnswer(runId, handle),
     onSuccess: (_res, handle) => {
       setUndone((s) => new Set([...s, handle]));
+      // What the coach remembered is on Settings → Coach's memory list too (Task 10).
+      if (isMemoryHandle(handle)) void qc.invalidateQueries({ queryKey: ["coach-memory"] });
       onRefresh?.();
     },
+    onError: (e, handle) => {
+      // Taken back already (here, or on another device): nothing is left to undo.
+      if (e instanceof ApiError && e.status === 404) setUndone((s) => new Set([...s, handle]));
+    },
   });
+  const gone = undo.error instanceof ApiError && undo.error.status === 404;
   if (lines.length === 0 && !inFlight) return null;
   return (
     <>
@@ -146,7 +155,7 @@ function RunLines({
           <LineItem
             key={line.key}
             line={line}
-            undo={live && line.undo && !undone.has(line.undo) ? () => undo.mutate(line.undo!) : null}
+            undo={line.undo && !undone.has(line.undo) && (live || isMemoryHandle(line.undo)) ? () => undo.mutate(line.undo!) : null}
             undoing={undo.isPending && undo.variables === line.undo}
           />
         ))}
@@ -162,7 +171,11 @@ function RunLines({
       </ol>
       {undo.isError ? (
         <p className="coach-run-note" role="status">
-          Couldn't take that back — try again.
+          {!gone
+            ? "Couldn't take that back — try again."
+            : isMemoryHandle(undo.variables ?? "")
+              ? "That memory was already taken back."
+              : "That was already taken back."}
         </p>
       ) : null}
     </>

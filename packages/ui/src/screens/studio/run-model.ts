@@ -119,6 +119,12 @@ export function undoHandleOf(e: CoachRunEventDto): string | null {
   return typeof undo?.handle === "string" && undo.handle.length > 0 ? undo.handle : null;
 }
 
+/**
+ * A handle that takes back what the coach remembered (remember's receipt, Task 10: `rm:<run>:<call>`). The memory item
+ * outlives the run, so its Undo is offered whatever the run's status.
+ */
+export const isMemoryHandle = (handle: string): boolean => handle.startsWith("rm:");
+
 /** A line that says something went wrong: the loop's errors, and a tool the coach couldn't use. */
 function isErrorEvent(e: CoachRunEventDto): boolean {
   return e.kind === "error" || (e.kind === "tool_result" && record(e.payload)?.ok === false);
@@ -176,6 +182,7 @@ export const DETAIL_ROWS_MAX = 12;
 const QUIET_KEYS = new Set([
   "by", "ok", "tool", "untrusted", "signature", "toolUseId", "proposalId", "runId", "handle", "undo",
   "id", "opId", "workoutId", "baseRev", "rev", "reviewRunId", "round", "kind", "final", "proposal", "asOf",
+  "memoryId", "replaced",
 ]);
 
 /** Keys a tool's input or receipt uses, in the athlete's words. */

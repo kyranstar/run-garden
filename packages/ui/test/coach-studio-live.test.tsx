@@ -214,6 +214,52 @@ describe("the composer", () => {
     expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "next_n", n: 3 }, request: null });
   });
 
+  const coachPrefs = (coach: { defaultScope?: "now" | "later_today" | "week" | "next_n"; nextN?: number }) => ({
+    coach,
+    settings: { defaultScope: coach.defaultScope ?? "now", nextN: coach.nextN ?? 3, trainingTimes: [], ceilingsUsd: { day: 1.5, set: 6 } },
+    model: { id: "m", name: "The coach's model" },
+  });
+  const primary = () => [...document.querySelectorAll<HTMLButtonElement>(".coach-composer-actions .btn-primary")].map((b) => b.textContent?.trim());
+
+  it("the athlete's settings lead: their next workouts — Plan ahead the primary button, its item marked, N theirs", async () => {
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: null },
+      "GET /api/coach/preferences": coachPrefs({ defaultScope: "next_n", nextN: 5 }),
+      "POST /api/coach/runs": (body: any) => json({ run: run({ scope: body.scope, status: "active" }), existing: false }),
+    });
+    mount({ loop: quietLoop(() => run({ status: "active" })) });
+    await until(() => primary().join() === "Plan ahead", "Plan ahead, the primary button");
+    await click(button("Plan ahead"), "Plan ahead");
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    expect(items.map((m) => m.textContent)).toEqual(["This week", "Next 5 workouts · your default"]);
+    expect(items.map((m) => m.getAttribute("aria-current"))).toEqual([null, "true"]);
+    await click(items[1], "Next 5 workouts");
+    expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "next_n", n: 5 }, request: null });
+  });
+
+  it("later today as the default: its button is the primary one; this week marks its item", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": coachPrefs({ defaultScope: "later_today" }) });
+    mount();
+    await until(() => primary().join() === "Later today", "Later today, the primary button");
+    act(() => root?.unmount());
+    host?.remove();
+    serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": coachPrefs({ defaultScope: "week" }) });
+    mount();
+    await until(() => primary().join() === "Plan ahead", "Plan ahead, the primary button");
+    await click(button("Plan ahead"), "Plan ahead");
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["This week · your default", "Next 3 workouts"]);
+  });
+
+  it("no settings to read (a 404): Now leads, and the next workouts are three", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": () => json({ error: "not_found" }, 404) });
+    mount();
+    await until(() => !!field(), "the composer");
+    await settle(20);
+    expect(primary()).toEqual(["Now"]);
+    await click(button("Plan ahead"), "Plan ahead");
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["This week", "Next 3 workouts"]);
+  });
+
   it("the counter shows only near the limit", async () => {
     serve({ "GET /api/coach/runs/current": { run: null } });
     mount();
@@ -350,6 +396,44 @@ describe("the question", () => {
     await until(() => posts(calls, "/api/coach/runs/run-1/undo-answer").length === 1, "the undo");
     expect(posts(calls, "/api/coach/runs/run-1/undo-answer")[0]!.body).toEqual({ handle: "run-1:toolu_7" });
     await until(() => !button("Undo"), "Undo gone");
+  });
+
+  const remembered = (runId: string) =>
+    ev(2, "tool_result", "Remembered (you said): Knees like a long warm-up.", {
+      tool: "remember",
+      ok: true,
+      receipt: { memoryId: "mem-1", kind: "fact", confidence: "stated", undo: { handle: `rm:${runId}:toolu_1` } },
+    });
+
+  it("Undo on a Remembered line, the run over: the memory is taken back and the memory list read again", async () => {
+    const over = run({ id: "run-rm", status: "finished", finishedAt: `${TODAY}T08:05:00.000Z` });
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: over, events: [ev(1, "note", "Read your request and today's plan."), remembered("run-rm")], proposal: null },
+      "POST /api/coach/runs/run-rm/undo-answer": { undone: 1 },
+      "GET /api/templates": { templates: [] },
+    });
+    mount({ loop: quietLoop(() => over), prime: (qc) => qc.setQueryData(["coach-memory"], { memory: [] }) });
+    await until(() => !!button("Undo"), "Undo on the Remembered line");
+    await click(button("Undo"), "Undo");
+    await until(() => posts(calls, "/api/coach/runs/run-rm/undo-answer").length === 1, "the undo");
+    expect(posts(calls, "/api/coach/runs/run-rm/undo-answer")[0]!.body).toEqual({ handle: "rm:run-rm:toolu_1" });
+    await until(() => lastClient!.getQueryState(["coach-memory"])?.isInvalidated === true, "the memory list read again");
+    await until(() => !button("Undo"), "Undo gone");
+  });
+
+  it("Undo on a Remembered line already taken back (404): said plainly, and not offered again", async () => {
+    const over = run({ id: "run-rm2", status: "finished", finishedAt: `${TODAY}T08:05:00.000Z` });
+    serve({
+      "GET /api/coach/runs/current": { run: over, events: [ev(1, "note", "Read your request and today's plan."), remembered("run-rm2")], proposal: null },
+      "POST /api/coach/runs/run-rm2/undo-answer": () => json({ error: "not_found" }, 404),
+      "GET /api/templates": { templates: [] },
+    });
+    mount({ loop: quietLoop(() => over) });
+    await until(() => !!button("Undo"), "Undo on the Remembered line");
+    await click(button("Undo"), "Undo");
+    await until(() => text().includes("That memory was already taken back."), "the plain words");
+    expect(text()).not.toContain("Couldn't take that back");
+    expect(button("Undo")).toBeNull();
   });
 
   it("today's condition check: the why as text, the app's own sheet — and the saved check's id answers, after the save is back", async () => {
