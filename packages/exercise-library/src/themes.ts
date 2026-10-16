@@ -72,13 +72,13 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: "skiPrep", name: "Ski prep", blurb: "Strong, springy legs for the slopes: quads, glutes, and steady single-leg work.",
-    modes: ["consistent", "build"], inRotation: false,
+    modes: ["consistent", "build"],
     emphasis: { patterns: { squat: 1.5, lunge: 2, "anti-lateral": 1 }, regions: { quads: 1.5, glutes: 1, hips: 0.5 }, tags: { ski: 3, landing: 2, deceleration: 2, "single-leg": 1.5, lateral: 1 } },
     formats: ["superset", "circuit", "ladder"], coreBias: ["squat", "hinge"],
   },
   {
     id: "athleticBase", name: "Athletic base", blurb: "Single-leg strength and a braced trunk to move well in any sport.",
-    modes: ["consistent", "build"], inRotation: false,
+    modes: ["consistent", "build"],
     emphasis: { patterns: { lunge: 2, "anti-rotate": 1.5, "anti-extend": 0.5 }, regions: { core: 1.5, hips: 0.5 }, tags: { "single-leg": 2, "anti-rotation": 1.5, "core-stability": 1, balance: 1 } },
     formats: ["superset", "circuit", "ladder"], coreBias: ["hinge", "squat"],
   },
@@ -95,9 +95,10 @@ export const THEMES: readonly Theme[] = [
     formats: ["flow", "holds"], coreBias: [],
   },
   {
-    // Never a recovery theme: its moves are plyometric, and condition profiles decide the days they may appear.
+    // Never a recovery theme: its moves are plyometric, and condition profiles decide the days they may appear. The day's
+    // proposal offers it only on a day the condition gate lets a jump through (session-engine `Proposal.theme`).
     id: "plyoIntro", name: "Jumps and landings", blurb: "Land softly first, then add a little spring: small hops and stuck landings, with plenty of rest.",
-    modes: ["consistent", "build"], inRotation: false,
+    modes: ["consistent", "build"],
     emphasis: { regions: { calves: 1, ankles: 1 }, tags: { landing: 2, elastic: 2, deceleration: 1 }, contractions: { plyometric: 3 } },
     formats: ["straight", "superset"], coreBias: ["squat", "hinge"],
   },

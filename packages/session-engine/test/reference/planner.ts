@@ -128,7 +128,7 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   });
   const proposal = Proposal.mode(data, { checks: t.checks, feelingOff: Boolean(t.feelingOff), sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal });
   const mode = t.override.mode || proposal.mode;
-  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today });
+  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today, checks: readingsOf(data, t) });
   const chosen = t.override.theme ? data.themes.find(th => th.id === t.override.theme && th.modes.includes(mode)) ?? null : null;
   const theme = chosen || themeProposal.theme;
   const minutes = t.override.minutes || program.settings.defaultMinutes;

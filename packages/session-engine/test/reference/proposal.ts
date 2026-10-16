@@ -1,6 +1,9 @@
-import { UNANSWERED, label, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme } from "@rg/exercise-library";
+import {
+  UNANSWERED, isPlyometric, label, plyometricDay, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme,
+} from "@rg/exercise-library";
 import { Coverage } from "./coverage.js";
 import { Hist } from "./hist.js";
+import { Lib } from "./lib.js";
 import { Rng } from "./rng.js";
 
 // Today's mode (recovery / consistent / build) and theme, each with plain-language reasons. The active
@@ -58,6 +61,7 @@ export interface ThemeArgs {
   sessions?: readonly HistorySession[];
   today: string;
   lastThemeId?: string | null;
+  checks?: Readonly<Record<string, CheckReading>>;
 }
 
 export interface ThemeProposal {
@@ -65,9 +69,11 @@ export interface ThemeProposal {
   reasons: string[];
 }
 
-function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null }: ThemeArgs): ThemeProposal {
-  // Same rule as the live engine: out-of-rotation themes (inRotation: false) are never proposed.
-  const options = data.themes.filter(t => t.modes.includes(m) && t.inRotation !== false);
+function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null, checks = {} }: ThemeArgs): ThemeProposal {
+  // Same rules as the live engine: out-of-rotation themes (inRotation: false) are never proposed, and a jumping day only
+  // when today's readings let a plyometric move fit the mode (owner, 2026-10-16).
+  const jumps = data.exercises.some(ex => isPlyometric(ex) && Lib.fitsMode(data, ex, m, checks));
+  const options = data.themes.filter(t => t.modes.includes(m) && t.inRotation !== false && (!plyometricDay(t) || jumps));
   if (!options.length) return { theme: null, reasons: [] };
   const debt = Coverage.debt(data, sessions, today);
   const rng = Rng.create(`${today}|${m}|theme`);

@@ -78,10 +78,9 @@ describe("themes for the new tags", () => {
     }
   });
 
-  test("the themes the day's proposal must not pick are marked out of the rotation", () => {
-    const studioOnly = ["skiPrep", "athleticBase", "plyoIntro"];
-    for (const id of studioOnly) expect(THEMES.find(t => t.id === id)!.inRotation, id).toBe(false);
-    for (const t of THEMES.filter(x => !studioOnly.includes(x.id))) expect(t.inRotation, t.id).not.toBe(false);
+  test("every theme is in the day's rotation, the three that joined it too (the owner, 2026-10-16)", () => {
+    for (const id of ["skiPrep", "athleticBase", "plyoIntro"]) expect(THEMES.find(t => t.id === id), id).toBeDefined();
+    for (const t of THEMES) expect(t.inRotation, t.id).not.toBe(false);
   });
 
   test("athleticBase is single-leg strength and a braced trunk, with no rotation work", () => {

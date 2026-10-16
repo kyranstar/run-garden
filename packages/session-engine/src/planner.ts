@@ -130,14 +130,16 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   }, hist);
   const proposal = Proposal.mode(data, { checks: t.checks, feelingOff: Boolean(t.feelingOff), sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal }, hist);
   const mode = t.override.mode || proposal.mode;
-  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today }, hist);
+  // The readings the build rules with: the proposal offers a jumping day only when they let a jump through.
+  const readings = readingsOf(data, t);
+  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today, checks: readings }, hist);
   const chosen = t.override.theme ? data.themes.find(th => th.id === t.override.theme && th.modes.includes(mode)) ?? null : null;
   const theme = chosen || themeProposal.theme;
   const minutes = t.override.minutes || program.settings.defaultMinutes;
   const location = locationOf(program.locations, t.override.location || program.settings.location);
   const buildInput: BuildInput = {
     today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
-    sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: readingsOf(data, t), swaps: t.swaps,
+    sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: readings, swaps: t.swaps,
     ...(program.summary ? { summary: program.summary } : {}),
   };
   return { t, ensured, proposal, mode, themeProposal, chosen, theme, minutes, location, buildInput, hist };

@@ -1,6 +1,9 @@
-import { UNANSWERED, label, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme } from "@rg/exercise-library";
+import {
+  UNANSWERED, isPlyometric, label, plyometricDay, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme,
+} from "@rg/exercise-library";
 import { Coverage } from "./coverage.js";
 import { Hist, HistIndex } from "./hist.js";
+import { Lib } from "./lib.js";
 import { Rng } from "./rng.js";
 
 // Today's mode (recovery / consistent / build) and theme, each with plain-language reasons. The active
@@ -58,6 +61,12 @@ export interface ThemeArgs {
   sessions?: readonly HistorySession[];
   today: string;
   lastThemeId?: string | null;
+  /**
+   * The readings today's build rules with (the planner's: the day's checks, its own "feeling off" joined in). A jumping
+   * day is proposed only when they let a jump through the condition gate (`jumpsAllowed`). Left out, nothing is
+   * answered: a profile that needs a check keeps the jumping day out.
+   */
+  checks?: Readonly<Record<string, CheckReading>>;
 }
 
 export interface ThemeProposal {
@@ -65,9 +74,20 @@ export interface ThemeProposal {
   reasons: string[];
 }
 
-function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null }: ThemeArgs, hist?: HistIndex): ThemeProposal {
-  // Themes marked `inRotation: false` are for the Studio and the coach; the day's proposal never picks them.
-  const options = data.themes.filter(t => t.modes.includes(m) && t.inRotation !== false);
+/**
+ * Whether today's condition gate lets a jump through in this mode: a plyometric move fits the mode with today's readings
+ * — the builder's own rule (`Lib.fitsMode`, every active profile's), so a proposed jumping day has jumps it may place.
+ */
+const jumpsAllowed = (data: EngineData, m: Mode, checks: Readonly<Record<string, CheckReading>>): boolean =>
+  data.exercises.some(ex => isPlyometric(ex) && Lib.fitsMode(data, ex, m, checks));
+
+function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null, checks = {} }: ThemeArgs, hist?: HistIndex): ThemeProposal {
+  // Themes marked `inRotation: false` are for the Studio and the coach; the day's proposal never picks them. A jumping
+  // day (a theme that emphasises plyometric work) is an option only when today's gate lets a jump through, so the day
+  // is never a jumping day without jumps; a manual pick of one stands, and its reason line says why it has none.
+  let jumps: boolean | undefined;
+  const options = data.themes.filter(t =>
+    t.modes.includes(m) && t.inRotation !== false && (!plyometricDay(t) || (jumps ??= jumpsAllowed(data, m, checks))));
   if (!options.length) return { theme: null, reasons: [] };
   const h = HistIndex.for(data, sessions, hist);
   const debt = Coverage.debtIn(h, today);
