@@ -10,13 +10,14 @@
  * Synthetic data only.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, todayInZone } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
-import { CURRENT_RUN_EVENTS, CURRENT_RUN_STATEMENTS, newRunState, ROUTE_OVERHEAD, type RunDeps } from "../src/services/coach-runs.js";
+import { CURRENT_RUN_EVENTS, CURRENT_RUN_STATEMENTS, currentRun, newRunState, ROUTE_OVERHEAD, type RunDeps } from "../src/services/coach-runs.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -222,6 +223,35 @@ describe("GET /api/coach/runs/current", () => {
     const r = await run({ status: "finished" });
     await proposal(r, "pending", [null], [], { dates: [today], expiresAt: addDays(today, -1) });
     expect((await current()).body).toEqual({ run: null });
+  });
+
+  it("the athlete's today is their zone's, not the server's: at 03:00 UTC on the 16th a suggestion for the 15th is still open in Los Angeles", async () => {
+    // The test athlete's zone is America/Los_Angeles (helpers.ts): 20:00 on Thu 15 Oct there, Fri 16 Oct in UTC.
+    const now = new Date("2026-10-16T03:00:00.000Z");
+    const r = await run({ status: "finished" });
+    await proposal(r, "pending", [null], [], { dates: ["2026-10-15"], expiresAt: "2026-10-15" });
+    const found = await currentRun(db, userId, now);
+    expect(found?.run.id).toBe(r);
+    expect(found?.proposal?.id).toBe(designProposalId(r));
+  });
+
+  it("preferences that can't be read are their defaults: the run is still found", async () => {
+    const r = await run({ status: "finished" });
+    await proposal(r, "pending", [null], [], { dates: [addDays(today, 2)] });
+    await db.run(sql`update user_preferences set prefs = '{not json' where user_id = ${userId}`);
+    const res = await current();
+    expect(res.status).toBe(200);
+    expect(res.body.run.id).toBe(r);
+  });
+
+  it("a suggestion still open is found behind a newer run whose suggestion has gone by", async () => {
+    const older = await run({ status: "finished" });
+    await proposal(older, "pending", [null], [], { dates: [addDays(today, 1)] });
+    const newer = await run({ status: "finished" });
+    await proposal(newer, "pending", [null], [], { dates: [addDays(today, -1)] });
+    const res = await current();
+    expect(res.body.run.id).toBe(older);
+    expect(res.body.proposal.id).toBe(designProposalId(older));
   });
 
   it("a live run whose suggestion has only past days answers no proposal", async () => {

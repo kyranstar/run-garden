@@ -20,7 +20,7 @@ import { MemoryRouter } from "react-router-dom";
 import { onlineManager, QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachRunDto, CoachRunEventDto, CoachRunStepResult, TemplateDto, TodayResponse } from "@rg/api-client";
-import { StudioCoach, COUNTER_FROM, REQUEST_MAX_CHARS } from "../src/screens/studio/composer.js";
+import { StudioCoach, COACH_CURRENT_QUERY, COUNTER_FROM, REQUEST_MAX_CHARS } from "../src/screens/studio/composer.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
 import { EXISTING_LINE, NOT_AVAILABLE_LINE, OUT_OF_CREDITS_FALLBACK } from "../src/screens/studio/run-model.js";
@@ -577,6 +577,160 @@ describe("fix round: the run's end, a return mid-run, an `existing` question", (
     await until(() => text().includes("Coach · cancelled"), "cancelled");
     await click(button("Copy my words back"), "Copy my words back");
     expect(field()!.value).toBe("my new words");
+    // Taken back: they are the athlete's draft now, offered no more — edited or not.
+    await type(field()!, "my new words, and more");
+    expect(button("Copy my words back")).toBeNull();
+  });
+
+  it("words offered back are let go when a new run starts", async () => {
+    const live = run({ id: "run-k15", status: "active", request: "an older request", costUsd: 0.1 });
+    const fresh = run({ id: "run-k15b", status: "finished", request: "other words", finishedAt: `${TODAY}T08:05:00.000Z` });
+    let creates = 0;
+    serve({
+      "GET /api/coach/runs/current": { run: null },
+      "POST /api/coach/runs": () =>
+        (creates += 1) === 1
+          ? json({ run: live, existing: true, offer: "continue_or_cancel", ignoredRequest: { scope: { kind: "now" }, request: "my new words" } })
+          : json({ run: fresh, existing: false }),
+      "POST /api/coach/runs/run-k15/cancel": () => json({ run: { ...live, status: "cancelled" } }),
+      "GET /api/templates": { templates: [] },
+    });
+    mount({ loop: quietLoop(() => live) });
+    await until(() => !!field(), "the composer");
+    await type(field()!, "my new words");
+    await click(button("Now"), "Now");
+    await until(() => text().includes(EXISTING_LINE), "the existing line");
+    await click(button("Cancel"), "Cancel");
+    await until(() => !!button("Copy my words back"), "the words offered back");
+    await type(field()!, "other words");
+    await click(button("Now"), "Now");
+    await until(() => text().includes("“other words”"), "the new run");
+    await settle(20);
+    expect(button("Copy my words back")).toBeNull();
+  });
+
+  it("while the run works, a line naming its suggestion is no reason to read it", async () => {
+    const live = run({ id: "run-k01", scope: { kind: "week" }, status: "active", request: null });
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: live, events: [ev(1, "note", "Monday's workout is designed.", { proposalId: "dp-run-k01" })], proposal: null },
+      "GET /api/coach/proposals/dp-run-k01": { id: "dp-run-k01", status: "unreviewed", resolvedAt: null, lines: [], changes: [] },
+    });
+    mount({ loop: quietLoop(() => live) });
+    await until(() => text().includes("Monday's workout is designed."), "the live set");
+    await settle(30);
+    expect(calls.filter((c) => c.path === "/api/coach/proposals/dp-run-k01")).toHaveLength(0);
+  });
+
+  it("a run just over stays shown: an older suggestion the next read finds doesn't take its place", async () => {
+    let server = run({ id: "run-k05", status: "active", request: "this one" });
+    let current: unknown = { run: server, events: [], proposal: null };
+    serve({
+      "GET /api/coach/runs/current": () => json(current),
+      "GET /api/coach/proposals/dp-run-old": { id: "dp-run-old", status: "pending", resolvedAt: null, lines: [line("op-o", "Older hips")], changes: [] },
+      "GET /api/templates": { templates: [] },
+    });
+    const loop = drivenLoop({ run: () => server });
+    mount({ loop: loop.deps });
+    await until(() => text().includes("“this one”"), "the live run");
+    // It ends with nothing proposed; the next read of the current run finds an older run's suggestion still open.
+    server = run({ id: "run-k05", status: "finished", request: "this one" });
+    current = {
+      run: run({ id: "run-old", status: "finished", request: "from before", proposalId: "dp-run-old", finishedAt: `${TODAY}T07:00:00.000Z` }),
+      events: [],
+      proposal: { id: "dp-run-old", status: "pending", flags: [] },
+    };
+    await loop.answer({ status: "finished", nextDue: null, events: [ev(1, "note", "Nothing was proposed.", { proposed: false })] });
+    await until(() => text().includes("Coach · done"), "the run over");
+    await settle(40);
+    expect(text()).toContain("“this one”");
+    expect(text()).not.toContain("“from before”");
+  });
+
+  it("back mid-run with the run kept from before: nothing until this screen's own read — not the composer, not the kept run", async () => {
+    const kept = run({ id: "run-k06", status: "active", request: "kept" });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    serve({
+      "GET /api/coach/runs/current": async () => {
+        await gate;
+        return json({ run: run({ id: "run-k06", status: "waiting_athlete", request: "kept" }), events: [asked], proposal: null });
+      },
+    });
+    mount({ loop: quietLoop(() => run({ id: "run-k06", status: "waiting_athlete" })), prime: (qc) => qc.setQueryData(COACH_CURRENT_QUERY, { run: kept, events: [], proposal: null }) });
+    await settle(30);
+    expect(field()).toBeNull();
+    expect(document.querySelector(".coach-run")).toBeNull();
+    release();
+    await until(() => !!document.querySelector(".coach-ask"), "the question, as the server has it");
+  });
+
+  it("a kept read that found no run shows the composer at once", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    serve({
+      "GET /api/coach/runs/current": async () => {
+        await gate;
+        return json({ run: null });
+      },
+    });
+    mount({ prime: (qc) => qc.setQueryData(COACH_CURRENT_QUERY, { run: null }) });
+    await settle(10);
+    expect(field()).not.toBeNull();
+    release();
+  });
+
+  it("a run started, the screen left and opened again: never the empty composer while the run is live", async () => {
+    const created = run({ id: "run-k10", status: "active", request: "started here" });
+    let current: unknown = { run: null };
+    let hold = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    serve({
+      "GET /api/coach/runs/current": async () => {
+        if (hold) await gate;
+        return json(current);
+      },
+      "POST /api/coach/runs": () => {
+        current = { run: created, events: [], proposal: null };
+        return json({ run: created, existing: false });
+      },
+    });
+    mount({ loop: quietLoop(() => created) });
+    await until(() => !!field(), "the composer");
+    await type(field()!, "started here");
+    await click(button("Now"), "Now");
+    await until(() => text().includes("“started here”"), "the run");
+    await settle(30);
+    const client = lastClient!;
+    act(() => root?.unmount());
+    host?.remove();
+    hold = true;
+    mount({ loop: quietLoop(() => created), client });
+    await settle(10);
+    expect(field()).toBeNull();
+    release();
+    await until(() => text().includes("“started here”"), "the run, as the server has it");
+  });
+
+  it("a stop's line waits for its suggestion's read: no ways to train now shown, then taken back", async () => {
+    const failed = run({ id: "run-k08", status: "failed", error: "gateway_402", proposalId: "dp-run-k08", finishedAt: `${TODAY}T08:05:00.000Z` });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    serve({
+      "GET /api/coach/runs/current": { run: failed, events: [ev(1, "error", "The AI account is out of credits — the coach stopped here.")], proposal: null },
+      "GET /api/coach/proposals/dp-run-k08": async () => {
+        await gate;
+        return json({ id: "dp-run-k08", status: "pending", resolvedAt: null, lines: [line("op-a", "Reviewed hips")], changes: [] });
+      },
+      "GET /api/templates": { templates: [] },
+    });
+    mount({ loop: quietLoop(() => failed) });
+    await until(() => text().includes("Coach · "), "the run");
+    await settle(40);
+    expect(document.querySelector(".coach-fallback")).toBeNull();
+    release();
+    await until(() => text().includes("Reviewed hips"), "the suggestion");
+    expect(document.querySelector(".coach-fallback")).toBeNull();
   });
 
   it("offline, a start says it couldn't reach the coach — it doesn't wait silently", async () => {

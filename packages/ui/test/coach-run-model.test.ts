@@ -341,6 +341,12 @@ describe("the plan's refusals, in plain words", () => {
       lead: "The day doesn't allow it now.",
       detail: "Box jumps aren't in the library any more.",
     });
+    // A cause the words name says it: the server's why for it isn't said again. An unknown cause keeps the why.
+    expect(refusedLine({ error: "not_editable", cause: "completed", why: "That session is completed." })).toEqual({ lead: "It's done already.", detail: null });
+    expect(refusedLine({ error: "not_editable", cause: "unknown", why: "It was changed on the watch." })).toEqual({
+      lead: "It can't change now.",
+      detail: "It was changed on the watch.",
+    });
   });
 
   it("a workout's day on the Plan: its week, its sheet open", () => {

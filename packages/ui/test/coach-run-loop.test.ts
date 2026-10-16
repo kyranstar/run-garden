@@ -373,6 +373,31 @@ describe("the step loop", () => {
     expect(loop.snapshot.status).toBe("finished");
   });
 
+  it("a read that steps it still never steps before nextDue (M1)", async () => {
+    let status: CoachRunDto["status"] = "active";
+    const h = harness({ steps: [step("active", [], 20_000), step("finished", [], null)], read: () => ({ run: runDto({ status }), events: [] }) });
+    const loop = start(h);
+    await h.clock.advance(1_000);
+    expect(h.calls.steps).toEqual([T0]);
+    // Waiting a moment (its step cleared), then read active again: the step it was due still waits for its time.
+    loop.setRun(runDto({ status: "waiting_athlete" }));
+    status = "active";
+    await loop.refresh();
+    await h.clock.advance(1_000);
+    expect(h.calls.steps).toEqual([T0]);
+    await h.clock.advance(20_000);
+    expect(h.calls.steps).toEqual([T0, T0 + 20_000]);
+  });
+
+  it("back online, a loop that isn't lost goes on as it was: no step before its time", async () => {
+    const h = harness({ steps: [step("active", [], 20_000), step("finished", [], null)] });
+    start(h);
+    await h.clock.advance(1_000);
+    h.goOnline();
+    await h.clock.advance(1_000);
+    expect(h.calls.steps).toEqual([T0]);
+  });
+
   it("back online, a lost loop goes on (M2)", async () => {
     const down = () => new TypeError("Failed to fetch");
     const h = harness({ steps: [down(), down(), down(), down(), step("finished", [], null)] });

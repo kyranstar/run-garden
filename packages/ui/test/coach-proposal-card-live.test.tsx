@@ -389,7 +389,7 @@ describe("a designed suggestion's card", () => {
     await click(button("Approve"), "Approve");
     await until(() => text().includes("On your plan for"), "the workout approved");
     await until(() => text().includes("Being changed"), "the change in flight");
-    expect(text()).not.toMatch(/Couldn't|being changed right now|being added right now|Not changed|Didn't finish|try again/);
+    expect(text()).not.toMatch(/Couldn't|being changed right now|being added right now|Not changed|Didn't finish|try again|can't be declined/);
     expect(document.querySelector(".coach-pc-error")).toBeNull();
     expect(posts(calls, "approve")).toHaveLength(1);
   });
@@ -413,7 +413,7 @@ describe("a designed suggestion's card", () => {
     await click(button("Approve"), "Approve");
     await until(() => text().includes("Being changed"), "the server's word");
     expect(text()).not.toContain("Didn't finish");
-    expect(text()).not.toMatch(/Couldn't|right now|try again/);
+    expect(text()).not.toMatch(/Couldn't|right now|try again|can't be declined/);
     expect(document.querySelector(".coach-pc-error")).toBeNull();
     expect(approves).toHaveLength(1);
   });
@@ -444,5 +444,12 @@ describe("a designed suggestion's card", () => {
       host?.remove();
     }
     root = null;
+  });
+
+  it("a suggestion holding no workout and no change is no card", async () => {
+    serve({ reads: [pending([], [])] });
+    mount();
+    await settle(20);
+    expect(document.querySelector(".coach-pc")).toBeNull();
   });
 });
