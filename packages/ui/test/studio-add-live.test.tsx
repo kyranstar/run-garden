@@ -30,6 +30,10 @@ let host: HTMLElement | null = null;
 let where = "";
 
 beforeEach(async () => {
+  // The Studio reads "today" on the account's clock (CUJ R14), so the fixtures' dates hold only on the day they name:
+  // the clock is pinned to TODAY (Date only; timers stay real), or the planned workouts fall into the past.
+  vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+  vi.setSystemTime(new Date(`${TODAY}T16:00:00Z`));
   await draftStore().clear();
 });
 
@@ -37,6 +41,7 @@ afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
   root = null;
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   SAVE_PATIENCE.ms = 8000;
 });
