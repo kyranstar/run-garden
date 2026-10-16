@@ -99,7 +99,9 @@ function serve(s: {
       const path = String(input).split("?")[0]!;
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, path, body });
-      if (method === "GET" && path === "/api/coach/proposals/dp-1/ops/run-a/draft") return s.draft ? json(s.draft) : json({ error: "not_found" }, 404);
+      // Any op of the proposal: the same draft, under that op's id.
+      const draftOp = /^\/api\/coach\/proposals\/dp-1\/ops\/([^/]+)\/draft$/.exec(path)?.[1];
+      if (method === "GET" && draftOp) return s.draft ? json({ ...s.draft, opId: draftOp }) : json({ error: "not_found" }, 404);
       if (method === "POST" && path === "/api/coach/proposals/dp-1/approve") {
         const a = s.approve?.[Math.min(approved++, (s.approve?.length ?? 1) - 1)];
         if (!a) return json({ error: "offline" }, 503);
@@ -120,7 +122,7 @@ function serve(s: {
   return calls;
 }
 
-function mount(path: string, extra?: ReturnType<typeof createElement>) {
+function mount(path: string, extra?: ReturnType<typeof createElement>, everywhere?: ReturnType<typeof createElement>) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -141,6 +143,7 @@ function mount(path: string, extra?: ReturnType<typeof createElement>) {
             createElement(Route, { path: "/coach", element: extra ?? null }),
           ),
           createElement(Where),
+          everywhere ?? null,
         ),
       ),
     );
@@ -337,6 +340,30 @@ describe("Edit before approve", () => {
     await click(document.querySelector('[role="dialog"] button[aria-label="Close"]'), "Close");
     expect(button("Save changes")).toBeNull();
     expect(button("Schedule…")).not.toBeNull();
+  });
+
+  it("taking one draft as a new workout is forgotten when the builder opens another: that one's Schedule approves it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    const calls = serve({ draft: draftOf(), approve: [{ settled: "declined" }, workout("w-b", TUESDAY, "17:30", "")] });
+    function Next() {
+      const edit = useEditBeforeApprove();
+      return createElement("button", { type: "button", onClick: () => edit("dp-1", "run-b") }, "Next draft");
+    }
+    mount("/studio/build/proposal/dp-1/run-a", undefined, createElement(Next));
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await click(button("Schedule…"), "Schedule…");
+    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await until(() => !!button("Schedule it as a new workout"), "the offer");
+    await click(button("Schedule it as a new workout"), "Schedule it as a new workout");
+    await click(document.querySelector('[role="dialog"] button[aria-label="Close"]'), "Close");
+    // The next draft, on the same builder.
+    await click(button("Next draft"), "Next draft");
+    await until(() => where === "/studio/build/proposal/dp-1/run-b" && titleField()?.value === "Coach's hips", "the next draft");
+    await click(button("Schedule…"), "Schedule…");
+    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await until(() => approvals(calls).length === 2, "its approve");
+    expect(approvals(calls)[1]!.body).toMatchObject({ edit: { opId: "run-b" } });
+    expect(calls.some((c) => c.method === "POST" && c.path === "/api/workouts")).toBe(false);
   });
 
   it("a new workout's draft refused for its day is the Studio's own words, in the sheet: pick another day", async () => {
