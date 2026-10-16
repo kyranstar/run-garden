@@ -1288,7 +1288,7 @@ export const LAST_TURN_NOTE = "This is your last turn in this run. Call finish n
 
 /** A main run's or a designer's turn that called no tool: its one repair (fix wave 3A, A3; the reviewer has its own). */
 export const NO_TOOL_NUDGE =
-  "That turn called no tool, and a turn without one ends the run with nothing reaching the athlete. If you meant to ask the athlete something, call ask_athlete. If the work is done, call finish, with one plain line for the athlete.";
+  "That turn called no tool. A turn that calls no tool ends your run, and nothing you drafted reaches the athlete. If you meant to ask the athlete something, call ask_athlete. If the work is done, call finish, with one plain line for the athlete.";
 
 /** An answer cut off at the output limit (fix wave 3A, A4): the thinking used the room, and the document is not the
  * problem — never a hint to make it smaller. */

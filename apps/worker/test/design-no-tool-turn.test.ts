@@ -134,7 +134,7 @@ describe("the main run: a turn with no tool", () => {
     // The nudge went to the model as the newest message of the call after the first prose reply.
     expect(newest(requests.at(-1)!)).toContain(NO_TOOL_NUDGE);
     expect(NO_TOOL_NUDGE).toMatch(/called no tool/);
-    expect(NO_TOOL_NUDGE).toMatch(/nothing reaching the athlete/);
+    expect(NO_TOOL_NUDGE).toMatch(/A turn that calls no tool ends your run, and nothing you drafted reaches the athlete\./);
     expect(NO_TOOL_NUDGE).toMatch(/ask_athlete/);
     expect(NO_TOOL_NUDGE).toMatch(/finish/);
     // Pending through the finish's own promotion, the run's proposal set, no stop note.

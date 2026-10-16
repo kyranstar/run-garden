@@ -321,6 +321,9 @@ describe("a rehearsal and the athlete's own run (A15)", () => {
     expect(rehearsal.run.id).not.toBe(mine);
     const second = await createRun(db, a.userId, { scope: { kind: "now" }, request: "Another.", rehearsal: true }, NOW);
     expect(second).toMatchObject({ existing: true, run: { id: rehearsal.run.id } });
+    // The athlete's own create is answered with their run — never the rehearsal, the newer of the two.
+    const mineAgain = await createRun(db, a.userId, { scope: { kind: "now" }, request: "Mine again." }, NOW);
+    expect(mineAgain).toMatchObject({ existing: true, run: { id: mine } });
     await cancelRun(db, a.userId, rehearsal.run.id, NOW);
     expect((await run(db, mine)).status).toBe("active");
   });

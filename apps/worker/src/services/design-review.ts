@@ -10,8 +10,9 @@
  *  2. The loop steps the reviewer first (a parent waits for its live sub-runs). Its opening context is the designer's
  *     (Task 3's builder, role `reviewer`) with this module's REVIEW PACKET in place of a brief: the draft — the
  *     designer's words, marked as data throughout — its change note, the validator's errors, warnings and derived
- *     fields, and the designer's TOOL RESULTS (tool, input, result, with provenance), newest first and cut near
- *     TOOL_RECORDS_MAX_BYTES with a line saying what was left out. Never the designer's reasoning: no assistant text,
+ *     fields, and the designer's TOOL RESULTS (tool, input, result, with provenance), ranked by what they are worth as
+ *     evidence before age — the athlete's own record first, library searches last and shortened (fix wave 3A, A6) —
+ *     and cut near TOOL_RECORDS_MAX_BYTES with a line saying what was left out. Never the designer's reasoning: no assistant text,
  *     no thinking. An earlier draft's review is left out too: each review is independent.
  *  3. The reviewer may read; it answers with `submit_review` — reviewer-only, its finish — which checks the review
  *     (`parseReview`: every REVIEW_DIMENSIONS id, a whole score 1..5, a bounded note) and stores it on the op
@@ -40,7 +41,9 @@
  *
  * Accepted advisory costs are not must-fix: the rubric (the reviewer's role block) says so, and nothing here turns a
  * validator warning into one. A dimension scored 2 or less IS must-fix by the rubric: when the reviewer lists no
- * must-fix item at all, each such dimension's own note becomes one.
+ * must-fix item at all, each such dimension's own note becomes one — unless the reviewer listed it as `accepted`, a
+ * cost the athlete chose in their own words (fix wave 3A, A7): kept as they asked, its reason shown to the designer
+ * and on the review's receipt.
  *
  * Everything the reviewer wrote is model-written text: stored as data, shown to the athlete as the review, and handed
  * to the designer as a tool result — never an instruction to the app.
@@ -53,7 +56,7 @@ import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
 import { markUntrusted, REVIEW_DIMENSIONS } from "./design-prompt.js";
 import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/propose.js";
-import { refuse } from "./design-tools/read-common.js";
+import { refuse, untrusted } from "./design-tools/read-common.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolOk } from "./design-tools/types.js";
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
 
@@ -112,22 +115,45 @@ export function reviewLine(r: DesignReview): string {
 
 // ── submit_review's input ───────────────────────────────────────────────────────────────────────────────────────────
 
+/** Costs the athlete chose that a review may list as accepted, at most (fix wave 3A, A7). */
+export const ACCEPTED_MAX = 3;
+
+/** A dimension whose low score is a cost the athlete chose in their own words: kept as they asked, never a must-fix. */
+export interface AcceptedCost {
+  dimension: string;
+  why: string;
+}
+
+/** A review as submit_review stores it: the four parts every review has, and the costs the athlete chose. */
+export type ReviewWithAccepted = DesignReview & { accepted?: AcceptedCost[] };
+
 const reviewInput = z
   .object({
     scores: z.record(z.unknown()),
     notes: z.record(z.unknown()),
     mustFix: z.array(z.string().trim().min(1).max(REVIEW_ITEM_MAX)).max(MUST_FIX_MAX),
     improvements: z.array(z.string().trim().min(1).max(REVIEW_ITEM_MAX)).max(IMPROVEMENTS_MAX),
+    accepted: z
+      .array(z.object({ dimension: z.string(), why: z.string().trim().min(1).max(REVIEW_ITEM_MAX) }).strict())
+      .max(ACCEPTED_MAX)
+      .optional(),
   })
   .strict();
 
-const REVIEW_FIX = `Call submit_review again with { scores, notes, mustFix, improvements }: a whole score from 1 to 5 and a one-line note (at most ${REVIEW_NOTE_MAX} characters) for each of ${DIMENSION_IDS.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change.`;
+const REVIEW_FIX = `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (at most ${REVIEW_NOTE_MAX} characters) for each of ${DIMENSION_IDS.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why }.`;
+
+/** "Condition safety: kept as you asked: <why>" — an accepted cost as the designer and the run view read it. */
+export function acceptedLine(a: AcceptedCost): string {
+  const label = REVIEW_DIMENSIONS.find((d) => d.id === a.dimension)?.label ?? a.dimension;
+  return `${label}: kept as you asked: ${a.why}`;
+}
 
 /**
  * A review as submit_review takes it, or a teachable `invalid_review` naming every problem: a dimension missing or
- * unknown, a score that isn't a whole number from 1 to 5, a note that is empty or too long, a malformed list.
+ * unknown (in the scores, the notes, or an accepted cost), a score that isn't a whole number from 1 to 5, a note that is
+ * empty or too long, a malformed list.
  */
-export function parseReview(raw: unknown): DesignReview | ToolErr {
+export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
   const problems: string[] = [];
   const parsed = reviewInput.safeParse(raw ?? {});
   if (!parsed.success) {
@@ -160,18 +186,28 @@ export function parseReview(raw: unknown): DesignReview | ToolErr {
     const unknown = Object.keys(o).filter((k) => !DIMENSION_IDS.includes(k));
     if (unknown.length > 0) problems.push(`${label}: no dimension ${unknown.map((k) => JSON.stringify(k)).join(", ")}`);
   }
+  const acceptedIn = Array.isArray((raw as { accepted?: unknown } | null)?.accepted) ? ((raw as { accepted: unknown[] }).accepted) : [];
+  for (const [i, a] of acceptedIn.entries()) {
+    const d = (a as { dimension?: unknown } | null)?.dimension;
+    if (typeof d === "string" && !DIMENSION_IDS.includes(d)) problems.push(`accepted.${i}.dimension: no dimension ${JSON.stringify(d)}`);
+  }
   if (problems.length > 0 || !parsed.success) {
     return refuse("invalid_review", `The review can't be read: ${[...new Set(problems)].slice(0, 10).join("; ")}.`, REVIEW_FIX);
   }
+  const accepted = parsed.data.accepted ?? [];
+  const chosen = new Set(accepted.map((a) => a.dimension));
   let mustFix = parsed.data.mustFix;
   // A dimension scored 2 or less is must-fix by the rubric: with no must-fix item listed, each one's note is one,
-  // named by the dimension's label, as many as a review may list.
+  // named by the dimension's label, as many as a review may list — except a cost the athlete chose in their own words
+  // (`accepted`, fix wave 3A, A7): kept as they asked, never made a must-fix. (A hard rule is the validator's: a draft
+  // that breaks one is refused before any review.)
   if (mustFix.length === 0) {
-    mustFix = REVIEW_DIMENSIONS.filter((d) => scores[d.id]! <= 2)
+    mustFix = REVIEW_DIMENSIONS.filter((d) => scores[d.id]! <= 2 && !chosen.has(d.id))
       .map((d) => `${d.label}: ${notes[d.id]}`)
       .slice(0, MUST_FIX_MAX);
   }
-  return { scores, notes, mustFix, improvements: parsed.data.improvements };
+  const review: ReviewWithAccepted = { scores, notes, mustFix, improvements: parsed.data.improvements, ...(accepted.length > 0 ? { accepted } : {}) };
+  return review;
 }
 
 // ── The op: versions, verdicts, the kept one ────────────────────────────────────────────────────────────────────────
@@ -357,8 +393,15 @@ export function designerResult(op: DocWorkoutOp, toolUseId: string, why?: string
       ? `round ${holder.round}'s draft, which scored higher (${fmt(holder.mean)} against ${fmt(entry.mean)})`
       : `round ${holder?.round ?? 1}'s draft`;
   // A revision that lost is not what the proposal holds: the next one starts from the held draft and its must-fix items.
+  // Everything a model wrote — the reviewer's notes and items, a draft's title — goes back marked (fix wave 3A, A16).
   const outstanding = isHeld ? (entry.review?.mustFix ?? []) : (holder?.review?.mustFix ?? []);
-  const reviseFrom = isHeld ? {} : { reviseFrom: `round ${holder?.round ?? 1}'s draft ("${op.doc.title}"), the one the proposal holds — not this one`, heldMustFix: outstanding };
+  const reviseFrom = isHeld
+    ? {}
+    : {
+        reviseFrom: `round ${holder?.round ?? 1}'s draft, the one the proposal holds — not this one`,
+        heldTitle: untrusted(op.doc.title),
+        heldMustFix: outstanding.map(untrusted),
+      };
   const next =
     roundsLeft === 0
       ? "No rounds of revision are left: call finish."
@@ -368,11 +411,26 @@ export function designerResult(op: DocWorkoutOp, toolUseId: string, why?: string
           : "Revise the held draft against its must-fix items, validate again, then call propose_workout again with a changeNote."
         : "Nothing must change: call finish.";
   if (entry.status === "reviewed" && entry.review) {
-    return { ...entry.review, round: entry.round, roundsLeft, kept, ...reviseFrom, next };
+    return { ...markedReview(entry.review), round: entry.round, roundsLeft, kept, ...reviseFrom, next };
   }
   // No review of this draft: nothing to revise it against, unless the draft held has must-fix items of its own.
   const afterNoReview = roundsLeft > 0 && outstanding.length === 0 ? "No review to revise against: call finish." : next;
   return { review: null, note: entry.note ?? NOTE_NOT_DONE, round: entry.round, roundsLeft, kept, ...reviseFrom, next: afterNoReview };
+}
+
+/**
+ * A review as its designer is given it (fix wave 3A, A16): the reviewer's words — each note, must-fix item and
+ * improvement, and each accepted cost, as "kept as you asked: <why>" — marked as model-written text, as a brief is; the
+ * scores are numbers.
+ */
+export function markedReview(r: ReviewWithAccepted): Record<string, unknown> {
+  return {
+    scores: r.scores,
+    notes: Object.fromEntries(Object.entries(r.notes).map(([d, n]) => [d, untrusted(n)])),
+    mustFix: r.mustFix.map(untrusted),
+    improvements: r.improvements.map(untrusted),
+    ...(r.accepted && r.accepted.length > 0 ? { accepted: r.accepted.map((a) => untrusted(acceptedLine(a))) } : {}),
+  };
 }
 
 /** The proposal row's title, rationale and expiry, computed from its ops (propose_workout writes them; so does a
@@ -499,7 +557,7 @@ const NOTE = { type: "string", minLength: 1, maxLength: REVIEW_NOTE_MAX } as con
 export const submitReview: DesignTool = {
   name: "submit_review",
   description:
-    "The reviewer's verdict on the draft, given once: a whole score from 1 to 5 and a one-line note for every dimension, the must-fix items (anything scoring 2 or less, and any hard rule the validator missed — never an advisory cost accepted with a sound reason) and the few improvements that matter most. It ends your run.",
+    "The reviewer's verdict on the draft, given once — the reviewer's tool, which ends its run: a whole score from 1 to 5 and a one-line note for every dimension; the must-fix items (anything scoring 2 or less, and any hard rule the validator missed — the validator enforces hard rules whatever the scores); the few improvements that matter most; and `accepted`, at most 3 of { dimension, why }: a dimension whose low score is a cost the athlete chose in their own words, with their reason — never a must-fix. A cost the document explains (in an item's why, its notes or the change note) is judged on that explanation, not re-flagged.",
   inputSchema: {
     type: "object",
     properties: {
@@ -507,6 +565,17 @@ export const submitReview: DesignTool = {
       notes: { type: "object", properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, NOTE])), required: [...DIMENSION_IDS], additionalProperties: false },
       mustFix: { type: "array", maxItems: MUST_FIX_MAX, items: { type: "string", minLength: 1, maxLength: REVIEW_ITEM_MAX } },
       improvements: { type: "array", maxItems: IMPROVEMENTS_MAX, items: { type: "string", minLength: 1, maxLength: REVIEW_ITEM_MAX } },
+      accepted: {
+        type: "array",
+        maxItems: ACCEPTED_MAX,
+        description: "Costs the athlete chose in their own words: the dimension whose score they lower, and the athlete's reason.",
+        items: {
+          type: "object",
+          properties: { dimension: { type: "string", enum: [...DIMENSION_IDS] }, why: { type: "string", minLength: 1, maxLength: REVIEW_ITEM_MAX } },
+          required: ["dimension", "why"],
+          additionalProperties: false,
+        },
+      },
     },
     required: ["scores", "notes", "mustFix", "improvements"],
     additionalProperties: false,
@@ -523,7 +592,13 @@ export const submitReview: DesignTool = {
     const { ops, opsText, status } = await readProposal(ctx.db, ctx.userId, of.proposalId);
     const op = ops.find((o) => o.by?.runId === of.designerRunId);
     const next = op ? applyVerdict(op, of.toolUseId, { review }) : null;
-    const receipt = { round: of.round, mean: meanScore(review), scores: review.scores, mustFix: review.mustFix.length };
+    const receipt = {
+      round: of.round,
+      mean: meanScore(review),
+      scores: review.scores,
+      mustFix: review.mustFix.length,
+      ...(review.accepted ? { accepted: review.accepted.map(acceptedLine) } : {}),
+    };
     // The draft's review is settled already, or its proposal closed (a cancel, an expiry): nothing to store, the run ends.
     if (!next || status === null || !(OPEN_PROPOSAL_STATUSES as readonly string[]).includes(status)) {
       return { data: { stored: false, note: "This draft's review is no longer needed." }, summary: reviewLine(review), receipt };
@@ -598,8 +673,8 @@ function targetWords(d: DraftForReview): string {
 /**
  * The reviewer's packet — the part of its opening message that is the draft and the facts it was built from (spec §5):
  * the draft and its change note (the designer's words, marked as data), a designer's brief (the main coach's words,
- * marked), the validator's view (the app's own), and the designer's tool results, newest first, cut near
- * TOOL_RECORDS_MAX_BYTES with a line saying how many older calls were left out and which. Composed by the app: every
+ * marked), the validator's view (the app's own), and the designer's tool results, by evidence then newest first, cut near
+ * TOOL_RECORDS_MAX_BYTES with a line saying how many of the least telling calls were left out, and which. Composed by the app: every
  * text in it that came from a model or the athlete is inside a marker, so the context builder places it as it is.
  */
 export function reviewPacket(o: { round: number; draft: DraftForReview; records: ToolRecord[]; brief?: string }): string {
@@ -621,11 +696,16 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
     `Derived from the document: ${JSON.stringify(d.derived)}`,
   ].map(noBrackets);
 
+  // What the reviewer most needs first (fix wave 3A, A6): the athlete's own record, then the plan, then the rest, the
+  // library searches last and shortened — newest first within each — and only then cut to size.
+  const ranked = o.records
+    .map((r, i) => ({ r: evidenceOf(r), i }))
+    .sort((a, b) => evidenceTier(a.r.tool) - evidenceTier(b.r.tool) || b.i - a.i)
+    .map((x) => x.r);
   const lines: string[] = [];
   let used = 0;
   let kept = 0;
-  const newest = [...o.records].reverse();
-  for (const r of newest) {
+  for (const r of ranked) {
     const line = recordLine(r);
     const size = bytes(line) + 1;
     if (used + size > TOOL_RECORDS_MAX_BYTES) break;
@@ -633,17 +713,64 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
     used += size;
     kept += 1;
   }
-  const dropped = newest.slice(kept);
+  const dropped = ranked.slice(kept);
   const counts = new Map<string, number>();
-  for (const r of dropped) counts.set(r.tool, (counts.get(r.tool) ?? 0) + 1);
+  for (const r of [...dropped].reverse()) counts.set(r.tool, (counts.get(r.tool) ?? 0) + 1);
   const droppedWords = [...counts].map(([tool, n]) => (n > 1 ? `${tool} (${n})` : tool)).join(", ");
   const records = [
     "# The designer's tool results",
-    "What the designer read, newest first: each call's tool, its input, and what came back with where the data came from. Never the designer's reasoning. An earlier draft's review is left out: each review is independent.",
-    ...(dropped.length > 0 ? [`${dropped.length} older call${dropped.length === 1 ? " was" : "s were"} left out to keep this short: ${noBrackets(droppedWords)}.`] : []),
+    "What the designer read — the athlete's own record first (answers, readiness, the day, history, profile, memory, balance, objectives), then the plan and proposals, then its other calls, the library searches last (each shortened to its query and the moves' ids and names); newest first within each. Each call's tool, its input, and what came back with where the data came from. Never the designer's reasoning. An earlier draft's review is left out: each review is independent.",
+    ...(dropped.length > 0 ? [`${dropped.length} call${dropped.length === 1 ? " was" : "s were"} left out to keep this short, the least telling first: ${noBrackets(droppedWords)}.`] : []),
     ...(lines.length > 0 ? lines : ["(none: the designer read nothing before proposing)"]),
   ];
   return [head.join("\n"), validator.join("\n"), records.join("\n")].join("\n\n");
+}
+
+/**
+ * What a call's result is worth to a reviewer as evidence, best first (fix wave 3A, A6): the reads of the athlete
+ * themselves (0) — what they answered, their readiness, the day, their history, profile, memory, balance and
+ * objectives — then the plan and the proposals (1), then everything else the designer called (2), then the library
+ * searches (3), which only list candidates: the draft names the moves it chose.
+ */
+const EVIDENCE_TIERS: Readonly<Record<string, number>> = {
+  ask_athlete: 0,
+  read_answers: 0,
+  record_answer: 0,
+  read_readiness: 0,
+  read_day: 0,
+  read_history: 0,
+  read_profile: 0,
+  recall_memory: 0,
+  read_balance: 0,
+  read_objectives: 0,
+  read_plan: 1,
+  read_proposals: 1,
+  read_set: 1,
+  list_workouts: 1,
+  get_workout: 1,
+  list_templates: 1,
+  search_library: 3,
+};
+const evidenceTier = (tool: string): number => EVIDENCE_TIERS[tool] ?? 2;
+
+/** A record as the packet keeps it: a library search shortened to its query, how many matched, and each move's id and
+ * name (a search cut to size before it reached the designer is no longer JSON, and stays as it was). */
+function evidenceOf(r: ToolRecord): ToolRecord {
+  if (r.tool !== "search_library" || !r.result || typeof r.result !== "object") return r;
+  const res = r.result as { provenance?: unknown; nextCursor?: unknown; data?: { query?: unknown; matched?: unknown; moves?: unknown } };
+  const moves = Array.isArray(res.data?.moves) ? res.data.moves : null;
+  if (!moves) return r;
+  return {
+    ...r,
+    result: {
+      ...(res.provenance ? { provenance: res.provenance } : {}),
+      data: {
+        query: res.data?.query ?? null,
+        matched: res.data?.matched ?? moves.length,
+        moves: moves.map((m) => ({ id: (m as { id?: unknown })?.id ?? null, name: (m as { name?: unknown })?.name ?? null })),
+      },
+    },
+  };
 }
 
 /**
