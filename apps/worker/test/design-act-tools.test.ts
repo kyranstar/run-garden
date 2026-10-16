@@ -17,6 +17,7 @@ import { buildDesignContext } from "../src/services/design-context.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { docValidateCtx, readDocAthlete, unwrapUntrusted, WORKOUT_DOC_JSON_SCHEMA } from "../src/services/design-tools/act-common.js";
 import { searchLibraryTool } from "../src/services/design-tools/read-library.js";
+import { RESULT_BUDGET_BYTES } from "../src/services/design-tools/read-common.js";
 import { defaultPlace } from "../src/services/default-place.js";
 import { listLibrary } from "../src/services/library-view.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
@@ -1230,6 +1231,37 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     const r = ok((await call("read_set", ctxOf(first), {})).result);
     expect((r.data as { workouts: unknown[] }).workouts).toEqual([]);
     expect(r.missing).toEqual(["no workout of the set is proposed yet"]);
+  });
+
+  it("a set too big to show whole gives way in order — the intents, then the parts, then the moves — and fits its budget", async () => {
+    const main = await run({ scope: { kind: "week" } });
+    const designer = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const moves = EXERCISES.slice(0, 40).map((e) => e.id);
+    const ops = [0, 1, 2, 3, 4, 5, 6].map((i) => {
+      const doc = calmDoc({ title: `Day ${i} ${"t".repeat(70)}` });
+      return {
+        kind: "doc_workout", target: { kind: "new", date: day(-i) }, date: day(-i),
+        doc: { ...doc, intent: { ...doc.intent, summary: "s".repeat(200) }, parts: Array.from({ length: 12 }, (_, p) => ({ purpose: p % 2 ? "accessory" : "conditioning", format: "straight", items: [{ kind: "exercise", libraryId: moves[(i * 3 + p) % moves.length]!, dose: { sets: 1, reps: 5 } }] })) },
+        review: { scores: {}, notes: {}, mustFix: ["m".repeat(80), "n".repeat(80)], improvements: [], rounds: 1, changes: [] },
+        issues: [], derived: { minutes: 30, regions: { glutes: 1, core: 1, hips: 1 } }, by: { runId: `d${i}`, role: "designer" }, toolUseId: `u${i}`, at: NOW.toISOString(),
+      };
+    });
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(main.id), userId: rich.userId, planId: null, title: "7 workouts", evidence: "", rationale: "", flags: [], ops, status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: day(-6),
+    });
+    const r = ok((await call("read_set", ctxOf(designer), {})).result);
+    const { summary: _s, ...forModel } = r;
+    expect(new TextEncoder().encode(JSON.stringify(forModel)).length).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    const workouts = (r.data as { workouts: Array<Record<string, unknown> & { review: Record<string, unknown> }> }).workouts;
+    expect(workouts).toHaveLength(7);
+    // This set stops at the moves: they are gone, the must-fix wording (the next to give way) is still there…
+    for (const w of workouts) {
+      expect(w.moves).toBeUndefined();
+      expect(w.review.mustFix).toBeDefined();
+      // …and what gives way before the moves is gone with them.
+      expect(w.parts).toBeUndefined();
+      expect(w.intent).toBeUndefined();
+    }
   });
 
   it("is every role's now; its description names the repeated-moves field", () => {
