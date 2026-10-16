@@ -95,15 +95,25 @@ describe("POST /api/workouts with playedOffline", () => {
       // A quick start's ref that names no quick start the app makes (fix round 1).
       { ...calmDoc(), source: { kind: "studio", ref: "quick_start:anything" } } as WorkoutDoc,
       { ...calmDoc(), source: { kind: "studio", ref: "quick_start:" } } as WorkoutDoc,
-      // A template that is not the account's: another account's, or none at all (fix round 1).
+      // A template another account holds (fix round 1).
       { ...calmDoc(), basedOn: { kind: "template", id: "t-theirs" } } as WorkoutDoc,
-      { ...calmDoc(), basedOn: { kind: "template", id: "t-gone" } } as WorkoutDoc,
     ];
     for (const doc of refused) {
       const res = await offline({ date: today, doc });
       expect(res.status).toBe(422);
       expect(res.body).toMatchObject({ error: "played_offline_refused", why: "source" });
     }
+  });
+
+  it("a template the account deleted before the device reconnected: what was played is still recorded (fix round 2)", async () => {
+    // Played offline from "t1", then deleted from the account (on another device) before this one reconnects.
+    const doc = { ...fromTemplate(calmDoc()), title: "Deleted since" } as WorkoutDoc;
+    await db.delete(workoutTemplates).where(eq(workoutTemplates.id, "t1"));
+    const made = await offline({ date: today, doc });
+    expect(made.status).toBe(201);
+    expect((await rowOf(made.body.workout.id))!.calendarSyncState).toBe(PLAYED_OFFLINE_CALENDAR_STATE);
+    // An id no template holds at all is the same: no account's.
+    expect((await offline({ date: today, doc: { ...calmDoc(), title: "Never held", basedOn: { kind: "template", id: "t-gone" } } as WorkoutDoc })).status).toBe(201);
   });
 
   it("needs the device's key and Start now: without either it is refused", async () => {

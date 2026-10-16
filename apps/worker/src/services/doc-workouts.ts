@@ -187,19 +187,17 @@ export class PlayedOfflineRefusedError extends Error {
 
 /**
  * A document the app itself made for the athlete to start (never a coach's or a programme's): a quick start's — its ref
- * names a quick start the app makes (`QUICK_START_KINDS`) — or one of the account's own templates (fix round 1).
+ * names a quick start the app makes (`QUICK_START_KINDS`) — or a template's that is not another account's (fix round
+ * 1). One the account deleted before the device reconnected is no one's now, and what was played is still recorded
+ * (fix round 2); one another account holds is refused.
  */
 async function appAuthored(db: Db, userId: string, doc: WorkoutDoc): Promise<boolean> {
   if (doc.source.kind === "coach" || doc.source.kind === "engine") return false;
   const ref = doc.source.ref ?? "";
   if (doc.source.kind === "studio" && ref.startsWith("quick_start:") && (QUICK_START_KINDS as readonly string[]).includes(ref.slice("quick_start:".length))) return true;
   if (doc.basedOn?.kind !== "template") return false;
-  const [own] = await db
-    .select({ id: workoutTemplates.id })
-    .from(workoutTemplates)
-    .where(and(eq(workoutTemplates.id, doc.basedOn.id), eq(workoutTemplates.userId, userId)))
-    .limit(1);
-  return own !== undefined;
+  const [held] = await db.select({ userId: workoutTemplates.userId }).from(workoutTemplates).where(eq(workoutTemplates.id, doc.basedOn.id)).limit(1);
+  return held === undefined || held.userId === userId;
 }
 
 /** The base revision is not the row's current one: the document changed elsewhere. */
