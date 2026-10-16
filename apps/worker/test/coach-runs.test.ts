@@ -94,6 +94,8 @@ function answer(content: ContentBlock[], stopReason: MessagesOk["stopReason"], c
 }
 const toolTurn = (...uses: ContentBlock[]) => answer([thinking(), { type: "text", text: "Looking into it." }, ...uses], "tool_use");
 const endTurn = (text: string) => answer([thinking(), { type: "text", text }], "end_turn");
+/** A turn that ends the run: the finish tool (a turn in words alone is nudged first since fix wave 3A, A3). */
+const finishTurn = (summary = "Done.") => toolTurn(use("finish", { summary }));
 
 // ── Scripted tools ──────────────────────────────────────────────────────
 
@@ -285,8 +287,8 @@ describe("a run, step by step, to finish", () => {
   });
 
   it("sends effort explicitly, never forces a tool, and holds to at most four cache breakpoints: the system's and the newest message's", async () => {
-    const model = scriptedModel([toolTurn(use("read_day")), toolTurn(use("read_day")), endTurn("Done.")]);
-    const d = deps(model.callModel, [readTool("read_day", 1)]);
+    const model = scriptedModel([toolTurn(use("read_day")), toolTurn(use("read_day")), finishTurn()]);
+    const d = deps(model.callModel, [readTool("read_day", 1), finishTool()]);
     const runId = await newMainRun();
     await drive(runId, d);
     expect(model.requests).toHaveLength(3);
@@ -310,8 +312,8 @@ describe("a run, step by step, to finish", () => {
   it("keeps the history append-only: each call's messages are a prefix of the next call's, thinking echoed unchanged", async () => {
     const turn1 = toolTurn(use("read_day"), use("read_plan"));
     const turn2 = toolTurn(use("read_plan"));
-    const model = scriptedModel([turn1, turn2, endTurn("Done.")]);
-    const d = deps(model.callModel, [readTool("read_day", 1), readTool("read_plan", 1)]);
+    const model = scriptedModel([turn1, turn2, finishTurn()]);
+    const d = deps(model.callModel, [readTool("read_day", 1), readTool("read_plan", 1), finishTool()]);
     const runId = await newMainRun();
     await drive(runId, d);
     expect(model.requests).toHaveLength(3);
@@ -334,12 +336,15 @@ describe("a run, step by step, to finish", () => {
     expect(state.messages.slice(0, model.requests[2]!.messages.length)).toEqual(stripCache(model.requests[2]!.messages));
   });
 
-  it("ends the run when the model answers without a tool call", async () => {
-    const model = scriptedModel([endTurn("Nothing to design today — rest is the right call.")]);
+  it("a turn without a tool call is nudged once; a second in a row ends the run, its words the last line (fix wave 3A, A3)", async () => {
+    const model = scriptedModel([endTurn("Nothing to design today."), endTurn("Nothing to design today — rest is the right call.")]);
     const runId = await newMainRun();
     const results = await drive(runId, deps(model.callModel, []));
+    expect(results.map((r) => r.status)).toEqual(["active", "active", "finished"]);
     expect(results.at(-1)).toMatchObject({ status: "finished", nextDue: null });
-    expect((await events(runId)).at(-1)).toMatchObject({ kind: "note", summary: "Nothing to design today — rest is the right call." });
+    expect(JSON.stringify(model.requests[1]!.messages.at(-1))).toContain("That turn called no tool");
+    // No proposal was ever drafted: the finish's guard keeps nothing back, and nothing was proposed.
+    expect((await events(runId)).map((e) => e.summary).slice(-2)).toEqual(["Nothing to design today — rest is the right call.", LINES.nothingProposed]);
   });
 });
 
@@ -555,8 +560,8 @@ describe("ask_athlete", () => {
     const ask = askTool();
     const after = readTool("read_plan", 1);
     const askCall = use("ask_athlete", { questions: [{ text: "How long do you have?", chips: ["20 min", "45 min"] }] });
-    const model = scriptedModel([toolTurn(askCall, use("read_plan")), endTurn("Done.")]);
-    const d = deps(model.callModel, [ask, after]);
+    const model = scriptedModel([toolTurn(askCall, use("read_plan")), finishTurn()]);
+    const d = deps(model.callModel, [ask, after, finishTool()]);
     const runId = await newMainRun();
     ok(await runStep(db, env, runId, userId, at(1), d));
 
@@ -936,13 +941,13 @@ describe("one step at a time", () => {
     let release!: (r: MessagesResult) => void;
     const model = scriptedModel([() => new Promise<MessagesResult>((r) => (release = r))]);
     const runId = await newMainRun();
-    const d = deps(model.callModel);
+    const d = deps(model.callModel, [finishTool()]);
     ok(await runStep(db, env, runId, userId, at(1), d));
     const first = runStep(db, env, runId, userId, at(2), d);
     await new Promise((r) => setTimeout(r, 5));
     expect(await runStep(db, env, runId, userId, at(2), d)).toEqual({ kind: "busy" });
     expect(model.requests).toHaveLength(1);
-    release(endTurn("Done."));
+    release(finishTurn());
     expect(ok(await first).status).toBe("finished");
   });
 
@@ -968,12 +973,12 @@ describe("one step at a time", () => {
 
 describe("a step that died mid-call (the phone went to the background)", () => {
   it("its stale claim is taken back by the next step, which goes on", async () => {
-    const model = scriptedModel([endTurn("Done.")]);
+    const model = scriptedModel([finishTurn()]);
     const runId = await newMainRun();
     ok(await runStep(db, env, runId, userId, at(1), deps(model.callModel)));
     await db.update(schema.coachRuns).set({ status: "stepping", updatedAt: at(2).toISOString() }).where(eq(schema.coachRuns.id, runId));
     const later = 2 + (COACH_RUN_STEP_STALE_MINUTES + 1) * 60;
-    const r = ok(await runStep(db, env, runId, userId, at(later), deps(model.callModel)));
+    const r = ok(await runStep(db, env, runId, userId, at(later), deps(model.callModel, [finishTool()])));
     expect(r.status).toBe("finished");
     expect(model.requests).toHaveLength(1);
   });
@@ -1122,12 +1127,12 @@ describe("the step's stamp", () => {
     const model = scriptedModel([
       async () => {
         clockMs += 95_000; // the model thought for 95 s
-        return endTurn("Done.");
+        return finishTurn();
       },
     ]);
     const runId = await newMainRun();
     ok(await runStep(db, env, runId, userId, at(1), deps(model.callModel)));
-    ok(await runStep(db, env, runId, userId, at(2), deps(model.callModel)));
+    ok(await runStep(db, env, runId, userId, at(2), deps(model.callModel, [finishTool()])));
     const row = await runRow(runId);
     expect(row.updatedAt).toBe(at(2 + 95).toISOString());
     expect(row.finishedAt).toBe(at(2 + 95).toISOString());
@@ -1140,9 +1145,9 @@ describe("a turn cut off at the output limit while it was thinking", () => {
       [thinking(), { type: "text", text: "Weighing the options." }, { type: "thinking", thinking: "", signature: "" }],
       "max_tokens",
     );
-    const model = scriptedModel([cut, endTurn("Done.")]);
+    const model = scriptedModel([cut, finishTurn()]);
     const runId = await newMainRun();
-    await drive(runId, deps(model.callModel));
+    await drive(runId, deps(model.callModel, [finishTool()]));
     expect(model.requests).toHaveLength(2);
     const sentBack = stripCache(model.requests[1]!.messages)[1]!;
     expect(sentBack).toEqual({ role: "assistant", content: cut.content.slice(0, 2) });
@@ -1374,13 +1379,13 @@ describe("a step's tail (fix round 2)", () => {
   it("a timezone that can't be read never leaves a run stuck: the window and the clock fall back to UTC", async () => {
     expect(() => windowClosed({ ceilingMicros: 1, maxCalls: 1, effort: "high", maxTokens: 1, rehearsal: false, timezone: "Not/AZone", window: { kind: "day", date: "2000-01-01" } }, at(0).toISOString(), at(0))).not.toThrow();
     expect(runWindow({ kind: "now" }, "Not/AZone", at(0))).toEqual({ kind: "day", date: at(0).toISOString().slice(0, 10) });
-    const model = scriptedModel([endTurn("Done.")]);
+    const model = scriptedModel([finishTurn()]);
     const runId = await newMainRun();
     const row = await runRow(runId);
     const state = JSON.parse(row.state!) as { settings: { timezone: string } };
     state.settings.timezone = "Not/AZone";
     await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, runId));
-    const results = await drive(runId, deps(model.callModel));
+    const results = await drive(runId, deps(model.callModel, [finishTool()]));
     expect(results.at(-1)!.status).toBe("finished");
     expect((await runRow(runId)).status).toBe("finished");
   });
@@ -1535,8 +1540,8 @@ async function insertSubRun(parentId: string, role: "designer" | "reviewer", cre
 
 describe("sub-runs", () => {
   it("stepping the main run advances its next due sub-run first; its events land on the main run's trail", async () => {
-    const model = scriptedModel([toolTurn(use("read_day")), endTurn("Draft ready."), endTurn("Set reviewed.")]);
-    const d = deps(model.callModel, [readTool("read_day", 0)]);
+    const model = scriptedModel([toolTurn(use("read_day")), finishTurn("Draft ready."), finishTurn("Set reviewed.")]);
+    const d = deps(model.callModel, [readTool("read_day", 0), finishTool()]);
     const main = await newMainRun();
     ok(await runStep(db, env, main, userId, at(1), d)); // main's context
     const designer = await insertSubRun(main, "designer", at(1));
@@ -1605,14 +1610,15 @@ describe("a rehearsal run", () => {
 
 describe("getRun", () => {
   it("answers the run and its events after a sequence number", async () => {
-    const model = scriptedModel([toolTurn(use("read_day")), endTurn("Done.")]);
+    const model = scriptedModel([toolTurn(use("read_day")), finishTurn()]);
     const runId = await newMainRun();
-    await drive(runId, deps(model.callModel, [readTool("read_day", 0)]));
+    await drive(runId, deps(model.callModel, [readTool("read_day", 0), finishTool()]));
     const all = await getRun(db, userId, runId, 0);
     expect(all!.run).toMatchObject({ id: runId, status: "finished" });
-    expect(all!.events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+    // The context, the coach's words and the read, then its words and its finish line.
+    expect(all!.events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
     const later = await getRun(db, userId, runId, 2);
-    expect(later!.events.map((e) => e.seq)).toEqual([3, 4]);
+    expect(later!.events.map((e) => e.seq)).toEqual([3, 4, 5]);
   });
 });
 

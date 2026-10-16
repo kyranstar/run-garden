@@ -261,6 +261,7 @@ describe("the routes", () => {
   it("a second step while one is in flight answers 409", async () => {
     let release!: (r: MessagesResult) => void;
     turns = [() => new Promise<MessagesResult>((r) => (release = r))];
+    tools = [{ ...costly("finish", 0), control: "finish", async run() { return { data: {}, summary: "Done." }; } }];
     const id = (await call("POST", "", { scope: { kind: "now" } })).body.run.id as string;
     await call("POST", `/${id}/step`);
     const first = call("POST", `/${id}/step`);
@@ -268,7 +269,7 @@ describe("the routes", () => {
     const second = await call("POST", `/${id}/step`);
     expect(second.status).toBe(409);
     expect(second.body).toEqual({ error: "busy" });
-    release(answer([{ type: "text", text: "Done." }], "end_turn"));
+    release(answer([use("finish", { summary: "Done." })]));
     expect((await first).body.status).toBe("finished");
   });
 });

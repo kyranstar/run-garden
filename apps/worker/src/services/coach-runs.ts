@@ -329,6 +329,9 @@ export interface RunState {
   awaitingAt?: number;
   /** A reviewer's repairs used: a review that couldn't be read, or an answer with no review (one is allowed). */
   repairs?: number;
+  /** A main run's or designer's turns in a row that called no tool (fix wave 3A, A3): the first is nudged, the second
+   * ends the run as a finish. A turn with a tool call clears it. */
+  textOnly?: number;
   /** A reviewer's packet (design-review.ts), until its opening context is built from it. */
   packet?: string;
   /** A reviewer's draft: what its submit_review stores the review against. */
@@ -441,6 +444,7 @@ export function readRunState(text: string | null): RunState | null {
     ...(s.awaitingReview && typeof s.awaitingReview === "object" ? { awaitingReview: s.awaitingReview } : {}),
     ...(typeof s.awaitingAt === "number" ? { awaitingAt: s.awaitingAt } : {}),
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
+    ...(typeof s.textOnly === "number" ? { textOnly: s.textOnly } : {}),
     ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
     ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
     ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds)
@@ -1170,6 +1174,9 @@ interface StepEnd {
   stopTree?: true;
   /** A ceiling's stop reaches the tree under the run whose ceiling it is (absent: the main run's whole tree). */
   stopFrom?: string;
+  /** A main run that ended in words with its proposal not made pending by the finish's guard (a review left under way,
+   * a workout unreviewed): once its end is written it proposes what was reviewed, as a stop does, with this note. */
+  withWhatItHas?: string;
 }
 
 type Advance = { kind: "end"; end: StepEnd } | { kind: "lost"; costMicros: number } | { kind: "restoring" };
@@ -1245,9 +1252,19 @@ export function expiredLine(settings: RunSettings | undefined): string {
   return settings?.window?.kind === "day" ? LINES.expiredDay : LINES.expiredSet;
 }
 
-/** Told to the model on its last call, in the newest (not yet sent) user message. */
-export const LAST_TURN_NOTE =
-  "This is your last turn in this run. Finish now with what you have (call finish), or say plainly what is still missing.";
+/** Told to the model on its last call, in the newest (not yet sent) user message (fix wave 3A, A3: never an invitation
+ * to answer in words, which would end the run with nothing shown). */
+export const LAST_TURN_NOTE = "This is your last turn in this run. Call finish now, with one plain line for the athlete.";
+
+/** A main run's or a designer's turn that called no tool: its one repair (fix wave 3A, A3; the reviewer has its own). */
+export const NO_TOOL_NUDGE =
+  "That turn called no tool, and a turn without one ends the run with nothing reaching the athlete. If you meant to ask the athlete something, call ask_athlete. If the work is done, call finish, with one plain line for the athlete.";
+
+/** An answer cut off at the output limit (fix wave 3A, A4): the thinking used the room, and the document is not the
+ * problem — never a hint to make it smaller. */
+export const CUT_OFF_NOTE =
+  "Your answer was cut off before it finished. Your thinking used most of the room: think less before you write, and keep the document whole.";
+const CUT_OFF_WHY = "Your answer was cut off before it finished.";
 /** The reviewer's last-turn note: it has no finish; its review is its end. */
 export const REVIEWER_LAST_TURN_NOTE = "This is your last turn in this run. Submit your review now with submit_review, from what you have read.";
 
@@ -1389,6 +1406,9 @@ export async function runStep(
     // read and, when it proposes, its write and the older plans' days it covers superseded.
     if (!isLive(root.status) && root.status !== "finished" && root.status !== "cancelled") {
       mainLines.push(await proposeWhatItHas(db, userId, root, nodes, stoppedNote(root.error), endAt));
+    } else if (end.withWhatItHas && due === root) {
+      // A main run that ended in words, its proposal kept back by the finish's guard: what was reviewed (fix wave 3A, A3).
+      mainLines.push(await proposeWhatItHas(db, userId, root, nodes, end.withWhatItHas, endAt));
     }
   } else {
     // A cancel took the claim while the tools ran: what they did is on the trail below, the cancel's status stands.
@@ -1773,14 +1793,13 @@ async function modelStep(s: StepCtx): Promise<Advance> {
 
   const uses = content.filter((b): b is ToolUseBlock => b.type === "tool_use");
   if (result.stopReason === "max_tokens") {
-    // Cut off mid-answer: a cut call's input is not what the model meant, so nothing runs; it is told and goes on.
+    // Cut off mid-answer: a cut call's input is not what the model meant, so nothing runs; it is told and goes on —
+    // told that its thinking used the room, never to make the document smaller (fix wave 3A, A4).
     if (uses.length > 0) {
-      state.results = uses.map((u) =>
-        errorResult(u.id, { error: "cut_off", why: "Your answer reached the output limit before this call was complete.", fix: "Make the call again, with a smaller input." }),
-      );
+      state.results = uses.map((u) => errorResult(u.id, { error: "cut_off", why: CUT_OFF_WHY, fix: CUT_OFF_NOTE.slice(CUT_OFF_WHY.length + 1) }));
       flushResults(state);
     } else {
-      state.messages.push({ role: "user", content: [{ type: "text", text: "Your answer was cut off at the output limit. Go on, more briefly." }] });
+      state.messages.push({ role: "user", content: [{ type: "text", text: CUT_OFF_NOTE }] });
     }
     return end({ ...base, status: "active", events });
   }
@@ -1794,8 +1813,17 @@ async function modelStep(s: StepCtx): Promise<Advance> {
       state.messages.push({ role: "user", content: [{ type: "text", text: REVIEW_NUDGE }] });
       return end({ ...base, status: "active", events });
     }
-    return end({ ...base, status: "finished", events: events.length > 0 ? events : [{ kind: "note", summary: LINES.finished }] });
+    // A turn with no tool call (fix wave 3A, A3; the agent-design audit's C1): ended there, it would leave a reviewed
+    // draft unshown. The first gets one nudge; a second in a row — or one on the run's last call, which no nudge could
+    // follow — ends the run as its finish would, its words the run's last line.
+    state.textOnly = (state.textOnly ?? 0) + 1;
+    if (state.textOnly < 2 && !last) {
+      state.messages.push({ role: "user", content: [{ type: "text", text: NO_TOOL_NUDGE }] });
+      return end({ ...base, status: "active", events });
+    }
+    return end(await finishInWords(s, said, spent));
   }
+  delete state.textOnly;
   state.pending = uses.map((u, i) => ({ id: u.id, name: u.name, input: u.input, ...(i >= MAX_TOOL_CALLS_PER_TURN ? { overflow: true } : {}) }));
   state.results = [];
   const ran = await runTools(s, STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED);
@@ -1992,34 +2020,7 @@ async function runTools(
       const said = (call.input as { summary?: unknown } | null)?.summary;
       if (run.role === "designer" && typeof said === "string") state.final = said.trim().slice(0, SUMMARY_MAX_CHARS);
       const proposalId = typeof (result.data as { proposalId?: unknown } | null)?.proposalId === "string" ? ((result.data as { proposalId: string }).proposalId) : null;
-      if (proposalId && state.settings.rehearsal) {
-        // A rehearsal's proposal is never one the athlete could act on, or see in a list.
-        await s.db
-          .update(coachProposals)
-          .set({ status: "rehearsal" })
-          .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, s.userId), inArray(coachProposals.status, ["pending", "unreviewed"])));
-      } else if (proposalId && run.role === "main") {
-        // Review comes before the athlete sees anything (spec §5): a design's proposal becomes `pending` — the only
-        // status the app lists — when its main run finishes, and only when every workout in it carries its review.
-        const promoted = await s.db
-          .update(coachProposals)
-          .set({ status: "pending" })
-          .where(
-            and(
-              eq(coachProposals.id, proposalId),
-              eq(coachProposals.userId, s.userId),
-              eq(coachProposals.status, "unreviewed"),
-              sql`json_valid(${coachProposals.ops}) and json_array_length(${coachProposals.ops}) > 0`,
-              sql`not exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.review') is null)`,
-              // No review under way either (design-review.ts `reviewRunning`): a dangling candidate is never shown.
-              sql`not exists (select 1 from json_each(${coachProposals.ops}) o where json_extract(o.value, '$.candidate') is not null
-                or exists (select 1 from json_each(json_extract(o.value, '$.reviewLog')) r where json_extract(r.value, '$.status') = 'reviewing'))`,
-            ),
-          )
-          .returning({ id: coachProposals.id });
-        // Made pending: the older plans' days it covers are superseded (one statement, on finish's declared cost).
-        if (promoted.length > 0) await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString());
-      }
+      if (proposalId) await closeProposalAtFinish(s, proposalId);
       const payload = { ...(proposalId ? { proposalId } : {}), ...(result.receipt ? { receipt: result.receipt } : {}) };
       // A reviewer's finish is its review.
       events.push({ kind: run.role === "reviewer" ? "review" : "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });
@@ -2050,6 +2051,73 @@ async function runTools(
   }
   if (state.pending.length === 0) flushResults(state);
   return { status: "active", events, proposalId: null };
+}
+
+/**
+ * A run's proposal at its finish (the finish tool's, or a finish in words): a rehearsal's marked a rehearsal — never
+ * one the athlete could act on, or see in a list; a main run's made `pending` — the only status the app lists — when
+ * every workout in it carries its review and none is under way (review comes before the athlete sees anything, spec
+ * §5), the older plans' days it covers then superseded. FINISH_WRITE, and the supersede on finish's declared cost (the
+ * finish in words calls no tool: it has the whole tool room). Answers what became of it: `pending`, `rehearsal`, or
+ * `kept` (nothing written: a designer's, or one the guard keeps back).
+ */
+async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"pending" | "rehearsal" | "kept"> {
+  if (s.state.settings.rehearsal) {
+    await s.db
+      .update(coachProposals)
+      .set({ status: "rehearsal" })
+      .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, s.userId), inArray(coachProposals.status, ["pending", "unreviewed"])));
+    return "rehearsal";
+  }
+  if (s.run.role !== "main") return "kept";
+  const promoted = await s.db
+    .update(coachProposals)
+    .set({ status: "pending" })
+    .where(
+      and(
+        eq(coachProposals.id, proposalId),
+        eq(coachProposals.userId, s.userId),
+        eq(coachProposals.status, "unreviewed"),
+        sql`json_valid(${coachProposals.ops}) and json_array_length(${coachProposals.ops}) > 0`,
+        sql`not exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.review') is null)`,
+        // No review under way either (design-review.ts `reviewRunning`): a dangling candidate is never shown.
+        sql`not exists (select 1 from json_each(${coachProposals.ops}) o where json_extract(o.value, '$.candidate') is not null
+          or exists (select 1 from json_each(json_extract(o.value, '$.reviewLog')) r where json_extract(r.value, '$.status') = 'reviewing'))`,
+      ),
+    )
+    .returning({ id: coachProposals.id });
+  if (promoted.length === 0) return "kept";
+  await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString());
+  return "pending";
+}
+
+/**
+ * A main run's or designer's second turn in a row with no tool call — or one on its last call — ends the run as its
+ * finish would (fix wave 3A, A3), its words the run's last line: a designer's kept as its finish line (`final`, which
+ * its set's outcome quotes); a main run's proposal made pending through the finish's own guard — or, kept back by it
+ * (a review left under way, a workout unreviewed), what was reviewed proposed once the end is written, as a stop does
+ * (`withWhatItHas`). No tool ran this step: at most the guard's write, the supersede, and a stop's proposal.
+ */
+async function finishInWords(s: StepCtx, said: string, spent: number): Promise<StepEnd> {
+  const { state, run } = s;
+  const words = said.length > 0 ? said : LINES.finished;
+  const longer = said.length > SUMMARY_MAX_CHARS ? { text: said } : {};
+  if (run.role !== "main") {
+    if (said.length > 0) state.final = said.slice(0, SUMMARY_MAX_CHARS);
+    return { status: "finished", state, costMicros: spent, error: null, proposalId: null, events: [{ kind: "note", summary: words, ...(said.length > SUMMARY_MAX_CHARS ? { payload: longer } : {}) }] };
+  }
+  const proposalId = designProposalId(run.id);
+  const closed = await closeProposalAtFinish(s, proposalId);
+  const shown = closed === "pending";
+  return {
+    status: "finished",
+    state,
+    costMicros: spent,
+    error: null,
+    proposalId: shown ? proposalId : null,
+    events: [{ kind: "note", summary: words, ...(shown || said.length > SUMMARY_MAX_CHARS ? { payload: { ...longer, ...(shown ? { proposalId } : {}) } } : {}) }],
+    ...(closed === "kept" ? { withWhatItHas: STOPPED_NOTES.unfinished } : {}),
+  };
 }
 
 /** A call queued after a propose_workout that paused for its review. */

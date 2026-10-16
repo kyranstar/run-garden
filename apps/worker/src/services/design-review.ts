@@ -689,6 +689,8 @@ export const STOPPED_NOTES: Readonly<Record<string, string>> = {
   internal: "The coach stopped when something went wrong inside it; this is what had been reviewed by then.",
   bad_state: "The coach stopped when its saved work couldn't be read; this is what had been reviewed by then.",
   expired: "The coach's time for this design ran out; this is what had been reviewed by then.",
+  /** A main run that ended in words with a review still under way, or a workout unreviewed (fix wave 3A, A3). */
+  unfinished: "The coach ended before every review was in; this is what had been reviewed by then.",
 };
 
 /** The note for a main run that stopped with the error `error` (a rejected request's code reads as one). */
