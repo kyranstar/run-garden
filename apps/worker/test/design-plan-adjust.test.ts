@@ -822,8 +822,8 @@ describe("read_proposals reports each change and how it ended", () => {
     const res = ok(await readProposals.run(ctxOf(await mainRun()), {}));
     const p = (res.data as { proposals: Array<{ id: string; ops: unknown[] }> }).proposals.find((x) => x.id === id)!;
     expect(p.ops).toEqual([
-      { kind: "plan_adjust", change: "skip", date: TODAY, title: { untrusted: true, text: "Strength" }, skipReason: { untrusted: true, text: "A flare day: rest the jaw." }, why: { untrusted: true, text: "Today's reading is high; a short relief session replaces it." }, outcome: "declined", reason: { untrusted: true, text: "Not today." } },
-      { kind: "plan_adjust", change: "adjust", date: day(-3), title: { untrusted: true, text: "Easy run" }, minutes: 30, why: { untrusted: true, text: "Legs are heavy after the hills: keep it easy and short." }, outcome: "approved" },
+      { kind: "plan_adjust", change: "skip", date: TODAY, day: "Wed 13 May · today", title: { untrusted: true, text: "Strength" }, skipReason: { untrusted: true, text: "A flare day: rest the jaw." }, why: { untrusted: true, text: "Today's reading is high; a short relief session replaces it." }, outcome: "declined", reason: { untrusted: true, text: "Not today." } },
+      { kind: "plan_adjust", change: "adjust", date: day(-3), day: "Sat 16 May · in 3 d", title: { untrusted: true, text: "Easy run" }, minutes: 30, why: { untrusted: true, text: "Legs are heavy after the hills: keep it easy and short." }, outcome: "approved" },
     ]);
   });
 });

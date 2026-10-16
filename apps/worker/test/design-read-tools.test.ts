@@ -860,7 +860,7 @@ describe("recall_memory", () => {
 });
 
 describe("the pinned core and rehearsal memory (memory-core.ts)", () => {
-  it("a rehearsal run's fact is in neither the opening context's core nor its count, nor recalled", async () => {
+  it("a rehearsal run's fact is neither in the opening context's core nor recalled", async () => {
     const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
     const fact = (body: string, rehearsal = false) => ({
       id: newId(), userId, kind: "fact", body, provenance: { source: "coach_run", at: at(day(1)), ...(rehearsal ? { rehearsal: true } : {}) }, learnedAt: at(day(1)),
@@ -871,7 +871,8 @@ describe("the pinned core and rehearsal memory (memory-core.ts)", () => {
     const all = `${ctx.system.map((b) => b.text).join("\n")}\n${ctx.header}`;
     expect(all).toContain("Owns a kettlebell");
     expect(all).not.toContain("REHEARSAL-FACT");
-    expect(ctx.header).toContain("- memory beyond the pinned core: 0");
+    // The count of the memory beyond the core left the index (fix wave 13: never read in ten live runs).
+    expect(ctx.header).not.toContain("memory beyond the pinned core");
     expect((await memoryCore(db, userId, TODAY)).map((r) => r.body)).toEqual(["Owns a kettlebell"]);
     expect(JSON.stringify(await ok("recall_memory", { limit: 30 }, { user: userId }))).not.toContain("REHEARSAL-FACT");
   });
