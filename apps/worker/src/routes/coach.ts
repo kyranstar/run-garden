@@ -34,7 +34,7 @@ import { requireUser } from "../auth/middleware.js";
 import { restoreInProgress } from "../services/account-state.js";
 import { loadOutOfCredits } from "../services/ai-credits.js";
 import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../services/calendar-sync.js";
-import { REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
+import { recordReplayFrom, REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
 import { LLM_BUDGET } from "../services/llm.js";
@@ -54,6 +54,7 @@ import {
 import { chunkIds, type Db } from "../services/db.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
 import { isDesignedProposal } from "../services/proposal-kinds.js";
+import { expiryOfClaims, SWEEP_REJUDGES } from "../services/design-approve.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
 import { liveMemoryWhere } from "../services/memory-core.js";
@@ -111,7 +112,12 @@ export async function sweepStaleQuestions(db: Db, userId: string, now: string): 
 /** Expire pending proposals whose day passed or TTL lapsed (spec §3) — and a design's proposal still unreviewed
  * (Stage 3 Task 6), silently: the athlete never saw it, so there is nothing to say. An unreviewed one is expired only
  * once its run is over (fix wave 3A, A10): a set still being designed across local midnight keeps its proposal, which
- * its next designer proposes into; the run itself proposes what was reviewed, or closes it, when it ends. */
+ * its next designer proposes into; the run itself proposes what was reviewed, or closes it, when it ends.
+ *
+ * A designed proposal's claims (Task 8b's recovery rule, design-approve.ts `expiryOfClaims`): one an approve is applying
+ * now is never expired under it; one whose approve died is judged again on the plan first — made, recorded applied; not,
+ * released — SWEEP_REJUDGES a sweep (REJUDGE_COST each), the rest waiting for the next. Its expiry is guarded by the ops
+ * it read too: a claim written between the read and the write wins. A thread proposal holds no claim: nothing changes. */
 export async function sweepExpiredProposals(db: Db, userId: string, today: string): Promise<number> {
   const runLive = sql`exists (select 1 from ${coachRuns} r where r.user_id = ${userId} and r.parent_id is null
     and ${coachProposals.id} = ${designProposalId("")} || r.id
@@ -127,16 +133,26 @@ export async function sweepExpiredProposals(db: Db, userId: string, today: strin
       ),
     );
   const now = nowInstant();
+  const room = { rejudges: SWEEP_REJUDGES };
   let expired = 0;
   for (const p of stale) {
+    const claims = await expiryOfClaims(db, userId, p, today, now, room);
+    if (!claims) continue;
     // Guarded: a proposal another request settled meanwhile is not expired, and gets no receipt.
     const changed = await db
       .update(coachProposals)
-      .set({ status: "expired", resolvedAt: now })
-      .where(and(eq(coachProposals.id, p.id), eq(coachProposals.status, p.status)))
+      .set({ status: "expired", resolvedAt: now, ...(claims.ops ? { ops: claims.ops } : {}) })
+      .where(
+        and(
+          eq(coachProposals.id, p.id),
+          eq(coachProposals.status, p.status),
+          isDesignedProposal(p.ops) ? sql`${coachProposals.ops} = ${JSON.stringify(p.ops)}` : undefined,
+        ),
+      )
       .returning({ id: coachProposals.id });
     if (changed.length === 0) continue;
     expired += 1;
+    if (claims.replayFrom !== null) await recordReplayFrom(db, userId, claims.replayFrom).catch(() => undefined);
     if (p.status === "pending") await receipt(db, userId, `Expired — the moment passed: ${p.title}`, p.id);
   }
   return expired;

@@ -9,7 +9,10 @@
  *        coachDrain? } every op named (none: all) — the workouts through the Studio's create / revise path, the changes
  *        to sessions already on the plan through the thread coach's applier (Task 8b) — within one request's budget; the
  *        rest come back in `remaining`: call again with `{ opIds: remaining }` until it is empty. The request that ends
- *        it hands the calendar one bounded sync step, in the room its ops left (Task 9)
+ *        it hands the calendar one bounded sync step, in the room its ops left (Task 9). A change another approve is
+ *        applying (its claim under two minutes old — Task 8b's recovery rule) is never applied twice: it is named in
+ *        `inFlight`, the others approved as usual; only when every op named is in flight (nothing else answered) is it
+ *        409 { error: "in_flight", opIds, status, applied: [], changed: [], refused: [], settled: [], remaining: [] }
  *                                          { edit: { opId, doc, date?, time? } } → the same, for that op alone, with
  *        the athlete's version of its draft (Edit before approve); refused as a Studio save is (422 `invalid_doc` with
  *        every issue, `past_date`, `run_unsupported`; 409 `stale_revision` with `rev`, `not_editable`; 404), nothing
@@ -109,6 +112,10 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   try {
     const meter = { left: 0 };
     const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs }, undefined, meter);
+    // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
+    const { inFlight, ...rest } = answer;
+    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining].every((xs) => xs.length === 0);
+    if (inFlight && nothingElse) return c.json({ error: "in_flight", opIds: inFlight, ...rest }, 409);
     // The calendar follows the plan, as after a Studio save (Task 9): once the approve is over and this request wrote
     // something, one bounded step in the room its declared costs left — none when the chunk was full (the half-hourly
     // reconcile books what this leaves).

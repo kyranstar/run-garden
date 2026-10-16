@@ -70,6 +70,16 @@
  * `applied_refs` snapshot is the thread card's, which never shows a designed proposal: each change's own `before` is
  * this record. A change has no draft (Edit before approve never names one) and needs no review.
  *
+ * A CLAIM NO REQUEST FINISHES (the recovery rule; the Task 9 review). An approve claims its changes (`applying`, with
+ * when — `at` — and the session as it stood) before the applier runs. For APPLYING_STALE_MS from its `at` the claim is
+ * that approve's, still applying: another approve answers it in flight (`inFlight`; the route's 409 `in_flight` when
+ * nothing else was named) and never runs the applier for it a second time, a decline answers it in flight, and the
+ * expiry sweep leaves its proposal alone. Past the window its request died (or the applier threw: the claims are
+ * released stale at once, their `before` kept): an approve takes the claim over and applies it, and a decline or the
+ * expiry sweep re-judges it on the plan — made, recorded applied with the claim's `before` (a skip's day put on the
+ * garden's replay); not made, declined (the decline) or released (the sweep: open again, as its proposal's other ops,
+ * which its expiry covers). A claim whose change is made is recorded applied, fresh or stale: nothing runs for it.
+ *
  * THE THREAD. Approving writes one plain receipt in the thread once nothing of the request remains — the workouts
  * approved, each as written (design-manifest.ts), how many were declined, and any not approved with why — and a decline
  * that declines the whole proposal says "Left as planned", as the thread's own does. A receipt that fails never fails
@@ -253,7 +263,11 @@ export const REQUEST_BUDGET = 45;
 /** An approve's own: the session and its restore check, the proposal, the preferences, the plan read, the proposal's
  * write and the receipt. */
 export const APPROVE_FIXED = 7;
-/** A decline: the session and its restore check, the proposal, the plan read, the write and the receipt. */
+/**
+ * A decline: the session and its restore check, the proposal, the plan read, the write, and the receipt — or the
+ * garden's replay for a claimed skip it found made (the recovery rule), never both: a change found made leaves the
+ * proposal approved in part, never declined, so no "Left as planned" is written.
+ */
 export const DECLINE_COST = 6;
 /**
  * The day a new workout or a revision is judged for (`docDayContext`): the place (two when the place it names is gone),
@@ -274,12 +288,12 @@ export const REVISE_BASE = 1 + DAY_READS + 1 + 2 + 1 + 2 + 2;
 const PLAN_MAX = 10;
 
 /**
- * A request's changes (Task 8b), through the applier once: first their claim (`applying`, the fix round's 1), then the
- * applier's threshold read, the sessions' before-state read and its write (`applied_refs`), the collision pass's two
- * reads, the garden's replay put on record (a skip resolves its day), and whether a watch job waits for the client (a
- * move).
+ * A request's changes (Task 8b), through the applier once: first their claim (`applying`, the fix round's 1) and its
+ * release should the applier throw (the recovery rule: one guarded write, reserved), then the applier's threshold read,
+ * the sessions' before-state read and its write (`applied_refs`), the collision pass's two reads, the garden's replay
+ * put on record (a skip resolves its day), and whether a watch job waits for the client (a move).
  */
-export const PLAN_BATCH_FIXED = 1 + 1 + 1 + 1 + 2 + 1 + 1;
+export const PLAN_BATCH_FIXED = 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1;
 /** A skip: the applier's read of the session and its write. */
 export const SKIP_COST = 2;
 /** A length: the read, and the write with its document's revision — before the rows its day's collision pass moves. */
@@ -337,6 +351,27 @@ export function opCostOf(op: Pick<DocWorkoutOp, "target"> | Pick<PlanAdjustOp, "
   // The collision pass may move every unpinned session of the day, the new one with them.
   return time ? CREATE_AT_TIME_COST : CREATE_PLACED_BASE + dayRows + 1;
 }
+
+// ── A claim no request finishes (the recovery rule; see the module comment) ────────────────────────────────────────
+
+/** How long a claim (`applying`) is the approve's that made it, from its `at`: past it, its request died. */
+export const APPLYING_STALE_MS = 2 * 60_000;
+
+/** A claim made under APPLYING_STALE_MS before `now`: its approve is applying it still. One whose `at` can't be read is
+ * stale (nothing waits on it). */
+export const claimFresh = (claim: { at: string }, now: string): boolean => Date.parse(now) - Date.parse(claim.at) < APPLYING_STALE_MS;
+
+/** A change's claim, when an approve claimed it and didn't finish. */
+const claimOf = (op: AnyDesignedOp): Extract<PlanOpOutcome, { status: "applying" }> | null => {
+  const o = isPlanAdjustOp(op) ? (op as DesignedPlanOp).outcome : undefined;
+  return o?.status === "applying" ? o : null;
+};
+
+/** The expiry sweep's re-judge of one proposal's stale claims, beyond what its expiry costs anyway: the plan read, and the
+ * garden's replay for a skip found made. */
+export const REJUDGE_COST = 1 + 1;
+/** The proposals one expiry sweep re-judges; another waits for the next sweep (the hourly one at the latest). */
+export const SWEEP_REJUDGES = 1;
 
 // ── The plan, read once ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -557,6 +592,9 @@ export interface ApproveAnswer {
   remaining: string[];
   /** A watch job a change queued waits for the client to drain it (`POST /api/coach/drain`), as the thread's approve says. */
   coachDrain?: true;
+  /** Changes another approve is applying (its claim within APPLYING_STALE_MS): never applied twice — the route answers 409
+   * `in_flight` when nothing else was named. Present only when there are some. */
+  inFlight?: string[];
 }
 
 /** The ops `ids` names, in the proposal's order; every id must be one of its ops. */
@@ -611,9 +649,8 @@ const beforeOf = (row: RowState): PlanBefore => ({
  * applier's own rule (`whyNotActionable`), a move to a day gone, a race (never skipped or moved: the thread coach's
  * `never_skip_race`, and `applyMove` refuses a race), a length for a session its build decides (ruling 3-R13) —
  * or `made`, its effect already there (the applier's own re-apply records it done, writing nothing) — or null: apply it.
- * A change an approve claimed and didn't finish (`applying`) is judged the same, its `before` the claim's (the session as
- * it stood before the applier ran, never as it stands after); a skip it made has its garden replay put on record
- * (`replayFrom`, its day resolved today or earlier: the request that made it died before it could).
+ * A change an approve claimed and didn't finish (`applying`) is first found made or not (`claimMade`), then judged the
+ * same.
  */
 function planVerdict(
   op: DesignedPlanOp,
@@ -621,12 +658,10 @@ function planVerdict(
   today: string,
 ): { made: PlanBefore; replayFrom: string | null } | { refusal: Omit<Refused, "opId"> } | null {
   const c = op.op;
-  const claim = op.outcome?.status === "applying" ? op.outcome : null;
-  const before = (r: RowState): PlanBefore => claim?.before ?? beforeOf(r);
   if (!row || row.archived) return { refusal: { error: "not_found", why: "It's no longer in the plan." } };
-  if (c.kind === "skip" && row.dto.completionState === "skipped") {
-    return { made: before(row), replayFrom: claim && row.resolution !== null && row.resolution <= today ? row.resolution : null };
-  }
+  const claimed = claimMade(op, row, today);
+  if (claimed) return claimed;
+  if (c.kind === "skip" && effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
   const why = whyNotActionable({ archivedAt: null, completionState: row.dto.completionState, effectiveDate: row.dto.date }, today);
   if (why !== undefined) {
     const cause: NotEditableCause | null =
@@ -639,9 +674,32 @@ function planVerdict(
     const cause: NotEditableCause = docOriginRow({ origin: row.origin }) ? "studio" : "programme";
     return { refusal: { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } };
   }
-  if (c.kind === "move" && row.dto.date === c.toDate && (c.toTime === undefined || row.dto.time === c.toTime)) return { made: before(row), replayFrom: null };
-  if (c.kind === "adjust" && row.minutes === c.durationMinutes) return { made: before(row), replayFrom: null };
+  if (effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
   return null;
+}
+
+/** A change's effect is on the plan: the session skipped, at its new day (and time, when one was asked for), or at its
+ * length. */
+const effectThere = (c: PlanChange, row: RowState): boolean =>
+  c.kind === "skip"
+    ? row.dto.completionState === "skipped"
+    : c.kind === "move"
+      ? row.dto.date === c.toDate && (c.toTime === undefined || row.dto.time === c.toTime)
+      : row.minutes === c.durationMinutes;
+
+/**
+ * A claimed change (`applying`) found made — by the approve that claimed it, which then died, threw or lost its last
+ * write — on its effect alone, whatever became of the session since (its day passed, done): made, with the claim's
+ * `before` (the session as it stood before the applier ran, never as it stands after), and for a skip the day it resolved
+ * (`replayFrom`: its garden replay, which the request that made it never put on record; within `today` when the caller
+ * knows it — a skip's resolution is its writer's today, so a decline, which reads no preferences, takes it as it is) —
+ * or null: not claimed, or not made.
+ */
+function claimMade(op: DesignedPlanOp, row: RowState | undefined, today: string | null): { made: PlanBefore; replayFrom: string | null } | null {
+  const claim = claimOf(op);
+  if (!claim || !row || row.archived || !effectThere(op.op, row)) return null;
+  const resolved = op.op.kind === "skip" ? row.resolution : null;
+  return { made: claim.before, replayFrom: resolved !== null && (today === null || resolved <= today) ? resolved : null };
 }
 
 /** The earlier of a day and another (none: the other). */
@@ -711,6 +769,7 @@ export async function approveDesignOps(
   }
 
   const remaining: string[] = [];
+  const inFlight: string[] = [];
   let left = budget;
   /** Nothing has gone yet: the first always goes, so every request moves on. */
   let first = true;
@@ -737,6 +796,12 @@ export async function approveDesignOps(
         if (!replayCounted) left -= 1;
         replayCounted = true;
       }
+      continue;
+    }
+    // Claimed within the window and not yet made: the approve that claimed it is applying it still (the recovery rule).
+    const claim = claimOf(c);
+    if (claim && claimFresh(claim, ctx.now)) {
+      inFlight.push(c.id);
       continue;
     }
     if (verdict) {
@@ -773,7 +838,17 @@ export async function approveDesignOps(
     const claimStatus = statusOfOps(allDesignedOps(claimOps));
     const resolvedAt = await writeOps(db, userId, p, claimOps, claimStatus, ctx.now);
     current = { ...p, ops: claimOps, status: claimStatus, resolvedAt };
-    const res = await applyOps(db, userId, ctx.prefs, p.id, batch.map((c) => c.op));
+    let res: Awaited<ReturnType<typeof applyOps>>;
+    try {
+      res = await applyOps(db, userId, ctx.prefs, p.id, batch.map((c) => c.op));
+    } catch (e) {
+      // THE RELEASE (the recovery rule): the applier threw — a fault it doesn't catch, its own or one of the D1's. The
+      // claims go stale at once, under the same guard (one statement, reserved in PLAN_BATCH_FIXED): nothing waits on them,
+      // and their `before` is kept — the applier may have made some before it threw — for the next approve to take them
+      // over or a decline to re-judge them. A release that loses its guard leaves them to their window.
+      await releaseClaims(db, userId, current, claimed, ctx.now).catch(() => undefined);
+      throw e;
+    }
     // Each change missed by the applier names the session it couldn't change, in order; the rest it applied.
     const missed = [...res.missed];
     for (const c of batch) {
@@ -828,7 +903,7 @@ export async function approveDesignOps(
   remaining.push(...overflow);
   // The first op always goes, so `left` can fall below nothing: no room then.
   if (meter) meter.left = Math.max(0, left);
-  const drain = coachDrain ? { coachDrain: true as const } : {};
+  const drain = { ...(coachDrain ? { coachDrain: true as const } : {}), ...(inFlight.length > 0 ? { inFlight } : {}) };
   if (outcomes.size === 0) {
     // A superseded proposal with nothing to repair is no longer the athlete's.
     if (p.status === "superseded") throw new NotOpenError(p.status);
@@ -839,12 +914,13 @@ export async function approveDesignOps(
   const status = statusOfOps(allDesignedOps(next));
   await writeOps(db, userId, current, next, status, ctx.now);
 
-  // One receipt once nothing of the request remains, when it changed something the thread has not been told.
+  // One receipt once nothing of the request remains — nor of another applying it (a change in flight: the approve that
+  // finishes it writes it) — when it changed something the thread has not been told.
   const news = applied.length > 0 || changed.length > 0 || refused.some((r) => {
     const before = ops.find((o) => opIdOf(o) === r.opId)?.outcome;
     return before?.status !== "refused" || before.error !== r.error;
   });
-  if (remaining.length === 0 && news && allDesignedOps(next).some((o) => o.outcome?.status === "applied")) {
+  if (remaining.length === 0 && inFlight.length === 0 && news && allDesignedOps(next).some((o) => o.outcome?.status === "applied")) {
     await receipt(db, userId, approvedReceipt(p.title, allDesignedOps(next)), p.id).catch((e: unknown) =>
       console.error(JSON.stringify({ level: "error", msg: "design approve: applied, but the receipt failed", proposal: p.id, error: e instanceof Error ? e.message : "unknown" })),
     );
@@ -972,6 +1048,14 @@ function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome | Pl
   });
 }
 
+/** The claims this request wrote (`claimed`: each change's `before`), released: still `applying`, but stale at once (their
+ * `at` set back by APPLYING_STALE_MS) — one guarded write. */
+async function releaseClaims(db: Db, userId: string, current: DesignProposalRow, claimed: ReadonlyMap<string, PlanBefore>, now: string): Promise<void> {
+  const at = new Date(Date.parse(now) - APPLYING_STALE_MS).toISOString();
+  const released = withOutcomes(current.ops, new Map([...claimed].map(([id, before]) => [id, { status: "applying" as const, at, before }])));
+  await writeOps(db, userId, current, released, current.status as DesignProposalStatus, now);
+}
+
 /**
  * Write the ops' outcomes and the status, while the proposal is still as this request read it. A proposal that ends
  * `superseded` names the newer plan that superseded it last (`superseded_by`), as Task 7's supersede does. Answers the
@@ -1052,15 +1136,16 @@ export interface DeclineAnswer {
   status: DesignProposalStatus;
   declined: string[];
   settled: Settled[];
-  /** Changes an approve is applying now (`applying`): never declined — the route answers 409 `in_flight` for them, the
-   * others declined (the review's fix round, 1). Present only when there are some. */
+  /** Changes an approve is applying now (claimed within APPLYING_STALE_MS): never declined — the route answers 409
+   * `in_flight` for them, the others declined (the review's fix round, 1). Present only when there are some. */
   inFlight?: string[];
 }
 
 /**
  * Decline the chosen ops (none named: all) — see the module comment: an op whose workout is there is recorded applied,
- * never declined; a change an approve is applying is in flight, never declined (`inFlight`). Throws `NotOpenError`,
- * `UnknownOpError`, `ProposalChangedError`.
+ * never declined; a change an approve is applying is in flight, never declined (`inFlight`); a change claimed past the
+ * window is judged again on the plan read (the recovery rule): made, recorded applied — its skip's garden replay put on
+ * record — else declined. Throws `NotOpenError`, `UnknownOpError`, `ProposalChangedError`.
  */
 export async function declineDesignOps(
   db: Db,
@@ -1073,20 +1158,32 @@ export async function declineDesignOps(
   for (const op of before) settled.push({ opId: opIdOf(op), outcome: op.outcome?.status === "superseded" ? "superseded" : "declined" });
   const reason = input.reason?.trim().slice(0, DECLINE_REASON_MAX);
   const declined: string[] = [];
-  const applying = (o: AnyDesignedOp) => isPlanAdjustOp(o) && o.outcome?.status === "applying";
+  const applying = (o: AnyDesignedOp) => {
+    const claim = claimOf(o);
+    return claim !== null && claimFresh(claim, now);
+  };
   const inFlight = chosenOpen.filter(applying).map(opIdOf);
   const flight = inFlight.length > 0 ? { inFlight } : {};
   const todo = chosenOpen.filter((o) => !applying(o));
   if (todo.length === 0) return { status: p.status as DesignProposalStatus, declined, settled, ...flight };
-  // The plan is read for the designed workouts (whose workout may be there already); a change is declined as it is.
+  // The plan is read for the designed workouts (whose workout may be there already) and the changes claimed past the
+  // window (whose change may be made); any other change is declined as it is.
   const workouts = todo.filter(isDocWorkoutOp) as DesignedOp[];
-  const plan = workouts.length > 0 ? await readPlan(db, userId, p.id, workouts, []) : null;
+  const stale = todo.filter((o) => claimOf(o) !== null) as DesignedPlanOp[];
+  const plan = workouts.length > 0 || stale.length > 0 ? await readPlan(db, userId, p.id, workouts, [], stale) : null;
   const outcomes = new Map<string, OpOutcome | PlanOpOutcome>();
+  let replayFrom: string | null = null;
   for (const op of todo) {
     const made = plan && isDocWorkoutOp(op) ? madeOf(op as DesignedOp, plan, now) : null;
+    const change = isPlanAdjustOp(op) ? (op as DesignedPlanOp) : null;
+    const claimed = plan && change ? claimMade(change, plan.rows.get(change.op.workoutId), null) : null;
     if (made) {
       outcomes.set(opIdOf(op), made);
       settled.push({ opId: opIdOf(op), outcome: "applied", workoutId: made.workoutId });
+    } else if (change && claimed) {
+      outcomes.set(change.id, { status: "applied", at: now, workoutId: change.op.workoutId, before: claimed.made });
+      settled.push({ opId: change.id, outcome: "applied", workoutId: change.op.workoutId });
+      if (claimed.replayFrom !== null) replayFrom = earliest(replayFrom, claimed.replayFrom);
     } else {
       outcomes.set(opIdOf(op), { status: "declined", at: now, ...(reason ? { reason } : {}) });
       declined.push(opIdOf(op));
@@ -1095,6 +1192,8 @@ export async function declineDesignOps(
   const next = withOutcomes(p.ops, outcomes);
   const status = statusOfOps(allDesignedOps(next));
   await writeOps(db, userId, p, next, status, now);
+  // Never an error once the outcomes are written (the approve's own rule).
+  if (replayFrom !== null) await recordReplayFrom(db, userId, replayFrom).catch(() => undefined);
   // Closed by this decline: "Left as planned", and when a newer plan took some of it, how much.
   if (status === "declined" || status === "superseded") {
     const ops = allDesignedOps(next);
@@ -1102,6 +1201,46 @@ export async function declineDesignOps(
     await receipt(db, userId, `Left as planned — ${p.title}${words}`, p.id);
   }
   return { status, declined, settled, ...flight };
+}
+
+// ── The expiry sweep's claims ───────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What the expiry sweep (routes/coach.ts `sweepExpiredProposals`) writes with a proposal's expiry, for its claims (the
+ * recovery rule) — null when the proposal waits: an approve is applying one of its changes (a claim within the window:
+ * never expired under it), or this sweep has re-judged its share (`room.rejudges`; the next sweep comes to it). Else
+ * the ops to write — none to change, for a proposal holding no claim (every thread proposal: nothing read) — or its
+ * stale claims re-judged on one plan read: made, recorded applied with the claim's `before`; not made, released (no
+ * outcome: open, as the proposal's other ops, which its expiry covers) — and the day the garden replays from (a skip
+ * found made), for the sweep to put on record once its expiry is written.
+ */
+export async function expiryOfClaims(
+  db: Db,
+  userId: string,
+  p: { id: string; ops: unknown },
+  today: string,
+  now: string,
+  room: { rejudges: number },
+): Promise<{ ops?: unknown[]; replayFrom: string | null } | null> {
+  const claimed = planOpsOf(p.ops).filter((o) => claimOf(o) !== null);
+  if (claimed.length === 0) return { replayFrom: null };
+  if (claimed.some((o) => claimFresh(claimOf(o)!, now))) return null;
+  if (room.rejudges <= 0) return null;
+  room.rejudges -= 1;
+  const plan = await readPlan(db, userId, p.id, [], [], claimed);
+  const made = new Map(claimed.map((o) => [o.id, claimMade(o, plan.rows.get(o.op.workoutId), today)]));
+  let replayFrom: string | null = null;
+  const ops = (p.ops as unknown[]).map((o) => {
+    if (!isPlanAdjustOp(o) || !made.has(o.id)) return o;
+    const m = made.get(o.id);
+    if (m) {
+      if (m.replayFrom !== null) replayFrom = earliest(replayFrom, m.replayFrom);
+      return { ...o, outcome: { status: "applied", at: now, workoutId: o.op.workoutId, before: m.made } satisfies PlanOpOutcome };
+    }
+    const { outcome: _released, ...open } = o as DesignedPlanOp;
+    return open;
+  });
+  return { ops, replayFrom };
 }
 
 // ── The draft ───────────────────────────────────────────────────────────────────────────────────────────────────────

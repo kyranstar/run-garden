@@ -23,7 +23,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { buildDossier } from "../src/services/coach-context.js";
 import { wake } from "../src/services/coach-wake.js";
-import { APPROVE_FIXED, DECLINE_COST, MOVE_COST, PLAN_BATCH_FIXED, REQUEST_BUDGET, SKIP_COST, ADJUST_COST, type DesignedOp } from "../src/services/design-approve.js";
+import { APPLYING_STALE_MS, APPROVE_FIXED, DECLINE_COST, MOVE_COST, PLAN_BATCH_FIXED, REQUEST_BUDGET, SKIP_COST, ADJUST_COST, type DesignedOp } from "../src/services/design-approve.js";
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { isToolErr, type OpReview, type ToolContext } from "../src/services/design-tools/types.js";
@@ -245,16 +245,22 @@ describe("decline, the draft and the proposal's read", () => {
 });
 
 describe("fix round: decline while a change is applying, and ten changes at once", () => {
-  /** A proposal whose skip an approve claimed and died inside the applier: the change is applying. */
-  async function withSkipApplying(): Promise<{ id: string; opIds: string[] }> {
+  /** A proposal whose skip an approve claimed (`at`: now, within the window — the approve is applying it still). */
+  async function withSkipApplying(at = nowInstant()): Promise<{ id: string; opIds: string[] }> {
     const made = await designed({ changes: [skip("w-1-07:00")], drafts: [{ title: "Hips", date: addDays(today, 2) }] });
-    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, made.id));
-    const ops = (p!.ops as Array<DesignedOp | PlanAdjustOp>).map((o) =>
-      o.kind === "plan_adjust" ? { ...o, outcome: { status: "applying", at: nowInstant(), before: { date: addDays(today, 1), time: "07:00", title: "Easy run", minutes: 30 } } } : o,
-    );
-    await db.update(coachProposals).set({ ops }).where(eq(coachProposals.id, made.id));
+    await claimedAt(made.id, at);
     return made;
   }
+  /** The proposal's claims made at `at`. */
+  async function claimedAt(id: string, at: string): Promise<void> {
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const ops = (p!.ops as Array<DesignedOp | PlanAdjustOp>).map((o) =>
+      o.kind === "plan_adjust" ? { ...o, outcome: { status: "applying", at, before: { date: addDays(today, 1), time: "07:00", title: "Easy run", minutes: 30 } } } : o,
+    );
+    await db.update(coachProposals).set({ ops }).where(eq(coachProposals.id, id));
+  }
+  /** A claim the window has passed: its request died. */
+  const stale = () => new Date(Date.now() - APPLYING_STALE_MS).toISOString();
 
   it("a decline meeting a change an approve is applying declines the others — 200, the change named in flight, the status as its ops say", async () => {
     const { id, opIds } = await withSkipApplying();
@@ -262,10 +268,43 @@ describe("fix round: decline while a change is applying, and ten changes at once
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ ok: true, status: "pending", declined: opIds, settled: [], inFlight: [planAdjustId("w-1-07:00")] });
     expect(res.total).toBeLessThanOrEqual(DECLINE_COST);
-    // The approve that finishes it records it applied.
+    // Within the window, an approve of it alone leaves it to the approve applying it: 409 in_flight.
+    const meanwhile = await invoke("POST", `/api/coach/proposals/${id}/approve`, { opIds: [planAdjustId("w-1-07:00")] });
+    expect(meanwhile.status).toBe(409);
+    expect(meanwhile.json).toEqual({ error: "in_flight", opIds: [planAdjustId("w-1-07:00")], status: "pending", applied: [], changed: [], refused: [], settled: [], remaining: [] });
+    expect((await rowOf("w-1-07:00")).completionState).toBe("scheduled");
+    // Past the window its request died: the approve takes it over, and records it applied.
+    await claimedAt(id, stale());
     const again = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
     expect(again.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("w-1-07:00")]);
     expect((await rowOf("w-1-07:00")).completionState).toBe("skipped");
+  });
+
+  it("an approve meeting a change another approve is applying: 200 for the rest with it named in flight — the applier never run for it", async () => {
+    const { id, opIds } = await withSkipApplying();
+    const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ ok: true, status: "partially_approved", inFlight: [planAdjustId("w-1-07:00")], changed: [], refused: [], remaining: [] });
+    expect(res.json.applied.map((a: { opId: string }) => a.opId)).toEqual(opIds);
+    expect((await rowOf("w-1-07:00")).completionState).toBe("scheduled");
+    expect(((await proposalOf(id)).ops as Array<{ kind: string; outcome?: unknown }>).find((o) => o.kind === "plan_adjust")!.outcome).toMatchObject({ status: "applying" });
+  });
+
+  it("a decline re-judging a claim past the window costs at most DECLINE_COST: not made, declined — made, recorded applied with its day's replay", async () => {
+    const notMade = await withSkipApplying(stale());
+    const res = await invoke("POST", `/api/coach/proposals/${notMade.id}/decline`, { reason: "Not now." });
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ ok: true, status: "declined", declined: [planAdjustId("w-1-07:00"), ...notMade.opIds], settled: [] });
+    expect(res.total).toBeLessThanOrEqual(DECLINE_COST);
+
+    const made = await withSkipApplying(stale());
+    await db.update(plannedWorkouts).set({ completionState: "skipped", resolutionDate: today }).where(eq(plannedWorkouts.id, "w-1-07:00"));
+    const again = await invoke("POST", `/api/coach/proposals/${made.id}/decline`, { reason: "Not now." });
+    expect(again.status).toBe(200);
+    expect(again.json).toEqual({ ok: true, status: "partially_approved", declined: made.opIds, settled: [{ opId: planAdjustId("w-1-07:00"), outcome: "applied", workoutId: "w-1-07:00" }] });
+    expect(again.total).toBeLessThanOrEqual(DECLINE_COST);
+    const [account] = await db.select().from(schema.accountState).where(eq(schema.accountState.userId, userId));
+    expect(account?.gardenChangedFrom).toBe(today);
   });
 
   it("a decline of nothing but changes in flight answers 409 in_flight: nothing was declined, nothing changed", async () => {
