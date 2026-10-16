@@ -650,7 +650,11 @@ export interface DesignChangeBeforeDto {
 }
 
 /** How the athlete decided one change; applied, it keeps the session as it stood (`before`). */
-export type DesignChangeOutcomeDto = { status: "applied"; at: string; workoutId: string; before: DesignChangeBeforeDto } | Exclude<DesignOutcomeDto, { status: "applied" }>;
+export type DesignChangeOutcomeDto =
+  | { status: "applied"; at: string; workoutId: string; before: DesignChangeBeforeDto }
+  /** An approve is applying it (claimed, with the session as it stood): still open — asked again, the approve finishes it. */
+  | { status: "applying"; at: string; before: DesignChangeBeforeDto }
+  | Exclude<DesignOutcomeDto, { status: "applied" }>;
 
 /** One change to a session already on the plan (`GET /api/coach/proposals/:id`'s `changes`; Task 8b): the thread coach's
  * own manifest line for its skip, move or length — and the coach's why. A change has no draft. */

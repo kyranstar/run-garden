@@ -146,8 +146,16 @@ export interface PlanBefore {
   minutes: number | null;
 }
 
-/** How a change ended (Task 8b): as a designed workout's, but applied it keeps the session as it stood (`before`). */
-export type PlanOpOutcome = { status: "applied"; at: string; workoutId: string; before: PlanBefore } | Exclude<OpOutcome, { status: "applied" }>;
+/**
+ * How a change ended (Task 8b): as a designed workout's, but applied it keeps the session as it stood (`before`) — and
+ * while an approve applies it, it is `applying`: claimed, with the session as it stood, before the applier runs (the
+ * review's fix round, 1). An `applying` change is still open: the approve asked again finishes it, a decline answers it
+ * in flight, and a newer plan never supersedes it.
+ */
+export type PlanOpOutcome =
+  | { status: "applied"; at: string; workoutId: string; before: PlanBefore }
+  | { status: "applying"; at: string; before: PlanBefore }
+  | Exclude<OpOutcome, { status: "applied" }>;
 
 /** A change to a session already on the plan, as a proposal holds it once the athlete has seen it. */
 export type DesignedPlanOp = PlanAdjustOp & { outcome?: PlanOpOutcome };
@@ -180,9 +188,9 @@ const approvalKey = (proposalId: string, opId: string): string => `approve:${pro
 /**
  * The proposal's status from its ops' outcomes (see the module comment) — the rule design-orchestrate.ts
  * `supersedeOlderPlans` writes in SQL: once every op is decided, `superseded` when none applied and not all were
- * declined.
+ * declined. A change being applied (`applying`) is open, as one with no outcome is.
  */
-export function statusOfOps(ops: readonly { outcome?: { status: OpOutcome["status"] } }[]): DesignProposalStatus {
+export function statusOfOps(ops: readonly { outcome?: { status: string } }[]): DesignProposalStatus {
   const applied = ops.filter((o) => o.outcome?.status === "applied").length;
   if (ops.length > 0 && applied === ops.length) return "approved";
   if (applied > 0) return "partially_approved";
@@ -265,11 +273,12 @@ export const REVISE_BASE = 1 + DAY_READS + 1 + 2 + 1 + 2 + 2;
 const PLAN_MAX = 10;
 
 /**
- * A request's changes (Task 8b), through the applier once: its threshold read, the sessions' before-state read and its
- * write (`applied_refs`), the collision pass's two reads, the garden's replay put on record (a skip resolves its day),
- * and whether a watch job waits for the client (a move).
+ * A request's changes (Task 8b), through the applier once: first their claim (`applying`, the fix round's 1), then the
+ * applier's threshold read, the sessions' before-state read and its write (`applied_refs`), the collision pass's two
+ * reads, the garden's replay put on record (a skip resolves its day), and whether a watch job waits for the client (a
+ * move).
  */
-export const PLAN_BATCH_FIXED = 1 + 1 + 1 + 2 + 1 + 1;
+export const PLAN_BATCH_FIXED = 1 + 1 + 1 + 1 + 2 + 1 + 1;
 /** A skip: the applier's read of the session and its write. */
 export const SKIP_COST = 2;
 /** A length: the read, and the write with its document's revision — before the rows its day's collision pass moves. */
@@ -314,9 +323,11 @@ interface RowState {
   archived: boolean;
   /** Its time was asked for (a `time_change` override: `createDocWorkout` pins a time it was given). */
   pinned: boolean;
-  /** For a change (Task 8b): its quality subtype (the app's name for it) and its length as every reader takes it. */
+  /** For a change (Task 8b): its quality subtype (the app's name for it), its length as every reader takes it, and
+   * the day a skip resolved it (a retry's garden replay). */
   subtype: string | null;
   minutes: number | null;
+  resolution: string | null;
 }
 
 interface Plan {
@@ -370,6 +381,7 @@ async function readPlan(
         'category', ${pw.category}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'content', ${pw.contentState},
         'completion', ${pw.completionState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt},
         'seconds', ${pw.fallbackEstimatedDurationSeconds}, 'sourceSeconds', ${pw.sourceEstimatedDurationSeconds}, 'subtype', ${pw.qualitySubtype},
+        'resolution', ${pw.resolutionDate},
         'pinned', exists(select 1 from ${scheduleOverrides} so where so.workout_id = ${pw.id} and so.kind = 'time_change'),
         'summary', case when json_valid(${pw.workoutDoc}) then json_extract(${pw.workoutDoc}, '$.intent.summary') end))
         from ${pw} where ${pw.userId} = ${userId} and ${pw.id} in (${values([...keyOf.values(), ...revised])})) as rows,
@@ -404,6 +416,7 @@ async function readPlan(
       pinned: x.pinned === 1 || x.pinned === true,
       subtype: typeof x.subtype === "string" ? x.subtype : null,
       minutes: typeof x.sourceSeconds === "number" ? Math.round(x.sourceSeconds / 60) : typeof x.seconds === "number" ? Math.round(x.seconds / 60) : null,
+      resolution: typeof x.resolution === "string" ? x.resolution : null,
     });
   }
   // Each revision id names one op's revision; its ref was checked in the read (the op's own).
@@ -574,11 +587,22 @@ const beforeOf = (row: RowState): PlanBefore => ({
  * applier's own rule (`whyNotActionable`), a move to a day gone, a race (never skipped or moved: the thread coach's
  * `never_skip_race`, and `applyMove` refuses a race), a length for a session its build decides (ruling 3-R13) —
  * or `made`, its effect already there (the applier's own re-apply records it done, writing nothing) — or null: apply it.
+ * A change an approve claimed and didn't finish (`applying`) is judged the same, its `before` the claim's (the session as
+ * it stood before the applier ran, never as it stands after); a skip it made has its garden replay put on record
+ * (`replayFrom`, its day resolved today or earlier: the request that made it died before it could).
  */
-function planVerdict(op: DesignedPlanOp, row: RowState | undefined, today: string): { made: PlanBefore } | { refusal: Omit<Refused, "opId"> } | null {
+function planVerdict(
+  op: DesignedPlanOp,
+  row: RowState | undefined,
+  today: string,
+): { made: PlanBefore; replayFrom: string | null } | { refusal: Omit<Refused, "opId"> } | null {
   const c = op.op;
+  const claim = op.outcome?.status === "applying" ? op.outcome : null;
+  const before = (r: RowState): PlanBefore => claim?.before ?? beforeOf(r);
   if (!row || row.archived) return { refusal: { error: "not_found", why: "It's no longer in the plan." } };
-  if (c.kind === "skip" && row.dto.completionState === "skipped") return { made: beforeOf(row) };
+  if (c.kind === "skip" && row.dto.completionState === "skipped") {
+    return { made: before(row), replayFrom: claim && row.resolution !== null && row.resolution <= today ? row.resolution : null };
+  }
   const why = whyNotActionable({ archivedAt: null, completionState: row.dto.completionState, effectiveDate: row.dto.date }, today);
   if (why !== undefined) {
     const cause: NotEditableCause | null =
@@ -591,10 +615,13 @@ function planVerdict(op: DesignedPlanOp, row: RowState | undefined, today: strin
     const cause: NotEditableCause = docOriginRow({ origin: row.origin }) ? "studio" : "programme";
     return { refusal: { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } };
   }
-  if (c.kind === "move" && row.dto.date === c.toDate && (c.toTime === undefined || row.dto.time === c.toTime)) return { made: beforeOf(row) };
-  if (c.kind === "adjust" && row.minutes === c.durationMinutes) return { made: beforeOf(row) };
+  if (c.kind === "move" && row.dto.date === c.toDate && (c.toTime === undefined || row.dto.time === c.toTime)) return { made: before(row), replayFrom: null };
+  if (c.kind === "adjust" && row.minutes === c.durationMinutes) return { made: before(row), replayFrom: null };
   return null;
 }
+
+/** The earlier of a day and another (none: the other). */
+const earliest = (a: string | null, b: string): string => (a === null || b < a ? b : a);
 
 /** The applier's own shortfall line, as a change's why: "A session it skips has already been done, so …". */
 const applierWhy = (missed: string | undefined): string =>
@@ -627,7 +654,8 @@ export async function approveDesignOps(
 
   const inHand = [...inPlan, ...declined];
   const workoutsInHand = inHand.filter(isDocWorkoutOp) as DesignedOp[];
-  const changesInHand = inHand.filter(isPlanAdjustOp) as DesignedPlanOp[];
+  // Only the changes still to do are read: a declined or superseded one is settled as it was decided (fix round, 4).
+  const changesInHand = inPlan.filter(isPlanAdjustOp) as DesignedPlanOp[];
   const plan = await readPlan(
     db,
     userId,
@@ -667,12 +695,21 @@ export async function approveDesignOps(
   const workouts = todo.filter(isDocWorkoutOp) as DesignedOp[];
   const batch: DesignedPlanOp[] = [];
   let full = false;
+  /** The earliest day a skip made before (its request died) resolved: its garden replay is put on record now. */
+  let madeReplay: string | null = null;
+  /** The garden's replay statement is counted: by the batch's fixed part, or once for a made skip's alone. */
+  let replayCounted = false;
   for (const [i, c] of changes.entries()) {
     const row = plan.rows.get(c.op.workoutId);
     const verdict = planVerdict(c, row, ctx.today);
     if (verdict && "made" in verdict) {
       outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before: verdict.made });
       changed.push({ opId: c.id, change: c.op.kind, workoutId: c.op.workoutId, before: verdict.made });
+      if (verdict.replayFrom !== null) {
+        madeReplay = earliest(madeReplay, verdict.replayFrom);
+        if (!replayCounted) left -= 1;
+        replayCounted = true;
+      }
       continue;
     }
     if (verdict) {
@@ -681,7 +718,7 @@ export async function approveDesignOps(
       continue;
     }
     const day = c.op.kind === "move" ? c.op.toDate : c.op.kind === "adjust" ? row?.dto.date : undefined;
-    const cost = (batch.length === 0 ? PLAN_BATCH_FIXED : 0) + opCostOf(c, rowsOn(day));
+    const cost = (batch.length === 0 ? PLAN_BATCH_FIXED - (replayCounted ? 1 : 0) : 0) + opCostOf(c, rowsOn(day));
     if (!first && cost > left) {
       remaining.push(...changes.slice(i).map((x) => x.id));
       full = true;
@@ -689,17 +726,32 @@ export async function approveDesignOps(
     }
     left -= cost;
     first = false;
+    replayCounted = true;
     batch.push(c);
     if (c.op.kind === "move") added.set(c.op.toDate, (added.get(c.op.toDate) ?? 0) + 1);
   }
   let coachDrain = false;
+  /** The proposal as this request last wrote it: every later write is guarded by it. */
+  let current = p;
+  let replayFrom = madeReplay;
   if (batch.length > 0) {
+    // THE CLAIM (the review's fix round, 1): the batch's changes are written `applying` — with the sessions as they stand,
+    // or as a claim before this one found them — under the same guard as every write, BEFORE the applier runs. A decline
+    // or a newer plan that lands first wins outright (the claim loses: ProposalChangedError, nothing applied); one that
+    // lands after finds them in flight (a decline answers in_flight; the supersede leaves an applying change alone).
+    const claimed = new Map<string, PlanBefore>(
+      batch.map((c) => [c.id, c.outcome?.status === "applying" ? c.outcome.before : beforeOf(plan.rows.get(c.op.workoutId)!)]),
+    );
+    const claimOps = withOutcomes(p.ops, new Map([...claimed].map(([id, before]) => [id, { status: "applying" as const, at: ctx.now, before }])));
+    const claimStatus = statusOfOps(allDesignedOps(claimOps));
+    const resolvedAt = await writeOps(db, userId, p, claimOps, claimStatus, ctx.now);
+    current = { ...p, ops: claimOps, status: claimStatus, resolvedAt };
     const res = await applyOps(db, userId, ctx.prefs, p.id, batch.map((c) => c.op));
     // Each change missed by the applier names the session it couldn't change, in order; the rest it applied.
     const missed = [...res.missed];
     for (const c of batch) {
       if (res.updated.includes(c.op.workoutId)) {
-        const before = beforeOf(plan.rows.get(c.op.workoutId)!);
+        const before = claimed.get(c.id)!;
         outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before });
         changed.push({ opId: c.id, change: c.op.kind, workoutId: c.op.workoutId, before });
       } else {
@@ -708,9 +760,11 @@ export async function approveDesignOps(
         outcomes.set(c.id, { status: "refused", at: ctx.now, ...refusal });
       }
     }
-    if (res.resimFrom) await recordReplayFrom(db, userId, res.resimFrom);
-    if (batch.some((c) => c.op.kind === "move" && res.updated.includes(c.op.workoutId))) coachDrain = await coachDrainQueued(db, userId);
+    if (res.resimFrom) replayFrom = earliest(replayFrom, res.resimFrom);
+    // Nothing after the applier may turn an applied change into an error (the thread route's own rule): caught.
+    if (batch.some((c) => c.op.kind === "move" && res.updated.includes(c.op.workoutId))) coachDrain = await coachDrainQueued(db, userId).catch(() => false);
   }
+  if (replayFrom !== null) await recordReplayFrom(db, userId, replayFrom).catch(() => undefined);
 
   for (const [i, op] of (full ? [] : workouts).entries()) {
     const opId = opIdOf(op);
@@ -752,9 +806,9 @@ export async function approveDesignOps(
     return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining, ...drain };
   }
 
-  const next = withOutcomes(p.ops, outcomes);
+  const next = withOutcomes(current.ops, outcomes);
   const status = statusOfOps(allDesignedOps(next));
-  await writeOps(db, userId, p, next, status, ctx.now);
+  await writeOps(db, userId, current, next, status, ctx.now);
 
   // One receipt once nothing of the request remains, when it changed something the thread has not been told.
   const news = applied.length > 0 || changed.length > 0 || refused.some((r) => {
@@ -891,9 +945,10 @@ function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome | Pl
 
 /**
  * Write the ops' outcomes and the status, while the proposal is still as this request read it. A proposal that ends
- * `superseded` names the newer plan that superseded it last (`superseded_by`), as Task 7's supersede does.
+ * `superseded` names the newer plan that superseded it last (`superseded_by`), as Task 7's supersede does. Answers the
+ * `resolved_at` it wrote.
  */
-async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unknown[], status: DesignProposalStatus, now: string): Promise<void> {
+async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unknown[], status: DesignProposalStatus, now: string): Promise<string | null> {
   const resolvedAt = status === "pending" ? p.resolvedAt : status === p.status ? (p.resolvedAt ?? now) : now;
   const by = status === "superseded" && status !== p.status ? newestSupersededBy(allDesignedOps(next)) : null;
   const written = await db
@@ -909,6 +964,7 @@ async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unkn
     )
     .returning({ id: coachProposals.id });
   if (written.length === 0) throw new ProposalChangedError();
+  return resolvedAt;
 }
 
 /** "; 1 declined; 2 replaced by a newer plan" — what of a proposal was decided otherwise than approved. */
@@ -967,11 +1023,15 @@ export interface DeclineAnswer {
   status: DesignProposalStatus;
   declined: string[];
   settled: Settled[];
+  /** Changes an approve is applying now (`applying`): never declined — the route answers 409 `in_flight` for them, the
+   * others declined (the review's fix round, 1). Present only when there are some. */
+  inFlight?: string[];
 }
 
 /**
  * Decline the chosen ops (none named: all) — see the module comment: an op whose workout is there is recorded applied,
- * never declined. Throws `NotOpenError`, `UnknownOpError`, `ProposalChangedError`.
+ * never declined; a change an approve is applying is in flight, never declined (`inFlight`). Throws `NotOpenError`,
+ * `UnknownOpError`, `ProposalChangedError`.
  */
 export async function declineDesignOps(
   db: Db,
@@ -980,11 +1040,15 @@ export async function declineDesignOps(
   input: { opIds?: string[]; reason?: string },
   now: string,
 ): Promise<DeclineAnswer> {
-  const { settled, declined: before, todo } = decidable(p, input.opIds);
+  const { settled, declined: before, todo: chosenOpen } = decidable(p, input.opIds);
   for (const op of before) settled.push({ opId: opIdOf(op), outcome: op.outcome?.status === "superseded" ? "superseded" : "declined" });
   const reason = input.reason?.trim().slice(0, DECLINE_REASON_MAX);
   const declined: string[] = [];
-  if (todo.length === 0) return { status: p.status as DesignProposalStatus, declined, settled };
+  const applying = (o: AnyDesignedOp) => isPlanAdjustOp(o) && o.outcome?.status === "applying";
+  const inFlight = chosenOpen.filter(applying).map(opIdOf);
+  const flight = inFlight.length > 0 ? { inFlight } : {};
+  const todo = chosenOpen.filter((o) => !applying(o));
+  if (todo.length === 0) return { status: p.status as DesignProposalStatus, declined, settled, ...flight };
   // The plan is read for the designed workouts (whose workout may be there already); a change is declined as it is.
   const workouts = todo.filter(isDocWorkoutOp) as DesignedOp[];
   const plan = workouts.length > 0 ? await readPlan(db, userId, p.id, workouts, []) : null;
@@ -1008,7 +1072,7 @@ export async function declineDesignOps(
     const words = status === "superseded" ? ` (${decidedWords(ops.filter((o) => o.outcome?.status === "declined").length, ops.filter((o) => o.outcome?.status === "superseded").length).slice(2)})` : "";
     await receipt(db, userId, `Left as planned — ${p.title}${words}`, p.id);
   }
-  return { status, declined, settled };
+  return { status, declined, settled, ...flight };
 }
 
 // ── The draft ───────────────────────────────────────────────────────────────────────────────────────────────────────

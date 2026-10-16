@@ -168,7 +168,10 @@ describe("3A-B — the prompt agrees with the code", () => {
 
   it("B2: runs are not designed by the coach — they stay on the plan; the archetype is around a run; a run document is fatal; no run brief", () => {
     expect(SHARED_PROMPT).not.toMatch(/designs workouts — runs/);
-    expect(SHARED_PROMPT).toContain("Runs stay on the plan as the watch plan sets them");
+    // Task 8b fix round (5): a watch-plan run may be changed, never designed.
+    expect(SHARED_PROMPT).toContain("Runs are never designed. A watch-plan run may be skipped, moved, or given another length with adjust_plan");
+    expect(roleBlock("main")).toContain("Runs are never designed. A watch-plan run may be skipped, moved, or given another length with adjust_plan");
+    expect([SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r))].join(" ")).not.toMatch(/Runs stay/);
     expect(SHARED_PROMPT).not.toContain("Easy run + mobility");
     expect(SHARED_PROMPT).toContain("- Around a run: activation before it, or mobility after it — its own mobility workout on the run's day, timed relative to the run.");
     expect(fatal).toContain("a mostly-running document");
@@ -233,9 +236,11 @@ describe("3A-B — the prompt agrees with the code", () => {
 
   it("Task 8b: adjust_plan — the main block's line, verbatim, and its line among the tools", () => {
     expect(roleBlock("main")).toContain(
-      "To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or shorten a watch-plan run. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. Your new workout and the change go to the athlete together.",
+      "To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or change a watch-plan run's length. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. Your new workout and the change go to the athlete together.",
     );
-    expect(line("adjust_plan")).toContain("the main coach's — change a session already on the plan, inside your proposal: skip it, move it, or shorten a watch-plan run");
+    expect(line("adjust_plan")).toContain("the main coach's — change a session already on the plan, inside your proposal: skip it, move it, or change a watch-plan run's length");
+    // "Change its length", never "shorten" (fix round, 5): a length may go either way.
+    expect([SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r))].join(" ")).not.toMatch(/shorten/i);
     expect(line("adjust_plan")).toContain("never reviewed");
     expect(roleBlock("designer")).not.toContain("adjust_plan");
     expect(roleBlock("reviewer")).not.toContain("adjust_plan");

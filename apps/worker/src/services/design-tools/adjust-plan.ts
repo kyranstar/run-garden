@@ -19,13 +19,23 @@
  *    template workout is revised (`revise_instead`);
  *  - the athlete's race skipped or moved (`race_day`: the thread coach's `never_skip_race`, and the applier refuses to
  *    move a race);
- *  - a move into the past (`past_date`) or past the plan this run reads (`beyond_horizon`: design-context.ts
- *    `horizonDays`), and a move or length that changes nothing (`no_change`);
+ *  - a session, or a move's day, past the run's reach (`beyond_horizon`: a set's plan read, design-context.ts
+ *    `horizonDays`; now and later today, today plus seven days — a request may name another day), a move into the past
+ *    (`past_date`), and a move or length that changes nothing (`no_change`);
+ *  - an eleventh change (`too_many_changes`: a proposal holds at most MAX_CHANGES);
  *  - a session a workout of this proposal revises (`target_taken`: propose_workout refuses the other way round);
  *  - a proposal already with the athlete (`proposal_pending`) or closed, a restore under way.
  *
- * Two statements: the athlete with the session, the proposal and the restore marker in one read, and the proposal's
- * guarded upsert (propose_workout's own: never a pending proposal, never one another write changed meanwhile).
+ * SANCTIONED REST. A skip is the thread coach's agreed rest, held to its rule: the first sanctioned skip in a rolling
+ * week counts as a rest day for the garden, further ones are merely neutral (coach-wake.ts's SKIP TREATMENT; the
+ * dossier's "sanctioned rest used n of 1"; garden-sync.ts's mercy day). A skip that takes the week past it carries the
+ * thread coach's advisory note, and every result counts it (`sanctionedRest`).
+ *
+ * The change's words reach the model marked: a session's name is an import's, a skip's reason the model's own.
+ *
+ * Two statements: the athlete with the session, the proposal, the restore marker and the week's sanctioned skips in one
+ * read, and the proposal's guarded upsert (propose_workout's own: never a pending proposal, never one another write
+ * changed meanwhile).
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -37,7 +47,7 @@ import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, planAdjustId, type PlanAdjustOp, type PlanChange, type PlanRowSnapshot } from "../proposal-kinds.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
 import { designProposalId, upsertProposal, type DocWorkoutOp } from "./propose.js";
-import { dateField, DATE_SCHEMA, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
+import { dateField, DATE_SCHEMA, parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 import type { DesignTool, ToolContext, ToolErr, ToolOk } from "./types.js";
 
 const WHY_MAX = 300;
@@ -45,6 +55,14 @@ const REASON_MAX = 200;
 const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** A length the athlete can play: five minutes to five hours. */
 const MINUTES = { min: 5, max: 300 } as const;
+/** The most changes one proposal holds (the review's fix round, 4): its approve's plan read covers ten ops. */
+export const MAX_CHANGES = 10;
+/**
+ * The sanctioned rest a rolling week holds: the thread coach's number (the dossier's "sanctioned rest used n of 1 this
+ * rolling week"; garden-sync.ts: the FIRST sanctioned skip in any rolling 7 days is a rest day). A test holds the two
+ * together.
+ */
+export const SANCTIONED_REST_PER_ROLLING_WEEK = 1;
 
 const change = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("skip"), reason: z.string().trim().min(1).max(REASON_MAX) }).strict(),
@@ -90,11 +108,26 @@ function snapshotOf(r: Row): PlanRowSnapshot {
   };
 }
 
+/** A set's main coach briefs; for now or later today it proposes (the review's fix round, 5). */
+const isSet = (ctx: ToolContext): boolean => ctx.run.scope.kind === "week" || ctx.run.scope.kind === "next_n";
+
 /** For a set the main coach briefs the shorter workout; for now or later today it proposes it. */
 const shorterWorkout = (ctx: ToolContext): string =>
-  ctx.run.scope.kind === "week" || ctx.run.scope.kind === "next_n"
+  isSet(ctx)
     ? "Skip it with adjust_plan and brief the shorter workout in plan_set; both go to the athlete together."
     : "Skip it with adjust_plan and propose the shorter workout with propose_workout; both go to the athlete together.";
+
+/** For a set the main coach briefs a Studio workout's replacement; for now or later today it revises it. */
+const reviseIt = (ctx: ToolContext): string =>
+  isSet(ctx) ? "Brief its replacement in plan_set: a designer revises the workout itself." : "Revise it with propose_workout's revise target.";
+
+/** The last day a change may touch (a session, or a move's day): a set's plan read; now and later today, today plus seven
+ * days — a request may name another day (the review's fix round, 4). */
+function lastDay(ctx: ToolContext, today: string): string {
+  return isSet(ctx) ? addDays(today, horizonDays(ctx.run.scope.kind, ctx.run.scope.n ?? 3) - 1) : addDays(today, 7);
+}
+
+const ordinal = (n: number): string => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
 
 /** Why this change can't be made to this session, by the applier's and the thread coach's own rules; null when it can. */
 function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>, today: string, workoutId: string): ToolErr | null {
@@ -104,6 +137,10 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
   const why = whyNotActionable({ archivedAt: row.archived, completionState: row.completion, effectiveDate: row.date }, today);
   if (why !== undefined) {
     return refuse("not_changeable", `That session ${why}.`, "Change a session still to come — read_plan lists them.");
+  }
+  const last = lastDay(ctx, today);
+  if (row.date > last) {
+    return refuse("beyond_horizon", `That session is on ${row.date}, past the plan this run reads (to ${last}).`, `Change a session up to ${last} — read_plan lists them.`);
   }
   if (c.kind === "skip" && row.category === "race") {
     return refuse("race_day", `${dayLabel(row.date)} holds the athlete's race: a skip would take it off the plan.`, "Leave the race on the plan and design around it; the athlete decides about their race.");
@@ -115,7 +152,7 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
     // Ruling 3-R13: a session the app builds has its build's length.
     if (appAuthoredRow({ origin: row.origin })) {
       return docOriginRow({ origin: row.origin })
-        ? refuse("revise_instead", "A Studio or template workout's length is its document's.", "Revise it with propose_workout's revise target.")
+        ? refuse("revise_instead", "A Studio or template workout's length is its document's.", reviseIt(ctx))
         : refuse("programme_session", "A programme session can't be re-timed.", shorterWorkout(ctx));
     }
     if (minutesOf(row) === c.durationMinutes) {
@@ -124,7 +161,6 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
   }
   if (c.kind === "move") {
     if (c.toDate < today) return refuse("past_date", `${c.toDate} is before today (${today}) where the athlete is.`, "Move it to today or a later day.");
-    const last = addDays(today, horizonDays(ctx.run.scope.kind, ctx.run.scope.n ?? 3) - 1);
     if (c.toDate > last) return refuse("beyond_horizon", `${c.toDate} is past the plan this run reads (to ${last}).`, `Move it to a day up to ${last}.`);
     if (c.toDate === row.date && (c.toTime ?? row.time) === row.time) {
       return refuse("no_change", `That session is already on ${c.toDate}${row.time ? ` at ${row.time}` : ""}.`, "Leave it as it is, or choose another day or time.");
@@ -133,8 +169,16 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
   return null;
 }
 
-/** What a stored change answers: the change as the manifest says it, the coach's words marked. */
-function storedAnswer(proposalId: string, op: PlanAdjustOp, o: { replaced?: boolean } = {}): ToolOk {
+/** The rolling week's sanctioned rest, as a result counts it. */
+interface SanctionedRest {
+  usedThisWeek: number;
+  inProposal: number;
+  allowance: number;
+}
+
+/** What a stored change answers: the change as the manifest says it — its words marked (a session's name is an
+ * import's, a skip's reason the model's; the review's fix round, 6) — and the coach's why, marked. */
+function storedAnswer(proposalId: string, op: PlanAdjustOp, o: { replaced?: boolean; sanctionedRest?: SanctionedRest } = {}): ToolOk {
   const words = describeChange(op);
   return {
     data: {
@@ -142,9 +186,16 @@ function storedAnswer(proposalId: string, op: PlanAdjustOp, o: { replaced?: bool
       proposalId,
       opId: op.id,
       ...(o.replaced ? { replaced: true } : {}),
-      change: { date: words.date, ...(words.time ? { time: words.time } : {}), summary: words.summary, was: words.was, effect: words.effect },
+      change: {
+        date: words.date,
+        ...(words.time ? { time: words.time } : {}),
+        summary: untrusted(words.summary),
+        was: words.was,
+        effect: words.effect === null ? null : untrusted(words.effect),
+      },
       why: untrusted(op.why),
       issues: op.issues,
+      ...(o.sanctionedRest ? { sanctionedRest: o.sanctionedRest } : {}),
       next: "It goes to the athlete with your proposal, never reviewed: the athlete approves or declines it with the rest.",
     },
     summary: `Plan change: ${words.title}${op.op.kind === "move" ? "" : ` (${dayLabel(op.date)})`}`,
@@ -205,6 +256,10 @@ export const adjustPlan: DesignTool = {
       propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
+      // The thread coach's agreed rest resolved lately, its days (the athlete's today is known only after this read:
+      // the UTC day's week and a day more either side hold it); counted below as the dossier counts it.
+      sanctioned: sql`(select json_group_array(${pw.resolutionDate}) from ${pw} where ${pw.userId} = ${ctx.userId}
+        and ${pw.sanctionedBy} = 'coach' and ${pw.completionState} in ('skipped', 'missed') and ${pw.resolutionDate} >= ${addDays(ctx.now.toISOString().slice(0, 10), -8)})`,
     });
     const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
     const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
@@ -233,6 +288,14 @@ export const adjustPlan: DesignTool = {
     if (all.some((o) => isDocWorkoutOp(o) && (o as DocWorkoutOp).target.kind === "revise" && (o as DocWorkoutOp & { target: { workoutId: string } }).target.workoutId === p.workoutId)) {
       return refuse("target_taken", "A workout of this proposal already revises that session.", "Change the revision instead, or leave the session as it is.");
     }
+    // A change of a session already changed replaces it; a new one must fit (the review's fix round, 4).
+    if (!changes.some((c) => c.op.workoutId === p.workoutId) && changes.length >= MAX_CHANGES) {
+      return refuse(
+        "too_many_changes",
+        `This proposal already holds ${MAX_CHANGES} changes to planned sessions, the most one proposal holds.`,
+        "Leave this session as it is, or change one already in the proposal instead (a second change of a session replaces its first).",
+      );
+    }
 
     // The thread coach's own op, as its schema stores one.
     const op = coachOpSchema.parse({ ...p.change, workoutId: p.workoutId }) as PlanChange;
@@ -241,12 +304,25 @@ export const adjustPlan: DesignTool = {
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
     const id = planAdjustId(p.workoutId);
     const before = changes.find((c) => c.id === id);
+    // The rolling week's sanctioned rest (the thread coach's rule): the skips resolved in the week to today, and this
+    // proposal's own skips once this change is in it.
+    const weekFrom = addDays(athlete.today, -6);
+    const usedThisWeek = (parsedArray(extra.sanctioned) as unknown[]).filter((d): d is string => typeof d === "string" && d >= weekFrom).length;
+    const inProposal = changes.filter((c) => c.id !== id && c.op.kind === "skip").length + (op.kind === "skip" ? 1 : 0);
+    const sanctionedRest: SanctionedRest = { usedThisWeek, inProposal, allowance: SANCTIONED_REST_PER_ROLLING_WEEK };
+    const restNote =
+      op.kind === "skip" && usedThisWeek + inProposal > SANCTIONED_REST_PER_ROLLING_WEEK
+        ? [{ code: "sanctioned_rest", message: `This would be the ${ordinal(usedThisWeek + inProposal)} sanctioned skip in a rolling week: only the first counts as a rest day for the garden; further ones are merely neutral.` }]
+        : [];
     const next: PlanAdjustOp = {
       kind: "plan_adjust",
       id,
       op,
       why: p.why,
-      issues: op.kind === "adjust" && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : [],
+      issues: [
+        ...(op.kind === "adjust" && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : []),
+        ...restNote,
+      ],
       date: snapshot.date,
       row: snapshot,
       toolUseId,
@@ -257,6 +333,6 @@ export const adjustPlan: DesignTool = {
     if (!(await upsertProposal(ctx, proposalId, ops, opsText, at))) {
       return refuse("proposal_changed", "The proposal changed while the change was being stored.", "Call adjust_plan again with the same change.");
     }
-    return storedAnswer(proposalId, next, { replaced: !!before });
+    return storedAnswer(proposalId, next, { replaced: !!before, sanctionedRest });
   },
 };

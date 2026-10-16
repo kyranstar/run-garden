@@ -13,7 +13,8 @@
  *        the athlete's version of its draft (Edit before approve); refused as a Studio save is (422 `invalid_doc` with
  *        every issue, `past_date`, `run_unsupported`; 409 `stale_revision` with `rev`, `not_editable`; 404), nothing
  *        recorded
- *   POST /api/coach/proposals/:id/decline  { opIds?, reason? } → { ok, status, declined, settled }
+ *   POST /api/coach/proposals/:id/decline  { opIds?, reason? } → { ok, status, declined, settled }; a change an approve is
+ *        applying is never declined: 409 { error: "in_flight", opIds, status, declined, settled }, the others declined
  *   GET  /api/coach/proposals/:id/ops/:opId/draft → the op's document as the builder loads one (`doc`, `derived`,
  *        `rev: null`) with its `target`, `date`, `time`, `outcome` and the proposal's `status`
  *   GET  /api/coach/proposals/:id (routes/coach.ts) → for a designed proposal, also its manifest: the workouts' `lines`
@@ -114,7 +115,10 @@ export async function declineDesigned(c: C, p: DesignProposalRow): Promise<Respo
   const parsed = declineSchema.safeParse(await bodyOf(c));
   if (!parsed.success) return c.json({ error: "bad_request", issues: parsed.error.issues }, 400);
   try {
-    const answer = await declineDesignOps(c.get("db"), c.get("userId"), p, parsed.data, nowInstant());
+    const { inFlight, ...answer } = await declineDesignOps(c.get("db"), c.get("userId"), p, parsed.data, nowInstant());
+    // A change an approve is applying is never declined (Task 8b's fix round, 1): 409 in_flight names it — the others
+    // declined, as the answer says.
+    if (inFlight) return c.json({ error: "in_flight", opIds: inFlight, ...answer }, 409);
     return c.json({ ok: true, ...answer });
   } catch (e) {
     return failed(c, e);

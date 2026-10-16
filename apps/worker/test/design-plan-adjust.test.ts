@@ -38,7 +38,8 @@ import {
 import { planChangeLines } from "../src/services/design-manifest.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { proposalFields } from "../src/services/design-review.js";
-import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
+import { adjustPlan, SANCTIONED_REST_PER_ROLLING_WEEK } from "../src/services/design-tools/adjust-plan.js";
+import { buildDossier } from "../src/services/coach-context.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { readProposals } from "../src/services/design-tools/read-proposals.js";
 import { isToolErr, type OpReview, type RunScope, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
@@ -52,6 +53,8 @@ const ENV = {} as Env;
 
 let db: Db;
 let statements: string[] = [];
+/** Runs just before each statement the application executes (a test arms it to land another request's write there). */
+let beforeStatement: ((sql: string) => void) | null = null;
 let rich: Awaited<ReturnType<typeof seedRichAthlete>>;
 let prefs: UserPreferences;
 
@@ -61,7 +64,14 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
   statements = [];
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
+  beforeStatement = null;
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (s) => {
+      statements.push(s);
+      beforeStatement?.(s);
+    },
+  });
   rich = await seedRichAthlete(db);
   prefs = await loadPreferences(db, rich.userId);
   vi.stubGlobal("fetch", vi.fn(async () => {
@@ -249,7 +259,8 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
       stored: true,
       proposalId: id,
       opId: planAdjustId(rich.outlineToday),
-      change: { date: TODAY, summary: "Strength — skipped", effect: "comes off the plan — A flare day: rest the jaw." },
+      // Its words carry a session's name (imported) and the coach's reason (the model's): marked (fix round, 6).
+      change: { date: TODAY, summary: { untrusted: true, text: "Strength — skipped" }, effect: { untrusted: true, text: "comes off the plan — A flare day: rest the jaw." } },
       why: { untrusted: true, text: "Today's reading is high; a short relief session replaces it." },
     });
     expect(out.receipt).toEqual({ proposalId: id, opId: planAdjustId(rich.outlineToday), workoutId: rich.outlineToday, change: "skip" });
@@ -293,6 +304,9 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
       expect(e.error).toBe("revise_instead");
       expect(e.fix).toBe("Revise it with propose_workout's revise target.");
     }
+    // A set's main coach never proposes: it briefs the replacement (fix round, 5).
+    const set = refused((await adjust(await mainRun({ kind: "next_n", n: 3 }), shorten(rich.todayDocId))).res);
+    expect(set).toMatchObject({ error: "revise_instead", fix: "Brief its replacement in plan_set: a designer revises the workout itself." });
     // Skipping or moving one is the thread coach's lever too, and stays legal.
     ok((await adjust(r, skip(rich.todayDocId))).res);
   });
@@ -303,9 +317,9 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
     const past = refused((await adjust(r, moveTo(run, day(1)))).res);
     expect(past.error).toBe("past_date");
     expect(past.why).toBe(`${day(1)} is before today (${TODAY}) where the athlete is.`);
-    // Now and later today read a week of plan: day 7 is past it.
-    expect(refused((await adjust(r, moveTo(run, day(-7)))).res).error).toBe("beyond_horizon");
-    ok((await adjust(r, moveTo(run, day(-6)))).res);
+    // Now and later today reach today plus seven days (a request may name another day): day 8 is past it.
+    expect(refused((await adjust(r, moveTo(run, day(-8)))).res).error).toBe("beyond_horizon");
+    ok((await adjust(r, moveTo(run, day(-7)))).res);
     const week = await mainRun({ kind: "week" });
     ok((await adjust(week, moveTo(run, day(-13)))).res);
     expect(refused((await adjust(week, moveTo(run, day(-14)))).res).error).toBe("beyond_horizon");
@@ -782,5 +796,212 @@ describe("the thread coach's readers tolerate a change in a designed proposal", 
     expect(coachOpsOf(ops)).toEqual([]);
     expect(coachOpsOf([{ kind: "skip", workoutId: "w" }, ...ops])).toEqual([{ kind: "skip", workoutId: "w" }]);
     expect(isDesignedProposal([{ kind: "skip", workoutId: "w" }])).toBe(false);
+  });
+});
+
+// ── Review fix round ────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("fix round 1: a change is claimed before the applier runs", () => {
+  const sqlite = () => (db as unknown as { $client: { prepare(q: string): { run(...a: unknown[]): unknown; get(...a: unknown[]): unknown } } }).$client;
+  /** Another request's write to the proposal's ops, landed as it would be: straight to the table. */
+  const writeOps = (id: string, edit: (ops: Array<Record<string, unknown>>) => void) => {
+    const row = sqlite().prepare("select ops from coach_proposals where id = ?").get(id) as { ops: string };
+    const ops = JSON.parse(row.ops) as Array<Record<string, unknown>>;
+    edit(ops);
+    sqlite().prepare("update coach_proposals set ops = ? where id = ?").run(JSON.stringify(ops), id);
+  };
+  /** Lands `write` just before the `n`th statement this approve runs that matches `pattern`. */
+  const raceAt = (pattern: RegExp, write: () => void, n = 1) => {
+    let seen = 0;
+    beforeStatement = (sql) => {
+      if (!pattern.test(sql) || ++seen < n) return;
+      beforeStatement = null;
+      write();
+    };
+  };
+  const changeOf = async (id: string, workoutId: string) => (await proposalOf(id))!.ops.find((o) => o.kind === "plan_adjust" && o.op.workoutId === workoutId) as DesignedPlanOp;
+  const UPDATE_PROPOSAL = /^update "coach_proposals"/;
+  /** The applier's first statement: its threshold read. */
+  const APPLIER = /daily_health/;
+
+  it("the claim: the changes are written `applying`, with the session as it stood, before the applier runs — one statement more", async () => {
+    const run = await watchRun();
+    const { id } = await proposal({ changes: [shorten(run, 30)] });
+    let claimed: unknown = null;
+    raceAt(APPLIER, () => {
+      claimed = (JSON.parse((sqlite().prepare("select ops from coach_proposals where id = ?").get(id) as { ops: string }).ops) as Array<{ outcome?: unknown }>)[0]!.outcome;
+    });
+    await approve(id);
+    expect(claimed).toEqual({ status: "applying", at: NOW.toISOString(), before: { date: day(-3), time: "18:00", title: "Easy run", minutes: 45 } });
+    expect((await changeOf(id, run)).outcome).toMatchObject({ status: "applied", before: { minutes: 45 } });
+    expect(PLAN_BATCH_FIXED).toBe(8);
+    expect(statusOfOps([{ outcome: { status: "applying" } } as never, { outcome: { status: "applied" } } as never])).toBe("partially_approved");
+    expect(statusOfOps([{ outcome: { status: "applying" } } as never])).toBe("pending");
+  });
+
+  it("R1: a decline landing before the claim: the claim loses, nothing is applied, the decline stands", async () => {
+    const { id } = await proposal({ changes: [skip(rich.outlineToday)] });
+    raceAt(UPDATE_PROPOSAL, () => writeOps(id, (ops) => (ops[0]!.outcome = { status: "declined", at: "elsewhere" })));
+    await expect(approve(id)).rejects.toMatchObject({ name: "ProposalChangedError" });
+    expect((await rowOf(rich.outlineToday)).completionState).toBe("scheduled");
+    expect((await changeOf(id, rich.outlineToday)).outcome).toEqual({ status: "declined", at: "elsewhere" });
+  });
+
+  it("R1: a decline landing while a change is applying: that change is in flight — the others declined — and the approve that finishes it records it applied", async () => {
+    const run = await watchRun();
+    const { id } = await proposal({ changes: [skip(rich.outlineToday), shorten(run, 30)] });
+    // The approve dies inside the applier, after its claim: the skip is applying.
+    raceAt(APPLIER, () => {
+      throw new Error("the request died");
+    });
+    await expect(approve(id, { opIds: [planAdjustId(rich.outlineToday)] })).rejects.toThrow("the request died");
+    expect((await changeOf(id, rich.outlineToday)).outcome).toMatchObject({ status: "applying" });
+    const d = await decline(id, { reason: "Not now." });
+    expect(d.inFlight).toEqual([planAdjustId(rich.outlineToday)]);
+    expect(d.declined).toEqual([planAdjustId(run)]);
+    expect((await changeOf(id, rich.outlineToday)).outcome).toMatchObject({ status: "applying" });
+    // Asked again, the approve finishes the change it claimed: the record matches the plan.
+    const again = await approve(id);
+    expect(again.changed.map((c) => c.opId)).toEqual([planAdjustId(rich.outlineToday)]);
+    expect((await rowOf(rich.outlineToday)).completionState).toBe("skipped");
+    expect((await changeOf(id, rich.outlineToday)).outcome).toMatchObject({ status: "applied", before: { date: TODAY, title: "Strength" } });
+    expect((await rowOf(run)).fallbackEstimatedDurationSeconds).toBeNull();
+    expect((await proposalOf(id))!.status).toBe("partially_approved");
+  });
+
+  it("R2: a supersede landing before the claim: the claim loses and nothing is applied; one landing after it leaves the applying change alone", async () => {
+    const run = await watchRun();
+    const a = await proposal({ changes: [shorten(run, 30)] });
+    raceAt(UPDATE_PROPOSAL, () => writeOps(a.id, (ops) => (ops[0]!.outcome = { status: "superseded", at: "x", reason: "a newer plan covers this session", by: "dp-newer" })));
+    await expect(approve(a.id)).rejects.toMatchObject({ name: "ProposalChangedError" });
+    expect((await rowOf(run)).fallbackEstimatedDurationSeconds).toBeNull();
+
+    // After the claim: a newer plan changing the same session supersedes nothing while the change is applying.
+    const b = await proposal({ changes: [shorten(run, 25)] });
+    raceAt(APPLIER, () => {
+      throw new Error("the request died");
+    });
+    await expect(approve(b.id)).rejects.toThrow("the request died");
+    const c = await proposal({ changes: [moveTo(run, day(-4))] });
+    await newer(c.id, 5);
+    expect(await supersedeOlderPlans(db, rich.userId, c.id, NOW.toISOString())).toBe(0);
+    expect((await changeOf(b.id, run)).outcome).toMatchObject({ status: "applying" });
+    await approve(b.id);
+    expect((await changeOf(b.id, run)).outcome).toMatchObject({ status: "applied", before: { minutes: 45 } });
+    expect((await rowOf(run)).fallbackEstimatedDurationSeconds).toBe(1500);
+  });
+
+  it("R3: the write after the applier loses: asked again, the change is recorded applied with the session as it stood before — never as it stands after", async () => {
+    const run = await watchRun();
+    const { id } = await proposal({ changes: [shorten(run, 30), skip(rich.outlineToday)] });
+    // The second write to the proposal (the outcomes, after the applier) loses to another request.
+    raceAt(UPDATE_PROPOSAL, () => writeOps(id, (ops) => (ops[1]!.outcome = { status: "declined", at: "elsewhere" })), 2);
+    await expect(approve(id, { opIds: [planAdjustId(run)] })).rejects.toMatchObject({ name: "ProposalChangedError" });
+    expect((await rowOf(run)).fallbackEstimatedDurationSeconds).toBe(1800);
+    const again = await approve(id, { opIds: [planAdjustId(run)] });
+    expect(again.changed).toEqual([{ opId: planAdjustId(run), change: "adjust", workoutId: run, before: { date: day(-3), time: "18:00", title: "Easy run", minutes: 45 } }]);
+    expect((await changeOf(id, run)).outcome).toMatchObject({ status: "applied", before: { minutes: 45 } });
+    expect((await changeOf(id, rich.outlineToday)).outcome).toEqual({ status: "declined", at: "elsewhere" });
+  });
+});
+
+describe("fix round 3: a skip the applier made before a request died", () => {
+  it("a skip and a move whose move fails: asked again, the skip is found made, its day's garden replay put on record, and the move applied", async () => {
+    const prog = await nextProgramme();
+    const { id } = await proposal({ changes: [skip(rich.outlineToday), moveTo(prog, day(-4))] });
+    beforeStatement = (sql) => {
+      if (!/^insert into "schedule_overrides"/.test(sql)) return;
+      beforeStatement = null;
+      throw new Error("the move failed");
+    };
+    await expect(approve(id)).rejects.toThrow("the move failed");
+    expect((await rowOf(rich.outlineToday)).completionState).toBe("skipped");
+    const account = async () => (await db.select().from(schema.accountState).where(eq(schema.accountState.userId, rich.userId)))[0];
+    expect((await account())?.gardenChangedFrom ?? null).toBeNull();
+    const again = await approve(id);
+    expect(again.status).toBe("approved");
+    expect(again.changed.map((c) => c.change)).toEqual(["skip", "move"]);
+    expect((await account())?.gardenChangedFrom).toBe(TODAY);
+    expect((await rowOf(prog)).effectiveDate).toBe(day(-4));
+  });
+
+  it("the garden's replay and the drain's read never turn an applied change into an error", async () => {
+    const { id } = await proposal({ changes: [skip(rich.outlineToday)] });
+    beforeStatement = (sql) => {
+      if (/^insert into "account_state"/.test(sql)) throw new Error("account_state unavailable");
+    };
+    const res = await approve(id);
+    expect(res.status).toBe("approved");
+    expect((await rowOf(rich.outlineToday)).completionState).toBe("skipped");
+  });
+});
+
+describe("fix round 4: caps", () => {
+  it("at most ten changes in a proposal: the eleventh is refused, teachably; a change of one already there still replaces it", async () => {
+    const r = await mainRun();
+    const rows: string[] = [];
+    for (let i = 0; i < 11; i++) rows.push(await planned({ date: day(-(i % 7)), time: `0${i % 10}:15` }));
+    for (const id of rows.slice(0, 10)) ok((await adjust(r, skip(id))).res);
+    const e = refused((await adjust(r, skip(rows[10]!))).res);
+    expect(e).toMatchObject({ error: "too_many_changes" });
+    expect(e.why).toBe("This proposal already holds 10 changes to planned sessions, the most one proposal holds.");
+    ok((await adjust(r, moveTo(rows[0]!, day(-1)))).res);
+    expect(await planOps(designProposalId(r.id))).toHaveLength(10);
+  });
+
+  it("a change's session must fall inside the run's reach: today plus seven days for now and later today, the plan read for a set", async () => {
+    const far = await planned({ date: day(-21) });
+    const e = refused((await adjust(await mainRun(), skip(far))).res);
+    expect(e.error).toBe("beyond_horizon");
+    expect(e.why).toBe(`That session is on ${day(-21)}, past the plan this run reads (to ${day(-7)}).`);
+    ok((await adjust(await mainRun({ kind: "next_n", n: 14 }), skip(far))).res);
+    expect(refused((await adjust(await mainRun({ kind: "week" }), skip(far))).res).error).toBe("beyond_horizon");
+  });
+
+  it("a declined or superseded change is settled without the plan read reading its session", async () => {
+    const run = await watchRun();
+    const { id } = await proposal({ changes: [shorten(run, 30)], docs: [{ title: "Hips", date: day(-1) }] });
+    await decline(id, { opIds: [planAdjustId(run)] });
+    // Every raw statement's bound values, as drizzle binds them (the plan read is one).
+    const bound: unknown[][] = [];
+    const all = db.all.bind(db);
+    (db as unknown as { all: (q: unknown) => unknown }).all = (q: unknown) => {
+      bound.push((db as unknown as { dialect: { sqlToQuery(q: unknown): { params: unknown[] } } }).dialect.sqlToQuery(q).params);
+      return all(q as never);
+    };
+    const res = await approve(id);
+    expect(res.applied).toHaveLength(1);
+    expect(res.settled).toEqual([{ opId: planAdjustId(run), outcome: "declined" }]);
+    expect(bound.length).toBeGreaterThan(0);
+    expect(bound.flat()).not.toContain(run);
+  });
+});
+
+describe("fix round 7: the sanctioned rest the thread coach is held to", () => {
+  it("a skip past the rolling week's allowance gets the thread coach's advisory note, and the result counts it", async () => {
+    const r = await mainRun();
+    const first = ok((await adjust(r, skip(rich.outlineToday))).res);
+    expect((first.data as { sanctionedRest: unknown }).sanctionedRest).toEqual({ usedThisWeek: 0, inProposal: 1, allowance: SANCTIONED_REST_PER_ROLLING_WEEK });
+    expect((await planOps(designProposalId(r.id)))[0]!.issues).toEqual([]);
+    const second = ok((await adjust(r, skip(await watchRun()))).res);
+    expect((second.data as { sanctionedRest: unknown }).sanctionedRest).toEqual({ usedThisWeek: 0, inProposal: 2, allowance: 1 });
+    const [, op] = await planOps(designProposalId(r.id));
+    expect(op!.issues).toEqual([
+      { code: "sanctioned_rest", message: "This would be the 2nd sanctioned skip in a rolling week: only the first counts as a rest day for the garden; further ones are merely neutral." },
+    ]);
+  });
+
+  it("counts the week's sanctioned skips already resolved, as the thread coach's dossier does — and holds its number", async () => {
+    await planned({ date: day(2), state: "skipped" });
+    await db.update(plannedWorkouts).set({ sanctionedBy: "coach", resolutionDate: day(2) }).where(eq(plannedWorkouts.effectiveDate, day(2)));
+    // One older than the rolling week counts for nothing.
+    await planned({ date: day(9), state: "skipped" });
+    await db.update(plannedWorkouts).set({ sanctionedBy: "coach", resolutionDate: day(9) }).where(eq(plannedWorkouts.effectiveDate, day(9)));
+    const res = ok((await adjust(await mainRun(), skip(rich.outlineToday))).res);
+    expect((res.data as { sanctionedRest: unknown }).sanctionedRest).toEqual({ usedThisWeek: 1, inProposal: 1, allowance: 1 });
+    const [op] = (await proposalOf((res.data as { proposalId: string }).proposalId))!.ops as DesignedPlanOp[];
+    expect(op!.issues.map((i) => i.code)).toEqual(["sanctioned_rest"]);
+    const dossier = await buildDossier(db, rich.userId, prefs, TODAY);
+    expect(dossier.text).toContain(`sanctioned rest used 1 of ${SANCTIONED_REST_PER_ROLLING_WEEK} this rolling week`);
   });
 });
