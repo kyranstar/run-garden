@@ -56,7 +56,7 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type ConditionCheckDto, type DocIssueDto, type SessionDto, type WorkoutDto } from "@rg/api-client";
+import { api, ApiError, type ConditionCheckDto, type DesignDraftResponse, type DocIssueDto, type SessionDto, type WorkoutDto } from "@rg/api-client";
 import { addDays, EFFORT_LEVELS, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, GLOSSARY, label, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
 import {
@@ -133,6 +133,10 @@ const readingsQuery = (today: string) => ["studio", "readings", today] as const;
 const rowQuery = (today: string) => ["plan", "studio-row", today] as const;
 const ROW_DAYS = 56;
 
+/** A coach's draft still the athlete's to decide: its proposal open, the op neither approved nor declined. */
+const draftIsOpen = (d: DesignDraftResponse): boolean =>
+  (d.status === "pending" || d.status === "partially_approved") && (d.outcome === null || d.outcome.status === "refused");
+
 /** The builder's routes (spec §2): `/studio/build/new`, `…/quick/:kind`, `…/template/:id`, `…/workout/:workoutId`. One instance across them. */
 export function BuilderRoute() {
   const { pathname } = useLocation();
@@ -175,6 +179,14 @@ function Builder({ source }: { source: BuildSource }) {
   // The stored document: a planned workout's own, or the one "Do it again" copies.
   const docId = source.kind === "workout" || source.kind === "again" ? source.id : null;
   const stored = useQuery({ queryKey: workoutDocQuery(docId ?? ""), queryFn: () => api.workoutDoc(docId!), enabled: docId !== null, staleTime: 0 });
+  // A coach's draft (Edit before approve, Stage 3): its document, where it goes, and how it stands.
+  const draftAt = source.kind === "proposal" ? source : null;
+  const draftQ = useQuery({
+    queryKey: ["proposal-draft", draftAt?.id ?? "", draftAt?.opId ?? ""],
+    queryFn: () => api.coachDesignDraft(draftAt!.id, draftAt!.opId),
+    enabled: draftAt !== null,
+    staleTime: 0,
+  });
   const planned = useQuery({
     queryKey: rowQuery(today),
     queryFn: () => api.workouts(addDays(today, -ROW_DAYS), addDays(today, ROW_DAYS)),
@@ -203,6 +215,11 @@ function Builder({ source }: { source: BuildSource }) {
     }
     if (source.kind === "quick") return made && "doc" in made ? { key, editor: startEditing(made.doc), baseline: null, rev: null, row: null } : null;
     if (source.kind === "template") return template?.doc ? { key, editor: startEditing(template.doc), baseline: template.doc, rev: null, row: null, base: template.updatedAt } : null;
+    // A coach's draft, while it is the athlete's to decide: on the coach's day and time (none: the athlete's window).
+    if (source.kind === "proposal") {
+      const d = draftQ.data;
+      return d && draftIsOpen(d) ? { key, editor: startEditing(d.doc), baseline: null, rev: null, row: { date: d.date, time: d.time ?? "" } } : null;
+    }
     const r = stored.data;
     // Do it again: a copy, as a new workout — nothing saved yet, so nothing to be "changed since".
     if (source.kind === "again") return r?.doc ? { key, editor: startEditing(r.doc), baseline: null, rev: null, row: null } : null;
@@ -220,7 +237,7 @@ function Builder({ source }: { source: BuildSource }) {
     const next = opened();
     if (next) setLoaded(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, drafts.loaded, drafts.draft, template, stored.data, made, setLoaded]);
+  }, [key, drafts.loaded, drafts.draft, template, stored.data, draftQ.data, made, setLoaded]);
 
   const ready = loaded?.key === key ? loaded : null;
   const doc = ready?.editor.doc ?? null;
@@ -275,7 +292,10 @@ function Builder({ source }: { source: BuildSource }) {
   const plannedRow: WorkoutDto | undefined = wid ? planned.data?.workouts.find((w) => w.id === wid) : undefined;
   const row = ready?.row ?? (plannedRow ? { date: plannedRow.effectiveDate, time: plannedRow.effectiveTime } : null);
   const isWorkout = key.startsWith("workout:");
-  const date = isWorkout && row && row.date > today ? row.date : today;
+  // A coach's draft is judged for the day it is proposed for; saving a revision's approves it (Save changes).
+  const isDraft = key.startsWith("proposal:");
+  const draftRevises = isDraft && draftQ.data?.target.kind === "revise";
+  const date = (isWorkout || isDraft) && row && row.date > today ? row.date : today;
   // A planned workout done with (its day passed, done, gone) is judged by the static rules alone: today's reading says
   // nothing of another day. One under way today keeps today's.
   const judgeOn = isWorkout ? judgeDayOf(plannedRow, today, date) : date;
@@ -431,10 +451,23 @@ function Builder({ source }: { source: BuildSource }) {
       // Condition care with the profiles never read (offline, or the read failed): "no profile is on" would be a guess.
       problem = source.quick === "condition_care" && !profilesKnown ? "Condition care needs a connection the first time." : made.reason;
     }
+    // A coach's draft: gone, approved already (its workout one tap away), or decided otherwise.
+    const d = draftQ.data;
+    const madeOf = d?.outcome?.status === "applied" ? d.outcome.workoutId : null;
+    if (source.kind === "proposal") {
+      if (draftQ.isError) problem = draftQ.error instanceof ApiError && draftQ.error.status === 404 ? "That draft is gone." : "Opening a draft needs a connection.";
+      else if (madeOf) problem = "This one is in your plan already.";
+      else if (d && !draftIsOpen(d)) problem = "This draft is closed.";
+    }
     return (
       <div className="stu-build">
         {problem ? (
           <EmptyState title={problem}>
+            {madeOf ? (
+              <Link className="btn btn-primary" to={`/studio/build/workout/${encodeURIComponent(madeOf)}`}>
+                Open it
+              </Link>
+            ) : null}
             <Link className="btn" to="/studio">
               Back to the Studio
             </Link>
@@ -451,7 +484,8 @@ function Builder({ source }: { source: BuildSource }) {
   // Done, under way, gone or past: read-only, and the page says why.
   const frozenWhy = isWorkout && plannedRow ? readOnlyWhy(plannedRow, today) : null;
   const frozen = frozenWhy !== null;
-  const canStart = features.player && (!isWorkout || (row !== null && row.date === today)) && !frozen;
+  // No Start on a coach's draft: starting would make a workout the proposal never approved.
+  const canStart = features.player && !isDraft && (!isWorkout || (row !== null && row.date === today)) && !frozen;
   const blocked = judged.blocked;
   const busy = flow.step === "busy";
   const open = sumOpen ?? wide;
@@ -566,7 +600,7 @@ function Builder({ source }: { source: BuildSource }) {
           { label: "Save as a new template…", run: () => setNaming(true) },
         ]
       : // A quick start offers no "Start over": that would clear the workout being built on this device.
-        isWorkout || source.kind === "quick" || source.kind === "again"
+        isWorkout || source.kind === "quick" || source.kind === "again" || isDraft
         ? [{ label: "Save as template…", run: () => setNaming(true) }]
         : [
             { label: "Save as template…", run: () => setNaming(true) },
@@ -600,7 +634,9 @@ function Builder({ source }: { source: BuildSource }) {
               <SaveMenu items={saveItems} />
             </span>
           </div>
-          {isWorkout && row ? <p className="stu-build-when">{`${row.date === today ? "Today" : formatDayShort(row.date)} · ${formatTime(row.time)}`}</p> : null}
+          {(isWorkout || isDraft) && row ? (
+            <p className="stu-build-when">{`${row.date === today ? "Today" : formatDayShort(row.date)}${row.time ? ` · ${formatTime(row.time)}` : ""}`}</p>
+          ) : null}
           <h1 className="visually-hidden">{doc.title}</h1>
           <CommitField label="Title" className="stu-build-title display" value={doc.title} maxLength={80} onCommit={setTitle} readOnly={frozen} />
           <CommitField
@@ -838,8 +874,8 @@ function Builder({ source }: { source: BuildSource }) {
                   {busy ? flow.what : "Start now"}
                 </button>
               ) : null}
-              {frozen ? null : isWorkout ? (
-                <button type="button" className="btn" disabled={!dirty || saving || busy} onClick={() => void saveChanges()}>
+              {frozen ? null : isWorkout || draftRevises ? (
+                <button type="button" className="btn" disabled={(!dirty && !isDraft) || saving || busy} onClick={() => void saveChanges()}>
                   {saving ? "Saving…" : "Save changes"}
                 </button>
               ) : (
@@ -910,6 +946,7 @@ function Builder({ source }: { source: BuildSource }) {
           onSchedule={schedule}
           onClose={() => setScheduling(false)}
           timeZone={timeZone}
+          initial={isDraft && row ? { date: row.date, time: row.time || null } : undefined}
         />
       ) : null}
       {naming ? <NameSheet initial={doc.title} onSave={saveAsTemplate} onClose={() => setNaming(false)} /> : null}

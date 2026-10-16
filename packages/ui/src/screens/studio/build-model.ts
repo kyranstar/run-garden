@@ -85,16 +85,22 @@ export type BuildSource =
   | { kind: "template"; id: string }
   | { kind: "workout"; id: string }
   /** A planned workout's document as the start of a new one ("Do it again", CUJ B2): a copy, kept nowhere yet. */
-  | { kind: "again"; id: string };
+  | { kind: "again"; id: string }
+  /** A coach's draft (Edit before approve, Stage 3): saving it approves that op of the proposal with this version. */
+  | { kind: "proposal"; id: string; opId: string };
 
 /** A quick start's kind from its address; null for anything else. */
 export function quickKindOf(s: string): QuickStartKind | null {
   return QUICK_START_KINDS.find((k) => k === s) ?? null;
 }
 
+/** Where Edit before approve opens a coach's draft: the builder on that op of the proposal. */
+export const editDraftHref = (proposalId: string, opId: string): string =>
+  `/studio/build/proposal/${encodeURIComponent(proposalId)}/${encodeURIComponent(opId)}`;
+
 /**
  * The builder's address (spec §2): `/studio/build/new`, `…/quick/:kind` (a quick start, spec §9), `…/template/:id`,
- * `…/workout/:workoutId`; anything else, null.
+ * `…/workout/:workoutId`, `…/proposal/:id/:opId` (a coach's draft); anything else, null.
  */
 export function sourceOfPath(pathname: string): BuildSource | null {
   if (/^\/studio\/build\/new\/?$/.test(pathname)) return { kind: "new" };
@@ -102,6 +108,14 @@ export function sourceOfPath(pathname: string): BuildSource | null {
   if (q) {
     const quick = quickKindOf(q[1]!);
     return quick ? { kind: "quick", quick } : null;
+  }
+  const d = /^\/studio\/build\/proposal\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
+  if (d) {
+    try {
+      return { kind: "proposal", id: decodeURIComponent(d[1]!), opId: decodeURIComponent(d[2]!) };
+    } catch {
+      return null;
+    }
   }
   const m = /^\/studio\/build\/(template|workout|again)\/([^/]+)\/?$/.exec(pathname);
   if (!m) return null;
@@ -114,7 +128,8 @@ export function sourceOfPath(pathname: string): BuildSource | null {
   return m[1] === "template" ? { kind: "template", id } : m[1] === "again" ? { kind: "again", id } : { kind: "workout", id };
 }
 
-export const sourceKey = (s: BuildSource): string => (s.kind === "new" ? "new" : s.kind === "quick" ? `quick:${s.quick}` : `${s.kind}:${s.id}`);
+export const sourceKey = (s: BuildSource): string =>
+  s.kind === "new" ? "new" : s.kind === "quick" ? `quick:${s.quick}` : s.kind === "proposal" ? `proposal:${s.id}:${s.opId}` : `${s.kind}:${s.id}`;
 
 /** A reason as a sentence ("wakes the glutes before Deadlift" → "Wakes the glutes before Deadlift."). */
 export const sentence = (s: string): string => `${s.charAt(0).toUpperCase()}${s.slice(1)}${/[.!?]$/.test(s) ? "" : "."}`;

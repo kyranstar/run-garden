@@ -11,8 +11,8 @@
  *   The saves   a planned workout's changes, a template's (on the version it opened), a new template; Reload when the
  *               base changed elsewhere; Start over.
  */
-import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import type { Location, NavigateFunction } from "react-router-dom";
+import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useNavigate, type Location, type NavigateFunction } from "react-router-dom";
 import type { QueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DocIssueDto, type DocWorkoutDto, type MeResponse, type SessionDto } from "@rg/api-client";
 import { addDays, newId, type WorkoutDoc } from "@rg/domain";
@@ -31,7 +31,7 @@ import { forgetStart, saveExtras } from "../../player/stored.js";
 import type { useStudioDraft } from "../../studio-drafts.js";
 import { addTargetHref, freshDoc } from "./add-model.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
-import { answered, checkViewOf, clockIn, EMPTY_BLOCK, forSchedule, judgeDraft, nowHHMM, type BuildCtx, type BuildSource, type Judged } from "./build-model.js";
+import { answered, checkViewOf, clockIn, editDraftHref, EMPTY_BLOCK, forSchedule, judgeDraft, nowHHMM, type BuildCtx, type BuildSource, type Judged } from "./build-model.js";
 import type { BuilderArrival } from "./templates-model.js";
 
 /** A planned workout's document, read fresh (`GET /api/workouts/:id/doc`). */
@@ -207,6 +207,12 @@ export function sameDocument(a: WorkoutDoc, b: WorkoutDoc): boolean {
   const x = toProposable(startEditing(a).doc);
   const y = toProposable(startEditing(b).doc);
   return x !== null && y !== null && JSON.stringify(x) === JSON.stringify(y);
+}
+
+/** Edit before approve (Stage 3): opens the builder on a coach's draft — that op of the proposal. */
+export function useEditBeforeApprove(): (proposalId: string, opId: string) => void {
+  const navigate = useNavigate();
+  return useCallback((proposalId: string, opId: string) => navigate(editDraftHref(proposalId, opId)), [navigate]);
 }
 
 /** The builder's Start now, Schedule and saves. */
@@ -577,6 +583,33 @@ export function useBuildFlows({
   }, [then, ready, judged, settled]);
 
   // ── Schedule, and the saves ──
+  /**
+   * EDIT BEFORE APPROVE (Stage 3): a coach's draft saved here — Schedule (a new workout, on the day chosen) or Save
+   * changes (a revision) — is that op of the proposal approved with this version, through the coach's approve, never
+   * a workout of its own; the builder is then on the workout it became. A refusal is the Studio save's own (thrown);
+   * a draft decided meanwhile goes to its workout, or says it is closed.
+   */
+  const approveDraft = async (doc: WorkoutDoc, when?: { date: string; time: string | null }): Promise<string | null> => {
+    if (source.kind !== "proposal") return null;
+    const res = await api.coachDesignApprove(source.id, { edit: { opId: source.opId, doc, ...(when ?? {}) } });
+    const made = res.applied.find((a) => a.opId === source.opId);
+    if (!made) {
+      const before = res.settled.find((s) => s.opId === source.opId)?.workoutId;
+      if (!before) return "This draft is closed.";
+      navigate(addTargetHref({ kind: "workout", id: before }), { replace: true });
+      return null;
+    }
+    refreshPlan();
+    adopt(made.workout, doc);
+    setScheduling(false);
+    setStatus(
+      when
+        ? { text: scheduledText(made.workout, today), link: { to: "/plan", label: "See it in Plan" }, notes: newNotes(made.warnings) }
+        : { text: "Saved.", notes: newNotes(made.warnings), ...(made.watchHasOlder ? { watch: { workoutId: made.workout.id, minutes: made.workout.minutes } } : {}) },
+    );
+    focusStatus();
+    return null;
+  };
   const schedule = async (when: string, time: string | null): Promise<string | null> => {
     const cur = live.current;
     if (!cur) return null;
@@ -585,6 +618,7 @@ export function useBuildFlows({
     if (j.blocked) return j.blocked;
     const sent = forSchedule(j.doc, source);
     try {
+      if (source.kind === "proposal") return await approveDraft(sent, { date: when, time });
       const once = await keyed("workout", cur.key);
       const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc: sent, clientId: once.clientId });
       once.landed();
@@ -656,6 +690,14 @@ export function useBuildFlows({
   const saveChanges = async () => {
     const cur = live.current;
     const d = cur ? toProposable(cur.editor.doc) : null;
+    if (cur && d && source.kind === "proposal") {
+      // A coach's revision, saved: approved with this version (Edit before approve).
+      setSaving(true);
+      const why = await approveDraft(d).catch((e: unknown) => refusalText(e, "save"));
+      if (why) setStatus({ text: why });
+      setSaving(false);
+      return;
+    }
     if (!cur || !d || !cur.key.startsWith("workout:")) return;
     const id = cur.key.slice("workout:".length);
     setSaving(true);

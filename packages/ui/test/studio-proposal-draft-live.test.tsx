@@ -1,0 +1,261 @@
+// @vitest-environment jsdom
+/**
+ * Stage 3 Task 8 — Edit before approve, live (spec §8): the builder opens a coach's draft at
+ * `/studio/build/proposal/:id/:opId`, loaded from the server; saving it there — Schedule for a new workout, on the
+ * coach's day unless the athlete picks another, or Save changes for a revision — approves THAT op with the edited
+ * document through the coach's approve, and the builder is on the workout it became. A refusal says why in place. No
+ * Start now on a draft: starting would make a workout the proposal never approved. Synthetic data only.
+ */
+import "fake-indexeddb/auto";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DesignDraftResponse, DocWorkoutDto } from "@rg/api-client";
+import { addDays, type WorkoutDoc } from "@rg/domain";
+import { EXERCISES } from "@rg/exercise-library";
+import { suggestedItem } from "@rg/workout";
+import { BuilderRoute } from "../src/screens/studio/builder.js";
+import { editDraftHref, sourceKey, sourceOfPath } from "../src/screens/studio/build-model.js";
+import { useEditBeforeApprove } from "../src/screens/studio/use-build-flows.js";
+import { DEVICE_PREFS, placesDto, primedClient, todayDto, TODAY } from "./studio-fixtures.js";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const HOME_GEAR = ["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"];
+const rec = (id: string) => EXERCISES.find((r) => r.id === id)!;
+/** Tuesday, two days on. */
+const TUESDAY = addDays(TODAY, 2);
+
+let root: Root | null = null;
+let host: HTMLElement | null = null;
+let where = "";
+
+afterEach(() => {
+  act(() => root?.unmount());
+  host?.remove();
+  root = null;
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+function Where() {
+  const loc = useLocation();
+  where = `${loc.pathname}${loc.search}`;
+  return null;
+}
+
+const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+
+/** The coach's document: one lift in its main part. */
+const coachDoc = (title: string): WorkoutDoc => ({
+  version: 1,
+  title,
+  intent: { summary: "Open the hips, then load them.", goals: [], focus: [], effort: "maintain" },
+  parts: [{ purpose: "main", format: "straight", items: [suggestedItem(rec("gobletSquat"), "main")] }],
+  source: { kind: "coach", ref: "run:main-1" },
+});
+
+function draftOf(over: Partial<DesignDraftResponse> = {}): DesignDraftResponse {
+  return {
+    proposalId: "dp-1",
+    opId: "run-a",
+    status: "pending",
+    doc: coachDoc("Coach's hips"),
+    derived: { estimatedMinutes: 20, discipline: "strength", category: "strength", mode: "consistent", watchStepCount: 4 },
+    rev: null,
+    target: { kind: "new", date: TUESDAY, time: "17:30" },
+    date: TUESDAY,
+    time: "17:30",
+    outcome: null,
+    ...over,
+  };
+}
+
+const workout = (id: string, date: string, time: string, title: string): DocWorkoutDto => ({
+  id, date, time, title, intentSummary: "", category: "strength", sport: "strength", origin: "studio", contentState: "outline",
+  completionState: "scheduled", docRev: 1, minutes: 20,
+});
+
+interface Call {
+  method: string;
+  path: string;
+  body: any;
+}
+
+/** The server: the draft (null: gone), and the approve's answers in turn (an error, or the workout it made). */
+function serve(s: { draft: DesignDraftResponse | null; approve?: Array<{ error: string; status: number } | DocWorkoutDto> }): Call[] {
+  const calls: Call[] = [];
+  let approved = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const path = String(input).split("?")[0]!;
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ method, path, body });
+      if (method === "GET" && path === "/api/coach/proposals/dp-1/ops/run-a/draft") return s.draft ? json(s.draft) : json({ error: "not_found" }, 404);
+      if (method === "POST" && path === "/api/coach/proposals/dp-1/approve") {
+        const a = s.approve?.[Math.min(approved++, (s.approve?.length ?? 1) - 1)];
+        if (!a) return json({ error: "offline" }, 503);
+        if ("error" in a) return json({ error: a.error }, a.status);
+        return json({ ok: true, status: "partially_approved", applied: [{ opId: body.edit.opId, workout: { ...a, title: body.edit.doc.title }, warnings: [] }], refused: [], settled: [], remaining: [] });
+      }
+      if (method === "GET" && path === "/api/plan/workouts") return json({ today: TODAY, plan: null, corosWritesEnabled: false, workouts: [] });
+      return json({ error: "offline" }, 503);
+    }),
+  );
+  return calls;
+}
+
+function mount(path: string, extra?: ReturnType<typeof createElement>) {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  const qc = primedClient({ places: placesDto(HOME_GEAR), today: todayDto(null, false) });
+  qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
+  act(() => {
+    root!.render(
+      createElement(
+        QueryClientProvider,
+        { client: qc },
+        createElement(
+          MemoryRouter,
+          { initialEntries: [path] },
+          createElement(
+            Routes,
+            null,
+            createElement(Route, { path: "/studio/build/*", element: createElement(BuilderRoute) }),
+            createElement(Route, { path: "/coach", element: extra ?? null }),
+          ),
+          createElement(Where),
+        ),
+      ),
+    );
+  });
+}
+
+const settle = (ms = 0) =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, ms));
+  });
+const text = () => (document.body.textContent ?? "").replace(/\s+/g, " ");
+async function until(test: () => boolean, what: string) {
+  for (let i = 0; i < 150; i++) {
+    if (test()) return;
+    await settle(5);
+  }
+  throw new Error(`waited for ${what}; the page says: ${text()}`);
+}
+async function click(el: Element | null | undefined, what: string) {
+  if (!el) throw new Error(`no ${what} in: ${text()}`);
+  await act(async () => {
+    (el as HTMLElement).click();
+  });
+  await settle();
+}
+const buttons = (scope: ParentNode = document) => [...scope.querySelectorAll<HTMLButtonElement>("button")];
+const button = (name: string, scope: ParentNode = document) => buttons(scope).find((b) => b.textContent?.trim() === name) ?? null;
+const dialog = (title: string) => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.querySelector("h2")?.textContent === title) ?? null;
+const titleField = () => document.querySelector<HTMLInputElement>(".stu-build-title");
+function setValue(input: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+async function retype(input: HTMLInputElement, value: string) {
+  act(() => input.focus());
+  await act(async () => setValue(input, value));
+  act(() => input.blur());
+  await settle();
+}
+const approvals = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.path === "/api/coach/proposals/dp-1/approve");
+
+// ── Where it opens ─────────────────────────────────────────────────────────
+
+describe("the draft's address", () => {
+  it("/studio/build/proposal/:id/:opId is the builder on that op's draft", () => {
+    expect(sourceOfPath("/studio/build/proposal/dp-1/run-a")).toEqual({ kind: "proposal", id: "dp-1", opId: "run-a" });
+    expect(sourceKey({ kind: "proposal", id: "dp-1", opId: "run-a" })).toBe("proposal:dp-1:run-a");
+    expect(sourceOfPath("/studio/build/proposal/dp-1")).toBeNull();
+    expect(sourceOfPath("/studio/build/proposal/%E0%A4%A/run-a")).toBeNull();
+    expect(editDraftHref("dp 1", "run/a")).toBe("/studio/build/proposal/dp%201/run%2Fa");
+    expect(sourceOfPath(editDraftHref("dp 1", "run/a"))).toEqual({ kind: "proposal", id: "dp 1", opId: "run/a" });
+  });
+
+  it("useEditBeforeApprove opens it", async () => {
+    serve({ draft: draftOf() });
+    function Opener() {
+      const edit = useEditBeforeApprove();
+      return createElement("button", { type: "button", onClick: () => edit("dp-1", "run-a") }, "Edit before approve");
+    }
+    mount("/coach", createElement(Opener));
+    await click(button("Edit before approve"), "the hook's button");
+    expect(where).toBe("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+  });
+});
+
+// ── Saving it approves it ──────────────────────────────────────────────────
+
+describe("Edit before approve", () => {
+  it("a new workout's draft: changed, then Schedule — on the coach's day and time — approves THAT op with the edited document, and the builder is on the workout", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    const calls = serve({ draft: draftOf(), approve: [workout("w-9", TUESDAY, "17:30", "")] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    // Starting a draft would make a workout the proposal never approved.
+    expect(document.querySelector(".stu-build-start")).toBeNull();
+    expect(document.querySelector(".stu-build-when")?.textContent).toBe("Tue Oct 13 · 5:30 PM");
+    await retype(titleField()!, "My hips");
+    await click(button("Schedule…"), "Schedule…");
+    const sheet = dialog("Schedule")!;
+    expect(sheet.querySelector<HTMLInputElement>('input[type="radio"][value="day"]')!.checked).toBe(true);
+    expect(sheet.querySelector<HTMLInputElement>('input[aria-label="Day"]')!.value).toBe(TUESDAY);
+    expect(sheet.querySelector<HTMLInputElement>('input[aria-label="Time (optional)"]')!.value).toBe("17:30");
+    await click(button("Schedule", sheet), "Schedule");
+    await until(() => text().includes("Scheduled for Tue Oct 13 at 5:30 PM."), "the line");
+    const [approve] = approvals(calls);
+    expect(approve!.body).toEqual({ edit: { opId: "run-a", doc: expect.objectContaining({ title: "My hips" }), date: TUESDAY, time: "17:30" } });
+    expect(calls.some((c) => c.method === "POST" && c.path === "/api/workouts")).toBe(false);
+    expect(where).toBe("/studio/build/workout/w-9");
+  });
+
+  it("a revision's draft: Save changes approves it, changed or not; a refusal says why in place, and saving again goes on", async () => {
+    const calls = serve({
+      draft: draftOf({ target: { kind: "revise", workoutId: "w1", baseRev: 3 }, date: TODAY, time: "18:00" }),
+      approve: [{ error: "stale_revision", status: 409 }, workout("w1", TODAY, "18:00", "")],
+    });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    expect(button("Schedule…")).toBeNull();
+    expect(button("Save changes")!.disabled).toBe(false);
+    await click(button("Save changes"), "Save changes");
+    await until(() => text().includes("This workout changed elsewhere — reload it to see the new version."), "the refusal");
+    expect(where).toBe("/studio/build/proposal/dp-1/run-a");
+    await click(button("Save changes"), "Save changes");
+    await until(() => where === "/studio/build/workout/w1", "the workout");
+    expect(text()).toContain("Saved.");
+    expect(approvals(calls).map((c) => c.body)).toEqual([
+      { edit: { opId: "run-a", doc: expect.objectContaining({ title: "Coach's hips" }) } },
+      { edit: { opId: "run-a", doc: expect.objectContaining({ title: "Coach's hips" }) } },
+    ]);
+  });
+
+  it("a draft already approved says so and opens the workout; one gone says so", async () => {
+    serve({ draft: draftOf({ outcome: { status: "applied", at: "2026-10-11T09:00:00Z", workoutId: "w-7", rev: 1 } }) });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => text().includes("This one is in your plan already."), "the line");
+    expect(document.querySelector<HTMLAnchorElement>('a[href="/studio/build/workout/w-7"]')?.textContent).toBe("Open it");
+    act(() => root?.unmount());
+    serve({ draft: null });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => text().includes("That draft is gone."), "the line");
+  });
+
+  it("a draft the athlete declined, or a proposal no longer open, is closed", async () => {
+    serve({ draft: draftOf({ status: "expired" }) });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => text().includes("This draft is closed."), "the line");
+  });
+});

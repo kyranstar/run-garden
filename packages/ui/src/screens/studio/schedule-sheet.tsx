@@ -35,15 +35,19 @@ export interface ScheduleSheetProps {
   onClose: () => void;
   /** The account's timezone: "now" is read on its clock (CUJ R14); the device's when unknown. */
   timeZone?: string | null;
+  /** The day and time it opens on (a coach's draft: the day the coach proposed), when that day is still ahead. */
+  initial?: { date: string; time: string | null };
 }
 
-export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onCheck, onSchedule, onClose, timeZone = null }: ScheduleSheetProps) {
+export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onCheck, onSchedule, onClose, timeZone = null, initial }: ScheduleSheetProps) {
   const name = useId();
   const tomorrow = addDays(today, 1);
-  const [choice, setChoice] = useState<"later" | "day">(later ? "later" : "day");
-  const [laterTime, setLaterTime] = useState(later ?? "");
-  const [date, setDate] = useState(tomorrow);
-  const [dayTime, setDayTime] = useState("");
+  const from = initial && initial.date >= today ? initial : null;
+  const onLater = !!from && from.date === today && !!later && !!from.time;
+  const [choice, setChoice] = useState<"later" | "day">(from ? (onLater ? "later" : "day") : later ? "later" : "day");
+  const [laterTime, setLaterTime] = useState(onLater ? from!.time! : (later ?? ""));
+  const [date, setDate] = useState(from && !onLater ? from.date : tomorrow);
+  const [dayTime, setDayTime] = useState(from && !onLater ? (from.time ?? "") : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
