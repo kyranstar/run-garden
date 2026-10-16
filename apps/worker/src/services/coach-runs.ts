@@ -314,7 +314,8 @@ export interface RunState {
   estimate?: SetEstimate;
   /** A designer's finish line, its own words: its set's outcome quotes it when its workout is left out. */
   final?: string;
-  /** A set's designer: the day of its brief (what a stop names when it never started; read in SQL). */
+  /** A set's designer: the day of its brief (what a stop names when it never started — so never read back here: read in
+   * SQL from the state it was started with). */
   day?: string;
   /** A set's redo designer: the designer whose workout its replaces once reviewed (ToolContext.replaces). */
   replaces?: string;
@@ -421,7 +422,6 @@ export function readRunState(text: string | null): RunState | null {
     ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds)
       ? { set: { rounds: s.set.rounds, ...(Array.isArray(s.set.keyLines) ? { keyLines: s.set.keyLines } : {}) } }
       : {}),
-    ...(typeof s.day === "string" ? { day: s.day } : {}),
     ...(typeof s.replaces === "string" ? { replaces: s.replaces } : {}),
     ...(s.estimate && typeof s.estimate === "object" ? { estimate: s.estimate } : {}),
     // (`final` is written once, at a designer's finish, and read in SQL: never read back here.)

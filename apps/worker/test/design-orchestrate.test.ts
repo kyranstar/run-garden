@@ -1627,3 +1627,94 @@ describe("fix round 1 — a newer plan supersedes an older one's days", () => {
     }
   });
 });
+
+describe("fix round 1 — the last guards the mutation pass left unheld", () => {
+  it("a finish that keeps its proposal back supersedes nothing: no statement for it", async () => {
+    const a = await athlete();
+    const runId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: "Something calm." }, NOW)).run.id;
+    // Without a reviewer the draft is never reviewed: the finish keeps it back.
+    const base = scripted([t(propose("Calm hips", TODAY)), t(finish("A calm half hour."))]);
+    const deps: RunDeps = { ...base.deps, review: false };
+    await runStep(db, env, runId, a.userId, NOW, deps);
+    await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 1000), deps);
+    statements = 0;
+    const out = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 2000), deps);
+    const cost = ROUTE_OVERHEAD + statements + 1;
+    expect(out.kind === "ok" && out.result.status).toBe("finished");
+    expect((await proposalOf(runId))!.status).toBe("unreviewed");
+    // The route, the model step (10 + the call), finish's read, the promotion tried (nothing made pending, so nothing
+    // superseded).
+    expect(cost).toBe(2 + 11 + 1 + 1);
+  });
+
+  it("the budget counts the plan's own model call", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const two = planSet([brief("thu", THU), brief("mon", MON)]);
+    // Two workouts need $1.40 + $0.40 + $0.75 = $2.55: $3.00 less this call's $0.50 doesn't hold them.
+    const { deps, requests } = scripted([turn([two], { cost: 500_000 }), t(finish("Nothing planned."))]);
+    await runStep(db, env, mainId, a.userId, NOW, deps);
+    const s = await stateOf(mainId);
+    s.settings.ceilingMicros = 3_000_000;
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
+    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("finished");
+    expect(sentError(requests, two)).toMatchObject({ error: "over_budget", why: expect.stringContaining("enough for 1 workout") });
+  });
+
+  it("a redo left out again says so once: the key's earlier line gives way to its new one", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const refused = { ok: false, kind: "rejected", reason: "invalid_request", status: 400 } as MessagesResult;
+    const { deps } = scripted([
+      t(planSet([brief("thu", THU), brief("sat", SAT)])),
+      ...designed("Thursday hips", THU),
+      refused,
+      t(planSet([brief("sat", SAT, { note: "Try again." })])),
+      refused,
+      t(finish("One session.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    const p = (await proposalOf(mainId))!;
+    expect(p.flags).toEqual(["No workout for Saturday 16 May: the designer couldn't finish: the AI service refused the request."]);
+  });
+});
+
+describe("fix round 1 — the supersede's status is design-approve.ts statusOfOps", () => {
+  it("for every mix of outcomes on a covered day and an uncovered one, the statement writes what statusOfOps gives", async () => {
+    const { statusOfOps } = await import("../src/services/design-approve.js");
+    const a = await athlete();
+    const T1 = new Date(NOW.getTime() - 3_600_000).toISOString();
+    const at = NOW.toISOString();
+    const outcomes: Record<string, Record<string, unknown> | undefined> = {
+      open: undefined,
+      refused: { status: "refused", at: T1, error: "past_date", why: "gone" },
+      applied: { status: "applied", at: T1, workoutId: "w", rev: 1, written: { date: TODAY, time: "18:00", title: "t", minutes: 20 } },
+      declined: { status: "declined", at: T1 },
+    };
+    const op = (date: string, kind: string) => ({
+      kind: "doc_workout", date, target: { kind: "new", date }, doc: calmDoc(), by: { runId: `r-${date}-${kind}` }, ...(outcomes[kind] ? { outcome: outcomes[kind] } : {}),
+    });
+    const x = `x-${a.userId}`;
+    await db.insert(schema.coachProposals).values({
+      id: x, userId: a.userId, planId: null, title: "x", evidence: "", rationale: "", flags: [], ops: [op(TODAY, "open")], status: "pending", createdAt: at, expiresAt: TODAY,
+    });
+    const cases: string[] = [];
+    for (const covered of ["open", "refused"]) {
+      for (const other of ["open", "refused", "applied", "declined"]) {
+        const id = `p-${covered}-${other}-${a.userId}`;
+        const ops = [op(TODAY, covered), op(MON, other)];
+        const status = statusOfOps(ops as never);
+        await db.insert(schema.coachProposals).values({ id, userId: a.userId, planId: null, title: id, evidence: "", rationale: "", flags: [], ops, status, createdAt: T1, expiresAt: MON });
+        cases.push(id);
+      }
+    }
+    await supersedeOlderPlans(db, a.userId, x, at);
+    const rows = new Map((await db.select().from(schema.coachProposals)).map((p) => [p.id, p]));
+    for (const id of cases) {
+      const row = rows.get(id)!;
+      const ops = row.ops as Array<{ outcome?: { status: string } }>;
+      expect(ops[0]!.outcome?.status, id).toBe("superseded");
+      expect(row.status, id).toBe(statusOfOps(ops as never));
+    }
+  });
+});

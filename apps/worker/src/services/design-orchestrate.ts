@@ -378,14 +378,10 @@ export async function settleSet(
       tally.leftOut += 1;
     }
   }
-  // One line taken back per key line: two workouts on one day can say the same words, and only this key's go.
-  const flagsNext = [...flags];
-  for (const l of takenBack) {
-    const at = flagsNext.indexOf(l);
-    if (at >= 0) flagsNext.splice(at, 1);
-  }
-  // The key lines are what the proposal's lines must hold for the set's workouts: one the proposal doesn't hold yet (it
-  // had no row when it was written) is written now.
+  const flagsNext = flags.filter((f) => !takenBack.includes(f));
+  // The key lines are what the proposal's lines must hold for the set's workouts, each as often as it is kept: one the
+  // proposal doesn't hold (it had no row when it was written, or another key's line said the same words and went with
+  // the line taken back) is written now.
   const keyLinesNext = [...keyLines, ...added];
   const want = new Map<string, number>();
   for (const k of keyLinesNext) want.set(k.line, (want.get(k.line) ?? 0) + 1);
