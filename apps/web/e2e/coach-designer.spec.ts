@@ -71,11 +71,21 @@ test("the composer → a scripted run → the suggestion → Approve → the wor
   await expect(card.getByRole("button", { name: "Hips and back, gently" })).toBeVisible();
   await expect(card).toContainText("Reviewed");
 
-  // A tip from the review is on the card; the review's scores, one tap down, in plain words (M1, M2).
-  await expect(card.getByText("Hold the last bridge for a slow count of three.")).toBeVisible();
+  // What it is for, one line under its title (Task 13, D1); no Tip on the face (R5).
+  await expect(card.getByText("Open the hips, wake the glutes and brace the trunk.")).toBeVisible();
+  await expect(card.getByText("Tip", { exact: true })).toHaveCount(0);
+  // One tap on the title: each move, its why under it, and the move weighed instead (D1, D3).
+  await expect(card.getByText("Wakes the glutes before the trunk work.")).toBeHidden();
+  await card.getByRole("button", { name: "Hips and back, gently" }).click();
+  await expect(card.getByText("Wakes the glutes before the trunk work.")).toBeVisible();
+  await expect(card.getByText("or Single-leg glute bridge — harder, one side at a time")).toBeVisible();
+  // The review's scores and the ideas the coach didn't use, one tap down, in plain words (M1, M2; R5).
+  await expect(card.getByText("Hold the last bridge for a slow count of three.")).toBeHidden();
   await expect(card.getByText("Clear purpose")).toBeHidden();
   await card.getByRole("button", { name: "See the review" }).click();
   await expect(card.getByText("Clear purpose")).toBeVisible();
+  await expect(card.getByText("Ideas the coach didn't use")).toBeVisible();
+  await expect(card.getByText("Hold the last bridge for a slow count of three.")).toBeVisible();
 
   await card.getByRole("button", { name: "Approve", exact: true }).click();
   const placed = card.getByRole("link", { name: /^On your plan for / });

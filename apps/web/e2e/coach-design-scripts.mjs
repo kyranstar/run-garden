@@ -36,7 +36,13 @@ export function mobilityDoc() {
         purpose: "main",
         format: "straight",
         items: [
-          { kind: "exercise", libraryId: "bridge", dose: { sets: 3, reps: 12, restSec: 45 } },
+          {
+            kind: "exercise",
+            libraryId: "bridge",
+            dose: { sets: 3, reps: 12, restSec: 45 },
+            why: "Wakes the glutes before the trunk work.",
+            alternates: [{ libraryId: "singleLegBridge", why: "harder, one side at a time" }],
+          },
           { kind: "exercise", libraryId: "deadBug", dose: { sets: 3, reps: 8, restSec: 45 } },
           { kind: "exercise", libraryId: "birdDog", dose: { sets: 2, reps: 8, restSec: 30 } },
         ],
