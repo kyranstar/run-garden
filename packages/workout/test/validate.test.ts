@@ -11,7 +11,7 @@ import { EXERCISES, TMJ, UNANSWERED, fitsMode, type CheckReading, type Condition
 import { Planner, Rng, type DayState, type ProgramState } from "@rg/session-engine";
 import { LOCATIONS, seededHistory } from "../../session-engine/test/seeded-history.js";
 import { DOC_ISSUE_CODES, docFromBuild, validateWorkoutDoc, type DayContext, type DocIssue, type ValidateCtx } from "../src/index.js";
-import { WORLD, jumpDayBuilds, stored } from "./seeded-builds.js";
+import { WORLD, jumpDayBuilds, seededBuilds, stored } from "./seeded-builds.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ describe("validateWorkoutDoc — a clean workout", () => {
   it("lists every code it can raise, and nothing else", () => {
     expect([...DOC_ISSUE_CODES].sort()).toEqual(
       [
-        "bounds", "condition_flare", "condition_format", "condition_gate", "condition_gate_pending", "condition_mode", "condition_never",
+        "bounds", "care_share", "condition_flare", "condition_format", "condition_gate", "condition_gate_pending", "condition_mode", "condition_never",
         "condition_pattern", "dose_mismatch", "equipment_unavailable", "excluded_by_athlete", "format_mismatch", "jump_placement", "legacy_id",
         "mode_above_day", "mode_limits", "progression_jump", "too_large", "too_long_for_watch", "unknown_equipment", "unknown_exercise", "unknown_focus",
       ].sort(),
@@ -658,6 +658,119 @@ describe("mode_limits", () => {
     expect(codes(check(one(ex("pogoHop", { sets: 3, reps: 10 }, alt("gobletCarry"))), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
     const [issue] = check(one(ex("pogoHop", { sets: 3, reps: 10 }, alt("gobletCarry", "bridge")), "recover", "holds"));
     expect(issue).toMatchObject({ code: "condition_gate", fix: "bridge" });
+  });
+
+  it("a Recover day takes one straight set of an easy activation or mobility move (Task 13, A15): no strength work in it", () => {
+    const recover = (items: WorkoutItem[], extra: Over = {}) => docOf([part("activation", "straight", items, extra)], "recover");
+    // One set of hip lifts with a pause, the activation the audit saw flagged.
+    expect(check(recover([ex("bridge", { sets: 1, reps: 6, tempo: { pauseSec: 2 } })]))).toEqual([]);
+    // A set count left to the record's own (the bridge names none: one set), and a part of several such moves.
+    expect(check(recover([ex("bridge", { reps: 8 }), ex("catCow", { sets: 1, reps: 8 })]))).toEqual([]);
+    expect(check(recover([ex("bridge", { sets: 1, reps: 8 })]), null, { activeProfiles: [] })).toEqual([]);
+    // Still the format's cost: a second set, a second round, a strength move, a move past the easy line, a free-text move.
+    const formatCost = (doc: WorkoutDoc) => only(check(doc, dayOf(CALM), { activeProfiles: [] }), "mode_limits").filter((i) => i.path === "parts[0].format");
+    expect(formatCost(recover([ex("bridge", { sets: 2, reps: 8 })]))).toEqual([expect.objectContaining({ code: "mode_limits", fix: "holds", message: "A Recover day doesn't use straight sets." })]);
+    // A dose that names no sets plays the record's own low count: two for the dead bug.
+    expect(formatCost(recover([ex("deadBug", { reps: 8 })]))).toHaveLength(1);
+    expect(formatCost(recover([ex("deadBug", { sets: 1, reps: 8 })]))).toEqual([]);
+    expect(formatCost(recover([ex("bridge", { sets: 1, reps: 8 })], { rounds: 2 }))).toHaveLength(1);
+    expect(formatCost(recover([ex("bridge", { sets: 1, reps: 8 }), ex("boxSquat", { sets: 1, reps: 8 })]))).toHaveLength(1);
+    expect(formatCost(recover([ex("reversePlank", { sets: 1, holdSec: 20 })]))).toHaveLength(1);
+    expect(formatCost(recover([ex("cableFacePull", { sets: 1, reps: 12 })]))).toHaveLength(1);
+    // Only straight sets: the same two single sets as a superset are still the format's cost.
+    expect(formatCost(docOf([part("activation", "superset", [ex("bridge", { sets: 1, reps: 8 }), ex("catCow", { sets: 1, reps: 8 })])], "recover"))).toEqual([
+      expect.objectContaining({ message: "A Recover day doesn't use a superset." }),
+    ]);
+    expect(formatCost(recover([ex("bridge", { sets: 1, reps: 8 }), { kind: "free_exercise", name: "Hip lift", dose: { sets: 1, reps: 8 } } as WorkoutItem]))).toHaveLength(1);
+    // The rule is the Recover day's: a Maintain day's straight sets were never a cost.
+    expect(formatCost(docOf([part("main", "straight", [ex("boxSquat", { sets: 3, reps: 8 })])], "maintain"))).toEqual([]);
+  });
+});
+
+describe("care_share (Task 13, A10): a cared-for profile's care part, measured against its share of the minutes", () => {
+  // Timed holds, one set each: every item plays its seconds plus the 15 s transition (derive.ts).
+  const hold = (id: string, holdSec: number): WorkoutItem => ex(id, { sets: 1, holdSec });
+  /** 20 minutes of easy work that is no care: four 285 s holds, each with its 15 s transition. */
+  const OTHER: WorkoutPart[] = [
+    part("warmup", "holds", [hold("childBlock", 285), hold("catCow", 285)]),
+    part("cooldown", "holds", [hold("figureFour", 285), hold("legsUp", 285)]),
+  ];
+  const recoverWith = (care: WorkoutItem[], effort: WorkoutDoc["intent"]["effort"] = "recover", other: WorkoutPart[] = OTHER): WorkoutDoc =>
+    docOf([...other.slice(0, 1), part("care", "holds", care), ...other.slice(1)], effort);
+  const share = (doc: WorkoutDoc, o: Partial<ValidateCtx> = {}) => only(check(doc, dayOf(CALM), o), "care_share");
+
+  it("a Recover draft with about a tenth of its minutes in care is a warning at the care part; one at about 27% is not", () => {
+    // 2 of 22 minutes (9%).
+    const thin = recoverWith([hold("rocabado", 105)]);
+    expect(share(thin)).toEqual([
+      {
+        path: "parts[1]", code: "care_share", severity: "warning",
+        message: "Jaw care is 2 of 22 minutes (9%); a Recover day gives it about 27% — about 6 minutes, 3–6 moves.",
+      },
+    ]);
+    // 8 of 28 minutes (29%).
+    const full = recoverWith([hold("rocabado", 165), hold("tongueRest", 90), hold("jawMassage", 105), hold("suboccipitalRelease", 45)]);
+    expect(share(full)).toEqual([]);
+    // Nothing else in either draft is a cost: the share is the only thing between them.
+    expect(check(full)).toEqual([]);
+    expect(codes(check(thin))).toEqual(["warning:care_share@parts[1]"]);
+  });
+
+  it("allows about a third under the share — the engine's short sessions round a one-minute care move — and not more", () => {
+    // 20 + 4 = 24 minutes: the share is about 6.5 minutes; 4 is at its floor (two thirds, in whole minutes), 3 is under.
+    expect(share(recoverWith([hold("rocabado", 225)]))).toEqual([]);
+    expect(share(recoverWith([hold("rocabado", 165)]))).toHaveLength(1);
+  });
+
+  it("each effort reads its own share: a tenth on a Maintain day, 7% on a Develop or Peak day", () => {
+    // 20 + 1 = 21 minutes: a one-minute care move is under a Recover day's share, and within a Maintain or Develop day's.
+    const one1 = (effort: WorkoutDoc["intent"]["effort"]) => recoverWith([hold("rocabado", 45)], effort);
+    expect(share(one1("recover"))).toHaveLength(1);
+    expect(share(one1("maintain"))).toEqual([]);
+    expect(share(one1("develop"))).toEqual([]);
+    // 41 minutes with no care move in the care part: under every effort's share, each named.
+    const long = [...OTHER, part("main", "holds", [hold("childHands", 285), hold("catCow", 285), hold("figureFour", 285), hold("legsUp", 285)])];
+    const none = (effort: WorkoutDoc["intent"]["effort"]) => share(recoverWith([hold("breath", 45)], effort, long))[0]?.message;
+    expect(none("maintain")).toMatch(/^Jaw care is 0 of 41 minutes \(0%\); a Maintain day gives it about 10% — about 4 minutes, 1–3 moves\./);
+    expect(none("peak")).toMatch(/^Jaw care is 0 of 41 minutes \(0%\); a Peak day gives it about 7% — about 3 minutes, 1–3 moves\./);
+  });
+
+  it("counts only the moves made for that care, wherever they are — and says which in the care part are not", () => {
+    // Breathing for the jaw in the care part is no care move: it isn't counted, and it is named.
+    const breathOnly = recoverWith([hold("breath", 105), hold("rocabado", 45)]);
+    expect(share(breathOnly)[0]!.message).toBe(
+      "Jaw care is 1 of 23 minutes (4%); a Recover day gives it about 27% — about 6 minutes, 3–6 moves. Only jaw care moves count: Jaw reset breathing isn't one.",
+    );
+    // A care move in the cool-down counts toward the share: 2 in the care part and 4 there, of 21 minutes (2 alone is under).
+    const spread = docOf([OTHER[0]!, part("care", "holds", [hold("rocabado", 105)]), part("cooldown", "holds", [hold("figureFour", 285), hold("jawMassage", 225)])], "recover");
+    expect(share(spread)).toEqual([]);
+    expect(share({ ...spread, parts: [...spread.parts.slice(0, 2), part("cooldown", "holds", [hold("figureFour", 285), hold("legsUp", 225)])] })).toHaveLength(1);
+  });
+
+  it("is judged only where care is given: no care part and no care move, no profile with care, or no minutes but a run's", () => {
+    expect(share(docOf(OTHER, "recover"))).toEqual([]);
+    expect(share(recoverWith([hold("rocabado", 45)]), { activeProfiles: [] })).toEqual([]);
+    expect(share(recoverWith([hold("rocabado", 45)]), { activeProfiles: [{ ...TMJ, care: null }] })).toEqual([]);
+    // A care move outside any care part is care given: judged, at the document's parts.
+    expect(share(docOf([...OTHER, part("cooldown", "holds", [hold("rocabado", 45)])], "recover"))).toEqual([expect.objectContaining({ path: "parts" })]);
+  });
+
+  it("measures the share against the session's minutes without its runs", () => {
+    // A 30-minute run, then 8 minutes of mobility holding 3 of care: 3 of 8 is the share; 3 of 38 would not be.
+    const run: WorkoutPart = part("run", "steady", [{ kind: "run", effort: "easy", target: { durationSec: 1800 } } as WorkoutItem]);
+    const doc = docOf([run, part("warmup", "holds", [hold("catCow", 285)]), part("care", "holds", [hold("rocabado", 165)])], "recover");
+    expect(share(doc)).toEqual([]);
+    expect(share({ ...doc, parts: [part("warmup", "holds", [hold("catCow", 285), hold("childBlock", 1500)]), doc.parts[2]!] })).toHaveLength(1);
+  });
+
+  it("the engine's own builds give care and keep within the share (every mode)", () => {
+    const builds = seededBuilds(50);
+    const care = builds.filter(({ plan }) => docFromBuild(stored(plan)).parts.some((p) => p.purpose === "care"));
+    expect(care.length).toBeGreaterThan(40);
+    for (const { label, plan } of builds) {
+      const doc = docFromBuild(stored(plan));
+      expect(only(validateWorkoutDoc(doc, { library: WORLD.data.exercises, activeProfiles: WORLD.data.profiles.active, day: null }), "care_share"), label).toEqual([]);
+    }
   });
 });
 

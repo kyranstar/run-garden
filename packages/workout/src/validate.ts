@@ -45,7 +45,15 @@
  * - condition_format (warning): `fitsFormat` is false for the part's format.
  * - condition_flare (warning): today's reading is a flare (`flare`) and the move is not flare-safe (`recordFlareSafe`).
  * - mode_limits (warning): the move is harder than the mode's difficulty cap or loaded where the mode takes no added
- *   weight (at the item or alternate); or a part holding exercises uses a format the mode does not (at the part's format).
+ *   weight (at the item or alternate); or a part holding exercises uses a format the mode does not (at the part's format),
+ *   except straight sets whose every move is ONE set of an easy activation or mobility move (Task 13, A15: a library
+ *   move with that purpose or role, at most difficulty ONE_SET_MAX_DIFFICULTY and no added weight, one set, one round —
+ *   the mode's own easy work, set out one move at a time; a free-text move can't be vouched for).
+ * - care_share (warning): a profile with care content (`care.block`) and a document that gives care — a `care` part, or a
+ *   move whose roles include the block's — where the care moves' derived minutes fall below CARE_SHARE_FLOOR of the
+ *   block's share for the mode (in whole minutes, against the document's minutes without its runs). Only moves with a
+ *   role of the block count, wherever they are; the moves in a `care` part without one are named. At the first `care`
+ *   part, else at "parts". A document that gives no care at all is not judged (the athlete's own sessions, imports).
  * - mode_above_day (warning, at intent.effort): on the day, the day's "feeling off" (the engine's own sentence), else a
  *   profile's `recoveryReason` (for a workout above recovery) or its first failed `buildChecks` line (for a build
  *   workout) — the profile's own words; `fix` is the effort it allows.
@@ -100,7 +108,7 @@ import {
   type Mode,
   type ProposalCtx,
 } from "@rg/exercise-library";
-import { FORMAT_OF_PART, docSize, makeLibraryIndex, modeOfEffort } from "./derive.js";
+import { FORMAT_OF_PART, deriveDoc, docSize, makeLibraryIndex, modeOfEffort } from "./derive.js";
 
 export const DOC_ISSUE_CODES = [
   "bounds",
@@ -125,6 +133,7 @@ export const DOC_ISSUE_CODES = [
   "too_long_for_watch",
   "unknown_focus",
   "unknown_equipment",
+  "care_share",
 ] as const;
 export type DocIssueCode = (typeof DOC_ISSUE_CODES)[number];
 
@@ -198,6 +207,22 @@ const EASIER_DEPTH = 3;
 const FRONTIER_DEPTH = 8;
 /** The day's "feeling off", in the engine's own words (its mode proposal). */
 const FEELING_OFF = "You said you're feeling off.";
+/**
+ * The most difficult move a mode that leaves straight sets out still takes as one straight set (A15): the easy end of
+ * the scale, where an activation or mobility move is a prompt, not strength work.
+ */
+const ONE_SET_MAX_DIFFICULTY = 2;
+/** What makes a move a prompt rather than a lift, for A15: its purposes or its roles. */
+const EASY_WORK = new Set<string>(["activation", "mobility"]);
+/**
+ * How much of a care block's share counts as met (A10). The block's share is what the engine's own sessions START the
+ * block with (unused time rolls forward), so its builds land under it: down to about 80% in recovery, and a single
+ * one-minute care move in a short Maintain or Develop session (1 of 21 minutes) — two thirds of the share, in whole
+ * minutes, keeps every engine build clean and still flags a care part a third short or worse.
+ */
+const CARE_SHARE_FLOOR = 2 / 3;
+/** A floating-point product that should be whole (0.1 × 30 × 2/3) is not let down by a hair. */
+const EPSILON = 1e-9;
 
 /** Case and separators ignored: "goblet-squat", "Goblet squat" and "gobletSquat" read alike. */
 const keyOf = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -489,6 +514,9 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   // ── Jumps: one part, straight sets or a superset, before the lifting ──
   checkJumps();
 
+  // ── Care: a cared-for profile's care part, against its share of the minutes ──
+  checkCare();
+
   function checkJumps(): void {
     let jumpsPart: number | null = null;
     let lifted = false;
@@ -535,11 +563,62 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         add({ path, code: "format_mismatch", message: "Intervals need a run or a timed move; this part has neither.", fix: moves >= CIRCUIT_MIN && moves <= CIRCUIT_MAX ? "circuit" : "straight", severity: "error" });
       }
     }
-    // The mode's formats bind exercise work only (run intervals on a maintain day are a run's way).
+    // The mode's formats bind exercise work only (run intervals on a maintain day are a run's way), and one straight set
+    // of an easy prompt is the mode's own easy work (A15).
     const allowed = MODES[mode].formats;
-    if (moves > 0 && !allowed.includes(FORMAT_RULE[part.format])) {
+    if (moves > 0 && !allowed.includes(FORMAT_RULE[part.format]) && !(part.format === "straight" && easyOneSets(part))) {
       const fix = FORMAT_PREFERENCE.find((f) => allowed.includes(FORMAT_RULE[f]));
       add({ path, code: "mode_limits", message: `A ${dayWord} day doesn't use ${FORMAT_WORDS[part.format]}.`, fix, severity: "warning" });
+    }
+  }
+
+  /** Every move of the part is one set, in one round, of an easy, unloaded library move for activation or mobility (A15). */
+  function easyOneSets(part: Part): boolean {
+    if ((part.rounds ?? 1) > 1) return false;
+    return part.items.every((item) => {
+      if (item.kind === "run" || item.kind === "rest") return true;
+      const rec = item.kind === "exercise" ? find(item.libraryId) : undefined;
+      if (!rec) return false;
+      const sets = item.dose.sets ?? rec.dose.sets?.[0] ?? 1;
+      return sets === 1 && rec.difficulty <= ONE_SET_MAX_DIFFICULTY && rec.load !== "external" && [...rec.purposes, ...rec.roles].some((x) => EASY_WORK.has(x));
+    });
+  }
+
+  /** Each cared-for profile's care block against its share of the minutes (see care_share in the header). */
+  function checkCare(): void {
+    const careAt = doc.parts.findIndex((p) => p.purpose === "care");
+    /** The document's derived minutes, holding only the items `keep` keeps (a part left with no move is dropped). */
+    const minutesOf = (keep: (item: WorkoutItem) => boolean): number => {
+      const parts = doc.parts
+        .map((p) => ({ ...p, items: p.items.filter(keep) }))
+        .filter((p) => p.items.some((i) => i.kind === "exercise" || i.kind === "free_exercise"));
+      return parts.length > 0 ? deriveDoc({ ...doc, parts }, ctx.library).estimatedMinutes : 0;
+    };
+    for (const p of profiles) {
+      const block = p.care?.block;
+      const share = block?.share[mode] ?? 0;
+      if (!block || !(share > 0)) continue;
+      const isCare = (item: WorkoutItem): boolean => item.kind === "exercise" && (find(item.libraryId)?.roles ?? []).some((r) => block.roles.includes(r));
+      if (careAt < 0 && !doc.parts.some((part) => part.items.some(isCare))) continue;
+      const total = minutesOf((i) => i.kind !== "run");
+      if (total === 0) continue;
+      const care = minutesOf(isCare);
+      const target = share * total;
+      if (care >= Math.floor(target * CARE_SHARE_FLOOR + EPSILON)) continue;
+      const pct = (x: number): number => Math.round(x * 100);
+      const [lo, hi] = [block.min[mode], block.max[mode]];
+      const moves = lo === hi ? `${lo} ${lo === 1 ? "move" : "moves"}` : `${lo}–${hi} moves`;
+      const about = Math.round(target);
+      let message = `${block.label} is ${care} of ${total} minutes (${pct(care / total)}%); a ${dayWord} day gives it about ${pct(share)}% — about ${about} ${about === 1 ? "minute" : "minutes"}, ${moves}.`;
+      // The moves a care part holds that don't count: library moves without the block's role, and free-text moves.
+      const uncounted = (i: WorkoutItem): string[] => {
+        if (i.kind === "free_exercise") return [i.name];
+        const rec = i.kind === "exercise" && !isCare(i) ? find(i.libraryId) : undefined;
+        return rec ? [rec.name] : [];
+      };
+      const others = [...new Set(doc.parts.filter((part) => part.purpose === "care").flatMap((part) => part.items.flatMap(uncounted)))];
+      if (others.length > 0) message += ` Only ${block.label.toLowerCase()} moves count: ${listWords(others)} ${others.length === 1 ? "isn't one" : "aren't"}.`;
+      add({ path: careAt >= 0 ? `parts[${careAt}]` : "parts", code: "care_share", message, severity: "warning" });
     }
   }
 
@@ -662,6 +741,12 @@ function ownAmount(rec: ExerciseRecord): Partial<WorkoutDose> {
     default:
       return { reps: lo === hi ? lo : { min: lo, max: hi } };
   }
+}
+
+/** "a", "a and b", "a, b and c" — at most three named, then "and others". */
+function listWords(xs: readonly string[]): string {
+  const named = xs.length > 3 ? [...xs.slice(0, 3), "others"] : xs;
+  return named.length <= 1 ? named.join("") : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
 }
 
 /** The gear a move needs that `have` lacks, in plain words. */
