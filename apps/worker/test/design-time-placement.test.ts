@@ -147,8 +147,6 @@ describe("any design: a time today already past is refused at propose", () => {
     const designer = await propose({ kind: "week" }, { kind: "new", date: TODAY, time: "08:00" }, la("09:32"), "designer");
     expect((designer.result as ToolErr).error).toBe("past_time");
     expect((designer.result as ToolErr).why).toMatch(/08:00.*passed/);
-    const now = await propose({ kind: "now" }, { kind: "new", date: TODAY, time: "09:00" }, la("09:32"));
-    expect((now.result as ToolErr).error).toBe("past_time");
     // A later day's morning is no past time; nor is this minute.
     expect(isToolErr((await propose({ kind: "week" }, { kind: "new", date: addDays(TODAY, 1), time: "08:00" }, la("09:32"), "designer")).result)).toBe(false);
     expect(isToolErr((await propose({ kind: "now" }, { kind: "new", date: TODAY, time: "09:32" }, la("09:32", 20))).result)).toBe(false);
@@ -172,12 +170,43 @@ describe("now: no time means the moment of the approve, rounded up to five minut
     expect((await rowOf(workout.id)).effectiveTime).toBe("09:35");
   });
 
-  it("on the minute, it stays on the minute; a timed now workout keeps its own time", async () => {
+  it("on the minute, it stays on the minute; a timed now workout keeps its time as its earliest", async () => {
     const { op } = await designed({ kind: "now" }, { kind: "new", date: TODAY }, la("09:31"));
     expect((await lineAt(op, la("09:40"))).time).toBe("09:40");
     const timed = await designed({ kind: "now" }, { kind: "new", date: TODAY, time: "10:15" }, la("09:31"));
-    expect(timed.op.target).toEqual({ kind: "new", date: TODAY, time: "10:15" });
+    expect(timed.op.target).toEqual({ kind: "new", date: TODAY, atNow: true, notBefore: "10:15" });
+    expect(timed.op.time).toBe("10:15");
     expect((await lineAt(timed.op, la("09:40"))).time).toBe("10:15");
+  });
+});
+
+describe("a now design floats (Task 13's fix wave, R1): its time is a floor, never a time passed", () => {
+  it("timed 13:15 by the coach, read and approved at 13:40: the card says 13:40, no 'time passed', and it lands at 13:40, pinned", async () => {
+    const { id, op } = await designed({ kind: "now" }, { kind: "new", date: TODAY, time: "13:15" }, la("13:01"));
+    expect(op.target).toEqual({ kind: "new", date: TODAY, atNow: true, notBefore: "13:15" });
+    const line = await lineAt(op, la("13:40"));
+    expect(line.time).toBe("13:40");
+    expect(line).not.toHaveProperty("timePassed");
+    const answer = await approveAt(id, la("13:40"));
+    expect(answer.refused).toEqual([]);
+    expect(answer.applied[0]!.workout.time).toBe("13:40");
+    expect(answer.applied[0]!.moved).toBeUndefined();
+    expect(await db.select().from(scheduleOverrides).where(eq(scheduleOverrides.workoutId, answer.applied[0]!.workout.id))).toHaveLength(1);
+  });
+
+  it("a time already gone by when the coach proposes is dropped, not refused: the workout is for now", async () => {
+    const { result } = await propose({ kind: "now" }, { kind: "new", date: TODAY, time: "09:00" }, la("09:32"));
+    expect(isToolErr(result)).toBe(false);
+    const { op } = await designed({ kind: "now" }, { kind: "new", date: TODAY, time: "09:00" }, la("09:32"));
+    expect(op.target).toEqual({ kind: "new", date: TODAY, atNow: true });
+    expect(op.time).toBeUndefined();
+  });
+
+  it("a later day named in a now run keeps its time as asked; so does a set's workout for today", async () => {
+    const later = await designed({ kind: "now" }, { kind: "new", date: addDays(TODAY, 1), time: "08:00" }, la("09:31"));
+    expect(later.op.target).toEqual({ kind: "new", date: addDays(TODAY, 1), time: "08:00" });
+    const set = await designed({ kind: "week" }, { kind: "new", date: TODAY, time: "11:00" }, la("09:31"));
+    expect(set.op.target).toEqual({ kind: "new", date: TODAY, time: "11:00" });
   });
 });
 

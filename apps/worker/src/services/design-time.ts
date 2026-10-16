@@ -6,8 +6,10 @@
  *  - LATER TODAY: the main coach's new workout carries a time at least LATER_LEAD_MIN after now in the athlete's zone
  *    (`laterTodayRefusal`; the refusal names the earliest time that works, or says no time is left today).
  *  - ANY DESIGN: a new workout for today at a time already past is refused (`pastTimeRefusal`, code `past_time`).
- *  - NOW: a new workout for today with no time is marked `atNow` at propose, and placed at the moment of the approve,
- *    rounded up to NOW_ROUND_MIN.
+ *  - NOW: a "now" design's new workout for today is always marked `atNow` at propose — a time the coach gave is kept as
+ *    its floor (`notBefore`) — and placed at the moment of the approve, rounded up to NOW_ROUND_MIN, never before its
+ *    floor (Task 13's fix wave, R1: a pinned time made a now suggestion "time passed" a quarter of an hour after it
+ *    landed). A now design is never a time passed.
  *  - APPROVE: a new workout for today with no time whose usual time (the athlete's window: day-placement.ts
  *    `windowTimeFor`) has passed is placed at the next SLOT_MIN slot from now, never in the past; its own time, if it
  *    has passed since, is refused (`past_time`); and with no slot left before midnight it is refused the same way.
@@ -23,6 +25,8 @@ export const SLOT_MIN = 15;
 /** A "now" design with no time: placed at now, rounded up to this many minutes. */
 export const NOW_ROUND_MIN = 5;
 const DAY_MIN = 24 * 60;
+/** "HH:MM", a time of day. */
+const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Each zone's clock formatter, built once — the athlete's, or UTC's when theirs doesn't read (never a thrown error).
  * Building one is most of reading a clock (tens of µs); propose, the approve and the manifest read it on every call.
@@ -151,18 +155,21 @@ export function laterTodayRefusal(
   };
 }
 
-/** A new workout's day, its time if it has one, and whether a "now" design left it untimed. */
+/** A new workout's day, its time if it has one, and whether it is a "now" design's (placed at the approve, never
+ * before `notBefore`, the time the coach gave it). */
 export interface NewTarget {
   date: string;
   time?: string;
   atNow?: true;
+  notBefore?: string;
 }
 
 /**
  * The time the approve gives a new workout of the coach's (see the module comment), at `now` for an athlete with
  * `prefs`: `{ time, pinned: true }` a time asked for or placed now — pinned, as a time asked for always is; `{ time,
  * pinned: false }` the athlete's window, where a Studio save places an untimed workout (its collision pass may still
- * move it); or `{ refused, code }` — a time already past (`past_time`), or none left today (`no_time_today`).
+ * move it); or `{ refused, code }` — a time already past (`past_time`), or none left today (`no_time_today`). A now
+ * design's (`atNow`) is read first: now rounded up, or its floor when that is later — never a time passed.
  */
 export function approveTimeOf(
   target: NewTarget,
@@ -170,16 +177,18 @@ export function approveTimeOf(
   o: { now: Date; prefs: SchedulingPreferences },
 ): { time: string; pinned: boolean } | { refused: string; code: PastTimeCode } {
   const at = clockIn(o.prefs.timezone || "UTC", o.now);
+  if (target.atNow && target.date === at.date) {
+    const time = slotAtOrAfter(at.minutes, NOW_ROUND_MIN);
+    if (!time) return { refused: NO_TIME_LEFT, code: "no_time_today" };
+    const floor = target.notBefore && CLOCK.test(target.notBefore) ? target.notBefore : null;
+    return { time: floor && minutesFromLocalTime(floor) > minutesFromLocalTime(time) ? floor : time, pinned: true };
+  }
   if (target.time) {
     const why = pastTime(target.date, target.time, at);
     return why ? { refused: why, code: "past_time" } : { time: target.time, pinned: true };
   }
   const usual = windowTimeFor({ category, date: target.date }, o.prefs);
   if (target.date !== at.date) return { time: usual, pinned: false };
-  if (target.atNow) {
-    const time = slotAtOrAfter(at.minutes, NOW_ROUND_MIN);
-    return time ? { time, pinned: true } : { refused: NO_TIME_LEFT, code: "no_time_today" };
-  }
   if (minutesFromLocalTime(usual) >= at.minutes) return { time: usual, pinned: false };
   const time = slotAtOrAfter(at.minutes, SLOT_MIN);
   return time ? { time, pinned: true } : { refused: NO_TIME_LEFT, code: "no_time_today" };

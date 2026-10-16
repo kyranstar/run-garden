@@ -6,8 +6,9 @@
  * FATAL ONLY WHEN WRONG — each refusal is teachable (what, why, how to fix) and writes nothing:
  *  - a day gone, in the athlete's own zone (`past_date`); a time today gone by (`past_time`); for later today, the main
  *    coach's new workout with no time (`needs_time`) or one less than 15 minutes ahead (`time_too_soon`) — each names
- *    the earliest time that works (design-time.ts; fix wave 3B, B-I1). A "now" design's untimed workout for today is
- *    marked `atNow`: the approve places it at its own moment;
+ *    the earliest time that works (design-time.ts; fix wave 3B, B-I1). A "now" design's workout for today is ALWAYS
+ *    marked `atNow` — the approve places it at its own moment — and a time the coach gave it is its floor (`notBefore`,
+ *    and the op's `time`), one already gone by dropped, never refused (Task 13's fix wave, R1);
  *  - a revision of a workout that isn't there (`not_found`: unknown, archived, another athlete's), that can't change
  *    (`not_editable`: a programme's session — the programme's engine builds it — a completed, skipped or missed one, one
  *    under way), or from a stale base (`stale_base`, saying the current revision);
@@ -107,9 +108,12 @@ import { clockIn, laterTodayRefusal, pastTime } from "../design-time.js";
 /** The one proposal of a main run's design. */
 export const designProposalId = (mainRunId: string): string => `dp-${mainRunId}`;
 
-/** Where a draft goes: a new workout (`atNow`: a "now" design's for today, untimed — placed at the moment of the approve,
- * fix wave 3B, B-I1), or a revision of one from the revision read. */
-export type DocWorkoutTarget = { kind: "new"; date: string; time?: string; atNow?: true } | { kind: "revise"; workoutId: string; baseRev: number };
+/** Where a draft goes: a new workout (`atNow`: a "now" design's for today — placed at the moment of the approve, fix wave
+ * 3B, B-I1 — never before `notBefore`, the time the coach gave it: Task 13's fix wave, R1), or a revision of one from the
+ * revision read. */
+export type DocWorkoutTarget =
+  | { kind: "new"; date: string; time?: string; atNow?: true; notBefore?: string }
+  | { kind: "revise"; workoutId: string; baseRev: number };
 
 /** One designed workout of a proposal (spec §8). Task 8 applies it; the run view and the manifest read it. Its
  * top-level fields are the version the proposal holds: the best-scoring one reviewed so far (design-review.ts). */
@@ -232,7 +236,14 @@ export const proposeWorkout: DesignTool = {
         anyOf: [
           {
             type: "object",
-            properties: { kind: { const: "new" }, date: DATE_SCHEMA, time: { type: "string", description: "HH:MM, the athlete's local time; never one already past (later today: required, 15+ minutes ahead)." } },
+            properties: {
+              kind: { const: "new" },
+              date: DATE_SCHEMA,
+              time: {
+                type: "string",
+                description: "HH:MM, the athlete's local time; never one already past (later today: required, 15+ minutes ahead). Now: leave it out unless the athlete named a time — a now workout is placed when it is approved, and a time given is only its earliest.",
+              },
+            },
             required: ["kind", "date"],
             additionalProperties: false,
           },
@@ -327,7 +338,7 @@ export const proposeWorkout: DesignTool = {
     let date: string;
     let time: string | undefined;
     let base: WorkoutDoc | null = null;
-    /** A "now" design's untimed workout for today: placed at the moment of the approve (B-I1). */
+    /** A "now" design's workout for today: placed at the moment of the approve (B-I1), its time a floor (R1). */
     let atNow = false;
     if (p.target.kind === "new") {
       date = p.target.date;
@@ -338,8 +349,10 @@ export const proposeWorkout: DesignTool = {
       const later = ctx.run.role === "main" && ctx.run.scope.kind === "later_today" ? laterTodayRefusal(date, time, clock) : null;
       if (later) return refuse(later.error, later.why, later.fix);
       const gone = pastTime(date, time, clock);
-      if (gone) return refuse("past_time", gone, "Give a time later today, or leave the time out: an untimed workout goes to the athlete's usual time, or the next free slot once that has passed.");
-      atNow = ctx.run.scope.kind === "now" && !time && date === today;
+      // A now design for today floats: placed when it is approved, its time (if still ahead) only a floor (R1).
+      atNow = ctx.run.role === "main" && ctx.run.scope.kind === "now" && date === today;
+      if (atNow && gone) time = undefined;
+      else if (gone) return refuse("past_time", gone, "Give a time later today, or leave the time out: an untimed workout goes to the athlete's usual time, or the next free slot once that has passed.");
     } else {
       const row = parsedJson(a.extra.targetRow) as TargetRow | null;
       if (!row || row.archived) {
@@ -383,7 +396,9 @@ export const proposeWorkout: DesignTool = {
 
     const draftTarget: DocWorkoutTarget =
       p.target.kind === "new"
-        ? { kind: "new", date, ...(time ? { time } : {}), ...(atNow ? { atNow: true as const } : {}) }
+        ? atNow
+          ? { kind: "new", date, atNow: true as const, ...(time ? { notBefore: time } : {}) }
+          : { kind: "new", date, ...(time ? { time } : {}) }
         : { kind: "revise", workoutId: p.target.workoutId, baseRev: p.target.baseRev };
     const derived = derivedSummary(judged.derived);
     const issues = judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut);

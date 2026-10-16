@@ -477,7 +477,8 @@ describe("propose_workout", () => {
     const op = p.ops[0]!;
     expect(op).toMatchObject({
       kind: "doc_workout",
-      target: { kind: "new", date: TODAY, time: "17:30" },
+      // A now design floats: placed when approved, the coach's time its earliest (Task 13's fix wave, R1).
+      target: { kind: "new", date: TODAY, atNow: true, notBefore: "17:30" },
       date: TODAY,
       time: "17:30",
       changeNote: "First draft.",
