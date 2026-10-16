@@ -1,5 +1,5 @@
 import type { BrowserContext, Locator, Page, TestInfo } from "@playwright/test";
-import { test, expect } from "./fixtures.js";
+import { pinAccountMorning, test, expect } from "./fixtures.js";
 
 /**
  * THE STUDIO, END TO END (Stage 2 spec §14; plan Task 9), on both projects:
@@ -98,10 +98,8 @@ test.describe("on the fixture stack", () => {
   test.slow();
   test.beforeEach(async ({ page, context, baseURL }) => {
     await signIn(context, baseURL);
-    // Mid-morning: "Later today" and today's check stay off the day's edges.
-    const now = new Date();
-    now.setHours(10, 0, 0, 0);
-    await page.clock.install({ time: now });
+    // Mid-morning of the account's own day: "Later today" and today's check stay off the day's edges.
+    await pinAccountMorning(page, context, baseURL);
   });
 
   test("search → a move's detail → Add → the builder → Schedule: it is on the Plan", async ({ page }, info) => {
@@ -143,7 +141,8 @@ test.describe("on the fixture stack", () => {
     // On the Plan, in its week, and it opens as a session of the plan.
     await page.goto(`/plan?week=${mondayOf(day)}`);
     const card = page.getByText(title, { exact: true });
-    await expect(card).toBeVisible();
+    // The Plan reads a dozen things before it shows its week; on a busy runner each took 1–2.7 s.
+    await expect(card).toBeVisible({ timeout: 30_000 });
     await card.click();
     await expect(page.getByRole("dialog").filter({ hasText: title })).toBeVisible();
   });
@@ -217,6 +216,8 @@ test.describe("on the fixture stack", () => {
       await detail.getByRole("button", { name: "Close" }).click();
       await expect(detail).toHaveCount(0);
       await page.getByRole("button", { name: "Clear search" }).click();
+      // Clear goes Back to the home (the list was opened from it): a tap before that Back lands is undone by it.
+      await expect(page).toHaveURL(/\/studio$/);
 
       // A quick start is built on the device, at once, from what the visit read.
       await page.getByRole("link", { name: /^Hip opener/ }).click();

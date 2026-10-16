@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { test, expect } from "./fixtures.js";
+import { pinAccountMorning, test, expect } from "./fixtures.js";
 
 /**
  * Smoke test of the fixture-seeded app across its main screens, on both
@@ -20,9 +20,7 @@ test.beforeEach(async ({ page, context, baseURL }) => {
   // allows; a browser fetch from the page would be refused.
   const login = await context.request.post(`${baseURL}/api/dev/fixture-login`);
   expect(login.ok()).toBeTruthy();
-  const now = new Date();
-  now.setHours(10, 0, 0, 0);
-  await page.clock.install({ time: now });
+  await pinAccountMorning(page, context, baseURL);
 });
 
 /**
@@ -57,7 +55,8 @@ test("Plan renders the week calendar with no COROS warning", async ({ page }) =>
     (r) => new URL(r.url()).pathname === "/api/coros/read-now" && r.request().method() === "POST",
   );
   await page.goto("/plan");
-  await expect(page.getByRole("heading", { name: "Plan", exact: true })).toBeVisible();
+  // The Plan reads a dozen things before it shows; on a busy runner each took 1–2.7 s.
+  await expect(page.getByRole("heading", { name: "Plan", exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.locator(".plan-week-title").first()).toBeVisible();
   // The app-open COROS check resolves silently when connected (the fixture
   // user is). Proven only once it has settled (Audit 2 E2E I2): the read
@@ -100,7 +99,8 @@ test("Moving a workout opens the move sheet", async ({ page }) => {
     const res = await fetch("/api/plan/workouts", { credentials: "include" });
     const body = (await res.json()) as { workouts?: Array<{ id: string; sport: string; origin?: string | null; completionState: string; effectiveDate: string }> } | Array<{ id: string; sport: string; origin?: string | null; completionState: string; effectiveDate: string }>;
     const list = Array.isArray(body) ? body : (body.workouts ?? []);
-    const today = new Date().toISOString().slice(0, 10);
+    // The account's today, as the server keeps it — never the page's own date.
+    const today = ((await (await fetch("/api/plan/today", { credentials: "include" })).json()) as { today: string }).today;
     return list.find((w) => w.sport === "run" && !w.origin && w.completionState === "scheduled" && w.effectiveDate >= today)?.id ?? null;
   });
   expect(runId).not.toBeNull();

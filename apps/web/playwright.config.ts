@@ -21,6 +21,8 @@ export default defineConfig({
   },
   projects: [
     { name: "iphone", use: { ...devices["iPhone 13"] } },
-    { name: "desktop", use: { viewport: { width: 1280, height: 800 } } },
+    // The browser far from the fixture account's zone (Los Angeles): their dates differ 21 hours a day, so a device date
+    // mixed with the account's fails here at almost any hour — not only once the runner has passed midnight UTC.
+    { name: "desktop", use: { viewport: { width: 1280, height: 800 }, timezoneId: "Pacific/Kiritimati" } },
   ],
 });
