@@ -72,6 +72,8 @@ export function toStepResult(v: unknown): CoachRunStepResult {
     status: (typeof r.status === "string" && r.status ? r.status : "active") as CoachRunStatus,
     nextDue: due && at && Number.isFinite(Date.parse(at)) ? { runId: text(due.runId), role: (text(due.role) || "main") as CoachRunDto["role"], at } : null,
     events: toEvents(r.events),
+    // Armed only when the server says so in so many words: anything else is the step itself.
+    ...(r.armed === true ? { armed: true as const } : {}),
   };
 }
 

@@ -1186,6 +1186,9 @@ export interface CoachRunStepResult {
   /** Step again at `at`; null: nothing to step (finished, stopped, or waiting on the athlete). */
   nextDue: { runId: string; role: CoachRunRole; at: string } | null;
   events: CoachRunEventDto[];
+  /** The server steps the run itself (its step alarm): the request only armed it. Read the run until it waits or is
+   * over — each read keeps the server stepping — and never wait on a step. Absent: the step ran in the request. */
+  armed?: true;
 }
 
 /** Arrival watermark for the garden's celebration/beat surfaces — the newest
@@ -2179,11 +2182,14 @@ export const api = {
   coachRunCreate: (body: { scope: CoachRunScope; request?: string | null; rehearsal?: boolean }) =>
     post<CoachRunCreateResult>("/api/coach/runs", body),
   // `signal`: the step loop gives up on a request whose answer is lost (the run reads as not stepping for a while), so a
-  // dropped connection never holds the loop for the whole deadline.
-  coachRunStep: (id: string, signal?: AbortSignal) =>
-    signal
-      ? request<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, { method: "POST", body: "{}", signal: withDeadline(signal, AI_TIMEOUT_MS) }, null)
-      : post<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, {}, AI_TIMEOUT_MS),
+  // dropped connection never holds the loop for the whole deadline. `afterSeq`: the last event held — an armed answer
+  // (the server's step alarm) carries the events after it.
+  coachRunStep: (id: string, signal?: AbortSignal, afterSeq?: number) => {
+    const path = `/api/coach/runs/${encodeURIComponent(id)}/step${afterSeq === undefined ? "" : `?afterSeq=${afterSeq}`}`;
+    return signal
+      ? request<CoachRunStepResult>(path, { method: "POST", body: "{}", signal: withDeadline(signal, AI_TIMEOUT_MS) }, null)
+      : post<CoachRunStepResult>(path, {}, AI_TIMEOUT_MS);
+  },
   coachRun: (id: string, afterSeq = 0) =>
     get<{ run: CoachRunDto; events: CoachRunEventDto[] }>(`/api/coach/runs/${encodeURIComponent(id)}?afterSeq=${afterSeq}`),
   coachRunAnswer: (id: string, body: CoachRunAnswerBody) =>

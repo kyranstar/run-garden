@@ -1,6 +1,7 @@
 /**
- * THE CLIENT STEP LOOP (Stage 3 spec §2; Task 9). The client is the only thing that steps a run — the hourly sweep never
- * calls the model — so while the run can be stepped and the page is visible, this asks for one step at a time:
+ * THE CLIENT STEP LOOP (Stage 3 spec §2; Task 9). The model is called only for a client that is watching — the hourly
+ * sweep never calls it — so while the run can be stepped and the page is visible, this asks for one step at a time (or,
+ * with the server's step alarm on, arms the run once and keeps it going by reading it: ARMED, below):
  *
  *  - It steps again when the step's `nextDue` says so, never before it (correctness M9); a backoff after a refusal or a
  *    failure applies on top.
@@ -18,6 +19,13 @@
  *    up and asked again, never waited on for the whole deadline (the robustness pass).
  *  - An answer it can't read (a newer server, a cut-off body) is a failure like any other: never a loop that stops
  *    with its step shown in flight for good.
+ *  - ARMED (the server's step alarm, COACH_STEP_ALARM): the step's answer says the request only armed the run — the
+ *    server steps it itself, so a closed tab can't kill a step. The loop never waits on a step then: it reads the run
+ *    every POLL_MS while it can be stepped — each read keeps the server's lease, so the coach goes on while someone
+ *    watches — shows it at work (its ●) throughout, and stops when it waits on the athlete or is over. A run the reads
+ *    find quiet (steppable, nothing at work) for STEP_LOST_MS is armed again; reads failing MAX_FAILURES in a row say
+ *    `lost`, and the network back arms it again. Hidden, nothing is read: the server's lease runs out and the coach
+ *    rests after the step at work and at most one more.
  *
  * Who owns the loop: the app's run keeper (run-keeper.tsx) when the app mounts one — the run goes on stepping on any
  * screen while the app is open — else the screen that shows the run, which stops it when it goes.
@@ -31,8 +39,9 @@ import { toRunRead, toStepResult } from "./coach-tolerance.js";
 import { backoffMs, isLive, isSteppable, lastSeq, LOST_RETRY_MS, MAX_FAILURES, mergeEvents, POLL_MS, STEP_LOST_MS, stepDelay, stepErrorKind } from "./run-model.js";
 
 export interface LoopDeps {
-  /** One step; `signal` aborts it (the loop gave up on an answer that was lost). */
-  step: (id: string, signal?: AbortSignal) => Promise<CoachRunStepResult>;
+  /** One step; `signal` aborts it (the loop gave up on an answer that was lost); `afterSeq`, the last event held (an
+   * armed answer carries the events after it). */
+  step: (id: string, signal?: AbortSignal, afterSeq?: number) => Promise<CoachRunStepResult>;
   read: (id: string, afterSeq: number) => Promise<{ run: CoachRunDto; events: CoachRunEventDto[] }>;
   setTimeout: (fn: () => void, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
@@ -50,7 +59,7 @@ export function browserDeps(): LoopDeps {
   const doc = typeof document === "undefined" ? null : document;
   const win = typeof window === "undefined" ? null : window;
   return {
-    step: async (id, signal) => toStepResult(await api.coachRunStep(id, signal)),
+    step: async (id, signal, afterSeq) => toStepResult(await api.coachRunStep(id, signal, afterSeq)),
     read: async (id, afterSeq) => toRunRead(await api.coachRun(id, afterSeq)),
     setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
     clearTimeout: (h) => globalThis.clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -125,6 +134,10 @@ export class CoachRunLoop {
   private notSteppingSince: number | null = null;
   /** While a step is out: give it up (its answer was lost). */
   private giveUp: (() => void) | null = null;
+  /** The server steps the run (an armed answer): the loop reads it, and steps only to arm it again. */
+  private armed = false;
+  /** While armed: since when the reads have found the run steppable with nothing at work (null: at work, or unread). */
+  private quietSince: number | null = null;
 
   constructor(
     readonly runId: string,
@@ -198,7 +211,10 @@ export class CoachRunLoop {
    * behind the step's own seqs, where no later read looks (fix wave 3B, B-I2). The read then steps it.
    */
   setRun(run: CoachRunDto): void {
-    this.set({ run, status: run.status });
+    // Watching the server's steps: this answer says where the run is now (a cancel ends it; an answer arms it again).
+    const watched = this.armed;
+    if (watched) this.endWatch();
+    this.set({ run, status: run.status, ...(watched ? { inFlight: false } : {}) });
     this.clearStep();
     if (isSteppable(run.status)) {
       this.nextDueAt = null;
@@ -274,7 +290,8 @@ export class CoachRunLoop {
   }
 
   private async tick(): Promise<void> {
-    if (this.disposed || this.snap.inFlight || this.snap.gone) return;
+    // Armed, the ● is the server's step, not a request of ours: arming it again is allowed.
+    if (this.disposed || (this.snap.inFlight && !this.armed) || this.snap.gone) return;
     // Lost: only Retry, the network, the page coming back — or the slow retry this tick is — goes on.
     if (this.snap.lost) {
       this.failures = MAX_FAILURES - 1;
@@ -326,7 +343,7 @@ export class CoachRunLoop {
     const since = this.snap.status === "stepping" && this.snap.workingSince !== null ? this.snap.workingSince : this.deps.now();
     this.set({ inFlight: true, workingSince: since });
     this.startPoll();
-    const out = this.deps.step(this.runId, controller.signal);
+    const out = this.deps.step(this.runId, controller.signal, lastSeq(this.snap.events));
     const entry = { done: out, abort: () => controller.abort() };
     IN_FLIGHT.set(this.runId, entry);
     const lost = new Promise<never>((_, reject) => {
@@ -351,6 +368,8 @@ export class CoachRunLoop {
     if (this.disposed) return;
     this.failures = 0;
     this.busy = 0;
+    if (res.armed === true) return this.watch(res);
+    this.armed = false;
     const due = res.nextDue ? Date.parse(res.nextDue.at) : NaN;
     this.nextDueAt = Number.isFinite(due) ? due : null;
     this.set({
@@ -438,6 +457,7 @@ export class CoachRunLoop {
   private async poll(): Promise<void> {
     this.pollTimer = null;
     if (this.disposed || !this.snap.inFlight) return;
+    if (this.armed) return this.pollArmed();
     if (this.deps.visible() && !this.polling) {
       this.polling = true;
       await this.read(false);
@@ -450,6 +470,90 @@ export class CoachRunLoop {
       }
     }
     if (this.snap.inFlight && !this.disposed) this.pollTimer = this.deps.setTimeout(() => void this.poll(), POLL_MS);
+  }
+
+  // ── Armed: the server steps the run ──
+
+  /** The step request armed the run: watch it — at work while it can be stepped — reading it from now on. */
+  private watch(res: CoachRunStepResult): void {
+    this.armed = true;
+    this.idle = 0;
+    this.nextDueAt = null;
+    this.quietSince = null;
+    const steppable = isSteppable(res.status);
+    this.set({
+      inFlight: steppable,
+      status: res.status,
+      events: mergeEvents(this.snap.events, res.events),
+      workingSince: res.status === "stepping" ? (this.snap.workingSince ?? this.deps.now()) : null,
+    });
+    if (steppable) return this.startPoll();
+    // Waiting on the athlete, or over, by the time it was asked: nothing to watch — one read for its figures.
+    this.endWatch();
+    void this.read(true);
+  }
+
+  /** Stop watching: no read scheduled (whoever ends it says what the run is now). */
+  private endWatch(): void {
+    this.armed = false;
+    this.quietSince = null;
+    this.clearPoll();
+  }
+
+  /** Every POLL_MS while armed: a read (not while hidden — the server's lease then runs out, and the coach rests). */
+  private async pollArmed(): Promise<void> {
+    if (this.deps.visible() && !this.polling) {
+      this.polling = true;
+      await this.readArmed();
+      this.polling = false;
+    }
+    if (this.armed && !this.disposed && this.snap.inFlight && this.pollTimer === null) this.pollTimer = this.deps.setTimeout(() => void this.poll(), POLL_MS);
+  }
+
+  /**
+   * One read while armed: the run's status, events and figures. Steppable, it is at work (its ● stays); waiting on the
+   * athlete or over, the watch ends. Quiet for STEP_LOST_MS — steppable, nothing at work: the server's chain stopped (its
+   * alarm gave up, no read reached it in time) — it is armed again. A read that fails counts toward `lost`.
+   */
+  private async readArmed(): Promise<void> {
+    let res: { run: CoachRunDto; events: CoachRunEventDto[] };
+    try {
+      res = await this.deps.read(this.runId, lastSeq(this.snap.events));
+    } catch {
+      if (this.disposed || !this.armed) return;
+      this.failures += 1;
+      if (this.failures >= MAX_FAILURES && !this.snap.lost) this.set({ lost: true });
+      return;
+    }
+    if (this.disposed || !this.armed) return;
+    this.failures = 0;
+    const now = this.deps.now();
+    // (A read can't bring a run that is over back to life: the watch ends with the first read that finds it over, and
+    // a read still out then is dropped above.)
+    const status = res.run.status;
+    const working = status === "stepping";
+    this.set({
+      run: res.run,
+      status,
+      events: mergeEvents(this.snap.events, res.events),
+      lost: false,
+      // The step at work's time, never the run's: from the first read that found it at work.
+      workingSince: working ? (this.snap.status === "stepping" && this.snap.workingSince !== null ? this.snap.workingSince : now) : null,
+    });
+    if (!isSteppable(status)) {
+      this.endWatch();
+      this.set({ inFlight: false });
+      return;
+    }
+    if (working) {
+      this.quietSince = null;
+      return;
+    }
+    this.quietSince ??= now;
+    if (now - this.quietSince >= STEP_LOST_MS) {
+      this.quietSince = null;
+      this.schedule(0);
+    }
   }
 }
 
