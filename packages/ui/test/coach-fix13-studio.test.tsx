@@ -290,7 +290,9 @@ describe("the week's budget (R11, M6, D11, §2.11)", () => {
     await click(button("Plan ahead"), "Plan ahead");
     await click(button("Next 7 days"), "Next 7 days");
     await until(() => text().includes("not enough for this request"), "the line");
-    expect(document.querySelector(".coach-composer-error")!.textContent).toBe("This week's AI budget has $0.40 left — not enough for this request.");
+    // A fact, said in the ink a status is — never the red of an error.
+    expect(document.querySelector(".coach-composer-used")!.textContent).toBe("This week's AI budget has $0.40 left — not enough for this request.");
+    expect(document.querySelector(".coach-composer-error")).toBeNull();
     expect(posts(calls)).toHaveLength(1);
     expect(field()!.value).toBe("plan my week");
     expect(document.querySelector(".coach-run")).toBeNull();

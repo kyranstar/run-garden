@@ -145,6 +145,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const [ignored, setIgnored] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  /** The server's refusal of a start the week can't pay for (409 `week_budget`), in one plain line. */
+  const [budgetLine, setBudgetLine] = useState<string | null>(null);
   /** The run a tap just started: the composer it was tapped in gives way, so the focus goes to the run (B-I9). */
   const [started, setStarted] = useState<string | null>(null);
 
@@ -185,6 +187,7 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
     mutationFn: (scope: CoachRunScope) => api.coachRunCreate({ scope, request: draft.trim() || null }),
     onSuccess: (res) => {
       setStartError(null);
+      setBudgetLine(null);
       // A new run has no trail yet; the live run an `existing` answer opens has one, which its loop reads.
       setShown(res.existing ? { run: res.run } : { run: res.run, events: [] });
       // The words went with the tap; a live run already there answers instead, and they are offered back.
@@ -197,9 +200,11 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
     },
     onError: (e) => {
       // The week can't pay for it (§2.11): one plain line, the words kept in the field.
+      // Said as a fact, in the ink a status is, never as a failure.
       const refused = weekBudgetRefusal(e);
+      setBudgetLine(refused);
       if (refused) {
-        setStartError(refused);
+        setStartError(null);
         void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
       } else if (isNotAvailable(e)) setUnavailable(true);
       else setStartError("Couldn't reach the coach — try again.");
@@ -285,6 +290,7 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
             wordsBack={existingLive ? null : wordsBack}
             budget={budget}
             setCeilingUsd={settings.ceilingsUsd.set}
+            budgetLine={budgetLine}
           />
         </CoachBoundary>
       ) : null}
@@ -343,6 +349,7 @@ export function Composer({
   wordsBack = null,
   budget = null,
   setCeilingUsd = Infinity,
+  budgetLine = null,
 }: {
   draft: string;
   onDraft: (v: string) => void;
@@ -361,6 +368,8 @@ export function Composer({
   budget?: WeekBudget | null;
   /** A set's own spending limit (Settings → Coach): the week is the tighter limit below it. */
   setCeilingUsd?: number;
+  /** A start the week couldn't pay for, in one plain line (409 `week_budget`): a fact, never an error's red. */
+  budgetLine?: string | null;
 }) {
   const id = useId();
   const headingId = useId();
@@ -416,6 +425,11 @@ export function Composer({
           {cost ? <p className="coach-composer-cost">{cost}</p> : null}
         </>
       )}
+      {budgetLine && !usedUp ? (
+        <p className="coach-composer-used" role="status">
+          {budgetLine}
+        </p>
+      ) : null}
       {error ? (
         <p className="coach-composer-error" role="status">
           {error}
