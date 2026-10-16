@@ -1267,7 +1267,7 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     // Two hard days in a row; the main coach asks for Tuesday again.
     const redo = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
     await db.update(schema.coachRuns).set({ state: JSON.stringify({ replaces: two.id }) }).where(eq(schema.coachRuns.id, redo.id));
-    ok((await call("propose_workout", ctxOf(redo, { replaces: two.id, toolUseId: "t-redo" }), { doc: calmDoc({ title: "Tuesday, easier" }), target: { kind: "new", date: day(-2) } })).result);
+    ok((await call("propose_workout", ctxOf(redo, { replaces: two.id, toolUseId: "t-redo" }), { doc: docOf([item("bandRow")], { title: "Tuesday, easier" }), target: { kind: "new", date: day(-2) } })).result);
     const reviewer = await run({ role: "reviewer", parentId: redo.id, scope: { kind: "week" } });
     const reviewOf = { proposalId: designProposalId(main.id), designerRunId: redo.id, toolUseId: "t-redo", round: 1 };
     const { result, count } = await call("read_set", ctxOf(reviewer, { reviewOf }), {});
@@ -1279,14 +1279,16 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
       ["Tuesday power", false, redo.id],
       ["Tuesday, easier", true, null],
     ]);
-    // Judged with the redo in its place: no hard pair, and Tuesday's moves counted once.
+    // Judged with the redo in its place: no hard pair, and none of Monday's moves repeated — the redo uses others (the first
+    // version, which repeats them, is the one it replaces).
     expect(d.hardDaysInARow.count).toBe(0);
-    expect(d.movesRepeatedOnConsecutiveDays).toEqual([{ days: [day(-1), day(-2)], moves: expect.arrayContaining(["bridge"]) }]);
+    expect(d.movesRepeatedOnConsecutiveDays).toEqual([]);
     expect(d.combined.minutes).toBe((d.workouts as Array<{ minutes: number }>).filter((_, i) => i !== 1).reduce((s, w) => s + w.minutes, 0));
     // The reviewer of a first design (no redo) sees nothing replaced: both of Tuesday's count, and so does the hard pair.
     const plain = data((await call("read_set", ctxOf(reviewer, { reviewOf: { ...reviewOf, designerRunId: one.id } }), {})).result);
     for (const w of plain.workouts as Array<Record<string, unknown>>) expect(w).not.toHaveProperty("replacedBy");
     expect(plain.hardDaysInARow.count).toBe(1);
+    expect(plain.movesRepeatedOnConsecutiveDays).toEqual([{ days: [day(-1), day(-2)], moves: expect.arrayContaining(["bridge"]) }]);
   });
 
   it("read_set's description names its marks: yours, firstVersion, underReview, replacedBy (round-2 minors)", () => {
