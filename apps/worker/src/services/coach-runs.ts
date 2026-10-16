@@ -365,8 +365,11 @@ export interface RunState {
   estimate?: SetEstimate;
   /** A designer's finish line, its own words: its set's outcome quotes it when its workout is left out. */
   final?: string;
-  /** A set's designer: the day of its brief — what a stop names when the designer got no draft in (read in SQL). */
+  /** A set's designer: the day of its brief — what a stop names when the designer got no draft in (read in SQL); and
+   * its reviewers' too (fix wave 3B, B-I7: the trail groups a set's lines by it). */
   day?: string;
+  /** A set's designer, once it has drafted, and its reviewers: the workout's title (B-I7, the trail's group heading). */
+  title?: string;
   /** A set's redo designer: the designer whose workout its replaces once reviewed (ToolContext.replaces). */
   replaces?: string;
 }
@@ -477,6 +480,7 @@ export function readRunState(text: string | null): RunState | null {
       : {}),
     ...(typeof s.replaces === "string" ? { replaces: s.replaces } : {}),
     ...(typeof s.day === "string" ? { day: s.day } : {}),
+    ...(typeof s.title === "string" ? { title: s.title } : {}),
     ...(s.estimate && typeof s.estimate === "object" ? { estimate: s.estimate } : {}),
     // (`final` is written once, at a designer's finish, and read in SQL: never read back here.)
   };
@@ -1383,7 +1387,7 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
     }
   }
   const by = waiting.id === root.id ? undefined : { runId: waiting.id, role: waiting.role };
-  await appendEvents(db, userId, root.id, events.map((e) => withBy(e, by)), claimAt);
+  await appendEvents(db, userId, root.id, events.map((e) => withBy(e, by, state)), claimAt);
   waiting.status = status;
   if (terminal) return { kind: "not_waiting", status: treeStatus(root, nodes) };
   return { kind: "ok", run: runDto(root, nodes) };
@@ -1417,10 +1421,16 @@ function askedQuestions(state: RunState, toolUseId: string): string[] {
   });
 }
 
-function withBy(e: NewEvent, by: { runId: string; role: ToolRole } | undefined): NewEvent {
+/**
+ * A sub-run's line on the main trail: who wrote it (`by`) — and, for a set's designer or its reviewer (fix wave 3B,
+ * B-I7; the contract with the run view, which groups a set's lines under their day), the workout's day (`forDay`,
+ * "YYYY-MM-DD") and, once drafted, its title (`forTitle`). The main run's own lines carry none of these.
+ */
+function withBy(e: NewEvent, by: { runId: string; role: ToolRole } | undefined, state: RunState | null): NewEvent {
   if (!by) return e;
   const payload = e.payload && typeof e.payload === "object" && !Array.isArray(e.payload) ? e.payload : e.payload === undefined ? {} : { value: e.payload };
-  return { ...e, payload: { ...(payload as Record<string, unknown>), by } };
+  const forDay = state?.day ? { forDay: state.day, ...(state.title ? { forTitle: state.title } : {}) } : {};
+  return { ...e, payload: { ...(payload as Record<string, unknown>), by, ...forDay } };
 }
 
 function flushResults(state: RunState): void {
@@ -1723,7 +1733,7 @@ export async function runStep(
     due.status = await addSpend(db, due.id, end.costMicros);
   }
   const by = due.id === root.id ? undefined : { runId: due.id, role: due.role };
-  const events = await appendEvents(db, userId, root.id, [...designerLines(due, end, reviewerLines(due, end)).map((e) => withBy(e, by)), ...mainLines], endAt);
+  const events = await appendEvents(db, userId, root.id, [...designerLines(due, end, reviewerLines(due, end)).map((e) => withBy(e, by, state)), ...mainLines], endAt);
   const next = dueRun(nodes, root);
   return okStep({
     status: treeStatus(root, nodes),
@@ -2304,6 +2314,9 @@ async function runTools(
       state.awaiting = call.id;
       state.awaitingKind = "review";
       state.awaitingReview = { proposalId: String(d.proposalId), reviewRunId: String(d.reviewRunId), round: Number(d.round) || 1 };
+      // A set's designer has its workout's title now: its lines, and its reviewer's, carry it (B-I7).
+      const title = (result.receipt as { title?: unknown } | undefined)?.title;
+      if (state.day && typeof title === "string") state.title = title;
       events.push({
         kind: state.awaitingReview.round > 1 ? "revision" : "draft",
         summary: result.summary ?? "A draft, sent for review.",
@@ -2503,6 +2516,8 @@ function reviewHooks(s: StepCtx): ReviewHooks {
         packet,
         reviewOf: { proposalId: req.proposalId, designerRunId: run.id, toolUseId: req.toolUseId, round: req.round },
       });
+      // A set's designer's reviewer: its lines carry the workout's day and the draft's title (B-I7).
+      if (state.day) Object.assign(reviewerState, { day: state.day, title: req.draft.doc.title });
       const inserted = (await s.db.all(sql`
         INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
         VALUES (${req.reviewRunId}, ${s.userId}, ${run.id}, 'reviewer', ${JSON.stringify(run.scope)}, ${root.request}, 'active',

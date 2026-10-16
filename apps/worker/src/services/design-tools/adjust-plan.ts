@@ -26,6 +26,9 @@
  *  - a session a workout of this proposal revises (`target_taken`: propose_workout refuses the other way round);
  *  - a proposal already with the athlete (`proposal_pending`) or closed, a restore under way.
  *
+ * CONDITION CARE (fix wave 3B, B-I6). A skip or a move of a session whose programme cares for an active profile (its
+ * `careProfiles`) carries the advisory `care_session`, in the profile's own words: "This skips a jaw care session."
+ *
  * SANCTIONED REST. A skip is the thread coach's agreed rest, held to its rule: the first sanctioned skip in a rolling
  * week counts as a rest day for the garden, further ones are merely neutral (coach-wake.ts's SKIP TREATMENT; the
  * dossier's "sanctioned rest used n of 1"; garden-sync.ts's mercy day). A skip that takes the week past it carries the
@@ -39,8 +42,9 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals, plannedWorkouts } from "@rg/database";
+import { accountState, coachProposals, plannedWorkouts, programs } from "@rg/database";
 import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle } from "@rg/domain";
+import type { ConditionProfile } from "@rg/exercise-library";
 import { whyNotActionable } from "../coach-apply.js";
 import { horizonDays } from "../design-context.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
@@ -88,6 +92,8 @@ interface Row {
   sidp: string | null;
   spid: string | null;
   lvd: string | null;
+  /** Its programme's care, when it has one (`config.careProfiles`): the profiles its sessions care for. */
+  care: unknown;
 }
 
 const minutesOf = (r: Row): number | null => {
@@ -107,6 +113,25 @@ function snapshotOf(r: Row): PlanRowSnapshot {
     onWatch: hasWatchAddress({ sourceWorkoutId: r.swid, sourceIdInPlan: r.sidp, sourceProgramId: r.spid, lastVerifiedCorosDate: r.lvd }),
   };
 }
+
+/** The first active profile a session's programme cares for (its `careProfiles`), or null: no care, or none on. */
+function careOf(row: Row, active: readonly ConditionProfile[]): ConditionProfile | null {
+  let ids: unknown = row.care;
+  if (typeof ids === "string") {
+    try {
+      ids = JSON.parse(ids);
+    } catch {
+      ids = null;
+    }
+  }
+  if (!Array.isArray(ids)) return null;
+  const listed = ids as unknown[];
+  return active.find((p) => listed.includes(p.id)) ?? null;
+}
+
+/** The profile's own words for its care, as a session's kind: "jaw care" (its care block's label), else "TMJ care". */
+const careWords = (p: ConditionProfile): string =>
+  p.care ? p.care.block.label.replace(/^([A-Z])(?=[a-z])/, (c) => c.toLowerCase()) : `${p.label} care`;
 
 /** A set's main coach briefs; for now or later today it proposes (the review's fix round, 5). */
 const isSet = (ctx: ToolContext): boolean => ctx.run.scope.kind === "week" || ctx.run.scope.kind === "next_n";
@@ -251,7 +276,9 @@ export const adjustPlan: DesignTool = {
       row: sql`(select json_object('id', ${pw.id}, 'date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'title', ${pw.title},
           'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState},
           'archived', ${pw.archivedAt}, 'sourceSec', ${pw.sourceEstimatedDurationSeconds}, 'fallbackSec', ${pw.fallbackEstimatedDurationSeconds},
-          'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate})
+          'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate},
+          'care', (select case when json_valid(${programs.config}) then json_extract(${programs.config}, '$.careProfiles') end
+            from ${programs} where ${programs.id} = ${pw.planId} and ${programs.userId} = ${ctx.userId}))
         from ${pw} where ${pw.id} = ${p.workoutId} and ${pw.userId} = ${ctx.userId})`,
       propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
@@ -314,6 +341,10 @@ export const adjustPlan: DesignTool = {
       op.kind === "skip" && usedThisWeek + inProposal > SANCTIONED_REST_PER_ROLLING_WEEK
         ? [{ code: "sanctioned_rest", message: `This would be the ${ordinal(usedThisWeek + inProposal)} sanctioned skip in a rolling week: only the first counts as a rest day for the garden; further ones are merely neutral.` }]
         : [];
+    // A session of a programme that cares for an active profile (fix wave 3B, B-I6): skipped or moved, said plainly.
+    const cared = careOf(row!, athlete.profiles);
+    const careNote =
+      cared && (op.kind === "skip" || op.kind === "move") ? [{ code: "care_session", message: `This ${op.kind === "skip" ? "skips" : "moves"} a ${careWords(cared)} session.` }] : [];
     const next: PlanAdjustOp = {
       kind: "plan_adjust",
       id,
@@ -321,6 +352,7 @@ export const adjustPlan: DesignTool = {
       why: p.why,
       issues: [
         ...(op.kind === "adjust" && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : []),
+        ...careNote,
         ...restNote,
       ],
       date: snapshot.date,

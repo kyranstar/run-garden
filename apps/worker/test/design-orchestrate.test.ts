@@ -311,6 +311,70 @@ describe("a three-workout set, end to end", () => {
     expect(trail).toContain("The set is designed: 3 workouts.");
   });
 
+  it("every line a set's designer or its reviewer adds names the workout's day, and its title once drafted; the main run's own name neither (fix wave 3B, B-I7)", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const { deps } = scripted([
+      t(planSet([brief("thu", THU), brief("mon", MON)])),
+      t(use("read_day", { date: THU })),
+      ...designed("Thursday hips", THU),
+      ...designed("Monday reset", MON),
+      t(finish("Two short sessions.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    const trail = await events(mainId);
+    type Payload = { by?: { runId: string; role: string }; forDay?: string; forTitle?: string } | null;
+    const payloadOf = (e: (typeof trail)[number]) => e.payload as Payload;
+    const designers = await designersOf(mainId);
+    const dayOfRun = new Map<string, string>([[designers[0]!.id, THU], [designers[1]!.id, MON]]);
+    const titleOfDay = new Map<string, string>([[THU, "Thursday hips"], [MON, "Monday reset"]]);
+    const sub = trail.filter((e) => payloadOf(e)?.by);
+    expect(sub.length).toBeGreaterThan(6);
+    for (const e of sub) {
+      const p = payloadOf(e)!;
+      // A designer's own day; a reviewer's, its designer's (one of the set's two).
+      if (p.by!.role === "designer") expect(p.forDay, e.summary).toBe(dayOfRun.get(p.by!.runId));
+      else expect([THU, MON], e.summary).toContain(p.forDay);
+    }
+    // Each reviewer's lines, and its designer's from its draft on, carry the draft's title.
+    for (const [runId, day] of dayOfRun) {
+      const mine = sub.filter((e) => payloadOf(e)!.by!.runId === runId);
+      const draftAt = mine.findIndex((e) => e.kind === "draft");
+      expect(draftAt, runId).toBeGreaterThanOrEqual(0);
+      // Before the turn that drafted it — its context, a read — there is no title yet (that turn's own words have it).
+      const before = mine.slice(0, draftAt).filter((e) => e.summary === "Read your request and today's plan." || (e.payload as { tool?: string }).tool === "read_day");
+      expect(before.length, runId).toBeGreaterThan(0);
+      expect(before.every((e) => payloadOf(e)!.forTitle === undefined && payloadOf(e)!.forDay === day), runId).toBe(true);
+      for (const e of mine.slice(draftAt)) expect(payloadOf(e)).toMatchObject({ forDay: day, forTitle: titleOfDay.get(day) });
+    }
+    const reviewers = sub.filter((e) => payloadOf(e)!.by!.role === "reviewer");
+    expect(reviewers.length).toBeGreaterThan(0);
+    for (const e of reviewers) {
+      const p = payloadOf(e)!;
+      expect(p.forTitle).toBe(titleOfDay.get(p.forDay!));
+    }
+    // The main run's own lines carry neither.
+    const own = trail.filter((e) => !payloadOf(e)?.by);
+    expect(own.length).toBeGreaterThan(2);
+    for (const e of own) {
+      expect(payloadOf(e)?.forDay, e.summary).toBeUndefined();
+      expect(payloadOf(e)?.forTitle, e.summary).toBeUndefined();
+    }
+  });
+
+  it("a now run's reviewer is no set's: its lines name no day", async () => {
+    const a = await athlete();
+    const runId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: "Something calm." }, NOW)).run.id;
+    const { deps } = scripted([t(use("propose_workout", { doc: calmDoc({ title: "Calm" }), target: { kind: "new", date: TODAY, time: "17:00" } })), t(submit(verdict(4))), t(finish("A calm half hour."))]);
+    expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
+    const trail = await events(runId);
+    expect(trail.some((e) => (e.payload as { by?: { role: string } } | null)?.by?.role === "reviewer")).toBe(true);
+    for (const e of trail) {
+      expect((e.payload as { forDay?: string } | null)?.forDay, e.summary).toBeUndefined();
+      expect((e.payload as { forTitle?: string } | null)?.forTitle, e.summary).toBeUndefined();
+    }
+  });
+
   it("each designer inherits the main run's window, clock, timezone and rehearsal; its ceiling is a workout's", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId, { rehearsal: true });

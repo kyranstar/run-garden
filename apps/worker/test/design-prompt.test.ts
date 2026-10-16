@@ -95,6 +95,8 @@ describe("the prompt text", () => {
     expect(reviewNote).toContain("Only the reviewer has it.");
     expect(roleBlock("main")).toMatch(/you don't call propose_workout/);
     expect(roleBlock("main")).toMatch(/then call finish/);
+    // A condition-care session is the athlete's care: only their own day off moves it (fix wave 3B, B-I6).
+    expect(roleBlock("main")).toContain("Never skip or move a condition-care session unless the athlete asked for that day off.");
     expect(roleBlock("designer")).toContain("propose_workout");
     for (const role of ["main", "designer"] as const) {
       expect(roleBlock(role), role).toContain("revise and call propose_workout again (at most two rounds), then call finish.");

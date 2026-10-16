@@ -428,6 +428,44 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
     expect(op!.row.onWatch).toBe(true);
     expect(op!.issues).toEqual([{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }]);
   });
+
+  describe("a condition-care programme's session (fix wave 3B, B-I6)", () => {
+    /** The fixture's programme, its care switched on for the athlete's active profile (TMJ). */
+    const careFor = async (profiles: string[]) => {
+      const [row] = await db.select({ planId: plannedWorkouts.planId }).from(plannedWorkouts).where(eq(plannedWorkouts.id, rich.outlineToday));
+      await db.update(schema.programs).set({ config: { weeklyGoal: 3, careProfiles: profiles } }).where(eq(schema.programs.id, row!.planId!));
+    };
+    const CARE_SKIP = { code: "care_session", message: "This skips a jaw care session." };
+
+    it("skipping or moving one says so plainly, in the profile's own words — advisory, the change stored — still two statements", async () => {
+      await careFor(["tmj"]);
+      const r = await mainRun();
+      const { res, count } = await adjust(r, skip(rich.outlineToday));
+      const out = ok(res);
+      expect(count).toBe(2);
+      const [op] = await planOps(designProposalId(r.id));
+      expect(op!.issues).toEqual([CARE_SKIP]);
+      expect(out.data).toMatchObject({ issues: [CARE_SKIP] });
+      const moved = await mainRun();
+      ok((await adjust(moved, moveTo(await nextProgramme(), day(-3), "17:30"))).res);
+      expect((await planOps(designProposalId(moved.id)))[0]!.issues).toEqual([{ code: "care_session", message: "This moves a jaw care session." }]);
+    });
+
+    it("a programme with no care switched on, or care for a profile that isn't on, is no care session", async () => {
+      const r = await mainRun();
+      ok((await adjust(r, skip(rich.outlineToday))).res);
+      expect((await planOps(designProposalId(r.id)))[0]!.issues).toEqual([]);
+      await careFor(["someone-elses-profile"]);
+      const s = await mainRun();
+      ok((await adjust(s, skip(rich.outlineToday))).res);
+      expect((await planOps(designProposalId(s.id)))[0]!.issues).toEqual([]);
+      await careFor(["tmj"]);
+      await db.update(schema.userConditions).set({ active: false }).where(eq(schema.userConditions.userId, rich.userId));
+      const t = await mainRun();
+      ok((await adjust(t, skip(rich.outlineToday))).res);
+      expect((await planOps(designProposalId(t.id)))[0]!.issues).toEqual([]);
+    });
+  });
 });
 
 // ── The proposal's fields ───────────────────────────────────────────────────────────────────────────────────────────
