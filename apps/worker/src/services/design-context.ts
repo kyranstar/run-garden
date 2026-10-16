@@ -46,6 +46,7 @@ import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
 // The role caps from the module with no imports (the step loop imports this one: it never imports the loop back).
 import { RUN_LIMITS } from "./design-limits.js";
+import { LATER_LEAD_MIN } from "./design-time.js";
 import { liveMemoryWhere, memoryCore } from "./memory-core.js";
 import { SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
 import type { SystemBlock } from "./llm-messages.js";
@@ -505,7 +506,7 @@ function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: str
     case "now":
       return `one workout, to start now (${time}), unless the request names another day or a planned workout to change`;
     case "later_today":
-      return `one workout, later today — after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}${preferred}) and set it as the target's time`;
+      return `one workout, later today — at least ${LATER_LEAD_MIN} minutes after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}${preferred}) and set it as the target's time`;
     case "week":
       return `this week — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set${setTimes}`;
     case "next_n":

@@ -51,7 +51,7 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, placeNamer, planChangeLines } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, planChangeLines } from "../services/design-manifest.js";
 import { refusal } from "./workouts.js";
 
 type C = Context<AppContext>;
@@ -160,13 +160,15 @@ export async function designedDraft(c: C): Promise<Response> {
   return c.json(draft);
 }
 
-/** A designed proposal's manifest, for its one-proposal read: the workouts' lines (one statement, the places' names —
- * none for a proposal of changes alone) and the changes' (none). */
+/** A designed proposal's manifest, for its one-proposal read: the workouts' lines (one statement, the places' names and
+ * the athlete's settings — each line's time is the one an approve now would use, B-I1 — none for a proposal of changes
+ * alone) and the changes' (none). */
 export async function designedLines(c: C, ops: unknown) {
   if (!coachDesignerEnabled(c.env)) return undefined;
   const workouts = designedOps(ops);
+  const reads = workouts.length > 0 ? await manifestReads(c.get("db"), c.get("userId")) : null;
   return {
-    lines: workouts.length > 0 ? docWorkoutLines(workouts, await placeNamer(c.get("db"), c.get("userId"))) : [],
+    lines: reads ? docWorkoutLines(workouts, reads.placeName, { now: new Date(), prefs: reads.prefs }) : [],
     changes: planChangeLines(Array.isArray(ops) ? ops : []),
   };
 }

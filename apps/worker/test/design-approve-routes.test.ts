@@ -15,7 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, parseStoredWorkoutDoc, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, isWeekend, newId, nowInstant, parseStoredWorkoutDoc, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -426,7 +426,8 @@ describe("GET /api/coach/proposals/:id", () => {
     expect(res.json).toMatchObject({ id, status: "partially_approved" });
     expect(res.json.lines.map((l: { opId: string; title: string; time: string | null; place: string; outcome: { status: string } | null }) => [l.opId, l.title, l.time, l.place, l.outcome?.status ?? null])).toEqual([
       [opIds[0], "A", "07:30", "Home", "applied"],
-      [opIds[1], "B", null, "Home", null],
+      // Untimed: the time its approve would use — the athlete's usual morning that day (B-I1).
+      [opIds[1], "B", isWeekend(addDays(today, 4)) ? prefs.weekendMorningTime : prefs.weekdayMorningTime, "Home", null],
     ]);
     expect(res.total).toBeLessThanOrEqual(5);
   });

@@ -746,7 +746,7 @@ describe("manifest lines", () => {
     // One unreadable review: no mean.
     p.ops[1] = { ...p.ops[1]!, review: { ...REVIEW, scores: {}, notes: {}, note: "The review couldn't be read — the validator's view stands." } };
     statements.length = 0;
-    const lines = docWorkoutLines(p.ops, await placeNamer(db, rich.userId));
+    const lines = docWorkoutLines(p.ops, await placeNamer(db, rich.userId), { now: NOW, prefs });
     expect(statements).toHaveLength(1);
     expect(lines[0]).toEqual({
       opId: opIds[0],
@@ -772,13 +772,14 @@ describe("manifest lines", () => {
       written: null,
     });
     expect(lines[0]!.review!.dimensions).toHaveLength(12);
-    expect(lines[1]).toMatchObject({ title: "At the gym", time: null, effort: "Maintain", place: "Gym", parts: ["Main"], reviewMean: null });
+    // Untimed: the time its approve would use — the athlete's usual time that day (a Saturday morning; B-I1).
+    expect(lines[1]).toMatchObject({ title: "At the gym", time: "08:00", effort: "Maintain", place: "Gym", parts: ["Main"], reviewMean: null });
     // The place, by default-place.ts's one rule: the athlete's own, a preset, "No equipment"; one deleted since, the default.
     const name = await placeNamer(db, rich.userId);
     expect([name(undefined), name(rich.gymId), name("mat"), name("none"), name("a-place-deleted-since")]).toEqual(["Garage", "Gym", "Mat only", "No equipment", "Garage"]);
     // Once decided, each line carries how it ended.
     await approve(id, { opIds: [opIds[0]!] });
-    const after = docWorkoutLines((await proposalOf(id))!.ops, await placeNamer(db, rich.userId));
+    const after = docWorkoutLines((await proposalOf(id))!.ops, await placeNamer(db, rich.userId), { now: NOW, prefs });
     expect(after[0]!.outcome).toMatchObject({ status: "applied", workoutId: expect.any(String) });
   });
 });
@@ -809,7 +810,7 @@ describe("what was written, after Edit before approve", () => {
       `✓ approved — ${p.title}: Sun 17 May · Sunday hips, mine (edited) · ${mine.minutes} min; Sat 16 May · Saturday · ${theirs.minutes} min`,
     ]);
     // The line keeps the coach's proposal, and says what was written beside it.
-    const [line] = docWorkoutLines(p.ops, await placeNamer(db, rich.userId));
+    const [line] = docWorkoutLines(p.ops, await placeNamer(db, rich.userId), { now: NOW, prefs });
     expect(line).toMatchObject({ title: "Friday hips", date: later, time: "17:30" });
     expect(line!.written).toEqual({ date: day(-4), time: "09:00", title: "Sunday hips, mine", minutes: mine.minutes, summary: `Sunday hips, mine · ${mine.minutes} min`, edited: true, moved: true });
     const main = await run({ userId: rich.userId, role: "main", scope: { kind: "now" } });

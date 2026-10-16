@@ -4,7 +4,10 @@
  * (for a week or the next few, designers do: ruling 4). The reviewer never proposes.
  *
  * FATAL ONLY WHEN WRONG — each refusal is teachable (what, why, how to fix) and writes nothing:
- *  - a day gone, in the athlete's own zone (`past_date`);
+ *  - a day gone, in the athlete's own zone (`past_date`); a time today gone by (`past_time`); for later today, the main
+ *    coach's new workout with no time (`needs_time`) or one less than 15 minutes ahead (`time_too_soon`) — each names
+ *    the earliest time that works (design-time.ts; fix wave 3B, B-I1). A "now" design's untimed workout for today is
+ *    marked `atNow`: the approve places it at its own moment;
  *  - a revision of a workout that isn't there (`not_found`: unknown, archived, another athlete's), that can't change
  *    (`not_editable`: a programme's session — the programme's engine builds it — a completed, skipped or missed one, one
  *    under way), or from a stale base (`stale_base`, saying the current revision);
@@ -99,11 +102,14 @@ import {
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, parsedJson, refuse } from "./read-common.js";
 import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
+import { clockIn, laterTodayRefusal, pastTime } from "../design-time.js";
 
 /** The one proposal of a main run's design. */
 export const designProposalId = (mainRunId: string): string => `dp-${mainRunId}`;
 
-export type DocWorkoutTarget = { kind: "new"; date: string; time?: string } | { kind: "revise"; workoutId: string; baseRev: number };
+/** Where a draft goes: a new workout (`atNow`: a "now" design's for today, untimed — placed at the moment of the approve,
+ * fix wave 3B, B-I1), or a revision of one from the revision read. */
+export type DocWorkoutTarget = { kind: "new"; date: string; time?: string; atNow?: true } | { kind: "revise"; workoutId: string; baseRev: number };
 
 /** One designed workout of a proposal (spec §8). Task 8 applies it; the run view and the manifest read it. Its
  * top-level fields are the version the proposal holds: the best-scoring one reviewed so far (design-review.ts). */
@@ -226,7 +232,7 @@ export const proposeWorkout: DesignTool = {
         anyOf: [
           {
             type: "object",
-            properties: { kind: { const: "new" }, date: DATE_SCHEMA, time: { type: "string", description: "HH:MM, the athlete's local time (optional)." } },
+            properties: { kind: { const: "new" }, date: DATE_SCHEMA, time: { type: "string", description: "HH:MM, the athlete's local time; never one already past (later today: required, 15+ minutes ahead)." } },
             required: ["kind", "date"],
             additionalProperties: false,
           },
@@ -320,10 +326,19 @@ export const proposeWorkout: DesignTool = {
     let date: string;
     let time: string | undefined;
     let base: WorkoutDoc | null = null;
+    /** A "now" design's untimed workout for today: placed at the moment of the approve (B-I1). */
+    let atNow = false;
     if (p.target.kind === "new") {
       date = p.target.date;
       time = p.target.time;
       if (date < today) return refuse("past_date", `${date} is before today (${today}) where the athlete is.`, "Propose it for today or a later day.");
+      // Never a time already past (fix wave 3B, B-I1; design-time.ts): later today's needs one 15 minutes ahead.
+      const clock = clockIn(a.athlete.tz, ctx.now);
+      const later = ctx.run.role === "main" && ctx.run.scope.kind === "later_today" ? laterTodayRefusal(date, time, clock) : null;
+      if (later) return refuse(later.error, later.why, later.fix);
+      const gone = pastTime(date, time, clock);
+      if (gone) return refuse("past_time", gone, "Give a time later today, or leave the time out: an untimed workout goes to the athlete's usual time, or the next free slot once that has passed.");
+      atNow = ctx.run.scope.kind === "now" && !time && date === today;
     } else {
       const row = parsedJson(a.extra.targetRow) as TargetRow | null;
       if (!row || row.archived) {
@@ -366,7 +381,9 @@ export const proposeWorkout: DesignTool = {
     }
 
     const draftTarget: DocWorkoutTarget =
-      p.target.kind === "new" ? { kind: "new", date, ...(time ? { time } : {}) } : { kind: "revise", workoutId: p.target.workoutId, baseRev: p.target.baseRev };
+      p.target.kind === "new"
+        ? { kind: "new", date, ...(time ? { time } : {}), ...(atNow ? { atNow: true as const } : {}) }
+        : { kind: "revise", workoutId: p.target.workoutId, baseRev: p.target.baseRev };
     const derived = derivedSummary(judged.derived);
     const issues = judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut);
     const draft: DraftForReview = {

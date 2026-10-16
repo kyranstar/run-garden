@@ -20,8 +20,8 @@
  * line for its skip, move or length, word for word (@rg/domain `describeOps`), and the coach's why.
  */
 import { sql } from "drizzle-orm";
-import { locations } from "@rg/database";
-import { dayLabel, doseSummary, NO_EQUIPMENT_PLACE, type WorkoutItem, type WorkoutPart } from "@rg/domain";
+import { locations, userPreferences } from "@rg/database";
+import { dayLabel, doseSummary, NO_EQUIPMENT_PLACE, userPreferencesSchema, type UserPreferences, type WorkoutItem, type WorkoutPart } from "@rg/domain";
 import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
@@ -30,6 +30,7 @@ import type { DesignedOp, DesignedPlanOp, OpOutcome, PlanOpOutcome, Written } fr
 import { reviewMeanOf } from "./design-orchestrate.js";
 import { REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { acceptedLine, type AcceptedCost } from "./design-review.js";
+import { approveTimeOf } from "./design-time.js";
 import { describeChange, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
@@ -39,7 +40,9 @@ export interface DocWorkoutLine {
   /** A revision's workout. */
   workoutId?: string;
   date: string;
-  /** "HH:MM", or null: placed at the athlete's window. */
+  /** "HH:MM": the time the approve would use now (fix wave 3B, B-I1; design-time.ts `approveTimeOf`) — the coach's, the
+   * moment of the approve for a "now" design, the next quarter hour once today's usual time has gone, else the
+   * athlete's window. Null only when no time is left today for an untimed one. (What an approve wrote is `written`.) */
   time: string | null;
   title: string;
   minutes: number;
@@ -152,17 +155,31 @@ function writtenLine(o: OpOutcome | undefined): DocWorkoutLine["written"] {
   return { ...w, summary: summaryLine(w.title, w.minutes), edited: !!o.edited, moved: !!o.moved };
 }
 
-/** Each op's line, in the proposal's order. */
-export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceNamer): DocWorkoutLine[] {
+/** The clock and the athlete's settings a line's time is read at (the approve's own rule). */
+export interface LineClock {
+  now: Date;
+  prefs: Parameters<typeof approveTimeOf>[2]["prefs"];
+}
+
+/** The time the approve would use for `op` at `at` (see `DocWorkoutLine.time`): a revision's is its workout's. */
+function lineTime(op: DesignedOp, category: string, at: LineClock): string | null {
+  if (op.target.kind !== "new") return op.time ?? null;
+  const placed = approveTimeOf(op.target, category, at);
+  return "refused" in placed ? (op.target.time ?? null) : placed.time;
+}
+
+/** Each op's line, in the proposal's order, its time read at `at`. */
+export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceNamer, at: LineClock): DocWorkoutLine[] {
   return ops.map((op) => {
     const doc = op.doc;
-    const minutes = deriveDoc(doc, EXERCISES).estimatedMinutes;
+    const derived = deriveDoc(doc, EXERCISES);
+    const minutes = derived.estimatedMinutes;
     return {
       opId: opIdOf(op),
       kind: op.target.kind,
       ...(op.target.kind === "revise" ? { workoutId: op.target.workoutId } : {}),
       date: op.date,
-      time: op.time ?? null,
+      time: lineTime(op, derived.category, at),
       title: doc.title,
       minutes,
       summary: summaryLine(doc.title, minutes),
@@ -232,11 +249,28 @@ export function planChangeLines(ops: readonly unknown[]): PlanChangeLine[] {
  * statement: the default place and the athlete's own places' names.
  */
 export async function placeNamer(db: Db, userId: string): Promise<PlaceNamer> {
+  return (await manifestReads(db, userId)).placeName;
+}
+
+/**
+ * What the manifest reads, in ONE statement: the places' names (`placeNamer`) and the athlete's settings, whose
+ * timezone and usual times say the time each line's approve would use (B-I1).
+ */
+export async function manifestReads(db: Db, userId: string): Promise<{ placeName: PlaceNamer; prefs: UserPreferences }> {
   const l = locations;
   const [row] = (await db.all(
     sql`select ${defaultPlaceSql(userId)} as fallback,
-      (select json_group_array(json_object('id', ${l.id}, 'name', ${l.name})) from ${l} where ${l.userId} = ${userId}) as own`,
-  )) as Array<{ fallback: unknown; own: unknown }>;
+      (select json_group_array(json_object('id', ${l.id}, 'name', ${l.name})) from ${l} where ${l.userId} = ${userId}) as own,
+      (select ${userPreferences.prefs} from ${userPreferences} where ${userPreferences.userId} = ${userId}) as prefs`,
+  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown }>;
+  let stored: unknown = {};
+  try {
+    stored = typeof row?.prefs === "string" ? JSON.parse(row.prefs) : (row?.prefs ?? {});
+  } catch {
+    // Settings that don't read: the defaults, as a preferences read with nothing stored.
+  }
+  const parsed = userPreferencesSchema.safeParse(stored ?? {});
+  const prefs = parsed.success ? parsed.data : userPreferencesSchema.parse({});
   const fallback = defaultFromRow(row?.fallback ?? null).name;
   const own = new Map<string, string>();
   try {
@@ -245,11 +279,12 @@ export async function placeNamer(db: Db, userId: string): Promise<PlaceNamer> {
   } catch {
     // No places to name: every document is at the default.
   }
-  return (id) => {
+  const placeName: PlaceNamer = (id) => {
     if (!id) return fallback;
     const mine = own.get(id);
     if (mine !== undefined) return mine;
     if (id === NO_EQUIPMENT_PLACE) return noEquipmentPlace().name;
     return LOCATION_PRESETS.find((p) => p.id === id)?.name ?? fallback;
   };
+  return { placeName, prefs };
 }

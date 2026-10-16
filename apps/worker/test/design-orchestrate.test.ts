@@ -1577,7 +1577,7 @@ describe("fix round 1 — a newer plan supersedes an older one's days", () => {
     expect((await proposalOf(setId))!.status).toBe("pending");
     // A now run this morning: a second session today — the evening one stands.
     const morningId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: "Something calm now." }, new Date(NOW.getTime() + 200_000))).run.id;
-    const morning = scripted([t(at("Calm now", TODAY, "09:30")), t(submit(verdict(4))), t(finish("A calm half hour."))]);
+    const morning = scripted([t(at("Calm now", TODAY, "09:45")), t(submit(verdict(4))), t(finish("A calm half hour."))]);
     expect((await drive(a.userId, morningId, morning.deps, { from: 300 })).at(-1)!.status).toBe("finished");
     expect((await proposalOf(morningId))!.status).toBe("pending");
     let older = (await proposalOf(setId))!;
@@ -1592,7 +1592,7 @@ describe("fix round 1 — a newer plan supersedes an older one's days", () => {
     expect(today!.outcome).toEqual({ status: "superseded", at: expect.any(String), reason: SUPERSEDED_REASON, by: designProposalId(lateId) });
     expect(mon!.outcome).toBeUndefined();
     expect(SUPERSEDED_REASON).toBe("a newer plan covers this session");
-    // The morning's own proposal is newer than the set, older than the late one, and its 09:30 is 6½ hours from 16:00.
+    // The morning's own proposal is newer than the set, older than the late one, and its 09:45 (never a time already past: B-I1) is 6¼ hours from 16:00.
     expect(((await proposalOf(morningId))!.ops as Array<{ outcome?: unknown }>)[0]!.outcome).toBeUndefined();
   });
 

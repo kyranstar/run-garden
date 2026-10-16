@@ -17,8 +17,14 @@
  * apply: a day gone (`past_date`), a base changed since the coach read it (`stale_revision`), a resolved row or a
  * programme's session (`not_editable`, with its `cause`), a workout removed since (`not_found`), a hard rule the day now
  * refuses or a move the library no longer has (`invalid_doc`, with the validator's errors), a run (`run_unsupported`),
- * a restore under way (`restore_in_progress`). Each `why` is plain words; the codes are for the UI to word. A refused op
+ * a restore under way (`restore_in_progress`), and the coach's time for today gone by — or no time left today for an
+ * untimed one (`past_time`; fix wave 3B, B-I1). Each `why` is plain words; the codes are for the UI to word. A refused op
  * stays open: the day can change, and the athlete can edit it.
+ *
+ * NEVER A TIME ALREADY PAST (B-I1; design-time.ts `approveTimeOf`). The coach's new workout for today with no time is
+ * placed at the moment of the approve rounded up to five minutes (a "now" design's, `atNow`), or — once the athlete's
+ * usual time has gone by — at the next quarter hour from now, pinned as a time asked for; a later day's, or today's
+ * while the usual time is ahead, goes to the athlete's window as before. The manifest's line says the same time.
  *
  * WHAT IS KEPT. Each op keeps its outcome (`outcome`) for read_proposals and the UI: applied — its workout, the
  * revision written, and what was WRITTEN (`written`: its day, time, title and minutes, which after an edit are the
@@ -87,7 +93,7 @@
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { coachMessages, coachProposals, plannedWorkouts, scheduleOverrides, workoutDocRevisions } from "@rg/database";
-import { appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
@@ -111,6 +117,7 @@ import {
   type DocWriteSource,
 } from "./doc-workouts.js";
 import { receiptLine } from "./design-manifest.js";
+import { approveTimeOf } from "./design-time.js";
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
 import { RestoreInProgressError } from "./programs.js";
 import { describeChange, isDesignedOp, isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp, type PlanChange } from "./proposal-kinds.js";
@@ -119,7 +126,7 @@ import { FROZEN_STATES } from "./workout-doc-store.js";
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Why the server refused an op today: the Studio's own error names. */
-export type RefusalCode = "past_date" | "stale_revision" | "not_editable" | "not_found" | "invalid_doc" | "run_unsupported" | "restore_in_progress" | "race";
+export type RefusalCode = "past_date" | "past_time" | "stale_revision" | "not_editable" | "not_found" | "invalid_doc" | "run_unsupported" | "restore_in_progress" | "race";
 
 /** Why a planned workout can't change (`not_editable`), as the Studio's own rules say it — and, for a change's length,
  * that a Studio workout's is its document's (`studio`). */
@@ -348,7 +355,8 @@ export function opCostOf(op: Pick<DocWorkoutOp, "target"> | Pick<PlanAdjustOp, "
   if ("op" in op) return planOpCostOf(op, dayRows);
   if (op.target.kind === "revise") return REVISE_BASE + dayRows;
   const time = edit && edit.time !== undefined ? edit.time : op.target.time;
-  // The collision pass may move every unpinned session of the day, the new one with them.
+  // The collision pass may move every unpinned session of the day, the new one with them. An untimed one the approve
+  // places at a time (B-I1) costs the less of the two: the declared cost stays an upper bound.
   return time ? CREATE_AT_TIME_COST : CREATE_PLACED_BASE + dayRows + 1;
 }
 
@@ -499,8 +507,10 @@ function madeOf(op: DesignedOp, plan: Plan, at: string): Extract<OpOutcome, { st
   if (target.kind === "revise" && writer === undefined) return null;
   const d = row.dto;
   // As `applyOp` decides it: another day, or a time asked for other than the coach's (a placed workout's time is the
-  // window's, asked for by no one).
-  const moved = target.kind === "new" && movedFrom(target, d.date, row.pinned ? d.time : null);
+  // window's, asked for by no one). An untimed target for a day the approve could have run on — up to tomorrow in UTC,
+  // a day's margin for any zone — may carry the approve's own placement, pinned (B-I1): only its day says it moved.
+  const placedMaybe = target.kind === "new" && target.time === undefined && target.date <= addDays(at.slice(0, 10), 1);
+  const moved = target.kind === "new" && movedFrom(target, d.date, row.pinned && !placedMaybe ? d.time : null);
   return {
     status: "applied",
     at,
@@ -964,9 +974,18 @@ async function applyOp(
   try {
     if (target.kind === "new") {
       date = mine?.date ?? target.date;
-      const time = mine && mine.time !== undefined ? mine.time : (target.time ?? null);
+      const asked = mine && mine.time !== undefined ? mine.time : (target.time ?? null);
       // The athlete chose another day or time than the coach's.
-      const moved = movedFrom(target, date, time);
+      const moved = movedFrom(target, date, asked);
+      // The coach's own day and time are never a time already past (fix wave 3B, B-I1; design-time.ts): untimed today,
+      // placed now (a "now" design) or at the next quarter hour once the usual time has gone; a time gone by refused.
+      // The athlete's own version (Edit before approve) is placed as the Studio's save places it.
+      let time = asked;
+      if (!mine) {
+        const placed = approveTimeOf(target, deriveDoc(op.doc, EXERCISES).category, { now: new Date(ctx.now), prefs: ctx.prefs });
+        if ("refused" in placed) return { refusal: { error: "past_time", why: placed.refused }, error: new Error("past_time") };
+        time = placed.pinned ? placed.time : null;
+      }
       const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
       return { applied: { workout: made.workout, warnings: made.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) } };
     }

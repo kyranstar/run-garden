@@ -6,11 +6,14 @@
  * renders as text. Synthetic data only.
  */
 import { describe, expect, it } from "vitest";
+import { DEFAULT_USER_PREFERENCES } from "@rg/domain";
 import { docWorkoutLines, planChangeLines } from "../src/services/design-manifest.js";
 import type { DesignedOp } from "../src/services/design-approve.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 
 const place = () => "Home";
+/** The clock a line's time is read at (B-I1): these lines are about their reviews. */
+const CLOCK = { now: new Date("2026-10-14T08:00:00.000Z"), prefs: DEFAULT_USER_PREFERENCES };
 
 function op(over: Partial<DesignedOp> = {}): DesignedOp {
   return {
@@ -46,6 +49,7 @@ describe("a designed workout's line: its review and its costs", () => {
         }),
       ],
       place,
+      CLOCK,
     );
     expect(line!.review).toEqual({
       dimensions: [
@@ -71,6 +75,7 @@ describe("a designed workout's line: its review and its costs", () => {
         op({ toolUseId: "toolu_2", by: { runId: "run-d2", role: "designer" } }),
       ],
       place,
+      CLOCK,
     );
     expect(unread!.review).toMatchObject({ dimensions: [], note: "The review couldn't be read — the validator's view stands." });
     expect(none!.review).toBeNull();
@@ -96,7 +101,7 @@ describe("a designed workout's line: its review and its costs", () => {
   });
 
   it("a dimension the rubric no longer has keeps its id as its label, after the rubric's own", () => {
-    const [line] = docWorkoutLines([op({ review: { scores: { pace: 3, intent: 5 }, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [] } })], place);
+    const [line] = docWorkoutLines([op({ review: { scores: { pace: 3, intent: 5 }, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [] } })], place, CLOCK);
     expect(line!.review!.dimensions).toEqual([
       { id: "intent", label: "Intent clarity", score: 5, note: null },
       { id: "pace", label: "pace", score: 3, note: null },
