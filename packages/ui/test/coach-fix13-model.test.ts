@@ -28,6 +28,11 @@ describe("a set's rows by day (D7)", () => {
     expect(said(rows)).toEqual(["no-day", "(Sun run)", "mon-am", "(Mon noon run)", "mon-pm", "(Mon late run)", "skip-tue", "(Tue untimed)", "wed", "(Thu run)"]);
   });
 
+  it("on one day, an untimed session after the timed ones, whatever order they came in", () => {
+    const rows = cardRows([], [line("mon", "2026-10-19", "18:00")], [ctx("Sun untimed", "2026-10-18", null), ctx("Sun run", "2026-10-18", "08:00")]);
+    expect(said(rows)).toEqual(["(Sun run)", "(Sun untimed)", "mon"]);
+  });
+
   it("with no context, the rows are as they were: by day, a set's changes among its workouts", () => {
     const rows = cardRows([change("skip-fri", "2026-10-16")], [line("thu", "2026-10-15", "18:00"), line("sat", "2026-10-17", "09:00")], []);
     expect(said(rows)).toEqual(["thu", "skip-fri", "sat"]);

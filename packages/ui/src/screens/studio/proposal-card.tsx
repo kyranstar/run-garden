@@ -107,7 +107,9 @@ export function cardRows(changes: readonly DesignChangeLineDto[], lines: readonl
     ...lines.map((l) => ({ date: l.date, change: null, line: l, context: null }) as const),
   ].sort((a, b) => a.date.localeCompare(b.date));
   const timeOf = (r: CardRow): string | null => r.change?.time ?? r.line?.time ?? null;
-  const others = [...context].sort((a, b) => a.date.localeCompare(b.date) || (a.time ?? "~").localeCompare(b.time ?? "~"));
+  // By day, then time, an untimed row after the timed ones: compared as written ("~" after every digit), never by locale.
+  const order = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+  const others = [...context].sort((a, b) => order(a.date, b.date) || order(a.time ?? "~", b.time ?? "~"));
   for (const x of others) {
     const at = rows.findIndex((r) => r.context === null && (r.date > x.date || (r.date === x.date && x.time !== null && (timeOf(r) ?? "") > x.time)));
     const row: CardRow = { date: x.date, change: null, line: null, context: x };
