@@ -348,7 +348,104 @@ describe("the question", () => {
   });
 });
 
+describe("today's condition check, the other ways", () => {
+  const check = ev(2, "question", "The coach asks you to log today's condition check.", { tool: "ask_athlete", data: { check: "condition", why: "Landing drills need it." } });
+
+  it("Skip posts dismissed", async () => {
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: run(), events: [check], proposal: null },
+      "POST /api/coach/runs/run-1/answer": () => json({ run: run({ status: "active" }) }),
+    });
+    mount();
+    await until(() => text().includes("Landing drills need it."), "the why");
+    await click(button("Skip"), "Skip");
+    await until(() => posts(calls, "/api/coach/runs/run-1/answer").length === 1, "the skip");
+    expect(posts(calls, "/api/coach/runs/run-1/answer")[0]!.body).toEqual({ dismissed: true });
+  });
+
+  it("a saved check with no id answers nothing, and says so", async () => {
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: run(), events: [check], proposal: null },
+      "POST /api/conditions/checks": (body: any) => json({ check: { profileId: body.profileId, date: TODAY, value: body.value, feelingOff: false } }),
+      "POST /api/coach/runs/run-1/answer": () => json({ run: run({ status: "active" }) }),
+    });
+    mount();
+    await until(() => text().includes("Landing drills need it."), "the why");
+    await click(document.querySelector(".condition-chip"), "the check's chip");
+    const sheet = document.querySelector('[role="dialog"]')!;
+    await click([...sheet.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === "1"), "a reading");
+    await click(button("Save", sheet), "Save");
+    await until(() => text().includes("Couldn't save that — try again."), "the line");
+    expect(posts(calls, "/api/coach/runs/run-1/answer")).toHaveLength(0);
+  });
+});
+
+describe("Cancel", () => {
+  it("under $0.50 it cancels at once; above, it asks first", async () => {
+    const cheap = run({ status: "active", costUsd: 0.2 });
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: cheap, events: [ev(1, "note", "Read the request.")], proposal: null },
+      "POST /api/coach/runs/run-1/cancel": () => json({ run: run({ status: "cancelled", costUsd: 0.2 }) }),
+    });
+    mount({ loop: quietLoop(() => cheap) });
+    await until(() => !!button("Cancel"), "Cancel");
+    await click(button("Cancel"), "Cancel");
+    await until(() => posts(calls, "/api/coach/runs/run-1/cancel").length === 1, "the cancel");
+    await until(() => text().includes("Coach · cancelled"), "cancelled");
+    act(() => root?.unmount());
+    host?.remove();
+
+    const dear = run({ status: "active", costUsd: 0.62 });
+    const calls2 = serve({
+      "GET /api/coach/runs/current": { run: dear, events: [ev(1, "note", "Read the request.")], proposal: null },
+      "POST /api/coach/runs/run-1/cancel": () => json({ run: run({ status: "cancelled", costUsd: 0.62 }) }),
+    });
+    mount({ loop: quietLoop(() => dear) });
+    await until(() => !!button("Cancel"), "Cancel");
+    await click(button("Cancel"), "Cancel");
+    expect(posts(calls2, "/api/coach/runs/run-1/cancel")).toHaveLength(0);
+    const dialog = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.textContent?.includes("Stop the coach?"));
+    expect(dialog?.textContent).toContain("$0.62");
+    await click(button("Stop it", dialog!), "Stop it");
+    await until(() => posts(calls2, "/api/coach/runs/run-1/cancel").length === 1, "the cancel");
+  });
+});
+
 // ── When it stopped ─────────────────────────────────────────────────────────
+
+describe("a run that stopped with what was reviewed", () => {
+  it("the failure line first, then the suggestion with its stop's note — no tiles", async () => {
+    const stopped = run({ status: "stopped_cap", error: "run_ceiling", proposalId: null, finishedAt: `${TODAY}T08:05:00.000Z` });
+    const note = "The coach stopped at this design's spending limit; this is what had been reviewed by then.";
+    serve({
+      "GET /api/coach/runs/current": {
+        run: stopped,
+        events: [ev(1, "note", "This design reached its spending limit ($1.50) — the coach stopped here."), ev(2, "note", "Proposed what had been reviewed before the stop.", { proposalId: "dp-run-1" })],
+        proposal: { id: "dp-run-1", status: "pending", flags: [note] },
+      },
+      "GET /api/coach/proposals/dp-run-1": {
+        id: "dp-run-1",
+        status: "pending",
+        resolvedAt: null,
+        lines: [
+          {
+            opId: "op-a", kind: "new", date: TODAY, time: null, title: "Hips, reviewed", minutes: 20, summary: "Hips, reviewed · 20 min", effort: "Maintain", place: "Home",
+            parts: ["Main"], detail: [], reviewMean: 4.5, review: null, issues: [], outcome: null, written: null,
+          },
+        ],
+        changes: [],
+      },
+    });
+    mount({ loop: quietLoop(() => stopped) });
+    await until(() => text().includes("Hips, reviewed"), "the card");
+    const failure = document.querySelector(".coach-run-failure")!;
+    const card = document.querySelector(".coach-pc")!;
+    expect(failure.textContent).toBe("This design reached its spending limit. Start a new one when you're ready.");
+    expect(failure.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.textContent).toContain(note);
+    expect(document.querySelector(".coach-fallback")).toBeNull();
+  });
+});
 
 describe("ways to train now", () => {
   it("out of credits, nothing proposed: the pinned words over the programme session, a template and a quick start", async () => {

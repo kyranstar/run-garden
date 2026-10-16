@@ -214,6 +214,21 @@ describe("the step loop", () => {
     expect(loop.snapshot).toMatchObject({ lost: false, status: "finished" });
   });
 
+  it("Retry starts the count again: one more failure backs off, it isn't lost at once", async () => {
+    const down = () => new ApiError(503, null);
+    const h = harness({ steps: [down(), down(), down(), down(), down(), step("finished", [], null)] });
+    const loop = start(h);
+    await h.clock.advance(60_000);
+    expect(loop.snapshot.lost).toBe(true);
+    loop.retry();
+    await h.clock.advance(10);
+    expect(h.calls.steps).toHaveLength(MAX_FAILURES + 1);
+    expect(loop.snapshot.lost).toBe(false);
+    await h.clock.advance(1_000);
+    expect(h.calls.steps).toHaveLength(MAX_FAILURES + 2);
+    expect(loop.snapshot.status).toBe("finished");
+  });
+
   it("a failure after a good step starts the count again", async () => {
     const down = () => new ApiError(502, null);
     const h = harness({ steps: [down(), down(), down(), step("active", [], 0), down(), down(), down(), step("finished", [], null)] });
@@ -316,6 +331,8 @@ describe("the step loop", () => {
     const loop = start(h);
     await h.clock.advance(10);
     loop.dispose();
+    // No timer is left behind at all, not even one that would find the loop gone.
+    expect(h.clock.pending()).toBe(0);
     await h.clock.advance(60_000);
     expect(h.calls.steps).toHaveLength(1);
     expect(h.clock.pending()).toBe(0);

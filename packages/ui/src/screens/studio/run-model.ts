@@ -235,7 +235,13 @@ export function detailOf(line: RunLine): DetailSection[] {
     if (prov && typeof prov.source === "string") back.push({ key: "From", value: clip(prov.source) });
     if (Array.isArray(p.missing) && p.missing.length > 0) back.push({ key: "Missing", value: valueWords(p.missing) });
     if (typeof p.error === "string") back.push({ key: "Why not", value: keyWords(p.error) });
-    if (p.receipt !== undefined) back.push(...rowsOf(p.receipt));
+    const receipt = record(p.receipt);
+    const scores = record(receipt?.scores);
+    if (receipt && scores) {
+      // A review's receipt: every score its own row ("Sequencing: 4 of 5"), then the rest of it.
+      for (const [dim, score] of Object.entries(scores)) back.push({ key: keyWords(dim), value: typeof score === "number" ? `${score} of 5` : valueWords(score) });
+      back.push(...rowsOf(Object.fromEntries(Object.entries(receipt).filter(([k]) => k !== "scores"))));
+    } else if (p.receipt !== undefined) back.push(...rowsOf(p.receipt));
     if (p.answers !== undefined) back.push({ key: "Your answer", value: valueWords(p.answers) });
     if (p.text !== undefined) back.push({ key: "In full", value: valueWords(p.text) });
     if (p.set !== undefined) back.push({ key: "The set", value: valueWords(p.set) });
@@ -243,7 +249,9 @@ export function detailOf(line: RunLine): DetailSection[] {
       const data = record(p.data);
       if (data) back.push(...rowsOf(data));
     }
-    if (back.length > 0) out.push({ title: e.kind === "question" ? "The question" : "Came back", rows: back.slice(0, DETAIL_ROWS_MAX) });
+    // A review's scores come whole, the cap on top of them.
+    const cap = DETAIL_ROWS_MAX + (scores ? Object.keys(scores).length : 0);
+    if (back.length > 0) out.push({ title: e.kind === "question" ? "The question" : "Came back", rows: back.slice(0, cap) });
   }
   return out;
 }

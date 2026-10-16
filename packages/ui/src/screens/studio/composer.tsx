@@ -180,7 +180,9 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
         />
       ) : null}
       {failure && (proposalId !== null || tilesReady) ? <StoppedLine failure={failure} proposed={proposalId !== null} tiles={tiles} /> : null}
-      {proposalId && over ? <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} /> : null}
+      {/* Whatever the run's status (fix A2): a suggestion the athlete can't decide yet (unreviewed while the coach works,
+          closed with a cancel) is no card — the card hides it. */}
+      {proposalId ? <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} /> : null}
     </div>
   );
 }

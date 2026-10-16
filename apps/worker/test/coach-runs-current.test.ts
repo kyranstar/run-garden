@@ -215,6 +215,21 @@ describe("GET /api/coach/runs/current", () => {
     expect((await current()).body.run.id).toBe(live);
   });
 
+  it("a live run comes first even when a run over with an open suggestion is newer", async () => {
+    const live = await run({ status: "waiting_athlete" });
+    const newer = await run({ status: "finished" });
+    await proposal(newer, "pending", [null]);
+    expect((await current()).body.run.id).toBe(live);
+  });
+
+  it("a live run's suggestion not yet the athlete's (unreviewed while it works) is no proposal", async () => {
+    const live = await run({ status: "active" });
+    await proposal(live, "unreviewed", [null]);
+    const res = await current();
+    expect(res.body.run.id).toBe(live);
+    expect(res.body.proposal).toBeNull();
+  });
+
   it("never a rehearsal: neither its live run nor its proposal", async () => {
     const live = await run({ status: "active", rehearsal: true });
     expect((await current()).body).toEqual({ run: null });
@@ -270,6 +285,12 @@ describe("the run's figures", () => {
     await db.delete(schema.coachRuns);
     const now = await run({ status: "active" });
     expect((await current()).body.run).toMatchObject({ id: now, estimateUsd: null, ceilingUsd: 1.5 });
+  });
+
+  it("a new run's answer carries its ceiling", async () => {
+    const app = mountRoutes(db, "/api/coach/runs", makeCoachRunRoutes(deps));
+    const res = await app.request("/api/coach/runs", { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify({ scope: { kind: "week" } }) }, ON);
+    expect(((await res.json()) as { run: unknown }).run).toMatchObject({ status: "active", estimateUsd: null, ceilingUsd: 6 });
   });
 
   it("a run's own read carries them too", async () => {

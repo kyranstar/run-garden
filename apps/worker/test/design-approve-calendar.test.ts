@@ -229,6 +229,23 @@ describe("the calendar's step after a designed approve", () => {
     expect(opIds).toHaveLength(3);
   });
 
+  it("a chunk with room left that still leaves an op remaining books nothing: the step is the loop's last request's", async () => {
+    // A timed workout (16) leaves 22; a workout placed on a day of six sessions declares 24 and waits for the next request.
+    const crowded = addDays(today, 5);
+    await busyAccount([crowded]);
+    await syncCalendar(db, makeEnv(), userId);
+    google.inserted.length = 0;
+    const { id, opIds } = await designed([
+      { doc: calmDoc({ title: "Timed" }), target: { kind: "new", date: addDays(today, 2), time: "17:30" } },
+      { doc: calmDoc({ title: "Placed" }), target: { kind: "new", date: crowded } },
+    ]);
+    const first = await invoke(`/api/coach/proposals/${id}/approve`, {});
+    expect(first.json.remaining).toEqual([opIds[1]]);
+    expect(calendarOpsFitting(REQUEST_BUDGET - APPROVE_FIXED - 16)).toBeGreaterThan(0);
+    expect(first.waited).toBe(0);
+    expect(google.inserted).toEqual([]);
+  });
+
   it("a request whose ops filled its room books nothing — the half-hourly reconcile does", async () => {
     // Six sessions on the day: a workout placed there declares its base and every one its collision pass could move, so
     // nothing is left for a calendar op.

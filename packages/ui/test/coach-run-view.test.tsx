@@ -114,10 +114,12 @@ describe("the run view, by status", () => {
     expect(html).not.toContain('placeholder="Or in your own words"');
   });
 
-  it("finished: done, no Cancel, no question", () => {
-    const { words } = view(run({ status: "finished" }), [...trail, ev(6, "note", "The coach finished.")]);
+  it("finished: done, no Cancel, no question — even one asked earlier on its trail", () => {
+    const { html, words } = view(run({ status: "finished" }), [...trail, question, ev(6, "note", "You answered: tight"), ev(7, "note", "The coach finished.")]);
     expect(words).toContain("Coach · done");
     expect(words).not.toContain("Cancel");
+    expect(html).not.toContain("coach-ask");
+    expect(html).not.toContain('placeholder="Or in your own words"');
   });
 
   it("failed for credits, the week's cap, the gateway; stopped at its own limit; expired; cancelled", () => {

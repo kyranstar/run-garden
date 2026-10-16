@@ -152,6 +152,31 @@ describe("the trail", () => {
     for (const s of sections) for (const r of s.rows) expect(r.value).not.toMatch(/[{}"]/);
   });
 
+  it("a review's line opens to every score, one a row", () => {
+    const [line] = runLines([
+      ev(1, "review", "Review — 4.9 avg", {
+        receipt: { round: 1, mean: 4.92, scores: { intent: 5, sequencing: 4, condition_safety: 5 }, mustFix: 0 },
+        by: { runId: "rv-1", role: "reviewer" },
+      }),
+    ]);
+    const rows = detailOf(line!)[0]!.rows;
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { key: "Intent", value: "5 of 5" },
+        { key: "Sequencing", value: "4 of 5" },
+        { key: "Condition safety", value: "5 of 5" },
+        { key: "Mean", value: "4.92" },
+      ]),
+    );
+    expect(rows.some((r) => r.key === "Scores")).toBe(false);
+    // A whole rubric's twelve scores, and the mean after them.
+    const twelve = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`dimension_${i + 1}`, 5]));
+    const [full] = runLines([ev(2, "review", "Review — 5 avg", { receipt: { round: 1, mean: 5, scores: twelve, mustFix: 0 } })]);
+    const fullRows = detailOf(full!)[0]!.rows;
+    expect(fullRows.filter((r) => r.value === "5 of 5")).toHaveLength(12);
+    expect(fullRows.some((r) => r.key === "Mean")).toBe(true);
+  });
+
   it("marked text reads as its text; a truncated payload says what it holds", () => {
     const [line] = runLines([ev(1, "tool_result", "Read history", { tool: "read_history", input: { note: { text: "my knee", untrusted: true } }, ok: true })]);
     expect(detailOf(line!)[0]!.rows).toEqual([{ key: "Note", value: "my knee" }]);
