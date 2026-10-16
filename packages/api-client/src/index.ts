@@ -7,6 +7,7 @@ import type {
   GardenEvent,
   GardenWeatherState,
   LiftingPlan,
+  ObjectiveBoardDto,
   ObjectiveCreate,
   ObjectiveDto,
   ObjectiveProgressDto,
@@ -2397,6 +2398,11 @@ export const api = {
     put<{ objective: ObjectiveDto }>(`/api/objectives/${encodeURIComponent(id)}`, patch),
   /** Every key result measured from logged data, in its own unit too. 404 for another account's. */
   objectiveProgress: (id: string) => get<ObjectiveProgressDto>(`/api/objectives/${encodeURIComponent(id)}/progress`),
+  /**
+   * The objectives board (Stage 3 Task 11): every objective but a dropped one, each key result measured with its best
+   * ever, the workouts that served it, its streak of weeks and the coach's latest line — one read. 404 with the coach off.
+   */
+  objectiveBoard: () => get<ObjectiveBoardDto>("/api/objectives/board"),
 };
 
 /** Exact shape of `GET /api/sessions/:workoutId/review-basis` (services/session-review-basis.ts). */

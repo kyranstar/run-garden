@@ -32,6 +32,7 @@ import { libraryRoutes } from "./routes/library.js";
 import { conditionSettingsRoutes } from "./routes/conditions.js";
 import { placeRoutes } from "./routes/places.js";
 import { objectiveRoutes, profileRoutes } from "./routes/profile.js";
+import { objectiveBoardRoutes } from "./routes/objectives-board.js";
 import { importRoutes } from "./routes/imports.js";
 import { lifeosRoutes } from "./routes/lifeos.js";
 import { workoutRoutes } from "./routes/workouts.js";
@@ -105,6 +106,8 @@ app.route("/api/conditions", conditionRoutes);
 app.route("/api/conditions", conditionSettingsRoutes);
 app.route("/api/places", placeRoutes);
 app.route("/api/profile", profileRoutes);
+// The objectives board's one read: 404 unless COACH_DESIGNER or staging, then requireUser. Ahead of /api/objectives.
+app.route("/api/objectives/board", objectiveBoardRoutes);
 app.route("/api/objectives", objectiveRoutes);
 app.route("/api/import", importRoutes);
 app.route("/api/library", libraryRoutes);
