@@ -33,9 +33,10 @@
  *     draft is held apart (`candidate`) while its review runs, so the version the op holds is always the best so far.
  *     The op's `review` is what the athlete sees: the kept version's review (or the note), how many drafts were
  *     reviewed, and what changed between them (the designer's change notes, and why a revision wasn't kept).
- *  6. STOPPING WITH WHAT IT HAS: a main run that stops at a spending limit (its ceiling, the weekly cap) or at its own
- *     step cap still proposes what was reviewed (`promoteWithWhatItHas`, the finish's own guard): a draft still under
- *     review is dropped with a change line, and a note at proposal level says why it stopped.
+ *  6. STOPPING WITH WHAT IT HAS: a main run that stops any way but the athlete's cancel — a spending limit, its step or
+ *     state cap, the AI account or service failing it, an internal error, its window closing — still proposes what was
+ *     reviewed (`promoteWithWhatItHas`, the finish's own guard): a draft still under review is dropped with a change
+ *     line, a workout whose day passed (an expiry) is left out, and a note at proposal level says why it stopped.
  *
  * Accepted advisory costs are not must-fix: the rubric (the reviewer's role block) says so, and nothing here turns a
  * validator warning into one. A dimension scored 2 or less IS must-fix by the rubric: when the reviewer lists no
@@ -47,6 +48,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
+import { isoWeekday } from "@rg/domain";
 import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
 import { markUntrusted, REVIEW_DIMENSIONS } from "./design-prompt.js";
@@ -670,25 +672,57 @@ export async function closeUnreviewed(db: Db, userId: string, proposalId: string
     .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, userId), eq(coachProposals.status, "unreviewed")));
 }
 
-/** Why a main run stopped with what it had — the proposal's own note, by how the run stopped (its error code). */
+/**
+ * Why a main run stopped with what it had — the proposal's own note, by how the run stopped (its error code; fix wave
+ * 3A, A2: every stop but the athlete's cancel proposes what was reviewed). A code not listed — a request the gateway
+ * rejected, named by its status — reads as `stoppedNote`'s default.
+ */
 export const STOPPED_NOTES: Readonly<Record<string, string>> = {
   run_ceiling: "The coach stopped at this design's spending limit; this is what had been reviewed by then.",
   weekly_cap: "The coach stopped at the week's AI spending limit; this is what had been reviewed by then.",
   step_cap: "The coach stopped at its step limit; this is what had been reviewed by then.",
+  state_cap: "The coach stopped when this design grew too long to continue; this is what had been reviewed by then.",
+  gateway_402: "The coach stopped when the AI account ran out of credits; this is what had been reviewed by then.",
+  no_key: "The coach stopped: this server has no AI key; this is what had been reviewed by then.",
+  retries: "The coach stopped when the AI service stopped answering; this is what had been reviewed by then.",
+  refusal: "The coach stopped when the model declined to go on; this is what had been reviewed by then.",
+  internal: "The coach stopped when something went wrong inside it; this is what had been reviewed by then.",
+  bad_state: "The coach stopped when its saved work couldn't be read; this is what had been reviewed by then.",
+  expired: "The coach's time for this design ran out; this is what had been reviewed by then.",
 };
+
+/** The note for a main run that stopped with the error `error` (a rejected request's code reads as one). */
+export function stoppedNote(error: string | null | undefined): string {
+  return STOPPED_NOTES[error ?? ""] ?? "The coach stopped when the AI service refused a request; this is what had been reviewed by then.";
+}
 
 /** A draft still under review when its run stopped: its line in the change list. */
 const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in.";
 
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/** "Saturday 16 May". */
+export function dayWords(date: string): string {
+  const [, m, d] = date.split("-").map(Number);
+  return `${WEEKDAYS[isoWeekday(date) - 1]} ${d} ${MONTHS[(m ?? 1) - 1]}`;
+}
+
+/** The proposal's line for reviewed workouts whose day passed before the run's stop (an expiry): left out. */
+export function pastDayLine(ops: DocWorkoutOp[]): string {
+  return `Its day passed before it could be proposed, so left out: ${ops.map((op) => `“${op.doc.title}” (${dayWords(op.date)})`).join(", ")}.`;
+}
+
 /**
- * A main run that stopped at a spending limit or at its own step cap proposes what it has (spec §2): its proposal
+ * A main run that stopped any way but a cancel proposes what it has (spec §2; fix wave 3A, A2): its proposal
  * becomes pending under the finish's own guard — still `unreviewed` (a rehearsal stays one), every op with its review,
  * no review under way — once a draft still under review is dropped (the held, reviewed version stays; the change list
- * says what was dropped). The stop's note is added to the proposal's own lines (`flags`), never over an op's note. Two
- * statements: the read, and a write guarded by the ops it read (none when nothing can be proposed). Answers whether it
- * was made pending.
+ * says what was dropped). With `today` (an expiry: the athlete's local date), a workout dated before it is left out,
+ * and a line says so; with none left, nothing is proposed. The stop's note is added to the proposal's own lines
+ * (`flags`), never over an op's note. Two statements: the read, and a write guarded by the ops it read (none when
+ * nothing can be proposed). Answers whether it was made pending.
  */
-export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: string, note: string): Promise<boolean> {
+export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string } = {}): Promise<boolean> {
   const rows = (await db.all(sql`
     SELECT ops, status, flags FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
   `)) as Array<{ ops: string | null; status: string; flags: string | null }>;
@@ -705,14 +739,18 @@ export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: s
     return false;
   }
   if (ops.length === 0) return false;
-  const next = ops.map((op) => {
+  const settled = ops.map((op) => {
     const running = (op.reviewLog ?? []).find((r) => r.status === "reviewing");
     return running ? (applyDrop(op, running.toolUseId, STOPPED_CHANGE) ?? op) : op;
   });
-  if (next.some((o) => !o.review) || reviewRunning(next)) return false;
+  const today = opts.today;
+  const past = today ? settled.filter((o) => o.date < today) : [];
+  const next = settled.filter((o) => !past.includes(o));
+  if (next.length === 0 || next.some((o) => !o.review) || reviewRunning(next)) return false;
+  const lines = [note, ...(past.length > 0 ? [pastDayLine(past)] : [])];
   const f = proposalFields(next);
   const written = (await db.all(sql`
-    UPDATE coach_proposals SET status = 'pending', ops = ${JSON.stringify(next)}, flags = ${JSON.stringify([...flags, note])},
+    UPDATE coach_proposals SET status = 'pending', ops = ${JSON.stringify(next)}, flags = ${JSON.stringify([...flags, ...lines])},
       title = ${f.title}, rationale = ${f.rationale}, expires_at = ${f.expiresAt}
     WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'unreviewed' AND ops IS ${row.ops}
     RETURNING id

@@ -764,11 +764,12 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     await step("unreadable again: the reviewer ends");
     await step("designer resumed, the validator's view written");
     expect((await step("finish")).status).toBe("finished");
-    // Pinned, route (2) and fetch included. A model step spends 10 statements of its own and the call — the tree, the
-    // claim, the weekly cap, the usage row before and after, the restore marker, the still-ours read, the credits
-    // marker, the run's write, the events — MODEL_STEP_FIXED (13) also reserving the lost-claim write and the finish's
-    // proposal write; the tools come on top. A step with no model: the tree, the claim, the run's write (+ the events).
-    const MODEL = 10 + 1;
+    // Pinned, route (2) and fetch included. A model step spends 9 statements of its own and the call — the tree, the
+    // claim, the weekly cap, the usage row before and after, the standing read (the restore marker and the still-ours
+    // read in one statement, fix wave 3A), the credits marker, the run's write, the events — MODEL_STEP_FIXED (13) also
+    // reserving the step's end (a lost claim's write with the finish's proposal write, or a stop's proposal: the
+    // larger); the tools come on top. A step with no model: the tree, the claim, the run's write (+ the events).
+    const MODEL = 9 + 1;
     expect(shapes).toEqual({
       "main context": 2 + 4 + 11,
       "validate ×2 + propose + start the reviewer": 2 + MODEL + 6 + 6 + 8,
@@ -820,8 +821,9 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     await runStep(db, env, expiring, c.userId, NOW, three.deps);
     await runStep(db, env, expiring, c.userId, new Date(NOW.getTime() + 1000), three.deps);
     const expired = await counted(c.userId, expiring, three.deps, new Date(NOW.getTime() + 24 * 3_600_000), { n: 0 });
-    // The tree, the expiry, the proposal closed, the line.
-    expect(expired.cost).toBe(2 + 4);
+    // The tree, the expiry, the proposal read (fix wave 3A, A2: nothing reviewed, so nothing proposed), the proposal
+    // closed, the lines.
+    expect(expired.cost).toBe(2 + 5);
   });
 });
 

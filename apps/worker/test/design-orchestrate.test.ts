@@ -1248,7 +1248,8 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     await step("designer: finish");
     await step("the redo's result: main resumed");
     expect((await step("finish")).status).toBe("finished");
-    const MODEL = 10 + 1;
+    // A model step's own nine statements (its restore marker and still-ours read one, since fix wave 3A) and the call.
+    const MODEL = 9 + 1;
     expect(shapes).toMatchObject({
       "main context": 2 + 4 + 11,
       // The athlete with the plan on the briefs' dates and the proposal; the estimate's read; the designers' one insert.
@@ -1659,9 +1660,9 @@ describe("fix round 1 — the last guards the mutation pass left unheld", () => 
     const cost = ROUTE_OVERHEAD + statements + 1;
     expect(out.kind === "ok" && out.result.status).toBe("finished");
     expect((await proposalOf(runId))!.status).toBe("unreviewed");
-    // The route, the model step (10 + the call), finish's read, the promotion tried (nothing made pending, so nothing
+    // The route, the model step (9 + the call), finish's read, the promotion tried (nothing made pending, so nothing
     // superseded).
-    expect(cost).toBe(2 + 11 + 1 + 1);
+    expect(cost).toBe(2 + 10 + 1 + 1);
   });
 
   it("the budget counts the plan's own model call", async () => {

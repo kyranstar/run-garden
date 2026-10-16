@@ -28,7 +28,8 @@
  *     left is reviewed.
  *  5. MONEY. Sub-run spend rolls up the tree (coach-runs.ts). A designer's own ceiling stops that designer alone; the
  *     main run's ceiling (the set's, $6 by default) stops the whole set — gracefully: `promoteSetWithWhatItHas` proposes
- *     what was reviewed, the rest left out with a line.
+ *     what was reviewed, the rest left out with a line. So does every other stop of the set but the athlete's cancel
+ *     (fix wave 3A, A2): the AI account or service failing it, its caps, an internal error, its window closing.
  *
  * THE ESTIMATE (`estimateSetCost`, stored in the main run's state and in plan_set's event for the run view): the
  * average designer's cost × the set's workouts + the average set main run's own cost. "A designer's cost" is a
@@ -44,11 +45,11 @@
  * marked where it reaches another run, never followed.
  */
 import { sql, type SQL } from "drizzle-orm";
-import { addDays, daysBetween, isoWeekday } from "@rg/domain";
+import { addDays, daysBetween } from "@rg/domain";
 import type { Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
 import { SET_MAX_WORKOUTS } from "./design-limits.js";
-import { applyDrop, meanScore, proposalFields, reviewRunning } from "./design-review.js";
+import { applyDrop, dayWords, meanScore, pastDayLine, proposalFields, reviewRunning } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
@@ -77,14 +78,8 @@ export const designerRunId = (mainRunId: string, toolUseId: string, index: numbe
 /** An op's id: the run that designed it (proposal-kinds.ts, the one definition approve and decline name ops by too). */
 export { opIdOf };
 
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
-/** "Saturday 16 May". */
-export function dayWords(date: string): string {
-  const [, m, d] = date.split("-").map(Number);
-  return `${WEEKDAYS[isoWeekday(date) - 1]} ${d} ${MONTHS[(m ?? 1) - 1]}`;
-}
+/** "Saturday 16 May" (design-review.ts). */
+export { dayWords };
 
 /** Where a workout goes, in words: "a new workout on Saturday 16 May" / "a revision of the workout w1 (from its
  * revision 2), on Saturday 16 May". */
@@ -456,25 +451,35 @@ export async function settleSet(
 
 const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in.";
 
+/** A designer of the set, as a stop sees it: its run, its brief's day, and whether it finished. */
+export interface SetDesigner {
+  runId: string;
+  day: string;
+  finished: boolean;
+}
+
 /**
- * A set's main run that stopped at a spending limit or its step cap proposes what was reviewed (spec §2; Task 6's
- * `promoteWithWhatItHas`, for a set): a draft still under review is dropped, the held reviewed version staying; a
- * workout with no review is left out, and a line says which; the days whose designers never started (`notStarted`) are
- * named; the stop's note goes in the proposal's lines. A workout a redo was designing (`redoOf`: the redo's designer →
- * its first version's) is proposed in ONE version: the redo's when it was reviewed and is the better by Task 6's rule
- * (`redoKept`; a tie to the redo), else the first — the redo's draft going without a line, its workout's day still
- * holding the first version. Pending under the
- * finish's own guard — still `unreviewed` (a rehearsal stays one), no review under way, the ops it read — and only with
- * at least one reviewed workout. Two statements (the read, the write; none written when nothing can be proposed).
+ * A set's main run that stopped any way but a cancel proposes what was reviewed (spec §2; Task 6's
+ * `promoteWithWhatItHas`, for a set; fix wave 3A, A2): a draft still under review is dropped, the held reviewed version
+ * staying; a workout with no review is left out, and a line says which; the days of designers that never got a draft
+ * in — never started, or stopped before proposing (`designers`; one that finished has its own line already) — are
+ * named; with `today` (an expiry), a workout dated before it is left out, and a line says which; the stop's note goes
+ * in the proposal's lines. A workout a redo was designing (`redoOf`: the redo's designer → its first version's) is
+ * proposed in ONE version: the redo's when it was reviewed and is the better by Task 6's rule (`redoKept`; a tie to the
+ * redo), else the first — the redo's draft going without a line, its workout's day still holding the first version.
+ * Pending under the finish's own guard — still `unreviewed` (a rehearsal stays one), no review under way, the ops it
+ * read — and only with at least one reviewed workout. Two statements (the read, the write; none written when nothing
+ * can be proposed).
  */
 export async function promoteSetWithWhatItHas(
   db: Db,
   userId: string,
   proposalId: string,
   note: string,
-  notStarted: string[] = [],
-  redoOf: Readonly<Record<string, string>> = {},
+  opts: { designers?: SetDesigner[]; redoOf?: Readonly<Record<string, string>>; today?: string } = {},
 ): Promise<boolean> {
+  const redoOf = opts.redoOf ?? {};
+  const today = opts.today;
   const { ops, opsText, status, flags } = await readSetProposal(db, userId, proposalId);
   if (status !== "unreviewed" || ops.length === 0) return false;
   let settled = ops.map((op) => {
@@ -490,13 +495,21 @@ export async function promoteSetWithWhatItHas(
     if (redone.review && redoKept(redone, firstOp).redo) settled = settled.filter((op) => op !== firstOp);
     else settled = settled.filter((op) => op !== redone);
   }
-  const kept = settled.filter((op) => op.review);
-  const left = settled.filter((op) => !op.review);
+  // An expiry: a reviewed workout whose day has passed can't be proposed.
+  const past = today ? settled.filter((op) => op.date < today && op.review) : [];
+  const live = settled.filter((op) => !(today && op.date < today));
+  const kept = live.filter((op) => op.review);
+  const left = live.filter((op) => !op.review);
   if (kept.length === 0 || reviewRunning(kept)) return false;
-  const undesigned = [...new Set(notStarted)].filter((day) => !kept.some((op) => op.date === day)).sort();
+  const undesigned = [
+    ...new Set((opts.designers ?? []).filter((d) => !d.finished && !ops.some((op) => op.by?.runId === d.runId)).map((d) => d.day)),
+  ]
+    .filter((day) => !kept.some((op) => op.date === day) && !(today && day < today))
+    .sort();
   const lines = [
     note,
     ...(left.length > 0 ? [`Not reviewed before the stop, so left out: ${left.map((op) => `“${op.doc.title}” (${dayWords(op.date)})`).join(", ")}.`] : []),
+    ...(past.length > 0 ? [pastDayLine(past)] : []),
     ...(undesigned.length > 0 ? [`Not designed before the stop: ${undesigned.map(dayWords).join(", ")}.`] : []),
   ];
   const f = proposalFields(kept);

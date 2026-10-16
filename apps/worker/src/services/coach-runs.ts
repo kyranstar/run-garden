@@ -1,9 +1,8 @@
 import { and, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
-import { coachProposals, coachRunEvents, coachRuns, llmUsage } from "@rg/database";
+import { accountState, coachProposals, coachRunEvents, coachRuns, llmUsage } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
-import { restoreInProgress } from "./account-state.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder } from "./design-context.js";
@@ -17,7 +16,7 @@ import {
   type KeyLine,
   type SetEstimate,
 } from "./design-orchestrate.js";
-import { llmBudgetStatus } from "./llm.js";
+import { LLM_BUDGET, llmBudgetStatus } from "./llm.js";
 import {
   callMessages,
   designModel,
@@ -32,7 +31,16 @@ import {
   type ToolUseBlock,
 } from "./llm-messages.js";
 import { COACH_RUN_LEFT_MINUTES, COACH_RUN_SET_WINDOW_HOURS, COACH_RUN_STEP_STALE_MINUTES } from "./cron-limits.js";
-import { closeUnreviewed, promoteWithWhatItHas, resumeAfterReview, reviewPacket, STOPPED_NOTES, toolRecords, unavailableWhy } from "./design-review.js";
+import {
+  closeUnreviewed,
+  promoteWithWhatItHas,
+  resumeAfterReview,
+  reviewPacket,
+  STOPPED_NOTES,
+  stoppedNote,
+  toolRecords,
+  unavailableWhy,
+} from "./design-review.js";
 import { allTools } from "./design-tools/index.js";
 import { designProposalId } from "./design-tools/propose.js";
 import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
@@ -87,11 +95,16 @@ import {
  * (and so does the sweep). The stamp a step leaves is the end of the step.
  *
  * MONEY. Before every model call: the run's own ceiling (state), the step and state caps, then the weekly cap
- * (`llmBudgetStatus`, the one the whole app shares). Every call is recorded in `llm_usage` by role (design_main |
- * design_workout | design_review): a row is written before the call at an estimate of its input — so a step killed
- * mid-call is still counted — and set to the real usage after it, or to what a broken-off answer had used, or to
- * zero when nothing was billed. A 402 records the existing out-of-credits marker and fails the run with a plain
- * event; a call that works clears it.
+ * (`llmBudgetStatus`, the one the whole app shares) as a hard ceiling — the call is made only when its worst case fits
+ * under it. Every call is recorded in `llm_usage` by role (design_main | design_workout | design_review): a row is
+ * written before the call at what a killed call could have cost — so a step killed mid-call is still counted — and set
+ * to the real usage after it, or to what a broken-off answer had used, or to zero when nothing was billed. A 402
+ * records the existing out-of-credits marker and fails the run with a plain event; a call that works clears it.
+ *
+ * A STOP PROPOSES WHAT WAS REVIEWED (fix wave 3A, A2). A main run that stops any way but the athlete's cancel — a
+ * spending limit, its step or state cap, the AI account or service failing it, an internal error, its window closing —
+ * proposes what had been reviewed (`promoteWithWhatItHas` / `promoteSetWithWhatItHas`, the finish's own guard), and its
+ * lines say that it stopped and then what came of it: proposed, or nothing.
  *
  * HOW LONG A RUN STAYS OPEN. Its context is frozen at its first step, so a run has a window: for now or later today,
  * the athlete's local day it began on; for a set, COACH_RUN_SET_WINDOW_HOURS. A step, an answer or the sweep that
@@ -133,8 +146,8 @@ import {
  * rehearsal and last-told clock) and the main run pauses, `waiting_set`. The designers run one at a time in brief
  * order, each with its reviewers before the next. Once every designer is over, the main run's own next step resumes it
  * — no model call — with the set's outcome as plan_set's result (`settleSet`). A designer's finish line is kept in its
- * state (`final`), for that outcome. A set's main run that stops at a limit proposes what was reviewed
- * (`promoteSetWithWhatItHas`).
+ * state (`final`), for that outcome. A set's main run that stops proposes what was reviewed
+ * (`promoteSetWithWhatItHas`), naming the days whose designers got no draft in.
  */
 
 // ── Vocabulary ──────────────────────────────────────────────────────────
@@ -203,10 +216,19 @@ const LOST_CLAIM_WRITE = 1;
 /** Reserved: the proposal's one write when its run finishes — a rehearsal's marked, or a reviewed one made pending. (The
  * older plans' days a pending one covers, superseded after it, are on finish's own declared cost.) */
 const FINISH_WRITE = 1;
-export const PENDING_STEP_FIXED = BASE_FIXED + LOST_CLAIM_WRITE + FINISH_WRITE;
-/** + the weekly-cap read, the usage row before the call, the model call, the restore marker, the still-ours read,
- * the credits marker, the usage row's update after it. */
-export const MODEL_STEP_FIXED = PENDING_STEP_FIXED + 7;
+/** Reserved: a main run that stops — any way but a cancel, even after its tools ran (its state grew past the cap) —
+ * proposes what was reviewed (fix wave 3A, A2): the proposal read, its write, the older plans' days it covers
+ * superseded. */
+const STOP_PROPOSE = 3;
+/** What a step's end may spend beyond its own writes: a finish's proposal write and a lost claim's spend can land in
+ * one step (a cancel taking the claim while the tools ran), while a stop that proposes never meets either — it is
+ * written under the claim it holds, and finishes nothing — so the larger of the two is reserved. */
+const END_RESERVE = Math.max(LOST_CLAIM_WRITE + FINISH_WRITE, STOP_PROPOSE);
+export const PENDING_STEP_FIXED = BASE_FIXED + END_RESERVE;
+/** + the weekly-cap read, the usage row before the call, the model call, the standing read after it (the restore
+ * marker and whether the claim is still the step's, in one statement), the credits marker, the usage row's update
+ * after it. */
+export const MODEL_STEP_FIXED = PENDING_STEP_FIXED + 6;
 /** The most one tool may declare: what a step of queued calls has room for. A tool above it is a registry bug, and
  * its call is answered with an error rather than queued forever. */
 export const MAX_TOOL_STATEMENT_COST = STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED;
@@ -241,6 +263,9 @@ export const EVENTS_PER_INSERT = 20;
 
 /** The model is told the time again when it was last told more than this long ago (or on another local date). */
 export const CLOCK_LINE_AFTER_MINUTES = 30;
+
+/** Bytes of a prompt per token, for the estimates made before a call: JSON tokenises densely, at about 3.5. */
+export const PROMPT_BYTES_PER_TOKEN = 3.5;
 
 const EPHEMERAL = { type: "ephemeral" } as const;
 const MAX_BREAKPOINTS = 4;
@@ -314,8 +339,7 @@ export interface RunState {
   estimate?: SetEstimate;
   /** A designer's finish line, its own words: its set's outcome quotes it when its workout is left out. */
   final?: string;
-  /** A set's designer: the day of its brief (what a stop names when it never started — so never read back here: read in
-   * SQL from the state it was started with). */
+  /** A set's designer: the day of its brief — what a stop names when the designer got no draft in (read in SQL). */
   day?: string;
   /** A set's redo designer: the designer whose workout its replaces once reviewed (ToolContext.replaces). */
   replaces?: string;
@@ -423,6 +447,7 @@ export function readRunState(text: string | null): RunState | null {
       ? { set: { rounds: s.set.rounds, ...(Array.isArray(s.set.keyLines) ? { keyLines: s.set.keyLines } : {}) } }
       : {}),
     ...(typeof s.replaces === "string" ? { replaces: s.replaces } : {}),
+    ...(typeof s.day === "string" ? { day: s.day } : {}),
     ...(s.estimate && typeof s.estimate === "object" ? { estimate: s.estimate } : {}),
     // (`final` is written once, at a designer's finish, and read in SQL: never read back here.)
   };
@@ -868,8 +893,11 @@ const DEAD_STEP_SPEND = sql.raw(
  * Expire a run's live tree, past its window or left under a run that is over, with the main run's plain line. Guarded:
  * a run a live step holds is left to that step — it finishes its work, and the next step, answer, create or sweep
  * expires the run — while a dead step's claim is taken, its spend added to the run. Answers whether the expiry took
- * the run itself. A main run's design proposal still unreviewed is closed with it: nothing half-made is ever shown.
- * Three statements (one when the run itself did not expire).
+ * the run itself. A main run that expires proposes what was reviewed (fix wave 3A, A2), a workout whose day has passed
+ * (in the athlete's zone) left out; with nothing to propose, its design proposal still unreviewed is closed with it:
+ * nothing half-made is ever shown. Its lines say it expired, and what came of the proposal. At most five statements
+ * (the expiry, the proposal read, its write and the older plans superseded — or the close — and the lines); one when
+ * the run itself did not expire.
  */
 async function expireTree(
   db: Db,
@@ -904,9 +932,11 @@ async function expireTree(
     .returning({ id: coachRuns.id });
   for (const n of members) if (expired.some((e) => e.id === n.id)) Object.assign(n, { status: "expired", error: "expired", finishedAt: at, updatedAt: at });
   const took = expired.some((e) => e.id === root.id);
-  if (took && root.parentId === null) await closeUnreviewed(db, userId, designProposalId(root.id), "expired", at);
-  const events =
-    took && root.parentId === null ? await appendEvents(db, userId, root.id, [{ kind: "note", summary: expiredLine(root.settings) }], at) : [];
+  if (!took || root.parentId !== null) return { took, events: [] };
+  const today = localDate(root.settings?.timezone || "UTC", now);
+  const outcome = await proposeWhatItHas(db, userId, root, nodes, STOPPED_NOTES.expired!, at, today);
+  if (outcome.summary !== LINES.proposed) await closeUnreviewed(db, userId, designProposalId(root.id), "expired", at);
+  const events = await appendEvents(db, userId, root.id, [{ kind: "note", summary: expiredLine(root.settings) }, outcome], at);
   return { took, events };
 }
 
@@ -933,25 +963,36 @@ export async function getRun(
 // ── Cancel ──────────────────────────────────────────────────────────────
 
 /** Cancel the run and every live run under it, and close its design proposal if it is still unreviewed (nothing
- * half-made is ever shown). A step in flight keeps only its spend (it writes under its claim, which this takes).
- * Idempotent: a run that is over comes back as it is. */
+ * half-made is ever shown). A step in flight keeps only its spend (it writes under its claim, which this takes, and adds
+ * its spend itself); a step that DIED holding a claim (stale) never will, so its spend is added here, as a takeover
+ * would (fix wave 3A, A12). Idempotent: a run that is over comes back as it is. */
 export async function cancelRun(db: Db, userId: string, runId: string, now: Date): Promise<{ run: CoachRunDto } | null> {
   const { root, nodes } = await loadTree(db, userId, runId);
   if (!root) return null;
   const live = subtree(nodes, root).filter((n) => isLive(n.status));
   if (live.length === 0) return { run: runDto(root, nodes) };
   const at = now.toISOString();
-  await db
+  const staleBefore = new Date(now.getTime() - COACH_RUN_STEP_STALE_MINUTES * 60_000).toISOString();
+  const cancelled = await db
     .update(coachRuns)
-    .set({ status: "cancelled", finishedAt: at, updatedAt: at })
+    .set({
+      status: "cancelled",
+      finishedAt: at,
+      updatedAt: at,
+      costUsd: sql`${coachRuns.costUsd} + CASE WHEN ${coachRuns.updatedAt} < ${staleBefore} THEN ${DEAD_STEP_SPEND} ELSE 0 END`,
+    })
     .where(
       and(
         eq(coachRuns.userId, userId),
         inArray(coachRuns.id, live.map((n) => n.id)),
         inArray(coachRuns.status, [...LIVE_STATUSES]),
       ),
-    );
-  for (const n of live) Object.assign(n, { status: "cancelled", finishedAt: at, updatedAt: at });
+    )
+    .returning({ id: coachRuns.id, costUsd: coachRuns.costUsd });
+  for (const n of live) {
+    const row = cancelled.find((r) => r.id === n.id);
+    Object.assign(n, { status: "cancelled", finishedAt: at, updatedAt: at, ...(row ? { costUsd: Number(row.costUsd ?? 0) } : {}) });
+  }
   await closeUnreviewed(db, userId, designProposalId(root.id), "cancelled", at);
   await appendEvents(db, userId, root.id, [{ kind: "note", summary: "Cancelled." }], at);
   return { run: runDto(root, nodes) };
@@ -1166,11 +1207,13 @@ const IDLE: StepEnd = { status: "active", state: null, costMicros: 0, error: nul
 
 const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 
-const LINES = {
+/** The loop's own lines. A stop's line says only that the coach stopped, and why; what it proposed — or that it
+ * proposed nothing — is the line after it (`proposed` / `nothingProposed`), written once the proposal is settled. */
+export const LINES = {
   context: "Read the request and what the coach needs to start.",
   weeklyCap: "The weekly AI budget is used up — the coach stopped here.",
-  stepCap: "This design reached its step limit — the coach stopped with what it had.",
-  stateCap: "This design grew too long to continue — the coach stopped with what it had.",
+  stepCap: "This design reached its step limit — the coach stopped.",
+  stateCap: "This design grew too long to continue — the coach stopped.",
   outOfCredits: "The AI account is out of credits — the coach stopped here.",
   noKey: "This server has no AI key — the coach can't design here.",
   rejected: "The AI service refused the request — the coach stopped here.",
@@ -1182,6 +1225,8 @@ const LINES = {
   finished: "The coach finished.",
   expiredDay: "This design was for a day that has passed — start a new one for today.",
   expiredSet: "This design was left open for a day — it stopped. Start a new one when you're ready.",
+  proposed: "Proposed what had been reviewed before the stop.",
+  nothingProposed: "Nothing was proposed.",
 } as const;
 
 /** The reviewer's own lines on the trail. */
@@ -1338,23 +1383,12 @@ export async function runStep(
       const from = (end.stopFrom && nodes.find((n) => n.id === end.stopFrom)) || root;
       await stopLiveTree(db, userId, from, nodes, due, end, endAt, staleBefore);
     }
-    // The main run stopped at a spending limit or its own step cap: it proposes what it has (spec §2), under the
-    // finish's own guard, with why it stopped — a set what was reviewed, the rest left out. Two statements, only on
-    // such a stop, and a third when it proposes (the older plans' days it covers superseded).
-    const stopped = root.status === "stopped_cap" ? STOPPED_NOTES[root.error ?? ""] : undefined;
-    // A set names the days whose designers never started.
-    const notStarted = nodes.filter((n) => n.parentId === root.id && n.role === "designer" && n.steps === 0 && n.day).map((n) => n.day!);
-    // A redo designer's first version: one version of each workout is proposed.
-    const redoOf = Object.fromEntries(nodes.filter((n) => n.parentId === root.id && n.role === "designer" && n.replaces).map((n) => [n.id, n.replaces!]));
-    const proposed = stopped
-      ? isSetScope(root.scope)
-        ? await promoteSetWithWhatItHas(db, userId, designProposalId(root.id), stopped, notStarted, redoOf)
-        : await promoteWithWhatItHas(db, userId, designProposalId(root.id), stopped)
-      : false;
-    if (proposed) {
-      // The older plans' days this one covers are superseded (one statement).
-      await supersedeOlderPlans(db, userId, designProposalId(root.id), endAt);
-      mainLines.push({ kind: "note", summary: "Proposed what had been reviewed before the stop.", payload: { proposalId: designProposalId(root.id) } });
+    // The main run stopped — this step ended it, any way but a cancel (a cancel takes the claim, so nothing here is
+    // written): it proposes what it has (spec §2; fix wave 3A, A2), under the finish's own guard, with why it stopped —
+    // a set what was reviewed, the rest left out — and its next line says what came of it. STOP_PROPOSE: the proposal
+    // read and, when it proposes, its write and the older plans' days it covers superseded.
+    if (!isLive(root.status) && root.status !== "finished" && root.status !== "cancelled") {
+      mainLines.push(await proposeWhatItHas(db, userId, root, nodes, stoppedNote(root.error), endAt));
     }
   } else {
     // A cancel took the claim while the tools ran: what they did is on the trail below, the cancel's status stands.
@@ -1378,6 +1412,29 @@ export async function runStep(
 }
 
 const okStep = (result: StepResult): StepOutcome => ({ kind: "ok", result });
+
+/**
+ * A main run that stopped proposes what was reviewed (fix wave 3A, A2): a set's reviewed workouts (design-orchestrate.ts
+ * `promoteSetWithWhatItHas`: the days its designers never got a draft in named, one version of a redone workout), or
+ * the run's reviewed draft (design-review.ts `promoteWithWhatItHas`); with `today` (an expiry), a workout whose day has
+ * passed is left out. Made pending, the older plans' days it covers are superseded. Answers the line that says what came
+ * of it. At most three statements: the proposal read, its write and the supersede (one when nothing is proposed).
+ */
+async function proposeWhatItHas(db: Db, userId: string, root: RunNode, nodes: RunNode[], note: string, at: string, today?: string): Promise<NewEvent> {
+  const proposalId = designProposalId(root.id);
+  const designers = nodes.filter((n) => n.parentId === root.id && n.role === "designer");
+  const proposed = isSetScope(root.scope)
+    ? await promoteSetWithWhatItHas(db, userId, proposalId, note, {
+        designers: designers.filter((d) => d.day).map((d) => ({ runId: d.id, day: d.day!, finished: d.status === "finished" })),
+        // A redo designer's first version: one version of each workout is proposed.
+        redoOf: Object.fromEntries(designers.filter((d) => d.replaces).map((d) => [d.id, d.replaces!])),
+        ...(today ? { today } : {}),
+      })
+    : await promoteWithWhatItHas(db, userId, proposalId, note, today ? { today } : {});
+  if (!proposed) return { kind: "note", summary: LINES.nothingProposed };
+  await supersedeOlderPlans(db, userId, proposalId, at);
+  return { kind: "note", summary: LINES.proposed, payload: { proposalId } };
+}
 
 function nextDueOf(nodes: RunNode[], root: RunNode, at: string): StepResult["nextDue"] {
   const next = dueRun(nodes, root);
@@ -1587,7 +1644,17 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     const capLine = cap === "state_cap" ? LINES.stateCap : run.role === "reviewer" ? REVIEWER_LINES.stepCap : LINES.stepCap;
     return end(stop(state, "stopped_cap", cap, capLine));
   }
-  if ((await llmBudgetStatus(db, userId)).cutoff) return end({ ...stop(state, "stopped_cap", "weekly_cap", LINES.weeklyCap), stopTree: true });
+  // The call's size: the stored state and the tools, at PROMPT_BYTES_PER_TOKEN (fix wave 3A, A13).
+  const model = designModel(env);
+  const tools = offeredTools(deps.tools).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+  const promptTokens = Math.ceil((size + bytes(JSON.stringify(tools))) / PROMPT_BYTES_PER_TOKEN);
+  // THE WEEKLY CAP IS A HARD CEILING (fix wave 3A, A5): a call is made only when its worst case — its input at the
+  // uncached rate, its output at the call's ceiling — fits under the week's cutoff with everything spent so far. A
+  // run's and a tree's own ceilings are checked against what has been spent, so a run may pass its own by one call's
+  // cost (its last): the week's is the account's guard rail, and is never passed.
+  const week = await llmBudgetStatus(db, userId);
+  const worst = messagesCostMicros(model, { inputTokens: promptTokens, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: settings.maxTokens });
+  if (week.spentMicros + worst > LLM_BUDGET.cutoffMicros) return end({ ...stop(state, "stopped_cap", "weekly_cap", LINES.weeklyCap), stopTree: true });
 
   // ── The newest (unsent) message: the time now if the frozen clock has drifted, the last-turn note at a cap ──
   const timezone = settings.timezone || "UTC";
@@ -1598,25 +1665,19 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   if (last) sent = withLastTurnNote(sent, run.role === "reviewer" ? REVIEWER_LAST_TURN_NOTE : LAST_TURN_NOTE);
 
   // ── The call, on the record before it is made ──
-  // Pessimistic, because a step killed mid-call never comes back to correct it: the input estimated from the prompt's
-  // size at the uncached rate, the output at the call's ceiling (a call writes at most max_tokens, and at 60 tokens a
+  // Pessimistic, because a step killed mid-call never comes back to correct it — what a killed call could have cost at
+  // most: the whole prompt written to the cache (the dearest input, $5 a million on Opus 5.5 against $4 uncached), at
+  // PROMPT_BYTES_PER_TOKEN, and the output at the call's ceiling (a call writes at most max_tokens, and at 60 tokens a
   // second — PESSIMISTIC_OUTPUT_TOKENS_PER_SECOND — its 10-minute window reaches that ceiling). The real usage replaces
   // it once the answer is in.
-  const model = designModel(env);
-  const tools = offeredTools(deps.tools).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
-  const estimate = {
-    inputTokens: Math.ceil((size + JSON.stringify(tools).length) / 4),
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    outputTokens: settings.maxTokens,
-  };
+  const estimate = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: promptTokens, outputTokens: settings.maxTokens };
   const usageId = newId();
   await db.insert(llmUsage).values({
     id: usageId,
     userId,
     kind: USAGE_KIND[run.role],
     model,
-    inputTokens: estimate.inputTokens,
+    inputTokens: promptTokens,
     outputTokens: estimate.outputTokens,
     costMicros: messagesCostMicros(model, estimate),
     cacheHit: false,
@@ -1632,17 +1693,21 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     effort: settings.effort,
   });
 
-  // ── After the call: every writer stands down for a restore; the claim may have been cancelled meanwhile ──
-  if (await restoreInProgress(db, userId)) return { kind: "restoring" };
-  const ours = await stillOurs(db, run.id, s.claimAt);
-  if (result.ok) await clearOutOfCredits(db, userId);
-  else if (result.kind === "out_of_credits") await recordOutOfCredits(db, userId, s.claimAt);
-  // What the call cost: the answer's usage; a broken-off answer's, as far as it got; nothing if never billed.
+  // What the call cost — the answer's usage; a broken-off answer's, as far as it got; nothing if never billed — known
+  // before anything else can break: the run keeps it even if the step then does (fix wave 3A, A12).
   const billed = result.ok
     ? { model: result.model, usage: result.usage, costMicros: result.costMicros }
     : result.kind === "retryable" && result.usage
       ? { model, usage: result.usage, costMicros: result.costMicros ?? messagesCostMicros(model, result.usage) }
       : null;
+  const spent = billed?.costMicros ?? 0;
+  s.spent = spent;
+
+  // ── After the call: every writer stands down for a restore; the claim may have been cancelled meanwhile ──
+  const { restoring, ours } = await standing(db, userId, run.id, s.claimAt);
+  if (restoring) return { kind: "restoring" };
+  if (result.ok) await clearOutOfCredits(db, userId);
+  else if (result.kind === "out_of_credits") await recordOutOfCredits(db, userId, s.claimAt);
   await db
     .update(llmUsage)
     .set(
@@ -1657,8 +1722,6 @@ async function modelStep(s: StepCtx): Promise<Advance> {
         : { inputTokens: 0, outputTokens: 0, costMicros: 0, cacheHit: false },
     )
     .where(eq(llmUsage.id, usageId));
-  const spent = billed?.costMicros ?? 0;
-  s.spent = spent;
   if (!ours) return { kind: "lost", costMicros: spent };
 
   if (!result.ok) {
@@ -1791,9 +1854,21 @@ function withClockLine(messages: MessageParam[], line: string): MessageParam[] {
   return [...messages.slice(0, -1), { role: "user", content: [...blocks, text] }];
 }
 
-async function stillOurs(db: Db, id: string, claimAt: string): Promise<boolean> {
-  const [row] = await db.select({ status: coachRuns.status, updatedAt: coachRuns.updatedAt }).from(coachRuns).where(eq(coachRuns.id, id));
-  return row?.status === "stepping" && row.updatedAt === claimAt;
+/**
+ * Where a step stands, in ONE statement: whether a restore has begun (account-state.ts `restoreInProgress`: every
+ * writer stands down for it), and whether the run's claim is still this step's (a cancel or an expiry that landed
+ * meanwhile took it).
+ */
+async function standing(db: Db, userId: string, runId: string, claimAt: string): Promise<{ restoring: boolean; ours: boolean }> {
+  const [row] = (await db.all(sql`
+    SELECT (SELECT ${accountState.restoreId} FROM ${accountState} WHERE ${accountState.userId} = ${userId} LIMIT 1) AS restoreId,
+      (SELECT ${coachRuns.status} FROM ${coachRuns} WHERE ${coachRuns.id} = ${runId}) AS status,
+      (SELECT ${coachRuns.updatedAt} FROM ${coachRuns} WHERE ${coachRuns.id} = ${runId}) AS updatedAt
+  `)) as Array<{ restoreId: string | null; status: string | null; updatedAt: string | null }>;
+  return {
+    restoring: typeof row?.restoreId === "string" && row.restoreId.length > 0,
+    ours: row?.status === "stepping" && row.updatedAt === claimAt,
+  };
 }
 
 /**

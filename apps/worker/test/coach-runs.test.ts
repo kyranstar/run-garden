@@ -34,6 +34,8 @@ import {
   MAX_TOOL_CALLS_PER_TURN,
   MAX_TOOL_STATEMENT_COST,
   ANSWER_MAX_BYTES,
+  PROMPT_BYTES_PER_TOKEN,
+  LINES,
   type ContextBuilder,
   type ContextRun,
   type RunDeps,
@@ -690,27 +692,35 @@ describe("a restore that begins during the model call", () => {
 describe("every model call is on the record, even one that dies", () => {
   it("is recorded before the call pessimistically — its input estimated, its output at the call's ceiling — so a step killed mid-call still counts toward the cap, never under", async () => {
     let seen: Array<typeof schema.llmUsage.$inferSelect> = [];
+    let promptBytes = 0;
+    const bytesOf = (text: string) => new TextEncoder().encode(text).length;
+    let runId = "";
     const model = scriptedModel([
-      async () => {
+      async (req) => {
         seen = await db.select().from(schema.llmUsage);
-        return endTurn("Done.");
+        promptBytes = bytesOf((await runRow(runId)).state!) + bytesOf(JSON.stringify(req.tools));
+        return toolTurn(use("finish", { summary: "Done." }));
       },
     ]);
-    const runId = await newMainRun();
-    await drive(runId, deps(model.callModel));
+    runId = await newMainRun();
+    await drive(runId, deps(model.callModel, [readTool("read_day", 1), finishTool()]));
     expect(seen).toHaveLength(1);
     // A killed call's elapsed time is unknown here; × 60 tokens a second over the call's 10-minute window it reaches
     // the ceiling, so the ceiling is what the row says until the answer replaces it.
     expect(seen[0]).toMatchObject({ kind: "design_main", outputTokens: RUN_LIMITS.main.maxTokens });
-    expect(seen[0]!.inputTokens).toBeGreaterThan(0);
+    // Fix wave 3A, A13: the prompt (the stored state and the tools) at 3.5 bytes a token — JSON tokenises densely —
+    // priced as a cache write, the dearest input ($5 a million, against $4 uncached).
+    expect(PROMPT_BYTES_PER_TOKEN).toBe(3.5);
+    expect(seen[0]!.inputTokens).toBe(Math.ceil(promptBytes / 3.5));
     expect(seen[0]!.costMicros).toBe(
       messagesCostMicros("anthropic/claude-opus-5.5", {
-        inputTokens: seen[0]!.inputTokens,
+        inputTokens: 0,
         cacheReadTokens: 0,
-        cacheWriteTokens: 0,
+        cacheWriteTokens: seen[0]!.inputTokens,
         outputTokens: RUN_LIMITS.main.maxTokens,
       }),
     );
+    expect(seen[0]!.costMicros).toBe(Math.ceil((seen[0]!.inputTokens * 5_000_000 + RUN_LIMITS.main.maxTokens * 20_000_000) / 1_000_000));
     // …and set to the real usage once the answer is in: one row per call, never two.
     const after = await db.select().from(schema.llmUsage);
     expect(after).toHaveLength(1);
@@ -751,7 +761,11 @@ describe("the weekly cap and the run's ceiling, checked before every model call"
     await spend(LLM_BUDGET.cutoffMicros);
     const r = ok(await runStep(db, env, runId, userId, at(2), deps(model.callModel)));
     expect(r).toMatchObject({ status: "stopped_cap", nextDue: null });
-    expect(r.events).toEqual([expect.objectContaining({ kind: "note", summary: expect.stringMatching(/weekly AI budget/i) })]);
+    // The stop's line, then what came of the proposal (fix wave 3A, A2): here, nothing had been drafted.
+    expect(r.events).toEqual([
+      expect.objectContaining({ kind: "note", summary: expect.stringMatching(/weekly AI budget/i) }),
+      expect.objectContaining({ kind: "note", summary: LINES.nothingProposed }),
+    ]);
     expect(model.requests).toHaveLength(0);
     expect(await runRow(runId)).toMatchObject({ status: "stopped_cap", error: "weekly_cap" });
   });
@@ -774,7 +788,10 @@ describe("the weekly cap and the run's ceiling, checked before every model call"
     const runId = await newMainRun();
     const results = await drive(runId, deps(model.callModel));
     expect(results.at(-1)).toMatchObject({ status: "failed", nextDue: null });
-    expect(results.at(-1)!.events).toEqual([expect.objectContaining({ kind: "error", summary: expect.stringMatching(/out of credits/i) })]);
+    expect(results.at(-1)!.events).toEqual([
+      expect.objectContaining({ kind: "error", summary: expect.stringMatching(/out of credits/i) }),
+      expect.objectContaining({ kind: "note", summary: LINES.nothingProposed }),
+    ]);
     expect(await loadOutOfCredits(db, userId)).not.toBeNull();
     expect((await runRow(runId)).error).toBe("gateway_402");
     expect((await db.select().from(schema.llmUsage)).map((u) => u.costMicros)).toEqual([0]);
@@ -838,7 +855,8 @@ describe("the step cap and the state cap", () => {
     expect(JSON.stringify(lastReq.messages.at(-1))).toMatch(/last turn/i);
     expect(JSON.stringify(model.requests.at(-2)!.messages.at(-1))).not.toMatch(/last turn/i);
     expect(results.at(-1)!.status).toBe("stopped_cap");
-    expect(results.at(-1)!.events.at(-1)!.summary).toMatch(/step limit/i);
+    expect(results.at(-1)!.events.map((e) => e.summary).slice(-2)).toEqual([LINES.stepCap, LINES.nothingProposed]);
+    expect(LINES.stepCap).toMatch(/step limit/i);
     expect((await runRow(runId)).error).toBe("step_cap");
   });
 
@@ -904,7 +922,8 @@ describe("the state cap, when one step's results would overflow it", () => {
       if (last.status !== "active") break;
     }
     expect(last!.status).toBe("stopped_cap");
-    expect(last!.events.at(-1)!.summary).toMatch(/too long/i);
+    expect(last!.events.map((e) => e.summary).slice(-2)).toEqual([LINES.stateCap, LINES.nothingProposed]);
+    expect(LINES.stateCap).toMatch(/too long/i);
     expect((await runRow(runId)).error).toBe("state_cap");
     expect(max).toBeLessThanOrEqual(STATE_MAX_BYTES);
   });
@@ -1031,6 +1050,36 @@ describe("a step that died mid-call (the phone went to the background)", () => {
     expect(out.reclaimed).toBe(1);
     expect(await runRow(swept)).toMatchObject({ status: "active" });
     expect((await runRow(swept)).costUsd).toBeCloseTo(0.4, 6);
+  });
+
+  it("…and when a cancel takes it (fix wave 3A, A12) — but a live step's claim is left to that step, which adds its own", async () => {
+    const dead = await newMainRun();
+    ok(await runStep(db, env, dead, userId, at(1), deps(scriptedModel([]).callModel)));
+    await killedMidCall(dead, at(2), 300_000);
+    const stale = await cancelRun(db, userId, dead, at(2 + (COACH_RUN_STEP_STALE_MINUTES + 1) * 60));
+    expect(await runRow(dead)).toMatchObject({ status: "cancelled" });
+    expect((await runRow(dead)).costUsd).toBeCloseTo(0.3, 6);
+    expect(stale!.run.costUsd).toBeCloseTo(0.3, 6);
+
+    // A claim still fresh is a step in flight: it finds its claim taken and adds its own spend, so the cancel adds none.
+    const other = await makeTestUser(db);
+    const live = (await createRun(db, other.userId, { scope: { kind: "now" }, request: null }, at(0))).run.id;
+    ok(await runStep(db, env, live, other.userId, at(1), deps(scriptedModel([]).callModel)));
+    await db.update(schema.coachRuns).set({ status: "stepping", updatedAt: at(2).toISOString() }).where(eq(schema.coachRuns.id, live));
+    await db.insert(schema.llmUsage).values({
+      id: newId(),
+      userId: other.userId,
+      kind: "design_main",
+      model: "m",
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicros: 300_000,
+      cacheHit: false,
+      requestFingerprint: `run:${live}:1`,
+      createdAt: at(2).toISOString(),
+    });
+    await cancelRun(db, other.userId, live, at(62));
+    expect(await runRow(live)).toMatchObject({ status: "cancelled", costUsd: 0 });
   });
 
   it("a claim younger than the stale limit still answers busy", async () => {
@@ -1184,13 +1233,14 @@ describe("a run past its window, wherever it is found (fix round 2)", () => {
     const child = await insertSubRun(old, "designer", at(2));
     statements = 0;
     const created = await createRun(db, userId, { scope: { kind: "now" }, request: "today's session" }, at(14 * 3600));
-    // + one since Task 6: the expired run's design proposal is closed while still unreviewed.
-    expect(statements).toBeLessThanOrEqual(7);
+    // + one since Task 6: the expired run's design proposal is closed while still unreviewed; + one since fix wave 3A
+    // (A2): an expiry first reads its proposal, to propose what was reviewed.
+    expect(statements).toBeLessThanOrEqual(8);
     expect(created).toMatchObject({ existing: false, run: { request: "today's session", status: "active" } });
     expect(created.run.id).not.toBe(old);
     expect(await runRow(old)).toMatchObject({ status: "expired", error: "expired" });
     expect((await runRow(child)).status).toBe("expired");
-    expect((await events(old)).at(-1)!.summary).toMatch(/day that has passed/);
+    expect((await events(old)).map((e) => e.summary).slice(-2)).toEqual([expect.stringMatching(/day that has passed/), LINES.nothingProposed]);
   });
 
   it("a create finds the live run still open: it answers it as before", async () => {
@@ -1205,7 +1255,7 @@ describe("a run past its window, wherever it is found (fix round 2)", () => {
     await drive(runId, deps(model.callModel, [askTool()]));
     const r = ok(await runStep(db, env, runId, userId, at(14 * 3600), deps(model.callModel)));
     expect(r).toMatchObject({ status: "expired", nextDue: null });
-    expect(r.events.map((e) => e.summary)).toEqual([expect.stringMatching(/day that has passed/)]);
+    expect(r.events.map((e) => e.summary)).toEqual([expect.stringMatching(/day that has passed/), LINES.nothingProposed]);
     expect(await runRow(runId)).toMatchObject({ status: "expired", error: "expired" });
   });
 
@@ -1291,6 +1341,34 @@ describe("a step's tail (fix round 2)", () => {
     expect(r.status).toBe("failed");
     expect(await runRow(runId)).toMatchObject({ error: "internal" });
     expect((await runRow(runId)).costUsd).toBeCloseTo(0.02, 6);
+  });
+
+  it("a step that breaks between the call and its usage update still adds the call's spend to the run (fix wave 3A, A12)", async () => {
+    // A database that fails the first statement after the call (the restore marker's read) once.
+    let armed = false;
+    const tdb = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: () => {
+        if (!armed) return;
+        armed = false;
+        throw new Error("the database dropped a statement");
+      },
+    });
+    const user = await makeTestUser(tdb);
+    const runId = (await createRun(tdb, user.userId, { scope: { kind: "now" }, request: null }, at(0))).run.id;
+    const model = scriptedModel([
+      () => {
+        armed = true;
+        return toolTurn(use("read_day"));
+      },
+    ]);
+    const d = deps(model.callModel, [readTool("read_day", 1)]);
+    ok(await runStep(tdb, env, runId, user.userId, at(1), d));
+    const r = ok(await runStep(tdb, env, runId, user.userId, at(2), d));
+    expect(r.status).toBe("failed");
+    const [row] = await tdb.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, runId));
+    expect(row).toMatchObject({ status: "failed", error: "internal" });
+    expect(row!.costUsd).toBeCloseTo(0.02, 6);
   });
 
   it("a timezone that can't be read never leaves a run stuck: the window and the clock fall back to UTC", async () => {
@@ -1394,7 +1472,7 @@ describe("how long a run stays open", () => {
     await drive(runId, deps(model.callModel, [askTool()]));
     const late = await answerRun(db, userId, runId, { answers: ["Gym"] }, at(14 * 3600));
     expect(late).toEqual({ kind: "not_waiting", status: "expired" });
-    expect((await events(runId)).at(-1)!.summary).toMatch(/day/i);
+    expect((await events(runId)).map((e) => e.summary).slice(-2)).toEqual([expect.stringMatching(/day/i), LINES.nothingProposed]);
   });
 });
 
@@ -1598,7 +1676,8 @@ describe("the orphan sweep", () => {
     expect(swept).toMatchObject({ expired: 1, stepped: 0 });
     expect(await runRow(waiting)).toMatchObject({ status: "expired", error: "expired" });
     expect((await runRow(child)).status).toBe("expired");
-    expect((await events(waiting)).at(-1)).toMatchObject({ kind: "note", summary: expect.stringMatching(/day/i) });
+    expect((await events(waiting)).at(-2)).toMatchObject({ kind: "note", summary: expect.stringMatching(/day/i) });
+    expect((await events(waiting)).at(-1)).toMatchObject({ kind: "note", summary: LINES.nothingProposed });
     expect(model.requests).toHaveLength(1);
   });
 

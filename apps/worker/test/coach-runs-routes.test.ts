@@ -289,7 +289,7 @@ describe("every request within the budget", () => {
     expect(again.cost).toBeLessThanOrEqual(BUDGET);
   });
 
-  it("create over a live run whose window closed: the run expired with its line and its unreviewed proposal closed, the new one started — about nine", async () => {
+  it("create over a live run whose window closed: the run expired with its lines and its unreviewed proposal closed, the new one started — about ten", async () => {
     const id = (await call("POST", "", { scope: { kind: "now" } })).body.run.id as string;
     const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     const state = JSON.parse(row!.state!) as { settings: Record<string, unknown> };
@@ -297,7 +297,8 @@ describe("every request within the budget", () => {
     await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, id));
     const created = await measured("POST", "", { scope: { kind: "now" }, request: "today" });
     expect(created.body).toMatchObject({ existing: false, run: { request: "today" } });
-    expect(created.cost).toBeLessThanOrEqual(9);
+    // One more since fix wave 3A (A2): the expiry reads its proposal first, to propose what was reviewed.
+    expect(created.cost).toBeLessThanOrEqual(10);
     const [old] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     expect(old!.status).toBe("expired");
   });
@@ -390,6 +391,63 @@ describe("every request within the budget", () => {
     expect(step.cost).toBeLessThanOrEqual(BUDGET);
     expect(step.cost).toBeGreaterThanOrEqual(BUDGET - 1);
     expect(step.body.events.length).toBeLessThanOrEqual(EVENTS_PER_INSERT);
+  });
+
+  it("the stop's worst case (fix wave 3A, A2): tools fill the room, their results take the state past its cap, and the run stops proposing its reviewed draft — exactly the budget", async () => {
+    const room = BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
+    const n = MAX_TOOL_CALLS_PER_STEP - 1;
+    const costs = Array.from({ length: n }, (_, i) => Math.floor(room / n) + (i < room % n ? 1 : 0));
+    // Each answers near the loop's cut (8 KB), so their results take a near-full state past STATE_MAX_BYTES.
+    tools = costs.map((c, i) => ({
+      ...costly(`t${i}`, c),
+      async run(ctx) {
+        for (let k = 0; k < c; k++) await ctx.db.all(sql`select 1`);
+        return { data: { rows: "r".repeat(7_800) }, summary: `t${i}` };
+      },
+    }));
+    turns = [answer(costs.map((_, i) => use(`t${i}`)))];
+    const id = (await call("POST", "", { scope: { kind: "now" } })).body.run.id as string;
+    await call("POST", `/${id}/step`); // context
+    const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
+    const state = JSON.parse(row!.state!) as { messages: Array<{ content: Array<{ text: string }> }> };
+    state.messages[0]!.content[0]!.text += "p".repeat(185_000);
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, id));
+    const today = new Date().toISOString().slice(0, 10);
+    const op = {
+      kind: "doc_workout",
+      target: { kind: "new", date: "2999-01-01" },
+      date: "2999-01-01",
+      doc: { title: "Calm hips", intent: { summary: "Calm the hips." }, parts: [] },
+      review: { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [], rounds: 1, changes: [] },
+      issues: [],
+      derived: { minutes: 20 },
+      by: { runId: id, role: "main" },
+      toolUseId: "u",
+      at: today,
+    };
+    await db.insert(schema.coachProposals).values({
+      id: `dp-${id}`,
+      userId,
+      title: "Calm hips",
+      evidence: "",
+      rationale: "",
+      flags: [],
+      ops: [op],
+      status: "unreviewed",
+      expiresAt: "2999-01-01",
+      createdAt: new Date().toISOString(),
+    });
+    const step = await measured("POST", `/${id}/step`);
+    expect(step.body.status).toBe("stopped_cap");
+    expect(step.body.events.map((e: { summary: string }) => e.summary).slice(-2)).toEqual([
+      "This design grew too long to continue — the coach stopped.",
+      "Proposed what had been reviewed before the stop.",
+    ]);
+    // Every tool ran (the room), then the run's write, the proposal read, its write, the older plans superseded, the
+    // lines: the step's end reserve spent whole.
+    expect(step.cost).toBe(BUDGET);
+    const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `dp-${id}`));
+    expect(p!.status).toBe("pending");
   });
 
   it("the context step with Task 3's own context", async () => {
