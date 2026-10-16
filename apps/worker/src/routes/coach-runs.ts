@@ -42,7 +42,7 @@ import { Hono } from "hono";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { coachDesignerEnabled, type Env } from "../env.js";
-import { stepAlarmOn, tellStepper, type StepperOp } from "../services/coach-run-stepper.js";
+import { stepAlarmOn, stepperLeaseMs, tellStepper, type StepperHint, type StepperOp } from "../services/coach-run-stepper.js";
 import {
   ANSWER_MAX_CHARS,
   REQUEST_MAX_CHARS,
@@ -56,6 +56,7 @@ import {
   noteOnTrail,
   parseScopeRequest,
   runStep,
+  type CoachRunDto,
   type RunDeps,
   WeekBudgetError,
 } from "../services/coach-runs.js";
@@ -75,14 +76,19 @@ function afterSeqOf(raw: string | undefined): number | null {
   return /^\d{1,9}$/.test(text) ? Number(text) : null;
 }
 
+/** What a route read of the run tells its object with every word (Task 13's fix wave): whether it reads `stepping`
+ * — a step on record for a run that doesn't holds no claim (R18) — and its lease by scope (§2.12). */
+const hintOf = (run: Pick<CoachRunDto, "status" | "scope">): StepperHint => ({ stepping: run.status === "stepping", leaseMs: stepperLeaseMs(run.scope) });
+
 /**
  * A client's word to its run's object (the step alarm): a read or an answer is here (`touch`), an answer asks for the
  * step it resumes (`arm`). A word that fails is logged and never the request's failure — the read answered — and the
  * client's next word, or its own arm, tells the object again.
  */
-async function tellQuietly(env: Env, runId: string, userId: string, op: StepperOp): Promise<void> {
+async function tellQuietly(env: Env, run: Pick<CoachRunDto, "id" | "status" | "scope">, userId: string, op: StepperOp): Promise<void> {
+  const runId = run.id;
   try {
-    await tellStepper(env, runId, userId, op);
+    await tellStepper(env, runId, userId, op, hintOf(run));
   } catch (e) {
     console.error(JSON.stringify({ level: "error", msg: "coach-runs: the run's stepper was not told", run: runId, op, error: e instanceof Error ? e.message : "unknown" }));
   }
@@ -135,7 +141,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       // (A sub-run's id is no run here — the reads answer main runs only — so only a main run's object is armed.)
       if (!AT_WORK.includes(read.run.status)) return c.json({ status: read.run.status, nextDue: null, events: read.events });
       try {
-        await tellStepper(c.env, read.run.id, c.get("userId"), "arm");
+        await tellStepper(c.env, read.run.id, c.get("userId"), "arm", hintOf(read.run));
       } catch (e) {
         console.error(JSON.stringify({ level: "error", msg: "coach-runs: the run's stepper was not armed", run: read.run.id, error: e instanceof Error ? e.message : "unknown" }));
         return c.json({ error: "stepper_unavailable" }, 503);
@@ -167,7 +173,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     const run = await getRun(c.get("db"), c.get("userId"), c.req.param("id"), afterSeq);
     if (!run) return c.json({ error: "not_found" }, 404);
     // A client reading a live run is watching it: its lease (and a step that is due, armed).
-    if (stepAlarmOn(c.env) && isLive(run.run.status)) await tellQuietly(c.env, run.run.id, c.get("userId"), "touch");
+    if (stepAlarmOn(c.env) && isLive(run.run.status)) await tellQuietly(c.env, run.run, c.get("userId"), "touch");
     return c.json(run);
   });
 
@@ -197,7 +203,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
         // The answer resumes the run: its object armed (or, a question still open, told the athlete is here).
         const run = outcome.run;
         if (stepAlarmOn(c.env) && isLive(run.status)) {
-          await tellQuietly(c.env, run.id, c.get("userId"), AT_WORK.includes(run.status) ? "arm" : "touch");
+          await tellQuietly(c.env, run, c.get("userId"), AT_WORK.includes(run.status) ? "arm" : "touch");
         }
         return c.json({ run });
       }
@@ -216,7 +222,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     const cancelled = await cancelRun(c.get("db"), c.get("userId"), c.req.param("id"), new Date());
     if (!cancelled) return c.json({ error: "not_found" }, 404);
     // Over by the athlete's hand: its object forgets it at once, nothing left armed (the go-live review, M5).
-    if (stepAlarmOn(c.env)) await tellQuietly(c.env, cancelled.run.id, c.get("userId"), "forget");
+    if (stepAlarmOn(c.env)) await tellQuietly(c.env, cancelled.run, c.get("userId"), "forget");
     return c.json(cancelled);
   });
 

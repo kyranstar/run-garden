@@ -9,11 +9,19 @@
  *    SQLite-backed (the only kind on Workers Free) — and answers at once. The object's ALARM runs the existing `runStep`,
  *    unchanged: the same claim, caps, ceilings, the 45-statement budget (it spends none on a route's sign-in) and tools.
  *    Only the alarm steps.
- *  - THE WATCHING RULE stays (the model is called only for a client that is watching). Every client request — the step,
- *    a read, an answer — stamps a lease (`touchedAt`). A finished step chains the next due one only while a client is
- *    watching: within STEPPER_LEASE_MS, and having asked or read since that step began. So a tab closed mid-step finishes
- *    that step and at most one more, then the run rests until a client is back; a read finds the step due and arms it.
- *    An alarm that fires with nobody watching steps nothing.
+ *  - THE LEASE (Task 13's fix wave, §2.12, the lead's decision on R6: a set took 10–13 minutes with the screen on). Every
+ *    client request — the step, a read, an answer — stamps a lease (`touchedAt`), and says how long it holds for the
+ *    run's scope (`stepperLeaseMs`: 20 minutes for now or later today, 45 for a set). A run the athlete started keeps
+ *    stepping without a client watching — each finished step chains the next due one — until it ends or waits for the
+ *    athlete, or until no client has touched it for its lease; then it rests until a client is back (a read finds the
+ *    step due and arms it). The run's ceiling and the weekly cap still bound it. An alarm that fires past the lease steps
+ *    nothing. (A word that names no lease — a record from before — keeps the old watching rule: STEPPER_LEASE_MS, and a
+ *    client seen since the step began.)
+ *  - WHETHER THE RUN IS STEPPING (R18; the go-live review's R1, R2). Every route that tells the object has read the run
+ *    and says whether it reads `stepping`. A recorded step on a run that doesn't — a step whose invocation finished in
+ *    an old instance after a deploy and could not settle here — holds no claim: it is cleared and the run armed now. So
+ *    is a stop after deaths in a row that never claimed (`deferred`). And a step that threw is marked `ended` before the
+ *    throw goes on: it has definitely ended, so a word during the platform's retry backoff arms it at once.
  *  - RECOVERY. The object records the claim its step takes (`step.claimAt`) before it takes it. An invocation that dies
  *    (a crash, an eviction) leaves that record. The platform's RETRY of that alarm (`alarmInfo.isRetry`: it follows an
  *    invocation that has ended) takes the claim back AT ONCE (`StepOptions.ownClaim`). Anything else that finds the record
@@ -37,9 +45,14 @@ import { COACH_RUN_STEP_STALE_MINUTES } from "./cron-limits.js";
 import { makeDb, type Db } from "./db.js";
 import { designModelTimeoutMs } from "./llm-messages.js";
 import { installStagingGuard } from "./staging.js";
+import type { RunScope } from "./design-tools/types.js";
 
-/** How long a client's request keeps the run stepping: its lease. A client at work reads every 2 s. */
+/** How long a client's request keeps the run stepping when its word names no lease (a record from before §2.12). */
 export const STEPPER_LEASE_MS = 120_000;
+/** A run's lease by scope (Task 13's fix wave, §2.12): it steps on without a client for this long after the last word. */
+export const STEPPER_LEASE_SINGLE_MS = 20 * 60_000;
+export const STEPPER_LEASE_SET_MS = 45 * 60_000;
+export const stepperLeaseMs = (scope: RunScope): number => (scope.kind === "week" || scope.kind === "next_n" ? STEPPER_LEASE_SET_MS : STEPPER_LEASE_SINGLE_MS);
 /** A step another request holds (busy), or a run that is live with nothing due: tried again this much later. */
 export const STEPPER_BUSY_RETRY_MS = 5_000;
 /** An account being restored: tried again this much later. */
@@ -83,23 +96,35 @@ interface StepperRecord {
   userId: string;
   /** The last client request (ms): the lease runs from it. */
   touchedAt: number;
+  /** How long the lease holds (§2.12: by the run's scope, from the routes); absent, the old watching rule. */
+  leaseMs?: number;
   /** When the run's next step is due (ms); null: nothing to step until a client asks (it waits on the athlete). */
   nextAt: number | null;
   /** The step at work — the claim it takes — written before it starts and cleared once it ends: one on record that no
-   * invocation is at work on died. */
-  step: { claimAt: string; startedAt: number } | null;
+   * invocation is at work on died. `ended`: its invocation threw (R2) — it has ended, whatever the platform does next. */
+  step: { claimAt: string; startedAt: number; ended?: true } | null;
   /** Invocations in a row that died with a step on record. */
   deaths: number;
+  /** The stop after STEPPER_MAX_DEATHS (M3), armed for the stale window: a word that finds the run not stepping steps it
+   * now instead (R2: the dying invocations never claimed). */
+  deferred?: true;
+}
+
+/** What a route says of the run with its word (R18; §2.12): whether it reads `stepping`, and its lease. */
+export interface StepperHint {
+  stepping?: boolean;
+  leaseMs?: number;
 }
 
 const KEY = "run";
 
-/** Tell `runId`'s object: one request to it. Throws when it can't be reached or answers an error. */
-export async function tellStepper(env: Env, runId: string, userId: string, op: StepperOp): Promise<StepperAnswer> {
+/** Tell `runId`'s object: one request to it, with what the route read of the run (`hint`). Throws when it can't be
+ * reached or answers an error. */
+export async function tellStepper(env: Env, runId: string, userId: string, op: StepperOp, hint: StepperHint = {}): Promise<StepperAnswer> {
   const ns = env.COACH_RUN_STEPPER!;
   const res = await ns.get(ns.idFromName(runId)).fetch(`https://coach-run-stepper/${op}`, {
     method: "POST",
-    body: JSON.stringify({ runId, userId }),
+    body: JSON.stringify({ runId, userId, ...hint }),
   });
   if (!res.ok) throw new Error(`coach run stepper: ${op} answered ${res.status}`);
   return (await res.json()) as StepperAnswer;
@@ -151,14 +176,20 @@ export class CoachRunStepper implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const op = new URL(request.url).pathname.slice(1);
     if (op !== "arm" && op !== "touch" && op !== "forget") return Response.json({ error: "not_found" }, { status: 404 });
-    const body = (await request.json().catch(() => null)) as { runId?: unknown; userId?: unknown } | null;
+    const body = (await request.json().catch(() => null)) as { runId?: unknown; userId?: unknown; stepping?: unknown; leaseMs?: unknown } | null;
     if (!body || typeof body.runId !== "string" || typeof body.userId !== "string") return Response.json({ error: "bad_request" }, { status: 400 });
-    return Response.json(await this.tell(op, body.runId, body.userId));
+    const hint: StepperHint = {
+      ...(typeof body.stepping === "boolean" ? { stepping: body.stepping } : {}),
+      // A lease within the old rule's and a set's (the routes send `stepperLeaseMs`).
+      ...(typeof body.leaseMs === "number" && Number.isFinite(body.leaseMs) ? { leaseMs: Math.min(STEPPER_LEASE_SET_MS, Math.max(STEPPER_LEASE_MS, body.leaseMs)) } : {}),
+    };
+    return Response.json(await this.tell(op, body.runId, body.userId, hint));
   }
 
   /** A client's word: the lease stamped; a step asked for is due now (never before a due time already known); a step
-   * that is due — or one that died with nothing left to retry it — is armed unless an alarm is set or at work. */
-  private async tell(op: StepperOp, runId: string, userId: string): Promise<StepperAnswer> {
+   * that is due — or one that died with nothing left to retry it — is armed unless an alarm is set or at work. A run the
+   * route found not stepping holds no claim (R18): a step on record is cleared and a deferred stop stepped, both now. */
+  private async tell(op: StepperOp, runId: string, userId: string, hint: StepperHint = {}): Promise<StepperAnswer> {
     const now = this.now();
     let record = await this.load();
     if (record && (record.runId !== runId || record.userId !== userId)) return { armed: false, working: this.working, nextAt: null, refused: true };
@@ -173,12 +204,25 @@ export class CoachRunStepper implements DurableObject {
       record = { runId, userId, touchedAt: now, nextAt: null, step: null, deaths: 0 };
     }
     record.touchedAt = now;
+    if (hint.leaseMs !== undefined) record.leaseMs = hint.leaseMs;
     if (op === "arm" && record.nextAt === null) record.nextAt = now;
+    // Not stepping (R18; go-live R1, R2): no invocation holds the run's claim — a step on record finished elsewhere (an
+    // old instance after a deploy) or died before claiming; a deferred stop's invocations never claimed. Step it now.
+    let cleared = false;
+    if (hint.stepping === false && !this.working && (record.step !== null || record.deferred)) {
+      record.step = null;
+      record.deaths = 0;
+      delete record.deferred;
+      record.nextAt = record.nextAt === null ? now : Math.min(record.nextAt, now);
+      cleared = true;
+    }
     await this.save(record);
-    if (this.working || (await this.storage.getAlarm()) !== null) return { armed: true, working: this.working, nextAt: record.nextAt };
+    // An alarm already set stands — unless it was set for a dead step's takeback, and the step is cleared now.
+    if (this.working || (!cleared && (await this.storage.getAlarm()) !== null)) return { armed: true, working: this.working, nextAt: record.nextAt };
     // Due: a step asked for, or chained. A step on record that no invocation of this instance is at work on began on an
-    // earlier one — dead, or still running there after a deploy: armed for when it may be taken back, never sooner (I2).
-    const due = record.step !== null ? stepTakebackAt(this.env, record.step.claimAt) : record.nextAt;
+    // earlier one — dead, or still running there after a deploy: armed for when it may be taken back, never sooner (I2)
+    // — but at once when it threw here (`ended`: R2).
+    const due = record.step !== null ? (record.step.ended ? now : stepTakebackAt(this.env, record.step.claimAt)) : record.nextAt;
     if (due === null) return { armed: false, working: false, nextAt: null };
     await this.storage.setAlarm(Math.max(now, due));
     return { armed: true, working: false, nextAt: record.nextAt };
@@ -193,34 +237,43 @@ export class CoachRunStepper implements DurableObject {
     // This instance runs one alarm at a time: a step on record is one an earlier invocation began. Only the platform's
     // retry knows that invocation has ended; anything else waits until no invocation can still be in its model call (I2).
     const dead = record.step;
-    const retry = alarmInfo?.isRetry === true || (alarmInfo?.retryCount ?? 0) > 0;
+    // The platform's retry follows an invocation that has ended; so does a step marked `ended` (it threw here: R2).
+    const retry = alarmInfo?.isRetry === true || (alarmInfo?.retryCount ?? 0) > 0 || dead?.ended === true;
     if (dead && !retry && now < stepTakebackAt(this.env, dead.claimAt)) {
       await this.storage.setAlarm(stepTakebackAt(this.env, dead.claimAt));
       return;
     }
     const deaths = dead ? record.deaths + 1 : 0;
     if (dead && deaths >= STEPPER_MAX_DEATHS) {
-      // Stop trying it as our own: the claim goes to the stale window's takeover — a read arms it for then (M3).
+      // Stop trying it as our own: the claim goes to the stale window's takeover — a read arms it for then (M3) — or,
+      // when a read finds the run not stepping (the dying invocations never claimed), at once (`deferred`: R2).
       console.error(JSON.stringify({ level: "error", msg: "coach-run-stepper: the step kept dying; stopped", run: record.runId, deaths }));
-      await this.save({ ...record, step: null, deaths: 0, nextAt: Date.parse(dead.claimAt) + COACH_RUN_STEP_STALE_MINUTES * 60_000 });
+      await this.save({ ...record, step: null, deaths: 0, nextAt: Date.parse(dead.claimAt) + COACH_RUN_STEP_STALE_MINUTES * 60_000, deferred: true });
       return;
     }
     if (dead) console.warn(JSON.stringify({ level: "warn", msg: "coach-run-stepper: taking back its own dead step", run: record.runId, retry, deaths }));
-    const watched = now - record.touchedAt < STEPPER_LEASE_MS;
+    const watched = now - record.touchedAt < (record.leaseMs ?? STEPPER_LEASE_MS);
     // Nobody watching and nothing to take back: the run rests until a client asks.
     if (!watched && !dead) return;
     const at = new Date(now);
+    const step = { claimAt: at.toISOString(), startedAt: now };
     let outcome: StepOutcome;
     this.working = true;
     try {
-      await this.save({ ...record, step: { claimAt: at.toISOString(), startedAt: now }, deaths });
+      const { deferred: _d, ...rest } = record;
+      await this.save({ ...rest, step, deaths });
       // Nobody watching: the dead claim is taken back, and no model is called for nobody (the sweep's own step).
       outcome = await runStep(this.opts.db ?? makeDb(this.env.DB), this.env, record.runId, record.userId, at, (this.opts.deps ?? defaultRunDeps)(), {
         ...(watched ? {} : { model: false }),
         ...(dead ? { ownClaim: dead.claimAt } : {}),
       });
+    } catch (e) {
+      // A step that threw has ended (R2): marked so, a word during the platform's retry backoff arms it at once rather
+      // than at its takeback time. The record stays: the retry takes its claim back.
+      const latest = await this.load().catch(() => null);
+      if (latest && latest.step?.claimAt === step.claimAt) await this.save({ ...latest, step: { ...step, ended: true } }).catch(() => undefined);
+      throw e;
     } finally {
-      // A step that threw keeps its record: the platform's retry takes its claim back.
       this.working = false;
     }
     await this.settle(outcome, now);
@@ -234,6 +287,7 @@ export class CoachRunStepper implements DurableObject {
     if (!record) return;
     record.step = null;
     record.deaths = 0;
+    delete record.deferred;
     switch (outcome.kind) {
       case "not_found":
         return this.forget();
@@ -252,10 +306,11 @@ export class CoachRunStepper implements DurableObject {
         break;
     }
     await this.save(record);
-    // The next step only for a client watching: within the lease, and seen since this step began (a step that ran
-    // nothing — busy, restoring — is tried again while the lease holds).
-    const fresh = now - record.touchedAt < STEPPER_LEASE_MS;
-    const seen = outcome.kind !== "ok" || record.touchedAt >= startedAt;
+    // The next step while the lease holds (§2.12: the run's own, from the routes — the run goes on with nobody reading).
+    // A record with no lease keeps the old watching rule: within STEPPER_LEASE_MS, and seen since this step began (a step
+    // that ran nothing — busy, restoring — is tried again while the lease holds).
+    const fresh = now - record.touchedAt < (record.leaseMs ?? STEPPER_LEASE_MS);
+    const seen = record.leaseMs !== undefined || outcome.kind !== "ok" || record.touchedAt >= startedAt;
     if (record.nextAt !== null && fresh && seen) await this.storage.setAlarm(Math.max(now, record.nextAt));
   }
 }

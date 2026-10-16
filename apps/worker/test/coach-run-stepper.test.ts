@@ -35,6 +35,7 @@ import {
   STEPPER_TAKEBACK_GRACE_MS,
   stepTakebackAt,
   stepAlarmOn,
+  stepperLeaseMs,
   type StepperAnswer,
 } from "../src/services/coach-run-stepper.js";
 import { COACH_RUN_STEP_STALE_MINUTES } from "../src/services/cron-limits.js";
@@ -209,18 +210,18 @@ const runDeps = (model: ReturnType<typeof scriptedModel>, tools: DesignTool[] = 
 });
 
 /** One run's object as the platform keeps it: its storage outlives an instance; `kill` is a reset (a deploy). */
-function stepper(runId: string, model: ReturnType<typeof scriptedModel>, env: Env = { ...BASE_ENV, COACH_STEP_ALARM: "1" } as Env) {
+function stepper(runId: string, model: ReturnType<typeof scriptedModel>, env: Env = { ...BASE_ENV, COACH_STEP_ALARM: "1" } as Env, stepDb: Db = db) {
   const storage = new FakeStorage();
   const make = () =>
     new CoachRunStepper({ storage, id: { toString: () => runId, name: runId } } as unknown as DurableObjectState, env, {
-      db,
+      db: stepDb,
       clock,
       deps: () => runDeps(model),
     });
   let instance = make();
   let retryPending = false;
-  const tell = async (op: "arm" | "touch" | "forget", who = userId): Promise<StepperAnswer> => {
-    const res = await instance.fetch(new Request(`https://coach-run-stepper/${op}`, { method: "POST", body: JSON.stringify({ runId, userId: who }) }));
+  const tell = async (op: "arm" | "touch" | "forget", who = userId, hint: { stepping?: boolean; leaseMs?: number } = {}): Promise<StepperAnswer> => {
+    const res = await instance.fetch(new Request(`https://coach-run-stepper/${op}`, { method: "POST", body: JSON.stringify({ runId, userId: who, ...hint }) }));
     return (await res.json()) as StepperAnswer;
   };
   return {
@@ -739,6 +740,156 @@ describe("an alarm that dies mid-step (a deploy, an eviction)", () => {
 
 // ── A dead step's spend ─────────────────────────────────────────────────
 
+describe("Task 13's fix wave: the routes say whether the run is stepping (R18; go-live R1, R2), and a run keeps going while its lease holds (§2.12)", () => {
+  it("R1: after a deploy mid-step, the old invocation finishes the step; a read that finds the run not stepping clears the dead record and arms now", async () => {
+    const runId = await newRun();
+    let answer!: (r: MessagesResult) => void;
+    const begun = deferred();
+    const model = scriptedModel([
+      () => {
+        begun.resolve();
+        return new Promise<MessagesResult>((r) => (answer = r));
+      },
+      finishTurn(),
+    ]);
+    const w = stepper(runId, model);
+    await w.arm();
+    await w.fire();
+    await w.touch();
+    const old = w.fire();
+    await begun.promise;
+    w.deploy();
+    // The run reads `stepping`: the read says so, and the new instance waits for the takeback time, as before.
+    advance(2_000);
+    await w.tell("touch", userId, { stepping: true });
+    expect(w.storage.alarm).toBeGreaterThan(nowMs + 60_000);
+    // The old invocation finishes its step and writes the run — its settle never reaches the reset object.
+    answer(toolTurn(use("read_day")));
+    await old.catch(() => undefined);
+    expect((await runRow(runId)).status).toBe("active");
+    await w.storage.put("run", { ...(await w.storage.get<Record<string, unknown>>("run"))!, step: { claimAt: new Date(nowMs - 5_000).toISOString(), startedAt: nowMs - 5_000 } });
+    // The next read finds the run not stepping: the recorded step holds no claim — cleared, and armed for now.
+    advance(2_000);
+    expect(await w.tell("touch", userId, { stepping: false })).toMatchObject({ armed: true, working: false });
+    expect(w.storage.alarm).toBe(nowMs);
+    expect(((await w.storage.get<{ step: unknown }>("run"))!).step).toBeNull();
+    expect(model.calls).toBe(1);
+    await w.fire();
+    expect(model.calls).toBe(2);
+    expect((await runRow(runId)).status).toBe("finished");
+  });
+
+  it("R2: a step that threw is marked ended before the throw goes on — a read during the retry's backoff arms it now, and it is taken back as the object's own", async () => {
+    const runId = await newRun();
+    let breakNext = false;
+    // The step's database breaks under it once (outside the loop's own catch: its claim): the invocation throws.
+    const breaking = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "update" && breakNext) {
+          breakNext = false;
+          return () => {
+            throw new Error("the invocation broke");
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const model = scriptedModel([finishTurn()]);
+    const w = stepper(runId, model, undefined, breaking as Db);
+    await w.arm();
+    await w.fire();
+    await w.touch();
+    breakNext = true;
+    await expect(w.fire()).rejects.toThrow("the invocation broke");
+    const record = (await w.storage.get<{ step: { ended?: boolean } | null }>("run"))!;
+    expect(record.step).toMatchObject({ ended: true });
+    // The retry's backoff: no alarm on record. A read arms the ended step at once — never the takeback time.
+    w.storage.alarm = null;
+    advance(1_000);
+    expect(await w.tell("touch", userId, { stepping: true })).toMatchObject({ armed: true });
+    expect(w.storage.alarm).toBe(nowMs);
+    // It fires as no retry, and still takes the ended step back as its own: the run goes on.
+    await w.fire();
+    expect(model.calls).toBe(1);
+    expect((await runRow(runId)).status).toBe("finished");
+  });
+
+  it("R2: the stop after deaths in a row is deferred — a read that finds the run not stepping steps it now, not at the stale time", async () => {
+    const runId = await newRun();
+    const model = scriptedModel([finishTurn()]);
+    const w = stepper(runId, model);
+    await w.arm();
+    const claimAt = new Date(nowMs - 1_000).toISOString();
+    const record = (await w.storage.get<Record<string, unknown>>("run"))!;
+    await w.storage.put("run", { ...record, step: { claimAt, startedAt: Date.parse(claimAt) }, deaths: STEPPER_MAX_DEATHS - 1 });
+    w.kill(0);
+    await w.fire();
+    expect(((await w.storage.get<{ deferred?: boolean }>("run"))!).deferred).toBe(true);
+    // The dying invocations never claimed: the run is not stepping, so the read steps it now.
+    advance(2_000);
+    await w.tell("touch", userId, { stepping: false });
+    expect(w.storage.alarm).toBe(nowMs);
+  });
+
+  it("§2.12: with its lease from the route — 20 minutes for now — the run steps on with nobody reading, until the lease lapses", async () => {
+    const runId = await newRun();
+    const model = scriptedModel([toolTurn(use("read_day")), toolTurn(use("read_plan")), finishTurn()]);
+    const w = stepper(runId, model);
+    await w.tell("arm", userId, { stepping: false, leaseMs: stepperLeaseMs({ kind: "now" }) });
+    expect(stepperLeaseMs({ kind: "now" })).toBe(20 * 60_000);
+    expect(stepperLeaseMs({ kind: "later_today" })).toBe(20 * 60_000);
+    expect(stepperLeaseMs({ kind: "week" })).toBe(45 * 60_000);
+    expect(stepperLeaseMs({ kind: "next_n", n: 3 })).toBe(45 * 60_000);
+    // No read at all: each step chains the next while the lease holds.
+    for (let i = 0; i < 4 && w.storage.alarm !== null; i++) {
+      advance(60_000);
+      nowMs = Math.max(nowMs, w.storage.alarm);
+      await w.fire();
+    }
+    expect(model.calls).toBe(3);
+    expect((await runRow(runId)).status).toBe("finished");
+  });
+
+  it("§2.12: once nobody has touched the run for its lease, an alarm steps nothing; a set's lease is 45 minutes", async () => {
+    const runId = await newRun();
+    const model = scriptedModel([toolTurn(use("read_day")), finishTurn()]);
+    const w = stepper(runId, model);
+    await w.tell("arm", userId, { stepping: false, leaseMs: stepperLeaseMs({ kind: "now" }) });
+    await w.fire(); // the context step
+    advance(20 * 60_000 + 1);
+    nowMs = Math.max(nowMs, w.storage.alarm ?? nowMs);
+    if (w.storage.alarm !== null) await w.fire();
+    expect(model.calls).toBe(0);
+    // A set's: 45 minutes from the last word, still stepping at 30.
+    await db.update(schema.coachRuns).set({ status: "cancelled" }).where(eq(schema.coachRuns.id, runId));
+    const setId = (await createRun(db, userId, { scope: { kind: "week" }, request: null }, new Date(nowMs))).run.id;
+    const m2 = scriptedModel([finishTurn()]);
+    const s = stepper(setId, m2);
+    await s.tell("arm", userId, { stepping: false, leaseMs: stepperLeaseMs({ kind: "week" }) });
+    await s.fire();
+    advance(30 * 60_000);
+    nowMs = Math.max(nowMs, s.storage.alarm ?? nowMs);
+    await s.fire();
+    expect(m2.calls).toBe(1);
+  });
+
+  it("the routes tell the object whether the run is stepping, and its lease by scope", async () => {
+    const model = scriptedModel([]);
+    const { call, space } = await routesWith({ COACH_STEP_ALARM: "1" }, model);
+    const runId = await newRun();
+    await call("POST", `/${runId}/step`);
+    const o = space.object(runId);
+    expect(((await o.storage.get<{ leaseMs?: number }>("run"))!).leaseMs).toBe(20 * 60_000);
+    // A dead step on record, the run not stepping: the read clears it and arms now.
+    await o.storage.put("run", { ...(await o.storage.get<Record<string, unknown>>("run"))!, step: { claimAt: new Date(nowMs).toISOString(), startedAt: nowMs } });
+    o.storage.alarm = nowMs + 600_000;
+    advance(1_000);
+    await call("GET", `/${runId}?afterSeq=0`);
+    expect(((await o.storage.get<{ step: unknown }>("run"))!).step).toBeNull();
+    expect(o.storage.alarm).toBe(nowMs);
+  });
+});
+
 describe("a dead step's spend: the run's ceiling counts a realistic estimate, the week its worst case", () => {
   it("the estimate: the input at the cache-write rate on a first call, the cache-read rate after; the median output so far; never over the cap", () => {
     const model = "anthropic/claude-opus-5.5";
@@ -942,8 +1093,9 @@ describe("the routes with the switch on (COACH_STEP_ALARM = 1)", () => {
     const o = space.object(runId);
     o.storage.alarm = null;
     advance(20);
-    await o.instance.alarm(); // the context step; nobody read during it, so it waits for a read
-    expect(o.storage.alarm).toBeNull();
+    await o.instance.alarm(); // the context step: under the run's lease (§2.12) the next is chained, though nobody read
+    expect(o.storage.alarm).not.toBeNull();
+    o.storage.alarm = null; // (say it fired, and the run rested)
     advance(1_000);
     const read = await call("GET", `/${runId}?afterSeq=0`);
     expect(read.status).toBe(200);

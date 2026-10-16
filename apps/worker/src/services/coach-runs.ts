@@ -84,8 +84,9 @@ import {
  *
  * A run (`coach_runs`) is one agent at work: the main agent, a workout's designer or its reviewer, the last two as
  * sub-runs under a parent. It advances one STEP per request, driven by the client while its screen is open — or, with the
- * step alarm on (COACH_STEP_ALARM), by its object's alarm, which the client arms and keeps going while it watches
- * (coach-run-stepper.ts) — and by the hourly cron for a run nobody is stepping; everything it needs to resume lives in
+ * step alarm on (COACH_STEP_ALARM), by its object's alarm, which the client arms and which goes on while the run's lease
+ * holds (coach-run-stepper.ts: 20 or 45 minutes after the client's last word, Task 13's fix wave §2.12) — and by the
+ * hourly cron for a run nobody is stepping; everything it needs to resume lives in
  * `state`:
  *
  *  1. The first step builds the opening context (`deps.buildContext`) and stores it: the system blocks, sent exactly
@@ -149,7 +150,8 @@ import {
  * newest message says the time now ("It is now Tuesday, 13 October 2026, 08:15.").
  *
  * NOBODY WATCHING. The hourly sweep never calls the model: it takes back dead claims, runs a left run's queued tool
- * calls, and expires runs past their window. The model is only ever called for a client that is stepping.
+ * calls, and expires runs past their window. The model is only ever called for a client that is stepping, or within the
+ * lease a client's last word left (the step alarm).
  *
  * THE TRAIL. Every step appends events (`coach_run_events`): one plain line each — what the coach said, each tool's
  * result in summary, a question, a stop — on the MAIN run's trail, so the run view reads one sequence. An event of a
