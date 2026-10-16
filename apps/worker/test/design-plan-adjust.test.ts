@@ -891,6 +891,21 @@ describe("fix round 1: a change is claimed before the applier runs", () => {
     expect((await rowOf(run)).fallbackEstimatedDurationSeconds).toBe(1500);
   });
 
+  it("a change claimed by an approve that died keeps its claim's `before` when asked again — even after its session changed meanwhile", async () => {
+    const run = await watchRun();
+    const { id } = await proposal({ changes: [moveTo(run, day(-4))] });
+    raceAt(APPLIER, () => {
+      throw new Error("the request died");
+    });
+    await expect(approve(id)).rejects.toThrow("the request died");
+    // Meanwhile the athlete moved the run's time by hand: the claim still says how the session stood when it was claimed.
+    await db.update(plannedWorkouts).set({ effectiveTime: "06:30" }).where(eq(plannedWorkouts.id, run));
+    const again = await approve(id);
+    expect(again.changed).toEqual([{ opId: planAdjustId(run), change: "move", workoutId: run, before: { date: day(-3), time: "18:00", title: "Easy run", minutes: 45 } }]);
+    expect((await changeOf(id, run)).outcome).toMatchObject({ status: "applied", before: { time: "18:00" } });
+    expect((await rowOf(run)).effectiveDate).toBe(day(-4));
+  });
+
   it("R3: the write after the applier loses: asked again, the change is recorded applied with the session as it stood before — never as it stands after", async () => {
     const run = await watchRun();
     const { id } = await proposal({ changes: [shorten(run, 30), skip(rich.outlineToday)] });
@@ -933,6 +948,19 @@ describe("fix round 3: a skip the applier made before a request died", () => {
     const res = await approve(id);
     expect(res.status).toBe("approved");
     expect((await rowOf(rich.outlineToday)).completionState).toBe("skipped");
+  });
+
+  it("the drain's read failing never turns an applied move into an error: the move is recorded applied", async () => {
+    const run = await watchRun();
+    const { id } = await proposal({ changes: [moveTo(run, day(-4))] });
+    // Its one read of the watch's queue (the move itself queues no watch job with the athlete's writes off).
+    beforeStatement = (sql) => {
+      if (/from "coros_write_jobs"/.test(sql)) throw new Error("coros_write_jobs unavailable");
+    };
+    const res = await approve(id);
+    expect(res.status).toBe("approved");
+    expect(res).not.toHaveProperty("coachDrain");
+    expect((await rowOf(run)).effectiveDate).toBe(day(-4));
   });
 });
 
@@ -994,9 +1022,9 @@ describe("fix round 7: the sanctioned rest the thread coach is held to", () => {
   it("counts the week's sanctioned skips already resolved, as the thread coach's dossier does — and holds its number", async () => {
     await planned({ date: day(2), state: "skipped" });
     await db.update(plannedWorkouts).set({ sanctionedBy: "coach", resolutionDate: day(2) }).where(eq(plannedWorkouts.effectiveDate, day(2)));
-    // One older than the rolling week counts for nothing.
-    await planned({ date: day(9), state: "skipped" });
-    await db.update(plannedWorkouts).set({ sanctionedBy: "coach", resolutionDate: day(9) }).where(eq(plannedWorkouts.effectiveDate, day(9)));
+    // One a week ago — the day before the rolling week's first — counts for nothing.
+    await planned({ date: day(7), state: "skipped" });
+    await db.update(plannedWorkouts).set({ sanctionedBy: "coach", resolutionDate: day(7) }).where(eq(plannedWorkouts.effectiveDate, day(7)));
     const res = ok((await adjust(await mainRun(), skip(rich.outlineToday))).res);
     expect((res.data as { sanctionedRest: unknown }).sanctionedRest).toEqual({ usedThisWeek: 1, inProposal: 1, allowance: 1 });
     const [op] = (await proposalOf((res.data as { proposalId: string }).proposalId))!.ops as DesignedPlanOp[];
