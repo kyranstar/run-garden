@@ -1190,11 +1190,26 @@ export interface CoachOpenProposalDto {
   flags: string[];
 }
 
+/**
+ * Another designed suggestion still open (Task 13, R2): not a rehearsal's, with something open dated today or later —
+ * newest first, at most 5, never the one the current run shows.
+ */
+export interface CoachAlsoOpenDto {
+  proposalId: string;
+  title: string;
+  date: string;
+  /** "HH:MM". */
+  time: string | null;
+  /** How many of its workouts and changes are still to decide. */
+  items: number;
+}
+
 /** `GET /api/coach/runs/current`: the run the Studio shows when it opens — the newest live main run, else the newest one
- * over whose proposal still has a workout to decide — with its last events and the proposal it holds open. */
+ * over whose proposal still has a workout to decide — with its last events and the proposal it holds open; and the
+ * other suggestions still open (`alsoOpen`, Task 13; absent from an older server). */
 export type CoachRunCurrentResponse =
-  | { run: CoachRunDto; events: CoachRunEventDto[]; proposal: CoachOpenProposalDto | null }
-  | { run: null };
+  | { run: CoachRunDto; events: CoachRunEventDto[]; proposal: CoachOpenProposalDto | null; alsoOpen?: CoachAlsoOpenDto[] }
+  | { run: null; alsoOpen?: CoachAlsoOpenDto[] };
 
 /** `POST /api/coach/runs/:id/answer`: the athlete's words (one per question), a skip, or the id of the condition check
  * the server saved for an ask for today's check. */

@@ -12,6 +12,7 @@
  */
 import {
   api,
+  type CoachAlsoOpenDto,
   type CoachOpenProposalDto,
   type CoachRunCurrentResponse,
   type CoachRunDto,
@@ -89,14 +90,26 @@ export function toRunRead(v: unknown): { run: CoachRunDto; events: CoachRunEvent
   return { run: toRun(r.run), events: toEvents(r.events) };
 }
 
-/** The current run's read: no run unless one with an id came. */
+/** The other suggestions still open (Task 13, R2): each with an id and a day; its title, time and count as they read. */
+function toAlsoOpen(v: unknown): CoachAlsoOpenDto[] {
+  return list(v).flatMap((x): CoachAlsoOpenDto[] => {
+    const a = record(x);
+    if (!a || typeof a.proposalId !== "string" || !a.proposalId || !isDay(a.date)) return [];
+    const time = typeof a.time === "string" && /^\d{1,2}:\d{2}/.test(a.time) ? a.time : null;
+    const items = num(a.items);
+    return [{ proposalId: a.proposalId, title: words(a.title) ?? "A suggestion", date: a.date, time, items: items !== null && items > 0 ? Math.round(items) : 1 }];
+  });
+}
+
+/** The current run's read: no run unless one with an id came; the other open suggestions whenever they came. */
 export function toCurrent(v: unknown): CoachRunCurrentResponse {
   const r = record(v);
   const run = record(r?.run);
-  if (!r || !run || typeof run.id !== "string" || !run.id) return { run: null };
+  const also = r && r.alsoOpen !== undefined ? { alsoOpen: toAlsoOpen(r.alsoOpen) } : {};
+  if (!r || !run || typeof run.id !== "string" || !run.id) return { run: null, ...also };
   const p = record(r.proposal);
   const proposal: CoachOpenProposalDto | null = p && typeof p.id === "string" && p.id ? { id: p.id, status: text(p.status), flags: texts(p.flags) } : null;
-  return { run: toRun(run), events: toEvents(r.events), proposal };
+  return { run: toRun(run), events: toEvents(r.events), proposal, ...also };
 }
 
 /** A suggestion's read (`GET /api/coach/proposals/:id`). */

@@ -11283,6 +11283,58 @@ a.stu-tpl-open:focus-visible::before {
   font-weight: var(--weight-medium);
   color: var(--ink-soft);
 }
+/* Also waiting (Task 13, R2): the other open suggestions under the current card, a compact line each that opens it. */
+.coach-also {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.coach-also-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.coach-also-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.coach-also-line {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-2);
+  min-height: var(--tap);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.coach-also-line:hover {
+  text-decoration: underline;
+}
+.coach-also-chev {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-soft);
+}
+.coach-also-line[aria-expanded="true"] .coach-also-chev {
+  transform: rotate(90deg);
+}
+.coach-also-card[hidden] {
+  display: none;
+}
+
 /* The words a tap carried that the coach didn't start, offered back under the field. */
 .coach-composer-back {
   margin: 0;

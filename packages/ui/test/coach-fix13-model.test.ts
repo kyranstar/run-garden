@@ -1,10 +1,12 @@
 /**
  * Task 13's fix wave, stream U — what the coach's screens decide without React: a suggestion's new fields read
- * tolerantly (§2.8, §2.9), a set's rows by day (D7), the review's new labels (§2.10). Synthetic data only.
+ * tolerantly (§2.8, §2.9), a set's rows by day (D7), the other open suggestions (R2, §2.7), the review's new labels
+ * (§2.10). Synthetic data only.
  */
 import { describe, expect, it } from "vitest";
 import type { DesignChangeLineDto, DesignContextRowDto, DesignLineDto } from "@rg/api-client";
-import { toProposal } from "../src/screens/studio/coach-tolerance.js";
+import { alsoLine } from "../src/screens/studio/also-waiting.js";
+import { toCurrent, toProposal } from "../src/screens/studio/coach-tolerance.js";
 import { cardRows, contextLine } from "../src/screens/studio/proposal-card.js";
 import { REVIEW_LABELS, reviewLabel } from "../src/screens/studio/run-model.js";
 
@@ -89,6 +91,43 @@ describe("a suggestion's new fields, read tolerantly (§2.8, §2.9)", () => {
       { date: "2026-10-19", time: null, kind: "", title: "Jaw care", minutes: null },
     ]);
     expect("context" in toProposal({ id: "dp-1", status: "pending", lines: [] })).toBe(false);
+  });
+});
+
+describe("the other open suggestions, read tolerantly (R2, §2.7)", () => {
+  const run = { id: "run-1", status: "finished", scope: { kind: "now" } };
+
+  it("each with an id and a day; a title, time and count as they read — and with no run too", () => {
+    const read = toCurrent({
+      run,
+      events: [],
+      proposal: null,
+      alsoOpen: [
+        { proposalId: "dp-2", title: "Hips", date: "2026-10-11", time: "13:05", items: 1 },
+        { proposalId: "dp-3", title: "", date: "2026-10-13", time: "noon", items: "three" },
+        { proposalId: "", title: "No id", date: "2026-10-13" },
+        { proposalId: "dp-4", title: "No day", date: "Tuesday" },
+        "not a row",
+      ],
+    });
+    expect(read.alsoOpen).toEqual([
+      { proposalId: "dp-2", title: "Hips", date: "2026-10-11", time: "13:05", items: 1 },
+      { proposalId: "dp-3", title: "A suggestion", date: "2026-10-13", time: null, items: 1 },
+    ]);
+    expect(toCurrent({ run: null, alsoOpen: [{ proposalId: "dp-2", title: "Hips", date: "2026-10-11", time: null, items: 2 }] })).toEqual({
+      run: null,
+      alsoOpen: [{ proposalId: "dp-2", title: "Hips", date: "2026-10-11", time: null, items: 2 }],
+    });
+  });
+
+  it("an older server's read: no alsoOpen at all", () => {
+    expect("alsoOpen" in toCurrent({ run, events: [], proposal: null })).toBe(false);
+    expect(toCurrent({ run: null })).toEqual({ run: null });
+  });
+
+  it("a line in words: title, day and time, and how many to decide when more than one", () => {
+    expect(alsoLine({ title: "Hips", date: "2026-10-11", time: "13:05", items: 1 })).toBe("Hips · Sun 1:05 PM");
+    expect(alsoLine({ title: "Your week", date: "2026-10-13", time: null, items: 3 })).toBe("Your week · Tue · 3 to decide");
   });
 });
 

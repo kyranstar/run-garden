@@ -20,6 +20,8 @@
  *  - A set (this week, the next workouts) shows its estimate once its plan made one, beside the limit; Cancel is there.
  *  - A run that stops says what stopped it and what happens next; its suggestion's card follows when it proposed what was
  *    reviewed, and otherwise up to three ways to train now.
+ *  - Under the card, "Also waiting": the other suggestions still open (the current read's `alsoOpen`, Task 13 R2), a
+ *    compact line each that opens its own card.
  *  - A 404 from the coach's routes: the server's coach is off. One quiet line, and nothing asked again.
  *
  * Shown only with the coach designer on (`coachOn`): the Studio home renders this in its slot.
@@ -33,6 +35,7 @@ import { useEscapeKey } from "../../components.js";
 import { COACH_PREFERENCES_QUERY } from "../settings/coach-settings.js";
 import { IconChevron } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
+import { AlsoWaiting } from "./also-waiting.js";
 import { CoachBoundary } from "./coach-boundary.js";
 import { readCurrent, readProposal } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
@@ -183,6 +186,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   });
   const proposed = cardShows(proposalRead.data);
   const proposalKnown = proposalId === null || proposalRead.isSuccess || proposalRead.isError;
+  // The other suggestions still open (R2), from a read made since this screen opened — never the one the run shows.
+  const alsoOpen = (current.isFetchedAfterMount ? (current.data?.alsoOpen ?? []) : []).filter((a) => a.proposalId !== proposalId);
 
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000, enabled: over });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today, enabled: over });
@@ -278,6 +283,11 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
       {proposalId ? (
         <CoachBoundary>
           <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} today={ctx.today} />
+        </CoachBoundary>
+      ) : null}
+      {alsoOpen.length > 0 ? (
+        <CoachBoundary>
+          <AlsoWaiting items={alsoOpen} today={ctx.today} />
         </CoachBoundary>
       ) : null}
     </div>
