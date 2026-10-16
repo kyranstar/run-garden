@@ -119,7 +119,7 @@ const whyDoc = () =>
         purpose: "main",
         format: "straight",
         items: [
-          { kind: "exercise", libraryId: "bridge", dose: { sets: 2, reps: 12 }, why: "Glutes on before loading." },
+          { kind: "exercise", libraryId: "bridge", dose: { sets: 2, reps: 12 }, why: "Wakes the athlete's glutes before loading." },
           { kind: "rest", seconds: 30 },
           { kind: "exercise", libraryId: "deadBug", dose: { sets: 2, reps: 8 }, alternates: [{ libraryId: "gobletSquat", why: "More load than the athlete's back wants today." }] },
         ],
@@ -133,7 +133,7 @@ describe("a line says what the workout is for and why each move (§2.8; 13d D1, 
     const [line] = docWorkoutLines([op({ doc: whyDoc() })], place, CLOCK);
     expect(line!.intent).toBe("Open your hips, then load them gently.");
     expect(line!.detail).toHaveLength(3);
-    expect(line!.whys).toEqual(["Glutes on before loading.", null, null]);
+    expect(line!.whys).toEqual(["Wakes your glutes before loading.", null, null]);
     expect(line!.alternates).toEqual([[], [], [{ name: "Goblet squat", why: "More load than your back wants today." }]]);
   });
 

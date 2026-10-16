@@ -187,19 +187,18 @@ describe("3A-B — the prompt agrees with the code", () => {
   });
 
   it("B4: what the athlete chose is not a must-fix — listed in accepted; the validator holds the hard rules whatever the score", () => {
-    expect(roleBlock("reviewer")).toContain(
-      "A cost the athlete chose in their own words is not a must-fix. Score it honestly, then list it in `accepted` with the athlete's reason. A must-fix may make their request safer, but never replaces it.",
-    );
+    // Its why is the cost they chose, to them; never the coach's own dosing, never condition safety (Task 13's fix wave).
+    expect(roleBlock("reviewer")).toContain("A cost the athlete chose in their own words is not a must-fix. Score it honestly, then list it in `accepted`");
+    expect(roleBlock("reviewer")).toContain("A must-fix may make their request safer, but never replaces it.");
     expect(roleBlock("reviewer")).toContain("Hard rules are enforced by the validator regardless of your scores.");
     expect(line("submit_review")).toContain("accepted");
   });
 
   it("B5: the main coach asks for today's condition check when a gate needs it — before plan_set in a set", () => {
     expect(SHARED_PROMPT).toContain('ask_athlete({ check: "condition", why }) — the athlete logs it in the app; validate again after.');
-    // Only when a workout today needs it: today's check opens today's gates, never a later day's (round 2, B-I1).
-    expect(roleBlock("main")).toContain(
-      "ask what the set needs (today's condition check, only when a workout today needs a move its gate closes) before plan_set",
-    );
+    // Only when a workout today needs it: today's check opens today's gates, never a later day's (round 2, B-I1) — and
+    // before plan_set, what would change the days (Task 13's fix wave, 13b I7).
+    expect(roleBlock("main")).toContain("and today's condition check only when a workout today needs it: its designers can't ask.");
     expect(roleBlock("main")).not.toMatch(/among it\)/);
   });
 
@@ -297,7 +296,7 @@ describe("3A round 2 — the prompt's remaining words", () => {
   });
 
   it("B-I1: the main coach asks for today's check only when a workout today needs it", () => {
-    expect(roleBlock("main")).toContain("(today's condition check, only when a workout today needs a move its gate closes)");
+    expect(roleBlock("main")).toContain("today's condition check only when a workout today needs it");
   });
 
   it("B-M3: propose_workout's document is the draft — not one validated first", () => {
