@@ -1929,3 +1929,24 @@ describe("fix round 2 — a newer plan supersedes by session, not by day", () =>
     expect(rows.get("far")).toMatchObject({ status: "pending", supersededBy: null });
   });
 });
+
+describe("fix round 2 — the main run's own spend, from the tree", () => {
+  it("what the main coach has spent comes off what its average run still needs", async () => {
+    const a = await athlete();
+    // A measured set's main run cost $3.00 on average.
+    const past = new Date(NOW.getTime() - 3 * 86_400_000).toISOString();
+    await db.insert(schema.coachRuns).values({
+      id: `old-main-${a.userId}`, userId: a.userId, parentId: null, role: "main", scope: { kind: "week" }, request: null, status: "finished",
+      state: null, steps: 4, costUsd: 3, createdAt: past, updatedAt: past,
+    });
+    const mainId = await weekRun(a.userId);
+    const four = planSet([brief("thu", THU), brief("sat", SAT), brief("mon", MON), brief("tue", day(-6), { sameDayWhy: "A short care session." })]);
+    // This plan's own call costs $1.00: the main run still needs $2.00 of its $3.00, so four at $0.70 fit the $5.00 left.
+    const { deps, requests } = scripted([turn([four], { cost: 1_000_000 })]);
+    await runStep(db, env, mainId, a.userId, NOW, deps);
+    await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + 1000), deps);
+    expect(requests).toHaveLength(1);
+    expect((await runRow(mainId)).status).toBe("waiting_set");
+    expect(await designersOf(mainId)).toHaveLength(4);
+  });
+});

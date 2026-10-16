@@ -2065,8 +2065,10 @@ function setHooks(s: StepCtx): SetHooks {
   return {
     rounds: () => s.state.set?.rounds ?? [],
     budget: () => {
-      // This set's designers that ran and are over: what each cost, its reviewers included.
-      const done = s.nodes.filter((n) => n.parentId === s.root.id && n.role === "designer" && !isLive(n.status) && n.steps > 0);
+      // This set's designers: what each cost, its reviewers included. (Main plans again only once every one of them is
+      // over — `waiting_set` — and a designer that never ran is one only a whole-tree stop leaves, after which nothing
+      // is planned.)
+      const done = s.nodes.filter((n) => n.parentId === s.root.id && n.role === "designer");
       return {
         ceilingMicros: s.state.settings.ceilingMicros,
         // The tree's spend as read at the step's start, and this step's model call.
