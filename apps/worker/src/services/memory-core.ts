@@ -17,6 +17,13 @@ import type { Db } from "./db.js";
 export const MEMORY_CORE = 20;
 
 /**
+ * The zone whose local date is the earliest anywhere at any moment (UTC−12; POSIX's sign is inverted): what "live"
+ * means to a read with no timezone in hand — the memory list, its edits, and an undo's pin count — so an item still
+ * live somewhere counts, and the hourly sweep retires one that lapsed in the athlete's own zone.
+ */
+export const EARLIEST_ZONE = "Etc/GMT+12";
+
+/**
  * Pinned items, at most (Stage 3 Task 10): every one rides in the core — inside its MEMORY_CORE items, so the cached
  * memory block stays the size the opening context already allows — with room left for recent facts and rules. A pin
  * past it is refused (`PATCH /api/coach/memory/:id`).
@@ -39,10 +46,26 @@ export function liveMemoryWhere(userId: string, today: string): SQL {
   )!;
 }
 
-/** The account's superseded history (Task 10: the memory list shows it under the item that replaced it): items a newer
- * one superseded, never a rehearsal's, never one the athlete deleted. */
-export function memoryHistoryWhere(userId: string): SQL {
-  return and(eq(m.userId, userId), eq(m.active, true), isNotNull(m.supersededBy), sql`not ${REHEARSAL_MEMORY}`)!;
+/** A row of `alias` a rehearsal run wrote: REHEARSAL_MEMORY for a row the query names by an alias. */
+const rehearsalOf = (alias: string): SQL =>
+  sql.raw(`coalesce(case when json_valid(${alias}.provenance) then json_extract(${alias}.provenance, '$.rehearsal') end, 0) = 1`);
+
+/**
+ * The account's superseded history (Task 10: the memory list shows it under the item that replaced it): items a newer
+ * one superseded, never a rehearsal's, never one the athlete deleted — and only in a CHAIN WHOSE NEWEST ITEM IS LIVE on
+ * `today` (fix wave 3B, A-M4): each item reached from a live item down `superseded_by`, through items still the
+ * athlete's (not deleted, not a rehearsal's). An orphan — under an item the athlete deleted or one that expired, under
+ * a row pointing anywhere but at another item (the migration's old `profile:` markers), or in a loop with no live end —
+ * is nobody's history. A scalar subquery of the same statement (a recursive walk, `union` so a loop ends).
+ */
+export function memoryHistoryWhere(userId: string, today: string): SQL {
+  const chain = sql`(with recursive chain(id) as (
+      select ${m.id} from ${m} where ${liveMemoryWhere(userId, today)}
+      union
+      select h.id from coach_memory h join chain on h.superseded_by = chain.id
+        where h.user_id = ${userId} and h.active = 1 and not ${rehearsalOf("h")}
+    ) select id from chain)`;
+  return and(eq(m.userId, userId), eq(m.active, true), isNotNull(m.supersededBy), sql`not ${REHEARSAL_MEMORY}`, sql`${m.id} in ${chain}`)!;
 }
 
 /** The core's rows: live, and pinned or a fact or rule. */

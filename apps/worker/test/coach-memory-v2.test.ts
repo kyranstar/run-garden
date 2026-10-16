@@ -3,7 +3,9 @@
  * so everything here is additive and its statements are pinned.
  *
  *  - `GET /api/coach/memory`: `memory` is what it always was (live items only, newest first); `history` adds the items
- *    a newer one superseded — never a rehearsal's, never one the athlete deleted. Still the session and one read.
+ *    a newer one superseded — never a rehearsal's, never one the athlete deleted — and only in a chain whose newest item
+ *    is live (fix wave 3B, A-M4): an orphan of a deleted or expired item, or a row pointing anywhere but at another item
+ *    (the migration's old markers), is no one's history. Still the session and one read.
  *  - `PATCH /api/coach/memory/:id { body?, pinned?, confirm? }`: an edit as before; pin and unpin; `confirm` turns the
  *    coach's inference into the athlete's confirmed item. Pinned items are capped (MEMORY_PIN_CAP): a pin past the cap
  *    is refused in plain words. Only the athlete's own live item — another's, a superseded one, a deleted one or a
@@ -11,13 +13,16 @@
  *  - The pinned core still holds every pinned item, and the thread coach's own reads don't change.
  *  - `remember`'s line carries an undo handle (record_answer's design): `POST /api/coach/runs/:id/undo-answer` takes
  *    the item back, puts back what it replaced, and says so on the trail; once.
+ *  - A pin travels with its item (fix wave 3B, A-M1): `remember` with `replaces` keeps the pin of what it replaces, and
+ *    an undo that puts a pinned item back checks the pin cap — over it, the item comes back unpinned, and the trail
+ *    says so.
  *
  * Synthetic data only.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { coachRoutes } from "../src/routes/coach.js";
@@ -53,6 +58,8 @@ let cookie: string;
 let statements = 0;
 
 const AT = "2026-10-01T09:00:00.000Z";
+/** A note's last day well ahead of whatever day the suite runs: a fixed one would expire, and the test with it. */
+const AHEAD = addDays(new Date().toISOString().slice(0, 10), 365);
 type Row = typeof schema.coachMemory.$inferInsert;
 const row = (id: string, o: Partial<Row> = {}): Row => ({
   id,
@@ -95,7 +102,7 @@ describe("GET /memory: the live list as before, and the history beside it", () =
       row("live", { kind: "rule", body: "Evenings now", learnedAt: "2026-10-03T09:00:00.000Z" }),
       row("older", { kind: "rule", body: "Mornings", supersededBy: "mid", learnedAt: "2026-09-01T09:00:00.000Z" }),
       row("mid", { kind: "rule", body: "Lunchtimes", supersededBy: "live", learnedAt: "2026-09-15T09:00:00.000Z" }),
-      row("pinned-note", { kind: "note", body: "Away next week", expiresAt: "2031-01-01", pinned: true, confidence: "confirmed" }),
+      row("pinned-note", { kind: "note", body: "Away next week", expiresAt: AHEAD, pinned: true, confidence: "confirmed" }),
       row("rehearsal-old", { body: "A rehearsal's", supersededBy: "live", provenance: { source: "athlete_words", at: AT, rehearsal: true } }),
       row("deleted-old", { body: "Deleted", supersededBy: "live", active: false }),
       row("expired", { kind: "note", body: "Gone by now", expiresAt: "2001-01-01" }),
@@ -106,6 +113,39 @@ describe("GET /memory: the live list as before, and the history beside it", () =
     expect(got.body.memory[1]).toMatchObject({ pinned: true, confidence: "confirmed", supersededBy: null });
     expect(got.body.history.map((m: { id: string }) => m.id).sort()).toEqual(["mid", "older"]);
     expect(got.body.history.find((m: { id: string }) => m.id === "mid")).toMatchObject({ body: "Lunchtimes", supersededBy: "live" });
+    expect(got.cost).toBe(2);
+  });
+
+  it("history holds only chains whose newest item is live: an orphan of a deleted or expired item, or of a non-item, is left out — in the same read", async () => {
+    await insertRows([
+      // A chain ending in a live item: its history.
+      row("live", { kind: "rule", body: "Evenings now" }),
+      row("mid", { kind: "rule", body: "Lunchtimes", supersededBy: "live" }),
+      row("older", { kind: "rule", body: "Mornings", supersededBy: "mid" }),
+      // A chain whose newest item the athlete deleted: its history went with it.
+      row("deleted-new", { body: "Deleted since", active: false }),
+      row("orphan", { body: "Under a deleted item", supersededBy: "deleted-new" }),
+      row("orphan-older", { body: "Further under it", supersededBy: "orphan" }),
+      // A chain through a deleted item: cut where the athlete deleted it.
+      row("live-2", { body: "Today's words" }),
+      row("deleted-mid", { body: "Deleted in the middle", supersededBy: "live-2", active: false }),
+      row("under-deleted-mid", { body: "Under the deleted middle", supersededBy: "deleted-mid" }),
+      // A chain whose newest item has expired.
+      row("expired-new", { kind: "note", body: "Away, back then", expiresAt: "2001-01-02" }),
+      row("under-expired", { kind: "note", body: "Away, earlier", expiresAt: "2001-01-01", supersededBy: "expired-new" }),
+      // A row the migration once pointed at the profile, and one pointing at an id that isn't there.
+      row("to-profile", { body: "A trip, now in the profile", supersededBy: "profile:events:mem-1" }),
+      row("to-nothing", { body: "Points nowhere", supersededBy: "no-such-item" }),
+      // Two rows that supersede each other, with no live end: never anyone's history, and the read still ends.
+      row("loop-a", { body: "Loop A", supersededBy: "loop-b" }),
+      row("loop-b", { body: "Loop B", supersededBy: "loop-a" }),
+    ]);
+    const other = await makeTestUser(db);
+    // Another athlete's live item is no chain's end for this athlete's rows.
+    await db.insert(schema.coachMemory).values([{ ...row("theirs"), userId: other.userId }, row("under-theirs", { supersededBy: "theirs" })]);
+    const got = await api("GET", "/memory");
+    expect(got.body.memory.map((m: { id: string }) => m.id).sort()).toEqual(["live", "live-2"]);
+    expect(got.body.history.map((m: { id: string }) => m.id).sort()).toEqual(["mid", "older"]);
     expect(got.cost).toBe(2);
   });
 });
@@ -286,8 +326,9 @@ describe("remember's line, with undo", () => {
 
     const done = await undo(runId, handle);
     expect(done).toMatchObject({ status: 200, body: { undone: 1 } });
-    // The session and the restore marker, what it replaced put back, the item taken back, the trail's line.
-    expect(done.cost).toBe(5);
+    // The session and the restore marker, the read of the item and what it replaced (A-M1: its pin and the cap), what it
+    // replaced put back, the item taken back, the trail's line.
+    expect(done.cost).toBe(6);
     expect((await one(`mem:${runId}:toolu_rm3`)).active).toBe(false);
     expect(await one("before")).toMatchObject({ active: true, supersededBy: null });
     const trail = await db.select().from(schema.coachRunEvents).where(eq(schema.coachRunEvents.runId, runId));
@@ -317,5 +358,64 @@ describe("remember's line, with undo", () => {
     expect((await one(second)).active).toBe(false);
     expect((await one("first")).supersededBy).toBe(second);
     expect(await one("third")).toMatchObject({ active: true, supersededBy: null });
+  });
+});
+
+describe("a pin travels with its item (fix wave 3B, A-M1)", () => {
+  const handleOf = (out: ToolOk) => (out.receipt as { undo: { handle: string } }).undo.handle;
+  const trailOf = async (runId: string) => (await db.select().from(schema.coachRunEvents).where(eq(schema.coachRunEvents.runId, runId))).map((e) => e.summary);
+
+  it("remember with replaces keeps the pin of what it replaces; an unpinned item's replacement is unpinned", async () => {
+    await db.insert(schema.coachMemory).values([row("pinned-before", { kind: "rule", body: "Mornings", pinned: true }), row("plain-before", { kind: "rule", body: "Gym on Mondays" })]);
+    const runId = (await createRun(db, userId, { scope: { kind: "now" }, request: "I train evenings now" }, new Date())).run.id;
+    await remembered(runId, { toolUseId: "toolu_pin1", input: { kind: "rule", body: "Evenings", confidence: "stated", replaces: "pinned-before" } });
+    await remembered(runId, { toolUseId: "toolu_pin2", input: { kind: "rule", body: "Gym on Tuesdays", confidence: "stated", replaces: "plain-before" } });
+    expect(await one(`mem:${runId}:toolu_pin1`)).toMatchObject({ pinned: true, active: true, supersededBy: null });
+    expect(await one("pinned-before")).toMatchObject({ supersededBy: `mem:${runId}:toolu_pin1` });
+    expect((await one(`mem:${runId}:toolu_pin2`)).pinned).toBe(false);
+    // The count of pins is the same as before: the replacement takes its place in the core.
+    const core = await memoryCore(db, userId, todayInZone(prefs.timezone));
+    expect(core.filter((m) => m.pinned).map((m) => m.id)).toEqual([`mem:${runId}:toolu_pin1`]);
+  });
+
+  it("an undo puts a pinned item back pinned while there's room", async () => {
+    await db.insert(schema.coachMemory).values(row("pinned-before", { kind: "rule", body: "Mornings", pinned: true }));
+    const runId = (await createRun(db, userId, { scope: { kind: "now" }, request: "I train evenings now" }, new Date())).run.id;
+    const out = await remembered(runId, { toolUseId: "toolu_pin3", input: { kind: "rule", body: "Evenings", confidence: "stated", replaces: "pinned-before" } });
+    const done = await undo(runId, handleOf(out));
+    expect(done.status).toBe(200);
+    expect(await one("pinned-before")).toMatchObject({ pinned: true, active: true, supersededBy: null });
+    expect((await trailOf(runId)).at(-1)).toBe('Taken back: the memory "Evenings"');
+  });
+
+  it(`an undo past the pin cap puts the item back unpinned, and says so`, async () => {
+    await db.insert(schema.coachMemory).values(row("pinned-before", { kind: "rule", body: "Mornings", pinned: true }));
+    const runId = (await createRun(db, userId, { scope: { kind: "now" }, request: "I train evenings now" }, new Date())).run.id;
+    const out = await remembered(runId, { toolUseId: "toolu_pin4", input: { kind: "rule", body: "Evenings", confidence: "stated", replaces: "pinned-before" } });
+    const replacement = `mem:${runId}:toolu_pin4`;
+    // Since then the athlete unpinned the replacement and pinned twelve others: the cap is full.
+    await db.update(schema.coachMemory).set({ pinned: false }).where(eq(schema.coachMemory.id, replacement));
+    await insertRows(Array.from({ length: MEMORY_PIN_CAP }, (_, i) => row(`pin-${i}`, { pinned: true })));
+    const done = await undo(runId, handleOf(out));
+    expect(done.status).toBe(200);
+    expect(await one("pinned-before")).toMatchObject({ pinned: false, active: true, supersededBy: null });
+    expect((await one(replacement)).active).toBe(false);
+    expect((await trailOf(runId)).at(-1)).toBe(`Taken back: the memory "Evenings". "Mornings" is back, unpinned: you have ${MEMORY_PIN_CAP} pinned already.`);
+    // The live pins stay at the cap.
+    const pinned = (await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.userId, userId))).filter((m) => m.pinned && m.active && !m.supersededBy);
+    expect(pinned).toHaveLength(MEMORY_PIN_CAP);
+    // The session and the restore marker, the read of what comes back, what it replaced put back, the item taken
+    // back, the trail's line.
+    expect(done.cost).toBe(6);
+  });
+
+  it("the replacement's own pin counts for nothing: it is taken back in the same undo", async () => {
+    await db.insert(schema.coachMemory).values(row("pinned-before", { kind: "rule", body: "Mornings", pinned: true }));
+    const runId = (await createRun(db, userId, { scope: { kind: "now" }, request: "I train evenings now" }, new Date())).run.id;
+    const out = await remembered(runId, { toolUseId: "toolu_pin5", input: { kind: "rule", body: "Evenings", confidence: "stated", replaces: "pinned-before" } });
+    // Eleven others pinned, and the replacement still pinned: twelve live pins — but the replacement goes with the undo.
+    await insertRows(Array.from({ length: MEMORY_PIN_CAP - 1 }, (_, i) => row(`pin-${i}`, { pinned: true })));
+    expect((await undo(runId, handleOf(out))).status).toBe(200);
+    expect(await one("pinned-before")).toMatchObject({ pinned: true, supersededBy: null });
   });
 });

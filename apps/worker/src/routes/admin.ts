@@ -239,7 +239,8 @@ export function adminRoutes(dispatch: AppDispatch): Hono<AppContext> {
   });
 
   /**
-   * The one-time move of profile-shaped memories into the profile (Stage 3 Task 10; services/coach-memory-migration.ts),
+   * The one-time copy of profile-shaped memories into the profile — each kept in memory too, for the thread coach
+   * (Stage 3 Task 10; fix wave 3B, A-I1; services/coach-memory-migration.ts),
    * for the owner's own account only (`ALLOWED_GOOGLE_EMAIL`, compared as sign-in compares it; any other account is a
    * 404). `{}` answers the dry run — reads only. `{ apply: true, fingerprint }` applies exactly the plan that dry run
    * reported, and refuses (409, with the fresh report) a plan that changed since. The report is the answer only:
@@ -258,7 +259,6 @@ export function adminRoutes(dispatch: AppDispatch): Hono<AppContext> {
     }
     const out = await migrationApply(db, userId, body.fingerprint);
     if (out.kind === "changed") return c.json({ error: "changed_since_dry_run", report: out.report }, 409);
-    if (out.kind === "too_large") return c.json({ error: "too_large", statements: out.statements }, 413);
     return c.json(out.report);
   });
 

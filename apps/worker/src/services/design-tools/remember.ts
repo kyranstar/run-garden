@@ -4,24 +4,28 @@
  * for it). Its confidence is `stated` — the athlete said it — or `inferred` — the coach concluded it; never
  * `confirmed`, which only the athlete gives. Where it came from goes with it (the athlete's words or the coach's
  * inference, the run, when), and a rehearsal run's item is marked as one (`provenance.rehearsal`) so no run ever reads
- * it as the athlete's. `replaces` updates an item by its id: the new one is written and the old one kept, superseded
- * by it — but an inference never replaces what the athlete confirmed, and what they state replaces it only with their
- * own words from the request (`quote`). Only a note expires: after today, within a year.
+ * it as the athlete's. `replaces` updates an item by its id: the new one is written — keeping the old one's pin (fix
+ * wave 3B, A-M1) — and the old one kept, superseded by it; but an inference never replaces what the athlete confirmed,
+ * and what they state replaces it only with their own words from the request (`quote`). Only a note expires: after
+ * today, within a year.
  *
  * A rehearsal run writes its marked row and NEVER supersedes the athlete's item (it answers that it would have).
  *
  * At most MEMORY_PER_RUN items per run, counted over the main run's whole tree. Keyed on the call's tool-use id: a
  * replay writes nothing new and answers the same. Its line carries an undo handle (record_answer's design, Task 10):
- * the run view's Undo takes the item back and puts back what it replaced (`undoRemembered`). The body is the athlete's (or the coach's) words — data — and comes
+ * the run view's Undo takes the item back and puts back what it replaced, its pin within the cap (`undoRemembered`).
+ * The body is the athlete's (or the coach's) words — data — and comes
  * back marked. Three statements: the athlete (with the run's count, a replay's row and the replaced item), then the
  * insert and the supersede, as one batch.
  */
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql, type AnyColumn } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
-import { addDays, newId } from "@rg/domain";
+import { addDays, newId, todayInZone } from "@rg/domain";
 import { coachMemory, coachRuns } from "@rg/database";
 import { runAtomically, type Db } from "../db.js";
 import { COACH_CONFIDENCES, MEMORY_KINDS, memoryWrites } from "../coach-memory.js";
+import { EARLIEST_ZONE, liveMemoryWhere, MEMORY_PIN_CAP } from "../memory-core.js";
 import type { DesignTool } from "./types.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
 import { quoteIn } from "./record-answer.js";
@@ -62,8 +66,14 @@ export const memoryHandle = (mainRunId: string, callId: string): string => `rm:$
  * Take back what one `remember` call kept (its handle), for `userId` only: the item is deleted as the Settings list
  * deletes one (`active` off), and what it replaced is live again — unless the item had itself been replaced since,
  * when the history stays as it is. Null when there is nothing to take back (already taken back, or never this
- * athlete's). Two statements, the replaced item first: should the second fail, both are live — a repeat, never a loss —
- * and the undo can be tried again.
+ * athlete's).
+ *
+ * A PIN COMES BACK WITHIN THE CAP (fix wave 3B, A-M1). What comes back keeps its pin while the athlete's other live pins
+ * — the item taken back not among them: it goes in the same undo — leave room under MEMORY_PIN_CAP; past it, it comes
+ * back unpinned, and the line says so. The write decides (the count in its own statement); the read before it says.
+ *
+ * Three statements: the read of the item, what it replaced and the other pins; then the replaced item put back first —
+ * should the last fail, both are live: a repeat, never a loss, and the undo can be tried again.
  */
 export async function undoRemembered(db: Db, userId: string, handle: string): Promise<{ line: string; count: number } | null> {
   const parsed = /^rm:([^:]{1,120}):([A-Za-z0-9_-]{1,120})$/.exec(handle);
@@ -71,16 +81,37 @@ export async function undoRemembered(db: Db, userId: string, handle: string): Pr
   const [, rootId, callId] = parsed as unknown as [string, string, string];
   const suffix = `:${callId}`;
   // The item: this athlete's, written in that main run's tree (`provenance.runId`), by that call (`mem:<run>:<call>`).
-  const theItem = and(
-    eq(m.userId, userId),
-    sql`substr(${m.id}, 1, 4) = 'mem:'`,
-    sql`substr(${m.id}, length(${m.id}) - ${suffix.length} + 1) = ${suffix}`,
-    sql`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.runId') end = ${rootId}`,
-  )!;
+  const theItemOf = (t: { id: AnyColumn; userId: AnyColumn; provenance: AnyColumn }) =>
+    and(
+      eq(t.userId, userId),
+      sql`substr(${t.id}, 1, 4) = 'mem:'`,
+      sql`substr(${t.id}, length(${t.id}) - ${suffix.length} + 1) = ${suffix}`,
+      sql`case when json_valid(${t.provenance}) then json_extract(${t.provenance}, '$.runId') end = ${rootId}`,
+    )!;
+  const theItem = theItemOf(m);
+  /** The athlete's live pins (the PATCH's own count: memory-core.ts's live) but the item's, named by the outer row. */
+  const pins = and(liveMemoryWhere(userId, todayInZone(EARLIEST_ZONE)), eq(m.pinned, true));
+  // Raw, with each table named: a column in a select's fields is written without its table, which a subquery over the
+  // same table would read as its own.
+  const item = alias(coachMemory, "item");
+  const [found] = (await db.all(sql`
+    SELECT item.id AS id,
+      CASE WHEN item.superseded_by IS NULL THEN (SELECT json_object('body', r.body, 'pinned', r.pinned) FROM coach_memory r
+        WHERE r.user_id = ${userId} AND r.superseded_by = item.id AND r.active = 1 LIMIT 1) END AS back,
+      (SELECT count(*) FROM ${m} WHERE ${pins} AND ${m.id} <> item.id) AS otherPins
+    FROM coach_memory item
+    WHERE ${theItemOf(item)} AND item.active = 1
+    LIMIT 1
+  `)) as Array<{ id: string; back: string | null; otherPins: number }>;
+  if (!found) return null;
   const now = new Date().toISOString();
   await db
     .update(m)
-    .set({ supersededBy: null, updatedAt: now })
+    .set({
+      supersededBy: null,
+      updatedAt: now,
+      pinned: sql`case when ${m.pinned} = 1 and (select count(*) from ${m} where ${pins} and ${m.id} <> ${found.id}) >= ${MEMORY_PIN_CAP} then 0 else ${m.pinned} end`,
+    })
     .where(
       and(
         eq(m.userId, userId),
@@ -88,7 +119,13 @@ export async function undoRemembered(db: Db, userId: string, handle: string): Pr
       ),
     );
   const [gone] = await db.update(m).set({ active: false, updatedAt: now }).where(and(theItem, eq(m.active, true))).returning({ body: m.body });
-  return gone ? { line: `the memory "${gone.body}"`, count: 1 } : null;
+  if (!gone) return null;
+  const back = parsedJson(found.back) as { body?: unknown; pinned?: unknown } | null;
+  const unpinned = !!back && (back.pinned === 1 || back.pinned === true) && Number(found.otherPins) >= MEMORY_PIN_CAP;
+  return {
+    line: `the memory "${gone.body}"${unpinned ? `. "${String(back.body)}" is back, unpinned: you have ${MEMORY_PIN_CAP} pinned already.` : ""}`,
+    count: 1,
+  };
 }
 
 export const remember: DesignTool = {

@@ -1,12 +1,15 @@
 /**
- * THE ONE-TIME MOVE OF PROFILE-SHAPED MEMORIES (Stage 3 Task 10; spec §9; principles §6.7: "anything that has a home in
- * the profile moves to the profile; memory keeps what does not fit a field"). Owner data: a dry run first.
+ * THE ONE-TIME COPY OF PROFILE-SHAPED MEMORIES INTO THE PROFILE (Stage 3 Task 10; spec §9; principles §6.7: "anything
+ * that has a home in the profile moves to the profile; memory keeps what does not fit a field"). Owner data: a dry run
+ * first. COPY, NOT MOVE (fix wave 3B, A-I1): the live thread coach reads only memory — its guardrails' dated events and
+ * its dossier — so every item stays live in memory until the thread coach reads the profile; the apply supersedes
+ * nothing.
  *
  *   POST /api/admin/coach-memory-migration { apply?, fingerprint? }
  *
  *  - Behind the admin switch and sign-in, as every admin route, and the owner's account only (ALLOWED_GOOGLE_EMAIL).
  *  - The default is a dry run: it writes nothing (only reads run) and answers the report — each profile-shaped item
- *    (an event or race, a goal, a focus area, a place), where it would go and what is left in memory; and the old
+ *    (an event or race, a goal, a focus area, a place) and where it would go, each kept in memory too; and the old
  *    Studio's plan brief: which fields go to the profile and which become memory items (stated, "the old Studio's
  *    brief"); and a fingerprint of the plan.
  *  - `apply: true` with that fingerprint does exactly what the dry run said, in one batch within 45 statements and D1's
@@ -14,17 +17,19 @@
  *    finds nothing to do and writes nothing.
  *  - The report is the response only: never written to the logs.
  *
- * Synthetic data only: a made-up athlete's made-up memories.
+ * Synthetic data only: a made-up athlete's made-up memories, dated relative to today (fix wave 3B, A-M6).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { DEFAULT_USER_PREFERENCES, newId } from "@rg/domain";
+import { addDays, DEFAULT_USER_PREFERENCES, newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { adminRoutes } from "../src/routes/admin.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { savePreferences } from "../src/services/calendar-sync.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
+import { buildDossier } from "../src/services/coach-context.js";
+import { guardrailCtx } from "../src/services/coach-wake.js";
 import { liveMemoryWhere } from "../src/services/memory-core.js";
 import { isWrite, makeTestDb, mountRoutes } from "./helpers.js";
 
@@ -50,6 +55,14 @@ const ran: string[] = [];
 
 /** "Today" for the athlete, far from the fixture's dates. */
 const TODAY = new Date().toISOString().slice(0, 10);
+/** A day `n` days after today: the fixture's events lie ahead whatever day the suite runs (A-M6 — fixed dates would
+ * have turned past one day, and these tests red with them). */
+const ahead = (n: number): string => addDays(TODAY, n);
+const SKI = { start: ahead(120), end: ahead(127) };
+const RACE = ahead(180);
+const WEDDING = ahead(240);
+/** What every copied item's note says (A-I1). */
+const KEPT_TOO = "Kept in memory too, until the thread coach reads the profile.";
 const AT = "2026-09-01T09:00:00.000Z";
 
 async function user(email: string, timezone = "Europe/Paris"): Promise<{ id: string; cookie: string }> {
@@ -73,9 +86,11 @@ const mem = (id: string, kind: string, body: string, o: Partial<Mem> = {}): Mem 
 
 async function seed() {
   const rows: Mem[] = [
-    mem("m-ski", "note", "Ski trip 2031-02-14 to 2031-02-21", { expiresAt: "2031-02-22" }),
-    mem("m-race", "note", "Half marathon on 2031-04-12, wants a gentle week before", { expiresAt: "2031-04-13" }),
-    mem("m-long-event", "note", `Wedding abroad on 2031-06-06 ${"with a long story about the plans, the travel and the days around it ".repeat(2)}`, { expiresAt: "2031-06-07" }),
+    mem("m-ski", "note", `Ski trip ${SKI.start} to ${SKI.end}`, { expiresAt: addDays(SKI.end, 1) }),
+    mem("m-race", "note", `Half marathon on ${RACE}, wants a gentle week before`, { expiresAt: addDays(RACE, 1) }),
+    mem("m-long-event", "note", `Wedding abroad on ${WEDDING} ${"with a long story about the plans, the travel and the days around it ".repeat(2)}`, {
+      expiresAt: addDays(WEDDING, 1),
+    }),
     mem("m-past", "fact", "Ran a marathon on 2001-05-01"),
     mem("m-expired", "note", "Trip 2001-01-01", { expiresAt: "2001-01-02" }),
     mem("m-goal", "fact", "Wants to improve posture"),
@@ -85,8 +100,8 @@ async function seed() {
     mem("m-sore", "fact", "Hamstrings get tight and sore after long runs"),
     mem("m-place", "fact", "Trains at a home gym with kettlebells"),
     mem("m-plain", "rule", "Long runs on Sunday"),
-    mem("m-rehearsal", "note", "Race 2031-05-01", { expiresAt: "2031-05-02", provenance: { source: "athlete_words", at: AT, rehearsal: true } }),
-    mem("m-old", "note", "Ski trip 2031-01-10", { expiresAt: "2031-01-11", supersededBy: "m-ski" }),
+    mem("m-rehearsal", "note", `Race ${ahead(200)}`, { expiresAt: ahead(201), provenance: { source: "athlete_words", at: AT, rehearsal: true } }),
+    mem("m-old", "note", `Ski trip ${ahead(100)}`, { expiresAt: ahead(101), supersededBy: "m-ski" }),
   ];
   for (let i = 0; i < rows.length; i += 4) await db.insert(schema.coachMemory).values(rows.slice(i, i + 4));
   await db.insert(schema.athleteProfiles).values({
@@ -135,7 +150,7 @@ beforeEach(async () => {
   ({ id: userId, cookie } = await user(OWNER));
   // Another athlete's memory is never read.
   const other = await user("someone-else@example.com");
-  await db.insert(schema.coachMemory).values(mem("o-ski", "note", "Ski trip 2031-02-14", { userId: other.id, expiresAt: "2031-02-15" }));
+  await db.insert(schema.coachMemory).values(mem("o-ski", "note", `Ski trip ${SKI.start}`, { userId: other.id, expiresAt: addDays(SKI.start, 1) }));
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -151,7 +166,7 @@ async function migrate(body: unknown, o: { cookie?: string; env?: Env } = {}) {
   return { status: res.status, body: (await res.json().catch(() => null)) as Record<string, any>, statements: [...ran] };
 }
 
-/** What the account holds that the move could touch. */
+/** What the account holds that the copy could touch. */
 async function snapshot() {
   const memory = await db.select().from(schema.coachMemory);
   const profile = await db.select().from(schema.athleteProfiles);
@@ -195,7 +210,7 @@ describe("the dry run", () => {
     expect(await snapshot()).toBe(before);
   });
 
-  it("says, for each profile-shaped item, where it would go and what is left in memory", async () => {
+  it("says, for each profile-shaped item, where it would go — and that it stays in memory too", async () => {
     await seed();
     const { body: r } = await migrate({});
     expect(r.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -208,22 +223,22 @@ describe("the dry run", () => {
     expect(itemOf(r, "m-ski")).toMatchObject({
       shape: "event",
       change: "add",
-      memory: "superseded",
-      profile: { field: "events", entry: { kind: "ski", start: "2031-02-14", end: "2031-02-21", label: "Ski trip 2031-02-14 to 2031-02-21", priority: "C", taper: false } },
+      memory: "kept",
+      profile: { field: "events", entry: { kind: "ski", start: SKI.start, end: SKI.end, label: `Ski trip ${SKI.start} to ${SKI.end}`, priority: "C", taper: false } },
     });
     expect(itemOf(r, "m-race")).toMatchObject({
       shape: "event",
       change: "add",
-      memory: "superseded",
-      profile: { field: "events", entry: { kind: "race", start: "2031-04-12", priority: "B", taper: true } },
+      memory: "kept",
+      profile: { field: "events", entry: { kind: "race", start: RACE, priority: "B", taper: true } },
     });
     expect(itemOf(r, "m-race").profile.entry.end).toBeUndefined();
-    // Longer than an event's name holds: the event is added, and the item stays in memory as it is.
+    // Longer than an event's name holds: the event is added with its name cut, and the item stays in memory as it is.
     expect(itemOf(r, "m-long-event")).toMatchObject({ shape: "event", change: "add", memory: "kept" });
     expect(itemOf(r, "m-long-event").profile.entry.label.length).toBeLessThanOrEqual(80);
     expect(itemOf(r, "m-past")).toMatchObject({ shape: "event", change: "none", memory: "kept" });
 
-    expect(itemOf(r, "m-goal")).toMatchObject({ shape: "goal", change: "add", memory: "superseded", profile: { field: "goals", entry: { id: "posture", words: "Wants to improve posture" } } });
+    expect(itemOf(r, "m-goal")).toMatchObject({ shape: "goal", change: "add", memory: "kept", profile: { field: "goals", entry: { id: "posture", words: "Wants to improve posture" } } });
     expect(itemOf(r, "m-goal-two")).toMatchObject({ shape: "goal", change: "none", memory: "kept", profile: null });
     expect(itemOf(r, "m-goal-two").note).toMatch(/more than one goal/);
     expect(itemOf(r, "m-goal-have")).toMatchObject({ shape: "goal", change: "already", memory: "kept" });
@@ -231,7 +246,7 @@ describe("the dry run", () => {
     expect(itemOf(r, "m-focus")).toMatchObject({
       shape: "focus_area",
       change: "add",
-      memory: "superseded",
+      memory: "kept",
       profile: { field: "focusAreas", entry: { id: "hips-glutes", label: "Hips and glutes", refs: ["hips", "glutes"], note: "Focus on hips and glutes" } },
     });
     expect(itemOf(r, "m-place")).toMatchObject({ shape: "place", change: "none", memory: "kept", profile: null });
@@ -239,9 +254,17 @@ describe("the dry run", () => {
     // Sore is no focus: a health signal stays in memory, unreported.
     expect(itemOf(r, "m-sore")).toBeUndefined();
 
+    // Copy, not move (A-I1): every item stays live in memory, and nothing points it anywhere else.
+    for (const item of r.memory.items as Array<Record<string, any>>) {
+      expect(item.memory, item.id).toBe("kept");
+      expect(item.to, item.id).toBeUndefined();
+    }
+    for (const id of ["m-ski", "m-race", "m-long-event", "m-goal", "m-focus"]) expect(itemOf(r, id).note, id).toContain(KEPT_TOO);
+
     // One plain line for each, for the owner to read.
     expect(r.lines.length).toBeGreaterThanOrEqual(r.memory.items.length);
-    expect(r.lines.join("\n")).toContain('"Ski trip 2031-02-14 to 2031-02-21" → the profile\'s events: a ski week, 2031-02-14 to 2031-02-21. The memory item is kept as history.');
+    expect(r.lines.join("\n")).toContain(`"Ski trip ${SKI.start} to ${SKI.end}" → the profile's events: a ski week, ${SKI.start} to ${SKI.end}. ${KEPT_TOO}`);
+    expect(r.lines.join("\n")).not.toMatch(/kept as history|superseded/i);
   });
 
   it("the old Studio's brief (its newest plan): the fields that go to the profile, the ones that become memory, the ones left behind", async () => {
@@ -276,7 +299,7 @@ describe("the apply", () => {
     const dry = (await migrate({})).body;
     expect((await migrate({ apply: true })).status).toBe(400);
     expect((await migrate({ apply: "yes" })).status).toBe(400);
-    await db.insert(schema.coachMemory).values(mem("m-new", "note", "Trip to the coast 2031-07-01", { expiresAt: "2031-07-02" }));
+    await db.insert(schema.coachMemory).values(mem("m-new", "note", `Trip to the coast ${ahead(260)}`, { expiresAt: ahead(261) }));
     const before = await snapshot();
     const stale = await migrate({ apply: true, fingerprint: dry.fingerprint });
     expect(stale.status).toBe(409);
@@ -286,7 +309,7 @@ describe("the apply", () => {
     expect(await snapshot()).toBe(before);
   });
 
-  it("does exactly what the dry run said", async () => {
+  it("does exactly what the dry run said: the profile gains the entries, and every memory item stays as it was", async () => {
     await seed();
     const dry = (await migrate({})).body;
     const applied = await migrate({ apply: true, fingerprint: dry.fingerprint });
@@ -294,8 +317,10 @@ describe("the apply", () => {
     const { dryRun: _d, applied: done, ...report } = applied.body;
     const { dryRun: _d2, ...planned } = dry;
     expect(report).toEqual(planned);
-    expect(done).toEqual({ profile: true, superseded: 4, added: 2 });
+    expect(done).toEqual({ profile: true, added: 2 });
     expect(applied.statements.length).toBeLessThanOrEqual(45);
+    // The profile written and the brief's items added — and no memory item changed (A-I1: the apply supersedes nothing).
+    expect(applied.statements.filter((s) => /^update "coach_memory"/i.test(s))).toEqual([]);
 
     // The profile: what was there, kept as it was, and what the plan added.
     const [p] = await db.select().from(schema.athleteProfiles).where(eq(schema.athleteProfiles.userId, userId));
@@ -305,16 +330,29 @@ describe("the apply", () => {
     expect(p!.focusAreas).toEqual(added("focusAreas"));
     expect(p!.preferences).toEqual({ sessionMinutes: { default: 45 }, trainingDays: [1, 3] });
 
-    // Memory: each item the plan superseded is history now, pointing at its new home; the rest as they were.
+    // Memory: every item as it was — still live, superseded by nothing — beside the brief's new items.
     for (const item of dry.memory.items as Array<Record<string, any>>) {
       const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, item.id));
-      expect(row!.active).toBe(true);
-      if (item.memory === "superseded") expect(row!.supersededBy, item.id).toMatch(/^profile:/);
-      else expect(row!.supersededBy, item.id).toBeNull();
+      expect(row!.active, item.id).toBe(true);
+      expect(row!.supersededBy, item.id).toBeNull();
     }
     const live = await db.select().from(schema.coachMemory).where(liveMemoryWhere(userId, TODAY));
     expect(live.map((m) => m.id).sort()).toEqual(
-      ["m-goal-have", "m-goal-two", "m-long-event", "m-past", "m-place", "m-plain", "m-sore", "studio-brief:plan-new:constraints", "studio-brief:plan-new:equipment"].sort(),
+      [
+        "m-focus",
+        "m-goal",
+        "m-goal-have",
+        "m-goal-two",
+        "m-long-event",
+        "m-past",
+        "m-place",
+        "m-plain",
+        "m-race",
+        "m-ski",
+        "m-sore",
+        "studio-brief:plan-new:constraints",
+        "studio-brief:plan-new:equipment",
+      ].sort(),
     );
     const [equipment] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, "studio-brief:plan-new:equipment"));
     expect(equipment).toMatchObject({ kind: "fact", body: "Equipment: dumbbells and a bench", confidence: "stated", pinned: false });
@@ -329,12 +367,12 @@ describe("the apply", () => {
     await migrate({ apply: true, fingerprint: first.fingerprint });
     const after = await snapshot();
     const second = (await migrate({})).body;
-    expect((second.memory.items as Array<{ change: string; memory: string }>).filter((i) => i.change === "add" || i.memory === "superseded")).toEqual([]);
+    expect((second.memory.items as Array<{ change: string; memory: string }>).filter((i) => i.change === "add" || i.memory !== "kept")).toEqual([]);
     expect(second.studioBrief.toProfile.every((f: { change: string }) => f.change === "already")).toBe(true);
     expect(second.studioBrief.toMemory.every((f: { change: string }) => f.change === "already")).toBe(true);
     const again = await migrate({ apply: true, fingerprint: second.fingerprint });
     expect(again.status).toBe(200);
-    expect(again.body.applied).toEqual({ profile: false, superseded: 0, added: 0 });
+    expect(again.body.applied).toEqual({ profile: false, added: 0 });
     expect(again.statements.filter(isWrite)).toEqual([]);
     expect(await snapshot()).toBe(after);
   });
@@ -350,12 +388,8 @@ describe("the apply", () => {
     expect(row!.active).toBe(false);
   });
 
-  it("many items: chunked within D1's 100 variables a statement, the whole request within 45", async () => {
-    const rows: Mem[] = Array.from({ length: 160 }, (_, i) =>
-      mem(`trip-${String(i).padStart(3, "0")}`, "note", `Trip ${i} on 2031-${String(1 + (i % 12)).padStart(2, "0")}-${String(1 + (i % 28)).padStart(2, "0")}`, {
-        expiresAt: "2031-12-31",
-      }),
-    );
+  it("many items: chunked within D1's 100 variables a statement, the whole request within 45 — and every item stays live", async () => {
+    const rows: Mem[] = Array.from({ length: 160 }, (_, i) => mem(`trip-${String(i).padStart(3, "0")}`, "note", `Trip ${i} on ${ahead(30 + i)}`, { expiresAt: ahead(400) }));
     for (let i = 0; i < rows.length; i += 4) await db.insert(schema.coachMemory).values(rows.slice(i, i + 4));
     const dry = (await migrate({})).body;
     const adds = (dry.memory.items as Array<{ change: string }>).filter((i) => i.change === "add").length;
@@ -365,7 +399,42 @@ describe("the apply", () => {
     const applied = await migrate({ apply: true, fingerprint: dry.fingerprint });
     expect(applied.status).toBe(200);
     expect(applied.statements.length).toBeLessThanOrEqual(45);
-    expect(applied.body.applied.superseded).toBe(dry.memory.items.filter((i: { memory: string }) => i.memory === "superseded").length);
+    // Every trip stays live in memory: the thread coach's dated events lose none of them.
+    expect(await db.select().from(schema.coachMemory).where(liveMemoryWhere(userId, TODAY))).toHaveLength(160);
+  });
+});
+
+describe("what the live thread coach reads (A-I1: copy, not move)", () => {
+  /** The thread coach's reads: its guardrails' dated events and anchor-day rules, and its dossier. */
+  async function threadCoachReads() {
+    const prefs = await loadPreferences(db, userId);
+    const today = (await migrate({})).body.today as string;
+    const ctx = await guardrailCtx(db, userId, prefs, today);
+    const dossier = await buildDossier(db, userId, prefs, today);
+    return { datedEvents: ctx.datedEvents, rules: ctx.rules, dossier: dossier.text };
+  }
+
+  it("its dated events and its dossier are unchanged by the apply: every trip, goal and focus area stays in them", async () => {
+    await seed();
+    // The old Studio's plans aside: the items the apply adds from them are new memory, which the dossier would list.
+    await db.delete(schema.studioPlans).where(eq(schema.studioPlans.userId, userId));
+    const before = await threadCoachReads();
+    expect(before.datedEvents.map((e) => e.id)).toEqual(expect.arrayContaining(["m-ski", "m-race", "m-long-event"]));
+    expect(before.dossier).toContain("Wants to improve posture");
+    expect(before.dossier).toContain("Focus on hips and glutes");
+    const applied = await migrate({ apply: true, fingerprint: (await migrate({})).body.fingerprint });
+    expect(applied.body.applied).toEqual({ profile: true, added: 0 });
+    expect(await threadCoachReads()).toEqual(before);
+  });
+
+  it("with the old Studio's brief too: nothing it read is lost, and its dated events and rules are the same", async () => {
+    await seed();
+    const before = await threadCoachReads();
+    await migrate({ apply: true, fingerprint: (await migrate({})).body.fingerprint });
+    const after = await threadCoachReads();
+    expect(after.datedEvents).toEqual(before.datedEvents);
+    expect(after.rules).toEqual(before.rules);
+    for (const line of before.dossier.split("\n")) expect(after.dossier).toContain(line);
   });
 });
 

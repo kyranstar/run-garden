@@ -8,7 +8,7 @@
  *
  * What is live and what rides in the pinned core is read in memory-core.ts; this is the writing side.
  */
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { coachMemory } from "@rg/database";
 import type { AtomicStatement, Db } from "./db.js";
 
@@ -47,9 +47,15 @@ export interface NewMemory {
 
 /**
  * The statements that write `m` — the row, and (when it replaces one) the older item marked superseded — for one
- * atomic batch. A replay of the same id writes nothing new, and an item already superseded is never re-pointed.
+ * atomic batch. A replay of the same id writes nothing new, and an item already superseded is never re-pointed. A
+ * replacement keeps the pin of the item it replaces (fix wave 3B, A-M1), read in its own insert while that item is
+ * still live: the athlete's pins stay as many as they were, each where they put it.
  */
 export function memoryWrites(db: Db, m: NewMemory): AtomicStatement[] {
+  const pinned = m.replaces
+    ? sql`coalesce((select ${coachMemory.pinned} from ${coachMemory} where ${coachMemory.id} = ${m.replaces} and ${coachMemory.userId} = ${m.userId}
+        and ${coachMemory.active} = 1 and ${coachMemory.supersededBy} is null), 0)`
+    : false;
   const writes: AtomicStatement[] = [
     db
       .insert(coachMemory)
@@ -62,7 +68,7 @@ export function memoryWrites(db: Db, m: NewMemory): AtomicStatement[] {
         learnedAt: m.provenance.at,
         expiresAt: m.expiresAt,
         active: true,
-        pinned: false,
+        pinned,
         confidence: m.confidence,
         supersededBy: null,
         evidence: m.evidence ? JSON.stringify(m.evidence) : null,

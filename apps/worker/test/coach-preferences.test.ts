@@ -163,6 +163,50 @@ describe("read and write", () => {
   });
 });
 
+describe("PUT /api/settings and the coach's settings (fix wave 3B, A-M5; the route is live)", () => {
+  async function settingsCall(body: unknown) {
+    const settings = mountRoutes(db, "/api/settings", settingsRoutes);
+    statements = 0;
+    const res = await settings.request(
+      "/api/settings",
+      { method: "PUT", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify(body) },
+      OFF,
+    );
+    return { status: res.status, body: (await res.json().catch(() => null)) as Record<string, any>, cost: statements };
+  }
+
+  it("a coach that doesn't read is a 400 — never a save that drops the stored settings — and nothing else is saved with it", async () => {
+    await prefsCall("PUT", { nextN: 4, ceilingsUsd: { set: 5 } });
+    for (const bad of [{ ceilingsUsd: { day: 9 } }, { nextN: 0 }, { defaultScope: "month" }, { model: "x" }, "next week", null, []]) {
+      const refused = await settingsCall({ units: "km", coach: bad });
+      expect(refused.status, JSON.stringify(bad)).toBe(400);
+      expect(refused.body.error, JSON.stringify(bad)).toBe("invalid_preferences");
+      // The session and the restore marker: refused before anything is read.
+      expect(refused.cost, JSON.stringify(bad)).toBe(2);
+      const prefs = await loadPreferences(db, userId);
+      expect(prefs.coach, JSON.stringify(bad)).toEqual({ nextN: 4, ceilingsUsd: { set: 5 } });
+      expect(prefs.units, JSON.stringify(bad)).toBe("mi");
+    }
+  });
+
+  it("a coach that reads is saved as before; a save without one keeps the stored settings — at the cost a save always had", async () => {
+    const kept = await settingsCall({ units: "km" });
+    expect(kept.status).toBe(200);
+    expect(kept.cost).toBe(SETTINGS_SAVE_STATEMENTS);
+    const saved = await settingsCall({ coach: { nextN: 5 } });
+    expect(saved.status).toBe(200);
+    expect(saved.cost).toBe(SETTINGS_SAVE_STATEMENTS);
+    expect((await loadPreferences(db, userId)).coach).toEqual({ nextN: 5 });
+    // `coach` left out of the body: the stored settings stand.
+    expect((await settingsCall({ units: "mi" })).status).toBe(200);
+    expect((await loadPreferences(db, userId)).coach).toEqual({ nextN: 5 });
+  });
+});
+
+/** A settings save with no calendar connected, measured before this change (unchanged by it): the session and the
+ * restore marker, the preferences read and written, and the calendar's step finding nothing to do. */
+const SETTINGS_SAVE_STATEMENTS = 8;
+
 describe("the model, in plain words", () => {
   it("names the gateway's Claude ids, and the setting the server runs on", async () => {
     expect(modelName("anthropic/claude-opus-5.5")).toBe("Claude Opus 5.5");

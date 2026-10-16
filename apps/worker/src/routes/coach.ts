@@ -57,12 +57,9 @@ import { isDesignedProposal } from "../services/proposal-kinds.js";
 import { expiryOfClaims, SWEEP_REJUDGES } from "../services/design-approve.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
-import { liveMemoryWhere, MEMORY_PIN_CAP, memoryHistoryWhere, REHEARSAL_MEMORY } from "../services/memory-core.js";
+import { EARLIEST_ZONE, liveMemoryWhere, MEMORY_PIN_CAP, memoryHistoryWhere, REHEARSAL_MEMORY } from "../services/memory-core.js";
 import { LIVE_STATUSES } from "../services/coach-runs.js";
 import { designProposalId } from "../services/design-tools/propose.js";
-
-/** The zone whose local date is the earliest anywhere at any moment (UTC−12; POSIX's sign is inverted). */
-const EARLIEST_ZONE = "Etc/GMT+12";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -626,11 +623,13 @@ coachRoutes.get("/memory", async (c) => {
   // now (UTC−12): an item still live somewhere is listed, and the hourly sweep retires one that lapsed in the
   // athlete's own zone (`sweepUserProposals`), as it always has.
   // Memory v2 (Stage 3 Task 10): the same read also brings the superseded history (`memoryHistoryWhere`), which the list
-  // shows under the item that replaced it; `memory` stays exactly the live items, as before.
+  // shows under the item that replaced it — only chains whose newest item is live (fix wave 3B, A-M4); `memory` stays
+  // exactly the live items, as before.
+  const today = todayInZone(EARLIEST_ZONE);
   const rows = await db
     .select()
     .from(coachMemory)
-    .where(or(liveMemoryWhere(userId, todayInZone(EARLIEST_ZONE)), memoryHistoryWhere(userId)))
+    .where(or(liveMemoryWhere(userId, today), memoryHistoryWhere(userId, today)))
     .orderBy(desc(coachMemory.learnedAt));
   return c.json({ memory: rows.filter((r) => r.supersededBy === null), history: rows.filter((r) => r.supersededBy !== null) });
 });

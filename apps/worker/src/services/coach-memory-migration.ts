@@ -1,9 +1,14 @@
 /**
- * THE ONE-TIME MOVE OF PROFILE-SHAPED MEMORIES INTO THE PROFILE (Stage 3 Task 10; spec §9; principles §6.7: "anything
+ * THE ONE-TIME COPY OF PROFILE-SHAPED MEMORIES INTO THE PROFILE (Stage 3 Task 10; spec §9; principles §6.7: "anything
  * that has a home in the profile moves to the profile; memory keeps what does not fit a field"). Owner data: the admin
  * route (routes/admin.ts) answers a dry run unless asked to apply, and an apply must carry the dry run's fingerprint.
  *
- * WHAT IS PROFILE-SHAPED. Deterministic and conservative: an item is moved only on plain signs, and everything else
+ * COPY, NOT MOVE (fix wave 3B, A-I1; the lead's ruling). The live thread coach reads only memory — its guardrails' dated
+ * events (coach-wake.ts `datedEventsFromMemory`) and its dossier — so an item superseded here would vanish from both:
+ * a trip it schedules around, a goal it plans for. Until the thread coach reads the profile, every item the profile
+ * gains is KEPT LIVE in memory too, and the dry run says so; the apply supersedes nothing.
+ *
+ * WHAT IS PROFILE-SHAPED. Deterministic and conservative: an item is copied only on plain signs, and everything else
  * stays in memory as it is. Live items only (`liveMemoryWhere`: never a rehearsal's, a superseded or an expired one).
  *  - An EVENT or race: a date (YYYY-MM-DD, as the thread coach is told to write one) and an event word (race,
  *    marathon, ski, trip, holiday, travel, wedding…). It becomes a profile event of that kind; a race is priority B
@@ -16,10 +21,8 @@
  *    area belongs to its profile, never a focus area.
  *  - A PLACE ("trains at", "home gym", "garage"…): reported only. Places live in Settings → Places, which this never
  *    changes; the item stays in memory.
- * WHAT IS LEFT IN MEMORY. An item whose words the profile's entry holds whole is superseded — kept as history, no
- * longer live (`superseded_by` names its new home: `profile:<field>:<id>`). A goal or focus area the profile already
- * has keeps its item live (its words may say more); an event's name is at most 80 characters, so a longer item stays
- * live beside its event.
+ * WHAT IS LEFT IN MEMORY. Everything: each item stays live as it is (above). An event's name is at most 80 characters,
+ * so a longer item's event carries its words cut.
  *
  * THE OLD STUDIO'S PLAN BRIEF (`studio_plans.brief`, its newest plan): its goal goes to the profile's goals (strength
  * and muscle size are strength; general fitness is athleticism), its session length and days to the profile's
@@ -29,11 +32,11 @@
  * tables are never changed here.
  *
  * APPLY does exactly the plan the dry run reported: the profile written whole from what it held (entries no reader
- * takes any more kept as they are) plus the plan's entries, the items superseded, the brief's items added — one
- * atomic batch, chunked under D1's 100 bound variables, within the request's 45 statements. Run again, the plan is
- * empty and nothing is written. The report is the answer only: nothing here logs.
+ * takes any more kept as they are) plus the plan's entries, and the brief's items added — one atomic batch within the
+ * request's 45 statements; no memory item is changed. Run again, the plan is empty and nothing is written. The report
+ * is the answer only: nothing here logs.
  */
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { athleteProfiles, coachMemory, studioPlans } from "@rg/database";
 import {
   focusAreaSchema,
@@ -64,12 +67,10 @@ const EVENT_LABEL_MAX = 80;
 const WORDS_MAX = 300;
 const FOCUS_LABEL_MAX = 60;
 const FOCUS_ID_MAX = 40;
-/** Items one supersede statement names: 3 bound variables each, under D1's 100 with the statement's own. */
-export const SUPERSEDE_CHUNK = 25;
-/** The request's budget less the sign-in's two statements and the four reads: what the writes may take. */
-export const MIGRATION_WRITES_MAX = 45 - 2 - 4;
 /** The id prefix of the items the old Studio's brief becomes. */
 const BRIEF_PREFIX = "studio-brief:";
+/** What every copied item's note says: the live thread coach reads only memory (A-I1). */
+export const KEPT_IN_MEMORY_TOO = "Kept in memory too, until the thread coach reads the profile.";
 
 // ── The report ──────────────────────────────────────────────────────────────
 
@@ -83,10 +84,8 @@ export interface MemoryMove {
   profile: { field: "events"; entry: ProfileEvent } | { field: "goals"; entry: ProfileGoal } | { field: "focusAreas"; entry: FocusArea } | null;
   /** add: the profile gains it; already: the profile (or Settings) holds it; none: nothing changes in the profile. */
   change: "add" | "already" | "none";
-  /** superseded: kept as history, no longer live; kept: live in memory as it is. */
-  memory: "superseded" | "kept";
-  /** Where a superseded item points (`superseded_by`). */
-  to?: string;
+  /** Always kept: live in memory as it is, whatever the profile gains (copy, not move — A-I1). */
+  memory: "kept";
   note: string;
 }
 
@@ -121,7 +120,8 @@ export interface MigrationReport {
   studioBrief: StudioBriefSection | null;
   /** One plain line for each change, for the owner. */
   lines: string[];
-  applied?: { profile: boolean; superseded: number; added: number };
+  /** What the apply wrote: the profile, and how many of the brief's items it added (it supersedes none). */
+  applied?: { profile: boolean; added: number };
 }
 
 // ── Reading the signs ───────────────────────────────────────────────────────
@@ -380,18 +380,17 @@ async function classify(r: MemoryRow, seen: Seen): Promise<MemoryMove | null> {
     }
     const settingsRace = eventKind === "race" && seen.raceDate === start;
     const there = seen.events.find((e) => e.id === id || (e.kind === eventKind && e.start === start));
-    const memory = fits ? "superseded" : "kept";
-    const keptWhy = fits ? "The memory item is kept as history." : `Its words are longer than an event's name (${EVENT_LABEL_MAX} characters), so the item stays in memory too.`;
+    const kept = fits ? KEPT_IN_MEMORY_TOO : `${KEPT_IN_MEMORY_TOO} The event's name is its first ${EVENT_LABEL_MAX} characters.`;
     if (settingsRace) {
-      return { ...base, shape: "event", profile: null, change: "already", memory, ...(fits ? { to: "settings:race" } : {}), note: `${quoted(body)} → already your race in Settings. ${keptWhy}` };
+      return { ...base, shape: "event", profile: null, change: "already", memory: "kept", note: `${quoted(body)} → already your race in Settings. ${KEPT_IN_MEMORY_TOO}` };
     }
     if (there) {
-      return { ...base, shape: "event", profile: { field: "events", entry: there }, change: "already", memory, ...(fits ? { to: `profile:events:${there.id}` } : {}), note: `${quoted(body)} → already in the profile's events (${KIND_WORDS[there.kind]}, ${span(there)}). ${keptWhy}` };
+      return { ...base, shape: "event", profile: { field: "events", entry: there }, change: "already", memory: "kept", note: `${quoted(body)} → already in the profile's events (${KIND_WORDS[there.kind]}, ${span(there)}). ${KEPT_IN_MEMORY_TOO}` };
     }
     if (!seen.room("events")) {
       return { ...base, shape: "event", profile: null, change: "none", memory: "kept", note: `${quoted(body)} → ${what}, but the profile holds at most ${PROFILE_MAX.events} events: left in memory.` };
     }
-    return { ...base, shape: "event", profile: { field: "events", entry }, change: "add", memory, ...(fits ? { to: `profile:events:${id}` } : {}), note: `${quoted(body)} → the profile's events: ${what}. ${keptWhy}` };
+    return { ...base, shape: "event", profile: { field: "events", entry }, change: "add", memory: "kept", note: `${quoted(body)} → the profile's events: ${what}. ${kept}` };
   }
 
   if (r.kind !== "fact" && r.kind !== "rule") return null;
@@ -411,17 +410,8 @@ async function classify(r: MemoryRow, seen: Seen): Promise<MemoryMove | null> {
       if (!seen.room("goals")) {
         return { ...base, shape: "goal", profile: null, change: "none", memory: "kept", note: `${quoted(body)} → the goal ${goalWords(id)}, but the profile holds at most ${PROFILE_MAX.goals} goals: left in memory.` };
       }
-      const fits = body.length <= WORDS_MAX;
       const entry: ProfileGoal = profileGoalSchema.parse({ id, words: cut(body, WORDS_MAX) });
-      return {
-        ...base,
-        shape: "goal",
-        profile: { field: "goals", entry },
-        change: "add",
-        memory: fits ? "superseded" : "kept",
-        ...(fits ? { to: `profile:goals:${id}` } : {}),
-        note: `${quoted(body)} → the profile's goals: ${goalWords(id)}. ${fits ? "The memory item is kept as history." : "Its words are longer than a goal holds, so the item stays in memory too."}`,
-      };
+      return { ...base, shape: "goal", profile: { field: "goals", entry }, change: "add", memory: "kept", note: `${quoted(body)} → the profile's goals: ${goalWords(id)}. ${KEPT_IN_MEMORY_TOO}` };
     }
   }
 
@@ -438,17 +428,8 @@ async function classify(r: MemoryRow, seen: Seen): Promise<MemoryMove | null> {
       if (!seen.room("focusAreas")) {
         return { ...base, shape: "focus_area", profile: null, change: "none", memory: "kept", note: `${quoted(body)} → a focus area, but the profile holds at most ${PROFILE_MAX.focusAreas}: left in memory.` };
       }
-      const fits = body.length <= WORDS_MAX;
       const entry: FocusArea = focusAreaSchema.parse({ id: refs.join("-").slice(0, FOCUS_ID_MAX).replace(/-+$/, ""), label, refs, note: cut(body, WORDS_MAX) });
-      return {
-        ...base,
-        shape: "focus_area",
-        profile: { field: "focusAreas", entry },
-        change: "add",
-        memory: fits ? "superseded" : "kept",
-        ...(fits ? { to: `profile:focusAreas:${entry.id}` } : {}),
-        note: `${quoted(body)} → a focus area in the profile: ${label}. ${fits ? "The memory item is kept as history." : "Its words are longer than a focus area's note holds, so the item stays in memory too."}`,
-      };
+      return { ...base, shape: "focus_area", profile: { field: "focusAreas", entry }, change: "add", memory: "kept", note: `${quoted(body)} → a focus area in the profile: ${label}. ${KEPT_IN_MEMORY_TOO}` };
     }
   }
 
@@ -495,17 +476,16 @@ export async function migrationDryRun(db: Db, userId: string): Promise<Migration
   return reportOf(await plan(db, userId), true);
 }
 
-export type ApplyOutcome =
-  | { kind: "applied"; report: MigrationReport }
-  | { kind: "changed"; report: MigrationReport }
-  | { kind: "too_large"; report: MigrationReport; statements: number };
+export type ApplyOutcome = { kind: "applied"; report: MigrationReport } | { kind: "changed"; report: MigrationReport };
 
-/** Apply the plan the dry run with `fingerprint` reported — refused, writing nothing, when the plan is another now. */
+/**
+ * Apply the plan the dry run with `fingerprint` reported — refused, writing nothing, when the plan is another now. Two
+ * writes at most, as one batch: the profile, and the brief's new items (at most three). No memory item is changed.
+ */
 export async function migrationApply(db: Db, userId: string, fingerprint: string): Promise<ApplyOutcome> {
   const p = await plan(db, userId);
   const report = await reportOf(p, false);
-  const superseding = p.items.filter((i) => i.memory === "superseded" && i.to);
-  const nothing = !p.write && superseding.length === 0 && p.newMemory.length === 0;
+  const nothing = !p.write && p.newMemory.length === 0;
   if (!nothing && report.fingerprint !== fingerprint) return { kind: "changed", report: { ...report, dryRun: true } };
   const now = nowInstant();
   const m = coachMemory;
@@ -516,15 +496,6 @@ export async function migrationApply(db: Db, userId: string, fingerprint: string
         .insert(athleteProfiles)
         .values({ id: userId, userId, ...p.write, updatedAt: now })
         .onConflictDoUpdate({ target: athleteProfiles.userId, set: { ...p.write, updatedAt: now } }),
-    );
-  }
-  for (let i = 0; i < superseding.length; i += SUPERSEDE_CHUNK) {
-    const chunk = superseding.slice(i, i + SUPERSEDE_CHUNK);
-    statements.push(
-      db
-        .update(m)
-        .set({ supersededBy: sql`case ${m.id} ${sql.join(chunk.map((c) => sql`when ${c.id} then ${c.to}`), sql` `)} end`, updatedAt: now })
-        .where(and(eq(m.userId, userId), eq(m.active, true), isNull(m.supersededBy), inArray(m.id, chunk.map((c) => c.id)))),
     );
   }
   if (p.newMemory.length > 0) {
@@ -548,10 +519,6 @@ export async function migrationApply(db: Db, userId: string, fingerprint: string
         .onConflictDoNothing(),
     );
   }
-  if (statements.length > MIGRATION_WRITES_MAX) return { kind: "too_large", report, statements: statements.length };
   await runAtomically(db, statements);
-  return {
-    kind: "applied",
-    report: { ...report, applied: { profile: p.write !== null, superseded: superseding.length, added: p.newMemory.length } },
-  };
+  return { kind: "applied", report: { ...report, applied: { profile: p.write !== null, added: p.newMemory.length } } };
 }

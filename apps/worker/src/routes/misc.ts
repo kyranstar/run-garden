@@ -23,6 +23,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  coachPreferencesSchema,
   DEFAULT_CALENDAR_NAME,
   humanizeWorkoutTitle,
   looksLikeCodeTitle,
@@ -1420,6 +1421,13 @@ settingsRoutes.put("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const body = await c.req.json();
+  // Settings → Coach rides in the preferences, and a stored value that doesn't read is read as none (the schema's
+  // `.catch`): so a `coach` sent here is judged on its own first — one that doesn't read is refused, never saved as none
+  // over what the athlete set (fix wave 3B, A-M5).
+  if (body && typeof body === "object" && "coach" in body && (body as { coach?: unknown }).coach !== undefined) {
+    const coach = coachPreferencesSchema.safeParse((body as { coach: unknown }).coach);
+    if (!coach.success) return c.json({ error: "invalid_preferences", details: coach.error.issues.map((i) => ({ ...i, path: ["coach", ...i.path] })) }, 400);
+  }
   const current = await loadPreferences(db, userId);
   const parsed = userPreferencesSchema.safeParse({ ...current, ...body });
   if (!parsed.success) return c.json({ error: "invalid_preferences", details: parsed.error.issues }, 400);
