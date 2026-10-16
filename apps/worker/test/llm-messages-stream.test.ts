@@ -353,6 +353,12 @@ describe("the stream reader: the same answer as before, from the same bytes", ()
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\t"}}',
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"1\\"}"}}\r',
       'data: {"type":"content_block_delta","index":,"delta":{"type":"input_json_delta","partial_json":"x"}}',
+      // A piece that would make an input of its own, on a line that isn't JSON: never taken.
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"[1]"]}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"[1]" }',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"[1]"}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"[1]"}}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"[1]"}}',
     ];
     for (const line of lines) {
       for (const tail of ["\n", "\r\n", "\n\n"]) {
@@ -376,13 +382,17 @@ describe("the stream reader does less work for the same answer", () => {
     expect(timers.mock.calls.length).toBeLessThanOrEqual(2);
   });
 
-  it("a tool input's pieces are read without parsing their events whole", async () => {
-    const chunks = documentTurn().split(/(?<=\n\n)/).map((e) => encoder.encode(e));
-    const parse = vi.spyOn(JSON, "parse");
-    const answer = await readStream(bodyOf(chunks), Date.now(), new AbortController().signal);
-    expect((answer as Answer).ok).toBe(true);
-    const whole = parse.mock.calls.filter(([text]) => typeof text === "string" && text.includes('"input_json_delta"'));
-    expect(whole).toEqual([]);
+  it("a tool input's pieces are read without parsing their events whole — CRLF lines too", async () => {
+    for (const text of [documentTurn(), documentTurn().replace(/\n/g, "\r\n")]) {
+      const chunks = text.split(/(?<=\n\r?\n)/).map((e) => encoder.encode(e));
+      const parse = vi.spyOn(JSON, "parse");
+      const answer = await readStream(bodyOf(chunks), Date.now(), new AbortController().signal);
+      expect((answer as Answer).ok).toBe(true);
+      expect((answer as Answer).content).toHaveLength(6);
+      const whole = parse.mock.calls.filter(([raw]) => typeof raw === "string" && raw.includes('"input_json_delta"'));
+      expect(whole).toEqual([]);
+      parse.mockRestore();
+    }
   });
 });
 
