@@ -17,8 +17,7 @@ import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import { ApiError } from "@rg/api-client";
 import type { PerformedSessionWireInput } from "@rg/domain";
 import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
-import { DONE_TODAY, enqueue, outboxEntries } from "../src/offline/outbox.js";
-import { rememberLocalStart, type LocalStart } from "../src/offline/local-starts.js";
+import { enqueue, outboxEntries } from "../src/offline/outbox.js";
 import { queuedUnstarts, queueUnstart } from "../src/offline/unstarts.js";
 import { OutboxSync } from "../src/components/outbox-sync.js";
 import { refusedFor, UnsyncedSessions } from "../src/components/unsynced-sessions.js";
@@ -193,25 +192,6 @@ describe("Settings → Data: a session that couldn't sync", () => {
     await until(() => text().includes("Saved on another device"), "the row");
     expect(text()).toContain("Oct 8");
     expect(text()).not.toContain("Couldn't sync");
-    expect(button("Retry")).toBeUndefined();
-    expect(button("Discard")).toBeDefined();
-  });
-
-  it("a session played offline whose workout another device had already done that day: says so plainly — Discard, and a way to see it (R11 fix round 1)", async () => {
-    db = await openOfflineDb(new IDBFactory());
-    await rememberLocalStart(db, {
-      localId: "local:c1", clientId: "c1", userId: "user-1", kind: "quick_start:desk_reset", title: "Desk reset",
-      doc: {} as LocalStart["doc"], date: "2026-10-08", time: "07:00", createdAt: 1, workoutId: "w-today", joined: true,
-    });
-    const e = await enqueue(db, { ...wire(), workoutId: "local:c1", buildId: "local:c1" }, "user-1");
-    await db.put("outbox", e.key, { ...e, state: "conflict", lastError: DONE_TODAY, attempts: 1 });
-    render(createElement(MemoryRouter, null, createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed: vi.fn() }, userId: "user-1" })));
-    await until(() => text().includes("Not saved: Desk reset was already done that day"), "the row");
-    expect(text()).toContain("Oct 8");
-    expect(text()).not.toContain("Saved on another device");
-    expect(text()).not.toContain("Couldn't sync");
-    const see = [...document.querySelectorAll("a")].find((a) => a.textContent === "See it");
-    expect(see?.getAttribute("href")).toBe("/plan?workout=w-today");
     expect(button("Retry")).toBeUndefined();
     expect(button("Discard")).toBeDefined();
   });

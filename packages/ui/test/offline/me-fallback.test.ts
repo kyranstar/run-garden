@@ -138,6 +138,18 @@ describe("forgetOfflineIdentity (ruling 2b-R6 as amended: sign-out and delete-al
     db.close();
   });
 
+  it("sign-out forgets every start made offline that no unsynced save waits on — one a save waits on stays, to record it (R11 fix round 2)", async () => {
+    const { db, caches } = await deviceWithTraces();
+    const startOf = (localId: string) => ({ localId, clientId: localId.slice(6), userId: "u1", kind: "quick_start:desk_reset", title: "Desk reset", doc: {}, date: "2026-10-07", time: "07:00", createdAt: 1 });
+    // Under way (no save yet), and one saved and waiting for the network.
+    await db.put("starts", "local:under-way", startOf("local:under-way"));
+    await db.put("starts", "local:saved", startOf("local:saved"));
+    await db.put("outbox", "p3:h", { key: "p3:h", userId: "u1", payload: { workoutId: "local:saved" } });
+    await forgetOfflineIdentity({ caches, db: async () => db });
+    expect((await db.all<{ localId: string }>("starts")).map((s) => s.localId)).toEqual(["local:saved"]);
+    db.close();
+  });
+
   it("delete-all: the same, and the deleted account's unsynced saves go too — another account's stay", async () => {
     const { db, caches } = await deviceWithTraces();
     await forgetOfflineIdentity({ caches, db: async () => db, dropOutboxOf: "u1" });

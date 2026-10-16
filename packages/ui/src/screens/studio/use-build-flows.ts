@@ -181,12 +181,15 @@ export interface BuildFlowsIn {
    */
   profilesKnown: boolean;
   /**
-   * Answers kept offline on this page, not recorded (R11 fix round 1). Should a Start go on ONLINE after all (the
-   * network back before its create), they are sent as ordinary checks before the build, so the server gates and builds
-   * on them; one whose send fails leaves the day unanswered there.
+   * Answers kept offline on this page, not recorded (R11 fix round 1), each with its day. Should a Start go on ONLINE
+   * after all (the network back before its create), one still of today with no reading the server holds is sent as an
+   * ordinary check before the build, so the server gates and builds on it; the rest are dropped (fix round 2).
    */
-  keptOffline: MutableRefObject<Map<string, CheckReading>>;
+  keptOffline: MutableRefObject<Map<string, KeptAnswer>>;
 }
+
+/** An answer kept offline (`keptOffline`): the reading, and the account's day it was answered on. */
+export type KeptAnswer = CheckReading & { date: string };
 
 /** A zone this runtime can read a date in: the account's day, never the device's guess (R11 fix round 1). */
 function zoneKnown(timeZone: string | null): timeZone is string {
@@ -340,12 +343,22 @@ export function useBuildFlows({
   /**
    * A Start going on online with answers kept offline on this page (the network back before its create; R11 fix round
    * 1): each is sent as an ordinary check before the build, so the server gates and builds on it — never attached to
-   * the session's save. One whose send fails stays kept, and the server judges the day unanswered.
+   * the session's save. Only while it is still today's on the account's clock, and the server holds no reading of its
+   * own for today (a fresh Today read says both); otherwise it is dropped (fix round 2). One whose send fails stays
+   * kept, and the server judges the day unanswered.
    */
   const sendKept = async (): Promise<void> => {
+    if (keptOffline.current.size === 0) return;
+    const now = await qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0, retry: false }).catch(() => null);
     let sent = false;
-    for (const [profileId, r] of [...keptOffline.current]) {
-      const res = await api.recordCheck({ profileId, value: r.pre, feelingOff: r.feelingOff }).catch(() => null);
+    for (const [profileId, k] of [...keptOffline.current]) {
+      const held = now?.conditions?.find((c) => c.profileId === profileId)?.today ?? null;
+      // No fresh word of today, another day's answer (the page left open overnight), or the server's own reading: dropped.
+      if (!now || k.date !== now.today || (held && (held.value !== null || held.feelingOff))) {
+        keptOffline.current.delete(profileId);
+        continue;
+      }
+      const res = await api.recordCheck({ profileId, value: k.pre, feelingOff: k.feelingOff }).catch(() => null);
       if (!res?.check) continue;
       keptOffline.current.delete(profileId);
       sent = true;

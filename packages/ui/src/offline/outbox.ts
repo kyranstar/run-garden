@@ -28,7 +28,7 @@
 import { ApiError, type CreateDocWorkoutRequest } from "@rg/api-client";
 import { canonicalJson, performedSessionSaveSchema, type PerformedSessionWire, type PerformedSessionWireInput } from "@rg/domain";
 import type { OfflineDb } from "./idb.js";
-import { forgetLocalStart, isLocalId, loadLocalStart, localStarts, LocalStartMissingError, onTheServer } from "./local-starts.js";
+import { forgetLocalStart, isLocalId, loadLocalStart, localStarts, LocalStartMissingError, onTheServer, standAlone } from "./local-starts.js";
 import { drainUnstarts } from "./unstarts.js";
 
 export type OutboxState = "pending" | "conflict" | "failed";
@@ -178,16 +178,10 @@ async function forgetUnneededStart(db: OfflineDb, workoutId: string | null): Pro
  * saved first — on another device (`slot_done`, ruling 2b-R18). Either way the server refuses it every time.
  */
 export const SLOT_DONE = "slot_done";
-/**
- * A session played offline (R11) that joined today's same start, still to finish (409 `started_today` at its create) —
- * another device's — which saved first: not saved here, because that workout was already done that day (fix round 1).
- * Refused every time, like `slot_done`; said plainly in Settings → Data, with a way to see the workout.
- */
-export const DONE_TODAY = "done_today";
 
 type Outcome =
   | { kind: "saved" }
-  | { kind: "conflict"; why: "conflict" | typeof SLOT_DONE | typeof DONE_TODAY }
+  | { kind: "conflict"; why: "conflict" | typeof SLOT_DONE }
   | { kind: "failed"; error: string }
   | { kind: "transient"; error: string };
 
@@ -225,8 +219,12 @@ function classifyCreate(error: unknown): Outcome {
   return { kind: "failed", error: typeof code === "string" ? `http_${error.status} ${code}` : `http_${error.status}` };
 }
 
-/** Send one entry: onto the workout recorded for it first, when it was played under a provisional id. */
-async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry): Promise<Outcome> {
+/**
+ * Send one entry: onto the workout recorded for it first, when it was played under a provisional id. One that joined
+ * today's same start on another device, which saved first (409 `slot_done`), is kept by a workout of its own, made and
+ * sent onto at once (`standAlone`; R11 fix round 2): no conflict is left, and nothing done is lost.
+ */
+async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry, alone = false): Promise<Outcome> {
   let payload = entry.payload;
   if (isLocalId(payload.workoutId)) {
     const createWorkout = api.createWorkout?.bind(api);
@@ -242,9 +240,12 @@ async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry): Promise<
     return { kind: "saved" };
   } catch (e) {
     const outcome = classify(e);
-    // Played offline, joined to another device's start of the same workout, which saved first: done that day already.
-    if (outcome.kind === "conflict" && outcome.why === SLOT_DONE && isLocalId(entry.payload.workoutId)) {
-      if ((await loadLocalStart(db, entry.payload.workoutId).catch(() => undefined))?.joined) return { kind: "conflict", why: DONE_TODAY };
+    const localId = entry.payload.workoutId;
+    if (!alone && outcome.kind === "conflict" && outcome.why === SLOT_DONE && isLocalId(localId)) {
+      if ((await loadLocalStart(db, localId).catch(() => undefined))?.joined) {
+        await standAlone(db, localId);
+        return send(db, api, entry, true);
+      }
     }
     return outcome;
   }

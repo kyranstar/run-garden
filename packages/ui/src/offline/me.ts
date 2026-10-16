@@ -17,13 +17,14 @@
  *    the outbox drains once the athlete signs in again, under the same account. A 401 that reaches the worker after its
  *    3 s timeout (the cached answer already served) purges them there too (apps/web/sw-routes.ts);
  *  - sign-out forgets the offline identity (`forgetOfflineIdentity`): those caches, the stored builds and live
- *    sessions, and the Studio's draft; its unsynced saves stay, tagged with the account, for its next sign-in
- *    (outbox.ts);
+ *    sessions, the Studio's draft, and every start made offline that no unsynced save waits on (R11); its unsynced
+ *    saves stay, tagged with the account, for its next sign-in (outbox.ts);
  *  - delete-all forgets the same, and drops that account's unsynced saves too.
  */
 import { api, ApiError, type MeResponse } from "@rg/api-client";
 import { offlineDb, type OfflineDb } from "./idb.js";
 import { hasLiveSession } from "./live.js";
+import { forgetUnwaitedStarts } from "./local-starts.js";
 import { discardAccountEntries } from "./outbox.js";
 
 /** The service worker's cache for `/api/auth/me` (apps/web/sw-routes.ts). */
@@ -95,9 +96,9 @@ export async function forgetCachedAnswers(deps: Pick<OfflineDeps, "caches"> = {}
 
 /**
  * Sign-out and delete-all (ruling 2b-R6 as amended): forget what lets this device open the account offline — the
- * cached answers (`forgetCachedAnswers`) and the offline database's stored builds, live sessions and Studio draft. The
- * outbox's unsynced saves stay, tagged with their account, unless `dropOutboxOf` names it (delete-all: the account is
- * gone). The outbox's lock stays. Never throws.
+ * cached answers (`forgetCachedAnswers`) and the offline database's stored builds, live sessions and Studio draft, and
+ * the starts made offline that no unsynced save waits on (R11). The outbox's unsynced saves stay, tagged with their
+ * account, unless `dropOutboxOf` names it (delete-all: the account is gone). The outbox's lock stays. Never throws.
  */
 export async function forgetOfflineIdentity(deps: OfflineDeps & { dropOutboxOf?: string } = {}): Promise<void> {
   await forgetCachedAnswers(deps);
@@ -108,6 +109,8 @@ export async function forgetOfflineIdentity(deps: OfflineDeps & { dropOutboxOf?:
       db.clear("live"),
       // The Studio's workout being built is the account's too (Stage 2).
       db.clear("drafts"),
+      // A start made offline whose build and session go here: never offered back as a Continue (R11 fix round 2).
+      forgetUnwaitedStarts(db),
       ...(deps.dropOutboxOf ? [discardAccountEntries(db, deps.dropOutboxOf)] : []),
     ]);
   };

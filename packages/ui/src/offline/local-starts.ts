@@ -37,9 +37,11 @@ export interface LocalStart {
   workoutId?: string;
   /**
    * That workout was today's same start, still to finish (409 `started_today`), not one recorded for this: another
-   * device's, maybe — which may save first (fix round 1: then this session was not saved, the workout done that day).
+   * device's, maybe — which may save first (then this session is given a workout of its own: `standAlone`).
    */
   joined?: true;
+  /** Made a workout of its own after the one it joined was saved first (`standAlone`): never joins another. */
+  own?: true;
 }
 
 export function rememberLocalStart(db: OfflineDb, start: LocalStart): Promise<void> {
@@ -67,6 +69,17 @@ export async function unfinishedLocalStart(db: OfflineDb, userId: string, kind: 
   // The outbox's store read as it is (the outbox reads this module: no import back).
   const saved = new Set((await db.all<{ payload: { workoutId: string | null } }>("outbox")).map((e) => e.payload.workoutId));
   return (await localStarts(db, userId)).find((s) => s.kind === kind && s.date === date && !saved.has(s.localId));
+}
+
+/**
+ * Sign-out (R11 fix round 2): every start made offline that no unsynced save waits on goes — its build and session in
+ * progress go with the offline identity, so it could only be offered back as a phantom Continue. One a save waits on
+ * stays, to record that save at the account's next sign-in.
+ */
+export async function forgetUnwaitedStarts(db: OfflineDb): Promise<void> {
+  // The outbox's store read as it is (the outbox reads this module: no import back). An entry may predate `payload`.
+  const waited = new Set((await db.all<{ payload?: { workoutId?: string | null } }>("outbox")).map((e) => e.payload?.workoutId));
+  for (const start of await db.all<LocalStart>("starts")) if (!waited.has(start.localId)) await forgetLocalStart(db, start.localId);
 }
 
 /** The kind a document is started as: a quick start's, or a template's; null for anything else (never started offline). */
@@ -105,12 +118,26 @@ export async function recordedWorkoutId(db: OfflineDb, api: LocalStartApi, local
   } catch (e) {
     const body = e instanceof ApiError ? ((e.body ?? null) as { error?: string; workout?: { id?: string } } | null) : null;
     const held = e instanceof ApiError && e.status === 409 && body?.error === "started_today" ? body.workout?.id : undefined;
-    if (!held) throw e;
+    // One already made its own (the start it joined was saved first) never joins another: the refusal stands.
+    if (!held || start.own) throw e;
     id = held;
     joined = true;
   }
   await db.update<LocalStart>("starts", localId, (current) => (current ? { ...current, workoutId: id, ...(joined ? { joined: true as const } : {}) } : current));
   return id;
+}
+
+/**
+ * The start it joined (409 `started_today`) — another device's — was saved first (409 `slot_done`): this session is
+ * kept by a workout of its own (R11 fix round 2). The joined workout is let go, and the next create is made under a key
+ * derived from the start's (`<clientId>-own`: a retry names the same row, and the route's key allows no other mark).
+ */
+export async function standAlone(db: OfflineDb, localId: string): Promise<void> {
+  await db.update<LocalStart>("starts", localId, (current) => {
+    if (!current || current.own) return current;
+    const { workoutId: _workoutId, joined: _joined, ...rest } = current;
+    return { ...rest, clientId: `${current.clientId}-own`, own: true };
+  });
 }
 
 /** A session played under a provisional id, as the server takes it: onto the workout recorded for it, with no build. */

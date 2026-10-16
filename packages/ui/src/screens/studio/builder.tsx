@@ -122,7 +122,7 @@ import { ScheduleSheet } from "./schedule-sheet.js";
 import { DETAIL_PANE_MIN_PX, useMinWidth, useStudioReads } from "./screen.js";
 import { SummaryCard } from "./summary-card.js";
 import { builderBack, quickStartFor, type BuilderArrival } from "./templates-model.js";
-import { IDLE, sameDocument, useBuildFlows, workoutDocQuery, type CheckAsked, type Flow, type Loaded, type Status } from "./use-build-flows.js";
+import { IDLE, sameDocument, useBuildFlows, workoutDocQuery, type CheckAsked, type Flow, type KeptAnswer, type Loaded, type Status } from "./use-build-flows.js";
 
 /** The readings this page recorded (or the session read gave): a Studio-only athlete's Today carries none. */
 const readingsQuery = (today: string) => ["studio", "readings", today] as const;
@@ -379,11 +379,12 @@ function Builder({ source }: { source: BuildSource }) {
   };
   const onCheck = (profileId: string) => setAsking({ profileId, then: null });
   /** Answers kept offline, not recorded (R11 fix round 1): sent as ordinary checks should Start go on online. */
-  const keptOffline = useRef(new Map<string, CheckReading>());
+  const keptOffline = useRef(new Map<string, KeptAnswer>());
   const onCheckSaved = (c: ConditionCheckDto, kept?: { offline: true }) => {
     const reading = { pre: c.value, post: null, feelingOff: c.feelingOff };
     qc.setQueryData<Record<string, CheckReading>>(readingsQuery(today), (old) => ({ ...(old ?? {}), [c.profileId]: reading }));
-    if (kept) keptOffline.current.set(c.profileId, reading);
+    // With its day (the account's, when it was answered): sent only while that is still today (fix round 2).
+    if (kept) keptOffline.current.set(c.profileId, { ...reading, date: c.date });
     else keptOffline.current.delete(c.profileId);
     if (asking?.then === "start") setResume(true);
   };

@@ -21,7 +21,7 @@ import {
   unfinishedLocalStart,
   type LocalStart,
 } from "../../src/offline/local-starts.js";
-import { discardAccountEntries, discardEntry, DONE_TODAY, drain, enqueue, entryActions, outboxEntries, retryEntry, type OutboxApi } from "../../src/offline/outbox.js";
+import { discardAccountEntries, discardEntry, drain, enqueue, entryActions, outboxEntries, retryEntry, type OutboxApi } from "../../src/offline/outbox.js";
 import { queuedUnstarts } from "../../src/offline/unstarts.js";
 import { discardSession, saveSession } from "../../src/player/save.js";
 import { loadExtras, saveExtras } from "../../src/player/stored.js";
@@ -187,17 +187,47 @@ describe("the outbox records a start made offline, then its session (R11)", () =
     db.close();
   });
 
-  it("joined today's start from another device, which saved first (409 slot_done): a conflict that says the workout was already done that day — Discard only (fix round 1)", async () => {
+  it("joined today's start from another device, which saved first (409 slot_done): its own workout is made under a key of its own and the session saved onto it — no conflict, nothing lost (fix round 2)", async () => {
     const db = await freshDb();
     await rememberLocalStart(db, start());
     await enqueue(db, save("p1"), ME, 2000);
-    const { api } = server({ create: ["started_today"], save: ["slot_done"] });
-    expect(await drain(db, api, { userId: ME })).toMatchObject({ saved: 0, conflicts: 1 });
+    const { api, creates, saves } = server({ create: ["started_today", "ok"], save: ["slot_done", "ok"] });
+    expect(await drain(db, api, { userId: ME })).toMatchObject({ saved: 1, conflicts: 0, failed: 0 });
+    // The second create: the device's key for a workout of its own, derived from the first (a retry names it again).
+    expect(creates.map((c) => c.clientId)).toEqual([CLIENT, `${CLIENT}-own`]);
+    expect(creates[1]).toMatchObject({ date: DAY, time: "07:30", startNow: true, playedOffline: true });
+    expect(saves.map((s) => [s.id, s.workoutId])).toEqual([
+      ["p1", "w-today"],
+      ["p1", "w-server"],
+    ]);
+    expect(await outboxEntries(db)).toEqual([]);
+    expect(await loadLocalStart(db, LOCAL)).toBeUndefined();
+    db.close();
+  });
+
+  it("…and its own create cut off by the network: the next drain makes it under the same derived key, never joining again", async () => {
+    const db = await freshDb();
+    await rememberLocalStart(db, start());
+    await enqueue(db, save("p1"), ME, 2000);
+    const { api, creates, saves } = server({ create: ["started_today", "offline", "ok"], save: ["slot_done", "ok"] });
+    expect(await drain(db, api, { userId: ME, now: () => 5000 })).toMatchObject({ saved: 0, conflicts: 0 });
+    expect(await loadLocalStart(db, LOCAL)).toMatchObject({ clientId: `${CLIENT}-own` });
+    expect((await loadLocalStart(db, LOCAL))!.workoutId).toBeUndefined();
+    expect(await drain(db, api, { userId: ME })).toMatchObject({ saved: 1 });
+    expect(creates.map((c) => c.clientId)).toEqual([CLIENT, `${CLIENT}-own`, `${CLIENT}-own`]);
+    expect(saves.map((s) => s.workoutId)).toEqual(["w-today", "w-server"]);
+    db.close();
+  });
+
+  it("…and today holding yet another unfinished start of it: its own create is refused, the entry failed (Retry, Discard) — never joined twice", async () => {
+    const db = await freshDb();
+    await rememberLocalStart(db, start());
+    await enqueue(db, save("p1"), ME, 2000);
+    const { api } = server({ create: ["started_today", "started_today"], save: ["slot_done"] });
+    expect(await drain(db, api, { userId: ME })).toMatchObject({ saved: 0, failed: 1 });
     const [left] = await outboxEntries(db);
-    expect(left).toMatchObject({ state: "conflict", lastError: DONE_TODAY });
-    expect(entryActions(left!)).toEqual(["discard"]);
-    // The workout it joined is kept with the start: what "See it" opens.
-    expect(await loadLocalStart(db, LOCAL)).toMatchObject({ workoutId: "w-today", joined: true });
+    expect(left).toMatchObject({ state: "failed", lastError: "http_409 started_today" });
+    expect(entryActions(left!)).toEqual(["retry", "discard"]);
     db.close();
   });
 

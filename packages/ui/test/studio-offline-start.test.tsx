@@ -23,6 +23,7 @@ import { loadBuild } from "../src/offline/builds.js";
 import { isLocalId, loadLocalStart, localStarts } from "../src/offline/local-starts.js";
 import { enqueue, outboxEntries } from "../src/offline/outbox.js";
 import { loadExtras } from "../src/player/stored.js";
+import { forgetOfflineIdentity } from "../src/offline/me.js";
 import { DEVICE_PREFS, libraryDto, placesDto, primedClient, profileDto, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -270,9 +271,10 @@ function builtSession(id: string, contentState: "built" | "started" = "built") {
 
 /**
  * The network gone at Start and at the check's Save, then back before the create's retry. `checkAnswer` is what the
- * server says to the kept answer's send once online (a 500: it fails).
+ * server says to the kept answer's send once online (a 500: it fails); `todayNow`, its Today read then (fix round 2:
+ * the account's day, and whether it holds a reading).
  */
-function flapping(opts: { checkAnswer?: number } = {}): Array<Call & { body?: unknown }> {
+function flapping(opts: { checkAnswer?: number; todayNow?: TodayResponse } = {}): Array<Call & { body?: unknown }> {
   const calls: Array<Call & { body?: unknown }> = [];
   let online = false;
   vi.stubGlobal(
@@ -293,6 +295,7 @@ function flapping(opts: { checkAnswer?: number } = {}): Array<Call & { body?: un
       if (method === "POST" && path === "/api/conditions/checks") {
         return opts.checkAnswer ? json({ error: "down" }, opts.checkAnswer) : json({ check: { ...body, date: TODAY } });
       }
+      if (method === "GET" && path === "/api/plan/today") return json(opts.todayNow ?? todayDto(null));
       if (method === "POST" && path === "/api/sessions/w-new/build") return json(builtSession("w-new"));
       if (method === "POST" && path === "/api/sessions/w-new/start") return json(builtSession("w-new", "started"));
       return json({ error: "not_found" }, 404);
@@ -332,6 +335,61 @@ describe("an answer kept offline, the network back before the create (R11 fix ro
     await click(button("Save", sheet), "Save");
     await until(() => where === "/session/w-new", "the player");
     expect(posts(calls).slice(-3)).toEqual(["/api/conditions/checks", "/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+  });
+
+  /**
+   * Start, the check answered while the network is out (kept), then the create lands online: the player opens. A new
+   * day's check, offered online once the day has turned, is skipped.
+   */
+  async function keptThenOnline(calls: Call[]): Promise<void> {
+    mount("/studio/build/quick/desk_reset", { today: todayDto(null) });
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    const sheet = dialog("Jaw / head")!;
+    await click(buttons(sheet).find((b) => b.textContent === "3"), "3");
+    await click(button("Save", sheet), "Save");
+    await until(() => where === "/session/w-new" || !!dialog("Jaw / head"), "the player, or the new day's check");
+    if (dialog("Jaw / head")) await click(button("Skip", dialog("Jaw / head")!), "Skip");
+    await until(() => where === "/session/w-new", "the player");
+    expect(calls.filter((c) => c.method === "GET" && c.path === "/api/plan/today").length).toBeGreaterThan(0);
+  }
+
+  it("the account's day has turned since it was kept: it is dropped, never sent as the new day's (fix round 2)", async () => {
+    const calls = flapping({ todayNow: { ...todayDto(null), today: addDays(TODAY, 1) } });
+    await keptThenOnline(calls);
+    expect(posts(calls).filter((p) => p === "/api/conditions/checks")).toHaveLength(1);
+    expect(posts(calls).slice(-2)).toEqual(["/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+  });
+
+  it("the server already holds a reading for today: the kept one is dropped, the server's stands (fix round 2)", async () => {
+    const calls = flapping({ todayNow: todayDto({ value: 5 }) });
+    await keptThenOnline(calls);
+    expect(posts(calls).filter((p) => p === "/api/conditions/checks")).toHaveLength(1);
+    expect(posts(calls).slice(-2)).toEqual(["/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+  });
+});
+
+describe("sign-out forgets a start under way (R11 fix round 2)", () => {
+  it("signed out with one under way, then in again: the same kind on the same day starts afresh — no Continue it into what is gone", async () => {
+    offline();
+    mount("/studio/build/quick/desk_reset");
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    const first = playedId();
+    unmount();
+    // Sign-out: the offline identity goes (the build, the session in progress, and now the start too).
+    await forgetOfflineIdentity({ caches: undefined });
+    expect(await localStarts(await offlineDb(), ME)).toEqual([]);
+
+    // Signed in again, the same day, still offline.
+    mount("/studio/build/quick/desk_reset");
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    expect(text()).not.toContain("You've started this today already.");
+    expect(playedId()).not.toBe(first);
   });
 });
 
