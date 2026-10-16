@@ -8,7 +8,7 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type ConditionCheckDto, type ConditionViewDto } from "@rg/api-client";
-import { accountTodayGuess, Banner, Sheet } from "../components.js";
+import { Banner, dateInZone, Sheet } from "../components.js";
 
 export interface TodayReading {
   value: number | null;
@@ -165,8 +165,10 @@ export function ConditionCheckSheet({
         return await api.recordCheck({ profileId: condition.profileId, value, feelingOff: off });
       } catch (e) {
         if (!keepOffline || e instanceof ApiError) throw e;
-        // The account's day, as the server would have dated it (CUJ J34).
-        const date = accountTodayGuess(qc.getQueryData<{ today?: string }>(["today"])?.today, qc.getQueryData<{ prefs?: { timezone?: string } }>(["settings"])?.prefs?.timezone);
+        // The account's day now, on its clock — as the server would have dated it (CUJ J34) and as an offline Start
+        // dates its session; never a cached Today read's, which offline may be yesterday's (R11).
+        const timeZone = qc.getQueryData<{ prefs?: { timezone?: string } }>(["settings"])?.prefs?.timezone ?? qc.getQueryData<{ timezone?: string }>(["profile"])?.timezone;
+        const date = dateInZone(new Date(), timeZone);
         return { check: { profileId: condition.profileId, date, value, feelingOff: off }, kept: true as const };
       }
     },

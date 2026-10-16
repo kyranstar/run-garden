@@ -341,8 +341,8 @@ describe("an answer kept offline, the network back before the create (R11 fix ro
    * Start, the check answered while the network is out (kept), then the create lands online: the player opens. A new
    * day's check, offered online once the day has turned, is skipped.
    */
-  async function keptThenOnline(calls: Call[]): Promise<void> {
-    mount("/studio/build/quick/desk_reset", { today: todayDto(null) });
+  async function keptThenOnline(calls: Call[], cachedToday: TodayResponse = todayDto(null)): Promise<void> {
+    mount("/studio/build/quick/desk_reset", { today: cachedToday });
     await startable();
     await click(startButton(), "Start now");
     await until(() => !!dialog("Jaw / head"), "the check");
@@ -367,6 +367,16 @@ describe("an answer kept offline, the network back before the create (R11 fix ro
     await keptThenOnline(calls);
     expect(posts(calls).filter((p) => p === "/api/conditions/checks")).toHaveLength(1);
     expect(posts(calls).slice(-2)).toEqual(["/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+  });
+
+  it("answered offline with only yesterday's Today read kept: dated on the account's clock, so it is sent when the network returns the same day", async () => {
+    const calls = flapping({ todayNow: todayDto(null) });
+    await keptThenOnline(calls, { ...todayDto(null), today: addDays(TODAY, -1) });
+    expect(calls.filter((c) => c.path === "/api/conditions/checks").map((c) => c.body)).toEqual([
+      { profileId: "tmj", value: 3, feelingOff: false },
+      { profileId: "tmj", value: 3, feelingOff: false },
+    ]);
+    expect(posts(calls).slice(-3)).toEqual(["/api/conditions/checks", "/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
   });
 });
 
