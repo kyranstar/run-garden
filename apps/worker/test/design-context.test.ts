@@ -18,6 +18,7 @@ import {
   contextStatements,
   ENFORCEMENT_LABEL,
   gatesReadTheCheck,
+  placeGearWords,
   RULE_ENFORCEMENT,
   type DesignRun,
 } from "../src/services/design-context.js";
@@ -730,6 +731,12 @@ describe("fix wave 13 — what the opening context gives, so the coach needn't f
       else expect(gym, id).toContain(`${name} (no library move uses it)`);
     }
     expect(profile).not.toMatch(/other places? — read_profile/);
+  });
+
+  it("R9: gear no library move uses is marked, whatever the library holds today", () => {
+    expect(placeGearWords(["mat", "barbell", "machine"], new Set(["mat"]))).toBe("Mat, Barbell (no library move uses it), Machines (no library move uses it)");
+    expect(placeGearWords(["mat", "barbell"], new Set(["mat", "barbell"]))).toBe("Mat, Barbell");
+    expect(placeGearWords([], new Set())).toBe("no equipment");
   });
 
   it("M4: the profile's care moves, ids and names, generated from the library — once, in the cached profile", async () => {
