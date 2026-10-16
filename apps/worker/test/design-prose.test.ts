@@ -88,4 +88,29 @@ describe("athleteText", () => {
     const plain = "Hold each stretch for five slow breaths, then rest.";
     expect(athleteText(plain)).toBe(plain);
   });
+
+  it("leaves brand-like words with one lowercase letter, or a capital run, as they are", () => {
+    const plain = "Log it on an iPhone or iPad, iOS or macOS, after an eBike ride, e.g. a short one.";
+    expect(athleteText(plain)).toBe(plain);
+  });
+
+  it("says the app's checks for validators too", () => {
+    expect(athleteText("The validators agree.")).toBe("The app's checks agree.");
+    expect(athleteText("no validators complained")).toBe("no app checks complained");
+  });
+
+  it("never doubles an article before a tool's words", () => {
+    expect(athleteText("the propose_workout call stood")).toBe("the suggestion call stood");
+    expect(athleteText("The read_balance numbers")).toBe("Your recent balance numbers");
+    expect(athleteText("a validate_workout pass")).toBe("the app's checks pass");
+  });
+
+  it("names a document path by what it is", () => {
+    expect(athleteText("intent.summary is long")).toBe("The summary is long");
+    expect(athleteText("Shorten intent.summary.")).toBe("Shorten the summary.");
+    expect(athleteText("Fix parts[1].items[0].why first.")).toBe("Fix a move's why first.");
+    expect(athleteText("parts[0].items[2].cue reads well")).toBe("A move's cue reads well");
+    expect(athleteText("Keep the intent. Then rest.")).toBe("Keep the intent. Then rest.");
+    expect(athleteText("At parts[2] the order is odd")).toBe("At a part the order is odd");
+  });
 });

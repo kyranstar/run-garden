@@ -65,6 +65,27 @@ const TOOLS = new Set<string>(PROMPT_TOOL_NAMES);
 /** "neckLoad" → "neck load". */
 const unCamel = (s: string): string => s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
 
+/** A field name worth splitting: two lowercase letters or more, then humps of a capital and lowercase ("lastTrained");
+ * never "iPhone", "eBike" or "macOS", which are names. */
+const FIELD_NAME = /^[a-z][a-z0-9]+(?:[A-Z][a-z0-9]+)+$/;
+
+/** Words that already carry their own article, so "the" or "a" before the tool's name goes. */
+const OWN_ARTICLE = /^(?:the|your|a|an|what|dropping)\b/;
+
+/** A path into the workout document ("intent.summary", "parts[1].items[0].why", "parts[2]"). */
+const DOC_PATH = /\b(?:intent|parts|items|setting|target)(?=\[\d|\.[A-Za-z])(?:\[\d+\])?(?:\.[A-Za-z]+(?:\[\d+\])?)*/g;
+
+/** A document path in words: what its last step names. */
+function pathWords(path: string): string {
+  const last = /([A-Za-z]+)(\[\d+\])?$/.exec(path)!;
+  const [, name, index] = last;
+  const inItem = /\bitems\[\d+\]\./.test(path);
+  if (name === "parts" && index) return "a part";
+  if (name === "items" && index) return "a move";
+  if (inItem && (name === "why" || name === "cue")) return `a move's ${name}`;
+  return `the ${unCamel(name!)}`;
+}
+
 /** A library or watch id the athlete would recognise by name, or null (a watch code with no English name is no name). */
 function moveName(token: string): string | null {
   const name = exerciseDisplayName(token);
@@ -79,9 +100,15 @@ function moveName(token: string): string | null {
 export function athleteText(text: string): string {
   return text
     .replace(/`([^`\n]{1,80})`/g, "$1")
+    .replace(DOC_PATH, (path, at: number, all: string) => fit(pathWords(path), at, all))
     .replace(/\bcoros:[A-Za-z0-9_-]+/g, (id, at: number, all: string) => fit(moveName(id) ?? "a watch move", at, all))
-    .replace(/\b[a-z]+(?:_[a-z]+)+\b/g, (word, at: number, all: string) => fit(TOOLS.has(word) ? TOOL_WORDS[word as PromptToolName] : word.replace(/_/g, " "), at, all))
-    .replace(/\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*\b/g, (word) => moveName(word) ?? unCamel(word))
+    .replace(/\b(?:([Tt]he|[Aa]n?) )?([a-z]+(?:_[a-z]+)+)\b/g, (_m, art: string | undefined, word: string, at: number, all: string) => {
+      const words = TOOLS.has(word) ? TOOL_WORDS[word as PromptToolName] : word.replace(/_/g, " ");
+      if (art && OWN_ARTICLE.test(words)) return keepCase(art, words);
+      return art ? `${art} ${words}` : fit(words, at, all);
+    })
+    .replace(/\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*\b/g, (word) => moveName(word) ?? (FIELD_NAME.test(word) ? unCamel(word) : word))
+    .replace(/\b(the |a )?validators\b/gi, (m, art: string | undefined) => keepCase(m, art ? "the app's checks" : "app checks"))
     .replace(/\b(?:the |a )?validator(?:'s|’s)/gi, (m) => keepCase(m, "the app's"))
     .replace(/\b(the |a )validator\b/gi, (m, art: string) => keepCase(m, art.toLowerCase() === "a " ? "a check" : "the app's checks"))
     .replace(/\bvalidator\b/gi, (m) => keepCase(m, "app check"))
@@ -90,9 +117,10 @@ export function athleteText(text: string): string {
     .replace(/\b([Tt])he athlete (asked|said|chose|wanted|named|wrote)\b/g, (_m, t: string, verb: string) => `${t === "T" ? "You" : "you"} ${verb}`);
 }
 
+const cap = (words: string): string => words[0]!.toUpperCase() + words.slice(1);
+
 /** `words` capitalised when what they replace was. */
-const keepCase = (was: string, words: string): string => (/^[A-Z]/.test(was) ? words[0]!.toUpperCase() + words.slice(1) : words);
+const keepCase = (was: string, words: string): string => (/^[A-Z]/.test(was) ? cap(words) : words);
 
 /** `words` capitalised when they open the text or a sentence. */
-const fit = (words: string, at: number, all: string): string =>
-  at === 0 || /[.!?]\s+$/.test(all.slice(0, at)) ? words[0]!.toUpperCase() + words.slice(1) : words;
+const fit = (words: string, at: number, all: string): string => (at === 0 || /[.!?]\s+$/.test(all.slice(0, at)) ? cap(words) : words);
