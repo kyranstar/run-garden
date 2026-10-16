@@ -16,10 +16,11 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createRun, LINES, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
-import { promoteSetWithWhatItHas } from "../src/services/design-orchestrate.js";
+import { promoteSetWithWhatItHas, supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import {
   acceptedLine,
+  applyVerdict,
   designerResult,
   markedReview,
   meanScore,
@@ -383,5 +384,92 @@ describe("the reviewer's packet names each move (13b I8, I9)", () => {
     expect(packet).toContain('"alternates":[{"libraryId":"gobletSquat","name":"Goblet squat","why":"More load than today wants."}]');
     // The draft as stored is untouched: names are the packet's.
     expect(JSON.stringify(doc)).not.toContain("Glute bridge");
+  });
+});
+
+// ── Round 2 (the whole-wave review: I2, Minors 9 and 13) ────────────────
+
+describe("round 2 — a now design covers its own session, not the day (review I2)", () => {
+  /** An op as a proposal stores it: a new workout on `date`, with `time` and `notBefore` as given. */
+  const opAt = (title: string, o: { time?: string; notBefore?: string; atNow?: boolean; runId?: string }) =>
+    ({
+      ...reviewedOp(o.runId ?? `r-${title}`, title, TODAY),
+      ...(o.time ? { time: o.time } : {}),
+      target: { kind: "new", date: TODAY, ...(o.time ? { time: o.time } : {}), ...(o.atNow ? { atNow: true } : {}), ...(o.notBefore ? { notBefore: o.notBefore } : {}) },
+      toolUseId: `t-${title}`,
+    }) as DocWorkoutOp;
+  const insert = (userId: string, id: string, ops: unknown[], status: string, createdAt: string) =>
+    db.insert(schema.coachProposals).values({ id, userId, title: "P", evidence: "", rationale: "", flags: [], ops, status, createdAt, expiresAt: TODAY });
+  const before = new Date(NOW.getTime() - 3_600_000).toISOString();
+  const outcomeOf = async (id: string) => {
+    const [row] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, id));
+    return (row!.ops as DocWorkoutOp[])[0]!.outcome?.status ?? "open";
+  };
+
+  it("an untimed now design whose floor is 07:00 leaves a 19:00 suggestion open; one with neither time nor floor (stored before) covers the day", async () => {
+    const a = await athlete();
+    await insert(a.userId, `ev1-${a.userId}`, [opAt("Evening", { time: "19:00" })], "pending", before);
+    await insert(a.userId, `now1-${a.userId}`, [opAt("Now reset", { atNow: true, notBefore: "07:00" })], "pending", NOW.toISOString());
+    expect(await supersedeOlderPlans(db, a.userId, `now1-${a.userId}`, NOW.toISOString())).toBe(0);
+    expect(await outcomeOf(`ev1-${a.userId}`)).toBe("open");
+
+    const b = await athlete();
+    await insert(b.userId, `ev2-${b.userId}`, [opAt("Evening", { time: "19:00" })], "pending", before);
+    await insert(b.userId, `now2-${b.userId}`, [opAt("Old now", { atNow: true })], "pending", NOW.toISOString());
+    expect(await supersedeOlderPlans(db, b.userId, `now2-${b.userId}`, NOW.toISOString())).toBe(1);
+    expect(await outcomeOf(`ev2-${b.userId}`)).toBe("superseded");
+  });
+
+  it("willReplace reads the floor the same way: a morning floor doesn't claim the evening, a near one does", async () => {
+    const a = await athlete();
+    await insert(a.userId, `ev3-${a.userId}`, [opAt("Evening", { time: "19:00" }), opAt("Late morning", { time: "09:30" })], "pending", before);
+    const mine = { ...opAt("Now reset", { atNow: true, notBefore: "07:00", runId: "run-now" }), toolUseId: "u1", reviewLog: [{ round: 1, toolUseId: "u1", reviewRunId: "rv-1", status: "reviewed", review: verdict(4), mean: 4, kept: true }] };
+    await insert(a.userId, `dp-now3-${a.userId}`, [mine], "unreviewed", NOW.toISOString());
+    const out = await resumeAfterReview(db, a.userId, { proposalId: `dp-now3-${a.userId}`, designerRunId: "run-now", toolUseId: "u1", reviewerError: null, now: NOW });
+    expect(out.result.data).toMatchObject({ willReplace: [{ title: { untrusted: true, text: "Late morning" }, date: TODAY, time: "09:30" }] });
+  });
+});
+
+describe("round 2 — a rehearsal designer is told it replaces nothing (review Minor 9)", () => {
+  it("a rehearsal's draft gets willReplace [] — a rehearsal supersedes nothing — though the athlete has an open suggestion it would cover", async () => {
+    const a = await athlete();
+    const before = new Date(NOW.getTime() - 3_600_000).toISOString();
+    const open = { ...reviewedOp("r-open", "Open one", TODAY), time: "14:00", target: { kind: "new", date: TODAY, time: "14:00" }, toolUseId: "t-open" };
+    await db.insert(schema.coachProposals).values({ id: `open-${a.userId}`, userId: a.userId, title: "Open", evidence: "", rationale: "", flags: [], ops: [open], status: "pending", createdAt: before, expiresAt: TODAY });
+    const mine = { ...reviewedOp("run-rh", "Mine", TODAY), time: "14:30", target: { kind: "new", date: TODAY, time: "14:30" }, toolUseId: "u1", reviewLog: [{ round: 1, toolUseId: "u1", reviewRunId: "rv-1", status: "reviewed", review: verdict(4), mean: 4, kept: true }] };
+    for (const status of ["rehearsal", "unreviewed"] as const) {
+      const id = `dp-${status}-${a.userId}`;
+      await db.insert(schema.coachProposals).values({ id, userId: a.userId, title: "Mine", evidence: "", rationale: "", flags: [], ops: [mine], status, createdAt: NOW.toISOString(), expiresAt: TODAY });
+      const out = await resumeAfterReview(db, a.userId, { proposalId: id, designerRunId: "run-rh", toolUseId: "u1", reviewerError: null, now: NOW });
+      expect((out.result.data as { willReplace: unknown[] }).willReplace, status).toHaveLength(status === "rehearsal" ? 0 : 1);
+    }
+  });
+});
+
+describe("round 2 — an amend's change line goes with the version it described (review Minor 13)", () => {
+  /** The held round 1 (reviewed 3.0), amended, with round 2 under review as the candidate. */
+  function amendedThenRevised(): DocWorkoutOp {
+    const held = reviewedOp("run-am", "One", TODAY);
+    const r1 = { round: 1, toolUseId: "u1", reviewRunId: "rv-1", status: "reviewed", review: verdict(3), mean: 3, kept: true };
+    const amend = { round: 1, toolUseId: "u-am", reviewRunId: "rv-1", status: "amended", changeNote: "Clearer cue on the bridge.", change: "Clearer cue on the bridge." };
+    const r2 = { round: 2, toolUseId: "u2", reviewRunId: "rv-2", status: "reviewing", changeNote: "Slower tempo." };
+    const { candidate: _c, ...rest } = held as DocWorkoutOp & { candidate?: unknown };
+    return {
+      ...rest,
+      toolUseId: "u1",
+      round: 1,
+      review: { ...verdict(3), rounds: 1, changes: ["Clearer cue on the bridge."] },
+      reviewLog: [r1, amend, r2],
+      candidate: { round: 2, toolUseId: "u2", reviewRunId: "rv-2", target: held.target, date: TODAY, doc: calmDoc({ title: "Two" }), changeNote: "Slower tempo.", issues: [], derived: { minutes: 22 }, at: NOW.toISOString() },
+    } as unknown as DocWorkoutOp;
+  }
+
+  it("a revision that wins takes the held version's amend line with it; one that loses leaves it", () => {
+    const won = applyVerdict(amendedThenRevised(), "u2", { review: verdict(4) })!;
+    expect(won.doc.title).toBe("Two");
+    expect(won.review!.changes).toEqual(["Slower tempo."]);
+    const lost = applyVerdict(amendedThenRevised(), "u2", { review: verdict(2) })!;
+    expect(lost.doc.title).toBe("One");
+    expect(lost.review!.changes).toEqual(["Clearer cue on the bridge.", "Slower tempo — not kept: it scored 2.0 against round 1's 3.0."]);
   });
 });

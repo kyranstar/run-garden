@@ -285,7 +285,9 @@ function athleteReview(op: DocWorkoutOp): OpReview | null {
   const held = log.find((r) => r.toolUseId === op.toolUseId);
   if (!held || held.status === "reviewing" || held.status === "dropped") return op.review ?? null;
   const rounds = countedRounds(log);
-  const changes = log.filter((r) => typeof r.change === "string").map((r) => r.change!);
+  // An amend's line says what changed in the version it amended (its `round`): once another version is held, it no
+  // longer describes what the athlete sees (review Minor 13).
+  const changes = log.filter((r) => typeof r.change === "string" && (r.status !== "amended" || r.round === held.round)).map((r) => r.change!);
   return held.status === "reviewed" && held.review
     ? { ...held.review, rounds, changes }
     : { scores: {}, notes: {}, mustFix: [], improvements: [], rounds, changes, note: held.note ?? NOTE_NOT_DONE };
@@ -578,9 +580,10 @@ async function readProposal(
   proposalId: string,
   o: { willReplaceOf?: string } = {},
 ): Promise<{ opsText: string | null; ops: DesignOp[]; status: string | null; willReplace: WillReplace[] }> {
-  // With `willReplaceOf` (a run's id), what that run's ops would replace once suggested, in the same statement.
+  // With `willReplaceOf` (a run's id), what that run's ops would replace once suggested, in the same statement — none
+  // for a rehearsal's: a rehearsal supersedes nothing (review Minor 9).
   const replaces = o.willReplaceOf
-    ? sql`CASE WHEN json_valid(cp.ops) THEN ${willReplaceSql(userId, proposalId, sql`cp.ops`, o.willReplaceOf)} END`
+    ? sql`CASE WHEN cp.status = 'rehearsal' THEN '[]' WHEN json_valid(cp.ops) THEN ${willReplaceSql(userId, proposalId, sql`cp.ops`, o.willReplaceOf)} END`
     : sql`NULL`;
   const rows = (await db.all(sql`
     SELECT cp.ops AS ops, cp.status AS status, ${replaces} AS willReplace FROM coach_proposals cp WHERE cp.id = ${proposalId} AND cp.user_id = ${userId}

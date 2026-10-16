@@ -597,7 +597,7 @@ export { SAME_SESSION_MINUTES };
  * covered BY SESSION, NOT BY DAY (two sessions a day are legitimate): an older revision of a workout, or an older change
  * to it (adjust_plan's skip, move or length, Task 8b), is covered by a newer revision of the same workout or a newer
  * change to it — the newer wins, whichever kind each is; an older new workout by a newer NEW workout on its date whose
- * time overlaps — either has no time, or the two start within SAME_SESSION_MINUTES of each other. (A newer revision of
+ * time overlaps — either has no start (its time, else a now design's floor), or the two start within SAME_SESSION_MINUTES of each other (design-cover.ts). (A newer revision of
  * a different workout, already planned, is its own session: it never supersedes a new one near it; nor does a change
  * ever supersede a new workout, or a new workout a change.)
  *
