@@ -18,8 +18,14 @@ describe("the shared prefix (every role)", () => {
     expect(SHARED_PROMPT).toContain("- A big planned session with nothing logged, when whether it happened changes the design:");
   });
 
-  it("13d D3: one plain line of what it weighed, beside the tool call", () => {
-    expect(SHARED_PROMPT).toContain("When you choose — a draft's shape, a move over its rivals, what a revision changes — say why in one plain line of text beside the tool call");
+  it("13d D3: one plain line of what it weighed, beside the tool call — the main coach's and a designer's, never the reviewer's (round 2, I1)", () => {
+    const d3 = "When you choose — a draft's shape, a move over its rivals, what a revision changes — say why in one plain line of text beside the tool call";
+    expect(roleBlock("main")).toContain(d3);
+    expect(roleBlock("designer")).toContain(d3);
+    // The reviewer's turn text would be critique on the trail before the review is shown.
+    expect(SHARED_PROMPT).not.toContain(d3);
+    expect(roleBlock("reviewer")).not.toContain(d3);
+    expect(roleBlock("reviewer")).toContain("Write no text beside your calls: your verdict goes only in submit_review.");
   });
 
   it("13a A5 + A2: unaccustomed means the movement — a first exposure capped, sets short of failure; with no logged sets, set 1 is the test", () => {
