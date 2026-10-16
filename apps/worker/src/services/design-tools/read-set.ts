@@ -113,7 +113,7 @@ export const readSet: DesignTool = {
     if (isErr(p)) return p;
     const rounds = ctx.set?.rounds() ?? [];
     const source = "this run's proposal: the set's designed workouts, each with its independent review";
-    if (ctx.run.role !== "main" || rounds.length === 0) {
+    if (rounds.length === 0) {
       return answer({
         source,
         now: ctx.now,

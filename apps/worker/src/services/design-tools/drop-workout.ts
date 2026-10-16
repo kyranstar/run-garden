@@ -35,7 +35,7 @@ export const dropWorkout: DesignTool = {
     const p = parseAct(input, raw, `opId (a workout's op id) and reason (plain words, at most ${REASON_MAX} characters)`);
     if (isErr(p)) return p;
     const rounds = ctx.set?.rounds() ?? [];
-    if (ctx.run.role !== "main" || rounds.length === 0) {
+    if (rounds.length === 0) {
       return refuse("no_set", "drop_workout takes a workout out of a planned set, and no set is planned in this run.", "Call plan_set first — or, for one workout, simply don't propose it.");
     }
     const proposalId = designProposalId(ctx.run.id);

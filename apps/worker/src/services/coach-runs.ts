@@ -2020,7 +2020,8 @@ function setHooks(s: StepCtx): SetHooks {
         ...d,
         state: newRunState("designer", run.scope, {
           rehearsal: state.settings.rehearsal,
-          ceilingMicros: Math.min(DESIGNER_CEILING_MICROS, state.settings.ceilingMicros),
+          // A workout's own; the main run's holds the whole set above it (the highest ceiling reached stops a run).
+          ceilingMicros: DESIGNER_CEILING_MICROS,
           ...(state.settings.timezone ? { timezone: state.settings.timezone } : {}),
           ...(state.settings.window ? { window: state.settings.window } : {}),
           toldAt: state.toldAt,

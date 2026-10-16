@@ -354,6 +354,12 @@ describe("a three-workout set, end to end", () => {
       // A now run's main is not a set's.
       row(`old-now-${a.userId}`, { role: "main", cost: 2, scope: { kind: "now" } }),
     ]);
+    // Runs older than the estimate's window don't count.
+    const long = new Date(NOW.getTime() - 90 * 86_400_000).toISOString();
+    await db.insert(schema.coachRuns).values([
+      { ...row(`old-d6-${a.userId}`, { role: "designer", parentId: `old-main-${a.userId}`, cost: 5 }), createdAt: long, updatedAt: long },
+      { ...row(`old-main2-${a.userId}`, { role: "main", cost: 4 }), createdAt: long, updatedAt: long },
+    ]);
     const mainId = await weekRun(a.userId);
     const { deps } = scripted([t(planSet([brief("thu", THU), brief("mon", MON)]))]);
     await runStep(db, env, mainId, a.userId, NOW, deps);
@@ -520,6 +526,55 @@ describe("main judges the set and acts on it", () => {
     expect(roles).toMatchObject({ plan_set: ["main"], read_set: ["main"], drop_workout: ["main"] });
   });
 
+  it("drop_workout before a set, on a proposal already settled, or racing another write: refused, nothing lost", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const op = (runId: string, date: string, title: string) =>
+      ({
+        kind: "doc_workout", target: { kind: "new", date }, date, doc: calmDoc({ title }), review: { ...verdict(4), rounds: 1, changes: [] }, issues: [],
+        derived: { minutes: 20 }, by: { runId, role: "designer" }, toolUseId: `u-${runId}`, at: NOW.toISOString(),
+      }) as unknown as DocWorkoutOp;
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(mainId), userId: a.userId, planId: null, title: "2 workouts", evidence: "", rationale: "", flags: [],
+      ops: [op("d-thu", THU, "Thursday hips"), op("d-mon", MON, "Monday reset")], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: MON,
+    });
+    const round = { toolUseId: "p", redo: false, briefs: [], designers: [{ key: "thu", runId: "d-thu" }, { key: "mon", runId: "d-mon" }] };
+    const ctxWith = (d: Db, rounds: unknown[]) =>
+      ({ db: d, env, userId: a.userId, now: NOW, run: { id: mainId, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false }, set: { rounds: () => rounds, start: async () => [] } }) as unknown as ToolContext;
+    const drop = allTools().find((x) => x.name === "drop_workout")!;
+    const input = { opId: "d-thu", reason: "Too much." };
+
+    expect(((await drop.run(ctxWith(db, []), input)) as ToolErr).error).toBe("no_set");
+
+    // Another write lands on the proposal between drop_workout's read and its write.
+    let raced = false;
+    const racing = new Proxy(db, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== "all" || typeof value !== "function") return value;
+        return async (q: { queryChunks?: Array<{ value?: unknown }> }) => {
+          const text = (q.queryChunks ?? []).map((c) => (Array.isArray(c?.value) ? c.value.join("") : "")).join("");
+          if (!raced && text.includes("UPDATE coach_proposals")) {
+            raced = true;
+            const now = (await proposalOf(mainId))!.ops.map((o) => ({ ...o, at: "changed meanwhile" }));
+            await db.update(schema.coachProposals).set({ ops: now }).where(eq(schema.coachProposals.id, designProposalId(mainId)));
+          }
+          return (value as (q: unknown) => Promise<unknown>).call(target, q);
+        };
+      },
+    }) as Db;
+    expect(((await drop.run(ctxWith(racing, [round]), input)) as ToolErr).error).toBe("proposal_changed");
+    expect(raced).toBe(true);
+    expect((await proposalOf(mainId))!.ops.map((o) => [o.by.runId, o.at])).toEqual([
+      ["d-thu", "changed meanwhile"],
+      ["d-mon", "changed meanwhile"],
+    ]);
+
+    await db.update(schema.coachProposals).set({ status: "pending" }).where(eq(schema.coachProposals.id, designProposalId(mainId)));
+    expect(((await drop.run(ctxWith(db, [round]), input)) as ToolErr).error).toBe("proposal_closed");
+    expect((await proposalOf(mainId))!.ops).toHaveLength(2);
+  });
+
   it("a redo: plan_set once more for one key, with a note; its new design replaces the old once reviewed; a third call is refused", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
@@ -615,6 +670,10 @@ describe("main judges the set and acts on it", () => {
     expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
     expect(sentError(requests, early)).toMatchObject({ error: "not_run" });
     expect(sentData(requests, plan).set[0]).toMatchObject({ outcome: "proposed" });
+    // The turn's results go back as one message, in the model's order: the set's outcome, then the call not run.
+    const last = requests.at(-1)!.messages.at(-1)!;
+    const ids = (last.content as Array<{ type: string; tool_use_id?: string }>).filter((b) => b.type === "tool_result").map((b) => b.tool_use_id);
+    expect(ids).toEqual([idOf(plan), idOf(early)]);
     expect((await proposalOf(mainId))!.status).toBe("pending");
   });
 });
@@ -647,6 +706,63 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
     expect(p.flags[0]).toBe(STOPPED_NOTES.run_ceiling);
     expect(p.flags.slice(1)).toEqual([expect.stringContaining("Saturday trunk")]);
     expect((await events(mainId)).at(-1)!.summary).toBe("Proposed what had been reviewed before the stop.");
+  });
+
+  it("a designer's limit and the set's both reached: the set's — the highest — stops the whole set at once", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
+    const s = await stateOf(mainId);
+    s.settings.ceilingMicros = 1_000_000;
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
+    const { deps, requests } = scripted([t(planSet([brief("thu", THU), brief("mon", MON)])), turn([propose("Thursday hips", THU)], { cost: DESIGNER_CEILING_MICROS + 100_000 })]);
+    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+    expect(requests).toHaveLength(2);
+    expect(await runRow(mainId)).toMatchObject({ status: "stopped_cap", error: "run_ceiling" });
+    expect((await designersOf(mainId)).map((d) => d.status)).toEqual(["stopped_cap", "stopped_cap"]);
+    const lines = (await events(mainId)).map((e) => e.summary).filter((x) => x.includes("spending limit"));
+    expect(lines).toEqual(["This design reached its spending limit ($1.00) — the coach stopped here."]);
+  });
+
+  it("a designer stopped while its revision was under review: the revision is dropped, the reviewed version stands, the set is proposed", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const plan = planSet([brief("thu", THU), brief("mon", MON)]);
+    const { deps, requests } = scripted([
+      t(plan),
+      turn([propose("Thursday hips", THU)], { cost: 100_000 }),
+      turn([submit(verdict(3, { mustFix: ["Shorter rests."] }))], { cost: 100_000 }),
+      // The revision takes Thursday's designer past its limit: its reviewer's call is never made.
+      turn([use("propose_workout", { doc: calmDoc({ title: "Thursday hips, shorter rests" }), target: { kind: "new", date: THU }, changeNote: "Shorter rests." })], { cost: 1_400_000 }),
+      ...designed("Monday reset", MON),
+      t(finish("Two sessions.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    expect(requests.map(roleOf)).toEqual(["main", "designer", "reviewer", "designer", "designer", "reviewer", "designer", "main"]);
+    expect(sentData(requests, plan).set[0]).toMatchObject({ key: "thu", outcome: "proposed", reviewMean: 3 });
+    const p = (await proposalOf(mainId))!;
+    expect(p.status).toBe("pending");
+    const thu = p.ops[0]!;
+    expect(thu.doc.title).toBe("Thursday hips");
+    expect(thu.candidate).toBeUndefined();
+    expect(thu.review!.changes).toEqual(["Shorter rests — not reviewed: its designer stopped before the review was in."]);
+  });
+
+  it("a rehearsal set stopped at its ceiling stays a rehearsal: nothing is made pending", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId, { rehearsal: true });
+    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
+    const s = await stateOf(mainId);
+    s.settings.ceilingMicros = 50_000;
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
+    const c = { cost: 10_000 };
+    const { deps } = scripted([
+      turn([planSet([brief("thu", THU), brief("sat", SAT), brief("mon", MON)])], c),
+      ...designed("Thursday hips", THU, c),
+      turn([propose("Saturday trunk", SAT)], c),
+    ]);
+    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+    expect((await proposalOf(mainId))!.status).toBe("rehearsal");
   });
 
   it("stopped before anything was reviewed: nothing is proposed", async () => {
@@ -748,6 +864,41 @@ describe("plan_set's checks", () => {
     expect(dup.why).toContain('"a"');
   });
 
+  it("the next N's last day is its plan's horizon; a day with a session already over needs its reason; outside the loop it can't start anything", async () => {
+    const a = await athlete();
+    const next = await ctxFor(a.userId, { kind: "next_n", n: 3 });
+    const far = refusal(await tool("plan_set").run(next.ctx, { briefs: [brief("a", day(-14))] }));
+    expect(far.why).toContain(`"a": ${day(-14)} is after the set's last day (${day(-13)})`);
+    expect(isToolErr(await tool("plan_set").run(next.ctx, { briefs: [brief("a", day(-13))] }))).toBe(false);
+
+    const b = await athlete();
+    await db.insert(schema.plannedWorkouts).values({
+      id: `skipped-${b.userId}`, userId: b.userId, planId: "coros-plan", sourceWorkoutId: `skipped-${b.userId}`, title: "Easy run", category: "easy", sport: "run",
+      originalPlanDate: MON, lastVerifiedCorosDate: MON, effectiveDate: MON, effectiveTime: "07:00", sourceContentFingerprint: "fp",
+      sourceEstimatedDurationSeconds: 2400, calendarBlockDurationSeconds: 3300, completionState: "skipped", createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+    });
+    const week = await ctxFor(b.userId, { kind: "week" });
+    const over = refusal(await tool("plan_set").run(week.ctx, { briefs: [brief("mon", MON)] }));
+    expect(over.why).toContain(`"mon": ${MON} holds a session already done, skipped or missed`);
+    expect(isToolErr(await tool("plan_set").run(week.ctx, { briefs: [brief("mon", MON, { sameDayWhy: "Mobility in place of the run." })] }))).toBe(false);
+
+    const { set: _hooks, ...outside } = week.ctx;
+    expect(refusal(await tool("plan_set").run(outside as ToolContext, { briefs: [brief("thu", THU)] })).error).toBe("unavailable");
+  });
+
+  it("a redo onto a day another workout of the set holds needs its reason too", async () => {
+    const a = await athlete();
+    const { ctx, started } = await ctxFor(a.userId, { kind: "week" });
+    const first = { toolUseId: "first", redo: false, briefs: [brief("thu", THU), brief("sat", SAT)], designers: [{ key: "thu", runId: "d-thu" }, { key: "sat", runId: "d-sat" }] };
+    const withFirst = { ...ctx, set: { ...ctx.set!, rounds: () => [first] } } as ToolContext;
+    const moved = refusal(await tool("plan_set").run(withFirst, { briefs: [brief("sat", THU, { note: "Earlier in the week." })] }));
+    expect(moved.why).toContain(`"sat": ${THU} already has another brief ("thu")`);
+    const ok = (await tool("plan_set").run(withFirst, { briefs: [brief("sat", THU, { note: "Earlier.", sameDayWhy: "A short evening session." })] })) as ToolOk;
+    expect(isToolErr(ok)).toBe(false);
+    expect((ok.data as { round: { redo: boolean; replaces: Record<string, string> } }).round).toMatchObject({ redo: true, replaces: { sat: "d-sat" } });
+    expect(started).toHaveLength(1);
+  });
+
   it("a designer can't plan a set", async () => {
     const a = await athlete();
     const { ctx } = await ctxFor(a.userId, { kind: "week" });
@@ -805,14 +956,19 @@ describe("read_set", () => {
     const ops: DocWorkoutOp[] = dates.map((date, i) => {
       const doc = calmDoc({ title: `Workout ${i} ${"t".repeat(60)}` });
       const runId = `ds-${mainId}-x-${String(i + 1).padStart(2, "0")}-k${i}`;
+      const effort = date === MON ? "peak" : date === TODAY || date === THU || date === day(-4) ? "develop" : "maintain";
+      const unread = { scores: {}, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [], note: "The review could not be read; the validator's view stands." };
       return {
         kind: "doc_workout",
         target: { kind: "new", date },
         date,
-        doc: { ...doc, intent: { ...doc.intent, summary: "s".repeat(200), effort: date === TODAY || date === THU || date === day(-4) ? "develop" : "maintain" } },
-        review: { ...verdict(2, { mustFix: Array.from({ length: 8 }, () => long) }), notes: Object.fromEntries(DIMS.map((d) => [d, long])), rounds: 3, changes: [long, long], note: undefined },
+        doc: { ...doc, intent: { ...doc.intent, summary: "s".repeat(200), effort } },
+        review:
+          date === SAT
+            ? unread
+            : { ...verdict(2, { mustFix: Array.from({ length: 8 }, () => long) }), notes: Object.fromEntries(DIMS.map((d) => [d, long])), rounds: 3, changes: [long, long] },
         issues: [],
-        derived: { minutes: 30, discipline: "strength", category: "strength", mode: "consistent", balance: { isotonicReps: 40 }, regions: { glutes: 4, core: 2 }, equipment: { all: [], oneOf: [] }, watchSteps: 4 },
+        derived: { minutes: 30, discipline: "strength", category: "strength", mode: "consistent", balance: { isometricSec: 120, isotonicReps: 40 }, regions: { glutes: 4, core: 2 }, equipment: { all: [], oneOf: [] }, watchSteps: 4 },
         by: { runId, role: "designer" },
         toolUseId: `u${i}`,
         at: NOW.toISOString(),
@@ -842,12 +998,38 @@ describe("read_set", () => {
       minutes: 30,
       review: { mean: 2, rounds: 3, mustFix: expect.any(Array) },
     });
-    expect(data.workouts[0].review.mustFix[0]).toMatchObject({ untrusted: true });
-    // Hard (develop or peak) on today, Thursday and the following Sunday: one pair in a row (today, Thursday).
-    expect(data.hardDaysInARow).toMatchObject({ count: 1, pairs: [[TODAY, THU]] });
+    expect(data.workouts[0].review.mustFixCount).toBe(8);
+    expect(data.workouts[0].balance).toEqual({ isometricMin: 2, isotonicReps: 40 });
+    // A review that couldn't be read has no mean: its note says so.
+    expect(data.workouts[3].review).toMatchObject({ mean: null, note: "The review could not be read; the validator's view stands." });
+    // Hard (develop or peak) today, Thursday, the following Sunday and Monday: two pairs in a row.
+    expect(data.hardDaysInARow).toMatchObject({ count: 2, pairs: [[TODAY, THU], [day(-4), MON]] });
     expect(data.combined.minutes).toBe(7 * 30);
-    expect(typeof data.combined.balance).toBe("object");
+    expect(data.combined.balance).toEqual(expect.objectContaining({ isotonicReps: expect.any(Number) }));
     expect(data.notes).toEqual(["Left out “Friday” (Friday 15 May): too much."]);
+  });
+
+  it("a small set is shown whole: each workout's intent and its must-fix items in words", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const doc = calmDoc({ title: "Thursday hips" });
+    const op = {
+      kind: "doc_workout", target: { kind: "new", date: THU }, date: THU, doc, review: { ...verdict(3, { mustFix: ["Shorter rests."] }), rounds: 1, changes: [] }, issues: [],
+      derived: { minutes: 20, regions: { glutes: 4, core: 2, hips: 1, back: 1 } }, by: { runId: "d-thu", role: "designer" }, toolUseId: "u", at: NOW.toISOString(),
+    } as unknown as DocWorkoutOp;
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(mainId), userId: a.userId, planId: null, title: "Thursday hips", evidence: "", rationale: "", flags: [], ops: [op], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: THU,
+    });
+    const rounds = [{ toolUseId: "p", redo: false, briefs: [], designers: [{ key: "thu", runId: "d-thu" }] }];
+    const ctx = { db, env, userId: a.userId, now: NOW, run: { id: mainId, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false }, set: { rounds: () => rounds, start: async () => [] } } as unknown as ToolContext;
+    const w = ((await allTools().find((x) => x.name === "read_set")!.run(ctx, {})) as ToolOk).data as any;
+    expect(w.workouts[0]).toMatchObject({
+      key: "thu",
+      intent: { untrusted: true, text: doc.intent.summary },
+      regions: { glutes: 4, core: 2, hips: 1 },
+      review: { mean: 3, low: Object.fromEntries(DIMS.slice(0, 3).map((d) => [d, 3])), mustFix: [{ untrusted: true, text: "Shorter rests." }], mustFixCount: 1, rounds: 1 },
+    });
+    expect(w.hardDaysInARow).toMatchObject({ count: 0, pairs: [] });
   });
 
   it("before any set: says so", async () => {

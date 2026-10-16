@@ -99,7 +99,7 @@ export const planSet: DesignTool = {
         "Design it yourself: validate_workout until no error remains, then propose_workout.",
       );
     }
-    if (!ctx.set || ctx.run.role !== "main") return refuse("unavailable", "plan_set runs only in the main coach's run.", "Finish with what you have.");
+    if (!ctx.set) return refuse("unavailable", "plan_set runs only in the main coach's run.", "Finish with what you have.");
     const toolUseId = ctx.toolUseId ?? `call-${ctx.now.toISOString()}`;
     const earlier = ctx.set.rounds().filter((r) => r.toolUseId !== toolUseId);
     if (earlier.length > SET_REDO_ROUNDS) {
@@ -129,8 +129,9 @@ export const planSet: DesignTool = {
       if (seen.has(b.key)) problems.push(`"${b.key}": the key is used twice — each workout of the set needs its own`);
       seen.add(b.key);
     }
+    // (A redo names keys of the first plan only, so it never holds more.)
     const limit = setLimit(ctx.run.scope);
-    if (!redo && p.briefs.length > limit) {
+    if (p.briefs.length > limit) {
       problems.push(`${p.briefs.length} briefs: this set holds at most ${limit} workout${limit === 1 ? "" : "s"}`);
     }
     const firstKeys = new Map((first?.briefs ?? []).map((b) => [b.key, b]));
