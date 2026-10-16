@@ -13,18 +13,29 @@
  * its fixed clock.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { cancelRun, createRun, LINES, ROUTE_OVERHEAD, runStep, STEP_BUDGET, type RunDeps } from "../src/services/coach-runs.js";
+import {
+  cancelRun,
+  createRun,
+  LINES,
+  PROMPT_BYTES_PER_TOKEN,
+  ROUTE_OVERHEAD,
+  RUN_LIMITS,
+  runStep,
+  STEP_BUDGET,
+  sweepCoachRuns,
+  type RunDeps,
+} from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { pastDayLine, STOPPED_NOTES, stoppedNote } from "../src/services/design-review.js";
 import { dayWords } from "../src/services/design-orchestrate.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
-import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult } from "../src/services/llm-messages.js";
+import { designModel, messagesCostMicros, type ContentBlock, type MessagesOk, type MessagesRequest, type MessagesResult } from "../src/services/llm-messages.js";
 import { LLM_BUDGET } from "../src/services/llm.js";
 import { day, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -143,7 +154,7 @@ const brief = (key: string, date: string) => ({
   why: "Spaced away from the runs for recovery.",
   sameDayWhy: "A short session beside what the day holds.",
 });
-const planSet = (briefs: Array<ReturnType<typeof brief>>) => use("plan_set", { briefs });
+const planSet = (briefs: Array<ReturnType<typeof brief> & { note?: string }>) => use("plan_set", { briefs });
 /** One designer's whole life: a draft, its review, its finish. */
 const designed = (title: string, date: string): Scripted[] => [t(propose(title, date)), t(submit(verdict(4))), t(finish(`${title}, as briefed.`))];
 const ask = () => use("ask_athlete", { questions: [{ text: "Is Saturday's event still on?", chips: ["Yes", "No"], why: "It decides Saturday's session." }] });
@@ -371,5 +382,229 @@ describe("the week's AI budget is a hard ceiling: a call is made only when its w
     const out = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 10_000), deps);
     expect(out.kind === "ok" && out.result.status).toBe("finished");
     expect(requests.length).toBe(calls + 1);
+  });
+});
+
+// ── Round 2 (the re-review of part A) ───────────────────────────────────
+
+/** A verdict that lands between a promote's read and its write — a reviewer's step still live while its tree stops —
+ * as another request would write it: the first promote of the proposal loses its `ops IS` guard. */
+function racing(proposalId: string) {
+  let raced = false;
+  const proxy = new Proxy(db, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      if (prop !== "all") return value.bind(target);
+      return async (q: { queryChunks?: Array<{ value?: unknown }> }) => {
+        const text = (q.queryChunks ?? []).map((c) => (Array.isArray(c?.value) ? c.value.join("") : "")).join("");
+        if (!raced && text.includes("SET status = 'pending', ops =")) {
+          raced = true;
+          await db.run(sql`UPDATE coach_proposals SET ops = json_set(ops, '$[0].review.note', 'A verdict that landed late.') WHERE id = ${proposalId}`);
+        }
+        return (value as (q: unknown) => Promise<unknown>).call(target, q);
+      };
+    },
+  });
+  return { db: proxy as Db, raced: () => raced };
+}
+
+type ExpiryPath = "step" | "create" | "sweep";
+const EXPIRY_PATHS: ExpiryPath[] = ["step", "create", "sweep"];
+
+/** The main run's window closed: found by its next step, by a new run's create, or by the hourly sweep. */
+async function expireBy(path: ExpiryPath, userId: string, mainId: string, deps: RunDeps, at: Date) {
+  if (path === "step") return runStep(db, env, mainId, userId, at, deps);
+  if (path === "create") return createRun(db, userId, { scope: { kind: "now" }, request: "Something new." }, at);
+  return sweepCoachRuns(db, env, userId, at, deps, { maxSteps: 0 });
+}
+
+/** Steps the set until `done` says so (bounded), from NOW. */
+async function stepUntil(userId: string, mainId: string, deps: RunDeps, done: () => Promise<boolean>, what: string) {
+  await untilDone(
+    async (i) => {
+      const out = await runStep(db, env, mainId, userId, new Date(NOW.getTime() + i * 1000), deps);
+      if (out.kind !== "ok") throw new Error(out.kind);
+      return done();
+    },
+    { max: 60, what },
+  );
+}
+
+const DAY_AND_AN_HOUR = 25 * 3_600_000;
+
+describe("an expiry proposes the same, whoever finds it (round 2, A-I1)", () => {
+  it("a redone set expiring before its main run resumes proposes Thursday and Saturday's redo — never both Saturdays — by a step, a create or the sweep", async () => {
+    const [thu, sat] = [day(-1), day(-3)];
+    const seen: Array<{ path: ExpiryPath; status: string; titles: string[]; flags: string[] }> = [];
+    for (const path of EXPIRY_PATHS) {
+      const a = await athlete();
+      const mainId = await weekRun(a.userId);
+      const { deps } = scripted([
+        t(planSet([brief("thu", thu), brief("sat", sat)])),
+        ...designed("Thursday trunk", thu),
+        ...designed("Saturday reset", sat),
+        t(planSet([{ ...brief("sat", sat), note: "Gentler: it follows the long run." }])),
+        t(propose("Saturday, gentler", sat)),
+        t(submit(verdict(5))),
+        t(finish("Gentler, as asked.")),
+      ]);
+      // Up to the redo's finish: the main run would settle the redo at its next step.
+      await stepUntil(
+        a.userId,
+        mainId,
+        deps,
+        async () => {
+          const ds = await designersOf(mainId);
+          return ds.length === 3 && ds[2]!.status === "finished";
+        },
+        "to the redo's finish",
+      );
+      expect((await proposalOf(mainId))!.ops.map((o) => o.doc.title)).toEqual(["Thursday trunk", "Saturday reset", "Saturday, gentler"]);
+      await expireBy(path, a.userId, mainId, deps, new Date(NOW.getTime() + DAY_AND_AN_HOUR));
+      expect((await runRow(mainId)).status, path).toBe("expired");
+      const p = (await proposalOf(mainId))!;
+      seen.push({ path, status: p.status, titles: p.ops.map((o) => o.doc.title), flags: p.flags });
+    }
+    for (const s of seen) {
+      expect(s, s.path).toEqual({ path: s.path, status: "pending", titles: ["Thursday trunk", "Saturday, gentler"], flags: [STOPPED_NOTES.expired] });
+    }
+  });
+
+  it("a set expiring after a designer failed names that day — by a step, a create or the sweep", async () => {
+    const [thu, fri, sat] = [day(-1), day(-2), day(-3)];
+    const seen: Array<{ path: ExpiryPath; status: string; titles: string[]; flags: string[] }> = [];
+    for (const path of EXPIRY_PATHS) {
+      const a = await athlete();
+      const mainId = await weekRun(a.userId);
+      const { deps } = scripted([
+        t(planSet([brief("thu", thu), brief("fri", fri), brief("sat", sat)])),
+        ...designed("Thursday trunk", thu),
+        { ...turn([]), stopReason: "refusal" },
+        ...designed("Saturday reset", sat),
+      ]);
+      // Every designer over — Friday's failed — and the main run not yet resumed.
+      await stepUntil(
+        a.userId,
+        mainId,
+        deps,
+        async () => {
+          const ds = await designersOf(mainId);
+          return ds.length === 3 && ds.every((d) => d.status === "finished" || d.status === "failed");
+        },
+        "to the last designer's finish",
+      );
+      expect((await designersOf(mainId)).map((d) => d.status)).toEqual(["finished", "failed", "finished"]);
+      await expireBy(path, a.userId, mainId, deps, new Date(NOW.getTime() + DAY_AND_AN_HOUR));
+      const p = (await proposalOf(mainId))!;
+      seen.push({ path, status: p.status, titles: p.ops.map((o) => o.doc.title), flags: p.flags });
+    }
+    for (const s of seen) {
+      expect(s, s.path).toEqual({
+        path: s.path,
+        status: "pending",
+        titles: ["Thursday trunk", "Saturday reset"],
+        flags: [STOPPED_NOTES.expired, `Not designed before the stop: ${dayWords(fri)}.`],
+      });
+    }
+  });
+});
+
+describe("a promote that loses to a late verdict reads again before it gives up (round 2, A-M3)", () => {
+  it("an expiry: the proposal is read again and proposed, the verdict kept — never closed — with one line for a day run whose workout is for a later day (A-M7)", async () => {
+    const a = await athlete();
+    const runId = await nowRun(a.userId);
+    const { deps } = scripted([t(propose("Calm hips", day(-1))), t(submit(verdict(4))), t(ask())]);
+    for (let i = 0; i < STEPS_TO_REVIEWED + 1; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+    expect((await runRow(runId)).status).toBe("waiting_athlete");
+    const r = racing(designProposalId(runId));
+    const out = await runStep(r.db, env, runId, a.userId, new Date(NOW.getTime() + DAY_AND_AN_HOUR), deps);
+    expect(out.kind === "ok" && out.result.status).toBe("expired");
+    expect(r.raced()).toBe(true);
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops[0]!.review!.note).toBe("A verdict that landed late.");
+    expect(p.flags).toEqual([STOPPED_NOTES.expired]);
+    // Its window was the day it began on, which has passed; its workout is tomorrow's: one line, no contradiction.
+    const trail = await lines(runId);
+    expect(trail.at(-1)).toBe("The day this was designed for has passed. The workouts for later days are proposed.");
+    expect(trail).not.toContain(LINES.expiredDay);
+    expect(trail).not.toContain(LINES.proposed);
+  });
+
+  it("a stop: the proposal is read again and proposed, the verdict kept", async () => {
+    const a = await athlete();
+    const runId = await nowRun(a.userId);
+    const { deps } = scripted([...REVIEWED, { ok: false, kind: "no_key", reason: "no_key" }]);
+    for (let i = 0; i < STEPS_TO_REVIEWED; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+    const r = racing(designProposalId(runId));
+    const out = await runStep(r.db, env, runId, a.userId, new Date(NOW.getTime() + 10_000), deps);
+    expect(out.kind === "ok" && out.result.status).toBe("failed");
+    expect(r.raced()).toBe(true);
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops[0]!.review!.note).toBe("A verdict that landed late.");
+    expect((await lines(runId)).slice(-2)).toEqual([LINES.noKey, LINES.proposed]);
+  });
+});
+
+describe("the week's cap prices a call's prompt as its usage row does (round 2, A-M2)", () => {
+  const bytesOf = (text: string) => new TextEncoder().encode(text).length;
+  /** What the row written before the next call records: the prompt (the stored state and the tools) as a cache write,
+   * the output at the call's ceiling. */
+  async function worstOf(runId: string): Promise<number> {
+    const tools = allTools().map((x) => ({ name: x.name, description: x.description, input_schema: x.inputSchema }));
+    const promptTokens = Math.ceil((bytesOf((await runRow(runId)).state!) + bytesOf(JSON.stringify(tools))) / PROMPT_BYTES_PER_TOKEN);
+    return messagesCostMicros(designModel(env), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: promptTokens, outputTokens: RUN_LIMITS.main.maxTokens });
+  }
+  async function spentThisWeek(userId: string, micros: number) {
+    await db.insert(schema.llmUsage).values({
+      id: `week-${userId}`,
+      userId,
+      kind: "coach_wake",
+      model: "m",
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicros: micros,
+      cacheHit: false,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  /** The week's spend as the call is made: the spend before it, and the row written for it. */
+  async function recordedAtTheCall(userId: string, runId: string): Promise<number> {
+    const [row] = (await db.all(sql`
+      SELECT (SELECT cost_micros FROM llm_usage WHERE id = ${`week-${userId}`}) +
+        (SELECT max(cost_micros) FROM llm_usage WHERE request_fingerprint LIKE ${`run:${runId}:%`}) AS total
+    `)) as Array<{ total: number }>;
+    return row!.total;
+  }
+
+  it("a call admitted at the cutoff less its worst case records exactly the cutoff, never more; a micro more and it isn't made", async () => {
+    const a = await athlete();
+    const runId = await nowRun(a.userId);
+    let recorded = -1;
+    const { deps } = scripted([
+      ...REVIEWED,
+      async () => {
+        recorded = await recordedAtTheCall(a.userId, runId);
+        return t(finish("Done."));
+      },
+    ]);
+    for (let i = 0; i < STEPS_TO_REVIEWED; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+    await spentThisWeek(a.userId, LLM_BUDGET.cutoffMicros - (await worstOf(runId)));
+    const out = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 10_000), deps);
+    expect(out.kind === "ok" && out.result.status).toBe("finished");
+    expect(recorded).toBe(LLM_BUDGET.cutoffMicros);
+
+    const b = await athlete();
+    const other = await nowRun(b.userId);
+    const two = scripted([...REVIEWED, t(finish("Done."))]);
+    for (let i = 0; i < STEPS_TO_REVIEWED; i++) await runStep(db, env, other, b.userId, new Date(NOW.getTime() + i * 1000), two.deps);
+    await spentThisWeek(b.userId, LLM_BUDGET.cutoffMicros - (await worstOf(other)) + 1);
+    const calls = two.requests.length;
+    const refused = await runStep(db, env, other, b.userId, new Date(NOW.getTime() + 10_000), two.deps);
+    expect(refused.kind === "ok" && refused.result.status).toBe("stopped_cap");
+    expect(two.requests.length).toBe(calls);
+    expect(await runRow(other)).toMatchObject({ status: "stopped_cap", error: "weekly_cap" });
   });
 });

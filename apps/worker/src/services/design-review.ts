@@ -846,15 +846,33 @@ export function pastDayLine(ops: DocWorkoutOp[]): string {
 }
 
 /**
+ * How many times a stop's or an expiry's promote reads its proposal (fix wave 3A round 2, A-M3): a write that loses its
+ * `ops IS` guard lost to a verdict landing between the read and the write — a reviewer's step still live while its tree
+ * stops — so the proposal is read once more and the promote tried again on what it holds now; only then is the proposal
+ * left as it is (an expiry then closes it). Each try is a read and a write.
+ */
+export const PROMOTE_TRIES = 2;
+
+/**
  * A main run that stopped any way but a cancel proposes what it has (spec §2; fix wave 3A, A2): its proposal
  * becomes pending under the finish's own guard — still `unreviewed` (a rehearsal stays one), every op with its review,
  * no review under way — once a draft still under review is dropped (the held, reviewed version stays; the change list
  * says what was dropped). With `today` (an expiry: the athlete's local date), a workout dated before it is left out,
  * and a line says so; with none left, nothing is proposed. The stop's note is added to the proposal's own lines
- * (`flags`), never over an op's note. Two statements: the read, and a write guarded by the ops it read (none when
- * nothing can be proposed). Answers whether it was made pending.
+ * (`flags`), never over an op's note. A read and a write guarded by the ops it read (none when nothing can be
+ * proposed), tried again once when the write lost to another (PROMOTE_TRIES): four statements at most. Answers whether
+ * it was made pending.
  */
 export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string } = {}): Promise<boolean> {
+  for (let tries = 0; tries < PROMOTE_TRIES; tries++) {
+    const out = await promoteOnce(db, userId, proposalId, note, opts);
+    if (out !== "lost") return out;
+  }
+  return false;
+}
+
+/** One try of `promoteWithWhatItHas`: made pending, nothing to propose, or the write `lost` to another. */
+async function promoteOnce(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string }): Promise<boolean | "lost"> {
   const rows = (await db.all(sql`
     SELECT ops, status, flags FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
   `)) as Array<{ ops: string | null; status: string; flags: string | null }>;
@@ -887,7 +905,7 @@ export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: s
     WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'unreviewed' AND ops IS ${row.ops}
     RETURNING id
   `)) as Array<{ id: string }>;
-  return written.length > 0;
+  return written.length > 0 || "lost";
 }
 
 export type { ReviewRound, DraftVersion };

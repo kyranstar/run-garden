@@ -49,7 +49,7 @@ import { addDays, daysBetween } from "@rg/domain";
 import type { Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
 import { SET_MAX_WORKOUTS } from "./design-limits.js";
-import { applyDrop, dayWords, meanScore, pastDayLine, proposalFields, reviewRunning } from "./design-review.js";
+import { applyDrop, dayWords, meanScore, pastDayLine, PROMOTE_TRIES, proposalFields, reviewRunning } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
@@ -118,15 +118,26 @@ export function briefText(
 
 // ── The proposal ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** A design proposal as stored: its ops (and their text, for a guarded write), status and lines. One statement. */
+/**
+ * A design proposal as stored: its ops (and their text, for a guarded write), status and lines — and, with
+ * `designersOf` (a main run's id), that run's designers as they stand (`SetDesigner`), read in the same statement.
+ * One statement.
+ */
 export async function readSetProposal(
   db: Db,
   userId: string,
   proposalId: string,
-): Promise<{ opsText: string | null; ops: DocWorkoutOp[]; status: string | null; flags: string[] }> {
+  o: { designersOf?: string } = {},
+): Promise<{ opsText: string | null; ops: DocWorkoutOp[]; status: string | null; flags: string[]; designers: SetDesigner[] }> {
+  const designers = o.designersOf
+    ? sql`(SELECT json_group_array(json_object('runId', r.id, 'status', r.status,
+        'day', CASE WHEN json_valid(r.state) THEN json_extract(r.state, '$.day') END,
+        'replaces', CASE WHEN json_valid(r.state) THEN json_extract(r.state, '$.replaces') END))
+        FROM coach_runs r WHERE r.user_id = ${userId} AND r.parent_id = ${o.designersOf} AND r.role = 'designer')`
+    : sql`NULL`;
   const rows = (await db.all(sql`
-    SELECT ops, status, flags FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
-  `)) as Array<{ ops: string | null; status: string; flags: string | null }>;
+    SELECT ops, status, flags, ${designers} AS designers FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
+  `)) as Array<{ ops: string | null; status: string; flags: string | null; designers: string | null }>;
   const row = rows[0];
   const list = (text: string | null | undefined): unknown[] => {
     try {
@@ -136,11 +147,17 @@ export async function readSetProposal(
       return [];
     }
   };
+  const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
   return {
     opsText: row?.ops ?? null,
     ops: list(row?.ops) as DocWorkoutOp[],
     status: row?.status ?? null,
     flags: list(row?.flags).filter((f): f is string => typeof f === "string"),
+    designers: list(row?.designers).flatMap((d) => {
+      const x = d as Record<string, unknown> | null;
+      const runId = str(x?.runId);
+      return runId ? [{ runId, status: str(x?.status) ?? "missing", day: str(x?.day), replaces: str(x?.replaces) }] : [];
+    }),
   };
 }
 
@@ -453,37 +470,52 @@ export async function settleSet(
 
 const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in.";
 
-/** A designer of the set, as a stop sees it: its run, its brief's day, and whether it finished. */
+/** A designer of the set as its proposal's read finds it (`readSetProposal`'s `designersOf`): its run, its status, its
+ * brief's day, and — a redo's designer — the designer whose first version it replaces once reviewed. */
 export interface SetDesigner {
   runId: string;
-  day: string;
-  finished: boolean;
+  status: string;
+  day: string | null;
+  replaces: string | null;
 }
 
 /**
  * A set's main run that stopped any way but a cancel proposes what was reviewed (spec §2; Task 6's
  * `promoteWithWhatItHas`, for a set; fix wave 3A, A2): a draft still under review is dropped, the held reviewed version
  * staying; a workout with no review is left out, and a line says which; the days of designers that never got a draft
- * in — never started, or stopped before proposing (`designers`; one that finished has its own line already) — are
- * named; with `today` (an expiry), a workout dated before it is left out, and a line says which; the stop's note goes
- * in the proposal's lines. A workout a redo was designing (`redoOf`: the redo's designer → its first version's) is
+ * in — never started, or stopped before proposing (one that finished has its own line already) — are named; with
+ * `today` (an expiry), a workout dated before it is left out, and a line says which; the stop's note goes in the
+ * proposal's lines. A workout a redo was designing (a redo's designer names its first version's: `replaces`) is
  * proposed in ONE version: the redo's when it was reviewed and is the better by Task 6's rule (`redoKept`; a tie to the
  * redo), else the first — the redo's draft going without a line, its workout's day still holding the first version.
- * Pending under the finish's own guard — still `unreviewed` (a rehearsal stays one), no review under way, the ops it
- * read — and only with at least one reviewed workout. Two statements (the read, the write; none written when nothing
- * can be proposed).
+ * The designers — the redos and the days not designed — come from the proposal's own read, every designer of the main
+ * run `mainRunId` as it stands (fix wave 3A round 2, A-I1): never from what the caller holds, so a stop found by a step,
+ * an expiry found by a create or by the sweep (which hold only the live runs) propose the same. Pending under the
+ * finish's own guard — still `unreviewed` (a rehearsal stays one), no review under way, the ops it read — and only with
+ * at least one reviewed workout. A read and a write (none written when nothing can be proposed), tried again once when
+ * the write lost to another (design-review.ts PROMOTE_TRIES): four statements at most.
  */
 export async function promoteSetWithWhatItHas(
   db: Db,
   userId: string,
   proposalId: string,
   note: string,
-  opts: { designers?: SetDesigner[]; redoOf?: Readonly<Record<string, string>>; today?: string } = {},
+  opts: { mainRunId: string; today?: string },
 ): Promise<boolean> {
-  const redoOf = opts.redoOf ?? {};
+  for (let tries = 0; tries < PROMOTE_TRIES; tries++) {
+    const out = await promoteSetOnce(db, userId, proposalId, note, opts);
+    if (out !== "lost") return out;
+  }
+  return false;
+}
+
+/** One try of `promoteSetWithWhatItHas`: made pending, nothing to propose, or the write `lost` to another. */
+async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: string, opts: { mainRunId: string; today?: string }): Promise<boolean | "lost"> {
   const today = opts.today;
-  const { ops, opsText, status, flags } = await readSetProposal(db, userId, proposalId);
+  const { ops, opsText, status, flags, designers } = await readSetProposal(db, userId, proposalId, { designersOf: opts.mainRunId });
   if (status !== "unreviewed" || ops.length === 0) return false;
+  // A redo's designer → its first version's: one version of each workout is proposed.
+  const redoOf: Record<string, string> = Object.fromEntries(designers.filter((d) => d.replaces).map((d) => [d.runId, d.replaces!]));
   let settled = ops.map((op) => {
     const running = (op.reviewLog ?? []).find((r) => r.status === "reviewing");
     return running ? (applyDrop(op, running.toolUseId, STOPPED_CHANGE) ?? op) : op;
@@ -504,7 +536,11 @@ export async function promoteSetWithWhatItHas(
   const left = live.filter((op) => !op.review);
   if (kept.length === 0 || reviewRunning(kept)) return false;
   const undesigned = [
-    ...new Set((opts.designers ?? []).filter((d) => !d.finished && !ops.some((op) => op.by?.runId === d.runId)).map((d) => d.day)),
+    ...new Set(
+      designers
+        .filter((d): d is SetDesigner & { day: string } => d.day !== null && d.status !== "finished" && !ops.some((op) => op.by?.runId === d.runId))
+        .map((d) => d.day),
+    ),
   ]
     .filter((day) => !kept.some((op) => op.date === day) && !(today && day < today))
     .sort();
@@ -521,7 +557,7 @@ export async function promoteSetWithWhatItHas(
     WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'unreviewed' AND ops IS ${opsText}
     RETURNING id
   `)) as Array<{ id: string }>;
-  return written.length > 0;
+  return written.length > 0 || "lost";
 }
 
 // ── A newer plan supersedes an older one's days ─────────────────────────────────────────────────────────────────────

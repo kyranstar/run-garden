@@ -378,8 +378,9 @@ describe("finish, and a step of act tools", () => {
     statements = 0;
     const step = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 1000), deps);
     if (step.kind !== "ok") throw new Error(step.kind);
-    // Every call of the turn ran in this one step: 6 + 6 + 7 + 7 statements of tools.
-    expect(step.result.events.filter((e) => e.kind === "tool_result")).toHaveLength(4);
+    // What fits the model step's tool room ran in it — 6 + 6 + 9 of its 28 (fix wave 3A round 2: a stop's proposal
+    // reserves more of the step) — and the second propose_workout waits for the next step, queued.
+    expect(step.result.events.filter((e) => e.kind === "tool_result")).toHaveLength(3);
     const cost = ROUTE_OVERHEAD + statements + 1;
     expect(cost).toBeLessThanOrEqual(STEP_BUDGET);
     const finished = await drive(a.userId, runId, deps);

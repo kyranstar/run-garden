@@ -17,7 +17,7 @@ import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { createRun, CUT_OFF_NOTE, LAST_TURN_NOTE, LINES, NO_TOOL_NUDGE, ROUTE_OVERHEAD, runStep, type RunDeps } from "../src/services/coach-runs.js";
+import { createRun, CUT_OFF_NOTE, LAST_TURN_NOTE, NO_TOOL_NUDGE, ROUTE_OVERHEAD, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { STOPPED_NOTES } from "../src/services/design-review.js";
@@ -213,7 +213,10 @@ describe("the main run: a turn with no tool", () => {
     expect(p.status).toBe("pending");
     expect(p.flags).toEqual([STOPPED_NOTES.unfinished]);
     expect(p.ops[0]!.reviewLog!.map((r) => r.status)).toEqual(["reviewed", "dropped"]);
-    expect((await lines(runId)).at(-1)!.summary).toBe(LINES.proposed);
+    // It ended — it didn't stop: the line says what was proposed, never "before the stop" (round 2, A-M7).
+    const last = (await lines(runId)).at(-1)!.summary;
+    expect(last).toBe("Proposed what had been reviewed.");
+    expect(last).not.toMatch(/stop/);
   });
 
   it("the last-turn note says to call finish, with one plain line — never to say what is missing instead", () => {

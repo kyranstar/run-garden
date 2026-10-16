@@ -19,7 +19,7 @@ import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { cancelRun, createRun, LINES, MAX_TAKEOVERS, runStep, sweepCoachRuns, type RunDeps } from "../src/services/coach-runs.js";
+import { cancelRun, createRun, EXPIRE_TREE_STATEMENTS, LINES, MAX_TAKEOVERS, runStep, sweepCoachRuns, type RunDeps } from "../src/services/coach-runs.js";
 import { COACH_RUN_STEP_STALE_MINUTES } from "../src/services/cron-limits.js";
 import { sweepExpiredProposals } from "../src/routes/coach.js";
 import { designContextBuilder } from "../src/services/design-context.js";
@@ -362,5 +362,81 @@ describe("a finish that died after making its proposal pending (A17)", () => {
       .from(schema.coachRuns)
       .where(and(eq(schema.coachRuns.parentId, runId), eq(schema.coachRuns.role, "reviewer")));
     expect(reviewers!.status).toBe("finished");
+  });
+
+  it("a proposal the athlete already approved counts as promoted too (round 2, A-M4): finished, no model call, the approval as it was", async () => {
+    let armed = false;
+    const db = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (text) => {
+        if (armed && RUN_WRITE.test(text)) throw new Error("the invocation was killed");
+      },
+    });
+    const a = await seedRichAthlete(db);
+    const runId = await nowRun(db, a.userId);
+    const { deps, requests } = scripted([t(propose("Calm hips")), t(submit(verdict(4))), t(finish("A calm half hour."))]);
+    for (let i = 0; i < 5; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // to the resume
+    armed = true;
+    const died = new Date(NOW.getTime() + 10_000);
+    await expect(runStep(db, env, runId, a.userId, died, deps)).rejects.toThrow();
+    armed = false;
+    // The athlete saw it pending and approved it before the dead step's claim went stale.
+    await db.update(schema.coachProposals).set({ status: "approved" }).where(eq(schema.coachProposals.id, designProposalId(runId)));
+    const calls = requests.length;
+    const out = await runStep(db, env, runId, a.userId, staleLater(died, 1), deps);
+    expect(out.kind === "ok" && out.result.status).toBe("finished");
+    expect(requests.length).toBe(calls);
+    expect(await run(db, runId)).toMatchObject({ status: "finished", error: null });
+    expect((await lines(db, runId)).at(-1)).toBe(LINES.finished);
+    expect((await proposal(db, runId))!.status).toBe("approved");
+  });
+});
+
+// ── Round 2, A-M8: the sweep's expiries, counted ──────────────────────────
+
+describe("the sweep expiring an athlete's two live trees (round 2, A-M8)", () => {
+  it("their own and a rehearsal's, both past their window: one read, then each tree at most its declared cost — the athlete's at it exactly", async () => {
+    let statements = 0;
+    let injecting = false;
+    let race: string | null = null;
+    const db: Db = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (text) => {
+        if (injecting) return;
+        statements += 1;
+        if (race && text.includes("SET status = 'pending', ops =")) {
+          // A late verdict lands between the promote's read and its write: the promote reads again (A-M3).
+          injecting = true;
+          (db as unknown as { $client: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } } }).$client
+            .prepare("UPDATE coach_proposals SET ops = json_set(ops, '$[0].review.note', 'late') WHERE id = ?")
+            .run(race);
+          injecting = false;
+          race = null;
+        }
+      },
+    });
+    const a = await seedRichAthlete(db);
+    const ask = () => use("ask_athlete", { questions: [{ text: "Gym or home?", chips: ["Gym", "Home"], why: "Sets the gear." }] });
+    // Each: a reviewed workout for tomorrow, then a question the athlete never answers.
+    const mine = await nowRun(db, a.userId);
+    const rehearsal = await nowRun(db, a.userId, { rehearsal: true });
+    for (const id of [mine, rehearsal]) {
+      const { deps } = scripted([t(propose("Calm hips", day(-1))), t(submit(verdict(4))), t(ask())]);
+      for (let i = 0; i < 6; i++) await runStep(db, env, id, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+      expect((await run(db, id)).status).toBe("waiting_athlete");
+    }
+    race = designProposalId(mine);
+    statements = 0;
+    const swept = await sweepCoachRuns(db, env, a.userId, new Date(NOW.getTime() + 25 * 3_600_000), scripted([]).deps, { maxSteps: 0 });
+    expect(swept).toMatchObject({ expired: 2 });
+    expect(race).toBeNull();
+    // The sweep's read; the athlete's tree — the expiry, the proposal read, the write that lost, the read again, the
+    // write, the older plans superseded, the line — at its declared cost; the rehearsal's — the expiry, the proposal read
+    // (a rehearsal's is never proposed), the close, the line.
+    expect(EXPIRE_TREE_STATEMENTS).toBe(7);
+    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS + 4);
+    expect((await proposal(db, mine))!).toMatchObject({ status: "pending" });
+    expect((await proposal(db, rehearsal))!.status).toBe("rehearsal");
+    for (const id of [mine, rehearsal]) expect((await run(db, id)).status).toBe("expired");
   });
 });

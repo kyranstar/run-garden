@@ -274,7 +274,8 @@ describe("each act tool's declared statement cost is the most it runs", () => {
 
   it("propose_workout fits a model step's tool room three times over, and every act tool fits the loop's per-tool cap", () => {
     const room = STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
-    expect(room).toBe(30);
+    // 28 since fix wave 3A round 2 (A-M3): a stop's proposal reserves its read and write twice over.
+    expect(room).toBe(28);
     // With its reviewer (Task 6) a draft pauses the run: no call after it runs in the same step.
     expect(tool("propose_workout").statementCost * 3).toBeLessThanOrEqual(room);
     for (const t of ACT_TOOLS) expect(t.statementCost, t.name).toBeLessThanOrEqual(MAX_TOOL_STATEMENT_COST);
