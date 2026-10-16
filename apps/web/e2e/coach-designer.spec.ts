@@ -34,12 +34,13 @@ async function clearTheCoach(request: APIRequestContext, baseURL: string | undef
   for (let i = 0; i < 5; i++) {
     const current = (await (await request.get(`${baseURL}/api/coach/runs/current`)).json()) as {
       run: { id: string; status: string } | null;
-      proposal?: { id: string } | null;
+      proposal?: { id: string; status?: string } | null;
     };
     if (!current.run) return;
     if (["active", "stepping", "waiting_athlete", "waiting_review", "waiting_set"].includes(current.run.status)) {
       await request.post(`${baseURL}/api/coach/runs/${current.run.id}/cancel`, { data: {} });
-    } else if (current.proposal) {
+    } else if (current.proposal && ["pending", "partially_approved"].includes(current.proposal.status ?? "")) {
+      // (A suggestion decided in the last 10 minutes still comes back with its run: no one's to clear.)
       await request.post(`${baseURL}/api/coach/proposals/${current.proposal.id}/decline`, { data: {} });
     } else return;
   }

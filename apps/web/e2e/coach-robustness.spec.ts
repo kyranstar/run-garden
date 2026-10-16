@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { test as bare } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
@@ -7,13 +8,20 @@ import { test, expect } from "./fixtures.js";
  * crash if I navigate away mid response etc."). On the fixture stack, the real app and worker with the scripted model
  * (its stand-in made slow on cue — `POST /delay/<ms>` — so a step is mid-response when the athlete moves):
  *
+ * The stack runs the coach's steps in its run stepper's alarm (COACH_STEP_ALARM, as production does): a step request
+ * only arms the run, and no client connection carries a step.
+ *
  *   1. leaving the Studio mid-step (and during a question): the run goes on stepping on the Plan — the app's run keeper —
  *      and the Studio tab's ● says so; back, the suggestion is there;
- *   2. the tab closed mid-step and opened again: the step the server still holds is said ("still working"), and the run
- *      finishes by itself;
+ *   2. the tab closed mid-step: the step finishes on the server with no client at all, plus at most one more, then the
+ *      run rests (the model is called only for someone watching); opened again, the coach is at work and finishes;
+ *  2c. the worker killed mid-step (a deploy): the run's object takes its own claim back at once — no 15-minute wait —
+ *      and the dead call counts at an estimate, so the run isn't stopped by its spending limit: it finishes;
  *  1b, 2b. the same between an answer over 16 KB and the next step, which runs its queued calls (the `big` script):
- *      left for the Plan, the calls run there; the tab closed, they wait and run once it's opened — no model asked again;
+ *      left for the Plan, the calls run there; the tab closed, the run rests and finishes once it's opened — no model
+ *      asked again;
  *   3. a reload mid-step, during Approve and during Decline: the run finishes; the decision lands once, never twice;
+ *      after the reload the card says what came of it;
  *   4. offline mid-step, then back: the run picks up by itself;
  *   9. Now, Send, Approve, Decline and Cancel tapped twice or three times: one request each;
  *  12. a render error inside the coach (injected): the coach says so in place, and the Studio and the app go on.
@@ -59,25 +67,107 @@ async function signIn(request: APIRequestContext, baseURL: string | undefined) {
 }
 
 interface Current {
-  run: { id: string; status: string; costUsd: number } | null;
+  run: { id: string; status: string; costUsd: number; steps: number; error: string | null } | null;
   proposal?: { id: string; status: string } | null;
 }
 const current = async (request: APIRequestContext, baseURL: string | undefined): Promise<Current> =>
   (await (await request.get(`${baseURL}/api/coach/runs/current`)).json()) as Current;
 
-/** Nothing of an earlier journey's left — no live run, no open suggestion — and the stand-in back to its script. */
+/** A suggestion's statuses the athlete still decides in: the current read's other proposals were decided already. */
+const OPEN = ["pending", "partially_approved"];
+
+/**
+ * Nothing of an earlier journey's left — no live run, no open suggestion — and the stand-in back to its script. (A
+ * suggestion decided in the last 10 minutes still comes back with its run, for a reload to show what came of it: no one's
+ * to clear. A new run takes its place on screen: `start`.)
+ */
 async function fresh(request: APIRequestContext, baseURL: string | undefined) {
   await signIn(request, baseURL);
+  const declined = new Set<string>();
   for (let i = 0; i < 6; i++) {
     const c = await current(request, baseURL);
     if (!c.run) break;
     if (LIVE.includes(c.run.status)) await request.post(`${baseURL}/api/coach/runs/${c.run.id}/cancel`, { data: {} });
-    else if (c.proposal) await request.post(`${baseURL}/api/coach/proposals/${c.proposal.id}/decline`, { data: {} });
-    else break;
+    else if (c.proposal && OPEN.includes(c.proposal.status) && !declined.has(c.proposal.id)) {
+      declined.add(c.proposal.id);
+      await request.post(`${baseURL}/api/coach/proposals/${c.proposal.id}/decline`, { data: {} });
+    } else break;
   }
   await model("/use/");
   await model("/delay/");
   await model("/calls/reset");
+}
+
+/**
+ * The run once it has come to rest with no client: the same status, steps and spend, and the same model calls begun,
+ * for `quietMs` in a row (read through /current, which tells the run's object nothing — no lease).
+ */
+async function atRest(request: APIRequestContext, baseURL: string | undefined, quietMs = 8_000): Promise<{ run: NonNullable<Current["run"]>; begun: number }> {
+  let last = "";
+  let since = Date.now();
+  for (const deadline = Date.now() + 90_000; Date.now() < deadline; ) {
+    const run = (await current(request, baseURL)).run!;
+    const begun = (await model("/calls")).begun;
+    const now = JSON.stringify([run.status, run.steps, run.costUsd, begun]);
+    if (now !== last) {
+      last = now;
+      since = Date.now();
+    } else if (Date.now() - since >= quietMs) {
+      return { run, begun };
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`the run never came to rest: ${last}`);
+}
+
+/** The PIDs `lsof` names for `args` (none: lsof answers 1). */
+function pidsOf(...args: string[]): number[] {
+  try {
+    return execFileSync("lsof", ["-t", ...args], { encoding: "utf8" }).split("\n").filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+}
+
+const psField = (field: string, pid: number): string => execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).trim();
+
+/**
+ * Take the worker down mid-step, at once, as a deploy or a crash does: the workerd holding a connection to the stand-in
+ * model (the runtime whose step waits on its call), its `wrangler dev`, and everything under that — SIGKILL. (Killing a
+ * workerd alone leaves wrangler 4.118 up but serving nothing.) The stack's supervisor starts `wrangler dev` again on the
+ * same state (fixture-stack.sh).
+ */
+function killTheWorker(): void {
+  const port = new URL(MODEL).port;
+  const model = new Set(pidsOf("-i", `TCP:${port}`, "-sTCP:LISTEN"));
+  const callers = [...new Set(pidsOf("-i", `TCP:${port}`, "-sTCP:ESTABLISHED"))].filter((pid) => !model.has(pid));
+  const runtime = callers.find((pid) => /workerd/.test(psField("comm", pid)));
+  expect(runtime, "a workerd waiting on the stand-in model").toBeDefined();
+  const wrangler = Number(psField("ppid", runtime!));
+  expect(psField("command", wrangler), "the runtime's parent is its wrangler").toMatch(/wrangler/);
+  const under = (pid: number): number[] => {
+    let children: number[] = [];
+    try {
+      children = execFileSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).split("\n").filter(Boolean).map(Number);
+    } catch {
+      // none
+    }
+    return children.flatMap((c) => [c, ...under(c)]);
+  };
+  for (const pid of [wrangler, ...under(wrangler)]) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // gone already
+    }
+  }
+}
+
+/** Until the worker answers again (its health route, through the web server). */
+async function workerBack(request: APIRequestContext, baseURL: string | undefined): Promise<void> {
+  await expect
+    .poll(async () => (await request.get(`${baseURL}/api/health`).catch(() => null))?.status() ?? 0, { timeout: 90_000, intervals: [1_000] })
+    .toBe(200);
 }
 
 /** The main navigation as this viewport shows it (the bottom bar on a phone, the rail on a desktop). */
@@ -88,7 +178,12 @@ async function start(page: Page, words: string) {
   const field = page.getByPlaceholder("What would help today?");
   await expect(field).toBeVisible({ timeout: 20_000 });
   await field.fill(words);
+  const created = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/coach/runs");
   await page.getByRole("button", { name: "Now", exact: true }).click();
+  await created;
+  // An earlier run whose suggestion was decided in the last 10 minutes may have been on screen with its card: the new
+  // run takes its place (it has no suggestion yet).
+  await expect(page.locator("section.coach-pc")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /^Coach · / })).toBeVisible();
 }
 
@@ -147,8 +242,8 @@ test("1. leaving the Studio mid-step, the coach goes on — on the Plan, and thr
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 60_000 });
 });
 
-test("2. the tab closed mid-step: opened again, the step the server holds is said, and the run finishes by itself", async ({ context, baseURL }) => {
-  test.setTimeout(150_000);
+test("2. the tab closed mid-step: the step finishes on the server, plus at most one more; opened again, the run finishes", async ({ context, baseURL }) => {
+  test.setTimeout(180_000);
   await fresh(context.request, baseURL);
   await model("/delay/20000");
   let page = await context.newPage();
@@ -157,55 +252,96 @@ test("2. the tab closed mid-step: opened again, the step the server holds is sai
   await model("/delay/");
   await page.close();
 
-  // Opened again while the server still holds that step: said, with its ● — never a bare header.
+  // No client at all: the step in flight finishes on the server — its call answered, the run no longer held.
+  await expect.poll(async () => (await model("/calls")).answered, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
+  // …and at most one more step, then the run rests: the model is called only for someone watching.
+  const rest = await atRest(context.request, baseURL);
+  expect(rest.begun).toBeLessThanOrEqual(2);
+  expect(LIVE).toContain(rest.run.status);
+  expect(rest.run.status).not.toBe("stepping");
+
+  // Opened again: the coach is at work (its ●), and the run finishes.
   page = await context.newPage();
   await page.goto("/studio");
-  await expect(page.locator(".coach-line--now")).toContainText("The coach is still working on this…", { timeout: 15_000 });
+  await expect(page.locator(".coach-line--now")).toBeVisible({ timeout: 15_000 });
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 90_000 });
+  expect((await model("/calls")).begun).toBe(4);
+});
+
+/**
+ * The guard of a journey that kills the worker: a 5xx from /api/* while it is down (the web server's proxy answering for
+ * it) is expected; any other — and any page error — fails it.
+ */
+function guardAcrossKill(page: Page): { down: () => void; up: () => void; check: () => void } {
+  const problems: string[] = [];
+  let downAt: number | null = null;
+  let upAt: number | null = null;
+  page.on("pageerror", (e) => problems.push(`pageerror: ${e.name}: ${e.message}`));
+  page.on("response", (r) => {
+    const { pathname } = new URL(r.url());
+    if (!pathname.startsWith("/api/") || r.status() < 500) return;
+    const now = Date.now();
+    const whileDown = downAt !== null && now >= downAt && (upAt === null || now <= upAt + 5_000);
+    if (!whileDown) problems.push(`${r.status()} ${r.request().method()} ${pathname}`);
+  });
+  return {
+    down: () => (downAt = Date.now()),
+    up: () => (upAt = Date.now()),
+    check: () => expect(problems, "page errors, and 5xx /api responses while the worker was up").toEqual([]),
+  };
+}
+
+bare("2c. the worker killed mid-step (a deploy): its own claim taken back at once, the dead call counted at an estimate — the run finishes", async ({ page, context, baseURL }) => {
+  bare.setTimeout(240_000);
+  const guard = guardAcrossKill(page);
+  await fresh(context.request, baseURL);
+  await model("/delay/30000");
+  await start(page, "a short, gentle hips session");
+  await modelBegun(1);
+  await model("/delay/");
+  const killedAt = Date.now();
+  guard.down();
+  killTheWorker();
+  // The call dies with it: the stand-in sees its caller hang up.
+  await expect.poll(async () => (await model("/calls")).hungUp, { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
+  await workerBack(context.request, baseURL);
+  guard.up();
+  // The page still open: the run picks up — within minutes, never behind a 15-minute stale claim — and finishes. The
+  // dead call counts against the run at an estimate (its worst case, at the stand-in's unknown price, is past the
+  // run's $1.50 limit by itself), so its limit doesn't stop it.
+  await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 150_000 });
+  expect(Date.now() - killedAt).toBeLessThan(4 * 60_000);
+  const done = (await current(context.request, baseURL)).run!;
+  expect(done).toMatchObject({ status: "finished", error: null });
+  expect(done.costUsd).toBeLessThan(1.5);
+  guard.check();
 });
 
 /**
  * An answer over 16 KB (the `big` script) runs its calls in the NEXT step, which calls no model (coach-runs.ts
- * DOCUMENT_ANSWER_BYTES). Between the two: `hold` keeps the next step from leaving this page until `release`, or
- * drops every later step (`drop`: the tab is as good as closed).
+ * DOCUMENT_ANSWER_BYTES). The server steps the run (its alarm): `readSeen` turns true once a read of the page's has
+ * brought the big answer's line — the step that read it is done, the one that runs its calls next.
  */
-async function betweenBigSteps(page: Page): Promise<{ readSeen: () => boolean; release: () => void; drop: () => void }> {
+function bigStepSeen(page: Page): () => boolean {
   let seen = false;
-  let mode: "hold" | "drop" | "go" = "hold";
-  let release!: () => void;
-  const released = new Promise<void>((r) => (release = r));
-  await page.route("**/api/coach/runs/*/step", async (route) => {
-    if (seen && mode === "hold") await released;
-    if (seen && mode === "drop") return route.abort();
-    const res = await route.fetch();
-    const body = await res.text();
+  page.on("response", async (r) => {
+    if (seen || !/\/api\/coach\/runs\/[^/]+(\/step)?\?afterSeq=/.test(r.url())) return;
+    const body = await r.text().catch(() => "");
     if (body.includes("Weighing the hips")) seen = true;
-    await route.fulfill({ response: res, body });
   });
-  return {
-    readSeen: () => seen,
-    release: () => {
-      mode = "go";
-      release();
-    },
-    drop: () => {
-      mode = "drop";
-      release();
-    },
-  };
+  return () => seen;
 }
 
 test("1b. between a big answer's two steps: the athlete leaves for the Plan — the queued calls run there, no model asked again", async ({ page, context, baseURL }) => {
   test.setTimeout(150_000);
   await fresh(context.request, baseURL);
   await model("/use/big");
-  const gate = await betweenBigSteps(page);
+  const seen = bigStepSeen(page);
   await start(page, "a short, gentle hips session");
-  await expect.poll(gate.readSeen, { timeout: 60_000 }).toBe(true);
-  // The step that read the answer is back; the one that runs its calls is held: to the Plan, then let it go.
+  await expect.poll(seen, { timeout: 60_000 }).toBe(true);
+  // The step that read the answer is done; the one that runs its calls is next: to the Plan.
   await nav(page).getByRole("link", { name: /^Plan/ }).click();
   await expect(page).toHaveURL(/\/plan/);
-  gate.release();
   await expect.poll(async () => (await current(context.request, baseURL)).run?.status, { timeout: 60_000 }).toBe("finished");
   // Two main turns before the finish, the reviewer, the finish: the queued calls asked no model.
   expect((await model("/calls")).begun).toBe(4);
@@ -213,19 +349,19 @@ test("1b. between a big answer's two steps: the athlete leaves for the Plan — 
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 20_000 });
 });
 
-test("2b. between a big answer's two steps: the tab is closed — the calls wait, queued, and run once it's opened again", async ({ context, baseURL }) => {
-  test.setTimeout(150_000);
+test("2b. between a big answer's two steps: the tab is closed — the run rests, and finishes once it's opened again", async ({ context, baseURL }) => {
+  test.setTimeout(180_000);
   await fresh(context.request, baseURL);
   await model("/use/big");
   let page = await context.newPage();
-  const gate = await betweenBigSteps(page);
+  const seen = bigStepSeen(page);
   await start(page, "a short, gentle hips session");
-  await expect.poll(gate.readSeen, { timeout: 60_000 }).toBe(true);
-  gate.drop();
+  await expect.poll(seen, { timeout: 60_000 }).toBe(true);
   await page.close();
-  // Nobody steps it: the run waits, live, its calls queued.
-  const waiting = await current(context.request, baseURL);
-  expect(waiting.run?.status).toBe("active");
+  // With nobody watching, the step at work and at most one more: the run rests, live, short of its end.
+  const rest = await atRest(context.request, baseURL);
+  expect(LIVE).toContain(rest.run.status);
+  expect(rest.begun).toBeLessThan(4);
   page = await context.newPage();
   await page.goto("/studio");
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 90_000 });
@@ -273,7 +409,12 @@ bare("3. a reload mid-step, during Approve and during Decline: the run finishes,
     .poll(async () => ((await (await context.request.get(`${baseURL}/api/coach/proposals/${proposalId}`)).json()) as { status: string }).status, { timeout: 20_000 })
     .toBe("approved");
   expect(await todayCopies(context.request, baseURL)).toBe(before + 1);
-  // Nothing offers a second approve.
+  // After the reload the card says what came of it (the current read answers a suggestion decided in the last 10
+  // minutes) — a reload that read before the approve landed reads again once it shows; nothing offers a second approve.
+  await expect(async () => {
+    await page.reload();
+    await expect(card(page).getByRole("heading", { name: "Added to your plan" })).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
 
   // Decline, then reload before its answer is drawn: declined, and nothing added.
@@ -289,6 +430,10 @@ bare("3. a reload mid-step, during Approve and during Decline: the run finishes,
     .poll(async () => ((await (await context.request.get(`${baseURL}/api/coach/proposals/${declineId}`)).json()) as { status: string }).status, { timeout: 20_000 })
     .toBe("declined");
   expect(await todayCopies(context.request, baseURL)).toBe(before + 1);
+  await expect(async () => {
+    await page.reload();
+    await expect(card(page).getByRole("heading", { name: "Not added" })).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 30_000 });
   checkGuard();
 });
 
