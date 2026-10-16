@@ -19,7 +19,7 @@
  * A change to a session already on the plan (Task 8b) has its own line (`planChangeLines`): the thread coach's manifest
  * line for its skip, move or length, word for word (@rg/domain `describeOps`), and the coach's why.
  */
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { locations, userPreferences } from "@rg/database";
 import { dayLabel, doseSummary, NO_EQUIPMENT_PLACE, userPreferencesSchema, type UserPreferences, type WorkoutItem, type WorkoutPart } from "@rg/domain";
 import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exercise-library";
@@ -161,10 +161,15 @@ function writtenLine(o: OpOutcome | undefined): DocWorkoutLine["written"] {
 export interface LineClock {
   now: Date;
   prefs: Parameters<typeof approveTimeOf>[2]["prefs"];
+  /** Where each open workout will sit once approved, the day's other sessions weighed (design-placement.ts
+   * `placedTimes`, by op id): the card's read always gives it; without it, the op's own rule alone. */
+  placed?: ReadonlyMap<string, string>;
 }
 
 /** The time the approve would use for `op` at `at` (see `DocWorkoutLine.time`): a revision's is its workout's. */
 function lineTime(op: DesignedOp, category: string, at: LineClock): string | null {
+  const known = at.placed?.get(opIdOf(op));
+  if (known) return known;
   if (op.target.kind !== "new") return op.time ?? null;
   const placed = approveTimeOf(op.target, category, at);
   return "refused" in placed ? (op.target.time ?? null) : placed.time;
@@ -258,13 +263,19 @@ export async function placeNamer(db: Db, userId: string): Promise<PlaceNamer> {
  * What the manifest reads, in ONE statement: the places' names (`placeNamer`) and the athlete's settings, whose
  * timezone and usual times say the time each line's approve would use (B-I1).
  */
-export async function manifestReads(db: Db, userId: string): Promise<{ placeName: PlaceNamer; prefs: UserPreferences }> {
+export async function manifestReads(
+  db: Db,
+  userId: string,
+  /** The plan's rows the lines' times are placed among (design-placement.ts `dayRowsSql`), in the same statement. */
+  dayRows: SQL = sql`null`,
+): Promise<{ placeName: PlaceNamer; prefs: UserPreferences; dayRows: unknown }> {
   const l = locations;
   const [row] = (await db.all(
     sql`select ${defaultPlaceSql(userId)} as fallback,
       (select json_group_array(json_object('id', ${l.id}, 'name', ${l.name})) from ${l} where ${l.userId} = ${userId}) as own,
-      (select ${userPreferences.prefs} from ${userPreferences} where ${userPreferences.userId} = ${userId}) as prefs`,
-  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown }>;
+      (select ${userPreferences.prefs} from ${userPreferences} where ${userPreferences.userId} = ${userId}) as prefs,
+      ${dayRows} as dayRows`,
+  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown; dayRows: unknown }>;
   let stored: unknown = {};
   try {
     stored = typeof row?.prefs === "string" ? JSON.parse(row.prefs) : (row?.prefs ?? {});
@@ -288,5 +299,5 @@ export async function manifestReads(db: Db, userId: string): Promise<{ placeName
     if (id === NO_EQUIPMENT_PLACE) return noEquipmentPlace().name;
     return LOCATION_PRESETS.find((p) => p.id === id)?.name ?? fallback;
   };
-  return { placeName, prefs };
+  return { placeName, prefs, dayRows: row?.dayRows ?? null };
 }

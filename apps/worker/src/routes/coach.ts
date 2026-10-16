@@ -537,7 +537,7 @@ coachRoutes.get("/proposals/:id", async (c) => {
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
   const { ops, ...status } = p;
-  const manifest = isDesignedProposal(ops) ? await designedLines(c, ops) : undefined;
+  const manifest = isDesignedProposal(ops) ? await designedLines(c, ops, p.id) : undefined;
   return c.json(manifest ? { ...status, ...manifest } : status);
 });
 

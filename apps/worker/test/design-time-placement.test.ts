@@ -14,7 +14,7 @@
  * moved where a case needs another minute. Synthetic data only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -22,6 +22,8 @@ import type { Db } from "../src/services/db.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { approveDesignOps, type DesignedOp } from "../src/services/design-approve.js";
 import { docWorkoutLines, placeNamer } from "../src/services/design-manifest.js";
+import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
+import { designedManifest } from "../src/routes/design-proposals.js";
 import { designProposalId, proposeWorkout, type DocWorkoutTarget } from "../src/services/design-tools/propose.js";
 import { isToolErr, type OpReview, type RunScope, type ToolContext, type ToolErr, type ToolRole } from "../src/services/design-tools/types.js";
 import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
@@ -34,9 +36,10 @@ const ENV = {} as Env;
 let db: Db;
 let userId: string;
 let prefs: UserPreferences;
+let statementsSeen = 0;
 
 beforeEach(async () => {
-  db = makeTestDb({ boundVariableCap: 100 });
+  db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statementsSeen += 1) });
   ({ userId } = await seedRichAthlete(db));
   prefs = await loadPreferences(db, userId);
   vi.stubGlobal("fetch", vi.fn(async () => {
@@ -224,5 +227,79 @@ describe("approve: never a time already past", () => {
     await db.update(coachProposals).set({ ops: untouched!.ops, status: "pending", resolvedAt: null }).where(eq(coachProposals.id, id));
     const again = await approveAt(id, la("09:40"));
     expect(again.applied.map((x) => [x.workout.time, x.moved ?? false])).toEqual([["09:35", false]]);
+  });
+});
+
+// ── The card's time is where the approve will put it (the lead's case, from Part U's QA) ───────────────────────────
+
+describe("a set's workout on a day that holds another session: the line says where the approve will put it", () => {
+  // Two days on, the fixture holds its programme's 07:00 session (35 min): the athlete's window, 07:00, is taken.
+  const busy = addDays(TODAY, 2);
+  /** The card's read of a proposal, as GET /api/coach/proposals/:id answers it. */
+  const card = async (id: string, now: Date) => {
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    return (await designedManifest(db, userId, id, p!.ops, now)).lines;
+  };
+  /** A set of these workouts (untimed), each its own designer's, made pending with a review. */
+  async function set(dates: string[], o: { skipFirst?: string } = {}): Promise<string> {
+    const main = await run("main", { kind: "week" });
+    for (const [i, date] of dates.entries()) {
+      const designer = await run("designer", { kind: "week" }, main.id);
+      const r = await proposeWorkout.run(ctxOf(designer, la("09:20")), { doc: calmDoc({ title: `Set ${i + 1}` }), target: { kind: "new", date } });
+      if (isToolErr(r)) throw new Error(r.why);
+    }
+    if (o.skipFirst) {
+      const r = await adjustPlan.run(ctxOf(main, la("09:20")), { workoutId: o.skipFirst, change: { kind: "skip", reason: "Rest the legs." }, why: "A lighter week." });
+      if (isToolErr(r)) throw new Error(r.why);
+    }
+    const id = designProposalId(main.id);
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const ops = (p!.ops as Array<{ kind: string }>).map((x) => (x.kind === "doc_workout" ? { ...x, review: REVIEW } : x));
+    await db.update(coachProposals).set({ status: "pending", ops }).where(eq(coachProposals.id, id));
+    return id;
+  }
+  const programmeOn = async (date: string) =>
+    (await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.effectiveDate, date), eq(plannedWorkouts.origin, "program"))))[0]!;
+
+  it("one workout: the line's time is the approve's, after the day's other session — never the window it can't have", async () => {
+    const id = await set([busy]);
+    const [line] = await card(id, la("09:32"));
+    expect(line!.time).not.toBe("07:00");
+    const answer = await approveAt(id, la("09:32"));
+    expect(answer.applied).toHaveLength(1);
+    expect(answer.applied[0]!.workout.time).toBe(line!.time);
+  });
+
+  it("two on one day: each line is where its approve puts it, the second's pass weighed for both", async () => {
+    const id = await set([busy, busy]);
+    const lines = await card(id, la("09:32"));
+    const answer = await approveAt(id, la("09:32"));
+    const written = new Map((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).map((w) => [w.id, w.effectiveTime]));
+    expect(answer.applied.map((a) => written.get(a.workout.id))).toEqual(lines.map((l) => l.time));
+    expect(new Set(lines.map((l) => l.time)).size).toBe(2);
+  });
+
+  it("with the suggestion's own skip of that day's session first: the window is free, and the line says it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(la("09:32"));
+    try {
+      const programme = await programmeOn(busy);
+      const id = await set([busy], { skipFirst: programme.id });
+      const [line] = await card(id, la("09:32"));
+      expect(line!.time).toBe("07:00");
+      const answer = await approveAt(id, la("09:32"));
+      expect(answer.changed).toHaveLength(1);
+      expect(answer.applied[0]!.workout.time).toBe("07:00");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the card's read is still one statement for the lines", async () => {
+    const id = await set([busy, addDays(TODAY, 3)]);
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const before = statementsSeen;
+    await designedManifest(db, userId, id, p!.ops, la("09:32"));
+    expect(statementsSeen - before).toBe(1);
   });
 });

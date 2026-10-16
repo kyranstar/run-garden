@@ -52,6 +52,9 @@ import {
   type DesignProposalRow,
 } from "../services/design-approve.js";
 import { docWorkoutLines, manifestReads, planChangeLines } from "../services/design-manifest.js";
+import { dayRowsSql, placedTimes } from "../services/design-placement.js";
+import { clockIn } from "../services/design-time.js";
+import type { Db } from "../services/db.js";
 import { refusal } from "./workouts.js";
 
 type C = Context<AppContext>;
@@ -163,12 +166,23 @@ export async function designedDraft(c: C): Promise<Response> {
 /** A designed proposal's manifest, for its one-proposal read: the workouts' lines (one statement, the places' names and
  * the athlete's settings — each line's time is the one an approve now would use, B-I1 — none for a proposal of changes
  * alone) and the changes' (none). */
-export async function designedLines(c: C, ops: unknown) {
+export async function designedLines(c: C, ops: unknown, proposalId: string) {
   if (!coachDesignerEnabled(c.env)) return undefined;
+  return designedManifest(c.get("db"), c.get("userId"), proposalId, ops, new Date());
+}
+
+/**
+ * A designed proposal's manifest as the athlete reads it at `now`: each workout's line — its time where the approve will
+ * put it, the day's other sessions and the proposal's own changes weighed (design-placement.ts `placedTimes`, B-I1) —
+ * and each change's. One statement: the places' names, the athlete's settings and the plan's rows the times are placed
+ * among (none for a proposal of changes alone).
+ */
+export async function designedManifest(db: Db, userId: string, proposalId: string, ops: unknown, now: Date) {
+  const all = Array.isArray(ops) ? (ops as unknown[]) : [];
   const workouts = designedOps(ops);
-  const reads = workouts.length > 0 ? await manifestReads(c.get("db"), c.get("userId")) : null;
-  return {
-    lines: reads ? docWorkoutLines(workouts, reads.placeName, { now: new Date(), prefs: reads.prefs }) : [],
-    changes: planChangeLines(Array.isArray(ops) ? ops : []),
-  };
+  if (workouts.length === 0) return { lines: [], changes: planChangeLines(all) };
+  const reads = await manifestReads(db, userId, dayRowsSql(userId, all));
+  const today = clockIn(reads.prefs.timezone, now).date;
+  const placed = await placedTimes(userId, proposalId, all, reads.dayRows, { now, today, prefs: reads.prefs });
+  return { lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }), changes: planChangeLines(all) };
 }

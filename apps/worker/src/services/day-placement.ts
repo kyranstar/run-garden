@@ -203,6 +203,17 @@ export function placeDaySessions(
   return out;
 }
 
+/**
+ * THE ONE RULE for a day's times after a change to it: when the day's sessions, at the times they hold now, collide,
+ * the whole day is laid out again (`placeDaySessions`); else it stands (null). `separateDayCollisions` writes what this
+ * decides, and the coach designer's card reads its suggestions' times from it before an approve writes them (design-
+ * time.ts `placedTimes`, fix wave 3B, B-I1) — so the two never disagree.
+ */
+export function relaidDay(date: string, sessions: PlaceableSession[], prefs: SchedulingPreferences): Map<string, string> | null {
+  if (sessions.length < 2 || !dayCollides(sessions, prefs)) return null;
+  return placeDaySessions(date, sessions, prefs);
+}
+
 /** One row this pass moved (or would move), for stats and for tests. */
 export interface RetimedRow {
   workoutId: string;
@@ -293,7 +304,6 @@ export async function separateDayCollisions(
   const retimed: RetimedRow[] = [];
   for (const date of [...byDate.keys()].sort()) {
     const dayRows = byDate.get(date)!;
-    if (dayRows.length < 2) continue;
     const sessions: PlaceableSession[] = dayRows.map((r) => ({
       key: r.id,
       category: r.category,
@@ -301,8 +311,8 @@ export async function separateDayCollisions(
       currentTime: r.effectiveTime,
       pinned: pinnedIds.has(r.id),
     }));
-    if (!dayCollides(sessions, prefs)) continue;
-    const placement = placeDaySessions(date, sessions, prefs);
+    const placement = relaidDay(date, sessions, prefs);
+    if (!placement) continue;
     for (const r of dayRows) {
       const to = placement.get(r.id);
       if (to === undefined || to === r.effectiveTime) continue;

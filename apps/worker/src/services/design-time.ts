@@ -24,10 +24,20 @@ export const SLOT_MIN = 15;
 export const NOW_ROUND_MIN = 5;
 const DAY_MIN = 24 * 60;
 
+/** A timezone the clock can be read in: the athlete's, or UTC when theirs doesn't read (never a thrown error). */
+function readableZone(tz: string): string {
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: tz });
+    return tz;
+  } catch {
+    return "UTC";
+  }
+}
+
 /** The athlete's wall clock at `now`: their local date, and the minute of their day with its seconds as a fraction. */
 export function clockIn(tz: string, now: Date): { date: string; minutes: number } {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
+    timeZone: readableZone(tz || "UTC"),
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

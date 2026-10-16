@@ -117,6 +117,7 @@ import {
   type DocWriteSource,
 } from "./doc-workouts.js";
 import { receiptLine } from "./design-manifest.js";
+import { approvalKey } from "./design-placement.js";
 import { approveTimeOf } from "./design-time.js";
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
 import { RestoreInProgressError } from "./programs.js";
@@ -200,8 +201,6 @@ export interface DesignProposalRow {
 /** The id an approved op's revision row carries (`source_ref`): the proposal and the op. */
 export const approvalRef = (proposalId: string, opId: string): string => `proposal:${proposalId}:${opId}`;
 
-/** The key a new workout is made under: the same op makes the same row, however often it is approved. */
-const approvalKey = (proposalId: string, opId: string): string => `approve:${proposalId}:${opId}`;
 
 /**
  * The proposal's status from its ops' outcomes (see the module comment) — the rule design-orchestrate.ts
