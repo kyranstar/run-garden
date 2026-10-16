@@ -33,10 +33,12 @@
  * workout is already there — a new workout by its key (`createDocWorkout`'s `clientId`, made from the proposal and the
  * op), a revision by its revision row (the one after the coach's base, carrying this op's ref) — and such an op is
  * recorded applied, never made again and never declined: a crash between a workout's write and the proposal's, a
- * double tap, an approve that raced a decline. A revise that met its own revision mid-way (`stale_revision` at the base's
- * next revision) reads it once more and is applied. A proposal decided whole answers each op's outcome (`settled`),
- * writing nothing, but for an op declined whose workout is there; one no longer the athlete's (expired, superseded,
- * never shown) is refused (`NotOpenError`).
+ * double tap, an approve that raced a decline or a newer plan's supersede (a removed workout is no workout: a declined or
+ * superseded op stays so). A revise that met its own revision mid-way (`stale_revision` at the base's next revision)
+ * reads it once more and is applied. A proposal decided whole answers each op's outcome (`settled`), writing nothing,
+ * but for an op declined or superseded whose workout is there; a proposal a newer plan superseded whole is opened only
+ * for that repair (its status then follows `statusOfOps`); one no longer the athlete's (expired, superseded with nothing
+ * to repair, never shown) is refused (`NotOpenError`).
  *
  * ONE REQUEST, ≤ 45 STATEMENTS — true upper bounds. The plan read also counts each day's scheduled sessions, so an op's
  * cost is known before it runs: a new workout at a time asked for, `CREATE_AT_TIME_COST`; one placed at the athlete's
@@ -60,7 +62,7 @@
  * the approve: the workouts are written by then.
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
-import { coachMessages, coachProposals, plannedWorkouts, workoutDocRevisions } from "@rg/database";
+import { coachMessages, coachProposals, plannedWorkouts, scheduleOverrides, workoutDocRevisions } from "@rg/database";
 import { dayLabel, docOriginRow, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
@@ -181,7 +183,16 @@ export class ProposalChangedError extends Error {
   }
 }
 
-// ── Costs (true upper bounds: each part is the most its code can run) ─────────────────────────────────────────────
+// ── Costs (upper bounds: each part is the most its code can run) ──────────────────────────────────────────────────
+//
+// Three conditions break them, each outside what one request controls:
+//  - a history of more than 90 held sessions in the build's window: each of its four reads runs once per 90
+//    (`byChunks`), so DAY_READS' five history reads become more. The window keeps a real athlete far below it;
+//    counting the held sessions would cost the read it counts.
+//  - a timed create that loses a race for its key (two approves of one op at once): `createDocWorkout` reads the row
+//    the winner made, one statement more.
+//  - a concurrent writer on the same day: the collision pass re-times every session it reads, so sessions another
+//    request adds between the plan read and the pass are moved too, beyond the day's count.
 
 /** Every request: ≤ 45 combined D1 statements and fetches (Workers Free; the suites budget 45). */
 export const REQUEST_BUDGET = 45;
@@ -222,6 +233,8 @@ interface RowState {
   dto: DocWorkoutDto;
   origin: string | null;
   archived: boolean;
+  /** Its time was asked for (a `time_change` override: `createDocWorkout` pins a time it was given). */
+  pinned: boolean;
 }
 
 interface Plan {
@@ -268,6 +281,7 @@ async function readPlan(db: Db, userId: string, proposalId: string, ops: readonl
         'category', ${pw.category}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'content', ${pw.contentState},
         'completion', ${pw.completionState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt},
         'seconds', ${pw.fallbackEstimatedDurationSeconds},
+        'pinned', exists(select 1 from ${scheduleOverrides} so where so.workout_id = ${pw.id} and so.kind = 'time_change'),
         'summary', case when json_valid(${pw.workoutDoc}) then json_extract(${pw.workoutDoc}, '$.intent.summary') end))
         from ${pw} where ${pw.userId} = ${userId} and ${pw.id} in (${values([...keyOf.values(), ...revised])})) as rows,
       (select json_group_array(json_object('id', ${r.id}, 'kind', ${r.sourceKind}))
@@ -298,6 +312,7 @@ async function readPlan(db: Db, userId: string, proposalId: string, ops: readonl
       },
       origin: typeof x.origin === "string" ? x.origin : null,
       archived: typeof x.archived === "string" && x.archived.length > 0,
+      pinned: x.pinned === 1 || x.pinned === true,
     });
   }
   // Each revision id names one op's revision; its ref was checked in the read (the op's own).
@@ -308,18 +323,21 @@ async function readPlan(db: Db, userId: string, proposalId: string, ops: readonl
 
 /**
  * The workout an op already made, as an applied outcome — or null when it made none. A new op's: its keyed row. A
- * revise op's: its target row, when the revision after the coach's base is this op's.
+ * revise op's: its target row, when the revision after the coach's base is this op's. A row removed since is no workout
+ * in the plan: a declined or superseded op stays as it was decided.
  */
 function madeOf(op: DesignedOp, plan: Plan, at: string): Extract<OpOutcome, { status: "applied" }> | null {
   const target = op.target;
   const id = target.kind === "new" ? plan.keyOf.get(opIdOf(op)) : target.workoutId;
   const row = id ? plan.rows.get(id) : undefined;
-  if (!id || !row) return null;
+  if (!id || !row || row.archived) return null;
   const revId = target.kind === "new" ? `${id}:1` : `${id}:${target.baseRev + 1}`;
   const writer = plan.revisions.get(revId);
   if (target.kind === "revise" && writer === undefined) return null;
   const d = row.dto;
-  const moved = target.kind === "new" && (d.date !== target.date || (!!target.time && d.time !== target.time));
+  // As `applyOp` decides it: another day, or a time asked for other than the coach's (a placed workout's time is the
+  // window's, asked for by no one).
+  const moved = target.kind === "new" && movedFrom(target, d.date, row.pinned ? d.time : null);
   return {
     status: "applied",
     at,
@@ -332,6 +350,10 @@ function madeOf(op: DesignedOp, plan: Plan, at: string): Extract<OpOutcome, { st
 }
 
 const writtenOf = (w: DocWorkoutDto): Written => ({ date: w.date, time: w.time, title: w.title, minutes: w.minutes });
+
+/** A new workout went on another day than the coach's, or at a time asked for other than the coach's. */
+const movedFrom = (target: Extract<DocWorkoutTarget, { kind: "new" }>, date: string, time: string | null): boolean =>
+  date !== target.date || (time ?? null) !== (target.time ?? null);
 
 /** Why a planned workout can't change, by the Studio's own rules (doc-workouts.ts `reviseDocWorkout`). */
 function notEditableCause(row: RowState | undefined): NotEditableCause {
@@ -407,13 +429,16 @@ function chosen(ops: readonly DesignedOp[], ids: readonly string[] | undefined):
 }
 
 /**
- * Of the ops `ids` names (none: all): those applied already (`settled`), those declined (`declined`: settled, unless the
- * plan read finds their workout), and those still to decide (`todo`). A proposal decided whole has nothing to decide;
+ * Of the ops `ids` names (none: all): those applied already (`settled`), those declined or superseded (`declined`:
+ * settled as they were, unless the plan read finds their workout), and those still to decide (`todo`). A proposal decided whole has nothing to decide;
  * one no longer the athlete's (expired, superseded, never shown) is `NotOpenError`.
  */
-function decidable(p: DesignProposalRow, ids: readonly string[] | undefined) {
+function decidable(p: DesignProposalRow, ids: readonly string[] | undefined, o: { repair?: boolean } = {}) {
   const open = OPEN_TO_ATHLETE.includes(p.status);
-  if (!open && !DECIDED.includes(p.status)) throw new NotOpenError(p.status);
+  // A proposal a newer plan superseded whole is opened only to repair it: an op whose workout an approve in flight made
+  // as the supersede landed is recorded applied (approveDesignOps); nothing else of it changes.
+  const repairable = o.repair === true && p.status === "superseded";
+  if (!open && !DECIDED.includes(p.status) && !repairable) throw new NotOpenError(p.status);
   const ops = designedOps(p.ops);
   const settled: Settled[] = [];
   const declined: DesignedOp[] = [];
@@ -421,8 +446,7 @@ function decidable(p: DesignProposalRow, ids: readonly string[] | undefined) {
   for (const op of chosen(ops, ids)) {
     const o = op.outcome;
     if (o?.status === "applied") settled.push({ opId: opIdOf(op), outcome: "applied", workoutId: o.workoutId });
-    else if (o?.status === "superseded") settled.push({ opId: opIdOf(op), outcome: "superseded" });
-    else if (o?.status === "declined") declined.push(op);
+    else if (o?.status === "declined" || o?.status === "superseded") declined.push(op);
     else if (open) todo.push(op);
   }
   return { ops, settled, declined, todo };
@@ -444,26 +468,30 @@ export async function approveDesignOps(
   ctx: DocWorkoutCtx,
   budget: number = REQUEST_BUDGET - APPROVE_FIXED,
 ): Promise<ApproveAnswer> {
-  const { ops, settled, declined, todo: open } = decidable(p, input.edit ? [input.edit.opId] : input.opIds);
+  const { ops, settled, declined, todo: open } = decidable(p, input.edit ? [input.edit.opId] : input.opIds, { repair: true });
   // One plan read covers at most PLAN_MAX ops; the rest wait for the next request.
   const inPlan = open.slice(0, PLAN_MAX);
   const overflow = open.slice(PLAN_MAX).map(opIdOf);
   const applied: Applied[] = [];
   const refused: Refused[] = [];
   const outcomes = new Map<string, OpOutcome>();
-  if (inPlan.length === 0 && declined.length === 0) return { status: p.status as DesignProposalStatus, applied, refused, settled, remaining: overflow };
+  if (inPlan.length === 0 && declined.length === 0) {
+    if (p.status === "superseded") throw new NotOpenError(p.status);
+    return { status: p.status as DesignProposalStatus, applied, refused, settled, remaining: overflow };
+  }
 
   const inHand = [...inPlan, ...declined];
   const plan = await readPlan(db, userId, p.id, inHand, inHand.flatMap((o) => dayOf(o, input.edit) ?? []));
-  // An op whose workout is there already — a crash, a double tap, an approve that raced a decline — is applied, and
-  // made no second time; a declined op whose workout isn't there stays declined.
+  // An op whose workout is there already — a crash, a double tap, an approve that raced a decline or a newer plan — is
+  // applied, and made no second time; a declined or superseded op whose workout isn't there stays as it was.
   const todo: DesignedOp[] = [];
   for (const op of inHand) {
     const made = madeOf(op, plan, ctx.now);
+    const was = op.outcome?.status;
     if (made) {
       outcomes.set(opIdOf(op), made);
       applied.push(appliedOf(op, made, plan));
-    } else if (op.outcome?.status === "declined") settled.push({ opId: opIdOf(op), outcome: "declined" });
+    } else if (was === "declined" || was === "superseded") settled.push({ opId: opIdOf(op), outcome: was });
     else todo.push(op);
   }
 
@@ -502,7 +530,11 @@ export async function approveDesignOps(
     }
   }
   remaining.push(...overflow);
-  if (outcomes.size === 0) return { status: p.status as DesignProposalStatus, applied, refused, settled, remaining };
+  if (outcomes.size === 0) {
+    // A superseded proposal with nothing to repair is no longer the athlete's.
+    if (p.status === "superseded") throw new NotOpenError(p.status);
+    return { status: p.status as DesignProposalStatus, applied, refused, settled, remaining };
+  }
 
   const next = withOutcomes(p.ops, outcomes);
   const status = statusOfOps(designedOps(next));
@@ -559,7 +591,7 @@ async function applyOp(
       date = mine?.date ?? target.date;
       const time = mine && mine.time !== undefined ? mine.time : (target.time ?? null);
       // The athlete chose another day or time than the coach's.
-      const moved = date !== target.date || (time ?? null) !== (target.time ?? null);
+      const moved = movedFrom(target, date, time);
       const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
       return { applied: { workout: made.workout, warnings: made.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) } };
     }
@@ -622,6 +654,16 @@ function sameDocument(raw: unknown, coach: WorkoutDoc): boolean {
   return a !== null && a === plain(coach);
 }
 
+/** The newer plan that superseded an op of these last. */
+function newestSupersededBy(ops: readonly DesignedOp[]): string | null {
+  let best: { at: string; by: string } | null = null;
+  for (const op of ops) {
+    const o = op.outcome;
+    if (o?.status === "superseded" && (!best || o.at > best.at)) best = { at: o.at, by: o.by };
+  }
+  return best?.by ?? null;
+}
+
 /** The proposal's ops with these outcomes on the designed ones they name; every other op as it was. */
 function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome>): unknown[] {
   return (Array.isArray(ops) ? ops : []).map((o) => {
@@ -631,12 +673,16 @@ function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome>): u
   });
 }
 
-/** Write the ops' outcomes and the status, while the proposal is still as this request read it. */
+/**
+ * Write the ops' outcomes and the status, while the proposal is still as this request read it. A proposal that ends
+ * `superseded` names the newer plan that superseded it last (`superseded_by`), as Task 7's supersede does.
+ */
 async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unknown[], status: DesignProposalStatus, now: string): Promise<void> {
   const resolvedAt = status === "pending" ? p.resolvedAt : status === p.status ? (p.resolvedAt ?? now) : now;
+  const by = status === "superseded" && status !== p.status ? newestSupersededBy(designedOps(next)) : null;
   const written = await db
     .update(coachProposals)
-    .set({ ops: next, status, resolvedAt })
+    .set({ ops: next, status, resolvedAt, ...(by ? { supersededBy: by } : {}) })
     .where(
       and(
         eq(coachProposals.id, p.id),
@@ -648,6 +694,10 @@ async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unkn
     .returning({ id: coachProposals.id });
   if (written.length === 0) throw new ProposalChangedError();
 }
+
+/** "; 1 declined; 2 replaced by a newer plan" — what of a proposal was decided otherwise than approved. */
+const decidedWords = (declined: number, superseded: number): string =>
+  `${declined ? `; ${declined} declined` : ""}${superseded ? `; ${superseded} replaced by a newer plan` : ""}`;
 
 async function receipt(db: Db, userId: string, body: string, proposalId: string): Promise<void> {
   await db.insert(coachMessages).values({ id: newId(), userId, role: "receipt", body, refs: { proposalId }, at: new Date().toISOString() });
@@ -663,8 +713,10 @@ function approvedReceipt(title: string, ops: readonly DesignedOp[]): string {
   const done: string[] = [];
   const not: string[] = [];
   let declined = 0;
+  let superseded = 0;
   for (const op of ops) {
     const o = op.outcome;
+    if (o?.status === "superseded") superseded += 1;
     if (o?.status === "applied") {
       const w = o.written;
       done.push(w ? receiptLine(w.date, w.title, w.minutes, !!o.edited) : receiptLine(op.date, op.doc.title, minutesOf(op.doc), !!o.edited));
@@ -672,7 +724,7 @@ function approvedReceipt(title: string, ops: readonly DesignedOp[]): string {
       not.push(`${receiptLine(op.date, op.doc.title, minutesOf(op.doc))} (${o.why})`);
     } else if (o?.status === "declined") declined += 1;
   }
-  const count = done.length < ops.length ? ` (${done.length} of ${ops.length}${declined ? `; ${declined} declined` : ""})` : "";
+  const count = done.length < ops.length ? ` (${done.length} of ${ops.length}${decidedWords(declined, superseded)})` : "";
   return `✓ approved — ${title}${count}: ${done.join("; ")}${not.length ? ` · not approved: ${not.join("; ")}` : ""}`;
 }
 
@@ -699,7 +751,7 @@ export async function declineDesignOps(
   now: string,
 ): Promise<DeclineAnswer> {
   const { settled, declined: before, todo } = decidable(p, input.opIds);
-  for (const op of before) settled.push({ opId: opIdOf(op), outcome: "declined" });
+  for (const op of before) settled.push({ opId: opIdOf(op), outcome: op.outcome?.status === "superseded" ? "superseded" : "declined" });
   const reason = input.reason?.trim().slice(0, DECLINE_REASON_MAX);
   const declined: string[] = [];
   if (todo.length === 0) return { status: p.status as DesignProposalStatus, declined, settled };
@@ -718,7 +770,12 @@ export async function declineDesignOps(
   const next = withOutcomes(p.ops, outcomes);
   const status = statusOfOps(designedOps(next));
   await writeOps(db, userId, p, next, status, now);
-  if (status === "declined") await receipt(db, userId, `Left as planned — ${p.title}`, p.id);
+  // Closed by this decline: "Left as planned", and when a newer plan took some of it, how much.
+  if (status === "declined" || status === "superseded") {
+    const ops = designedOps(next);
+    const words = status === "superseded" ? ` (${decidedWords(ops.filter((o) => o.outcome?.status === "declined").length, ops.filter((o) => o.outcome?.status === "superseded").length).slice(2)})` : "";
+    await receipt(db, userId, `Left as planned — ${p.title}${words}`, p.id);
+  }
   return { status, declined, settled };
 }
 

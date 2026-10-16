@@ -624,6 +624,40 @@ describe("the proposal's write, raced", () => {
     await expect(approve(id)).rejects.toMatchObject({ name: "ProposalChangedError" });
     expect((await proposalOf(id))!.status).toBe("expired");
   });
+
+  it("an approve whose write loses to a newer plan's supersede: on the retry the op whose workout is there is applied — even with the proposal superseded whole", async () => {
+    const { id, opIds } = await designed([
+      { doc: calmDoc({ title: "Friday" }), target: { kind: "new", date: later } },
+      { doc: calmDoc({ title: "Saturday" }), target: { kind: "new", date: day(-3) } },
+    ]);
+    const [a] = opIds as [string, string];
+    // Task 7's supersede lands between this approve's workout and its write: every open op superseded, and the
+    // proposal with them.
+    raceWith(() => {
+      const row = sqlite().prepare("select ops from coach_proposals where id = ?").get(id) as { ops: string };
+      const ops = (JSON.parse(row.ops) as Array<Record<string, unknown>>).map((o) => ({ ...o, outcome: { status: "superseded", at: "2026-05-13T17:00:00.000Z", reason: "a newer plan covers this day", by: "dp-newer" } }));
+      sqlite().prepare("update coach_proposals set ops = ?, status = 'superseded', superseded_by = 'dp-newer' where id = ?").run(JSON.stringify(ops), id);
+    });
+    await expect(approve(id, { opIds: [a] })).rejects.toMatchObject({ name: "ProposalChangedError" });
+    expect((await proposalOf(id))!.status).toBe("superseded");
+    expect(await designRows()).toHaveLength(1);
+    // The retry: the workout made is recorded applied; the other stays superseded; the status follows.
+    const again = await approve(id, { opIds: [a] });
+    expect(again.applied.map((x) => x.opId)).toEqual([a]);
+    expect(again.status).toBe("partially_approved");
+    const p = (await proposalOf(id))!;
+    expect(p.status).toBe("partially_approved");
+    expect(p.ops.map((o) => o.outcome?.status)).toEqual(["applied", "superseded"]);
+    expect(await designRows()).toHaveLength(1);
+    // A superseded proposal with nothing to repair is not the athlete's.
+    const other = await designed([{ doc: calmDoc({ title: "Sunday" }), target: { kind: "new", date: day(-4) } }]);
+    const q = (await proposalOf(other.id))!;
+    await db
+      .update(coachProposals)
+      .set({ status: "superseded", ops: q.ops.map((o) => ({ ...o, outcome: { status: "superseded", at: "t", reason: "a newer plan covers this day", by: "dp-newer" } })) })
+      .where(eq(coachProposals.id, other.id));
+    await expect(approve(other.id)).rejects.toMatchObject({ name: "NotOpenError", status: "superseded" });
+  });
 });
 
 describe("statusOfOps", () => {
@@ -773,6 +807,35 @@ describe("what was written, after Edit before approve", () => {
     expect((await opOf(id, b)).outcome).not.toHaveProperty("moved");
   });
 
+  it("a decline that closes a proposal a newer plan took part of: superseded, superseded_by as the supersede writes it, and a receipt that says both", async () => {
+    const { id, opIds } = await designed([
+      { doc: calmDoc({ title: "One" }), target: { kind: "new", date: later, time: "07:00" } },
+      { doc: calmDoc({ title: "Two" }), target: { kind: "new", date: day(-3), time: "07:00" } },
+    ]);
+    const p = (await proposalOf(id))!;
+    await db
+      .update(coachProposals)
+      .set({ ops: p.ops.map((o, i) => (i === 0 ? { ...o, outcome: { status: "superseded", at: "2026-05-13T17:00:00.000Z", reason: "a newer plan covers this day", by: "dp-newer" } } : o)) })
+      .where(eq(coachProposals.id, id));
+    const res = await decline(id, { opIds: [opIds[1]!] });
+    expect(res.status).toBe("superseded");
+    const after = (await proposalOf(id))!;
+    expect([after.status, after.supersededBy]).toEqual(["superseded", "dp-newer"]);
+    expect((await receipts()).map((r) => r.body)).toEqual([`Left as planned — ${p.title} (1 declined; 1 replaced by a newer plan)`]);
+    // And an approve's count says so too.
+    const other = await designed([
+      { doc: calmDoc({ title: "Three" }), target: { kind: "new", date: day(-4), time: "07:00" } },
+      { doc: calmDoc({ title: "Four" }), target: { kind: "new", date: day(-5), time: "07:00" } },
+    ]);
+    const q = (await proposalOf(other.id))!;
+    await db
+      .update(coachProposals)
+      .set({ ops: q.ops.map((o, i) => (i === 0 ? { ...o, outcome: { status: "superseded", at: "t", reason: "a newer plan covers this day", by: "dp-newer" } } : o)) })
+      .where(eq(coachProposals.id, other.id));
+    await approve(other.id, { opIds: [other.opIds[1]!] });
+    expect((await receipts()).map((r) => r.body)[1]).toMatch(/ \(1 of 2; 1 replaced by a newer plan\): /);
+  });
+
   it("the receipt says how many were declined", async () => {
     const { id, opIds } = await designed([
       { doc: calmDoc({ title: "One" }), target: { kind: "new", date: later, time: "07:00" } },
@@ -802,6 +865,35 @@ describe("what was written, after Edit before approve", () => {
 // ── The op that made a workout records applied ──────────────────────────────────────────────────────────────────────
 
 describe("the op that made a workout records applied", () => {
+  it("but not a workout removed since: a declined op whose workout is gone stays declined", async () => {
+    const { id, opIds } = await designed([{ doc: calmDoc({ title: "Friday" }), target: { kind: "new", date: later } }]);
+    const made = await approve(id);
+    const p = (await proposalOf(id))!;
+    await db.update(coachProposals).set({ ops: p.ops.map((o) => ({ ...o, outcome: { status: "declined", at: "elsewhere" } })), status: "declined" }).where(eq(coachProposals.id, id));
+    await db.update(plannedWorkouts).set({ archivedAt: NOW.toISOString() }).where(eq(plannedWorkouts.id, made.applied[0]!.workout.id));
+    expect(await approve(id)).toMatchObject({ status: "declined", applied: [], settled: [{ opId: opIds[0], outcome: "declined" }] });
+  });
+
+  it("found again after a crash, a move is what the approve decided: a time the athlete asked for, never the window's", async () => {
+    const { id, opIds } = await designed([
+      { doc: calmDoc({ title: "Friday" }), target: { kind: "new", date: later } },
+      { doc: calmDoc({ title: "Saturday" }), target: { kind: "new", date: day(-3) } },
+    ]);
+    const [a, b] = opIds as [string, string];
+    const untouched = (await proposalOf(id))!;
+    await approve(id, { edit: { opId: a, doc: (await opOf(id, a)).doc, time: "07:15" } });
+    await approve(id, { opIds: [b] });
+    expect((await proposalOf(id))!.ops.map((o) => o.outcome && "moved" in o.outcome)).toEqual([true, false]);
+    // Both records lost: the plan read finds each workout, and says the same of each.
+    await db.update(coachProposals).set({ ops: untouched.ops, status: "pending", resolvedAt: null }).where(eq(coachProposals.id, id));
+    const again = await approve(id);
+    expect(again.applied.map((x) => [x.opId, x.moved ?? false])).toEqual([
+      [a, true],
+      [b, false],
+    ]);
+    expect((await proposalOf(id))!.ops.map((o) => o.outcome && "moved" in o.outcome)).toEqual([true, false]);
+  });
+
   const sqlite = () => (db as unknown as { $client: { prepare(q: string): { run(...a: unknown[]): unknown } } }).$client;
 
   it("a double tap on a revision: the second meets the first's revision mid-way, reads it once more, and records applied", async () => {

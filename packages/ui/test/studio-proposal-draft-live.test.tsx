@@ -265,15 +265,29 @@ describe("Edit before approve", () => {
     await until(() => text().includes("That draft is gone."), "the line");
   });
 
-  it("decided elsewhere meanwhile: the edits stay, it says so plainly, and Schedule it as a new workout makes one of the athlete's own", async () => {
+  it("approved elsewhere meanwhile: the edits stay, it says so plainly, and Open it goes to the workout in the plan", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
-    const calls = serve({ draft: draftOf(), approve: [{ settled: "applied" }] });
+    serve({ draft: draftOf(), approve: [{ settled: "applied" }] });
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     await retype(titleField()!, "My hips");
     await click(button("Schedule…"), "Schedule…");
     await click(button("Schedule", dialog("Schedule")!), "Schedule");
     await until(() => text().includes("The coach's version was approved already."), "the line");
+    expect(titleField()!.value).toBe("My hips");
+    expect(document.querySelector<HTMLAnchorElement>('.stu-build-status a[href="/studio/build/workout/w-theirs"]')?.textContent).toBe("Open it");
+    expect(button("Schedule it as a new workout")).toBeNull();
+  });
+
+  it("declined elsewhere meanwhile: the edits stay, and Schedule it as a new workout makes one of the athlete's own — written in the Studio, its lineage the proposal's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    const calls = serve({ draft: draftOf(), approve: [{ settled: "declined" }] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await retype(titleField()!, "My hips");
+    await click(button("Schedule…"), "Schedule…");
+    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await until(() => text().includes("The coach's version was declined already."), "the line");
     // Nothing lost, nowhere else.
     expect(titleField()!.value).toBe("My hips");
     expect(where).toBe("/studio/build/proposal/dp-1/run-a");
@@ -281,8 +295,16 @@ describe("Edit before approve", () => {
     await click(button("Schedule", dialog("Schedule")!), "Schedule");
     await until(() => where === "/studio/build/workout/w-own", "the new workout");
     const created = calls.filter((c) => c.method === "POST" && c.path === "/api/workouts");
-    expect(created.map((c) => c.body)).toEqual([expect.objectContaining({ date: TUESDAY, time: "17:30", doc: expect.objectContaining({ title: "My hips" }) })]);
+    expect(created.map((c) => c.body)).toEqual([
+      expect.objectContaining({
+        date: TUESDAY,
+        time: "17:30",
+        doc: expect.objectContaining({ title: "My hips", source: { kind: "studio" }, basedOn: { kind: "proposal", id: "dp-1", opId: "run-a" } }),
+      }),
+    ]);
     expect(approvals(calls)).toHaveLength(1);
+    // On the workout it became, nothing reads as changed since it was made.
+    expect(button("Save changes")!.disabled).toBe(true);
   });
 
   it("the draft's own refusals in its own words: declined elsewhere, a revision's day gone, a draft no longer open", async () => {
@@ -301,6 +323,7 @@ describe("Edit before approve", () => {
     await say(revise, { settled: "declined" }, "Save changes", "The coach's version was declined already.");
     await say(revise, { error: "past_date", status: 422 }, "Save changes", "This workout's day has passed, so the draft can't be applied any more.");
     await say(revise, { error: "not_pending", status: 409 }, "Save changes", "This draft isn't open any more, so it can't be approved.");
+    await say(revise, { error: "not_found", status: 404 }, "Save changes", "The workout this draft revises is no longer in your plan.");
   });
 
   it("a revision's draft taken as a new workout schedules one: Schedule… stands where Save changes was", async () => {

@@ -89,7 +89,8 @@ export function draftRefusal(e: unknown, revises: boolean): Status | null {
   if (body.error === "stale_revision") return { text: "This workout changed after the coach drafted this, so the draft can't be applied.", asNew: true };
   if (body.error === "past_date" && revises) return { text: "This workout's day has passed, so the draft can't be applied any more.", asNew: true };
   if (body.error === "not_pending" || body.error === "not_yet") return { text: "This draft isn't open any more, so it can't be approved.", asNew: true };
-  if (e instanceof ApiError && e.status === 404) return { text: "This draft is gone.", asNew: true };
+  // A revision's draft was loaded, so what is gone is the workout it revises.
+  if (e instanceof ApiError && e.status === 404) return { text: revises ? "The workout this draft revises is no longer in your plan." : "This draft is gone.", asNew: true };
   return null;
 }
 
@@ -311,7 +312,13 @@ export function useBuildFlows({
   const adopt = (w: DocWorkoutDto, sent: WorkoutDoc) => {
     const cur = live.current;
     if (!cur) return;
-    const editor = source.kind === "template" ? { ...cur.editor, doc: startEditing(forSchedule(cur.editor.doc, source)).doc } : cur.editor;
+    // A template's says it is based on the template; a coach's draft is now what was written (its source, its lineage).
+    const editor =
+      source.kind === "template"
+        ? { ...cur.editor, doc: startEditing(forSchedule(cur.editor.doc, source)).doc }
+        : source.kind === "proposal"
+          ? { ...cur.editor, doc: startEditing(sent).doc }
+          : cur.editor;
     setLoaded({ key: `workout:${w.id}`, editor, baseline: sent, rev: w.docRev ?? 1, row: { date: w.date, time: w.time } });
     if (cur.key === "new") void drafts.clear().catch(() => undefined);
     // The entry keeps where its way back goes (the templates list, when it came from there).
@@ -622,6 +629,8 @@ export function useBuildFlows({
   // ── Schedule, and the saves ──
   /** The athlete took a coach's draft as a new workout of their own (it couldn't be approved): Schedule makes one. */
   const [asNew, setAsNew] = useState(false);
+  // Another draft (or another workout) on this page: it is the coach's to approve again.
+  useEffect(() => setAsNew(false), [key]);
   /** Their edits, scheduled as a new workout: the Schedule sheet, and it makes one of their own. */
   const scheduleAsNew = () => {
     setAsNew(true);
@@ -654,8 +663,13 @@ export function useBuildFlows({
     }
     const made = res.applied.find((a) => a.opId === source.opId);
     if (!made) {
-      const before = res.settled.find((s) => s.opId === source.opId)?.outcome;
-      sayDraft({ text: before ? DECIDED_TEXT[before] : "This draft isn't open any more, so it can't be approved.", asNew: true });
+      const before = res.settled.find((s) => s.opId === source.opId);
+      // Approved elsewhere: its workout is in the plan — one tap to it; otherwise the edits may go in as a new workout.
+      if (before?.outcome === "applied" && before.workoutId) {
+        sayDraft({ text: DECIDED_TEXT.applied, link: { to: addTargetHref({ kind: "workout", id: before.workoutId }), label: "Open it" } });
+        return null;
+      }
+      sayDraft({ text: before ? DECIDED_TEXT[before.outcome] : "This draft isn't open any more, so it can't be approved.", asNew: true });
       return null;
     }
     refreshPlan();
@@ -678,8 +692,11 @@ export function useBuildFlows({
     const sent = forSchedule(j.doc, source);
     try {
       if (source.kind === "proposal" && !asNew) return await approveDraft(sent, { date: when, time });
+      // A coach's draft taken as a new workout is the athlete's own: written in the Studio, its lineage the proposal's.
+      const doc: WorkoutDoc =
+        source.kind === "proposal" ? { ...sent, source: { kind: "studio" }, basedOn: { kind: "proposal", id: source.id, opId: source.opId } } : sent;
       const once = await keyed("workout", cur.key);
-      const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc: sent, clientId: once.clientId });
+      const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc, clientId: once.clientId });
       once.landed();
       refreshPlan();
       if (source.kind === "template") {
@@ -689,7 +706,7 @@ export function useBuildFlows({
           .catch(() => undefined);
       }
       // A new workout or a quick start, scheduled, is that planned workout now (a second Start never makes another).
-      if (cur.key === "new" || source.kind === "quick" || source.kind === "again" || source.kind === "proposal") adopt(res.workout, sent);
+      if (cur.key === "new" || source.kind === "quick" || source.kind === "again" || source.kind === "proposal") adopt(res.workout, doc);
       setScheduling(false);
       setStatus({ text: scheduledText(res.workout, today), link: { to: "/plan", label: "See it in Plan" }, notes: newNotes(res.warnings) });
       focusStatus();
