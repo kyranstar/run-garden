@@ -74,7 +74,7 @@ function scenarios(): Record<string, unknown[]> {
       { from: day(60), to: day(-30), q: "studio hips rows", limit: 50 },
       { from: day(60), to: day(-30), limit: 3, cursor: encodeCursor([day(5), "07:00", "~"]) },
     ],
-    get_workout: [{ id: rich.pastDocId }, { id: rich.todayDocId }, { id: rich.outlineToday }, { id: "no-such" }, {}],
+    get_workout: [{ id: rich.pastDocId }, { id: rich.todayDocId }, { id: rich.outlineToday }, { id: "no-such" }, {}, { proposalId: `${rich.userId}-prop-0`, opId: "none" }],
     read_history: [
       { from: day(14), to: TODAY },
       { from: day(91), to: TODAY, limit: 30 },

@@ -2,7 +2,8 @@
  * read_proposals(status?) — past proposals and how each ended (Stage 3 spec §4, §8): newest first, with the day it
  * was made, its status (pending, approved, partially_approved, declined, superseded, expired) and the day it was
  * resolved, and what it proposed — each change's kind, day and, for a designed workout, its title, what the coach based
- * it on (`basedOn`, as it set it), and how the athlete decided it (design-approve.ts): `approved` as the coach proposed it, `edited` (the athlete changed the draft, then
+ * it on (`basedOn`, as it set it), its `opId` (get_workout reads the suggestion back by it, fix wave 13, R8), and how
+ * the athlete decided it (design-approve.ts): `approved` as the coach proposed it, `edited` (the athlete changed the draft, then
  * approved theirs), with `moved` and the day it went to (`plannedFor`) when the athlete chose another day or time,
  * `declined` (with the athlete's reason, when they gave one), `not_applied` (the server refused it at approval, with
  * why), or `superseded` (a newer plan covered its day) — and each change to a session already on the plan (Task 8b):
@@ -63,8 +64,9 @@ function lineageOf(raw: unknown): Record<string, unknown> {
 /** A day by name and how far from today ("Tue 12 May · yesterday"); null for none. */
 const dayOf = (date: string | null, today: string): string | null => (date ? dayWords(date, today) : null);
 
-/** How the athlete decided a designed workout (design-approve.ts's outcome), in the tool's words; nothing while open. */
-function decided(o: Record<string, unknown>): Record<string, unknown> {
+/** How the athlete decided a designed workout (design-approve.ts's outcome), in the tool's words; nothing while open.
+ * get_workout says a suggestion's the same way. */
+export function decided(o: Record<string, unknown>): Record<string, unknown> {
   switch (o.outcome) {
     case "applied": {
       const moved = (o.moved === 1 || o.moved === true) && typeof o.wDate === "string";
@@ -129,7 +131,7 @@ export const readProposals: DesignTool = {
           'resolvedAt', resolved_at, 'ops', ops)) from (
           select ${c.id} as id, ${c.title} as title, ${c.rationale} as rationale, ${c.status} as status, ${c.createdAt} as created_at,
             ${c.resolvedAt} as resolved_at,
-            (select json_group_array(json_object('kind', ${op("$.kind")}, 'date', coalesce(${op("$.date")}, ${op("$.toDate")}),
+            (select json_group_array(json_object('kind', ${op("$.kind")}, 'opId', coalesce(${op("$.by.runId")}, ${op("$.id")}), 'date', coalesce(${op("$.date")}, ${op("$.toDate")}),
               'title', ${op("$.doc.title")}, 'outcome', ${op("$.outcome.status")}, 'edited', ${op("$.outcome.edited")},
               'moved', ${op("$.outcome.moved")}, 'wDate', ${op("$.outcome.written.date")}, 'wTime', ${op("$.outcome.written.time")},
               'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}, 'basedOn', json(${op("$.doc.basedOn")}),
@@ -160,6 +162,7 @@ export const readProposals: DesignTool = {
           resolved: dayOf(localDateOf(athlete.tz, r.resolvedAt), athlete.today),
           ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o, athlete.today) : {
             kind: typeof o.kind === "string" ? o.kind : "unknown",
+            ...(typeof o.opId === "string" && ID.test(o.opId) ? { opId: o.opId } : {}),
             ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date, day: dayWords(o.date, athlete.today) } : {}),
             ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),
             ...lineageOf(o.basedOn),

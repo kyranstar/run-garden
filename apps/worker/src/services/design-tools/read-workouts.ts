@@ -10,16 +10,22 @@
  *    one (a move the library does not know, an id with spaces in it) marked as well — its revision, what is derived
  *    from it (`deriveDoc`), what was done in it (read_history's lines, with their ids) and the feedback on it. Archived
  *    rows and other accounts' are not found. Two statements: the athlete with the row, then what was done and the
- *    feedback in one read.
+ *    feedback in one read. Or a suggestion (fix wave 13, R8): `{ proposalId, opId }` from read_proposals gives that
+ *    designed workout's document, minutes, review mean and how the athlete decided it — after a decline, "the same but
+ *    60 min" starts from it (`basedOn: { kind: "proposal", id }`). One statement.
  */
 import { and, between, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { activities, athleteAnswers, performedSessions, plannedWorkouts } from "@rg/database";
+import { activities, athleteAnswers, coachProposals, performedSessions, plannedWorkouts } from "@rg/database";
 import { dayLabel, dayRangeLabel, parseStoredWorkoutDoc, type WorkoutDoc, type WorkoutDose, type WorkoutItem } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import { likeWordPatterns } from "../like-pattern.js";
-import type { DesignTool } from "./types.js";
+import { reviewMeanOf } from "../design-orchestrate.js";
+import { isDocWorkoutOp, opIdOf } from "../proposal-kinds.js";
+import type { DocWorkoutOp } from "./propose.js";
+import { decided } from "./read-proposals.js";
+import type { DesignTool, ToolContext, ToolErr, ToolOk } from "./types.js";
 import {
   answer,
   checkRange,
@@ -33,6 +39,7 @@ import {
   limitField,
   limitSchema,
   pagedAnswer,
+  parsedArray,
   parsedJson,
   parseInput,
   plural,
@@ -231,26 +238,98 @@ export function markedDoc(doc: WorkoutDoc): Record<string, unknown> {
   };
 }
 
-const getInput = z.object({ id: z.string().min(1).max(120) }).strict();
+// A planned workout by its id, or a suggestion by its proposal and op (fix wave 13, R8) — one or the other, whole.
+const getInput = z
+  .object({ id: z.string().min(1).max(120).optional(), proposalId: z.string().min(1).max(200).optional(), opId: z.string().min(1).max(200).optional() })
+  .strict()
+  .refine((x) => (x.id !== undefined) !== (x.proposalId !== undefined || x.opId !== undefined) && (x.id !== undefined || (x.proposalId !== undefined && x.opId !== undefined)), {
+    message: "give either id (a planned workout) or both proposalId and opId (a suggestion), not both",
+  });
+
+/**
+ * A suggestion read back (fix wave 13, R8): after a decline, "the same, but 60 minutes" starts from what was declined,
+ * not from nothing. The designed workout `opId` of the athlete's proposal `proposalId` (never a rehearsal's): its
+ * document (marked as get_workout marks one), day, minutes and mode, its review's mean and rounds, and how it ended in
+ * read_proposals' words (open while the athlete hasn't decided). One statement: the athlete with the proposal.
+ */
+async function suggestion(ctx: ToolContext, proposalId: string, opId: string): Promise<ToolOk | ToolErr> {
+  const c = coachProposals;
+  const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
+    proposal: sql`(select json_object('status', ${c.status}, 'ops', ${c.ops}) from ${c}
+        where ${c.id} = ${proposalId} and ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal')`,
+  });
+  const held = parsedJson(extra.proposal) as { status?: string; ops?: unknown } | null;
+  const ops = parsedArray(typeof held?.ops === "string" ? held.ops : null);
+  // An op is read as stored: one written before ops carried their run (`by`) has no opId and is never this one.
+  const op = ops.find(
+    (o): o is DocWorkoutOp & { outcome?: Record<string, unknown> } =>
+      isDocWorkoutOp(o) && typeof (o as { by?: { runId?: unknown } }).by?.runId === "string" && opIdOf(o as DocWorkoutOp) === opId,
+  );
+  if (!held || !op) {
+    return refuse(
+      "not_found",
+      `No suggested workout ${JSON.stringify(opId)} in the athlete's proposal ${JSON.stringify(proposalId)}.`,
+      "Use a proposalId and the opId of one of its designed workouts from read_proposals.",
+    );
+  }
+  const o = op.outcome;
+  const outcome = o
+    ? decided({
+        outcome: o.status,
+        edited: o.edited,
+        moved: o.moved,
+        wDate: (o.written as { date?: unknown } | undefined)?.date,
+        wTime: (o.written as { time?: unknown } | undefined)?.time,
+        reason: o.reason,
+        why: o.why,
+      })
+    : {};
+  const d = op.derived ?? {};
+  const mean = reviewMeanOf(op);
+  const doc = parseStoredWorkoutDoc(JSON.stringify(op.doc));
+  return answer({
+    source: "the coach's proposal: the suggested workout, its review and how the athlete decided it",
+    now: ctx.now,
+    missing: [...athlete.missing, ...(doc ? [] : ["the suggested document does not read"])],
+    data: {
+      proposalId,
+      opId,
+      date: op.date,
+      day: dayWords(op.date, athlete.today),
+      ...(op.time ? { time: op.time } : {}),
+      target: op.target,
+      derived: { minutes: typeof d.minutes === "number" ? d.minutes : null, mode: typeof d.mode === "string" ? d.mode : null },
+      review: op.review ? { mean, rounds: op.review.rounds } : null,
+      ...(Object.keys(outcome).length ? outcome : { outcome: "open" }),
+      document: doc ? markedDoc(doc) : null,
+    },
+    summary: `Read the suggestion for ${dayLabel(op.date)}`,
+  });
+}
 
 const notFound = (id: string) =>
   refuse("not_found", `No workout with id ${JSON.stringify(id)} in the athlete's plan.`, "Use an id from list_workouts or read_plan.");
 
 export const getWorkout: DesignTool = {
   name: "get_workout",
-  description: "One planned workout: its document, revision, derived minutes, what was done in it and the feedback on it.",
+  description:
+    "One planned workout by id (its document, revision, minutes, what was done, feedback), or a suggestion by proposalId and opId (its document, minutes, review, how it ended). Build on one: basedOn { kind: proposal, id: proposalId }.",
   inputSchema: {
     type: "object",
-    properties: { id: { type: "string", description: "A workout id from list_workouts or read_plan." } },
-    required: ["id"],
+    properties: {
+      id: { type: "string", description: "A workout id from list_workouts or read_plan." },
+      proposalId: { type: "string", description: "A suggestion's proposal id, from read_proposals (with its opId)." },
+      opId: { type: "string", description: "The designed workout's opId in that proposal, from read_proposals." },
+    },
     additionalProperties: false,
   },
   statementCost: 2,
   cpuWeight: 0.4,
   roles: READ_ROLES,
   async run(ctx, raw) {
-    const p = parseInput(getInput, raw, "the workout's id");
+    const p = parseInput(getInput, raw, "a workout's id, or a suggestion's proposalId and opId");
     if (isErr(p)) return p;
+    if (p.id === undefined) return suggestion(ctx, p.proposalId!, p.opId!);
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'category', ${pw.category}, 'origin', ${pw.origin},
           'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'doc', ${pw.workoutDoc})

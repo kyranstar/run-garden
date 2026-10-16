@@ -57,6 +57,7 @@ async function refused(name: string, input: unknown, o: { user?: string } = {}):
 }
 
 const U = (text: string) => ({ untrusted: true, text });
+const getWorkoutTool = () => READ_TOOLS.find((t) => t.name === "get_workout")!;
 const isMarked = (v: unknown): boolean => !!v && typeof v === "object" && (v as { untrusted?: unknown }).untrusted === true && typeof (v as { text?: unknown }).text === "string";
 
 describe("every read tool's envelope", () => {
@@ -771,6 +772,57 @@ describe("read_proposals", () => {
     const declined = await ok("read_proposals", { status: "declined" });
     expect(declined.data.proposals.every((p: { status: string }) => p.status === "declined")).toBe(true);
     expect((await refused("read_proposals", { status: "rehearsal" })).error).toBe("invalid_input");
+  });
+});
+
+describe("R8: a suggestion can be read back — after a decline, \"the same but 60 min\" starts from it", () => {
+  async function declined() {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    const op = {
+      kind: "doc_workout", target: { kind: "new", date: TODAY, time: "18:00" }, date: TODAY, time: "18:00", doc: studioDoc({ title: "Hips at home" }),
+      review: { scores: { intent: 4, order: 5 }, notes: {}, mustFix: [], improvements: [], rounds: 2, changes: [] },
+      issues: [], derived: { minutes: 31, mode: "consistent" }, by: { runId: "run-designed", role: "main" }, toolUseId: "t1", at: at(TODAY, "08:00"),
+      outcome: { status: "declined", at: at(TODAY, "08:30"), reason: "Too long for today" },
+    };
+    await db.insert(schema.coachProposals).values([
+      { id: `p-${userId}`, userId, title: "Hips at home", evidence: "", rationale: "", flags: [], ops: [op], status: "declined", createdAt: at(TODAY, "08:00"), expiresAt: at(day(-1)), resolvedAt: at(TODAY, "08:30") },
+      { id: `r-${userId}`, userId, title: "Rehearsed", evidence: "", rationale: "", flags: [], ops: [{ ...op, by: { runId: "run-rehearsed", role: "main" } }], status: "rehearsal", createdAt: at(TODAY, "08:00"), expiresAt: at(day(-1)) },
+    ]);
+    return userId;
+  }
+
+  it("read_proposals gives each designed workout its opId; get_workout({ proposalId, opId }) gives its document, minutes, review mean and outcome", async () => {
+    const userId = await declined();
+    const list = await ok("read_proposals", {}, { user: userId });
+    expect(list.data.proposals[0].ops[0]).toMatchObject({ kind: "doc_workout", opId: "run-designed", outcome: "declined", reason: U("Too long for today") });
+    const { data, missing } = await ok("get_workout", { proposalId: `p-${userId}`, opId: "run-designed" }, { user: userId });
+    expect(data).toMatchObject({
+      proposalId: `p-${userId}`, opId: "run-designed", date: TODAY, day: "Wed 13 May · today", time: "18:00",
+      derived: { minutes: 31, mode: "consistent" }, review: { mean: 4.5, rounds: 2 }, outcome: "declined", reason: U("Too long for today"),
+    });
+    expect(data.document.title).toEqual(U("Hips at home"));
+    expect(data.document.parts[1].items[0]).toMatchObject({ kind: "exercise", libraryId: "gobletSquat" });
+    expect(missing).toEqual([]);
+    // One statement: the athlete with the proposal.
+    expect(getWorkoutTool().statementCost).toBeGreaterThanOrEqual(1);
+  });
+
+  it("an op that isn't there, a rehearsal's, another athlete's, or half an address is refused with a way forward", async () => {
+    const userId = await declined();
+    for (const input of [{ proposalId: `p-${userId}`, opId: "nope" }, { proposalId: `r-${userId}`, opId: "run-rehearsed" }]) {
+      const e = await refused("get_workout", input, { user: userId });
+      expect(e.error).toBe("not_found");
+      expect(e.fix).toMatch(/read_proposals/);
+    }
+    expect((await refused("get_workout", { proposalId: `p-${userId}`, opId: "run-designed" }, { user: rich.userId })).error).toBe("not_found");
+    expect((await refused("get_workout", { proposalId: `p-${userId}` }, { user: userId })).error).toBe("invalid_input");
+    expect((await refused("get_workout", { id: "x", proposalId: `p-${userId}`, opId: "run-designed" }, { user: userId })).error).toBe("invalid_input");
+  });
+
+  it("get_workout says how to build on a suggestion: basedOn kind proposal", () => {
+    expect(getWorkoutTool().description).toMatch(/proposalId/);
+    expect(getWorkoutTool().description).toMatch(/basedOn/);
+    expect(getWorkoutTool().description.length).toBeLessThanOrEqual(240);
   });
 });
 
