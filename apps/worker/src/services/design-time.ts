@@ -76,17 +76,56 @@ export function pastTime(date: string, time: string | undefined, at: { date: str
   return time && passed(time, at, date) ? pastTimeWhy(time) : null;
 }
 
+/** Why a time today can't be had — gone by, or none left before midnight — with its code (the polish round, 5:
+ * no_time_today is its own, never past_time). */
+export type PastTimeCode = "past_time" | "no_time_today";
+
+/**
+ * A refusal of a time today, thrown where a Studio save's refusal is (Edit before approve): the route answers it 422
+ * `{ error: code, why }`, as POST /api/workouts answers its own.
+ */
+export class PastTimeError extends Error {
+  constructor(
+    readonly code: PastTimeCode,
+    readonly why: string,
+  ) {
+    super(code);
+  }
+}
+
+/** The earliest time today at least LATER_LEAD_MIN after `at`, as "HH:MM"; null when none is left. */
+const earliestToday = (at: { minutes: number }): string | null => clockTime(Math.ceil(at.minutes + LATER_LEAD_MIN - 1e-9));
+
+/**
+ * A time today held to the lead (B-I1; the polish round, 1: a move adjust_plan proposes for today — its `toTime`, or the
+ * time it keeps — never lands at a past time): `time` at least LATER_LEAD_MIN after now. Null when it is, else the
+ * refusal: gone by (`past_time`), too soon (`time_too_soon`), or no time left today (`no_time_today`), and the earliest
+ * time that works when there is one.
+ */
+export function todayLeadRefusal(
+  time: string,
+  at: { minutes: number },
+): { error: "past_time" | "time_too_soon" | "no_time_today"; why: string; earliest: string | null } | null {
+  if (minutesFromLocalTime(time) >= at.minutes + LATER_LEAD_MIN) return null;
+  const earliest = earliestToday(at);
+  const nowWords = clockTime(Math.floor(at.minutes));
+  if (!earliest) return { error: "no_time_today", why: `${NO_TIME_LEFT} It is ${nowWords} where the athlete is.`, earliest: null };
+  return minutesFromLocalTime(time) < Math.floor(at.minutes)
+    ? { error: "past_time", why: `${pastTimeWhy(time)} It is ${nowWords} where the athlete is.`, earliest }
+    : { error: "time_too_soon", why: `${time} is less than ${LATER_LEAD_MIN} minutes from now (it is ${nowWords} where the athlete is).`, earliest };
+}
+
 /** Later today's rule for the main coach's new workout: null when its time works, else the refusal's parts. */
 export function laterTodayRefusal(
   date: string,
   time: string | undefined,
   at: { date: string; minutes: number },
-): { error: "needs_time" | "time_too_soon"; why: string; fix: string } | null {
-  const earliest = clockTime(Math.ceil(at.minutes + LATER_LEAD_MIN - 1e-9));
+): { error: "needs_time" | "time_too_soon" | "no_time_today"; why: string; fix: string } | null {
+  const earliest = earliestToday(at);
   const nowWords = clockTime(Math.floor(at.minutes));
-  const noneLeft = `No time is left today: it is ${nowWords} where the athlete is. Propose it for another day, or finish and say so.`;
+  const noneLeft = `It is ${nowWords} where the athlete is. Propose it for another day, or finish and say so.`;
   if (!time) {
-    if (!earliest) return { error: "needs_time", why: `Later today needs a time, and ${NO_TIME_LEFT.toLowerCase()}`, fix: noneLeft };
+    if (!earliest) return { error: "no_time_today", why: NO_TIME_LEFT, fix: noneLeft };
     return {
       error: "needs_time",
       why: `Later today needs a time, at least ${LATER_LEAD_MIN} minutes from now: ${earliest} or later where the athlete is (it is ${nowWords} there).`,
@@ -94,7 +133,7 @@ export function laterTodayRefusal(
     };
   }
   if (date !== at.date || minutesFromLocalTime(time) >= at.minutes + LATER_LEAD_MIN) return null;
-  if (!earliest) return { error: "time_too_soon", why: `${time} is less than ${LATER_LEAD_MIN} minutes from now.`, fix: noneLeft };
+  if (!earliest) return { error: "no_time_today", why: NO_TIME_LEFT, fix: noneLeft };
   return {
     error: "time_too_soon",
     why: `${time} is less than ${LATER_LEAD_MIN} minutes from now (it is ${nowWords} where the athlete is).`,
@@ -113,25 +152,25 @@ export interface NewTarget {
  * The time the approve gives a new workout of the coach's (see the module comment), at `now` for an athlete with
  * `prefs`: `{ time, pinned: true }` a time asked for or placed now — pinned, as a time asked for always is; `{ time,
  * pinned: false }` the athlete's window, where a Studio save places an untimed workout (its collision pass may still
- * move it); or `{ refused }` — a time already past, or none left today.
+ * move it); or `{ refused, code }` — a time already past (`past_time`), or none left today (`no_time_today`).
  */
 export function approveTimeOf(
   target: NewTarget,
   category: string,
   o: { now: Date; prefs: SchedulingPreferences },
-): { time: string; pinned: boolean } | { refused: string } {
+): { time: string; pinned: boolean } | { refused: string; code: PastTimeCode } {
   const at = clockIn(o.prefs.timezone || "UTC", o.now);
   if (target.time) {
     const why = pastTime(target.date, target.time, at);
-    return why ? { refused: why } : { time: target.time, pinned: true };
+    return why ? { refused: why, code: "past_time" } : { time: target.time, pinned: true };
   }
   const usual = windowTimeFor({ category, date: target.date }, o.prefs);
   if (target.date !== at.date) return { time: usual, pinned: false };
   if (target.atNow) {
     const time = slotAtOrAfter(at.minutes, NOW_ROUND_MIN);
-    return time ? { time, pinned: true } : { refused: NO_TIME_LEFT };
+    return time ? { time, pinned: true } : { refused: NO_TIME_LEFT, code: "no_time_today" };
   }
   if (minutesFromLocalTime(usual) >= at.minutes) return { time: usual, pinned: false };
   const time = slotAtOrAfter(at.minutes, SLOT_MIN);
-  return time ? { time, pinned: true } : { refused: NO_TIME_LEFT };
+  return time ? { time, pinned: true } : { refused: NO_TIME_LEFT, code: "no_time_today" };
 }

@@ -19,7 +19,7 @@ import { approveDesignOps, type DesignedOp } from "../src/services/design-approv
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { buildDesignContext } from "../src/services/design-context.js";
 import { designerStopLine, settleSet, type DesignerEnd } from "../src/services/design-orchestrate.js";
-import { DROPPED_LINE, NOTE_NOT_DONE, NOTE_UNREADABLE, pastDayLine, STOPPED_NOTES, unavailableWhy } from "../src/services/design-review.js";
+import { DROPPED_LINE, NOTE_NOT_DONE, NOTE_UNREADABLE, pastDayLine, reviewLine, STOPPED_NOTES, unavailableWhy } from "../src/services/design-review.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
 import { planSet } from "../src/services/design-tools/plan-set.js";
 import { isToolErr, type SetHooks, type ToolContext, type ToolOk } from "../src/services/design-tools/types.js";
@@ -166,6 +166,22 @@ describe("the loop's own lines, a stop's notes and a review's", () => {
     }
     expect(LINES.nothingProposed).toBe("Nothing was suggested.");
     expect(NOTE_UNREADABLE).toBe("The review could not be read; the app's own checks stand.");
+  });
+
+  it("a review's line: its mean of 5, and how many things to fix — no rubric ids (the polish round, 3)", () => {
+    const review = (score: number, mustFix: string[]) => ({
+      scores: Object.fromEntries(["intent", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "time_fit", "equipment_fit", "specificity", "honesty"].map((d) => [d, d === "sequencing" ? 2 : score])),
+      notes: {},
+      mustFix,
+      improvements: [],
+    });
+    expect(reviewLine(review(5, ["Order the moves."]))).toBe("Reviewed: 4.8 of 5 · one thing to fix");
+    expect(reviewLine(review(5, ["a", "b"]))).toBe("Reviewed: 4.8 of 5 · 2 things to fix");
+    expect(reviewLine(review(4, []))).toBe("Reviewed: 3.8 of 5");
+    for (const line of [reviewLine(review(3, ["a"])), reviewLine(review(4, []))]) {
+      expectPlain(line);
+      expect(line).not.toMatch(/sequencing|condition_safety|time fit|must-fix|avg/);
+    }
   });
 
   it("a day gone before it could be suggested names its day as the app does", () => {

@@ -370,6 +370,8 @@ export interface RunState {
   day?: string;
   /** A set's designer, once it has drafted, and its reviewers: the workout's title (B-I7, the trail's group heading). */
   title?: string;
+  /** A set's designer and its reviewers: the brief's key (the polish round, 2: two workouts on one day group apart). */
+  key?: string;
   /** A set's redo designer: the designer whose workout its replaces once reviewed (ToolContext.replaces). */
   replaces?: string;
 }
@@ -481,6 +483,7 @@ export function readRunState(text: string | null): RunState | null {
     ...(typeof s.replaces === "string" ? { replaces: s.replaces } : {}),
     ...(typeof s.day === "string" ? { day: s.day } : {}),
     ...(typeof s.title === "string" ? { title: s.title } : {}),
+    ...(typeof s.key === "string" ? { key: s.key } : {}),
     ...(s.estimate && typeof s.estimate === "object" ? { estimate: s.estimate } : {}),
     // (`final` is written once, at a designer's finish, and read in SQL: never read back here.)
   };
@@ -1424,12 +1427,13 @@ function askedQuestions(state: RunState, toolUseId: string): string[] {
 /**
  * A sub-run's line on the main trail: who wrote it (`by`) — and, for a set's designer or its reviewer (fix wave 3B,
  * B-I7; the contract with the run view, which groups a set's lines under their day), the workout's day (`forDay`,
- * "YYYY-MM-DD") and, once drafted, its title (`forTitle`). The main run's own lines carry none of these.
+ * "YYYY-MM-DD"), the brief's key (`forKey`: two workouts on one day group apart) and, once drafted, its title
+ * (`forTitle`). The main run's own lines carry none of these.
  */
 function withBy(e: NewEvent, by: { runId: string; role: ToolRole } | undefined, state: RunState | null): NewEvent {
   if (!by) return e;
   const payload = e.payload && typeof e.payload === "object" && !Array.isArray(e.payload) ? e.payload : e.payload === undefined ? {} : { value: e.payload };
-  const forDay = state?.day ? { forDay: state.day, ...(state.title ? { forTitle: state.title } : {}) } : {};
+  const forDay = state?.day ? { forDay: state.day, ...(state.title ? { forTitle: state.title } : {}), ...(state.key ? { forKey: state.key } : {}) } : {};
   return { ...e, payload: { ...(payload as Record<string, unknown>), by, ...forDay } };
 }
 
@@ -2517,7 +2521,7 @@ function reviewHooks(s: StepCtx): ReviewHooks {
         reviewOf: { proposalId: req.proposalId, designerRunId: run.id, toolUseId: req.toolUseId, round: req.round },
       });
       // A set's designer's reviewer: its lines carry the workout's day and the draft's title (B-I7).
-      if (state.day) Object.assign(reviewerState, { day: state.day, title: req.draft.doc.title });
+      if (state.day) Object.assign(reviewerState, { day: state.day, title: req.draft.doc.title, ...(state.key ? { key: state.key } : {}) });
       const inserted = (await s.db.all(sql`
         INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
         VALUES (${req.reviewRunId}, ${s.userId}, ${run.id}, 'reviewer', ${JSON.stringify(run.scope)}, ${root.request}, 'active',
@@ -2594,6 +2598,7 @@ function setHooks(s: StepCtx): SetHooks {
       }));
       for (const r of rows) {
         r.state.day = r.date;
+        r.state.key = r.key;
         if (r.replaces) r.state.replaces = r.replaces;
       }
       const values = rows.map(

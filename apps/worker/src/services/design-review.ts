@@ -110,15 +110,12 @@ export function meanScore(r: DesignReview): number {
 
 const fmt = (mean: number | null | undefined): string => (typeof mean === "number" ? mean.toFixed(1) : "—");
 
-/** One line for the run view: "Review — 3.8 avg · sequencing 2 · 1 must-fix". */
+/** One line for the run view, in plain words (the polish round, 3): "Reviewed: 4.9 of 5 · one thing to fix" — the mean,
+ * and how many must-fix items, never a rubric id (the scores, by their labels, are the card's, one tap down). */
 export function reviewLine(r: DesignReview): string {
-  const low = DIMENSION_IDS.map((d) => ({ d, s: r.scores[d] ?? 0 }))
-    .filter((x) => x.s < 4)
-    .sort((a, b) => a.s - b.s)
-    .slice(0, 2)
-    .map((x) => `${x.d.replace(/_/g, " ")} ${x.s}`);
-  const must = r.mustFix.length > 0 ? [`${r.mustFix.length} must-fix`] : [];
-  return [`Review — ${fmt(meanScore(r))} avg`, ...low, ...must].join(" · ");
+  const n = r.mustFix.length;
+  const must = n === 0 ? [] : [n === 1 ? "one thing to fix" : `${n} things to fix`];
+  return [`Reviewed: ${fmt(meanScore(r))} of 5`, ...must].join(" · ");
 }
 
 // ── submit_review's input ───────────────────────────────────────────────────────────────────────────────────────────

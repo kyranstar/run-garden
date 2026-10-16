@@ -44,6 +44,9 @@ export interface DocWorkoutLine {
    * moment of the approve for a "now" design, the next quarter hour once today's usual time has gone, else the
    * athlete's window. Null only when no time is left today for an untimed one. (What an approve wrote is `written`.) */
   time: string | null;
+  /** The approve would refuse this time now — gone by, or no time left today (the polish round, 4): the card asks for
+   * another rather than show it as if it stood. Only on an op still open. */
+  timePassed?: true;
   title: string;
   minutes: number;
   /** "Hips and back · 24 min". */
@@ -167,12 +170,13 @@ export interface LineClock {
 }
 
 /** The time the approve would use for `op` at `at` (see `DocWorkoutLine.time`): a revision's is its workout's. */
-function lineTime(op: DesignedOp, category: string, at: LineClock): string | null {
+function lineTime(op: DesignedOp, category: string, at: LineClock): { time: string | null; passed: boolean } {
   const known = at.placed?.get(opIdOf(op));
-  if (known) return known;
-  if (op.target.kind !== "new") return op.time ?? null;
+  if (known) return { time: known, passed: false };
+  if (op.target.kind !== "new") return { time: op.time ?? null, passed: false };
   const placed = approveTimeOf(op.target, category, at);
-  return "refused" in placed ? (op.target.time ?? null) : placed.time;
+  // The approve would refuse it (gone by, or no time left today): the line says so, never the old time as if it stood.
+  return "refused" in placed ? { time: op.target.time ?? null, passed: true } : { time: placed.time, passed: false };
 }
 
 /** Each op's line, in the proposal's order, its time read at `at`. */
@@ -181,12 +185,14 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
     const doc = op.doc;
     const derived = deriveDoc(doc, EXERCISES);
     const minutes = derived.estimatedMinutes;
+    const when = lineTime(op, derived.category, at);
     return {
       opId: opIdOf(op),
       kind: op.target.kind,
       ...(op.target.kind === "revise" ? { workoutId: op.target.workoutId } : {}),
       date: op.date,
-      time: lineTime(op, derived.category, at),
+      time: when.time,
+      ...(when.passed && (!op.outcome || op.outcome.status === "refused") ? { timePassed: true as const } : {}),
       title: doc.title,
       minutes,
       summary: summaryLine(doc.title, minutes),

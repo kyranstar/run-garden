@@ -53,7 +53,7 @@ import {
 } from "../services/design-approve.js";
 import { docWorkoutLines, manifestReads, planChangeLines } from "../services/design-manifest.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
-import { clockIn } from "../services/design-time.js";
+import { clockIn, PastTimeError } from "../services/design-time.js";
 import type { Db } from "../services/db.js";
 import { refusal } from "./workouts.js";
 
@@ -92,6 +92,8 @@ function failed(c: C, e: unknown): Response {
   if (e instanceof NotOpenError) return c.json({ error: "not_pending", status: e.status }, 409);
   if (e instanceof UnknownOpError) return c.json({ error: "unknown_op", opIds: e.opIds }, 400);
   if (e instanceof ProposalChangedError) return c.json({ error: "proposal_changed" }, 409);
+  // Edit before approve at a time today gone by (the polish round, 6): refused as a save is, in plain words.
+  if (e instanceof PastTimeError) return c.json({ error: e.code, why: e.why }, 422);
   // Edit before approve: the athlete's version refused as a Studio save is.
   return refusal(c, e);
 }

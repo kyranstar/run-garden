@@ -21,7 +21,9 @@
  *    move a race);
  *  - a session, or a move's day, past the run's reach (`beyond_horizon`: a set's plan read, design-context.ts
  *    `horizonDays`; now and later today, today plus seven days — a request may name another day), a move into the past
- *    (`past_date`), and a move or length that changes nothing (`no_change`);
+ *    (`past_date`) or to today at a time not at least 15 minutes ahead — its toTime, or the time it keeps
+ *    (`past_time`, `time_too_soon`, `no_time_today`; the polish round, 1) — and a move or length that changes nothing
+ *    (`no_change`);
  *  - an eleventh change (`too_many_changes`: a proposal holds at most MAX_CHANGES);
  *  - a session a workout of this proposal revises (`target_taken`: propose_workout refuses the other way round);
  *  - a proposal already with the athlete (`proposal_pending`) or closed, a restore under way.
@@ -47,6 +49,7 @@ import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatc
 import type { ConditionProfile } from "@rg/exercise-library";
 import { whyNotActionable } from "../coach-apply.js";
 import { horizonDays } from "../design-context.js";
+import { clockIn, todayLeadRefusal } from "../design-time.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, planAdjustId, type PlanAdjustOp, type PlanChange, type PlanRowSnapshot } from "../proposal-kinds.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
@@ -155,7 +158,7 @@ function lastDay(ctx: ToolContext, today: string): string {
 const ordinal = (n: number): string => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
 
 /** Why this change can't be made to this session, by the applier's and the thread coach's own rules; null when it can. */
-function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>, today: string, workoutId: string): ToolErr | null {
+function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>, today: string, workoutId: string, clock: { minutes: number }): ToolErr | null {
   if (!row || row.archived) {
     return refuse("not_found", `No planned session of the athlete's has id ${JSON.stringify(workoutId)}.`, "Use an id from read_plan.");
   }
@@ -189,6 +192,20 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
     if (c.toDate > last) return refuse("beyond_horizon", `${c.toDate} is past the plan this run reads (to ${last}).`, `Move it to a day up to ${last}.`);
     if (c.toDate === row.date && (c.toTime ?? row.time) === row.time) {
       return refuse("no_change", `That session is already on ${c.toDate}${row.time ? ` at ${row.time}` : ""}.`, "Leave it as it is, or choose another day or time.");
+    }
+    // Never at a past time (the polish round, 1): a move to today — at its toTime, or at the time it keeps, as the
+    // applier keeps it — lands at least 15 minutes after now in the athlete's zone.
+    if (c.toDate === today) {
+      const kept = c.toTime ?? row.time ?? "07:00";
+      const late = todayLeadRefusal(kept, clock);
+      if (late) {
+        const which = c.toTime ? "" : ` (with no toTime it keeps its own time, ${kept})`;
+        return refuse(
+          late.error,
+          `${late.why}${which}`,
+          late.earliest ? `Give change.toTime, HH:MM, ${late.earliest} or later — or move it to another day.` : "No time is left today: move it to another day, or leave it.",
+        );
+      }
     }
   }
   return null;
@@ -310,7 +327,7 @@ export const adjustPlan: DesignTool = {
       return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the change can be asked for again once the restore is done.");
     }
     const row = parsedJson(extra.row) as Row | null;
-    const refused = refusalOf(ctx, row, p.change, athlete.today, p.workoutId);
+    const refused = refusalOf(ctx, row, p.change, athlete.today, p.workoutId, clockIn(athlete.tz, ctx.now));
     if (refused) return refused;
     if (all.some((o) => isDocWorkoutOp(o) && (o as DocWorkoutOp).target.kind === "revise" && (o as DocWorkoutOp & { target: { workoutId: string } }).target.workoutId === p.workoutId)) {
       return refuse("target_taken", "A workout of this proposal already revises that session.", "Change the revision instead, or leave the session as it is.");

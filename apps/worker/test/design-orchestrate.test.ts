@@ -328,6 +328,8 @@ describe("a three-workout set, end to end", () => {
     const designers = await designersOf(mainId);
     const dayOfRun = new Map<string, string>([[designers[0]!.id, THU], [designers[1]!.id, MON]]);
     const titleOfDay = new Map<string, string>([[THU, "Thursday hips"], [MON, "Monday reset"]]);
+    // The brief's key too (the polish round, 2): two workouts on one day group apart.
+    const keyOfDay = new Map<string, string>([[THU, "thu"], [MON, "mon"]]);
     const sub = trail.filter((e) => payloadOf(e)?.by);
     expect(sub.length).toBeGreaterThan(6);
     for (const e of sub) {
@@ -335,6 +337,7 @@ describe("a three-workout set, end to end", () => {
       // A designer's own day; a reviewer's, its designer's (one of the set's two).
       if (p.by!.role === "designer") expect(p.forDay, e.summary).toBe(dayOfRun.get(p.by!.runId));
       else expect([THU, MON], e.summary).toContain(p.forDay);
+      expect((p as { forKey?: string }).forKey, e.summary).toBe(keyOfDay.get(p.forDay!));
     }
     // Each reviewer's lines, and its designer's from its draft on, carry the draft's title.
     for (const [runId, day] of dayOfRun) {
@@ -357,6 +360,7 @@ describe("a three-workout set, end to end", () => {
     const own = trail.filter((e) => !payloadOf(e)?.by);
     expect(own.length).toBeGreaterThan(2);
     for (const e of own) {
+      expect((payloadOf(e) as { forKey?: string } | null)?.forKey, e.summary).toBeUndefined();
       expect(payloadOf(e)?.forDay, e.summary).toBeUndefined();
       expect(payloadOf(e)?.forTitle, e.summary).toBeUndefined();
     }

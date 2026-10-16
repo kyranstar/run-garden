@@ -238,7 +238,7 @@ describe("a must-fix sends the draft back; the revision is reviewed again", () =
     ]);
     const trail = await events(runId);
     const reviews = trail.filter((e) => e.kind === "review");
-    expect(reviews.map((e) => e.summary)).toEqual([expect.stringMatching(/^Review — 3\.8 avg/), expect.stringMatching(/^Review — 4\.0 avg/)]);
+    expect(reviews.map((e) => e.summary)).toEqual([expect.stringMatching(/^Reviewed: 3\.8 of 5/), expect.stringMatching(/^Reviewed: 4\.0 of 5/)]);
     expect(reviews[0]!.payload).toMatchObject({ by: { runId: reviewers[0]!.id, role: "reviewer" } });
     expect(trail.filter((e) => e.kind === "draft" || e.kind === "revision").map((e) => e.kind)).toEqual(["draft", "revision"]);
     expect(trail.some((e) => e.summary === "Reviewing the draft.")).toBe(true);

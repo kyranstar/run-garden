@@ -33,7 +33,9 @@ import { designProposalId, proposeWorkout, type DocWorkoutTarget } from "../src/
 import { isToolErr, type OpReview, type RunScope, type ToolContext, type ToolErr, type ToolRole } from "../src/services/design-tools/types.js";
 import { NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
-import { makeTestDb } from "./helpers.js";
+import { makeTestDb, mountRoutes } from "./helpers.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { coachRoutes } from "../src/routes/coach.js";
 
 const { coachProposals, plannedWorkouts, scheduleOverrides } = schema;
 const ENV = {} as Env;
@@ -132,9 +134,10 @@ describe("later today: the main coach's workout needs a time at least 15 minutes
     expect(isToolErr(tomorrow.result)).toBe(false);
   });
 
-  it("no time left today: refused, and it says to plan another day", async () => {
+  it("no time left today: refused with its own code, and it says to plan another day", async () => {
     const { result } = await propose({ kind: "later_today" }, { kind: "new", date: TODAY }, la("23:50"));
-    expect((result as ToolErr).error).toBe("needs_time");
+    expect((result as ToolErr).error).toBe("no_time_today");
+    expect((result as ToolErr).why).toContain("There's no time left today.");
     expect((result as ToolErr).fix).toMatch(/another day|tomorrow/);
   });
 });
@@ -214,14 +217,29 @@ describe("approve: never a time already past", () => {
 
   it("a time the coach set that has passed since is refused in plain words, the op left open; no slot left today, the same", async () => {
     const { id, op } = await designed({ kind: "week" }, { kind: "new", date: TODAY, time: "09:45" }, la("09:20"));
-    expect((await lineAt(op, la("10:00"))).time).toBe("09:45");
+    // Still ahead, the line is plain; gone by, it says so (the polish round, 4) — never the old time as if it stood.
+    expect(await lineAt(op, la("09:30"))).not.toHaveProperty("timePassed");
+    expect(await lineAt(op, la("10:00"))).toMatchObject({ time: "09:45", timePassed: true });
     const late = await approveAt(id, la("10:00"));
     expect(late.applied).toEqual([]);
     expect(late.refused).toEqual([expect.objectContaining({ error: "past_time", why: "09:45 today has passed." })]);
     expect(late.status).toBe("pending");
     const untimed = await designed({ kind: "week" }, { kind: "new", date: TODAY }, la("09:20"));
+    expect(await lineAt(untimed.op, la("23:50"))).toMatchObject({ timePassed: true });
     const nearMidnight = await approveAt(untimed.id, la("23:50"));
-    expect(nearMidnight.refused).toEqual([expect.objectContaining({ error: "past_time", why: "There's no time left today." })]);
+    // No slot left before midnight has its own code (the polish round, 5).
+    expect(nearMidnight.refused).toEqual([expect.objectContaining({ error: "no_time_today", why: "There's no time left today." })]);
+  });
+
+  it("Edit before approve runs the same check: the edit's time, or the coach's when the edit leaves it — refused as a save is", async () => {
+    const { id, op } = await designed({ kind: "week" }, { kind: "new", date: TODAY, time: "11:00" }, la("09:20"));
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const editAt = (edit: Record<string, unknown>, now: Date) =>
+      approveDesignOps(db, userId, { ...p!, ops: p!.ops as DesignedOp[] }, { edit: { opId: op.by.runId, doc: op.doc as unknown as Record<string, unknown>, ...edit } }, { today: TODAY, now: now.toISOString(), prefs }, Number.POSITIVE_INFINITY);
+    await expect(editAt({ time: "08:00" }, la("09:32"))).rejects.toMatchObject({ code: "past_time", why: "08:00 today has passed." });
+    await expect(editAt({}, la("11:30"))).rejects.toMatchObject({ code: "past_time", why: "11:00 today has passed." });
+    // A later day, or a time still ahead, is approved as before.
+    expect((await editAt({ time: "10:30" }, la("09:32"))).applied).toHaveLength(1);
   });
 
   it("found again after a crash, a time the approve placed is no move of the athlete's", async () => {
@@ -367,6 +385,41 @@ describe("the card's time, every rule the approve's writes follow (design-placem
     const rows = new Map((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).map((w) => [w.id, w.effectiveTime]));
     return { said: lines.map((l) => l.time), written: answer.applied.map((a) => rows.get(a.workout.id)) };
   }
+
+  it("the approve route answers an edit at a time gone by as a save's refusal: 422, its code and plain words", async () => {
+    const { id, op } = await designed({ kind: "week" }, { kind: "new", date: TODAY, time: "11:00" }, la("09:20"));
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const app = mountRoutes(db, "/api/coach", coachRoutes);
+    const res = await app.request(
+      `/api/coach/proposals/${id}/approve`,
+      { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify({ edit: { opId: op.by.runId, doc: op.doc, time: "08:00" } }) },
+      { APP_URL: "https://app.test", FIXTURE_MODE: "0", COACH_DESIGNER: "1" } as Env,
+    );
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "past_time", why: "08:00 today has passed." });
+  });
+
+  it("a move to today never lands at a past time: the tool refuses it, teaching the fix, and so does the approve", async () => {
+    const tomorrow = await session({ date: free, time: "07:00" });
+    const main = await run("main", { kind: "now" });
+    const move = (toTime?: string) => ({ workoutId: tomorrow, change: { kind: "move", toDate: TODAY, ...(toTime ? { toTime } : {}) }, why: "Today has room." });
+    // No toTime: it keeps its own 07:00 — gone by at 09:32.
+    const kept = await adjustPlan.run(ctxOf(main, la("09:32")), move());
+    expect(kept).toMatchObject({ error: "past_time" });
+    expect((kept as ToolErr).why).toContain("07:00");
+    expect((kept as ToolErr).fix).toMatch(/toTime/);
+    expect((kept as ToolErr).fix).toContain("09:47");
+    // Less than 15 minutes ahead: too soon; 15 minutes on: it stands.
+    expect(await adjustPlan.run(ctxOf(main, la("09:32")), move("09:40"))).toMatchObject({ error: "time_too_soon" });
+    expect(isToolErr(await adjustPlan.run(ctxOf(main, la("09:32")), move("09:47")))).toBe(false);
+    // Approved once that time has gone by: past_time, the session left where it was.
+    const id = designProposalId(main.id);
+    await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, id));
+    const late = await approveAt(id, la("09:40"));
+    expect(late.changed).toEqual([]);
+    expect(late.refused).toEqual([expect.objectContaining({ error: "past_time" })]);
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, tomorrow)))[0]!).toMatchObject({ effectiveDate: free, effectiveTime: "07:00" });
+  });
 
   it("a revision whose length now collides: its line is where the day's pass puts it", async () => {
     // A short calm workout at 07:00 clears a run at 07:40; six times as long, it doesn't — and the run, the heavier

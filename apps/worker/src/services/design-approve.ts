@@ -118,7 +118,7 @@ import {
 } from "./doc-workouts.js";
 import { receiptLine } from "./design-manifest.js";
 import { approvalKey } from "./design-placement.js";
-import { approveTimeOf } from "./design-time.js";
+import { approveTimeOf, clockIn, PastTimeError, pastTime, todayLeadRefusal } from "./design-time.js";
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
 import { RestoreInProgressError } from "./programs.js";
 import { describeChange, isDesignedOp, isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp, type PlanChange } from "./proposal-kinds.js";
@@ -127,7 +127,7 @@ import { FROZEN_STATES } from "./workout-doc-store.js";
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Why the server refused an op today: the Studio's own error names. */
-export type RefusalCode = "past_date" | "past_time" | "stale_revision" | "not_editable" | "not_found" | "invalid_doc" | "run_unsupported" | "restore_in_progress" | "race";
+export type RefusalCode = "past_date" | "past_time" | "no_time_today" | "stale_revision" | "not_editable" | "not_found" | "invalid_doc" | "run_unsupported" | "restore_in_progress" | "race";
 
 /** Why a planned workout can't change (`not_editable`), as the Studio's own rules say it — and, for a change's length,
  * that a Studio workout's is its document's (`studio`). */
@@ -665,6 +665,8 @@ function planVerdict(
   op: DesignedPlanOp,
   row: RowState | undefined,
   today: string,
+  /** The athlete's clock now: a move to today is held to the lead (the polish round, 1). */
+  clock: { date: string; minutes: number },
 ): { made: PlanBefore; replayFrom: string | null } | { refusal: Omit<Refused, "opId"> } | null {
   const c = op.op;
   if (!row || row.archived) return { refusal: { error: "not_found", why: "It's no longer in the plan." } };
@@ -684,6 +686,12 @@ function planVerdict(
     return { refusal: { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } };
   }
   if (effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
+  // A move to today never lands at a past time (the polish round, 1): its time asked for, or the one it keeps (the
+  // applier's own rule, coach-apply.ts), at least the lead after now — else refused, the session left where it is.
+  if (c.kind === "move" && c.toDate === today) {
+    const late = todayLeadRefusal(c.toTime ?? (row.dto.time || "07:00"), clock);
+    if (late) return { refusal: { error: late.error === "no_time_today" ? "no_time_today" : "past_time", why: late.why } };
+  }
   return null;
 }
 
@@ -796,7 +804,7 @@ export async function approveDesignOps(
   let replayCounted = false;
   for (const [i, c] of changes.entries()) {
     const row = plan.rows.get(c.op.workoutId);
-    const verdict = planVerdict(c, row, ctx.today);
+    const verdict = planVerdict(c, row, ctx.today, clockIn(ctx.prefs.timezone, new Date(ctx.now)));
     if (verdict && "made" in verdict) {
       outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before: verdict.made });
       changed.push({ opId: c.id, change: c.op.kind, workoutId: c.op.workoutId, before: verdict.made });
@@ -982,8 +990,12 @@ async function applyOp(
       let time = asked;
       if (!mine) {
         const placed = approveTimeOf(target, deriveDoc(op.doc, EXERCISES).category, { now: new Date(ctx.now), prefs: ctx.prefs });
-        if ("refused" in placed) return { refusal: { error: "past_time", why: placed.refused }, error: new Error("past_time") };
+        if ("refused" in placed) return { refusal: { error: placed.code, why: placed.refused }, error: new PastTimeError(placed.code, placed.refused) };
         time = placed.pinned ? placed.time : null;
+      } else if (asked) {
+        // The athlete's version runs the same check (the polish round, 6): its time, or the coach's when it left it.
+        const gone = pastTime(date, asked, clockIn(ctx.prefs.timezone, new Date(ctx.now)));
+        if (gone) return { refusal: { error: "past_time", why: gone }, error: new PastTimeError("past_time", gone) };
       }
       const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
       return { applied: { workout: made.workout, warnings: made.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) } };
