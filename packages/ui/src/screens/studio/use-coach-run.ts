@@ -87,6 +87,11 @@ export class CoachRunLoop {
   private nextDueAt: number | null = null;
   /** A step came due while the page was hidden: take it when it is visible again. */
   private owed = false;
+  /**
+   * The trail must be read before the next step (an answer's line was written: B-I2). Until a read succeeds, no step —
+   * a read that fails is a failure like a step's, retried on the backoff; the line is never left behind the step's seqs.
+   */
+  private readOwed = false;
   private disposed = false;
   private unsubscribe: (() => void) | null = null;
   private listeners = new Set<(s: LoopSnapshot) => void>();
@@ -163,7 +168,8 @@ export class CoachRunLoop {
     this.clearStep();
     if (isSteppable(run.status)) {
       this.nextDueAt = null;
-      void this.read(true);
+      this.readOwed = true;
+      this.schedule(0);
     }
   }
 
@@ -226,6 +232,14 @@ export class CoachRunLoop {
     if (!this.deps.visible()) {
       this.owed = true;
       return;
+    }
+    // The trail first, when an answer wrote to it (the re-review): no step until a read succeeds.
+    if (this.readOwed) {
+      const ok = await this.read(true, false);
+      if (this.disposed) return;
+      if (!ok) return this.failed(new Error("read"));
+      this.readOwed = false;
+      if (!isSteppable(this.snap.status) || this.snap.lost || this.snap.gone) return;
     }
     // Another loop of this tab on this run still has a step out (the screen was left and opened again): wait for it — a
     // step in flight all the same, its lines read as they land (M3) — then read where it left the run.
@@ -310,19 +324,22 @@ export class CoachRunLoop {
    * then a run that can be stepped, with nothing scheduled and no step out, is stepped (M1): answered on another device,
    * resumed by a refresh.
    */
-  private async read(withStatus: boolean): Promise<void> {
-    if (this.disposed) return;
+  private async read(withStatus: boolean, stepAfter = withStatus): Promise<boolean> {
+    if (this.disposed) return false;
+    let ok = false;
     try {
       const res = await this.deps.read(this.runId, lastSeq(this.snap.events));
-      if (this.disposed) return;
+      if (this.disposed) return false;
       // A run that is over never comes back to life: a read that says otherwise is older than what the loop knows.
       const fresh = withStatus && !this.snap.inFlight && (isLive(this.snap.status) || !isLive(res.run.status));
       const status = fresh ? res.run.status : this.snap.status;
       this.set({ run: res.run, status, events: mergeEvents(this.snap.events, res.events) });
+      ok = true;
     } catch {
       // A read that fails changes nothing: the next one, or the next step, catches up.
     }
-    if (withStatus) this.stepIfIdle();
+    if (stepAfter) this.stepIfIdle();
+    return ok;
   }
 
   private startPoll(): void {

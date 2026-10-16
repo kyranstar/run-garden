@@ -328,8 +328,10 @@ describe("the plan's refusals, in plain words", () => {
     expect(refusalWords({ error: "not_editable", cause: "studio" })).toBe("Its length comes from the Studio: edit the workout there.");
     expect(refusalWords({ error: "not_editable", cause: "completed" })).toBe("It's done already.");
     expect(refusalWords({ error: "race" })).toBe("A race day stays as it is.");
-    // A time today that has gone by since (fix wave 3B, Part S's B-I1).
+    // A time today that has gone by since (fix wave 3B, Part S's B-I1); no slot left before midnight.
     expect(refusalWords({ error: "past_time" })).toBe("That time has passed.");
+    expect(refusalWords({ error: "no_time_today" })).toBe("There's no time left today.");
+    expect(refusedLine({ error: "no_time_today", why: "No time is left today after 22:30." })).toEqual({ lead: "There's no time left today.", detail: null });
     expect(refusalWords({ error: "something_new" })).toBe("The plan couldn't take it.");
   });
 

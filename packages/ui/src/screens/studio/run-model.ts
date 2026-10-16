@@ -112,6 +112,8 @@ export interface RunLine {
   forDay: string | null;
   /** That workout's title, once known (`payload.forTitle`). */
   forTitle: string | null;
+  /** The set's brief it belongs to (`payload.forKey`): two workouts on one day are two groups (the re-review). */
+  forKey: string | null;
   /** The athlete's own part of the trail — a question put to them, their answer, a skip, a logged check: never folded
    * into "earlier lines" (M10). */
   mine: boolean;
@@ -206,6 +208,7 @@ export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boo
       undo: undoHandleOf(e),
       forDay: isDay(p?.forDay) ? p.forDay : null,
       forTitle: typeof p?.forTitle === "string" && p.forTitle.trim() ? p.forTitle.trim() : null,
+      forKey: typeof p?.forKey === "string" && p.forKey.trim() ? p.forKey.trim() : null,
       mine: isMine(e),
     };
     lines.push(line);
@@ -226,6 +229,8 @@ export function dayHeading(day: string, title: string | null): string {
 }
 
 export interface DayGroup {
+  /** The group's key: the set's brief (`forKey`), else its day. */
+  key: string;
   day: string;
   title: string | null;
   heading: string;
@@ -234,22 +239,24 @@ export interface DayGroup {
 
 /**
  * The trail as it shows (fix wave 3B, B-I7): the main run's own lines, ungrouped, at the top; a set's sub-runs' lines
- * under their day's heading, the days in date order — a day's title is the newest any of its lines knows.
+ * under their workout's heading — grouped by the set's brief (`forKey`; the re-review: two workouts on one day are two
+ * groups), else by the day — in date order; a group's title is the newest any of its lines knows.
  */
 export function trailSections(lines: readonly RunLine[]): { main: RunLine[]; days: DayGroup[] } {
   const main: RunLine[] = [];
-  const byDay = new Map<string, DayGroup>();
+  const groups = new Map<string, DayGroup>();
   for (const line of lines) {
     if (!line.forDay) {
       main.push(line);
       continue;
     }
-    const group = byDay.get(line.forDay) ?? { day: line.forDay, title: null, heading: "", lines: [] };
+    const key = line.forKey ? `key:${line.forKey}` : `day:${line.forDay}`;
+    const group = groups.get(key) ?? { key, day: line.forDay, title: null, heading: "", lines: [] };
     group.lines.push(line);
     if (line.forTitle) group.title = line.forTitle;
-    byDay.set(line.forDay, group);
+    groups.set(key, group);
   }
-  const days = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)).map((g) => ({ ...g, heading: dayHeading(g.day, g.title) }));
+  const days = [...groups.values()].sort((a, b) => a.day.localeCompare(b.day)).map((g) => ({ ...g, heading: dayHeading(g.day, g.title) }));
   return { main, days };
 }
 
@@ -276,7 +283,7 @@ const QUIET_KEYS = new Set([
   "id", "opId", "workoutId", "baseRev", "rev", "reviewRunId", "round", "kind", "final", "proposal", "asOf",
   "memoryId", "replaced",
   // A set's grouping marks (fix wave 3B, B-I7): the trail's headings say them. A refusal: its "Why not" row says it.
-  "forDay", "forTitle", "rehearsal", "refusal",
+  "forDay", "forTitle", "forKey", "rehearsal", "refusal",
 ]);
 
 /** Keys a tool's input or receipt uses, in the athlete's words. */
@@ -684,6 +691,9 @@ export function refusalWords(r: { error: string; cause?: string }): string {
     case "past_time":
       // A time today that has gone by since the coach chose it (fix wave 3B, Part S's B-I1).
       return "That time has passed.";
+    case "no_time_today":
+      // No slot left before midnight (the re-review).
+      return "There's no time left today.";
     case "stale_revision":
       return "That workout changed after the coach read it.";
     case "not_found":
@@ -719,7 +729,7 @@ export function refusalWords(r: { error: string; cause?: string }): string {
 }
 
 /** Codes whose words say it all: the why (the server's words, about this op) adds to the others. */
-const SAID_BY_CODE = new Set(["past_date", "past_time", "stale_revision", "not_found", "run_unsupported", "restore_in_progress", "race"]);
+const SAID_BY_CODE = new Set(["past_date", "past_time", "no_time_today", "stale_revision", "not_found", "run_unsupported", "restore_in_progress", "race"]);
 
 /** How the server begins an `invalid_doc` why (Task 8): what follows is the rule the day now refuses. */
 const DAY_REFUSES = /^The day now refuses it:\s*/;

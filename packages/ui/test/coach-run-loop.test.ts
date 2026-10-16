@@ -227,23 +227,71 @@ describe("the step loop", () => {
     expect(h.calls.maxInFlight).toBe(1);
   });
 
-  it("a read that fails before the next step still steps: the answer's line comes with a later read", async () => {
+  it("the read before the next step fails: no step until a read succeeds — retried on the loop's backoff — and the answer's line is never lost (the re-review)", async () => {
     let server: CoachRunStepResult["status"] = "waiting_athlete";
-    let failRead = false;
+    const serverEvents: CoachRunEventDto[] = [ev(1), ev(2, "How long do you have?")];
+    let failReads = 0;
     const h = harness({
-      steps: [step("waiting_athlete", [], null), () => Promise.resolve((server = "finished", step("finished", [ev(2)], null)))],
-      read: () => {
-        if (failRead) throw new Error("offline");
-        return { run: runDto({ status: server }), events: [] };
+      steps: [
+        step("waiting_athlete", [ev(1), ev(2, "How long do you have?")], null),
+        () => {
+          serverEvents.push(ev(4, "Read today"));
+          return Promise.resolve((server = "finished", step("finished", [ev(4, "Read today")], null)));
+        },
+      ],
+      read: (afterSeq) => {
+        if (failReads > 0) {
+          failReads -= 1;
+          throw new Error("offline");
+        }
+        return { run: runDto({ status: server }), events: serverEvents.filter((e) => e.seq > afterSeq) };
       },
     });
     const loop = start(h);
     await h.clock.advance(1_000);
-    failRead = true;
+    serverEvents.push({ ...ev(3, "You answered: 20 min"), payload: { answers: ["20 min"] } });
     server = "active";
+    failReads = 2;
+    const readsBefore = h.calls.reads.length;
     loop.setRun(runDto({ status: "active" }));
     await h.clock.advance(10);
+    // The read failed: no step.
+    expect(h.calls.steps).toHaveLength(1);
+    // Tried again on the backoff (1 s, then 2 s), and only then the step.
+    await h.clock.advance(1_000);
+    expect(h.calls.steps).toHaveLength(1);
+    await h.clock.advance(2_000);
     expect(h.calls.steps).toHaveLength(2);
+    expect(h.calls.reads.length - readsBefore).toBeGreaterThanOrEqual(3);
+    expect(loop.snapshot.events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+    expect(loop.snapshot.lost).toBe(false);
+  });
+
+  it("a read before the step that keeps failing loses the connection, says so, and Retry reads before it steps", async () => {
+    let server: CoachRunStepResult["status"] = "waiting_athlete";
+    let failing = false;
+    let answered = false;
+    const h = harness({
+      steps: [step("waiting_athlete", [ev(1)], null), () => Promise.resolve((server = "finished", step("finished", [ev(3)], null)))],
+      read: (afterSeq) => {
+        if (failing) throw new Error("offline");
+        return { run: runDto({ status: server }), events: answered && afterSeq < 2 ? [{ ...ev(2, "You answered: tight"), payload: { answers: ["tight"] } }] : [] };
+      },
+    });
+    const loop = start(h);
+    await h.clock.advance(1_000);
+    failing = true;
+    answered = true;
+    server = "active";
+    loop.setRun(runDto({ status: "active" }));
+    await h.clock.advance(60_000);
+    expect(loop.snapshot.lost).toBe(true);
+    expect(h.calls.steps).toHaveLength(1);
+    failing = false;
+    loop.retry();
+    await h.clock.advance(10);
+    expect(h.calls.steps).toHaveLength(2);
+    expect(loop.snapshot.events.some((e) => e.summary === "You answered: tight")).toBe(true);
   });
 
   it("never steps before nextDue", async () => {

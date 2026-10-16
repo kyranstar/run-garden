@@ -5,11 +5,12 @@
  *   ASK THE COACH
  *   [ What would help today?                       ]
  *   [ Now ]  [ Later today ]  [ Plan ahead ▾ ]          ← Next 7 days · Next N workouts
- *   A week plan usually costs about $3–5.
  *
- *  - Settings → Coach (Task 10) decides the primary button — the athlete's default scope; for the next 7 days or the
- *    next workouts, Plan ahead, one tap that starts it, a ▾ beside it for the menu, its item marked (fix wave 3B, M10) —
- *    and N. Unreadable (a 404, offline): Now, and the next three.
+ *  - Settings → Coach (Task 10) decides the primary button — the athlete's default scope — and N. For the next 7 days
+ *    or the next workouts it is one tap named for what it starts ("Plan the next 7 days"), a ▾ beside it for the menu,
+ *    its item marked, and what such a plan usually costs right under it (fix wave 3B, M4, M10; the re-review). Any
+ *    other default: Plan ahead opens the menu, and no set's cost is said. Unreadable (a 404, offline): Now, and the
+ *    next three.
  *  - Opening the Studio finds the athlete's run (`GET /api/coach/runs/current`): a live one shows in place of the empty
  *    composer and goes on stepping; one that is over with a suggestion still open shows under the composer, its card
  *    with it. Rehearsals never come back.
@@ -64,8 +65,19 @@ export interface CoachArrival {
   request?: string;
 }
 
-/** What a set usually costs, said before the tap that starts one (fix wave 3B, M4). */
-export const SET_COST_LINE = "A week plan usually costs about $3–5.";
+/** A set as it is named on its one-tap button (the re-review): "Plan the next 7 days", "Plan the next 3 workouts". */
+export function setScopeWords(scope: CoachScopeKind, nextN: number): string | null {
+  return scope === "week" ? "the next 7 days" : scope === "next_n" ? `the next ${nextN} workouts` : null;
+}
+
+/**
+ * What the default set usually costs, beside the button that starts it in one tap (fix wave 3B, M4; the re-review):
+ * "A plan for the next 7 days usually costs about $3–5." None when the default is no set.
+ */
+export function setCostLine(scope: CoachScopeKind, nextN: number): string | null {
+  const words = setScopeWords(scope, nextN);
+  return words ? `A plan for ${words} usually costs about $3–5.` : null;
+}
 
 /** The run the area shows, with its trail when known (an `existing` answer comes without it: the loop reads it). */
 interface Shown {
@@ -284,6 +296,7 @@ export function Composer({
     if (focus) field.current?.focus();
   }, [focus]);
   const near = draft.length >= COUNTER_FROM;
+  const cost = setCostLine(defaultScope, nextN);
   return (
     <div className="coach-composer-box" role="group" aria-labelledby={headingId}>
       {/* Named as the Studio's sections are, in their eyebrow (fix wave 3B, B-I10). */}
@@ -319,7 +332,7 @@ export function Composer({
         </button>
         <ScopeMenu nextN={nextN} defaultScope={defaultScope} busy={busy} onPick={onStart} />
       </div>
-      <p className="coach-composer-cost">{SET_COST_LINE}</p>
+      {cost ? <p className="coach-composer-cost">{cost}</p> : null}
       {error ? (
         <p className="coach-composer-error" role="status">
           {error}
@@ -391,8 +404,9 @@ function ScopeMenu({
     <div className={`coach-scope${setDefault ? " coach-scope--split" : ""}`} ref={wrap}>
       {setDefault ? (
         <>
+          {/* Named for what one tap starts (the re-review). */}
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => onPick(setDefault)}>
-            Plan ahead
+            {`Plan ${setScopeWords(defaultScope, nextN)}`}
           </button>
           <button
             ref={button}

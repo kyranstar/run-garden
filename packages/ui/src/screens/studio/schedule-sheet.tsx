@@ -37,9 +37,23 @@ export interface ScheduleSheetProps {
   timeZone?: string | null;
   /** The day and time it opens on (a coach's draft: the day the coach proposed), when that day is still ahead. */
   initial?: { date: string; time: string | null };
+  /** Its confirm's words, and while busy (a coach's draft: "Approve my version" — the re-review). */
+  confirm?: { label: string; busy: string };
 }
 
-export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onCheck, onSchedule, onClose, timeZone = null, initial }: ScheduleSheetProps) {
+export function ScheduleSheet({
+  today,
+  later,
+  usual,
+  judgeFor,
+  checkLabel,
+  onCheck,
+  onSchedule,
+  onClose,
+  timeZone = null,
+  initial,
+  confirm = { label: "Schedule", busy: "Scheduling…" },
+}: ScheduleSheetProps) {
   const name = useId();
   const tomorrow = addDays(today, 1);
   const from = initial && initial.date >= today ? initial : null;
@@ -92,7 +106,7 @@ export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onChe
       footer={
         <div className="btn-row stu-sched-actions">
           <button type="button" className="btn btn-primary" disabled={disabled} onClick={() => void go()}>
-            {busy ? "Scheduling…" : "Schedule"}
+            {busy ? confirm.busy : confirm.label}
           </button>
         </div>
       }

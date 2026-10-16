@@ -212,7 +212,7 @@ function RunLines({
     <>
       <FoldedList lines={main} keep={live ? LINES_SHOWN : Infinity} render={item} tail={days.length === 0 ? now : null} />
       {days.map((d) => (
-        <section key={d.day} className="coach-day" aria-label={d.heading}>
+        <section key={d.key} className="coach-day" aria-label={d.heading}>
           <h3 className="coach-day-head">{d.heading}</h3>
           <FoldedList lines={d.lines} keep={live ? DAY_LINES_SHOWN : Infinity} render={item} tail={null} />
         </section>

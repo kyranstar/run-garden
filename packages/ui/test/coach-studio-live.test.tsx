@@ -228,7 +228,7 @@ describe("the composer", () => {
       "POST /api/coach/runs": (body: any) => json({ run: run({ scope: body.scope, status: "active" }), existing: false }),
     });
     mount({ loop: quietLoop(() => run({ status: "active" })) });
-    await until(() => primary().join() === "Plan ahead", "Plan ahead, the primary button");
+    await until(() => primary().join() === "Plan the next 5 workouts", "the default set, the primary button");
     // One tap starts the default (fix wave 3B, M10); the menu is the ▾ beside it.
     await click(document.querySelector(".coach-scope-more"), "the ▾");
     const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
@@ -246,7 +246,7 @@ describe("the composer", () => {
     host?.remove();
     serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": coachPrefs({ defaultScope: "week" }) });
     mount();
-    await until(() => primary().join() === "Plan ahead", "Plan ahead, the primary button");
+    await until(() => primary().join() === "Plan the next 7 days", "the default set, the primary button");
     await click(document.querySelector(".coach-scope-more"), "the ▾");
     expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days · your default", "Next 3 workouts"]);
   });
@@ -915,17 +915,16 @@ describe("fix wave 3B: the composer", () => {
     expect(document.querySelector(".coach-composer-box")!.getAttribute("aria-labelledby")).toBe(h.id);
   });
 
-  it("before the tap, what a week plan costs; Plan ahead's menu says Next 7 days, never 'This week' (M4, M8)", async () => {
+  it("Plan ahead's menu says Next 7 days, never 'This week' (M8)", async () => {
     serve({ "GET /api/coach/runs/current": { run: null } });
     mount();
     await until(() => !!field(), "the composer");
-    expect(document.querySelector(".coach-composer-cost")?.textContent).toBe("A week plan usually costs about $3–5.");
     await click(button("Plan ahead"), "Plan ahead");
     expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days", "Next 3 workouts"]);
     expect(text()).not.toContain("This week");
   });
 
-  it("a set as the default: Plan ahead is one tap — it starts that set at once; a small ▾ opens the menu (M10)", async () => {
+  it("a set as the default: one tap — the button names what it starts — and what it usually costs beside it; a small ▾ opens the menu (M4, M10, the re-review)", async () => {
     const calls = serve({
       "GET /api/coach/runs/current": { run: null },
       "GET /api/coach/preferences": coachPrefs({ defaultScope: "next_n", nextN: 5 }),
@@ -936,16 +935,17 @@ describe("fix wave 3B: the composer", () => {
     const more = document.querySelector<HTMLButtonElement>(".coach-scope-more")!;
     expect(more.getAttribute("aria-label")).toBe("More ways to plan ahead");
     expect(more.getAttribute("aria-haspopup")).toBe("menu");
-    expect([...document.querySelectorAll<HTMLButtonElement>(".coach-composer-actions .btn-primary")].map((b) => b.textContent?.trim())).toEqual(["Plan ahead"]);
+    expect([...document.querySelectorAll<HTMLButtonElement>(".coach-composer-actions .btn-primary")].map((b) => b.textContent?.trim())).toEqual(["Plan the next 5 workouts"]);
+    expect(document.querySelector(".coach-composer-cost")?.textContent).toBe("A plan for the next 5 workouts usually costs about $3–5.");
     await click(more, "the ▾");
     expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days", "Next 5 workouts · your default"]);
     await click(more, "the ▾ again");
-    await click(button("Plan ahead"), "Plan ahead");
+    await click(button("Plan the next 5 workouts"), "Plan the next 5 workouts");
     await until(() => posts(calls, "/api/coach/runs").length === 1, "the start");
     expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "next_n", n: 5 }, request: null });
   });
 
-  it("the next 7 days as the default: one tap starts them", async () => {
+  it("the next 7 days as the default: 'Plan the next 7 days', its cost beside it; one tap starts them", async () => {
     const calls = serve({
       "GET /api/coach/runs/current": { run: null },
       "GET /api/coach/preferences": coachPrefs({ defaultScope: "week" }),
@@ -953,18 +953,21 @@ describe("fix wave 3B: the composer", () => {
     });
     mount({ loop: quietLoop(() => run({ status: "active" })) });
     await until(() => !!document.querySelector(".coach-scope-more"), "the ▾");
-    await click(button("Plan ahead"), "Plan ahead");
+    expect(document.querySelector(".coach-composer-cost")?.textContent).toBe("A plan for the next 7 days usually costs about $3–5.");
+    await click(button("Plan the next 7 days"), "Plan the next 7 days");
     await until(() => posts(calls, "/api/coach/runs").length === 1, "the start");
     expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "week" }, request: null });
   });
 
-  it("not a set as the default: Plan ahead opens its menu, no ▾ beside it", async () => {
+  it("not a set as the default: Plan ahead opens its menu, no ▾ beside it, and no set's cost line", async () => {
     serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": coachPrefs({ defaultScope: "now" }) });
     mount();
     await until(() => !!field(), "the composer");
     await settle(20);
     expect(document.querySelector(".coach-scope-more")).toBeNull();
     expect(button("Plan ahead")!.getAttribute("aria-haspopup")).toBe("menu");
+    expect(document.querySelector(".coach-composer-cost")).toBeNull();
+    expect(text()).not.toContain("usually costs");
   });
 
   it("the existing run's notice says how to ask for something new (M10)", () => {

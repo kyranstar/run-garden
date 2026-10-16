@@ -198,6 +198,28 @@ describe("the memory list", () => {
     expect(text()).toContain("Kept fact");
   });
 
+  it("after Yes, the focus goes to the next item's first control — never dropped with the item it was on", async () => {
+    fakeWorker({ memory: [mem("a", { body: "First fact", learnedAt: "2026-10-03T09:00:00.000Z" }), mem("b", { body: "Second fact", learnedAt: "2026-10-02T09:00:00.000Z" })] });
+    mount(createElement(CoachMemorySection));
+    await until(() => text().includes("Second fact"), "the list");
+    // Newest first: "First fact", then "Second fact".
+    await click(inItem("First fact", "Delete"));
+    await click(inItem("First fact", "Yes"));
+    await until(() => !text().includes("First fact"), "the delete");
+    await until(() => document.activeElement === inItem("Second fact", "Pin"), "the focus on the next item's first control");
+  });
+
+  it("after Yes on the last item, the focus goes to the section's heading", async () => {
+    fakeWorker({ memory: [mem("a", { body: "Only fact" })] });
+    mount(createElement(CoachMemorySection));
+    await until(() => text().includes("Only fact"), "the list");
+    await click(inItem("Only fact", "Delete"));
+    await click(inItem("Only fact", "Yes"));
+    await until(() => !text().includes("Only fact"), "the delete");
+    await until(() => document.activeElement?.textContent === "Coach memory", "the focus on the section's heading");
+    expect(document.activeElement?.tagName).toMatch(/^H\d$/);
+  });
+
   it("the caption says, plainly, what the list is and that all of it can be changed", async () => {
     fakeWorker({ memory: [mem("a")] });
     mount(createElement(CoachMemorySection));

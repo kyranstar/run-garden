@@ -180,12 +180,34 @@ export function CoachMemorySection() {
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.coachMemoryDelete(id),
+    // A delete that didn't go through moves no focus later.
+    onError: () => setFocusAfter(null),
     onSettled: invalidate,
   });
   const rows = memory.data?.memory ?? [];
   const history = memory.data?.history ?? [];
+  // After Yes, the focus goes to the next item's first control — or, the last one gone, to the section's heading —
+  // once the list no longer holds the item deleted (the re-review): never dropped with the item it was on.
+  const section = useRef<HTMLDivElement>(null);
+  const [focusAfter, setFocusAfter] = useState<{ deleted: string; next: number | null } | null>(null);
+  useEffect(() => {
+    if (!focusAfter || rows.some((m) => m.id === focusAfter.deleted)) return;
+    const root = section.current;
+    // The item gone, the next one stands where it stood: found by its place in the list, never by an id in the page.
+    const next = focusAfter.next !== null ? (root?.querySelectorAll<HTMLElement>(".memory-item")[focusAfter.next] ?? null) : null;
+    const target = next?.querySelector<HTMLElement>("button, input") ?? null;
+    if (target) target.focus();
+    else {
+      const heading = root?.querySelector<HTMLElement>("h2, h3");
+      heading?.setAttribute("tabindex", "-1");
+      heading?.focus();
+    }
+    setFocusAfter(null);
+  }, [rows, focusAfter]);
+  /** The list in the order it shows: the groups', each pinned first, then newest. */
+  const order = MEMORY_GROUPS.flatMap(({ kind }) => groupItems(rows, kind).map((m) => m.id));
   return (
-    <div id="coach-memory">
+    <div id="coach-memory" ref={section}>
       <Card title="Coach memory">
         <p className="muted">{MEMORY_CAPTION}</p>
         {rows.length === 0 ? (
@@ -211,7 +233,12 @@ export function CoachMemorySection() {
                   setEditing(m.id);
                   setDraft(m.body);
                 }}
-                onDelete={() => remove.mutate(m.id)}
+                onDelete={() => {
+                  const at = order.indexOf(m.id);
+                  // The next item takes this one's place; none there (the last), the heading.
+                  setFocusAfter({ deleted: m.id, next: at >= 0 ? at : null });
+                  remove.mutate(m.id);
+                }}
                 onPin={(pinned) => patch.mutate({ id: m.id, patch: { pinned } })}
                 onConfirm={() => patch.mutate({ id: m.id, patch: { confirm: true } })}
               />

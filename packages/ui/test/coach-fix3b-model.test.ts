@@ -218,6 +218,26 @@ describe("a set's trail, by day (B-I7)", () => {
     expect(days.map((d) => d.day)).toEqual(["2026-10-16", "2026-10-19"]);
   });
 
+  it("two workouts on one day are two groups: by the brief's key (payload.forKey), each 'Sat 17 Oct · <title>'", () => {
+    const keyed = (runId: string, forKey: string, forTitle?: string) => ({ ...sub(runId, "2026-10-17", forTitle), forKey });
+    const lines = runLines([
+      ev(1, "tool_result", "Planned 2 workouts", { tool: "plan_set", ok: true }),
+      ev(2, "note", "Read your request and today's plan.", keyed("d-1", "legs")),
+      ev(3, "note", "Read your request and today's plan.", keyed("d-2", "mobility")),
+      ev(4, "draft", "Draft — “Single-leg strength”", keyed("d-1", "legs", "Single-leg strength")),
+      ev(5, "draft", "Draft — “Easy hips”", keyed("d-2", "mobility", "Easy hips")),
+      // No key (an older trail): its day is its group.
+      ev(6, "note", "Read today", sub("d-3", "2026-10-18", "Long walk")),
+    ]);
+    expect(lines.map((l) => l.forKey)).toEqual([null, "legs", "mobility", "legs", "mobility", null]);
+    const { days } = trailSections(lines);
+    expect(days.map((d) => [d.heading, d.lines.map((l) => l.key)])).toEqual([
+      ["Sat 17 Oct · Single-leg strength", [2, 4]],
+      ["Sat 17 Oct · Easy hips", [3, 5]],
+      ["Sun 18 Oct · Long walk", [6]],
+    ]);
+  });
+
   it("once over, the trail folds to one line", () => {
     expect(TRAIL_FOLD_LINE).toBe("How the coach made this");
   });

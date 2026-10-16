@@ -572,6 +572,28 @@ describe("fix wave 3B: the workout's line (M1, M2, M3, M7, M8, M10)", () => {
     expect(button("Approve")).not.toBeNull();
   });
 
+  it("a time the approve would refuse (timePassed): never shown as if it stood — 'That time has passed — pick another', and Edit", async () => {
+    serve({ reads: [pending([line("op-a", { time: "08:00", timePassed: true }), line("op-b", { date: "2026-10-16", time: "09:00" })])] });
+    mount();
+    await until(() => text().includes("That time has passed — pick another"), "the line");
+    const items = [...document.querySelectorAll<HTMLElement>("li.coach-pc-item")];
+    const passed = items.find((li) => li.textContent?.includes("Workout op-a"))!;
+    expect(passed.querySelector(".coach-pc-facts")!.textContent).toMatch(/^Thu · 24 min/);
+    expect(passed.textContent).not.toContain("8 AM");
+    expect([...passed.querySelectorAll("a")].find((a) => a.textContent === "Edit")?.getAttribute("href")).toBe("/studio/build/proposal/dp-1/op-a");
+    // A line whose time stands keeps it.
+    const other = items.find((li) => li.textContent?.includes("Workout op-b"))!;
+    expect(other.querySelector(".coach-pc-facts")!.textContent).toMatch(/^Fri 9 AM · /);
+    expect(other.textContent).not.toContain("That time has passed");
+  });
+
+  it("no time left today (no_time_today): said plainly, the line open", async () => {
+    serve({ reads: [pending([line("op-a", { outcome: { status: "refused", at: "", error: "no_time_today", why: "No time is left today." } })], [], "pending")] });
+    mount();
+    await until(() => text().includes("Not added: There's no time left today."), "the refusal");
+    expect(button("Approve")).not.toBeNull();
+  });
+
   it("once applied, the line's day and time are the plan's — where the approve put it — not the coach's proposal", async () => {
     serve({ reads: [pending([applied("op-a", { time: "08:00" }, { time: "10:30" })], [], "approved")] });
     mount();

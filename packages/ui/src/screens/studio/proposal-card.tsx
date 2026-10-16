@@ -47,6 +47,9 @@ export const LEFT_AS_PLANNED = "Left as planned";
 /** The athlete's edit of a coach's draft, wherever it shows (M8). */
 export const YOUR_VERSION = "(your version)";
 
+/** A line whose time the approve would refuse (the manifest's `timePassed`): Edit is beside it (the re-review). */
+export const TIME_PASSED_LINE = "That time has passed — pick another";
+
 /** A designed suggestion's read. */
 export const designProposalQuery = (id: string) => ["coach-design-proposal", id] as const;
 
@@ -431,8 +434,10 @@ function WorkoutItem({
   // Once applied, the plan's own figures: where the approve put it, and the athlete's version's minutes after an edit
   // (M3) — never the coach's proposal beside the line that says where it went.
   const minutes = applied && line.written ? line.written.minutes : line.minutes;
+  // A time the approve would refuse is never shown as if it stood (the re-review): the day alone, and a line saying so.
+  const timePassed = line.timePassed === true && !applied && isOpen(line.outcome);
   const facts = [
-    applied ? dayAndTime(applied.date, applied.time) : dayAndTime(line.date, line.time),
+    applied ? dayAndTime(applied.date, applied.time) : dayAndTime(line.date, timePassed ? null : line.time),
     `${minutes} min`,
     line.effort,
     line.place,
@@ -448,6 +453,7 @@ function WorkoutItem({
           {line.title}
         </button>
         <p className="coach-pc-facts">{facts.join(" · ")}</p>
+        {timePassed ? <p className="coach-pc-outcome coach-pc-time-passed">{TIME_PASSED_LINE}</p> : null}
         <OutcomeLine outcome={line.outcome} applied={applied} />
         {/* On the card, no tap (lead's QA, Q1): a tip from the review, and the day's costs — the two alike (M1, M7). */}
         {r && r.improvements.length > 0 ? (

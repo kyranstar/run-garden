@@ -227,7 +227,7 @@ describe("Edit before approve", () => {
     expect(sheet.querySelector<HTMLInputElement>('input[type="radio"][value="day"]')!.checked).toBe(true);
     expect(sheet.querySelector<HTMLInputElement>('input[aria-label="Day"]')!.value).toBe(TUESDAY);
     expect(sheet.querySelector<HTMLInputElement>('input[aria-label="Time (optional)"]')!.value).toBe("17:30");
-    await click(button("Schedule", sheet), "Schedule");
+    await click(button("Approve my version", sheet), "Approve my version");
     await until(() => text().includes("Scheduled for Tue Oct 13 at 5:30 PM."), "the line");
     const [approve] = approvals(calls);
     expect(approve!.body).toEqual({ edit: { opId: "run-a", doc: expect.objectContaining({ title: "My hips" }), date: TUESDAY, time: "17:30" } });
@@ -275,7 +275,7 @@ describe("Edit before approve", () => {
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     await retype(titleField()!, "My hips");
     await click(button("Approve my version…"), "Approve my version…");
-    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
     await until(() => text().includes("The coach's version was approved already."), "the line");
     expect(titleField()!.value).toBe("My hips");
     expect(document.querySelector<HTMLAnchorElement>('.stu-build-status a[href="/studio/build/workout/w-theirs"]')?.textContent).toBe("Open it");
@@ -289,7 +289,7 @@ describe("Edit before approve", () => {
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     await retype(titleField()!, "My hips");
     await click(button("Approve my version…"), "Approve my version…");
-    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
     await until(() => text().includes("The coach's version was declined already."), "the line");
     // Nothing lost, nowhere else.
     expect(titleField()!.value).toBe("My hips");
@@ -316,7 +316,7 @@ describe("Edit before approve", () => {
       mount("/studio/build/proposal/dp-1/run-a");
       await until(() => titleField()?.value === "Coach's hips", "the draft");
       await click(button(button_), button_);
-      if (button_ === "Approve my version…") await click(button("Schedule", dialog("Schedule")!), "Schedule");
+      if (button_ === "Approve my version…") await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
       await until(() => text().includes(words), words);
       expect(button("Schedule it as a new workout")).not.toBeNull();
       act(() => root?.unmount());
@@ -352,7 +352,7 @@ describe("Edit before approve", () => {
     mount("/studio/build/proposal/dp-1/run-a", undefined, createElement(Next));
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     await click(button("Approve my version…"), "Approve my version…");
-    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
     await until(() => !!button("Schedule it as a new workout"), "the offer");
     await click(button("Schedule it as a new workout"), "Schedule it as a new workout");
     await click(document.querySelector('[role="dialog"] button[aria-label="Close"]'), "Close");
@@ -360,7 +360,7 @@ describe("Edit before approve", () => {
     await click(button("Next draft"), "Next draft");
     await until(() => where === "/studio/build/proposal/dp-1/run-b" && titleField()?.value === "Coach's hips", "the next draft");
     await click(button("Approve my version…"), "Approve my version…");
-    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
     await until(() => approvals(calls).length === 2, "its approve");
     expect(approvals(calls)[1]!.body).toMatchObject({ edit: { opId: "run-b" } });
     expect(calls.some((c) => c.method === "POST" && c.path === "/api/workouts")).toBe(false);
@@ -372,7 +372,7 @@ describe("Edit before approve", () => {
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     await click(button("Approve my version…"), "Approve my version…");
-    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await click(button("Approve my version", dialog("Schedule")!), "Approve my version");
     await until(() => text().includes("That day has passed — pick today or a later day."), "the sheet's line");
     expect(button("Schedule it as a new workout")).toBeNull();
   });
@@ -415,7 +415,7 @@ describe("fix wave 3B: Edit before approve (B-I8) and the goal line (A-M2, LIVE)
     const time = sheet.querySelector<HTMLInputElement>('input[aria-label="Time today"]')!.value;
     expect(time).toMatch(/^\d{2}:\d{2}$/);
     expect(text()).not.toContain("Your usual time today has passed");
-    const go = button("Schedule", sheet)!;
+    const go = button("Approve my version", sheet)!;
     expect(go.disabled).toBe(false);
     await click(go, "Schedule");
     await until(() => approvals(calls).length === 1, "the approve");

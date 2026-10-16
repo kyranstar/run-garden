@@ -957,6 +957,8 @@ function Builder({ source }: { source: BuildSource }) {
           onClose={() => setScheduling(false)}
           timeZone={timeZone}
           initial={isDraft && row ? { date: row.date, time: row.time || null } : undefined}
+          // A coach's draft: the sheet's confirm approves the athlete's version (the re-review).
+          confirm={isDraft && !asNew ? { label: "Approve my version", busy: "Approving…" } : undefined}
         />
       ) : null}
       {naming ? <NameSheet initial={doc.title} onSave={saveAsTemplate} onClose={() => setNaming(false)} /> : null}

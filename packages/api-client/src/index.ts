@@ -685,6 +685,11 @@ export interface DesignLineDto {
   outcome: DesignOutcomeDto | null;
   /** Applied: what the plan holds — the athlete's version and day after an edit or a move. */
   written: (DesignWrittenDto & { summary: string; edited: boolean; moved: boolean }) | null;
+  /**
+   * The approve would refuse its time (`past_time`: today's, gone by since): `time` is no longer one that stands — the
+   * card says so and offers Edit, never the old time as if valid (fix wave 3B, the re-review).
+   */
+  timePassed?: true;
 }
 
 /** A designed workout's review, as the athlete reads it: each dimension by the rubric's label, in its order; what changed
