@@ -9,8 +9,15 @@
  *  - more briefs than the set holds (SET_MAX_WORKOUTS, or N), or a key used twice;
  *  - a second brief on a date without `sameDayWhy`, and a date that holds a programme session or a session already
  *    done, skipped or missed (read from the plan) without one — with it, the brief stands and its designer is told why.
+ *  - a `note` on a first plan (a note is a redo's).
  * Once more at most (SET_REDO_ROUNDS): a REDO names keys of the first plan only, each brief with a `note` on what to
- * change; its designer's reviewed workout replaces the first version.
+ * change; its designer is told where the first version went, may revise the same workout (propose_workout lets it:
+ * `ToolContext.replaces`), and its reviewed workout replaces the first version. A day held by a workout dropped or left
+ * out is free again.
+ *
+ * SIZED TO THE BUDGET: the plan's estimate (the designers', and on the first plan the main run's share) with the main
+ * coach's reserve (SET_MAIN_RESERVE_MICROS) must fit what the set's ceiling has left — read from the step's tree, no
+ * statement — or the call is refused (`over_budget`), naming how many workouts fit.
  *
  * The call answers `control: "set"` — the main run waits (`waiting_set`) until every designer is over, and the call's
  * result for the model is then the set's outcome (design-orchestrate.ts `settleSet`). Its data is the loop's: the
@@ -23,8 +30,18 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { plannedWorkouts } from "@rg/database";
-import { SET_MAX_WORKOUTS, SET_REDO_ROUNDS } from "../design-limits.js";
-import { briefText, dayWords, designerRunId, estimateSetCost, isSetScope, setLastDay, setLimit, type SetEstimate } from "../design-orchestrate.js";
+import { SET_MAIN_RESERVE_MICROS, SET_MAX_WORKOUTS, SET_REDO_ROUNDS } from "../design-limits.js";
+import {
+  briefText,
+  dayWords,
+  DEFAULT_WORKOUT_COST_MICROS,
+  designerRunId,
+  estimateSetCost,
+  isSetScope,
+  setLastDay,
+  setLimit,
+  type SetEstimate,
+} from "../design-orchestrate.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
 import { isErr, parseAct } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
@@ -51,6 +68,7 @@ const brief = z
   .strict();
 const input = z.object({ briefs: z.array(brief).min(1).max(SET_MAX_WORKOUTS) }).strict();
 
+const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 const str = (max: number, description: string) => ({ type: "string", minLength: 1, maxLength: max, description });
 
 const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }";
@@ -122,6 +140,12 @@ export const planSet: DesignTool = {
     const today = athlete.today;
     const last = setLastDay(ctx.run.scope, today);
     const plan = parsedArray(extra.plan) as Array<{ date?: unknown; origin?: unknown; state?: unknown }>;
+    const ops = redo ? (parsedArray(extra.ops) as DocWorkoutOp[]) : [];
+    /** The workout the first plan's designer of `key` put in the proposal: none once dropped or left out. */
+    const firstOpOf = (key: string): DocWorkoutOp | undefined => {
+      const runId = first?.designers.find((d) => d.key === key)?.runId;
+      return runId ? ops.find((o) => o.by?.runId === runId) : undefined;
+    };
 
     const problems: string[] = [];
     const seen = new Set<string>();
@@ -140,10 +164,15 @@ export const planSet: DesignTool = {
         if (!firstKeys.has(b.key)) problems.push(`"${b.key}": a redo names a workout of the first plan (${[...firstKeys.keys()].map((k) => `"${k}"`).join(", ")})`);
         else if (!b.note) problems.push(`"${b.key}": a redo needs its note — what to change from the first version, and why`);
       }
+    } else {
+      for (const b of p.briefs) {
+        if (b.note) problems.push(`"${b.key}": a note is a redo's (plan_set's second call) — say it in why or constraints`);
+      }
     }
     const scopeEnd = ctx.run.scope.kind === "week" ? "this week's last day" : "the set's last day";
-    // The dates already briefed: on a redo, the first plan's other workouts stand.
-    const held: SetBrief[] = redo ? (first?.briefs ?? []).filter((b) => !p.briefs.some((r) => r.key === b.key)) : [];
+    // The dates already briefed: on a redo, the first plan's other workouts that still stand (one dropped or left out
+    // holds no day).
+    const held: SetBrief[] = redo ? (first?.briefs ?? []).filter((b) => !p.briefs.some((r) => r.key === b.key) && firstOpOf(b.key)) : [];
     for (const b of p.briefs) {
       if (b.date < today) problems.push(`"${b.key}": ${b.date} is before today (${today})`);
       else if (b.date > last) problems.push(`"${b.key}": ${b.date} is after ${scopeEnd} (${last})`);
@@ -161,18 +190,38 @@ export const planSet: DesignTool = {
     }
 
     const estimate: SetEstimate | null = redo ? null : await estimateSetCost(ctx.db, ctx.userId, p.briefs.length, ctx.now);
-    const ops = redo ? (parsedArray(extra.ops) as DocWorkoutOp[]) : [];
+    // SIZED TO THE BUDGET: the designers' estimate (and, on the first plan, the main run's share of it) with the main
+    // coach's reserve must fit what the set's ceiling has left — from the step's tree, no statement.
+    const budget = ctx.set.budget();
+    const perWorkout = (estimate ?? budget.estimate)?.perWorkoutMicros ?? DEFAULT_WORKOUT_COST_MICROS;
+    const mainShare = estimate?.mainMicros ?? 0;
+    const left = budget.ceilingMicros - budget.spentMicros;
+    const needed = perWorkout * p.briefs.length + mainShare + SET_MAIN_RESERVE_MICROS;
+    if (needed > left) {
+      const fit = Math.max(0, Math.floor((left - mainShare - SET_MAIN_RESERVE_MICROS) / perWorkout));
+      const n = p.briefs.length;
+      return refuse(
+        "over_budget",
+        `${n} workout${n === 1 ? " is" : "s are"} estimated at ${usd(perWorkout * n + mainShare)}, and the coach keeps ${usd(SET_MAIN_RESERVE_MICROS)} to judge and finish the set: ${usd(Math.max(0, left))} of this design's ${usd(budget.ceilingMicros)} is left — enough for ${fit} workout${fit === 1 ? "" : "s"}.`,
+        fit > 0
+          ? `Plan ${fit} or fewer: the sessions the week needs most, around the runs.`
+          : "No workout fits what is left: call finish, and say the set couldn't be designed within its limit.",
+      );
+    }
     const firstOrder = [...firstKeys.keys()];
     const designers = p.briefs.map((b, i) => {
-      const firstRun = first?.designers.find((d) => d.key === b.key)?.runId;
-      const firstOp = firstRun ? ops.find((o) => o.by?.runId === firstRun) : undefined;
+      const firstOp = redo ? firstOpOf(b.key) : undefined;
+      const replaces = redo ? first?.designers.find((d) => d.key === b.key)?.runId : undefined;
       return {
         key: b.key,
         runId: designerRunId(ctx.run.id, toolUseId, i, b.key),
+        date: b.date,
+        ...(replaces ? { replaces } : {}),
         brief: briefText(b, {
           index: redo ? firstOrder.indexOf(b.key) : i,
           count: redo ? firstOrder.length : p.briefs.length,
-          first: firstOp ? { title: firstOp.doc.title, mustFix: firstOp.review?.mustFix ?? [] } : null,
+          redo,
+          first: firstOp ? { title: firstOp.doc.title, mustFix: firstOp.review?.mustFix ?? [], target: firstOp.target, date: firstOp.date } : null,
         }),
       };
     });

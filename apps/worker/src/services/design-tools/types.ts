@@ -1,4 +1,5 @@
 import type { WorkoutDoc } from "@rg/domain";
+import type { SetEstimate } from "../design-orchestrate.js";
 import type { DocIssue } from "@rg/workout";
 import type { Env } from "../../env.js";
 import type { Db } from "../db.js";
@@ -62,6 +63,12 @@ export interface ToolContext {
    * the start of a round's designer sub-runs. Absent outside the loop.
    */
   set?: SetHooks;
+  /**
+   * A set's redo designer (Task 7): the run whose workout this run's replaces once reviewed — its op stands until then,
+   * so it never makes this run's revision of the same workout "taken" (propose_workout). Set by the loop from the
+   * run's state.
+   */
+  replaces?: string;
 }
 
 export interface ToolOk {
@@ -123,6 +130,20 @@ export interface SetDesignerStart {
   runId: string;
   key: string;
   brief: string;
+  /** The brief's day: what a stop names when the designer never started. */
+  date: string;
+  /** A redo's: the designer whose workout this one replaces once reviewed. */
+  replaces?: string;
+}
+
+/** What a set may still spend, from the step's tree (no statement). */
+export interface SetBudget {
+  /** The main run's ceiling: the whole set's. */
+  ceilingMicros: number;
+  /** What the main run's tree has spent, this step's model call included. */
+  spentMicros: number;
+  /** The set's estimate from its first plan, when there is one. */
+  estimate: SetEstimate | null;
 }
 
 /** The loop's side of a set (coach-runs.ts). */
@@ -134,6 +155,11 @@ export interface SetHooks {
    * designer that already exists: a replay starts nothing twice).
    */
   start(designers: SetDesignerStart[]): Promise<string[]>;
+  /** What the set may still spend (no statement). */
+  budget(): SetBudget;
+  /** A line a tool put in the proposal for one workout of the set (drop_workout's): kept with its key in the main
+   * run's state, so a redo of the key that is designed takes it back. */
+  keyLine(key: string, line: string): void;
 }
 
 // ── Review (spec §5; ruling 4; design-review.ts) ────────────────────────────────────────────────────────────────────

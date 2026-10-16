@@ -14,7 +14,8 @@
  *    alternate stand in; a proposal never leans on that);
  *  - a document whose discipline is a run (`run_unsupported`: the app can't play one yet, so it could never be
  *    approved);
- *  - a revision of a workout another run of this design already revises (`target_taken`);
+ *  - a revision of a workout another run of this design already revises (`target_taken`) — but not the first version a
+ *    set's redo replaces (`ctx.replaces`);
  *  - a third draft from one run, once two rounds of review are done (`rounds_done`: ruling 4).
  * Everything else — the validator's warnings — goes with the draft as its costs.
  *
@@ -322,7 +323,9 @@ export const proposeWorkout: DesignTool = {
       }
       if (row.date < today) return refuse("past_date", `That workout is on ${row.date}, before today (${today}).`, "Propose a new workout for today or later instead.");
       const workoutId = p.target.workoutId;
-      if (ops.some((o) => o.by.runId !== ctx.run.id && o.target.kind === "revise" && o.target.workoutId === workoutId)) {
+      // A set's redo may revise what the first version it replaces revises: that op stands only until this one is
+      // reviewed (design-orchestrate.ts), so it never takes the workout from it.
+      if (ops.some((o) => o.by.runId !== ctx.run.id && o.by.runId !== ctx.replaces && o.target.kind === "revise" && o.target.workoutId === workoutId)) {
         return refuse("target_taken", "Another workout of this design already revises that workout.", "Propose a new workout, or revise a different one.");
       }
       date = row.date;

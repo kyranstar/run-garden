@@ -26,12 +26,13 @@ import { designContextBuilder } from "../src/services/design-context.js";
 import { DESIGNER_CEILING_MICROS, SET_MAX_WORKOUTS } from "../src/services/design-limits.js";
 import { PROMPT_TOOL_NAMES, REVIEW_DIMENSIONS, roleBlock, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { STOPPED_NOTES } from "../src/services/design-review.js";
+import { SUPERSEDED_REASON, supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { ACT_TOOLS, allTools, PENDING_TOOL_NAMES } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import { RESULT_BUDGET_BYTES } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult, ToolResultBlock } from "../src/services/llm-messages.js";
-import { day, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
+import { day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, untilDone } from "./helpers.js";
 
@@ -199,6 +200,16 @@ const designed = (title: string, date: string, o: { score?: number; effort?: str
   turn([finish(`${title}, as briefed.`)], { cost: o.cost }),
 ];
 
+/** The main run's context and its plan_set (the set sized to the default ceiling), then the set's ceiling lowered: the
+ * stops these tests reach come mid-set. */
+async function plannedThenCeiling(userId: string, mainId: string, deps: RunDeps, ceilingMicros: number) {
+  await runStep(db, env, mainId, userId, NOW, deps);
+  await runStep(db, env, mainId, userId, new Date(NOW.getTime() + 1000), deps);
+  const s = await stateOf(mainId);
+  s.settings.ceilingMicros = ceilingMicros;
+  await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
+}
+
 async function weekRun(userId: string, o: { rehearsal?: boolean; scope?: { kind: "week" } | { kind: "next_n"; n: number } } = {}) {
   return (await createRun(db, userId, { scope: o.scope ?? { kind: "week" }, request: "Plan my week around the runs.", rehearsal: o.rehearsal }, NOW)).run.id;
 }
@@ -341,9 +352,9 @@ describe("a three-workout set, end to end", () => {
     const a = await athlete();
     // Three earlier designers ($0.50, $0.70 with a $0.20 reviewer, $0.60) under a finished week's main run ($0.30).
     const at = new Date(NOW.getTime() - 3 * 86_400_000).toISOString();
-    const row = (id: string, o: { parentId?: string | null; role: string; cost: number; status?: string; scope?: Record<string, unknown> }) => ({
+    const row = (id: string, o: { parentId?: string | null; role: string; cost: number; status?: string; error?: string; scope?: Record<string, unknown> }) => ({
       id, userId: a.userId, parentId: o.parentId ?? null, role: o.role, scope: o.scope ?? { kind: "week" }, request: null,
-      status: o.status ?? "finished", state: null, steps: 1, costUsd: o.cost, createdAt: at, updatedAt: at,
+      status: o.status ?? "finished", error: o.error ?? null, state: null, steps: 1, costUsd: o.cost, createdAt: at, updatedAt: at,
     });
     await db.insert(schema.coachRuns).values([
       row(`old-main-${a.userId}`, { role: "main", cost: 0.3 }),
@@ -351,8 +362,14 @@ describe("a three-workout set, end to end", () => {
       row(`old-d2-${a.userId}`, { role: "designer", parentId: `old-main-${a.userId}`, cost: 0.5 }),
       row(`old-r2-${a.userId}`, { role: "reviewer", parentId: `old-d2-${a.userId}`, cost: 0.2 }),
       row(`old-d3-${a.userId}`, { role: "designer", parentId: `old-main-${a.userId}`, cost: 0.6 }),
+    ]);
+    await db.insert(schema.coachRuns).values([
       // A failed designer is not a measure of what a workout costs.
       row(`old-d4-${a.userId}`, { role: "designer", parentId: `old-main-${a.userId}`, cost: 3, status: "failed" }),
+      // One stopped at its own ceiling spent what a workout can cost: it counts.
+      row(`old-d7-${a.userId}`, { role: "designer", parentId: `old-main-${a.userId}`, cost: 1.5, status: "stopped_cap", error: "run_ceiling" }),
+      // One stopped at its step cap doesn't.
+      row(`old-d8-${a.userId}`, { role: "designer", parentId: `old-main-${a.userId}`, cost: 2, status: "stopped_cap", error: "step_cap" }),
       // A now run's main is not a set's.
       row(`old-now-${a.userId}`, { role: "main", cost: 2, scope: { kind: "now" } }),
     ]);
@@ -367,12 +384,13 @@ describe("a three-workout set, end to end", () => {
     await runStep(db, env, mainId, a.userId, NOW, deps);
     await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + 1000), deps);
     expect((await stateOf(mainId)).estimate).toEqual({
-      micros: 2 * 600_000 + 300_000,
+      // (0.50 + 0.70 + 0.60 + 1.50) / 4 designers.
+      micros: 2 * 825_000 + 300_000,
       workouts: 2,
-      perWorkoutMicros: 600_000,
+      perWorkoutMicros: 825_000,
       mainMicros: 300_000,
       basis: { designer: "measured", main: "measured" },
-      samples: { designers: 3, mains: 1 },
+      samples: { designers: 4, mains: 1 },
     });
   });
 });
@@ -686,10 +704,6 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
   it("the main run's ceiling, reached during the second designer: the first workout is proposed with the stop's note", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
-    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps); // the context
-    const s = await stateOf(mainId);
-    s.settings.ceilingMicros = 50_000;
-    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
     const c = { cost: 10_000 };
     const { deps, requests } = scripted([
       turn([planSet([brief("thu", THU), brief("sat", SAT), brief("mon", MON)])], c),
@@ -697,7 +711,8 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
       turn([propose("Saturday trunk", SAT)], c),
       // Saturday's reviewer would be the call past the limit.
     ]);
-    const steps = await drive(a.userId, mainId, deps, { from: 1 });
+    await plannedThenCeiling(a.userId, mainId, deps, 50_000);
+    const steps = await drive(a.userId, mainId, deps, { from: 2 });
     expect(steps.at(-1)!.status).toBe("stopped_cap");
     expect(requests).toHaveLength(5);
     expect((await runRow(mainId))).toMatchObject({ status: "stopped_cap", error: "run_ceiling" });
@@ -706,19 +721,17 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday hips"]);
     expect(p.flags[0]).toBe(STOPPED_NOTES.run_ceiling);
-    expect(p.flags.slice(1)).toEqual([expect.stringContaining("Saturday trunk")]);
+    // What was under review, and the day whose designer never started, are named.
+    expect(p.flags.slice(1)).toEqual([expect.stringContaining("Saturday trunk"), "Not designed before the stop: Monday 18 May."]);
     expect((await events(mainId)).at(-1)!.summary).toBe("Proposed what had been reviewed before the stop.");
   });
 
   it("a designer's limit and the set's both reached: the set's — the highest — stops the whole set at once", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
-    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
-    const s = await stateOf(mainId);
-    s.settings.ceilingMicros = 1_000_000;
-    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
     const { deps, requests } = scripted([t(planSet([brief("thu", THU), brief("mon", MON)])), turn([propose("Thursday hips", THU)], { cost: DESIGNER_CEILING_MICROS + 100_000 })]);
-    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+    await plannedThenCeiling(a.userId, mainId, deps, 1_000_000);
+    expect((await drive(a.userId, mainId, deps, { from: 2 })).at(-1)!.status).toBe("stopped_cap");
     expect(requests).toHaveLength(2);
     expect(await runRow(mainId)).toMatchObject({ status: "stopped_cap", error: "run_ceiling" });
     expect((await designersOf(mainId)).map((d) => d.status)).toEqual(["stopped_cap", "stopped_cap"]);
@@ -753,53 +766,44 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
   it("the set's ceiling reached while a revision is under review: the revision is dropped, the reviewed version proposed", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
-    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
-    const s = await stateOf(mainId);
-    s.settings.ceilingMicros = 1_000_000;
-    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
     const { deps } = scripted([
       t(planSet([brief("thu", THU), brief("mon", MON)])),
       turn([propose("Thursday hips", THU)], { cost: 100_000 }),
       turn([submit(verdict(3, { mustFix: ["Shorter rests."] }))], { cost: 100_000 }),
       turn([use("propose_workout", { doc: calmDoc({ title: "Thursday hips, shorter rests" }), target: { kind: "new", date: THU }, changeNote: "Shorter rests." })], { cost: 900_000 }),
     ]);
-    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+    await plannedThenCeiling(a.userId, mainId, deps, 1_000_000);
+    expect((await drive(a.userId, mainId, deps, { from: 2 })).at(-1)!.status).toBe("stopped_cap");
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
     expect(p.ops).toHaveLength(1);
     expect(p.ops[0]!.doc.title).toBe("Thursday hips");
     expect(p.ops[0]!.candidate).toBeUndefined();
     expect(p.ops[0]!.review!.changes).toEqual(["Shorter rests — not reviewed: the coach stopped before its review was in."]);
-    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling]);
+    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling, "Not designed before the stop: Monday 18 May."]);
   });
 
   it("a rehearsal set stopped at its ceiling stays a rehearsal: nothing is made pending", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId, { rehearsal: true });
-    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
-    const s = await stateOf(mainId);
-    s.settings.ceilingMicros = 50_000;
-    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
     const c = { cost: 10_000 };
     const { deps } = scripted([
       turn([planSet([brief("thu", THU), brief("sat", SAT), brief("mon", MON)])], c),
       ...designed("Thursday hips", THU, c),
       turn([propose("Saturday trunk", SAT)], c),
     ]);
-    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+    await plannedThenCeiling(a.userId, mainId, deps, 50_000);
+    expect((await drive(a.userId, mainId, deps, { from: 2 })).at(-1)!.status).toBe("stopped_cap");
     expect((await proposalOf(mainId))!.status).toBe("rehearsal");
   });
 
   it("stopped before anything was reviewed: nothing is proposed", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
-    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
-    const s = await stateOf(mainId);
-    s.settings.ceilingMicros = 15_000;
-    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
     const c = { cost: 10_000 };
     const { deps } = scripted([turn([planSet([brief("thu", THU), brief("mon", MON)])], c), turn([propose("Thursday hips", THU)], c)]);
-    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+    await plannedThenCeiling(a.userId, mainId, deps, 15_000);
+    expect((await drive(a.userId, mainId, deps, { from: 2 })).at(-1)!.status).toBe("stopped_cap");
     expect((await proposalOf(mainId))!.status).toBe("unreviewed");
   });
 });
@@ -820,6 +824,8 @@ describe("plan_set's checks", () => {
       run: { id, role: "main", scope, parentId: null, rehearsal: false },
       set: {
         rounds: () => [],
+        budget: () => ({ ceilingMicros: 6_000_000, spentMicros: 0, estimate: null }),
+        keyLine: () => undefined,
         start: async (designers: unknown[]) => {
           started.push(...designers);
           return [];
@@ -914,11 +920,23 @@ describe("plan_set's checks", () => {
     expect(refusal(await tool("plan_set").run(outside as ToolContext, { briefs: [brief("thu", THU)] })).error).toBe("unavailable");
   });
 
-  it("a redo onto a day another workout of the set holds needs its reason too", async () => {
+  it("a redo onto a day another workout of the set holds needs its reason too; a day whose workout was left out is free", async () => {
     const a = await athlete();
     const { ctx, started } = await ctxFor(a.userId, { kind: "week" });
     const first = { toolUseId: "first", redo: false, briefs: [brief("thu", THU), brief("sat", SAT)], designers: [{ key: "thu", runId: "d-thu" }, { key: "sat", runId: "d-sat" }] };
     const withFirst = { ...ctx, set: { ...ctx.set!, rounds: () => [first] } } as ToolContext;
+    // Thursday's workout is in the proposal; Saturday's was left out (or dropped): it holds no day.
+    const thuOp = {
+      kind: "doc_workout", target: { kind: "new", date: THU }, date: THU, doc: calmDoc({ title: "Thursday hips" }), review: { ...verdict(4), rounds: 1, changes: [] },
+      issues: [], derived: { minutes: 20 }, by: { runId: "d-thu", role: "designer" }, toolUseId: "u-thu", at: NOW.toISOString(),
+    };
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(ctx.run.id), userId: a.userId, planId: null, title: "Thursday hips", evidence: "", rationale: "", flags: [],
+      ops: [thuOp], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: THU,
+    });
+    const free = (await tool("plan_set").run(withFirst, { briefs: [brief("thu", SAT, { note: "Saturday instead." })] })) as ToolOk;
+    expect(isToolErr(free), JSON.stringify(free)).toBe(false);
+    started.length = 0;
     const moved = refusal(await tool("plan_set").run(withFirst, { briefs: [brief("sat", THU, { note: "Earlier in the week." })] }));
     expect(moved.why).toContain(`"sat": ${THU} already has another brief ("thu")`);
     const ok = (await tool("plan_set").run(withFirst, { briefs: [brief("sat", THU, { note: "Earlier.", sameDayWhy: "A short evening session." })] })) as ToolOk;
@@ -1044,9 +1062,10 @@ describe("read_set", () => {
       title: { untrusted: true, text: expect.stringContaining("Workout 1") },
       effort: "develop",
       minutes: 30,
-      review: { mean: 2, rounds: 3, mustFix: expect.any(Array) },
+      review: { mean: 2, rounds: 3, mustFixCount: 8 },
     });
     expect(data.workouts[0].review.mustFixCount).toBe(8);
+    expect(data.workouts[0].target).toEqual({ kind: "new", date: TODAY });
     expect(data.workouts[0].balance).toEqual({ isometricMin: 2, isotonicReps: 40 });
     // A review that couldn't be read has no mean: its note says so.
     expect(data.workouts[3].review).toMatchObject({ mean: null, note: "The review could not be read; the validator's view stands." });
@@ -1056,7 +1075,34 @@ describe("read_set", () => {
     expect(data.combined.balance).toEqual(expect.objectContaining({ isotonicReps: expect.any(Number) }));
     // What the set doesn't train is left out, never written as 0.
     expect(Object.values(data.combined.balance).every((v) => (v as number) > 0)).toBe(true);
-    expect(data.notes).toEqual(["Left out “Friday” (Friday 15 May): too much."]);
+    expect(data.notes).toEqual([{ untrusted: true, text: "Left out “Friday” (Friday 15 May): too much." }]);
+  });
+
+  it("when a set doesn't fit whole, the intent sentences give way first: the moves stay", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const moves = ["calfStretch", "soleusStretch", "calfRaise", "bentKneeCalfRaise", "eccentricHeelDrop", "singleLegCalfRaise", "tibialisRaise", "calfRelease", "ankleCircles", "bandPallofPress", "wallPallofHold", "sidePlank"];
+    const ops = [0, 1, 2, 3, 4, 5, 6].map((i) => {
+      const date = addDays(TODAY, i);
+      const doc = calmDoc({ title: `Day ${i}` });
+      return {
+        kind: "doc_workout", target: { kind: "new", date }, date,
+        doc: { ...doc, intent: { ...doc.intent, summary: "s".repeat(200) }, parts: [{ purpose: "main", format: "straight", items: moves.map((libraryId) => ({ kind: "exercise", libraryId, dose: { sets: 1, reps: 5 } })) }] },
+        review: { ...verdict(4), rounds: 1, changes: [] }, issues: [], derived: { minutes: 30 }, by: { runId: `d${i}`, role: "designer" }, toolUseId: `u${i}`, at: NOW.toISOString(),
+      };
+    });
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(mainId), userId: a.userId, planId: null, title: "7 workouts", evidence: "", rationale: "", flags: [], ops, status: "unreviewed",
+      createdAt: NOW.toISOString(), expiresAt: day(-6),
+    });
+    const rounds = [{ toolUseId: "p", redo: false, briefs: [], designers: ops.map((o, i) => ({ key: `k${i}`, runId: o.by.runId })) }];
+    const ctx = { db, env, userId: a.userId, now: NOW, run: { id: mainId, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false }, set: { rounds: () => rounds } } as unknown as ToolContext;
+    const r = (await allTools().find((x) => x.name === "read_set")!.run(ctx, {})) as ToolOk;
+    const { summary: _s, ...forModel } = r;
+    expect(new TextEncoder().encode(JSON.stringify(forModel)).length).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    const workouts = (r.data as { workouts: Array<{ intent?: unknown; moves?: string[] }> }).workouts;
+    expect(workouts.every((w) => w.intent === undefined)).toBe(true);
+    expect(workouts.every((w) => w.moves?.length === 12)).toBe(true);
   });
 
   it("a small set is shown whole: each workout's intent and its must-fix items in words", async () => {
@@ -1173,6 +1219,10 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
       return c;
     };
     await step("main context");
+    // Seven workouts are more than the default $6 holds with the coach's reserve: this run's ceiling is raised.
+    const raised = await stateOf(mainId);
+    raised.settings.ceilingMicros = 10_000_000;
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(raised) }).where(eq(schema.coachRuns.id, mainId));
     await step("plan_set: seven designers started");
     expect(await designersOf(mainId)).toHaveLength(7);
     seventh = (await designersOf(mainId))[6]!.id;
@@ -1210,7 +1260,8 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
       "plan_set again: one redo designer": 2 + MODEL + 2,
       // …and the ops written: the first version taken out, the redo's in its place.
       "the redo's result: main resumed": 2 + 4 + 2,
-      finish: 2 + MODEL + 1 + 1,
+      // finish's read, the proposal made pending, the older plans' days it covers superseded.
+      finish: 2 + MODEL + 1 + 1 + 1,
     });
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
@@ -1220,21 +1271,18 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
   it("the set stopped at its ceiling, proposing what was reviewed, stays small", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
-    await runStep(db, env, mainId, a.userId, NOW, scripted([]).deps);
-    const s = await stateOf(mainId);
-    s.settings.ceilingMicros = 50_000;
-    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
     const c = { cost: 10_000 };
     const calls = { n: 0 };
     const base = scripted([turn([planSet([brief("thu", THU), brief("sat", SAT), brief("mon", MON)])], c), ...designed("Thursday hips", THU, c), turn([propose("Saturday trunk", SAT)], c)]);
     const deps: RunDeps = { ...base.deps, callModel: async (e, r) => ((calls.n += 1), base.deps.callModel(e, r)) };
-    for (let i = 1; i <= 10; i++) await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+    await plannedThenCeiling(a.userId, mainId, deps, 50_000);
+    for (let i = 2; i <= 10; i++) await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
     // Saturday's reviewer context ran; its call is the one past the limit.
     const stopped = await counted(a.userId, mainId, deps, new Date(NOW.getTime() + 11_000), calls);
     expect(stopped.status).toBe("stopped_cap");
     // The tree, the claim, the run's write, the rest of the tree stopped, the proposal read, the proposal made pending,
-    // the events.
-    expect(stopped.cost).toBe(2 + 7);
+    // the older plans' days it covers superseded, the events.
+    expect(stopped.cost).toBe(2 + 8);
   });
 
   it("every new tool fits a model step's room, and the registry holds the prompt's names with none left pending", () => {
@@ -1260,5 +1308,322 @@ describe("the prompt says how a set works", () => {
     expect(roleBlock("main")).toMatch(/once more/);
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
     expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1500);
+  });
+});
+
+// ── Fix round 1 ─────────────────────────────────────────────────────────
+
+describe("fix round 1 — a redo goes where its first version went", () => {
+  it("a redo that revises the same workout as its first version gives one revision, never a new workout beside it", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const revise = (title: string) => use("propose_workout", { doc: calmDoc({ title }), target: { kind: "revise", workoutId: a.todayDocId, baseRev: 2 } });
+    const why = "The evening session, revised.";
+    const redo = planSet([brief("eve", TODAY, { sameDayWhy: why, note: "Gentler." })]);
+    const { deps, requests } = scripted([
+      t(planSet([brief("eve", TODAY, { sameDayWhy: why })])),
+      t(revise("Evening hips")),
+      t(submit(verdict(4))),
+      t(finish("Revised.")),
+      t(redo),
+      t(revise("Evening hips, gentler")),
+      t(submit(verdict(5))),
+      t(finish("Gentler.")),
+      t(finish("One session, revised.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    // The redo's designer was told where the first version went, and that this one is a redo.
+    const redoHeader = requests.filter((r) => roleOf(r) === "designer" && r.messages.length === 1).map(headerOf)[1]!;
+    expect(redoHeader).toContain(`a revision of the workout ${a.todayDocId} (from its revision 2)`);
+    expect(redoHeader).toContain("— a redo");
+    const target = { kind: "revise", workoutId: a.todayDocId, baseRev: 2 };
+    expect(sentData(requests, redo).set[0]).toMatchObject({ key: "eve", outcome: "replaced", target, reviewMean: 5 });
+    const p = (await proposalOf(mainId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops.map((o) => [o.target, o.doc.title])).toEqual([[target, "Evening hips, gentler"]]);
+  });
+});
+
+describe("fix round 1 — the set judged on its moves", () => {
+  it("read_set gives each workout's target and moves, and the moves repeated on consecutive days — one statement", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const FRI = day(-2);
+    const mk = (runId: string, date: string, doc: ReturnType<typeof calmDoc>) =>
+      ({
+        kind: "doc_workout", target: { kind: "new", date }, date, doc, review: { ...verdict(4), rounds: 1, changes: [] }, issues: [],
+        derived: { minutes: 20 }, by: { runId, role: "designer" }, toolUseId: `u-${runId}`, at: NOW.toISOString(),
+      }) as unknown as DocWorkoutOp;
+    const ops = [mk("d-mon", MON, calmDoc({ title: "Monday" })), mk("d-thu", THU, calmDoc({ title: "Thursday" })), mk("d-fri", FRI, studioDoc({ title: "Friday" }))];
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(mainId), userId: a.userId, planId: null, title: "3 workouts", evidence: "", rationale: "", flags: [], ops, status: "unreviewed",
+      createdAt: NOW.toISOString(), expiresAt: MON,
+    });
+    const rounds = [{ toolUseId: "p", redo: false, briefs: [], designers: ops.map((o) => ({ key: o.by.runId.slice(2), runId: o.by.runId })) }];
+    const ctx = { db, env, userId: a.userId, now: NOW, run: { id: mainId, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false }, set: { rounds: () => rounds } } as unknown as ToolContext;
+    statements = 0;
+    const data = ((await allTools().find((x) => x.name === "read_set")!.run(ctx, {})) as ToolOk).data as any;
+    expect(statements).toBe(1);
+    expect(data.workouts.map((w: { target: unknown; moves: string[] }) => [w.target, w.moves])).toEqual([
+      [{ kind: "new", date: THU }, ["bridge", "deadBug"]],
+      [{ kind: "new", date: FRI }, ["bridge", "gobletSquat", "bandRow", "couchStretch"]],
+      [{ kind: "new", date: MON }, ["bridge", "deadBug"]],
+    ]);
+    // Thursday and Friday share the bridge; Monday follows no workout of the set.
+    expect(data.movesRepeatedOnConsecutiveDays).toEqual([{ days: [THU, FRI], moves: ["bridge"] }]);
+  });
+});
+
+describe("fix round 1 — a set sized to its budget", () => {
+  it("too many workouts for what is left is refused, naming how many fit; the set's result says what is left", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const tooMany = planSet([brief("thu", THU), brief("sat", SAT), brief("mon", MON)]);
+    const one = planSet([brief("thu", THU)]);
+    const { deps, requests } = scripted([t(tooMany), t(one), ...designed("Thursday hips", THU), t(finish("One session."))]);
+    await runStep(db, env, mainId, a.userId, NOW, deps);
+    const s = await stateOf(mainId);
+    s.settings.ceilingMicros = 2_000_000;
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
+    expect((await drive(a.userId, mainId, deps, { from: 1 })).at(-1)!.status).toBe("finished");
+    const err = sentError(requests, tooMany);
+    expect(err.error).toBe("over_budget");
+    // Three at the default $0.70, the main run's $0.40, and the coach's $0.75 don't fit what is left of $2.00.
+    expect(err.why).toContain("3 workouts are estimated at $2.50, and the coach keeps $0.75 to judge and finish the set");
+    expect(err.why).toContain("of this design's $2.00 is left — enough for 1 workout.");
+    expect(err.fix).toBe("Plan 1 or fewer: the sessions the week needs most, around the runs.");
+    expect(await designersOf(mainId)).toHaveLength(1);
+    const budget = sentData(requests, one).budget;
+    expect(budget.ceilingUsd).toBe(2);
+    expect(budget.leftUsd).toBeGreaterThan(1.9);
+    expect(budget.leftUsd).toBeLessThan(2);
+  });
+
+  it("at the default $6, a workout every day of the week doesn't fit: six do", async () => {
+    const a = await athlete();
+    const id = (await createRun(db, a.userId, { scope: { kind: "week" }, request: null }, NOW)).run.id;
+    const ctx = {
+      db, env, userId: a.userId, now: NOW, toolUseId: `toolu_budget${++seq}`,
+      run: { id, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false },
+      set: { rounds: () => [], budget: () => ({ ceilingMicros: 6_000_000, spentMicros: 0, estimate: null }), keyLine: () => undefined, start: async () => [] },
+    } as unknown as ToolContext;
+    const why = "A short care session only.";
+    const seven = [0, 1, 2, 3, 4, 5, 6].map((i) => brief(`d${i}`, addDays(TODAY, i), [0, 2, 4, 6].includes(i) ? { sameDayWhy: why } : {}));
+    const err = (await allTools().find((x) => x.name === "plan_set")!.run(ctx, { briefs: seven })) as ToolErr;
+    expect(err.error).toBe("over_budget");
+    expect(err.why).toContain("enough for 6 workouts");
+    expect(isToolErr(await allTools().find((x) => x.name === "plan_set")!.run(ctx, { briefs: seven.slice(0, 6) }))).toBe(false);
+    expect(roleBlock("main")).toContain("Plan the sessions the week needs around the runs — usually 2–4, not one a day");
+  });
+});
+
+describe("fix round 1 — the set's lines and days after a drop or a left-out day", () => {
+  it("a redo of a dropped key that is designed takes back its \"Left out\" line", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const { deps } = scripted([
+      t(planSet([brief("thu", THU), brief("sat", SAT)])),
+      ...designed("Thursday hips", THU),
+      ...designed("Saturday trunk", SAT),
+      async () => t(use("drop_workout", { opId: (await designersOf(mainId))[1]!.id, reason: "Too close to the long run." })),
+      t(planSet([brief("sat", SAT, { note: "Shorter, after the long run." })])),
+      ...designed("Saturday, short", SAT),
+      t(finish("Two sessions.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    const p = (await proposalOf(mainId))!;
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday hips", "Saturday, short"]);
+    expect(p.flags).toEqual([]);
+  });
+
+  it("two workouts left out on one day: a redo of one takes back only its own line", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const refused = { ok: false, kind: "rejected", reason: "invalid_request", status: 400 } as MessagesResult;
+    const { deps } = scripted([
+      t(planSet([brief("am", THU), brief("pm", THU, { sameDayWhy: "Mobility after work." })])),
+      refused,
+      refused,
+      t(planSet([brief("am", THU, { note: "Try again." })])),
+      ...designed("Thursday morning", THU),
+      t(finish("One session.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    const p = (await proposalOf(mainId))!;
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday morning"]);
+    expect(p.flags).toEqual(["No workout for Thursday 14 May: the designer couldn't finish: the AI service refused the request."]);
+  });
+
+  it("the set's result reports the day a workout went to, and the brief's when the designer chose another", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const plan = planSet([brief("thu", THU)]);
+    const { deps, requests } = scripted([t(plan), ...designed("Saturday instead", SAT), t(finish("One session."))]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    expect(sentData(requests, plan).set[0]).toMatchObject({ key: "thu", outcome: "proposed", date: SAT, briefDate: THU });
+  });
+
+  it("a note on a first plan is refused (a note is a redo's); a first plan's brief is never called a redo", async () => {
+    const a = await athlete();
+    const id = (await createRun(db, a.userId, { scope: { kind: "week" }, request: null }, NOW)).run.id;
+    const started: Array<{ brief: string }> = [];
+    const ctx = {
+      db, env, userId: a.userId, now: NOW, toolUseId: `toolu_note${++seq}`,
+      run: { id, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false },
+      set: {
+        rounds: () => [],
+        budget: () => ({ ceilingMicros: 6_000_000, spentMicros: 0, estimate: null }),
+        keyLine: () => undefined,
+        start: async (d: Array<{ brief: string }>) => (started.push(...d), []),
+      },
+    } as unknown as ToolContext;
+    const plan = allTools().find((x) => x.name === "plan_set")!;
+    const err = (await plan.run(ctx, { briefs: [brief("thu", THU, { note: "Something." })] })) as ToolErr;
+    expect(err.error).toBe("invalid_briefs");
+    expect(err.why).toContain(`"thu": a note is a redo's`);
+    expect(isToolErr(await plan.run(ctx, { briefs: [brief("thu", THU)] }))).toBe(false);
+    expect(started[0]!.brief).not.toContain("a redo");
+  });
+});
+
+describe("fix round 1 — a failed designer's line, and a lost write", () => {
+  it("a failed designer's trail line says the workout stopped and the set goes on", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const { deps } = scripted([
+      t(planSet([brief("thu", THU), brief("mon", MON)])),
+      { ok: false, kind: "rejected", reason: "invalid_request", status: 400 } as MessagesResult,
+      ...designed("Monday reset", MON),
+      t(finish("One session.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    const trail = (await events(mainId)).map((e) => e.summary);
+    expect(trail).toContain("This workout's design stopped: the AI service refused the request — the rest of the set goes on.");
+    expect(trail).not.toContain("The AI service refused the request — the coach stopped here.");
+  });
+
+  it("the set's outcome whose write loses to another claims nothing taken out, and says so", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const plan = planSet([brief("thu", THU), brief("sat", SAT)]);
+    const { deps } = scripted([
+      t(plan),
+      ...designed("Thursday hips", THU),
+      t(propose("Saturday trunk", SAT)),
+      { ok: false, kind: "rejected", reason: "invalid_request", status: 400 } as MessagesResult, // Saturday's reviewer
+      t(finish("Leaving Saturday.")),
+    ]);
+    // Every designer over; the main run's next step is the set's outcome.
+    await untilDone(
+      async (i) => {
+        await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+        const ds = await designersOf(mainId);
+        return ds.length === 2 && ds.every((d) => !(LIVE_STATUSES as readonly string[]).includes(d.status));
+      },
+      { max: 30, what: "the designers" },
+    );
+    let raced = false;
+    const racing = new Proxy(db, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== "all" || typeof value !== "function") return value;
+        return async (q: { queryChunks?: Array<{ value?: unknown }> }) => {
+          const text = (q.queryChunks ?? []).map((c) => (Array.isArray(c?.value) ? c.value.join("") : "")).join("");
+          if (!raced && text.includes("flags =") && text.includes("COALESCE(")) {
+            raced = true;
+            const now = (await proposalOf(mainId))!.ops.map((o) => ({ ...o, at: "changed meanwhile" }));
+            await db.update(schema.coachProposals).set({ ops: now }).where(eq(schema.coachProposals.id, designProposalId(mainId)));
+          }
+          return (value as (q: unknown) => Promise<unknown>).call(target, q);
+        };
+      },
+    }) as Db;
+    await runStep(racing, env, mainId, a.userId, new Date(NOW.getTime() + 60_000), deps);
+    expect(raced).toBe(true);
+    const state = await stateOf(mainId);
+    const results = (state.messages.at(-1).content as ToolResultBlock[]).filter((b) => b.type === "tool_result");
+    const data = JSON.parse(textOf(results.find((b) => b.tool_use_id === idOf(plan)))).data;
+    expect(data.proposalNote).toContain("nothing was taken out of it");
+    expect(data.set[1]).toMatchObject({ key: "sat", outcome: "left_out", draftTakenOut: false });
+    expect(data.workoutsInProposal).toBe(2);
+    const p = (await proposalOf(mainId))!;
+    expect(p.ops).toHaveLength(2);
+    expect(p.flags).toEqual([]);
+    expect((await events(mainId)).at(-1)!.summary).toContain("The proposal changed meanwhile, so nothing was written to it.");
+  });
+});
+
+describe("fix round 1 — a newer plan supersedes an older one's days", () => {
+  it("a week set, then a now on one of its days: that day's workout of the set is superseded, the rest stands", async () => {
+    const a = await athlete();
+    const setId = await weekRun(a.userId);
+    const set = scripted([
+      t(planSet([brief("today", TODAY, { sameDayWhy: "A short evening session." }), brief("mon", MON)])),
+      ...designed("Evening hips", TODAY),
+      ...designed("Monday reset", MON),
+      t(finish("Two sessions.")),
+    ]);
+    expect((await drive(a.userId, setId, set.deps)).at(-1)!.status).toBe("finished");
+    expect((await proposalOf(setId))!.status).toBe("pending");
+    // Later, a now run for today.
+    const nowId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: "Something calm now." }, new Date(NOW.getTime() + 200_000))).run.id;
+    const now = scripted([t(propose("Calm now", TODAY)), t(submit(verdict(4))), t(finish("A calm half hour."))]);
+    expect((await drive(a.userId, nowId, now.deps, { from: 300 })).at(-1)!.status).toBe("finished");
+    expect((await proposalOf(nowId))!.status).toBe("pending");
+    const older = (await proposalOf(setId))!;
+    expect(older.status).toBe("pending");
+    const [today, mon] = older.ops as Array<DocWorkoutOp & { outcome?: unknown }>;
+    expect(today!.outcome).toEqual({ status: "superseded", at: expect.any(String), reason: SUPERSEDED_REASON, by: designProposalId(nowId) });
+    expect(mon!.outcome).toBeUndefined();
+    expect(SUPERSEDED_REASON).toBe("a newer plan covers this day");
+  });
+
+  it("one statement: an older plan's open ops on the new days only; all decided → statusOfOps, or superseded with none applied", async () => {
+    const a = await athlete();
+    const b = await athlete();
+    const T1 = new Date(NOW.getTime() - 3_600_000).toISOString();
+    const T2 = NOW.toISOString();
+    const T3 = new Date(NOW.getTime() + 3_600_000).toISOString();
+    const op = (date: string, outcome?: Record<string, unknown>) => ({ kind: "doc_workout", date, target: { kind: "new", date }, doc: calmDoc(), by: { runId: `r-${date}` }, ...(outcome ? { outcome } : {}) });
+    const applied = { status: "applied", at: T1, workoutId: "w1", rev: 1 };
+    const row = (id: string, userId: string, status: string, createdAt: string, ops: unknown[]) => ({
+      id, userId, planId: null, title: id, evidence: "", rationale: "", flags: [], ops, status, createdAt, expiresAt: MON,
+    });
+    const x = `x-${a.userId}`;
+    await db.insert(schema.coachProposals).values([
+      row(x, a.userId, "pending", T2, [op(TODAY)]),
+      row(`a-${a.userId}`, a.userId, "pending", T1, [op(TODAY), op(MON)]),
+      row(`b-${a.userId}`, a.userId, "partially_approved", T1, [op(TODAY), op(MON, applied)]),
+      row(`c-${a.userId}`, a.userId, "pending", T1, [op(TODAY, { status: "refused", at: T1, error: "past_date", why: "gone" })]),
+      row(`d-${a.userId}`, a.userId, "pending", T1, [op(TODAY, { status: "declined", at: T1 }), op(MON)]),
+      row(`e-${a.userId}`, a.userId, "declined", T1, [op(TODAY)]),
+      row(`f-${a.userId}`, a.userId, "pending", T3, [op(TODAY)]),
+    ]);
+    await db.insert(schema.coachProposals).values([
+      row(`g-${b.userId}`, b.userId, "pending", T1, [op(TODAY)]),
+      // A thread proposal's ops are not designed workouts.
+      row(`h-${a.userId}`, a.userId, "pending", T1, [{ kind: "move", date: TODAY }]),
+    ]);
+    const before = new Map((await db.select().from(schema.coachProposals)).map((p) => [p.id, p]));
+    statements = 0;
+    const at = new Date(NOW.getTime() + 60_000).toISOString();
+    expect(await supersedeOlderPlans(db, a.userId, x, at)).toBe(3);
+    expect(statements).toBe(1);
+    const after = new Map((await db.select().from(schema.coachProposals)).map((p) => [p.id, p]));
+    const sup = { status: "superseded", at, reason: SUPERSEDED_REASON, by: x };
+    const opsOf = (id: string) => after.get(id)!.ops as Array<{ date: string; outcome?: unknown }>;
+    // Its open op on today superseded; Monday's still the athlete's: still pending.
+    expect(opsOf(`a-${a.userId}`).map((o) => [o.date, o.outcome])).toEqual([[TODAY, sup], [MON, undefined]]);
+    expect(after.get(`a-${a.userId}`)!.status).toBe("pending");
+    // Every op decided, one applied: partially approved, as statusOfOps says.
+    expect(opsOf(`b-${a.userId}`).map((o) => o.outcome)).toEqual([sup, applied]);
+    expect(after.get(`b-${a.userId}`)!.status).toBe("partially_approved");
+    // A refused op is still open: superseded; none applied, all decided — the proposal is superseded, by the new one.
+    expect(opsOf(`c-${a.userId}`)[0]!.outcome).toEqual(sup);
+    expect(after.get(`c-${a.userId}`)).toMatchObject({ status: "superseded", supersededBy: x, resolvedAt: at });
+    // Untouched: a decided op on the day, a proposal already decided, a newer one, another athlete's, a thread proposal.
+    for (const id of [`d-${a.userId}`, `e-${a.userId}`, `f-${a.userId}`, `g-${b.userId}`, `h-${a.userId}`, x]) {
+      expect(after.get(id), id).toEqual(before.get(id));
+    }
   });
 });

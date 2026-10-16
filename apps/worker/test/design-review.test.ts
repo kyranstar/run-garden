@@ -784,8 +784,8 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
       "unreadable again: the reviewer ends": 2 + MODEL,
       // …the op with its note, and the line saying which version stands.
       "designer resumed, the validator's view written": 2 + 4 + 1 + 1,
-      // finish's read and the proposal made pending.
-      finish: 2 + MODEL + 1 + 1,
+      // finish's read, the proposal made pending, and the older plans' days it covers superseded (Task 7).
+      finish: 2 + MODEL + 1 + 1 + 1,
     });
     expect((await proposalOf(runId))!.status).toBe("pending");
   });
@@ -1254,8 +1254,9 @@ describe("fix round 1 — a main run that stops proposes what it has", () => {
     statements = 0;
     const out = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 6000), deps);
     expect(out.kind === "ok" && out.result.status).toBe("stopped_cap");
-    // The tree, the claim, the run's write, the proposal read and made pending, the lines.
-    expect(ROUTE_OVERHEAD + statements).toBe(2 + 6);
+    // The tree, the claim, the run's write, the proposal read and made pending, the older plans superseded (Task 7), the
+    // lines.
+    expect(ROUTE_OVERHEAD + statements).toBe(2 + 7);
   });
 });
 
@@ -1298,7 +1299,7 @@ describe("follow-up — the stops that propose, counted (N1, N2)", () => {
     return { cost: ROUTE_OVERHEAD + statements, status: out.result.status };
   }
 
-  it("a reviewer's money stop that promotes the held version: nine", async () => {
+  it("a reviewer's money stop that promotes the held version: ten", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId);
     const { deps } = scripted([
@@ -1312,12 +1313,12 @@ describe("follow-up — the stops that propose, counted (N1, N2)", () => {
     const stop = await countedStep(a.userId, runId, deps, 8);
     expect(stop.status).toBe("stopped_cap");
     // The tree, the claim, the reviewer's write, the rest of the tree stopped, the proposal read and made pending, the
-    // lines.
-    expect(stop.cost).toBe(2 + 7);
+    // older plans superseded (Task 7), the lines.
+    expect(stop.cost).toBe(2 + 8);
     expect((await proposalOf(runId))!.status).toBe("pending");
   });
 
-  it("the main run's weekly-cap stop that promotes: nine", async () => {
+  it("the main run's weekly-cap stop that promotes: ten", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId);
     const { deps } = scripted([t(propose("Calm hips")), t(submit(verdict(4)))]);
@@ -1328,8 +1329,9 @@ describe("follow-up — the stops that propose, counted (N1, N2)", () => {
     const stop = await countedStep(a.userId, runId, deps, 6);
     expect(stop.status).toBe("stopped_cap");
     expect(await runRow(runId)).toMatchObject({ error: "weekly_cap" });
-    // The tree, the claim, the weekly cap, the run's write, the proposal read and made pending, the lines.
-    expect(stop.cost).toBe(2 + 7);
+    // The tree, the claim, the weekly cap, the run's write, the proposal read and made pending, the older plans
+    // superseded (Task 7), the lines.
+    expect(stop.cost).toBe(2 + 8);
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");
     expect(p.flags).toEqual([STOPPED_NOTES.weekly_cap]);

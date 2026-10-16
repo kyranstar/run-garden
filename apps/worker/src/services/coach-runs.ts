@@ -8,7 +8,15 @@ import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder } from "./design-context.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, REVIEWER_MAX_CALLS, SET_REDO_ROUNDS } from "./design-limits.js";
-import { isSetScope, promoteSetWithWhatItHas, settleSet, type SetEstimate } from "./design-orchestrate.js";
+import {
+  designerStopLine,
+  isSetScope,
+  promoteSetWithWhatItHas,
+  settleSet,
+  supersedeOlderPlans,
+  type KeyLine,
+  type SetEstimate,
+} from "./design-orchestrate.js";
 import { llmBudgetStatus } from "./llm.js";
 import {
   callMessages,
@@ -192,7 +200,8 @@ export const ROUTE_OVERHEAD = 2;
 const BASE_FIXED = 4;
 /** Reserved: the spend added to a run whose claim a cancel took (the run write then matched nothing). */
 const LOST_CLAIM_WRITE = 1;
-/** Reserved: the proposal's one write when its run finishes — a rehearsal's marked, or a reviewed one made pending. */
+/** Reserved: the proposal's one write when its run finishes — a rehearsal's marked, or a reviewed one made pending. (The
+ * older plans' days a pending one covers, superseded after it, are on finish's own declared cost.) */
 const FINISH_WRITE = 1;
 export const PENDING_STEP_FIXED = BASE_FIXED + LOST_CLAIM_WRITE + FINISH_WRITE;
 /** + the weekly-cap read, the usage row before the call, the model call, the restore marker, the still-ours read,
@@ -300,11 +309,15 @@ export interface RunState {
   /** A reviewer's draft: what its submit_review stores the review against. */
   reviewOf?: ReviewOf;
   /** A main run's set: each plan_set call's briefs and the designers it started, in order (design-orchestrate.ts). */
-  set?: { rounds: SetRound[] };
+  set?: { rounds: SetRound[]; keyLines?: KeyLine[] };
   /** A main run's set: its estimated cost, from its first plan (the run view shows it). */
   estimate?: SetEstimate;
   /** A designer's finish line, its own words: its set's outcome quotes it when its workout is left out. */
   final?: string;
+  /** A set's designer: the day of its brief (what a stop names when it never started; read in SQL). */
+  day?: string;
+  /** A set's redo designer: the designer whose workout its replaces once reviewed (ToolContext.replaces). */
+  replaces?: string;
 }
 
 /** A fresh state for a run of `role` (sub-runs start here too: a history of their own, the parent's window). */
@@ -405,7 +418,11 @@ export function readRunState(text: string | null): RunState | null {
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
     ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
     ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
-    ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds) ? { set: { rounds: s.set.rounds } } : {}),
+    ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds)
+      ? { set: { rounds: s.set.rounds, ...(Array.isArray(s.set.keyLines) ? { keyLines: s.set.keyLines } : {}) } }
+      : {}),
+    ...(typeof s.day === "string" ? { day: s.day } : {}),
+    ...(typeof s.replaces === "string" ? { replaces: s.replaces } : {}),
     ...(s.estimate && typeof s.estimate === "object" ? { estimate: s.estimate } : {}),
     // (`final` is written once, at a designer's finish, and read in SQL: never read back here.)
   };
@@ -484,6 +501,8 @@ interface RunNode {
   settings?: RunSettings;
   /** From the state, read in SQL: a designer's finish line (`RunState.final`). */
   final?: string | null;
+  /** From the state, read in SQL: a set's designer's day (`RunState.day`). */
+  day?: string | null;
 }
 
 /** Everything but `state`, and from the state only its settings (read in SQL, so a large state is never read whole;
@@ -491,6 +510,7 @@ interface RunNode {
 const NODE_COLUMNS = {
   settings: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.settings') END`,
   final: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.final') END`,
+  day: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.day') END`,
   id: coachRuns.id,
   parentId: coachRuns.parentId,
   role: coachRuns.role,
@@ -525,6 +545,7 @@ function toNode(r: NodeRow): RunNode {
     finishedAt: (r.finishedAt as string | null) ?? null,
     settings: parseSettings((r.settings as string | null) ?? null),
     final: typeof r.final === "string" ? r.final : null,
+    day: typeof r.day === "string" ? r.day : null,
   };
 }
 
@@ -1315,10 +1336,18 @@ export async function runStep(
     }
     // The main run stopped at a spending limit or its own step cap: it proposes what it has (spec §2), under the
     // finish's own guard, with why it stopped — a set what was reviewed, the rest left out. Two statements, only on
-    // such a stop.
+    // such a stop, and a third when it proposes (the older plans' days it covers superseded).
     const stopped = root.status === "stopped_cap" ? STOPPED_NOTES[root.error ?? ""] : undefined;
-    const promote = isSetScope(root.scope) ? promoteSetWithWhatItHas : promoteWithWhatItHas;
-    if (stopped && (await promote(db, userId, designProposalId(root.id), stopped))) {
+    // A set names the days whose designers never started.
+    const notStarted = nodes.filter((n) => n.parentId === root.id && n.role === "designer" && n.steps === 0 && n.day).map((n) => n.day!);
+    const proposed = stopped
+      ? isSetScope(root.scope)
+        ? await promoteSetWithWhatItHas(db, userId, designProposalId(root.id), stopped, notStarted)
+        : await promoteWithWhatItHas(db, userId, designProposalId(root.id), stopped)
+      : false;
+    if (proposed) {
+      // The older plans' days this one covers are superseded (one statement).
+      await supersedeOlderPlans(db, userId, designProposalId(root.id), endAt);
       mainLines.push({ kind: "note", summary: "Proposed what had been reviewed before the stop.", payload: { proposalId: designProposalId(root.id) } });
     }
   } else {
@@ -1326,7 +1355,7 @@ export async function runStep(
     due.status = await addSpend(db, due.id, end.costMicros);
   }
   const by = due.id === root.id ? undefined : { runId: due.id, role: due.role };
-  const events = await appendEvents(db, userId, root.id, [...reviewerLines(due, end).map((e) => withBy(e, by)), ...mainLines], endAt);
+  const events = await appendEvents(db, userId, root.id, [...designerLines(due, end, reviewerLines(due, end)).map((e) => withBy(e, by)), ...mainLines], endAt);
   const next = dueRun(nodes, root);
   return okStep({
     status: treeStatus(root, nodes),
@@ -1361,6 +1390,17 @@ function reviewerLines(due: RunNode, end: StepEnd): NewEvent[] {
   const ownLine = ["run_ceiling", "weekly_cap", OUT_OF_CREDITS_REASON, "no_key", "review_unreadable", "step_cap"];
   if (due.role !== "reviewer" || isLive(end.status) || end.status === "finished" || ownLine.includes(end.error ?? "")) return end.events;
   return end.events.map((e) => (DESIGN_STOP_LINES.has(e.summary) ? { ...e, summary: `The reviewer couldn't finish: ${unavailableWhy(end.error)}.` } : e));
+}
+
+/**
+ * A set's designer that ends on its own — not by a limit of the whole tree (the weekly cap, no credits, no key), not at
+ * its own ceiling (which has its own line) — stops only its workout: any line saying the design stopped says so, and
+ * that the rest of the set goes on (design-orchestrate.ts `designerStopLine`).
+ */
+function designerLines(due: RunNode, end: StepEnd, events: NewEvent[]): NewEvent[] {
+  const ownLine = ["run_ceiling", "weekly_cap", OUT_OF_CREDITS_REASON, "no_key"];
+  if (due.role !== "designer" || isLive(end.status) || end.status === "finished" || ownLine.includes(end.error ?? "")) return events;
+  return events.map((e) => (DESIGN_STOP_LINES.has(e.summary) ? { ...e, summary: designerStopLine(end.error) } : e));
 }
 
 /**
@@ -1471,7 +1511,8 @@ async function resumeSet(s: StepCtx): Promise<StepEnd> {
     ? await settleSet(s.db, s.userId, {
         proposalId: designProposalId(s.root.id),
         round,
-        earlier: rounds.slice(0, rounds.indexOf(round)),
+        keyLines: state.set?.keyLines ?? [],
+        budget: { ceilingMicros: state.settings.ceilingMicros, spentMicros: treeSpendMicros(s.nodes, s.root) },
         designers: round.designers.map((d) => {
           const n = s.nodes.find((x) => x.id === d.runId);
           return {
@@ -1486,7 +1527,8 @@ async function resumeSet(s: StepCtx): Promise<StepEnd> {
         // The rounds before this one past the first are the redos used.
         redoLeft: Math.max(0, SET_REDO_ROUNDS - rounds.indexOf(round)),
       })
-    : { data: { set: [], note: "This set's plan can't be found: nothing was designed from it.", next: "Call finish." }, line: null };
+    : { data: { set: [], note: "This set's plan can't be found: nothing was designed from it.", next: "Call finish." }, line: null, keyLines: null };
+  if (settled.keyLines && state.set) state.set = { ...state.set, keyLines: settled.keyLines };
   const result: ToolOk = { data: settled.data, provenance: { source: "the set's designers and their independent reviews", asOf: s.now.toISOString() } };
   const at = Math.min(Math.max(0, state.awaitingAt ?? state.results.length), state.results.length);
   state.results.splice(at, 0, okResult(callId, result));
@@ -1779,6 +1821,7 @@ async function runTools(
     ...(s.deps.review && run.role !== "reviewer" ? { review: reviewHooks(s) } : {}),
     ...(state.reviewOf ? { reviewOf: state.reviewOf } : {}),
     ...(run.role === "main" ? { set: setHooks(s) } : {}),
+    ...(state.replaces ? { replaces: state.replaces } : {}),
   };
   const events: NewEvent[] = [];
   let executed = 0;
@@ -1843,7 +1886,7 @@ async function runTools(
       // The set's designers are at work: this run waits, and the call's result is the set's outcome, once every one of
       // them is over. The round is kept (a replay's replaces its own); the estimate from the first plan.
       const d = result.data as { round?: SetRound; estimate?: SetEstimate } | null;
-      if (d?.round) state.set = { rounds: [...(state.set?.rounds ?? []).filter((r) => r.toolUseId !== d.round!.toolUseId), d.round] };
+      if (d?.round) state.set = { ...state.set, rounds: [...(state.set?.rounds ?? []).filter((r) => r.toolUseId !== d.round!.toolUseId), d.round] };
       if (d?.estimate && !state.estimate) state.estimate = d.estimate;
       state.awaiting = call.id;
       state.awaitingKind = "set";
@@ -1877,7 +1920,7 @@ async function runTools(
       } else if (proposalId && run.role === "main") {
         // Review comes before the athlete sees anything (spec §5): a design's proposal becomes `pending` — the only
         // status the app lists — when its main run finishes, and only when every workout in it carries its review.
-        await s.db
+        const promoted = await s.db
           .update(coachProposals)
           .set({ status: "pending" })
           .where(
@@ -1891,7 +1934,10 @@ async function runTools(
               sql`not exists (select 1 from json_each(${coachProposals.ops}) o where json_extract(o.value, '$.candidate') is not null
                 or exists (select 1 from json_each(json_extract(o.value, '$.reviewLog')) r where json_extract(r.value, '$.status') = 'reviewing'))`,
             ),
-          );
+          )
+          .returning({ id: coachProposals.id });
+        // Made pending: the older plans' days it covers are superseded (one statement, on finish's declared cost).
+        if (promoted.length > 0) await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString());
       }
       const payload = { ...(proposalId ? { proposalId } : {}), ...(result.receipt ? { receipt: result.receipt } : {}) };
       // A reviewer's finish is its review.
@@ -2012,6 +2058,16 @@ function reviewHooks(s: StepCtx): ReviewHooks {
 function setHooks(s: StepCtx): SetHooks {
   return {
     rounds: () => s.state.set?.rounds ?? [],
+    budget: () => ({
+      ceilingMicros: s.state.settings.ceilingMicros,
+      // The tree's spend as read at the step's start, and this step's model call.
+      spentMicros: treeSpendMicros(s.nodes, s.root) + s.spent,
+      estimate: s.state.estimate ?? null,
+    }),
+    keyLine(key, line) {
+      const set = s.state.set ?? { rounds: [] };
+      s.state.set = { ...set, keyLines: [...(set.keyLines ?? []), { key, line }] };
+    },
     async start(designers) {
       if (designers.length === 0) return [];
       const { state, run } = s;
@@ -2028,6 +2084,10 @@ function setHooks(s: StepCtx): SetHooks {
           brief: d.brief,
         }),
       }));
+      for (const r of rows) {
+        r.state.day = r.date;
+        if (r.replaces) r.state.replaces = r.replaces;
+      }
       const values = rows.map(
         (r) => sql`(${r.runId}, ${s.userId}, ${run.id}, 'designer', ${JSON.stringify(run.scope)}, ${run.request}, 'active', ${JSON.stringify(r.state)}, 0, 0, ${at}, ${at})`,
       );

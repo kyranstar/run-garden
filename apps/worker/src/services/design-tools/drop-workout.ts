@@ -58,6 +58,8 @@ export const dropWorkout: DesignTool = {
     const next = ops.filter((o) => o !== op);
     const written = await writeSetOps(ctx.db, ctx.userId, proposalId, next, opsText, [...flags, line]);
     if (!written) return refuse("proposal_changed", "The proposal changed while the workout was being taken out.", "Call drop_workout again.");
+    // Kept with its key: a redo of the key that is designed takes the line back.
+    if (key) ctx.set?.keyLine(key, line);
     return {
       data: { dropped: true, opId: p.opId, key, date: op.date, title: untrusted(op.doc.title), workoutsLeft: next.length },
       summary: `Took out “${op.doc.title}” (${when}): ${p.reason}`,

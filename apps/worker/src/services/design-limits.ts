@@ -20,3 +20,7 @@ export const SET_REDO_ROUNDS = 1;
 /** What one workout's designer, its reviewers included, may spend (micros): what a single workout's run may
  * (coach-runs.ts `RUN_CEILING_MICROS.now`). The set's main run holds the whole set's ceiling above it. */
 export const DESIGNER_CEILING_MICROS = 1_500_000;
+
+/** What a set's plan keeps back for the main coach's own calls after its designers (judging the set, a redo's plan,
+ * the finish): plan_set refuses a plan whose estimate and this don't fit what the ceiling has left (micros). */
+export const SET_MAIN_RESERVE_MICROS = 750_000;

@@ -43,12 +43,12 @@
  * Every text a model wrote — the briefs, a designer's last line, a review's must-fix items, a workout's title — is data:
  * marked where it reaches another run, never followed.
  */
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { addDays, daysBetween, isoWeekday } from "@rg/domain";
 import type { Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
 import { SET_MAX_WORKOUTS } from "./design-limits.js";
-import { applyDrop, meanScore, proposalFields } from "./design-review.js";
+import { applyDrop, meanScore, proposalFields, reviewRunning } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
@@ -86,22 +86,37 @@ export function dayWords(date: string): string {
   return `${WEEKDAYS[isoWeekday(date) - 1]} ${d} ${MONTHS[(m ?? 1) - 1]}`;
 }
 
+/** Where a workout goes, in words: "a new workout on Saturday 16 May" / "a revision of the workout w1 (from its
+ * revision 2), on Saturday 16 May". */
+export function targetWords(target: DocWorkoutOp["target"], date: string): string {
+  return target.kind === "new"
+    ? `a new workout on ${dayWords(date)}${target.time ? ` at ${target.time}` : ""}`
+    : `a revision of the workout ${target.workoutId} (from its revision ${target.baseRev}), on ${dayWords(date)}`;
+}
+
 /**
  * A designer's brief as its opening context carries it (marked whole as the main coach's words: design-context.ts):
- * the brief's own fields, and on a redo what the first version was and what its review asked to change.
+ * the brief's own fields, and on a redo (`redo`) what the first version was — where it goes, and what its review asked
+ * to change — so the redo goes where the first version went unless the note says otherwise.
  */
-export function briefText(b: SetBrief, o: { index: number; count: number; first?: { title: string; mustFix: string[] } | null }): string {
+export function briefText(
+  b: SetBrief,
+  o: { index: number; count: number; redo: boolean; first?: { title: string; mustFix: string[]; target: DocWorkoutOp["target"]; date: string } | null },
+): string {
   return [
-    `Workout "${b.key}", ${o.index + 1} of ${o.count} in the set${b.note ? " — a redo" : ""}.`,
+    `Workout "${b.key}", ${o.index + 1} of ${o.count} in the set${o.redo ? " — a redo" : ""}.`,
     `Date: ${dayWords(b.date)} (${b.date})${b.time ? `, at ${b.time}` : ""}.`,
     `Purpose: ${b.purpose}`,
     `Emphasis: ${b.emphasis}`,
     `Constraints: ${b.constraints}`,
     `Why: ${b.why}`,
     ...(b.sameDayWhy ? [`A second session that day, because: ${b.sameDayWhy}`] : []),
-    ...(b.note ? [`What to change from the first version: ${b.note}`] : []),
+    ...(o.redo && b.note ? [`What to change from the first version: ${b.note}`] : []),
     ...(o.first
-      ? [`The first version was "${o.first.title}"${o.first.mustFix.length > 0 ? `; its review's must-fix items: ${o.first.mustFix.join("; ")}` : ""}.`]
+      ? [
+          `The first version was "${o.first.title}", ${targetWords(o.first.target, o.first.date)}${o.first.mustFix.length > 0 ? `; its review's must-fix items: ${o.first.mustFix.join("; ")}` : ""}.`,
+          "Propose yours for the same place unless the note says otherwise: once reviewed it replaces the first version.",
+        ]
       : []),
   ].join("\n");
 }
@@ -191,6 +206,7 @@ const noWorkoutFor = (date: string): string => `No workout for ${dayWords(date)}
 const NOT_REVIEWED = "not reviewed: its designer stopped before the review was in.";
 
 const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
+const dollars = (micros: number): number => Math.round(micros / 10_000) / 100;
 
 /** Why a designer gave no reviewed workout, in plain words. */
 function leftOutWhy(d: DesignerEnd | undefined, op: DocWorkoutOp | undefined): string {
@@ -247,11 +263,27 @@ function designerWhy(error: string | null): string {
   }
 }
 
+/**
+ * A set's designer that ended on its own — not a limit of the whole set, not its own ceiling (which has its own line):
+ * its trail line says the workout stopped and the set goes on (the loop's own line says the coach stopped).
+ */
+export function designerStopLine(error: string | null): string {
+  switch (error) {
+    case "step_cap":
+      return "This workout's design reached its step limit — the rest of the set goes on.";
+    case "state_cap":
+      return "This workout's design grew too long to continue — the rest of the set goes on.";
+    default:
+      return `This workout's design stopped: ${designerWhy(error)} — the rest of the set goes on.`;
+  }
+}
+
 /** A proposed workout as plan_set's result gives it. */
 function proposedEntry(op: DocWorkoutOp): Record<string, unknown> {
   const r = op.review;
   return {
     opId: opIdOf(op),
+    target: op.target,
     title: untrusted(op.doc.title),
     minutes: op.derived?.minutes ?? null,
     balance: balanceInUnits(op.derived?.balance as Record<string, unknown> | undefined),
@@ -262,30 +294,53 @@ function proposedEntry(op: DocWorkoutOp): Record<string, unknown> {
   };
 }
 
+/** A workout's day as plan_set's result gives it: where it went, and the brief's day when the designer chose another. */
+const dayOf = (date: string, brief: SetBrief): Record<string, string> => ({ date, ...(date !== brief.date ? { briefDate: brief.date } : {}) });
+
 const NEXT_WITH_REDO =
-  "Judge the set as a whole: read_set shows each workout with its review, the set's combined balance and hard days in a row. Take one out with drop_workout (a plain reason for the athlete), or call plan_set once more with briefs for the keys to redo, each with a note. Then call finish with one plain line on how the set fits together.";
+  "Judge the set as a whole: read_set shows each workout with its moves and review, moves repeated on consecutive days, the set's combined balance and hard days in a row. Take one out with drop_workout (a plain reason for the athlete), or call plan_set once more with briefs for the keys to redo, each with a note. Then call finish with one plain line on how the set fits together.";
 const NEXT_NO_REDO =
   "Judge the set as a whole (read_set). Take one out with drop_workout if it must go — no rounds of redo are left. Then call finish with one plain line on how the set fits together.";
+
+/** A line of the proposal's about one workout of the set, by its brief's key: a day left out, a workout taken out. */
+export interface KeyLine {
+  key: string;
+  line: string;
+}
 
 /**
  * The set's outcome once every designer of `round` is over (the main run's own step; ≤ 2 statements: the proposal, and
  * the ops and lines written when anything changed). Each brief's workout is proposed — its draft still under review
  * dropped, the reviewed version kept — or left out with its reason: an unreviewed draft is taken out, and the
- * proposal's lines say why that day has no workout. A redo's reviewed workout replaces the first version; a redo that
- * couldn't be designed keeps it; a redo of a day left out takes back the line that said so. Answers plan_set's result
- * for the model and the trail's line.
+ * proposal's lines say why that day has no workout. A redo's reviewed workout replaces the first version (a redo that
+ * couldn't be designed keeps it), and takes back what the proposal said about its key — never another key's line.
+ * When the write loses to another (the proposal closed or changed), nothing is claimed taken out. Answers plan_set's
+ * result for the model (with the budget left), the trail's line, and the key lines as they now stand.
  */
 export async function settleSet(
   db: Db,
   userId: string,
-  o: { proposalId: string; round: SetRound; earlier?: SetRound[]; designers: DesignerEnd[]; redoLeft: number },
-): Promise<{ data: Record<string, unknown>; line: string }> {
+  o: {
+    proposalId: string;
+    round: SetRound;
+    keyLines: KeyLine[];
+    designers: DesignerEnd[];
+    redoLeft: number;
+    budget: { ceilingMicros: number; spentMicros: number };
+  },
+): Promise<{ data: Record<string, unknown>; line: string; keyLines: KeyLine[] }> {
   const { ops, opsText, status, flags } = await readSetProposal(db, userId, o.proposalId);
   let next = [...ops];
-  let kept = [...flags];
-  const lines: string[] = [];
+  let keyLines = [...o.keyLines];
+  const takenBack: string[] = [];
+  const added: KeyLine[] = [];
   const out: Array<Record<string, unknown>> = [];
   const tally = { proposed: 0, replaced: 0, keptFirst: 0, leftOut: 0 };
+  /** What the proposal said about a key no longer stands. */
+  const takeBack = (key: string) => {
+    takenBack.push(...keyLines.filter((k) => k.key === key).map((k) => k.line));
+    keyLines = keyLines.filter((k) => k.key !== key);
+  };
   for (const b of o.round.briefs) {
     const d = o.designers.find((x) => x.key === b.key);
     let op = d ? next.find((x) => x.by?.runId === d.runId) : undefined;
@@ -300,15 +355,11 @@ export async function settleSet(
     }
     const firstId = o.round.replaces?.[b.key];
     const first = firstId ? next.find((x) => x.by?.runId === firstId) : undefined;
-    const base = { key: b.key, date: b.date };
-    // A redo of a day the first plan left out: the line saying so no longer stands (a new one is written if it is left
-    // out again).
-    const was = (o.earlier ?? []).flatMap((r) => r.briefs).find((x) => x.key === b.key);
-    if (was && !first) kept = kept.filter((f) => !f.startsWith(noWorkoutFor(was.date)));
     if (op && op.review) {
       if (first) next = next.filter((x) => x !== first);
+      takeBack(b.key);
       const stopped = d && d.status !== "finished" ? { note: `${keptWhy(d)} after a draft was reviewed: the reviewed version stands` } : {};
-      out.push({ ...base, outcome: first ? "replaced" : "proposed", ...proposedEntry(op), ...stopped });
+      out.push({ key: b.key, ...dayOf(op.date, b), outcome: first ? "replaced" : "proposed", ...proposedEntry(op), ...stopped });
       tally[first ? "replaced" : "proposed"] += 1;
       continue;
     }
@@ -316,17 +367,35 @@ export async function settleSet(
     if (op) next = next.filter((x) => x !== op);
     const reason = leftOutWhy(d, op);
     const said = d?.final ? { designerSaid: untrusted(d.final) } : {};
+    const draft = op ? { draftTakenOut: true } : {};
     if (first) {
-      out.push({ ...base, outcome: "kept_first", opId: opIdOf(first), reason: `the redo couldn't be designed: ${reason}`, ...said });
+      out.push({ key: b.key, ...dayOf(first.date, b), outcome: "kept_first", opId: opIdOf(first), target: first.target, reason: `the redo couldn't be designed: ${reason}`, ...draft, ...said });
       tally.keptFirst += 1;
     } else {
-      out.push({ ...base, outcome: "left_out", reason, ...said });
-      lines.push(`${noWorkoutFor(b.date)} ${reason}.`);
+      takeBack(b.key);
+      added.push({ key: b.key, line: `${noWorkoutFor(b.date)} ${reason}.` });
+      out.push({ key: b.key, date: b.date, outcome: "left_out", reason, ...draft, ...said });
       tally.leftOut += 1;
     }
   }
-  const changed = next.length !== ops.length || next.some((x, i) => x !== ops[i]) || lines.length > 0 || kept.length !== flags.length;
-  if (changed && status !== null) await writeSetOps(db, userId, o.proposalId, next, opsText, [...kept, ...lines]);
+  // One line taken back per key line: two workouts on one day can say the same words, and only this key's go.
+  const flagsNext = [...flags];
+  for (const l of takenBack) {
+    const at = flagsNext.indexOf(l);
+    if (at >= 0) flagsNext.splice(at, 1);
+  }
+  // The key lines are what the proposal's lines must hold for the set's workouts: one the proposal doesn't hold yet (it
+  // had no row when it was written) is written now.
+  const keyLinesNext = [...keyLines, ...added];
+  const want = new Map<string, number>();
+  for (const k of keyLinesNext) want.set(k.line, (want.get(k.line) ?? 0) + 1);
+  for (const [l, n] of want) for (let i = flagsNext.filter((f) => f === l).length; i < n; i++) flagsNext.push(l);
+  const changed = next.length !== ops.length || next.some((x, i) => x !== ops[i]) || flagsNext.length !== flags.length || flagsNext.some((f, i) => f !== flags[i]);
+  const stored = !changed || status === null || (await writeSetOps(db, userId, o.proposalId, next, opsText, flagsNext));
+  if (!stored) {
+    // Another write came between: nothing was taken out of the proposal, nor added to its lines.
+    for (const e of out) if (e.draftTakenOut) e.draftTakenOut = false;
+  }
   const parts = o.round.redo
     ? [
         ...(tally.replaced ? [`${tally.replaced} replaced`] : []),
@@ -335,17 +404,24 @@ export async function settleSet(
         ...(tally.leftOut ? [`${tally.leftOut} left out`] : []),
       ]
     : [`${tally.proposed} proposed`, ...(tally.leftOut ? [`${tally.leftOut} left out`] : [])];
+  const left = Math.max(0, o.budget.ceilingMicros - o.budget.spentMicros);
   return {
     data: {
       set: out,
       proposed: tally.proposed + tally.replaced,
       leftOut: tally.leftOut,
       ...(o.round.redo ? { keptFirst: tally.keptFirst } : {}),
-      workoutsInProposal: next.length,
+      workoutsInProposal: stored ? next.length : ops.length,
+      ...(stored
+        ? {}
+        : { proposalNote: "The proposal changed while the set's outcome was being written: nothing was taken out of it or added to its lines. Read it with read_set before finishing." }),
+      // What is left, rounded down: never more than there is.
+      budget: { leftUsd: Math.floor(left / 10_000) / 100, ceilingUsd: dollars(o.budget.ceilingMicros) },
       redoLeft: o.redoLeft,
       next: o.redoLeft > 0 ? NEXT_WITH_REDO : NEXT_NO_REDO,
     },
-    line: `${o.round.redo ? "The redo is in" : "The set is designed"}: ${parts.join(", ")}.`,
+    line: `${o.round.redo ? "The redo is in" : "The set is designed"}: ${parts.join(", ")}.${stored ? "" : " The proposal changed meanwhile, so nothing was written to it."}`,
+    keyLines: stored ? keyLinesNext : o.keyLines,
   };
 }
 
@@ -356,11 +432,12 @@ const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in
 /**
  * A set's main run that stopped at a spending limit or its step cap proposes what was reviewed (spec §2; Task 6's
  * `promoteWithWhatItHas`, for a set): a draft still under review is dropped, the held reviewed version staying; a
- * workout with no review is left out, and a line says which; the stop's note goes in the proposal's lines. Pending
- * under the finish's own guard — still `unreviewed` (a rehearsal stays one), the ops it read — and only with at least
- * one reviewed workout. Two statements (the read, the write; none written when nothing can be proposed).
+ * workout with no review is left out, and a line says which; the days whose designers never started (`notStarted`) are
+ * named; the stop's note goes in the proposal's lines. Pending under the finish's own guard — still `unreviewed` (a
+ * rehearsal stays one), no review under way, the ops it read — and only with at least one reviewed workout. Two
+ * statements (the read, the write; none written when nothing can be proposed).
  */
-export async function promoteSetWithWhatItHas(db: Db, userId: string, proposalId: string, note: string): Promise<boolean> {
+export async function promoteSetWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, notStarted: string[] = []): Promise<boolean> {
   const { ops, opsText, status, flags } = await readSetProposal(db, userId, proposalId);
   if (status !== "unreviewed" || ops.length === 0) return false;
   const settled = ops.map((op) => {
@@ -369,10 +446,12 @@ export async function promoteSetWithWhatItHas(db: Db, userId: string, proposalId
   });
   const kept = settled.filter((op) => op.review);
   const left = settled.filter((op) => !op.review);
-  if (kept.length === 0) return false;
+  if (kept.length === 0 || reviewRunning(kept)) return false;
+  const undesigned = [...new Set(notStarted)].filter((day) => !kept.some((op) => op.date === day)).sort();
   const lines = [
     note,
     ...(left.length > 0 ? [`Not reviewed before the stop, so left out: ${left.map((op) => `“${op.doc.title}” (${dayWords(op.date)})`).join(", ")}.`] : []),
+    ...(undesigned.length > 0 ? [`Not designed before the stop: ${undesigned.map(dayWords).join(", ")}.`] : []),
   ];
   const f = proposalFields(kept);
   const written = (await db.all(sql`
@@ -384,6 +463,51 @@ export async function promoteSetWithWhatItHas(db: Db, userId: string, proposalId
   return written.length > 0;
 }
 
+// ── A newer plan supersedes an older one's days ─────────────────────────────────────────────────────────────────────
+
+/** Why an older plan's workout gives way, in plain words (its op's outcome). */
+export const SUPERSEDED_REASON = "a newer plan covers this day";
+
+/**
+ * A design proposal just made pending (`proposalId`; a finish, or a stop with what it has): every OLDER designed
+ * proposal of the athlete's still theirs to decide (`pending`, `partially_approved`) with an OPEN op — no outcome yet, or
+ * refused (a refused op stays open: design-approve.ts) — on a day the new one covers has that op's outcome set to
+ * `{ status: "superseded", at, reason: SUPERSEDED_REASON, by: proposalId }`; its other ops are left alone. Once every op
+ * of an older proposal is decided (applied, declined, superseded), its status follows design-approve.ts `statusOfOps` —
+ * `approved` all applied, `partially_approved` some, `declined` all declined — and, with none applied, `superseded` (by
+ * the new proposal, resolved now); while any op is open it keeps its status. ONE statement: each row's ops are read
+ * as that row is written, so an outcome written meanwhile is never lost. Answers how many proposals it changed.
+ */
+export async function supersedeOlderPlans(db: Db, userId: string, proposalId: string, at: string): Promise<number> {
+  const days = sql`(SELECT json_extract(n.value, '$.date') FROM coach_proposals np, json_each(np.ops) n
+    WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending' AND json_valid(np.ops))`;
+  /** An op this supersedes: a designed workout's, still open, on a day the new proposal covers. */
+  const covered = (value: SQL) => sql`(json_extract(${value}, '$.kind') = 'doc_workout'
+    AND coalesce(json_extract(${value}, '$.outcome.status'), 'open') IN ('open', 'refused')
+    AND json_extract(${value}, '$.date') IN ${days})`;
+  const outcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${SUPERSEDED_REASON}, 'by', ${proposalId})`;
+  const after = sql`(SELECT CASE WHEN ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st
+    FROM json_each(coach_proposals.ops) o)`;
+  const status = sql`(SELECT CASE
+      WHEN sum(st IN ('applied', 'declined', 'superseded')) < count(*) THEN coach_proposals.status
+      WHEN sum(st = 'applied') = count(*) THEN 'approved'
+      WHEN sum(st = 'applied') > 0 THEN 'partially_approved'
+      WHEN sum(st = 'declined') = count(*) THEN 'declined'
+      ELSE 'superseded' END FROM ${after})`;
+  const rows = (await db.all(sql`
+    UPDATE coach_proposals SET
+      ops = (SELECT json_group_array(CASE WHEN ${covered(sql`o.value`)} THEN json_set(o.value, '$.outcome', ${outcome}) ELSE json(o.value) END)
+        FROM json_each(coach_proposals.ops) o),
+      (status, resolved_at, superseded_by) = (SELECT s, CASE WHEN s = coach_proposals.status THEN coach_proposals.resolved_at ELSE ${at} END,
+        CASE WHEN s = 'superseded' THEN ${proposalId} ELSE coach_proposals.superseded_by END FROM (SELECT ${status} AS s))
+    WHERE user_id = ${userId} AND id <> ${proposalId} AND status IN ('pending', 'partially_approved') AND json_valid(ops)
+      AND created_at < (SELECT created_at FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId})
+      AND EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE ${covered(sql`o.value`)})
+    RETURNING id
+  `)) as Array<{ id: string }>;
+  return rows.length;
+}
+
 // ── The estimate ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** One workout's designer with its reviewers, before any is measured (micros; see the module comment). */
@@ -392,7 +516,7 @@ export const DEFAULT_WORKOUT_COST_MICROS = 700_000;
 export const DEFAULT_SET_MAIN_COST_MICROS = 400_000;
 /** How far back measured runs count. */
 export const ESTIMATE_WINDOW_DAYS = 60;
-/** Finished designers needed before their average replaces the default. */
+/** Measured designers (finished, or stopped at their ceiling) needed before their average replaces the default. */
 export const ESTIMATE_MIN_DESIGNERS = 3;
 
 export interface SetEstimate {
@@ -408,7 +532,9 @@ export interface SetEstimate {
 /** The set's estimated cost before its designers run (see the module comment). One statement. */
 export async function estimateSetCost(db: Db, userId: string, workouts: number, now: Date): Promise<SetEstimate> {
   const since = new Date(now.getTime() - ESTIMATE_WINDOW_DAYS * 86_400_000).toISOString();
-  const designers = sql`FROM coach_runs d WHERE d.user_id = ${userId} AND d.role = 'designer' AND d.status = 'finished' AND d.created_at >= ${since}`;
+  // A designer that stopped at its own ceiling spent what a workout can cost: it counts (leaving it out would read low).
+  const designers = sql`FROM coach_runs d WHERE d.user_id = ${userId} AND d.role = 'designer'
+    AND (d.status = 'finished' OR (d.status = 'stopped_cap' AND d.error = 'run_ceiling')) AND d.created_at >= ${since}`;
   const mains = sql`FROM coach_runs m WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.status = 'finished' AND m.created_at >= ${since}
     AND json_valid(m.scope) AND json_extract(m.scope, '$.kind') IN ('week', 'next_n')`;
   const [row] = (await db.all(sql`
@@ -444,5 +570,34 @@ export function hardPairs(ops: DocWorkoutOp[]): Array<[string, string]> {
   const days = [...new Set(ops.filter(isHard).map((o) => o.date))].sort();
   const out: Array<[string, string]> = [];
   for (let i = 1; i < days.length; i++) if (daysBetween(days[i - 1]!, days[i]!) === 1) out.push([days[i - 1]!, days[i]!]);
+  return out;
+}
+
+/** The moves a workout uses (library ids, each once, in order), at most MOVES_SHOWN. */
+export const MOVES_SHOWN = 12;
+export function movesOf(op: DocWorkoutOp): string[] {
+  const out: string[] = [];
+  for (const part of op.doc?.parts ?? []) {
+    for (const item of part.items ?? []) if (item.kind === "exercise" && !out.includes(item.libraryId)) out.push(item.libraryId);
+  }
+  return out.slice(0, MOVES_SHOWN);
+}
+
+/** The moves two of the set's workouts on consecutive days share (variety, and the same tissues two days running). */
+export function repeatsOnConsecutiveDays(ops: DocWorkoutOp[]): Array<{ days: [string, string]; moves: string[] }> {
+  const byDay = new Map<string, Set<string>>();
+  for (const op of ops) {
+    const moves = byDay.get(op.date) ?? new Set<string>();
+    for (const part of op.doc?.parts ?? []) for (const item of part.items ?? []) if (item.kind === "exercise") moves.add(item.libraryId);
+    byDay.set(op.date, moves);
+  }
+  const days = [...byDay.keys()].sort();
+  const out: Array<{ days: [string, string]; moves: string[] }> = [];
+  for (let i = 1; i < days.length; i++) {
+    if (daysBetween(days[i - 1]!, days[i]!) !== 1) continue;
+    const later = byDay.get(days[i]!)!;
+    const shared = [...byDay.get(days[i - 1]!)!].filter((m) => later.has(m)).sort();
+    if (shared.length > 0) out.push({ days: [days[i - 1]!, days[i]!], moves: shared });
+  }
   return out;
 }

@@ -7,7 +7,9 @@
  *
  * Review comes before the athlete sees anything (spec §5): the loop's finish makes the main run's proposal `pending`
  * only when every workout in it carries its review; one that still has an unreviewed workout stays `unreviewed` —
- * never listed — and the line says it is kept back. One statement: the proposal.
+ * never listed — and the line says it is kept back. One statement: the proposal — and its cost declares one more, the
+ * loop's own once the proposal is made pending: the older plans' days it covers superseded (design-orchestrate.ts
+ * `supersedeOlderPlans`).
  */
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -32,7 +34,7 @@ export const finish: DesignTool = {
     required: ["summary"],
     additionalProperties: false,
   },
-  statementCost: 1,
+  statementCost: 2,
   roles: ["main", "designer"],
   control: "finish",
   async run(ctx, raw) {

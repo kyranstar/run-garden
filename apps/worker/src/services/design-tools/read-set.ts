@@ -1,20 +1,22 @@
 /**
  * read_set() — the main coach's view of its set so far, to judge it as a whole (Stage 3 spec §6; principles §6.9;
- * design-orchestrate.ts): the proposal's workouts in date order, each with its key and op id, what is derived from its
- * document (minutes, discipline, category, mode, balance, top regions), its effort and intent, and its review in
- * summary (the mean, the low scores, the must-fix items, the rounds); the set's combined balance (`deriveDoc` over the
- * documents, summed, in read_balance's units — what the set adds, beside what read_balance says was done); and hard
- * days in a row (two workouts of the set that develop or peak on consecutive days). Runs and programme sessions around
- * them are read_plan's. Main only.
+ * design-orchestrate.ts): the proposal's workouts in date order, each with its key and op id, where it goes (`target`:
+ * a new workout, or a revision of one), what is derived from its document (minutes, discipline, category, mode,
+ * balance, top regions), its effort, intent and moves (library ids), and its review in summary (the mean, the low
+ * scores, the must-fix items, the rounds); the set's combined balance (`deriveDoc` over the documents, summed, in
+ * read_balance's units — what the set adds, beside what read_balance says was done); hard days in a row (two workouts
+ * of the set that develop or peak on consecutive days); and the moves repeated on consecutive days (progression and
+ * variety, and the same tissues two days running). Runs and programme sessions around them are read_plan's. The
+ * proposal's lines (`notes`) carry model-written words — a title, a reason — so they come marked. Main only.
  *
  * Small by contract: one statement (the proposal), and an answer within RESULT_BUDGET_BYTES — the details give way, in
- * order, before any workout does (the intent sentences, then the must-fix wording, then the regions).
+ * order, before any workout does (the intent sentences, then the moves, then the must-fix wording, then the regions).
  */
 import { z } from "zod";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, type BalanceProfile } from "@rg/workout";
 import { REVIEW_DIMENSIONS } from "../design-prompt.js";
-import { balanceInUnits, hardPairs, opIdOf, readSetProposal, reviewMeanOf } from "../design-orchestrate.js";
+import { balanceInUnits, hardPairs, movesOf, opIdOf, readSetProposal, repeatsOnConsecutiveDays, reviewMeanOf } from "../design-orchestrate.js";
 import { isErr, parseAct } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { answer, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
@@ -31,8 +33,9 @@ const NOTE_MAX = 200;
 const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const bytesOf = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
 
-/** How much of each workout is shown: 0 all; 1 without the intent; 2 the must-fix items counted only; 3 no regions. */
-type Detail = 0 | 1 | 2 | 3;
+/** How much of each workout is shown: 0 all; 1 without the intent; 2 nor the moves; 3 the must-fix items counted only;
+ * 4 no regions. */
+type Detail = 0 | 1 | 2 | 3 | 4;
 
 function workoutOf(op: DocWorkoutOp, key: string | null, detail: Detail): Record<string, unknown> {
   const d = op.derived ?? {};
@@ -53,20 +56,22 @@ function workoutOf(op: DocWorkoutOp, key: string | null, detail: Detail): Record
     key,
     date: op.date,
     ...(op.time ? { time: op.time } : {}),
+    target: op.target,
     title: untrusted(cut(op.doc.title, TITLE_MAX)),
     ...(detail < 1 ? { intent: untrusted(cut(op.doc.intent.summary, INTENT_MAX)) } : {}),
+    ...(detail < 2 ? { moves: movesOf(op) } : {}),
     effort: op.doc.intent.effort,
     minutes: d.minutes ?? null,
     discipline: d.discipline ?? null,
     category: d.category ?? null,
     mode: d.mode ?? null,
     balance: balanceInUnits(d.balance as Record<string, unknown> | undefined),
-    ...(detail < 3 ? { regions } : {}),
+    ...(detail < 4 ? { regions } : {}),
     review: r
       ? {
           mean: reviewMeanOf(op),
           low,
-          ...(detail < 2 ? { mustFix: r.mustFix.slice(0, MUST_FIX_SHOWN).map((m) => untrusted(cut(m, MUST_FIX_MAX))) } : {}),
+          ...(detail < 3 ? { mustFix: r.mustFix.slice(0, MUST_FIX_SHOWN).map((m) => untrusted(cut(m, MUST_FIX_MAX))) } : {}),
           mustFixCount: r.mustFix.length,
           rounds: r.rounds,
           ...(r.note ? { note: r.note } : {}),
@@ -118,7 +123,7 @@ export const readSet: DesignTool = {
         source,
         now: ctx.now,
         missing: ["no set planned yet: call plan_set first"],
-        data: { workouts: [], combined: null, hardDaysInARow: { count: 0, pairs: [] }, notes: [] },
+        data: { workouts: [], combined: null, hardDaysInARow: { count: 0, pairs: [] }, movesRepeatedOnConsecutiveDays: [], notes: [] },
         summary: "No set planned yet",
       });
     }
@@ -129,10 +134,11 @@ export const readSet: DesignTool = {
     const rest = {
       combined: combinedOf(ordered),
       hardDaysInARow: { count: pairs.length, pairs, counts: "the set's own workouts that develop or peak, on consecutive days (read_plan for the runs and sessions around them)" },
-      notes: flags.slice(-NOTES_SHOWN).map((f) => cut(f, NOTE_MAX)),
+      movesRepeatedOnConsecutiveDays: repeatsOnConsecutiveDays(ordered),
+      notes: flags.slice(-NOTES_SHOWN).map((f) => untrusted(cut(f, NOTE_MAX))),
     };
     let result = answer({ source, now: ctx.now, missing: ops.length === 0 ? ["no workout in the set's proposal yet"] : [], data: {}, summary: "" });
-    for (const detail of [0, 1, 2, 3] as Detail[]) {
+    for (const detail of [0, 1, 2, 3, 4] as Detail[]) {
       const workouts = ordered.map((op) => workoutOf(op, keyOf.get(opIdOf(op)) ?? null, detail));
       result = answer({
         source,
