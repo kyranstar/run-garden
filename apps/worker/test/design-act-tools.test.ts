@@ -1143,7 +1143,8 @@ describe("3A-B — the act tools say what the code holds", () => {
 
   it("M16: a focus-area id from the profile stands for its refs — no unknown_focus, and the proposal keeps the library ids", async () => {
     const r = await run();
-    const doc = docOf([item("bandRow", { sets: 2, reps: 12 })], { intent: { summary: "Mid-back.", goals: ["posture"], focus: ["mid-back", "glutes"], effort: "maintain" } });
+    // "upper-back" is a library region and also a focus area's id (refs upper-back and thoracic): the library's id stays.
+    const doc = docOf([item("bandRow", { sets: 2, reps: 12 })], { intent: { summary: "Mid-back.", goals: ["posture"], focus: ["mid-back", "upper-back", "glutes"], effort: "maintain" } });
     const v = data((await call("validate_workout", ctxOf(r), { doc, date: TODAY })).result);
     expect(v.warnings.filter((w: { code: string }) => w.code === "unknown_focus")).toEqual([]);
     ok((await call("propose_workout", ctxOf(r), { doc, target: { kind: "new", date: TODAY } })).result);
@@ -1178,5 +1179,62 @@ describe("3A-B — the act tools say what the code holds", () => {
     const both = askedAnswerRows({ userId: "u", mainRunId: "m", toolUseId: "t", questions: [energy, sore], answers: ["running on fumes", "SORE"], localDate: TODAY, at: NOW.toISOString() });
     expect(both.rows.map((x) => [x.questionId, x.valueNum, x.valueChoice, x.text])).toEqual([["soreness", 5, "sore", null]]);
     expect(askedAnswerRows({ userId: "u", mainRunId: "m", toolUseId: "t", questions: [sore], answers: ["a bit, after the hills"], localDate: TODAY, at: NOW.toISOString() }).rows).toEqual([]);
+  });
+});
+
+describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)", () => {
+  async function setOfTwo() {
+    const main = await run({ scope: { kind: "week" } });
+    const one = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const two = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    ok((await call("propose_workout", ctxOf(one), { doc: calmDoc({ title: "Monday hips" }), target: { kind: "new", date: day(-1) } })).result);
+    return { main, one, two };
+  }
+
+  it("a designer sees its siblings — date, title, minutes, parts and moves — before it drafts, in one statement", async () => {
+    const { two } = await setOfTwo();
+    const { result, count } = await call("read_set", ctxOf(two), {});
+    expect(count).toBeLessThanOrEqual(1);
+    expect(tool("read_set").statementCost).toBe(1);
+    const d = data(result);
+    expect(d.workouts).toHaveLength(1);
+    const [w] = d.workouts;
+    expect(w).toMatchObject({ date: day(-1), title: { untrusted: true, text: "Monday hips" }, minutes: expect.any(Number), parts: ["main"], moves: calmDoc().parts[0]!.items.map((i) => (i as { libraryId: string }).libraryId) });
+    expect(w.yours).toBe(false);
+    // Keys are the main coach's (its plan's rounds): a designer's view leaves them out.
+    expect(w).not.toHaveProperty("key");
+    expect(ok(result).missing).toEqual([]);
+  });
+
+  it("its own workout is marked once proposed, and the moves repeated on the next day are named", async () => {
+    const { two } = await setOfTwo();
+    ok((await call("propose_workout", ctxOf(two), { doc: calmDoc({ title: "Tuesday hips" }), target: { kind: "new", date: day(-2) } })).result);
+    const d = data((await call("read_set", ctxOf(two), {})).result);
+    expect(d.workouts.map((w: { date: string; yours: boolean }) => [w.date, w.yours])).toEqual([[day(-1), false], [day(-2), true]]);
+    expect(d.movesRepeatedOnConsecutiveDays).toEqual([{ days: [day(-1), day(-2)], moves: expect.arrayContaining(["bridge"]) }]);
+  });
+
+  it("a reviewer reads the set of the draft it reviews, the reviewed designer's workout marked", async () => {
+    const { main, two } = await setOfTwo();
+    ok((await call("propose_workout", ctxOf(two), { doc: calmDoc({ title: "Tuesday hips" }), target: { kind: "new", date: day(-2) } })).result);
+    const reviewer = await run({ role: "reviewer", parentId: two.id, scope: { kind: "week" } });
+    const reviewOf = { proposalId: designProposalId(main.id), designerRunId: two.id, toolUseId: "t", round: 1 };
+    const { result, count } = await call("read_set", ctxOf(reviewer, { reviewOf }), {});
+    expect(count).toBeLessThanOrEqual(1);
+    expect(data(result).workouts.map((w: { title: { text: string }; yours: boolean }) => [w.title.text, w.yours])).toEqual([["Monday hips", false], ["Tuesday hips", true]]);
+  });
+
+  it("before any sibling is proposed: says so, never 'call plan_set' (that is the main coach's)", async () => {
+    const main = await run({ scope: { kind: "week" } });
+    const first = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const r = ok((await call("read_set", ctxOf(first), {})).result);
+    expect((r.data as { workouts: unknown[] }).workouts).toEqual([]);
+    expect(r.missing).toEqual(["no workout of the set is proposed yet"]);
+  });
+
+  it("is every role's now; its description names the repeated-moves field", () => {
+    expect(tool("read_set").roles).toEqual(["main", "designer", "reviewer"]);
+    expect(tool("read_set").description).toMatch(/moves repeated on consecutive days/);
+    expect(tool("read_set").description).toMatch(/designers and reviewers/);
   });
 });

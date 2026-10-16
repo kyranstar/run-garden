@@ -7,12 +7,17 @@
  * was trained and its working sets (each set of a move that trains it, once). The units are in the answer. One
  * physical session counts once; a session's played-only moves count as played, once. Nothing logged is said, never
  * balanced as zeros. Two statements: the athlete with the focus areas, then the range in one read.
+ *
+ * RUNS LOAD THE LEGS (audit I5). A run is no working set, so the regions above are the sessions' alone; what runs
+ * loaded is said apart (`fromRuns`: each region a run loads — RUN_REGIONS — with the runs in the range and the last
+ * one's date). A region a run loaded is never listed untrained, and a focus area that means one of them gains
+ * `lastRun` beside its strength-only `lastTrained` — so a run-heavy week never reads as legs left untrained.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { athleteProfiles, performedSessions } from "@rg/database";
 import { daysBetween, focusAreaSchema } from "@rg/domain";
-import { EXERCISES, REGIONS } from "@rg/exercise-library";
+import { EXERCISES, MUSCLE_REGION, REGIONS, type MuscleId, type Region } from "@rg/exercise-library";
 import { derivePerformed, type BalanceProfile, type PerformedInput } from "@rg/workout";
 import type { DesignTool } from "./types.js";
 import { answer, checkRange, DATE_SCHEMA, dateField, isErr, parsedArray, parseInput, plural, READ_ROLES, readAthlete, readTagged, untrusted } from "./read-common.js";
@@ -23,12 +28,19 @@ const TOP_MUSCLES = 12;
 const LIBRARY = new Set(EXERCISES.map((e) => e.id));
 const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
 
+/** The regions a run loads (the library's own region ids). */
+export const RUN_REGIONS = ["calves", "hamstrings", "quads", "hips", "ankles", "feet"] as const satisfies readonly Region[];
+const RUN_REGION_SET = new Set<string>(RUN_REGIONS);
+/** The region a focus area's ref names: itself, or the region its muscle sits under. */
+const regionOf = (ref: string): string | undefined => (REGIONS as readonly string[]).includes(ref) ? ref : MUSCLE_REGION[ref as MuscleId];
+
 /** What each figure counts. */
 const UNITS = {
   balance: "isometricMin, aerobicMin, mobilityMin, recoveryMin in minutes; isotonicReps and eccentricReps in reps (a side each); plyoContacts in contacts",
-  regions: "working sets of the moves that load each region (top ten)",
+  regions: "working sets of the moves that load each region (top ten); runs are counted apart, in fromRuns",
   muscles: "working sets, a muscle a move works secondarily counting half (top twelve)",
-  focusAreas: "working sets of the moves that train any of the area's regions or muscles, each set once",
+  focusAreas: "working sets of the moves that train any of the area's regions or muscles, each set once; lastTrained is a strength, mobility or care session's, lastRun a run's",
+  fromRuns: `each region a run loads (${RUN_REGIONS.join(", ")}): the runs in the range and the last one's date — such a region is never listed untrained`,
 } as const;
 
 const input = z.object({ from: dateField, to: dateField }).strict();
@@ -40,7 +52,7 @@ const top = (m: Map<string, number>, n: number): Record<string, number> =>
 export const readBalance: DesignTool = {
   name: "read_balance",
   description:
-    "The balance of what was done between two dates: contraction types, aerobic and mobility minutes, exposure by region and muscle, untrained regions, and when each focus area was last trained.",
+    "The balance of what was done between two dates: contraction types, aerobic and mobility minutes, exposure by region and muscle, what runs loaded, untrained regions, and when each focus area was last trained.",
   inputSchema: { type: "object", properties: { from: DATE_SCHEMA, to: DATE_SCHEMA }, required: ["from", "to"], additionalProperties: false },
   statementCost: 2,
   roles: READ_ROLES,
@@ -127,6 +139,11 @@ export const readBalance: DesignTool = {
       else other += 1;
       add({ entries: [], movesDone: [], activity: { sport: a.sport, durationSeconds: a.seconds, distanceMeters: a.meters } });
     }
+    // Every run in the range loaded the legs, a session's own run among them (by its date).
+    const ranDays = [...acts.values()].filter((a) => a.sport === "run" && a.date >= p.from && a.date <= p.to).map((a) => a.date);
+    const lastRun = ranDays.length ? ranDays.reduce((x, y) => (y > x ? y : x)) : null;
+    const fromRuns = lastRun ? Object.fromEntries(RUN_REGIONS.map((r) => [r, { runs: ranDays.length, last: lastRun }])) : {};
+    const runLoaded = (region: string): boolean => lastRun !== null && RUN_REGION_SET.has(region);
 
     const nothing = chosen.length === 0 && runs === 0 && other === 0;
     const minutes = (sec: number) => Math.round(sec / 60);
@@ -156,17 +173,20 @@ export const readBalance: DesignTool = {
               recoveryMin: minutes(balance.recoverySec),
             },
         regions: top(regions, TOP_REGIONS),
-        // Unknown when nothing was logged: not every region untrained.
-        untrained: nothing ? null : REGIONS.filter((r) => r !== "full-body" && !(regions.get(r)! > 0)),
+        fromRuns,
+        // Unknown when nothing was logged: not every region untrained. A region a run loaded is not untrained.
+        untrained: nothing ? null : REGIONS.filter((r) => r !== "full-body" && !(regions.get(r)! > 0) && !runLoaded(r)),
         muscles: top(muscles, TOP_MUSCLES),
         focusAreas: focus.map((f) => {
           const seen = focusSeen.get(f.id)!;
+          const ran = f.refs.some((ref) => runLoaded(regionOf(ref) ?? ""));
           return {
             id: f.id,
             label: untrusted(f.label),
             lastTrained: seen.last,
             daysAgo: seen.last ? daysBetween(seen.last, athlete.today) : null,
             sets: round1(seen.sets),
+            ...(ran ? { lastRun } : {}),
           };
         }),
       },

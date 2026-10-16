@@ -3,7 +3,8 @@
  * then paused and done (never dropped), each key result measured from logged data by the Stage 1 measures
  * (`measureKeyResults`, one read per source for all of them) with how good the evidence is — measured, sparse,
  * capped (no set reached a max: the timer or the prescription stopped it) or none — its current value in the key
- * result's unit, its last three points, and when it was last measured. The athlete's words marked.
+ * result's unit, its last three points, and when it was last measured. The athlete's words marked. A legend in the
+ * answer says what each evidence flag means and how a test counts (`EVIDENCE_LEGEND`).
  *
  * BUDGET: one statement for the athlete, the objectives and their key results, then `measureKeyResults`, whose worst
  * case is eight (four for strength sets and their prescriptions, the runs, the threshold days, the matched runs'
@@ -13,7 +14,7 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { keyResults, objectives } from "@rg/database";
-import { KEY_RESULT_UNITS, keyResultMeasureSchema, type KeyResultMeasure, type KeyResultUnit } from "@rg/domain";
+import { KEY_RESULT_UNITS, keyResultMeasureSchema, type KeyResultEvidence, type KeyResultMeasure, type KeyResultUnit } from "@rg/domain";
 import { measureKeyResults } from "../key-result-measures.js";
 import type { DesignTool } from "./types.js";
 import {
@@ -39,6 +40,22 @@ const DEFAULT_LIMIT = 6;
 const MAX_LIMIT = 12;
 const RECENT_POINTS = 3;
 const STATUS_ORDER: Record<string, number> = { active: 0, paused: 1, done: 2 };
+
+/**
+ * What the evidence flags mean (audit I11), in the answer itself — the domain's own definitions (profile.ts
+ * `KEY_RESULT_EVIDENCE`, key-result-measures.ts) — and how a test counts: a set done to max is capacity, so it is
+ * measured, once it is logged.
+ */
+export const EVIDENCE_LEGEND = {
+  evidence: {
+    measured: "three or more points that show capacity",
+    sparse: "one or two points",
+    capped: "the best came from a set its prescription stopped (a hold timed out, a set done exactly as written): at least this much — a test would measure it",
+    none: "nothing measured yet (missing says why)",
+  } satisfies Record<KeyResultEvidence, string>,
+  capped: "a point whose best set was stopped by its prescription, not a max",
+  test: "To measure a key result, schedule a test: a move to max (dose.max) naming it (test.keyResultId). It counts only once the athlete does it and it is logged.",
+} as const;
 
 const input = z.object({ limit: limitField(MAX_LIMIT).optional(), cursor: cursorField.optional() }).strict();
 
@@ -166,7 +183,7 @@ export const readObjectives: DesignTool = {
       limit,
       render,
       cursorOf: (_obj, i) => encodeCursor([offset + i]),
-      data: (objectives) => ({ objectives }),
+      data: (objectives) => ({ legend: EVIDENCE_LEGEND, objectives }),
       summary: (shown) => (all.length ? `Read ${plural(shown, "objective")} and their progress` : "No objectives recorded"),
     });
   },

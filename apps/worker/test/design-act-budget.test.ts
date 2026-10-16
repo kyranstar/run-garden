@@ -88,7 +88,7 @@ describe("the registry", () => {
       remember: ["main", "designer"],
       propose_workout: ["main", "designer"],
       plan_set: ["main"],
-      read_set: ["main"],
+      read_set: ["main", "designer", "reviewer"],
       drop_workout: ["main"],
       submit_review: ["reviewer"],
       finish: ["main", "designer"],

@@ -547,7 +547,8 @@ describe("main judges the set and acts on it", () => {
     expect(err.error).toBe("not_found");
     expect(err.fix).toContain((await designersOf(mainId))[0]!.id);
     const roles = Object.fromEntries(ACT_TOOLS.map((x) => [x.name, x.roles]));
-    expect(roles).toMatchObject({ plan_set: ["main"], read_set: ["main"], drop_workout: ["main"] });
+    // read_set is every role's since the 3A fix wave (a set's designers and reviewers read their siblings).
+    expect(roles).toMatchObject({ plan_set: ["main"], read_set: ["main", "designer", "reviewer"], drop_workout: ["main"] });
   });
 
   it("drop_workout before a set, on a proposal already settled, or racing another write: refused, nothing lost", async () => {

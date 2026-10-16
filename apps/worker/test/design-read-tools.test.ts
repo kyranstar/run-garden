@@ -280,7 +280,7 @@ describe("read_balance", () => {
     // An area named by a region and one of its muscles counts each band row set once, not twice.
     expect(data.focusAreas.find((f: { id: string }) => f.id === "mid-back")).toMatchObject({ sets: 7 * 3 });
     expect(data.focusAreas.find((f: { id: string }) => f.id === "calves")).toMatchObject({ lastTrained: null, daysAgo: null, sets: 0 });
-    expect(Object.keys(data.units)).toEqual(["balance", "regions", "muscles", "focusAreas"]);
+    expect(Object.keys(data.units)).toEqual(["balance", "regions", "muscles", "focusAreas", "fromRuns"]);
     expect(missing).toEqual([]);
   });
 
@@ -827,3 +827,51 @@ describe("user scoping", () => {
 });
 
 const input = (x: unknown) => x;
+
+// ── Batch 3A end fix wave, part B (audit-3a-agent-design.md) ────────────────────────────────────────────────────────
+
+describe("3A-B — read_balance counts what runs load (B6)", () => {
+  const RUN_REGIONS = ["calves", "hamstrings", "quads", "hips", "ankles", "feet"];
+
+  it("the audit's probe — five runs in fourteen days: no leg region a run loads is untrained, and fromRuns says so per region", async () => {
+    const { data } = await ok("read_balance", { from: day(14), to: TODAY });
+    expect(data.runs).toBe(5);
+    for (const region of RUN_REGIONS) {
+      expect(data.untrained, region).not.toContain(region);
+      expect(data.fromRuns[region], region).toEqual({ runs: 5, last: day(2) });
+    }
+    expect(Object.keys(data.fromRuns).sort()).toEqual([...RUN_REGIONS].sort());
+    // What no session or run loads is still untrained.
+    expect(data.untrained).toContain("jaw");
+    // Runs are counted apart: the working sets by region are the sessions' alone.
+    expect(data.regions.calves).toBeUndefined();
+    expect(Object.keys(data.units)).toContain("fromRuns");
+  });
+
+  it("a focus area keeps its strength-only lastTrained, and gains lastRun when a run loaded it", async () => {
+    const { data } = await ok("read_balance", { from: day(14), to: TODAY });
+    expect(data.focusAreas.find((f: { id: string }) => f.id === "calves")).toEqual({ id: "calves", label: U("Calves"), lastTrained: null, daysAgo: null, sets: 0, lastRun: day(2) });
+    // No run loads the upper back: no lastRun.
+    expect(data.focusAreas.find((f: { id: string }) => f.id === "upper-back")).not.toHaveProperty("lastRun");
+  });
+
+  it("a range with no run: fromRuns is empty, and a leg region no session loaded is untrained", async () => {
+    const { data } = await ok("read_balance", { from: day(1), to: day(1) });
+    expect(data.runs).toBe(0);
+    expect(data.fromRuns).toEqual({});
+    expect(data.untrained).toContain("calves");
+    expect(data.focusAreas.find((f: { id: string }) => f.id === "calves")).not.toHaveProperty("lastRun");
+  });
+});
+
+describe("3A-B — read_objectives explains its evidence (B12)", () => {
+  it("a legend for every evidence value and the capped flag, and how a test counts", async () => {
+    const { data } = await ok("read_objectives");
+    expect(Object.keys(data.legend.evidence).sort()).toEqual(["capped", "measured", "none", "sparse"]);
+    expect(data.legend.evidence.capped).toMatch(/a test would measure/);
+    expect(data.legend.capped).toMatch(/prescription/);
+    expect(data.legend.test).toMatch(/dose\.max/);
+    expect(data.legend.test).toMatch(/test\.keyResultId/);
+    expect(data.legend.test).toMatch(/logged/);
+  });
+});
