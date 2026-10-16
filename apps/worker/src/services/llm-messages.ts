@@ -412,6 +412,57 @@ function readWait(startedAt: number): number {
   return Math.max(1000, Math.min(STREAM_STALL_MS, TIMEOUT_MS - (Date.now() - startedAt)));
 }
 
+/**
+ * THE STALL GUARD: every read may wait `readWait` from when it began, and a read that waits longer is cut loose — the
+ * reader cancelled, which settles the read, and the answer is a timeout. One watchdog serves the whole answer: a single
+ * timer, re-armed only when it fires (for what is left of the read then under way), never a timer raced against each
+ * read — a document turn is thousands of reads, and a timer each was a large part of its CPU. A later read never times
+ * out before an earlier one would have (`readWait` shrinks no faster than the clock moves), so the timer is never
+ * late; each read times out at the same instant as before.
+ */
+interface StallGuard {
+  /** Call as each read begins. */
+  reading(): void;
+  /** The guard cut the read loose: the answer is a timeout. */
+  readonly stalled: boolean;
+  /** The answer is read (or given up): the timer goes. */
+  stop(): void;
+}
+
+function stallGuard(reader: ReadableStreamDefaultReader<Uint8Array>, startedAt: number): StallGuard {
+  let began = 0;
+  let wait = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stalled = false;
+  let stopped = false;
+  const check = () => {
+    timer = undefined;
+    if (stopped) return;
+    const waited = Date.now() - began;
+    if (waited < wait) {
+      timer = setTimeout(check, wait - waited);
+      return;
+    }
+    stalled = true;
+    void reader.cancel().catch(() => undefined);
+  };
+  return {
+    reading() {
+      began = Date.now();
+      wait = readWait(startedAt);
+      timer ??= setTimeout(check, wait);
+    },
+    get stalled() {
+      return stalled;
+    },
+    stop() {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
 /** A buffered answer. Its body is read through a reader, read by read, with the same stall guard as a stream's
  * reads (the abort alone does not cut a body read loose in workerd), so a stalled body can be cancelled:
  * `response.text()` would lock the body and leave nothing to cancel, keeping the connection open until the
@@ -419,22 +470,24 @@ function readWait(startedAt: number): number {
 async function readJson(response: Response, startedAt: number, deadline: AbortSignal): Promise<Answer | Cut> {
   if (!response.body) return cutOff("gateway_bad_response");
   const reader = response.body.getReader();
+  const guard = stallGuard(reader, startedAt);
   const decoder = new TextDecoder();
   let text = "";
   try {
     for (;;) {
-      const next = await withTimeout(reader.read(), readWait(startedAt));
-      if (next === "timed_out") {
-        await reader.cancel().catch(() => undefined);
-        return cutOff("llm_timeout");
-      }
+      guard.reading();
+      const next = await reader.read();
+      if (guard.stalled) return cutOff("llm_timeout");
       if (next.done) break;
       text += decoder.decode(next.value, { stream: true });
     }
     text += decoder.decode();
   } catch {
-    // The whole call's deadline aborting the read is a timeout; anything else is the connection failing.
-    return cutOff(deadline.aborted ? "llm_timeout" : "llm_error");
+    // The stall guard or the whole call's deadline cutting the read loose is a timeout; anything else is the
+    // connection failing.
+    return cutOff(guard.stalled || deadline.aborted ? "llm_timeout" : "llm_error");
+  } finally {
+    guard.stop();
   }
   let parsed: RawMessage | null;
   try {
@@ -451,19 +504,6 @@ async function readJson(response: Response, startedAt: number, deadline: AbortSi
   };
 }
 
-/** Race a promise against a timer without leaking the timer. */
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | "timed_out"> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<"timed_out">((resolve) => {
-    timer = setTimeout(() => resolve("timed_out"), ms);
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 type StreamEvent = {
   type?: string;
   index?: number;
@@ -474,18 +514,48 @@ type StreamEvent = {
   error?: { type?: string };
 };
 
+/** A tool input's piece, as the Messages API writes its line: this, the block's index, INPUT_DELTA_MID, the piece as
+ * one JSON string, and `}}`. */
+const INPUT_DELTA_HEAD = 'data: {"type":"content_block_delta","index":';
+const INPUT_DELTA_MID = ',"delta":{"type":"input_json_delta","partial_json":"';
+/** An index the fast path reads has at most this many digits (a longer one is read by the whole parse). */
+const INDEX_DIGITS_MAX = 9;
+const DIGIT_0 = 48;
+const DIGIT_9 = 57;
+const CR = 13;
+const QUOTE = 34;
+const CLOSE_BRACE = 125;
+
+/** One JSON string literal's value; null when the text is not exactly one. */
+function jsonString(literal: string): string | null {
+  try {
+    const value: unknown = JSON.parse(literal);
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Assemble an SSE answer into the message it describes: message_start (usage) → per block content_block_start /
  * _delta / _stop → message_delta (stop reason, final usage) → message_stop. A tool call's input arrives as JSON in
  * pieces and is parsed once its block stops. A stream that ends before the model says it stopped is a dropped
  * connection, not a short answer.
+ *
+ * THE FAST PATH. Most of a document turn is its tool inputs' pieces, an event each. A line that is exactly
+ * INPUT_DELTA_HEAD, an index (a JSON integer: no leading zero), INPUT_DELTA_MID's rest, one JSON string and `}}` (a CR
+ * before its newline allowed) is read without parsing the event whole: only its string is parsed. Such a line is
+ * exactly the event `{type: "content_block_delta", index, delta: {type: "input_json_delta", partial_json}}` — these
+ * keys, in this order, nothing else — so the whole parse would have read the same; any other line (another spelling,
+ * another key, a broken string) is parsed whole, as every line was.
  */
-async function readStream(
+export async function readStream(
   body: ReadableStream<Uint8Array>,
   startedAt: number,
   deadline: AbortSignal,
 ): Promise<Answer | Cut> {
   const reader = body.getReader();
+  const guard = stallGuard(reader, startedAt);
   const decoder = new TextDecoder();
   const blocks: Array<Record<string, unknown> | undefined> = [];
   const toolJson: string[] = [];
@@ -497,17 +567,43 @@ async function readStream(
   let outputReported = false;
   try {
     for (;;) {
-      const next = await withTimeout(reader.read(), readWait(startedAt));
-      if (next === "timed_out") {
-        await reader.cancel().catch(() => undefined);
-        return cutOff("llm_timeout", usage, sofar(), outputReported);
-      }
+      guard.reading();
+      const next = await reader.read();
+      if (guard.stalled) return cutOff("llm_timeout", usage, sofar(), outputReported);
       if (next.done) break;
       buffered += decoder.decode(next.value, { stream: true });
+      // The lines read are skipped by position; what is left after the last newline is kept once, at the end.
+      let from = 0;
       let newline: number;
-      while ((newline = buffered.indexOf("\n")) >= 0) {
-        const line = buffered.slice(0, newline).trim();
-        buffered = buffered.slice(newline + 1);
+      while ((newline = buffered.indexOf("\n", from)) >= 0) {
+        const at = from;
+        from = newline + 1;
+        if (buffered.startsWith(INPUT_DELTA_HEAD, at)) {
+          const digits = at + INPUT_DELTA_HEAD.length;
+          let p = digits;
+          let index = 0;
+          for (let c = buffered.charCodeAt(p); c >= DIGIT_0 && c <= DIGIT_9 && p - digits < INDEX_DIGITS_MAX; c = buffered.charCodeAt(++p)) {
+            index = index * 10 + (c - DIGIT_0);
+          }
+          const open = p + INPUT_DELTA_MID.length - 1;
+          const end = buffered.charCodeAt(newline - 1) === CR ? newline - 1 : newline;
+          if (
+            p > digits &&
+            (p === digits + 1 || buffered.charCodeAt(digits) !== DIGIT_0) &&
+            buffered.startsWith(INPUT_DELTA_MID, p) &&
+            end - 3 > open &&
+            buffered.charCodeAt(end - 1) === CLOSE_BRACE &&
+            buffered.charCodeAt(end - 2) === CLOSE_BRACE &&
+            buffered.charCodeAt(end - 3) === QUOTE
+          ) {
+            const piece = jsonString(buffered.slice(open, end - 2));
+            if (piece !== null) {
+              if (blocks[index]) toolJson[index] = (toolJson[index] ?? "") + piece;
+              continue;
+            }
+          }
+        }
+        const line = buffered.slice(at, newline).trim();
         if (!line.startsWith("data:")) continue;
         let event: StreamEvent;
         try {
@@ -562,10 +658,14 @@ async function readStream(
             return cutOff(`stream_${event.error?.type ?? "error"}`, usage, sofar(), outputReported);
         }
       }
+      if (from > 0) buffered = buffered.slice(from);
     }
   } catch {
-    // The whole call's deadline aborting the read is a timeout; anything else is the connection failing.
-    return cutOff(deadline.aborted ? "llm_timeout" : "llm_error", usage, sofar(), outputReported);
+    // The stall guard or the whole call's deadline cutting the read loose is a timeout; anything else is the
+    // connection failing.
+    return cutOff(guard.stalled || deadline.aborted ? "llm_timeout" : "llm_error", usage, sofar(), outputReported);
+  } finally {
+    guard.stop();
   }
   if (!stopped && stopReason === null) return cutOff("gateway_bad_response", usage, sofar(), outputReported);
   return {
