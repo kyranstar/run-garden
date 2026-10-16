@@ -367,7 +367,7 @@ function Builder({ source }: { source: BuildSource }) {
     if (Object.keys(known).length) qc.setQueryData<Record<string, CheckReading>>(readingsQuery(today), (old) => ({ ...(old ?? {}), ...known }));
   };
 
-  const { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver } = useBuildFlows({
+  const { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver, startsHere } = useBuildFlows({
     source,
     key,
     tplId,
@@ -403,13 +403,15 @@ function Builder({ source }: { source: BuildSource }) {
       focusNext.current = [".stu-build-status a", ".stu-build-status-text"];
     },
     timeZone,
+    recorded,
+    place: here,
   });
 
   // ── Not ready ──
   if (!ready || !doc || !judged) {
     let problem: string | null = null;
     if (source.kind === "template") {
-      if (templates.isError) problem = "Opening a template needs a connection.";
+      if (templates.isError) problem = "Opening a template needs a connection the first time.";
       else if (templates.isSuccess) problem = template ? "This template can't be read." : "That template is gone.";
     } else if (source.kind === "again") {
       if (stored.isError) problem = stored.error instanceof ApiError && stored.error.status === 404 ? "That workout is gone." : "Opening it again needs a connection.";
@@ -909,6 +911,7 @@ function Builder({ source }: { source: BuildSource }) {
           onSaved={onCheckSaved}
           onClose={() => setAsking(null)}
           onSkip={asking?.offered ? () => skipCheck(asked.id) : undefined}
+          keepOffline={asking?.then === "start" && startsHere}
         />
       ) : null}
       {sendingWatch ? (

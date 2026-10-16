@@ -16,6 +16,8 @@ import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
 import { loadBuild, saveBuild } from "../src/offline/builds.js";
 import { readLive, writeLive } from "../src/offline/live.js";
 import { queuedUnstarts } from "../src/offline/unstarts.js";
+import { rememberLocalStart, type LocalStart } from "../src/offline/local-starts.js";
+import { enqueue } from "../src/offline/outbox.js";
 import { loadExtras, saveExtras } from "../src/player/stored.js";
 import { beginPlayer, endSession, playerData, toLiveSession } from "../src/player/run.js";
 import { SessionsInProgress } from "../src/components/sessions-in-progress.js";
@@ -216,5 +218,77 @@ describe("Today: a session in progress here that another device saved (ruling 2b
     render({ slotState: () => new Promise(() => undefined), checkWaitMs: 20 });
     await until(() => !!continueLink(), "Continue after the wait");
     expect(continueLink()?.getAttribute("href")).toBe("/session/slot-y");
+  });
+});
+
+describe("Today: a quick start or template started offline (R11)", () => {
+  const LOCAL = "local:c0ffee00-0000-4000-8000-000000000003";
+  const startHere = (over: Partial<LocalStart> = {}): LocalStart => ({
+    localId: LOCAL,
+    clientId: LOCAL.slice("local:".length),
+    userId: "user-1",
+    kind: "quick_start:desk_reset",
+    title: "Desk reset",
+    doc: {} as LocalStart["doc"],
+    date: TODAY,
+    time: "07:30",
+    createdAt: T,
+    ...over,
+  });
+  const saved = (id: string, workoutId: string, seconds: number) => ({
+    id,
+    source: "app" as const,
+    sourceRef: null,
+    workoutId,
+    buildId: workoutId,
+    localDate: TODAY,
+    startedAt: `${TODAY}T07:30:00.000Z`,
+    endedAt: `${TODAY}T07:40:00.000Z`,
+    seconds,
+    plannedSeconds: seconds,
+    minutes: 8,
+    mode: "consistent" as const,
+    theme: null,
+    locationId: "home",
+    blockRef: null,
+    blockNumber: null,
+    completed: true,
+    stepsTotal: 1,
+    stepsDone: 1,
+    note: null,
+    newMove: null,
+    entries: [],
+  });
+
+  it("in progress: Continue, and the server is never asked about it (it has nothing under that id)", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await inProgress(LOCAL, TODAY, "user-1");
+    const asked: string[] = [];
+    render({
+      slotState: async (id) => {
+        asked.push(id);
+        return "started";
+      },
+    });
+    await until(() => !!continueLink(), "Continue");
+    expect(continueLink()?.getAttribute("href")).toBe(`/session/${encodeURIComponent(LOCAL)}`);
+    expect(asked).toEqual([]);
+  });
+
+  it("saved and waiting for the network: its name, done and how long, saved, will sync — as a session saved offline says it; not another account's, nor one refused", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await rememberLocalStart(db, startHere());
+    await enqueue(db, saved("p1", LOCAL, 600), "user-1");
+    await rememberLocalStart(db, startHere({ localId: "local:theirs", clientId: "theirs", userId: "user-2", title: "Their reset" }));
+    await enqueue(db, saved("p2", "local:theirs", 600), "user-2");
+    await rememberLocalStart(db, startHere({ localId: "local:refused", clientId: "refused", title: "Hip opener" }));
+    const refused = await enqueue(db, saved("p3", "local:refused", 600), "user-1");
+    await db.put("outbox", refused.key, { ...refused, state: "failed", lastError: "http_422 played_offline_refused" });
+    render({});
+    await until(() => text().includes("Desk reset"), "the line");
+    expect(text()).toContain("Today · Done · 10 min · saved, will sync");
+    expect(text()).not.toContain("Their reset");
+    expect(text()).not.toContain("Hip opener");
+    expect(continueLink()).toBeUndefined();
   });
 });

@@ -16,15 +16,22 @@ import type { Location, NavigateFunction } from "react-router-dom";
 import type { QueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DocIssueDto, type DocWorkoutDto, type MeResponse, type SessionDto } from "@rg/api-client";
 import { addDays, newId, type WorkoutDoc } from "@rg/domain";
+import type { CheckReading } from "@rg/exercise-library";
 import { startEditing, toProposable, type EditorState } from "@rg/workout";
 import { formatDayShort, formatTime } from "../../components.js";
 import { keepStarted } from "../../components/start-session.js";
+import { saveBuild } from "../../offline/builds.js";
+import { offlineDb } from "../../offline/idb.js";
 import { requestPersistentStorage } from "../../offline/live.js";
+import { forgetLocalStart, isLocalId, localIdOf, rememberLocalStart, startKindOf, unfinishedLocalStart, type LocalStart } from "../../offline/local-starts.js";
+import { meWithOfflineFallback } from "../../offline/me.js";
 import { chimes } from "../../player/audio.js";
+import { localBuild } from "../../player/local-build.js";
+import { forgetStart, saveExtras } from "../../player/stored.js";
 import type { useStudioDraft } from "../../studio-drafts.js";
 import { addTargetHref, freshDoc } from "./add-model.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
-import { answered, EMPTY_BLOCK, forSchedule, judgeDraft, nowHHMM, type BuildCtx, type BuildSource, type Judged } from "./build-model.js";
+import { answered, checkViewOf, clockIn, EMPTY_BLOCK, forSchedule, judgeDraft, nowHHMM, type BuildCtx, type BuildSource, type Judged } from "./build-model.js";
 import type { BuilderArrival } from "./templates-model.js";
 
 /** A planned workout's document, read fresh (`GET /api/workouts/:id/doc`). */
@@ -94,6 +101,22 @@ export function refusalText(e: unknown, what: "start" | "schedule" | "save"): st
 const errorBody = (e: unknown): { error?: string; session?: SessionDto; workout?: DocWorkoutDto } | null =>
   e instanceof ApiError ? ((e.body ?? null) as { error?: string; session?: SessionDto; workout?: DocWorkoutDto } | null) : null;
 
+/** A start made offline and still to finish, as the offer to continue names it (R11): under way, on this device. */
+const heldHere = (s: LocalStart): DocWorkoutDto => ({
+  id: s.localId,
+  date: s.date,
+  time: s.time,
+  title: s.title,
+  intentSummary: s.doc.intent.summary,
+  category: "",
+  sport: "",
+  origin: s.kind.startsWith("template:") ? "template" : "studio",
+  contentState: "started",
+  completionState: "scheduled",
+  docRev: null,
+  minutes: 0,
+});
+
 /** "Scheduled for today at 4 PM." */
 function scheduledText(w: DocWorkoutDto, today: string): string {
   const day = w.date === today ? "today" : w.date === addDays(today, 1) ? "tomorrow" : formatDayShort(w.date);
@@ -148,6 +171,10 @@ export interface BuildFlowsIn {
   focusStatus: () => void;
   /** The account's timezone (its settings); null until known — then the device's clock. */
   timeZone: string | null;
+  /** The readings answered on this page: what is known of now when the device's plan is another day's (R11). */
+  recorded: Readonly<Record<string, CheckReading>>;
+  /** Where it is done (`placeOf`): the place a build made on the device names (R11). */
+  place: { id?: string; name: string; equipment: readonly string[] } | null;
 }
 
 /**
@@ -194,6 +221,8 @@ export function useBuildFlows({
   noteChecks,
   focusStatus,
   timeZone,
+  recorded,
+  place,
 }: BuildFlowsIn) {
   /** Changed since it was saved: the two read alike through the schema (its key order, its empty parts dropped). */
   const dirtyOf = (l: Loaded | null): boolean =>
@@ -304,7 +333,14 @@ export function useBuildFlows({
           (t) => t.today,
           () => today,
         );
-        const res = await api.createWorkout({ date: day, time: nowHHMM(new Date(), timeZone), doc: sent, clientId: once.clientId, startNow: true });
+        let res: Awaited<ReturnType<typeof api.createWorkout>>;
+        try {
+          res = await api.createWorkout({ date: day, time: nowHHMM(new Date(), timeZone), doc: sent, clientId: once.clientId, startNow: true });
+        } catch (e) {
+          // No network (R11): a quick start or a template plays from this device, recorded once the outbox can.
+          if (!(e instanceof ApiError) && startsOnce(cur)) return await startOffline(cur, sent, once);
+          throw e;
+        }
         once.landed();
         fresh = newNotes(res.warnings) ?? [];
         if (source.kind === "template") void api.useTemplate(source.id).catch(() => undefined);
@@ -349,8 +385,70 @@ export function useBuildFlows({
       setFlow({ step: "refused", text: refusalText(e, "start") });
     }
   };
+  /**
+   * START NOW WITH NO NETWORK (R11): a quick start or a template, played from a build made on this device under a
+   * provisional id, and recorded when the outbox can (`offline/local-starts.ts`). Its day and time are the account's
+   * clock's, now; what is known of the day is today's readings here — or, when this device's plan is another day's,
+   * only those answered on this page. Judged for that day as the server would (an unanswered day keeps day-gated moves
+   * out): an error stops it in the validator's words, a check its errors wait on is asked, and today's unanswered check
+   * is offered as online — its answer kept for this session alone. Two of one kind on one day are one session (Continue
+   * it). A device that cannot keep it (no storage, no account known here) still needs a connection.
+   */
+  const startOffline = async (cur: Loaded, sent: WorkoutDoc, once: { clientId: string; landed: () => void }): Promise<void> => {
+    const needsConnection = () => setFlow({ step: "refused", text: refusalText(null, "start") });
+    const kind = startKindOf(sent);
+    const uid = userId() ?? (await meWithOfflineFallback().catch(() => null))?.userId ?? null;
+    const db = await offlineDb().catch(() => null);
+    if (!kind || !uid || !db) return needsConnection();
+    const now = new Date();
+    const clock = clockIn(now, timeZone);
+    const date = clock.date;
+    const held = await unfinishedLocalStart(db, uid, kind, date).catch(() => undefined);
+    if (held) {
+      setFlow({ step: "again", workout: heldHere(held) });
+      return;
+    }
+    const readings = date === bc.today ? bc.readings : recorded;
+    const day = date === bc.today ? judged : judgeDraft(cur.editor.doc, { ...bc, today: date, readings }, date);
+    if (day?.blocked) {
+      setFlow({ step: "refused", text: day.blocked });
+      return;
+    }
+    const waits = day?.checks[0];
+    const unanswered = bc.profiles.find((p) => !answered(readings[p.id]) && !skipped.current.has(p.id));
+    if (waits || unanswered) {
+      setFlow(IDLE);
+      setAsking(waits ? { profileId: waits, then: "start" } : { profileId: unanswered!.id, then: "start", offered: true });
+      return;
+    }
+    const checks = Object.fromEntries(bc.profiles.flatMap((p) => (answered(readings[p.id]) ? [[p.id, { pre: readings[p.id]!.pre, feelingOff: readings[p.id]!.feelingOff }]] : [])));
+    const localId = localIdOf(once.clientId);
+    try {
+      const where = { id: place?.id ?? "home", name: place?.name ?? "Home", equipment: place?.equipment ?? [] };
+      const { build, view } = localBuild(sent, { localId, date, checks, location: where, now: now.getTime() });
+      const start: LocalStart = { localId, clientId: once.clientId, userId: uid, kind, title: sent.title, doc: sent, date, time: nowHHMM(now, timeZone), createdAt: now.getTime() };
+      await rememberLocalStart(db, start);
+      await saveBuild(db, { workoutId: localId, build, view }, now.getTime());
+      await saveExtras(db, { workoutId: localId, title: sent.title, profiles: bc.profiles.map(checkViewOf), userId: uid, savedAt: now.getTime() });
+    } catch {
+      // Too large to build, or the device full: nothing half-kept.
+      await forgetLocalStart(db, localId).catch(() => undefined);
+      await forgetStart(db, localId).catch(() => undefined);
+      return needsConnection();
+    }
+    // Its key is the start's now: the next Start of this draft makes another.
+    once.landed();
+    setFlow(IDLE);
+    navigate(`/session/${encodeURIComponent(localId)}`);
+  };
   /** Continue the one today already holds: back into its session when it is under way, else started now. */
   const continueToday = async (w: DocWorkoutDto): Promise<void> => {
+    // Started offline on this device (R11): its session is here, and only here.
+    if (isLocalId(w.id)) {
+      setFlow(IDLE);
+      navigate(`/session/${encodeURIComponent(w.id)}`);
+      return;
+    }
     if (w.contentState === "started") {
       // Under way — on this device, or on another: what the player plays is left here first, under the workout's own
       // title, as Start leaves it. Read from the server alone, the session names no workout (the player said "Session").
@@ -576,5 +674,7 @@ export function useBuildFlows({
     setFlow({ step: "idle" });
   };
 
-  return { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver };
+  // A quick start's or a template's new workout: its Start can go on with no network, and so its check's answer (R11).
+  const startsHere = startsOnce(ready);
+  return { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver, startsHere };
 }

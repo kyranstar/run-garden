@@ -11,6 +11,11 @@
  * a second session for the slot. A server that can't answer in time (offline, a slow network) leaves Continue to the
  * device, as offline play needs. For an account with no program there is never a session in progress, and nothing
  * renders.
+ *
+ * A quick start or template started offline (R11) is here too: in progress, with Continue (the server, which has nothing
+ * under its provisional id, is never asked); saved and waiting for the network, by its name with "Done · N min · saved,
+ * will sync" — the words a session saved offline has on Today's card — until the outbox records it. One refused waits
+ * in Settings → Data, with Retry and Discard.
  */
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -20,6 +25,8 @@ import { ConfirmDialog, formatDayShort } from "../components.js";
 import { loadBuild } from "../offline/builds.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { liveSessions } from "../offline/live.js";
+import { isLocalId, loadLocalStart } from "../offline/local-starts.js";
+import { outboxEntries } from "../offline/outbox.js";
 import { chimes } from "../player/audio.js";
 import { discardHere } from "../player/save.js";
 import { loadExtras } from "../player/stored.js";
@@ -56,6 +63,25 @@ export async function sessionsInProgress(db: OfflineDb, userId: string): Promise
   return out.sort((a, b) => a.startedAt - b.startedAt).map(({ startedAt: _startedAt, ...s }) => s);
 }
 
+/** A session started offline (R11), saved and waiting for the network. */
+export interface SavingWhenOnline {
+  workoutId: string;
+  title: string;
+  date: string;
+  minutes: number;
+}
+
+/** The device's sessions started offline and saved, waiting for the outbox, for `userId` — oldest first. */
+export async function savingWhenOnline(db: OfflineDb, userId: string): Promise<SavingWhenOnline[]> {
+  const out: SavingWhenOnline[] = [];
+  for (const e of await outboxEntries(db, userId)) {
+    if (e.state !== "pending" || !isLocalId(e.payload.workoutId)) continue;
+    const start = await loadLocalStart(db, e.payload.workoutId);
+    out.push({ workoutId: e.payload.workoutId, title: start?.title ?? "Workout", date: e.payload.localDate, minutes: Math.max(1, Math.round(e.payload.seconds / 60)) });
+  }
+  return out;
+}
+
 export type SlotState = SessionDto["contentState"];
 
 /** How long the line waits for the server before it leaves Continue to the device. */
@@ -71,6 +97,8 @@ export async function slotStates(
   waitMs: number,
 ): Promise<Record<string, SlotState | null>> {
   const one = async (id: string): Promise<SlotState | null> => {
+    // Started offline (R11): the server has nothing under this id — the device's own to continue.
+    if (isLocalId(id)) return null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([ask(id), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), waitMs)))]);
@@ -111,6 +139,15 @@ export function SessionsInProgress({
     retry: false,
     staleTime: 0,
   });
+  // Under ["outbox"]: every drain's answer reads it again (`afterDrain`), so a session recorded leaves the line.
+  const saving = useQuery({
+    queryKey: ["outbox", "saving-when-online", userId],
+    queryFn: async () => savingWhenOnline(await db(), userId!),
+    enabled: !!userId,
+    retry: false,
+    staleTime: 0,
+  });
+  const waiting = saving.data ?? [];
   const items = (q.data ?? []).filter((s) => !shown.includes(s.workoutId));
   const ids = items.map((s) => s.workoutId);
   const server = useQuery({
@@ -122,7 +159,7 @@ export function SessionsInProgress({
     // Asked whatever the browser says of the network: a check that can't be answered leaves Continue to the device.
     networkMode: "always",
   });
-  if (items.length === 0) return null;
+  if (items.length === 0 && waiting.length === 0) return null;
   const checked = server.data;
 
   const discard = async (workoutId: string) => {
@@ -169,6 +206,16 @@ export function SessionsInProgress({
           </div>
         );
       })}
+      {waiting.map((s) => (
+        <div key={s.workoutId} className="today-inprogress-row">
+          <div className="today-session-text">
+            <span className="today-session-name">{s.title}</span>
+            <span className="today-session-meta">
+              {s.date === today ? "Today" : formatDayShort(s.date)} · Done · {s.minutes} min · saved, will sync
+            </span>
+          </div>
+        </div>
+      ))}
       <ConfirmDialog
         open={discarding !== null}
         onClose={() => setDiscarding(null)}

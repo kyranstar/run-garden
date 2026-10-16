@@ -7,8 +7,8 @@
  */
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type ConditionCheckDto, type ConditionViewDto } from "@rg/api-client";
-import { Banner, Sheet } from "../components.js";
+import { api, ApiError, type ConditionCheckDto, type ConditionViewDto } from "@rg/api-client";
+import { Banner, localTodayGuess, Sheet } from "../components.js";
 
 export interface TodayReading {
   value: number | null;
@@ -139,6 +139,7 @@ export function ConditionCheckSheet({
   onClose,
   onSaved,
   onSkip,
+  keepOffline = false,
 }: {
   condition: ConditionViewDto & { today: TodayReading | null };
   onClose: () => void;
@@ -146,12 +147,24 @@ export function ConditionCheckSheet({
   onSaved?: (check: ConditionCheckDto) => void;
   /** Offered before a Start (the builder's, CUJ R5): one tap goes on without it. Absent, there is no Skip. */
   onSkip?: () => void;
+  /**
+   * Asked for a Start that can go on with no network (R11: a quick start's or a template's): offline, the answer is
+   * kept for that session alone — its before-reading, inside its save — and never sent on its own.
+   */
+  keepOffline?: boolean;
 }) {
   const qc = useQueryClient();
   const [value, setValue] = useState<number | null>(condition.today?.value ?? null);
   const [off, setOff] = useState(condition.today?.feelingOff ?? false);
   const save = useMutation({
-    mutationFn: () => api.recordCheck({ profileId: condition.profileId, value, feelingOff: off }),
+    mutationFn: async () => {
+      try {
+        return await api.recordCheck({ profileId: condition.profileId, value, feelingOff: off });
+      } catch (e) {
+        if (!keepOffline || e instanceof ApiError) throw e;
+        return { check: { profileId: condition.profileId, date: localTodayGuess(), value, feelingOff: off } };
+      }
+    },
     onSuccess: (res) => {
       // `{check: null}`: a restore is replacing the account and nothing was recorded — not saved (audit 2a-UI M7).
       if (!res.check) return;
