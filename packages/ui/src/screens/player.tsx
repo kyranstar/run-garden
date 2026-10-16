@@ -29,6 +29,7 @@ import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
 import { createLiveWriter, readLive, writeLive, type LiveWriter } from "../offline/live.js";
+import { isLocalId } from "../offline/local-starts.js";
 import type { OutboxApi } from "../offline/outbox.js";
 import type { UnstartApi } from "../offline/unstarts.js";
 import { chimes as appChimes, type Chimes } from "../player/audio.js";
@@ -77,6 +78,8 @@ export interface PlayerDeps {
   reviewBasis: (workoutId: string) => Promise<ReviewBasisDto>;
   /** The outbox's delivery (Save tries it at once). */
   savePerformed: OutboxApi["savePerformed"];
+  /** The outbox's record of a quick start or template started offline (R11), before its session. */
+  createWorkout?: OutboxApi["createWorkout"];
   /** Discard's un-start (ruling 2b-R9): the slot back to built on the server. */
   unstartSession: UnstartApi["unstartSession"];
   /** Who is signed in, when Start did not say (offline: the answer kept on the device). */
@@ -95,6 +98,7 @@ const defaultDeps: PlayerDeps = {
   getSession: api.getSession,
   reviewBasis: api.reviewBasis,
   savePerformed: api.savePerformed,
+  createWorkout: api.createWorkout,
   unstartSession: api.unstartSession,
   whoAmI: async () => (await meWithOfflineFallback().catch(() => null))?.userId ?? null,
   chimes: appChimes,
@@ -141,6 +145,8 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
   let stored: StoredSessionBuild | undefined = db ? await loadBuild(db, workoutId).catch(() => undefined) : undefined;
   let extras: PlayerExtras | null = db ? ((await loadExtras(db, workoutId).catch(() => undefined)) ?? null) : null;
   if (!stored) {
+    // Started offline (R11), its build gone from the device: the server has nothing under this id.
+    if (isLocalId(workoutId)) return { loaded: { kind: "missing" }, db };
     let session: SessionDto;
     try {
       session = await deps.getSession(workoutId);
@@ -241,7 +247,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const [basis, setBasis] = useState<ReviewBasisDto | null>(loaded.basis);
   // The review's basis, once, while online (Start's own request may have beaten the player to it, or not).
   useEffect(() => {
-    if (basis) return;
+    // A session started offline has no basis on the server (R11): its review is the device's own, as offline.
+    if (basis || isLocalId(src.workoutId)) return;
     let alive = true;
     deps
       .reviewBasis(src.workoutId)
@@ -582,7 +589,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             if (!userId) throw new Error("no signed-in account to save for");
             // The first send's answer reaches the screens whenever it lands, even after Today shows "will sync"
             // (audit 2b-B M-2), and an expired sign-in sends the app to sign-in (M-3).
-            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed }, userId, {
+            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed, createWorkout: deps.createWorkout }, userId, {
               waitMs: deps.saveWaitMs,
               onDrained: (r) => afterDrain(qc, r),
             });

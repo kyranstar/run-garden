@@ -596,6 +596,11 @@ export interface CreateDocWorkoutRequest {
   clientId?: string;
   /** Made to start at once (the builder's Start now): never planned, so booked on no calendar. */
   startNow?: true;
+  /**
+   * Played offline and recorded now (R11; the outbox's only): a quick start's or a template's, with `startNow` and
+   * `clientId`, dated today or up to a week back — the day's gate skipped. 422 `{error: "played_offline_refused", why}`.
+   */
+  playedOffline?: true;
 }
 
 /**

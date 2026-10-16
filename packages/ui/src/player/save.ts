@@ -7,6 +7,7 @@
 import type { PerformedSessionWire } from "@rg/domain";
 import type { OfflineDb } from "../offline/idb.js";
 import { clearLive } from "../offline/live.js";
+import { forgetLocalStart, isLocalId } from "../offline/local-starts.js";
 import { drain, enqueue, outboxEntries, type DrainResult, type OutboxApi } from "../offline/outbox.js";
 import { drainUnstarts, queueUnstart, type UnstartApi } from "../offline/unstarts.js";
 import { forgetStart } from "./stored.js";
@@ -73,6 +74,12 @@ export async function discardSession(
 ): Promise<void> {
   await clearLive(db, workoutId);
   const saving = await savedHere(db, workoutId);
+  if (isLocalId(workoutId)) {
+    // Started offline (R11): the server never knew it — nothing to un-start; the start goes unless a save of it waits.
+    if (!saving) await forgetLocalStart(db, workoutId);
+    await forgetStart(db, workoutId);
+    return;
+  }
   if (!saving && opts.userId) await queueUnstart(db, workoutId, opts.userId);
   await forgetStart(db, workoutId);
   if (saving || !opts.api) return;

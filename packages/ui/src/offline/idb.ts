@@ -7,13 +7,14 @@
  *   outbox   `${performedId}:${payloadHash}` → a saved session waiting for the server
  *   meta     small bookkeeping (the outbox's drain lock)
  *   drafts   the Studio's workout being built, one at a time (`studio-drafts.ts`; version 2)
+ *   starts   localId → a quick start or template started offline, until the outbox records it (`local-starts.ts`; v3)
  *
  * Keys are given with each write (out-of-line). The schema is versioned: `UPGRADES[n]` takes a database from version n
  * to n + 1, so a later version adds a store without touching what is stored.
  */
 
 export const OFFLINE_DB_NAME = "rg-offline";
-export const OFFLINE_STORES = ["builds", "live", "outbox", "meta", "drafts"] as const;
+export const OFFLINE_STORES = ["builds", "live", "outbox", "meta", "drafts", "starts"] as const;
 export type OfflineStore = (typeof OFFLINE_STORES)[number];
 
 const UPGRADES: ReadonlyArray<(db: IDBDatabase) => void> = [
@@ -25,6 +26,10 @@ const UPGRADES: ReadonlyArray<(db: IDBDatabase) => void> = [
   // Version 2 (Stage 2): the Studio's draft.
   (db) => {
     db.createObjectStore("drafts");
+  },
+  // Version 3 (R11): the starts made offline, each until the outbox records its workout.
+  (db) => {
+    db.createObjectStore("starts");
   },
 ];
 export const OFFLINE_DB_VERSION = UPGRADES.length;

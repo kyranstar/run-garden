@@ -21,10 +21,14 @@
  *    answer onto the entry as it is then, and never brings back one discarded meanwhile (audit 2b-A M-8).
  *  - Two drains at once (two tabs, or two triggers) never send one entry twice: a drain holds a lock in IndexedDB,
  *    renewed before each send, which a drain from a tab that died gives up after `lockMs`.
+ *  - A session played under a provisional id (`local:…`, a quick start or template started offline — R11) is sent onto
+ *    the workout recorded for it first (`local-starts.ts`: once, with the device's key). That create is retried as a
+ *    save is (the network, a 5xx); refused, the entry is flagged `failed` (Retry / Discard) and the session stays here.
  */
-import { ApiError } from "@rg/api-client";
+import { ApiError, type CreateDocWorkoutRequest } from "@rg/api-client";
 import { canonicalJson, performedSessionSaveSchema, type PerformedSessionWire, type PerformedSessionWireInput } from "@rg/domain";
 import type { OfflineDb } from "./idb.js";
+import { forgetLocalStart, isLocalId, localStarts, LocalStartMissingError, onTheServer } from "./local-starts.js";
 import { drainUnstarts } from "./unstarts.js";
 
 export type OutboxState = "pending" | "conflict" | "failed";
@@ -48,9 +52,13 @@ export interface OutboxEntry {
   createdAt: number;
 }
 
-/** What sending needs: the api client's `savePerformed` — and `unstartSession`, for Discards that wait (ruling 2b-R9). */
+/**
+ * What sending needs: the api client's `savePerformed` — `createWorkout`, for a session played under a provisional id
+ * (R11; without it such a session waits) — and `unstartSession`, for Discards that wait (ruling 2b-R9).
+ */
 export interface OutboxApi {
   savePerformed(performedId: string, payload: PerformedSessionWire): Promise<unknown>;
+  createWorkout?(body: CreateDocWorkoutRequest): Promise<{ workout: { id: string } }>;
   unstartSession?(workoutId: string): Promise<unknown>;
 }
 
@@ -139,19 +147,30 @@ export async function retryEntry(db: OfflineDb, key: string): Promise<void> {
   await db.update<OutboxEntry>("outbox", key, (e) => (e ? { ...e, state: "pending", attempts: 0, repeats: 0, nextAttemptAt: 0 } : undefined));
 }
 
-/** Settings → Data "Discard": the entry is dropped. */
-export function discardEntry(db: OfflineDb, key: string): Promise<void> {
-  return db.delete("outbox", key);
+/** Settings → Data "Discard": the entry is dropped — and a start made offline that only it was waiting to record. */
+export async function discardEntry(db: OfflineDb, key: string): Promise<void> {
+  const entry = await db.get<OutboxEntry>("outbox", key);
+  await db.delete("outbox", key);
+  if (entry) await forgetUnneededStart(db, entry.payload.workoutId);
 }
 
 /**
- * Delete everything: the deleted account's unsynced saves go with it (ruling 2b-R6 as amended). Another account's stay.
- * Each through `update`, so an entry a drain is answering at that moment is not brought back.
+ * Delete everything: the deleted account's unsynced saves go with it (ruling 2b-R6 as amended), and its starts made
+ * offline. Another account's stay. Each through `update`, so an entry a drain is answering at that moment is not
+ * brought back.
  */
 export async function discardAccountEntries(db: OfflineDb, userId: string): Promise<void> {
   for (const entry of await outboxEntries(db, userId)) {
     await db.update<OutboxEntry>("outbox", entry.key, (current) => (current?.userId === userId ? undefined : current));
   }
+  for (const start of await localStarts(db, userId)) await forgetLocalStart(db, start.localId);
+}
+
+/** A start made offline is kept while a session of it waits here (two tabs' edits of one session are two entries). */
+async function forgetUnneededStart(db: OfflineDb, workoutId: string | null): Promise<void> {
+  if (!isLocalId(workoutId)) return;
+  if ((await outboxEntries(db)).some((e) => e.payload.workoutId === workoutId)) return;
+  await forgetLocalStart(db, workoutId);
 }
 
 /**
@@ -182,6 +201,43 @@ function classify(error: unknown): Outcome {
 
 /** A server failure that counts towards OUTBOX_MAX_SAME_5XX: a 5xx, but not the save's own `busy`. */
 const countsAsRepeat = (error: string) => /^http_5\d\d$/.test(error);
+
+/** A sender that cannot record a start made offline (no `createWorkout`): its session waits for one that can. */
+class CannotCreateError extends Error {}
+
+/**
+ * Why recording a start made offline did not happen (R11): the network or a server failing backs off as a save does; a
+ * refusal (422 `played_offline_refused`, a document that does not read, …) is `failed`, and so is a start gone from
+ * the device. A create's 409 is never a save's `same_payload` or `conflict`.
+ */
+function classifyCreate(error: unknown): Outcome {
+  if (error instanceof LocalStartMissingError) return { kind: "failed", error: "local_start_missing" };
+  if (error instanceof CannotCreateError) return { kind: "transient", error: "network" };
+  if (!(error instanceof ApiError)) return { kind: "transient", error: "network" };
+  if (error.status >= 500 || TRANSIENT_STATUSES.has(error.status)) return { kind: "transient", error: `http_${error.status}` };
+  const code = (error.body as { error?: unknown } | null)?.error;
+  return { kind: "failed", error: typeof code === "string" ? `http_${error.status} ${code}` : `http_${error.status}` };
+}
+
+/** Send one entry: onto the workout recorded for it first, when it was played under a provisional id. */
+async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry): Promise<Outcome> {
+  let payload = entry.payload;
+  if (isLocalId(payload.workoutId)) {
+    const createWorkout = api.createWorkout?.bind(api);
+    try {
+      if (!createWorkout) throw new CannotCreateError();
+      payload = await onTheServer(db, { createWorkout }, payload);
+    } catch (e) {
+      return classifyCreate(e);
+    }
+  }
+  try {
+    await api.savePerformed(entry.performedId, payload);
+    return { kind: "saved" };
+  } catch (e) {
+    return classify(e);
+  }
+}
 
 /** The lock for `owner`, or — held by another drain — when that one's lock runs out. */
 async function claimLock(db: OfflineDb, owner: string, now: number, lockMs: number): Promise<{ ok: boolean; until: number }> {
@@ -222,15 +278,10 @@ export async function drain(
       // Still ours? (A drain that outlived its lock must not race the one that took it over.)
       const still = await claimLock(db, owner, t, lockMs);
       if (!still.ok) return { ...result, locked: true, retryAt: still.until };
-      let outcome: Outcome;
-      try {
-        await api.savePerformed(entry.performedId, entry.payload);
-        outcome = { kind: "saved" };
-      } catch (e) {
-        outcome = classify(e);
-      }
+      const outcome = await send(db, api, entry);
       if (outcome.kind === "saved") {
         await db.delete("outbox", entry.key);
+        await forgetUnneededStart(db, entry.payload.workoutId);
         result.saved += 1;
       } else if (outcome.kind === "conflict") {
         const why = outcome.why;

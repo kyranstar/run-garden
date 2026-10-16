@@ -66,8 +66,8 @@ describe("the offline database", () => {
   });
 });
 
-describe("version 2 adds the Studio's draft store (Stage 2)", () => {
-  it("a database a version-1 build made opens at version 2, keeping everything it held, with `drafts` added", async () => {
+describe("version 2 adds the Studio's draft store (Stage 2); version 3 the starts made offline (R11)", () => {
+  it("a database a version-1 build made opens at the current version, keeping everything it held, with `drafts` and `starts` added", async () => {
     const browser = new IDBFactory();
     // What the player's build (version 1) made: its four stores, and a session in one of them.
     const v1 = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -85,12 +85,40 @@ describe("version 2 adds the Studio's draft store (Stage 2)", () => {
     });
     v1.close();
 
-    expect(OFFLINE_DB_VERSION).toBe(2);
+    expect(OFFLINE_DB_VERSION).toBe(3);
     const db = await openOfflineDb(browser);
     expect(await db.get("live", "w1")).toEqual({ step: 4 });
     await db.put("drafts", "current", { d: 1 });
     expect(await db.get("drafts", "current")).toEqual({ d: 1 });
+    await db.put("starts", "local:1", { s: 1 });
+    expect(await db.get("starts", "local:1")).toEqual({ s: 1 });
     expect(OFFLINE_STORES).toContain("drafts");
+    expect(OFFLINE_STORES).toContain("starts");
+    db.close();
+  });
+
+  it("a database a version-2 build made (the Studio's draft in it) opens at version 3 with its draft, and `starts` added", async () => {
+    const browser = new IDBFactory();
+    const v2 = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = browser.open(OFFLINE_DB_NAME, 2);
+      req.onupgradeneeded = () => {
+        for (const s of ["builds", "live", "outbox", "meta", "drafts"]) req.result.createObjectStore(s);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    await new Promise<void>((resolve) => {
+      const tx = v2.transaction("drafts", "readwrite");
+      tx.objectStore("drafts").put({ title: "Mine" }, "current");
+      tx.oncomplete = () => resolve();
+    });
+    v2.close();
+
+    const db = await openOfflineDb(browser);
+    expect(await db.get("drafts", "current")).toEqual({ title: "Mine" });
+    expect(await db.all("starts")).toEqual([]);
+    await db.put("starts", "local:1", { s: 1 });
+    expect(await db.all("starts")).toEqual([{ s: 1 }]);
     db.close();
   });
 });
