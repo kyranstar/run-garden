@@ -19,6 +19,7 @@ import { loadPreferences } from "../src/services/calendar-sync.js";
 import { createRun, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { approveDesignOps, type DesignedOp } from "../src/services/design-approve.js";
+import { designerRunId } from "../src/services/design-orchestrate.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { promoteWithWhatItHas, STOPPED_NOTES } from "../src/services/design-review.js";
 import { allTools } from "../src/services/design-tools/index.js";
@@ -327,5 +328,43 @@ describe("a week: the main coach moves a session, then plans the set", () => {
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.kind)).toEqual(["plan_adjust", "doc_workout", "doc_workout"]);
     expect(p.title).toBe("2 workouts · 1 plan change");
+  });
+
+  it("a workout taken out of the set keeps the change, and so does a stop of the set", async () => {
+    const a = await seedRichAthlete(db);
+    const prog = await nextProgramme(a.userId);
+    const brief = (key: string, date: string) => ({
+      key, date, purpose: `Workout ${key}: hips and trunk.`, emphasis: "Control.", constraints: "About 30 minutes, at home.", why: "Spaced from the runs.", sameDayWhy: "Short, beside what the day holds.",
+    });
+    const designed = (title: string, date: string) => [t(propose(title, date)), t(submit()), t(finish(`${title}, as briefed.`))];
+    const move = adjust({ workoutId: prog, change: { kind: "move", toDate: day(-4) }, why: "Friday is busy." });
+
+    // drop_workout writes the set's ops: the change stays.
+    const dropRun = (await createRun(db, a.userId, { scope: { kind: "week" }, request: "Plan my week." }, NOW)).run.id;
+    const plan = use("plan_set", { briefs: [brief("a", day(-1)), brief("b", day(-3))] });
+    const dropped = scripted([
+      t(move, plan),
+      ...designed("Thursday hips", day(-1)),
+      ...designed("Saturday trunk", day(-3)),
+      t(use("drop_workout", { opId: designerRunId(dropRun, plan.type === "tool_use" ? plan.id : "", 0, "a"), reason: "Two strength days in a row." })),
+      t(finish("One session around the runs; Friday's strength moves to Sunday.")),
+    ]);
+    expect(await drive(a.userId, dropRun, dropped.deps)).toBe("finished");
+    const [drop] = resultsOf(dropped.requests, "drop_workout");
+    expect(drop).toMatchObject({ data: { dropped: true } });
+    expect((await proposalOf(dropRun))!.ops.map((o) => (o.kind === "plan_adjust" ? o.kind : o.doc.title))).toEqual(["plan_adjust", "Saturday trunk"]);
+
+    // A set that stops after its designers: what was reviewed is proposed, the change beside it.
+    const stopRun = (await createRun(db, a.userId, { scope: { kind: "week" }, request: "Plan my week." }, NOW)).run.id;
+    const stopped = scripted([
+      t(move, use("plan_set", { briefs: [brief("a", day(-1)), brief("b", day(-3))] })),
+      ...designed("Thursday hips", day(-1)),
+      ...designed("Saturday trunk", day(-3)),
+      { ok: false, kind: "no_key", reason: "no_key" },
+    ]);
+    await drive(a.userId, stopRun, stopped.deps);
+    const p = (await proposalOf(stopRun))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops.map((o) => (o.kind === "plan_adjust" ? o.kind : o.doc.title))).toEqual(["plan_adjust", "Thursday hips", "Saturday trunk"]);
   });
 });

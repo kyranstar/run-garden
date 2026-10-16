@@ -242,6 +242,17 @@ describe("decline, the draft and the proposal's read", () => {
   });
 });
 
+describe("a proposal of changes alone, read", () => {
+  it("answers its changes and no workouts' lines, with no place read", async () => {
+    const { id } = await designed({ changes: [skip("w-1-07:00")] });
+    const read = await invoke("GET", `/api/coach/proposals/${id}`);
+    expect(read.json.lines).toEqual([]);
+    expect(read.json.changes.map((c: { opId: string; summary: string }) => [c.opId, c.summary])).toEqual([[planAdjustId("w-1-07:00"), "Easy run — skipped"]]);
+    // The session, the proposal: no place to name.
+    expect(read.total).toBeLessThanOrEqual(4);
+  });
+});
+
 // ── The thread coach ────────────────────────────────────────────────────────────────────────────────────────────────
 
 describe("the thread coach's readers tolerate changes in a designed proposal", () => {

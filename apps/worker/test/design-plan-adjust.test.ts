@@ -578,6 +578,82 @@ describe("approve: each change through the thread coach's own applier", () => {
   });
 });
 
+describe("approve: judged again before the applier runs, and planned within the request's budget", () => {
+  /** A change as a proposal holds it, rewritten to `op` (one stored before its session became what it is now). */
+  async function storedAs(id: string, workoutId: string, op: Record<string, unknown>) {
+    const p = (await proposalOf(id))!;
+    const ops = p.ops.map((o) => (o.kind === "plan_adjust" ? { ...o, id: planAdjustId(workoutId), op: { ...op, workoutId } } : o));
+    await db.update(coachProposals).set({ ops }).where(eq(coachProposals.id, id));
+  }
+
+  it("a length for a programme session, or a skip or move of a race, stored before: refused with why — never the applier's (which would skip a race, or throw on moving one)", async () => {
+    const prog = await nextProgramme();
+    const race = await planned({ date: day(-5), category: "race", title: "Spring 10K" });
+    const a = await proposal({ changes: [skip(rich.outlineToday)] });
+    await storedAs(a.id, prog, { kind: "adjust", durationMinutes: 20 });
+    const b = await proposal({ changes: [skip(await watchRun())] });
+    await storedAs(b.id, race, { kind: "skip", reason: "Rest." });
+    const c = await proposal({ changes: [skip(await planned({ date: day(-1) }))] });
+    await storedAs(c.id, race, { kind: "move", toDate: day(-6) });
+    expect((await approve(a.id)).refused).toEqual([{ opId: planAdjustId(prog), error: "not_editable", cause: "programme", why: "It's a programme's session: the programme plans it." }]);
+    expect((await approve(b.id)).refused).toEqual([{ opId: planAdjustId(race), error: "race", why: "It's the athlete's race: it stays where it is." }]);
+    expect((await approve(c.id)).refused.map((r) => r.error)).toEqual(["race"]);
+    expect(await rowOf(race)).toMatchObject({ completionState: "scheduled", effectiveDate: day(-5) });
+    expect((await rowOf(prog)).fallbackEstimatedDurationSeconds).toBeNull();
+  });
+
+  it("a move or a length already in place is recorded applied with nothing written — the applier is never run", async () => {
+    const run = await watchRun();
+    const long = await planned({ date: day(-1), minutes: 50 });
+    const { id } = await proposal({ changes: [moveTo(run, day(-4)), shorten(long, 30)] });
+    const ops = (await proposalOf(id))!.ops as DesignedPlanOp[];
+    // Since the coach proposed them, the athlete made both changes by hand.
+    await db.update(plannedWorkouts).set({ effectiveDate: day(-4) }).where(eq(plannedWorkouts.id, run));
+    await db.update(plannedWorkouts).set({ sourceEstimatedDurationSeconds: 1800 }).where(eq(plannedWorkouts.id, long));
+    const res = await approve(id);
+    expect(res.status).toBe("approved");
+    expect(res.changed.map((c) => c.opId)).toEqual(ops.map((o) => o.id));
+    // The approve's own writes only — the proposal's outcomes and the receipt — and no read of the applier's (its
+    // threshold read of daily_health is its first statement).
+    const writes = statements.filter((s) => /^\s*(insert|update|delete)/i.test(s));
+    expect(writes.map((s) => s.match(/^\s*(?:insert into|update)\s+"(\w+)"/i)?.[1])).toEqual(["coach_proposals", "coach_messages"]);
+    expect(statements.filter((s) => /daily_health/.test(s))).toEqual([]);
+  });
+
+  it("the changes go first and share the applier's fixed part once; what doesn't fit waits — the workouts after them", async () => {
+    const one = await planned({ date: day(-1) });
+    const two = await planned({ date: day(-2) });
+    const { id } = await proposal({ changes: [skip(one), skip(two)], docs: [{ title: "Hips", date: day(-1) }] });
+    const workout = (await proposalOf(id))!.ops.find((o) => o.kind === "doc_workout")!.by.runId;
+    const room = PLAN_BATCH_FIXED + 2 * SKIP_COST;
+    // One short of both skips: the first goes (with the fixed part), the second and the workout wait — each once.
+    let res = await approveDesignOps(db, rich.userId, (await proposalOf(id))! as never, {}, ctx(), room - 1);
+    expect(res.changed.map((c) => c.workoutId)).toEqual([one]);
+    expect(res.remaining).toEqual([planAdjustId(two), workout]);
+    // Room for both: the fixed part is paid once.
+    const fresh = await proposal({ changes: [skip(await planned({ date: day(-1) })), skip(await planned({ date: day(-2) }))] });
+    res = await approveDesignOps(db, rich.userId, (await proposalOf(fresh.id))! as never, {}, ctx(), room);
+    expect(res.changed).toHaveLength(2);
+    expect(res.remaining).toEqual([]);
+  });
+
+  it("a move is costed by the sessions its new day holds: one too many for the room waits", async () => {
+    const busy = day(-6);
+    await planned({ date: busy, time: "07:00" });
+    await planned({ date: busy, time: "12:00" });
+    const first = await planned({ date: day(-1) });
+    const mover = await planned({ date: day(-2) });
+    // The new day holds the fixture's run and the two added: three.
+    const dayRows = (await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.userId, rich.userId), eq(plannedWorkouts.effectiveDate, busy)))).length;
+    const { id } = await proposal({ changes: [skip(first), moveTo(mover, busy)] });
+    const room = PLAN_BATCH_FIXED + SKIP_COST + planOpCostOf({ op: { kind: "move", workoutId: mover, toDate: busy } } as PlanAdjustOp, dayRows) - 1;
+    const res = await approveDesignOps(db, rich.userId, (await proposalOf(id))! as never, {}, ctx(), room);
+    expect(res.changed.map((c) => c.workoutId)).toEqual([first]);
+    expect(res.remaining).toEqual([planAdjustId(mover)]);
+    expect((await rowOf(mover)).effectiveDate).toBe(day(-2));
+  });
+});
+
 describe("decline: per change", () => {
   it("declines one change with the athlete's reason; the rest is approved after", async () => {
     const run = await watchRun();
