@@ -400,6 +400,10 @@ function holdShowsCapacity(seconds: number | null, p: Prescription | null): bool
   return p.holdSec !== undefined && seconds > p.holdSec + HOLD_WINDOW_SEC;
 }
 
+/** A done set's columns, in the order loggedSets selects them: session, entry, set number, side, move, reps, seconds,
+ * load (kg). */
+type SetValues = [string, number, number, string | null, string, number | null, number | null, number | null];
+
 /** The done sets of these moves in [from, to], one physical session once, each judged against its prescription. */
 async function loggedSets(db: Db, userId: string, from: string, to: string, exerciseIds: readonly string[]): Promise<LoggedSet[]> {
   const inWindow = and(
@@ -431,25 +435,32 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
       })
       .from(performedSessions)
       .where(inWindow),
-    db
-      .select({
-        sessionId: performedSets.performedSessionId,
-        entryIndex: performedSets.entryIndex,
-        setIndex: performedSets.setIndex,
-        side: performedSets.side,
-        exerciseId: performedSets.exerciseId,
-        reps: performedSets.reps,
-        seconds: performedSets.seconds,
-        kg: performedSets.loadKg,
-      })
-      .from(performedSets)
-      .where(
-        and(
-          inArray(performedSets.exerciseId, moves),
-          eq(performedSets.done, true),
-          inArray(performedSets.performedSessionId, db.select({ id: performedSessions.id }).from(performedSessions).where(inWindow)),
-        ),
-      ),
+    // The sets as plain rows (`values()`, mapped here by position): thousands over two years — the board asks every
+    // measure over every logged day — and drizzle's mapping of each row was most of their cost. Every column is a plain
+    // integer, real or text: there is nothing to decode.
+    (async () => {
+      const rows = (await db
+        .select({
+          sessionId: performedSets.performedSessionId,
+          entryIndex: performedSets.entryIndex,
+          setIndex: performedSets.setIndex,
+          side: performedSets.side,
+          exerciseId: performedSets.exerciseId,
+          reps: performedSets.reps,
+          seconds: performedSets.seconds,
+          kg: performedSets.loadKg,
+        })
+        .from(performedSets)
+        .where(
+          and(
+            inArray(performedSets.exerciseId, moves),
+            eq(performedSets.done, true),
+            inArray(performedSets.performedSessionId, db.select({ id: performedSessions.id }).from(performedSessions).where(inWindow)),
+          ),
+        )
+        .values()) as SetValues[];
+      return rows.map(([sessionId, entryIndex, setIndex, side, exerciseId, reps, seconds, kg]) => ({ sessionId, entryIndex, setIndex, side, exerciseId, reps, seconds, kg }));
+    })(),
     // The builds those sessions played: an app session's own, a watch session's workout's locked ones.
     db
       .select({
@@ -861,7 +872,9 @@ export async function measureKeyResults(
 
   let labels = { facts: new Map<string, RunFacts>(), raceDays: new Set<string>() };
   if (bests.length > 0) {
-    const candidates = runs.filter((r) => bests.some((m) => r.date >= windowStart(today, m.windowDays) && qualifiesFor(m, r)));
+    // Each best's window start, once — not once a run (the board asks every measure over every logged day too).
+    const windows = bests.map((m) => ({ m, from: windowStart(today, m.windowDays) }));
+    const candidates = runs.filter((r) => windows.some(({ m, from }) => r.date >= from && qualifiesFor(m, r)));
     if (candidates.length > 0) {
       const [facts, raceDays] = await Promise.all([runFacts(db, userId, candidates), raceDaysOf(db, userId, ctx.raceDate)]);
       labels = { facts, raceDays };
