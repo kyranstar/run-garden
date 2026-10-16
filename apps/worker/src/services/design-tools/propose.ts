@@ -13,7 +13,9 @@
  *    proposal states what will be played, so the designer swaps it in this revision (the Studio's save lets the
  *    alternate stand in; a proposal never leans on that);
  *  - a document whose discipline is a run (`run_unsupported`: the app can't play one yet, so it could never be
- *    approved);
+ *    approved), and an objective or key result id that isn't the athlete's (`unknown_objective`) — validate_workout
+ *    refuses both the same way (act-common.ts);
+ *  - a proposal already with the athlete (`proposal_pending`: the main run's finish made it pending; "call finish");
  *  - a revision of a workout another run of this design already revises (`target_taken`) — but not the first version a
  *    set's redo replaces (`ctx.replaces`);
  *  - a third draft from one run, once two rounds of review are done (`rounds_done`: ruling 4).
@@ -45,10 +47,11 @@
  * it (design-review.ts `settleNoReview`); one whose review is in answers it. Without the hooks (tests of this tool
  * alone), a later draft replaces the earlier and nothing is reviewed: the proposal never becomes pending.
  *
- * Nine statements at most: the athlete (with the gear, set-aside moves, recent sessions' ids, the target row, the
- * proposal and the restore marker), the moves done cleanly, the recent sessions (four), one write — an upsert guarded by
- * the ops it read, so a write that raced another is refused rather than lost — the reviewer sub-run's insert, and, when
- * the reviewer can't be started, the round dropped.
+ * Nine statements at most: the athlete (with the gear, set-aside moves, recent sessions' ids, the focus areas, the
+ * objectives' and key results' ids, the target row, the proposal and the restore marker), the moves done cleanly, the
+ * recent sessions (four), one write — an upsert guarded by the ops it read and by the status it was written with, so a
+ * write that raced another is refused rather than lost, and a proposal made pending meanwhile is never moved back to
+ * unreviewed — the reviewer sub-run's insert, and, when the reviewer can't be started, the round dropped.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -79,6 +82,7 @@ import {
   docValidateCtx,
   errorsLine,
   freeTextRefusal,
+  idsRefusal,
   isErr,
   issueOut,
   judge,
@@ -86,7 +90,9 @@ import {
   objectField,
   parseAct,
   readDocAthlete,
+  runUnsupported,
   WARNINGS_SHOWN,
+  withFocusRefs,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, parsedJson, refuse } from "./read-common.js";
 
@@ -205,7 +211,7 @@ interface TargetRow {
 export const proposeWorkout: DesignTool = {
   name: "propose_workout",
   description:
-    "Submit a validated draft and where it goes: a new workout on a date (today or later), or a revision of one that can still change, from its current revision. It is reviewed independently before the athlete sees it. Call again with a revised draft to replace yours.",
+    "The main coach (now or later today) and designers: a draft and where it goes — a new workout on a date (today or later), or a revision of one that can still change, from its current revision. validate_workout's checks first (errors refuse it, using no round), then an independent review. A revised draft is reviewed too: the proposal keeps the better-scoring version.",
   inputSchema: {
     type: "object",
     properties: {
@@ -251,10 +257,10 @@ export const proposeWorkout: DesignTool = {
     const mainRunId = mainRunIdOf(ctx);
     if (!mainRunId) return refuse("no_main_run", "This designer run has no main run to propose into.", "Finish with what you have.");
     const proposalId = designProposalId(mainRunId);
-    const doc = coachDoc(p.doc, mainRunId);
+    const submitted = coachDoc(p.doc, mainRunId);
     const pw = plannedWorkouts;
     const a = await readDocAthlete(ctx, {
-      placeId: docPlaceId(doc),
+      placeId: docPlaceId(submitted),
       extras: {
         propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
         propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
@@ -269,6 +275,7 @@ export const proposeWorkout: DesignTool = {
     });
     if (isErr(a)) return a;
     const today = a.athlete.today;
+    const doc = withFocusRefs(submitted, a.focusAreas);
     const opsText = typeof a.extra.propOps === "string" ? a.extra.propOps : null;
     const ops = ((opsText ? parsedJson(opsText) : null) as DocWorkoutOp[] | null) ?? [];
     const status = typeof a.extra.propStatus === "string" ? a.extra.propStatus : null;
@@ -280,6 +287,8 @@ export const proposeWorkout: DesignTool = {
       if (replayed) return replayed;
     }
 
+    // The main run's finish made it pending: it is the athlete's to approve now, and nothing this run drafts changes it.
+    if (status === "pending") return refuse("proposal_pending", "Your proposal is already with the athlete.", "Call finish.");
     if (status !== null && !(OPEN as readonly string[]).includes(status)) {
       return refuse("proposal_closed", `This design's proposal is already ${status}.`, "Finish: say what you would change, and the athlete can ask again.");
     }
@@ -335,16 +344,13 @@ export const proposeWorkout: DesignTool = {
 
     const free = freeTextRefusal(doc, base);
     if (free) return free;
+    const ids = idsRefusal(doc, a);
+    if (ids) return ids;
     const judged = judge(doc, await docValidateCtx(ctx, a, date));
+    // A run document first, as validate_workout refuses it: no fix of its errors makes it one the app can play.
+    if (judged.derived?.discipline === "run") return runUnsupported();
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
       return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, date === today));
-    }
-    if (judged.derived.discipline === "run") {
-      return refuse(
-        "run_unsupported",
-        "This draft is mostly running, and the app can't play a run document yet, so it could never be approved.",
-        "Keep runs on the plan as they are; propose strength, mobility or care work around them.",
-      );
     }
 
     const draftTarget: DocWorkoutTarget =
@@ -523,8 +529,10 @@ function whyNotEditable(row: TargetRow): string | null {
 }
 
 /**
- * Write the proposal with `ops`: made, or updated while it is still open and still holds the ops this call read
- * (`readOps`, null for none). One statement; false when nothing was written (another write came between).
+ * Write the proposal with `ops`: made, or updated while it still has the status this call writes — unreviewed (a
+ * rehearsal's, rehearsal), never pending: the finish made that one the athlete's, and a draft never moves it back — and
+ * still holds the ops this call read (`readOps`, null for none). One statement; false when nothing was written (another
+ * write came between).
  */
 async function upsertProposal(ctx: ToolContext, id: string, ops: DocWorkoutOp[], readOps: string | null, at: string): Promise<boolean> {
   const status = proposalStatusOf(ctx.run.rehearsal);
@@ -534,8 +542,8 @@ async function upsertProposal(ctx: ToolContext, id: string, ops: DocWorkoutOp[],
     INSERT INTO coach_proposals (id, user_id, plan_id, title, evidence, rationale, flags, ops, status, created_at, expires_at)
     VALUES (${id}, ${ctx.userId}, NULL, ${title}, '', ${rationale}, '[]', ${json}, ${status}, ${at}, ${expiresAt})
     ON CONFLICT (id) DO UPDATE SET title = excluded.title, rationale = excluded.rationale, ops = excluded.ops,
-      status = excluded.status, expires_at = excluded.expires_at
-    WHERE coach_proposals.user_id = excluded.user_id AND coach_proposals.status IN ('unreviewed', 'pending', 'rehearsal')
+      expires_at = excluded.expires_at
+    WHERE coach_proposals.user_id = excluded.user_id AND coach_proposals.status = excluded.status
       AND coach_proposals.ops IS ${readOps}
     RETURNING id
   `)) as Array<{ id: string }>;

@@ -259,7 +259,11 @@ export interface DesignTool<I = any> {
   inputSchema: Record<string, unknown>;
   /** The most D1 statements one call runs (see above). */
   statementCost: number;
-  /** The roles that may call it; any other role gets a `ToolErr`, and the model never sees it in its list. */
+  /**
+   * The roles that may call it; a call from any other role is answered with a `ToolErr` (`not_for_role`). Every role
+   * is offered every tool — one shared cache prefix (coach-runs.ts) — so a role-limited tool's description names its
+   * roles.
+   */
   roles: ToolRole[];
   control?: ToolControl;
   run(ctx: ToolContext, input: I): Promise<ToolOk | ToolErr>;

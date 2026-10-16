@@ -252,16 +252,18 @@ describe("an answer to a check-in question is kept as the athlete's answer", () 
     expect(note.payload).toMatchObject({ receipt: { undo: { handle: `aa:${runId}:${ask.id}` } } });
   });
 
-  it("words typed to a declared question are kept as text with no value, read back marked; energy is fresh for the day", async () => {
+  it("words typed to a declared question stay the run's answer, never the check-in's (3A-B, M8); a tapped chip is kept, energy fresh for the day", async () => {
     const { a, runId, rows } = await askAndAnswer({ questions: [energy, sore], answers: ["running on fumes", "a bit sore"] });
     const byQ = Object.fromEntries(rows.map((r) => [r.questionId, r]));
-    expect(byQ.energy).toMatchObject({ subjectKind: null, valueNum: null, valueChoice: null, text: "running on fumes", expiresAt: TODAY });
+    expect(byQ.energy).toBeUndefined();
     expect(byQ.soreness).toMatchObject({ valueNum: 3 });
     const read = await readAnswers.run(
       { db, env, userId: a.userId, run: { id: runId, role: "main", scope: { kind: "now" }, parentId: null, rehearsal: false }, now: NOW },
       { question: "energy", since: TODAY },
     );
-    expect(JSON.stringify(read)).toContain('{"untrusted":true,"text":"running on fumes"}');
+    expect(JSON.stringify(read)).not.toContain("running on fumes");
+    const chipped = await askAndAnswer({ questions: [energy], answers: ["low"] });
+    expect(chipped.rows).toEqual([expect.objectContaining({ questionId: "energy", valueNum: 3, valueChoice: "low", text: null, expiresAt: TODAY })]);
   });
 
   it("a chip that names its own area keeps that area", async () => {

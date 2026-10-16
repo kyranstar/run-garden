@@ -7,8 +7,10 @@
  * call answers the same. Errors must be fixed before propose_workout takes the draft; warnings are costs the designer
  * may accept with a reason.
  *
- * A free-text move is refused, as propose_workout refuses it (act-common.ts `freeTextRefusal`); told which workout the
- * draft revises (`workoutId`), it allows the free-text moves that workout's document already holds, unchanged.
+ * It refuses what propose_workout refuses whatever the day (act-common.ts), so a draft never passes here only to be
+ * refused there: a free-text move (`freeTextRefusal` — told which workout the draft revises, `workoutId`, it allows the
+ * free-text moves that workout's document already holds, unchanged), an objective or key result id that isn't the
+ * athlete's (`idsRefusal`), and a run document (`runUnsupported`). A focus-area id stands for its refs (`withFocusRefs`).
  * Six statements at most: the athlete (with the gear, the set-aside moves, the recent sessions' ids and the revised
  * workout's document), the moves done cleanly, and the recent sessions (four).
  */
@@ -25,6 +27,7 @@ import {
   docValidateCtx,
   ERRORS_SHOWN,
   freeTextRefusal,
+  idsRefusal,
   isErr,
   issueOut,
   judge,
@@ -32,7 +35,9 @@ import {
   objectField,
   parseAct,
   readDocAthlete,
+  runUnsupported,
   WARNINGS_SHOWN,
+  withFocusRefs,
   WORKOUT_DOC_JSON_SCHEMA,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, refuse } from "./read-common.js";
@@ -42,7 +47,7 @@ const input = z.object({ doc: objectField, date: dateField, workoutId: z.string(
 export const validateWorkout: DesignTool = {
   name: "validate_workout",
   description:
-    "Check a draft for its date, free: the errors to fix (a condition's refusal, an unknown move, a malformed part) and the advisory notes, with the minutes, balance and gear derived from it. Call it on every draft and after each change.",
+    "Check a draft for its date, free: the errors to fix (a condition's refusal, an unknown move, a malformed part) and the advisory notes, with the minutes, balance and gear derived from it. It refuses what propose_workout refuses (a run document, an id that isn't the athlete's). Use it while you are still shaping a draft.",
   inputSchema: {
     type: "object",
     properties: {
@@ -58,10 +63,10 @@ export const validateWorkout: DesignTool = {
   async run(ctx, raw) {
     const p = parseAct(input, raw, "doc (a workout document), date (YYYY-MM-DD) and optionally workoutId");
     if (isErr(p)) return p;
-    const doc = coachDoc(p.doc, mainRunIdOf(ctx) ?? ctx.run.id);
+    const submitted = coachDoc(p.doc, mainRunIdOf(ctx) ?? ctx.run.id);
     const pw = plannedWorkouts;
     const a = await readDocAthlete(ctx, {
-      placeId: docPlaceId(doc),
+      placeId: docPlaceId(submitted),
       ...(p.workoutId
         ? { extras: { baseDoc: sql`(select ${pw.workoutDoc} from ${pw} where ${and(eq(pw.id, p.workoutId), eq(pw.userId, ctx.userId), isNull(pw.archivedAt))})` } }
         : {}),
@@ -71,9 +76,13 @@ export const validateWorkout: DesignTool = {
     if (p.date < today) {
       return refuse("past_date", `${p.date} is before today (${today}) where the athlete is.`, "Check it for today or a later day.");
     }
+    const doc = withFocusRefs(submitted, a.focusAreas);
     const free = freeTextRefusal(doc, p.workoutId ? parseStoredWorkoutDoc(a.extra.baseDoc) : null);
     if (free) return free;
+    const ids = idsRefusal(doc, a);
+    if (ids) return ids;
     const judged = judge(doc, await docValidateCtx(ctx, a, p.date));
+    if (judged.derived?.discipline === "run") return runUnsupported();
     const minutes = judged.derived?.estimatedMinutes;
     const notes = judged.warnings.length ? `, ${judged.warnings.length} note${judged.warnings.length === 1 ? "" : "s"}` : "";
     return {

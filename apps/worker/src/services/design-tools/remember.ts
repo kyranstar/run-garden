@@ -51,7 +51,7 @@ const m = coachMemory;
 export const remember: DesignTool = {
   name: "remember",
   description:
-    "Keep a durable fact, rule, note (with expires) or observation (with evidence) about the athlete. Confidence: stated (they said it) or inferred (you concluded it) — only the athlete confirms. replaces: an item's id, to update it.",
+    "The main coach and designers: keep a durable fact, rule, note (with expires) or observation (with evidence) about the athlete. Confidence: stated (they said it) or inferred (you concluded it) — only the athlete confirms. replaces: an item's id, to update it.",
   inputSchema: {
     type: "object",
     properties: {

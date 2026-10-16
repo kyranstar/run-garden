@@ -17,12 +17,19 @@
  *    profile's choice, the place marked default, the first made, the Home preset). At most 1 + 1 + 4 statements.
  *  - A free-text move is refused (`freeTextRefusal`): no rule can judge a move with no library record. A revision may
  *    keep one its workout already holds, unchanged.
+ *  - A run document is refused (`runUnsupported`), by validate_workout and propose_workout alike: the app can't play
+ *    one yet, so it could never be approved.
+ *  - The ids a document names beyond the library — `intent.objectiveIds`, an item's `test.keyResultId` — must be the
+ *    athlete's own (`idsRefusal`, fatal: an invented id would attach the workout to nothing), read in the statement
+ *    the tools already run. A focus-area id in `intent.focus` stands for its library refs (`withFocusRefs`), so the
+ *    document keeps the library's ids and the validator's focus check reads them.
  *  - Issues go back to the model as `{ path, code, message, fix? }`, capped and counted; a refusal's line names each
- *    error's code.
+ *    error's code. Two fixes are the tool layer's (`judge`): an unknown move's points at search_library, and a gated
+ *    move's stand-in on a day ahead is offered only from its own family — none when nothing of it passes.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
-import { exercisePrefs, performedSessions } from "@rg/database";
+import { athleteProfiles, exercisePrefs, keyResults, objectives, performedSessions } from "@rg/database";
 import {
   addDays,
   BASED_ON_KINDS,
@@ -35,7 +42,7 @@ import {
   workoutDocSchema,
   type WorkoutDoc,
 } from "@rg/domain";
-import { EQUIPMENT_IDS, EXERCISES } from "@rg/exercise-library";
+import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { defaultFromRow, defaultPlaceSql, namedFromRow, ownPlaceSql, type PlaceGear } from "../default-place.js";
 import { recentOf } from "../doc-workouts.js";
@@ -110,7 +117,7 @@ const DOSE = {
     breaths: num(1, 200, true),
     carryM: num(1, 5000),
     perSide: { type: "boolean" },
-    max: { const: true, description: "To max: reps or holdSec become a floor, not a cap." },
+    max: { const: true, description: "To max: reps or holdSec become a floor, not a cap — what a test needs." },
     tempo: { type: "object", properties: { eccentricSec: num(0, 20), pauseSec: num(0, 30), concentricSec: num(0, 20) }, additionalProperties: false },
     load: { anyOf: [{ type: "object", properties: { typed: str(20, 'As the athlete writes it: "35 lb".'), kg: num(0, 500) }, required: ["typed", "kg"], additionalProperties: false }, { const: "bodyweight" }] },
     restSec: num(0, 900),
@@ -148,7 +155,12 @@ const ITEM = {
           maxItems: 3,
           items: { type: "object", properties: { libraryId: str(80), why: { type: "string", maxLength: 120 } }, required: ["libraryId"], additionalProperties: false },
         },
-        test: { type: "object", properties: { keyResultId: str(80) }, additionalProperties: false },
+        test: {
+          type: "object",
+          description: "A test of a key result: this move to max (dose.max). It counts as evidence once done and logged.",
+          properties: { keyResultId: str(80, "The key result it measures (read_objectives).") },
+          additionalProperties: false,
+        },
       },
       required: ["kind", "libraryId", "dose"],
       additionalProperties: false,
@@ -163,6 +175,10 @@ const ITEM = {
   ],
 } as const;
 
+/** The library's place presets and a bare room, in words (the place filter of search_library says the same). */
+const PRESET_WORDS = `${LOCATION_PRESETS.map((p) => p.id).slice(0, -1).join(", ")} or ${LOCATION_PRESETS.at(-1)!.id}`;
+export const PLACE_WORDS = `a preset — ${PRESET_WORDS} — or "none": a bare room — ${NO_EQUIPMENT_GEAR.join(", ")}, nothing brought`;
+
 /** A workout document as the tools take it (`source` is the tool's to set). */
 export const WORKOUT_DOC_JSON_SCHEMA = {
   type: "object",
@@ -175,9 +191,9 @@ export const WORKOUT_DOC_JSON_SCHEMA = {
       properties: {
         summary: str(200, "One sentence: what this workout is for today."),
         goals: { type: "array", maxItems: 6, items: { enum: [...GOAL_IDS] } },
-        focus: { type: "array", maxItems: 12, items: str(40, "A region or muscle id.") },
+        focus: { type: "array", maxItems: 12, items: str(40, "A region or muscle id, or one of the athlete's focus-area ids (it stands for its refs).") },
         effort: { enum: [...EFFORT_LEVELS] },
-        objectiveIds: { type: "array", maxItems: 10, items: str(80) },
+        objectiveIds: { type: "array", maxItems: 10, items: str(80, "An id of the athlete's objectives.") },
       },
       required: ["summary", "goals", "focus", "effort"],
       additionalProperties: false,
@@ -185,8 +201,13 @@ export const WORKOUT_DOC_JSON_SCHEMA = {
     setting: {
       type: "object",
       properties: {
-        placeId: str(80, 'A place id from read_profile (its gear is checked), or "none" for no equipment; left out: the default place.'),
-        equipment: { type: "array", maxItems: 20, items: { enum: [...EQUIPMENT_IDS] } },
+        placeId: str(80, `Where it is done, whose gear is checked: a place id from read_profile, ${PLACE_WORDS}. Left out: the default place.`),
+        equipment: {
+          type: "array",
+          maxItems: 20,
+          description: "The gear this workout uses. placeId decides what is available: listing gear here adds none.",
+          items: { enum: [...EQUIPMENT_IDS] },
+        },
         targetMinutes: num(1, 600),
       },
       additionalProperties: false,
@@ -234,6 +255,11 @@ export interface DocAthlete {
   setAside: string[];
   /** Sessions that hold the last one and the last seven days' (by id; at most RECENT_IDS_MAX). */
   recentIds: string[];
+  /** The athlete's focus areas: id → the library regions and muscles it means. */
+  focusAreas: Map<string, string[]>;
+  /** The ids a document may serve or test: the athlete's objectives (not dropped) and their key results. */
+  objectiveIds: Set<string>;
+  keyResultIds: Set<string>;
 }
 
 /** Enough for a week of sessions and the last before it, under one chunk of `loadSessionsById` (90). */
@@ -258,13 +284,18 @@ function recentSql(userId: string, now: Date): SQL {
 /**
  * The athlete a document is judged for, in ONE statement: `readAthlete` (preferences, profiles, today's reading) with
  * the moves set aside, the place's gear (default-place.ts: the place the document names, else the default place), the
- * recent sessions' ids, and the caller's own `extras`. A place the document names that is no place is refused.
+ * recent sessions' ids, the focus areas, the objectives' and key results' ids, and the caller's own `extras`. A place
+ * the document names that is no place is refused.
  */
 export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; extras?: Record<string, SQL> }): Promise<DocAthlete | ToolErr> {
+  const live = sql`(select ${objectives.id} from ${objectives} where ${objectives.userId} = ${ctx.userId} and ${objectives.status} != 'dropped')`;
   const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
     actSetAside: sql`(select json_group_array(${exercisePrefs.exerciseId}) from ${exercisePrefs} where ${exercisePrefs.userId} = ${ctx.userId} and ${exercisePrefs.excluded} = 1)`,
     actPlace: o.placeId ? ownPlaceSql(ctx.userId, o.placeId) : defaultPlaceSql(ctx.userId),
     actRecent: recentSql(ctx.userId, ctx.now),
+    actFocus: sql`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${ctx.userId})`,
+    actObjectives: sql`(select json_group_array(id) from ${live})`,
+    actKeyResults: sql`(select json_group_array(${keyResults.id}) from ${keyResults} where ${keyResults.userId} = ${ctx.userId} and ${keyResults.objectiveId} in ${live})`,
     ...o.extras,
   });
   let place: DocPlace;
@@ -274,7 +305,7 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
       return refuse(
         "unknown_place",
         `setting.placeId ${JSON.stringify(o.placeId)} is not one of the athlete's places.`,
-        'Use a place id from read_profile (or home, gym, mat, or "none" for no equipment), or leave placeId out to use the default place.',
+        `Use a place id from read_profile, or ${PLACE_WORDS}; or leave placeId out to use the default place.`,
       );
     }
     place = { id: named.id, equipment: named.equipment, default: false, kind: named.kind };
@@ -282,13 +313,85 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
     const d = defaultFromRow(extra.actPlace);
     place = { id: d.id, equipment: d.equipment, default: true, kind: d.kind };
   }
+  const ids = (raw: unknown): Set<string> => new Set(parsedArray(raw).filter((x): x is string => typeof x === "string"));
+  const focusAreas = new Map(
+    parsedArray(extra.actFocus).flatMap((f) => {
+      const x = f as { id?: unknown; refs?: unknown } | null;
+      return typeof x?.id === "string" && Array.isArray(x.refs) ? [[x.id, x.refs.filter((r): r is string => typeof r === "string")] as const] : [];
+    }),
+  );
   return {
     athlete,
     extra,
     place,
     setAside: parsedArray(extra.actSetAside).filter((x): x is string => typeof x === "string"),
     recentIds: parsedArray(extra.actRecent).filter((x): x is string => typeof x === "string"),
+    focusAreas,
+    objectiveIds: ids(extra.actObjectives),
+    keyResultIds: ids(extra.actKeyResults),
   };
+}
+
+// ── What a document names beyond the library ────────────────────────────────────────────────────────────────────────
+
+const LIBRARY_AREAS = new Set<string>([...REGIONS, ...MUSCLES]);
+/** The most focus ids a document holds (the schema's bound). */
+const FOCUS_MAX = 12;
+
+/**
+ * The document with each focus-area id in `intent.focus` replaced by its refs (the library's regions and muscles), in
+ * order, each once — a library id stays as it is, and anything else is left for the validator to name. The document
+ * keeps the library's ids, which the Studio and the suggestions read.
+ */
+export function withFocusRefs(doc: Record<string, unknown>, focusAreas: ReadonlyMap<string, readonly string[]>): Record<string, unknown> {
+  const intent = doc.intent as { focus?: unknown } | null | undefined;
+  if (!intent || typeof intent !== "object" || !Array.isArray(intent.focus)) return doc;
+  const focus = intent.focus as unknown[];
+  if (!focus.some((f) => typeof f === "string" && !LIBRARY_AREAS.has(f) && focusAreas.has(f))) return doc;
+  const out: unknown[] = [];
+  for (const f of focus) {
+    const refs = typeof f === "string" && !LIBRARY_AREAS.has(f) ? focusAreas.get(f) : undefined;
+    for (const x of refs ?? [f]) if (!out.includes(x)) out.push(x);
+  }
+  return { ...doc, intent: { ...intent, focus: out.slice(0, FOCUS_MAX) } };
+}
+
+/**
+ * An objective or key result id the athlete doesn't have — refused (fatal only when wrong: an invented id attaches the
+ * workout to nothing, and the card would name it). Every one is named at once; null when all are theirs.
+ */
+export function idsRefusal(doc: Record<string, unknown>, a: Pick<DocAthlete, "objectiveIds" | "keyResultIds">): ToolErr | null {
+  const bad: string[] = [];
+  const intent = doc.intent as { objectiveIds?: unknown } | null | undefined;
+  if (intent && Array.isArray(intent.objectiveIds)) {
+    intent.objectiveIds.forEach((id, i) => {
+      if (typeof id === "string" && !a.objectiveIds.has(id)) bad.push(`intent.objectiveIds[${i}] ${JSON.stringify(id)} is none of the athlete's objectives`);
+    });
+  }
+  const parts = Array.isArray(doc.parts) ? (doc.parts as unknown[]) : [];
+  parts.forEach((part, p) => {
+    const items = (part as { items?: unknown } | null)?.items;
+    if (!Array.isArray(items)) return;
+    items.forEach((item, i) => {
+      const id = (item as { test?: { keyResultId?: unknown } } | null)?.test?.keyResultId;
+      if (typeof id === "string" && !a.keyResultIds.has(id)) bad.push(`parts[${p}].items[${i}].test.keyResultId ${JSON.stringify(id)} is none of the athlete's key results`);
+    });
+  });
+  if (bad.length === 0) return null;
+  return refuse(
+    "unknown_objective",
+    `${bad.slice(0, 6).join("; ")}${bad.length > 6 ? `; and ${bad.length - 6} more` : ""}.`,
+    "Use an objective id from the profile, or a key result id from read_objectives — or leave it out.",
+  );
+}
+
+/** A run document: the app can't play one yet, so it could never be approved (validate_workout and propose_workout). */
+export function runUnsupported(): ToolErr {
+  return refuse(
+    "run_unsupported",
+    "This draft is mostly running, and the app can't play a run document yet, so it could never be approved.",
+    "Keep runs on the plan as they are; propose strength, mobility or care work around them.",
+  );
 }
 
 /**
@@ -395,12 +498,50 @@ export interface Judged {
 
 /** The validator's verdict, and what is derived from the document when it can be built. */
 export function judge(raw: unknown, vctx: ValidateCtx): Judged {
-  const issues = validateWorkoutDoc(raw, vctx);
+  const issues = validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw));
   const errors = issues.filter((i) => i.severity === "error");
   const warnings = issues.filter((i) => i.severity === "warning");
   const parsed = workoutDocSchema.safeParse(raw);
   const buildable = parsed.success && !errors.some((e) => e.code === "bounds" || e.code === "too_large");
   return { doc: parsed.success ? parsed.data : null, errors, warnings, derived: buildable ? deriveDoc(parsed.data!, EXERCISES) : null };
+}
+
+/** A library record by its id or one of its old ids. */
+const RECORD_BY_ID = new Map<string, ExerciseRecord>(EXERCISES.flatMap((e) => [[e.id, e] as const, ...e.legacyIds.map((l) => [l, e] as const)]));
+const ITEM_ID_PATH = /^parts\[(\d+)\]\.items\[(\d+)\]\.libraryId$/;
+
+/** The library id of the item at a `parts[p].items[i].libraryId` path, if there is one. */
+function itemIdAt(raw: unknown, path: string): string | undefined {
+  const m = ITEM_ID_PATH.exec(path);
+  if (!m) return undefined;
+  const item = ((raw as { parts?: Array<{ items?: unknown[] }> } | null)?.parts?.[Number(m[1])]?.items ?? [])[Number(m[2])] as { libraryId?: unknown } | undefined;
+  return typeof item?.libraryId === "string" ? item.libraryId : undefined;
+}
+
+/**
+ * The two fixes the coach reads differently from the Studio (spec §4; audit M6):
+ *  - an unknown move's fix points at search_library — after the validator's near guess, when it has one;
+ *  - a gated move's stand-in on a day ahead (the error: no alternate of the designer's passes on a recovery day) is
+ *    offered only from the move's own family (`family`, the library's pattern family). The validator offers only a move
+ *    that passes in recovery, so a stand-in is never gated itself; one from another family (a box squat for pogo hops)
+ *    is another quality, so none is offered, and the message says how to choose.
+ */
+function coachFix(i: DocIssue, raw: unknown): DocIssue {
+  if (i.code === "unknown_exercise") {
+    const search = "find the move with search_library and use an id it shows";
+    return { ...i, fix: i.fix !== undefined ? `"${i.fix}", or ${search}` : `${search[0]!.toUpperCase()}${search.slice(1)}` };
+  }
+  if (i.code === "condition_gate_pending" && i.severity === "error") {
+    const own = RECORD_BY_ID.get(itemIdAt(raw, i.path) ?? "");
+    const offered = i.fix !== undefined ? RECORD_BY_ID.get(i.fix) : undefined;
+    if (offered && own && offered.family === own.family) return i;
+    const { fix: _f, ...rest } = i;
+    return {
+      ...rest,
+      message: `${i.message} No stand-in of its own family is offered: choose an alternate yourself with search_library, or keep the move for a day whose check is known.`,
+    };
+  }
+  return i;
 }
 
 export const ERRORS_SHOWN = 20;

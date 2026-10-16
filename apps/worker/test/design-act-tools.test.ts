@@ -23,6 +23,7 @@ import { designProposalId, type DocWorkoutOp } from "../src/services/design-tool
 import { markedDoc } from "../src/services/design-tools/read-workouts.js";
 import { recallMemory } from "../src/services/design-tools/read-memory.js";
 import { readAnswers } from "../src/services/design-tools/read-answers.js";
+import { askedAnswerRows } from "../src/services/design-tools/record-answer.js";
 import { isToolErr, type DesignReview, type DesignTool, type ReviewHooks, type ReviewStart, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
 import { docDayContext } from "../src/services/doc-workouts.js";
 import { at, day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
@@ -1023,5 +1024,159 @@ describe("follow-up — remember's quote is for one thing only (N6)", () => {
     expect(alone.fix).toMatch(/confirmed/);
     expect(err((await call("remember", ctxOf(r), { kind: "rule", body: "Trains evenings", confidence: "stated", replaces: stated, quote: "I train evenings now" })).result).error).toBe("quote_unused");
     expect((tool("remember").inputSchema as any).properties.quote.description).toMatch(/only when replacing an item the athlete confirmed/i);
+  });
+});
+
+// ── Batch 3A end fix wave, part B (audit-3a-agent-design.md) ────────────────────────────────────────────────────────
+
+describe("3A-B — the act tools say what the code holds", () => {
+  const runDoc = () =>
+    docOf([], { parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: 1800 }, effort: "easy" }] }] });
+  const powerDoc = (libraryId: string, extra: Record<string, unknown> = {}) =>
+    docOf([], { parts: [{ purpose: "power", format: "straight", items: [{ ...item(libraryId, { sets: 2, reps: 5 }), ...extra }] }] });
+
+  it("B2: validate_workout refuses a run document as propose_workout does — the same error, why and fix", async () => {
+    const r = await run();
+    const v = err((await call("validate_workout", ctxOf(r), { doc: runDoc(), date: TODAY })).result);
+    const p = err((await call("propose_workout", ctxOf(r), { doc: runDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect(v.error).toBe("run_unsupported");
+    expect(v).toEqual(p);
+    expect(v.fix).toMatch(/strength, mobility or care/);
+  });
+
+  it("correctness M5: a propose against a proposal already with the athlete is refused, and it stays pending", async () => {
+    const r = await run();
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "Kept" }), target: { kind: "new", date: TODAY } })).result);
+    await db.update(schema.coachProposals).set({ status: "pending" }).where(eq(schema.coachProposals.id, designProposalId(r.id)));
+    const { result, writes } = await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "Later" }), target: { kind: "new", date: TODAY } });
+    const e = err(result);
+    expect(e.error).toBe("proposal_pending");
+    expect(`${e.why} ${e.fix}`).toBe("Your proposal is already with the athlete. Call finish.");
+    expect(writes).toEqual([]);
+    expect(await proposal(r.id)).toMatchObject({ status: "pending", ops: [expect.objectContaining({ doc: expect.objectContaining({ title: "Kept" }) })] });
+  });
+
+  it("correctness M5: the upsert itself never moves a pending proposal back to unreviewed (made pending between the read and the write)", async () => {
+    const r = await run();
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "Kept" }), target: { kind: "new", date: TODAY } })).result);
+    let raced = false;
+    const racingDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== "all" || typeof value !== "function") return value;
+        return async (q: { queryChunks?: Array<{ value?: unknown }> }) => {
+          const text = (q.queryChunks ?? []).map((c) => (Array.isArray(c?.value) ? c.value.join("") : "")).join("");
+          if (!raced && text.includes("INSERT INTO coach_proposals")) {
+            raced = true;
+            await db.update(schema.coachProposals).set({ status: "pending" }).where(eq(schema.coachProposals.id, designProposalId(r.id)));
+          }
+          return (value as (q: unknown) => Promise<unknown>).call(target, q);
+        };
+      },
+    });
+    const e = err(await tool("propose_workout").run({ ...ctxOf(r), db: racingDb }, { doc: calmDoc({ title: "Later" }), target: { kind: "new", date: TODAY } }));
+    expect(raced).toBe(true);
+    expect(e.error).toBe("proposal_changed");
+    expect(await proposal(r.id)).toMatchObject({ status: "pending", ops: [expect.objectContaining({ doc: expect.objectContaining({ title: "Kept" }) })] });
+  });
+
+  it("M6: an unknown move's fix points at search_library, with or without a near guess", async () => {
+    const r = await run();
+    const v = data((await call("validate_workout", ctxOf(r), { doc: docOf([item("zzzzqqq"), item("Goblet squats")]), date: TODAY })).result);
+    const unknown = v.errors.filter((e: { code: string }) => e.code === "unknown_exercise");
+    expect(unknown).toHaveLength(2);
+    for (const e of unknown) expect(e.fix).toMatch(/search_library/);
+    // A near guess is still offered first.
+    expect(unknown[1].fix).toMatch(/^"gobletSquat"/);
+    // The refusal at propose carries the same fix.
+    expect(err((await call("propose_workout", ctxOf(r), { doc: docOf([item("zzzzqqq")]), target: { kind: "new", date: TODAY } })).result).why).toMatch(/search_library/);
+  });
+
+  it("M6: a gated move on a day ahead is never offered a stand-in from another family — the same family when one passes, else none", async () => {
+    const r = await run();
+    const byId = new Map(EXERCISES.map((e) => [e.id, e]));
+    const plyo = EXERCISES.filter((e) => e.contraction.includes("plyometric"));
+    expect(plyo.length).toBeGreaterThan(3);
+    for (const rec of plyo) {
+      const v = data((await call("validate_workout", ctxOf(r), { doc: powerDoc(rec.id), date: day(-2) })).result);
+      const gate = [...v.errors, ...v.warnings].find((i: { code: string; path: string }) => i.code === "condition_gate_pending" && i.path === "parts[0].items[0].libraryId");
+      expect(gate, rec.id).toBeDefined();
+      if (gate.fix === undefined) expect(gate.message, rec.id).toMatch(/search_library/);
+      else expect(byId.get(gate.fix)?.family, `${rec.id} → ${gate.fix}`).toBe(rec.family);
+    }
+    // Pogo hops were offered a box squat (another family, another quality): nothing of their family passes, so none.
+    const pogo = data((await call("validate_workout", ctxOf(r), { doc: powerDoc("pogoHop"), date: day(-2) })).result);
+    expect(pogo.errors.find((i: { code: string }) => i.code === "condition_gate_pending")?.fix).toBeUndefined();
+    // A designer's own alternate that passes is still the warning's swap.
+    const own = data((await call("validate_workout", ctxOf(r), { doc: powerDoc("pogoHop", { alternates: [{ libraryId: "calfRaise" }] }), date: day(-2) })).result);
+    expect(own.warnings.find((i: { code: string }) => i.code === "condition_gate_pending")?.fix).toBe("calfRaise");
+  });
+
+  it("M7: an objective or key result id the athlete doesn't have is refused — at validate and at propose — and their own ids pass", async () => {
+    const r = await run();
+    const [kr] = await db.select({ id: schema.keyResults.id }).from(schema.keyResults).where(eq(schema.keyResults.objectiveId, `${rich.userId}-obj-hold`));
+    const withIds = (objectiveIds: string[], keyResultId?: string) => {
+      const sit = { ...item("wallSit", { holdSec: 30, max: true }), ...(keyResultId ? { test: { keyResultId } } : {}) };
+      return docOf([sit], { intent: { summary: "Test the wall sit.", goals: ["strength"], focus: [], effort: "maintain", objectiveIds }, parts: [{ purpose: "main", format: "holds", items: [sit] }] });
+    };
+    const good = withIds([`${rich.userId}-obj-hold`], kr!.id);
+    expect(data((await call("validate_workout", ctxOf(r), { doc: good, date: TODAY })).result).valid).toBe(true);
+    for (const bad of [withIds(["obj-invented"]), withIds([`${rich.userId}-obj-dropped`]), withIds([`${rich.userId}-obj-hold`], "kr-invented")]) {
+      const v = err((await call("validate_workout", ctxOf(r), { doc: bad, date: TODAY })).result);
+      expect(v.error).toBe("unknown_objective");
+      expect(v.fix).toMatch(/read_objectives/);
+      expect(err((await call("propose_workout", ctxOf(r), { doc: bad, target: { kind: "new", date: TODAY } })).result).error).toBe("unknown_objective");
+    }
+    // Another athlete's objective is none of this one's.
+    const other = await seedRichAthlete(db);
+    expect(err((await call("validate_workout", ctxOf(r), { doc: withIds([`${other.userId}-obj-hold`]), date: TODAY })).result).error).toBe("unknown_objective");
+    ok((await call("propose_workout", ctxOf(r), { doc: good, target: { kind: "new", date: TODAY } })).result);
+  });
+
+  it("M7: the ids are read in the statement the tools already run — validate's and propose's costs are unchanged", async () => {
+    const r = await run();
+    const doc = docOf([item("bridge")], { intent: { summary: "x", goals: [], focus: [], effort: "maintain", objectiveIds: [`${rich.userId}-obj-hold`] } });
+    expect((await call("validate_workout", ctxOf(r), { doc, date: TODAY })).count).toBeLessThanOrEqual(tool("validate_workout").statementCost);
+    expect(tool("validate_workout").statementCost).toBe(6);
+    expect(tool("propose_workout").statementCost).toBe(9);
+  });
+
+  it("M16: a focus-area id from the profile stands for its refs — no unknown_focus, and the proposal keeps the library ids", async () => {
+    const r = await run();
+    const doc = docOf([item("bandRow", { sets: 2, reps: 12 })], { intent: { summary: "Mid-back.", goals: ["posture"], focus: ["mid-back", "glutes"], effort: "maintain" } });
+    const v = data((await call("validate_workout", ctxOf(r), { doc, date: TODAY })).result);
+    expect(v.warnings.filter((w: { code: string }) => w.code === "unknown_focus")).toEqual([]);
+    ok((await call("propose_workout", ctxOf(r), { doc, target: { kind: "new", date: TODAY } })).result);
+    expect((await proposal(r.id))!.ops[0]!.doc.intent.focus).toEqual(["upper-back", "rhomboids", "glutes"]);
+    // Neither a library id nor a focus area: still the validator's warning.
+    const odd = data((await call("validate_workout", ctxOf(r), { doc: docOf([item("bandRow")], { intent: { summary: "x", goals: [], focus: ["elbows-ish"], effort: "maintain" } }), date: TODAY })).result);
+    expect(odd.warnings.map((w: { code: string }) => w.code)).toContain("unknown_focus");
+    expect((WORKOUT_DOC_JSON_SCHEMA as any).properties.intent.properties.focus.items.description).toMatch(/focus-area id/);
+  });
+
+  it("M4: the document's place fields say what they mean — the presets named, a bare room's props, equipment as what the workout uses", () => {
+    const setting = (WORKOUT_DOC_JSON_SCHEMA as any).properties.setting.properties;
+    expect(setting.placeId.description).toMatch(/home, gym or mat/);
+    expect(setting.placeId.description).toContain('"none": a bare room — wall, chair, mat, towel');
+    expect(setting.equipment.description).toMatch(/the gear this workout uses/i);
+    expect(setting.equipment.description).toMatch(/placeId decides/);
+    expect((searchLibraryTool.inputSchema as any).properties.filters.properties.place.description).toContain('"none": a bare room — wall, chair, mat, towel');
+  });
+
+  it("M5 and M15: propose's description keeps the best version; role-limited tools name their roles", () => {
+    expect(tool("propose_workout").description).not.toMatch(/replace yours/);
+    expect(tool("propose_workout").description).toMatch(/better-scoring/);
+    expect(tool("propose_workout").description).toMatch(/main coach.*designers/);
+    expect(tool("record_answer").description).toMatch(/main coach only/);
+    expect(tool("finish").description).toMatch(/main coach and designers/);
+    expect(tool("remember").description).toMatch(/main coach and designers/);
+  });
+
+  it("M8: words typed to a check-in question with chips stay the run's answer — never kept as the check-in's", () => {
+    const energy = { text: "How is your energy?", why: "It sets the effort.", checkin: { question: "energy" }, chips: [{ label: "low", value: 3 }, { label: "good", value: 7 }] };
+    const sore = { text: "Calves?", why: "Load.", checkin: { question: "soreness", area: "calves" }, chips: [{ label: "fine", value: 0 }, { label: "sore", value: 5 }] };
+    const both = askedAnswerRows({ userId: "u", mainRunId: "m", toolUseId: "t", questions: [energy, sore], answers: ["running on fumes", "SORE"], localDate: TODAY, at: NOW.toISOString() });
+    expect(both.rows.map((x) => [x.questionId, x.valueNum, x.valueChoice, x.text])).toEqual([["soreness", 5, "sore", null]]);
+    expect(askedAnswerRows({ userId: "u", mainRunId: "m", toolUseId: "t", questions: [sore], answers: ["a bit, after the hills"], localDate: TODAY, at: NOW.toISOString() }).rows).toEqual([]);
   });
 });

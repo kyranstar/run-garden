@@ -27,7 +27,7 @@ const input = z.object({ summary: z.string().trim().min(1).max(LINE_MAX) }).stri
 export const finish: DesignTool = {
   name: "finish",
   description:
-    "End the run with one plain line for the athlete: what was proposed, or why not — never restating what the proposal card shows (minutes, dates, counts).",
+    "The main coach and designers (a reviewer ends with submit_review): end the run with one plain line for the athlete — what was proposed, or why not — never restating what the proposal card shows (minutes, dates, times, counts).",
   inputSchema: {
     type: "object",
     properties: { summary: { type: "string", minLength: 1, maxLength: LINE_MAX } },

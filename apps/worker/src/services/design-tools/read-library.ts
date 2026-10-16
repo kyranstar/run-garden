@@ -43,6 +43,7 @@ import { namedFromRow, ownPlaceSql } from "../default-place.js";
 import { doneStats, safetyFor } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
 import type { DesignTool } from "./types.js";
+import { PLACE_WORDS } from "./act-common.js";
 import {
   answer,
   CURSOR_SCHEMA,
@@ -169,7 +170,7 @@ export const searchLibraryTool: DesignTool = {
           position: enumSchema(POSITIONS),
           laterality: enumSchema(LATERALITY),
           maxDifficulty: { type: "integer", minimum: 1, maximum: 5 },
-          place: { type: "string", description: "A place id (read_profile), home, gym, mat, or \"none\" for no equipment: only moves its gear allows." },
+          place: { type: "string", description: `Only moves its gear allows: a place id (read_profile), ${PLACE_WORDS}.` },
           fitToday: { type: "boolean", description: "Only moves today's condition readings allow." },
         },
         additionalProperties: false,
@@ -197,7 +198,7 @@ export const searchLibraryTool: DesignTool = {
     if (f.place) {
       const place = namedFromRow(f.place, extra.place);
       if (!place) {
-        return refuse("unknown_place", `No place with id ${JSON.stringify(f.place)}.`, 'Use a place id from read_profile, home, gym or mat, or "none" for no equipment.');
+        return refuse("unknown_place", `No place with id ${JSON.stringify(f.place)}.`, `Use a place id from read_profile, or ${PLACE_WORDS}.`);
       }
       gear = place.equipment;
     }

@@ -11,7 +11,7 @@
  * A rehearsal run writes nothing: it answers as it would (`{ recorded, rehearsal: true }`, the same receipt).
  *
  * Answers to ask_athlete's check-in questions are kept by the same rules (`askedAnswerRows`, written by the answer
- * route), as `source 'ask_athlete'`.
+ * route), as `source 'ask_athlete'` — a tapped chip only.
  *
  * Undo: every row of one call shares the call's handle (`ra:<main run>:<tool-use id>` — `aa:` for an asked question's
  * — each row `<handle>:<n>`), which the call's receipt carries to the run view; `POST /api/coach/runs/:id/undo-answer
@@ -147,7 +147,7 @@ export function insertAnswers(db: Db, rows: readonly AnswerRow[]) {
 export const recordAnswer: DesignTool = {
   name: "record_answer",
   description:
-    "Keep what the request itself states as check-in answers, so the next design knows it: soreness, tightness or pain by area (a region, muscle or focus-area id), energy on its own, each quoting the request's words; value 0–10 only a number the athlete gave.",
+    "The main coach only: keep what the request itself states as check-in answers, so the next design knows it — soreness, tightness or pain by area (a region, muscle or focus-area id), energy on its own, each quoting the request's words; value 0–10 only a number the athlete gave.",
   inputSchema: {
     type: "object",
     properties: {
@@ -263,11 +263,13 @@ export function askedCheckin(q: unknown): AskedCheckin | null {
 }
 
 /**
- * The rows the answers to an ask call keep: one per question that declares a check-in (the others stay in the run's
- * own record). A tapped chip gives its value and area (its own, else the question's), its label as the choice; words
- * typed instead are the text, with no value — kept only when the question names its area, as soreness, tightness and
- * pain are kept by area. `source 'ask_athlete'`, ids `aa:<main run>:<tool-use id>:<n>` (n the
- * question's place), fresh for the question's days. The areas were checked when the question was asked.
+ * The rows the answers to an ask call keep: one per question that declares a check-in and was answered with one of its
+ * chips (the others stay in the run's own record). A tapped chip gives its value and area (its own, else the
+ * question's), its label as the choice. Words typed instead of a chip stay the run's answer only, never the check-in's:
+ * they may not answer the question at all, and a check-in row is read later as the athlete's state (audit M8; only a
+ * question with no chips at all — ask_athlete never asks one — would keep them, as text). `source
+ * 'ask_athlete'`, ids `aa:<main run>:<tool-use id>:<n>` (n the question's place), fresh for the question's days. The
+ * areas were checked when the question was asked.
  */
 export function askedAnswerRows(o: {
   userId: string;
@@ -284,9 +286,10 @@ export function askedAnswerRows(o: {
     const c = askedCheckin(o.questions[n]);
     if (!c) return;
     const chip = c.chips.find((ch) => ch.label.trim().toLowerCase() === text.trim().toLowerCase());
+    // Words typed instead of one of the question's chips stay in the run's own record (audit M8).
+    if (!chip && c.chips.length > 0) return;
     const area = chip?.area ?? c.area;
-    // Soreness, tightness and pain are kept by area (principles §5.3): words typed to a question whose areas are only
-    // on its chips name none of them, so they stay in the run's own record.
+    // Soreness, tightness and pain are kept by area (principles §5.3).
     if (CHECKIN_QUESTIONS[c.question].byArea && !area) return;
     const subject = CHECKIN_QUESTIONS[c.question].byArea && area ? subjectOf(area, new Map([[area, area]])) : null;
     rows.push({
