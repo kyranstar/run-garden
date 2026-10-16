@@ -41,11 +41,29 @@ export const runtimeCaching: RuntimeCaching[] = [
       plugins: [
         {
           fetchDidSucceed: async ({ response }) => {
-            if (response.status === 401) await Promise.all([caches.delete("rg-me"), caches.delete("rg-read-cache"), caches.delete("rg-doc-cache")]);
+            if (response.status === 401) {
+              await Promise.all([caches.delete("rg-me"), caches.delete("rg-read-cache"), caches.delete("rg-doc-cache"), caches.delete("rg-studio-cache")]);
+            }
             return response;
           },
         },
       ],
+    },
+  },
+  {
+    // What a quick start or a template needs to start OFFLINE (R11 fix round 1): the templates (their documents), the
+    // library's view as the Studio reads it (the account's condition profiles — judged by none of their rules, a Start
+    // offline is refused) and the profile (the account's zone — the session's day). Kept a week, the outbox's reach, so
+    // a jaw release on the second to seventh day offline still judges by the real profiles; in a cache of its own, with
+    // the account's other answers forgotten on a 401 (above, and packages/ui/src/offline/me.ts). Only these lists: never
+    // a filtered library, one move's or one template's own read.
+    urlPattern: ({ url }) =>
+      /^\/api\/(templates|profile)$/.test(url.pathname) || (url.pathname === "/api/library" && [...url.searchParams.keys()].every((k) => k === "limit")),
+    handler: "NetworkFirst",
+    options: {
+      cacheName: "rg-studio-cache",
+      networkTimeoutSeconds: 4,
+      expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 * 7 },
     },
   },
   {
@@ -56,18 +74,16 @@ export const runtimeCaching: RuntimeCaching[] = [
     // The quick review's basis too (Phase 3; audit 3-B UI-9): Today, from this cache, offers "Log your session" offline,
     // and the sheet it opens reads the basis Today read ahead. Its save re-checks the activity and the build server-side,
     // so a basis from the cache cannot write wrong data. Nothing else of a session is kept.
-    // The Studio's reads too (Stage 2 spec §12): its templates, the planned workouts, the athlete's side of the library
-    // (pins, ratings, history), the places' gear and the profile (its focus areas, CUJ R7) — the moves themselves are in
-    // the bundle. With them a Studio opened
-    // offline, a cold start included, knows what it knew online, and a quick start is built at once instead of after its
-    // reads fail through their retries. The lists one entry each — the library's only as the Studio reads it (all, or a
-    // page), never filtered, and the workouts' never a typed search: each filter or query would be an entry of its own,
-    // pushing Today out of the 40. Never one move's or one template's own read, nor a workout's document (below).
+    // The Studio's other reads too (Stage 2 spec §12): the planned workouts and the places' gear — its templates, the
+    // athlete's side of the library and the profile are kept a week in the studio cache (above); the moves themselves
+    // are in the bundle. With them a Studio opened offline, a cold start included, knows what it knew online, and a
+    // quick start is built at once instead of after its reads fail through their retries. The lists one entry each —
+    // the workouts' never a typed search: each query would be an entry of its own, pushing Today out of the 40. Never a
+    // workout's document (below).
     urlPattern: ({ url }) =>
       url.pathname.match(/^\/api\/(plan\/today|plan\/workouts|garden|insights|settings)/) !== null ||
       /^\/api\/sessions\/[^/]+\/watch-review$/.test(url.pathname) ||
-      /^\/api\/(templates|places|profile)$/.test(url.pathname) ||
-      (url.pathname === "/api/library" && [...url.searchParams.keys()].every((k) => k === "limit")) ||
+      url.pathname === "/api/places" ||
       (url.pathname === "/api/workouts" && !url.searchParams.has("q")),
     handler: "NetworkFirst",
     options: {

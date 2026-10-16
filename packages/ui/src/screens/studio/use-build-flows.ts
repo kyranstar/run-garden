@@ -175,6 +175,22 @@ export interface BuildFlowsIn {
   recorded: Readonly<Record<string, CheckReading>>;
   /** Where it is done (`placeOf`): the place a build made on the device names (R11). */
   place: { id?: string; name: string; equipment: readonly string[] } | null;
+  /**
+   * The account's condition profiles are known on the device (the library's read is here): without them a document is
+   * judged by no profile's rules, so an offline Start is refused (R11 fix round 1).
+   */
+  profilesKnown: boolean;
+}
+
+/** A zone this runtime can read a date in: the account's day, never the device's guess (R11 fix round 1). */
+function zoneKnown(timeZone: string | null): timeZone is string {
+  if (!timeZone) return false;
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -223,6 +239,7 @@ export function useBuildFlows({
   timeZone,
   recorded,
   place,
+  profilesKnown,
 }: BuildFlowsIn) {
   /** Changed since it was saved: the two read alike through the schema (its key order, its empty parts dropped). */
   const dirtyOf = (l: Loaded | null): boolean =>
@@ -392,10 +409,13 @@ export function useBuildFlows({
    * only those answered on this page. Judged for that day as the server would (an unanswered day keeps day-gated moves
    * out): an error stops it in the validator's words, a check its errors wait on is asked, and today's unanswered check
    * is offered as online — its answer kept for this session alone. Two of one kind on one day are one session (Continue
-   * it). A device that cannot keep it (no storage, no account known here) still needs a connection.
+   * it). A device that cannot keep it (no storage, no account known here) still needs a connection — and so does one
+   * that does not know the account's condition profiles (it would judge by none of their rules) or its zone (it would
+   * date the session by a day the server may refuse) (fix round 1).
    */
   const startOffline = async (cur: Loaded, sent: WorkoutDoc, once: { clientId: string; landed: () => void }): Promise<void> => {
     const needsConnection = () => setFlow({ step: "refused", text: refusalText(null, "start") });
+    if (!profilesKnown || !zoneKnown(timeZone)) return needsConnection();
     const kind = startKindOf(sent);
     const uid = userId() ?? (await meWithOfflineFallback().catch(() => null))?.userId ?? null;
     const db = await offlineDb().catch(() => null);

@@ -11,7 +11,8 @@
  * (the player must reopen); otherwise the failure stands ("Couldn't reach").
  *
  * What makes that safe is forgetting (ruling 2b-R6 as amended):
- *  - any 401 forgets the account's cached answers, `rg-me`, `rg-read-cache` and `rg-doc-cache` (`forgetCachedAnswers`) — and NEVER the
+ *  - any 401 forgets the account's cached answers, `rg-me`, `rg-read-cache`, `rg-doc-cache` and `rg-studio-cache`
+ *    (`forgetCachedAnswers`) — and NEVER the
  *    live session or the outbox: a sign-in that expired mid-session must not lose the workout; the session resumes and
  *    the outbox drains once the athlete signs in again, under the same account. A 401 that reaches the worker after its
  *    3 s timeout (the cached answer already served) purges them there too (apps/web/sw-routes.ts);
@@ -31,6 +32,11 @@ export const ME_CACHE = "rg-me";
 export const READ_CACHE = "rg-read-cache";
 /** The service worker's cache of planned workouts' documents (apps/web/sw-routes.ts): the account's answers too. */
 export const DOC_CACHE = "rg-doc-cache";
+/**
+ * The service worker's week-long cache of what an offline Start needs (apps/web/sw-routes.ts; R11 fix round 1): the
+ * templates, the library's view (the condition profiles), the profile (the account's zone). The account's answers too.
+ */
+export const STUDIO_CACHE = "rg-studio-cache";
 const ME_URL = "/api/auth/me";
 
 type Caches = Pick<CacheStorage, "match" | "delete">;
@@ -79,12 +85,12 @@ export async function meWithOfflineFallback(
 const FORGET_DB_WAIT_MS = 2000;
 
 /**
- * On any 401 (ruling 2b-R6 as amended): the account's cached answers go — `rg-me`, `rg-read-cache`, `rg-doc-cache` —
- * and nothing else. Never throws.
+ * On any 401 (ruling 2b-R6 as amended): the account's cached answers go — `rg-me`, `rg-read-cache`, `rg-doc-cache`,
+ * `rg-studio-cache` — and nothing else. Never throws.
  */
 export async function forgetCachedAnswers(deps: Pick<OfflineDeps, "caches"> = {}): Promise<void> {
   const store = "caches" in deps ? deps.caches : browserCaches();
-  await Promise.all([ME_CACHE, READ_CACHE, DOC_CACHE].map((name) => store?.delete(name).catch(() => false)));
+  await Promise.all([ME_CACHE, READ_CACHE, DOC_CACHE, STUDIO_CACHE].map((name) => store?.delete(name).catch(() => false)));
 }
 
 /**

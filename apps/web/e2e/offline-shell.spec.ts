@@ -136,6 +136,7 @@ test("a session ended elsewhere: the online reload goes to sign-in and forgets t
   await expect(page).toHaveURL(/\/welcome/);
   await expect.poll(() => cacheNames(page)).not.toContain("rg-me");
   expect(await cacheNames(page)).not.toContain("rg-read-cache");
+  expect(await cacheNames(page)).not.toContain("rg-studio-cache");
   // A sign-in that expired mid-session never loses the workout: it resumes after signing in again.
   expect(await liveSessions(page)).toBe(1);
   await offlineLaunchShowsNoAccount(page, context);
@@ -154,6 +155,7 @@ test("a 401 that reaches the service worker after its 3 s timeout still purges t
   await expect(page.getByRole("link", { name: "Plan" }).first()).toBeVisible();
   await expect.poll(() => cacheNames(page), { timeout: 15_000 }).not.toContain("rg-me");
   expect(await cacheNames(page)).not.toContain("rg-read-cache");
+  expect(await cacheNames(page)).not.toContain("rg-studio-cache");
   await context.unroute("**/api/auth/me");
   await offlineLaunchShowsNoAccount(page, context);
 });
@@ -166,5 +168,6 @@ test("Delete all data: nothing of the account opens offline afterwards (audit 2b
   await expect(page).toHaveURL(/\/welcome/);
   expect(await cacheNames(page)).not.toContain("rg-me");
   expect(await cacheNames(page)).not.toContain("rg-read-cache");
+  expect(await cacheNames(page)).not.toContain("rg-studio-cache");
   await offlineLaunchShowsNoAccount(page, context);
 });

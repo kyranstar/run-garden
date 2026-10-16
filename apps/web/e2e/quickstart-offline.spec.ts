@@ -5,7 +5,9 @@ import { test, expect } from "./fixtures.js";
  * R11 (J02): A QUICK START PLAYED OFFLINE, SAVED ONCE BACK ONLINE. The athlete opens the Studio with no network (on a
  * plane, in a basement gym), starts the desk reset, answers today's jaw check, plays it, saves it — Today says it will
  * sync — and when the network comes back the outbox records it: exactly one workout (started at once, so booked on no
- * calendar: `app_only_offline`), one performed session, and its before-reading as one `pre` check at its own day.
+ * calendar: `app_only_offline`), one performed session, and its before-reading as one `pre` check at its own day. Days
+ * into an offline week (the day's reads gone, the Studio's week-long ones kept: R11 fix round 1) the jaw release still
+ * starts on the real profiles; with those gone too it needs a connection.
  *
  * LOCAL ONLY, like session-offline.spec.ts: it needs the PRODUCTION build (the service worker, the offline shell) with
  * the Studio on, served on one origin by the fixture worker, so it skips itself unless `RG_E2E_BUILT=1`. To run it:
@@ -107,8 +109,14 @@ test("a quick start played offline is saved once back online: one workout, one s
   await expect(page.getByRole("button", { name: "Start now" })).toBeVisible({ timeout: 30_000 });
   const title = await page.locator(".stu-build-title").inputValue();
   await expect
-    .poll(() => page.evaluate(async () => (await (await caches.open("rg-read-cache")).keys()).map((r) => new URL(r.url).pathname)))
-    .toEqual(expect.arrayContaining(["/api/library", "/api/places", "/api/plan/today"]));
+    .poll(() =>
+      page.evaluate(async () => {
+        const paths: string[] = [];
+        for (const name of ["rg-read-cache", "rg-studio-cache"]) paths.push(...(await (await caches.open(name)).keys()).map((r) => new URL(r.url).pathname));
+        return paths;
+      }),
+    )
+    .toEqual(expect.arrayContaining(["/api/library", "/api/profile", "/api/places", "/api/plan/today"]));
 
   await context.setOffline(true);
   // A cold start with no network: the shell and the reads from the service worker, the quick start built on the device.
@@ -186,4 +194,32 @@ test("the network cut with the builder open: started, played and saved offline, 
   expect(made[0]).toMatchObject({ contentState: "done", calendarSyncState: "app_only_offline" });
   // Skipped: no reading at all.
   expect((await tableRows(req, baseURL!, "condition_checks")).filter((r) => r.localDate === today)).toEqual([]);
+});
+
+test("days into the offline week: the jaw release still starts on the real profiles; with those gone too, it needs a connection", async ({ page, context, baseURL }) => {
+  await underTheWorker(page, context, baseURL!);
+  await page.goto("/studio/build/quick/condition_care");
+  await expect(page.getByRole("button", { name: "Start now" })).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(() => page.evaluate(async () => (await (await caches.open("rg-studio-cache")).keys()).map((r) => new URL(r.url).pathname)))
+    .toEqual(expect.arrayContaining(["/api/library", "/api/profile"]));
+
+  // A few days on: the day's reads (Today, the settings) are gone from the device; the Studio's week-long ones are not.
+  await page.evaluate(() => caches.delete("rg-read-cache"));
+  await context.setOffline(true);
+  await page.goto("/studio/build/quick/condition_care");
+  await page.getByRole("button", { name: "Start now" }).click();
+  // Today unknown: its check is offered (the day judged unanswered until then).
+  const check = page.getByRole("dialog");
+  await expect(check.getByRole("radiogroup")).toBeVisible({ timeout: 15_000 });
+  await check.getByRole("button", { name: "Skip", exact: true }).click();
+  await expect(page).toHaveURL(/\/session\/local%3A/, { timeout: 15_000 });
+  await expect(page.locator(".player-count")).toContainText("1 of ");
+
+  // Past the week, or never kept: the profiles unknown — it needs a connection, never judged by no profile's rules.
+  await page.evaluate(() => caches.delete("rg-studio-cache"));
+  await page.goto("/studio/build/quick/desk_reset");
+  await page.getByRole("button", { name: "Start now" }).click();
+  await expect(page.getByText("Starting needs a connection — try again once you're online.")).toBeVisible({ timeout: 15_000 });
+  await context.setOffline(false);
 });

@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 import { ApiError, type MeResponse } from "@rg/api-client";
 import { openOfflineDb, type OfflineDb } from "../../src/offline/idb.js";
-import { DOC_CACHE, forgetCachedMe, forgetOfflineIdentity, ME_CACHE, meWithOfflineFallback, READ_CACHE } from "../../src/offline/me.js";
+import { DOC_CACHE, forgetCachedMe, forgetOfflineIdentity, ME_CACHE, meWithOfflineFallback, READ_CACHE, STUDIO_CACHE } from "../../src/offline/me.js";
 import { drain, enqueue, outboxEntries, type OutboxApi } from "../../src/offline/outbox.js";
 import { newLiveSession, readLive, writeLive } from "../../src/offline/live.js";
 
@@ -45,6 +45,8 @@ async function deviceWithTraces(): Promise<{ db: OfflineDb; caches: ReturnType<t
     [READ_CACHE]: { "/api/garden": { garden: true } },
     // A planned workout's document, in its own cache (whole-branch review): the account's too.
     [DOC_CACHE]: { "/api/workouts/w1/doc": { doc: null } },
+    // The Studio's week-long reads — its templates, the library's profiles, the profile's zone (R11 fix round 1).
+    [STUDIO_CACHE]: { "/api/templates": { templates: [] }, "/api/profile": { timezone: "UTC" } },
     "rg-shell": { "/index.html": {} },
   });
   return { db, caches };

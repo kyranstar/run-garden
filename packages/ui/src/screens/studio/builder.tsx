@@ -406,6 +406,7 @@ function Builder({ source }: { source: BuildSource }) {
     timeZone,
     recorded,
     place: here,
+    profilesKnown,
   });
 
   // ── Not ready ──

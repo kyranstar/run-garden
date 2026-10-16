@@ -242,11 +242,12 @@ test.describe("under the service worker (the built app)", () => {
     await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
   }
 
-  /** The paths the read cache holds. */
+  /** The paths the read cache and the studio cache (the Studio's week-long reads, R11 fix round 1) hold. */
   const cachedPaths = (page: Page) =>
     page.evaluate(async () => {
-      const cache = await caches.open("rg-read-cache");
-      return (await cache.keys()).map((r) => new URL(r.url).pathname);
+      const paths: string[] = [];
+      for (const name of ["rg-read-cache", "rg-studio-cache"]) paths.push(...(await (await caches.open(name)).keys()).map((r) => new URL(r.url).pathname));
+      return paths;
     });
 
   test("a cold start offline: the Studio's reads come from the cache — search, a move, a quick start at once, the templates", async ({ page, context, baseURL }) => {

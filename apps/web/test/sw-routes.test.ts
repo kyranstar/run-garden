@@ -28,7 +28,7 @@ describe("the rg-me route", () => {
     });
   });
 
-  it("a 401 from me deletes rg-me, rg-read-cache and rg-doc-cache, and passes the answer through", async () => {
+  it("a 401 from me deletes rg-me, rg-read-cache, rg-doc-cache and rg-studio-cache, and passes the answer through", async () => {
     const deleted: string[] = [];
     vi.stubGlobal("caches", { delete: vi.fn(async (name: string) => deleted.push(name) > 0) });
     const plugin = meRoute().options!.plugins!.find((p) => "fetchDidSucceed" in p)!;
@@ -36,7 +36,7 @@ describe("the rg-me route", () => {
 
     const signedOut = new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 });
     expect(await fetchDidSucceed({ response: signedOut })).toBe(signedOut);
-    expect(deleted.sort()).toEqual(["rg-doc-cache", "rg-me", "rg-read-cache"]);
+    expect(deleted.sort()).toEqual(["rg-doc-cache", "rg-me", "rg-read-cache", "rg-studio-cache"]);
 
     deleted.length = 0;
     const ok = new Response("{}", { status: 200 });
@@ -47,7 +47,7 @@ describe("the rg-me route", () => {
   });
 
   it("every other route keeps what it had: the shell, and the read cache's API paths", () => {
-    expect(runtimeCaching.map((r) => r.options?.cacheName)).toEqual(["rg-shell", "rg-me", "rg-read-cache", "rg-doc-cache"]);
+    expect(runtimeCaching.map((r) => r.options?.cacheName)).toEqual(["rg-shell", "rg-me", "rg-studio-cache", "rg-read-cache", "rg-doc-cache"]);
   });
 });
 
@@ -74,10 +74,11 @@ describe("the read cache (rg-read-cache)", () => {
    * knew online, and a quick start is built at once rather than after its reads fail through their retries. One entry
    * each: the lists only, never a move's or a workout's own read, and never a typed search of the workouts.
    */
-  it("answers the Studio's list reads offline: templates, workouts, the library view, places, the profile", () => {
-    for (const path of ["/api/templates", "/api/workouts", "/api/workouts?from=2026-10-12&to=2026-11-09", "/api/library", "/api/library?limit=200", "/api/places", "/api/profile"]) {
+  it("answers the Studio's list reads offline: workouts and places (its templates, library and profile: the studio cache's)", () => {
+    for (const path of ["/api/workouts", "/api/workouts?from=2026-10-12&to=2026-11-09", "/api/places"]) {
       expect(matches(path), path).toBe(true);
     }
+    for (const path of ["/api/templates", "/api/library", "/api/library?limit=200", "/api/profile"]) expect(matches(path), path).toBe(false);
   });
 
   // A planned workout's document is kept in a cache of its own (below): one entry a workout here would push Today out.
@@ -121,6 +122,43 @@ describe("the read cache (rg-read-cache)", () => {
     ]) {
       expect(matches(path), path).toBe(false);
     }
+  });
+});
+
+/**
+ * R11 fix round 1: what a quick start or a template needs to start offline — the templates, the library's view (the
+ * account's condition profiles), the profile (the account's zone) — is kept a week, the outbox's reach, in a cache of
+ * its own: a jaw release on the second to seventh day offline still judges by the real profiles, on the account's day.
+ */
+describe("the studio cache (rg-studio-cache)", () => {
+  const studioCache = () => runtimeCaching.find((r) => r.options?.cacheName === "rg-studio-cache")!;
+  const matches = (path: string) => {
+    const fn = new Function(`return (${String(studioCache().urlPattern)});`)() as (p: { url: URL; request: { mode: string } }) => boolean;
+    return fn({ url: new URL(`https://run.garden.test${path}`), request: { mode: "cors" } });
+  };
+
+  it("answers the templates, the library as the Studio reads it, and the profile — and nothing else", () => {
+    for (const path of ["/api/templates", "/api/library", "/api/library?limit=200", "/api/profile"]) expect(matches(path), path).toBe(true);
+    for (const path of [
+      "/api/library?part=main",
+      "/api/library?limit=200&q=squat",
+      "/api/library/gobletSquat",
+      "/api/templates/t1",
+      "/api/templates/t1/use",
+      "/api/templatesx",
+      "/api/profilex",
+      "/api/plan/today",
+      "/api/places",
+      "/api/settings",
+    ]) {
+      expect(matches(path), path).toBe(false);
+    }
+  });
+
+  it("is NetworkFirst, GET only, small, and keeps a week: the outbox's reach", () => {
+    expect(studioCache()).toMatchObject({ handler: "NetworkFirst", options: { networkTimeoutSeconds: 4 } });
+    expect(studioCache().method ?? "GET").toBe("GET");
+    expect(studioCache().options?.expiration).toEqual({ maxEntries: 8, maxAgeSeconds: 604800 });
   });
 });
 

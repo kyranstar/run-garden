@@ -23,7 +23,7 @@ import { loadBuild } from "../src/offline/builds.js";
 import { isLocalId, loadLocalStart, localStarts } from "../src/offline/local-starts.js";
 import { enqueue, outboxEntries } from "../src/offline/outbox.js";
 import { loadExtras } from "../src/player/stored.js";
-import { DEVICE_PREFS, libraryDto, placesDto, primedClient, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { DEVICE_PREFS, libraryDto, placesDto, primedClient, profileDto, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,12 +84,13 @@ function offline(kept: { templates?: TemplateDto[] } = {}): Call[] {
   return calls;
 }
 
-function mount(path: string, primed: Primed = {}) {
+/** `settings: false`: no settings read kept on the device (the account's zone then only the profile's, if kept). */
+function mount(path: string, primed: Primed = {}, opts: { settings?: boolean } = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   const qc = primedClient({ places: placesDto(HOME_GEAR), library: libraryDto({ tmj: true }), today: todayDto({ value: 2 }), ...primed });
-  qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
+  if (opts.settings !== false) qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
   qc.setQueryData(["me"], { userId: ME });
   act(() => {
     root!.render(
@@ -253,6 +254,37 @@ describe("Start now of a template with no network (R11)", () => {
     mount("/studio/build/template/t9");
     await until(() => text().includes("Opening a template needs a connection the first time."), "the line");
     expect(startButton()).toBeNull();
+  });
+});
+
+describe("what an offline start needs kept on the device (R11 fix round 1)", () => {
+  it("the condition profiles unknown (neither the library nor Today read kept): it needs a connection — never judged with no profiles", async () => {
+    const calls = offline();
+    mount("/studio/build/quick/desk_reset", { library: undefined, today: undefined });
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => text().includes("Starting needs a connection — try again once you're online."), "the refusal");
+    expect(text()).not.toContain("the player");
+    expect(await localStarts(await offlineDb(), ME)).toEqual([]);
+    expect(posts(calls)).toEqual(["/api/workouts"]);
+  });
+
+  it("the account's zone unknown (no settings, no profile kept): it needs a connection — never dated by the device's clock", async () => {
+    offline();
+    mount("/studio/build/quick/desk_reset", {}, { settings: false });
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => text().includes("Starting needs a connection — try again once you're online."), "the refusal");
+    expect(await localStarts(await offlineDb(), ME)).toEqual([]);
+  });
+
+  it("the settings gone but the profile kept (its week-long cache): dated on the profile's zone, and it starts", async () => {
+    offline();
+    mount("/studio/build/quick/desk_reset", { profile: { ...profileDto(), timezone: DEVICE_PREFS.timezone } }, { settings: false });
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    expect((await loadLocalStart(await offlineDb(), playedId()))!).toMatchObject({ date: TODAY, time: "09:00" });
   });
 });
 
