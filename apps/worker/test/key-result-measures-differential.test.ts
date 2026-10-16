@@ -53,6 +53,18 @@ async function seedOddities(db: Db, uid: string): Promise<void> {
   const set = (sessionId: string, entryIndex: number, exerciseId: string, setIndex: number, o: Partial<typeof schema.performedSets.$inferInsert>) => ({
     id: newId(), performedSessionId: sessionId, entryIndex, exerciseId, setIndex, done: true, ...o,
   });
+  // A run the plan asked for at race effort, on the first day of a week's window (TODAY − 6: the long history's 21.1 km
+  // run): its label ("test") comes only from the facts of the runs picked as worth labelling.
+  const raceDoc = {
+    version: 1, title: "Time trial", intent: { summary: "A time trial.", goals: [], focus: [], effort: "test" },
+    parts: [{ purpose: "run", format: "straight", items: [{ kind: "run", effort: "race", target: { distanceM: 21_100 } }] }], source: { kind: "coach" },
+  };
+  await db.insert(schema.plannedWorkouts).values({
+    id: `odd-trial-${uid}`, userId: uid, planId: "plan", sourceWorkoutId: `odd-trial-${uid}`, title: "Time trial", category: "race", sport: "run",
+    originalPlanDate: addDays(TODAY, -6), lastVerifiedCorosDate: "", effectiveDate: addDays(TODAY, -6), effectiveTime: "18:00", sourceContentFingerprint: "fp",
+    calendarBlockDurationSeconds: 7200, createdAt: stamp(TODAY), updatedAt: stamp(TODAY), workoutDoc: JSON.stringify(raceDoc),
+  });
+  await db.insert(schema.workoutCompletionMatches).values({ id: newId(), workoutId: `odd-trial-${uid}`, activityId: "long-r6", confidence: 1, method: "manual", matchedAt: stamp(TODAY) });
   await db.insert(schema.performedSets).values([
     // A hold a side at a time: both sides of set 0, one side of set 1 (the other skipped).
     set("odd-sides", 0, "wallSit", 0, { side: "left", seconds: 70 }),
@@ -104,6 +116,13 @@ describe("the key results, measured as before", () => {
       expect(now).toEqual(before);
       // Not a trivial agreement: the long history is read (points in most series).
       expect(now.filter((p) => p.series.length > 10).length).toBeGreaterThan(20);
+    }
+    // And each window asked alone, as a key result's progress asks it: the runs worth labelling are then the window's.
+    for (const windowDays of [7, 30, 90, 365]) {
+      const alone = requests().filter((r) => "windowDays" in r.measure && r.measure.windowDays === windowDays);
+      const now = await measureKeyResults(db, userId, alone, { today: TODAY, raceDate: addDays(TODAY, -30) });
+      expect(now, `${windowDays} days`).toEqual(await legacyMeasureKeyResults(db, userId, alone, { today: TODAY, raceDate: addDays(TODAY, -30) }));
+      if (windowDays === 7) expect(now.flatMap((p) => p.series).some((pt) => pt.label === "test")).toBe(true);
     }
   });
 });
