@@ -10,7 +10,7 @@ import { conditionChecks, performedSessions, plannedWorkouts } from "@rg/databas
 import { dayLabel } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { DesignTool } from "./types.js";
-import { answer, dateField, isErr, localTimeOf, parseInput, READ_ROLES, readAthlete, readTagged, weekdayOf } from "./read-common.js";
+import { answer, athleteOf, dateField, isErr, localTimeOf, parseInput, READ_ROLES, readTagged, weekdayOf } from "./read-common.js";
 import { planItem, planTerm } from "./read-plan.js";
 import { activitiesAround, checkRows, doneEntries, doneTerms, sessionsWhere } from "./read-sessions.js";
 
@@ -31,7 +31,7 @@ export const readDay: DesignTool = {
   async run(ctx, raw) {
     const p = parseInput(input, raw, "an optional date (YYYY-MM-DD)");
     if (isErr(p)) return p;
-    const { athlete } = await readAthlete(ctx.db, ctx.userId, ctx.now);
+    const athlete = await athleteOf(ctx);
     const date = p.date ?? athlete.today;
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.localDate} = ${date}`);
     const rows = await readTagged(ctx.db, [

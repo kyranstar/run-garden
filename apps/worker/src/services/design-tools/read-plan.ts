@@ -27,7 +27,7 @@ import {
   parseInput,
   plural,
   READ_ROLES,
-  readAthlete,
+  athleteOf,
   readTagged,
   untrusted,
   untrustedOrNull,
@@ -140,7 +140,7 @@ export const readPlan: DesignTool = {
     // A page starts at its cursor's row (date, time, id), so a workout written meanwhile never shifts it.
     const at = keyCursor(p.cursor, 3);
     if (isErr(at)) return at;
-    const { athlete } = await readAthlete(ctx.db, ctx.userId, ctx.now);
+    const athlete = await athleteOf(ctx);
     const limit = p.limit ?? DEFAULT_LIMIT;
     const rows = await readTagged(ctx.db, [
       planTerm(

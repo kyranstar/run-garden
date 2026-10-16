@@ -26,7 +26,7 @@ import {
   parseInput,
   plural,
   READ_ROLES,
-  readAthlete,
+  athleteOf,
   untrusted,
   untrustedOrNull,
 } from "./read-common.js";
@@ -63,7 +63,7 @@ export const recallMemory: DesignTool = {
     if (isErr(p)) return p;
     const at = keyCursor(p.cursor, 2);
     if (isErr(at)) return at;
-    const { athlete } = await readAthlete(ctx.db, ctx.userId, ctx.now);
+    const athlete = await athleteOf(ctx);
     const today = athlete.today;
     const words = likeWordPatterns(p.query);
     const limit = p.limit ?? DEFAULT_LIMIT;

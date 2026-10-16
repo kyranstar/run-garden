@@ -3,6 +3,7 @@ import type { SetEstimate } from "../design-orchestrate.js";
 import type { DocIssue } from "@rg/workout";
 import type { Env } from "../../env.js";
 import type { Db } from "../db.js";
+import type { Athlete } from "./read-common.js";
 
 /**
  * THE COACH DESIGNER'S TOOL CONTRACT (Stage 3 spec §4; principles §6.2). The step loop (coach-runs.ts) takes the tool
@@ -71,6 +72,12 @@ export interface ToolContext {
    * run's state.
    */
   replaces?: string;
+  /**
+   * The athlete as `readAthlete` reads them with no extras, read once for the step's calls (the loop sets it:
+   * read-common.ts `sharedAthlete`): a read tool that needs nothing beside the athlete takes them from here
+   * (`athleteOf`). Absent outside the loop: the tool reads its own.
+   */
+  athlete?: () => Promise<Athlete>;
 }
 
 export interface ToolOk {

@@ -27,7 +27,7 @@ import {
   parseInput,
   plural,
   READ_ROLES,
-  readAthlete,
+  athleteOf,
   untrusted,
   untrustedOrNull,
 } from "./read-common.js";
@@ -73,7 +73,7 @@ export const readAnswers: DesignTool = {
     if (isErr(p)) return p;
     const at = keyCursor(p.cursor, 3);
     if (isErr(at)) return at;
-    const { athlete } = await readAthlete(ctx.db, ctx.userId, ctx.now);
+    const athlete = await athleteOf(ctx);
     const today = athlete.today;
     const since = p.since ?? addDays(today, -(DEFAULT_DAYS - 1));
     const bad = checkRange(since, today, { from: "since", to: "today" });

@@ -25,7 +25,7 @@ import {
   parseInput,
   plural,
   READ_ROLES,
-  readAthlete,
+  athleteOf,
   readTagged,
 } from "./read-common.js";
 import { activitiesAround, DONE_KINDS, doneEntries, doneTerms, sessionsWhere, type DoneKind } from "./read-sessions.js";
@@ -70,7 +70,7 @@ export const readHistory: DesignTool = {
     if (bad) return bad;
     const after = keyCursor(p.cursor, 1);
     if (isErr(after)) return after;
-    const { athlete } = await readAthlete(ctx.db, ctx.userId, ctx.now);
+    const athlete = await athleteOf(ctx);
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.localDate} between ${p.from} and ${p.to}`);
     const rows = await readTagged(ctx.db, doneTerms(ctx.userId, scope, { activitiesWhere: activitiesAround(p.from, p.to) }));
     const all = doneEntries(

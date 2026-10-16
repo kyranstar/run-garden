@@ -56,6 +56,7 @@ import {
 } from "./design-review.js";
 import { allTools } from "./design-tools/index.js";
 import { designProposalId } from "./design-tools/propose.js";
+import { sharedAthlete } from "./design-tools/read-common.js";
 import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
 import {
   isToolErr,
@@ -2311,6 +2312,8 @@ async function runTools(
     ...(state.reviewOf ? { reviewOf: state.reviewOf } : {}),
     ...(run.role === "main" ? { set: setHooks(s) } : {}),
     ...(state.replaces ? { replaces: state.replaces } : {}),
+    // The athlete, read once for the step's read tools that need nothing beside them.
+    athlete: sharedAthlete(s.db, s.userId, s.now),
   };
   // A queued call's input is its tool_use block's, in the newest answer (the history holds it; the queue doesn't hold
   // it twice) — or, in a state stored before, the queue's own copy.

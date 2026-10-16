@@ -790,8 +790,9 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
       "validate ×2": 2 + MODEL + 6 + 6,
       "propose + start the reviewer (queued)": 2 + 5 + 8,
       "reviewer context": 2 + 4 + 11,
-      // read_day and read_history (two statements each), and the unreadable review (refused before any read).
-      "reviewer reads + an unreadable review (repair)": 2 + MODEL + 2 + 2 + 0,
+      // read_day and read_history (a statement each) after the athlete, read once for both (it was 2 + 2: each read
+      // the athlete), and the unreadable review (refused before any read).
+      "reviewer reads + an unreadable review (repair)": 2 + MODEL + 1 + 1 + 1 + 0,
       "reviewer's review stored, the reviewer ended": 2 + MODEL + 2,
       // The tree, the claim, the proposal, the run's write: no line to write after round 1.
       "designer resumed with its review": 2 + 4,

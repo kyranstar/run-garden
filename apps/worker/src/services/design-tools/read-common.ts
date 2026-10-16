@@ -33,7 +33,7 @@ import { addDays, daysBetween, isLocalDate, isoWeekday, todayInZone, userPrefere
 import { isProfileId, profileById, UNANSWERED, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
 import { readingsOfDay } from "../condition-views.js";
 import type { Db } from "../db.js";
-import type { ToolErr, ToolOk, ToolRole } from "./types.js";
+import type { ToolContext, ToolErr, ToolOk, ToolRole } from "./types.js";
 import { utf8Bytes } from "../utf8.js";
 
 /** Read tools serve every role: the reviewer reads too (spec §5). */
@@ -353,6 +353,31 @@ export async function readAthlete(
     athlete: { prefs, tz, today, profiles: active.map(profileById), readings, missing },
     extra,
   };
+}
+
+/**
+ * The athlete read once for a step's calls (the loop puts it in their ToolContext): the first call that needs nothing
+ * beside the athlete reads it, the others share that read — one statement and one parse a step, not one a call. Each
+ * call gets its own `missing` (a tool adds to its own). A read that fails is not kept: the next call reads again.
+ */
+export function sharedAthlete(db: Db, userId: string, now: Date): () => Promise<Athlete> {
+  let read: Promise<Athlete> | null = null;
+  return async () => {
+    read ??= readAthlete(db, userId, now).then((r) => r.athlete);
+    try {
+      const athlete = await read;
+      return { ...athlete, missing: [...athlete.missing] };
+    } catch (e) {
+      read = null;
+      throw e;
+    }
+  };
+}
+
+/** The athlete, for a read tool that needs nothing beside them: the step's shared read (ToolContext.athlete), or a read
+ * of its own outside the loop. */
+export async function athleteOf(ctx: Pick<ToolContext, "db" | "userId" | "now" | "athlete">): Promise<Athlete> {
+  return ctx.athlete ? ctx.athlete() : (await readAthlete(ctx.db, ctx.userId, ctx.now)).athlete;
 }
 
 // ── Words and figures ───────────────────────────────────────────────────────────────────────────────────────────────
