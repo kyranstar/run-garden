@@ -247,20 +247,20 @@ async function ceilingOf(runId: string): Promise<number> {
 }
 
 describe("a create honours the settings", () => {
-  it("no settings: a create with no scope is for now, under the default limits — four statements, as before", async () => {
+  it("no settings: a create with no scope is for now, under the default limits — five statements", async () => {
     const made = await create({ request: "something easy" });
     expect(made.status).toBe(200);
     expect(made.body.run.scope).toEqual({ kind: "now" });
     expect(await ceilingOf(made.body.run.id)).toBe(RUN_CEILING_MICROS.now);
-    // The session and the restore marker, the preferences, the insert.
-    expect(made.cost).toBe(4);
+    // The session and the restore marker, the preferences, the week's spend (Task 13's fix wave, §2.11), the insert.
+    expect(made.cost).toBe(5);
   });
 
   it("the default scope and N: a create with no scope starts the athlete's default, next workouts with no count takes theirs", async () => {
     await prefsCall("PUT", { defaultScope: "next_n", nextN: 5 });
     const made = await create({ request: "plan ahead" });
     expect(made.body.run.scope).toEqual({ kind: "next_n", n: 5 });
-    expect(made.cost).toBe(4);
+    expect(made.cost).toBe(5);
     await db.update(schema.coachRuns).set({ status: "cancelled" }).where(eq(schema.coachRuns.id, made.body.run.id));
     expect((await create({ scope: { kind: "next_n" } })).body.run.scope).toEqual({ kind: "next_n", n: 5 });
     await db.update(schema.coachRuns).set({ status: "cancelled" });

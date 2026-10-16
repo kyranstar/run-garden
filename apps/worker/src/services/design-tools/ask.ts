@@ -26,7 +26,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { athleteProfiles } from "@rg/database";
 import type { DesignTool } from "./types.js";
-import { isErr, parseAct } from "./act-common.js";
+import { capInWords, isErr, parseAct, prose } from "./act-common.js";
+import { clipProse } from "../design-prose.js";
 import { refuse } from "./read-common.js";
 import { AREA_FIX, CHECKIN_IDS, CHECKIN_QUESTIONS, focusAreasOf, libraryArea, subjectOf } from "./record-answer.js";
 
@@ -36,20 +37,23 @@ const TEXT_MAX = 200;
 const CHIP_MAX = 40;
 const WHY_MAX = 200;
 
-const line = (max: number) => z.string().trim().min(1).max(max);
+/** A question's words and its chips are held to their caps — a question is never cut — and a refusal says the length in
+ * words; its `why` is free text (Task 13's fix wave, §2.1): kept up to four times its cap, clipped where the athlete reads
+ * it. */
+const line = (max: number) => prose(max, 1);
 const chip = z.union([line(CHIP_MAX), z.object({ label: line(CHIP_MAX), value: z.number().int().min(0).max(10).optional(), area: z.string().min(1).max(80).optional() }).strict()]);
 const question = z
   .object({
     text: line(TEXT_MAX),
     chips: z.array(chip).min(1).max(MAX_CHIPS, `at most ${MAX_CHIPS} chips a question`),
     allowFreeText: z.literal(true).optional(),
-    why: line(WHY_MAX),
+    why: prose(WHY_MAX),
     checkin: z.object({ question: z.enum(CHECKIN_IDS), area: z.string().min(1).max(80).optional() }).strict().optional(),
   })
   .strict();
 const input = z.object({ questions: z.array(question).min(1).max(MAX_QUESTIONS, `at most ${MAX_QUESTIONS} questions at a time`) }).strict();
 /** Today's condition check asked for (fix wave 3A, A8): no wording of the model's — the app shows its own check. */
-const checkInput = z.object({ check: z.literal("condition"), why: line(WHY_MAX) }).strict();
+const checkInput = z.object({ check: z.literal("condition"), why: prose(WHY_MAX) }).strict();
 
 const labelOf = (c: z.infer<typeof chip>): string => (typeof c === "string" ? c : c.label);
 
@@ -71,7 +75,7 @@ export const askAthlete: DesignTool = {
     description: "Either { questions } or { check: \"condition\", why }.",
     properties: {
       check: { type: "string", enum: ["condition"], description: "Ask the athlete to log today's condition check in the app, instead of questions." },
-      why: { type: "string", minLength: 1, maxLength: WHY_MAX, description: "With check: why the design needs today's check." },
+      why: { type: "string", minLength: 1, description: `With check: why the design needs today's check — ${capInWords(WHY_MAX)}.` },
       questions: {
         type: "array",
         minItems: 1,
@@ -79,7 +83,7 @@ export const askAthlete: DesignTool = {
         items: {
           type: "object",
           properties: {
-            text: { type: "string", minLength: 1, maxLength: TEXT_MAX },
+            text: { type: "string", minLength: 1, maxLength: TEXT_MAX, description: `The question: ${capInWords(TEXT_MAX)}.` },
             chips: {
               type: "array",
               minItems: 1,
@@ -102,7 +106,7 @@ export const askAthlete: DesignTool = {
               },
             },
             allowFreeText: { const: true, description: "Always true: the athlete can answer in their own words." },
-            why: { type: "string", minLength: 1, maxLength: WHY_MAX, description: "How the answer changes the design." },
+            why: { type: "string", minLength: 1, description: `How the answer changes the design, to the athlete: ${capInWords(WHY_MAX)}.` },
             checkin: {
               type: "object",
               description: "The check-in this question asks, so its answer is kept: soreness, tightness or pain by area (a region, muscle or focus-area id), energy alone.",
@@ -129,9 +133,9 @@ export const askAthlete: DesignTool = {
       return refuse("set_designer_cannot_ask", SET_DESIGNER_ASKS.why, SET_DESIGNER_ASKS.fix);
     }
     if (raw && typeof raw === "object" && "check" in raw) {
-      const c = parseAct(checkInput, raw, `{ check: "condition", why } — why the design needs today's check, at most ${WHY_MAX} characters`);
+      const c = parseAct(checkInput, raw, `{ check: "condition", why } — why the design needs today's check, ${capInWords(WHY_MAX)}`);
       if (isErr(c)) return c;
-      return { data: { check: c.check, why: c.why }, summary: CHECK_ASKED };
+      return { data: { check: c.check, why: clipProse(c.why, WHY_MAX) }, summary: CHECK_ASKED };
     }
     const p = parseAct(input, raw, `questions: 1–${MAX_QUESTIONS}, each { text, chips (1–${MAX_CHIPS}), why, checkin? } — or { check: "condition", why }`);
     if (isErr(p)) return p;
@@ -171,7 +175,7 @@ export const askAthlete: DesignTool = {
       text: q.text,
       chips: q.chips.map(labelOf),
       allowFreeText: true as const,
-      why: q.why,
+      why: clipProse(q.why, WHY_MAX),
       ...(q.checkin ? { checkin: q.checkin } : {}),
     }));
     return { data: { questions }, summary: questions.map((q) => q.text).join(" · ") };

@@ -48,7 +48,7 @@ import {
 } from "../design-orchestrate.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
 import { LLM_BUDGET } from "../llm.js";
-import { isErr, parseAct } from "./act-common.js";
+import { capInWords, isErr, parseAct, prose } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { dateField, DATE_SCHEMA, jsonList, parsedArray, readAthlete, refuse } from "./read-common.js";
 import type { DesignTool, SetBrief, SetRound } from "./types.js";
@@ -57,7 +57,8 @@ const KEY = /^[A-Za-z0-9_-]{1,24}$/;
 const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 const LIMITS = { purpose: 200, emphasis: 200, constraints: 300, why: 300, sameDayWhy: 200, note: 300 } as const;
 
-const text = (max: number) => z.string().trim().min(1).max(max);
+/** A brief's words are free text only models read (Task 13's fix wave, §2.1): kept whole up to four times the cap. */
+const text = (max: number) => prose(max);
 const brief = z
   .object({
     key: z.string().regex(KEY, "letters, digits, - or _ (at most 24)"),
@@ -74,7 +75,7 @@ const brief = z
 const input = z.object({ briefs: z.array(brief).min(1).max(SET_MAX_WORKOUTS) }).strict();
 
 const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
-const str = (max: number, description: string) => ({ type: "string", minLength: 1, maxLength: max, description });
+const str = (max: number, description: string) => ({ type: "string", minLength: 1, description: `${description.replace(/\.$/, "")} — ${capInWords(max)}.` });
 
 const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }";
 

@@ -5,6 +5,15 @@
  * call's receipt, and makes `data.proposalId` the run's proposal — the main run's design proposal when it has one, or
  * for a designer, when it added a workout to it.
  *
+ * NEVER REFUSED FOR LENGTH (Task 13's fix wave, §2.1; audits 13b I1, 13c R3): the model can't count characters, and 15 of
+ * the 16 live runs that called finish had their first refused for a line a little over its cap — on a last turn, a
+ * refused finish ended a finished design as a stop. The line is clipped where the athlete reads it (design-prose.ts
+ * `clipProse`: its last sentence end inside LINE_MAX, else a word and "…"), and the loop keeps the whole text in the
+ * event's payload. The schema states the cap in words.
+ *
+ * A SET'S DESIGNER'S LINE IS INTERNAL (M3): its `summary` is optional and only the main coach reads it (the loop keeps it
+ * as the designer's `final`, which its set's outcome quotes); the trail shows the workout it designed, by its title.
+ *
  * Review comes before the athlete sees anything (spec §5): the loop's finish makes the main run's proposal `pending`
  * only when every workout in it carries its review; one that still has an unreviewed workout stays `unreviewed` —
  * never listed — and the line says it is kept back. A change to a session already on the plan (adjust_plan, Task 8b)
@@ -16,24 +25,35 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
 import type { DesignTool } from "./types.js";
-import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
+import { capInWords, isErr, mainRunIdOf, parseAct } from "./act-common.js";
+import { refuse } from "./read-common.js";
 import { reviewRunning } from "../design-review.js";
+import { clipProse } from "../design-prose.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
 
-const LINE_MAX = 300;
+/** The athlete's line, at most (characters): clipped to it, never refused. */
+export const LINE_MAX = 300;
 const KEPT_BACK = " (Not reviewed yet — kept back until it is.)";
 
-const input = z.object({ summary: z.string().trim().min(1).max(LINE_MAX) }).strict();
+const input = z.object({ summary: z.string().trim().min(1).optional() }).strict();
+
+/** A set's designer's line on the trail: the workout it designed, by its title (M3). */
+export const designedLine = (title: string | null): string => (title ? `Designed “${title}”.` : "Finished without a workout.");
 
 export const finish: DesignTool = {
   name: "finish",
   description:
-    "The main coach and designers (a reviewer ends with submit_review): end the run with one plain line for the athlete — what was proposed, or why not — never restating what the proposal card shows (minutes, dates, times, counts).",
+    "The main coach and designers (a reviewer ends with submit_review): end the run. The main coach: one plain line for the athlete — what was proposed, or why not — never restating what the proposal card shows (minutes, dates, times, counts). A set's designer: the line is optional and only the main coach reads it.",
   inputSchema: {
     type: "object",
-    properties: { summary: { type: "string", minLength: 1, maxLength: LINE_MAX } },
-    required: ["summary"],
+    properties: {
+      summary: {
+        type: "string",
+        minLength: 1,
+        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits. A set's designer: optional, for the main coach only.`,
+      },
+    },
     additionalProperties: false,
   },
   statementCost: 2,
@@ -41,8 +61,13 @@ export const finish: DesignTool = {
   roles: ["main", "designer"],
   control: "finish",
   async run(ctx, raw) {
-    const p = parseAct(input, raw, `summary: one plain line (at most ${LINE_MAX} characters)`);
+    const p = parseAct(input, raw, `summary: ${ctx.run.role === "main" ? "one plain line for the athlete" : "optional"} (${capInWords(LINE_MAX)})`);
     if (isErr(p)) return p;
+    const designer = ctx.run.role === "designer";
+    if (!designer && !p.summary) {
+      return refuse("invalid_input", "summary: Required — the athlete's last line.", `Call it again with summary: one plain line for the athlete (${capInWords(LINE_MAX)}).`);
+    }
+    const said = p.summary ?? "";
     const mainRunId = mainRunIdOf(ctx);
     const proposalId = mainRunId ? designProposalId(mainRunId) : null;
     const [row] = proposalId
@@ -55,14 +80,15 @@ export const finish: DesignTool = {
     // The designed workouts: what review is about. The changes ride beside them, never reviewed.
     const ops = all.filter(isDocWorkoutOp) as DocWorkoutOp[];
     const changes = all.filter(isPlanAdjustOp).length;
-    const mine = row && (ctx.run.role === "main" ? all.length > 0 : ops.some((o) => o.by?.runId === ctx.run.id));
-    if (!row || !mine || !proposalId) return { data: {}, summary: p.summary, receipt: { final: true } };
+    const own = designer ? ops.find((o) => o.by?.runId === ctx.run.id) : undefined;
+    const mine = row && (ctx.run.role === "main" ? all.length > 0 : !!own);
+    // A designer's line is its workout's title (M3); the main coach's, its own words clipped where the athlete reads them.
+    const lineOf = (room: number): string => (designer ? designedLine(own?.doc.title ?? null) : clipProse(said, room));
+    if (!row || !mine || !proposalId) return { data: {}, summary: lineOf(LINE_MAX), receipt: { final: true } };
     // Kept back while any workout lacks its review, or has one under way: the loop's finish makes the rest pending
     // (coach-runs.ts, the same guard).
     const unreviewed = row.status === "unreviewed" && (ops.some((o) => !o.review) || reviewRunning(ops));
-    const line = unreviewed
-      ? `${p.summary.length + KEPT_BACK.length > LINE_MAX ? `${p.summary.slice(0, LINE_MAX - KEPT_BACK.length - 1)}…` : p.summary}${KEPT_BACK}`
-      : p.summary;
+    const line = unreviewed && !designer ? `${lineOf(LINE_MAX - KEPT_BACK.length)}${KEPT_BACK}` : lineOf(LINE_MAX);
     // What the proposal is once this finish lands: the loop's finish makes a main run's fully reviewed one pending.
     const promoted = ctx.run.role === "main" && row.status === "unreviewed" && all.length > 0 && ops.every((o) => o.review) && !reviewRunning(ops);
     return {

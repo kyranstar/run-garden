@@ -80,14 +80,15 @@ const thousands = (n: number): string => n.toLocaleString("en-US");
 export const proseTooLong = (field: string, length: number, cap: number): string =>
   `${field} is ${thousands(length)} characters; at most ${thousands(cap)} — about ${capWords(cap)} words`;
 
-/** A free-text field: trimmed and not empty, accepted whole up to PROSE_CEILING × `cap`, refused past it in words. */
-export const prose = (cap: number) =>
+/** A free-text field: trimmed and not empty, accepted whole up to `ceiling` × `cap` (PROSE_CEILING; 1 for a text that is
+ * never cut, a question's own words), refused past it in words. */
+export const prose = (cap: number, ceiling = PROSE_CEILING) =>
   z
     .string()
     .trim()
     .min(1)
     .superRefine((text, c) => {
-      if (text.length > cap * PROSE_CEILING) c.addIssue({ code: z.ZodIssueCode.custom, message: "too long", params: { prose: { length: text.length, cap } } });
+      if (text.length > cap * ceiling) c.addIssue({ code: z.ZodIssueCode.custom, message: "too long", params: { prose: { length: text.length, cap } } });
     });
 
 function issueText(i: z.ZodIssue): string {

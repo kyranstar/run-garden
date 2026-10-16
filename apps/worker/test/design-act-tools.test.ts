@@ -793,10 +793,10 @@ describe("finish", () => {
     expect(ok((await call("finish", ctxOf(designer), { summary: "Done." })).result).data).toMatchObject({ proposalId: designProposalId(main.id) });
   });
 
-  it("refuses an empty or long line", async () => {
+  it("refuses an empty line; a long one is clipped where the athlete reads it, never refused (Task 13's fix wave, §2.1)", async () => {
     const r = await run();
     expect(err((await call("finish", ctxOf(r), { summary: "  " })).result).error).toBe("invalid_input");
-    expect(err((await call("finish", ctxOf(r), { summary: "x".repeat(301) })).result).error).toBe("invalid_input");
+    expect(ok((await call("finish", ctxOf(r), { summary: "x".repeat(301) })).result).summary).toHaveLength(300);
     expect(tool("finish").roles).toEqual(["main", "designer"]);
   });
 });

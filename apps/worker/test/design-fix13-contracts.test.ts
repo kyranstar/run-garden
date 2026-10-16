@@ -22,6 +22,9 @@ import type { Db } from "../src/services/db.js";
 import { applyVerdict, countedRounds } from "../src/services/design-review.js";
 import { capInWords, capWords, proseTooLong } from "../src/services/design-tools/act-common.js";
 import { designProposalId, firstNonTextDiff, proposeWorkout, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
+import { askAthlete } from "../src/services/design-tools/ask.js";
+import { finish } from "../src/services/design-tools/finish.js";
+import { planSet } from "../src/services/design-tools/plan-set.js";
 import { isToolErr, type DesignReview, type ReviewHooks, type ReviewStart, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { makeTestDb } from "./helpers.js";
@@ -230,6 +233,65 @@ describe("soft caps (§2.1): a change note is kept whole up to four times its ca
     expect(e.error).toBe("invalid_input");
     expect(e.why).toContain("changeNote is 900 characters; at most 200 — about 30 words");
     expect(e.fix).toMatch(/fewer words/);
+  });
+
+  it("finish is never refused for length: the athlete's line clipped at a sentence inside 300, its cap in words", async () => {
+    const run = await mainRun();
+    const long = `${"The session eases the hips first and then the trunk, at home. ".repeat(9)}Enjoy it.`;
+    expect(long.length).toBeGreaterThan(500);
+    const out = ok(await finish.run(ctxOf(run), { summary: long }));
+    expect(out.summary!.length).toBeLessThanOrEqual(300);
+    expect(out.summary).toMatch(/\.$/);
+    expect(long.startsWith(out.summary!)).toBe(true);
+    const huge = ok(await finish.run(ctxOf(run), { summary: "word ".repeat(1_200) }));
+    expect(huge.summary!.length).toBeLessThanOrEqual(300);
+    expect(JSON.stringify(finish.inputSchema)).toContain(capInWords(300));
+    expect(JSON.stringify(finish.inputSchema)).not.toContain("maxLength");
+    // The main coach's line is the athlete's: none is still refused (not for length).
+    expect(err(await finish.run(ctxOf(run), {})).error).toBe("invalid_input");
+  });
+
+  it("a set's designer finishes without a line of its own: internal, and the trail shows its workout's title (M3)", async () => {
+    const main = await mainRun({ kind: "week" });
+    const id = `ds-${newId().slice(0, 10)}`;
+    await db.insert(schema.coachRuns).values({
+      id, userId, parentId: main.id, role: "designer", scope: { kind: "week" }, request: null, status: "active", state: null, steps: 0, costUsd: 0,
+      createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+    });
+    const designer: ToolContext["run"] = { id, role: "designer", scope: { kind: "week" }, parentId: main.id, rehearsal: false };
+    ok(await proposeWorkout.run(ctxOf(designer), { doc: doc({ title: "Calm hips" }), target: { kind: "new", date: "2026-05-15" } }));
+    const quiet = ok(await finish.run(ctxOf(designer), {}));
+    expect(quiet.summary).toBe("Designed “Calm hips”.");
+    const said = ok(await finish.run(ctxOf(designer), { summary: "A long note for the main coach. ".repeat(20) }));
+    expect(said.summary).toBe("Designed “Calm hips”.");
+  });
+
+  it("ask_athlete: a why over its cap is kept, clipped where the athlete reads it; past four times it, refused in words", async () => {
+    const run = await mainRun();
+    const why = `${"Your answer sets how long the warm-up runs and which moves come first. ".repeat(4)}Thanks.`;
+    expect(why.length).toBeGreaterThan(200);
+    const out = ok(await askAthlete.run(ctxOf(run), { questions: [{ text: "Gym or home?", chips: ["Gym", "Home"], why }] }));
+    const kept = (out.data as { questions: Array<{ why: string }> }).questions[0]!.why;
+    expect(kept.length).toBeLessThanOrEqual(200);
+    expect(kept).toMatch(/\.$/);
+    const check = ok(await askAthlete.run(ctxOf(run), { check: "condition", why }));
+    expect((check.data as { why: string }).why.length).toBeLessThanOrEqual(200);
+    const e = err(await askAthlete.run(ctxOf(run), { questions: [{ text: "Gym or home?", chips: ["Gym", "Home"], why: "w".repeat(900) }] }));
+    expect(e.why).toContain("questions.0.why is 900 characters; at most 200 — about 30 words");
+    // A question's own words stay within theirs: refused, in words, never cut mid-question.
+    const q = err(await askAthlete.run(ctxOf(run), { questions: [{ text: "q".repeat(230), chips: ["Gym"], why: "Sets the gear." }] }));
+    expect(q.why).toContain("questions.0.text is 230 characters; at most 200 — about 30 words");
+  });
+
+  it("plan_set: a brief's fields are kept whole up to four times their cap — only models read them — and refused past it in words", async () => {
+    const set = planSet.inputSchema as { properties: { briefs: { items: { properties: Record<string, { description?: string; maxLength?: number }> } } } };
+    const fields = set.properties.briefs.items.properties;
+    expect(fields.why!.description).toContain(capInWords(300));
+    expect(fields.why!.maxLength).toBeUndefined();
+    const run = await mainRun({ kind: "week" });
+    const brief = { key: "a", date: TODAY, purpose: "Care.", emphasis: "Mobility.", constraints: "Home.", why: "w".repeat(1_300), sameDayWhy: "A short one." };
+    const e = err(await planSet.run(ctxOf(run), { briefs: [brief] }));
+    expect(e.why).toContain("briefs.0.why is 1,300 characters; at most 300 — about 45 words");
   });
 
   it("caps in words", () => {

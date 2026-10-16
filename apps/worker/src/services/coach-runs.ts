@@ -57,7 +57,10 @@ import {
   unavailableWhy,
 } from "./design-review.js";
 import { allTools } from "./design-tools/index.js";
+import { capInWords, PROSE_CEILING } from "./design-tools/act-common.js";
+import { designedLine, LINE_MAX as FINISH_LINE_MAX } from "./design-tools/finish.js";
 import { designProposalId } from "./design-tools/propose.js";
+import { clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
 import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
 import {
@@ -394,6 +397,9 @@ export interface RunState {
   /** A main run's or designer's turns in a row that called no tool (fix wave 3A, A3): the first is nudged, the second
    * ends the run as a finish. A turn with a tool call clears it. */
   textOnly?: number;
+  /** A call refused after the run's last call was made (Task 13's fix wave, R3): the run then ends as a finish in words
+   * does, never as a stop — with a refused finish's own words when it carried them. */
+  lastRefused?: { words?: string };
   /** Times a dead step's claim on this run was taken back since a step last wrote its state (fix wave 3A, A14):
    * counted in the claim itself (or the sweep's), cleared by any step that gets as far as writing. */
   takeovers?: number;
@@ -519,6 +525,9 @@ export function readRunState(text: string | null): RunState | null {
     ...(typeof s.awaitingAt === "number" ? { awaitingAt: s.awaitingAt } : {}),
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
     ...(typeof s.textOnly === "number" ? { textOnly: s.textOnly } : {}),
+    ...(s.lastRefused && typeof s.lastRefused === "object"
+      ? { lastRefused: typeof s.lastRefused.words === "string" ? { words: s.lastRefused.words } : {} }
+      : {}),
     ...(typeof s.takeovers === "number" ? { takeovers: s.takeovers } : {}),
     ...(Array.isArray(s.outputs) && s.outputs.every((n) => typeof n === "number" && Number.isFinite(n)) ? { outputs: s.outputs } : {}),
     ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
@@ -1799,7 +1808,11 @@ export function expiredLine(settings: RunSettings | undefined): string {
 
 /** Told to the model on its last call, in the newest (not yet sent) user message (fix wave 3A, A3: never an invitation
  * to answer in words, which would end the run with nothing shown). */
-export const LAST_TURN_NOTE = "This is your last turn in this run. Call finish now, with one plain line for the athlete.";
+export const LAST_TURN_NOTE = `This is your last turn in this run. Call finish now, with one plain line for the athlete — ${capInWords(FINISH_LINE_MAX)}.`;
+
+/** A finish's own words as the loop keeps them where only a model or the record reads them — a designer's `final`, the
+ * whole line in the event's payload: at most this (characters; finish never refuses for length: §2.1). */
+const FINISH_KEPT_MAX = FINISH_LINE_MAX * PROSE_CEILING;
 
 /** A main run's or a designer's turn that called no tool: its one repair (fix wave 3A, A3; the reviewer has its own) —
  * the shared prompt's own line, which says what this loop does (round 2, A-M5 and B-M1). */
@@ -2143,6 +2156,12 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
     if (!ours) return { kind: "lost", costMicros: 0 };
     const ran = await runTools(s, { statements: STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED, cpu: PENDING_STEP_CPU_ROOM });
     return end({ state, costMicros: 0, error: null, ...ran });
+  }
+  // A call refused after the run's last call (R3): the run ends as a finish in words does — the proposal promoted, the
+  // model's words (or a refused finish's) its line — never as a stop. A step of its own: no tool ran in it, so the
+  // finish's writes have the whole room. The sweep may take it too: it calls no model.
+  if (state.lastCall !== null && state.lastRefused && state.pending.length === 0 && s.run.role !== "reviewer") {
+    return end(await finishInWords(s, state.lastRefused.words ?? lastWords(state), 0, { proposedFallback: true }));
   }
   if (!s.allowModel) return end(IDLE);
   if (state.system === null) return end(await contextStep(s));
@@ -2663,10 +2682,13 @@ async function runTools(
       state.results = [];
       // A designer's own last line, as it wrote it: its set's outcome quotes it if its workout is left out.
       const said = (input as { summary?: unknown } | null)?.summary;
-      if (run.role === "designer" && typeof said === "string") state.final = said.trim().slice(0, SUMMARY_MAX_CHARS);
+      // (Kept whole up to the finish's ceiling: only the main coach reads it — its trail line is its workout's, M3.)
+      if (run.role === "designer" && typeof said === "string") state.final = clipProse(said, FINISH_KEPT_MAX);
       const proposalId = typeof (result.data as { proposalId?: unknown } | null)?.proposalId === "string" ? ((result.data as { proposalId: string }).proposalId) : null;
       if (proposalId) await closeProposalAtFinish(s, proposalId);
-      const payload = { ...(proposalId ? { proposalId } : {}), ...(result.receipt ? { receipt: result.receipt } : {}) };
+      // The main coach's line clipped where the athlete reads it (finish.ts, §2.1): its whole text kept in the payload.
+      const whole = run.role === "main" && typeof said === "string" && !(result.summary ?? "").startsWith(said.trim()) ? { text: clipProse(said, FINISH_KEPT_MAX) } : {};
+      const payload = { ...(proposalId ? { proposalId } : {}), ...whole, ...(result.receipt ? { receipt: result.receipt } : {}) };
       // A reviewer's finish is its review.
       events.push({ kind: run.role === "reviewer" ? "review" : "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });
       return { status: "finished", events, proposalId };
@@ -2681,6 +2703,11 @@ async function runTools(
           }
         : refusedLine(call.name, result, input),
     );
+    if (!ok && state.lastCall !== null && run.role !== "reviewer") {
+      // Refused after the run's last call (R3): no turn is left to fix it — the run ends as a finish in words does.
+      const words = call.name === "finish" ? (input as { summary?: unknown } | null)?.summary : undefined;
+      state.lastRefused = { ...(state.lastRefused ?? {}), ...(typeof words === "string" && words.trim() ? { words: words.trim() } : {}) };
+    }
     if (!ok && run.role === "reviewer" && result.error === "invalid_review") {
       // A review that can't be read gets one repair (this error, with what was wrong); a second ends the reviewer, and
       // its designer goes on with the validator's view.
@@ -2750,26 +2777,44 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
  * (a review left under way, a workout unreviewed), what was reviewed proposed once the end is written, as a stop does
  * (`withWhatItHas`). No tool ran this step: at most the guard's write, the supersede, and a stop's proposal.
  */
-async function finishInWords(s: StepCtx, said: string, spent: number): Promise<StepEnd> {
+async function finishInWords(s: StepCtx, said: string, spent: number, o: { proposedFallback?: boolean } = {}): Promise<StepEnd> {
   const { state, run } = s;
-  const words = said.length > 0 ? said : LINES.finished;
-  const longer = said.length > SUMMARY_MAX_CHARS ? { text: said } : {};
+  // Clipped where the athlete reads it (§2.1), at its last sentence end inside the line; the whole kept in the payload.
+  const clipped = said.length > 0 ? clipProse(said, SUMMARY_MAX_CHARS) : "";
+  const longer = said.trim().length > clipped.length ? { text: clipProse(said, FINISH_KEPT_MAX) } : {};
   if (run.role !== "main") {
-    if (said.length > 0) state.final = said.slice(0, SUMMARY_MAX_CHARS);
-    return { status: "finished", state, costMicros: spent, error: null, proposalId: null, events: [{ kind: "note", summary: words, ...(said.length > SUMMARY_MAX_CHARS ? { payload: longer } : {}) }] };
+    // A designer's words are the main coach's (its `final`); its line is the workout it designed (M3).
+    if (said.length > 0) state.final = clipProse(said, FINISH_KEPT_MAX);
+    return { status: "finished", state, costMicros: spent, error: null, proposalId: null, events: [{ kind: "note", summary: designedLine(state.title ?? null) }] };
   }
   const proposalId = designProposalId(run.id);
   const closed = await closeProposalAtFinish(s, proposalId);
   const shown = closed === "pending";
+  // No words of its own (a refused last call's run, R3): the standard line for what it proposed.
+  const words = clipped || (shown && o.proposedFallback ? LINES.proposedAtEnd : LINES.finished);
   return {
     status: "finished",
     state,
     costMicros: spent,
     error: null,
     proposalId: shown ? proposalId : null,
-    events: [{ kind: "note", summary: words, ...(shown || said.length > SUMMARY_MAX_CHARS ? { payload: { ...longer, ...(shown ? { proposalId } : {}) } } : {}) }],
+    events: [{ kind: "note", summary: words, ...(shown || "text" in longer ? { payload: { ...longer, ...(shown ? { proposalId } : {}) } } : {}) }],
     ...(closed === "kept" ? { withWhatItHas: STOPPED_NOTES.unfinished } : {}),
   };
+}
+
+/** The words of the run's newest answer (its text blocks): what a finish in words says when no tool said it. */
+function lastWords(state: RunState): string {
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const m = state.messages[i]!;
+    if (m.role !== "assistant" || typeof m.content === "string") continue;
+    return m.content
+      .filter((b): b is { type: "text"; text: string } => b.type === "text" && typeof (b as { text?: unknown }).text === "string")
+      .map((b) => b.text.trim())
+      .filter((t) => t.length > 0)
+      .join(" ");
+  }
+  return "";
 }
 
 /** A call queued after a propose_workout that paused for its review. */
