@@ -473,6 +473,13 @@ describe("also waiting (Task 13's fix wave, R2): the other suggestions still ope
     expect(res.body.alsoOpen.map((x: { proposalId: string }) => x.proposalId)).toEqual(ids.slice(2).reverse());
     expect(res.cost).toBe(1 + CURRENT_RUN_STATEMENTS);
   });
+
+  it("newer suggestions gone by never crowd out an older one still open", async () => {
+    const open = await other({ title: "Still open", dates: [addDays(today, 1)] });
+    for (let i = 0; i < 6; i++) await other({ dates: [addDays(today, -1)] });
+    await run({ status: "active" });
+    expect((await current()).body.alsoOpen.map((x: { proposalId: string }) => x.proposalId)).toEqual([open]);
+  });
 });
 
 describe("the run's figures", () => {
