@@ -29,9 +29,11 @@ import {
   REVIEW_ITEM_MAX,
   REVIEW_NOTE_MAX,
   reviewLine,
+  reviewPacket,
   STOPPED_NOTES,
   submitReview,
 } from "../src/services/design-review.js";
+import { EXERCISES } from "@rg/exercise-library";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import type { ContentBlock, MessagesOk, MessagesResult } from "../src/services/llm-messages.js";
@@ -346,7 +348,9 @@ describe("what the designer is told after a review (§2.5; 13a A3, 13b I5, 13c R
     await older(`old-b-${a.userId}`, [{ ...newOp("Decided", "13:30"), outcome: { status: "declined", at: before } }, { ...newOp("Tomorrow", "14:00"), date: day(-1), target: { kind: "new", date: day(-1), time: "14:00" } }], before);
     const id = `dp-mine-${a.userId}`;
     const mine = { ...newOp("Mine", "14:00", "run-me"), toolUseId: "u1", reviewLog: [{ round: 1, toolUseId: "u1", reviewRunId: "rv-1", status: "reviewed", review: verdict(4), mean: 4, kept: true }] };
-    await db.insert(schema.coachProposals).values({ id, userId: a.userId, title: "Mine", evidence: "", rationale: "", flags: [], ops: [mine], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: TODAY });
+    // Another designer's workout in the same set covers "Far": it is that designer's to say, not this one's.
+    const sibling = newOp("Sibling", "10:50", "run-sibling");
+    await db.insert(schema.coachProposals).values({ id, userId: a.userId, title: "Mine", evidence: "", rationale: "", flags: [], ops: [sibling, mine], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: TODAY });
     const out = await resumeAfterReview(db, a.userId, { proposalId: id, designerRunId: "run-me", toolUseId: "u1", reviewerError: null, now: NOW });
     expect(out.result.data).toMatchObject({ willReplace: [{ title: { untrusted: true, text: "Near" }, date: TODAY, time: "11:05" }] });
   });
@@ -362,5 +366,22 @@ describe("what the designer is told after a review (§2.5; 13a A3, 13b I5, 13c R
     const out = await resumeAfterReview(counted, b.userId, { proposalId: id, designerRunId: "run-one", toolUseId: `toolu-run-one`, reviewerError: null, now: NOW });
     expect(out.result.data).toMatchObject({ willReplace: [] });
     expect(statements).toBe(1);
+  });
+});
+
+// ── I8: the reviewer reads moves by name ────────────────────────────────
+
+describe("the reviewer's packet names each move (13b I8, I9)", () => {
+  it("each move and each alternate carries its name beside its id, and a move its condition ratings — so notes name moves, and get_exercise is rarely needed", () => {
+    const doc = calmDoc();
+    const first = doc.parts[0]!.items[0]! as { libraryId: string; alternates?: Array<{ libraryId: string; why?: string }> };
+    first.alternates = [{ libraryId: "gobletSquat", why: "More load than today wants." }];
+    const packet = reviewPacket({ round: 1, draft: { proposalId: "dp-x", target: { kind: "new", date: TODAY }, date: TODAY, doc, issues: [], derived: { minutes: 20 } }, records: [] });
+    const bridge = EXERCISES.find((e) => e.id === "bridge")!;
+    expect(packet).toContain(`"libraryId":"bridge","name":"Glute bridge","ratings":${JSON.stringify(bridge.conditions)}`);
+    expect(packet).toContain('"libraryId":"deadBug","name":"Dead bug"');
+    expect(packet).toContain('"alternates":[{"libraryId":"gobletSquat","name":"Goblet squat","why":"More load than today wants."}]');
+    // The draft as stored is untouched: names are the packet's.
+    expect(JSON.stringify(doc)).not.toContain("Glute bridge");
   });
 });
