@@ -2,14 +2,14 @@
  * COACH MEMORY — observable and editable (coach UX spec §6; memory v2, Stage 3 Task 10, spec §9). Live for the thread
  * coach too, so it only adds: each item says its kind, how sure it is and where it came from; it can be pinned (the
  * pinned core rides in every coach run, at most 12), and the coach's inference confirmed; what a newer item replaced
- * is one tap down under it. Edit and delete work as they always have: deleting is immediate and total — the next
- * dossier simply lacks the item.
+ * is one tap down under it. Edit and delete send what they always have: deleting is total — the next dossier simply
+ * lacks the item — so it asks first, inline on the item: "Delete for good?" Yes · No (fix wave 3B, M9).
  */
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachMemoryItem } from "@rg/api-client";
 import { Card, formatShortDate } from "../../components.js";
-import { confidenceWords, groupItems, historyOf, MEMORY_GROUPS, metaLine, PIN_CAP_LINE } from "./coach-memory-model.js";
+import { confidenceWords, DELETE_ASK, groupItems, historyOf, MEMORY_CAPTION, MEMORY_GROUPS, metaLine, PIN_CAP_LINE } from "./coach-memory-model.js";
 
 /** One item: its words, what it is, its actions, and the versions it replaced (collapsed). */
 export function MemoryItem({
@@ -39,6 +39,17 @@ export function MemoryItem({
   onPin: (pinned: boolean) => void;
   onConfirm: () => void;
 }) {
+  // Delete asks first, inline, in the place of this item's actions (fix wave 3B, M9): "Delete for good?" Yes · No.
+  const [asking, setAsking] = useState(false);
+  const no = useRef<HTMLButtonElement>(null);
+  const del = useRef<HTMLButtonElement>(null);
+  const wasAsking = useRef(false);
+  useEffect(() => {
+    // The focus follows the question in, and back to Delete when it is answered No.
+    if (asking) no.current?.focus();
+    else if (wasAsking.current) del.current?.focus();
+    wasAsking.current = asking;
+  }, [asking]);
   return (
     <div className="memory-item">
       <div className="memory-row">
@@ -59,22 +70,42 @@ export function MemoryItem({
           )}
           <p className="memory-meta faint">{metaLine(item)}</p>
         </div>
-        <span className="row memory-actions">
-          {item.confidence === "inferred" ? (
-            <button type="button" className="linklike" disabled={busy} onClick={onConfirm}>
-              Confirm
+        {asking ? (
+          <span className="row memory-actions memory-ask" role="group" aria-label={DELETE_ASK}>
+            <span className="memory-ask-q">{DELETE_ASK}</span>
+            <button
+              type="button"
+              className="linklike"
+              onClick={() => {
+                setAsking(false);
+                wasAsking.current = false;
+                onDelete();
+              }}
+            >
+              Yes
             </button>
-          ) : null}
-          <button type="button" className="linklike" disabled={busy} aria-pressed={item.pinned === true} onClick={() => onPin(!item.pinned)}>
-            {item.pinned ? "Unpin" : "Pin"}
-          </button>
-          <button type="button" className="linklike" onClick={onEdit}>
-            Edit
-          </button>
-          <button type="button" className="linklike" onClick={onDelete}>
-            Delete
-          </button>
-        </span>
+            <button ref={no} type="button" className="linklike" onClick={() => setAsking(false)}>
+              No
+            </button>
+          </span>
+        ) : (
+          <span className="row memory-actions">
+            {item.confidence === "inferred" ? (
+              <button type="button" className="linklike" disabled={busy} onClick={onConfirm}>
+                Confirm
+              </button>
+            ) : null}
+            <button type="button" className="linklike" disabled={busy} aria-pressed={item.pinned === true} onClick={() => onPin(!item.pinned)}>
+              {item.pinned ? "Unpin" : "Pin"}
+            </button>
+            <button type="button" className="linklike" onClick={onEdit}>
+              Edit
+            </button>
+            <button ref={del} type="button" className="linklike" onClick={() => setAsking(true)}>
+              Delete
+            </button>
+          </span>
+        )}
       </div>
       {history.length > 0 ? (
         <details className="memory-history">
@@ -156,10 +187,7 @@ export function CoachMemorySection() {
   return (
     <div id="coach-memory">
       <Card title="Coach memory">
-        <p className="muted">
-          Everything the coach knows about you — learned from your messages, editable here,
-          deleted for good the moment you say so.
-        </p>
+        <p className="muted">{MEMORY_CAPTION}</p>
         {rows.length === 0 ? (
           <p className="faint">Nothing yet — the coach learns as you talk to it.</p>
         ) : (

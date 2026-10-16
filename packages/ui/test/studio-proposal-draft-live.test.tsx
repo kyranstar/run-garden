@@ -222,7 +222,7 @@ describe("Edit before approve", () => {
     expect(document.querySelector(".stu-build-start")).toBeNull();
     expect(document.querySelector(".stu-build-when")?.textContent).toBe("Tue Oct 13 · 5:30 PM");
     await retype(titleField()!, "My hips");
-    await click(button("Schedule…"), "Schedule…");
+    await click(button("Approve my version…"), "Approve my version…");
     const sheet = dialog("Schedule")!;
     expect(sheet.querySelector<HTMLInputElement>('input[type="radio"][value="day"]')!.checked).toBe(true);
     expect(sheet.querySelector<HTMLInputElement>('input[aria-label="Day"]')!.value).toBe(TUESDAY);
@@ -243,12 +243,12 @@ describe("Edit before approve", () => {
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     expect(button("Schedule…")).toBeNull();
-    expect(button("Save changes")!.disabled).toBe(false);
-    await click(button("Save changes"), "Save changes");
+    expect(button("Approve my version")!.disabled).toBe(false);
+    await click(button("Approve my version"), "Approve my version");
     await until(() => text().includes("This workout changed after the coach drafted this, so the draft can't be applied."), "the refusal");
     expect(where).toBe("/studio/build/proposal/dp-1/run-a");
     expect(button("Schedule it as a new workout")).not.toBeNull();
-    await click(button("Save changes"), "Save changes");
+    await click(button("Approve my version"), "Approve my version");
     await until(() => where === "/studio/build/workout/w1", "the workout");
     expect(text()).toContain("Saved.");
     expect(approvals(calls).map((c) => c.body)).toEqual([
@@ -274,7 +274,7 @@ describe("Edit before approve", () => {
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     await retype(titleField()!, "My hips");
-    await click(button("Schedule…"), "Schedule…");
+    await click(button("Approve my version…"), "Approve my version…");
     await click(button("Schedule", dialog("Schedule")!), "Schedule");
     await until(() => text().includes("The coach's version was approved already."), "the line");
     expect(titleField()!.value).toBe("My hips");
@@ -288,7 +288,7 @@ describe("Edit before approve", () => {
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     await retype(titleField()!, "My hips");
-    await click(button("Schedule…"), "Schedule…");
+    await click(button("Approve my version…"), "Approve my version…");
     await click(button("Schedule", dialog("Schedule")!), "Schedule");
     await until(() => text().includes("The coach's version was declined already."), "the line");
     // Nothing lost, nowhere else.
@@ -316,24 +316,24 @@ describe("Edit before approve", () => {
       mount("/studio/build/proposal/dp-1/run-a");
       await until(() => titleField()?.value === "Coach's hips", "the draft");
       await click(button(button_), button_);
-      if (button_ === "Schedule…") await click(button("Schedule", dialog("Schedule")!), "Schedule");
+      if (button_ === "Approve my version…") await click(button("Schedule", dialog("Schedule")!), "Schedule");
       await until(() => text().includes(words), words);
       expect(button("Schedule it as a new workout")).not.toBeNull();
       act(() => root?.unmount());
       host?.remove();
     };
     const revise = draftOf({ target: { kind: "revise", workoutId: "w1", baseRev: 3 }, date: TODAY, time: "18:00" });
-    await say(revise, { settled: "declined" }, "Save changes", "The coach's version was declined already.");
-    await say(revise, { error: "past_date", status: 422 }, "Save changes", "This workout's day has passed, so the draft can't be applied any more.");
-    await say(revise, { error: "not_pending", status: 409 }, "Save changes", "This draft isn't open any more, so it can't be approved.");
-    await say(revise, { error: "not_found", status: 404 }, "Save changes", "The workout this draft revises is no longer in your plan.");
+    await say(revise, { settled: "declined" }, "Approve my version", "The coach's version was declined already.");
+    await say(revise, { error: "past_date", status: 422 }, "Approve my version", "This workout's day has passed, so the draft can't be applied any more.");
+    await say(revise, { error: "not_pending", status: 409 }, "Approve my version", "This draft isn't open any more, so it can't be approved.");
+    await say(revise, { error: "not_found", status: 404 }, "Approve my version", "The workout this draft revises is no longer in your plan.");
   });
 
   it("a revision's draft taken as a new workout schedules one: Schedule… stands where Save changes was", async () => {
     serve({ draft: draftOf({ target: { kind: "revise", workoutId: "w1", baseRev: 3 }, date: TODAY, time: "18:00" }), approve: [{ settled: "declined" }] });
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => titleField()?.value === "Coach's hips", "the draft");
-    await click(button("Save changes"), "Save changes");
+    await click(button("Approve my version"), "Approve my version");
     await until(() => !!button("Schedule it as a new workout"), "the offer");
     await click(button("Schedule it as a new workout"), "Schedule it as a new workout");
     expect(dialog("Schedule")).not.toBeNull();
@@ -351,7 +351,7 @@ describe("Edit before approve", () => {
     }
     mount("/studio/build/proposal/dp-1/run-a", undefined, createElement(Next));
     await until(() => titleField()?.value === "Coach's hips", "the draft");
-    await click(button("Schedule…"), "Schedule…");
+    await click(button("Approve my version…"), "Approve my version…");
     await click(button("Schedule", dialog("Schedule")!), "Schedule");
     await until(() => !!button("Schedule it as a new workout"), "the offer");
     await click(button("Schedule it as a new workout"), "Schedule it as a new workout");
@@ -359,7 +359,7 @@ describe("Edit before approve", () => {
     // The next draft, on the same builder.
     await click(button("Next draft"), "Next draft");
     await until(() => where === "/studio/build/proposal/dp-1/run-b" && titleField()?.value === "Coach's hips", "the next draft");
-    await click(button("Schedule…"), "Schedule…");
+    await click(button("Approve my version…"), "Approve my version…");
     await click(button("Schedule", dialog("Schedule")!), "Schedule");
     await until(() => approvals(calls).length === 2, "its approve");
     expect(approvals(calls)[1]!.body).toMatchObject({ edit: { opId: "run-b" } });
@@ -371,7 +371,7 @@ describe("Edit before approve", () => {
     serve({ draft: draftOf(), approve: [{ error: "past_date", status: 422 }] });
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => titleField()?.value === "Coach's hips", "the draft");
-    await click(button("Schedule…"), "Schedule…");
+    await click(button("Approve my version…"), "Approve my version…");
     await click(button("Schedule", dialog("Schedule")!), "Schedule");
     await until(() => text().includes("That day has passed — pick today or a later day."), "the sheet's line");
     expect(button("Schedule it as a new workout")).toBeNull();
@@ -381,5 +381,52 @@ describe("Edit before approve", () => {
     serve({ draft: draftOf({ status: "expired" }) });
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => text().includes("This draft is closed."), "the line");
+  });
+});
+
+// ── Fix wave 3B, Part U ─────────────────────────────────────────────────────
+
+describe("fix wave 3B: Edit before approve (B-I8) and the goal line (A-M2, LIVE)", () => {
+  it("the builder says it is the coach's suggestion, and its save button approves the athlete's version", async () => {
+    serve({ draft: draftOf() });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    expect(document.querySelector(".stu-build-head .eyebrow")?.textContent).toBe("Coach's suggestion");
+    expect(button("Approve my version…")).not.toBeNull();
+    expect(button("Schedule…")).toBeNull();
+  });
+
+  it("a revision's draft: its save button approves it too, in the same words", async () => {
+    serve({ draft: draftOf({ target: { kind: "revise", workoutId: "w1", baseRev: 3 }, date: TODAY, time: "18:00" }) });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    expect(button("Approve my version")).not.toBeNull();
+    expect(button("Save changes")).toBeNull();
+  });
+
+  it("a draft dated today with no time opens the sheet on Later today — a time already in it, ready to approve", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    const calls = serve({ draft: draftOf({ target: { kind: "new", date: TODAY }, date: TODAY, time: null }), approve: [workout("w-9", TODAY, "11:00", "")] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await click(button("Approve my version…"), "Approve my version…");
+    const sheet = dialog("Schedule")!;
+    expect(sheet.querySelector<HTMLInputElement>('input[type="radio"][value="later"]')!.checked).toBe(true);
+    const time = sheet.querySelector<HTMLInputElement>('input[aria-label="Time today"]')!.value;
+    expect(time).toMatch(/^\d{2}:\d{2}$/);
+    expect(text()).not.toContain("Your usual time today has passed");
+    const go = button("Schedule", sheet)!;
+    expect(go.disabled).toBe(false);
+    await click(go, "Schedule");
+    await until(() => approvals(calls).length === 1, "the approve");
+    expect(approvals(calls)[0]!.body).toMatchObject({ edit: { opId: "run-a", date: TODAY, time } });
+  });
+
+  it("the goal line names each goal in plain words (GOAL_LABELS), never its id", async () => {
+    const doc = { ...coachDoc("Coach's hips"), intent: { ...coachDoc("x").intent, goals: ["aerobic-base", "condition-care"] as WorkoutDoc["intent"]["goals"] } };
+    serve({ draft: draftOf({ doc }) });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    expect(document.querySelector(".stu-build-goal-list")?.textContent).toBe("Aerobic base · Condition care");
   });
 });

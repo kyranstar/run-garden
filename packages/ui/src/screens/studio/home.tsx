@@ -86,19 +86,22 @@ export function StudioHome({
         </div>
       </Section>
 
-      {/* The objectives board (Stage 3 Task 11), with the coach: one quiet link, sitting with Templates. */}
-      {coachOn() ? (
-        <Link className="linklike stu-tpl-link stu-obj-link" to="/studio/objectives">
-          Objectives
-          <IconChevron size={16} />
-        </Link>
-      ) : null}
       <div className="stu-build-row">
         <BuildEntry />
-        <Link className="linklike stu-tpl-link" to={TEMPLATES_HREF}>
-          {count === undefined ? "Templates" : `Templates (${count})`}
-          <IconChevron size={16} />
-        </Link>
+        <span className="stu-build-links">
+          {/* The objectives board (Stage 3 Task 11), with the coach: one quiet link, in the row with Templates (fix
+              wave 3B, M10). */}
+          {coachOn() ? (
+            <Link className="linklike stu-tpl-link" to="/studio/objectives">
+              Objectives
+              <IconChevron size={16} />
+            </Link>
+          ) : null}
+          <Link className="linklike stu-tpl-link" to={TEMPLATES_HREF}>
+            {count === undefined ? "Templates" : `Templates (${count})`}
+            <IconChevron size={16} />
+          </Link>
+        </span>
       </div>
 
       <Section title="Browse">

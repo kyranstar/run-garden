@@ -2,13 +2,13 @@
  * ADD OR EDIT AN OBJECTIVE (Stage 3 Task 11; spec §11) — one sheet in the Studio's pattern (a Sheet, its fields as the
  * builder's sheets lay them, Save pinned in its foot), with two views:
  *
- *   New objective                              ✕        Key result                                 ✕
+ *   New objective                              ✕        Measure                                    ✕
  *   Title  [                     ]                      Name     [                    ]
- *   Why    [                     ]                      Measure  [Longest hold        ▾]
+ *   Why    [                     ]                      What it measures [Longest hold ▾]
  *   GOALS  Ski · Posture · …  (toggles)                 Moves    (Wall sit ✕)  [⌕ Find a move ]
- *   KEY RESULTS                                         Over the last [90 days ▾]
+ *   MEASURES                                            Over the last [90 days ▾]
  *   Wall sit hold · Longest hold · Wall sit  Edit Remove  Target (s) [120]   Start (s) [60]
- *   [＋ Add a key result]                               By [date]
+ *   [＋ Add a measure]                                  By [date]
  *                                    [ Save ]                                         [Back] [Done]
  *
  * The key results are the whole list (`PUT`'s rule): one removed is left out of what is sent. Values are typed in the
@@ -136,7 +136,7 @@ export function ObjectiveSheet({
       <Sheet
         open
         onClose={back}
-        title="Key result"
+        title="Measure"
         footer={
           <div className="btn-row stu-sched-actions">
             <button type="button" className="btn" onClick={back}>
@@ -193,12 +193,12 @@ export function ObjectiveSheet({
           </div>
         </section>
         <section className="obj-sheet-sec">
-          <h3 className="eyebrow">Key results</h3>
+          <h3 className="eyebrow">Measures</h3>
           {draft.krs.length ? (
             <ul className="obj-sheet-krs">
               {draft.krs.map((k, i) => {
                 const m = measureOf(k, units);
-                const name = k.label.trim() || "A key result";
+                const name = k.label.trim() || "A measure";
                 return (
                   <li key={k.id ?? `new-${i}`} className="obj-sheet-kr">
                     <span className="obj-sheet-kr-name">{name}</span>
@@ -234,7 +234,7 @@ export function ObjectiveSheet({
             onClick={() => setView({ kind: "kr", index: null, draft: emptyKr(), errors: [] })}
           >
             <IconPlus size={16} />
-            Add a key result
+            Add a measure
           </button>
         </section>
         <Errors errors={errors} />
@@ -291,7 +291,7 @@ function KeyResultForm({ draft, units, errors, onChange }: { draft: KrDraft; uni
         <input ref={nameRef} id={ids.name} className="stu-field" value={draft.label} maxLength={120} autoComplete="off" onChange={(e) => set({ label: e.target.value })} />
       </label>
       <label className="stu-field-row stu-field-row--wide" htmlFor={ids.kind}>
-        <span>Measure</span>
+        <span>What it measures</span>
         <select id={ids.kind} className="stu-select" value={kind} onChange={(e) => choose(e.target.value)}>
           <option value="">Choose…</option>
           {MEASURE_KINDS.map((k) => (

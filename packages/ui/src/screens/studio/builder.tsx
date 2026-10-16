@@ -57,7 +57,7 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type ConditionCheckDto, type DesignDraftResponse, type DocIssueDto, type SessionDto, type WorkoutDto } from "@rg/api-client";
-import { addDays, EFFORT_LEVELS, type WorkoutDoc } from "@rg/domain";
+import { addDays, EFFORT_LEVELS, GOAL_LABELS, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, GLOSSARY, label, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
 import {
   makeLibraryIndex,
@@ -635,6 +635,8 @@ function Builder({ source }: { source: BuildSource }) {
               <SaveMenu items={saveItems} />
             </span>
           </div>
+          {/* Whose this is, while it is still the coach's to approve (fix wave 3B, B-I8). */}
+          {isDraft && !asNew ? <p className="eyebrow stu-build-eyebrow">Coach's suggestion</p> : null}
           {(isWorkout || isDraft) && row ? (
             <p className="stu-build-when">{`${row.date === today ? "Today" : formatDayShort(row.date)}${row.time ? ` · ${formatTime(row.time)}` : ""}`}</p>
           ) : null}
@@ -663,7 +665,8 @@ function Builder({ source }: { source: BuildSource }) {
           <div className="stu-build-goals">
             <span className="stu-build-k">Goals</span>
             <span className="stu-build-goal-list">
-              {[...doc.intent.goals.map((g) => label(g)), ...doc.intent.focus.map((f) => label(f))].join(" · ")}
+              {/* Goals in plain words, the domain's one map (3B audit A-M2), as the goals sheet and the board say them. */}
+              {[...doc.intent.goals.map((g) => GOAL_LABELS[g] ?? label(g)), ...doc.intent.focus.map((f) => label(f))].join(" · ")}
             </span>
             {frozen ? null : (
               <button type="button" className="linklike stu-build-goals-edit" onClick={() => setGoalsOpen(true)}>
@@ -880,13 +883,14 @@ function Builder({ source }: { source: BuildSource }) {
                   {busy ? flow.what : "Start now"}
                 </button>
               ) : null}
+              {/* A coach's draft: saving it approves the athlete's version (fix wave 3B, B-I8) — said so. */}
               {frozen ? null : isWorkout || (draftRevises && !asNew) ? (
                 <button type="button" className="btn" disabled={(!dirty && !isDraft) || saving || busy} onClick={() => void saveChanges()}>
-                  {saving ? "Saving…" : "Save changes"}
+                  {saving ? "Saving…" : isDraft ? "Approve my version" : "Save changes"}
                 </button>
               ) : (
                 <button type="button" className="btn" disabled={!judged.doc || busy} onClick={() => setScheduling(true)}>
-                  Schedule…
+                  {isDraft && !asNew ? "Approve my version…" : "Schedule…"}
                 </button>
               )}
             </>

@@ -45,7 +45,8 @@ const SOURCE_WORDS: Record<string, string> = {
   manual: "From a check-in",
   open: "From your recent training",
   athlete_words: "From your request to the coach",
-  coach_inference: "From a coach run",
+  // A request, never the coach's "run" (fix wave 3B, B-I12).
+  coach_inference: "From a coach request",
   studio_brief: "From the old Studio's brief",
 };
 
@@ -95,3 +96,9 @@ export function groupItems(items: readonly CoachMemoryItem[], kind: MemoryKind):
 
 /** The words for a pin past the cap: the server's own, else the same. */
 export const PIN_CAP_LINE = "You can pin up to 12. Unpin one first.";
+
+/** What the list is, said once at its top (fix wave 3B, M9). */
+export const MEMORY_CAPTION = "Everything the coach remembers about you — from your messages, answers and requests. Edit or delete any of it.";
+
+/** Delete asks first, inline, on the item (M9): deleting is for good. */
+export const DELETE_ASK = "Delete for good?";

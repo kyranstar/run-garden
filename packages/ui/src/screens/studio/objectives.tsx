@@ -25,7 +25,9 @@
  *
  * Gentle (§2.10): a streak from one week and never at zero; a best ever only when it is on the trend (an old one is not
  * brought up); a stalled objective only its facts and one neutral line with a next step; no red anywhere. Evidence in
- * read_objectives' four words. The athlete's words and the coach's line are text.
+ * plain words — Measured, Few readings, At least, Not measured yet — and one not measured yet offers to ask the coach for
+ * a test (fix wave 3B, B-I11). A key result is a "measure" to the athlete. The athlete's words and the coach's line are
+ * text.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
@@ -50,11 +52,13 @@ import {
   stalled,
   STALL_DAYS,
   streakWords,
+  testRequest,
   windowWords,
   writeError,
   type BoardUnits,
   type ObjectiveDraft,
 } from "./objectives-model.js";
+import type { CoachArrival } from "./composer.js";
 import { ObjectiveSheet } from "./objectives-sheet.js";
 import { planDayHref } from "./run-model.js";
 
@@ -367,7 +371,7 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
           ))}
         </ul>
       ) : (
-        <p className="obj-quiet">No key results yet.</p>
+        <p className="obj-quiet">No measures yet.</p>
       )}
 
       {card.served.length ? (
@@ -446,6 +450,12 @@ function KeyResultRow({ k, units }: { k: ObjectiveBoardCard["keyResults"][number
       ) : (
         <p className="obj-quiet">{p.missing ?? "Nothing measured yet."}</p>
       )}
+      {/* Not measured yet: the coach can plan a test — the composer opens with the request in it (fix wave 3B, B-I11). */}
+      {p.evidence === "none" ? (
+        <Link className="linklike obj-ask-test tap-pad" to="/studio" state={{ coach: "compose", request: testRequest(kr.label) } satisfies CoachArrival}>
+          Ask the coach for a test
+        </Link>
+      ) : null}
       {bestOnTrend ? (
         <p className="obj-best">
           <span className="obj-best-glyph" aria-hidden="true">

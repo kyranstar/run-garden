@@ -164,11 +164,46 @@ describe("the memory list", () => {
     });
     await until(() => text().includes("Trains evenings"), "the edit");
     await click(inItem("Old fact", "Delete"));
+    await click(inItem("Old fact", "Yes"));
     await until(() => !text().includes("Old fact"), "the delete");
     expect(writes(calls)).toEqual([
       { method: "PATCH", path: "/api/coach/memory/a", body: { body: "Trains evenings" } },
       { method: "DELETE", path: "/api/coach/memory/b", body: null },
     ]);
+  });
+
+  // ── Fix wave 3B, M9 (LIVE: the memory list is in production for the thread coach) ──
+
+  it("Delete asks first, inline: 'Delete for good?' — No sends nothing and puts the actions back; Yes deletes", async () => {
+    const { calls } = fakeWorker({ memory: [mem("a", { body: "Old fact" }), mem("b", { body: "Kept fact" })] });
+    mount(createElement(CoachMemorySection));
+    await until(() => text().includes("Old fact"), "the list");
+    await click(inItem("Old fact", "Delete"));
+    const item = () => [...document.querySelectorAll<HTMLElement>(".memory-item")].find((el) => el.textContent!.includes("Old fact"))!;
+    expect(item().textContent).toContain("Delete for good?");
+    expect(inItem("Old fact", "Yes")).toBeDefined();
+    expect(inItem("Old fact", "No")).toBeDefined();
+    // The question takes the place of that item's actions only.
+    expect(inItem("Old fact", "Edit")).toBeUndefined();
+    expect(inItem("Kept fact", "Delete")).toBeDefined();
+    expect(writes(calls)).toEqual([]);
+    await click(inItem("Old fact", "No"));
+    expect(item().textContent).not.toContain("Delete for good?");
+    expect(inItem("Old fact", "Delete")).toBeDefined();
+    expect(writes(calls)).toEqual([]);
+    await click(inItem("Old fact", "Delete"));
+    await click(inItem("Old fact", "Yes"));
+    await until(() => !text().includes("Old fact"), "the delete");
+    expect(writes(calls)).toEqual([{ method: "DELETE", path: "/api/coach/memory/a", body: null }]);
+    expect(text()).toContain("Kept fact");
+  });
+
+  it("the caption says, plainly, what the list is and that all of it can be changed", async () => {
+    fakeWorker({ memory: [mem("a")] });
+    mount(createElement(CoachMemorySection));
+    await until(() => text().includes("Body a"), "the list");
+    expect(text()).toContain("Everything the coach remembers about you — from your messages, answers and requests. Edit or delete any of it.");
+    expect(text()).not.toContain("learned from your messages, editable here");
   });
 });
 
@@ -176,15 +211,15 @@ describe("Settings → Coach", () => {
   it("a tap on a scope or a count saves the settings whole", async () => {
     const { calls } = fakeWorker({ coach: { ceilingsUsd: { day: 1 } } });
     mount(createElement(CoachSection));
-    await until(() => text().includes("AI spend this week") && text().includes("$1.25 of $20"), "the card and the week's spend");
-    await click(buttons().find((b) => b.textContent === "This week"));
-    await until(() => buttons().find((b) => b.textContent === "This week")?.getAttribute("aria-pressed") === "true", "pressed");
+    await until(() => text().includes("AI spend this week") && text().includes("$1.25 of $20.00"), "the card and the week's spend");
+    await click(buttons().find((b) => b.textContent === "Next 7 days"));
+    await until(() => buttons().find((b) => b.textContent === "Next 7 days")?.getAttribute("aria-pressed") === "true", "pressed");
     const select = document.querySelector<HTMLSelectElement>("select.coach-n")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "5");
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await until(() => text().includes("Next 5"), "N");
+    await until(() => text().includes("Next 5 workouts"), "N");
     expect(writes(calls).map((c) => c.body)).toEqual([
       { ceilingsUsd: { day: 1 }, defaultScope: "week" },
       { ceilingsUsd: { day: 1 }, defaultScope: "week", nextN: 5 },
@@ -223,6 +258,17 @@ describe("Settings → Coach", () => {
     await typeLimit("1.50");
     await until(() => writes(calls).length === 1, "the save");
     expect(writes(calls)[0]!.body).toEqual({ nextN: 2 });
+  });
+
+  it("Add a time: the focus goes to the new time's field (fix wave 3B, B-I9)", async () => {
+    fakeWorker({ coach: { trainingTimes: ["07:00"] } });
+    mount(createElement(CoachSection));
+    await until(() => !!buttons().find((b) => b.textContent === "Add a time"), "Add a time");
+    await click(buttons().find((b) => b.textContent === "Add a time"));
+    const fields = [...document.querySelectorAll<HTMLInputElement>('input[type="time"]')];
+    expect(fields).toHaveLength(2);
+    expect(document.activeElement).toBe(fields[1]);
+    expect(fields[1]!.getAttribute("aria-label")).toBe("Training time 2");
   });
 
   it("a server whose coach is off answers 404: the card isn't there", async () => {

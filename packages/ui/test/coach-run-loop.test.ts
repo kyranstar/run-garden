@@ -169,14 +169,81 @@ describe("the step loop", () => {
   });
 
   it("an answer resumes it: the run the answer left steps again at once", async () => {
-    const h = harness({ steps: [step("waiting_athlete", [], null), step("finished", [ev(2)], null)], read: () => ({ run: runDto({ status: "finished" }), events: [] }) });
+    let server: CoachRunStepResult["status"] = "waiting_athlete";
+    const h = harness({
+      steps: [step("waiting_athlete", [], null), () => Promise.resolve((server = "finished", step("finished", [ev(2)], null)))],
+      read: () => ({ run: runDto({ status: server }), events: [] }),
+    });
     const loop = start(h);
     await h.clock.advance(1_000);
     expect(h.calls.steps).toHaveLength(1);
+    server = "active";
     loop.setRun(runDto({ status: "active" }));
     await h.clock.advance(10);
     expect(h.calls.steps).toHaveLength(2);
     expect(loop.snapshot.status).toBe("finished");
+  });
+
+  it("an answer's own line is read (after the last seq held) BEFORE the next step — even when that step returns within the poll (fix wave 3B, B-I2)", async () => {
+    // The answer route writes "You answered…" (seq 3); the next step writes seq 4 and returns well inside POLL_MS, so no
+    // poll ever runs while it is out — and a read after it (afterSeq 4) would never see seq 3.
+    const answered: CoachRunEventDto = { ...ev(3, "You answered: 20 min"), payload: { answers: ["20 min"], receipt: { undo: { handle: "run-1:t1" } } } };
+    const serverEvents: CoachRunEventDto[] = [ev(1), ev(2, "How long do you have?")];
+    let server: CoachRunStepResult["status"] = "waiting_athlete";
+    const order: string[] = [];
+    const h = harness({
+      steps: [
+        step("waiting_athlete", [ev(1), ev(2, "How long do you have?")], null),
+        () => {
+          order.push("step");
+          serverEvents.push(ev(4, "Read today"));
+          return Promise.resolve(step("active", [ev(4, "Read today")], 0));
+        },
+        () => {
+          order.push("step");
+          server = "finished";
+          return Promise.resolve(step("finished", [ev(5, "Done")], null));
+        },
+      ],
+      read: (afterSeq) => {
+        order.push(`read>${afterSeq}`);
+        return { run: runDto({ status: server }), events: serverEvents.filter((e) => e.seq > afterSeq) };
+      },
+    });
+    const loop = start(h);
+    await h.clock.advance(1_000);
+    // The athlete answers: the server writes their line and resumes the run.
+    serverEvents.push(answered);
+    server = "active";
+    order.length = 0;
+    loop.setRun(runDto({ status: "active" }));
+    await h.clock.advance(100);
+    expect(order[0]).toBe("read>2");
+    expect(order.indexOf("read>2")).toBeLessThan(order.indexOf("step"));
+    expect(loop.snapshot.events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(loop.snapshot.events.find((e) => e.seq === 3)?.summary).toBe("You answered: 20 min");
+    expect(loop.snapshot.status).toBe("finished");
+    // Never two steps at once on the way.
+    expect(h.calls.maxInFlight).toBe(1);
+  });
+
+  it("a read that fails before the next step still steps: the answer's line comes with a later read", async () => {
+    let server: CoachRunStepResult["status"] = "waiting_athlete";
+    let failRead = false;
+    const h = harness({
+      steps: [step("waiting_athlete", [], null), () => Promise.resolve((server = "finished", step("finished", [ev(2)], null)))],
+      read: () => {
+        if (failRead) throw new Error("offline");
+        return { run: runDto({ status: server }), events: [] };
+      },
+    });
+    const loop = start(h);
+    await h.clock.advance(1_000);
+    failRead = true;
+    server = "active";
+    loop.setRun(runDto({ status: "active" }));
+    await h.clock.advance(10);
+    expect(h.calls.steps).toHaveLength(2);
   });
 
   it("never steps before nextDue", async () => {

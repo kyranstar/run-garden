@@ -119,13 +119,13 @@ function serve(s: { reads: unknown[]; approve?: Array<Partial<DesignApproveRespo
   return calls;
 }
 
-function mount(flags: string[] = []) {
+function mount(flags: string[] = [], today: string | null = null) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   const qc = primedClient();
   act(() => {
-    root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(ProposalCard, { proposalId: "dp-1", flags }))));
+    root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(ProposalCard, { proposalId: "dp-1", flags, today }))));
   });
 }
 
@@ -159,7 +159,7 @@ describe("a designed suggestion's card", () => {
     mount(["The coach stopped at this design's spending limit; this is what had been reviewed by then."]);
     await until(() => text().includes("Workout op-a"), "the card");
     expect(text()).toContain("The coach stopped at this design's spending limit; this is what had been reviewed by then.");
-    expect(text()).toContain("Thu 6 PM · 24 min · Develop · Home · Review 4.3");
+    expect(text()).toContain("Thu 6 PM · 24 min · Develop · Home · Reviewed 4.3 of 5");
     // On the card, no tap: what could be better, and the day's costs.
     const card = document.querySelector<HTMLElement>(".coach-pc")!;
     const shown = (el: Element | null) => !!el && !el.closest("[hidden]");
@@ -177,7 +177,7 @@ describe("a designed suggestion's card", () => {
     expect(moves.textContent).toContain("Glute bridge 2 × 12");
     const review = card.querySelector<HTMLElement>(".coach-pc-review")!;
     expect(review.hidden).toBe(true);
-    expect(review.textContent).toContain("Intent clarity");
+    expect(review.textContent).toContain("Clear purpose");
     await click(button("See the review"), "See the review");
     expect(review.hidden).toBe(false);
     expect(review.textContent).toContain("5 of 5 · One clear aim.");
@@ -265,8 +265,8 @@ describe("a designed suggestion's card", () => {
     expect(text()).not.toContain("Wed 14 Oct has passed.");
     expect(text()).toContain("Not added: The day doesn't allow it now: tuck jumps are closed today.");
     expect(text()).not.toContain("The day now refuses it");
-    // A change refused is "not changed", never "not added" (fix round, M7).
-    expect(text()).toContain("Not changed: It's a programme's session: the programme plans it.");
+    // A change refused is left as planned, never "not added" (fix round, M7; fix wave 3B, M8).
+    expect(text()).toContain("Left as planned: It's a programme's session: the programme plans it.");
     // Open again: the three refused ones are chosen; the applied one is not offered.
     expect(boxes()).toHaveLength(3);
     expect(button("Approve")).not.toBeNull();
@@ -292,8 +292,9 @@ describe("a designed suggestion's card", () => {
     });
     mount();
     await until(() => text().includes("Strength A — skipped"), "the change");
-    expect(text()).toContain("Tue: Strength A — skipped · comes off the plan — a flare day — Your knee needs a rest day before Thursday.");
-    expect(text()).toContain("Done · it was Tue 7 AM, 30 min");
+    // Its line, then one reason line — the why (fix wave 3B, B-I5).
+    expect(text()).toContain("Tue: Strength A — skippedYour knee needs a rest day before Thursday.");
+    expect(text()).toContain("Moved · was Tue 7 AM, 30 min");
     expect([...document.querySelectorAll("a")].filter((a) => a.textContent === "Edit")).toHaveLength(0);
     // One left to decide: no checkbox, and Approve takes it.
     expect(boxes()).toHaveLength(0);
@@ -451,5 +452,190 @@ describe("a designed suggestion's card", () => {
     mount();
     await settle(20);
     expect(document.querySelector(".coach-pc")).toBeNull();
+  });
+});
+
+// ── Fix wave 3B, Part U ─────────────────────────────────────────────────────
+
+const applied = (opId: string, over: Partial<DesignLineDto> = {}, written: { date?: string; time?: string; minutes?: number; edited?: boolean } = {}) =>
+  line(opId, {
+    outcome: { status: "applied", at: "", workoutId: `w-${opId}`, rev: 1, written: { date: written.date ?? THU, time: written.time ?? "18:00", title: `Workout ${opId}`, minutes: written.minutes ?? 24 } },
+    written: { date: written.date ?? THU, time: written.time ?? "18:00", title: `Workout ${opId}`, minutes: written.minutes ?? 24, summary: "", edited: written.edited ?? false, moved: false },
+    ...over,
+  });
+const heading = () => document.querySelector(".coach-pc-title-h")?.textContent;
+const before = { date: "2026-10-13", time: "07:00", title: "Strength A", minutes: 35 };
+
+describe("fix wave 3B: a change's line and what it did (B-I5)", () => {
+  it("one reason line — the why — never the skip's reason and the why stacked", async () => {
+    serve({ reads: [pending([], [change("adj-1"), change("adj-2", { workoutId: "w-2", date: "2026-10-14", why: "", effect: "comes off the plan — a flare day" })])] });
+    mount();
+    await until(() => text().includes("Strength A — skipped"), "the changes");
+    const items = [...document.querySelectorAll<HTMLElement>(".coach-pc-item--change")];
+    expect(items[0]!.querySelector(".coach-pc-change")!.textContent).toBe("Tue: Strength A — skipped");
+    expect(items[0]!.querySelector(".coach-pc-why")!.textContent).toBe("Your knee needs a rest day before Thursday.");
+    expect(items[0]!.textContent).not.toContain("a flare day");
+    // No why: its own reason is the one line.
+    expect(items[1]!.querySelector(".coach-pc-why")!.textContent).toBe("comes off the plan — a flare day");
+  });
+
+  it("a move keeps where it was on its own line", async () => {
+    serve({ reads: [pending([], [change("adj-1", { kind: "move", summary: "Easy run", was: "Tue", effect: null })])] });
+    mount();
+    await until(() => text().includes("Easy run"), "the move");
+    expect(document.querySelector(".coach-pc-change")!.textContent).toBe("Tue: Easy run · was Tue");
+  });
+
+  it("applied: Skipped, Moved or Changed — and how it was; never 'Done'", async () => {
+    serve({
+      reads: [
+        pending([], [
+          change("adj-1", { outcome: { status: "applied", at: "", workoutId: "w-strength", before } }),
+          change("adj-2", { kind: "move", workoutId: "w-run", summary: "Easy run", outcome: { status: "applied", at: "", workoutId: "w-run", before: { ...before, minutes: 30 } } }),
+          change("adj-3", { kind: "adjust", workoutId: "w-x", summary: "Mobility — 15 min", outcome: { status: "applied", at: "", workoutId: "w-x", before: { ...before, minutes: null } } }),
+        ], "approved"),
+      ],
+    });
+    mount();
+    await until(() => text().includes("Skipped · was Tue 7 AM, 35 min"), "the skip");
+    expect(text()).toContain("Moved · was Tue 7 AM, 30 min");
+    expect(text()).toContain("Changed · was Tue 7 AM");
+    expect(text()).not.toContain("Done");
+  });
+});
+
+describe("fix wave 3B: the workout's line (M1, M2, M3, M7, M8, M10)", () => {
+  it("Tip, not 'Could be better'; Worth knowing styled the same", async () => {
+    serve({ reads: [pending([line("op-a", { review: { ...line("op-a").review!, improvements: ["Hold the last bridge for a slow count of three."] } })])] });
+    mount();
+    await until(() => text().includes("Workout op-a"), "the card");
+    const titles = [...document.querySelectorAll(".coach-pc-main > .coach-pc-sub > .coach-detail-title")].map((h) => h.textContent);
+    expect(titles).toEqual(["Tip", "Worth knowing"]);
+    expect(text()).not.toContain("Could be better");
+    for (const ul of document.querySelectorAll(".coach-pc-main > .coach-pc-sub > ul")) expect(ul.className).toBe("coach-pc-better");
+  });
+
+  it("the review: 4.3 of 5 on the line; one tap down, a heading, the plainer labels — and the toggle says Hide", async () => {
+    serve({ reads: [pending([line("op-a")])] });
+    mount();
+    await until(() => text().includes("Workout op-a"), "the card");
+    expect(document.querySelector(".coach-pc-facts")!.textContent).toBe("Thu 6 PM · 24 min · Develop · Home · Reviewed 4.3 of 5");
+    const review = document.querySelector<HTMLElement>(".coach-pc-review")!;
+    expect(review.textContent).toContain("How the coach's reviewer scored it");
+    expect(review.textContent).toContain("Clear purpose");
+    expect(review.textContent).not.toContain("Intent clarity");
+    await click(button("See the review"), "See the review");
+    expect(review.hidden).toBe(false);
+    expect(button("See the review")).toBeNull();
+    await click(button("Hide"), "Hide");
+    expect(review.hidden).toBe(true);
+  });
+
+  it("the header says what became of it once nothing is open: Added to your plan, Some added, Not added", async () => {
+    serve({ reads: [pending([line("op-a"), line("op-b")])] });
+    mount();
+    await until(() => heading() === "The coach suggests", "open");
+    act(() => root?.unmount());
+    host?.remove();
+
+    serve({ reads: [pending([applied("op-a"), applied("op-b")], [change("adj-1", { outcome: { status: "applied", at: "", workoutId: "w-strength", before } })], "approved")] });
+    mount();
+    await until(() => heading() === "Added to your plan", "all added");
+    act(() => root?.unmount());
+    host?.remove();
+
+    serve({ reads: [pending([applied("op-a"), line("op-b", { outcome: { status: "declined", at: "" } })], [], "partially_approved")] });
+    mount();
+    await until(() => heading() === "Some added", "some added");
+    act(() => root?.unmount());
+    host?.remove();
+
+    serve({ reads: [pending([line("op-a", { outcome: { status: "declined", at: "" } })], [], "declined")] });
+    mount();
+    await until(() => heading() === "Not added", "none added");
+  });
+
+  it("an edited workout shows the athlete's version: its minutes, '(your version)'", async () => {
+    serve({ reads: [pending([applied("op-a", {}, { minutes: 31, edited: true })], [], "approved")] });
+    mount();
+    await until(() => text().includes("On your plan for"), "the applied line");
+    expect(document.querySelector(".coach-pc-facts")!.textContent).toContain("31 min");
+    expect(document.querySelector(".coach-pc-facts")!.textContent).not.toContain("24 min");
+    expect(document.querySelector(".coach-pc-outcome")!.textContent).toBe("✓ On your plan for Thu 6 PM (your version)");
+  });
+
+  it("an approved workout for today offers Start — the Plan's own way in, its sheet", async () => {
+    serve({ reads: [pending([applied("op-a")], [], "approved")] });
+    mount([], THU);
+    await until(() => text().includes("On your plan for"), "the applied line");
+    const start = [...document.querySelectorAll<HTMLAnchorElement>("a")].find((a) => a.textContent === "Start");
+    expect(start?.getAttribute("href")).toBe("/plan?workout=w-op-a");
+    act(() => root?.unmount());
+    host?.remove();
+    // Another day's: no Start.
+    serve({ reads: [pending([applied("op-a")], [], "approved")] });
+    mount([], "2026-10-14");
+    await until(() => text().includes("On your plan for"), "the applied line");
+    expect([...document.querySelectorAll("a")].some((a) => a.textContent === "Start")).toBe(false);
+  });
+
+  it("a set's items by day, its changes on their day among the workouts", async () => {
+    serve({
+      reads: [
+        pending(
+          [line("op-thu"), line("op-sat", { date: "2026-10-17", title: "Saturday legs" })],
+          [change("adj-tue"), change("adj-fri", { workoutId: "w-fri", date: "2026-10-16", summary: "Easy run — skipped" })],
+        ),
+      ],
+    });
+    mount();
+    await until(() => text().includes("Saturday legs"), "the card");
+    const order = [...document.querySelectorAll(".coach-pc-list > li")].map((li) => li.querySelector(".coach-pc-name, .coach-pc-change")!.textContent);
+    expect(order).toEqual(["Tue: Strength A — skipped", "Workout op-thu", "Fri: Easy run — skipped", "Saturday legs"]);
+  });
+
+  it("a change left as it was says 'Left as planned', refused or declined", async () => {
+    serve({
+      reads: [
+        pending([], [
+          change("adj-1", { outcome: { status: "refused", at: "", error: "not_editable", cause: "programme", why: "" } }),
+          change("adj-2", { workoutId: "w-2", outcome: { status: "declined", at: "" } }),
+        ], "partially_approved"),
+      ],
+    });
+    mount();
+    await until(() => text().includes("Left as planned: It's a programme's session"), "the refused change");
+    expect(text()).toMatch(/Left as planned(?!:)/);
+    expect(text()).not.toContain("Not changed");
+  });
+
+  it("Decline asks what the coach should know, and the reason is echoed on the declined line", async () => {
+    const calls = serve({
+      reads: [pending([line("op-a")]), pending([line("op-a", { outcome: { status: "declined", at: "", reason: "too much on Thursday" } })], [], "declined")],
+    });
+    mount();
+    await until(() => !!button("Decline"), "Decline");
+    await click(button("Decline"), "Decline");
+    expect(document.querySelector(".coach-pc-label")!.textContent).toBe("Anything the coach should know? (optional)");
+    const why = document.querySelector<HTMLTextAreaElement>(".coach-pc-decline textarea")!;
+    // Decline's reason field takes the focus as it opens (B-I9).
+    expect(document.activeElement).toBe(why);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(why, "too much on Thursday");
+      why.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Decline"), "Decline");
+    await until(() => posts(calls, "decline").length === 1, "the decline");
+    await until(() => text().includes("Not added · “too much on Thursday”"), "the reason echoed");
+  });
+
+  it("after Approve, the focus goes to the outcome line (B-I9)", async () => {
+    serve({ reads: [pending([line("op-a")]), pending([applied("op-a")], [], "approved")], approve: [{ applied: [{ opId: "op-a" } as never], remaining: [], status: "approved" }] });
+    mount();
+    await until(() => !!button("Approve"), "Approve");
+    await click(button("Approve"), "Approve");
+    await until(() => text().includes("On your plan for"), "the applied line");
+    await until(() => document.activeElement?.classList.contains("coach-pc-outcome") === true, "the focus on the outcome line");
+    expect(document.activeElement?.textContent).toContain("On your plan for Thu 6 PM");
   });
 });

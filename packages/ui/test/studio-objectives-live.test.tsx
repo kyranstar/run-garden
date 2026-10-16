@@ -219,6 +219,17 @@ describe("the coach switch", () => {
     await until(() => !!cardOf("Legs"), "the card");
     expect(where).toBe("/studio/objectives");
   });
+
+  it("a measure not measured yet: 'Ask the coach for a test' opens the composer with the request in it (fix wave 3B, B-I11)", async () => {
+    serve([objective("o1", "Legs", { keyResults: [kr("k1", "o1", "Wall sit")] })]);
+    mount("/studio/objectives");
+    await until(() => !!cardOf("Legs"), "the card");
+    expect(cardOf("Legs")!.textContent).toContain("Not measured yet");
+    await click([...document.querySelectorAll("a")].find((a) => a.textContent === "Ask the coach for a test"), "Ask the coach for a test");
+    await until(() => where === "/studio", "the Studio");
+    await until(() => !!document.querySelector(".coach-composer-field"), "the composer");
+    expect(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!.value).toBe("Plan a test so I can measure: Wall sit");
+  });
 });
 
 // ── Writes ─────────────────────────────────────────────────────────────────
@@ -234,10 +245,10 @@ describe("add", () => {
     type(field("Title", sheet), "  Stronger legs ", "the title");
     type(field("Why", sheet), "Ski the whole day", "the why");
     await click(button("Ski", sheet), "the Ski goal");
-    await click(button("Add a key result", sheet), "Add a key result");
-    const k = dialog("Key result")!;
+    await click(button("Add a measure", sheet), "Add a measure");
+    const k = dialog("Measure")!;
     type(field("Name", k), "Wall sit hold", "the name");
-    type(field("Measure", k), "hold_max", "the measure");
+    type(field("What it measures", k), "hold_max", "the measure");
     await settle();
     type(k.querySelector<HTMLInputElement>('input[type="search"]'), "wall sit", "the move search");
     await settle();
@@ -274,10 +285,10 @@ describe("add", () => {
     await click(button("New objective"), "New objective");
     const sheet = dialog("New objective")!;
     type(field("Title", sheet), "Faster 10K", "the title");
-    await click(button("Add a key result", sheet), "Add a key result");
-    const k = dialog("Key result")!;
+    await click(button("Add a measure", sheet), "Add a measure");
+    const k = dialog("Measure")!;
     type(field("Name", k), "10K time", "the name");
-    type(field("Measure", k), "run_best", "the measure");
+    type(field("What it measures", k), "run_best", "the measure");
     await settle();
     type(field("Distance", k), "10", "the distance");
     type(field("Target", k), "48:30", "the target");
@@ -301,13 +312,13 @@ describe("add", () => {
     await click(button("New objective"), "New objective");
     await click(button("Save", dialog("New objective")!), "Save");
     expect(dialog("New objective")!.textContent).toContain("Give it a title.");
-    await click(button("Add a key result", dialog("New objective")!), "Add a key result");
-    const k = dialog("Key result")!;
-    type(field("Measure", k), "hold_max", "the measure");
+    await click(button("Add a measure", dialog("New objective")!), "Add a measure");
+    const k = dialog("Measure")!;
+    type(field("What it measures", k), "hold_max", "the measure");
     await settle();
     type(field("Target", k), "fast", "the target");
     await click(button("Done", k), "Done");
-    const said = dialog("Key result")!.textContent ?? "";
+    const said = dialog("Measure")!.textContent ?? "";
     expect(said).toContain("Give it a name.");
     expect(said).toContain("Pick at least one move.");
     expect(said).toContain("The target isn't a number.");
@@ -330,10 +341,10 @@ describe("add", () => {
     await click(button("New objective"), "New objective");
     const sheet = dialog("New objective")!;
     type(field("Title", sheet), "Legs", "the title");
-    await click(button("Add a key result", sheet), "Add a key result");
-    const k = dialog("Key result")!;
+    await click(button("Add a measure", sheet), "Add a measure");
+    const k = dialog("Measure")!;
     type(field("Name", k), "Hold", "the name");
-    type(field("Measure", k), "hold_max", "the measure");
+    type(field("What it measures", k), "hold_max", "the measure");
     await settle();
     type(k.querySelector<HTMLInputElement>('input[type="search"]'), "wall sit", "the move search");
     await settle();

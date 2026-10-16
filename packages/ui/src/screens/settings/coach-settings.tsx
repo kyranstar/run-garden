@@ -1,10 +1,10 @@
 /**
  * SETTINGS → COACH (Stage 3 Task 10; spec §6): how the coach starts when you don't say, how many "next workouts", your
- * training times, each run's spending limit (lowered, never raised past its default), the model in use and this week's
- * AI spend. Shown only with the coach designer on (`coachOn`); a server whose coach is off (a 404) shows nothing.
+ * training times, each request's spending limit (lowered, never raised past its default), the model in use and this
+ * week's AI spend — past the week's warning, one plain line that the coach keeps going to the cutoff (fix wave 3B, M4). Shown only with the coach designer on (`coachOn`); a server whose coach is off (a 404) shows nothing.
  * Each change saves at once, the settings whole (`PUT /api/coach/preferences`).
  */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachPreferencesDto, type CoachSpendDto } from "@rg/api-client";
 import {
@@ -24,19 +24,27 @@ export const COACH_PREFERENCES_QUERY = ["coach-preferences"] as const;
 
 const usd = (v: number): string => `$${v.toFixed(2)}`;
 
+/** The scopes, in the composer's words (fix wave 3B, M8): "Next 7 days", "Next 3 workouts" — never "This week". */
 export function scopeChoices(nextN: number): Array<{ value: CoachScopeKind; label: string }> {
   return [
     { value: "now", label: "Now" },
     { value: "later_today", label: "Later today" },
-    { value: "week", label: "This week" },
-    { value: "next_n", label: `Next ${nextN}` },
+    { value: "week", label: "Next 7 days" },
+    { value: "next_n", label: `Next ${nextN} workouts` },
   ];
 }
 
+/** Each limit by what it covers: a workout for today, or planning ahead — the composer's own button. */
 const LIMITS: ReadonlyArray<{ kind: CoachCeilingKind; label: string }> = [
   { kind: "day", label: "Now or later today" },
-  { kind: "set", label: "This week or next workouts" },
+  { kind: "set", label: "Plan ahead" },
 ];
+
+/** "$5", "$5.50": whole dollars bare. */
+const dollars = (micros: number): string => {
+  const v = micros / 1_000_000;
+  return Number.isInteger(v) ? `$${v}` : usd(v);
+};
 
 /** A typed limit: the dollars it means, or why not ("At most $1.50."). */
 export function readLimit(kind: CoachCeilingKind, text: string): { usd: number } | { why: string } {
@@ -116,6 +124,14 @@ export function CoachSettingsView({
   const { coach, settings } = data;
   const nId = useId();
   const [times, setTimes] = useState<string[]>(settings.trainingTimes);
+  // After "Add a time", the focus goes to the new time's field (fix wave 3B, B-I9).
+  const timesBox = useRef<HTMLDivElement>(null);
+  const [added, setAdded] = useState(false);
+  useEffect(() => {
+    if (!added) return;
+    setAdded(false);
+    [...(timesBox.current?.querySelectorAll<HTMLInputElement>('input[type="time"]') ?? [])].at(-1)?.focus();
+  }, [added]);
   // What was saved comes back as the list (sorted, each once): the rows follow it.
   const saved = settings.trainingTimes.join(",");
   useEffect(() => setTimes(saved ? saved.split(",") : []), [saved]);
@@ -162,7 +178,7 @@ export function CoachSettingsView({
           ))}
         </select>
       </div>
-      <div className="coach-setting">
+      <div className="coach-setting" ref={timesBox}>
         <span className="coach-setting-label">Training times</span>
         {times.length === 0 ? <p className="faint">None set.</p> : null}
         {times.map((t, i) => (
@@ -193,13 +209,21 @@ export function CoachSettingsView({
           </div>
         ))}
         {times.length < COACH_TRAINING_TIMES_MAX ? (
-          <button type="button" className="btn btn-small" disabled={busy || times.includes("")} onClick={() => setTimes([...times, ""])}>
+          <button
+            type="button"
+            className="btn btn-small"
+            disabled={busy || times.includes("")}
+            onClick={() => {
+              setTimes([...times, ""]);
+              setAdded(true);
+            }}
+          >
             Add a time
           </button>
         ) : null}
       </div>
       <div className="coach-setting">
-        <span className="coach-setting-label">Spending limit for one run</span>
+        <span className="coach-setting-label">Spending limit for one request</span>
         {LIMITS.map((l) => (
           <LimitRow
             key={l.kind}
@@ -219,9 +243,13 @@ export function CoachSettingsView({
         <div className="setting-row">
           <span>AI spend this week</span>
           <span className="coach-setting-value">
-            {usd(spend.spentUsd)} of ${Math.round(spend.cutoffMicros / 1_000_000)}
+            {usd(spend.spentUsd)} of {usd(spend.cutoffMicros / 1_000_000)}
           </span>
         </div>
+      ) : null}
+      {/* Past the week's warning, one plain line: the cutoff is still ahead (fix wave 3B, M4). */}
+      {spend && spend.spentMicros > spend.warnMicros && spend.spentMicros < spend.cutoffMicros ? (
+        <p className="coach-setting-why">{`Over ${dollars(spend.warnMicros)} this week — the coach keeps going until ${dollars(spend.cutoffMicros)}.`}</p>
       ) : null}
       {error ? (
         <p className="coach-setting-why" role="status">

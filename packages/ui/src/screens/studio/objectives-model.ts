@@ -150,7 +150,14 @@ export function measureWords(m: KeyResultMeasure, u: BoardUnits): string {
 /** The window a measure reads, in words ("last 90 days"); null for one with none. */
 export const windowWords = (m: KeyResultMeasure): string | null => ("windowDays" in m ? `last ${m.windowDays} days` : null);
 
-const EVIDENCE_WORD: Record<KeyResultEvidence, string> = { measured: "Measured", sparse: "Sparse", capped: "Capped", none: "None" };
+/**
+ * The evidence in plain words (fix wave 3B, B-I11), one map for the pill and every other place that says it — never the
+ * model's own (sparse, capped, none). The domain holds the ids alone.
+ */
+const EVIDENCE_WORD: Record<KeyResultEvidence, string> = { measured: "Measured", sparse: "Few readings", capped: "At least", none: "Not measured yet" };
+
+/** What "Ask the coach for a test" puts in the composer for a measure not measured yet (B-I11): the athlete's to send. */
+export const testRequest = (label: string): string => `Plan a test so I can measure: ${label.trim()}`;
 /** read_objectives' legend's own four words. */
 export const evidenceWord = (e: KeyResultEvidence): string => EVIDENCE_WORD[e];
 
@@ -426,7 +433,7 @@ export function objectiveInputOf(
   const keyResults: KeyResultInput[] = [];
   d.krs.forEach((k) => {
     const r = krInputOf(k, u);
-    if ("errors" in r) errors.push(...r.errors.map((e) => `“${k.label.trim() || "A key result"}”: ${e}`));
+    if ("errors" in r) errors.push(...r.errors.map((e) => `“${k.label.trim() || "A measure"}”: ${e}`));
     else keyResults.push(r.input);
   });
   if (errors.length) return { errors };
@@ -448,8 +455,9 @@ export function issueLines(issues: readonly Issue[], d: ObjectiveDraft): string[
     const message = i.message ?? "can't be saved";
     if (first === "title") return i.code === "too_small" ? "Give it a title." : `Title: ${message}`;
     if (first === "why") return i.code === "too_big" ? "The why is too long (500 characters at most)." : `Why: ${message}`;
-    if (first === "keyResults" && typeof at === "number") return `“${d.krs[at]?.label.trim() || `Key result ${at + 1}`}”: ${message}`;
-    if (first === "keyResults") return i.code === "too_big" ? "Ten key results at most." : `Key results: ${message}`;
+    // "Measure", never "key result", wherever the athlete reads it (fix wave 3B, M10); the domain's names stay.
+    if (first === "keyResults" && typeof at === "number") return `“${d.krs[at]?.label.trim() || `Measure ${at + 1}`}”: ${message}`;
+    if (first === "keyResults") return i.code === "too_big" ? "Ten measures at most." : `Measures: ${message}`;
     return message;
   });
 }

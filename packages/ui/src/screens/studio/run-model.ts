@@ -9,15 +9,18 @@
  *   the loop's decisions: what can be stepped, how long to wait (never before `nextDue`, the backoff on top), what an
  *                  error means
  *   failureOf      what stopped the coach, in plain words, and what happens next
- *   fallbackTiles  up to three ways to train now when nothing was proposed: the day's programme session, a pinned or
- *                  recent template, the built-in quick starts — the Studio's own tiles
+ *   fallbackTiles  ways to train now when nothing was proposed: the day's programme session, a recent template — the
+ *                  Studio's own tiles, never one the quick starts right below already show
+ *   trailSections  a set's trail by day, under the main run's own lines; foldLines, the athlete's lines never folded
  *   refusalWords   why the plan refused a workout or a change at approval, in plain words
  *
  * Every text the coach or the athlete wrote (the request, an event's summary, a question, a why) is data: the view
  * renders it as text, never as markup.
  */
-import { ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus, type TodayResponse } from "@rg/api-client";
+import { ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus, type DesignChangeBeforeDto, type TodayResponse } from "@rg/api-client";
+import { dayLabel } from "@rg/domain";
 import { formatTime, weekdayShort } from "../../components.js";
+import { kindWords } from "../settings/coach-memory-model.js";
 
 // ── Statuses ────────────────────────────────────────────────────────────────
 
@@ -65,6 +68,9 @@ export function statusWord(run: Pick<CoachRunDto, "status" | "error" | "scope">,
 /** Every money figure: two decimals. */
 export const usd = (n: number): string => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
 
+/** The header's spend (fix wave 3B, M4): "Spent $0.16" — read again with every read of the run. */
+export const spentWords = (n: number): string => `Spent ${usd(n)}`;
+
 /** "About $4.23; the limit is $6.00" — a set's estimate, once its plan made one. */
 export function estimateLine(run: Pick<CoachRunDto, "estimateUsd" | "ceilingUsd">): string | null {
   if (typeof run.estimateUsd !== "number") return null;
@@ -101,6 +107,14 @@ export interface RunLine {
   events: CoachRunEventDto[];
   /** What the athlete's answer kept, to take back (`undo-answer`): the receipt's handle. */
   undo: string | null;
+  /** A set's sub-run's line: the day its workout is for ("YYYY-MM-DD", the server's `payload.forDay`); the main run's
+   * own lines carry none (fix wave 3B, B-I7). */
+  forDay: string | null;
+  /** That workout's title, once known (`payload.forTitle`). */
+  forTitle: string | null;
+  /** The athlete's own part of the trail — a question put to them, their answer, a skip, a logged check: never folded
+   * into "earlier lines" (M10). */
+  mine: boolean;
 }
 
 const record = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -130,10 +144,29 @@ function isErrorEvent(e: CoachRunEventDto): boolean {
   return e.kind === "error" || (e.kind === "tool_result" && record(e.payload)?.ok === false);
 }
 
-/** An event's mark: ! for what went wrong, – for an outcome that is no step done (nothing proposed), else ✓. */
+/**
+ * A call the plan refused, which the coach then adjusted its draft after (fix wave 3B, B-I4; the server's contract): a
+ * note — "Adjusted the draft." — its refusal in the payload. Neither a step done nor an alarm.
+ */
+export function isRefusalNote(e: CoachRunEventDto): boolean {
+  const p = record(e.payload);
+  return e.kind === "note" && !!p && (p.ok === false || typeof p.error === "string" || p.refused !== undefined);
+}
+
+/** An event's mark: ! for what went wrong, – for an outcome that is no step done (nothing proposed, a refused call
+ * adjusted after), else ✓. */
 function glyphOf(e: CoachRunEventDto): Glyph {
   if (isErrorEvent(e)) return "error";
-  return record(e.payload)?.proposed === false ? "neutral" : "done";
+  return record(e.payload)?.proposed === false || isRefusalNote(e) ? "neutral" : "done";
+}
+
+/** "YYYY-MM-DD", nothing else. */
+const isDay = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+/** The athlete's own lines: what the coach asked them, and what they answered, skipped or logged (M10). */
+const ATHLETE_LINE = /^You (answered|skipped|logged)\b/;
+function isMine(e: CoachRunEventDto): boolean {
+  return e.kind === "question" || Array.isArray(record(e.payload)?.answers) || ATHLETE_LINE.test(e.summary);
 }
 
 /** A question's line once it was answered: what the coach asked, in the athlete's words. */
@@ -164,11 +197,70 @@ export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boo
       continue;
     }
     const summary = e.kind === "question" ? askedLine(e) : e.summary;
-    const line: RunLine = { key: e.seq, summary, glyph: glyphOf(e), events: [e], undo: undoHandleOf(e) };
+    const p = record(e.payload);
+    const line: RunLine = {
+      key: e.seq,
+      summary,
+      glyph: glyphOf(e),
+      events: [e],
+      undo: undoHandleOf(e),
+      forDay: isDay(p?.forDay) ? p.forDay : null,
+      forTitle: typeof p?.forTitle === "string" && p.forTitle.trim() ? p.forTitle.trim() : null,
+      mine: isMine(e),
+    };
     lines.push(line);
     if (e.kind === "tool_call" && key) openCalls.set(key, line);
   }
   return lines;
+}
+
+/** Once the run is over, the trail folds to this one line (fix wave 3B, B-I7): the card's Approve sits high on a phone. */
+export const TRAIL_FOLD_LINE = "How the coach made this";
+
+/** The line under a live run (M10): it moves only while the Studio is open — the client is what steps it. */
+export const PAUSE_LINE = "The coach pauses while you're away from the Studio.";
+
+/** "Sat 17 Oct · Single-leg strength": a set's day, and its workout's title once known. */
+export function dayHeading(day: string, title: string | null): string {
+  return title ? `${dayLabel(day)} · ${title}` : dayLabel(day);
+}
+
+export interface DayGroup {
+  day: string;
+  title: string | null;
+  heading: string;
+  lines: RunLine[];
+}
+
+/**
+ * The trail as it shows (fix wave 3B, B-I7): the main run's own lines, ungrouped, at the top; a set's sub-runs' lines
+ * under their day's heading, the days in date order — a day's title is the newest any of its lines knows.
+ */
+export function trailSections(lines: readonly RunLine[]): { main: RunLine[]; days: DayGroup[] } {
+  const main: RunLine[] = [];
+  const byDay = new Map<string, DayGroup>();
+  for (const line of lines) {
+    if (!line.forDay) {
+      main.push(line);
+      continue;
+    }
+    const group = byDay.get(line.forDay) ?? { day: line.forDay, title: null, heading: "", lines: [] };
+    group.lines.push(line);
+    if (line.forTitle) group.title = line.forTitle;
+    byDay.set(line.forDay, group);
+  }
+  const days = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)).map((g) => ({ ...g, heading: dayHeading(g.day, g.title) }));
+  return { main, days };
+}
+
+/**
+ * The latest `keep` lines, and every earlier line of the athlete's own (M10: their answers never fold away); `hidden`
+ * counts the rest, one tap away.
+ */
+export function foldLines(lines: readonly RunLine[], keep: number): { hidden: number; shown: RunLine[] } {
+  const from = Math.max(0, lines.length - keep);
+  const shown = lines.filter((l, i) => i >= from || l.mine);
+  return { hidden: lines.length - shown.length, shown: shown.length === lines.length ? (lines as RunLine[]) : shown };
 }
 
 // ── A line's detail ─────────────────────────────────────────────────────────
@@ -183,6 +275,8 @@ const QUIET_KEYS = new Set([
   "by", "ok", "tool", "untrusted", "signature", "toolUseId", "proposalId", "runId", "handle", "undo",
   "id", "opId", "workoutId", "baseRev", "rev", "reviewRunId", "round", "kind", "final", "proposal", "asOf",
   "memoryId", "replaced",
+  // A set's grouping marks (fix wave 3B, B-I7): the trail's headings say them.
+  "forDay", "forTitle", "rehearsal",
 ]);
 
 /** Keys a tool's input or receipt uses, in the athlete's words. */
@@ -195,6 +289,28 @@ const KEY_WORDS: Readonly<Record<string, string>> = {
   mustFix: "Must fix",
   questions: "Questions",
 };
+
+/**
+ * The review's rubric, in plainer words (fix wave 3B, M2) — the card's scores and the trail's alike, keyed by the
+ * dimension's id (the ids stay the server's).
+ */
+export const REVIEW_LABELS: Readonly<Record<string, string>> = {
+  intent: "Clear purpose",
+  sequencing: "Order of the parts",
+  alignment: "Fits your goals",
+  balance: "Balance across your weeks",
+  progression: "A sensible step from your history",
+  diversity: "Variety",
+  recovery: "Room to recover",
+  condition_safety: "Safe for your condition",
+  time_fit: "Fits your time",
+  equipment_fit: "Fits your equipment",
+  specificity: "Made for you",
+  honesty: "Honest explanation",
+};
+
+/** A dimension's plainer label; one the map doesn't hold keeps the words it came with. */
+export const reviewLabel = (id: string, fallback: string): string => REVIEW_LABELS[id] ?? fallback;
 
 /** The system's words for the athlete, as they would say them. */
 const yourWords = (s: string): string => s.replace(/\bthe athlete's\b/g, "your").replace(/\bthe athlete\b/g, "you");
@@ -215,6 +331,8 @@ export function keyWords(key: string): string {
 /** A value in words: text as it is (marked untrusted text too), numbers, yes/no, lists and small objects inline. */
 export function valueWords(v: unknown, depth = 0): string {
   if (v === null || v === undefined) return "—";
+  // A whole value that is a day reads as one ("Fri 16 Oct", fix wave 3B, B-I3); a date inside words is theirs.
+  if (isDay(v)) return dayLabel(v);
   if (typeof v === "string") return clip(v.replace(/\s+/g, " ").trim());
   if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
   if (typeof v === "boolean") return v ? "yes" : "no";
@@ -254,19 +372,89 @@ export function rowsOf(v: unknown): DetailRow[] {
 }
 
 export interface DetailSection {
-  title: string;
+  /** The section's heading; none where its rows say what they are. */
+  title: string | null;
   rows: DetailRow[];
+}
+
+/** A question's detail (fix wave 3B, B-I3): "You were asked: …" and its "Choices: …", one pair a question. */
+function questionRows(p: Record<string, unknown>): DetailRow[] {
+  const data = record(p.data);
+  if (!data) return [];
+  if (data.check === "condition") {
+    const why = typeof data.why === "string" && data.why.trim() ? data.why.trim() : null;
+    return [{ key: "You were asked", value: clip(["Today's condition check", why].filter(Boolean).join(" · ")) }];
+  }
+  if (!Array.isArray(data.questions)) return [];
+  return data.questions.flatMap((x): DetailRow[] => {
+    const q = record(x);
+    if (!q || typeof q.text !== "string") return [];
+    const chips = Array.isArray(q.chips) ? q.chips.filter((c): c is string => typeof c === "string") : [];
+    return [{ key: "You were asked", value: clip(q.text) }, ...(chips.length ? [{ key: "Choices", value: clip(chips.join(" · ")) }] : [])];
+  });
+}
+
+/** What the coach remembered, by its kind (fix wave 3B, B-I3): never "Body", "Confidence" or a kind's code. */
+function rememberedRows(p: Record<string, unknown>): DetailRow[] {
+  const from = record(p.input) ?? record(record(p.data)?.remembered);
+  if (!from) return [];
+  const kind = (typeof from.kind === "string" ? from.kind : "note") as Parameters<typeof kindWords>[0]["kind"];
+  const expiresAt = typeof from.expires === "string" ? from.expires : null;
+  const rows: DetailRow[] = [{ key: kindWords({ kind, expiresAt }), value: valueWords(from.body) }];
+  if (Array.isArray(from.evidence) && from.evidence.length > 0) rows.push({ key: "Because", value: valueWords(from.evidence) });
+  return rows;
+}
+
+/** A set's outcome, a row a day (fix wave 3B, B-I3): the day, and the workout — or why it was left out — in words. */
+function setRows(set: readonly unknown[]): DetailRow[] {
+  return set.slice(0, DETAIL_ROWS_MAX).flatMap((x): DetailRow[] => {
+    const o = record(x);
+    if (!o) return [];
+    const reason = typeof o.reason === "string" && o.reason.trim() ? o.reason.trim() : null;
+    let value: string;
+    switch (o.outcome) {
+      case "left_out":
+        value = reason ? `Left out — ${reason}` : "Left out";
+        break;
+      case "kept_first":
+        value = reason ? `The first version kept — ${reason}` : "The first version kept";
+        break;
+      default: {
+        const title = o.title !== undefined ? valueWords(o.title) : null;
+        const minutes = typeof o.minutes === "number" ? `${Math.round(o.minutes)} min` : null;
+        value = [title, minutes].filter(Boolean).join(" · ") || "Proposed";
+      }
+    }
+    return [{ key: isDay(o.date) ? dayLabel(o.date) : "—", value: clip(value) }];
+  });
+}
+
+/** Why a call was refused: the server's own words when it gave them, else its code in words. */
+function whyNot(p: Record<string, unknown>): DetailRow {
+  return { key: "Why not", value: typeof p.why === "string" && p.why.trim() ? clip(p.why.trim()) : keyWords(String(p.error ?? "refused")) };
 }
 
 /**
  * A line's detail: what the coach asked for (the call's input) and a summary of what came back (where from, what was
- * missing, the receipt — a review's scores and notes among them), each a short key: value list. Never raw JSON.
+ * missing, the receipt — a review's scores and notes among them), each a short key: value list. Never raw JSON, and
+ * never a payload's own keys where words say it better (fix wave 3B, B-I3): a question, a set, what was remembered.
  */
 export function detailOf(line: RunLine): DetailSection[] {
   const out: DetailSection[] = [];
   for (const e of line.events) {
     const p = record(e.payload);
     if (!p) continue;
+    if (e.kind === "question") {
+      const rows = questionRows(p);
+      if (rows.length > 0) out.push({ title: null, rows });
+      continue;
+    }
+    if (p.tool === "remember") {
+      const rows = rememberedRows(p);
+      if (p.ok === false) rows.push(whyNot(p));
+      if (rows.length > 0) out.push({ title: p.ok === false ? "Asked to remember" : "Remembered", rows });
+      continue;
+    }
     if (p.input !== undefined) {
       const rows = rowsOf(p.input);
       if (rows.length > 0) out.push({ title: "Asked for", rows });
@@ -275,24 +463,25 @@ export function detailOf(line: RunLine): DetailSection[] {
     const prov = record(p.provenance);
     if (prov && typeof prov.source === "string") back.push({ key: "Read from", value: clip(yourWords(prov.source)) });
     if (Array.isArray(p.missing) && p.missing.length > 0) back.push({ key: "Missing", value: valueWords(p.missing) });
-    if (typeof p.error === "string") back.push({ key: "Why not", value: keyWords(p.error) });
+    if (typeof p.error === "string" || typeof p.why === "string") back.push(whyNot(p));
     const receipt = record(p.receipt);
     const scores = record(receipt?.scores);
     if (receipt && scores) {
-      // A review's receipt: every score its own row ("Sequencing: 4 of 5"), then the rest of it.
-      for (const [dim, score] of Object.entries(scores)) back.push({ key: keyWords(dim), value: typeof score === "number" ? `${score} of 5` : valueWords(score) });
+      // A review's receipt: every score its own row ("Order of the parts: 4 of 5"), then the rest of it.
+      for (const [dim, score] of Object.entries(scores)) {
+        back.push({ key: reviewLabel(dim, keyWords(dim)), value: typeof score === "number" ? `${score} of 5` : valueWords(score) });
+      }
       back.push(...rowsOf(Object.fromEntries(Object.entries(receipt).filter(([k]) => k !== "scores"))));
     } else if (p.receipt !== undefined) back.push(...rowsOf(p.receipt));
     if (p.answers !== undefined) back.push({ key: "Your answer", value: valueWords(p.answers) });
     if (p.text !== undefined) back.push({ key: "In full", value: valueWords(p.text) });
-    if (p.set !== undefined) back.push({ key: "The set", value: valueWords(p.set) });
-    if (e.kind === "question") {
-      const data = record(p.data);
-      if (data) back.push(...rowsOf(data));
+    if (Array.isArray(p.set)) {
+      const rows = setRows(p.set);
+      if (rows.length > 0) out.push({ title: "The set", rows });
     }
     // A review's scores come whole, the cap on top of them.
     const cap = DETAIL_ROWS_MAX + (scores ? Object.keys(scores).length : 0);
-    if (back.length > 0) out.push({ title: e.kind === "question" ? "The question" : "Came back", rows: back.slice(0, cap) });
+    if (back.length > 0) out.push({ title: "Came back", rows: back.slice(0, cap) });
   }
   return out;
 }
@@ -362,20 +551,17 @@ export const isNotAvailable = (e: unknown): boolean => e instanceof ApiError && 
 export const LOST_LINE = "Lost the connection. It'll pick up when you're back.";
 /** The composer's one quiet line when the server's coach is off. */
 export const NOT_AVAILABLE_LINE = "The coach isn't available here.";
-/** The line the composer shows when the athlete already has the coach working on something. */
-export const EXISTING_LINE = "You already have the coach working on something. Here it is.";
+/** The line the composer shows when the athlete already has the coach working on something — and how to ask anew (M10). */
+export const EXISTING_LINE = "You already have the coach working on something. Here it is. Cancel it to ask for something new.";
 
 // ── Failures ────────────────────────────────────────────────────────────────
-
-/** The out-of-credits copy, pinned (spec §10). */
-export const OUT_OF_CREDITS_FALLBACK = "The AI account is out of credits — here are three ways to train now:";
 
 export interface Failure {
   /** What stopped, in plain words. */
   what: string;
   /** What happens next. */
   next: string | null;
-  /** Out of credits: the pinned lead over the tiles. */
+  /** Out of credits: the owner's billing — said, never a route offered (fix wave 3B, M5). */
   credits: boolean;
 }
 
@@ -428,15 +614,18 @@ export function tileKindWord(t: Pick<FallbackTile, "kind">): string {
   return t.kind === "session" ? "Today's session" : t.kind === "template" ? "Your template" : "Quick start";
 }
 
+/** Under the ways to train now: the Studio's quick starts sit right below the coach (M5). */
+export const QUICK_BELOW_LINE = "or pick a quick start below";
+
 /**
- * Up to three ways to train now (spec §10), as the Studio's own tiles, each saying what kind it is: the day's programme
- * session when there is one still to do — by its own name (without the theme its build appends) and length — opening
- * its sheet, where Start is (Today's read); then a pinned or recent template; then the built-in quick starts — filling
- * the three.
+ * Ways to train now (spec §10), as the Studio's own tiles, each saying what kind it is: the day's programme session when
+ * there is one still to do — by its own name (without the theme its build appends) and length — opening its sheet,
+ * where Start is (Today's read); then a recent template. Never a tile the quick starts right below already show (fix
+ * wave 3B, M5): a built-in quick start, or a template pinned among them.
  */
 export function fallbackTiles(o: {
   today: Pick<TodayResponse, "todaySessions"> | null | undefined;
-  /** The quick-start tiles (`quickTiles`): built-in ones first, then pinned templates. */
+  /** The quick-start tiles (`quickTiles`): built-in ones first, then pinned templates — shown below the coach. */
   quick: ReadonlyArray<Omit<FallbackTile, "kind">>;
   /** The athlete's templates' tiles, in the templates list's order (pinned, then recent). */
   templates: ReadonlyArray<Omit<FallbackTile, "kind">>;
@@ -458,13 +647,22 @@ export function fallbackTiles(o: {
       href: `/plan?workout=${encodeURIComponent(session.workout.id)}`,
     });
   }
-  const template = o.templates[0];
+  const below = new Set(o.quick.map((q) => q.key));
+  const template = o.templates.find((t) => !below.has(t.key));
   if (template) out.push({ ...template, kind: "template" });
-  for (const q of o.quick) {
-    if (out.length >= 3) break;
-    if (!q.key.startsWith("template:") && !out.some((x) => x.key === q.key)) out.push({ ...q, kind: "quick" });
-  }
-  return out.slice(0, 3);
+  return out;
+}
+
+/** The check ask's primary action (M6), in the profile's own word: "Do the jaw check"; an acronym keeps its capitals. */
+export function checkAskLabel(checkLabel: string): string {
+  const word = checkLabel.trim().split(/[\s/]+/)[0] || checkLabel.trim();
+  return `Do the ${word === word.toUpperCase() && word.length > 1 ? word : word.toLowerCase()} check`;
+}
+
+/** What an approve did to a session already on the plan, and how it stood (B-I5): "Skipped · was Sun 8:55 AM, 30 min". */
+export function appliedChangeLine(kind: "skip" | "move" | "adjust", before: Pick<DesignChangeBeforeDto, "date" | "time" | "minutes">): string {
+  const verb = kind === "skip" ? "Skipped" : kind === "move" ? "Moved" : "Changed";
+  return `${verb} · was ${dayAndTime(before.date, before.time)}${before.minutes !== null ? `, ${before.minutes} min` : ""}`;
 }
 
 // ── Approval ────────────────────────────────────────────────────────────────

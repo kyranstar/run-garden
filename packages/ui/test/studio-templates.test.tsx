@@ -167,9 +167,10 @@ describe("the home's quick starts", () => {
     };
     const row = rowOf(html);
     expect(row.indexOf("/studio/build/new")).toBeLessThan(row.indexOf('href="/studio/templates"'));
-    expect(text(row)).toMatch(/New workout Templates \(4\)$/);
+    // Objectives sits before Templates in the row, with the coach on (fix wave 3B, M10).
+    expect(text(row)).toMatch(/New workout (Objectives )?Templates \(4\)$/);
     // Before the list is read: no count yet, the link the same.
-    expect(text(rowOf(renderAt("/studio", createElement(StudioScreen))))).toMatch(/New workout Templates$/);
+    expect(text(rowOf(renderAt("/studio", createElement(StudioScreen))))).toMatch(/New workout (Objectives )?Templates$/);
   });
 });
 

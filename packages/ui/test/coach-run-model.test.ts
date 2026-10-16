@@ -168,7 +168,7 @@ describe("the trail", () => {
     expect(rows).toEqual(
       expect.arrayContaining([
         { key: "Workout", value: "Hips" },
-        { key: "For", value: "day 2026-10-16" },
+        { key: "For", value: "day Fri 16 Oct" },
         { key: "What changed", value: "Gentler warm-up." },
         { key: "Read from", value: "the exercise library, today's condition checks and your logged sets and exercise preferences" },
       ]),
@@ -198,9 +198,10 @@ describe("the trail", () => {
     const rows = detailOf(line!)[0]!.rows;
     expect(rows).toEqual(
       expect.arrayContaining([
-        { key: "Intent", value: "5 of 5" },
-        { key: "Sequencing", value: "4 of 5" },
-        { key: "Condition safety", value: "5 of 5" },
+        // The rubric's plainer labels, from one map (fix wave 3B, M2).
+        { key: "Clear purpose", value: "5 of 5" },
+        { key: "Order of the parts", value: "4 of 5" },
+        { key: "Safe for your condition", value: "5 of 5" },
         { key: "Mean", value: "4.92" },
       ]),
     );
@@ -287,35 +288,35 @@ describe("ways to train now", () => {
   const today = (origin: string, completionState = "scheduled") =>
     ({ todaySessions: [{ workout: { id: "w-1", origin, title: "Strength A", completionState, contentState: "built" }, build: { minutes: 35 } }] }) as unknown as TodayResponse;
 
-  it("the day's programme session, a pinned or recent template, then a built-in quick start — each saying what kind it is", () => {
-    const tiles = fallbackTiles({ today: today("program"), quick, templates });
+  const recent = [{ key: "template:t2", title: "Recent one", minutes: 15, href: "/studio/build/template/t2" }];
+
+  it("the day's programme session, then a recent template — never what the quick starts below already show (fix wave 3B, M5)", () => {
+    const tiles = fallbackTiles({ today: today("program"), quick, templates: recent });
     expect(tiles.map((t) => [t.kind, t.title])).toEqual([
       ["session", "Strength A"],
-      ["template", "Pinned one"],
-      ["quick", "Jaw care"],
+      ["template", "Recent one"],
     ]);
     expect(tiles[0]).toEqual({ key: "session:w-1", kind: "session", title: "Strength A", minutes: 35, href: "/plan?workout=w-1" });
-    expect(tiles.map(tileKindWord)).toEqual(["Today's session", "Your template", "Quick start"]);
+    expect(tiles.map(tileKindWord)).toEqual(["Today's session", "Your template"]);
+    expect(tileKindWord({ kind: "quick" })).toBe("Quick start");
+    // A template pinned among the quick starts is one of them: not a tile again.
+    expect(fallbackTiles({ today: today("program"), quick, templates }).map((t) => t.kind)).toEqual(["session"]);
   });
 
-  it("the day's session by its own name and length — beside a quick start of that name, it is plainly another thing", () => {
+  it("the day's session by its own name and length — the quick start of that name is below, never a tile beside it", () => {
     const named = {
       todaySessions: [
         { workout: { id: "w-2", origin: "program", title: "Jaw care · Gentle flow", completionState: "scheduled", contentState: "outline", workoutSeconds: 1800 }, build: { theme: "Gentle flow", minutes: null } },
       ],
     } as unknown as TodayResponse;
     const tiles = fallbackTiles({ today: named, quick, templates: [] });
-    expect(tiles.map((t) => [t.kind, t.title, t.minutes])).toEqual([
-      ["session", "Jaw care", 30],
-      ["quick", "Jaw care", 5],
-      ["quick", "Desk reset", 8],
-    ]);
+    expect(tiles.map((t) => [t.kind, t.title, t.minutes])).toEqual([["session", "Jaw care", 30]]);
   });
 
-  it("no programme session to do (none, done, a Studio workout): templates and quick starts fill the three", () => {
-    expect(fallbackTiles({ today: today("program", "completed"), quick, templates }).map((t) => t.title)).toEqual(["Pinned one", "Jaw care", "Desk reset"]);
-    expect(fallbackTiles({ today: today("studio"), quick, templates: [] }).map((t) => t.title)).toEqual(["Jaw care", "Desk reset", "Hip opener"]);
-    expect(fallbackTiles({ today: null, quick: quick.slice(1, 2), templates: [] }).map((t) => t.title)).toEqual(["Desk reset"]);
+  it("no programme session to do (none, done, a Studio workout): a recent template, else nothing — the quick starts are below", () => {
+    expect(fallbackTiles({ today: today("program", "completed"), quick, templates: recent }).map((t) => t.title)).toEqual(["Recent one"]);
+    expect(fallbackTiles({ today: today("studio"), quick, templates: [] })).toEqual([]);
+    expect(fallbackTiles({ today: null, quick: quick.slice(1, 2), templates }).map((t) => t.title)).toEqual(["Pinned one"]);
   });
 });
 

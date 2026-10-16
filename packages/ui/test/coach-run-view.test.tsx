@@ -10,7 +10,7 @@ import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { CoachRunDto, CoachRunEventDto } from "@rg/api-client";
 import { RunView, StoppedLine } from "../src/screens/studio/run-view.js";
-import { failureOf, OUT_OF_CREDITS_FALLBACK, type FallbackTile } from "../src/screens/studio/run-model.js";
+import { failureOf, type FallbackTile } from "../src/screens/studio/run-model.js";
 import { renderAt, text, todayDto } from "./studio-fixtures.js";
 
 const run = (over: Partial<CoachRunDto> = {}): CoachRunDto => ({
@@ -109,9 +109,8 @@ describe("the run view, by status", () => {
     const { html, words } = view(run({ status: "waiting_athlete" }), [...trail, check]);
     expect(words).toContain("The coach asks you to log today's condition check.");
     expect(words).toContain("Landing drills need today's check.");
-    // The chip Today wears for the profile, opening the same sheet.
-    expect(html).toContain("condition-chip");
-    expect(words).toContain("Jaw check ›");
+    // A full button in the profile's own word, opening the app's own sheet (fix wave 3B, M6).
+    expect(html).toContain('class="btn btn-primary">Do the jaw check</button>');
     expect(words).toContain("Skip");
     expect(html).not.toContain('placeholder="Or in your own words"');
   });
@@ -223,9 +222,9 @@ describe("when it stopped short", () => {
   const stopped = (error: string, proposed: boolean, t = tiles) =>
     renderAt("/studio", createElement(StoppedLine, { failure: failureOf({ status: error === "expired" ? "expired" : "failed", error })!, proposed, tiles: t }));
 
-  it("out of credits with nothing proposed: the pinned words, then the programme session, a template and a quick start", () => {
+  it("out of credits with nothing proposed: what stopped and what's next, then the tiles it was given, each by its kind", () => {
     const html = stopped("gateway_402", false);
-    expect(text(html)).toContain(OUT_OF_CREDITS_FALLBACK);
+    expect(text(html)).toContain("The AI account is out of credits. The coach can design again once credits are added.");
     expect(html).toContain('href="/plan?workout=w-1"');
     expect(html).toContain('href="/studio/build/template/t1"');
     expect(html).toContain('href="/studio/build/quick/condition_care"');
@@ -238,7 +237,7 @@ describe("when it stopped short", () => {
 
   it("another stop: what failed and what happens next, then the ways to train now", () => {
     const words = text(stopped("weekly_cap", false));
-    expect(words).toContain("This week's AI budget is used up. The coach can design again next week. Ways to train now:");
+    expect(words).toContain("This week's AI budget is used up. The coach can design again next week. Today's session Strength A");
     expect(text(stopped("expired", false))).toContain("This design ran out of time.");
     expect(text(stopped("retries", false))).toContain("The AI service didn't answer.");
   });

@@ -47,6 +47,7 @@ import {
   parseKr,
   stalled,
   streakWords,
+  testRequest,
 } from "../src/screens/studio/objectives-model.js";
 import { primedClient, staticRouter, text } from "./studio-fixtures.js";
 
@@ -203,8 +204,8 @@ describe("the board's words and numbers", () => {
     expect(measureWords(keyResultMeasureSchema.parse({ kind: "pace_at_hr", hrLow: 130, hrHigh: 145 }), { units: "km", weightUnit: "kg" })).toBe("Pace at heart rate 130–145");
   });
 
-  it("says evidence in read_objectives' four words", () => {
-    expect((["measured", "sparse", "capped", "none"] as const).map(evidenceWord)).toEqual(["Measured", "Sparse", "Capped", "None"]);
+  it("says evidence in plain words, never the model's (fix wave 3B, B-I11)", () => {
+    expect((["measured", "sparse", "capped", "none"] as const).map(evidenceWord)).toEqual(["Measured", "Few readings", "At least", "Not measured yet"]);
   });
 
   it("measures progress from the start to the target, either way, clamped to 0–100%", () => {
@@ -306,7 +307,7 @@ describe("the board", () => {
 
   it("a sparse key result says how few points it has", () => {
     const k = krOf(cardOf(boardHtml(), "o1"), "5K time");
-    expect(text(k)).toContain("Sparse");
+    expect(text(k)).toContain("Few readings");
     expect(text(k)).toContain("1 point");
     expect(text(k)).toContain("25:30");
     expect(text(k)).toContain("Fastest 5 km");
@@ -314,13 +315,28 @@ describe("the board", () => {
 
   it("a capped key result reads as a floor: at least this much", () => {
     const k = krOf(cardOf(boardHtml(), "o1"), "Squat estimated max");
-    expect(text(k)).toContain("Capped");
+    expect(text(k)).toContain("At least");
     expect(text(k)).toContain("Now at least 32.5 kg");
+  });
+
+  it("a key result not measured yet offers to ask the coach for a test; a measured one doesn't (fix wave 3B, B-I11)", () => {
+    const none = krOf(cardOf(boardHtml(), "o1"), "Easy pace");
+    expect(none).toMatch(/<a class="linklike obj-ask-test tap-pad" href="\/studio">Ask the coach for a test<\/a>/);
+    expect(krOf(cardOf(boardHtml(), "o1"), "5K time")).not.toContain("Ask the coach for a test");
+    expect(krOf(cardOf(boardHtml(), "o1"), "Squat estimated max")).not.toContain("Ask the coach for a test");
+  });
+
+  it("the request a test asks for, in plain words, naming the measure", () => {
+    expect(testRequest("Easy pace")).toBe("Plan a test so I can measure: Easy pace");
+  });
+
+  it("'Key result' is 'Measure' wherever the athlete reads it (fix wave 3B, M10)", () => {
+    expect(text(boardHtml())).not.toMatch(/key result/i);
   });
 
   it("a key result with nothing measured says why, with no chart and no number", () => {
     const k = krOf(cardOf(boardHtml(), "o1"), "Easy pace");
-    expect(text(k)).toContain("None");
+    expect(text(k)).toContain("Not measured yet");
     expect(text(k)).toContain("No run long enough with its average heart rate in this range in the last 90 days.");
     expect(k).not.toContain("<svg");
     expect(text(k)).not.toMatch(/Now /);
@@ -333,9 +349,9 @@ describe("the board", () => {
     const pills = [...html.matchAll(/<span class="pill obj-ev obj-ev--(\w+)">([^<]*)<\/span>/g)].map((m) => [m[1], m[2]]);
     expect(pills).toEqual([
       ["measured", "Measured"],
-      ["sparse", "Sparse"],
-      ["capped", "Capped"],
-      ["none", "None"],
+      ["sparse", "Few readings"],
+      ["capped", "At least"],
+      ["none", "Not measured yet"],
     ]);
   });
 
@@ -473,10 +489,11 @@ describe("the coach switch", () => {
     return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter("/studio", createElement(StudioScreen))));
   }
 
-  it("on: one quiet link to the board, right beside the row that holds Templates", () => {
+  it("on: one quiet link to the board, in the row with Templates, just before it (fix wave 3B, M10)", () => {
     const html = home();
     expect(html.match(/href="\/studio\/objectives"/g)).toHaveLength(1);
-    expect(html).toMatch(/<a class="linklike stu-tpl-link stu-obj-link" href="\/studio\/objectives">Objectives<svg[^>]*>[\s\S]*?<\/svg><\/a><div class="stu-build-row">/);
+    const row = html.slice(html.indexOf('<div class="stu-build-row">'), html.indexOf("<section", html.indexOf('<div class="stu-build-row">')));
+    expect(row).toMatch(/<a class="linklike stu-tpl-link" href="\/studio\/objectives">Objectives<svg[^>]*>[\s\S]*?<\/svg><\/a><a class="linklike stu-tpl-link" href="\/studio\/templates">/);
   });
 
   it("off: no link", () => {

@@ -43,9 +43,11 @@ export function ScheduleSheet({ today, later, usual, judgeFor, checkLabel, onChe
   const name = useId();
   const tomorrow = addDays(today, 1);
   const from = initial && initial.date >= today ? initial : null;
-  const onLater = !!from && from.date === today && !!later && !!from.time;
+  // A day of today opens on Later today — at its own time, or with none (a coach's draft for now), at Later today's
+  // slot: never "Another day" with today in it and no time, which the usual window may already refuse (fix wave 3B, B-I8).
+  const onLater = !!from && from.date === today && !!later;
   const [choice, setChoice] = useState<"later" | "day">(from ? (onLater ? "later" : "day") : later ? "later" : "day");
-  const [laterTime, setLaterTime] = useState(onLater ? from!.time! : (later ?? ""));
+  const [laterTime, setLaterTime] = useState(onLater && from!.time ? from!.time : (later ?? ""));
   const [date, setDate] = useState(from && !onLater ? from.date : tomorrow);
   const [dayTime, setDayTime] = useState(from && !onLater ? (from.time ?? "") : "");
   const [busy, setBusy] = useState(false);

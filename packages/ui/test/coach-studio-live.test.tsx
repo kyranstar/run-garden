@@ -23,7 +23,7 @@ import type { CoachRunDto, CoachRunEventDto, CoachRunStepResult, TemplateDto, To
 import { StudioCoach, COACH_CURRENT_QUERY, COUNTER_FROM, REQUEST_MAX_CHARS } from "../src/screens/studio/composer.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
-import { EXISTING_LINE, NOT_AVAILABLE_LINE, OUT_OF_CREDITS_FALLBACK } from "../src/screens/studio/run-model.js";
+import { EXISTING_LINE, NOT_AVAILABLE_LINE, QUICK_BELOW_LINE, TRAIL_FOLD_LINE } from "../src/screens/studio/run-model.js";
 import { primedClient, todayDto, TODAY } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -201,7 +201,7 @@ describe("the composer", () => {
     expect(field()).toBeNull();
   });
 
-  it("Plan ahead offers This week and the next workouts", async () => {
+  it("Plan ahead offers the next 7 days and the next workouts", async () => {
     const calls = serve({
       "GET /api/coach/runs/current": { run: null },
       "POST /api/coach/runs": (body: any) => json({ run: run({ scope: body.scope, status: "active" }), existing: false }),
@@ -209,7 +209,7 @@ describe("the composer", () => {
     mount({ loop: quietLoop(() => run({ status: "active" })) });
     await until(() => !!field(), "the composer");
     await click(button("Plan ahead"), "Plan ahead");
-    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["This week", "Next 3 workouts"]);
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days", "Next 3 workouts"]);
     await click(button("Next 3 workouts"), "Next 3 workouts");
     expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "next_n", n: 3 }, request: null });
   });
@@ -229,15 +229,16 @@ describe("the composer", () => {
     });
     mount({ loop: quietLoop(() => run({ status: "active" })) });
     await until(() => primary().join() === "Plan ahead", "Plan ahead, the primary button");
-    await click(button("Plan ahead"), "Plan ahead");
+    // One tap starts the default (fix wave 3B, M10); the menu is the ▾ beside it.
+    await click(document.querySelector(".coach-scope-more"), "the ▾");
     const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-    expect(items.map((m) => m.textContent)).toEqual(["This week", "Next 5 workouts · your default"]);
+    expect(items.map((m) => m.textContent)).toEqual(["Next 7 days", "Next 5 workouts · your default"]);
     expect(items.map((m) => m.getAttribute("aria-current"))).toEqual([null, "true"]);
     await click(items[1], "Next 5 workouts");
     expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "next_n", n: 5 }, request: null });
   });
 
-  it("later today as the default: its button is the primary one; this week marks its item", async () => {
+  it("later today as the default: its button is the primary one; the next 7 days mark their item", async () => {
     serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": coachPrefs({ defaultScope: "later_today" }) });
     mount();
     await until(() => primary().join() === "Later today", "Later today, the primary button");
@@ -246,8 +247,8 @@ describe("the composer", () => {
     serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": coachPrefs({ defaultScope: "week" }) });
     mount();
     await until(() => primary().join() === "Plan ahead", "Plan ahead, the primary button");
-    await click(button("Plan ahead"), "Plan ahead");
-    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["This week · your default", "Next 3 workouts"]);
+    await click(document.querySelector(".coach-scope-more"), "the ▾");
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days · your default", "Next 3 workouts"]);
   });
 
   it("no settings to read (a 404): Now leads, and the next workouts are three", async () => {
@@ -257,7 +258,7 @@ describe("the composer", () => {
     await settle(20);
     expect(primary()).toEqual(["Now"]);
     await click(button("Plan ahead"), "Plan ahead");
-    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["This week", "Next 3 workouts"]);
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days", "Next 3 workouts"]);
   });
 
   it("the counter shows only near the limit", async () => {
@@ -330,15 +331,17 @@ describe("the composer", () => {
 
 describe("the question", () => {
   it("Send posts the answers — a chip, or words of one's own — and the run goes on", async () => {
+    // The server's run: waiting on the athlete until the answer is in.
+    let server = run();
     const calls = serve({
       "GET /api/coach/runs/current": { run: run(), events: [ev(1, "note", "Read the request."), asked], proposal: null },
-      "POST /api/coach/runs/run-1/answer": () => json({ run: run({ status: "active" }) }),
+      "POST /api/coach/runs/run-1/answer": () => json({ run: (server = run({ status: "active" })) }),
     });
-    mount();
+    mount({ loop: quietLoop(() => server) });
     await until(() => text().includes("How are the hips today?"), "the question");
     expect(button("Send")!.disabled).toBe(true);
     await click(button("tight"), "the chip");
-    expect(button("tight")!.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector('.coach-ask .chip[aria-pressed="true"]')?.textContent).toBe("✓tight");
     await click(button("Send"), "Send");
     await until(() => posts(calls, "/api/coach/runs/run-1/answer").length === 1, "the answer");
     expect(posts(calls, "/api/coach/runs/run-1/answer")[0]!.body).toEqual({ answers: ["tight"] });
@@ -453,7 +456,7 @@ describe("the question", () => {
     });
     mount();
     await until(() => text().includes("Landing drills need today's check."), "the why");
-    await click(document.querySelector(".condition-chip"), "the check's chip");
+    await click(button("Do the jaw check"), "the check's button");
     const sheet = document.querySelector('[role="dialog"]')!;
     await click([...sheet.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === "2"), "a reading");
     await click(button("Save", sheet), "Save");
@@ -486,7 +489,7 @@ describe("today's condition check, the other ways", () => {
     });
     mount();
     await until(() => text().includes("Landing drills need it."), "the why");
-    await click(document.querySelector(".condition-chip"), "the check's chip");
+    await click(button("Do the jaw check"), "the check's button");
     const sheet = document.querySelector('[role="dialog"]')!;
     await click([...sheet.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === "1"), "a reading");
     await click(button("Save", sheet), "Save");
@@ -867,7 +870,7 @@ describe("a run that stopped with what was reviewed", () => {
 });
 
 describe("ways to train now", () => {
-  it("out of credits, nothing proposed: the pinned words over the programme session, a template and a quick start", async () => {
+  it("out of credits, nothing proposed: said once, then today's session — a pinned template is among the quick starts below", async () => {
     const today = {
       ...todayDto(null),
       todaySessions: [{ workout: { id: "w-prog", origin: "program", title: "Strength A", completionState: "scheduled", contentState: "built" }, build: { minutes: 35 } }],
@@ -881,11 +884,197 @@ describe("ways to train now", () => {
       "GET /api/templates": { templates: [{ ...template, doc: { version: 1, title: "Morning flow", intent: { summary: "", goals: [], focus: [], effort: "maintain" }, parts: [], source: { kind: "studio" } } }] },
     });
     mount({ today, loop: quietLoop(() => stopped) });
-    await until(() => text().includes(OUT_OF_CREDITS_FALLBACK), "the pinned words");
+    await until(() => !!document.querySelector(".coach-fallback .stu-qs"), "the ways to train now");
+    expect(document.querySelector(".coach-fallback")!.textContent).toContain("The AI account is out of credits. The coach can design again once credits are added.");
     const tiles = [...document.querySelectorAll<HTMLAnchorElement>(".coach-fallback .stu-qs")];
-    expect(tiles.map((a) => a.getAttribute("href"))).toEqual(["/plan?workout=w-prog", "/studio/build/template/t1", expect.stringMatching(/^\/studio\/build\/quick\//)]);
-    expect(tiles.map((a) => a.querySelector(".stu-qs-name")?.textContent).slice(0, 2)).toEqual(["Strength A", "Morning flow"]);
+    expect(tiles.map((a) => a.getAttribute("href"))).toEqual(["/plan?workout=w-prog"]);
+    expect(tiles.map((a) => a.querySelector(".stu-qs-name")?.textContent)).toEqual(["Strength A"]);
+    expect(text()).toContain(QUICK_BELOW_LINE);
+    // Said once: the trail that ended in it is folded (the lines one tap down).
+    expect(document.querySelector<HTMLElement>(".coach-run-trail")!.hidden).toBe(true);
     // The composer is back, for a new request.
     expect(field()).not.toBeNull();
+  });
+});
+
+// ── Fix wave 3B, Part U ─────────────────────────────────────────────────────
+
+describe("fix wave 3B: the composer", () => {
+  const coachPrefs = (coach: { defaultScope?: "now" | "later_today" | "week" | "next_n"; nextN?: number }) => ({
+    coach,
+    settings: { defaultScope: coach.defaultScope ?? "now", nextN: coach.nextN ?? 3, trainingTimes: [], ceilingsUsd: { day: 1.5, set: 6 } },
+    model: { id: "m", name: "The coach's model" },
+  });
+
+  it("an 'Ask the coach' heading over it, in the quick starts' eyebrow; the group is named by it (B-I10)", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null } });
+    mount();
+    await until(() => !!field(), "the composer");
+    const h = document.querySelector<HTMLElement>(".coach-composer-box h2.eyebrow")!;
+    expect(h.textContent).toBe("Ask the coach");
+    expect(document.querySelector(".coach-composer-box")!.getAttribute("aria-labelledby")).toBe(h.id);
+  });
+
+  it("before the tap, what a week plan costs; Plan ahead's menu says Next 7 days, never 'This week' (M4, M8)", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null } });
+    mount();
+    await until(() => !!field(), "the composer");
+    expect(document.querySelector(".coach-composer-cost")?.textContent).toBe("A week plan usually costs about $3–5.");
+    await click(button("Plan ahead"), "Plan ahead");
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days", "Next 3 workouts"]);
+    expect(text()).not.toContain("This week");
+  });
+
+  it("a set as the default: Plan ahead is one tap — it starts that set at once; a small ▾ opens the menu (M10)", async () => {
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: null },
+      "GET /api/coach/preferences": coachPrefs({ defaultScope: "next_n", nextN: 5 }),
+      "POST /api/coach/runs": (body: any) => json({ run: run({ scope: body.scope, status: "active" }), existing: false }),
+    });
+    mount({ loop: quietLoop(() => run({ status: "active" })) });
+    await until(() => !!document.querySelector(".coach-scope-more"), "the ▾");
+    const more = document.querySelector<HTMLButtonElement>(".coach-scope-more")!;
+    expect(more.getAttribute("aria-label")).toBe("More ways to plan ahead");
+    expect(more.getAttribute("aria-haspopup")).toBe("menu");
+    expect([...document.querySelectorAll<HTMLButtonElement>(".coach-composer-actions .btn-primary")].map((b) => b.textContent?.trim())).toEqual(["Plan ahead"]);
+    await click(more, "the ▾");
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual(["Next 7 days", "Next 5 workouts · your default"]);
+    await click(more, "the ▾ again");
+    await click(button("Plan ahead"), "Plan ahead");
+    await until(() => posts(calls, "/api/coach/runs").length === 1, "the start");
+    expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "next_n", n: 5 }, request: null });
+  });
+
+  it("the next 7 days as the default: one tap starts them", async () => {
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: null },
+      "GET /api/coach/preferences": coachPrefs({ defaultScope: "week" }),
+      "POST /api/coach/runs": (body: any) => json({ run: run({ scope: body.scope, status: "active" }), existing: false }),
+    });
+    mount({ loop: quietLoop(() => run({ status: "active" })) });
+    await until(() => !!document.querySelector(".coach-scope-more"), "the ▾");
+    await click(button("Plan ahead"), "Plan ahead");
+    await until(() => posts(calls, "/api/coach/runs").length === 1, "the start");
+    expect(posts(calls, "/api/coach/runs")[0]!.body).toEqual({ scope: { kind: "week" }, request: null });
+  });
+
+  it("not a set as the default: Plan ahead opens its menu, no ▾ beside it", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/preferences": coachPrefs({ defaultScope: "now" }) });
+    mount();
+    await until(() => !!field(), "the composer");
+    await settle(20);
+    expect(document.querySelector(".coach-scope-more")).toBeNull();
+    expect(button("Plan ahead")!.getAttribute("aria-haspopup")).toBe("menu");
+  });
+
+  it("the existing run's notice says how to ask for something new (M10)", () => {
+    expect(EXISTING_LINE).toContain("Cancel it to ask for something new.");
+  });
+
+  it("arriving with a request (the board's 'Ask the coach for a test'): the field holds it, focused (B-I11)", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null } });
+    mount({ state: { coach: "compose", request: "A test for: Plank hold" } });
+    await until(() => !!field(), "the composer");
+    expect(field()!.value).toBe("A test for: Plank hold");
+    expect(document.activeElement).toBe(field());
+  });
+});
+
+describe("fix wave 3B: the question, the trail, the focus", () => {
+  it("a chosen chip says so: pressed, filled, and a ✓ — never colour alone (B-C1)", async () => {
+    serve({ "GET /api/coach/runs/current": { run: run(), events: [asked], proposal: null } });
+    mount();
+    await until(() => text().includes("How are the hips today?"), "the question");
+    const chip = () => [...document.querySelectorAll<HTMLButtonElement>(".coach-ask .chip")].find((b) => b.textContent?.includes("tight"))!;
+    expect(chip().textContent).toBe("tight");
+    await click(chip(), "the chip");
+    expect(chip().getAttribute("aria-pressed")).toBe("true");
+    expect(chip().textContent).toBe("✓tight");
+    expect(chip().querySelector('[aria-hidden="true"]')?.textContent).toBe("✓");
+    // Chosen again: not chosen, no ✓.
+    await click(chip(), "the chip again");
+    expect(chip().textContent).toBe("tight");
+  });
+
+  it("after Send, the trail is read before the next step: 'You answered…' shows live, with its Undo (B-I2)", async () => {
+    // Its own run: a step another test left out on run-1 would hold this one's (the tab's one-step-a-run registry).
+    let server = run({ id: "run-i2" });
+    let events: CoachRunEventDto[] = [ev(1, "note", "Read your request and today's plan."), asked];
+    const calls = serve({
+      "GET /api/coach/runs/current": () => json({ run: server, events, proposal: null }),
+      "POST /api/coach/runs/run-i2/answer": () => {
+        server = run({ id: "run-i2", status: "active" });
+        events = [...events, ev(3, "note", "You answered: tight", { answers: ["tight"], receipt: { undo: { handle: "run-i2:toolu_3" } } })];
+        return json({ run: server });
+      },
+    });
+    const loop = drivenLoop({ run: () => server, events: () => events });
+    mount({ loop: loop.deps });
+    await until(() => text().includes("How are the hips today?"), "the question");
+    await click(button("tight"), "the chip");
+    await click(button("Send"), "Send");
+    await until(() => posts(calls, "/api/coach/runs/run-i2/answer").length === 1, "the answer");
+    // The next step goes out and never answers (within the poll's 2 s, nothing else reads): the line is the read's,
+    // made before the step.
+    await until(() => loop.stepped.length === 1, "the next step");
+    expect(text()).toContain("You answered: tight");
+    expect(button("Undo")).not.toBeNull();
+  });
+
+  it("after Now, the focus goes to the run's heading — the composer it was in is gone (B-I9)", async () => {
+    serve({
+      "GET /api/coach/runs/current": { run: null },
+      "POST /api/coach/runs": (body: any) => json({ run: run({ scope: body.scope, request: body.request, status: "active" }), existing: false }),
+    });
+    mount({ loop: quietLoop(() => run({ status: "active" })) });
+    await until(() => !!field(), "the composer");
+    await click(button("Now"), "Now");
+    await until(() => document.activeElement?.classList.contains("coach-run-title") === true, "the focus on the run's heading");
+    expect(document.activeElement?.textContent).toBe("Coach · designing");
+  });
+
+  it("after an answer — a chip sent, a check saved — the focus goes back to the run (B-I9)", async () => {
+    serve({
+      "GET /api/coach/runs/current": { run: run(), events: [asked], proposal: null },
+      "POST /api/coach/runs/run-1/answer": () => json({ run: run({ status: "active" }) }),
+    });
+    mount({ loop: quietLoop(() => run({ status: "active" })) });
+    await until(() => text().includes("How are the hips today?"), "the question");
+    await click(button("tight"), "the chip");
+    await click(button("Send"), "Send");
+    await until(() => document.activeElement?.classList.contains("coach-run-title") === true, "the focus on the run");
+  });
+
+  it("the check ask's sheet saved: the focus goes back to the run (B-I9)", async () => {
+    const check = ev(2, "question", "The coach asks you to log today's condition check.", { tool: "ask_athlete", data: { check: "condition", why: "Landing drills need it." } });
+    serve({
+      "GET /api/coach/runs/current": { run: run(), events: [check], proposal: null },
+      "POST /api/conditions/checks": (body: any) => json({ check: { id: "chk-9", profileId: body.profileId, date: TODAY, value: body.value, feelingOff: false } }),
+      "POST /api/coach/runs/run-1/answer": () => json({ run: run({ status: "active" }) }),
+    });
+    mount({ loop: quietLoop(() => run({ status: "active" })) });
+    await until(() => !!button("Do the jaw check"), "the check's button");
+    await click(button("Do the jaw check"), "Do the jaw check");
+    const sheet = document.querySelector('[role="dialog"]')!;
+    await click([...sheet.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === "2"), "a reading");
+    await click(button("Save", sheet), "Save");
+    await until(() => document.activeElement?.classList.contains("coach-run-title") === true, "the focus on the run");
+  });
+
+  it("once over, the trail folds to one line; one tap opens it (B-I7)", async () => {
+    const over = run({ status: "finished", finishedAt: `${TODAY}T08:05:00.000Z` });
+    serve({
+      "GET /api/coach/runs/current": { run: over, events: [ev(1, "note", "Read your request and today's plan."), ev(2, "note", "Nothing was proposed.", { proposed: false })], proposal: null },
+      "GET /api/templates": { templates: [] },
+    });
+    mount({ loop: quietLoop(() => over) });
+    await until(() => !!button(TRAIL_FOLD_LINE), "the fold");
+    const trail = () => document.querySelector<HTMLElement>(".coach-run-trail")!;
+    expect(trail().hidden).toBe(true);
+    expect(button(TRAIL_FOLD_LINE)!.getAttribute("aria-expanded")).toBe("false");
+    await click(button(TRAIL_FOLD_LINE), "the fold");
+    expect(trail().hidden).toBe(false);
+    expect(button(TRAIL_FOLD_LINE)!.getAttribute("aria-expanded")).toBe("true");
+    expect(trail().textContent).toContain("Read your request and today's plan.");
   });
 });

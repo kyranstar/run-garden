@@ -2,11 +2,14 @@
  * THE COACH IN THE STUDIO (Stage 3 spec §10; Task 9): the composer at the top of the Studio home, and in its place, while
  * the coach works, the run view.
  *
+ *   ASK THE COACH
  *   [ What would help today?                       ]
- *   [ Now ]  [ Later today ]  [ Plan ahead ▾ ]          ← This week · Next N workouts
+ *   [ Now ]  [ Later today ]  [ Plan ahead ▾ ]          ← Next 7 days · Next N workouts
+ *   A week plan usually costs about $3–5.
  *
- *  - Settings → Coach (Task 10) decides the primary button — the athlete's default scope; for this week or the next
- *    workouts, Plan ahead, its item marked — and N. Unreadable (a 404, offline): Now, and the next three.
+ *  - Settings → Coach (Task 10) decides the primary button — the athlete's default scope; for the next 7 days or the
+ *    next workouts, Plan ahead, one tap that starts it, a ▾ beside it for the menu, its item marked (fix wave 3B, M10) —
+ *    and N. Unreadable (a 404, offline): Now, and the next three.
  *  - Opening the Studio finds the athlete's run (`GET /api/coach/runs/current`): a live one shows in place of the empty
  *    composer and goes on stepping; one that is over with a suggestion still open shows under the composer, its card
  *    with it. Rehearsals never come back.
@@ -57,7 +60,12 @@ export const COACH_CURRENT_QUERY = ["coach-run-current"] as const;
 /** What the Studio's location may carry: the Plan coach sheet's link asks for the composer, focused. */
 export interface CoachArrival {
   coach?: "compose";
+  /** Words to start from (the objectives board's "Ask the coach for a test", fix wave 3B, B-I11): the athlete's to send. */
+  request?: string;
 }
+
+/** What a set usually costs, said before the tap that starts one (fix wave 3B, M4). */
+export const SET_COST_LINE = "A week plan usually costs about $3–5.";
 
 /** The run the area shows, with its trail when known (an `existing` answer comes without it: the loop reads it). */
 interface Shown {
@@ -84,19 +92,22 @@ export function proposalIdOf(run: CoachRunDto, events: readonly CoachRunEventDto
 export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () => LoopDeps }) {
   const qc = useQueryClient();
   const location = useLocation();
-  const compose = (location.state as CoachArrival | null)?.coach === "compose";
+  const arrival = location.state as CoachArrival | null;
+  const compose = arrival?.coach === "compose";
   const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: api.coachRunCurrent, retry: false, staleTime: 0 });
   // Settings → Coach's read (Task 10), shared with its card: a 404 (or no read yet) is the defaults.
   const prefs = useQuery({ queryKey: COACH_PREFERENCES_QUERY, queryFn: api.coachPreferences, retry: false });
   const settings = prefs.data?.settings ?? coachSettings(null);
   const [shown, setShown] = useState<Shown | null>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => (typeof arrival?.request === "string" ? arrival.request.slice(0, REQUEST_MAX_CHARS) : ""));
   /** The run an `existing` answer opened: its line shows while it is live. */
   const [existingRun, setExistingRun] = useState<string | null>(null);
   /** The words a tap carried that the coach didn't start: offered back until taken, or a new run starts (M4). */
   const [ignored, setIgnored] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  /** The run a tap just started: the composer it was tapped in gives way, so the focus goes to the run (B-I9). */
+  const [started, setStarted] = useState<string | null>(null);
 
   // Only a read made since this screen opened decides what it shows — a kept one may be a run long over (fix round,
   // Important 2). The first fresh read gives the run shown; a later one, a live run that isn't it (started on another
@@ -133,6 +144,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
       setDraft("");
       setExistingRun(res.existing ? res.run.id : null);
       setIgnored(res.existing ? res.ignoredRequest.request : null);
+      // A live run already there keeps the composer on screen, the focus where it was.
+      setStarted(res.existing ? null : res.run.id);
       void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     },
     onError: (e) => {
@@ -227,12 +240,13 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
           onRun={(r) => loop?.setRun(r)}
           onRefresh={() => void loop?.refresh()}
           notice={notice}
+          focusKey={started !== null && run.id === started ? started : null}
         />
       ) : null}
       {failure && proposalKnown && (proposed || tilesReady) ? <StoppedLine failure={failure} proposed={proposed} tiles={tiles} /> : null}
       {/* Whatever the run's status (fix A2): a suggestion the athlete can't decide yet (unreviewed while the coach works,
           closed with a cancel) is no card — the card hides it. */}
-      {proposalId ? <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} /> : null}
+      {proposalId ? <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} today={ctx.today} /> : null}
     </div>
   );
 }
@@ -264,13 +278,18 @@ export function Composer({
   wordsBack?: ReactNode;
 }) {
   const id = useId();
+  const headingId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (focus) field.current?.focus();
   }, [focus]);
   const near = draft.length >= COUNTER_FROM;
   return (
-    <div className="coach-composer-box" role="group" aria-label="Ask the coach">
+    <div className="coach-composer-box" role="group" aria-labelledby={headingId}>
+      {/* Named as the Studio's sections are, in their eyebrow (fix wave 3B, B-I10). */}
+      <h2 id={headingId} className="eyebrow">
+        Ask the coach
+      </h2>
       <label className="visually-hidden" htmlFor={id}>
         What would help today?
       </label>
@@ -300,6 +319,7 @@ export function Composer({
         </button>
         <ScopeMenu nextN={nextN} defaultScope={defaultScope} busy={busy} onPick={onStart} />
       </div>
+      <p className="coach-composer-cost">{SET_COST_LINE}</p>
       {error ? (
         <p className="coach-composer-error" role="status">
           {error}
@@ -317,8 +337,9 @@ const SCOPE_MENU_GUTTER_PX = 16;
 const btnFor = (isDefault: boolean): string => (isDefault ? "btn btn-primary" : "btn");
 
 /**
- * "Plan ahead": This week · Next N workouts — a menu as the Studio's others are (Escape, a tap elsewhere, the arrows).
- * The athlete's default a set: Plan ahead is the primary button, and the default's item says so.
+ * "Plan ahead": Next 7 days · Next N workouts — a menu as the Studio's others are (Escape, a tap elsewhere, the arrows).
+ * The athlete's default a set (fix wave 3B, M10): Plan ahead is the primary button and one tap — it starts that set at
+ * once — and a small ▾ beside it opens the menu, the default's item saying so.
  */
 function ScopeMenu({
   nextN,
@@ -351,31 +372,48 @@ function ScopeMenu({
     return () => document.removeEventListener("pointerdown", away);
   }, [open]);
   const choices: Array<{ label: string; scope: CoachRunScope }> = [
-    { label: "This week", scope: { kind: "week" } },
+    { label: "Next 7 days", scope: { kind: "week" } },
     { label: `Next ${nextN} workouts`, scope: { kind: "next_n", n: nextN } },
   ];
+  const setDefault = choices.find((c) => c.scope.kind === defaultScope)?.scope ?? null;
+  const toggle = () => {
+    const r = button.current?.getBoundingClientRect();
+    // The menu is at least SCOPE_MENU_MIN_PX wide: past the viewport's edge from the left, it opens to the left.
+    if (r && typeof window !== "undefined") setToEnd(r.left + SCOPE_MENU_MIN_PX > window.innerWidth - SCOPE_MENU_GUTTER_PX);
+    setOpen((v) => !v);
+  };
+  const chevron = (
+    <span className="coach-scope-chev" aria-hidden="true">
+      <IconChevron size={14} />
+    </span>
+  );
   return (
-    <div className="coach-scope" ref={wrap}>
-      <button
-        ref={button}
-        type="button"
-        className={btnFor(defaultScope === "week" || defaultScope === "next_n")}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={id}
-        disabled={busy}
-        onClick={() => {
-          const r = button.current?.getBoundingClientRect();
-          // The menu is at least SCOPE_MENU_MIN_PX wide: past the viewport's edge from the left, it opens to the left.
-          if (r && typeof window !== "undefined") setToEnd(r.left + SCOPE_MENU_MIN_PX > window.innerWidth - SCOPE_MENU_GUTTER_PX);
-          setOpen((v) => !v);
-        }}
-      >
-        Plan ahead
-        <span className="coach-scope-chev" aria-hidden="true">
-          <IconChevron size={14} />
-        </span>
-      </button>
+    <div className={`coach-scope${setDefault ? " coach-scope--split" : ""}`} ref={wrap}>
+      {setDefault ? (
+        <>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => onPick(setDefault)}>
+            Plan ahead
+          </button>
+          <button
+            ref={button}
+            type="button"
+            className="btn coach-scope-more"
+            aria-label="More ways to plan ahead"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-controls={id}
+            disabled={busy}
+            onClick={toggle}
+          >
+            {chevron}
+          </button>
+        </>
+      ) : (
+        <button ref={button} type="button" className="btn" aria-haspopup="menu" aria-expanded={open} aria-controls={id} disabled={busy} onClick={toggle}>
+          Plan ahead
+          {chevron}
+        </button>
+      )}
       <div
         id={id}
         role="menu"

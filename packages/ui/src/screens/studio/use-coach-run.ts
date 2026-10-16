@@ -153,16 +153,17 @@ export class CoachRunLoop {
   }
 
   /**
-   * The run as another request answered it (an answer, a cancel): its status is the loop's now, and a run that can be
-   * stepped again (an answer resumed it) is stepped at once.
+   * The run as another request answered it (an answer, a skip, a logged check, a cancel): its status is the loop's now.
+   * A run that can be stepped again (an answer resumed it) has its trail read first — after the last seq held — so the
+   * line the answer wrote ("You answered…", its Undo) shows now: a step that returns within the poll would leave it
+   * behind the step's own seqs, where no later read looks (fix wave 3B, B-I2). The read then steps it.
    */
   setRun(run: CoachRunDto): void {
     this.set({ run, status: run.status });
+    this.clearStep();
     if (isSteppable(run.status)) {
       this.nextDueAt = null;
-      this.schedule(0);
-    } else {
-      this.clearStep();
+      void this.read(true);
     }
   }
 

@@ -87,7 +87,8 @@ describe("each item, in plain words", () => {
     expect(from("manual")).toBe("From a check-in, Oct 3");
     expect(from("open")).toBe("From your recent training, Oct 3");
     expect(from("athlete_words", { runId: "run-SECRET" })).toBe("From your request to the coach, Oct 3");
-    expect(from("coach_inference", { runId: "run-SECRET" })).toBe("From a coach run, Oct 3");
+    // "Request", never the coach's "run" (fix wave 3B, B-I12).
+    expect(from("coach_inference", { runId: "run-SECRET" })).toBe("From a coach request, Oct 3");
     expect(from("studio_brief", { planId: "plan-SECRET" })).toBe("From the old Studio's brief, Oct 3");
     expect(from("weekly")).toBe("From the coach, Oct 3");
   });
@@ -95,7 +96,7 @@ describe("each item, in plain words", () => {
   it("rendered: the words, the line under them, the actions; no id anywhere", () => {
     const pinned = itemMarkup(item({ pinned: true, kind: "rule", confidence: "confirmed", provenance: { source: "coach_inference", runId: "run-SECRET-ID", at: "2026-10-03T09:00:00.000Z" } }));
     expect(text(pinned)).toContain("Trains in a garage");
-    expect(text(pinned)).toContain("Rule · Confirmed · From a coach run, Oct 3 · Pinned");
+    expect(text(pinned)).toContain("Rule · Confirmed · From a coach request, Oct 3 · Pinned");
     expect(pinned).toMatch(/aria-pressed="true"[^>]*>Unpin</);
     expect(pinned).not.toMatch(/>Confirm</);
     expect(pinned).not.toContain("SECRET");
@@ -170,7 +171,8 @@ describe("Settings → Coach", () => {
   it("the defaults: Now pressed, three workouts, no times, the full limits, the model and the week's spend", () => {
     const markup = view(dto());
     expect(markup).toMatch(/aria-pressed="true"[^>]*>Now</);
-    expect(markup).toMatch(/aria-pressed="false"[^>]*>Next 3</);
+    expect(markup).toMatch(/aria-pressed="false"[^>]*>Next 3 workouts</);
+    expect(markup).toMatch(/aria-pressed="false"[^>]*>Next 7 days</);
     expect(markup).toMatch(/<option value="3" selected="">3<\/option>/);
     expect(text(markup)).toContain("None set.");
     expect(markup).toContain('value="1.50"');
@@ -178,13 +180,40 @@ describe("Settings → Coach", () => {
     expect(markup).toMatch(/max="1.5"/);
     expect(markup).toMatch(/max="6"/);
     expect(text(markup)).toContain("Model Claude Opus 5.5");
-    expect(text(markup)).toContain("AI spend this week $3.20 of $20");
+    expect(text(markup)).toContain("AI spend this week $3.20 of $20.00");
     expect(markup).not.toContain("anthropic/");
+  });
+
+  it("the words (fix wave 3B): Next 7 days and Next N workouts, never 'This week'; a request, never a run (M8, B-I12)", () => {
+    const words = text(view(dto()));
+    expect(words).toContain("Now Later today Next 7 days Next 3 workouts");
+    expect(words).toContain("Spending limit for one request");
+    expect(words).toContain("Now or later today");
+    expect(words).toContain("Plan ahead");
+    expect(words).not.toContain("This week");
+    expect(words).not.toMatch(/\brun\b/);
+  });
+
+  it("past the week's warning: one plain line, the cutoff still ahead (M4)", () => {
+    const spend = (usd: number) =>
+      text(
+        html(
+          createElement(CoachSettingsView, {
+            data: dto(),
+            spend: { since: "2026-10-09T00:00:00.000Z", spentMicros: Math.round(usd * 1e6), spentUsd: usd, warnMicros: 5_000_000, cutoffMicros: 20_000_000 },
+            onSave: noop,
+          }),
+        ),
+      );
+    expect(spend(5.07)).toContain("AI spend this week $5.07 of $20.00");
+    expect(spend(5.07)).toContain("Over $5 this week — the coach keeps going until $20.");
+    expect(spend(4.99)).not.toContain("Over $5");
+    expect(spend(5)).not.toContain("Over $5");
   });
 
   it("what the athlete set", () => {
     const markup = view(dto({ defaultScope: "next_n", nextN: 5, trainingTimes: ["18:30", "07:00"], ceilingsUsd: { day: 1 } }), false);
-    expect(markup).toMatch(/aria-pressed="true"[^>]*>Next 5</);
+    expect(markup).toMatch(/aria-pressed="true"[^>]*>Next 5 workouts</);
     expect(markup).toMatch(/<option value="5" selected="">5<\/option>/);
     expect(markup.indexOf('value="07:00"')).toBeLessThan(markup.indexOf('value="18:30"'));
     expect(markup).toContain('value="1.00"');

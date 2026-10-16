@@ -60,22 +60,26 @@ test("the composer → a scripted run → the suggestion → Approve → the wor
   await expect(page.getByRole("heading", { name: /^Coach · / })).toBeVisible();
   await expect(page.getByText("“a short, gentle hips session”")).toBeVisible();
 
-  // The run finishes on its own (the client steps it) and its suggestion opens under the composer.
-  const card = page.getByRole("region", { name: "The coach suggests" });
-  await expect(card).toBeVisible({ timeout: 60_000 });
+  // The run finishes on its own (the client steps it) and its suggestion opens under the composer. The card's heading
+  // says what became of it once decided (fix wave 3B, M3), so the card is found by its own box.
+  await expect(page.getByRole("region", { name: "The coach suggests" })).toBeVisible({ timeout: 60_000 });
+  const card = page.locator("section.coach-pc");
   await expect(page.getByRole("heading", { name: "Coach · done" })).toBeVisible();
+  // Once over, the trail folds to one line; the card's Approve sits high (B-I7).
+  await expect(page.getByRole("button", { name: "How the coach made this" })).toHaveAttribute("aria-expanded", "false");
   await expect(card.getByRole("button", { name: "Hips and back, gently" })).toBeVisible();
-  await expect(card).toContainText("Review");
+  await expect(card).toContainText("Reviewed");
 
-  // What could be better is on the card; the review's scores, one tap down.
+  // A tip from the review is on the card; the review's scores, one tap down, in plain words (M1, M2).
   await expect(card.getByText("Hold the last bridge for a slow count of three.")).toBeVisible();
-  await expect(card.getByText("Intent clarity")).toBeHidden();
+  await expect(card.getByText("Clear purpose")).toBeHidden();
   await card.getByRole("button", { name: "See the review" }).click();
-  await expect(card.getByText("Intent clarity")).toBeVisible();
+  await expect(card.getByText("Clear purpose")).toBeVisible();
 
   await card.getByRole("button", { name: "Approve", exact: true }).click();
   const placed = card.getByRole("link", { name: /^On your plan for / });
   await expect(placed).toBeVisible({ timeout: 30_000 });
+  await expect(card.getByRole("heading", { name: "Added to your plan" })).toBeVisible();
 
   // That day on the Plan, the workout's sheet open.
   await placed.click();

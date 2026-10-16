@@ -1142,7 +1142,12 @@ export interface CoachRunEventDto {
   kind: "tool_call" | "tool_result" | "draft" | "review" | "revision" | "question" | "note" | "error";
   /** One plain line for the run view. */
   summary: string;
-  /** Bounded detail; a sub-run's event carries `by: { runId, role }`. */
+  /**
+   * Bounded detail; a sub-run's event carries `by: { runId, role }`. A set's designer's and reviewer's events also carry
+   * `forDay` ("YYYY-MM-DD") and, once known, `forTitle`: the run view groups them under that day (the main run's own
+   * lines carry neither). A call the plan refused is a `note` — "Adjusted the draft." — its refusal here (`ok: false`,
+   * `error`, and the server's `why` when it gave one): never an error line.
+   */
   payload: unknown;
   at: string;
 }
