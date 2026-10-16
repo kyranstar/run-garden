@@ -219,7 +219,8 @@ describe("a must-fix sends the draft back; the revision is reviewed again", () =
     // at most three (the draft and two revisions), and what is left. Nothing must change after the second: finish.
     expect(REVIEW_ROUNDS).toBe(3);
     expect(sentData(requests, first)).toMatchObject({ ...marked(firstReview), round: 1, roundsLeft: 2 });
-    expect(sentData(requests, second)).toMatchObject({ ...marked(secondReview), round: 2, roundsLeft: 1, next: "Nothing must change: call finish." });
+    // An improvement may be worth a text fix (Task 13's fix wave, §2.5): an amend, no new review, then finish.
+    expect(sentData(requests, second)).toMatchObject({ ...marked(secondReview), round: 2, roundsLeft: 1, next: expect.stringContaining("propose_workout({ amend: true, changeNote }) — text only, no new review — then call finish.") });
 
     // Pending at the finish, holding the revision with its review, the rounds and what changed.
     const p = (await proposalOf(runId))!;
@@ -389,7 +390,18 @@ describe("a review that can't be read", () => {
     // The second failure ends the reviewer; the designer is told the validator's view stands.
     const [reviewer] = await reviewersOf(runId);
     expect(reviewer).toMatchObject({ status: "failed", error: "review_unreadable" });
-    expect(sentData(requests, first)).toEqual({ review: null, note: NOTE_UNREADABLE, round: 1, roundsLeft: 2, kept: "this draft", next: "No review to revise against: call finish." });
+    // With the draft's minutes and mode, its validator notes and what it would replace (Task 13's fix wave, §2.5).
+    expect(sentData(requests, first)).toEqual({
+      review: null,
+      note: NOTE_UNREADABLE,
+      round: 1,
+      roundsLeft: 2,
+      kept: "this draft",
+      derived: { minutes: expect.any(Number), mode: expect.any(String) },
+      issues: expect.any(Array),
+      willReplace: [],
+      next: "No review to revise against: call finish.",
+    });
     // The op carries the note; it counts as reviewed, so the finish makes the proposal pending.
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");

@@ -60,6 +60,7 @@ import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/pro
 import { refuse, untrusted } from "./design-tools/read-common.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolOk } from "./design-tools/types.js";
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
+import { willReplaceOf, willReplaceSql } from "./design-cover.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, type PlanAdjustOp } from "./proposal-kinds.js";
 import { utf8Bytes } from "./utf8.js";
@@ -426,14 +427,45 @@ export function unavailableWhy(error: string | null | undefined): string {
   }
 }
 
+/** What a review's result asks next (Task 13's fix wave, §2.5). */
+export const NEXT_LINES = {
+  revise: "Revise against the must-fix items and call propose_workout again with a changeNote.",
+  reviseHeld: "Revise the held draft against its must-fix items and call propose_workout again with a changeNote.",
+  noRounds: "No rounds of revision are left: call finish.",
+  finish: "Nothing must change: call finish.",
+} as const;
+
+/**
+ * Nothing must change, but something may be worth a text fix (§2.5; 13a A3): an improvement that corrects a fact or
+ * removes an unexplained cost, or a validator note (`notes`) the words can fix, goes back as an amend — text only, no
+ * new review, no round (propose.ts); a format or dose change that fixes a note is a full revision, its code in the
+ * changeNote, while rounds are left (`rounds`).
+ */
+function amendLine(notes: boolean, rounds: boolean): string {
+  return [
+    "Nothing must change. Apply an improvement that corrects a fact or removes an unexplained cost, or a validator note in issues that words can fix (in its move's why or the notes), with propose_workout({ amend: true, changeNote }) — text only, no new review — then call finish.",
+    ...(notes && rounds ? ["A format or dose change that fixes a note is a full revision instead, its code in changeNote."] : []),
+  ].join(" ");
+}
+
+/** An open suggestion a reviewed draft would replace once it is suggested (design-cover.ts `willReplaceSql`). */
+export interface WillReplace {
+  title: string;
+  date: string;
+  time: string | null;
+}
+
 /**
  * What the designer's propose_workout call answers once its draft's review is in (null while it is still running):
  * the review — scores, notes, must-fix items, improvements — or `{ review: null, note }` when the validator's view
  * stands, or `{ review: null, unavailable: true, note }` when the round was dropped; the round and the rounds left;
  * which version the proposal keeps — and, when it isn't this draft, which draft to revise from and what must still
- * change in it; and what to do next: revise only against must-fix items, otherwise finish.
+ * change in it; the version held's minutes and effort mode (`derived`) and its open validator notes (`issues`: code,
+ * path, message, fix — 13b I5: propose gave the designer neither); with `o.willReplace`, the open suggestions it would
+ * replace once suggested (13c R2: the line says "replaces" only when this does); and what to do next (§2.5): revise
+ * against must-fix items; else amend the text when an improvement or a note may be worth it, then finish; else finish.
  */
-export function designerResult(op: DocWorkoutOp, toolUseId: string, why?: string): Record<string, unknown> | null {
+export function designerResult(op: DocWorkoutOp, toolUseId: string, why?: string, o: { willReplace?: readonly WillReplace[] } = {}): Record<string, unknown> | null {
   const log = op.reviewLog ?? [];
   const entry = log.find((r) => r.toolUseId === toolUseId);
   if (!entry || entry.status === "reviewing") return null;
@@ -468,20 +500,29 @@ export function designerResult(op: DocWorkoutOp, toolUseId: string, why?: string
         heldTitle: untrusted(op.doc.title),
         heldMustFix: outstanding.map(untrusted),
       };
+  // The version held — what a revision or an amend starts from: its minutes and mode, and its open validator notes.
+  const issues = (op.issues ?? []).map((i) => ({ code: String(i.code), path: i.path, message: i.message, ...(i.fix !== undefined ? { fix: i.fix } : {}) }));
+  const derived = { minutes: op.derived?.minutes ?? null, mode: op.derived?.mode ?? null };
+  const improvements = (isHeld ? entry.review?.improvements : holder?.review?.improvements) ?? [];
   const next =
-    roundsLeft === 0
-      ? "No rounds of revision are left: call finish."
-      : outstanding.length > 0
-        ? isHeld
-          ? "Revise against the must-fix items and call propose_workout again with a changeNote."
-          : "Revise the held draft against its must-fix items and call propose_workout again with a changeNote."
-        : "Nothing must change: call finish.";
+    outstanding.length > 0
+      ? roundsLeft === 0
+        ? NEXT_LINES.noRounds
+        : isHeld
+          ? NEXT_LINES.revise
+          : NEXT_LINES.reviseHeld
+      : improvements.length > 0 || issues.length > 0
+        ? amendLine(issues.length > 0, roundsLeft > 0)
+        : roundsLeft === 0
+          ? NEXT_LINES.noRounds
+          : NEXT_LINES.finish;
+  const facts = { derived, issues, ...(o.willReplace ? { willReplace: o.willReplace.map((w) => ({ ...w, title: untrusted(w.title) })) } : {}) };
   if (entry.status === "reviewed" && entry.review) {
-    return { ...markedReview(entry.review), round: entry.round, roundsLeft, kept, ...reviseFrom, next };
+    return { ...markedReview(entry.review), round: entry.round, roundsLeft, kept, ...reviseFrom, ...facts, next };
   }
   // No review of this draft: nothing to revise it against, unless the draft held has must-fix items of its own.
   const afterNoReview = roundsLeft > 0 && outstanding.length === 0 ? "No review to revise against: call finish." : next;
-  return { review: null, note: entry.note ?? NOTE_NOT_DONE, round: entry.round, roundsLeft, kept, ...reviseFrom, next: afterNoReview };
+  return { review: null, note: entry.note ?? NOTE_NOT_DONE, round: entry.round, roundsLeft, kept, ...reviseFrom, ...facts, next: afterNoReview };
 }
 
 /**
@@ -536,10 +577,19 @@ export async function updateOps(db: Db, userId: string, proposalId: string, ops:
 }
 
 /** A design proposal's ops and status, as stored (one statement). */
-async function readProposal(db: Db, userId: string, proposalId: string): Promise<{ opsText: string | null; ops: DesignOp[]; status: string | null }> {
+async function readProposal(
+  db: Db,
+  userId: string,
+  proposalId: string,
+  o: { willReplaceOf?: string } = {},
+): Promise<{ opsText: string | null; ops: DesignOp[]; status: string | null; willReplace: WillReplace[] }> {
+  // With `willReplaceOf` (a run's id), what that run's ops would replace once suggested, in the same statement.
+  const replaces = o.willReplaceOf
+    ? sql`CASE WHEN json_valid(cp.ops) THEN ${willReplaceSql(userId, proposalId, sql`cp.ops`, o.willReplaceOf)} END`
+    : sql`NULL`;
   const rows = (await db.all(sql`
-    SELECT ops, status FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
-  `)) as Array<{ ops: string | null; status: string }>;
+    SELECT cp.ops AS ops, cp.status AS status, ${replaces} AS willReplace FROM coach_proposals cp WHERE cp.id = ${proposalId} AND cp.user_id = ${userId}
+  `)) as Array<{ ops: string | null; status: string; willReplace: unknown }>;
   const row = rows[0];
   let ops: DesignOp[] = [];
   try {
@@ -548,7 +598,7 @@ async function readProposal(db: Db, userId: string, proposalId: string): Promise
   } catch {
     ops = [];
   }
-  return { opsText: row?.ops ?? null, ops, status: row?.status ?? null };
+  return { opsText: row?.ops ?? null, ops, status: row?.status ?? null, willReplace: willReplaceOf(row?.willReplace ?? null) };
 }
 
 // ── The designer resumed ────────────────────────────────────────────────────────────────────────────────────────────
@@ -583,7 +633,7 @@ export async function resumeAfterReview(
 ): Promise<{ result: ToolOk; lines: string[] }> {
   const asOf = o.now.toISOString();
   const provenance = { source: "the independent reviewer's review of this draft", asOf };
-  const { ops, opsText, status } = await readProposal(db, userId, o.proposalId);
+  const { ops, opsText, status, willReplace } = await readProposal(db, userId, o.proposalId, { willReplaceOf: o.designerRunId });
   let op = ofRun(ops, o.designerRunId);
   const entry = op?.reviewLog?.find((r) => r.toolUseId === o.toolUseId);
   if (!op || !entry) {
@@ -602,7 +652,7 @@ export async function resumeAfterReview(
       dropped = settled.dropped;
     }
   }
-  const data = designerResult(op, o.toolUseId, unavailableWhy(o.reviewerError)) ?? { review: null, note: NOTE_NOT_DONE };
+  const data = designerResult(op, o.toolUseId, unavailableWhy(o.reviewerError), { willReplace }) ?? { review: null, note: NOTE_NOT_DONE };
   return { result: { data, provenance }, lines: dropped ? [DROPPED_LINE] : keptLines(op, o.toolUseId) };
 }
 

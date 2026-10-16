@@ -48,6 +48,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { addDays, dayLabel, daysBetween } from "@rg/domain";
 import type { Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
+import { covers, openOp, SAME_SESSION_MINUTES } from "./design-cover.js";
 import { SET_MAX_WORKOUTS } from "./design-limits.js";
 import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, PROMOTED_STATUS, proposalFields, reviewRunning, withLines, writePromoted } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
@@ -585,8 +586,8 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
 /** Why an older plan's workout gives way, in plain words (its op's outcome). */
 export const SUPERSEDED_REASON = "a newer plan covers this session";
 
-/** How far apart two sessions on one day start before they are two sessions, not one (minutes). */
-export const SAME_SESSION_MINUTES = 180;
+/** How far apart two sessions on one day start before they are two sessions, not one (minutes; design-cover.ts). */
+export { SAME_SESSION_MINUTES };
 
 /**
  * A design proposal just made pending (`proposalId`; a finish, or a stop with what it has): every OLDER designed
@@ -610,22 +611,12 @@ export const SAME_SESSION_MINUTES = 180;
  * Answers how many proposals it changed.
  */
 export async function supersedeOlderPlans(db: Db, userId: string, proposalId: string, at: string): Promise<number> {
-  const minutes = (time: SQL) => sql`(cast(substr(${time}, 1, 2) AS integer) * 60 + cast(substr(${time}, 4, 2) AS integer))`;
-  /** The planned workout a designed op is about: a revision's, or a change's (Task 8b); none for a new workout. */
-  const workoutOf = (value: SQL) => sql`(CASE json_extract(${value}, '$.kind')
-    WHEN 'plan_adjust' THEN json_extract(${value}, '$.op.workoutId')
-    WHEN 'doc_workout' THEN CASE WHEN json_extract(${value}, '$.target.kind') = 'revise' THEN json_extract(${value}, '$.target.workoutId') END END)`;
-  /** An op this supersedes: a designed one, still open, for a session one of the new proposal's covers. */
-  const covered = (value: SQL) => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust')
-    AND coalesce(json_extract(${value}, '$.outcome.status'), 'open') IN ('open', 'refused')
+  /** An op this supersedes: a designed one, still open, for a session one of the new proposal's covers (design-cover.ts,
+   * the rule a designer's `willReplace` reads before). */
+  const covered = (value: SQL) => sql`(${openOp(value)}
     AND EXISTS (SELECT 1 FROM coach_proposals np, json_each(np.ops) n
       WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending' AND json_valid(np.ops)
-        AND ((${workoutOf(value)} IS NOT NULL AND ${workoutOf(value)} = ${workoutOf(sql`n.value`)})
-          OR (json_extract(${value}, '$.kind') = 'doc_workout' AND json_extract(n.value, '$.kind') = 'doc_workout'
-              AND json_extract(${value}, '$.target.kind') = 'new' AND json_extract(n.value, '$.target.kind') = 'new'
-              AND json_extract(n.value, '$.date') = json_extract(${value}, '$.date')
-              AND (json_extract(${value}, '$.time') IS NULL OR json_extract(n.value, '$.time') IS NULL
-                OR abs(${minutes(sql`json_extract(${value}, '$.time')`)} - ${minutes(sql`json_extract(n.value, '$.time')`)}) <= ${SAME_SESSION_MINUTES})))))`;
+        AND ${covers(sql`n.value`, value)}))`;
   const outcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${SUPERSEDED_REASON}, 'by', ${proposalId})`;
   // Each designed op's outcome once this is written — the changes' too: the proposal's status follows both kinds.
   const after = sql`(SELECT CASE WHEN ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st

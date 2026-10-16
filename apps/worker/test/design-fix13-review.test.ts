@@ -20,10 +20,12 @@ import { promoteSetWithWhatItHas } from "../src/services/design-orchestrate.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import {
   acceptedLine,
+  designerResult,
   markedReview,
   meanScore,
   parseReview,
   promoteWithWhatItHas,
+  resumeAfterReview,
   REVIEW_ITEM_MAX,
   REVIEW_NOTE_MAX,
   reviewLine,
@@ -281,8 +283,84 @@ describe("a cost the athlete chose (13c R15, 13b I8)", () => {
     expect(schema.properties.accepted.items.properties.dimension.enum).toEqual(DIMS.filter((d) => d !== "condition_safety"));
   });
 
-  it("its line is written to the athlete: '<Label> — kept as you asked: <why>', in their words", () => {
+  it("its line is written to the athlete: '<Label> — kept as you asked: <why>', in the athlete's words", () => {
     expect(acceptedLine({ dimension: "recovery", why: "heavier legs for the athlete's long run" })).toBe("Recovery — kept as you asked: heavier legs for your long run");
     expect(acceptedLine({ dimension: "fit", why: "the full gobletSquat set you asked for" })).toBe("Fits your time and place — kept as you asked: the full Goblet squat set you asked for");
+  });
+});
+
+// ── §2.5: what the designer is told after a review ──────────────────────
+
+describe("what the designer is told after a review (§2.5; 13a A3, 13b I5, 13c R2)", () => {
+  const MODE_LIMITS = { path: "parts.0", code: "mode_limits", message: "A Recover day doesn't use straight sets.", fix: "Hold each move instead." };
+  /** An op holding one reviewed draft (`u1`), with the validator's notes and derived fields. */
+  function held(review: ReturnType<typeof verdict>, o: { issues?: unknown[]; roundsUsed?: number } = {}): DocWorkoutOp {
+    const used = o.roundsUsed ?? 1;
+    const log = Array.from({ length: used }, (_, i) => ({ round: i + 1, toolUseId: `u${i + 1}`, reviewRunId: `rv-${i + 1}`, status: "reviewed", review, mean: meanScore(review), kept: i + 1 === used }));
+    return {
+      ...reviewedOp("run-x", "Calm hips", TODAY),
+      toolUseId: `u${used}`,
+      review: { ...review, rounds: used, changes: [] },
+      issues: o.issues ?? [],
+      derived: { minutes: 31, mode: "recover", category: "mobility", balance: { holdSec: 600 } },
+      reviewLog: log,
+    } as DocWorkoutOp;
+  }
+
+  it("carries the draft's minutes and effort mode and its open validator notes — code, path, message, fix", () => {
+    const r = designerResult(held(verdict(4), { issues: [MODE_LIMITS] }), "u1")!;
+    expect(r.derived).toEqual({ minutes: 31, mode: "recover" });
+    expect(r.issues).toEqual([MODE_LIMITS]);
+  });
+
+  it("must-fix → revise; an improvement or a fixable note → amend (text only, no new review), then finish; nothing → finish", () => {
+    expect(designerResult(held(verdict(4, { mustFix: ["Shorter rests."] })), "u1")!.next).toBe(
+      "Revise against the must-fix items and call propose_workout again with a changeNote.",
+    );
+    const improved = designerResult(held(verdict(4, { improvements: ["The why says Monday: the day is Tuesday."] })), "u1")!.next as string;
+    expect(improved).toContain("propose_workout({ amend: true, changeNote })");
+    expect(improved).toContain("text only, no new review");
+    expect(improved).toMatch(/then call finish\.$/);
+    const noted = designerResult(held(verdict(4), { issues: [MODE_LIMITS] }), "u1")!.next as string;
+    expect(noted).toContain("amend: true");
+    expect(noted).toContain("a full revision instead, its code in changeNote");
+    expect(designerResult(held(verdict(4)), "u1")!.next).toBe("Nothing must change: call finish.");
+    // No rounds left: a text fix is still an amend (it uses none), never a full revision.
+    const last = designerResult(held(verdict(4), { issues: [MODE_LIMITS], roundsUsed: 3 }), "u3")!.next as string;
+    expect(last).toContain("amend: true");
+    expect(last).not.toContain("full revision");
+  });
+
+  it("says which open suggestions this one would replace, by the supersede's own rule — on the step's one read", async () => {
+    const a = await athlete();
+    const older = (id: string, ops: unknown[], at: string) =>
+      db.insert(schema.coachProposals).values({ id, userId: a.userId, title: "Older", evidence: "", rationale: "", flags: [], ops, status: "pending", createdAt: at, expiresAt: TODAY });
+    const newOp = (title: string, time: string | null, runId = "other") => ({
+      ...reviewedOp(runId, title, TODAY),
+      ...(time ? { time, target: { kind: "new", date: TODAY, time } } : {}),
+      toolUseId: `t-${title}`,
+    });
+    const before = new Date(NOW.getTime() - 3_600_000).toISOString();
+    // 175 minutes before 14:00 is the same session; 185 is another; another day, or decided, is never replaced.
+    await older(`old-a-${a.userId}`, [newOp("Near", "11:05"), newOp("Far", "10:55")], before);
+    await older(`old-b-${a.userId}`, [{ ...newOp("Decided", "13:30"), outcome: { status: "declined", at: before } }, { ...newOp("Tomorrow", "14:00"), date: day(-1), target: { kind: "new", date: day(-1), time: "14:00" } }], before);
+    const id = `dp-mine-${a.userId}`;
+    const mine = { ...newOp("Mine", "14:00", "run-me"), toolUseId: "u1", reviewLog: [{ round: 1, toolUseId: "u1", reviewRunId: "rv-1", status: "reviewed", review: verdict(4), mean: 4, kept: true }] };
+    await db.insert(schema.coachProposals).values({ id, userId: a.userId, title: "Mine", evidence: "", rationale: "", flags: [], ops: [mine], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: TODAY });
+    const out = await resumeAfterReview(db, a.userId, { proposalId: id, designerRunId: "run-me", toolUseId: "u1", reviewerError: null, now: NOW });
+    expect(out.result.data).toMatchObject({ willReplace: [{ title: { untrusted: true, text: "Near" }, date: TODAY, time: "11:05" }] });
+  });
+
+  it("the resume reads once: the proposal and what it would replace, in one statement", async () => {
+    let statements = 0;
+    const counted = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
+    const b = await seedRichAthlete(counted);
+    const id = `dp-one-${b.userId}`;
+    const mine = { ...reviewedOp("run-one", "Mine", TODAY), toolUseId: "u1" };
+    await counted.insert(schema.coachProposals).values({ id, userId: b.userId, title: "Mine", evidence: "", rationale: "", flags: [], ops: [mine], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: TODAY });
+    statements = 0;
+    const out = await resumeAfterReview(counted, b.userId, { proposalId: id, designerRunId: "run-one", toolUseId: `toolu-run-one`, reviewerError: null, now: NOW });
+    expect(out.result.data).toMatchObject({ willReplace: [] });
+    expect(statements).toBe(1);
   });
 });
