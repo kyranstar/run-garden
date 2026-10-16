@@ -1294,10 +1294,22 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
   });
 
   it("A6: the plan's long, quality and race runs are hard days beside the set's own, named; each workout says its day (fix wave 13)", async () => {
-    // The fixture's plan holds a long run in 9 days: a workout that develops the day after it makes a hard pair.
-    const main = await run({ scope: { kind: "next_n", n: 3 } });
-    const one = await run({ role: "designer", parentId: main.id, scope: { kind: "next_n", n: 3 } });
-    const two = await run({ role: "designer", parentId: main.id, scope: { kind: "next_n", n: 3 } });
+    // The fixture's plan holds a long run in 9 days: a workout that develops the day after it makes a hard pair. A quality
+    // run the day before the long run is the plan's pair, not the set's; a skipped one the day after the workout is no
+    // hard day at all.
+    const own = await seedRichAthlete(db);
+    const planRun = async (date: string, category: string, state: string) => {
+      const id = newId();
+      await db.insert(schema.plannedWorkouts).values({
+        id, userId: own.userId, planId: "coros-plan", sourceWorkoutId: id, title: "Run", category, sport: "run", originalPlanDate: date, lastVerifiedCorosDate: date,
+        effectiveDate: date, effectiveTime: "07:00", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, completionState: state, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+      });
+    };
+    await planRun(day(-8), "quality", "scheduled");
+    await planRun(day(-11), "quality", "skipped");
+    const main = await run({ userId: own.userId, scope: { kind: "next_n", n: 3 } });
+    const one = await run({ userId: own.userId, role: "designer", parentId: main.id, scope: { kind: "next_n", n: 3 } });
+    const two = await run({ userId: own.userId, role: "designer", parentId: main.id, scope: { kind: "next_n", n: 3 } });
     const hard = { ...calmDoc({ title: "Legs, the day after" }), intent: { ...calmDoc().intent, effort: "develop" } };
     ok((await call("propose_workout", ctxOf(one), { doc: hard, target: { kind: "new", date: day(-10) } })).result);
     const d = data((await call("read_set", ctxOf(two), {})).result);
