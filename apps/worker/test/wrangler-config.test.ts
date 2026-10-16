@@ -22,6 +22,12 @@ describe("wrangler staging env", () => {
     expect(production.match(/^\s*WATCH_PUSH_ENABLED\s*=.*$/gm)).toEqual(['WATCH_PUSH_ENABLED = "1"']);
     expect(staging).not.toMatch(/^\s*WATCH_PUSH_ENABLED\s*=/m);
   });
+  it("production is never fixture mode, and never names a stand-in model (Task 9: the scripted designer is a fixture-stack seam)", () => {
+    const production = toml.slice(0, toml.indexOf("[env.staging]"));
+    expect(production.match(/^\s*FIXTURE_MODE\s*=.*$/gm)).toEqual(['FIXTURE_MODE = "0"']);
+    expect(toml).not.toMatch(/^\s*FIXTURE_MODEL_URL\s*=/m);
+    expect(toml).not.toMatch(/^\s*AI_DESIGN_MODEL\s*=\s*"scripted:/m);
+  });
   it("has its own database", () => {
     expect(staging).toContain('database_name = "run-garden-db-staging"');
     expect(staging).not.toContain("00acb208-8450-4bc0-88da-6b1e75f76280");

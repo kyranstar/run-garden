@@ -11,6 +11,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
+import { addDays, todayInZone } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -49,10 +50,14 @@ let db: Db;
 let userId: string;
 let cookie: string;
 let statements = 0;
+/** The athlete's today, by their own zone (the proposals' days are relative to it: no date here goes stale). */
+let today: string;
 
 beforeEach(async () => {
   db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
-  ({ userId } = await makeTestUser(db));
+  let prefs;
+  ({ userId, prefs } = await makeTestUser(db));
+  today = todayInZone(prefs.timezone);
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
 });
 
@@ -102,13 +107,22 @@ async function run(o: {
   return id;
 }
 
-/** The run's design proposal, with ops each undecided (`null`) or with an outcome's status. */
-async function proposal(runId: string, status: string, outcomes: Array<string | null>, flags: string[] = []): Promise<string> {
+/**
+ * The run's design proposal, with ops each undecided (`null`) or with an outcome's status, each dated `dates[i]`
+ * (default: tomorrow in the athlete's zone), the proposal expiring on `expiresAt` (default: four days on).
+ */
+async function proposal(
+  runId: string,
+  status: string,
+  outcomes: Array<string | null>,
+  flags: string[] = [],
+  o: { dates?: string[]; expiresAt?: string } = {},
+): Promise<string> {
   const id = designProposalId(runId);
-  const ops = outcomes.map((o, i) => ({
+  const ops = outcomes.map((o2, i) => ({ o2, date: o.dates?.[i] ?? addDays(today, 1) })).map(({ o2: o, date }, i) => ({
     kind: "doc_workout",
-    target: { kind: "new", date: "2026-10-16" },
-    date: "2026-10-16",
+    target: { kind: "new", date },
+    date,
     doc: { title: `Workout ${i + 1}` },
     review: null,
     issues: [],
@@ -128,7 +142,7 @@ async function proposal(runId: string, status: string, outcomes: Array<string | 
     ops,
     status,
     createdAt: stamp(),
-    expiresAt: "2026-10-20",
+    expiresAt: o.expiresAt ?? addDays(today, 4),
   });
   return id;
 }
@@ -193,6 +207,29 @@ describe("GET /api/coach/runs/current", () => {
     await db.delete(schema.coachProposals);
     await proposal(partly, "partially_approved", ["applied", "applying"]);
     expect((await current()).body.run.id).toBe(partly);
+  });
+
+  it("an op dated before the athlete's today is no longer theirs to decide; one dated today or later still is", async () => {
+    const r = await run({ status: "finished" });
+    await proposal(r, "pending", [null], [], { dates: [addDays(today, -1)] });
+    expect((await current()).body).toEqual({ run: null });
+    await db.delete(schema.coachProposals);
+    await proposal(r, "pending", [null, null], [], { dates: [addDays(today, -1), today] });
+    expect((await current()).body.run.id).toBe(r);
+  });
+
+  it("a pending proposal whose day has passed, not yet swept, is not open", async () => {
+    const r = await run({ status: "finished" });
+    await proposal(r, "pending", [null], [], { dates: [today], expiresAt: addDays(today, -1) });
+    expect((await current()).body).toEqual({ run: null });
+  });
+
+  it("a live run whose suggestion has only past days answers no proposal", async () => {
+    const live = await run({ status: "active" });
+    await proposal(live, "pending", [null], [], { dates: [addDays(today, -2)] });
+    const res = await current();
+    expect(res.body.run.id).toBe(live);
+    expect(res.body.proposal).toBeNull();
   });
 
   it("an expired, declined, superseded or cancelled proposal is not open", async () => {

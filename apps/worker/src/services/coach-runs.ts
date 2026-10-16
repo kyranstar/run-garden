@@ -1,6 +1,15 @@
 import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
-import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage } from "@rg/database";
-import { ceilingKindOf, COACH_CEILING_DEFAULTS_USD, coachSettings, newId, todayInZone, type CoachPreferences } from "@rg/domain";
+import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage, userPreferences } from "@rg/database";
+import {
+  ceilingKindOf,
+  COACH_CEILING_DEFAULTS_USD,
+  coachSettings,
+  newId,
+  todayInZone,
+  userPreferencesSchema,
+  type CoachPreferences,
+  type UserPreferences,
+} from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
@@ -1084,27 +1093,56 @@ const OPEN_OP = sql.raw(
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))))`,
 );
 const LIVE_ROOT = sql.raw(`r.status IN (${LIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`);
+/** The days of the joined proposal's ops still open (`OPEN_OP`'s), as a JSON array: the pick keeps those from today on. */
+const OPEN_DAYS = sql.raw(
+  `(SELECT json_group_array(json_extract(o.value, '$.date')) FROM json_each(CASE WHEN p.status IN ('pending', 'partially_approved') AND json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust') ` +
+    `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying')))`,
+);
+
+/** The runs the pick weighs: the live one first, then the newest over with an op open by its status. A suggestion behind
+ * ten newer ones isn't shown. */
+export const CURRENT_RUN_CANDIDATES = 10;
 
 /**
  * The run the Studio shows when it opens (Task 9): the athlete's newest live main run; else the newest main run that is
- * over whose design proposal still has an op to decide (pending, or partially approved with an op undecided or refused —
- * Task 8); else null. Never a rehearsal's (its lane is its own: fix wave 3A, A15), never a sub-run. With its last
- * CURRENT_RUN_EVENTS events, oldest first, and the proposal it holds open. CURRENT_RUN_STATEMENTS: the pick — one
- * statement, the proposal read with it — then the tree and the events; the pick alone when there is none.
+ * over whose design proposal still has an op to decide — pending, or partially approved with an op undecided, refused
+ * (Task 8) or being applied (8b) — dated today or later in the athlete's zone, the proposal not past its own day (a
+ * proposal the sweep hasn't expired yet is not shown as open: fix round, M8); else null. Never a rehearsal's (its lane is
+ * its own: fix wave 3A, A15), never a sub-run. With its last CURRENT_RUN_EVENTS events, oldest first, and the proposal
+ * it holds open. CURRENT_RUN_STATEMENTS: the pick — one statement, the proposals and the athlete's preferences (their
+ * timezone: their today) read with it — then the tree and the events; the pick alone when there is none.
  */
 export async function currentRun(
   db: Db,
   userId: string,
+  now: Date = new Date(),
 ): Promise<{ run: CoachRunDto; events: CoachRunEventDto[]; proposal: OpenProposalDto | null } | null> {
-  const [pick] = (await db.all(sql`
-    SELECT r.id AS id, p.id AS proposalId, p.status AS proposalStatus, p.flags AS flags, CASE WHEN ${OPEN_OP} THEN 1 ELSE 0 END AS open
+  const candidates = (await db.all(sql`
+    SELECT r.id AS id, CASE WHEN ${LIVE_ROOT} THEN 1 ELSE 0 END AS live, p.id AS proposalId, p.status AS proposalStatus,
+      p.flags AS flags, p.expires_at AS expiresAt, ${OPEN_DAYS} AS openDays,
+      (SELECT ${userPreferences.prefs} FROM ${userPreferences} WHERE ${userPreferences.userId} = ${userId}) AS prefs
     FROM coach_runs r LEFT JOIN coach_proposals p ON p.id = ${designProposalId("")} || r.id AND p.user_id = r.user_id
     WHERE r.user_id = ${userId} AND r.parent_id IS NULL AND r.role = 'main'
       AND coalesce(CASE WHEN json_valid(r.state) THEN json_extract(r.state, '$.settings.rehearsal') END, 0) = 0
       AND (${LIVE_ROOT} OR ${OPEN_OP})
     ORDER BY CASE WHEN ${LIVE_ROOT} THEN 1 ELSE 0 END DESC, r.created_at DESC, r.id DESC
-    LIMIT 1
-  `)) as Array<{ id: string; proposalId: string | null; proposalStatus: string | null; flags: string | null; open: number }>;
+    LIMIT ${CURRENT_RUN_CANDIDATES}
+  `)) as Array<{
+    id: string;
+    live: number;
+    proposalId: string | null;
+    proposalStatus: string | null;
+    flags: string | null;
+    expiresAt: string | null;
+    openDays: string | null;
+    prefs: string | null;
+  }>;
+  const today = localDate(preferencesOf(candidates[0]?.prefs ?? null).timezone, now);
+  /** The proposal still has an op the athlete can decide, today or later, and is not past its own day. */
+  const openToday = (c: (typeof candidates)[number]): boolean =>
+    !!c.proposalId && (c.expiresAt ?? "") >= today && stringsOf(c.openDays).some((d) => d >= today);
+  const pick = candidates.find((c) => Number(c.live) === 1) ?? candidates.find(openToday);
   if (!pick) return null;
   const { root, nodes } = await loadTree(db, userId, pick.id);
   if (!root) return null;
@@ -1118,19 +1156,26 @@ export async function currentRun(
     .map((r) => ({ seq: r.seq, kind: r.kind as RunEventKind, summary: r.summary, payload: r.payload ?? null, at: r.at }))
     .sort((a, b) => a.seq - b.seq);
   const proposal =
-    Number(pick.open) === 1 && pick.proposalId && pick.proposalStatus
-      ? { id: pick.proposalId, status: pick.proposalStatus, flags: flagsOf(pick.flags) }
-      : null;
+    openToday(pick) && pick.proposalId && pick.proposalStatus ? { id: pick.proposalId, status: pick.proposalStatus, flags: stringsOf(pick.flags) } : null;
   return { run: runDto(root, nodes), events, proposal };
 }
 
-/** A proposal's flags as stored (JSON text): its strings, in order. */
-function flagsOf(text: string | null): string[] {
+/** A JSON array's strings, in order (a proposal's flags, its open ops' days); none when it isn't one. */
+function stringsOf(text: string | null): string[] {
   try {
     const parsed: unknown = text ? JSON.parse(text) : [];
     return Array.isArray(parsed) ? parsed.filter((f): f is string => typeof f === "string") : [];
   } catch {
     return [];
+  }
+}
+
+/** The athlete's preferences as stored (JSON text), read as `loadPreferences` reads them: their defaults when unreadable. */
+function preferencesOf(text: string | null): UserPreferences {
+  try {
+    return userPreferencesSchema.parse(text ? JSON.parse(text) : {});
+  } catch {
+    return userPreferencesSchema.parse({});
   }
 }
 
@@ -1445,7 +1490,7 @@ const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 /** The loop's own lines. A stop's line says only that the coach stopped, and why; what it proposed — or that it
  * proposed nothing — is the line after it (`proposed` / `nothingProposed`), written once the proposal is settled. */
 export const LINES = {
-  context: "Read the request and what the coach needs to start.",
+  context: "Read your request and today's plan.",
   weeklyCap: "The weekly AI budget is used up — the coach stopped here.",
   stepCap: "This design reached its step limit — the coach stopped.",
   stateCap: "This design grew too long to continue — the coach stopped.",
@@ -1703,7 +1748,10 @@ async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: str
 
 /** The line after a stop's — or a finish in words' — own: `line` (what was proposed), or that nothing was. */
 function proposedLine(root: RunNode, proposed: boolean, line: string): NewEvent {
-  return proposed ? { kind: "note", summary: line, payload: { proposalId: designProposalId(root.id) } } : { kind: "note", summary: LINES.nothingProposed };
+  // Nothing proposed is an outcome, not a step done: the run view marks it so (`proposed: false`; Task 9 fix round).
+  return proposed
+    ? { kind: "note", summary: line, payload: { proposalId: designProposalId(root.id) } }
+    : { kind: "note", summary: LINES.nothingProposed, payload: { proposed: false } };
 }
 
 function nextDueOf(nodes: RunNode[], root: RunNode, at: string): StepResult["nextDue"] {
