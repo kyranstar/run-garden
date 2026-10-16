@@ -125,6 +125,17 @@ export function dayLabel(iso: string): string {
   return `${WEEKDAYS[isoWeekday(iso) - 1]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 }
 
+/** "Fri 16 – Thu 22 Oct" — a span of days in `dayLabel`'s words, its month said once when it doesn't change ("Fri 30
+ * Oct – Thu 5 Nov" when it does); one day is that day. The coach designer's lines name a span this way (fix wave 3B,
+ * B-I3): never as ISO dates. */
+export function dayRangeLabel(from: string, to: string): string {
+  if (from === to) return dayLabel(from);
+  const a = dayLabel(from);
+  const b = dayLabel(to);
+  const sameMonth = a !== from && b !== to && from.slice(0, 7) === to.slice(0, 7);
+  return `${sameMonth ? a.slice(0, a.lastIndexOf(" ")) : a} – ${b}`;
+}
+
 function sessionSummary(s: CoachSession): string {
   return `${s.title} · ${s.durationMinutes} min`;
 }

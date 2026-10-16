@@ -1499,7 +1499,7 @@ export const LINES = {
   rejected: "The AI service refused the request — the coach stopped here.",
   retrying: "The AI service didn't answer — trying again shortly.",
   retries: `The AI service didn't answer after ${MAX_RETRIES} tries — the coach stopped here.`,
-  refusal: "The model declined to design this — the coach stopped.",
+  refusal: "The AI declined to design this — the coach stopped.",
   internal: "Something went wrong inside the coach — this design stopped.",
   badState: "This design's saved state can't be read — the coach stopped.",
   keptStopping: "The coach kept stopping partway through; it's been stopped.",
@@ -1508,20 +1508,33 @@ export const LINES = {
   expiredSet: "This design was left open for a day — it stopped. Start a new one when you're ready.",
   /** A run for a day that has passed, whose workouts for later days are proposed: one line, never `expiredDay` and a
    * line contradicting it (round 2, A-M7). */
-  expiredDayLater: "The day this was designed for has passed. The workouts for later days are proposed.",
-  proposed: "Proposed what had been reviewed before the stop.",
+  expiredDayLater: "The day this was designed for has passed. The workouts for later days are suggested.",
+  proposed: "Suggested what had been reviewed before the stop.",
   /** A main run that ended in words with its proposal kept back by the finish's guard: it ended, it didn't stop
    * (round 2, A-M7). */
-  proposedAtEnd: "Proposed what had been reviewed.",
-  nothingProposed: "Nothing was proposed.",
+  proposedAtEnd: "Suggested what had been reviewed.",
+  nothingProposed: "Nothing was suggested.",
 } as const;
 
-/** The reviewer's own lines on the trail. */
-const REVIEWER_LINES = {
+/** The reviewer's own lines on the trail — in the athlete's words, as every line is (fix wave 3B, B-I3). */
+export const REVIEWER_LINES = {
   context: "Reviewing the draft.",
-  stepCap: "The review reached its step limit — the validator's view stands.",
-  unreadable: "The review couldn't be read — the validator's view stands.",
+  stepCap: "The review reached its step limit — the app's own checks stand.",
+  unreadable: "The review couldn't be read — the app's own checks stand.",
 } as const;
+
+/**
+ * A refused tool call on the trail (fix wave 3B, B-I4): no alarm, no machinery — the coach adjusted its draft. A quiet
+ * note; the refusal itself (its code, why and fix: what the model was told) rides in the payload, one tap down.
+ */
+export const ADJUSTED_LINE = "Adjusted the draft.";
+function refusedLine(tool: string, refusal: ToolErr, input?: unknown): NewEvent {
+  return {
+    kind: "note",
+    summary: ADJUSTED_LINE,
+    payload: { tool, ...(input === undefined ? {} : { input: bounded(input, 1_500) }), ok: false, error: refusal.error, refusal: { error: refusal.error, why: refusal.why, fix: refusal.fix } },
+  };
+}
 
 /** A reviewer that answered in words instead of calling submit_review: its one repair. */
 export const REVIEW_NUDGE =
@@ -1774,12 +1787,12 @@ const DESIGN_STOP_LINES = new Set<string>([
 /**
  * A reviewer that ends is not the design stopping: whenever a reviewer's run ends other than by a whole-tree stop (a
  * spending limit, no credits, no key) or with a line of its own (an unreadable review, its step cap), any line saying
- * the design stopped becomes "The reviewer couldn't finish: <why>." — its draft goes back to its designer, who goes on.
+ * the design stopped becomes "The review couldn't finish: <why>." — its draft goes back to its designer, who goes on.
  */
 function reviewerLines(due: RunNode, end: StepEnd): NewEvent[] {
   const ownLine = ["run_ceiling", "weekly_cap", OUT_OF_CREDITS_REASON, "no_key", "review_unreadable", "step_cap"];
   if (due.role !== "reviewer" || isLive(end.status) || end.status === "finished" || ownLine.includes(end.error ?? "")) return end.events;
-  return end.events.map((e) => (DESIGN_STOP_LINES.has(e.summary) ? { ...e, summary: `The reviewer couldn't finish: ${unavailableWhy(end.error)}.` } : e));
+  return end.events.map((e) => (DESIGN_STOP_LINES.has(e.summary) ? { ...e, summary: `The review couldn't finish: ${unavailableWhy(end.error)}.` } : e));
 }
 
 /**
@@ -2301,7 +2314,7 @@ async function runTools(
       state.awaitingAt = state.results.length;
       for (const queued of state.pending) {
         state.results.push(errorResult(queued.id, REVIEW_FIRST));
-        events.push({ kind: "tool_result", summary: `Couldn't use ${label(queued.name)}: ${REVIEW_FIRST.why}`, payload: { tool: queued.name, ok: false, error: REVIEW_FIRST.error } });
+        events.push(refusedLine(queued.name, REVIEW_FIRST));
       }
       state.pending = [];
       return { status: "waiting_review", events, proposalId: null };
@@ -2323,7 +2336,7 @@ async function runTools(
       state.awaitingAt = state.results.length;
       for (const queued of state.pending) {
         state.results.push(errorResult(queued.id, SET_FIRST));
-        events.push({ kind: "tool_result", summary: `Couldn't use ${label(queued.name)}: ${SET_FIRST.why}`, payload: { tool: queued.name, ok: false, error: SET_FIRST.error } });
+        events.push(refusedLine(queued.name, SET_FIRST));
       }
       state.pending = [];
       return { status: "waiting_set", events, proposalId: null };
@@ -2342,16 +2355,15 @@ async function runTools(
       return { status: "finished", events, proposalId };
     }
     state.results.push(ok ? okResult(call.id, result) : errorResult(call.id, result));
-    events.push({
-      kind: "tool_result",
-      summary: ok ? (result.summary ?? `Used ${label(call.name)}`) : `Couldn't use ${label(call.name)}: ${result.why}`,
-      payload: {
-        tool: call.name,
-        input: bounded(call.input, 1_500),
-        ok,
-        ...(ok ? { provenance: result.provenance, missing: result.missing, ...(result.receipt ? { receipt: result.receipt } : {}) } : { error: result.error }),
-      },
-    });
+    events.push(
+      ok
+        ? {
+            kind: "tool_result",
+            summary: result.summary ?? `Used ${label(call.name)}`,
+            payload: { tool: call.name, input: bounded(call.input, 1_500), ok, provenance: result.provenance, missing: result.missing, ...(result.receipt ? { receipt: result.receipt } : {}) },
+          }
+        : refusedLine(call.name, result, call.input),
+    );
     if (!ok && run.role === "reviewer" && result.error === "invalid_review") {
       // A review that can't be read gets one repair (this error, with what was wrong); a second ends the reviewer, and
       // its designer goes on with the validator's view.

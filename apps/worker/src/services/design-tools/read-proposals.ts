@@ -167,7 +167,7 @@ export const readProposals: DesignTool = {
       },
       cursorOf: (r) => encodeCursor([String(r.createdAt), String(r.id)]),
       data: (proposals) => ({ proposals }),
-      summary: (shown) => (rows.length ? `Read ${plural(shown, "past proposal")}` : "No past proposals"),
+      summary: (shown) => (rows.length ? `Read ${plural(shown, "past suggestion")}` : "No past suggestions"),
     });
   },
 };

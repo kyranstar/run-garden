@@ -497,7 +497,7 @@ describe("edit before approve", () => {
     expect(op.doc).toEqual(original);
     // Only that op: the other is still the athlete's to decide.
     expect((await opOf(id, opIds[1]!)).outcome).toBeUndefined();
-    expect((await receipts()).map((r) => r.body)).toEqual([expect.stringMatching(/Friday hips, shorter \(edited\) · \d+ min$/)]);
+    expect((await receipts()).map((r) => r.body)).toEqual([expect.stringMatching(/Friday hips, shorter \(your version\) · \d+ min$/)]);
   });
 
   it("a draft saved unchanged is approved as the coach's, not marked edited; a new workout's day and time may be the athlete's", async () => {
@@ -806,8 +806,8 @@ describe("what was written, after Edit before approve", () => {
     const theirs = rest.applied[0]!.workout;
     const p = (await proposalOf(id))!;
     expect((await receipts()).map((r) => r.body)).toEqual([
-      `✓ approved — ${p.title} (1 of 2): Sun 17 May · Sunday hips, mine (edited) · ${mine.minutes} min`,
-      `✓ approved — ${p.title}: Sun 17 May · Sunday hips, mine (edited) · ${mine.minutes} min; Sat 16 May · Saturday · ${theirs.minutes} min`,
+      `✓ approved — ${p.title} (1 of 2): Sun 17 May · Sunday hips, mine (your version) · ${mine.minutes} min`,
+      `✓ approved — ${p.title}: Sun 17 May · Sunday hips, mine (your version) · ${mine.minutes} min; Sat 16 May · Saturday · ${theirs.minutes} min`,
     ]);
     // The line keeps the coach's proposal, and says what was written beside it.
     const [line] = docWorkoutLines(p.ops, await placeNamer(db, rich.userId), { now: NOW, prefs });

@@ -311,7 +311,7 @@ describe("the opening message: today", () => {
   it("states the scope and its limits", async () => {
     expect((await build({ scope: { kind: "now" } })).header).toMatch(/Scope: one workout, to start now/);
     expect((await build({ scope: { kind: "later_today" } })).header).toMatch(/Scope: one workout, later today/);
-    expect((await build({ scope: { kind: "week" } })).header).toMatch(/Scope: this week/);
+    expect((await build({ scope: { kind: "week" } })).header).toMatch(/Scope: the next 7 days/);
     expect((await build({ scope: { kind: "next_n", n: 3 } })).header).toMatch(/Scope: the next 3 workouts/);
     expect((await build({ scope: { kind: "next_n", n: 4 } })).header).toMatch(/Scope: the next 4 workouts/);
     // The coach_runs column's own text works as well as the parsed object, and so does the older "next_n:<n>".
@@ -328,7 +328,7 @@ describe("the opening message: today", () => {
 
   it("says the scope and a missing request in each role's own terms", async () => {
     const designer = await build({ role: "designer", scope: { kind: "week" }, parentId: "run-0", brief: "b", request: null });
-    expect(designer.header).toMatch(/Scope: one workout of this week's set \(2026-03-10 to 2026-03-16\), designed from its brief\./);
+    expect(designer.header).toMatch(/Scope: one workout of a set for the next 7 days \(2026-03-10 to 2026-03-16\), designed from its brief\./);
     expect(designer.header).toContain("The athlete gave no request: the brief is the request.");
     const nextN = await build({ role: "designer", scope: { kind: "next_n", n: 3 }, parentId: "run-0", brief: "b" });
     expect(nextN.header).toMatch(/Scope: one workout of a set of the next 3 workouts, designed from its brief\./);

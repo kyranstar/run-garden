@@ -116,7 +116,7 @@ export const recallMemory: DesignTool = {
       },
       cursorOf: (r) => encodeCursor([r.latest, r.id]),
       data: (memories) => ({ memories }),
-      summary: (shown) => (shown ? `Recalled ${plural(shown, "memory", "memories")}${p.query ? " matching the search" : ""}` : "Nothing more remembered"),
+      summary: (shown) => (shown ? `Recalled ${plural(shown, "memory", "memories")}${p.query ? " matching the search" : ""}` : "That's everything the coach remembers."),
     });
   },
 };

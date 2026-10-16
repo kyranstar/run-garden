@@ -7,6 +7,7 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { conditionChecks, performedSessions, plannedWorkouts } from "@rg/database";
+import { dayLabel } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { DesignTool } from "./types.js";
 import { answer, dateField, isErr, localTimeOf, parseInput, READ_ROLES, readAthlete, readTagged, weekdayOf } from "./read-common.js";
@@ -65,7 +66,7 @@ export const readDay: DesignTool = {
       now: ctx.now,
       missing,
       data,
-      summary: `Read ${isToday ? "today" : date} — ${plan.length} planned, ${done.length} done`,
+      summary: `Read ${isToday ? "today" : dayLabel(date)} — ${plan.length} planned, ${done.length} done`,
     });
   },
 };

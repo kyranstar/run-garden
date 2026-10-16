@@ -725,7 +725,7 @@ describe("propose_workout", () => {
     const over = ok((await call("propose_workout", { ...c, review: capped }, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
     expect(over.control).toBeUndefined();
     expect(over.data).toMatchObject({ review: null, round: 1, roundsLeft: 2 });
-    expect((await proposal(r.id))!.ops[0]!.review).toMatchObject({ rounds: 1, note: expect.stringContaining("the validator's view stands") });
+    expect((await proposal(r.id))!.ops[0]!.review).toMatchObject({ rounds: 1, note: expect.stringContaining("the app's own checks stand") });
 
     // …but one whose reviewer crashed gave no review at all: the round is dropped, the draft stays unreviewed.
     const r2 = await run();
@@ -733,7 +733,7 @@ describe("propose_workout", () => {
     ok((await call("propose_workout", c2, { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
     const crashed: ReviewHooks = { start: async () => false, ended: () => ({ status: "failed", error: "internal" }) };
     const lost = ok((await call("propose_workout", { ...c2, review: crashed }, { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
-    expect(lost.data).toMatchObject({ review: null, unavailable: true, roundsLeft: 3, note: expect.stringContaining("something went wrong in the reviewer") });
+    expect(lost.data).toMatchObject({ review: null, unavailable: true, roundsLeft: 3, note: expect.stringContaining("something went wrong in the review") });
     const op2 = (await proposal(r2.id))!.ops[0]!;
     expect(op2.review).toBeNull();
     expect(op2.reviewLog!.map((x) => x.status)).toEqual(["dropped"]);

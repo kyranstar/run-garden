@@ -45,11 +45,11 @@
  * marked where it reaches another run, never followed.
  */
 import { sql, type SQL } from "drizzle-orm";
-import { addDays, daysBetween } from "@rg/domain";
+import { addDays, dayLabel, daysBetween } from "@rg/domain";
 import type { Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
 import { SET_MAX_WORKOUTS } from "./design-limits.js";
-import { applyDrop, dayWords, meanScore, pastDayLine, PROMOTE_TRIES, proposalFields, reviewRunning } from "./design-review.js";
+import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, proposalFields, reviewRunning } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
@@ -78,15 +78,12 @@ export const designerRunId = (mainRunId: string, toolUseId: string, index: numbe
 /** An op's id: the run that designed it (proposal-kinds.ts, the one definition approve and decline name ops by too). */
 export { opIdOf };
 
-/** "Saturday 16 May" (design-review.ts). */
-export { dayWords };
-
-/** Where a workout goes, in words: "a new workout on Saturday 16 May" / "a revision of the workout w1 (from its
- * revision 2), on Saturday 16 May". */
+/** Where a workout goes, in words: "a new workout on Sat 16 May" / "a revision of the workout w1 (from its revision 2),
+ * on Sat 16 May" — the day as the app names one everywhere (@rg/domain `dayLabel`). */
 export function targetWords(target: DocWorkoutOp["target"], date: string): string {
   return target.kind === "new"
-    ? `a new workout on ${dayWords(date)}${target.time ? ` at ${target.time}` : ""}`
-    : `a revision of the workout ${target.workoutId} (from its revision ${target.baseRev}), on ${dayWords(date)}`;
+    ? `a new workout on ${dayLabel(date)}${target.time ? ` at ${target.time}` : ""}`
+    : `a revision of the workout ${target.workoutId} (from its revision ${target.baseRev}), on ${dayLabel(date)}`;
 }
 
 /**
@@ -100,7 +97,7 @@ export function briefText(
 ): string {
   return [
     `Workout "${b.key}", ${o.index + 1} of ${o.count} in the set${o.redo ? " — a redo" : ""}.`,
-    `Date: ${dayWords(b.date)} (${b.date})${b.time ? `, at ${b.time}` : ""}.`,
+    `Date: ${dayLabel(b.date)} (${b.date})${b.time ? `, at ${b.time}` : ""}.`,
     `Purpose: ${b.purpose}`,
     `Emphasis: ${b.emphasis}`,
     `Constraints: ${b.constraints}`,
@@ -223,48 +220,52 @@ export interface DesignerEnd {
   ceilingMicros?: number;
 }
 
-/** The start of the proposal's line for a day of the set with no workout. */
-const noWorkoutFor = (date: string): string => `No workout for ${dayWords(date)}:`;
+/**
+ * The suggestion's line for a day of the set with no workout, in the athlete's words (fix wave 3B, B-I3): a design that
+ * finished without one, "The coach couldn't fit a workout on Sat 17 Oct."; any other reason, "No workout on Sat 17 Oct:
+ * <why>." Either names its day — what a stop's line looks for before naming the day again (`namesNoWorkout`).
+ */
+function noWorkoutLine(date: string, why: string | null): string {
+  return why === null ? `The coach couldn't fit a workout on ${dayLabel(date)}.` : `No workout on ${dayLabel(date)}: ${why}.`;
+}
+const namesNoWorkout = (line: string, date: string): boolean => line === noWorkoutLine(date, null) || line.startsWith(`No workout on ${dayLabel(date)}:`);
 
-/** The change line of a draft still under review when its designer ended. */
-const NOT_REVIEWED = "not reviewed: its designer stopped before the review was in.";
+/** The change line of a draft still under review when its design ended. */
+const NOT_REVIEWED = "not reviewed: its design stopped before the review was in.";
 
 const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 const dollars = (micros: number): number => Math.round(micros / 10_000) / 100;
 
-/** Why a designer gave no reviewed workout, in plain words. */
-function leftOutWhy(d: DesignerEnd | undefined, op: DocWorkoutOp | undefined): string {
-  if (!d || d.status === "missing") return "its designer couldn't be found";
-  if (d.status === "finished") {
-    return op
-      ? "its review couldn't be done, and it wasn't proposed again (a workout is never shown unreviewed)"
-      : "the designer finished without proposing a workout";
-  }
+/** Why a designer gave no reviewed workout, in plain words — null when it finished without one (the coach couldn't fit
+ * a workout there: `noWorkoutLine`'s own words). The model reads it too (plan_set's result). */
+function leftOutWhy(d: DesignerEnd | undefined, op: DocWorkoutOp | undefined): string | null {
+  if (!d || d.status === "missing") return "its design couldn't be found";
+  if (d.status === "finished") return op ? "its review couldn't be done, and a workout is never shown unreviewed" : null;
   if (d.status === "stopped_cap") return `${stoppedWhy(d)} before a workout was reviewed`;
   if (d.status === "expired") return "it ran out of time";
   if (d.status === "cancelled") return "it was cancelled";
-  return `the designer couldn't finish: ${designerWhy(d.error)}`;
+  return `its design couldn't finish: ${designerWhy(d.error)}`;
 }
 
 /** How a designer that stopped at a limit stopped, in plain words. */
 function stoppedWhy(d: DesignerEnd): string {
   switch (d.error) {
     case "run_ceiling":
-      return `the designer reached its spending limit${typeof d.ceilingMicros === "number" ? ` (${usd(d.ceilingMicros)})` : ""}`;
+      return `its design reached its spending limit${typeof d.ceilingMicros === "number" ? ` (${usd(d.ceilingMicros)})` : ""}`;
     case "step_cap":
-      return "the designer reached its step limit";
+      return "its design reached its step limit";
     case "state_cap":
       return "the design grew too long";
     case "weekly_cap":
       return "the week's AI budget ran out";
     default:
-      return "the designer stopped";
+      return "its design stopped";
   }
 }
 
 /** A designer that stopped after its draft was reviewed: how, for the note beside the version it keeps. */
 function keptWhy(d: DesignerEnd): string {
-  return d.status === "stopped_cap" ? stoppedWhy(d) : `the designer couldn't finish: ${designerWhy(d.error)}`;
+  return d.status === "stopped_cap" ? stoppedWhy(d) : `its design couldn't finish: ${designerWhy(d.error)}`;
 }
 
 /** Why a designer failed, in plain words, from its error code. */
@@ -273,7 +274,7 @@ function designerWhy(error: string | null): string {
     case "retries":
       return "the AI service didn't answer";
     case "refusal":
-      return "the model declined to design it";
+      return "the AI declined to design it";
     case "internal":
     case "bad_state":
       return "something went wrong in the coach";
@@ -407,14 +408,14 @@ export async function settleSet(
       // The first version stays: the redo's reviewed draft is taken out.
       next = next.filter((x) => x !== op);
       out.push({ key: b.key, ...dayOf(first!.date, b), outcome: "kept_first", opId: opIdOf(first!), target: first!.target, kept: "first", reason: choice.why });
-      chosen.push(`${dayWords(first!.date)}: the first version kept — ${choice.why}`);
+      chosen.push(`${dayLabel(first!.date)}: the first version kept — ${choice.why}`);
       tally.keptFirst += 1;
       continue;
     }
     if (op && op.review) {
       if (first) next = next.filter((x) => x !== first);
       takeBack(b.key);
-      if (choice) chosen.push(`${dayWords(op.date)}: the redo kept — ${choice.why}`);
+      if (choice) chosen.push(`${dayLabel(op.date)}: the redo kept — ${choice.why}`);
       const stopped = d && d.status !== "finished" ? { note: `${keptWhy(d)} after a draft was reviewed: the reviewed version stands` } : {};
       out.push({ key: b.key, ...dayOf(op.date, b), outcome: first ? "replaced" : "proposed", ...(choice ? { kept: "redo", reason: choice.why } : {}), ...proposedEntry(op), ...stopped });
       tally[first ? "replaced" : "proposed"] += 1;
@@ -422,7 +423,8 @@ export async function settleSet(
     }
     // Never shown unreviewed: the draft is taken out.
     if (op) next = next.filter((x) => x !== op);
-    const reason = leftOutWhy(d, op);
+    const why = leftOutWhy(d, op);
+    const reason = why ?? "the design finished without a workout";
     const said = d?.final ? { designerSaid: untrusted(d.final) } : {};
     const draft = op ? { draftTakenOut: true } : {};
     if (first) {
@@ -430,7 +432,7 @@ export async function settleSet(
       tally.keptFirst += 1;
     } else {
       takeBack(b.key);
-      added.push({ key: b.key, line: `${noWorkoutFor(b.date)} ${reason}.` });
+      added.push({ key: b.key, line: noWorkoutLine(b.date, why) });
       out.push({ key: b.key, date: b.date, outcome: "left_out", reason, ...draft, ...said });
       tally.leftOut += 1;
     }
@@ -449,14 +451,16 @@ export async function settleSet(
     // Another write came between: nothing was taken out of the proposal, nor added to its lines.
     for (const e of out) if (e.draftTakenOut) e.draftTakenOut = false;
   }
+  // The trail's line, in the athlete's words (B-I3): workouts, never "proposed".
+  const workouts = (n: number) => `${n} workout${n === 1 ? "" : "s"}`;
   const parts = o.round.redo
     ? [
         ...(tally.replaced ? [`${tally.replaced} replaced`] : []),
-        ...(tally.proposed ? [`${tally.proposed} proposed`] : []),
+        ...(tally.proposed ? [`${workouts(tally.proposed)} added`] : []),
         ...(tally.keptFirst ? [`${tally.keptFirst} kept as first designed`] : []),
         ...(tally.leftOut ? [`${tally.leftOut} left out`] : []),
       ]
-    : [`${tally.proposed} proposed`, ...(tally.leftOut ? [`${tally.leftOut} left out`] : [])];
+    : [workouts(tally.proposed), ...(tally.leftOut ? [`${tally.leftOut} left out`] : [])];
   const left = Math.max(0, o.budget.ceilingMicros - o.budget.spentMicros);
   return {
     data: {
@@ -473,7 +477,7 @@ export async function settleSet(
       redoLeft: o.redoLeft,
       next: o.redoLeft > 0 ? NEXT_WITH_REDO : NEXT_NO_REDO,
     },
-    line: `${o.round.redo ? "The redo is in" : "The set is designed"}: ${parts.join(", ")}.${chosen.length > 0 ? ` ${chosen.join("; ")}.` : ""}${stored ? "" : " The proposal changed meanwhile, so nothing was written to it."}`,
+    line: `${o.round.redo ? "The redo is in" : "The set is designed"}: ${parts.join(", ")}.${chosen.length > 0 ? ` ${chosen.join("; ")}.` : ""}${stored ? "" : " The suggestion changed meanwhile, so nothing was written to it."}`,
     keyLines: stored ? keyLinesNext : o.keyLines,
   };
 }
@@ -561,13 +565,13 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
     ),
   ]
     // A day the proposal's lines already say has no workout (the set's outcome said why) is not named again.
-    .filter((day) => !kept.some((op) => op.date === day) && !(today && day < today) && !flags.some((f) => f.startsWith(noWorkoutFor(day))))
+    .filter((day) => !kept.some((op) => op.date === day) && !(today && day < today) && !flags.some((f) => namesNoWorkout(f, day)))
     .sort();
   const lines = [
     note,
-    ...(left.length > 0 ? [`Not reviewed before the stop, so left out: ${left.map((op) => `“${op.doc.title}” (${dayWords(op.date)})`).join(", ")}.`] : []),
+    ...(left.length > 0 ? [`Not reviewed before the stop, so left out: ${left.map((op) => `“${op.doc.title}” (${dayLabel(op.date)})`).join(", ")}.`] : []),
     ...(past.length + pastChanges.length > 0 ? [pastDayLine([...past, ...pastChanges])] : []),
-    ...(undesigned.length > 0 ? [`Not designed before the stop: ${undesigned.map(dayWords).join(", ")}.`] : []),
+    ...(undesigned.length > 0 ? [`Not designed before the stop: ${undesigned.map(dayLabel).join(", ")}.`] : []),
   ];
   const proposed = [...liveChanges, ...kept];
   const f = proposalFields(proposed);

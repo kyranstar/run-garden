@@ -288,7 +288,7 @@ describe("a stop proposes changes only beside a reviewed workout", () => {
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.kind)).toEqual(["doc_workout"]);
-    expect(p.flags).toEqual([STOPPED_NOTES.expired, "Its day passed before it could be proposed, so left out: “Strength — skipped” (Wednesday 13 May)."]);
+    expect(p.flags).toEqual([STOPPED_NOTES.expired, "Its day passed before it could be suggested, so left out: “Strength — skipped” (Wed 13 May)."]);
   });
 });
 

@@ -442,7 +442,8 @@ describe("the thread coach after a designed proposal is approved", () => {
     expect(state.json.pendingProposals).toEqual([]);
     expect(state.json.settledProposals).toEqual([]);
     const receipt = (state.json.messages as Array<{ role: string; body: string; refs: { proposalId?: string } }>).find((m) => m.role === "receipt")!;
-    expect(receipt.body).toMatch(/^✓ approved — .+: \w{3} \d{1,2} \w{3} · Friday hips · \d+ min$/);
+    // The workout named once (fix wave 3B, B-M8): the proposal is it.
+    expect(receipt.body).toMatch(/^✓ approved — Friday hips: \w{3} \d{1,2} \w{3} · \d+ min$/);
     expect(receipt.refs).toEqual({ proposalId: id });
     const dossier = await buildDossier(db, userId, prefs, today);
     expect(dossier.text).toContain(receipt.body);

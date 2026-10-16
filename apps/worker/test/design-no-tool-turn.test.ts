@@ -216,7 +216,7 @@ describe("the main run: a turn with no tool", () => {
     expect(p.ops[0]!.reviewLog!.map((r) => r.status)).toEqual(["reviewed", "dropped"]);
     // It ended — it didn't stop: the line says what was proposed, never "before the stop" (round 2, A-M7).
     const last = (await lines(runId)).at(-1)!.summary;
-    expect(last).toBe("Proposed what had been reviewed.");
+    expect(last).toBe("Suggested what had been reviewed.");
     expect(last).not.toMatch(/stop/);
   });
 

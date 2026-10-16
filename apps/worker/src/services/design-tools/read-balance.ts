@@ -16,7 +16,7 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { athleteProfiles, performedSessions } from "@rg/database";
-import { daysBetween, focusAreaSchema } from "@rg/domain";
+import { dayRangeLabel, daysBetween, focusAreaSchema } from "@rg/domain";
 import { EXERCISES, MUSCLE_REGION, REGIONS, type MuscleId, type Region } from "@rg/exercise-library";
 import { derivePerformed, type BalanceProfile, type PerformedInput } from "@rg/workout";
 import type { DesignTool } from "./types.js";
@@ -191,8 +191,8 @@ export const readBalance: DesignTool = {
         }),
       },
       summary: nothing
-        ? `Nothing logged from ${p.from} to ${p.to}`
-        : `Read the balance of ${plural(chosen.length, "session")} and ${plural(runs + other, "activity", "activities")} from ${p.from} to ${p.to}`,
+        ? `Nothing logged, ${dayRangeLabel(p.from, p.to)}`
+        : `Read the balance of ${plural(chosen.length, "session")} and ${plural(runs + other, "activity", "activities")}, ${dayRangeLabel(p.from, p.to)}`,
     });
   },
 };

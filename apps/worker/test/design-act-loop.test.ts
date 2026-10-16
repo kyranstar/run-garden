@@ -178,8 +178,24 @@ describe("an instruction in the request, or in a note a tool read back, does not
 
     expect(await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(runId)))).toEqual([]);
     expect(await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${runId}:%`))).toEqual([]);
-    const lines = (await events(runId)).map((e) => e.summary);
-    expect(lines.filter((l) => l.startsWith("Couldn't use propose workout: "))).toHaveLength(4);
+    const trail = await events(runId);
+    const lines = trail.map((e) => e.summary);
+    // A refused call is no alarm (fix wave 3B, B-I4): a quiet note, "Adjusted the draft.", the refusal in its payload —
+    // never "Couldn't use …" on the trail, never an error line.
+    expect(lines.filter((l) => l.startsWith("Couldn't use"))).toEqual([]);
+    const refusedLines = trail.filter((e) => (e.payload as { refusal?: unknown } | null)?.refusal);
+    expect(refusedLines.filter((e) => (e.payload as { tool?: string }).tool === "propose_workout")).toHaveLength(4);
+    for (const e of refusedLines) {
+      expect(e).toMatchObject({ kind: "note", summary: "Adjusted the draft." });
+      expect((e.payload as { ok: boolean; refusal: { error: string; why: string; fix: string } }).ok).toBe(false);
+      expect((e.payload as { refusal: { error: string; why: string; fix: string } }).refusal).toEqual({
+        error: expect.any(String),
+        why: expect.any(String),
+        fix: expect.any(String),
+      });
+    }
+    expect(refusedLines.find((e) => (e.payload as { tool?: string }).tool === "propose_workout")!.payload).toMatchObject({ refusal: { error: "invalid_workout" } });
+    expect(trail.filter((e) => e.kind === "error")).toEqual([]);
     expect(lines.at(-1)).toBe("No jumps today — the jaw check says rest it.");
   });
 });

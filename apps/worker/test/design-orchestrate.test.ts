@@ -308,7 +308,7 @@ describe("a three-workout set, end to end", () => {
     // The trail: the plan, then the set's line once it was in.
     const trail = (await events(mainId)).map((e) => e.summary);
     expect(trail.some((s) => s.startsWith("Planned 3 workouts"))).toBe(true);
-    expect(trail).toContain("The set is designed: 3 proposed.");
+    expect(trail).toContain("The set is designed: 3 workouts.");
   });
 
   it("each designer inherits the main run's window, clock, timezone and rehearsal; its ceiling is a workout's", async () => {
@@ -422,8 +422,8 @@ describe("a designer that fails leaves its slot out; the rest of the set stands"
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.date)).toEqual([THU, MON]);
-    expect(p.flags).toEqual([expect.stringMatching(/^No workout for Saturday 16 May: .*the AI service refused the request/)]);
-    expect((await events(mainId)).map((e) => e.summary)).toContain("The set is designed: 2 proposed, 1 left out.");
+    expect(p.flags).toEqual([expect.stringMatching(/^No workout on Sat 16 May: .*the AI service refused the request/)]);
+    expect((await events(mainId)).map((e) => e.summary)).toContain("The set is designed: 2 workouts, 1 left out.");
   });
 
   it("a designer whose review was dropped and that finished without proposing again: its unreviewed draft is taken out, never shown", async () => {
@@ -498,7 +498,7 @@ describe("a designer that fails leaves its slot out; the rest of the set stands"
       outcome: "proposed",
       reviewMean: 4,
       mustFix: 1,
-      note: "the designer reached its spending limit ($1.50) after a draft was reviewed: the reviewed version stands",
+      note: "its design reached its spending limit ($1.50) after a draft was reviewed: the reviewed version stands",
     });
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
@@ -531,9 +531,9 @@ describe("main judges the set and acts on it", () => {
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.date)).toEqual([THU, MON]);
-    expect(p.flags).toEqual(["Left out “Saturday trunk” (Saturday 16 May): Saturday follows the long run: rest is the better choice."]);
+    expect(p.flags).toEqual(["Left out “Saturday trunk” (Sat 16 May): Saturday follows the long run: rest is the better choice."]);
     expect((await events(mainId)).map((e) => e.summary)).toContain(
-      "Took out “Saturday trunk” (Saturday 16 May): Saturday follows the long run: rest is the better choice.",
+      "Took out “Saturday trunk” (Sat 16 May): Saturday follows the long run: rest is the better choice.",
     );
   });
 
@@ -727,8 +727,8 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
     expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday hips"]);
     expect(p.flags[0]).toBe(STOPPED_NOTES.run_ceiling);
     // What was under review, and the day whose designer never started, are named.
-    expect(p.flags.slice(1)).toEqual([expect.stringContaining("Saturday trunk"), "Not designed before the stop: Monday 18 May."]);
-    expect((await events(mainId)).at(-1)!.summary).toBe("Proposed what had been reviewed before the stop.");
+    expect(p.flags.slice(1)).toEqual([expect.stringContaining("Saturday trunk"), "Not designed before the stop: Mon 18 May."]);
+    expect((await events(mainId)).at(-1)!.summary).toBe("Suggested what had been reviewed before the stop.");
   });
 
   it("a designer's limit and the set's both reached: the set's — the highest — stops the whole set at once", async () => {
@@ -765,7 +765,7 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
     const thu = p.ops[0]!;
     expect(thu.doc.title).toBe("Thursday hips");
     expect(thu.candidate).toBeUndefined();
-    expect(thu.review!.changes).toEqual(["Shorter rests — not reviewed: its designer stopped before the review was in."]);
+    expect(thu.review!.changes).toEqual(["Shorter rests — not reviewed: its design stopped before the review was in."]);
   });
 
   it("the set's ceiling reached while a revision is under review: the revision is dropped, the reviewed version proposed", async () => {
@@ -785,7 +785,7 @@ describe("the set stops gracefully at the run's ceiling, keeping what is reviewe
     expect(p.ops[0]!.doc.title).toBe("Thursday hips");
     expect(p.ops[0]!.candidate).toBeUndefined();
     expect(p.ops[0]!.review!.changes).toEqual(["Shorter rests — not reviewed: the coach stopped before its review was in."]);
-    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling, "Not designed before the stop: Monday 18 May."]);
+    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling, "Not designed before the stop: Mon 18 May."]);
   });
 
   it("a rehearsal set stopped at its ceiling stays a rehearsal: nothing is made pending", async () => {
@@ -873,7 +873,7 @@ describe("plan_set's checks", () => {
     );
     expect(err.error).toBe("invalid_briefs");
     expect(err.why).toContain(`"past": ${day(1)} is before today (${TODAY})`);
-    expect(err.why).toContain(`"far": ${day(-7)} is after this week's last day (${day(-6)})`);
+    expect(err.why).toContain(`"far": ${day(-7)} is after the last of the next 7 days (${day(-6)})`);
     expect(err.why).toMatch(/"two": .*another brief/);
     expect(err.why).toMatch(/"prog": .*programme session/);
     expect(started).toHaveLength(0);
@@ -966,7 +966,7 @@ describe("plan_set's checks", () => {
     expect(errs).toContain("not_for_role");
     expect(await designersOf(mainId)).toHaveLength(1);
     // Its designer finished without proposing: the slot is left out, saying so, with the designer's own words.
-    expect(sentData(requests, plan).set[0]).toMatchObject({ outcome: "left_out", reason: "the designer finished without proposing a workout", designerSaid: { untrusted: true, text: "Done." } });
+    expect(sentData(requests, plan).set[0]).toMatchObject({ outcome: "left_out", reason: "the design finished without a workout", designerSaid: { untrusted: true, text: "Done." } });
   });
 
   it("a set whose only workout is left out keeps its proposal's title and day, holds no workout, and is never made pending", async () => {
@@ -983,7 +983,7 @@ describe("plan_set's checks", () => {
     const p = (await proposalOf(mainId))!;
     expect(p.ops).toEqual([]);
     expect(p).toMatchObject({ status: "unreviewed", title: "Thursday hips", expiresAt: THU });
-    expect(p.flags).toEqual([expect.stringMatching(/^No workout for Thursday 14 May: its review couldn't be done/)]);
+    expect(p.flags).toEqual([expect.stringMatching(/^No workout on Thu 14 May: its review couldn't be done/)]);
   });
 });
 
@@ -1029,7 +1029,7 @@ describe("read_set", () => {
       const doc = calmDoc({ title: `Workout ${i} ${"t".repeat(60)}` });
       const runId = `ds-${mainId}-x-${String(i + 1).padStart(2, "0")}-k${i}`;
       const effort = date === MON ? "peak" : date === TODAY || date === THU || date === day(-4) ? "develop" : "maintain";
-      const unread = { scores: {}, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [], note: "The review could not be read; the validator's view stands." };
+      const unread = { scores: {}, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [], note: "The review could not be read; the app's own checks stand." };
       return {
         kind: "doc_workout",
         target: { kind: "new", date },
@@ -1074,7 +1074,7 @@ describe("read_set", () => {
     expect(data.workouts[0].target).toEqual({ kind: "new", date: TODAY });
     expect(data.workouts[0].balance).toEqual({ isometricMin: 2, isotonicReps: 40 });
     // A review that couldn't be read has no mean: its note says so.
-    expect(data.workouts[3].review).toMatchObject({ mean: null, note: "The review could not be read; the validator's view stands." });
+    expect(data.workouts[3].review).toMatchObject({ mean: null, note: "The review could not be read; the app's own checks stand." });
     // Hard (develop or peak) today, Thursday, the following Sunday and Monday: two pairs in a row.
     expect(data.hardDaysInARow).toMatchObject({ count: 2, pairs: [[TODAY, THU], [day(-4), MON]] });
     expect(data.combined.minutes).toBe(7 * 30);
@@ -1457,7 +1457,7 @@ describe("fix round 1 — the set's lines and days after a drop or a left-out da
     expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
     const p = (await proposalOf(mainId))!;
     expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday morning"]);
-    expect(p.flags).toEqual(["No workout for Thursday 14 May: the designer couldn't finish: the AI service refused the request."]);
+    expect(p.flags).toEqual(["No workout on Thu 14 May: its design couldn't finish: the AI service refused the request."]);
   });
 
   it("the set's result reports the day a workout went to, and the brief's when the designer chose another", async () => {
@@ -1556,7 +1556,7 @@ describe("fix round 1 — a failed designer's line, and a lost write", () => {
     const p = (await proposalOf(mainId))!;
     expect(p.ops).toHaveLength(2);
     expect(p.flags).toEqual([]);
-    expect((await events(mainId)).at(-1)!.summary).toContain("The proposal changed meanwhile, so nothing was written to it.");
+    expect((await events(mainId)).at(-1)!.summary).toContain("The suggestion changed meanwhile, so nothing was written to it.");
   });
 });
 
@@ -1693,7 +1693,7 @@ describe("fix round 1 — the last guards the mutation pass left unheld", () => 
     ]);
     expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
     const p = (await proposalOf(mainId))!;
-    expect(p.flags).toEqual(["No workout for Saturday 16 May: the designer couldn't finish: the AI service refused the request."]);
+    expect(p.flags).toEqual(["No workout on Sat 16 May: its design couldn't finish: the AI service refused the request."]);
   });
 });
 
@@ -1995,7 +1995,7 @@ describe("follow-up — a redo replaces its first version only when it is the be
     const p = (await proposalOf(mainId))!;
     expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday hips"]);
     expect((await events(mainId)).map((e) => e.summary)).toContain(
-      "The redo is in: 1 kept as first designed. Thursday 14 May: the first version kept — the first version scored 5.0 against 3.0.",
+      "The redo is in: 1 kept as first designed. Thu 14 May: the first version kept — the first version scored 5.0 against 3.0.",
     );
   });
 
@@ -2003,7 +2003,7 @@ describe("follow-up — a redo replaces its first version only when it is the be
     const { mainId, result, designers } = await redone(4, 4);
     expect(result.set[0]).toMatchObject({ outcome: "replaced", kept: "redo", opId: designers[1]!.id, reason: "a tie at 4.0, and the redo was asked for" });
     expect((await proposalOf(mainId))!.ops.map((o) => o.doc.title)).toEqual(["Thursday, again"]);
-    expect((await events(mainId)).map((e) => e.summary)).toContain("The redo is in: 1 replaced. Thursday 14 May: the redo kept — a tie at 4.0, and the redo was asked for.");
+    expect((await events(mainId)).map((e) => e.summary)).toContain("The redo is in: 1 replaced. Thu 14 May: the redo kept — a tie at 4.0, and the redo was asked for.");
   });
 
   it("the rule itself: a review read beats one that couldn't be; the higher mean wins; a tie to the redo", () => {

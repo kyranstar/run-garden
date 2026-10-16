@@ -122,9 +122,11 @@ const find = makeLibraryIndex(EXERCISES);
 /** "Hips and back · 24 min" — the coach manifest's summary shape. */
 export const summaryLine = (title: string, minutes: number): string => `${title} · ${minutes} min`;
 
-/** "Fri 15 May · Hips and back · 24 min", with "(edited)" after the title when the athlete changed the coach's draft. */
-export const receiptLine = (date: string, title: string, minutes: number, edited = false): string =>
-  `${dayLabel(date)} · ${summaryLine(edited ? `${title} (edited)` : title, minutes)}`;
+/** "Fri 15 May · Hips and back · 24 min", with "(your version)" after the title when the athlete changed the coach's
+ * draft (the words the card uses too, fix wave 3B); `untitled`: the receipt has named the workout already (B-M8), so
+ * the line is its day and minutes — "Fri 15 May · 24 min". */
+export const receiptLine = (date: string, title: string, minutes: number, edited = false, untitled = false): string =>
+  edited || !untitled ? `${dayLabel(date)} · ${summaryLine(edited ? `${title} (your version)` : title, minutes)}` : `${dayLabel(date)} · ${minutes} min`;
 
 /** A part's header words: its purpose, and its format beyond straight sets ("Main · Superset × 3"). */
 export function partLine(part: WorkoutPart): string {

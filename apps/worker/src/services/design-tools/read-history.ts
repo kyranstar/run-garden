@@ -8,6 +8,7 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { performedSessions } from "@rg/database";
+import { dayRangeLabel } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
   checkRange,
@@ -90,7 +91,7 @@ export const readHistory: DesignTool = {
       cursorOf: (e) => encodeCursor([e.key]),
       data: (entries) => ({ from: p.from, to: p.to, entries }),
       summary: (shown) =>
-        all.length ? `Read ${plural(shown, one, many)} of ${all.length} from ${p.from} to ${p.to}` : `Found no ${many} from ${p.from} to ${p.to}`,
+        all.length ? `Read ${plural(shown, one, many)} of ${all.length}, ${dayRangeLabel(p.from, p.to)}` : `Found no ${many}, ${dayRangeLabel(p.from, p.to)}`,
     });
   },
 };

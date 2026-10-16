@@ -470,7 +470,7 @@ describe("every request within the budget", () => {
     expect(raceFirstPromoteOf).toBeNull();
     expect(step.body.events.map((e: { summary: string }) => e.summary).slice(-2)).toEqual([
       "This design grew too long to continue — the coach stopped.",
-      "Proposed what had been reviewed before the stop.",
+      "Suggested what had been reviewed before the stop.",
     ]);
     // Every tool ran (the room), then the run's write, the proposal read, its write (which lost to a late verdict), the
     // read again, the write again, the older plans superseded, the lines: the step's end reserve spent whole.
@@ -533,7 +533,7 @@ describe("every request within the budget", () => {
     expect(raceFirstPromoteOf).toBeNull();
     expect(step.body.events.map((e: { summary: string }) => e.summary).slice(-2)).toEqual([
       "This design grew too long to continue — the coach stopped.",
-      "Proposed what had been reviewed before the stop.",
+      "Suggested what had been reviewed before the stop.",
     ]);
     // The route's two, the tree, the claim, the standing read, every queued call (the room), the run's write, the
     // proposal read, its write (lost), the read again, the write again, the older plans superseded, the lines.

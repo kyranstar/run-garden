@@ -14,7 +14,7 @@
 import { and, between, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { activities, athleteAnswers, performedSessions, plannedWorkouts } from "@rg/database";
-import { parseStoredWorkoutDoc, type WorkoutDoc, type WorkoutDose, type WorkoutItem } from "@rg/domain";
+import { dayLabel, dayRangeLabel, parseStoredWorkoutDoc, type WorkoutDoc, type WorkoutDose, type WorkoutItem } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import { likeWordPatterns } from "../like-pattern.js";
@@ -126,7 +126,7 @@ export const listWorkouts: DesignTool = {
       }),
       cursorOf: (r) => encodeCursor([r.date, r.time, r.id]),
       data: (workouts) => ({ from: p.from, to: p.to, workouts }),
-      summary: (shown) => `Listed ${plural(shown, "workout")} from ${p.from} to ${p.to}${p.q ? " matching the search" : ""}`,
+      summary: (shown) => `Listed ${plural(shown, "workout")}, ${dayRangeLabel(p.from, p.to)}${p.q ? ", matching the search" : ""}`,
     });
   },
 };
@@ -294,7 +294,7 @@ export const getWorkout: DesignTool = {
         feedback,
         document: doc ? markedDoc(doc) : null,
       },
-      summary: `Read the workout on ${row.date}${actuals.length ? " and what was done in it" : ""}`,
+      summary: `Read the workout on ${dayLabel(row.date)}${actuals.length ? " and what was done in it" : ""}`,
     });
   },
 };

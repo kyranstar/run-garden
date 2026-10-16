@@ -390,7 +390,7 @@ describe("a review that can't be read", () => {
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");
     expect(p.ops[0]!.review).toEqual({ scores: {}, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [], note: NOTE_UNREADABLE });
-    expect((await events(runId)).some((e) => e.summary === "The review couldn't be read — the validator's view stands.")).toBe(true);
+    expect((await events(runId)).some((e) => e.summary === "The review couldn't be read — the app's own checks stand.")).toBe(true);
   });
 
   it("a review written as words instead of submitted is unreadable too: one nudge, then the validator's view", async () => {
@@ -582,7 +582,7 @@ describe("spend rolls up the tree", () => {
     expect(p.status).toBe("pending");
     expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling]);
     expect(p.ops[0]!.review).toEqual({ ...verdict(4), rounds: 1, changes: [] });
-    expect((await events(runId)).at(-1)!.summary).toBe("Proposed what had been reviewed before the stop.");
+    expect((await events(runId)).at(-1)!.summary).toBe("Suggested what had been reviewed before the stop.");
   });
 });
 
@@ -1052,11 +1052,11 @@ describe("fix round 1 — a reviewer that crashed is not a review", () => {
   const kinds: Array<{ kind: string; error: string; why: string; reviewer: Array<MessagesResult | (() => MessagesResult)>; before?: (runId: string) => Promise<void> }> = [
     { kind: "retries run out", error: "retries", why: "the AI service didn't answer", reviewer: [retry(), retry(), retry()] },
     { kind: "a rejected call", error: "invalid_request", why: "the AI service refused the request", reviewer: [{ ok: false, kind: "rejected", reason: "invalid_request", status: 400 }] },
-    { kind: "a refusal", error: "refusal", why: "the reviewing model declined", reviewer: [{ ...turn([]), stopReason: "refusal" }] },
+    { kind: "a refusal", error: "refusal", why: "the AI declined to review it", reviewer: [{ ...turn([]), stopReason: "refusal" }] },
     {
       kind: "an internal error",
       error: "internal",
-      why: "something went wrong in the reviewer",
+      why: "something went wrong in the review",
       reviewer: [
         () => {
           throw new Error("boom");
@@ -1066,7 +1066,7 @@ describe("fix round 1 — a reviewer that crashed is not a review", () => {
     {
       kind: "a bad state",
       error: "bad_state",
-      why: "something went wrong in the reviewer",
+      why: "something went wrong in the review",
       reviewer: [],
       before: async (runId) => {
         await db.update(schema.coachRuns).set({ state: "{not json" }).where(and(eq(schema.coachRuns.parentId, runId), eq(schema.coachRuns.role, "reviewer")));
@@ -1100,7 +1100,7 @@ describe("fix round 1 — a reviewer that crashed is not a review", () => {
         expect(p.ops[0]!.reviewLog!.map((r) => r.status)).toEqual(["dropped"]);
         const lines = (await events(runId)).map((e) => e.summary);
         expect(lines).toContain("The review couldn't be done — the draft goes back to the coach.");
-        expect(lines).toContain(`The reviewer couldn't finish: ${k.why}.`);
+        expect(lines).toContain(`The review couldn't finish: ${k.why}.`);
         expect(lines.at(-1)).toBe("Nothing to show yet. (Not reviewed yet — kept back until it is.)");
       } finally {
         quiet.mockRestore();
@@ -1182,8 +1182,8 @@ describe("fix round 1 — a reviewer that crashed is not a review", () => {
   });
 
   it("a reviewer that used its turns, or whose review couldn't be read, still leaves the validator's view", () => {
-    expect(NOTE_NOT_DONE).toContain("the validator's view stands");
-    expect(NOTE_UNREADABLE).toContain("the validator's view stands");
+    expect(NOTE_NOT_DONE).toContain("the app's own checks stand");
+    expect(NOTE_UNREADABLE).toContain("the app's own checks stand");
   });
 });
 
@@ -1211,7 +1211,12 @@ describe("fix round 1 — nothing runs before the review is read", () => {
     const back = resumed.messages.at(-1)!.content as ToolResultBlock[];
     expect(back.map((b) => b.tool_use_id)).toEqual([idOf(draft), idOf(early)]);
     expect(JSON.parse(textOf(back[1]))).toEqual({ error: "not_run", why: "Not run: propose_workout's review comes first.", fix: "Call it again after reading the review." });
-    expect((await events(runId)).some((e) => e.summary === "Couldn't use finish: Not run: propose_workout's review comes first.")).toBe(true);
+    // Answered "not run" — on the trail, a quiet note with the refusal in its payload (fix wave 3B, B-I4).
+    expect(
+      (await events(runId)).some(
+        (e) => e.kind === "note" && e.summary === "Adjusted the draft." && (e.payload as { tool?: string; refusal?: { error?: string } }).tool === "finish" && (e.payload as { refusal?: { error?: string } }).refusal?.error === "not_run",
+      ),
+    ).toBe(true);
     expect((await events(runId)).at(-1)!.summary).toBe("A calm half hour.");
   });
 });
@@ -1403,7 +1408,7 @@ describe("follow-up — a replayed draft whose reviewer can't be started (N3)", 
     const quiet = (await import("vitest")).vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const replayed = await tool.run({ ...base, review: { start: async () => { throw new Error("down"); }, ended: () => null } }, input);
-      expect(replayed).toMatchObject({ error: "review_unavailable", why: expect.stringContaining("the reviewer couldn't be started") });
+      expect(replayed).toMatchObject({ error: "review_unavailable", why: expect.stringContaining("the review couldn't be started") });
     } finally {
       quiet.mockRestore();
     }
@@ -1424,7 +1429,7 @@ describe("follow-up — a reviewer's end never reads as the design stopping (N4)
     expect((await reviewersOf(runId))[0]).toMatchObject({ status: "stopped_cap", error: "state_cap" });
     expect(sentData(requests, first)).toMatchObject({ unavailable: true, note: expect.stringContaining("the review grew too long to finish") });
     const lines = (await events(runId)).map((e) => e.summary);
-    expect(lines).toContain("The reviewer couldn't finish: the review grew too long to finish.");
+    expect(lines).toContain("The review couldn't finish: the review grew too long to finish.");
     expect(lines.some((l) => l.startsWith("This design grew too long"))).toBe(false);
     expect((await proposalOf(runId))!.status).toBe("unreviewed");
   });

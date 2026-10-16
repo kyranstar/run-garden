@@ -51,7 +51,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
-import { isoWeekday } from "@rg/domain";
+import { dayLabel } from "@rg/domain";
 import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
 import { markUntrusted, REVIEW_DIMENSIONS } from "./design-prompt.js";
@@ -73,9 +73,9 @@ const ofRun = (ops: readonly DesignOp[], runId: string): DocWorkoutOp | undefine
 export const REVIEW_ROUNDS = 3;
 
 /** The op's note when the review could not be read (twice unreadable, or written as words instead of submitted). */
-export const NOTE_UNREADABLE = "The review could not be read; the validator's view stands.";
+export const NOTE_UNREADABLE = "The review could not be read; the app's own checks stand.";
 /** The op's note when the reviewer used all its turns without a review (its step cap). */
-export const NOTE_NOT_DONE = "The review could not be finished; the validator's view stands.";
+export const NOTE_NOT_DONE = "The review could not be finished; the app's own checks stand.";
 
 /** How a reviewer ended without a review and still leaves the validator's view: it had its turns. Any other ending
  * drops the round (`applyDrop`). */
@@ -347,22 +347,22 @@ export function unavailableWhy(error: string | null | undefined): string {
     case "retries":
       return "the AI service didn't answer";
     case "refusal":
-      return "the reviewing model declined";
+      return "the AI declined to review it";
     case "internal":
     case "bad_state":
-      return "something went wrong in the reviewer";
+      return "something went wrong in the review";
     case "no_key":
     case "gateway_402":
       return "the AI account can't be reached";
     case "not_started":
-      return "the reviewer couldn't be started";
+      return "the review couldn't be started";
     case "state_cap":
       return "the review grew too long to finish";
     case "kept_stopping":
-      return "the reviewer kept stopping partway through";
+      return "the review kept stopping partway through";
     case null:
     case undefined:
-      return "the reviewer ended without one";
+      return "the review ended without a verdict";
     default:
       return "the AI service refused the request";
   }
@@ -385,7 +385,7 @@ export function designerResult(op: DocWorkoutOp, toolUseId: string, why?: string
     return {
       review: null,
       unavailable: true,
-      note: `The review couldn't be done (${why ?? "the reviewer gave none"}): this draft isn't reviewed and doesn't count as a round.`,
+      note: `The review couldn't be done (${why ?? "no review came back"}): this draft isn't reviewed and doesn't count as a round.`,
       roundsLeft,
       next:
         roundsLeft > 0
@@ -845,20 +845,11 @@ export function stoppedNote(error: string | null | undefined): string {
 /** A draft still under review when its run stopped: its line in the change list. */
 const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in.";
 
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
-/** "Saturday 16 May". */
-export function dayWords(date: string): string {
-  const [, m, d] = date.split("-").map(Number);
-  return `${WEEKDAYS[isoWeekday(date) - 1]} ${d} ${MONTHS[(m ?? 1) - 1]}`;
-}
-
 /** The proposal's line for reviewed workouts — and changes (Task 8b) — whose day passed before the run's stop (an
- * expiry): left out. */
+ * expiry): left out. In the athlete's words (fix wave 3B, B-I3): the day as the app names it, nothing "proposed". */
 export function pastDayLine(ops: readonly DesignOp[]): string {
   const named = (op: DesignOp) => (isPlanAdjustOp(op) ? describeChange(op).title : op.doc.title);
-  return `Its day passed before it could be proposed, so left out: ${ops.map((op) => `“${named(op)}” (${dayWords(op.date)})`).join(", ")}.`;
+  return `Its day passed before it could be suggested, so left out: ${ops.map((op) => `“${named(op)}” (${dayLabel(op.date)})`).join(", ")}.`;
 }
 
 /**

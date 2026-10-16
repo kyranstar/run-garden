@@ -8,7 +8,7 @@
 import { and, between, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { athleteAnswers } from "@rg/database";
-import { addDays } from "@rg/domain";
+import { addDays, dayLabel } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
   ageWords,
@@ -136,7 +136,7 @@ export const readAnswers: DesignTool = {
       },
       cursorOf: (r) => encodeCursor([r.date, r.at, r.id]),
       data: (answers) => ({ since, answers }),
-      summary: (shown) => (rows.length ? `Read ${plural(shown, "answer")} since ${since}` : `Found no ${what} since ${since}`),
+      summary: (shown) => (rows.length ? `Read ${plural(shown, "answer")} since ${dayLabel(since)}` : `Found no ${what} since ${dayLabel(since)}`),
     });
   },
 };

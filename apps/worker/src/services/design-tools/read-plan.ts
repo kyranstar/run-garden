@@ -8,7 +8,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { plannedWorkouts, programBlocks, programs } from "@rg/database";
-import { daysBetween } from "@rg/domain";
+import { dayRangeLabel, daysBetween } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
   byBytes,
@@ -163,7 +163,7 @@ export const readPlan: DesignTool = {
       render: planItem,
       cursorOf: (r) => encodeCursor([String(r.date), String(r.time), String(r.id)]),
       data: (workouts) => ({ from: p.from, to: p.to, workouts, programmes }),
-      summary: (shown) => (shown || at ? `Read ${plural(shown, "planned workout")} from ${p.from} to ${p.to}` : `Nothing planned from ${p.from} to ${p.to}`),
+      summary: (shown) => (shown || at ? `Read ${plural(shown, "planned workout")}, ${dayRangeLabel(p.from, p.to)}` : `Nothing planned, ${dayRangeLabel(p.from, p.to)}`),
     });
   },
 };

@@ -15,6 +15,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
+import { dayLabel } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import {
@@ -32,7 +33,6 @@ import {
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { pastDayLine, STOPPED_NOTES, stoppedNote } from "../src/services/design-review.js";
-import { dayWords } from "../src/services/design-orchestrate.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import { designModel, messagesCostMicros, type ContentBlock, type MessagesOk, type MessagesRequest, type MessagesResult } from "../src/services/llm-messages.js";
@@ -195,7 +195,7 @@ describe("a set's designer stopping the whole tree proposes the reviewed workout
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.doc.title)).toEqual(["Day 1 hips", "Day 2 hips", "Day 3 hips", "Day 4 hips", "Day 5 hips"]);
-    expect(p.flags).toEqual([STOPPED_NOTES.gateway_402, `Not designed before the stop: ${dayWords(days[5]!)}, ${dayWords(days[6]!)}.`]);
+    expect(p.flags).toEqual([STOPPED_NOTES.gateway_402, `Not designed before the stop: ${dayLabel(days[5]!)}, ${dayLabel(days[6]!)}.`]);
     expect((await lines(mainId)).slice(-2)).toEqual([LINES.outOfCredits, LINES.proposed]);
     // The tree, the claim, the weekly cap, the usage row and its update, the call, the standing read (the restore marker
     // and the still-ours read, one statement), the credits marker, the designer's write, the rest of the tree stopped,
@@ -311,7 +311,7 @@ describe("a set that expires proposes its reviewed workouts still ahead", () => 
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday trunk", "Saturday reset"]);
-    expect(p.flags).toEqual([STOPPED_NOTES.expired, `Its day passed before it could be proposed, so left out: “Wednesday hips” (${dayWords(wed)}).`]);
+    expect(p.flags).toEqual([STOPPED_NOTES.expired, `Its day passed before it could be suggested, so left out: “Wednesday hips” (${dayLabel(wed)}).`]);
     expect((await lines(mainId)).slice(-2)).toEqual([LINES.expiredSet, LINES.proposed]);
     // The tree, the expiry, the proposal read and made pending, the older plans superseded, the lines.
     expect(expired.cost).toBe(2 + 6);
@@ -333,7 +333,7 @@ describe("a set that expires proposes its reviewed workouts still ahead", () => 
 
   it("the past-day line names each workout left out", () => {
     const op = { doc: calmDoc({ title: "Hips" }), date: TODAY } as unknown as DocWorkoutOp;
-    expect(pastDayLine([op])).toBe(`Its day passed before it could be proposed, so left out: “Hips” (${dayWords(TODAY)}).`);
+    expect(pastDayLine([op])).toBe(`Its day passed before it could be suggested, so left out: “Hips” (${dayLabel(TODAY)}).`);
   });
 });
 
@@ -504,7 +504,7 @@ describe("an expiry proposes the same, whoever finds it (round 2, A-I1)", () => 
         path: s.path,
         status: "pending",
         titles: ["Thursday trunk", "Saturday reset"],
-        flags: [STOPPED_NOTES.expired, `Not designed before the stop: ${dayWords(fri)}.`],
+        flags: [STOPPED_NOTES.expired, `Not designed before the stop: ${dayLabel(fri)}.`],
       });
     }
   });
@@ -528,8 +528,8 @@ describe("a stop names a day once (round-2 minors)", () => {
     const p = (await proposalOf(mainId))!;
     expect(p.status).toBe("pending");
     expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday trunk", "Saturday reset"]);
-    expect(p.flags.filter((f) => f.includes(dayWords(fri)))).toHaveLength(1);
-    expect(p.flags[0]).toMatch(new RegExp(`^No workout for ${dayWords(fri)}:`));
+    expect(p.flags.filter((f) => f.includes(dayLabel(fri)))).toHaveLength(1);
+    expect(p.flags[0]).toMatch(new RegExp(`^No workout on ${dayLabel(fri)}: `));
     expect(p.flags).not.toContainEqual(expect.stringMatching(/^Not designed before the stop/));
   });
 
@@ -571,7 +571,7 @@ describe("a promote that loses to a late verdict reads again before it gives up 
     expect(p.flags).toEqual([STOPPED_NOTES.expired]);
     // Its window was the day it began on, which has passed; its workout is tomorrow's: one line, no contradiction.
     const trail = await lines(runId);
-    expect(trail.at(-1)).toBe("The day this was designed for has passed. The workouts for later days are proposed.");
+    expect(trail.at(-1)).toBe("The day this was designed for has passed. The workouts for later days are suggested.");
     expect(trail).not.toContain(LINES.expiredDay);
     expect(trail).not.toContain(LINES.proposed);
   });

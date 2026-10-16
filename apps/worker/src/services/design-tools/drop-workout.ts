@@ -7,7 +7,8 @@
  * Two statements: the proposal, and the ops and lines written, guarded by the ops it read.
  */
 import { z } from "zod";
-import { dayWords, opIdOf, readSetProposal, writeSetOps } from "../design-orchestrate.js";
+import { dayLabel } from "@rg/domain";
+import { opIdOf, readSetProposal, writeSetOps } from "../design-orchestrate.js";
 import { isErr, parseAct } from "./act-common.js";
 import { designProposalId } from "./propose.js";
 import { refuse, untrusted } from "./read-common.js";
@@ -53,7 +54,7 @@ export const dropWorkout: DesignTool = {
       return refuse("proposal_closed", `This set's proposal is already ${status ?? "gone"}.`, "Call finish.");
     }
     const key = rounds.flatMap((r) => r.designers).find((d) => d.runId === p.opId)?.key ?? null;
-    const when = dayWords(op.date);
+    const when = dayLabel(op.date);
     const line = `Left out “${op.doc.title}” (${when}): ${p.reason}`;
     const next = ops.filter((o) => o !== op);
     const written = await writeSetOps(ctx.db, ctx.userId, proposalId, next, changes, opsText, [...flags, line]);

@@ -32,9 +32,9 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { plannedWorkouts } from "@rg/database";
 import { SET_MAIN_RESERVE_MICROS, SET_MAX_WORKOUTS, SET_REDO_ROUNDS } from "../design-limits.js";
+import { dayLabel } from "@rg/domain";
 import {
   briefText,
-  dayWords,
   DEFAULT_SET_MAIN_COST_MICROS,
   DEFAULT_WORKOUT_COST_MICROS,
   designerRunId,
@@ -115,7 +115,7 @@ export const planSet: DesignTool = {
     if (!isSetScope(ctx.run.scope)) {
       return refuse(
         "not_for_scope",
-        "plan_set plans a set — this week, or the next few workouts; this run designs one workout.",
+        "plan_set plans a set — the next 7 days, or the next few workouts; this run designs one workout.",
         "Design it yourself: validate_workout until no error remains, then propose_workout.",
       );
     }
@@ -171,7 +171,7 @@ export const planSet: DesignTool = {
         if (b.note) problems.push(`"${b.key}": a note is a redo's (plan_set's second call) — say it in why or constraints`);
       }
     }
-    const scopeEnd = ctx.run.scope.kind === "week" ? "this week's last day" : "the set's last day";
+    const scopeEnd = ctx.run.scope.kind === "week" ? "the last of the next 7 days" : "the set's last day";
     // The dates already briefed: on a redo, the first plan's other workouts that still stand (one dropped or left out
     // holds no day).
     const held: SetBrief[] = redo ? (first?.briefs ?? []).filter((b) => !p.briefs.some((r) => r.key === b.key) && firstOpOf(b.key)) : [];
@@ -246,12 +246,13 @@ export const planSet: DesignTool = {
       designers: designers.map(({ key, runId }) => ({ key, runId })),
       ...(replaces ? { replaces } : {}),
     };
-    const days = p.briefs.map((b) => dayWords(b.date)).join(", ");
+    // The trail's line, in the athlete's words (fix wave 3B, B-I3): the days as the app names them, no machinery.
+    const days = p.briefs.map((b) => dayLabel(b.date)).join(", ");
     return {
       data: { round, ...(estimate ? { estimate } : {}) },
       summary: redo
-        ? `Asked for ${p.briefs.length === 1 ? "one workout" : `${p.briefs.length} workouts`} again — a new designer for each: ${days}`
-        : `Planned ${p.briefs.length} workout${p.briefs.length === 1 ? "" : "s"} — a designer for each: ${days}`,
+        ? `Asked again for ${p.briefs.length === 1 ? "one workout" : `${p.briefs.length} workouts`}: ${days}`
+        : `Planned ${p.briefs.length} workout${p.briefs.length === 1 ? "" : "s"} — a workout for each day: ${days}`,
       receipt: { keys: p.briefs.map((b) => b.key), dates: p.briefs.map((b) => b.date), started: started.length, redo, ...(estimate ? { estimate } : {}) },
       control: "set",
     };

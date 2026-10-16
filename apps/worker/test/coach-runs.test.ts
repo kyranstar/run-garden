@@ -537,7 +537,10 @@ describe("tool calls that do not fit one step's budget", () => {
     expect(result!.is_error).toBe(true);
     expect(result!.content).not.toContain("SQLITE");
     expect(result!.content).not.toContain("secret");
-    expect((await events(runId)).find((e) => e.kind === "tool_result")!.summary).not.toContain("SQLITE");
+    // The trail says the coach adjusted its draft (fix wave 3B, B-I4); the refusal it rides with is plain words.
+    const refused = (await events(runId)).find((e) => (e.payload as { refusal?: unknown } | null)?.refusal)!;
+    expect(refused).toMatchObject({ kind: "note", summary: "Adjusted the draft." });
+    expect(JSON.stringify(refused.payload)).not.toContain("SQLITE");
   });
 
   it("truncates a tool result above the size limit before it enters the history, and says how to page", async () => {

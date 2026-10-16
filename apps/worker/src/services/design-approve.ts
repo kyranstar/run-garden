@@ -1114,7 +1114,8 @@ function changeLine(c: PlanAdjustOp): string {
 }
 
 /**
- * "✓ approved — <title>: Fri 15 May · Hips · 24 min; …" — every workout and change of the proposal approved so far,
+ * "✓ approved — <title>: Fri 15 May · Hips · 24 min; …" — every workout and change of the proposal approved so far
+ * (one titled as the proposal is, "Fri 15 May · 24 min": named once),
  * each workout as it was WRITTEN (the athlete's version and day, when edited or moved), each change as the manifest says
  * it, then any the server refused, with why; "(k of n; d declined)" while some are not approved.
  */
@@ -1135,11 +1136,17 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[]): string {
     }
     const op = any as DesignedOp;
     const o = op.outcome;
+    // The receipt names the proposal first: a workout of that very title is not named twice (fix wave 3B, B-M8) —
+    // "✓ approved — Hips and back, gently: Fri 16 Oct · 10 min".
     if (o?.status === "applied") {
       const w = o.written;
-      done.push(w ? receiptLine(w.date, w.title, w.minutes, !!o.edited) : receiptLine(op.date, op.doc.title, minutesOf(op.doc), !!o.edited));
+      done.push(
+        w
+          ? receiptLine(w.date, w.title, w.minutes, !!o.edited, w.title === title)
+          : receiptLine(op.date, op.doc.title, minutesOf(op.doc), !!o.edited, op.doc.title === title),
+      );
     } else if (o?.status === "refused") {
-      not.push(`${receiptLine(op.date, op.doc.title, minutesOf(op.doc))} (${o.why})`);
+      not.push(`${receiptLine(op.date, op.doc.title, minutesOf(op.doc), false, op.doc.title === title)} (${o.why})`);
     } else if (o?.status === "declined") declined += 1;
   }
   const count = done.length < ops.length ? ` (${done.length} of ${ops.length}${decidedWords(declined, superseded)})` : "";

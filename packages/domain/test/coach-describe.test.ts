@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { coachOpSchema, type CoachOp } from "../src/coach.js";
-import { describeOps, hasWatchAddress, type PlannedRef } from "../src/coach-describe.js";
+import { dayLabel, dayRangeLabel, describeOps, hasWatchAddress, type PlannedRef } from "../src/coach-describe.js";
 import { watchAddressOf } from "../src/watch-address.js";
 
 const LIVE_OPS: unknown[] = [
@@ -379,5 +379,17 @@ describe("describeOps — every op kind is described", () => {
     expect(lines[0]!.summary).toBe("New plan: Post-race block · Mon 24 Aug to Fri 20 Nov");
     expect(lines[2]!.summary).toBe("Week of Mon 7 Sep — hold, one quality");
     expect(lines[2]!.change).toBe("sketched: long run");
+  });
+});
+
+describe("a day and a span, as the athlete reads them (fix wave 3B, B-I3)", () => {
+  it("a day is its weekday, date and month; a span says the month once when it doesn't change", () => {
+    expect(dayLabel("2026-10-17")).toBe("Sat 17 Oct");
+    expect(dayRangeLabel("2026-10-16", "2026-10-22")).toBe("Fri 16 – Thu 22 Oct");
+    expect(dayRangeLabel("2026-10-30", "2026-11-05")).toBe("Fri 30 Oct – Thu 5 Nov");
+    expect(dayRangeLabel("2026-12-30", "2027-01-02")).toBe("Wed 30 Dec – Sat 2 Jan");
+    expect(dayRangeLabel("2026-10-17", "2026-10-17")).toBe("Sat 17 Oct");
+    // Not a date: as it came, never a thrown error on a line the athlete reads.
+    expect(dayRangeLabel("someday", "2026-10-17")).toBe("someday – Sat 17 Oct");
   });
 });

@@ -508,7 +508,7 @@ function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: str
     case "later_today":
       return `one workout, later today — at least ${LATER_LEAD_MIN} minutes after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}${preferred}) and set it as the target's time`;
     case "week":
-      return `this week — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set${setTimes}`;
+      return `the next 7 days — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set${setTimes}`;
     case "next_n":
       return `the next ${n} workouts — ${n} new ones around what is planned, not the next ${n} planned sessions — from today (the plan is read through ${end}), planned as a set${setTimes}`;
   }
@@ -516,7 +516,7 @@ function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: str
 
 /** The scope in each role's own terms: a designer designs one workout of a set, a reviewer judges one draft. */
 function scopeLine(role: DesignRun["role"], kind: ScopeKind, n: number, r: Reads, time: string, end: string): string {
-  const set = kind === "week" ? `this week's set (${r.today} to ${addDays(r.today, 6)})` : kind === "next_n" ? `a set of the next ${n} workouts` : null;
+  const set = kind === "week" ? `a set for the next 7 days (${r.today} to ${addDays(r.today, 6)})` : kind === "next_n" ? `a set of the next ${n} workouts` : null;
   if (role === "designer") {
     return set ? `Scope: one workout of ${set}, designed from its brief.` : `Scope: one workout, designed from its brief; the run asked for ${scopeWords(kind, n, r, time, end)}.`;
   }
