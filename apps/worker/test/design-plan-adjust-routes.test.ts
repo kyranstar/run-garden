@@ -243,22 +243,37 @@ describe("decline, the draft and the proposal's read", () => {
 });
 
 describe("fix round: decline while a change is applying, and ten changes at once", () => {
-  it("a decline naming a change an approve is applying answers 409 in_flight for it, and declines the others", async () => {
-    const { id, opIds } = await designed({ changes: [skip("w-1-07:00")], drafts: [{ title: "Hips", date: addDays(today, 2) }] });
-    // An approve claimed the skip and died inside the applier: the change is applying.
-    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+  /** A proposal whose skip an approve claimed and died inside the applier: the change is applying. */
+  async function withSkipApplying(): Promise<{ id: string; opIds: string[] }> {
+    const made = await designed({ changes: [skip("w-1-07:00")], drafts: [{ title: "Hips", date: addDays(today, 2) }] });
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, made.id));
     const ops = (p!.ops as Array<DesignedOp | PlanAdjustOp>).map((o) =>
       o.kind === "plan_adjust" ? { ...o, outcome: { status: "applying", at: nowInstant(), before: { date: addDays(today, 1), time: "07:00", title: "Easy run", minutes: 30 } } } : o,
     );
-    await db.update(coachProposals).set({ ops }).where(eq(coachProposals.id, id));
+    await db.update(coachProposals).set({ ops }).where(eq(coachProposals.id, made.id));
+    return made;
+  }
+
+  it("a decline meeting a change an approve is applying declines the others — 200, the change named in flight, the status as its ops say", async () => {
+    const { id, opIds } = await withSkipApplying();
     const res = await invoke("POST", `/api/coach/proposals/${id}/decline`, { reason: "Not now." });
-    expect(res.status).toBe(409);
-    expect(res.json).toMatchObject({ error: "in_flight", opIds: [planAdjustId("w-1-07:00")], declined: opIds, status: "pending" });
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ ok: true, status: "pending", declined: opIds, settled: [], inFlight: [planAdjustId("w-1-07:00")] });
     expect(res.total).toBeLessThanOrEqual(DECLINE_COST);
     // The approve that finishes it records it applied.
     const again = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
     expect(again.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("w-1-07:00")]);
     expect((await rowOf("w-1-07:00")).completionState).toBe("skipped");
+  });
+
+  it("a decline of nothing but changes in flight answers 409 in_flight: nothing was declined, nothing changed", async () => {
+    const { id } = await withSkipApplying();
+    const before = (await proposalOf(id)).ops;
+    const res = await invoke("POST", `/api/coach/proposals/${id}/decline`, { opIds: [planAdjustId("w-1-07:00")], reason: "Not now." });
+    expect(res.status).toBe(409);
+    expect(res.json).toEqual({ error: "in_flight", opIds: [planAdjustId("w-1-07:00")], status: "pending", declined: [], settled: [] });
+    expect((await proposalOf(id)).ops).toEqual(before);
+    expect(await db.select().from(coachMessages).where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "receipt")))).toEqual([]);
   });
 
   it("a proposal of ten changes (the most one holds) approves whole, every request within 45 and its opIds within the route's cap", async () => {
