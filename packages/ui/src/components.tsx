@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { appAuthoredRow, todayInZone, type CompletionState, type SyncAction, type WatchCoverageView, type WorkoutSyncView } from "@rg/domain";
+import { appAuthoredRow, DOC_SOURCES, todayInZone, type CompletionState, type SyncAction, type WatchCoverageView, type WorkoutSyncView } from "@rg/domain";
 import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
   IconAlert,
@@ -882,7 +882,7 @@ export const CATEGORY_LABELS: Record<string, string> = {
 };
 
 /** The document sources the app writes itself; the others are imports (`coros_import`, `standalone_import`). */
-const APP_DOC_SOURCES: ReadonlySet<string> = new Set(["engine", "coach", "studio", "template", "athlete"]);
+const APP_DOC_SOURCES: ReadonlySet<string> = new Set(DOC_SOURCES.filter((s) => s !== "coros_import" && s !== "standalone_import"));
 
 /** Who made one workout, as far as a surface knows it. */
 export interface WorkoutMaker {

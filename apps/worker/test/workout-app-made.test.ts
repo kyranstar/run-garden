@@ -95,7 +95,8 @@ describe("appMade on the workout row", () => {
   });
 
   it("the week: its rows carry it — as many statements as before", async () => {
-    const { body, count } = await get<{ workouts?: Dto[]; days?: Array<{ workouts: Dto[] }> }>(`/api/plan/week?start=${startOfIsoWeek(today)}`);
+    // The week that holds tomorrow's rows, not today's: on a Sunday every seeded row (today +1 to +4) is next week.
+    const { body, count } = await get<{ workouts?: Dto[]; days?: Array<{ workouts: Dto[] }> }>(`/api/plan/week?start=${startOfIsoWeek(addDays(today, 1))}`);
     const rows = body.workouts ?? body.days?.flatMap((d) => d.workouts) ?? [];
     const inWeek = Object.keys(KINDS).filter((id) => rows.some((w) => w.id === id));
     expect(inWeek.length).toBeGreaterThan(0);
