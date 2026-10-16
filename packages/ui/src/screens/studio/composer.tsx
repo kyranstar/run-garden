@@ -33,8 +33,11 @@ import { useEscapeKey } from "../../components.js";
 import { COACH_PREFERENCES_QUERY } from "../settings/coach-settings.js";
 import { IconChevron } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
+import { CoachBoundary } from "./coach-boundary.js";
+import { readCurrent, readProposal } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
 import { cardShows, designProposalQuery, ProposalCard } from "./proposal-card.js";
+import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
 import {
   EXISTING_LINE,
   failureOf,
@@ -47,6 +50,7 @@ import {
 import { RunView, StoppedLine } from "./run-view.js";
 import { quickTiles, sortTemplates, templateHref, templateShape } from "./templates-model.js";
 import { useCoachRun, type LoopDeps } from "./use-coach-run.js";
+import { useOneTap } from "./use-one-tap.js";
 
 /** The server's own cap on a request's words (coach-runs.ts REQUEST_MAX_CHARS). */
 export const REQUEST_MAX_CHARS = 2_000;
@@ -55,8 +59,8 @@ export const COUNTER_FROM = 1_800;
 /** How many workouts "Next N" plans until Settings → Coach says otherwise (Task 10). */
 export const NEXT_N_DEFAULT = COACH_NEXT_N.default;
 
-/** The current run's read. */
-export const COACH_CURRENT_QUERY = ["coach-run-current"] as const;
+/** The current run's read (the app's run keeper reads it too). */
+export { COACH_CURRENT_QUERY };
 
 /** What the Studio's location may carry: the Plan coach sheet's link asks for the composer, focused. */
 export interface CoachArrival {
@@ -106,7 +110,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const location = useLocation();
   const arrival = location.state as CoachArrival | null;
   const compose = arrival?.coach === "compose";
-  const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: api.coachRunCurrent, retry: false, staleTime: 0 });
+  // Read tolerantly (a newer server's fields), and asked again on a passing failure — never on a 404 (the coach is off).
+  const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: readCurrent, retry: currentRetry, staleTime: 0 });
   // Settings → Coach's read (Task 10), shared with its card: a 404 (or no read yet) is the defaults.
   const prefs = useQuery({ queryKey: COACH_PREFERENCES_QUERY, queryFn: api.coachPreferences, retry: false });
   const settings = prefs.data?.settings ?? coachSettings(null);
@@ -145,6 +150,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
     void qc.invalidateQueries({ queryKey: ["coach-design-proposal"] });
   }, [over, run?.id, qc]);
 
+  // A double or triple tap on Now starts one run (the robustness pass): never a second create answered `existing`.
+  const oneTap = useOneTap();
   const start = useMutation({
     networkMode: "always",
     mutationFn: (scope: CoachRunScope) => api.coachRunCreate({ scope, request: draft.trim() || null }),
@@ -170,7 +177,7 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const proposalId = run ? proposalIdOf(run, events, open, over) : null;
   const proposalRead = useQuery({
     queryKey: designProposalQuery(proposalId ?? ""),
-    queryFn: () => api.coachProposal(proposalId!),
+    queryFn: () => readProposal(proposalId!),
     enabled: proposalId !== null,
     retry: false,
   });
@@ -225,40 +232,54 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const failure = run && over ? failureOf({ status: status!, error: run.error }) : null;
   // The ways to train now wait for the reads they are made from, so the tiles never change under the athlete's finger.
   const tilesReady = !templates.isPending && !today.isPending;
+  // Each piece in a boundary of its own (the robustness pass): one that fails to draw says so, the others stand.
   return (
     <div className="coach-area">
       {!live || existingLive ? (
-        <Composer
-          draft={draft}
-          onDraft={setDraft}
-          onStart={(scope) => start.mutate(scope)}
-          busy={start.isPending}
-          error={startError}
-          focus={compose && !live}
-          defaultScope={settings.defaultScope}
-          nextN={settings.nextN}
-          wordsBack={existingLive ? null : wordsBack}
-        />
+        <CoachBoundary>
+          <Composer
+            draft={draft}
+            onDraft={setDraft}
+            onStart={(scope) => oneTap(() => start.mutateAsync(scope))}
+            busy={start.isPending}
+            error={startError}
+            focus={compose && !live}
+            defaultScope={settings.defaultScope}
+            nextN={settings.nextN}
+            wordsBack={existingLive ? null : wordsBack}
+          />
+        </CoachBoundary>
       ) : null}
       {run && status ? (
-        <RunView
-          run={run}
-          status={status}
-          events={events}
-          inFlight={snapshot?.inFlight ?? false}
-          dueRole={snapshot?.dueRole ?? null}
-          lost={snapshot?.lost ?? false}
-          onRetry={() => loop?.retry()}
-          onRun={(r) => loop?.setRun(r)}
-          onRefresh={() => void loop?.refresh()}
-          notice={notice}
-          focusKey={started !== null && run.id === started ? started : null}
-        />
+        <CoachBoundary>
+          <RunView
+            run={run}
+            status={status}
+            events={events}
+            inFlight={snapshot?.inFlight ?? false}
+            dueRole={snapshot?.dueRole ?? null}
+            lost={snapshot?.lost ?? false}
+            workingSince={snapshot?.workingSince ?? null}
+            onRetry={() => loop?.retry()}
+            onRun={(r) => loop?.setRun(r)}
+            onRefresh={() => void loop?.refresh()}
+            notice={notice}
+            focusKey={started !== null && run.id === started ? started : null}
+          />
+        </CoachBoundary>
       ) : null}
-      {failure && proposalKnown && (proposed || tilesReady) ? <StoppedLine failure={failure} proposed={proposed} tiles={tiles} /> : null}
+      {failure && proposalKnown && (proposed || tilesReady) ? (
+        <CoachBoundary>
+          <StoppedLine failure={failure} proposed={proposed} tiles={tiles} />
+        </CoachBoundary>
+      ) : null}
       {/* Whatever the run's status (fix A2): a suggestion the athlete can't decide yet (unreviewed while the coach works,
           closed with a cancel) is no card — the card hides it. */}
-      {proposalId ? <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} today={ctx.today} /> : null}
+      {proposalId ? (
+        <CoachBoundary>
+          <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} today={ctx.today} />
+        </CoachBoundary>
+      ) : null}
     </div>
   );
 }

@@ -155,9 +155,9 @@ describe("the run view, by status", () => {
     expect(words).toContain("Nothing was proposed.");
   });
 
-  it("lost the connection: says so, with Retry", () => {
+  it("lost the connection: says so, with Retry (and keeps trying by itself)", () => {
     const { words } = view(run(), trail, { lost: true });
-    expect(words).toContain("Lost the connection. It'll pick up when you're back.");
+    expect(words).toContain("Can't reach the coach right now. It keeps trying.");
     expect(words).toContain("Retry");
   });
 

@@ -11832,3 +11832,35 @@ a.stu-tpl-open:focus-visible::before {
     padding: var(--space-6);
   }
 }
+
+/* The coach's robustness pass: a piece of the coach that failed to draw says so in place (coach-boundary.tsx), and the
+   Studio tab carries a quiet ● while the coach has a run going (run-keeper.tsx). Coach on only. */
+.coach-broken {
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.coach-broken p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.bottom-nav a:has(> .nav-coach-mark) {
+  position: relative;
+}
+.nav-coach-mark {
+  position: absolute;
+  top: var(--space-3);
+  left: calc(50% + var(--space-5));
+  font-size: var(--text-2xs);
+  line-height: 1;
+  color: var(--green);
+}
+@media (min-width: 1024px) {
+  .side-nav .nav-coach-mark {
+    position: static;
+    margin-left: auto;
+  }
+}

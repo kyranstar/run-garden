@@ -17,7 +17,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus } from "@rg/api-client";
+import { api, ApiError, DESIGN_MODEL_DEADLINE_MS, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus } from "@rg/api-client";
 import { ConfirmDialog } from "../../components.js";
 import { ConditionCheckSheet } from "../../components/condition-check-sheet.js";
 import { IconChevron, IconClock } from "../../icons.js";
@@ -30,12 +30,15 @@ import {
   foldLines,
   isLive,
   isMemoryHandle,
+  isSlow,
   LOST_LINE,
   PAUSE_LINE,
   QUICK_BELOW_LINE,
   runLines,
+  SLOW_LINE,
   spentWords,
   statusWord,
+  STILL_WORKING_LINE,
   tileKindWord,
   TRAIL_FOLD_LINE,
   trailSections,
@@ -45,6 +48,10 @@ import {
   type FallbackTile,
   type RunLine,
 } from "./run-model.js";
+import { useOneTap } from "./use-one-tap.js";
+
+/** How often the view looks at the clock while a step is at work (for "taking longer than usual"). */
+export const SLOW_CHECK_MS = 15_000;
 
 /** Lines the trail shows before the earlier ones fold away (the latest always shows). */
 export const LINES_SHOWN = 6;
@@ -63,6 +70,10 @@ export interface RunViewProps {
   dueRole?: CoachRunRole | null;
   /** The loop lost the connection: say so, with Retry. */
   lost?: boolean;
+  /** Since when a step has been at work (the loop's `workingSince`): past the model's deadline, it says so. */
+  workingSince?: number | null;
+  /** The clock (a test's own). */
+  now?: () => number;
   onRetry?: () => void;
   /** The run as the answer, a skip or a cancel left it: the loop takes it from here. */
   onRun?: (run: CoachRunDto) => void;
@@ -77,7 +88,21 @@ export interface RunViewProps {
   focusKey?: string | number | null;
 }
 
-export function RunView({ run, status, events, inFlight = false, dueRole = null, lost = false, onRetry, onRun, onRefresh, notice, focusKey = null }: RunViewProps) {
+export function RunView({
+  run,
+  status,
+  events,
+  inFlight = false,
+  dueRole = null,
+  lost = false,
+  workingSince = null,
+  now = Date.now,
+  onRetry,
+  onRun,
+  onRefresh,
+  notice,
+  focusKey = null,
+}: RunViewProps) {
   const headingId = useId();
   const trailId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -85,6 +110,17 @@ export function RunView({ run, status, events, inFlight = false, dueRole = null,
   const live = isLive(status);
   const word = statusWord(shown, dueRole);
   const waiting = status === "waiting_athlete";
+  // Another request's step at work (another tab or device, or one this page sent before a reload): said, with its ●.
+  const elsewhere = live && !inFlight && status === "stepping";
+  // Past the model's own deadline, a step at work is taking longer than usual: look at the clock now and then.
+  const [clock, setClock] = useState(() => now());
+  useEffect(() => {
+    if (workingSince === null) return;
+    setClock(now());
+    const t = setInterval(() => setClock(now()), SLOW_CHECK_MS);
+    return () => clearInterval(t);
+  }, [workingSince, now]);
+  const slow = live && (inFlight || elsewhere) && isSlow(workingSince, clock, DESIGN_MODEL_DEADLINE_MS);
   // While it waits on the athlete, the question is its card on top, not a line of the trail too (lead's QA, Q4).
   const lines = useMemo(() => runLines(events, { waiting }), [events, waiting]);
   const asked = waiting ? askedOf(events) : null;
@@ -137,8 +173,20 @@ export function RunView({ run, status, events, inFlight = false, dueRole = null,
         </button>
       ) : null}
       <div id={trailId} className="coach-run-trail" hidden={folded && lines.length > 0}>
-        <RunLines lines={lines} live={live} inFlight={inFlight && live} nowWord={word} runId={run.id} onRefresh={onRefresh} />
+        <RunLines
+          lines={lines}
+          live={live}
+          inFlight={(inFlight || elsewhere) && live}
+          nowWord={elsewhere ? null : word}
+          runId={run.id}
+          onRefresh={onRefresh}
+        />
       </div>
+      {slow ? (
+        <p className="coach-run-note" role="status">
+          {SLOW_LINE}
+        </p>
+      ) : null}
       {live ? <p className="coach-run-note">{PAUSE_LINE}</p> : null}
       {lost ? (
         <div className="coach-run-lost" role="status">
@@ -166,11 +214,13 @@ function RunLines({
   lines: RunLine[];
   live: boolean;
   inFlight: boolean;
-  nowWord: string;
+  /** The ● line's word ("Designing…"); null: another request's step, "The coach is still working on this…". */
+  nowWord: string | null;
   runId: string;
   onRefresh?: () => void;
 }) {
   const qc = useQueryClient();
+  const oneTap = useOneTap();
   const [undone, setUndone] = useState<ReadonlySet<string>>(new Set());
   const undo = useMutation({
     networkMode: "always",
@@ -194,7 +244,7 @@ function RunLines({
     <LineItem
       key={line.key}
       line={line}
-      undo={line.undo && !undone.has(line.undo) && (live || isMemoryHandle(line.undo)) ? () => undo.mutate(line.undo!) : null}
+      undo={line.undo && !undone.has(line.undo) && (live || isMemoryHandle(line.undo)) ? () => oneTap(() => undo.mutateAsync(line.undo!)) : null}
       undoing={undo.isPending && undo.variables === line.undo}
     />
   );
@@ -204,7 +254,7 @@ function RunLines({
         ●
       </span>
       <span className="visually-hidden">Now: </span>
-      <span className="coach-line-text">{`${nowWord.charAt(0).toUpperCase()}${nowWord.slice(1)}…`}</span>
+      <span className="coach-line-text">{nowWord === null ? STILL_WORKING_LINE : `${nowWord.charAt(0).toUpperCase()}${nowWord.slice(1)}…`}</span>
     </li>
   ) : null;
   // While it runs, the earlier lines fold away; once it is over and the athlete opened the trail, it is all there.
@@ -309,6 +359,7 @@ function LineItem({ line, undo, undoing }: { line: RunLine; undo: (() => void) |
 
 function CancelRun({ run, onRun }: { run: CoachRunDto; onRun?: (run: CoachRunDto) => void }) {
   const [asking, setAsking] = useState(false);
+  const oneTap = useOneTap();
   const cancel = useMutation({
     networkMode: "always",
     mutationFn: () => api.coachRunCancel(run.id),
@@ -317,7 +368,8 @@ function CancelRun({ run, onRun }: { run: CoachRunDto; onRun?: (run: CoachRunDto
       onRun?.(res.run);
     },
   });
-  const tap = () => (run.costUsd > CANCEL_CONFIRM_ABOVE_USD ? setAsking(true) : cancel.mutate());
+  const stop = () => oneTap(() => cancel.mutateAsync());
+  const tap = () => (run.costUsd > CANCEL_CONFIRM_ABOVE_USD ? setAsking(true) : stop());
   return (
     <div className="coach-run-foot">
       <button type="button" className="btn btn-small" disabled={cancel.isPending} onClick={tap}>
@@ -333,7 +385,7 @@ function CancelRun({ run, onRun }: { run: CoachRunDto; onRun?: (run: CoachRunDto
         onClose={() => setAsking(false)}
         title="Stop the coach?"
         confirmLabel="Stop it"
-        onConfirm={() => cancel.mutate()}
+        onConfirm={stop}
         busy={cancel.isPending}
         error={cancel.isError ? "Couldn't cancel — try again." : undefined}
       >
@@ -368,6 +420,7 @@ export function QuestionCard({
   onRun?: (run: CoachRunDto) => void;
   onRefresh?: () => void;
 }) {
+  const oneTap = useOneTap();
   const send = useMutation({
     networkMode: "always",
     mutationFn: (body: Parameters<typeof api.coachRunAnswer>[1]) => api.coachRunAnswer(run.id, body),
@@ -376,6 +429,8 @@ export function QuestionCard({
       if (e instanceof ApiError && e.status === 409) onRefresh?.();
     },
   });
+  // One answer however many taps: a second Send would be told the coach "isn't waiting on this any more".
+  const answer = (body: Parameters<typeof api.coachRunAnswer>[1]) => oneTap(() => send.mutateAsync(body));
   const lead = [...events].sort((a, b) => b.seq - a.seq).find((e) => e.kind === "question")?.summary;
   // The question takes the focus to its first answer when it appears — unless the athlete is typing somewhere (the
   // composer's field): their words keep it.
@@ -389,9 +444,9 @@ export function QuestionCard({
   return (
     <div ref={card} className="coach-ask" role="group" aria-label="The coach asks">
       {asked.kind === "check" ? (
-        <CheckAsk lead={lead ?? null} why={asked.why} busy={send.isPending} onCheck={(id) => send.mutate({ conditionCheckId: id })} onSkip={() => send.mutate({ dismissed: true })} />
+        <CheckAsk lead={lead ?? null} why={asked.why} busy={send.isPending} onCheck={(id) => answer({ conditionCheckId: id })} onSkip={() => answer({ dismissed: true })} />
       ) : (
-        <QuestionsAsk asked={asked} busy={send.isPending} onSend={(answers) => send.mutate({ answers })} onSkip={() => send.mutate({ dismissed: true })} />
+        <QuestionsAsk asked={asked} busy={send.isPending} onSend={(answers) => answer({ answers })} onSkip={() => answer({ dismissed: true })} />
       )}
       {send.isError ? (
         <p className="coach-ask-error" role="status">

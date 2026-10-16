@@ -38,6 +38,7 @@ import { EmptyState, formatDayShort, formatShortDate, Sheet, Spinner } from "../
 import { coachOn } from "../../features.js";
 import { IconBack, IconMore, IconPlus } from "../../icons.js";
 import { useUnits, useWeightUnit } from "../../use-units.js";
+import { CoachBoundary } from "./coach-boundary.js";
 import { KrTrendChart } from "./objectives-chart.js";
 import {
   boardSections,
@@ -68,7 +69,12 @@ export const OBJECTIVES_HREF = "/studio/objectives";
 /** The route: the board with the coach on; the Studio without it. */
 export function ObjectivesRoute() {
   if (!coachOn()) return <Navigate to="/studio" replace />;
-  return <ObjectivesScreen />;
+  // A render error on the board stays on the board (the robustness pass): it says so, with a reload.
+  return (
+    <CoachBoundary what="your objectives">
+      <ObjectivesScreen />
+    </CoachBoundary>
+  );
 }
 
 const STATUS_WORD: Partial<Record<ObjectiveStatus, string>> = { paused: "Paused", done: "Completed" };

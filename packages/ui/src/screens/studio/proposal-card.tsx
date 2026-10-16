@@ -32,7 +32,9 @@ import {
 } from "@rg/api-client";
 import { features } from "../../features.js";
 import { editDraftHref } from "./build-model.js";
+import { readProposal } from "./coach-tolerance.js";
 import { appliedChangeLine, dayAndTime, planDayHref, refusedLine, reviewLabel } from "./run-model.js";
+import { useOneTap } from "./use-one-tap.js";
 
 /** What became of the suggestion once nothing in it is open (fix wave 3B, M3); while something is, what it is. */
 export function cardHeader(lines: readonly Pick<DesignLineDto, "outcome">[], changes: readonly Pick<DesignChangeLineDto, "outcome">[]): string {
@@ -150,7 +152,10 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
   const headingId = useId();
   const card = useRef<HTMLElement>(null);
   const reasonField = useRef<HTMLTextAreaElement>(null);
-  const read = useQuery({ queryKey: designProposalQuery(proposalId), queryFn: () => api.coachProposal(proposalId), retry: false });
+  // Read tolerantly: a newer server's kinds and statuses, a line missing a list, render generically (the robustness pass).
+  const read = useQuery({ queryKey: designProposalQuery(proposalId), queryFn: () => readProposal(proposalId), retry: false });
+  // One approve or decline however many taps (the robustness pass): a second would race the first.
+  const oneTap = useOneTap();
   /** The athlete's choice; null: every open one (the default). */
   const [chosen, setChosen] = useState<ReadonlySet<string> | null>(null);
   const [declining, setDeclining] = useState(false);
@@ -301,7 +306,7 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
               onChange={(e) => setReason(e.target.value)}
             />
             <div className="btn-row">
-              <button type="button" className="btn" disabled={busy || picked.length === 0} onClick={() => decline.mutate({ opIds: some, reason })}>
+              <button type="button" className="btn" disabled={busy || picked.length === 0} onClick={() => oneTap(() => decline.mutateAsync({ opIds: some, reason }))}>
                 Decline
               </button>
               <button type="button" className="btn" disabled={busy} onClick={() => setDeclining(false)}>
@@ -311,7 +316,7 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
           </div>
         ) : (
           <div className="btn-row coach-pc-actions">
-            <button type="button" className="btn btn-primary" disabled={busy || picked.length === 0} onClick={() => approve.mutate(some)}>
+            <button type="button" className="btn btn-primary" disabled={busy || picked.length === 0} onClick={() => oneTap(() => approve.mutateAsync(some))}>
               {some ? `Approve ${some.length}` : "Approve"}
             </button>
             <button type="button" className="btn" disabled={busy || picked.length === 0} onClick={() => setDeclining(true)}>

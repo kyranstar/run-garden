@@ -336,9 +336,10 @@ describe("the words (M4, M6, M10)", () => {
     expect(checkAskLabel("TMJ pain")).toBe("Do the TMJ check");
   });
 
-  it("the existing run's notice says how to ask for something new; leaving mid-run says the coach pauses", () => {
+  it("the existing run's notice says how to ask for something new; the coach pauses only while the app is closed", () => {
     expect(EXISTING_LINE).toBe("You already have the coach working on something. Here it is. Cancel it to ask for something new.");
-    expect(PAUSE_LINE).toBe("The coach pauses while you're away from the Studio.");
+    // The app's run keeper steps it on every screen (the robustness pass): leaving the Studio no longer pauses it.
+    expect(PAUSE_LINE).toBe("The coach pauses while the app is closed.");
   });
 });
 

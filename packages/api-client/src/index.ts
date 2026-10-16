@@ -119,6 +119,19 @@ export const post = <T>(path: string, body?: unknown, timeoutMs?: number | null)
 
 /** AI generation legitimately runs for minutes — never cut it off client-side. */
 const AI_TIMEOUT_MS = 15 * 60_000;
+
+/** A caller's signal that also aborts after `ms` (the request's own deadline), where the browser can combine them. */
+function withDeadline(signal: AbortSignal, ms: number): AbortSignal {
+  const any = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  return typeof any === "function" ? any([signal, AbortSignal.timeout(ms)]) : signal;
+}
+
+/**
+ * The coach designer's model call has this long, at most (the worker's llm-messages.ts `TIMEOUT_MS`, the two pinned
+ * equal by a test): a step still at work past it is taking longer than usual, and the run view says so.
+ */
+export const DESIGN_MODEL_DEADLINE_MS = 10 * 60_000;
+
 export const put = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: "PUT", body: JSON.stringify(body) });
 
@@ -2165,8 +2178,12 @@ export const api = {
   // client-side; a 409 means another step holds the run (poll `coachRun` and step again).
   coachRunCreate: (body: { scope: CoachRunScope; request?: string | null; rehearsal?: boolean }) =>
     post<CoachRunCreateResult>("/api/coach/runs", body),
-  coachRunStep: (id: string) =>
-    post<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, {}, AI_TIMEOUT_MS),
+  // `signal`: the step loop gives up on a request whose answer is lost (the run reads as not stepping for a while), so a
+  // dropped connection never holds the loop for the whole deadline.
+  coachRunStep: (id: string, signal?: AbortSignal) =>
+    signal
+      ? request<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, { method: "POST", body: "{}", signal: withDeadline(signal, AI_TIMEOUT_MS) }, null)
+      : post<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, {}, AI_TIMEOUT_MS),
   coachRun: (id: string, afterSeq = 0) =>
     get<{ run: CoachRunDto; events: CoachRunEventDto[] }>(`/api/coach/runs/${encodeURIComponent(id)}?afterSeq=${afterSeq}`),
   coachRunAnswer: (id: string, body: CoachRunAnswerBody) =>

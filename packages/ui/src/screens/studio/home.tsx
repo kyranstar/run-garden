@@ -27,6 +27,7 @@ import { IconChevron, IconClock, IconPlus } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { BuildEntry } from "./build-entry.js";
 import { ChipRow } from "./chip-row.js";
+import { CoachBoundary } from "./coach-boundary.js";
 import { StudioCoach } from "./composer.js";
 import { browseParts, browseTags, HOME_TAGS, themeCountWord, visibleThemes, type StudioCtx, type StudioFilters } from "./model.js";
 import { quickTiles, TEMPLATES_HREF } from "./templates-model.js";
@@ -63,7 +64,12 @@ export function StudioHome({
       {/* Stage 3: the coach's composer (What would help today? · Now · Later today · Plan ahead) — or, while the coach
           works, its run view — in this slot, with the coach designer on (`coachOn`); off, the slot takes no room. */}
       <div className="stu-composer-slot" data-slot="coach-composer">
-        {coachOn() ? <StudioCoach ctx={ctx} /> : null}
+        {/* A render error anywhere in the coach stays in the coach: the Studio goes on (the robustness pass). */}
+        {coachOn() ? (
+          <CoachBoundary>
+            <StudioCoach ctx={ctx} />
+          </CoachBoundary>
+        ) : null}
       </div>
 
       <Section title="Quick starts">

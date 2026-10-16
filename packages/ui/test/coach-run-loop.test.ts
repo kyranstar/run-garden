@@ -4,7 +4,8 @@
  *
  *  - it steps until the run waits on the athlete, and never before `nextDue`;
  *  - a 409 (another tab holds the step) backs off 1, 2, 4, 8 s and keeps reading events;
- *  - four failures in a row stop it ("lost"); Retry, or the page coming back, resumes it;
+ *  - four failures in a row say so ("lost"); Retry, or the page coming back, resumes it (and, since the robustness
+ *    pass, it tries again by itself every LOST_RETRY_MS);
  *  - hidden, the step in flight finishes and no new one starts; visible again, it goes on;
  *  - never two step requests in flight from one tab — not even from two loops on one run;
  *  - a step's events and a poll's merge by seq, never one twice; it polls every 2 s while a step is out.
@@ -14,7 +15,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunStepResult } from "@rg/api-client";
 import { CoachRunLoop, type LoopDeps } from "../src/screens/studio/use-coach-run.js";
-import { MAX_FAILURES, POLL_MS } from "../src/screens/studio/run-model.js";
+import { LOST_RETRY_MS, MAX_FAILURES, POLL_MS } from "../src/screens/studio/run-model.js";
 
 const T0 = Date.parse("2026-10-14T08:00:00.000Z");
 
@@ -330,7 +331,8 @@ describe("the step loop", () => {
     expect(loop.snapshot.lost).toBe(true);
     const gaps = h.calls.steps.slice(1).map((t, i) => t - h.calls.steps[i]!);
     expect(gaps).toEqual([1_000, 2_000, 4_000]);
-    await h.clock.advance(60_000);
+    // Lost, it waits LOST_RETRY_MS before it tries by itself (coach-robust-loop.test.ts); Retry tries now.
+    await h.clock.advance(LOST_RETRY_MS - 60_000 + h.calls.steps.at(-1)! - T0 - 1);
     expect(h.calls.steps).toHaveLength(MAX_FAILURES);
     loop.retry();
     await h.clock.advance(10);

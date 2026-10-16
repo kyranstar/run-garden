@@ -5,23 +5,34 @@
  *  - It steps again when the step's `nextDue` says so, never before it (correctness M9); a backoff after a refusal or a
  *    failure applies on top.
  *  - A 409 (another tab or device holds the step): back off at 1, 2, 4, 8 s — capped at 8 — and keep reading events.
- *  - A network error or a 5xx: the same backoff; after MAX_FAILURES in a row it stops and says so (`lost`), with Retry.
+ *  - A network error or a 5xx: the same backoff; after MAX_FAILURES in a row it says so (`lost`), with Retry — and it
+ *    keeps trying by itself, once every LOST_RETRY_MS, so a passing outage never stalls a run the athlete isn't looking
+ *    at (the robustness pass).
  *  - It stops on `waiting_athlete` and on every status that is over; the athlete's answer resumes it.
  *  - Hidden: the step in flight finishes, no new one starts; visible again, it goes on.
  *  - Never two step requests in flight from one tab: one at a time per loop, and per run across the tab (`IN_FLIGHT`) —
  *    a loop mounted again while an old one's step is still out waits for it.
  *  - Events: each step's response carries its own; while a step is in flight the run is also read every POLL_MS, so a
  *    long step's sub-runs' lines appear as they land. Merged by `seq`, never one twice.
+ *  - A step whose answer is lost (a dropped connection: the reads say the run isn't stepping, for STEP_LOST_MS) is given
+ *    up and asked again, never waited on for the whole deadline (the robustness pass).
+ *  - An answer it can't read (a newer server, a cut-off body) is a failure like any other: never a loop that stops
+ *    with its step shown in flight for good.
+ *
+ * Who owns the loop: the app's run keeper (run-keeper.tsx) when the app mounts one — the run goes on stepping on any
+ * screen while the app is open — else the screen that shows the run, which stops it when it goes.
  *
  * Testable without a browser: `fetch` (the step and the read), the timers and the page's visibility are injected
  * (`LoopDeps`); the decisions are run-model.ts's.
  */
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { api, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus, type CoachRunStepResult } from "@rg/api-client";
-import { backoffMs, isLive, isSteppable, lastSeq, MAX_FAILURES, mergeEvents, POLL_MS, stepDelay, stepErrorKind } from "./run-model.js";
+import { toRunRead, toStepResult } from "./coach-tolerance.js";
+import { backoffMs, isLive, isSteppable, lastSeq, LOST_RETRY_MS, MAX_FAILURES, mergeEvents, POLL_MS, STEP_LOST_MS, stepDelay, stepErrorKind } from "./run-model.js";
 
 export interface LoopDeps {
-  step: (id: string) => Promise<CoachRunStepResult>;
+  /** One step; `signal` aborts it (the loop gave up on an answer that was lost). */
+  step: (id: string, signal?: AbortSignal) => Promise<CoachRunStepResult>;
   read: (id: string, afterSeq: number) => Promise<{ run: CoachRunDto; events: CoachRunEventDto[] }>;
   setTimeout: (fn: () => void, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
@@ -34,13 +45,13 @@ export interface LoopDeps {
   onOnline?: (fn: () => void) => () => void;
 }
 
-/** The page's own: the api client, the window's timers, the document's visibility and the window's network. */
+/** The page's own: the api client (its answers read tolerantly), the window's timers, the document's visibility and the window's network. */
 export function browserDeps(): LoopDeps {
   const doc = typeof document === "undefined" ? null : document;
   const win = typeof window === "undefined" ? null : window;
   return {
-    step: (id) => api.coachRunStep(id),
-    read: (id, afterSeq) => api.coachRun(id, afterSeq),
+    step: async (id, signal) => toStepResult(await api.coachRunStep(id, signal)),
+    read: async (id, afterSeq) => toRunRead(await api.coachRun(id, afterSeq)),
     setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
     clearTimeout: (h) => globalThis.clearTimeout(h as ReturnType<typeof setTimeout>),
     now: () => Date.now(),
@@ -67,14 +78,27 @@ export interface LoopSnapshot {
   inFlight: boolean;
   /** Who the next step is for (the last step's `nextDue.role`): the header says "reviewing" for a reviewer. */
   dueRole: CoachRunRole | null;
-  /** MAX_FAILURES failures in a row: stopped until Retry (or the page comes back). */
+  /** MAX_FAILURES failures in a row: it says so, keeps trying now and then, and Retry tries at once. */
   lost: boolean;
   /** The run is gone (404). */
   gone: boolean;
+  /**
+   * Since when (this device's clock) the step now under way has been at work, as this tab knows it: its own step's
+   * start, or the first read that found another request's step at work (the run `stepping`, no step of ours out). Null
+   * while no step is at work. The run view says "taking longer than usual" past the model's own deadline.
+   */
+  workingSince: number | null;
 }
 
-/** Step requests out in this tab, by run: a second loop on the same run waits for the first's. */
-const IN_FLIGHT = new Map<string, Promise<unknown>>();
+/** Step requests out in this tab, by run: a second loop on the same run waits for the first's — and can give it up. */
+const IN_FLIGHT = new Map<string, { done: Promise<unknown>; abort: () => void }>();
+
+/** Thrown inside the loop when it gives up on a step whose answer was lost. */
+class StepLost extends Error {
+  constructor() {
+    super("step_lost");
+  }
+}
 
 export class CoachRunLoop {
   private snap: LoopSnapshot;
@@ -97,6 +121,10 @@ export class CoachRunLoop {
   private listeners = new Set<(s: LoopSnapshot) => void>();
   /** The seed carried the run's trail (`events`, even none): no read is needed before the first step. */
   private readonly trailKnown: boolean;
+  /** While a step is out: when its reads first found the run not stepping (null: the last read found it stepping). */
+  private notSteppingSince: number | null = null;
+  /** While a step is out: give it up (its answer was lost). */
+  private giveUp: (() => void) | null = null;
 
   constructor(
     readonly runId: string,
@@ -112,11 +140,17 @@ export class CoachRunLoop {
       dueRole: null,
       lost: false,
       gone: false,
+      workingSince: null,
     };
   }
 
   get snapshot(): LoopSnapshot {
     return this.snap;
+  }
+
+  /** Stopped (`dispose`): its owner makes a new one to show the run again. */
+  get isDisposed(): boolean {
+    return this.disposed;
   }
 
   subscribe(fn: (s: LoopSnapshot) => void): () => void {
@@ -182,7 +216,10 @@ export class CoachRunLoop {
 
   private set(patch: Partial<LoopSnapshot>): void {
     if (this.disposed) return;
-    this.snap = { ...this.snap, ...patch };
+    const next = { ...this.snap, ...patch };
+    // At work: our own step's start (set with it), else a step of another request's the reads found (`stepping`).
+    if (!next.inFlight) next.workingSince = isLive(next.status) && next.status === "stepping" ? (this.snap.workingSince ?? this.deps.now()) : null;
+    this.snap = next;
     for (const fn of this.listeners) fn(this.snap);
   }
 
@@ -201,8 +238,18 @@ export class CoachRunLoop {
     this.clearStep();
     this.stepTimer = this.deps.setTimeout(() => {
       this.stepTimer = null;
-      void this.tick();
+      // Whatever goes wrong inside (an answer it can't read), the loop goes on: a failure, retried on the backoff.
+      void this.tick().catch((e: unknown) => this.broke(e));
     }, Math.max(0, ms));
+  }
+
+  /** Something the loop didn't expect threw: no step is shown in flight for good, and it tries again on the backoff. */
+  private broke(e: unknown): void {
+    if (this.disposed) return;
+    this.clearPoll();
+    this.giveUp = null;
+    this.set({ inFlight: false });
+    void this.failed(e).catch(() => undefined);
   }
 
   /** The network is back: a loop that lost the connection goes on (M2). */
@@ -227,7 +274,12 @@ export class CoachRunLoop {
   }
 
   private async tick(): Promise<void> {
-    if (this.disposed || this.snap.inFlight || this.snap.lost || this.snap.gone) return;
+    if (this.disposed || this.snap.inFlight || this.snap.gone) return;
+    // Lost: only Retry, the network, the page coming back — or the slow retry this tick is — goes on.
+    if (this.snap.lost) {
+      this.failures = MAX_FAILURES - 1;
+      this.set({ lost: false });
+    }
     if (!isSteppable(this.snap.status)) return;
     if (!this.deps.visible()) {
       this.owed = true;
@@ -242,12 +294,22 @@ export class CoachRunLoop {
       if (!isSteppable(this.snap.status) || this.snap.lost || this.snap.gone) return;
     }
     // Another loop of this tab on this run still has a step out (the screen was left and opened again): wait for it — a
-    // step in flight all the same, its lines read as they land (M3) — then read where it left the run.
+    // step in flight all the same, its lines read as they land (M3) — then read where it left the run. A step whose
+    // answer is lost is given up here too.
     const other = IN_FLIGHT.get(this.runId);
     if (other) {
-      this.set({ inFlight: true });
+      this.set({ inFlight: true, workingSince: this.snap.workingSince ?? this.deps.now() });
+      this.notSteppingSince = null;
+      const lost = new Promise<void>((resolve) => {
+        this.giveUp = () => {
+          other.abort();
+          if (IN_FLIGHT.get(this.runId) === other) IN_FLIGHT.delete(this.runId);
+          resolve();
+        };
+      });
       this.startPoll();
-      await other.catch(() => undefined);
+      await Promise.race([other.done.catch(() => undefined), lost]);
+      this.giveUp = null;
       this.clearPoll();
       if (this.disposed) return;
       this.set({ inFlight: false });
@@ -258,25 +320,39 @@ export class CoachRunLoop {
   }
 
   private async step(): Promise<void> {
-    this.set({ inFlight: true });
+    const controller = new AbortController();
+    this.notSteppingSince = null;
+    // Asking again while another request's step is at work (a 409's backoff) doesn't restart its clock.
+    const since = this.snap.status === "stepping" && this.snap.workingSince !== null ? this.snap.workingSince : this.deps.now();
+    this.set({ inFlight: true, workingSince: since });
     this.startPoll();
-    const out = this.deps.step(this.runId);
-    IN_FLIGHT.set(this.runId, out);
+    const out = this.deps.step(this.runId, controller.signal);
+    const entry = { done: out, abort: () => controller.abort() };
+    IN_FLIGHT.set(this.runId, entry);
+    const lost = new Promise<never>((_, reject) => {
+      this.giveUp = () => {
+        controller.abort();
+        reject(new StepLost());
+      };
+    });
     let res: CoachRunStepResult;
     try {
-      res = await out;
+      res = await Promise.race([out, lost]);
     } catch (e) {
       this.clearPoll();
       this.set({ inFlight: false });
       return this.failed(e);
     } finally {
-      if (IN_FLIGHT.get(this.runId) === out) IN_FLIGHT.delete(this.runId);
+      this.giveUp = null;
+      if (IN_FLIGHT.get(this.runId) === entry) IN_FLIGHT.delete(this.runId);
+      out.catch(() => undefined);
     }
     this.clearPoll();
     if (this.disposed) return;
     this.failures = 0;
     this.busy = 0;
-    this.nextDueAt = res.nextDue ? Date.parse(res.nextDue.at) : null;
+    const due = res.nextDue ? Date.parse(res.nextDue.at) : NaN;
+    this.nextDueAt = Number.isFinite(due) ? due : null;
     this.set({
       inFlight: false,
       status: res.status,
@@ -315,7 +391,12 @@ export class CoachRunLoop {
       return;
     }
     this.failures += 1;
-    if (this.failures >= MAX_FAILURES) return this.set({ lost: true });
+    if (this.failures >= MAX_FAILURES) {
+      // Said, with Retry — and tried again now and then by itself.
+      this.set({ lost: true });
+      this.schedule(LOST_RETRY_MS);
+      return;
+    }
     this.schedule(stepDelay({ nextDueAt: this.nextDueAt, now: this.deps.now(), backoff: backoffMs(this.failures) }));
   }
 
@@ -334,6 +415,8 @@ export class CoachRunLoop {
       const fresh = withStatus && !this.snap.inFlight && (isLive(this.snap.status) || !isLive(res.run.status));
       const status = fresh ? res.run.status : this.snap.status;
       this.set({ run: res.run, status, events: mergeEvents(this.snap.events, res.events) });
+      // A step of ours out, and the server not at work on any: its answer may be lost (see poll).
+      if (this.snap.inFlight) this.notSteppingSince = res.run.status === "stepping" ? null : (this.notSteppingSince ?? this.deps.now());
       ok = true;
     } catch {
       // A read that fails changes nothing: the next one, or the next step, catches up.
@@ -347,7 +430,11 @@ export class CoachRunLoop {
     this.pollTimer = this.deps.setTimeout(() => void this.poll(), POLL_MS);
   }
 
-  /** While the step is out: read the events every POLL_MS (not while hidden), never two reads at once. */
+  /**
+   * While the step is out: read the events every POLL_MS (not while hidden), never two reads at once. A step out for
+   * STEP_LOST_MS while every read in that time found the run not stepping lost its answer (a dropped connection): it is
+   * given up — the run is stepped again, never waited on for the request's whole deadline.
+   */
   private async poll(): Promise<void> {
     this.pollTimer = null;
     if (this.disposed || !this.snap.inFlight) return;
@@ -355,20 +442,35 @@ export class CoachRunLoop {
       this.polling = true;
       await this.read(false);
       this.polling = false;
+      const now = this.deps.now();
+      const since = this.snap.workingSince ?? now;
+      if (this.giveUp && this.notSteppingSince !== null && now - this.notSteppingSince >= STEP_LOST_MS && now - since >= STEP_LOST_MS) {
+        this.giveUp();
+        return;
+      }
     }
     if (this.snap.inFlight && !this.disposed) this.pollTimer = this.deps.setTimeout(() => void this.poll(), POLL_MS);
   }
 }
 
+/** The app's run keeper (run-keeper.tsx), when the app mounts one: it owns the loop, so leaving a screen never stops it. */
+export interface LoopOwner {
+  adopt(runId: string, seed: { run?: CoachRunDto | null; events?: CoachRunEventDto[] }, deps?: () => LoopDeps): CoachRunLoop;
+}
+
+export const LoopOwnerContext = createContext<LoopOwner | null>(null);
+
 /**
  * The loop for the run shown (`runId`; null: none), as React state. `seed` is what the screen already holds of it (the
- * current run's read, a create's answer). The loop is made once per run and stopped when the run or the screen goes.
+ * current run's read, a create's answer). With the app's run keeper, the keeper owns the loop — it goes on stepping when
+ * this screen goes; without one, the loop is made once per run and stopped when the run or the screen goes.
  */
 export function useCoachRun(
   runId: string | null,
   seed: { run?: CoachRunDto | null; events?: CoachRunEventDto[] } = {},
-  deps: () => LoopDeps = browserDeps,
+  deps?: () => LoopDeps,
 ): { snapshot: LoopSnapshot | null; loop: CoachRunLoop | null } {
+  const owner = useContext(LoopOwnerContext);
   const [loop, setLoop] = useState<CoachRunLoop | null>(null);
   const [snapshot, setSnapshot] = useState<LoopSnapshot | null>(null);
   const seedRef = useRef(seed);
@@ -381,15 +483,16 @@ export function useCoachRun(
       setSnapshot(null);
       return;
     }
-    const l = new CoachRunLoop(runId, depsRef.current(), seedRef.current);
+    const kept = owner !== null;
+    const l = owner ? owner.adopt(runId, seedRef.current, depsRef.current) : new CoachRunLoop(runId, (depsRef.current ?? browserDeps)(), seedRef.current);
     setLoop(l);
     setSnapshot(l.snapshot);
     const off = l.subscribe(setSnapshot);
-    l.start();
+    if (!kept) l.start();
     return () => {
       off();
-      l.dispose();
+      if (!kept) l.dispose();
     };
-  }, [runId]);
+  }, [runId, owner]);
   return { snapshot: loop?.runId === runId ? snapshot : null, loop: loop?.runId === runId ? loop : null };
 }

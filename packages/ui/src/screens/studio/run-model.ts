@@ -30,6 +30,10 @@ export const LIVE_STATUSES: readonly CoachRunStatus[] = ["active", "stepping", "
  * backs off). Never `waiting_athlete`: the athlete's answer comes first. */
 const STEPPABLE: readonly CoachRunStatus[] = ["active", "stepping", "waiting_review", "waiting_set"];
 
+/** A run that is over, for one of the reasons this bundle knows. A status it doesn't know (a newer server's) is neither
+ * live nor one of these: shown in its own words, never stepped, never read as a failure (the robustness pass). */
+export const OVER_STATUSES: readonly CoachRunStatus[] = ["finished", "failed", "cancelled", "expired", "stopped_cap"];
+
 export const isLive = (s: CoachRunStatus): boolean => LIVE_STATUSES.includes(s);
 export const isSteppable = (s: CoachRunStatus): boolean => STEPPABLE.includes(s);
 /** A set: the main coach plans several workouts, each designed by its own designer. */
@@ -62,11 +66,14 @@ export function statusWord(run: Pick<CoachRunDto, "status" | "error" | "scope">,
     case "stopped_cap":
     case "failed":
       return run.error === "run_ceiling" || run.error === "weekly_cap" ? "ran out of budget" : "stopped";
+    default:
+      // A status a newer server sends: its own words, plainly ("thinking_hard" → "thinking hard").
+      return String(run.status ?? "").replace(/[_-]+/g, " ").trim().toLowerCase() || "working";
   }
 }
 
-/** Every money figure: two decimals. */
-export const usd = (n: number): string => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
+/** Every money figure: two decimals (a figure that isn't a number reads as nothing spent). */
+export const usd = (n: number): string => `$${(Math.round((Number.isFinite(n) ? n : 0) * 100) / 100).toFixed(2)}`;
 
 /** The header's spend (fix wave 3B, M4): "Spent $0.16" — read again with every read of the run. */
 export const spentWords = (n: number): string => `Spent ${usd(n)}`;
@@ -83,8 +90,9 @@ export const CANCEL_CONFIRM_ABOVE_USD = 0.5;
 // ── Events → lines ──────────────────────────────────────────────────────────
 
 /** A step's events and a poll's, merged by `seq`: in order, never one twice (the later copy of a seq wins). */
-export function mergeEvents(have: readonly CoachRunEventDto[], incoming: readonly CoachRunEventDto[]): CoachRunEventDto[] {
-  if (incoming.length === 0) return have as CoachRunEventDto[];
+export function mergeEvents(have: readonly CoachRunEventDto[], incoming: readonly CoachRunEventDto[] | null | undefined): CoachRunEventDto[] {
+  // An answer without its events (a cut-off body) merges nothing.
+  if (!Array.isArray(incoming) || incoming.length === 0) return have as CoachRunEventDto[];
   const bySeq = new Map<number, CoachRunEventDto>();
   for (const e of have) bySeq.set(e.seq, e);
   for (const e of incoming) bySeq.set(e.seq, e);
@@ -193,12 +201,14 @@ export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boo
       const line = openCalls.get(key)!;
       openCalls.delete(key);
       line.events.push(e);
-      line.summary = e.summary;
+      if (typeof e.summary === "string" && e.summary.trim()) line.summary = e.summary;
       line.glyph = glyphOf(e);
       line.undo = line.undo ?? undoHandleOf(e);
       continue;
     }
-    const summary = e.kind === "question" ? askedLine(e) : e.summary;
+    const summary = e.kind === "question" ? askedLine(e) : typeof e.summary === "string" ? e.summary : "";
+    // A line with nothing to say (a newer server's event with no summary) isn't shown: a mark with no words.
+    if (!summary.trim()) continue;
     const p = record(e.payload);
     const line: RunLine = {
       key: e.seq,
@@ -220,8 +230,21 @@ export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boo
 /** Once the run is over, the trail folds to this one line (fix wave 3B, B-I7): the card's Approve sits high on a phone. */
 export const TRAIL_FOLD_LINE = "How the coach made this";
 
-/** The line under a live run (M10): it moves only while the Studio is open — the client is what steps it. */
-export const PAUSE_LINE = "The coach pauses while you're away from the Studio.";
+/** The line under a live run (M10): it moves only while the app is open — the client is what steps it, on any screen
+ * (the app's run keeper, the robustness pass). */
+export const PAUSE_LINE = "The coach pauses while the app is closed.";
+
+/** The trail's last line while another request's step is at work (another tab or device, or a step this page sent
+ * before it was reloaded): never a ● with nothing said (the robustness pass). */
+export const STILL_WORKING_LINE = "The coach is still working on this…";
+
+/** Under the trail once a step has been at work longer than the model's own deadline. */
+export const SLOW_LINE = "This is taking longer than usual.";
+
+/** Whether a step at work since `since` has outlasted the model's own deadline. */
+export function isSlow(since: number | null, now: number, deadlineMs: number): boolean {
+  return since !== null && now - since > deadlineMs;
+}
 
 /** "Sat 17 Oct · Single-leg strength": a set's day, and its workout's title once known. */
 export function dayHeading(day: string, title: string | null): string {
@@ -532,8 +555,12 @@ export function askedOf(events: readonly CoachRunEventDto[]): Asked | null {
 
 // ── The step loop's decisions ───────────────────────────────────────────────
 
-/** Failures in a row (a network error, a 5xx) before the loop stops and offers Retry. */
+/** Failures in a row (a network error, a 5xx) before the loop says so and offers Retry. */
 export const MAX_FAILURES = 4;
+/** Once it has said so, how often it tries again by itself (a run on a screen the athlete isn't looking at never stalls). */
+export const LOST_RETRY_MS = 60_000;
+/** A step out this long while every read in that time found the run not stepping lost its answer: it is given up. */
+export const STEP_LOST_MS = 45_000;
 /** How often the run's events are read while a step is in flight. */
 export const POLL_MS = 2_000;
 /** The longest the loop waits for a `nextDue` (a clock that disagrees with the server's never parks it for long). */
@@ -565,8 +592,8 @@ export function stepErrorKind(e: unknown): StepErrorKind {
 /** Whether an error is the server saying the coach isn't there at all (its routes are off). */
 export const isNotAvailable = (e: unknown): boolean => e instanceof ApiError && e.status === 404;
 
-/** The line the loop shows after MAX_FAILURES failures in a row. */
-export const LOST_LINE = "Lost the connection. It'll pick up when you're back.";
+/** The line the loop shows after MAX_FAILURES failures in a row: it keeps trying by itself, and Retry tries now. */
+export const LOST_LINE = "Can't reach the coach right now. It keeps trying.";
 /** The composer's one quiet line when the server's coach is off. */
 export const NOT_AVAILABLE_LINE = "The coach isn't available here.";
 /** The line the composer shows when the athlete already has the coach working on something — and how to ask anew (M10). */
@@ -585,7 +612,7 @@ export interface Failure {
 
 /** What stopped a run that is over, and what happens next; null for one that finished, or was cancelled. */
 export function failureOf(run: Pick<CoachRunDto, "status" | "error">): Failure | null {
-  if (run.status === "finished" || run.status === "cancelled" || isLive(run.status)) return null;
+  if (run.status === "finished" || run.status === "cancelled" || !OVER_STATUSES.includes(run.status)) return null;
   if (run.status === "expired") return { what: "This design ran out of time.", next: "Start a new one when you're ready.", credits: false };
   switch (run.error) {
     case "gateway_402":
@@ -750,14 +777,17 @@ export function refusedLine(r: { error: string; why: string; cause?: string }): 
   return { lead, detail: SAID_BY_CODE.has(r.error) || named || why.length === 0 || why === lead ? null : why };
 }
 
-/** "Thu 6 PM" — a day and, when set, a time. */
+/** "Thu 6 PM" — a day and, when set, a time; a day or a time that can't be read is left out. */
 export function dayAndTime(date: string, time: string | null | undefined): string {
-  return time ? `${weekdayShort(date)} ${formatTime(time)}` : weekdayShort(date);
+  const day = isDay(date) ? weekdayShort(date) : "";
+  const at = typeof time === "string" && /^\d{1,2}:\d{2}/.test(time) ? formatTime(time) : "";
+  return [day, at].filter(Boolean).join(" ");
 }
 
-/** The Plan's day for a workout: its week, the workout's sheet open. */
+/** The Plan's day for a workout: its week, the workout's sheet open (a day that can't be read: the sheet alone). */
 export function planDayHref(workoutId: string, date: string): string {
-  return `/plan?week=${mondayOf(date)}&workout=${encodeURIComponent(workoutId)}`;
+  const sheet = `workout=${encodeURIComponent(workoutId)}`;
+  return isDay(date) ? `/plan?week=${mondayOf(date)}&${sheet}` : `/plan?${sheet}`;
 }
 
 /** The Monday of a date's ISO week. */

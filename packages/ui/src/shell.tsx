@@ -2,8 +2,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
 import type { RestoreStatus } from "@rg/api-client";
-import { features } from "./features.js";
+import { coachOn, features } from "./features.js";
 import { IconGarden, IconPlan, IconRuns, IconSettings, IconStudio } from "./icons.js";
+import { CoachBoundary } from "./screens/studio/coach-boundary.js";
+import { CoachNavMark } from "./screens/studio/run-keeper.js";
 import { useCorosReadNow } from "./screens/use-coros-read.js";
 import { RestorePendingNotice } from "./screens/restore-notice.js";
 
@@ -16,6 +18,19 @@ export const NAV = [
   { to: "/runs", label: "Activity", icon: <IconRuns /> },
   { to: "/settings", label: "Settings", icon: <IconSettings /> },
 ];
+
+/**
+ * The Studio tab's quiet ● while the coach has a run going (the run keeper; coach on only). A mark that fails to draw
+ * just isn't there.
+ */
+function StudioMark() {
+  if (!coachOn()) return null;
+  return (
+    <CoachBoundary quiet>
+      <CoachNavMark />
+    </CoachBoundary>
+  );
+}
 
 /** The tabs to draw: all five, or the original four while the Studio ships dark (`features.studio`). */
 export function navItems(): typeof NAV {
@@ -68,6 +83,7 @@ export function AppShell({
           <NavLink key={item.to} to={item.to} end={item.to === "/"}>
             {item.icon}
             {item.label}
+            {item.to === "/studio" ? <StudioMark /> : null}
           </NavLink>
         ))}
         <div className="nav-footer">{footer}</div>
@@ -101,6 +117,7 @@ export function AppShell({
           <NavLink key={item.to} to={item.to} end={item.to === "/"}>
             {item.icon}
             {item.label}
+            {item.to === "/studio" ? <StudioMark /> : null}
           </NavLink>
         ))}
       </nav>
