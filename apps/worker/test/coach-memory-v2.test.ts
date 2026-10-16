@@ -297,6 +297,15 @@ describe("remember's line, with undo", () => {
     expect(await one("before")).toMatchObject({ active: true, supersededBy: null });
   });
 
+  it("a handle reaches its own run's item only: another run's call with the same id is no item of this run's", async () => {
+    const runA = (await createRun(db, userId, { scope: { kind: "now" }, request: "x" }, new Date())).run.id;
+    await db.update(schema.coachRuns).set({ status: "cancelled" }).where(eq(schema.coachRuns.id, runA));
+    const runB = (await createRun(db, userId, { scope: { kind: "now" }, request: "y" }, new Date())).run.id;
+    await remembered(runB, { toolUseId: "toolu_same", input: { kind: "fact", body: "Run B's item", confidence: "stated" } });
+    expect((await undo(runA, `rm:${runA}:toolu_same`)).status).toBe(404);
+    expect((await one(`mem:${runB}:toolu_same`)).active).toBe(true);
+  });
+
   it("an item replaced again since keeps its history: only the item is taken back", async () => {
     await db.insert(schema.coachMemory).values(row("first", { kind: "rule", body: "Mornings" }));
     const runId = (await createRun(db, userId, { scope: { kind: "now" }, request: "x" }, new Date())).run.id;

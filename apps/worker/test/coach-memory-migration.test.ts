@@ -185,7 +185,14 @@ describe("the dry run", () => {
     expect(dry.body.dryRun).toBe(true);
     expect(dry.statements.filter(isWrite)).toEqual([]);
     expect(await snapshot()).toBe(before);
-    expect(dry.statements.length).toBeLessThanOrEqual(45);
+    // The session and the restore marker, then the preferences, the memory, the profile and the old Studio's plan.
+    expect(dry.statements).toHaveLength(6);
+    // `apply: false` is a dry run too.
+    const asked = await migrate({ apply: false });
+    expect(asked.status).toBe(200);
+    expect(asked.body.dryRun).toBe(true);
+    expect(asked.statements.filter(isWrite)).toEqual([]);
+    expect(await snapshot()).toBe(before);
   });
 
   it("says, for each profile-shaped item, where it would go and what is left in memory", async () => {
