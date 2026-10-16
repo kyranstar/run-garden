@@ -16,6 +16,7 @@
  *   check    asks for today's condition check first, then as `now`
  *   credits  the AI account is out of credits (402) at the first call: nothing is proposed
  *   slow     as `now`, each answer three seconds late (a live run to look at)
+ *   big      as `now`, its proposing answer over 16 KB: its calls run in the step after the one that read it
  */
 
 /** A turn calling tools, the way the model answers. */
@@ -66,8 +67,20 @@ function reviewer(_turn, ctx) {
   return uses(["submit_review", { scores, notes, mustFix: [], improvements: ["Hold the last bridge for a slow count of three."] }]);
 }
 
+/**
+ * As `now`, but the turn that proposes says a great deal first: its answer is over the worker's DOCUMENT_ANSWER_BYTES
+ * (16 KB), so the step that reads it runs none of its calls — they wait, queued, for the next step (coach-runs.ts).
+ */
+function designBig(turn, ctx) {
+  const answer = designAfter(0)(turn, ctx);
+  if (turn !== 1) return answer;
+  const musing = "Weighing the hips against the back, the warm-up against the time, and the bridges against the floor space. ".repeat(180);
+  return { ...answer, content: [{ type: "text", text: musing }, ...answer.content.filter((b) => b.type !== "text")] };
+}
+
 export const SCRIPTS = {
   now: { main: designAfter(0), reviewer },
+  big: { main: designBig, reviewer },
   slow: { main: designAfter(0), reviewer, delayMs: 3000 },
   ask: {
     main: (turn, ctx) =>
