@@ -33,6 +33,7 @@ import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import type { PlanAdjustOp } from "../proposal-kinds.js";
 import { answer, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
 import type { DesignTool } from "./types.js";
+import { utf8Bytes } from "../utf8.js";
 
 const input = z.object({}).strict();
 
@@ -43,7 +44,7 @@ const MUST_FIX_MAX = 120;
 const NOTES_SHOWN = 6;
 const NOTE_MAX = 200;
 const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
-const bytesOf = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+const bytesOf = (value: unknown): number => utf8Bytes(JSON.stringify(value));
 
 /** How much of each workout is shown: 0 all; 1 without the intent; 2 nor the parts; 3 nor the moves; 4 the must-fix
  * items counted only; 5 no regions; 6 the moves repeated on consecutive days counted, not listed. */

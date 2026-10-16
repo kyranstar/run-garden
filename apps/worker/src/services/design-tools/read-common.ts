@@ -34,6 +34,7 @@ import { isProfileId, profileById, UNANSWERED, type CheckReading, type Condition
 import { readingsOfDay } from "../condition-views.js";
 import type { Db } from "../db.js";
 import type { ToolErr, ToolOk, ToolRole } from "./types.js";
+import { utf8Bytes } from "../utf8.js";
 
 /** Read tools serve every role: the reviewer reads too (spec §5). */
 export const READ_ROLES: ToolRole[] = ["main", "designer", "reviewer"];
@@ -127,7 +128,7 @@ export function checkRange(from: string, to: string, names: { from: string; to: 
 /** The most one answer may carry for the model (its envelope included): well under the loop's 8,000-byte cut. */
 export const RESULT_BUDGET_BYTES = 6_500;
 
-const bytesOf = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+const bytesOf = (value: unknown): number => utf8Bytes(JSON.stringify(value));
 
 /** A cursor: opaque to the model, a JSON array of key parts (or one offset) underneath. */
 export function encodeCursor(parts: ReadonlyArray<string | number>): string {

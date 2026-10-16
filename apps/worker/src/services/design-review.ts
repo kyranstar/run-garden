@@ -60,6 +60,7 @@ import { refuse, untrusted } from "./design-tools/read-common.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolOk } from "./design-tools/types.js";
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, type PlanAdjustOp } from "./proposal-kinds.js";
+import { utf8Bytes } from "./utf8.js";
 
 /** An op of a design's proposal: a designed workout, or a change to a session already on the plan (Task 8b). */
 type DesignOp = DocWorkoutOp | PlanAdjustOp;
@@ -96,7 +97,7 @@ export const reviewerRunId = (designerRunId: string, toolUseId: string): string 
 
 const DIMENSION_IDS: readonly string[] = REVIEW_DIMENSIONS.map((d) => d.id);
 
-const bytes = (text: string): number => new TextEncoder().encode(text).length;
+const bytes = utf8Bytes;
 
 // ── Scores ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 

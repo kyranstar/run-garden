@@ -28,6 +28,7 @@ import {
   type SetEstimate,
 } from "./design-orchestrate.js";
 import { LLM_BUDGET, llmBudgetStatus } from "./llm.js";
+import { utf8Bytes } from "./utf8.js";
 import {
   callMessages,
   designModel,
@@ -516,7 +517,7 @@ export function resolveRunScope(asked: RunScope | undefined, coach: CoachPrefere
   return kind === "next_n" ? { kind, n: asked?.n ?? settings.nextN } : { kind };
 }
 
-const bytes = (text: string): number => new TextEncoder().encode(text).length;
+const bytes = utf8Bytes;
 
 // ── Dependencies ────────────────────────────────────────────────────────
 
@@ -2663,8 +2664,8 @@ const TRUNCATED_NOTE =
 
 /** A result above TOOL_RESULT_MAX_BYTES, cut (by bytes, at a character boundary) with a note saying how to page. */
 function capResult(text: string): string {
+  if (bytes(text) <= TOOL_RESULT_MAX_BYTES) return text;
   const encoded = new TextEncoder().encode(text);
-  if (encoded.length <= TOOL_RESULT_MAX_BYTES) return text;
   const room = TOOL_RESULT_MAX_BYTES - bytes(TRUNCATED_NOTE);
   let head = new TextDecoder().decode(encoded.slice(0, room));
   while (bytes(head) > room) head = head.slice(0, -1); // a split character decodes as U+FFFD (3 bytes)
