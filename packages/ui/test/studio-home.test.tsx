@@ -100,7 +100,8 @@ describe("the Studio home", () => {
     // Jumps need an answered, calm jaw check: with none yet, the jumping theme has nothing that fits today.
     const html = section(home({ library: libraryDto({ tmj: true }) }), "Themes");
     expect(text(html)).toContain("Jumps and landings None fit today");
-    expect(text(html)).not.toContain("0 moves");
+    // A count of nothing, not any count that ends in a nought ("30 moves" is fine).
+    expect(text(html)).not.toMatch(/(^|[^0-9])0 moves/);
     // A bare mat has no carry gear: the card names the place instead.
     const mat = section(home({ places: placesDto(["mat"]) }), "Themes");
     expect(text(mat)).toMatch(/Carry day (\d+ moves?|None at Home)/);

@@ -1,8 +1,9 @@
 // Controlled vocabularies for exercise records. Library validation rejects anything else.
 
+/** Movement patterns. `ankle-raise`: lifting the heels (a calf raise) or the toes (a tibialis raise) — neither is a squat. */
 export const PATTERNS = [
   "squat", "hinge", "lunge", "push-h", "push-v", "pull-h", "pull-v", "carry", "rotate", "anti-rotate", "anti-extend",
-  "anti-lateral", "mobility", "breathe", "release",
+  "anti-lateral", "mobility", "breathe", "release", "ankle-raise",
 ] as const;
 export type Pattern = (typeof PATTERNS)[number];
 
@@ -49,7 +50,7 @@ export type Purpose = (typeof PURPOSES)[number];
 
 /** A tag names what the other fields cannot; tags that echo a contraction, purpose or region (isometric-hold, eccentric-emphasis, balance, thoracic, ankle, core-stability) are used only when that quality is the defining point of the move. */
 export const TAGS = [
-  "posture", "ski", "hip-opening", "glute-activation", "single-leg", "landing", "deceleration", "anti-rotation",
+  "posture", "ski", "running", "hip-opening", "glute-activation", "single-leg", "landing", "deceleration", "anti-rotation",
   "desk-relief", "breath", "thoracic", "ankle", "balance", "rotational", "lateral", "grip", "core-stability",
   "elastic", "eccentric-emphasis", "isometric-hold",
 ] as const;
@@ -112,6 +113,7 @@ const LABELS: Record<string, string> = {
   mobility: "Mobility", breathe: "Breathing", release: "Release work",
   "push-h": "Pushing", "push-v": "Overhead pressing", "pull-h": "Rows", "pull-v": "Vertical pulling",
   "anti-rotate": "Anti-rotation", "anti-extend": "Anti-extension", "anti-lateral": "Side-bend resistance",
+  "ankle-raise": "Calf and shin raises",
   "upper-back": "Upper back", "low-back": "Low back", "full-body": "Full body",
   "glute-max": "Glute max", "glute-med": "Glute med", "deep-hip-rotators": "Deep hip rotators", "hip-flexors": "Hip flexors",
   "feet-intrinsics": "Foot muscles", "rectus-abdominis": "Rectus abdominis", "transverse-abdominis": "Deep abdominals",

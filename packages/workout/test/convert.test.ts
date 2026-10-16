@@ -608,7 +608,9 @@ describe("docFromBuild", () => {
       const docBlocks = [...new Set(doc.parts.map((p) => Object.entries(want).find(([, ps]) => ps.includes(p.purpose))![0]))];
       expect(docBlocks).toEqual(blocksInOrder);
     }
-    expect([...purposes].sort()).toEqual(["accessory", "activation", "arrive", "care", "cooldown", "main", "warmup"]);
+    // Since the lower-leg records (R10) the seeded history differs, and the sample holds a jumping day whose accessory
+    // block is one jump alone: a power part.
+    expect([...purposes].sort()).toEqual(["accessory", "activation", "arrive", "care", "cooldown", "main", "power", "warmup"]);
   });
 
   it("the swap alternatives become alternates (at most 3), the reasons the why, the progression note the progression", () => {

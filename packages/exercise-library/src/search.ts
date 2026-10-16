@@ -54,10 +54,16 @@ export function matchesFilters(ex: ExerciseRecord, f: LibraryFilters): boolean {
 /** Words of five or more letters forgive one typo (Stage 2 spec §4). */
 const TYPO_MIN_LETTERS = 5;
 
-/** Everyday words for the vocabulary's: a query word standing for another. */
-const ALIASES: Readonly<Record<string, string>> = {
+/**
+ * What a sore area asks for: a stretch, passive work (release, massage, a relaxed hold) or recovery — what eases it,
+ * never what loads it. "Sore calves" finds the calf stretches and the release, not the calf raises.
+ */
+const EASING: readonly string[] = ["stretch", "passive", "recovery"];
+
+/** Everyday words for the vocabulary's: a query word standing for another, or for any of a few. */
+const ALIASES: Readonly<Record<string, string | readonly string[]>> = {
   calf: "calves", ab: "core", abs: "core", ham: "hamstrings", hammies: "hamstrings", butt: "glutes", bum: "glutes",
-  delts: "deltoids", shin: "tibialis", tspine: "thoracic",
+  delts: "deltoids", shin: "tibialis", tspine: "thoracic", sore: EASING, soreness: EASING,
 };
 
 /**
@@ -137,7 +143,9 @@ const MIN_STEM = 3;
  * only after s, x, z, ch or sh ("presses" → "press", "boxes" → "box").
  */
 function variants(w: string): string[] {
-  if (ALIASES[w]) return [ALIASES[w]];
+  // Own keys only: a query word like "constructor" is no alias.
+  const alias = Object.hasOwn(ALIASES, w) ? ALIASES[w] : undefined;
+  if (alias !== undefined) return typeof alias === "string" ? [alias] : [...alias];
   const out = [w];
   const es = w.slice(0, -2);
   if (w.endsWith("es") && es.length >= MIN_STEM && /(s|x|z|ch|sh)$/.test(es)) out.push(es);
@@ -180,8 +188,9 @@ export type TextTier = 0 | 1 | 2 | 3 | 4 | 5;
  * How the record meets the query (Stage 2 spec §4), best first: 0 the name is the query; 1 the name starts with it;
  * 2 a word of the name starts with it; 3 the name contains it; 4 the card line or a tag says it as whole words (a
  * plural forgiven); 5 every word of the query starts a word the record says anywhere — name, card line, id, tags, purposes,
- * contraction, muscles, regions, gear (ids and labels), in any order, plurals and everyday words ("calf", "abs")
- * forgiven, a word of five or more letters forgiving one typo (ranked inside the tier by `wordRank`); null no match.
+ * contraction, muscles, regions, gear (ids and labels), in any order, plurals and everyday words ("calf", "abs"; "sore"
+ * for what eases) forgiven, a word of five or more letters forgiving one typo (ranked inside the tier by `wordRank`);
+ * null no match.
  * An empty query matches all (5).
  */
 export function textTier(ex: ExerciseRecord, query: string): TextTier | null {

@@ -170,28 +170,44 @@ describe("one part per move: it is offered where it fits best", () => {
   });
 
   // Sixty documents, every part of each: about a second on a quiet runner, and several on a loaded one.
-  it("30 generated documents (seeded builds), whole and as shells around their main work: no move is offered in two parts — two parts of one kind included", { timeout: 60_000 }, () => {
+  it("30 generated documents (seeded builds), whole and as shells around their main work: no move is offered in two parts — two parts of one kind included — but by a part with nothing else to offer", { timeout: 60_000 }, () => {
     // The sample the final review found 4 of 30 documents offering one move in two parts: a move ranked fourth where it
     // fits best filled the place another part's move left there, and two parts of one kind (two warm-ups) listed alike.
+    // The one way a move shows in two parts (the header's "never empty a part"): every move a part could offer is
+    // listed elsewhere, so it offers those too. Such a part, with the other parts' moves set aside, has nothing left;
+    // a part that lists another's move while it had its own is the bug. (The sample's documents are seeded builds over
+    // the real library, so they change with it: since the lower-leg records (R10) a few of them are such documents.)
     const twice: string[] = [];
     let sameKind = 0;
+    let emptied = 0;
     for (const { label, plan } of seededBuilds(30)) {
       const whole = docFromBuild(stored(plan));
       const shell = { ...whole, parts: whole.parts.map((p) => (p.purpose === "main" ? p : { ...p, items: [] })) } as WorkoutDoc;
       for (const doc of [whole, shell]) {
         const kinds = doc.parts.map((p) => p.purpose);
         if (new Set(kinds).size < kinds.length) sameKind += 1;
+        const lists = doc.parts.map((_, i) => ids(suggestForPart(doc, i, LIBRARY, CTX)));
+        /** Part `i` lists only what others list, and with those set aside has nothing at all to offer. */
+        const nothingElse = (i: number): boolean => {
+          const elsewhere = lists.flatMap((l, j) => (j === i ? [] : l));
+          if (!lists[i]!.every((id) => elsewhere.includes(id))) return false;
+          return suggestForPart(doc, i, LIBRARY, { ...CTX, excluded: elsewhere }).length === 0;
+        };
         const where = new Map<string, number>();
-        doc.parts.forEach((p, i) => {
-          for (const id of ids(suggestForPart(doc, i, LIBRARY, CTX))) {
-            if (where.has(id)) twice.push(`${label}${doc === shell ? " (shell)" : ""}: ${id} in ${doc.parts[where.get(id)!]!.purpose} and ${p.purpose}`);
-            else where.set(id, i);
+        lists.forEach((list, i) => {
+          for (const id of list) {
+            const first = where.get(id);
+            if (first === undefined) where.set(id, i);
+            else if (nothingElse(first) || nothingElse(i)) emptied += 1;
+            else twice.push(`${label}${doc === shell ? " (shell)" : ""}: ${id} in ${doc.parts[first]!.purpose} and ${doc.parts[i]!.purpose}`);
           }
         });
       }
     }
     expect(sameKind).toBeGreaterThan(20);
     expect(twice).toEqual([]);
+    // Rare: most parts have moves of their own to offer.
+    expect(emptied).toBeLessThan(30);
   });
 
   it("two parts of one kind each offer their own: the second warm-up takes the next moves, not the first's again", () => {

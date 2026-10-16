@@ -10,11 +10,16 @@ import { EXTRA_STRENGTH } from "./extra-strength.js";
 import { FLOWS } from "./flows.js";
 import { JAW_NECK } from "./jaw-neck.js";
 import { LOWER } from "./lower.js";
+import { LOWER_LEG } from "./lower-leg.js";
 import { MOBILITY } from "./mobility.js";
 import { UPPER } from "./upper.js";
 
-/** Every library record, in the standalone tool's load order (library order breaks ties in selection). */
+/**
+ * Every library record, in the standalone tool's load order (library order breaks ties in selection); later additions
+ * go last, so the ties among the older records break as before.
+ */
 export const EXERCISES: readonly ExerciseRecord[] = [
   ...BREATH_DOWNSHIFT, ...JAW_NECK, ...MOBILITY, ...CORE_CARRY, ...LOWER, ...UPPER,
   ...EXTRA_JAW_NECK, ...EXTRA_MOBILITY, ...EXTRA_STRENGTH, ...EXTRA_CORE, ...EXTRA_PASS_TWO, ...ATHLETIC, ...FLOWS,
+  ...LOWER_LEG,
 ];

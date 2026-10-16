@@ -29,6 +29,7 @@ export const GLOSSARY: Readonly<Record<string, string>> = {
   // ── Tags ──
   posture: "How you hold yourself: sitting and standing tall with ease.",
   ski: "Builds what skiing asks for: strong legs, steady knees, quick balance.",
+  running: "Builds what running asks for: strong calves and shins, steady ankles.",
   "hip-opening": "Frees how your hips turn, fold and open.",
   "glute-activation": "Wakes your buttock muscles so they drive your hips.",
   "single-leg": "One leg at a time, for strength and balance on each side.",
