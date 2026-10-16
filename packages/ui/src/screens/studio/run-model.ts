@@ -17,7 +17,17 @@
  * Every text the coach or the athlete wrote (the request, an event's summary, a question, a why) is data: the view
  * renders it as text, never as markup.
  */
-import { ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus, type DesignChangeBeforeDto, type TodayResponse } from "@rg/api-client";
+import {
+  ApiError,
+  type CoachRunDto,
+  type CoachRunEventDto,
+  type CoachRunRole,
+  type CoachRunStatus,
+  type CoachRunWeekBudgetError,
+  type CoachSpendDto,
+  type DesignChangeBeforeDto,
+  type TodayResponse,
+} from "@rg/api-client";
 import { dayLabel } from "@rg/domain";
 import { formatTime, weekdayShort } from "../../components.js";
 import { kindWords } from "../settings/coach-memory-model.js";
@@ -78,10 +88,48 @@ export const usd = (n: number): string => `$${(Math.round((Number.isFinite(n) ? 
 /** The header's spend (fix wave 3B, M4): "Spent $0.16" — read again with every read of the run. */
 export const spentWords = (n: number): string => `Spent ${usd(n)}`;
 
-/** "About $4.23; the limit is $6.00" — a set's estimate, once its plan made one. */
-export function estimateLine(run: Pick<CoachRunDto, "estimateUsd" | "ceilingUsd">): string | null {
+/**
+ * "About $4.23; the limit is $6.00" — a set's estimate, once its plan made one; "About $4.23; $2.10 left this week"
+ * when what the week has left is less than what the run's own limit still allows (Task 13, D11).
+ */
+export function estimateLine(run: Pick<CoachRunDto, "estimateUsd" | "ceilingUsd" | "costUsd">, weekLeftUsd: number | null = null): string | null {
   if (typeof run.estimateUsd !== "number") return null;
-  return typeof run.ceilingUsd === "number" ? `About ${usd(run.estimateUsd)}; the limit is ${usd(run.ceilingUsd)}` : `About ${usd(run.estimateUsd)}`;
+  const about = `About ${usd(run.estimateUsd)}`;
+  const runLeft = typeof run.ceilingUsd === "number" ? run.ceilingUsd - (Number.isFinite(run.costUsd) ? run.costUsd : 0) : Infinity;
+  if (weekLeftUsd !== null && weekLeftUsd < runLeft) return `${about}; ${usd(weekLeftUsd)} left this week`;
+  return typeof run.ceilingUsd === "number" ? `${about}; the limit is ${usd(run.ceilingUsd)}` : about;
+}
+
+// ── The week's budget (Task 13: R11, M6, D11) ───────────────────────────────
+
+/** What the rolling week has left of its AI budget, and whether it is used up. */
+export interface WeekBudget {
+  leftUsd: number;
+  usedUp: boolean;
+}
+
+/** The week's budget from the spend Settings shows (`GET /api/coach/spend`); null when it can't be read. */
+export function weekBudgetOf(s: Pick<CoachSpendDto, "spentMicros" | "cutoffMicros"> | null | undefined): WeekBudget | null {
+  if (!s || !Number.isFinite(s.spentMicros) || !Number.isFinite(s.cutoffMicros) || s.cutoffMicros <= 0) return null;
+  return { leftUsd: Math.max(0, s.cutoffMicros - s.spentMicros) / 1e6, usedUp: s.spentMicros >= s.cutoffMicros };
+}
+
+/** Past the week's cutoff, in place of the ways to start (R11): the words a stop at the weekly cap says too. */
+export const WEEK_USED_UP_LINE = "This week's AI budget is used up. The coach can design again next week.";
+
+/**
+ * The server's refusal to start a run the week can't pay for (409 `week_budget`, §2.11), in one plain line; null for
+ * any other error.
+ */
+export function weekBudgetRefusal(e: unknown): string | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  const b = e.body as { [K in keyof CoachRunWeekBudgetError]?: unknown } | null;
+  if (b?.error !== "week_budget") return null;
+  const spent = typeof b.spentUsd === "number" && Number.isFinite(b.spentUsd) ? b.spentUsd : null;
+  const cutoff = typeof b.cutoffUsd === "number" && Number.isFinite(b.cutoffUsd) ? b.cutoffUsd : null;
+  const left = spent !== null && cutoff !== null ? Math.max(0, cutoff - spent) : null;
+  if (left === null || left < 0.005) return WEEK_USED_UP_LINE;
+  return `This week's AI budget has ${usd(left)} left — not enough for this request.`;
 }
 
 /** Above this spend, Cancel asks first. */

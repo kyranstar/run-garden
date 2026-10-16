@@ -10988,6 +10988,12 @@ a.stu-tpl-open:focus-visible::before {
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }
+/* Past the week's cutoff (Task 13, R11): the line where the ways to start were. */
+.coach-composer-used {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
 .coach-scope-chev {
   display: inline-flex;
   transform: rotate(90deg);

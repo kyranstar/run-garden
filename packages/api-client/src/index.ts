@@ -1230,8 +1230,17 @@ export interface CoachRunEventDto {
   at: string;
 }
 
+/** `POST /api/coach/runs`'s 409 when what the week has spent and what the request would cost pass the week's cutoff
+ * (Task 13, §2.11): nothing started. */
+export interface CoachRunWeekBudgetError {
+  error: "week_budget";
+  spentUsd: number;
+  cutoffUsd: number;
+}
+
 /** `POST /api/coach/runs`: a new run, or the athlete's live one — nothing about it changed — with what the screen can
- * offer, and the request it did not start (to offer again once the live run is cancelled). */
+ * offer, and the request it did not start (to offer again once the live run is cancelled). A 409 `week_budget`
+ * (`CoachRunWeekBudgetError`): the week can't pay for it. */
 export type CoachRunCreateResult =
   | { run: CoachRunDto; existing: false }
   | {

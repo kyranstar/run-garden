@@ -11,10 +11,10 @@ import "fake-indexeddb/auto";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachRunDto, DesignLineDto } from "@rg/api-client";
-import { StudioCoach } from "../src/screens/studio/composer.js";
+import { COACH_CURRENT_QUERY, StudioCoach } from "../src/screens/studio/composer.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
 import { primedClient, todayDto, TODAY } from "./studio-fixtures.js";
@@ -108,11 +108,12 @@ const quietLoop = (r: () => CoachRunDto) => (): LoopDeps => ({
   onVisibility: () => () => undefined,
 });
 
-function mount(o: { loop?: () => LoopDeps } = {}) {
+function mount(o: { loop?: () => LoopDeps; prime?: (qc: QueryClient) => void } = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   const qc = primedClient({ today: todayDto(null) });
+  o.prime?.(qc);
   act(() => {
     root!.render(
       createElement(
@@ -206,6 +207,13 @@ describe("Also waiting (R2, §2.7)", () => {
     expect(alsoLines().map((b) => b.textContent)).toEqual(["Hips and back, gently · Sun 1:05 PM"]);
   });
 
+  it("a kept read's list is never shown: only a read made since the screen opened says what is waiting", async () => {
+    serve({ "GET /api/coach/runs/current": () => new Promise<Response>(() => undefined) as unknown as Response });
+    mount({ prime: (qc) => qc.setQueryData(COACH_CURRENT_QUERY, { run: null, alsoOpen: alsoOpen.slice(0, 1) }) });
+    await settle(20);
+    expect(alsoSection()).toBeNull();
+  });
+
   it("nothing else open (or an older server that doesn't say): no Also waiting at all", async () => {
     serve({
       "GET /api/coach/runs/current": { run: run(), events: [], proposal: { id: "dp-1", status: "pending", flags: [] } },
@@ -215,5 +223,84 @@ describe("Also waiting (R2, §2.7)", () => {
     await until(() => text().includes("Gym session"), "the current card");
     await settle(20);
     expect(alsoSection()).toBeNull();
+  });
+});
+
+// ── The week's budget ───────────────────────────────────────────────────────
+
+describe("the week's budget (R11, M6, D11, §2.11)", () => {
+  const spend = (spentUsd: number, cutoffUsd = 20) => ({ since: `${TODAY}T00:00:00.000Z`, spentMicros: Math.round(spentUsd * 1e6), spentUsd, warnMicros: 5e6, cutoffMicros: cutoffUsd * 1e6 });
+  const coachPrefs = (defaultScope: "now" | "week" | "next_n") => ({
+    coach: { defaultScope },
+    settings: { defaultScope, nextN: 3, trainingTimes: [], ceilingsUsd: { day: 1.5, set: 6 } },
+    model: { id: "m", name: "The coach's model" },
+  });
+  const field = () => document.querySelector<HTMLTextAreaElement>(".coach-composer-field");
+  const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === name) ?? null;
+  const posts = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.path === "/api/coach/runs");
+
+  it("past the week's cutoff: one plain line where the ways to start were — nothing to tap that would start a run", async () => {
+    const calls = serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/spend": spend(20.4) });
+    mount();
+    await until(() => text().includes("This week's AI budget is used up."), "the line");
+    expect(text()).toContain("This week's AI budget is used up. The coach can design again next week.");
+    expect(button("Now")).toBeNull();
+    expect(button("Later today")).toBeNull();
+    expect(button("Plan ahead")).toBeNull();
+    expect(document.querySelector(".coach-composer-actions")).toBeNull();
+    expect(posts(calls)).toHaveLength(0);
+  });
+
+  it("a set as the default and the week tighter than its limit: '$X left this week' beside what a set usually costs", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/spend": spend(17.9), "GET /api/coach/preferences": coachPrefs("week") });
+    mount();
+    await until(() => text().includes("left this week"), "the week's line");
+    expect(document.querySelector(".coach-composer-cost")!.textContent).toBe("A plan for the next 7 days usually costs about $3–5; $2.10 left this week.");
+  });
+
+  it("the run's own limit the tighter one: no word of the week", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null }, "GET /api/coach/spend": spend(4), "GET /api/coach/preferences": coachPrefs("week") });
+    mount();
+    await until(() => !!document.querySelector(".coach-composer-cost"), "the cost line");
+    await settle(20);
+    expect(document.querySelector(".coach-composer-cost")!.textContent).toBe("A plan for the next 7 days usually costs about $3–5.");
+  });
+
+  it("the spend can't be read: the composer as it was", async () => {
+    serve({ "GET /api/coach/runs/current": { run: null } });
+    mount();
+    await until(() => !!field(), "the composer");
+    await settle(20);
+    expect(button("Now")).not.toBeNull();
+    expect(text()).not.toContain("budget");
+  });
+
+  it("the server's 409 week_budget: one plain line, the words kept, no run", async () => {
+    const calls = serve({
+      "GET /api/coach/runs/current": { run: null },
+      "GET /api/coach/spend": spend(19.6),
+      "POST /api/coach/runs": () => json({ error: "week_budget", spentUsd: 19.6, cutoffUsd: 20 }, 409),
+    });
+    mount();
+    await until(() => !!field(), "the composer");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field()!, "plan my week");
+      field()!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Plan ahead"), "Plan ahead");
+    await click(button("Next 7 days"), "Next 7 days");
+    await until(() => text().includes("not enough for this request"), "the line");
+    expect(document.querySelector(".coach-composer-error")!.textContent).toBe("This week's AI budget has $0.40 left — not enough for this request.");
+    expect(posts(calls)).toHaveLength(1);
+    expect(field()!.value).toBe("plan my week");
+    expect(document.querySelector(".coach-run")).toBeNull();
+  });
+
+  it("a live set's estimate: the week's left beside it when the week is the tighter limit", async () => {
+    const live = run({ id: "run-set", scope: { kind: "week" }, status: "waiting_set", costUsd: 0.5, estimateUsd: 4.23, ceilingUsd: 6, proposalId: null, finishedAt: null });
+    serve({ "GET /api/coach/runs/current": { run: live, events: [], proposal: null }, "GET /api/coach/spend": spend(17.9) });
+    mount({ loop: quietLoop(() => live) });
+    await until(() => text().includes("left this week"), "the estimate");
+    expect(document.querySelector(".coach-run-estimate")!.textContent).toBe("About $4.23; $2.10 left this week");
   });
 });

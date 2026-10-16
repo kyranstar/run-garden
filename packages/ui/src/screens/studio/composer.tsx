@@ -17,7 +17,10 @@
  *  - Now / Later today / a scope from the menu start a run with the field's words. When the athlete already has the coach
  *    working on something, the server answers that run (`existing`): it opens, with one line saying so, and the words
  *    this tap carried are offered back into the field — never dropped silently.
- *  - A set (this week, the next workouts) shows its estimate once its plan made one, beside the limit; Cancel is there.
+ *  - A set (this week, the next workouts) shows its estimate once its plan made one, beside the limit — or beside what
+ *    the week has left, when that is the tighter limit (Task 13, D11); Cancel is there.
+ *  - The week's AI budget (the spend Settings shows; Task 13, R11/M6): past its cutoff, one plain line where the ways to
+ *    start were; a start the server refuses for it (409 `week_budget`) one plain line, the words kept in the field.
  *  - A run that stops says what stopped it and what happens next; its suggestion's card follows when it proposed what was
  *    reviewed, and otherwise up to three ways to train now.
  *  - Under the card, "Also waiting": the other suggestions still open (the current read's `alsoOpen`, Task 13 R2), a
@@ -47,8 +50,14 @@ import {
   fallbackTiles,
   isLive,
   isNotAvailable,
+  isSetScope,
   NOT_AVAILABLE_LINE,
+  usd,
+  WEEK_USED_UP_LINE,
+  weekBudgetOf,
+  weekBudgetRefusal,
   type FallbackTile,
+  type WeekBudget,
 } from "./run-model.js";
 import { RunView, StoppedLine } from "./run-view.js";
 import { quickTiles, sortTemplates, templateHref, templateShape } from "./templates-model.js";
@@ -79,12 +88,18 @@ export function setScopeWords(scope: CoachScopeKind, nextN: number): string | nu
 
 /**
  * What the default set usually costs, beside the button that starts it in one tap (fix wave 3B, M4; the re-review):
- * "A plan for the next 7 days usually costs about $3–5." None when the default is no set.
+ * "A plan for the next 7 days usually costs about $3–5." — and, when the week has less left than a set's own limit
+ * (Task 13, D11), "…; $2.10 left this week." None when the default is no set.
  */
-export function setCostLine(scope: CoachScopeKind, nextN: number): string | null {
+export function setCostLine(scope: CoachScopeKind, nextN: number, weekLeftUsd: number | null = null, setCeilingUsd = Infinity): string | null {
   const words = setScopeWords(scope, nextN);
-  return words ? `A plan for ${words} usually costs about $3–5.` : null;
+  if (!words) return null;
+  const line = `A plan for ${words} usually costs about $3–5`;
+  return weekLeftUsd !== null && weekLeftUsd < setCeilingUsd ? `${line}; ${usd(weekLeftUsd)} left this week.` : `${line}.`;
 }
+
+/** The spend's read (Settings → Coach reads it too). */
+export const COACH_SPEND_QUERY = ["coach-spend"] as const;
 
 /** The run the area shows, with its trail when known (an `existing` answer comes without it: the loop reads it). */
 interface Shown {
@@ -118,6 +133,9 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   // Settings → Coach's read (Task 10), shared with its card: a 404 (or no read yet) is the defaults.
   const prefs = useQuery({ queryKey: COACH_PREFERENCES_QUERY, queryFn: api.coachPreferences, retry: false });
   const settings = prefs.data?.settings ?? coachSettings(null);
+  // The week's AI budget (Task 13: R11, M6, D11): what Settings shows. Unreadable, nothing is said and nothing held back.
+  const spend = useQuery({ queryKey: COACH_SPEND_QUERY, queryFn: api.coachSpend, retry: false });
+  const budget = weekBudgetOf(spend.data);
   const [shown, setShown] = useState<Shown | null>(null);
   const [draft, setDraft] = useState(() => (typeof arrival?.request === "string" ? arrival.request.slice(0, REQUEST_MAX_CHARS) : ""));
   /** The run an `existing` answer opened: its line shows while it is live. */
@@ -151,7 +169,13 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
     if (!over) return;
     void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     void qc.invalidateQueries({ queryKey: ["coach-design-proposal"] });
+    void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
   }, [over, run?.id, qc]);
+  // A live set's estimate says what the week has left beside it (D11): read again as the set spends.
+  const setCost = run && live && isSetScope(run) ? run.costUsd : null;
+  useEffect(() => {
+    if (setCost !== null) void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
+  }, [setCost, qc]);
 
   // A double or triple tap on Now starts one run (the robustness pass): never a second create answered `existing`.
   const oneTap = useOneTap();
@@ -171,7 +195,12 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
       void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     },
     onError: (e) => {
-      if (isNotAvailable(e)) setUnavailable(true);
+      // The week can't pay for it (§2.11): one plain line, the words kept in the field.
+      const refused = weekBudgetRefusal(e);
+      if (refused) {
+        setStartError(refused);
+        void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
+      } else if (isNotAvailable(e)) setUnavailable(true);
       else setStartError("Couldn't reach the coach — try again.");
     },
   });
@@ -252,6 +281,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
             defaultScope={settings.defaultScope}
             nextN={settings.nextN}
             wordsBack={existingLive ? null : wordsBack}
+            budget={budget}
+            setCeilingUsd={settings.ceilingsUsd.set}
           />
         </CoachBoundary>
       ) : null}
@@ -270,6 +301,7 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
             onRefresh={() => void loop?.refresh()}
             notice={notice}
             focusKey={started !== null && run.id === started ? started : null}
+            weekLeftUsd={budget?.leftUsd ?? null}
           />
         </CoachBoundary>
       ) : null}
@@ -305,6 +337,8 @@ export function Composer({
   defaultScope = "now",
   nextN = NEXT_N_DEFAULT,
   wordsBack = null,
+  budget = null,
+  setCeilingUsd = Infinity,
 }: {
   draft: string;
   onDraft: (v: string) => void;
@@ -319,6 +353,10 @@ export function Composer({
   nextN?: number;
   /** The words a tap carried that the coach didn't start, offered back ("Copy my words back"; M4). */
   wordsBack?: ReactNode;
+  /** The week's AI budget (Task 13): used up, one line where the ways to start were; tight, its left beside a set's cost. */
+  budget?: WeekBudget | null;
+  /** A set's own spending limit (Settings → Coach): the week is the tighter limit below it. */
+  setCeilingUsd?: number;
 }) {
   const id = useId();
   const headingId = useId();
@@ -327,7 +365,8 @@ export function Composer({
     if (focus) field.current?.focus();
   }, [focus]);
   const near = draft.length >= COUNTER_FROM;
-  const cost = setCostLine(defaultScope, nextN);
+  const cost = setCostLine(defaultScope, nextN, budget?.leftUsd ?? null, setCeilingUsd);
+  const usedUp = budget?.usedUp === true;
   return (
     <div className="coach-composer-box" role="group" aria-labelledby={headingId}>
       {/* Named as the Studio's sections are, in their eyebrow (fix wave 3B, B-I10). */}
@@ -354,16 +393,25 @@ export function Composer({
         </span>
       ) : null}
       {wordsBack ? <p className="coach-composer-back">{wordsBack}</p> : null}
-      <div className="coach-composer-actions">
-        <button type="button" className={btnFor(defaultScope === "now")} disabled={busy} onClick={() => onStart({ kind: "now" })}>
-          Now
-        </button>
-        <button type="button" className={btnFor(defaultScope === "later_today")} disabled={busy} onClick={() => onStart({ kind: "later_today" })}>
-          Later today
-        </button>
-        <ScopeMenu nextN={nextN} defaultScope={defaultScope} busy={busy} onPick={onStart} />
-      </div>
-      {cost ? <p className="coach-composer-cost">{cost}</p> : null}
+      {usedUp ? (
+        // Past the week's cutoff (R11, M6): the line, instead of a run that would stop at once.
+        <p className="coach-composer-used" role="status">
+          {WEEK_USED_UP_LINE}
+        </p>
+      ) : (
+        <>
+          <div className="coach-composer-actions">
+            <button type="button" className={btnFor(defaultScope === "now")} disabled={busy} onClick={() => onStart({ kind: "now" })}>
+              Now
+            </button>
+            <button type="button" className={btnFor(defaultScope === "later_today")} disabled={busy} onClick={() => onStart({ kind: "later_today" })}>
+              Later today
+            </button>
+            <ScopeMenu nextN={nextN} defaultScope={defaultScope} busy={busy} onPick={onStart} />
+          </div>
+          {cost ? <p className="coach-composer-cost">{cost}</p> : null}
+        </>
+      )}
       {error ? (
         <p className="coach-composer-error" role="status">
           {error}

@@ -86,6 +86,8 @@ export interface RunViewProps {
    * an answer (the question card goes): changing, it moves the focus again.
    */
   focusKey?: string | number | null;
+  /** What the week's AI budget has left (Task 13, D11): beside a set's estimate when it is the tighter limit. */
+  weekLeftUsd?: number | null;
 }
 
 export function RunView({
@@ -102,6 +104,7 @@ export function RunView({
   onRefresh,
   notice,
   focusKey = null,
+  weekLeftUsd = null,
 }: RunViewProps) {
   const headingId = useId();
   const trailId = useId();
@@ -124,7 +127,8 @@ export function RunView({
   // While it waits on the athlete, the question is its card on top, not a line of the trail too (lead's QA, Q4).
   const lines = useMemo(() => runLines(events, { waiting }), [events, waiting]);
   const asked = waiting ? askedOf(events) : null;
-  const estimate = estimateLine(run);
+  // While it runs: once over, what the week has left is no longer this run's limit.
+  const estimate = estimateLine(run, live ? weekLeftUsd : null);
   // What a screen reader hears as it changes: the state and the newest line — the question it waits on, a stop.
   const question = waiting ? [...events].sort((a, b) => b.seq - a.seq).find((e) => e.kind === "question")?.summary : undefined;
   const newest = question ?? lines.at(-1)?.summary;
