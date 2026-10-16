@@ -1,9 +1,10 @@
 /**
  * read_history(from, to, kind?) — what was actually done (Stage 3 spec §4): logged sessions with their moves, sets,
  * flags and checks before and after; runs with distance, pace, heart rate and feel; other sports. One compact line
- * each, newest first, each with its id; a page that fits, paged by key (a session logged meanwhile never shifts the
- * next page). The prompt's guide lines (step down, hold, rotate) turn on a session's check rising and its flagged
- * sets, so both are on every session line. Two statements: the athlete, then everything in one read.
+ * each, newest first, each with its id and its day by name and how far from today ("Tue 12 May · yesterday"; fix wave
+ * 13, I6); a page that fits, paged by key (a session logged meanwhile never shifts the next page). The prompt's guide
+ * lines (step down, hold, rotate) turn on a session's check rising and its flagged sets, so both are on every session
+ * line. Two statements: the athlete, then everything in one read.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -75,7 +76,7 @@ export const readHistory: DesignTool = {
     const rows = await readTagged(ctx.db, doneTerms(ctx.userId, scope, { activitiesWhere: activitiesAround(p.from, p.to) }));
     const all = doneEntries(
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
-      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit },
+      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today },
       { from: p.from, to: p.to },
     ).filter((e) => !p.kind || e.kind === p.kind);
     // Newest first: a page starts at its cursor's line, or at the newest.

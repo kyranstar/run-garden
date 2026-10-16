@@ -1,9 +1,10 @@
 /**
  * read_answers(question?, area?, since?) — what the athlete has said (Stage 3 spec §4; principles §5.3): check-in
  * answers (soreness, tightness and pain by area, energy) and feedback (ratings of moves and workouts), newest first,
- * each with what it is about (`subject` and `subjectKind`), its age, and the athlete's own words marked. Since the last
- * fourteen days by default; a since further back than the range a read covers is refused. A page that fits, paged by
- * key (an answer recorded meanwhile never shifts the next page). Two statements: the athlete (for today), then the page.
+ * each with what it is about (`subject` and `subjectKind`), its day by name and how far from today ("Tue 12 May ·
+ * yesterday"; fix wave 13, I6), and the athlete's own words marked. Since the last fourteen days by default; a since
+ * further back than the range a read covers is refused. A page that fits, paged by key (an answer recorded meanwhile
+ * never shifts the next page). Two statements: the athlete (for today), then the page.
  */
 import { and, between, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -11,11 +12,11 @@ import { athleteAnswers } from "@rg/database";
 import { addDays, dayLabel } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
-  ageWords,
   checkRange,
   CURSOR_SCHEMA,
   cursorField,
   dateField,
+  dayWords,
   encodeCursor,
   isErr,
   keyCursor,
@@ -53,7 +54,7 @@ const input = z
 export const readAnswers: DesignTool = {
   name: "read_answers",
   description:
-    "Check-in answers and feedback, newest first with their age: soreness, tightness and pain by area, energy, ratings of moves and workouts. Filter by question id, area or since.",
+    "Check-in answers and feedback, newest first with their day: soreness, tightness and pain by area, energy, ratings of moves and workouts. Filter by question id, area or since.",
   inputSchema: {
     type: "object",
     properties: {
@@ -131,7 +132,7 @@ export const readAnswers: DesignTool = {
           ...(r.choice !== null ? { choice: ID.test(r.choice) ? r.choice : untrusted(r.choice) } : {}),
           ...(text ? { text } : {}),
           source: r.source,
-          age: ageWords(r.date, today),
+          day: dayWords(r.date, today),
           ...(expires && expires < today ? { expired: true } : {}),
         };
       },

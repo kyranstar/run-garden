@@ -3,7 +3,9 @@
  * is, its minutes, where it came from, whether it is done, whether it is still an outline the programme builds on its
  * day, and a document workout's intent and revision; plus each active programme's current block (its week and core
  * lifts). Archived rows are not workouts. A page that fits, paged by key. Two statements: the athlete, then the rows
- * and programmes in one read.
+ * and programmes in one read. Each row says its day ("Tue 12 May · yesterday"), and a row gone by while still only
+ * scheduled says nothing logged matches it (`passed`, its minutes then `plannedMinutes`): the plan is not the log (fix
+ * wave 13, A1/I6).
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -28,9 +30,12 @@ import {
   plural,
   READ_ROLES,
   athleteOf,
+  dayWords,
+  localTimeOf,
   readTagged,
   untrusted,
   untrustedOrNull,
+  type Athlete,
 } from "./read-common.js";
 
 const pw = plannedWorkouts;
@@ -70,20 +75,50 @@ function whatOf(category: string, subtype: string | null, sport: string): string
   return sport;
 }
 
-/** One planned row as the model reads it: the title and intent are the athlete's or an import's words, marked. */
-export function planItem(r: Record<string, unknown>): Record<string, unknown> {
+/** The athlete's today and local time now: what a planned row's `day` and `passed` are read against. */
+export interface PlanClock {
+  today: string;
+  /** "09:30", the athlete's local time. */
+  time: string;
+}
+
+export const planClock = (athlete: Pick<Athlete, "today" | "tz">, now: Date): PlanClock => ({ today: athlete.today, time: localTimeOf(athlete.tz, now.toISOString()) ?? "00:00" });
+
+/** What a planned row still only scheduled says once its time has gone by (fix wave 13, A1/I6): the plan is not the log. */
+export const PASSED_WORDS = "nothing logged — not known whether it happened";
+
+/**
+ * Whether a planned row's time has gone by while it is still only scheduled — nothing logged has matched it, so it may
+ * or may not have happened. A rest day never "passes"; a done, skipped or missed row says so itself.
+ */
+export function hasPassed(r: { date: string | null; time: string | null; state: string | null; category: string | null }, clock: PlanClock): boolean {
+  if (r.state !== "scheduled" || r.category === "rest" || !r.date) return false;
+  return r.date < clock.today || (r.date === clock.today && !!r.time && r.time < clock.time);
+}
+
+/**
+ * One planned row as the model reads it: the title and intent are the athlete's or an import's words, marked. With the
+ * clock, its `day` ("Tue 12 May · yesterday") and — gone by with nothing logged — `passed`, its minutes then
+ * `plannedMinutes` (the plan's figure, never what was done).
+ */
+export function planItem(r: Record<string, unknown>, clock?: PlanClock): Record<string, unknown> {
   const s = (k: string) => (typeof r[k] === "string" ? (r[k] as string) : null);
   const seconds = typeof r.seconds === "number" ? r.seconds : 0;
+  const date = s("date");
+  const passed = clock ? hasPassed({ date, time: s("time"), state: s("state"), category: s("category") }, clock) : false;
+  const minutes = seconds > 0 ? Math.round(seconds / 60) : null;
   const item: Record<string, unknown> = {
     id: s("id"),
-    date: s("date"),
+    date,
+    ...(clock && date ? { day: dayWords(date, clock.today) } : {}),
     time: s("time"),
     what: whatOf(s("category") ?? "", s("subtype"), s("sport") ?? ""),
-    minutes: seconds > 0 ? Math.round(seconds / 60) : null,
+    ...(passed ? { plannedMinutes: minutes } : { minutes }),
   };
   const origin = s("origin");
   if (origin) item.origin = ORIGIN_WORDS[origin] ?? origin;
   item.status = STATUS_WORDS[s("state") ?? ""] ?? s("state");
+  if (passed) item.passed = PASSED_WORDS;
   if (s("content")) item.content = s("content");
   if (typeof r.rev === "number") item.rev = r.rev;
   item.title = untrusted(s("title") ?? "");
@@ -142,6 +177,7 @@ export const readPlan: DesignTool = {
     if (isErr(at)) return at;
     const athlete = await athleteOf(ctx);
     const limit = p.limit ?? DEFAULT_LIMIT;
+    const clock = planClock(athlete, ctx.now);
     const rows = await readTagged(ctx.db, [
       planTerm(
         ctx.userId,
@@ -161,7 +197,7 @@ export const readPlan: DesignTool = {
       missing: athlete.missing,
       rows: ordered,
       limit,
-      render: planItem,
+      render: (r) => planItem(r, clock),
       cursorOf: (r) => encodeCursor([String(r.date), String(r.time), String(r.id)]),
       data: (workouts) => ({ from: p.from, to: p.to, workouts, programmes }),
       summary: (shown) => (shown || at ? `Read ${plural(shown, "planned workout")}, ${dayRangeLabel(p.from, p.to)}` : `Nothing planned, ${dayRangeLabel(p.from, p.to)}`),

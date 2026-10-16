@@ -22,7 +22,7 @@ import { addDays, type WeightUnit } from "@rg/domain";
 import { EXERCISES, PROFILES, isProfileId, profileById, THEMES } from "@rg/exercise-library";
 import { readingsBySession, sessionPerActivity, type CheckRowLike } from "../logged-sets.js";
 import { COROS_EXERCISE_PREFIX, PENDING_HASH } from "../watch-sets.js";
-import { activityDateOf, distanceWords, localTimeOf, minutesOf, paceWords, parsedArray, untrusted, weightWords, type Untrusted } from "./read-common.js";
+import { activityDateOf, dayWords, distanceWords, localTimeOf, minutesOf, paceWords, parsedArray, untrusted, weightWords, type Untrusted } from "./read-common.js";
 
 const ps = performedSessions;
 const pset = performedSets;
@@ -266,11 +266,16 @@ export interface DoneCtx {
   tz: string;
   units: "km" | "mi";
   weightUnit: WeightUnit;
+  /** The athlete's today: with it, each line says its day ("Tue 12 May · yesterday"; fix wave 13, I6). */
+  today?: string;
 }
 
 /** A line's kind, as the model filters by it: a logged session, a run, or another sport (its `sport` says which). */
 export type DoneKind = "session" | "run" | "other";
 export const DONE_KINDS = ["session", "run", "other"] as const satisfies readonly DoneKind[];
+
+/** A line's `day`, when the caller knows today. */
+const dayOf = (date: string, ctx: DoneCtx): { day?: string } => (ctx.today ? { day: dayWords(date, ctx.today) } : {});
 
 export interface DoneEntry {
   /** For ordering, newest first, and for a page to start at: the day, the local time, the id. */
@@ -311,7 +316,7 @@ export function doneEntries(
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([profileId, r]) => ({ profile: profileById(profileId).label, before: r.pre, after: r.post }));
     const a = s.activityId ? activitiesById.get(s.activityId) : undefined;
-    const entry: Record<string, unknown> = { id: s.id, date: s.date, kind: "session", source: s.source, minutes: minutesOf(s.seconds) };
+    const entry: Record<string, unknown> = { id: s.id, date: s.date, ...dayOf(s.date, ctx), kind: "session", source: s.source, minutes: minutesOf(s.seconds) };
     if (s.mode) entry.mode = s.mode;
     if (s.theme) entry.theme = THEME_NAME.get(s.theme) ?? untrusted(s.theme);
     if (s.workoutId) entry.workoutId = s.workoutId;
@@ -328,7 +333,7 @@ export function doneEntries(
     if (logged.has(a.id) || (range && (a.date < range.from || a.date > range.to))) continue;
     const key = `${a.date} ${localTimeOf(ctx.tz, a.start) ?? ""} ${a.id}`;
     if (a.sport === "run") {
-      const entry: Record<string, unknown> = { id: a.id, date: a.date, kind: "run", minutes: minutesOf(a.seconds) };
+      const entry: Record<string, unknown> = { id: a.id, date: a.date, ...dayOf(a.date, ctx), kind: "run", minutes: minutesOf(a.seconds) };
       if (a.meters && a.meters > 0) entry.distance = distanceWords(a.meters, ctx.units);
       const pace = a.pace && a.pace > 0 ? a.pace : a.meters && a.meters > 0 && a.seconds > 0 ? a.seconds / (a.meters / 1000) : null;
       if (pace) entry.pace = paceWords(pace, ctx.units);
@@ -338,7 +343,7 @@ export function doneEntries(
       if (a.note && a.note.trim()) entry.note = untrusted(a.note);
       out.push({ key, kind: "run", entry });
     } else {
-      const entry: Record<string, unknown> = { id: a.id, date: a.date, kind: "other", sport: a.sport, minutes: minutesOf(a.seconds) };
+      const entry: Record<string, unknown> = { id: a.id, date: a.date, ...dayOf(a.date, ctx), kind: "other", sport: a.sport, minutes: minutesOf(a.seconds) };
       if (a.hr) entry.hr = Math.round(a.hr);
       if (a.load) entry.load = Math.round(a.load);
       out.push({ key, kind: "other", entry });

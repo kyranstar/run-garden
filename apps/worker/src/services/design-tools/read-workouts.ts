@@ -2,8 +2,9 @@
  * list_workouts(from, to, q?) and get_workout(id) — document workouts (Stage 3 spec §4).
  *
  *  - list_workouts: the planned rows with a document between two dates, newest first, with their intent — the
- *    Studio's searchable list ("like last week's"; every word of `q` in the title or the intent). A page that fits,
- *    paged by key. One statement.
+ *    Studio's searchable list ("like last week's"; every word of `q` in the title or the intent), each with its day by
+ *    name and how far from today, and — gone by while still only scheduled — read_plan's `passed` (fix wave 13, I6).
+ *    A page that fits, paged by key. Two statements: the athlete (today, the timezone), then the page.
  *  - get_workout: one workout's document — every word in it marked (a document is written by the client, its `source`
  *    too, so nothing tells the athlete's words from the app's), and every id or vocabulary value that is not plainly
  *    one (a move the library does not know, an id with spaces in it) marked as well — its revision, what is derived
@@ -36,13 +37,15 @@ import {
   parseInput,
   plural,
   READ_ROLES,
+  athleteOf,
+  dayWords,
   readAthlete,
   readTagged,
   refuse,
   untrusted,
   type Untrusted,
 } from "./read-common.js";
-import { INTENT_SQL, ORIGIN_WORDS, STATUS_WORDS } from "./read-plan.js";
+import { hasPassed, INTENT_SQL, ORIGIN_WORDS, PASSED_WORDS, planClock, STATUS_WORDS } from "./read-plan.js";
 import { doneEntries, doneTerms, knownMove, sessionsWhere } from "./read-sessions.js";
 
 const pw = plannedWorkouts;
@@ -69,7 +72,7 @@ export const listWorkouts: DesignTool = {
     required: ["from", "to"],
     additionalProperties: false,
   },
-  statementCost: 1,
+  statementCost: 2,
   cpuWeight: 0.2,
   roles: READ_ROLES,
   async run(ctx, raw) {
@@ -82,6 +85,8 @@ export const listWorkouts: DesignTool = {
     if (isErr(at)) return at;
     const words = likeWordPatterns(p.q);
     const limit = p.limit ?? DEFAULT_LIMIT;
+    const athlete = await athleteOf(ctx);
+    const clock = planClock(athlete, ctx.now);
     const rows = await ctx.db
       .select({
         id: pw.id,
@@ -90,6 +95,7 @@ export const listWorkouts: DesignTool = {
         title: pw.title,
         intent: INTENT_SQL,
         state: pw.completionState,
+        category: pw.category,
         origin: pw.origin,
         rev: pw.workoutDocRev,
         seconds: MINUTES,
@@ -111,20 +117,26 @@ export const listWorkouts: DesignTool = {
     return pagedAnswer({
       source: "the plan's document workouts",
       now: ctx.now,
-      missing: rows.length === 0 && !at ? [`no document workouts from ${p.from} to ${p.to}${p.q ? ` matching "${p.q}"` : ""}`] : [],
+      missing: [...athlete.missing, ...(rows.length === 0 && !at ? [`no document workouts from ${p.from} to ${p.to}${p.q ? ` matching "${p.q}"` : ""}`] : [])],
       rows,
       limit,
-      render: (r) => ({
-        id: r.id,
-        date: r.date,
-        time: r.time,
-        minutes: typeof r.seconds === "number" && r.seconds > 0 ? Math.round(r.seconds / 60) : null,
-        status: STATUS_WORDS[r.state] ?? r.state,
-        ...(r.origin ? { origin: ORIGIN_WORDS[r.origin] ?? r.origin } : {}),
-        rev: r.rev,
-        title: untrusted(r.title),
-        intent: untrusted(typeof r.intent === "string" ? r.intent : ""),
-      }),
+      render: (r) => {
+        const passed = hasPassed(r, clock);
+        const minutes = typeof r.seconds === "number" && r.seconds > 0 ? Math.round(r.seconds / 60) : null;
+        return {
+          id: r.id,
+          date: r.date,
+          day: dayWords(r.date, clock.today),
+          time: r.time,
+          ...(passed ? { plannedMinutes: minutes } : { minutes }),
+          status: STATUS_WORDS[r.state] ?? r.state,
+          ...(passed ? { passed: PASSED_WORDS } : {}),
+          ...(r.origin ? { origin: ORIGIN_WORDS[r.origin] ?? r.origin } : {}),
+          rev: r.rev,
+          title: untrusted(r.title),
+          intent: untrusted(typeof r.intent === "string" ? r.intent : ""),
+        };
+      },
       cursorOf: (r) => encodeCursor([r.date, r.time, r.id]),
       data: (workouts) => ({ from: p.from, to: p.to, workouts }),
       summary: (shown) => `Listed ${plural(shown, "workout")}, ${dayRangeLabel(p.from, p.to)}${p.q ? ", matching the search" : ""}`,
@@ -240,11 +252,11 @@ export const getWorkout: DesignTool = {
     const p = parseInput(getInput, raw, "the workout's id");
     if (isErr(p)) return p;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
-      row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'origin', ${pw.origin},
+      row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'category', ${pw.category}, 'origin', ${pw.origin},
           'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'doc', ${pw.workoutDoc})
           from ${pw} where ${pw.id} = ${p.id} and ${pw.userId} = ${ctx.userId} and ${pw.archivedAt} is null)`,
     });
-    const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null } | null;
+    const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; category?: string; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null } | null;
     if (!row || typeof row.date !== "string") return notFound(p.id);
 
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.workoutId} = ${p.id}`);
@@ -259,7 +271,7 @@ export const getWorkout: DesignTool = {
     ]);
     const actuals = doneEntries(
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
-      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit },
+      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today },
     )
       .filter((e) => e.kind === "session")
       .map((e) => e.entry);
@@ -287,8 +299,10 @@ export const getWorkout: DesignTool = {
       data: {
         id: p.id,
         date: row.date,
+        day: dayWords(row.date, athlete.today),
         time: row.time,
         status: STATUS_WORDS[row.state ?? ""] ?? row.state,
+        ...(hasPassed({ date: row.date, time: row.time ?? null, state: row.state ?? null, category: row.category ?? null }, planClock(athlete, ctx.now)) ? { passed: PASSED_WORDS } : {}),
         ...(row.origin ? { origin: ORIGIN_WORDS[row.origin] ?? row.origin } : {}),
         rev: row.rev ?? null,
         derived: derived ? { minutes: derived.estimatedMinutes, discipline: derived.discipline, category: derived.category, mode: derived.mode } : null,

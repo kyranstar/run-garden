@@ -113,19 +113,22 @@ describe("read_profile", () => {
 describe("read_day", () => {
   it("today: the readings, the plan, nothing done yet, and the time left", async () => {
     const { data, missing } = await ok("read_day");
-    expect(data).toMatchObject({ date: TODAY, weekday: "Wednesday", today: true, timeLeft: "14 h 30 min" });
+    expect(data).toMatchObject({ date: TODAY, day: "Wed 13 May · today", timeLeft: "14 h 30 min" });
+    expect(data.weekday).toBeUndefined();
     expect(data.readings).toEqual([{ profile: "TMJ", kind: "daily", value: 2, feelingOff: false, time: "07:40" }]);
     expect(data.plan.map((p: { time: string }) => p.time)).toEqual(["07:00", "18:00"]);
     expect(data.plan[1]).toMatchObject({ id: rich.todayDocId, title: U("Strong hips, easy back"), what: "strength", origin: "Studio workout", status: "scheduled", rev: 2 });
     expect(data.plan[1].intent).toEqual(U("Wake the glutes, then load the squat; finish by opening the hips."));
-    expect(data.plan[0]).toMatchObject({ what: "strength", origin: "programme session", content: "outline", minutes: 35 });
+    // 07:00 has gone by at 09:30 with nothing logged for it: not known whether it happened, its figures the plan's.
+    expect(data.plan[0]).toMatchObject({ what: "strength", origin: "programme session", content: "outline", plannedMinutes: 35, passed: "nothing logged — not known whether it happened" });
+    expect(data.plan[1].passed).toBeUndefined();
     expect(data.done).toEqual([]);
     expect(missing).toEqual(["nothing logged yet today"]);
   });
 
   it("another day: its readings, plan and what was done — one session per activity, never one being written", async () => {
     const { data } = await ok("read_day", { date: day(3) });
-    expect(data).toMatchObject({ date: day(3), today: false });
+    expect(data).toMatchObject({ date: day(3), day: "Sun 10 May · 3 d ago" });
     expect(data.timeLeft).toBeUndefined();
     expect(data.readings.map((r: { kind: string }) => r.kind).sort()).toEqual(["daily", "post", "pre"]);
     expect(data.plan.map((p: { id: string }) => p.id)).toContain(rich.pastDocId);
@@ -184,7 +187,7 @@ describe("read_history", () => {
   it("runs: distance, time, pace, heart rate, load and feel in the athlete's units", async () => {
     const { data } = await ok("read_history", { from: day(5), to: day(5), kind: "run" });
     expect(data.entries).toEqual([
-      { id: expect.any(String), date: day(5), kind: "run", minutes: 28, distance: "5.0 km", pace: "5:30 /km", hr: 151, load: 65, feel: "4 of 5", note: U("Legs heavy on the hills") },
+      { id: expect.any(String), date: day(5), day: "Fri 8 May · 5 d ago", kind: "run", minutes: 28, distance: "5.0 km", pace: "5:30 /km", hr: 151, load: 65, feel: "4 of 5", note: U("Legs heavy on the hills") },
     ]);
   });
 
@@ -260,6 +263,58 @@ describe("read_history", () => {
   });
 });
 
+describe("I6/R10/A1: every dated row says its day; a planned session gone by with nothing logged says so", () => {
+  const DAY = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{1,2} [A-Z][a-z]{2} · (today|yesterday|tomorrow|\d+ d ago|in \d+ d)$/;
+
+  it("history, plan, workouts, answers and proposals: each row's day by name and how far from today", async () => {
+    const history = await ok("read_history", { from: day(7), to: TODAY });
+    expect(history.data.entries.length).toBeGreaterThan(0);
+    for (const e of history.data.entries) expect(e.day, e.id).toMatch(DAY);
+    expect(history.data.entries.find((e: { date: string }) => e.date === day(5)).day).toBe("Fri 8 May · 5 d ago");
+    const plan = await ok("read_plan", { from: day(3), to: day(-3) });
+    for (const w of plan.data.workouts) expect(w.day).toMatch(DAY);
+    expect(plan.data.workouts.find((w: { date: string }) => w.date === day(-2)).day).toBe("Fri 15 May · in 2 d");
+    const workouts = await ok("list_workouts", { from: day(30), to: day(-30) });
+    for (const w of workouts.data.workouts) expect(w.day).toMatch(DAY);
+    const answers = await ok("read_answers", {});
+    for (const a of answers.data.answers) expect(a.day).toMatch(DAY);
+    expect(answers.data.answers.every((a: { age?: string }) => a.age === undefined)).toBe(true);
+    const proposals = await ok("read_proposals");
+    for (const p of proposals.data.proposals) expect(p.created).toMatch(DAY);
+  });
+
+  it("a planned row still only scheduled once its time has passed: nothing logged — not known whether it happened; its minutes the plan's", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    const row = async (o: { date: string; time: string; category: string; sport?: string; state?: string; title: string }) => {
+      const id = newId();
+      await db.insert(schema.plannedWorkouts).values({
+        id, userId, planId: "coros-plan", sourceWorkoutId: id, title: o.title, category: o.category, sport: o.sport ?? "run", originalPlanDate: o.date,
+        lastVerifiedCorosDate: o.date, effectiveDate: o.date, effectiveTime: o.time, sourceContentFingerprint: "fp", sourceEstimatedDurationSeconds: 3 * 3600,
+        calendarBlockDurationSeconds: 3 * 3600, completionState: o.state ?? "scheduled", createdAt: at(day(9)), updatedAt: at(day(9)),
+      });
+    };
+    await row({ date: day(1), time: "08:00", category: "cross_training", sport: "hike", title: "Long hike" });
+    await row({ date: day(1), time: "18:00", category: "easy", state: "completed", title: "Easy run" });
+    await row({ date: day(2), time: "00:00", category: "rest", title: "Rest" });
+    await row({ date: TODAY, time: "09:00", category: "easy", title: "Morning run" });
+    await row({ date: TODAY, time: "10:00", category: "easy", title: "Later run" });
+    const { data } = await ok("read_plan", { from: day(2), to: TODAY }, { user: userId });
+    const by = (title: string) => data.workouts.find((w: { title: { text: string } }) => w.title.text === title);
+    const passed = "nothing logged — not known whether it happened";
+    expect(by("Long hike")).toMatchObject({ day: "Tue 12 May · yesterday", status: "scheduled", passed, plannedMinutes: 180 });
+    expect(by("Long hike").minutes).toBeUndefined();
+    expect(by("Morning run")).toMatchObject({ passed, plannedMinutes: 180 });
+    // Done, a rest day, or still to come today: nothing to say.
+    for (const title of ["Easy run", "Rest", "Later run"]) {
+      expect(by(title).passed, title).toBeUndefined();
+      expect(by(title).minutes, title).toBe(180);
+    }
+    // read_day says the same of its day's plan.
+    const yesterday = await ok("read_day", { date: day(1) }, { user: userId });
+    expect(yesterday.data.plan.find((w: { title: { text: string } }) => w.title.text === "Long hike")).toMatchObject({ passed });
+  });
+});
+
 describe("read_balance", () => {
   it("derivePerformed over the range: contraction balance, exposure ranked, aerobic and mobility minutes, focus areas' last training", async () => {
     const { data, missing } = await ok("read_balance", { from: day(13), to: TODAY });
@@ -299,7 +354,7 @@ describe("read_plan", () => {
     const { data } = await ok("read_plan", { from: TODAY, to: day(-6) });
     const dates = data.workouts.map((w: { date: string; time: string }) => `${w.date} ${w.time}`);
     expect(dates).toEqual([...dates].sort());
-    expect(data.workouts[0]).toMatchObject({ date: TODAY, time: "07:00", what: "strength", origin: "programme session", content: "outline", status: "scheduled", minutes: 35 });
+    expect(data.workouts[0]).toMatchObject({ date: TODAY, day: "Wed 13 May · today", time: "07:00", what: "strength", origin: "programme session", content: "outline", status: "scheduled", plannedMinutes: 35, passed: "nothing logged — not known whether it happened" });
     expect(data.workouts.find((w: { what: string }) => w.what === "run, easy")).toMatchObject({ title: U("Easy run"), minutes: 45 });
     expect(data.programmes).toEqual([
       { name: U("Strength block"), weeklyGoal: 3, block: { number: 2, week: 3, weeks: 5, core: { squat: "gobletSquat", hinge: "suitcaseDeadlift", row: "bandRow", press: null } } },
@@ -346,7 +401,8 @@ describe("list_workouts and get_workout", () => {
 
   it("one workout: its document (the words marked), revision, derived minutes, what was done and the feedback", async () => {
     const { data } = await ok("get_workout", { id: rich.pastDocId });
-    expect(data).toMatchObject({ id: rich.pastDocId, date: day(3), status: "done", origin: "Studio workout", rev: 1 });
+    expect(data).toMatchObject({ id: rich.pastDocId, date: day(3), day: "Sun 10 May · 3 d ago", status: "done", origin: "Studio workout", rev: 1 });
+    expect(data.passed).toBeUndefined();
     expect(data.document.title).toEqual(U("Hips and rows"));
     expect(data.document.intent).toMatchObject({ summary: U("Wake the glutes, then load the squat; finish by opening the hips."), effort: "develop", goals: ["strength", "posture"] });
     expect(data.document.parts[1].items[0]).toMatchObject({ kind: "exercise", libraryId: "gobletSquat", dose: { sets: 3, reps: 8 }, why: U("Week 3 of 5 — up one rep."), cue: U("Elbows inside the knees.") });
@@ -357,7 +413,7 @@ describe("list_workouts and get_workout", () => {
     expect(data.document.source).toEqual({ kind: "studio" });
     expect(data.derived.minutes).toBeGreaterThan(0);
     expect(data.actuals).toHaveLength(1);
-    expect(data.actuals[0]).toMatchObject({ id: rich.sessionDay3, kind: "session" });
+    expect(data.actuals[0]).toMatchObject({ id: rich.sessionDay3, kind: "session", day: "Sun 10 May · 3 d ago" });
     expect(data.actuals[0].moves[0]).toBe("gobletSquat 3 × 8 @ 35 lb, last set 6");
     expect(data.feedback).toEqual([{ date: day(3), question: "workout_feedback", value: 4, text: U("Just right"), source: "session_post" }]);
   });
@@ -446,8 +502,8 @@ describe("read_answers", () => {
   it("check-ins and feedback newest first with their age; free text marked; filters by question, area and since", async () => {
     const { data } = await ok("read_answers", { question: "soreness" });
     expect(data.answers).toEqual([
-      { date: day(1), time: "08:00", question: "soreness", subject: "calves", subjectKind: "region", value: 6, text: U("Calves tight after the hills"), source: "checkin", age: "1 d old" },
-      { date: day(1), time: "07:59", question: "soreness", subject: "hamstrings", subjectKind: "region", value: 3, source: "checkin", age: "1 d old" },
+      { date: day(1), time: "08:00", question: "soreness", subject: "calves", subjectKind: "region", value: 6, text: U("Calves tight after the hills"), source: "checkin", day: "Tue 12 May · yesterday" },
+      { date: day(1), time: "07:59", question: "soreness", subject: "hamstrings", subjectKind: "region", value: 3, source: "checkin", day: "Tue 12 May · yesterday" },
     ]);
     // The area filter takes the subject as an answer gives it (and the older "kind:id" too).
     const hips = await ok("read_answers", { area: "hips" });
@@ -673,9 +729,9 @@ describe("read_proposals", () => {
     const first = await ok("read_proposals");
     const { data } = first;
     expect(data.proposals).toHaveLength(10);
-    expect(data.proposals[0]).toMatchObject({ status: "approved", created: day(1), resolved: day(0), title: U("Proposal 0"), rationale: U("Ease Thursday so Saturday's long run lands fresh") });
-    expect(data.proposals[0].ops).toEqual([{ kind: "doc_workout", date: day(0), title: U("Designed 0") }]);
-    expect(data.proposals[1].ops).toEqual([{ kind: "move", date: day(2) }, { kind: "skip" }]);
+    expect(data.proposals[0]).toMatchObject({ status: "approved", created: "Tue 12 May · yesterday", resolved: "Wed 13 May · today", title: U("Proposal 0"), rationale: U("Ease Thursday so Saturday's long run lands fresh") });
+    expect(data.proposals[0].ops).toEqual([{ kind: "doc_workout", date: day(0), day: "Wed 13 May · today", title: U("Designed 0") }]);
+    expect(data.proposals[1].ops).toEqual([{ kind: "move", date: day(2), day: "Mon 11 May · 2 d ago" }, { kind: "skip" }]);
     const all = [...data.proposals, ...(await ok("read_proposals", { cursor: first.nextCursor })).data.proposals];
     expect(all).toHaveLength(13);
     expect(JSON.stringify(all)).not.toContain("REHEARSAL-PROPOSAL");

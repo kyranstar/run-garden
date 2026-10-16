@@ -21,6 +21,7 @@ import {
   byBytes,
   CURSOR_SCHEMA,
   cursorField,
+  dayWords,
   encodeCursor,
   isErr,
   keyCursor,
@@ -59,6 +60,9 @@ function lineageOf(raw: unknown): Record<string, unknown> {
   return { basedOn: { kind: b.kind, id: ID.test(b.id) ? b.id : untrusted(b.id), ...(typeof b.rev === "number" ? { rev: b.rev } : {}) } };
 }
 
+/** A day by name and how far from today ("Tue 12 May · yesterday"); null for none. */
+const dayOf = (date: string | null, today: string): string | null => (date ? dayWords(date, today) : null);
+
 /** How the athlete decided a designed workout (design-approve.ts's outcome), in the tool's words; nothing while open. */
 function decided(o: Record<string, unknown>): Record<string, unknown> {
   switch (o.outcome) {
@@ -83,13 +87,13 @@ function decided(o: Record<string, unknown>): Record<string, unknown> {
 /** A change to a session already on the plan (adjust_plan's, Task 8b), as the tool reports it: the change, the session
  * as it was named, where it moved or its new length, a skip's reason and the coach's why — model-written, marked — and
  * how it ended. */
-function changeOf(o: Record<string, unknown>): Record<string, unknown> {
+function changeOf(o: Record<string, unknown>, today: string): Record<string, unknown> {
   const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
   const to = str(o.toDate);
   return {
     kind: "plan_adjust",
     change: str(o.change) ?? "unknown",
-    ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date } : {}),
+    ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date, day: dayWords(o.date, today) } : {}),
     ...(str(o.rowTitle) ? { title: untrusted(str(o.rowTitle)!) } : {}),
     ...(to && isLocalDate(to) ? { to: `${to}${str(o.toTime) ? ` ${str(o.toTime)}` : ""}` } : {}),
     ...(typeof o.minutes === "number" ? { minutes: o.minutes } : {}),
@@ -151,12 +155,12 @@ export const readProposals: DesignTool = {
         const rationale = untrustedOrNull(r.rationale);
         return {
           id: r.id,
-          created: localDateOf(athlete.tz, r.createdAt),
+          created: dayOf(localDateOf(athlete.tz, r.createdAt), athlete.today),
           status: r.status,
-          resolved: localDateOf(athlete.tz, r.resolvedAt),
-          ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o) : {
+          resolved: dayOf(localDateOf(athlete.tz, r.resolvedAt), athlete.today),
+          ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o, athlete.today) : {
             kind: typeof o.kind === "string" ? o.kind : "unknown",
-            ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date } : {}),
+            ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date, day: dayWords(o.date, athlete.today) } : {}),
             ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),
             ...lineageOf(o.basedOn),
             ...decided(o),

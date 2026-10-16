@@ -2,7 +2,9 @@
  * read_day(date?) — one day (Stage 3 spec §4): its condition readings (the day's checks and the checks around its
  * sessions, with their times), its plan, what was done, and for today the time left. Today's reading, plan line and
  * time left are already in the opening message; on today this is mostly for what is already done, the rest for
- * completeness. Two statements: the athlete, then everything of the day in one read (five terms).
+ * completeness. The day by name and how far from today ("Tue 12 May · yesterday"); a planned row gone by with
+ * nothing logged says so (read_plan's `passed`). Two statements: the athlete, then everything of the day in one read
+ * (five terms).
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -10,8 +12,8 @@ import { conditionChecks, performedSessions, plannedWorkouts } from "@rg/databas
 import { dayLabel } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { DesignTool } from "./types.js";
-import { answer, athleteOf, dateField, isErr, localTimeOf, parseInput, READ_ROLES, readTagged, weekdayOf } from "./read-common.js";
-import { planItem, planTerm } from "./read-plan.js";
+import { answer, athleteOf, dateField, dayWords, isErr, localTimeOf, parseInput, READ_ROLES, readTagged } from "./read-common.js";
+import { planClock, planItem, planTerm } from "./read-plan.js";
 import { activitiesAround, checkRows, doneEntries, doneTerms, sessionsWhere } from "./read-sessions.js";
 
 const input = z.object({ date: dateField.optional() }).strict();
@@ -33,6 +35,7 @@ export const readDay: DesignTool = {
     if (isErr(p)) return p;
     const athlete = await athleteOf(ctx);
     const date = p.date ?? athlete.today;
+    const clock = planClock(athlete, ctx.now);
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.localDate} = ${date}`);
     const rows = await readTagged(ctx.db, [
       ...doneTerms(ctx.userId, scope, { activitiesWhere: activitiesAround(date, date), moreChecks: sql`${conditionChecks.localDate} = ${date}` }),
@@ -40,17 +43,17 @@ export const readDay: DesignTool = {
     ]);
     const done = doneEntries(
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
-      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit },
+      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today },
       { from: date, to: date },
     );
     const readings = checkRows(rows.get("c"))
       .filter((c) => c.localDate === date && isProfileId(c.profileId) && (c.value !== null || c.feelingOff))
       .sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))
       .map((c) => ({ profile: profileById(c.profileId).label, kind: c.kind, value: c.value, feelingOff: c.feelingOff, time: localTimeOf(athlete.tz, c.at) }));
-    const plan = (rows.get("p") ?? []).sort((a, b) => `${a.time} ${a.id}`.localeCompare(`${b.time} ${b.id}`)).map(planItem);
+    const plan = (rows.get("p") ?? []).sort((a, b) => `${a.time} ${a.id}`.localeCompare(`${b.time} ${b.id}`)).map((r) => planItem(r, clock));
 
     const isToday = date === athlete.today;
-    const data: Record<string, unknown> = { date, weekday: weekdayOf(date), today: isToday };
+    const data: Record<string, unknown> = { date, day: dayWords(date, athlete.today) };
     if (isToday) {
       const [hh, mm] = (localTimeOf(athlete.tz, ctx.now.toISOString()) ?? "00:00").split(":").map(Number);
       const left = 24 * 60 - (hh! * 60 + mm!);
