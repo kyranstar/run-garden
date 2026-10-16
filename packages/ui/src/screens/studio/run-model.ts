@@ -230,7 +230,8 @@ function isErrorEvent(e: CoachRunEventDto): boolean {
 
 /**
  * A call the plan refused, which the coach then adjusted its draft after (fix wave 3B, B-I4; the server's contract): a
- * note — "Adjusted the draft." — its refusal in the payload. Neither a step done nor an alarm.
+ * note — "Adjusted the draft.", or "Adjusted the plan." for a plan's tool (Task 13, §2.13) — its refusal in the payload.
+ * Neither a step done nor an alarm. A refused finish, question, review or read is quiet: an empty summary, no line.
  */
 export function isRefusalNote(e: CoachRunEventDto): boolean {
   const p = record(e.payload);

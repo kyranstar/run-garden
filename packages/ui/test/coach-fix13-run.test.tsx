@@ -151,3 +151,21 @@ describe("a refused call's Why not, in plain words (M1)", () => {
     expect(whyOf({ error: "invalid_doc", why: "Tuck jumps are closed today." })).toBe("Tuck jumps are closed today.");
   });
 });
+
+describe("the trail's refusals after §2.13", () => {
+  const refusal = (seq: number, tool: string, summary: string) =>
+    ev(seq, "note", summary, { tool, ok: false, error: "invalid_input", refusal: { error: "invalid_input", why: "summary: Required" } });
+
+  it("a refused finish, question, review or read is quiet — an empty summary is no line, no mark", () => {
+    const events = [ev(1, "note", "Read your request and today's plan."), refusal(2, "finish", ""), refusal(3, "ask_athlete", ""), refusal(4, "submit_review", ""), refusal(5, "read_day", "")];
+    expect(runLines(events).map((l) => l.summary)).toEqual(["Read your request and today's plan."]);
+    const { html } = view(run({ status: "finished", proposalId: "dp-1" }), events);
+    expect(html.match(/class="coach-line /g)).toHaveLength(1);
+  });
+
+  it("a refused plan reads 'Adjusted the plan.', neutral as a refused draft is", () => {
+    const [plan] = runLines([refusal(6, "plan_set", "Adjusted the plan.")]);
+    expect(plan!.summary).toBe("Adjusted the plan.");
+    expect(plan!.glyph).toBe("neutral");
+  });
+});
