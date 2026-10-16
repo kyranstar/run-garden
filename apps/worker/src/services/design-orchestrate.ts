@@ -564,10 +564,11 @@ export async function estimateSetCost(db: Db, userId: string, workouts: number, 
   const since = new Date(now.getTime() - ESTIMATE_WINDOW_DAYS * 86_400_000).toISOString();
   // What a designer cost: its own spend and its reviewers'.
   const cost = sql`(d.cost_usd + coalesce((SELECT sum(r.cost_usd) FROM coach_runs r WHERE r.user_id = ${userId} AND r.parent_id = d.id), 0))`;
-  // A designer that stopped at its OWN ceiling — it ran, and its spend reached its limit — spent what a workout can
-  // cost: it counts (leaving it out would read low). One stopped by the set's limit before it ran, or part way, doesn't.
+  // A designer that stopped at its OWN ceiling — its spend reached its limit, so it ran — spent what a workout can
+  // cost: it counts (leaving it out would read low). One stopped by the set's limit before it ran (nothing spent), or
+  // part way, doesn't.
   const designers = sql`FROM coach_runs d WHERE d.user_id = ${userId} AND d.role = 'designer' AND d.created_at >= ${since}
-    AND (d.status = 'finished' OR (d.status = 'stopped_cap' AND d.error = 'run_ceiling' AND d.steps > 0
+    AND (d.status = 'finished' OR (d.status = 'stopped_cap' AND d.error = 'run_ceiling'
       AND json_valid(d.state) AND ${cost} * 1000000 >= json_extract(d.state, '$.settings.ceilingMicros')))`;
   const mains = sql`FROM coach_runs m WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.status = 'finished' AND m.created_at >= ${since}
     AND json_valid(m.scope) AND json_extract(m.scope, '$.kind') IN ('week', 'next_n')`;
