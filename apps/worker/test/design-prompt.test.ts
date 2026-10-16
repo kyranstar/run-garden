@@ -67,9 +67,9 @@ describe("the prompt text", () => {
     expect(marked).toContain("a ‹ b › c ‹/untrusted›‹untrusted from=\"memory\"›");
   });
 
-  it("the review rubric: the spec's twelve dimensions, unique ids, each with its question", () => {
-    expect(REVIEW_DIMENSIONS).toHaveLength(12);
-    expect(new Set(REVIEW_DIMENSIONS.map((d) => d.id)).size).toBe(12);
+  it("the review rubric: the spec's dimensions as Task 13's fix wave set them (§2.10), unique ids, each with its question", () => {
+    expect(REVIEW_DIMENSIONS).toHaveLength(13);
+    expect(new Set(REVIEW_DIMENSIONS.map((d) => d.id)).size).toBe(13);
     const reviewer = roleBlock("reviewer");
     for (const d of REVIEW_DIMENSIONS) {
       expect(reviewer).toContain(d.id);
@@ -120,7 +120,7 @@ describe("the prompt text", () => {
       condition_gate_pending: "a condition's refusal",
     };
     const warningsOnly: DocIssueCode[] = [
-      "legacy_id", "condition_mode", "condition_format", "condition_flare", "mode_limits", "mode_above_day", "excluded_by_athlete",
+      "legacy_id", "care_share", "condition_mode", "condition_format", "condition_flare", "mode_limits", "mode_above_day", "excluded_by_athlete",
       "equipment_unavailable", "progression_jump", "dose_mismatch", "jump_placement", "too_long_for_watch", "unknown_focus", "unknown_equipment",
     ];
     expect([...Object.keys(errors), ...warningsOnly].sort()).toEqual([...DOC_ISSUE_CODES].sort());

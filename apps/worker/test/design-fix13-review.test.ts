@@ -18,7 +18,18 @@ import { createRun, LINES, runStep, type RunDeps } from "../src/services/coach-r
 import { designContextBuilder } from "../src/services/design-context.js";
 import { promoteSetWithWhatItHas } from "../src/services/design-orchestrate.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
-import { promoteWithWhatItHas, STOPPED_NOTES } from "../src/services/design-review.js";
+import {
+  acceptedLine,
+  markedReview,
+  meanScore,
+  parseReview,
+  promoteWithWhatItHas,
+  REVIEW_ITEM_MAX,
+  REVIEW_NOTE_MAX,
+  reviewLine,
+  STOPPED_NOTES,
+  submitReview,
+} from "../src/services/design-review.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import type { ContentBlock, MessagesOk, MessagesResult } from "../src/services/llm-messages.js";
@@ -200,5 +211,78 @@ describe("the trail's words after a revision's review", () => {
     const kept = (await events(runId)).map((e) => e.summary).filter((s) => s.startsWith("Kept"));
     expect(kept).toEqual(["Kept the revision — it scored the same, 4.0."]);
     expect((await proposalOf(runId))!.ops[0]!.doc.title).toBe("Two");
+  });
+});
+
+// ── §2.10: the rubric ───────────────────────────────────────────────────
+
+describe("the rubric (§2.10)", () => {
+  it("keeps every id but time_fit and equipment_fit, which merge into fit; adds request and words", () => {
+    expect(DIMS).toEqual(["intent", "request", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "fit", "specificity", "honesty", "words"]);
+    const label = (id: string) => REVIEW_DIMENSIONS.find((d) => d.id === id)?.label;
+    expect([label("fit"), label("request"), label("words")]).toEqual(["Fits your time and place", "Answers what you asked", "Clear words"]);
+  });
+
+  it("a review stored before the change keeps its mean: averaged over its own dimensions, never the new ones it lacks", () => {
+    const old = ["intent", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "time_fit", "equipment_fit", "specificity", "honesty"];
+    const review = { scores: Object.fromEntries(old.map((d) => [d, 4])), notes: {}, mustFix: [], improvements: [] };
+    expect(meanScore(review)).toBe(4);
+    expect(reviewLine(review)).toBe("Reviewed: 4.0 of 5");
+  });
+});
+
+// ── §2.1: the review's prose caps ───────────────────────────────────────
+
+describe("a review's prose is never refused for length up to four times its cap (§2.1, 13b I1)", () => {
+  const long = (n: number) => "A steady sentence about the hips. ".repeat(Math.ceil(n / 34)).slice(0, n);
+
+  it("a long note, must-fix item or improvement is kept whole — the designer reads it whole", () => {
+    const v = verdict(4, { mustFix: [long(600)], improvements: [long(500)] });
+    const r = parseReview({ ...v, notes: { ...v.notes, recovery: long(400) } });
+    if ("error" in r) throw new Error(r.why);
+    expect(r.notes.recovery).toBe(long(400).trim());
+    expect(r.mustFix[0]).toBe(long(600).trim());
+    expect(r.improvements[0]).toBe(long(500).trim());
+    const forDesigner = markedReview(r) as { notes: Record<string, { text: string }>; mustFix: Array<{ text: string }> };
+    expect(forDesigner.notes.recovery!.text).toBe(long(400).trim());
+    expect(forDesigner.mustFix[0]!.text).toBe(long(600).trim());
+  });
+
+  it("past four times the cap, the refusal says the length and the cap in words", () => {
+    const v = verdict(4);
+    const note = parseReview({ ...v, notes: { ...v.notes, recovery: long(1000) } });
+    expect(note).toMatchObject({ error: "invalid_review", why: expect.stringContaining("notes.recovery is 1,000 characters; at most 240 — about 35 words") });
+    const item = parseReview({ ...v, mustFix: [long(1200)] });
+    expect(item).toMatchObject({ why: expect.stringContaining("mustFix.0 is 1,200 characters; at most 240 — about 35 words") });
+    const accepted = parseReview({ ...v, accepted: [{ dimension: "recovery", why: long(1100) }] });
+    expect(accepted).toMatchObject({ why: expect.stringContaining("accepted.0.why is 1,100 characters; at most 240 — about 35 words") });
+    expect(parseReview({ ...v, notes: { ...v.notes, recovery: long(REVIEW_NOTE_MAX * 4) } })).not.toHaveProperty("error");
+    expect(parseReview({ ...v, improvements: [long(REVIEW_ITEM_MAX * 4)] })).not.toHaveProperty("error");
+  });
+
+  it("the tool's schema states each cap in words, and no length the model must count", () => {
+    type Prop = { description?: string; maxLength?: number; items?: Prop; properties?: Record<string, Prop> };
+    const schema = submitReview.inputSchema as { properties: Record<string, Prop> };
+    for (const k of ["notes", "mustFix", "improvements"]) expect(schema.properties[k]!.description, k).toContain("at most about 35 words (240 characters)");
+    expect(Object.values(schema.properties.notes!.properties!).every((p) => p.maxLength === undefined)).toBe(true);
+    expect(schema.properties.mustFix!.items!.maxLength).toBeUndefined();
+    expect(schema.properties.accepted!.items!.properties!.why!.description).toMatch(/in a few words to them/);
+  });
+});
+
+// ── R15, I8: a cost the athlete chose ───────────────────────────────────
+
+describe("a cost the athlete chose (13c R15, 13b I8)", () => {
+  it("condition safety is never accepted: a condition's cost always shows beside Approve", () => {
+    const v = verdict(4);
+    const r = parseReview({ ...v, scores: { ...v.scores, condition_safety: 2 }, accepted: [{ dimension: "condition_safety", why: "They asked for it." }] });
+    expect(r).toMatchObject({ error: "invalid_review", why: expect.stringContaining("accepted.0.dimension: condition safety is never accepted") });
+    const schema = submitReview.inputSchema as { properties: { accepted: { items: { properties: { dimension: { enum: string[] } } } } } };
+    expect(schema.properties.accepted.items.properties.dimension.enum).toEqual(DIMS.filter((d) => d !== "condition_safety"));
+  });
+
+  it("its line is written to the athlete: '<Label> — kept as you asked: <why>', in their words", () => {
+    expect(acceptedLine({ dimension: "recovery", why: "heavier legs for the athlete's long run" })).toBe("Recovery — kept as you asked: heavier legs for your long run");
+    expect(acceptedLine({ dimension: "fit", why: "the full gobletSquat set you asked for" })).toBe("Fits your time and place — kept as you asked: the full Goblet squat set you asked for");
   });
 });

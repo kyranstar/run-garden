@@ -29,7 +29,8 @@ import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type { DesignedOp, DesignedPlanOp, OpOutcome, PlanOpOutcome, Written } from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
 import { REVIEW_DIMENSIONS } from "./design-prompt.js";
-import { acceptedLine, type AcceptedCost } from "./design-review.js";
+import { athleteText, clipProse } from "./design-prose.js";
+import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
 import { describeChange, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
 
@@ -74,9 +75,12 @@ export interface DocWorkoutLine {
 
 /**
  * A review as the athlete reads it (Task 9): each dimension scored or noted, by the rubric's own label and in its order
- * (`REVIEW_DIMENSIONS`; one the rubric no longer has keeps its id, after them); what changed between the drafts; the
- * must-fix items and improvements; the costs the athlete chose (`acceptedLine`); how many drafts were reviewed; and,
- * for a review that couldn't be read, the note saying the validator's view stands. Plain text, all of it.
+ * (`REVIEW_DIMENSIONS`; one the rubric no longer has after them, by its plain label: `dimensionLabel`); what changed
+ * between the drafts; the must-fix items and improvements; the costs the athlete chose (`acceptedLine`); how many drafts
+ * were reviewed; and, for a review that couldn't be read, the note saying the validator's view stands. Plain text, all
+ * of it, in the athlete's words (Task 13's fix wave, §2.8: `athleteText` — a move's id is its name, a tool or
+ * "validator" plain words) and fitted to its cap at a sentence end (§2.1: the reviewer was never refused for length,
+ * and the designer read it whole).
  */
 export interface LineReview {
   dimensions: Array<{ id: string; label: string; score: number | null; note: string | null }>;
@@ -90,6 +94,26 @@ export interface LineReview {
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
+/**
+ * The labels of rubric dimensions the rubric no longer has (Task 13's fix wave, §2.10: `time_fit` and `equipment_fit`
+ * merged into `fit`): a review stored before keeps rendering, each by its plain label, never its raw id.
+ */
+export const LEGACY_LABELS: Readonly<Record<string, string>> = {
+  time_fit: "Time fit",
+  equipment_fit: "Equipment fit",
+};
+
+/** A dimension's label: the rubric's, a retired one's (`LEGACY_LABELS`), else its id in plain words. */
+export function dimensionLabel(id: string): string {
+  return REVIEW_DIMENSIONS.find((d) => d.id === id)?.label ?? LEGACY_LABELS[id] ?? idInWords(id);
+}
+
+/** What changed between drafts, as the card shows a line of it (a change note and why it wasn't kept), at most. */
+export const CHANGE_SHOWN_MAX = 300;
+
+/** A review's text as the athlete reads it: in their words, fitted to `max` at a sentence end. */
+const shown = (text: string, max: number): string => clipProse(athleteText(text), max);
+
 /** The op's review, as the athlete reads it (see `LineReview`). */
 export function lineReview(review: DesignedOp["review"]): LineReview | null {
   if (!review) return null;
@@ -99,21 +123,23 @@ export function lineReview(review: DesignedOp["review"]): LineReview | null {
   const ids = [...REVIEW_DIMENSIONS.map((d) => d.id as string), ...[...Object.keys(scores), ...Object.keys(notes)].filter((k) => !known.has(k))];
   const dimensions = [...new Set(ids)].flatMap((id) => {
     const score = typeof scores[id] === "number" ? (scores[id] as number) : null;
-    const note = typeof notes[id] === "string" ? (notes[id] as string) : null;
+    const note = typeof notes[id] === "string" ? shown(notes[id] as string, REVIEW_NOTE_MAX) : null;
     if (score === null && note === null) return [];
-    return [{ id, label: REVIEW_DIMENSIONS.find((d) => d.id === id)?.label ?? id, score, note }];
+    return [{ id, label: dimensionLabel(id), score, note }];
   });
   const accepted = (review as { accepted?: unknown }).accepted;
   return {
     dimensions,
-    mustFix: strings(review.mustFix),
-    improvements: strings(review.improvements),
-    changes: strings(review.changes),
+    mustFix: strings(review.mustFix).map((x) => shown(x, REVIEW_ITEM_MAX)),
+    improvements: strings(review.improvements).map((x) => shown(x, REVIEW_ITEM_MAX)),
+    changes: strings(review.changes).map((x) => shown(x, CHANGE_SHOWN_MAX)),
     accepted: Array.isArray(accepted)
-      ? accepted.filter((a): a is AcceptedCost => !!a && typeof a === "object" && typeof (a as AcceptedCost).why === "string").map(acceptedLine)
+      ? accepted
+          .filter((a): a is AcceptedCost => !!a && typeof a === "object" && typeof (a as AcceptedCost).why === "string")
+          .map((a) => acceptedLine({ ...a, why: clipProse(a.why, REVIEW_ITEM_MAX) }, dimensionLabel(a.dimension)))
       : [],
     rounds: typeof review.rounds === "number" ? review.rounds : 1,
-    note: typeof review.note === "string" ? review.note : null,
+    note: typeof review.note === "string" ? athleteText(review.note) : null,
   };
 }
 

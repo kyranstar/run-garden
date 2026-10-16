@@ -60,7 +60,8 @@ describe("a designed workout's line: its review and its costs", () => {
       mustFix: [],
       improvements: ["Add a slower tempo on the bridges."],
       changes: ["Swapped the jumps for bridges."],
-      accepted: ["Condition safety: kept as you asked: the athlete asked for it"],
+      // A review stored before condition safety could no longer be accepted still renders, in the athlete's words.
+      accepted: ["Condition safety — kept as you asked: you asked for it"],
       rounds: 2,
       note: null,
     });
@@ -71,13 +72,13 @@ describe("a designed workout's line: its review and its costs", () => {
   it("a review that couldn't be read says so; no review is none", () => {
     const [unread, none] = docWorkoutLines(
       [
-        op({ review: { scores: {}, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [], note: "The review couldn't be read — the validator's view stands." } }),
+        op({ review: { scores: {}, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [], note: "The review couldn't be read — the app's own checks stand." } }),
         op({ toolUseId: "toolu_2", by: { runId: "run-d2", role: "designer" } }),
       ],
       place,
       CLOCK,
     );
-    expect(unread!.review).toMatchObject({ dimensions: [], note: "The review couldn't be read — the validator's view stands." });
+    expect(unread!.review).toMatchObject({ dimensions: [], note: "The review couldn't be read — the app's own checks stand." });
     expect(none!.review).toBeNull();
     expect(none!.issues).toEqual([]);
   });
@@ -100,11 +101,11 @@ describe("a designed workout's line: its review and its costs", () => {
     expect(plain!.issues).toEqual([]);
   });
 
-  it("a dimension the rubric no longer has keeps its id as its label, after the rubric's own", () => {
+  it("a dimension the rubric no longer has comes after the rubric's own, its id in plain words (never raw: Task 13's fix wave, §2.10)", () => {
     const [line] = docWorkoutLines([op({ review: { scores: { pace: 3, intent: 5 }, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [] } })], place, CLOCK);
     expect(line!.review!.dimensions).toEqual([
       { id: "intent", label: "Intent clarity", score: 5, note: null },
-      { id: "pace", label: "pace", score: 3, note: null },
+      { id: "pace", label: "Pace", score: 3, note: null },
     ]);
   });
 });

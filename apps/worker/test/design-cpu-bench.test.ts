@@ -830,7 +830,7 @@ beforeAll(async () => {
     notes: Object.fromEntries(REVIEW_DIMENSIONS.map((d, i) => [d.id, words(i, 230)])),
     mustFix: [words(1, 220), words(2, 220)],
     improvements: [words(3, 220), words(4, 220), words(5, 220), words(6, 220)],
-    accepted: [{ dimension: "time_fit", why: words(8, 200) }],
+    accepted: [{ dimension: "fit", why: words(8, 200) }],
   };
   {
     // 8. submit_review's own CPU, as the reviewer calls it.

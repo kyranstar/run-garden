@@ -15,7 +15,8 @@
  *     and cut near TOOL_RECORDS_MAX_BYTES with a line saying what was left out. Never the designer's reasoning: no assistant text,
  *     no thinking. An earlier draft's review is left out too: each review is independent.
  *  3. The reviewer may read; it answers with `submit_review` — reviewer-only, its finish — which checks the review
- *     (`parseReview`: every REVIEW_DIMENSIONS id, a whole score 1..5, a bounded note) and stores it on the op
+ *     (`parseReview`: every REVIEW_DIMENSIONS id, a whole score 1..5, a note — free text is never refused for length
+ *     below PROSE_CEILING times its cap, and is kept whole for the designer; the card clips it) and stores it on the op
  *     (`applyVerdict`). A review that can't be read gets ONE repair (a teachable error back to the reviewer, or a
  *     nudge after an answer with no call); a second ends the reviewer, and the validator's view stands, said in the
  *     op's `note`. So does a reviewer that used all its turns (its step cap). Those two alone: a reviewer that had its
@@ -59,6 +60,7 @@ import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/pro
 import { refuse, untrusted } from "./design-tools/read-common.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolOk } from "./design-tools/types.js";
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
+import { athleteText, clipProse } from "./design-prose.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, type PlanAdjustOp } from "./proposal-kinds.js";
 import { utf8Bytes } from "./utf8.js";
 
@@ -85,11 +87,27 @@ export const VALIDATOR_VIEW_ENDINGS: Readonly<Record<string, string>> = { review
 /** The designer's tool results a reviewer is given, at most (bytes of the marked lines). */
 export const TOOL_RECORDS_MAX_BYTES = 24_000;
 
-/** A review's note per dimension, and each must-fix or improvement, at most (characters). */
+/** A review's note per dimension, and each must-fix or improvement or accepted reason, at most (characters): the cap
+ * the athlete reads it at (the card clips to it at a sentence end, design-manifest.ts), never a reason to refuse — the
+ * designer reads it whole up to PROSE_CEILING times the cap (Task 13's fix wave, §2.1). */
 export const REVIEW_NOTE_MAX = 240;
 export const REVIEW_ITEM_MAX = 240;
 export const MUST_FIX_MAX = 8;
 export const IMPROVEMENTS_MAX = 6;
+
+/** How far past its cap a free-text field is still taken (×): beyond it, refused with its length (§2.1). */
+export const PROSE_CEILING = 4;
+
+/** A cap as the model can aim at it: "about 35 words (240 characters)" — a model can't count characters (13b I1). */
+export const capInWords = (max: number): string => `about ${Math.max(5, Math.round(max / 6.5 / 5) * 5)} words (${max} characters)`;
+
+/** Why `text` at `field` is past its ceiling — "notes.recovery is 1,410 characters; at most 240 — about 35 words" — or
+ * null while it is within PROSE_CEILING times `max`. */
+export function overCeiling(field: string, text: string, max: number): string | null {
+  const n = text.length;
+  if (n <= max * PROSE_CEILING) return null;
+  return `${field} is ${n.toLocaleString("en-US")} characters; at most ${max} — about ${Math.max(5, Math.round(max / 6.5 / 5) * 5)} words`;
+}
 
 /** The reviewer sub-run of a designer's draft, keyed on the call that proposed it: starting it twice inserts it once,
  * and a draft proposed again after a dropped round gets a reviewer of its own. */
@@ -101,12 +119,17 @@ const bytes = utf8Bytes;
 
 // ── Scores ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The sum of a review's dimension scores: the comparison (every review scores the same dimensions). */
-const scoreSum = (r: DesignReview): number => DIMENSION_IDS.reduce((s, d) => s + (r.scores[d] ?? 0), 0);
+/** The mean of the scores a review holds, unrounded — over its OWN dimensions: a review stored before the rubric
+ * changed (§2.10: `time_fit` and `equipment_fit` merged into `fit`, `request` and `words` added) keeps its mean, never
+ * counting a dimension it was never asked as 0. */
+function rawMean(r: DesignReview): number {
+  const scores = Object.values(r.scores ?? {}).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  return scores.length === 0 ? 0 : scores.reduce((s, v) => s + v, 0) / scores.length;
+}
 
 /** The mean of a review's dimension scores, to two places. */
 export function meanScore(r: DesignReview): number {
-  return Math.round((scoreSum(r) / DIMENSION_IDS.length) * 100) / 100;
+  return Math.round(rawMean(r) * 100) / 100;
 }
 
 const fmt = (mean: number | null | undefined): string => (typeof mean === "number" ? mean.toFixed(1) : "—");
@@ -133,25 +156,43 @@ export interface AcceptedCost {
 /** A review as submit_review stores it: the four parts every review has, and the costs the athlete chose. */
 export type ReviewWithAccepted = DesignReview & { accepted?: AcceptedCost[] };
 
+/** A dimension a cost the athlete chose can never be listed under: a condition's costs always show beside Approve
+ * (13c R15) — the athlete's "brutal" is never a reason the coach's dosing can skip the profile. */
+export const NEVER_ACCEPTED = "condition_safety";
+
+// No length cap here: a long text is measured against its ceiling below, with its length in the refusal (§2.1).
 const reviewInput = z
   .object({
     scores: z.record(z.unknown()),
     notes: z.record(z.unknown()),
-    mustFix: z.array(z.string().trim().min(1).max(REVIEW_ITEM_MAX)).max(MUST_FIX_MAX),
-    improvements: z.array(z.string().trim().min(1).max(REVIEW_ITEM_MAX)).max(IMPROVEMENTS_MAX),
+    mustFix: z.array(z.string().trim().min(1)).max(MUST_FIX_MAX),
+    improvements: z.array(z.string().trim().min(1)).max(IMPROVEMENTS_MAX),
     accepted: z
-      .array(z.object({ dimension: z.string(), why: z.string().trim().min(1).max(REVIEW_ITEM_MAX) }).strict())
+      .array(z.object({ dimension: z.string(), why: z.string().trim().min(1) }).strict())
       .max(ACCEPTED_MAX)
       .optional(),
   })
   .strict();
 
-const REVIEW_FIX = `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (at most ${REVIEW_NOTE_MAX} characters) for each of ${DIMENSION_IDS.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why }.`;
+const ACCEPTABLE_IDS = DIMENSION_IDS.filter((d) => d !== NEVER_ACCEPTED);
 
-/** "Condition safety: kept as you asked: <why>" — an accepted cost as the designer and the run view read it. */
-export function acceptedLine(a: AcceptedCost): string {
-  const label = REVIEW_DIMENSIONS.find((d) => d.id === a.dimension)?.label ?? a.dimension;
-  return `${label}: kept as you asked: ${a.why}`;
+const REVIEW_FIX = `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (${capInWords(REVIEW_NOTE_MAX)}) for each of ${DIMENSION_IDS.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change in ${capInWords(REVIEW_ITEM_MAX)}; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why } — never ${NEVER_ACCEPTED}.`;
+
+/** A dimension's id in plain words, for one no label names: "pace_feel" → "Pace feel" — never shown raw. */
+export function idInWords(id: string): string {
+  const words = id.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
+  return words.length > 0 ? words[0]!.toUpperCase() + words.slice(1) : id;
+}
+
+/**
+ * "Recovery — kept as you asked: heavier legs for your long run" — a cost the athlete chose, as the designer, the run
+ * view and the card read it: the dimension's label (`label`, else the rubric's, else the id in words) and the reason,
+ * written to the athlete (`athleteText`: "the athlete's" is "your"; a move's id its name). Whole: a caller showing it
+ * clips the reason first.
+ */
+export function acceptedLine(a: AcceptedCost, label?: string): string {
+  const named = label ?? REVIEW_DIMENSIONS.find((d) => d.id === a.dimension)?.label ?? idInWords(a.dimension);
+  return `${named} — kept as you asked: ${athleteText(a.why)}`;
 }
 
 /**
@@ -182,8 +223,10 @@ export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
     else if (typeof s !== "number" || !Number.isInteger(s) || s < 1 || s > 5) problems.push(`scores.${d}: ${JSON.stringify(s)} is not a whole score from 1 to 5`);
     else scores[d] = s;
     const n = noteIn[d];
+    const over = typeof n === "string" ? overCeiling(`notes.${d}`, n.trim(), REVIEW_NOTE_MAX) : null;
     if (n === undefined) missingNotes.push(d);
-    else if (typeof n !== "string" || n.trim().length === 0 || n.trim().length > REVIEW_NOTE_MAX) problems.push(`notes.${d}: one line of at most ${REVIEW_NOTE_MAX} characters`);
+    else if (typeof n !== "string" || n.trim().length === 0) problems.push(`notes.${d}: one line, ${capInWords(REVIEW_NOTE_MAX)}`);
+    else if (over) problems.push(over);
     else notes[d] = n.trim();
   }
   if (missingScores.length > 0) problems.push(`scores: missing ${missingScores.join(", ")}`);
@@ -196,6 +239,23 @@ export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
   for (const [i, a] of acceptedIn.entries()) {
     const d = (a as { dimension?: unknown } | null)?.dimension;
     if (typeof d === "string" && !DIMENSION_IDS.includes(d)) problems.push(`accepted.${i}.dimension: no dimension ${JSON.stringify(d)}`);
+    if (d === NEVER_ACCEPTED) {
+      problems.push(`accepted.${i}.dimension: condition safety is never accepted — a condition's costs always show beside Approve; score it, and list a must-fix if the dose needs one`);
+    }
+  }
+  // Free text past its ceiling (§2.1): said with its length and its cap in words. Within it, kept whole.
+  const listed = (raw ?? {}) as { mustFix?: unknown; improvements?: unknown };
+  for (const field of ["mustFix", "improvements"] as const) {
+    const list = Array.isArray(listed[field]) ? (listed[field] as unknown[]) : [];
+    for (const [i, x] of list.entries()) {
+      const over = typeof x === "string" ? overCeiling(`${field}.${i}`, x.trim(), REVIEW_ITEM_MAX) : null;
+      if (over) problems.push(over);
+    }
+  }
+  for (const [i, a] of acceptedIn.entries()) {
+    const why = (a as { why?: unknown } | null)?.why;
+    const over = typeof why === "string" ? overCeiling(`accepted.${i}.why`, why.trim(), REVIEW_ITEM_MAX) : null;
+    if (over) problems.push(over);
   }
   if (problems.length > 0 || !parsed.success) {
     return refuse("invalid_review", `The review can't be read: ${[...new Set(problems)].slice(0, 10).join("; ")}.`, REVIEW_FIX);
@@ -239,7 +299,7 @@ function athleteReview(op: DocWorkoutOp): OpReview | null {
 function laterWins(later: ReviewRound, held: ReviewRound | undefined): boolean {
   if (!held || held.status !== "reviewed" || !held.review) return true;
   if (later.status !== "reviewed" || !later.review) return false;
-  return scoreSum(later.review) >= scoreSum(held.review);
+  return rawMean(later.review) >= rawMean(held.review);
 }
 
 /** A candidate draft promoted to the version the op holds. */
@@ -570,26 +630,37 @@ function keptLines(op: DocWorkoutOp, toolUseId: string): string[] {
 // ── submit_review ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 const SCORE = { type: "integer", minimum: 1, maximum: 5 } as const;
-const NOTE = { type: "string", minLength: 1, maxLength: REVIEW_NOTE_MAX } as const;
+// No maxLength the model must count (13b I1): each cap is said in words, and the athlete's view is clipped to it.
+const NOTE = { type: "string", minLength: 1 } as const;
+const ITEM = { type: "string", minLength: 1 } as const;
 
 export const submitReview: DesignTool = {
   name: "submit_review",
   description:
-    "The reviewer's verdict, given once; it ends your run. Every dimension scored 1–5 with a one-line note; must-fix: anything at 2 or less, and any guide line or rule no tool checks; the key improvements. A cost the document explains (an item's why, its notes) is judged on that explanation. `accepted`, at most 3 { dimension, why }: a cost the athlete chose in their own words — never a must-fix.",
+    "The reviewer's verdict, given once; it ends your run. Every dimension scored 1–5 with a one-line note to the athlete; must-fix: anything at 2 or less, and any guide line or rule no tool checks; the key improvements. A cost the document explains is judged on that explanation. `accepted`, at most 3 { dimension, why }: a cost the athlete chose in their own words — never a must-fix.",
   inputSchema: {
     type: "object",
     properties: {
       scores: { type: "object", properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, SCORE])), required: [...DIMENSION_IDS], additionalProperties: false },
-      notes: { type: "object", properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, NOTE])), required: [...DIMENSION_IDS], additionalProperties: false },
-      mustFix: { type: "array", maxItems: MUST_FIX_MAX, items: { type: "string", minLength: 1, maxLength: REVIEW_ITEM_MAX } },
-      improvements: { type: "array", maxItems: IMPROVEMENTS_MAX, items: { type: "string", minLength: 1, maxLength: REVIEW_ITEM_MAX } },
+      notes: {
+        type: "object",
+        description: `One line per dimension, written to the athlete: at most ${capInWords(REVIEW_NOTE_MAX)} each.`,
+        properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, NOTE])),
+        required: [...DIMENSION_IDS],
+        additionalProperties: false,
+      },
+      mustFix: { type: "array", maxItems: MUST_FIX_MAX, description: `Each one concrete change, at most ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
+      improvements: { type: "array", maxItems: IMPROVEMENTS_MAX, description: `Each one concrete change, at most ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
       accepted: {
         type: "array",
         maxItems: ACCEPTED_MAX,
-        description: "Costs the athlete chose in their own words: the dimension whose score they lower, and the athlete's reason.",
+        description: "Costs the athlete chose in their own words: the dimension whose score they lower (never condition_safety), and the cost.",
         items: {
           type: "object",
-          properties: { dimension: { type: "string", enum: [...DIMENSION_IDS] }, why: { type: "string", minLength: 1, maxLength: REVIEW_ITEM_MAX } },
+          properties: {
+            dimension: { type: "string", enum: [...ACCEPTABLE_IDS] },
+            why: { type: "string", minLength: 1, description: "The cost they chose, in a few words to them: \"heavier legs for Sunday's run\"." },
+          },
           required: ["dimension", "why"],
           additionalProperties: false,
         },
@@ -616,7 +687,8 @@ export const submitReview: DesignTool = {
       mean: meanScore(review),
       scores: review.scores,
       mustFix: review.mustFix.length,
-      ...(review.accepted ? { accepted: review.accepted.map(acceptedLine) } : {}),
+      // The run view shows the receipt one tap down: the athlete's words, fitted (§2.1).
+      ...(review.accepted ? { accepted: review.accepted.map((x) => acceptedLine({ ...x, why: clipProse(x.why, REVIEW_ITEM_MAX) })) } : {}),
     };
     // The draft's review is settled already, or its proposal closed (a cancel, an expiry): nothing to store, the run ends.
     if (!next || status === null || !(OPEN_PROPOSAL_STATUSES as readonly string[]).includes(status)) {

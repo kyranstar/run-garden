@@ -238,7 +238,7 @@ describe("a must-fix sends the draft back; the revision is reviewed again", () =
     ]);
     const trail = await events(runId);
     const reviews = trail.filter((e) => e.kind === "review");
-    expect(reviews.map((e) => e.summary)).toEqual([expect.stringMatching(/^Reviewed: 3\.8 of 5/), expect.stringMatching(/^Reviewed: 4\.0 of 5/)]);
+    expect(reviews.map((e) => e.summary)).toEqual([expect.stringMatching(/^Reviewed: 3\.9 of 5/), expect.stringMatching(/^Reviewed: 4\.0 of 5/)]);
     expect(reviews[0]!.payload).toMatchObject({ by: { runId: reviewers[0]!.id, role: "reviewer" } });
     expect(trail.filter((e) => e.kind === "draft" || e.kind === "revision").map((e) => e.kind)).toEqual(["draft", "revision"]);
     expect(trail.some((e) => e.summary === "Reviewing the draft.")).toBe(true);
@@ -877,9 +877,10 @@ describe("submit_review reads a review strictly", () => {
     expect(problems({ ...v, scores: { ...v.scores, intent: 4.5 } })).toContain("scores.intent: 4.5");
     expect(problems({ ...v, scores: { ...v.scores, intent: "5" } })).toContain("scores.intent");
     expect(problems({ ...v, scores: { ...v.scores, vibes: 5 } })).toContain('scores: no dimension "vibes"');
-    expect(problems({ ...v, notes: { ...v.notes, intent: "x".repeat(REVIEW_NOTE_MAX + 1) } })).toContain("notes.intent");
+    // Free text is refused for length only past four times its cap, with its length (Task 13's fix wave, §2.1).
+    expect(problems({ ...v, notes: { ...v.notes, intent: "x".repeat(REVIEW_NOTE_MAX * 4 + 1) } })).toContain("notes.intent is 961 characters");
     expect(problems({ ...v, notes: { ...v.notes, intent: "   " } })).toContain("notes.intent");
-    expect(problems({ ...v, mustFix: ["x".repeat(241)] })).toContain("mustFix.0");
+    expect(problems({ ...v, mustFix: ["x".repeat(961)] })).toContain("mustFix.0 is 961 characters");
     expect(problems({ ...v, improvements: "add a cue" })).toContain("improvements");
     // A smuggled field is named first, however much else is wrong.
     expect(problems({ scores: {}, notes: {}, approved: true })).toMatch(/^The review can't be read: unknown field "approved"/);
@@ -1521,15 +1522,16 @@ describe("fix wave 3A — the packet keeps the evidence (A6)", () => {
 });
 
 describe("fix wave 3A — a cost the athlete chose is not a must-fix (A7)", () => {
-  const choose = (o: { accepted?: unknown } = {}) => ({ ...verdict({ condition_safety: 2 }), ...o });
+  // Never condition safety (Task 13's fix wave, 13c R15): a condition's costs always show beside Approve.
+  const choose = (o: { accepted?: unknown } = {}) => ({ ...verdict({ recovery: 2 }), ...o });
 
-  it("condition safety at 2 with `accepted` gives no must-fix; without it, one", () => {
+  it("recovery at 2 with `accepted` gives no must-fix; without it, one", () => {
     const why = "They asked to max out the squat today, and said why.";
-    const kept = parseReview(choose({ accepted: [{ dimension: "condition_safety", why }] }));
+    const kept = parseReview(choose({ accepted: [{ dimension: "recovery", why }] }));
     expect("error" in kept).toBe(false);
-    expect(kept).toMatchObject({ mustFix: [], accepted: [{ dimension: "condition_safety", why }] });
+    expect(kept).toMatchObject({ mustFix: [], accepted: [{ dimension: "recovery", why }] });
     const plain = parseReview(choose());
-    expect(plain).toMatchObject({ mustFix: [expect.stringMatching(/^Condition safety: /)] });
+    expect(plain).toMatchObject({ mustFix: [expect.stringMatching(/^Recovery: /)] });
     expect(plain).not.toHaveProperty("accepted");
   });
 
@@ -1541,25 +1543,24 @@ describe("fix wave 3A — a cost the athlete chose is not a must-fix (A7)", () =
     expect(many).toMatchObject({ error: "invalid_review" });
     const schema = submitReview.inputSchema as { properties: { accepted: { maxItems: number; items: { properties: { dimension: { enum: string[] } } } } } };
     expect(schema.properties.accepted.maxItems).toBe(3);
-    expect(schema.properties.accepted.items.properties.dimension.enum).toEqual(DIMS);
+    expect(schema.properties.accepted.items.properties.dimension.enum).toEqual(DIMS.filter((d) => d !== "condition_safety"));
   });
 
   it("the review's receipt and the designer's result show it as kept as the athlete asked; the athlete's review keeps it", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId, { request: "Max out my squat today." });
-    const why = "They asked to max out the squat today.";
+    const why = "Heavier legs for the next run, as you asked.";
     const first = propose("Heavy squat");
-    const { deps, requests } = scripted([t(first), t(submit(choose({ accepted: [{ dimension: "condition_safety", why }] }))), t(finish())]);
+    const { deps, requests } = scripted([t(first), t(submit(choose({ accepted: [{ dimension: "recovery", why }] }))), t(finish())]);
     expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
     const result = sentData(requests, first);
     expect(result.mustFix).toEqual([]);
-    expect(result.accepted).toEqual([u(`Condition safety: kept as you asked: ${why}`)]);
-    expect(result.next).toBe("Nothing must change: call finish.");
+    expect(result.accepted).toEqual([u(`Recovery — kept as you asked: ${why}`)]);
     const reviewEvent = (await events(runId)).find((e) => e.kind === "review")!;
-    expect(reviewEvent.payload).toMatchObject({ receipt: { mustFix: 0, accepted: [`Condition safety: kept as you asked: ${why}`] } });
+    expect(reviewEvent.payload).toMatchObject({ receipt: { mustFix: 0, accepted: [`Recovery — kept as you asked: ${why}`] } });
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");
-    expect(p.ops[0]!.review).toMatchObject({ accepted: [{ dimension: "condition_safety", why }] });
+    expect(p.ops[0]!.review).toMatchObject({ accepted: [{ dimension: "recovery", why }] });
   });
 });
 
