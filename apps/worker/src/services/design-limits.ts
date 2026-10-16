@@ -7,3 +7,6 @@
 
 /** Tool calls one model turn may ask for; past this each gets an error result and nothing runs (coach-runs.ts). */
 export const MAX_TOOL_CALLS_PER_TURN = 12;
+
+/** Model calls a reviewer run may make (coach-runs.ts `RUN_LIMITS`); its review packet says so (design-review.ts). */
+export const REVIEWER_MAX_CALLS = 3;

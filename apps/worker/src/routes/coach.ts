@@ -114,14 +114,19 @@ export async function sweepExpiredProposals(db: Db, userId: string, today: strin
       ),
     );
   const now = nowInstant();
+  let expired = 0;
   for (const p of stale) {
-    await db
+    // Guarded: a proposal another request settled meanwhile is not expired, and gets no receipt.
+    const changed = await db
       .update(coachProposals)
       .set({ status: "expired", resolvedAt: now })
-      .where(and(eq(coachProposals.id, p.id), eq(coachProposals.status, p.status)));
+      .where(and(eq(coachProposals.id, p.id), eq(coachProposals.status, p.status)))
+      .returning({ id: coachProposals.id });
+    if (changed.length === 0) continue;
+    expired += 1;
     if (p.status === "pending") await receipt(db, userId, `Expired — the moment passed: ${p.title}`, p.id);
   }
-  return stale.length;
+  return expired;
 }
 
 coachRoutes.get("/state", async (c) => {

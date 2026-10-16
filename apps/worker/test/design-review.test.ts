@@ -33,7 +33,18 @@ import {
 } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
-import { NOTE_UNREADABLE, parseReview, REVIEW_NOTE_MAX, REVIEW_ROUNDS, reviewPacket, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/services/design-review.js";
+import {
+  MUST_FIX_MAX,
+  NOTE_NOT_DONE,
+  NOTE_UNREADABLE,
+  parseReview,
+  REVIEW_NOTE_MAX,
+  REVIEW_ROUNDS,
+  reviewPacket,
+  STOPPED_NOTES,
+  toolRecords,
+  TOOL_RECORDS_MAX_BYTES,
+} from "../src/services/design-review.js";
 import { defaultRunDeps, newRunState } from "../src/services/coach-runs.js";
 import { LLM_BUDGET } from "../src/services/llm.js";
 import { submitReview } from "../src/services/design-review.js";
@@ -78,14 +89,14 @@ function turn(uses: ContentBlock[], o: { cost?: number; text?: string; thinking?
 }
 const t = (...uses: ContentBlock[]) => turn(uses);
 
-function scripted(turns: MessagesResult[], o: { review?: boolean } = {}) {
+function scripted(turns: Array<MessagesResult | (() => MessagesResult)>, o: { review?: boolean } = {}) {
   const requests: MessagesRequest[] = [];
   const deps: RunDeps = {
     callModel: async (_env, req) => {
       requests.push(structuredClone(req));
       const next = turns.shift();
       if (!next) throw new Error("the scripted model ran out of turns");
-      return next;
+      return typeof next === "function" ? next() : next;
     },
     buildContext: designContextBuilder,
     tools: allTools(),
@@ -197,10 +208,10 @@ describe("a must-fix sends the draft back; the revision is reviewed again", () =
     expect(requests.map(isReviewer)).toEqual([false, true, false, true, false]);
 
     // Each review came back as its propose_workout's result: the scores, the notes, what must change; the round of
-    // at most two, and what is left.
-    expect(REVIEW_ROUNDS).toBe(2);
-    expect(sentData(requests, first)).toMatchObject({ ...firstReview, round: 1, roundsLeft: 1 });
-    expect(sentData(requests, second)).toMatchObject({ ...secondReview, round: 2, roundsLeft: 0 });
+    // at most three (the draft and two revisions), and what is left. Nothing must change after the second: finish.
+    expect(REVIEW_ROUNDS).toBe(3);
+    expect(sentData(requests, first)).toMatchObject({ ...firstReview, round: 1, roundsLeft: 2 });
+    expect(sentData(requests, second)).toMatchObject({ ...secondReview, round: 2, roundsLeft: 1, next: "Nothing must change: call finish." });
 
     // Pending at the finish, holding the revision with its review, the rounds and what changed.
     const p = (await proposalOf(runId))!;
@@ -225,30 +236,54 @@ describe("a must-fix sends the draft back; the revision is reviewed again", () =
     expect(trail.some((e) => e.summary === "Reviewing the draft.")).toBe(true);
   });
 
-  it("two rounds at most: a third propose_workout is refused, and the proposal keeps what was reviewed", async () => {
+  it("the draft and two revisions at most: a fourth propose_workout is refused, and the proposal keeps what was reviewed", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId);
     const must = verdict({ recovery: 2 }, { mustFix: ["Ease the second block."] });
-    const third = propose("Calm hips, third try", "Eased it again.");
+    const third = propose("Calm hips, eased again", "Eased it again.");
+    const fourth = propose("Calm hips, fourth try", "Once more.");
     const { deps, requests } = scripted([
       t(propose("Calm hips")),
       t(submit(must)),
       t(propose("Calm hips, eased", "Eased the second block.")),
       t(submit(must)),
       t(third),
+      t(submit(must)),
+      t(fourth),
       t(finish()),
     ]);
     expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
-    const refused = sentError(requests, third);
+    expect(sentData(requests, third)).toMatchObject({ round: 3, roundsLeft: 0, next: "No rounds of revision are left: call finish." });
+    const refused = sentError(requests, fourth);
     expect(refused.error).toBe("rounds_done");
-    expect(refused.why).toContain("Two rounds of revision are done");
+    expect(refused.why).toContain("2 rounds of revision are done: 3 drafts were reviewed");
     expect(refused.fix).toContain("finish");
-    expect(await reviewersOf(runId)).toHaveLength(2);
+    expect(await reviewersOf(runId)).toHaveLength(3);
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");
-    // Equal scores: the later version is kept; its review lists what must still change, for the athlete to see.
-    expect(p.ops[0]!.doc.title).toBe("Calm hips, eased");
-    expect(p.ops[0]!.review).toMatchObject({ mustFix: ["Ease the second block."], rounds: 2 });
+    // Equal scores: the latest version is kept; its review lists what must still change, for the athlete to see.
+    expect(p.ops[0]!.doc.title).toBe("Calm hips, eased again");
+    expect(p.ops[0]!.review).toMatchObject({ mustFix: ["Ease the second block."], rounds: 3 });
+  });
+
+  it("a winning revision is measured against the version held, not the round before it (which may have lost)", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const { deps } = scripted([
+      t(propose("One")),
+      t(submit(verdict(4, { mustFix: ["Shorter rests."] }))),
+      t(propose("Two", "Longer rests.")),
+      t(submit(verdict(3))),
+      t(propose("Three", "Shorter rests, as asked.")),
+      t(submit(verdict(5))),
+      t(finish()),
+    ]);
+    expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
+    const lines = (await events(runId)).map((e) => e.summary).filter((s) => s.startsWith("Kept"));
+    expect(lines).toEqual(["Kept round 1's version — it scored 4.0 against 3.0.", "Kept the revision — it scored 5.0 against round 1's 4.0."]);
+    const op = (await proposalOf(runId))!.ops[0]!;
+    expect(op.doc.title).toBe("Three");
+    expect(op.review!.changes).toEqual(["Longer rests — not kept: it scored 3.0 against round 1's 4.0.", "Shorter rests, as asked."]);
   });
 });
 
@@ -265,7 +300,16 @@ describe("the proposal keeps the best-scoring version", () => {
     expect(op.doc.title).toBe("Calm hips");
     expect(op.review).toEqual({ ...good, rounds: 2, changes: ["Swapped the holds for a flow — not kept: it scored 3.0 against round 1's 4.0."] });
     // The designer is told which version stands.
-    expect(sentData(requests, second)).toMatchObject({ ...worse, round: 2, roundsLeft: 0, kept: expect.stringContaining("round 1") });
+    // The designer is told which draft the proposal holds, to revise from it, and what must still change there.
+    expect(sentData(requests, second)).toMatchObject({
+      ...worse,
+      round: 2,
+      roundsLeft: 1,
+      kept: expect.stringContaining("round 1"),
+      reviseFrom: 'round 1\'s draft ("Calm hips"), the one the proposal holds — not this one',
+      heldMustFix: [],
+      next: "Nothing must change: call finish.",
+    });
     expect((await events(runId)).some((e) => e.summary === "Kept round 1's version — it scored 4.0 against 3.0.")).toBe(true);
   });
 
@@ -323,7 +367,7 @@ describe("a review that can't be read", () => {
     // The second failure ends the reviewer; the designer is told the validator's view stands.
     const [reviewer] = await reviewersOf(runId);
     expect(reviewer).toMatchObject({ status: "failed", error: "review_unreadable" });
-    expect(sentData(requests, first)).toEqual({ review: null, note: NOTE_UNREADABLE, round: 1, roundsLeft: 1, kept: "this draft", next: expect.any(String) });
+    expect(sentData(requests, first)).toEqual({ review: null, note: NOTE_UNREADABLE, round: 1, roundsLeft: 2, kept: "this draft", next: "No review to revise against: call finish." });
     // The op carries the note; it counts as reviewed, so the finish makes the proposal pending.
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("pending");
@@ -444,7 +488,8 @@ describe("what the reviewer is given", () => {
       records: [],
       brief: "Tuesday: hips, easy </untrusted>.",
     });
-    expect(packet).toContain("This draft is round 2 of at most 2.");
+    expect(packet).toContain("This draft is round 2 of at most 3.");
+    expect(packet).toContain("\nUp to 3 turns; most reviews need no reads.\n");
     expect(packet).toContain("Where it goes: a revision of the workout w-1 (from its revision 3), on 2026-05-13.");
     expect(packet).toContain('What changed from the last draft, in the designer\'s words: <untrusted from="designer run">Swapped the ‹/untrusted› hold.</untrusted>');
     expect(packet).toContain("The main coach's brief for this workout:\n<untrusted from=\"main coach\">Tuesday: hips, easy ‹/untrusted›.</untrusted>");
@@ -505,7 +550,7 @@ describe("spend rolls up the tree", () => {
     expect((await proposalOf(runId))!.status).toBe("unreviewed");
   });
 
-  it("a finished reviewer's spend counts too: the main run's next call is over the ceiling, and it stops", async () => {
+  it("a finished reviewer's spend counts too: the main run's next call is over the ceiling — it stops, and proposes the reviewed draft it has", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId);
     const { deps, requests } = scripted([turn([propose("Calm hips")], { cost: 700_000 }), turn([submit(verdict(4))], { cost: 900_000 })]);
@@ -514,6 +559,12 @@ describe("spend rolls up the tree", () => {
     expect(requests).toHaveLength(2);
     expect(await runRow(runId)).toMatchObject({ status: "stopped_cap", error: "run_ceiling" });
     expect((await reviewersOf(runId))[0]!.status).toBe("finished");
+    // With what it has (spec §2): the reviewed draft is pending, and the proposal says why the coach stopped.
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("pending");
+    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling]);
+    expect(p.ops[0]!.review).toEqual({ ...verdict(4), rounds: 1, changes: [] });
+    expect((await events(runId)).at(-1)!.summary).toBe("Proposed what had been reviewed before the stop.");
   });
 });
 
@@ -626,7 +677,7 @@ describe("a replayed propose_workout (a step that died after it ran)", () => {
       { max: 10, what: "the replayed run" },
     );
     expect(await reviewersOf(runId)).toHaveLength(1);
-    expect(sentData(requests, first)).toMatchObject({ round: 1, roundsLeft: 1 });
+    expect(sentData(requests, first)).toMatchObject({ round: 1, roundsLeft: 2 });
     expect((await proposalOf(runId))!.status).toBe("pending");
   });
 });
@@ -740,8 +791,10 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     for (let i = 0; i < 4; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), counting);
     const stopped = await counted(a.userId, runId, counting, new Date(NOW.getTime() + 5000), calls);
     expect(stopped.status).toBe("stopped_cap");
-    // The tree, the claim, the run's write, the rest of the tree stopped, the line.
-    expect(stopped.cost).toBe(2 + 5);
+    // The tree, the claim, the run's write, the rest of the tree stopped, the proposal read (nothing reviewed yet, so
+    // nothing proposed), the line.
+    expect(stopped.cost).toBe(2 + 6);
+    expect((await proposalOf(runId))!.status).toBe("unreviewed");
 
     const b = await athlete();
     const cancelled = await newRun(b.userId);
@@ -809,7 +862,9 @@ describe("submit_review reads a review strictly", () => {
 
   it("a dimension scored 2 or less is must-fix: with none listed, its note becomes one; listed ones stand as given", () => {
     const low = verdict({ recovery: 2, sequencing: 1 });
-    expect(parseReview(low)).toMatchObject({ mustFix: ["sequencing: sequencing: as it should be.", "recovery: recovery: as it should be."] });
+    expect(parseReview(low)).toMatchObject({ mustFix: ["Sequencing: sequencing: as it should be.", "Recovery: recovery: as it should be."] });
+    // As many as a review may list.
+    expect((parseReview(verdict(1)) as { mustFix: string[] }).mustFix).toHaveLength(MUST_FIX_MAX);
     expect(parseReview({ ...low, mustFix: ["Ease the hinge."] })).toMatchObject({ mustFix: ["Ease the hinge."] });
     // Scores of 3 and up add nothing; an improvement is never promoted.
     expect(parseReview(verdict(3, { improvements: ["A cue."] }))).toMatchObject({ mustFix: [], improvements: ["A cue."] });
@@ -965,5 +1020,209 @@ describe("the run around a review", () => {
     for (let i = 0; i < 2; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
     await cancelRun(db, a.userId, runId, new Date(NOW.getTime() + 3000));
     expect((await proposalOf(runId))!.status).toBe("rehearsal");
+  });
+});
+
+// ── Fix round 1 ─────────────────────────────────────────────────────────
+
+describe("fix round 1 — a reviewer that crashed is not a review", () => {
+  const retry = (): MessagesResult => ({ ok: false, kind: "retryable", reason: "timeout" });
+  const kinds: Array<{ kind: string; error: string; why: string; reviewer: Array<MessagesResult | (() => MessagesResult)>; before?: (runId: string) => Promise<void> }> = [
+    { kind: "retries run out", error: "retries", why: "the AI service didn't answer", reviewer: [retry(), retry(), retry()] },
+    { kind: "a rejected call", error: "invalid_request", why: "the AI service refused the request", reviewer: [{ ok: false, kind: "rejected", reason: "invalid_request", status: 400 }] },
+    { kind: "a refusal", error: "refusal", why: "the reviewing model declined", reviewer: [{ ...turn([]), stopReason: "refusal" }] },
+    {
+      kind: "an internal error",
+      error: "internal",
+      why: "something went wrong in the reviewer",
+      reviewer: [
+        () => {
+          throw new Error("boom");
+        },
+      ],
+    },
+    {
+      kind: "a bad state",
+      error: "bad_state",
+      why: "something went wrong in the reviewer",
+      reviewer: [],
+      before: async (runId) => {
+        await db.update(schema.coachRuns).set({ state: "{not json" }).where(and(eq(schema.coachRuns.parentId, runId), eq(schema.coachRuns.role, "reviewer")));
+      },
+    },
+  ];
+
+  for (const k of kinds) {
+    it(`${k.kind}: the round is dropped, the designer is told plainly, and nothing is pending`, async () => {
+      const a = await athlete();
+      const runId = await newRun(a.userId);
+      const first = propose("Calm hips");
+      const quiet = (await import("vitest")).vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { deps, requests } = scripted([t(first), ...k.reviewer, t(finish("Nothing to show yet."))]);
+        await runStep(db, env, runId, a.userId, NOW, deps); // context
+        await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 1000), deps); // propose
+        await k.before?.(runId);
+        expect((await drive(a.userId, runId, deps, { from: 2 })).at(-1)!.status).toBe("finished");
+        expect((await reviewersOf(runId))[0]).toMatchObject({ status: "failed", error: k.error });
+        expect(sentData(requests, first)).toEqual({
+          review: null,
+          unavailable: true,
+          note: `The review couldn't be done (${k.why}): this draft isn't reviewed and doesn't count as a round.`,
+          roundsLeft: 3,
+          next: expect.stringContaining("Call propose_workout again"),
+        });
+        const p = (await proposalOf(runId))!;
+        expect(p.status).toBe("unreviewed");
+        expect(p.ops[0]!.review).toBeNull();
+        expect(p.ops[0]!.reviewLog!.map((r) => r.status)).toEqual(["dropped"]);
+        const lines = (await events(runId)).map((e) => e.summary);
+        expect(lines).toContain("The review couldn't be done — the draft goes back to the coach.");
+        expect(lines).toContain(`The reviewer couldn't finish: ${k.why}.`);
+        expect(lines.at(-1)).toBe("Nothing to show yet. (Not reviewed yet — kept back until it is.)");
+      } finally {
+        quiet.mockRestore();
+      }
+    });
+  }
+
+  it("no key, or no credits: the whole tree stops and the unreviewed draft is never shown", async () => {
+    for (const failure of [{ ok: false, kind: "no_key" }, { ok: false, kind: "out_of_credits", status: 402 }]) {
+      const a = await athlete();
+      const runId = await newRun(a.userId);
+      const { deps } = scripted([t(propose("Calm hips")), failure as unknown as MessagesResult]);
+      expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("failed");
+      expect((await proposalOf(runId))!.status).toBe("unreviewed");
+    }
+  });
+
+  it("a dropped round counts against nothing: proposed again, the draft is round 1 of 3 and is reviewed", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const again = propose("Calm hips, again");
+    const { deps, requests } = scripted([t(propose("Calm hips")), { ok: false, kind: "rejected", reason: "invalid_request", status: 400 }, t(again), t(submit(verdict(4))), t(finish())]);
+    expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
+    expect(sentData(requests, again)).toMatchObject({ round: 1, roundsLeft: 2 });
+    expect(await reviewersOf(runId)).toHaveLength(2);
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops[0]!.review).toEqual({ ...verdict(4), rounds: 1, changes: [] });
+  });
+
+  it("a reviewer that used its turns, or whose review couldn't be read, still leaves the validator's view", () => {
+    expect(NOTE_NOT_DONE).toContain("the validator's view stands");
+    expect(NOTE_UNREADABLE).toContain("the validator's view stands");
+  });
+});
+
+describe("fix round 1 — nothing runs before the review is read", () => {
+  it("propose and finish in one turn: the finish is answered 'not run', the review comes first, then the designer finishes", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const draft = propose("Calm hips");
+    const early = finish("Done before the review.");
+    const { deps, requests } = scripted([t(draft, early), t(submit(verdict(4))), t(finish("A calm half hour."))]);
+    const step = async (i: number) => runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+    await step(0); // context
+    await step(1); // propose (+ the finish answered) → paused
+    expect((await runRow(runId)).status).toBe("waiting_review");
+    await step(2); // the reviewer's context
+    await step(3); // its review
+    // Reviewed, but the designer hasn't read it: nothing is promoted.
+    expect((await proposalOf(runId))!.status).toBe("unreviewed");
+    await step(4); // the designer resumed
+    await step(5); // its finish, having read the review
+    expect((await runRow(runId)).status).toBe("finished");
+    expect((await proposalOf(runId))!.status).toBe("pending");
+    // The review and the finish's answer went back together, in the model's order.
+    const resumed = requests.filter((r) => !isReviewer(r))[1]!;
+    const back = resumed.messages.at(-1)!.content as ToolResultBlock[];
+    expect(back.map((b) => b.tool_use_id)).toEqual([idOf(draft), idOf(early)]);
+    expect(JSON.parse(textOf(back[1]))).toEqual({ error: "not_run", why: "Not run: propose_workout's review comes first.", fix: "Call it again after reading the review." });
+    expect((await events(runId)).some((e) => e.summary === "Couldn't use finish: Not run: propose_workout's review comes first.")).toBe(true);
+    expect((await events(runId)).at(-1)!.summary).toBe("A calm half hour.");
+  });
+});
+
+describe("fix round 1 — a main run that stops proposes what it has", () => {
+  it("a revision still under review at the spending limit: the held, reviewed version is proposed, the revision dropped with a change line", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const { deps } = scripted([
+      turn([propose("Calm hips")], { cost: 100_000 }),
+      turn([submit(verdict(4, { mustFix: ["Shorter rests."] }))], { cost: 100_000 }),
+      turn([propose("Calm hips, shorter rests", "Shorter rests.")], { cost: 100_000 }),
+      turn([use("read_day", {})], { cost: 1_300_000 }),
+    ]);
+    expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("stopped_cap");
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("pending");
+    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling]);
+    const op = p.ops[0]!;
+    expect(op.doc.title).toBe("Calm hips");
+    expect(op.candidate).toBeUndefined();
+    expect(op.review).toEqual({
+      ...verdict(4, { mustFix: ["Shorter rests."] }),
+      rounds: 1,
+      changes: ["Shorter rests — not reviewed: the coach stopped before its review was in."],
+    });
+    expect(op.reviewLog!.map((r) => r.status)).toEqual(["reviewed", "dropped"]);
+  });
+
+  it("at its own step cap after a reviewed draft: pending, with the step limit's note; a rehearsal's stays a rehearsal", async () => {
+    for (const rehearsal of [false, true]) {
+      const a = await athlete();
+      const runId = await newRun(a.userId, { rehearsal });
+      const { deps } = scripted([t(propose("Calm hips")), t(submit(verdict(4))), t(use("read_day", {}))]);
+      await runStep(db, env, runId, a.userId, NOW, deps); // context
+      const state = JSON.parse((await runRow(runId)).state!) as { settings: Record<string, unknown> };
+      state.settings.maxCalls = 2;
+      await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, runId));
+      expect((await drive(a.userId, runId, deps, { from: 1 })).at(-1)!.status).toBe("stopped_cap");
+      expect(await runRow(runId)).toMatchObject({ error: "step_cap" });
+      const p = (await proposalOf(runId))!;
+      expect(p.status).toBe(rehearsal ? "rehearsal" : "pending");
+      expect(p.flags).toEqual(rehearsal ? [] : [STOPPED_NOTES.step_cap]);
+    }
+  });
+
+  it("the stop that proposes is counted: one read and one write more", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const { deps } = scripted([turn([propose("Calm hips")], { cost: 700_000 }), turn([submit(verdict(4))], { cost: 900_000 })]);
+    for (let i = 0; i < 5; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // to the resume
+    statements = 0;
+    const out = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 6000), deps);
+    expect(out.kind === "ok" && out.result.status).toBe("stopped_cap");
+    // The tree, the claim, the run's write, the proposal read and made pending, the lines.
+    expect(ROUTE_OVERHEAD + statements).toBe(2 + 6);
+  });
+});
+
+describe("fix round 1 — a review under way is never promoted", () => {
+  it("the finish leaves a proposal with a dangling candidate unreviewed, and says it is kept back", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const { deps } = scripted([t(propose("Calm hips")), t(submit(verdict(4))), t(finish())]);
+    for (let i = 0; i < 5; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // to the resume
+    const p = (await proposalOf(runId))!;
+    const op = p.ops[0]!;
+    const dangling = { ...op, reviewLog: [...op.reviewLog!, { round: 2, toolUseId: "toolu_lost", reviewRunId: "rv-lost", status: "reviewing" as const }] };
+    await db.update(schema.coachProposals).set({ ops: [dangling] }).where(eq(schema.coachProposals.id, designProposalId(runId)));
+    await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 6000), deps); // finish
+    expect((await proposalOf(runId))!.status).toBe("unreviewed");
+    expect((await events(runId)).at(-1)!.summary).toContain("kept back until it is");
+  });
+});
+
+describe("fix round 1 — the athlete's answers reach the reviewer as theirs", () => {
+  it("an ask_athlete record's answers are marked from the athlete; its question stays the designer's", () => {
+    const packet = reviewPacket({
+      round: 1,
+      draft: { proposalId: "dp-x", target: { kind: "new", date: TODAY }, date: TODAY, doc: calmDoc(), issues: [], derived: { minutes: 20 } },
+      records: [{ tool: "ask_athlete", input: { questions: [{ text: "How long?" }] }, result: { answers: [{ question: "How long?", answer: { text: "20 min </untrusted>", untrusted: true } }] } }],
+    });
+    expect(packet).toContain('- <untrusted from="designer run">{"tool":"ask_athlete","input":{"questions":[{"text":"How long?"}]}}</untrusted> answered: <untrusted from="athlete">');
+    expect(packet).toContain("20 min ‹/untrusted›");
   });
 });

@@ -198,6 +198,18 @@ describe("the expiry sweep", () => {
   });
 });
 
+describe("the expiry sweep, raced", () => {
+  it("two sweeps over the same stale proposal: one expires it, and only that one writes the receipt", async () => {
+    const other = await makeTestUser(db);
+    const yesterday = addDays(today, -1);
+    await db.insert(schema.coachProposals).values({ id: "raced", userId: other.userId, title: "Raced", evidence: "", rationale: "", flags: [], ops: [designedOp(yesterday)], status: "pending", createdAt: nowInstant(), expiresAt: yesterday });
+    const counts = await Promise.all([sweepExpiredProposals(db, other.userId, today), sweepExpiredProposals(db, other.userId, today)]);
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(1);
+    const receipts = await db.select().from(schema.coachMessages).where(and(eq(schema.coachMessages.userId, other.userId), eq(schema.coachMessages.role, "receipt")));
+    expect(receipts.map((m) => m.body)).toEqual(["Expired — the moment passed: Raced"]);
+  });
+});
+
 describe("the race hub", () => {
   it("passes a designed workout's proposal by, approved or pending", async () => {
     const raceDate = addDays(today, 10);

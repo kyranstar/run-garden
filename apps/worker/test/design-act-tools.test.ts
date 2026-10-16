@@ -667,18 +667,22 @@ describe("propose_workout", () => {
     const r = await run();
     const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => quiet.mockRestore());
-    const down: ReviewHooks = { start: async () => { throw new Error("reviewer down"); } };
+    const down: ReviewHooks = { start: async () => { throw new Error("reviewer down"); }, ended: () => null };
     const refused = err((await call("propose_workout", ctxOf(r, { review: down }), { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
     expect(refused).toMatchObject({ error: "review_unavailable" });
     const stored = (await proposal(r.id))!;
     expect(stored.status).toBe("unreviewed");
     expect(stored.ops[0]!.review).toBeNull();
     const started: ReviewStart[] = [];
-    const up: ReviewHooks = { start: async (req) => (started.push(req), true) };
+    const up: ReviewHooks = { start: async (req) => (started.push(req), true), ended: () => null };
     const again = ok((await call("propose_workout", ctxOf(r, { review: up }), { doc: calmDoc({ title: "Again" }), target: { kind: "new", date: TODAY } })).result);
     expect(again.control).toBe("review");
     expect(started.map((x) => x.round)).toEqual([1]);
-    expect((await proposal(r.id))!.ops[0]!.reviewLog!.map((x) => [x.round, x.status])).toEqual([[1, "reviewing"]]);
+    // The round that never got its reviewer was dropped at once: it counts against nothing.
+    expect((await proposal(r.id))!.ops[0]!.reviewLog!.map((x) => [x.round, x.status])).toEqual([
+      [1, "dropped"],
+      [1, "reviewing"],
+    ]);
   });
 
   it("a rehearsal run's proposal is stored as a rehearsal", async () => {
@@ -690,34 +694,46 @@ describe("propose_workout", () => {
   it("with the loop's review hooks: the draft is stored unreviewed, its reviewer started with the draft, and the call pauses for the review", async () => {
     const r = await run();
     const started: ReviewStart[] = [];
-    const hooks: ReviewHooks = { start: async (req) => (started.push(req), true) };
+    const hooks: ReviewHooks = { start: async (req) => (started.push(req), true), ended: () => null };
     const c = ctxOf(r, { review: hooks });
     const out = ok((await call("propose_workout", c, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
     expect(started).toHaveLength(1);
     expect(started[0]).toMatchObject({
-      reviewRunId: `rv1-${r.id}`,
+      reviewRunId: `rv-${r.id}-${c.toolUseId}`,
       proposalId: designProposalId(r.id),
       round: 1,
       toolUseId: c.toolUseId,
       draft: { proposalId: designProposalId(r.id), date: TODAY, doc: { title: "Reviewed" }, target: { kind: "new", date: TODAY } },
     });
     expect(out.control).toBe("review");
-    expect(out.data).toMatchObject({ stored: true, proposalId: designProposalId(r.id), round: 1, reviewRunId: `rv1-${r.id}`, reviewing: true });
+    expect(out.data).toMatchObject({ stored: true, proposalId: designProposalId(r.id), round: 1, reviewRunId: `rv-${r.id}-${c.toolUseId}`, reviewing: true });
     expect(out.summary).toMatch(/^Draft — "Reviewed": \d+ min — sent for review$/);
     const p = (await proposal(r.id))!;
-    expect(p.ops[0]).toMatchObject({ review: null, round: 1, reviewRunId: `rv1-${r.id}`, reviewLog: [{ round: 1, status: "reviewing", toolUseId: c.toolUseId }] });
+    expect(p.ops[0]).toMatchObject({ review: null, round: 1, reviewRunId: `rv-${r.id}-${c.toolUseId}`, reviewLog: [{ round: 1, status: "reviewing", toolUseId: c.toolUseId }] });
     // Reviewed or not, propose never makes a proposal pending: the main run's finish does, once every op is reviewed.
     expect(p.status).toBe("unreviewed");
     // Replayed when its reviewer was never started (the step died between the write and the start): started now, once —
     // the round is the same — and the run waits again.
-    const again = ok((await call("propose_workout", { ...c, review: { start: async (req) => (started.push(req), true) } }, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
+    const again = ok((await call("propose_workout", { ...c, review: { start: async (req) => (started.push(req), true), ended: () => null } }, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
     expect(again.control).toBe("review");
     expect((await proposal(r.id))!.ops[0]!.reviewLog).toHaveLength(1);
-    // Replayed once its reviewer is over without a review: the validator's view stands, written now.
-    const over = ok((await call("propose_workout", { ...c, review: { start: async () => false } }, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
+    // Replayed once its reviewer used all its turns without a review: the validator's view stands, written now.
+    const capped: ReviewHooks = { start: async () => false, ended: () => ({ status: "stopped_cap", error: "step_cap" }) };
+    const over = ok((await call("propose_workout", { ...c, review: capped }, { doc: calmDoc({ title: "Reviewed" }), target: { kind: "new", date: TODAY } })).result);
     expect(over.control).toBeUndefined();
-    expect(over.data).toMatchObject({ review: null, round: 1, roundsLeft: 1 });
+    expect(over.data).toMatchObject({ review: null, round: 1, roundsLeft: 2 });
     expect((await proposal(r.id))!.ops[0]!.review).toMatchObject({ rounds: 1, note: expect.stringContaining("the validator's view stands") });
+
+    // …but one whose reviewer crashed gave no review at all: the round is dropped, the draft stays unreviewed.
+    const r2 = await run();
+    const c2 = ctxOf(r2, { review: { start: async () => true, ended: () => null } });
+    ok((await call("propose_workout", c2, { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    const crashed: ReviewHooks = { start: async () => false, ended: () => ({ status: "failed", error: "internal" }) };
+    const lost = ok((await call("propose_workout", { ...c2, review: crashed }, { doc: calmDoc(), target: { kind: "new", date: TODAY } })).result);
+    expect(lost.data).toMatchObject({ review: null, unavailable: true, roundsLeft: 3, note: expect.stringContaining("something went wrong in the reviewer") });
+    const op2 = (await proposal(r2.id))!.ops[0]!;
+    expect(op2.review).toBeNull();
+    expect(op2.reviewLog!.map((x) => x.status)).toEqual(["dropped"]);
   });
 });
 

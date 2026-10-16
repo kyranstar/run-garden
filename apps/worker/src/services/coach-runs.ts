@@ -7,7 +7,7 @@ import { restoreInProgress } from "./account-state.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder } from "./design-context.js";
-import { MAX_TOOL_CALLS_PER_TURN } from "./design-limits.js";
+import { MAX_TOOL_CALLS_PER_TURN, REVIEWER_MAX_CALLS } from "./design-limits.js";
 import { llmBudgetStatus } from "./llm.js";
 import {
   callMessages,
@@ -23,7 +23,7 @@ import {
   type ToolUseBlock,
 } from "./llm-messages.js";
 import { COACH_RUN_LEFT_MINUTES, COACH_RUN_SET_WINDOW_HOURS, COACH_RUN_STEP_STALE_MINUTES } from "./cron-limits.js";
-import { closeUnreviewed, resumeAfterReview, reviewPacket, toolRecords } from "./design-review.js";
+import { closeUnreviewed, promoteWithWhatItHas, resumeAfterReview, reviewPacket, STOPPED_NOTES, toolRecords, unavailableWhy } from "./design-review.js";
 import { allTools } from "./design-tools/index.js";
 import { designProposalId } from "./design-tools/propose.js";
 import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
@@ -148,7 +148,7 @@ const ROLES: readonly ToolRole[] = ["main", "designer", "reviewer"];
 export const RUN_LIMITS: Readonly<Record<ToolRole, { maxCalls: number; effort: Effort; maxTokens: number }>> = {
   main: { maxCalls: 12, effort: "high", maxTokens: 16_000 },
   designer: { maxCalls: 10, effort: "high", maxTokens: 16_000 },
-  reviewer: { maxCalls: 3, effort: "high", maxTokens: 16_000 },
+  reviewer: { maxCalls: REVIEWER_MAX_CALLS, effort: "high", maxTokens: 16_000 },
 };
 
 /** A run's own spending ceiling, by scope (spec §2): $1.50 for now / later today, $6 for a set. */
@@ -271,6 +271,9 @@ export interface RunState {
   awaitingKind?: "review";
   /** The review awaited: the proposal the draft is in, and the reviewer sub-run reviewing it. */
   awaitingReview?: { proposalId: string; reviewRunId: string; round: number };
+  /** Where the awaited review's result goes among this turn's results: the calls before it ran, the ones after it were
+   * answered "not run" at the pause, and the turn's results keep the model's order. */
+  awaitingAt?: number;
   /** A reviewer's repairs used: a review that couldn't be read, or an answer with no review (one is allowed). */
   repairs?: number;
   /** A reviewer's packet (design-review.ts), until its opening context is built from it. */
@@ -373,6 +376,7 @@ export function readRunState(text: string | null): RunState | null {
     toldAt: typeof s.toldAt === "string" ? s.toldAt : null,
     ...(s.awaitingKind === "review" ? { awaitingKind: "review" as const } : {}),
     ...(s.awaitingReview && typeof s.awaitingReview === "object" ? { awaitingReview: s.awaitingReview } : {}),
+    ...(typeof s.awaitingAt === "number" ? { awaitingAt: s.awaitingAt } : {}),
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
     ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
     ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
@@ -1265,15 +1269,22 @@ export async function runStep(
     })
     .where(and(eq(coachRuns.id, due.id), eq(coachRuns.status, "stepping"), eq(coachRuns.updatedAt, claimAt)))
     .returning({ id: coachRuns.id });
+  const mainLines: NewEvent[] = [];
   if (written) {
     Object.assign(due, { status: end.status, steps: due.steps + 1, updatedAt: endAt, finishedAt: terminal ? endAt : null, error: end.error });
     if (end.stopTree) await stopLiveTree(db, userId, root, nodes, due, end, endAt, staleBefore);
+    // The main run stopped at a spending limit or its own step cap: it proposes what it has (spec §2), under the
+    // finish's own guard, with why it stopped. Two statements, only on such a stop.
+    const stopped = root.status === "stopped_cap" ? STOPPED_NOTES[root.error ?? ""] : undefined;
+    if (stopped && (await promoteWithWhatItHas(db, userId, designProposalId(root.id), stopped))) {
+      mainLines.push({ kind: "note", summary: "Proposed what had been reviewed before the stop.", payload: { proposalId: designProposalId(root.id) } });
+    }
   } else {
     // A cancel took the claim while the tools ran: what they did is on the trail below, the cancel's status stands.
     due.status = await addSpend(db, due.id, end.costMicros);
   }
   const by = due.id === root.id ? undefined : { runId: due.id, role: due.role };
-  const events = await appendEvents(db, userId, root.id, end.events.map((e) => withBy(e, by)), endAt);
+  const events = await appendEvents(db, userId, root.id, [...reviewerLines(due, end).map((e) => withBy(e, by)), ...mainLines], endAt);
   const next = dueRun(nodes, root);
   return okStep({
     status: treeStatus(root, nodes),
@@ -1294,6 +1305,17 @@ const okStep = (result: StepResult): StepOutcome => ({ kind: "ok", result });
 function nextDueOf(nodes: RunNode[], root: RunNode, at: string): StepResult["nextDue"] {
   const next = dueRun(nodes, root);
   return next && steppable(next.status) ? { runId: next.id, role: next.role, at } : null;
+}
+
+/**
+ * A reviewer that failed is not the design stopping: its error line says the review couldn't be finished, and why — its
+ * draft goes back to its designer (design-review.ts drops the round). A money stop reaches the whole tree and keeps
+ * its own line; so does an unreadable review's.
+ */
+function reviewerLines(due: RunNode, end: StepEnd): NewEvent[] {
+  const treeWide = [OUT_OF_CREDITS_REASON, "no_key", "review_unreadable"];
+  if (due.role !== "reviewer" || end.status !== "failed" || treeWide.includes(end.error ?? "")) return end.events;
+  return end.events.map((e) => (e.kind === "error" ? { ...e, summary: `The reviewer couldn't finish: ${unavailableWhy(end.error)}.` } : e));
 }
 
 /**
@@ -1366,8 +1388,9 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
 
 /**
  * The designer's run, resumed once its reviewer is over (design-review.ts `resumeAfterReview`): the review — or the
- * validator's view, written now when the reviewer left none — becomes its propose_workout call's result. No model call:
- * the next step calls it. At most two statements beyond the step's own.
+ * validator's view, or word that the round was dropped — becomes its propose_workout call's result, in its place among
+ * the turn's results (the calls after it were answered "not run" at the pause), and the turn goes back to the model as
+ * one message. No model call: the next step calls it. At most two statements beyond the step's own.
  */
 async function resumeReview(s: StepCtx): Promise<StepEnd> {
   const { state } = s;
@@ -1376,11 +1399,13 @@ async function resumeReview(s: StepCtx): Promise<StepEnd> {
   const reviewer = w ? s.nodes.find((n) => n.id === w.reviewRunId) : undefined;
   const { result, lines } = w
     ? await resumeAfterReview(s.db, s.userId, { proposalId: w.proposalId, designerRunId: s.run.id, toolUseId: callId, reviewerError: reviewer?.error ?? null, now: s.now })
-    : { result: { data: { review: null, note: "The review could not be found; the validator's view stands." } } as ToolOk, lines: [] };
-  state.results.push(okResult(callId, result));
+    : { result: { data: { review: null, unavailable: true, note: "This draft's review could not be found: it isn't reviewed." } } as ToolOk, lines: [] };
+  const at = Math.min(Math.max(0, state.awaitingAt ?? state.results.length), state.results.length);
+  state.results.splice(at, 0, okResult(callId, result));
   state.awaiting = null;
   delete state.awaitingKind;
   delete state.awaitingReview;
+  delete state.awaitingAt;
   if (state.pending.length === 0) flushResults(state);
   return { status: "active", state, costMicros: 0, error: null, proposalId: null, events: lines.map((summary) => ({ kind: "note" as const, summary })) };
 }
@@ -1710,6 +1735,14 @@ async function runTools(
         summary: result.summary ?? "A draft, sent for review.",
         payload: { tool: call.name, input: bounded(call.input, 1_500), ...(result.receipt ? { receipt: result.receipt } : {}) },
       });
+      // The calls queued after it never run before the review is read — a finish least of all: each is answered now,
+      // and their answers go back with the review, in the model's order, as one message.
+      state.awaitingAt = state.results.length;
+      for (const queued of state.pending) {
+        state.results.push(errorResult(queued.id, REVIEW_FIRST));
+        events.push({ kind: "tool_result", summary: `Couldn't use ${label(queued.name)}: ${REVIEW_FIRST.why}`, payload: { tool: queued.name, ok: false, error: REVIEW_FIRST.error } });
+      }
+      state.pending = [];
       return { status: "waiting_review", events, proposalId: null };
     }
     if (tool?.control === "finish" && ok) {
@@ -1735,6 +1768,9 @@ async function runTools(
               eq(coachProposals.status, "unreviewed"),
               sql`json_valid(${coachProposals.ops}) and json_array_length(${coachProposals.ops}) > 0`,
               sql`not exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.review') is null)`,
+              // No review under way either (design-review.ts `reviewRunning`): a dangling candidate is never shown.
+              sql`not exists (select 1 from json_each(${coachProposals.ops}) o where json_extract(o.value, '$.candidate') is not null
+                or exists (select 1 from json_each(json_extract(o.value, '$.reviewLog')) r where json_extract(r.value, '$.status') = 'reviewing'))`,
             ),
           );
       }
@@ -1770,6 +1806,13 @@ async function runTools(
   return { status: "active", events, proposalId: null };
 }
 
+/** A call queued after a propose_workout that paused for its review. */
+const REVIEW_FIRST: ToolErr = {
+  error: "not_run",
+  why: "Not run: propose_workout's review comes first.",
+  fix: "Call it again after reading the review.",
+};
+
 /** The reviewer's finish is its review: a call to finish is answered with what to call instead. */
 const REVIEWER_HAS_NO_FINISH: ToolErr = {
   error: "not_for_role",
@@ -1780,11 +1823,16 @@ const REVIEWER_HAS_NO_FINISH: ToolErr = {
 /**
  * The review hooks a designing run's tools are given (ToolContext.review): `start` puts the reviewer sub-run in place —
  * a fresh history, the root's window, timezone and ceiling, this run's rehearsal and last-told clock, and the review
- * packet from this run's tool results (never its reasoning) — in one insert keyed on the round's id, and adds it to
- * the step's tree so the step answers it as the run due next.
+ * packet from this run's tool results (never its reasoning) — in one insert keyed on the proposing call's id, and adds
+ * it to the step's tree so the step answers it as the run due next. `ended` says how a reviewer of this run ended, from
+ * that tree (the whole tree is read, finished runs too).
  */
 function reviewHooks(s: StepCtx): ReviewHooks {
   return {
+    ended(reviewRunId) {
+      const n = s.nodes.find((x) => x.id === reviewRunId);
+      return n && !isLive(n.status) ? { status: n.status, error: n.error } : null;
+    },
     async start(req) {
       const { state, run, root } = s;
       const at = s.now.toISOString();

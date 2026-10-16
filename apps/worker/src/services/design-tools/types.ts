@@ -132,6 +132,8 @@ export interface ReviewHooks {
    * `reviewRunId` — answers false, inserting nothing, when that run already exists.
    */
   start(req: ReviewStart): Promise<boolean>;
+  /** How a reviewer of this run's ended, from the step's tree (no statement); null when it isn't there or is live. */
+  ended(reviewRunId: string): { status: string; error: string | null } | null;
 }
 
 /** The draft a reviewer run reviews: the proposal, the designer's run, and the call that proposed the draft. */

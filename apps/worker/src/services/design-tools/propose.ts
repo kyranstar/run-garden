@@ -37,14 +37,17 @@
  * reviewer sub-run is started for it, and the call answers `control: "review"`: the run pauses, and the call's result
  * for the model is the review, once it is in. A first draft is the op itself; a revision of a reviewed draft waits
  * beside it (`candidate`) while its review runs, so the op always holds the best-scoring version so far, and each
- * round is logged (`reviewLog`). REVIEW_ROUNDS drafts are reviewed at most. A replay of a call whose draft is under
- * review starts its reviewer only if it never was (the sub-run's id is the round's); one whose reviewer is over without
- * a review settles the validator's view; one whose review is in answers it. Without the hooks (tests of this tool
+ * round is logged (`reviewLog`). REVIEW_ROUNDS drafts are reviewed at most (the draft and two revisions); a round
+ * dropped because its reviewer gave no review is not one of them. A reviewer that can't be started drops the round at
+ * once (`review_unavailable`). A replay of a call whose draft is under review starts its reviewer only if it never was
+ * (the sub-run's id is the call's); one whose reviewer is over without a review is settled as the resume would settle
+ * it (design-review.ts `settleNoReview`); one whose review is in answers it. Without the hooks (tests of this tool
  * alone), a later draft replaces the earlier and nothing is reviewed: the proposal never becomes pending.
  *
- * Eight statements: the athlete (with the gear, set-aside moves, recent sessions' ids, the target row, the proposal and
- * the restore marker), the moves done cleanly, the recent sessions (four), one write — an upsert guarded by the ops it
- * read, so a write that raced another is refused rather than lost — and the reviewer sub-run's insert.
+ * Nine statements at most: the athlete (with the gear, set-aside moves, recent sessions' ids, the target row, the
+ * proposal and the restore marker), the moves done cleanly, the recent sessions (four), one write — an upsert guarded by
+ * the ops it read, so a write that raced another is refused rather than lost — the reviewer sub-run's insert, and, when
+ * the reviewer can't be started, the round dropped.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -54,7 +57,8 @@ import type { DocIssue } from "@rg/workout";
 import { LOCKED_CONTENT } from "../doc-workouts.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
 import {
-  applyVerdict,
+  applyDrop,
+  countedRounds,
   designerResult,
   draftOf,
   NOTE_NOT_DONE,
@@ -62,6 +66,8 @@ import {
   proposalFields,
   REVIEW_ROUNDS,
   reviewerRunId,
+  settleNoReview,
+  unavailableWhy,
   updateOps,
 } from "../design-review.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolContext, ToolErr, ToolOk } from "./types.js";
@@ -136,12 +142,16 @@ export interface DraftVersion {
   at: string;
 }
 
-/** One draft's round of review: under way, reviewed, or over without a review that could be read. */
+/** One draft's round of review: under way; reviewed; over with the validator's view (its reviewer had its turns and
+ * gave no review it could be read by); or dropped (its reviewer gave none at all, or the run stopped first) — a dropped
+ * round counts against nothing. */
 export interface ReviewRound {
   round: number;
   toolUseId: string;
   reviewRunId: string;
-  status: "reviewing" | "reviewed" | "unread";
+  status: "reviewing" | "reviewed" | "unread" | "dropped";
+  /** A revision's: the version the op held when it was judged, and that version's mean. */
+  against?: { round: number; mean: number | null };
   review?: DesignReview;
   mean?: number | null;
   /** Why there is no review (the op's note). */
@@ -225,7 +235,7 @@ export const proposeWorkout: DesignTool = {
     required: ["doc", "target"],
     additionalProperties: false,
   },
-  statementCost: 8,
+  statementCost: 9,
   roles: ["main", "designer"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, "doc (a workout document), target ({ kind: new, date, time? } or { kind: revise, workoutId, baseRev }) and optionally changeNote");
@@ -279,12 +289,12 @@ export const proposeWorkout: DesignTool = {
     // storing the draft): this run is stepping, so no reviewer of its is live, and a review that ended was settled when
     // the run resumed. It is no round: dropped, its draft with it.
     const kept = mine ? withoutAbandoned(mine) : undefined;
-    // Two rounds at most (ruling 4): a third draft is never reviewed, so it is never proposed.
+    // The draft and two revisions at most (ruling 4): a further draft is never reviewed, so it is never proposed.
     const log = kept?.reviewLog ?? [];
-    if (ctx.review && log.length >= REVIEW_ROUNDS) {
+    if (ctx.review && countedRounds(log) >= REVIEW_ROUNDS) {
       return refuse(
         "rounds_done",
-        `Two rounds of revision are done: ${REVIEW_ROUNDS} drafts were reviewed, and the proposal keeps the best-scoring one, with its review.`,
+        `${REVIEW_ROUNDS - 1} rounds of revision are done: ${REVIEW_ROUNDS} drafts were reviewed, and the proposal keeps the best-scoring one, with its review.`,
         "Call finish, with one plain line on what was proposed.",
       );
     }
@@ -364,8 +374,8 @@ export const proposeWorkout: DesignTool = {
 
     let op: DocWorkoutOp;
     let replaced = false;
-    const round = log.length + 1;
-    const reviewRunId = reviewerRunId(ctx.run.id, round);
+    const round = countedRounds(log) + 1;
+    const reviewRunId = reviewerRunId(ctx.run.id, toolUseId);
     const entry: ReviewRound = { round, toolUseId, reviewRunId, status: "reviewing", ...(p.changeNote ? { changeNote: p.changeNote } : {}) };
     if (ctx.review && kept?.review) {
       // A revision of a reviewed draft: held apart while its review runs; the op keeps the best so far.
@@ -384,12 +394,22 @@ export const proposeWorkout: DesignTool = {
       return refuse("proposal_changed", "The proposal changed while this draft was being stored.", "Call propose_workout again with the same draft.");
     }
     if (!ctx.review) return storedAnswer(proposalId, op, replaced);
+    let started = false;
     try {
-      await ctx.review.start({ reviewRunId, proposalId, round, toolUseId, draft });
+      started = await ctx.review.start({ reviewRunId, proposalId, round, toolUseId, draft });
     } catch (e) {
-      // Stored, never shown: unreviewed, it is never pending. The next call drops this round and starts afresh.
       console.error(JSON.stringify({ level: "error", msg: "propose_workout: the reviewer could not be started", error: e instanceof Error ? e.message : "unknown" }));
-      return refuse("review_unavailable", "The draft is stored, but its reviewer couldn't be started.", "Call propose_workout again with the same draft.");
+    }
+    if (!started) {
+      // No reviewer (it couldn't be inserted, or one under this call's id is already there): the round is dropped now,
+      // so it counts against nothing, and the draft — unreviewed — is never shown.
+      const dropped = applyDrop(op, toolUseId);
+      if (dropped) await updateOps(ctx.db, ctx.userId, proposalId, next.map((o) => (o === op ? dropped : o)), JSON.stringify(next));
+      return refuse(
+        "review_unavailable",
+        `The draft couldn't be sent for review (${unavailableWhy("not_started")}): it isn't reviewed and doesn't count as a round.`,
+        "Call propose_workout again with the same draft — or finish: an unreviewed draft is never shown.",
+      );
     }
     return reviewingAnswer(proposalId, { ...version, round, reviewRunId });
   },
@@ -426,11 +446,13 @@ async function replay(
         const v = mine.toolUseId === toolUseId ? mine : mine.candidate!;
         return reviewingAnswer(proposalId, { ...v, round: entry.round, reviewRunId: entry.reviewRunId });
       }
-      const settled = applyVerdict(mine, toolUseId, { note: NOTE_NOT_DONE });
+      // Its reviewer is over (this run is stepping, so it is not live) and left no review: settled as the resume would.
+      const error = ctx.review?.ended(entry.reviewRunId)?.error ?? null;
+      const settled = settleNoReview(mine, toolUseId, error);
       if (!settled) return null;
-      const written = await updateOps(ctx.db, ctx.userId, proposalId, ops.map((o) => (o === mine ? settled : o)), opsText);
+      const written = await updateOps(ctx.db, ctx.userId, proposalId, ops.map((o) => (o === mine ? settled.op : o)), opsText);
       if (!written) return refuse("proposal_changed", "The proposal changed while this draft's review was being settled.", "Call propose_workout again with the same draft.");
-      return reviewedAnswer(settled, toolUseId, ctx.now);
+      return reviewedAnswer(settled.op, toolUseId, ctx.now, unavailableWhy(error));
     }
     return reviewedAnswer(mine, toolUseId, ctx.now);
   }
@@ -446,9 +468,9 @@ async function replay(
 }
 
 /** The review of a draft, as its propose_workout call answers it. */
-function reviewedAnswer(op: DocWorkoutOp, toolUseId: string, now: Date): ToolOk {
+function reviewedAnswer(op: DocWorkoutOp, toolUseId: string, now: Date, why?: string): ToolOk {
   return {
-    data: designerResult(op, toolUseId) ?? { review: null, note: NOTE_NOT_DONE },
+    data: designerResult(op, toolUseId, why) ?? { review: null, note: NOTE_NOT_DONE },
     provenance: { source: "the independent reviewer's review of this draft", asOf: now.toISOString() },
     summary: "The draft's review, again",
   };

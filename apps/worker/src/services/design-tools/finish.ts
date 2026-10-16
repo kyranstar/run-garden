@@ -14,6 +14,7 @@ import { z } from "zod";
 import { coachProposals } from "@rg/database";
 import type { DesignTool } from "./types.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
+import { reviewRunning } from "../design-review.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 
 const LINE_MAX = 300;
@@ -48,13 +49,14 @@ export const finish: DesignTool = {
     const ops = (Array.isArray(row?.ops) ? row.ops : []) as DocWorkoutOp[];
     const mine = row && (ctx.run.role === "main" ? ops.length > 0 : ops.some((o) => o.by?.runId === ctx.run.id));
     if (!row || !mine || !proposalId) return { data: {}, summary: p.summary, receipt: { final: true } };
-    // Kept back while any workout lacks its review: the loop's finish makes the rest pending (coach-runs.ts).
-    const unreviewed = row.status === "unreviewed" && ops.some((o) => !o.review);
+    // Kept back while any workout lacks its review, or has one under way: the loop's finish makes the rest pending
+    // (coach-runs.ts, the same guard).
+    const unreviewed = row.status === "unreviewed" && (ops.some((o) => !o.review) || reviewRunning(ops));
     const line = unreviewed
       ? `${p.summary.length + KEPT_BACK.length > LINE_MAX ? `${p.summary.slice(0, LINE_MAX - KEPT_BACK.length - 1)}…` : p.summary}${KEPT_BACK}`
       : p.summary;
     // What the proposal is once this finish lands: the loop's finish makes a main run's fully reviewed one pending.
-    const promoted = ctx.run.role === "main" && row.status === "unreviewed" && ops.length > 0 && ops.every((o) => o.review);
+    const promoted = ctx.run.role === "main" && row.status === "unreviewed" && ops.length > 0 && ops.every((o) => o.review) && !reviewRunning(ops);
     return {
       data: { proposalId, ...(unreviewed ? { unreviewed: true } : {}) },
       summary: line,

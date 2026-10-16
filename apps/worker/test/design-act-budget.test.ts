@@ -172,6 +172,8 @@ describe("each act tool's declared statement cost is the most it runs", () => {
           .returning({ id: schema.coachRuns.id });
         return rows.length > 0;
       },
+      // A reviewer that used its turns: the validator's view is settled on a replay.
+      ended: () => ({ status: "stopped_cap", error: "step_cap" }),
     };
     const main = await runRow(rich.userId);
     const use = `toolu_hooked_${seq}`;
@@ -183,15 +185,27 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect((replay.result as ToolOk).data).toMatchObject({ review: null, round: 1 });
     const revised = await measured("propose_workout", { ...input, changeNote: "Again." }, rich.userId, main, `toolu_hooked2_${seq}`, { review: hooks });
     expect((revised.result as ToolOk).control).toBe("review");
-    const n = Math.max(first.count, replay.count, revised.count);
+    // A reviewer that can't be started (its insert finds the id taken): the round dropped at once, one write more.
+    const refusedStart = await measured("propose_workout", input, rich.userId, await runRow(rich.userId), `toolu_nostart_${seq}`, {
+      review: {
+        async start() {
+          await db.select({ id: schema.coachRuns.id }).from(schema.coachRuns).limit(1);
+          return false;
+        },
+        ended: () => null,
+      },
+    });
+    expect((refusedStart.result as ToolErr).error).toBe("review_unavailable");
+    const n = Math.max(first.count, replay.count, revised.count, refusedStart.count);
     expect(first.count).toBe(8);
+    expect(refusedStart.count).toBe(9);
     expect(n).toBe(tool("propose_workout").statementCost);
-    expect(n).toBe(8);
+    expect(n).toBe(9);
   });
 
   it("submit_review: the proposal, then the op with its review", async () => {
     const main = await runRow(rich.userId);
-    const hooks: ReviewHooks = { start: async () => true };
+    const hooks: ReviewHooks = { start: async () => true, ended: () => null };
     const use = `toolu_reviewed_${seq}`;
     await measured("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } }, rich.userId, main, use, { review: hooks });
     const reviewer = await runRow(rich.userId, { role: "reviewer", parentId: main.id });
