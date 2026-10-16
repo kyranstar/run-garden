@@ -142,6 +142,8 @@ describe("a refused call's Why not, in plain words (M1)", () => {
 
   it("anything else the schema says: one plain line", () => {
     expect(whyOf({ error: "invalid_input", why: "doc: Expected object, received string" })).toBe("Workout: the wrong kind of value");
+    // A path that ends at a position names the list it is in, never the position.
+    expect(whyOf({ error: "invalid_input", why: "answers.2: Expected object, received string" })).toBe("Answers: the wrong kind of value");
     expect(whyOf({ error: "invalid_input", why: "input: something odd happened" })).toBe("Not in the form the tool takes");
   });
 
