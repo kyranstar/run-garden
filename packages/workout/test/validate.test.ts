@@ -747,12 +747,27 @@ describe("care_share (Task 13, A10): a cared-for profile's care part, measured a
     expect(share({ ...spread, parts: [...spread.parts.slice(0, 2), part("cooldown", "holds", [hold("figureFour", 285), hold("legsUp", 225)])] })).toHaveLength(1);
   });
 
-  it("is judged only where care is given: no care part and no care move, no profile with care, or no minutes but a run's", () => {
+  it("is judged only for a document with a care part, and only for a profile with care", () => {
     expect(share(docOf(OTHER, "recover"))).toEqual([]);
     expect(share(recoverWith([hold("rocabado", 45)]), { activeProfiles: [] })).toEqual([]);
     expect(share(recoverWith([hold("rocabado", 45)]), { activeProfiles: [{ ...TMJ, care: null }] })).toEqual([]);
-    // A care move outside any care part is care given: judged, at the document's parts.
-    expect(share(docOf([...OTHER, part("cooldown", "holds", [hold("rocabado", 45)])], "recover"))).toEqual([expect.objectContaining({ path: "parts" })]);
+    // A care move in a workout with no care part — one chin tuck in the athlete's own Studio session — sets out no care
+    // block, so its share isn't judged (round 2, Minor 4).
+    expect(share(docOf([...OTHER, part("cooldown", "holds", [hold("rocabado", 45)])], "recover"))).toEqual([]);
+    expect(share(docOf([part("main", "straight", [ex("boxSquat", { sets: 3, reps: 8 }), ex("chinTuck", { sets: 1, reps: 8 })])], "develop"))).toEqual([]);
+  });
+
+  it("counts a rest between care moves as care, as the session's minutes count every rest (round 2, Minor 4)", () => {
+    const rest = (seconds: number): WorkoutItem => ({ kind: "rest", seconds }) as WorkoutItem;
+    const minutesIn = (doc: WorkoutDoc) => /^Jaw care is (\d+) of (\d+) minutes/.exec(share(doc)[0]?.message ?? "")?.slice(1).map(Number);
+    // Three one-minute care moves with a minute's rest between each: 5 of 25 minutes, within a Recover day's share.
+    expect(share(recoverWith([hold("rocabado", 45), rest(60), hold("jawMassage", 45), rest(60), hold("tongueRest", 45)]))).toEqual([]);
+    // Counted, not left out: two care moves and the rest between them, 3 of 23; a rest at the care part's end is its own.
+    expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("jawMassage", 45)]))).toEqual([3, 23]);
+    expect(minutesIn(recoverWith([hold("rocabado", 45), hold("jawMassage", 45), rest(60)]))).toEqual([3, 23]);
+    // A rest that leads into a move that is no care, or that opens the part, is not care's.
+    expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("breath", 45)]))).toEqual([1, 23]);
+    expect(minutesIn(recoverWith([rest(60), hold("rocabado", 45)]))).toEqual([1, 22]);
   });
 
   it("measures the share against the session's minutes without its runs", () => {

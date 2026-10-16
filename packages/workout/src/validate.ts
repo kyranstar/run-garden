@@ -49,11 +49,13 @@
  *   except straight sets whose every move is ONE set of an easy activation or mobility move (Task 13, A15: a library
  *   move with that purpose or role, at most difficulty ONE_SET_MAX_DIFFICULTY and no added weight, one set, one round —
  *   the mode's own easy work, set out one move at a time; a free-text move can't be vouched for).
- * - care_share (warning): a profile with care content (`care.block`) and a document that gives care — a `care` part, or a
- *   move whose roles include the block's — where the care moves' derived minutes fall below CARE_SHARE_FLOOR of the
- *   block's share for the mode (in whole minutes, against the document's minutes without its runs). Only moves with a
- *   role of the block count, wherever they are; the moves in a `care` part without one are named. At the first `care`
- *   part, else at "parts". A document that gives no care at all is not judged (the athlete's own sessions, imports).
+ * - care_share (warning): a profile with care content (`care.block`) and a document with a `care` part — one that sets
+ *   out a care block — where the care's derived minutes fall below CARE_SHARE_FLOOR of the block's share for the mode
+ *   (in whole minutes, against the document's minutes without its runs). The care is the moves with a role of the block,
+ *   wherever they are, and the rests between them — a rest whose nearest move before it in its part is one of them,
+ *   and whose nearest move after it is one too or the part's end — as the session's minutes count every rest. The
+ *   moves in a `care` part without such a role are named. At the first `care` part. A document with no care part is
+ *   not judged, care moves or none (the athlete's own sessions, imports; round 2, Minor 4).
  * - mode_above_day (warning, at intent.effort): on the day, the day's "feeling off" (the engine's own sentence), else a
  *   profile's `recoveryReason` (for a workout above recovery) or its first failed `buildChecks` line (for a build
  *   workout) — the profile's own words; `fix` is the effort it allows.
@@ -587,22 +589,34 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   /** Each cared-for profile's care block against its share of the minutes (see care_share in the header). */
   function checkCare(): void {
     const careAt = doc.parts.findIndex((p) => p.purpose === "care");
+    if (careAt < 0) return;
     /** The document's derived minutes, holding only the items `keep` keeps (a part left with no move is dropped). */
-    const minutesOf = (keep: (item: WorkoutItem) => boolean): number => {
+    const minutesOf = (keep: (item: WorkoutItem, at: number, items: readonly WorkoutItem[]) => boolean): number => {
       const parts = doc.parts
         .map((p) => ({ ...p, items: p.items.filter(keep) }))
         .filter((p) => p.items.some((i) => i.kind === "exercise" || i.kind === "free_exercise"));
       return parts.length > 0 ? deriveDoc({ ...doc, parts }, ctx.library).estimatedMinutes : 0;
+    };
+    /** The nearest item that is no rest from `at`, stepping by `step` through the part; undefined past its end. */
+    const nearestMove = (items: readonly WorkoutItem[], at: number, step: 1 | -1): WorkoutItem | undefined => {
+      for (let i = at + step; i >= 0 && i < items.length; i += step) if (items[i]!.kind !== "rest") return items[i];
+      return undefined;
     };
     for (const p of profiles) {
       const block = p.care?.block;
       const share = block?.share[mode] ?? 0;
       if (!block || !(share > 0)) continue;
       const isCare = (item: WorkoutItem): boolean => item.kind === "exercise" && (find(item.libraryId)?.roles ?? []).some((r) => block.roles.includes(r));
-      if (careAt < 0 && !doc.parts.some((part) => part.items.some(isCare))) continue;
+      /** A care move, or a rest between care moves (or after the last one in its part). */
+      const careTime = (item: WorkoutItem, at: number, items: readonly WorkoutItem[]): boolean => {
+        if (item.kind !== "rest") return isCare(item);
+        const before = nearestMove(items, at, -1);
+        const after = nearestMove(items, at, 1);
+        return before !== undefined && isCare(before) && (after === undefined || isCare(after));
+      };
       const total = minutesOf((i) => i.kind !== "run");
       if (total === 0) continue;
-      const care = minutesOf(isCare);
+      const care = minutesOf(careTime);
       const target = share * total;
       if (care >= Math.floor(target * CARE_SHARE_FLOOR + EPSILON)) continue;
       const pct = (x: number): number => Math.round(x * 100);
@@ -618,7 +632,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
       };
       const others = [...new Set(doc.parts.filter((part) => part.purpose === "care").flatMap((part) => part.items.flatMap(uncounted)))];
       if (others.length > 0) message += ` Only ${block.label.toLowerCase()} moves count: ${listWords(others)} ${others.length === 1 ? "isn't one" : "aren't"}.`;
-      add({ path: careAt >= 0 ? `parts[${careAt}]` : "parts", code: "care_share", message, severity: "warning" });
+      add({ path: `parts[${careAt}]`, code: "care_share", message, severity: "warning" });
     }
   }
 
