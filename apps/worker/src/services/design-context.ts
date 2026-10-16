@@ -372,11 +372,12 @@ async function read(db: Db, userId: string, now: Date, horizonEnd: (today: strin
         (select max(${providerConnections.lastSyncAt}) from ${providerConnections} where ${providerConnections.userId} = ${userId}
            and ${providerConnections.provider} = 'coros') as watchSynced,
         (select json_group_array(json_object('title', title, 'date', d, 'c', c)) from (
-           select p.title as title, p.created_at as c, (select min(json_extract(o.value, '$.date')) from json_each(p.ops) o
-               where ${OPEN_OP} and json_extract(o.value, '$.date') >= ${today}) as d
-           from ${cp} p where p.user_id = ${userId} and substr(p.id, 1, ${designPrefix.length}) = ${designPrefix}
-             and p.status in ('pending', 'partially_approved') and json_valid(p.ops) and p.expires_at >= ${today}
-           order by p.created_at desc, p.id desc) where d is not null limit ${OPEN_LISTED + 1}) as open,
+           select title, d, c from (
+             select p.title as title, p.created_at as c, p.id as i, (select min(json_extract(o.value, '$.date')) from json_each(p.ops) o
+                 where ${OPEN_OP} and json_extract(o.value, '$.date') >= ${today}) as d
+             from ${cp} p where p.user_id = ${userId} and substr(p.id, 1, ${designPrefix.length}) = ${designPrefix}
+               and p.status in ('pending', 'partially_approved') and json_valid(p.ops) and p.expires_at >= ${today})
+           where d is not null order by c desc, i desc limit ${OPEN_LISTED + 1})) as open,
         (select json_object('n', count(*), 'reasons', sum(case when json_extract(o.value, '$.outcome.reason') is not null then 1 else 0 end))
            from ${cp} p, json_each(case when json_valid(p.ops) then p.ops else '[]' end) o
            where p.user_id = ${userId} and p.status != 'rehearsal' and json_extract(o.value, '$.kind') = 'doc_workout'
