@@ -1194,11 +1194,11 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     return { main, one, two };
   }
 
-  it("a designer sees its siblings — date, title, minutes, parts and moves — before it drafts, in one statement", async () => {
+  it("a designer sees its siblings — date, title, minutes, parts and moves — before it drafts, in two statements (the set, the athlete with the plan's hard runs)", async () => {
     const { two } = await setOfTwo();
     const { result, count } = await call("read_set", ctxOf(two), {});
-    expect(count).toBeLessThanOrEqual(1);
-    expect(tool("read_set").statementCost).toBe(1);
+    expect(count).toBeLessThanOrEqual(2);
+    expect(tool("read_set").statementCost).toBe(2);
     const d = data(result);
     expect(d.workouts).toHaveLength(1);
     const [w] = d.workouts;
@@ -1223,7 +1223,7 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     const reviewer = await run({ role: "reviewer", parentId: two.id, scope: { kind: "week" } });
     const reviewOf = { proposalId: designProposalId(main.id), designerRunId: two.id, toolUseId: "t", round: 1 };
     const { result, count } = await call("read_set", ctxOf(reviewer, { reviewOf }), {});
-    expect(count).toBeLessThanOrEqual(1);
+    expect(count).toBeLessThanOrEqual(2);
     const workouts = data(result).workouts as Array<{ title: { text: string }; underReview: boolean }>;
     expect(workouts.map((w) => [w.title.text, w.underReview])).toEqual([["Monday hips", false], ["Tuesday hips", true]]);
     for (const w of workouts) expect(w).not.toHaveProperty("yours");
@@ -1246,7 +1246,7 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     });
     const reviewOf = { proposalId: designProposalId(main.id), designerRunId: designer.id, toolUseId: "t2", round: 2 };
     const { result, count } = await call("read_set", ctxOf(reviewer, { reviewOf }), {});
-    expect(count).toBe(1);
+    expect(count).toBe(2);
     const [w] = data(result).workouts as Array<Record<string, unknown>>;
     expect(w).toMatchObject({ underReview: true, title: { untrusted: true, text: "Tuesday hips, shorter rests" }, time: "18:00", minutes: 25, review: null });
     // Only the reviewer of that draft sees it: one whose draft is the version held sees the version held.
@@ -1273,7 +1273,7 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     const reviewer = await run({ role: "reviewer", parentId: redo.id, scope: { kind: "week" } });
     const reviewOf = { proposalId: designProposalId(main.id), designerRunId: redo.id, toolUseId: "t-redo", round: 1 };
     const { result, count } = await call("read_set", ctxOf(reviewer, { reviewOf }), {});
-    expect(count).toBe(1);
+    expect(count).toBe(2);
     const d = data(result);
     const marks = (d.workouts as Array<Record<string, unknown> & { title: { text: string } }>).map((w) => [w.title.text, w.underReview, w.replacedBy ?? null]);
     expect(marks).toEqual([
@@ -1291,6 +1291,26 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     for (const w of plain.workouts as Array<Record<string, unknown>>) expect(w).not.toHaveProperty("replacedBy");
     expect(plain.hardDaysInARow.count).toBe(1);
     expect(plain.movesRepeatedOnConsecutiveDays).toEqual([{ days: [day(-1), day(-2)], moves: expect.arrayContaining(["bridge"]) }]);
+  });
+
+  it("A6: the plan's long, quality and race runs are hard days beside the set's own, named; each workout says its day (fix wave 13)", async () => {
+    // The fixture's plan holds a long run in 9 days: a workout that develops the day after it makes a hard pair.
+    const main = await run({ scope: { kind: "next_n", n: 3 } });
+    const one = await run({ role: "designer", parentId: main.id, scope: { kind: "next_n", n: 3 } });
+    const two = await run({ role: "designer", parentId: main.id, scope: { kind: "next_n", n: 3 } });
+    const hard = { ...calmDoc({ title: "Legs, the day after" }), intent: { ...calmDoc().intent, effort: "develop" } };
+    ok((await call("propose_workout", ctxOf(one), { doc: hard, target: { kind: "new", date: day(-10) } })).result);
+    const d = data((await call("read_set", ctxOf(two), {})).result);
+    expect(d.workouts[0].day).toBe("Sat 23 May · in 10 d");
+    expect(d.hardDaysInARow.pairs).toEqual([[day(-9), day(-10)]]);
+    expect(d.hardDaysInARow.count).toBe(1);
+    expect(d.hardDaysInARow.runs).toEqual([{ date: day(-9), day: "Fri 22 May · in 9 d", what: "long run" }]);
+    expect(d.hardDaysInARow.counts).toMatch(/long, quality and race runs/);
+    // A workout that only maintains, beside the same run: no hard pair.
+    const easy = await run({ role: "designer", parentId: (await run({ scope: { kind: "next_n", n: 3 } })).id, scope: { kind: "next_n", n: 3 } });
+    ok((await call("propose_workout", ctxOf(easy), { doc: calmDoc({ title: "Easy the day after" }), target: { kind: "new", date: day(-10) } })).result);
+    const calm = data((await call("read_set", ctxOf(easy), {})).result);
+    expect(calm.hardDaysInARow.count).toBe(0);
   });
 
   it("read_set's description names its marks: yours, firstVersion, underReview, replacedBy (round-2 minors)", () => {

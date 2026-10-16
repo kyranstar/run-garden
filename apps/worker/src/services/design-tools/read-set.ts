@@ -5,11 +5,13 @@
  * regions), its effort, intent, parts (their purposes, in order) and moves (library ids), and its review in summary (the
  * mean, the low scores, the must-fix items, the rounds); the set's combined balance (`deriveDoc` over the documents,
  * summed, in read_balance's units — what the set adds, beside what read_balance says was done); hard days in a row (two
- * workouts of the set that develop or peak on consecutive days); and the moves repeated on consecutive days
- * (progression and variety, and the same tissues two days running). Runs and programme sessions around them are
- * read_plan's. The proposal's lines (`notes`) carry model-written words — a title, a reason — so they come marked. The
- * main coach's changes to sessions already on the plan (adjust_plan's, Task 8b) are listed apart (`planChanges`: the
- * session, the change and the coach's why, marked): never a designer's work, never one of the set's workouts.
+ * consecutive hard days, one of them the set's: a workout of the set that develops or peaks, or a long, quality or race
+ * run on the plan — fix wave 13, A6: a runner's week turns on its runs — with the runs in a pair named); and the moves
+ * repeated on consecutive days (progression and variety, and the same tissues two days running). Each workout says its
+ * day by name and how far from today (I6). The rest of the plan around them is read_plan's. The proposal's lines
+ * (`notes`) carry model-written words — a title, a reason — so they come marked. The main coach's changes to sessions
+ * already on the plan (adjust_plan's, Task 8b) are listed apart (`planChanges`: the session, the change and the coach's
+ * why, marked): never a designer's work, never one of the set's workouts.
  *
  * Every role reads it (audit I7; the lead's ruling for 3A): the main coach judges its set (each workout with its key,
  * from its plan's rounds); a set's designer reads its siblings before it drafts, so it can vary from the days either
@@ -19,19 +21,22 @@
  * redo's reviewer sees the first version the redo would replace marked `replacedBy`, and the set judged — hard days in a
  * row, the moves repeated, the combined balance — with the redo in its place, never both).
  *
- * Small by contract: one statement (the proposal), and an answer within RESULT_BUDGET_BYTES — the details give way, in
- * order, before any workout does (the intent sentences, then the parts, then the moves, then the must-fix wording, then
- * the regions, then the repeated moves' names — counted instead).
+ * Small by contract: two statements (the proposal; the athlete with the plan's hard runs), and an answer within
+ * RESULT_BUDGET_BYTES — the details give way, in order, before any workout does (the intent sentences, then the parts,
+ * then the moves, then the must-fix wording, then the regions, then the repeated moves' names — counted instead).
  */
+import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
+import { plannedWorkouts } from "@rg/database";
+import { addDays, daysBetween } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, type BalanceProfile } from "@rg/workout";
 import { REVIEW_DIMENSIONS } from "../design-prompt.js";
-import { balanceInUnits, hardPairs, movesOf, opIdOf, readSetProposal, repeatsOnConsecutiveDays, reviewMeanOf } from "../design-orchestrate.js";
+import { balanceInUnits, isHard, movesOf, opIdOf, readSetProposal, repeatsOnConsecutiveDays, reviewMeanOf } from "../design-orchestrate.js";
 import { isErr, parseAct } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import type { PlanAdjustOp } from "../proposal-kinds.js";
-import { answer, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
+import { answer, dayWords, parsedArray, readAthlete, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
 import type { DesignTool } from "./types.js";
 import { utf8Bytes } from "../utf8.js";
 
@@ -83,7 +88,7 @@ function marks(opId: string, view: View): Record<string, unknown> {
 /** A workout's parts, by purpose, in order. */
 const partsOf = (op: DocWorkoutOp): string[] => (op.doc?.parts ?? []).map((p) => p.purpose);
 
-function workoutOf(op: DocWorkoutOp, view: View, detail: Detail): Record<string, unknown> {
+function workoutOf(op: DocWorkoutOp, view: View, detail: Detail, today: string): Record<string, unknown> {
   const d = op.derived ?? {};
   const r = op.review;
   const low = r
@@ -102,6 +107,7 @@ function workoutOf(op: DocWorkoutOp, view: View, detail: Detail): Record<string,
     opId,
     ...marks(opId, view),
     date: op.date,
+    day: dayWords(op.date, today),
     ...(op.time ? { time: op.time } : {}),
     target: op.target,
     title: untrusted(cut(op.doc.title, TITLE_MAX)),
@@ -154,7 +160,57 @@ function combinedOf(ops: DocWorkoutOp[]): Record<string, unknown> {
   };
 }
 
-const EMPTY = { workouts: [], combined: null, hardDaysInARow: { count: 0, pairs: [] }, movesRepeatedOnConsecutiveDays: [], notes: [], planChanges: [] };
+// ── Hard days, runs among them (fix wave 13, A6) ────────────────────────────────────────────────────────────────────
+
+/** A run on the plan that is a hard day for the legs, by its category. */
+const HARD_RUN_WORDS: Readonly<Record<string, string>> = { long: "long run", quality: "quality run", race: "race" };
+const HARD_COUNTS =
+  "the set's own workouts that develop or peak, and the plan's long, quality and race runs (runs), on consecutive days — each pair holds one of the set's (read_plan for the rest of the plan)";
+/** How far the plan's hard runs are read, from the UTC day: every set's days (at most four weeks ahead) and the day either side. */
+const HARD_RUN_BACK_DAYS = 2;
+const HARD_RUN_AHEAD_DAYS = 31;
+
+/** The plan's long, quality and race runs around now (not skipped or missed), as one JSON array: a column beside the athlete. */
+function hardRunsSql(userId: string, now: Date): SQL {
+  const utcDay = now.toISOString().slice(0, 10);
+  const pw = plannedWorkouts;
+  return sql`(select json_group_array(json_object('date', ${pw.effectiveDate}, 'category', ${pw.category}))
+    from ${pw} where ${pw.userId} = ${userId} and ${pw.archivedAt} is null and ${pw.category} in ('long', 'quality', 'race')
+      and ${pw.completionState} in ('scheduled', 'completed')
+      and ${pw.effectiveDate} between ${addDays(utcDay, -HARD_RUN_BACK_DAYS)} and ${addDays(utcDay, HARD_RUN_AHEAD_DAYS)})`;
+}
+
+function hardRunsOf(raw: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const r of parsedArray(raw)) {
+    const x = r as { date?: unknown; category?: unknown };
+    if (typeof x.date !== "string" || typeof x.category !== "string" || !HARD_RUN_WORDS[x.category]) continue;
+    // A race outranks a quality run outranks a long run on one day: the one named is the hardest.
+    const held = out.get(x.date);
+    const order = ["long run", "quality run", "race"];
+    if (!held || order.indexOf(HARD_RUN_WORDS[x.category]!) > order.indexOf(held)) out.set(x.date, HARD_RUN_WORDS[x.category]!);
+  }
+  return out;
+}
+
+/**
+ * Hard days in a row: two consecutive days that are each hard — a workout of the set that develops or peaks, or a long,
+ * quality or race run on the plan — where at least one is the set's (two runs in a row are the plan's, not the set's to
+ * judge). The runs named are those in a pair.
+ */
+function hardDays(ops: DocWorkoutOp[], runs: ReadonlyMap<string, string>, today: string): { pairs: Array<[string, string]>; runs: Array<{ date: string; day: string; what: string }> } {
+  const mine = new Set(ops.filter(isHard).map((o) => o.date));
+  const days = [...new Set([...mine, ...runs.keys()])].sort();
+  const pairs: Array<[string, string]> = [];
+  for (let i = 1; i < days.length; i++) {
+    const [a, b] = [days[i - 1]!, days[i]!];
+    if (daysBetween(a, b) === 1 && (mine.has(a) || mine.has(b))) pairs.push([a, b]);
+  }
+  const named = [...new Set(pairs.flat())].filter((d) => runs.has(d)).sort();
+  return { pairs, runs: named.map((date) => ({ date, day: dayWords(date, today), what: runs.get(date)! })) };
+}
+
+const EMPTY = { workouts: [], combined: null, hardDaysInARow: { count: 0, pairs: [], runs: [] }, movesRepeatedOnConsecutiveDays: [], notes: [], planChanges: [] };
 
 /** A change of the main coach's to a session already on the plan, as the set's reader sees it beside the workouts. */
 function changeOf(c: PlanAdjustOp): Record<string, unknown> {
@@ -175,7 +231,7 @@ export const readSet: DesignTool = {
   description:
     "The set so far (a week or the next few), for the main coach, its designers and reviewers: each workout in date order with its op id, where it goes, parts, moves, derived fields and review; the combined balance; hard days in a row; the moves repeated on consecutive days; the main coach's changes to planned sessions, apart. Marks: yours, firstVersion, underReview, replacedBy.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  statementCost: 1,
+  statementCost: 2,
   cpuWeight: 0.4,
   roles: ["main", "designer", "reviewer"],
   async run(ctx, raw) {
@@ -201,7 +257,12 @@ export const readSet: DesignTool = {
     if (!proposalId) return answer({ source, now: ctx.now, missing: ["no set to read: this run belongs to none"], data: EMPTY, summary: "No set to read" });
     // A reviewer's read also reads the set's designers (in the same statement): the one under review may be a redo.
     const mainRunId = proposalId.startsWith("dp-") ? proposalId.slice(3) : null;
-    const read = await readSetProposal(ctx.db, ctx.userId, proposalId, view.role === "reviewer" && mainRunId ? { designersOf: mainRunId } : {});
+    // The athlete (today, for each workout's day) with the plan's hard runs, beside the set (fix wave 13, A6, I6).
+    const [read, { athlete, extra }] = await Promise.all([
+      readSetProposal(ctx.db, ctx.userId, proposalId, view.role === "reviewer" && mainRunId ? { designersOf: mainRunId } : {}),
+      readAthlete(ctx.db, ctx.userId, ctx.now, { hardRuns: hardRunsSql(ctx.userId, ctx.now) }),
+    ]);
+    const today = athlete.today;
     if (view.role === "reviewer") {
       const under = view.underReview;
       view = { ...view, replaced: read.designers.find((d) => d.runId === under)?.replaces ?? null };
@@ -213,17 +274,17 @@ export const readSet: DesignTool = {
     // The set as it would be: a redo's draft in its first version's place, never both.
     const replaced = view.role === "reviewer" ? view.replaced : null;
     const judged = ordered.filter((op) => opIdOf(op) !== replaced);
-    const pairs = hardPairs(judged);
+    const { pairs, runs } = hardDays(judged, hardRunsOf(extra.hardRuns), today);
     const repeats = repeatsOnConsecutiveDays(judged);
     const rest = {
       combined: combinedOf(judged),
-      hardDaysInARow: { count: pairs.length, pairs, counts: "the set's own workouts that develop or peak, on consecutive days (read_plan for the runs and sessions around them)" },
+      hardDaysInARow: { count: pairs.length, pairs, runs, counts: HARD_COUNTS },
       notes: flags.slice(-NOTES_SHOWN).map((f) => untrusted(cut(f, NOTE_MAX))),
       planChanges: read.changes.map(changeOf),
     };
     let result = answer({ source, now: ctx.now, missing: none, data: {}, summary: "" });
     for (const detail of DETAILS) {
-      const workouts = ordered.map((op) => workoutOf(op, view, detail));
+      const workouts = ordered.map((op) => workoutOf(op, view, detail, today));
       // Last of all, the repeated moves are counted rather than listed (each workout's own moves are gone by then).
       const movesRepeatedOnConsecutiveDays = detail < 6 ? repeats : repeats.map((r) => ({ days: r.days, count: r.moves.length }));
       result = answer({

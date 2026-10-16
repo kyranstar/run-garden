@@ -1091,7 +1091,7 @@ describe("a replay never starts a designer twice", () => {
 // ── read_set ────────────────────────────────────────────────────────────
 
 describe("read_set", () => {
-  it("returns the set in date order with reviews, the combined balance and hard days in a row — one statement, within the result budget", async () => {
+  it("returns the set in date order with reviews, the combined balance and hard days in a row — two statements (the set; the athlete with the plan's hard runs), within the result budget", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
     const long = "x".repeat(240);
@@ -1125,8 +1125,8 @@ describe("read_set", () => {
     const ctx = { db, env, userId: a.userId, now: NOW, run: { id: mainId, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false }, set: { rounds: () => rounds, start: async () => [] } } as unknown as ToolContext;
     statements = 0;
     const r = (await allTools().find((x) => x.name === "read_set")!.run(ctx, {})) as ToolOk;
-    expect(statements).toBeLessThanOrEqual(1);
-    expect(allTools().find((x) => x.name === "read_set")!.statementCost).toBe(1);
+    expect(statements).toBeLessThanOrEqual(2);
+    expect(allTools().find((x) => x.name === "read_set")!.statementCost).toBe(2);
     expect(isToolErr(r)).toBe(false);
     const { summary: _s, receipt: _r, control: _c, ...forModel } = r;
     expect(new TextEncoder().encode(JSON.stringify(forModel)).length).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
@@ -1328,7 +1328,8 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
       "designer context": 2 + 4 + 11,
       // The tree, the claim, the proposal read, the run's write, the events: every workout proposed, nothing to write.
       "the set's result: main resumed": 2 + 4 + 1,
-      "read_set": 2 + MODEL + 1,
+      // The set, and the athlete with the plan's hard runs (fix wave 13, A6).
+      "read_set": 2 + MODEL + 2,
       "drop_workout": 2 + MODEL + 2,
       // A redo reads no estimate.
       "plan_set again: one redo designer": 2 + MODEL + 2,
@@ -1363,7 +1364,7 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     const tool = (name: string) => ACT_TOOLS.find((x) => x.name === name)!;
     expect(tool("plan_set").statementCost).toBe(3);
     expect(tool("drop_workout").statementCost).toBe(2);
-    expect(tool("read_set").statementCost).toBe(1);
+    expect(tool("read_set").statementCost).toBe(2);
     expect([...PENDING_TOOL_NAMES]).toEqual([]);
     expect(allTools().map((x) => x.name).sort()).toEqual([...PROMPT_TOOL_NAMES].sort());
   });
@@ -1419,7 +1420,7 @@ describe("fix round 1 — a redo goes where its first version went", () => {
 });
 
 describe("fix round 1 — the set judged on its moves", () => {
-  it("read_set gives each workout's target and moves, and the moves repeated on consecutive days — one statement", async () => {
+  it("read_set gives each workout's target and moves, and the moves repeated on consecutive days — two statements", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
     const FRI = day(-2);
@@ -1437,7 +1438,7 @@ describe("fix round 1 — the set judged on its moves", () => {
     const ctx = { db, env, userId: a.userId, now: NOW, run: { id: mainId, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false }, set: { rounds: () => rounds } } as unknown as ToolContext;
     statements = 0;
     const data = ((await allTools().find((x) => x.name === "read_set")!.run(ctx, {})) as ToolOk).data as any;
-    expect(statements).toBe(1);
+    expect(statements).toBe(2);
     expect(data.workouts.map((w: { target: unknown; moves: string[] }) => [w.target, w.moves])).toEqual([
       [{ kind: "new", date: THU }, ["bridge", "deadBug"]],
       [{ kind: "new", date: FRI }, ["bridge", "gobletSquat", "bandRow", "couchStretch"]],
