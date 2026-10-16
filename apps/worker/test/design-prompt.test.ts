@@ -44,6 +44,8 @@ describe("the prompt text", () => {
       "validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "plan_set", "finish",
       // The lead's ruling 4 (fix round 1): the reviewer's verdict comes back through its own tool.
       "submit_review",
+      // Task 7: the main coach's lever over a set — judge it, take a workout out.
+      "read_set", "drop_workout",
     ];
     expect([...PROMPT_TOOL_NAMES].sort()).toEqual([...spec].sort());
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);

@@ -6,14 +6,17 @@
  *
  * The names, and what each tool is for, are the ones the prompt promises (design-prompt.ts `PROMPT_TOOL_NAMES` and
  * "Using the tools well"); the descriptions stay short because the prompt already explains when to reach for which.
- * The read tools serve all three roles; the act tools follow them (`ACT_TOOLS`, each with its own roles), the
- * reviewer's `submit_review` (design-review.ts) among them. One tool the prompt names arrives with a later task —
- * `plan_set` (Task 7) — and is listed in `PENDING_TOOL_NAMES` until it does, so a test holds the registry plus that
- * list to the prompt's names exactly.
+ * The read tools serve all three roles; the act tools follow them (`ACT_TOOLS`, each with its own roles): the
+ * reviewer's `submit_review` (design-review.ts) among them, and the main coach's tools for a set — plan_set, read_set,
+ * drop_workout (design-orchestrate.ts; read_set reads, but only the main coach's set). A tool the prompt names before
+ * a later task adds it is listed in `PENDING_TOOL_NAMES` until it does — none now — so a test holds the registry plus
+ * that list to the prompt's names exactly.
  */
 import { submitReview } from "../design-review.js";
 import { askAthlete } from "./ask.js";
+import { dropWorkout } from "./drop-workout.js";
 import { finish } from "./finish.js";
+import { planSet } from "./plan-set.js";
 import { proposeWorkout } from "./propose.js";
 import { readAnswers } from "./read-answers.js";
 import { readBalance } from "./read-balance.js";
@@ -28,6 +31,7 @@ import { readProposals } from "./read-proposals.js";
 import { readReadiness } from "./read-readiness.js";
 import { listTemplates } from "./read-templates.js";
 import { getWorkout, listWorkouts } from "./read-workouts.js";
+import { readSet } from "./read-set.js";
 import { recordAnswer } from "./record-answer.js";
 import { remember } from "./remember.js";
 import type { DesignTool } from "./types.js";
@@ -53,10 +57,21 @@ export const READ_TOOLS: DesignTool[] = [
 ];
 
 /** The act tools, in the prompt's order. */
-export const ACT_TOOLS: DesignTool[] = [validateWorkout, askAthlete, recordAnswer, remember, proposeWorkout, submitReview, finish];
+export const ACT_TOOLS: DesignTool[] = [
+  validateWorkout,
+  askAthlete,
+  recordAnswer,
+  remember,
+  proposeWorkout,
+  planSet,
+  readSet,
+  dropWorkout,
+  submitReview,
+  finish,
+];
 
-/** Tools the prompt names that later tasks add: each leaves this list when it joins the registry. */
-export const PENDING_TOOL_NAMES = ["plan_set"] as const;
+/** Tools the prompt names that later tasks add: each leaves this list when it joins the registry (none left). */
+export const PENDING_TOOL_NAMES: readonly string[] = [];
 
 /** Every tool a run is offered. */
 export function allTools(): DesignTool[] {

@@ -57,6 +57,11 @@ export interface ToolContext {
   review?: ReviewHooks;
   /** A reviewer's run: the draft it reviews (the loop sets it from the sub-run's state). */
   reviewOf?: ReviewOf;
+  /**
+   * A main run's set (Task 7; design-orchestrate.ts), set by the loop for the main run: the rounds planned so far, and
+   * the start of a round's designer sub-runs. Absent outside the loop.
+   */
+  set?: SetHooks;
 }
 
 export interface ToolOk {
@@ -76,8 +81,59 @@ export interface ToolOk {
   /**
    * `review`: the run pauses (`waiting_review`) while the reviewer sub-run this call started reviews its draft; the
    * call's result for the model is that review, given when the run resumes (design-review.ts).
+   * `set`: the main run pauses (`waiting_set`) while the designer sub-runs plan_set started design the set; the call's
+   * result for the model is the set's outcome, given when every designer is over (design-orchestrate.ts). `data` is
+   * then the loop's: `{ round: SetRound, estimate? }`.
    */
-  control?: "review";
+  control?: "review" | "set";
+}
+
+// ── A set (Task 7; spec §6; principles §6.9; design-orchestrate.ts) ─────────────────────────────────────────────────
+
+/** One workout of a set, as the main coach briefs it (plan_set). Model-written: the designer reads it as data. */
+export interface SetBrief {
+  /** The main coach's name for this workout of the set (its slot): unique in the set, and what a redo names. */
+  key: string;
+  date: string;
+  time?: string;
+  purpose: string;
+  emphasis: string;
+  constraints: string;
+  why: string;
+  /** Why a second session that day: needed when another brief, a programme session or a session already over holds
+   * the date. */
+  sameDayWhy?: string;
+  /** A redo's: what to change from the first version, and why. */
+  note?: string;
+}
+
+/** One call of plan_set: its briefs and the designer started for each (its id is the workout's op id). */
+export interface SetRound {
+  toolUseId: string;
+  /** A second call, for specific keys of the first. */
+  redo: boolean;
+  briefs: SetBrief[];
+  designers: Array<{ key: string; runId: string }>;
+  /** A redo's: the designer whose workout each key's new one replaces once reviewed. */
+  replaces?: Record<string, string>;
+}
+
+/** A designer sub-run to start: its id (keyed on the call and the brief), and its brief as its context will carry it. */
+export interface SetDesignerStart {
+  runId: string;
+  key: string;
+  brief: string;
+}
+
+/** The loop's side of a set (coach-runs.ts). */
+export interface SetHooks {
+  /** The rounds this main run has planned, as its state holds them (no statement). */
+  rounds(): readonly SetRound[];
+  /**
+   * Start the designers, in brief order: one insert, each keyed on its id — answers the ids inserted (none for a
+   * designer that already exists: a replay starts nothing twice).
+   */
+  start(designers: SetDesignerStart[]): Promise<string[]>;
 }
 
 // ── Review (spec §5; ruling 4; design-review.ts) ────────────────────────────────────────────────────────────────────
@@ -157,8 +213,8 @@ export interface ToolErr {
  *   athlete's answer, given when they answer (`POST /api/coach/runs/:id/answer`).
  * - `finish`: the run ends. `data.proposalId` (a string), when present, becomes the run's proposal. The reviewer's
  *   `submit_review` is its finish.
- * A call that started a review pauses its run through its result instead (`ToolOk.control`). (A spawning control
- * for designer sub-runs comes with the orchestration, Task 7.)
+ * A call that started a review, or a set's designers (plan_set), pauses its run through its result instead
+ * (`ToolOk.control`).
  */
 export type ToolControl = "ask" | "finish";
 

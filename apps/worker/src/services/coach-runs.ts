@@ -7,7 +7,8 @@ import { restoreInProgress } from "./account-state.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder } from "./design-context.js";
-import { MAX_TOOL_CALLS_PER_TURN, REVIEWER_MAX_CALLS } from "./design-limits.js";
+import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, REVIEWER_MAX_CALLS, SET_REDO_ROUNDS } from "./design-limits.js";
+import { isSetScope, promoteSetWithWhatItHas, settleSet, type SetEstimate } from "./design-orchestrate.js";
 import { llmBudgetStatus } from "./llm.js";
 import {
   callMessages,
@@ -34,6 +35,8 @@ import {
   type ReviewOf,
   type RunScope,
   type RunScopeKind,
+  type SetHooks,
+  type SetRound,
   type ToolContext,
   type ToolErr,
   type ToolOk,
@@ -113,7 +116,17 @@ import {
  * SPEND ROLLS UP THE TREE. A run's ceiling holds its whole tree: before a model call, every run from the due one up to
  * the main run is checked against its own ceiling with the spend of everything under it, finished sub-runs included
  * (`loadTree` reads the main run's whole tree). A money stop — a ceiling, the weekly cap, the account out of credits, no
- * key — stops the whole live tree with one line. The run's cost (`CoachRunDto.costUsd`) is the tree's.
+ * key — stops the whole live tree with one line; a ceiling stops the tree under the run whose ceiling it is (the
+ * highest reached), so a set's designer that reaches its own stops alone and the set goes on. The run's cost
+ * (`CoachRunDto.costUsd`) is the tree's.
+ *
+ * A SET (design-orchestrate.ts; Task 7). For a week or the next N, the main run's plan_set starts one DESIGNER SUB-RUN
+ * per brief (`SetHooks.start`: one insert — its brief, a workout's ceiling, the main run's scope, window, timezone,
+ * rehearsal and last-told clock) and the main run pauses, `waiting_set`. The designers run one at a time in brief
+ * order, each with its reviewers before the next. Once every designer is over, the main run's own next step resumes it
+ * — no model call — with the set's outcome as plan_set's result (`settleSet`). A designer's finish line is kept in its
+ * state (`final`), for that outcome. A set's main run that stops at a limit proposes what was reviewed
+ * (`promoteSetWithWhatItHas`).
  */
 
 // ── Vocabulary ──────────────────────────────────────────────────────────
@@ -124,6 +137,8 @@ export type RunStatus =
   | "waiting_athlete"
   /** Its draft is with the reviewer sub-run it started; it resumes once that run is over. */
   | "waiting_review"
+  /** A main run whose set's designers (plan_set) are at work; it resumes once every one of them is over. */
+  | "waiting_set"
   | "finished"
   | "failed"
   | "cancelled"
@@ -131,11 +146,14 @@ export type RunStatus =
   | "stopped_cap";
 
 /** A run still in play: it holds the athlete's one live main run. */
-export const LIVE_STATUSES = ["active", "stepping", "waiting_athlete", "waiting_review"] as const satisfies readonly RunStatus[];
+export const LIVE_STATUSES = ["active", "stepping", "waiting_athlete", "waiting_review", "waiting_set"] as const satisfies readonly RunStatus[];
 const isLive = (status: string): boolean => (LIVE_STATUSES as readonly string[]).includes(status);
-/** A live run nobody else holds and no answer is awaited for, that a step may claim (a waiting_review run is due only
- * once its reviewer is over: `dueRun` never returns a run with a live sub-run). */
-const CLAIMABLE = ["active", "waiting_review"] as const satisfies readonly RunStatus[];
+/** A live run nobody else holds and no answer is awaited for, that a step may claim (a waiting_review or waiting_set run
+ * is due only once its reviewer, or every designer of its set, is over: `dueRun` never returns a run with a live
+ * sub-run). */
+const CLAIMABLE = ["active", "waiting_review", "waiting_set"] as const satisfies readonly RunStatus[];
+/** The live statuses a guarded stop or expiry takes at once (a `stepping` run only once its claim is stale). */
+const RESTING = ["active", "waiting_athlete", "waiting_review", "waiting_set"] as const satisfies readonly RunStatus[];
 const steppable = (status: string): boolean => (CLAIMABLE as readonly string[]).includes(status);
 
 export type RunEventKind = "tool_call" | "tool_result" | "draft" | "review" | "revision" | "question" | "note" | "error";
@@ -267,8 +285,9 @@ export interface RunState {
   lastCall: "step_cap" | "state_cap" | null;
   /** When the model was last told the time: the opening context's build, or the last clock line. */
   toldAt: string | null;
-  /** What `awaiting` waits on: the athlete's answer (absent), or the review of the draft that call proposed. */
-  awaitingKind?: "review";
+  /** What `awaiting` waits on: the athlete's answer (absent), the review of the draft that call proposed, or the
+   * designers of the set that call (plan_set) started. */
+  awaitingKind?: "review" | "set";
   /** The review awaited: the proposal the draft is in, and the reviewer sub-run reviewing it. */
   awaitingReview?: { proposalId: string; reviewRunId: string; round: number };
   /** Where the awaited review's result goes among this turn's results: the calls before it ran, the ones after it were
@@ -280,6 +299,12 @@ export interface RunState {
   packet?: string;
   /** A reviewer's draft: what its submit_review stores the review against. */
   reviewOf?: ReviewOf;
+  /** A main run's set: each plan_set call's briefs and the designers it started, in order (design-orchestrate.ts). */
+  set?: { rounds: SetRound[] };
+  /** A main run's set: its estimated cost, from its first plan (the run view shows it). */
+  estimate?: SetEstimate;
+  /** A designer's finish line, its own words: its set's outcome quotes it when its workout is left out. */
+  final?: string;
 }
 
 /** A fresh state for a run of `role` (sub-runs start here too: a history of their own, the parent's window). */
@@ -374,12 +399,15 @@ export function readRunState(text: string | null): RunState | null {
     retries: typeof s.retries === "number" ? s.retries : 0,
     lastCall: s.lastCall === "step_cap" || s.lastCall === "state_cap" ? s.lastCall : null,
     toldAt: typeof s.toldAt === "string" ? s.toldAt : null,
-    ...(s.awaitingKind === "review" ? { awaitingKind: "review" as const } : {}),
+    ...(s.awaitingKind === "review" || s.awaitingKind === "set" ? { awaitingKind: s.awaitingKind } : {}),
     ...(s.awaitingReview && typeof s.awaitingReview === "object" ? { awaitingReview: s.awaitingReview } : {}),
     ...(typeof s.awaitingAt === "number" ? { awaitingAt: s.awaitingAt } : {}),
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
     ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
     ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
+    ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds) ? { set: { rounds: s.set.rounds } } : {}),
+    ...(s.estimate && typeof s.estimate === "object" ? { estimate: s.estimate } : {}),
+    ...(typeof s.final === "string" ? { final: s.final } : {}),
   };
 }
 
@@ -454,12 +482,15 @@ interface RunNode {
   finishedAt: string | null;
   /** From the state, read in SQL: its window and timezone (a run's tree is open while its main run's window is). */
   settings?: RunSettings;
+  /** From the state, read in SQL: a designer's finish line (`RunState.final`). */
+  final?: string | null;
 }
 
 /** Everything but `state`, and from the state only its settings (read in SQL, so a large state is never read whole;
  * a state that is not JSON reads as none). */
 const NODE_COLUMNS = {
   settings: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.settings') END`,
+  final: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.final') END`,
   id: coachRuns.id,
   parentId: coachRuns.parentId,
   role: coachRuns.role,
@@ -493,6 +524,7 @@ function toNode(r: NodeRow): RunNode {
     updatedAt: r.updatedAt as string,
     finishedAt: (r.finishedAt as string | null) ?? null,
     settings: parseSettings((r.settings as string | null) ?? null),
+    final: typeof r.final === "string" ? r.final : null,
   };
 }
 
@@ -538,11 +570,11 @@ function dueRun(nodes: RunNode[], root: RunNode): RunNode | null {
 }
 
 /** The run's status as the athlete sees it: a finished main run's own, else what its due run is doing (a run waiting
- * on a review that is over is about to go on: active). */
+ * on a review, or on its set, that is over is about to go on: active). */
 function treeStatus(root: RunNode, nodes: RunNode[]): RunStatus {
   if (!isLive(root.status)) return root.status;
   const status = dueRun(nodes, root)?.status ?? root.status;
-  return status === "waiting_review" ? "active" : status;
+  return status === "waiting_review" || status === "waiting_set" ? "active" : status;
 }
 
 function subtree(nodes: RunNode[], root: RunNode): RunNode[] {
@@ -566,13 +598,16 @@ function lineage(nodes: RunNode[], run: RunNode): RunNode[] {
   return out;
 }
 
-/** The first ceiling the run's spend reaches — its own, or a parent's with everything under that parent — or null. */
-function ceilingReached(nodes: RunNode[], run: RunNode, own: RunSettings): number | null {
+/** The highest ceiling the run's spend reaches — its own, or a parent's with everything under that parent — and whose
+ * it is; or null. The highest, so the stop reaches as far as the limit does: a designer's own stops its tree alone, the
+ * main run's stops the set. */
+function ceilingReached(nodes: RunNode[], run: RunNode, own: RunSettings): { ceiling: number; of: RunNode } | null {
+  let reached: { ceiling: number; of: RunNode } | null = null;
   for (const n of lineage(nodes, run)) {
     const ceiling = n === run ? own.ceilingMicros : n.settings?.ceilingMicros;
-    if (typeof ceiling === "number" && treeSpendMicros(nodes, n) >= ceiling) return ceiling;
+    if (typeof ceiling === "number" && treeSpendMicros(nodes, n) >= ceiling) reached = { ceiling, of: n };
   }
-  return null;
+  return reached;
 }
 
 // ── DTOs ────────────────────────────────────────────────────────────────
@@ -741,7 +776,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
       SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(input.scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
       WHERE NOT EXISTS (
-        SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review')
+        SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
       )
       RETURNING id
     `)) as Array<{ id: string }>;
@@ -836,7 +871,7 @@ async function expireTree(
         eq(coachRuns.userId, userId),
         inArray(coachRuns.id, members.map((n) => n.id)),
         or(
-          inArray(coachRuns.status, ["active", "waiting_athlete", "waiting_review"]),
+          inArray(coachRuns.status, [...RESTING]),
           and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore)),
         ),
       ),
@@ -1067,6 +1102,8 @@ interface StepEnd {
   idle?: true;
   /** A money stop (a ceiling, the weekly cap, no credits, no key): every other live run of the tree stops with it. */
   stopTree?: true;
+  /** A ceiling's stop reaches the tree under the run whose ceiling it is (absent: the main run's whole tree). */
+  stopFrom?: string;
 }
 
 type Advance = { kind: "end"; end: StepEnd } | { kind: "lost"; costMicros: number } | { kind: "restoring" };
@@ -1272,11 +1309,16 @@ export async function runStep(
   const mainLines: NewEvent[] = [];
   if (written) {
     Object.assign(due, { status: end.status, steps: due.steps + 1, updatedAt: endAt, finishedAt: terminal ? endAt : null, error: end.error });
-    if (end.stopTree) await stopLiveTree(db, userId, root, nodes, due, end, endAt, staleBefore);
+    if (end.stopTree) {
+      const from = (end.stopFrom && nodes.find((n) => n.id === end.stopFrom)) || root;
+      await stopLiveTree(db, userId, from, nodes, due, end, endAt, staleBefore);
+    }
     // The main run stopped at a spending limit or its own step cap: it proposes what it has (spec §2), under the
-    // finish's own guard, with why it stopped. Two statements, only on such a stop.
+    // finish's own guard, with why it stopped — a set what was reviewed, the rest left out. Two statements, only on
+    // such a stop.
     const stopped = root.status === "stopped_cap" ? STOPPED_NOTES[root.error ?? ""] : undefined;
-    if (stopped && (await promoteWithWhatItHas(db, userId, designProposalId(root.id), stopped))) {
+    const promote = isSetScope(root.scope) ? promoteSetWithWhatItHas : promoteWithWhatItHas;
+    if (stopped && (await promote(db, userId, designProposalId(root.id), stopped))) {
       mainLines.push({ kind: "note", summary: "Proposed what had been reviewed before the stop.", payload: { proposalId: designProposalId(root.id) } });
     }
   } else {
@@ -1337,7 +1379,7 @@ async function stopLiveTree(db: Db, userId: string, root: RunNode, nodes: RunNod
         eq(coachRuns.userId, userId),
         inArray(coachRuns.id, others.map((n) => n.id)),
         or(
-          inArray(coachRuns.status, ["active", "waiting_athlete", "waiting_review"]),
+          inArray(coachRuns.status, [...RESTING]),
           and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore)),
         ),
       ),
@@ -1379,6 +1421,7 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
   const { state } = s;
   const end = (e: StepEnd): Advance => ({ kind: "end", end: e });
   if (state.awaiting && state.awaitingKind === "review") return end(await resumeReview(s));
+  if (state.awaiting && state.awaitingKind === "set") return end(await resumeSet(s));
   if (state.awaiting) return end({ status: "waiting_athlete", state, costMicros: 0, error: null, proposalId: null, events: [] });
   if (state.pending.length > 0 && state.system !== null) {
     const ran = await runTools(s, STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED);
@@ -1413,6 +1456,48 @@ async function resumeReview(s: StepCtx): Promise<StepEnd> {
   return { status: "active", state, costMicros: 0, error: null, proposalId: null, events: lines.map((summary) => ({ kind: "note" as const, summary })) };
 }
 
+/**
+ * The main run, resumed once every designer of its set is over (design-orchestrate.ts `settleSet`): the set's outcome —
+ * each workout proposed, or left out with its reason — becomes the plan_set call's result, in its place among the
+ * turn's results (the calls after it were answered "not run" at the pause). No model call: the next step calls it. At
+ * most two statements beyond the step's own: the proposal, and the ops and lines written when anything changed.
+ */
+async function resumeSet(s: StepCtx): Promise<StepEnd> {
+  const { state } = s;
+  const callId = state.awaiting!;
+  const rounds = state.set?.rounds ?? [];
+  const round = rounds.find((r) => r.toolUseId === callId);
+  const settled = round
+    ? await settleSet(s.db, s.userId, {
+        proposalId: designProposalId(s.root.id),
+        round,
+        earlier: rounds.slice(0, rounds.indexOf(round)),
+        designers: round.designers.map((d) => {
+          const n = s.nodes.find((x) => x.id === d.runId);
+          return {
+            key: d.key,
+            runId: d.runId,
+            status: n?.status ?? "missing",
+            error: n?.error ?? null,
+            final: n?.final ?? null,
+            ...(typeof n?.settings?.ceilingMicros === "number" ? { ceilingMicros: n.settings.ceilingMicros } : {}),
+          };
+        }),
+        // The rounds before this one past the first are the redos used.
+        redoLeft: Math.max(0, SET_REDO_ROUNDS - rounds.indexOf(round)),
+      })
+    : { data: { set: [], note: "This set's plan can't be found: nothing was designed from it.", next: "Call finish." }, line: null };
+  const result: ToolOk = { data: settled.data, provenance: { source: "the set's designers and their independent reviews", asOf: s.now.toISOString() } };
+  const at = Math.min(Math.max(0, state.awaitingAt ?? state.results.length), state.results.length);
+  state.results.splice(at, 0, okResult(callId, result));
+  state.awaiting = null;
+  delete state.awaitingKind;
+  delete state.awaitingAt;
+  if (state.pending.length === 0) flushResults(state);
+  const events: NewEvent[] = settled.line ? [{ kind: "note", summary: settled.line, payload: { set: settled.data.set } }] : [];
+  return { status: "active", state, costMicros: 0, error: null, proposalId: null, events };
+}
+
 async function contextStep(s: StepCtx): Promise<StepEnd> {
   const run: ContextRun = {
     id: s.run.id,
@@ -1439,9 +1524,14 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   const settings = state.settings;
 
   // ── Before the call: the tree's ceilings, the run's step and state caps, the weekly cap ──
-  const ceiling = ceilingReached(s.nodes, run, settings);
-  if (ceiling !== null) {
-    return end({ ...stop(state, "stopped_cap", "run_ceiling", `This design reached its spending limit (${usd(ceiling)}) — the coach stopped here.`), stopTree: true });
+  const reached = ceilingReached(s.nodes, run, settings);
+  if (reached !== null) {
+    // A sub-run's own ceiling (a set's designer) stops its own tree; the main run's stops the whole of it.
+    const whole = reached.of.parentId === null;
+    const summary = whole
+      ? `This design reached its spending limit (${usd(reached.ceiling)}) — the coach stopped here.`
+      : `This workout's design reached its spending limit (${usd(reached.ceiling)}) — it stopped; the rest of the set goes on.`;
+    return end({ ...stop(state, "stopped_cap", "run_ceiling", summary), stopTree: true, ...(whole ? {} : { stopFrom: reached.of.id }) });
   }
   const size = s.storedBytes;
   if (state.lastCall !== null || state.calls >= settings.maxCalls || size > STATE_MAX_BYTES) {
@@ -1688,6 +1778,7 @@ async function runTools(
     now: s.now,
     ...(s.deps.review && run.role !== "reviewer" ? { review: reviewHooks(s) } : {}),
     ...(state.reviewOf ? { reviewOf: state.reviewOf } : {}),
+    ...(run.role === "main" ? { set: setHooks(s) } : {}),
   };
   const events: NewEvent[] = [];
   let executed = 0;
@@ -1748,9 +1839,34 @@ async function runTools(
       state.pending = [];
       return { status: "waiting_review", events, proposalId: null };
     }
+    if (ok && result.control === "set") {
+      // The set's designers are at work: this run waits, and the call's result is the set's outcome, once every one of
+      // them is over. The round is kept (a replay's replaces its own); the estimate from the first plan.
+      const d = result.data as { round?: SetRound; estimate?: SetEstimate } | null;
+      if (d?.round) state.set = { rounds: [...(state.set?.rounds ?? []).filter((r) => r.toolUseId !== d.round!.toolUseId), d.round] };
+      if (d?.estimate && !state.estimate) state.estimate = d.estimate;
+      state.awaiting = call.id;
+      state.awaitingKind = "set";
+      events.push({
+        kind: "tool_result",
+        summary: result.summary ?? "Planned the set.",
+        payload: { tool: call.name, input: bounded(call.input, 1_500), ok: true, ...(result.receipt ? { receipt: result.receipt } : {}) },
+      });
+      // As after a draft: the calls queued after it never run before the set is in, and are answered now.
+      state.awaitingAt = state.results.length;
+      for (const queued of state.pending) {
+        state.results.push(errorResult(queued.id, SET_FIRST));
+        events.push({ kind: "tool_result", summary: `Couldn't use ${label(queued.name)}: ${SET_FIRST.why}`, payload: { tool: queued.name, ok: false, error: SET_FIRST.error } });
+      }
+      state.pending = [];
+      return { status: "waiting_set", events, proposalId: null };
+    }
     if (tool?.control === "finish" && ok) {
       state.pending = [];
       state.results = [];
+      // A designer's own last line, as it wrote it: its set's outcome quotes it if its workout is left out.
+      const said = (call.input as { summary?: unknown } | null)?.summary;
+      if (run.role === "designer" && typeof said === "string") state.final = said.trim().slice(0, SUMMARY_MAX_CHARS);
       const proposalId = typeof (result.data as { proposalId?: unknown } | null)?.proposalId === "string" ? ((result.data as { proposalId: string }).proposalId) : null;
       if (proposalId && state.settings.rehearsal) {
         // A rehearsal's proposal is never one the athlete could act on, or see in a list.
@@ -1816,6 +1932,13 @@ const REVIEW_FIRST: ToolErr = {
   fix: "Call it again after reading the review.",
 };
 
+/** A call queued after a plan_set that paused for its designers. */
+const SET_FIRST: ToolErr = {
+  error: "not_run",
+  why: "Not run: plan_set's designers come first.",
+  fix: "Call it again once the set's result is in.",
+};
+
 /** The reviewer's finish is its review: a call to finish is answered with what to call instead. */
 const REVIEWER_HAS_NO_FINISH: ToolErr = {
   error: "not_for_role",
@@ -1875,6 +1998,66 @@ function reviewHooks(s: StepCtx): ReviewHooks {
         settings: reviewerState.settings,
       });
       return true;
+    },
+  };
+}
+
+/**
+ * The set hooks the main run's tools are given (ToolContext.set): the rounds its state holds, and `start`, which puts a
+ * round's designer sub-runs in place in ONE insert — each with its brief, a workout's own ceiling, the main run's scope,
+ * request, window, timezone and rehearsal and the clock it was last told, keyed on its id (a replay inserts nothing) —
+ * and adds them to the step's tree, so the step answers the first of them as the run due next. One bound row per
+ * designer (eight values each: 56 of D1's 100 for a full set).
+ */
+function setHooks(s: StepCtx): SetHooks {
+  return {
+    rounds: () => s.state.set?.rounds ?? [],
+    async start(designers) {
+      if (designers.length === 0) return [];
+      const { state, run } = s;
+      const at = s.now.toISOString();
+      const rows = designers.map((d) => ({
+        ...d,
+        state: newRunState("designer", run.scope, {
+          rehearsal: state.settings.rehearsal,
+          ceilingMicros: Math.min(DESIGNER_CEILING_MICROS, state.settings.ceilingMicros),
+          ...(state.settings.timezone ? { timezone: state.settings.timezone } : {}),
+          ...(state.settings.window ? { window: state.settings.window } : {}),
+          toldAt: state.toldAt,
+          brief: d.brief,
+        }),
+      }));
+      const values = rows.map(
+        (r) => sql`(${r.runId}, ${s.userId}, ${run.id}, 'designer', ${JSON.stringify(run.scope)}, ${run.request}, 'active', ${JSON.stringify(r.state)}, 0, 0, ${at}, ${at})`,
+      );
+      const inserted = (await s.db.all(sql`
+        INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
+        VALUES ${sql.join(values, sql`, `)}
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `)) as Array<{ id: string }>;
+      const ids = new Set(inserted.map((r) => r.id));
+      for (const r of rows) {
+        if (!ids.has(r.runId)) continue;
+        s.nodes.push({
+          id: r.runId,
+          parentId: run.id,
+          role: "designer",
+          scope: run.scope,
+          request: run.request,
+          status: "active",
+          steps: 0,
+          costUsd: 0,
+          proposalId: null,
+          error: null,
+          createdAt: at,
+          updatedAt: at,
+          finishedAt: null,
+          settings: r.state.settings,
+          final: null,
+        });
+      }
+      return rows.filter((r) => ids.has(r.runId)).map((r) => r.runId);
     },
   };
 }

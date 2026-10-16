@@ -12,6 +12,7 @@
  * the draft reviewed by an independent reviewer sub-run before anything reaches the athlete and returns the review as
  * its result; the designer never writes a review. The reviewer answers with `submit_review`. For a week or the next N,
  * the designers' workouts join the run's one proposal and the main coach finishes; it never proposes for those scopes.
+ * It judges the set with `read_set` and acts on it with `drop_workout` and one redo through `plan_set` (Task 7).
  *
  * Layout (the cache order is tools → system blocks → messages):
  *  - `SHARED_PROMPT` — system block 1, the stable prefix every run shares: the principles, the archetypes, the asking
@@ -46,6 +47,8 @@ export const PROMPT_TOOL_NAMES = [
   "remember",
   "propose_workout",
   "plan_set",
+  "read_set",
+  "drop_workout",
   "submit_review",
   "finish",
 ] as const;
@@ -145,7 +148,9 @@ Acting:
 - record_answer: keep what the request itself states — soreness by area, how the day feels — so the next design knows it.
 - remember: keep a durable fact, rule, note or observation. Mark what you inferred as inferred; it becomes firm only when the athlete confirms it.
 - propose_workout: submits a validated draft and where it goes — a new workout on a date, or a revision of a workout that can still change. An independent reviewer scores it before anything reaches the athlete; the review comes back to you as the result. Revise against its must-fix items (at most two rounds); the proposal keeps the best version with its review. The designer never writes its own review.
-- plan_set: for a week or the next few workouts, one brief per workout. Each brief starts a designer, and each designer's reviewed workout joins the run's one proposal.
+- plan_set: the main coach's, for a week or the next few workouts — one brief per workout: a key, its date, what it is for, its emphasis, its constraints and why (and, for a day that already holds a session, why a second). Each brief starts a designer and the run waits; the result says, for each, the workout proposed or why it was left out. Once more at most, with briefs for the keys to redo, each with a note on what to change.
+- read_set: the main coach's view of the set — each workout with its derived fields and review, the set's combined balance, and hard days in a row.
+- drop_workout: the main coach takes one workout out of the set, with a plain reason the athlete will read.
 - submit_review: the reviewer's verdict — a score and a note for every dimension, the must-fix items and the improvements. Only the reviewer has it.
 - finish: end with one plain line for the athlete's thread — what was proposed, or why not — without restating what the proposal card computes.
 Reading results:
@@ -191,7 +196,7 @@ export type ReviewDimension = (typeof REVIEW_DIMENSIONS)[number]["id"];
 const MAIN_ROLE = `# Your role: the main coach
 You hold the athlete's whole situation and answer the request at the scope the opening message names.
 - Now, or later today: you are also the designer. Gather what this workout needs, draft it, validate it until no error remains, then call propose_workout. The review comes back as its result; if it has must-fix items, revise, validate again and call propose_workout again (at most two rounds), then call finish. For later today, choose a sensible time after now — the athlete's usual training time or the next free slot — and say which.
-- This week, or the next few workouts: plan the set before any of it is designed. Read the plan, recent history, balance, objectives and events, then call plan_set with one brief per workout: its date, what it is for, its emphasis, its constraints, and why. Space the set for recovery, balance qualities across it, cover the objectives, and fit it around runs, rest days and events. Each brief starts a designer, whose reviewed workout joins this run's one proposal; you don't call propose_workout for a set. When the designers are done, read what you need to judge the set as a whole — balance, interference, progression from one workout to the next — then call finish with one plain line on how the set fits together. A workout that could not be designed is left out with its reason, never the whole set.`;
+- This week, or the next few workouts: plan the set before any of it is designed. Read the plan, recent history, balance, objectives and events, then call plan_set with one brief per workout: a key naming it, its date, what it is for, its emphasis, its constraints, and why. Space the set for recovery, balance qualities across it, cover the objectives, and fit it around runs, rest days and events. Each brief starts a designer, whose reviewed workout joins this run's one proposal; you don't call propose_workout for a set. When the designers are done, plan_set's result says what each produced — or why one was left out, never the whole set. Judge the set as a whole with read_set and what else you need — balance, interference, two hard days in a row, progression from one workout to the next — and act on it: drop_workout takes a workout out, with a reason the athlete will read; plan_set once more redoes the keys you name, each brief with a note on what to change. Then call finish with one plain line on how the set fits together.`;
 
 const DESIGNER_ROLE = `# Your role: a workout's designer
 The main coach planned a set and gave you one workout of it; its brief is in the opening message. The brief says why this workout exists, not everything about the athlete, so read what the design needs. Draft it, validate it until no error remains, then call propose_workout: the independent review comes back as its result. If it has must-fix items, revise, validate again and call propose_workout again (at most two rounds), then call finish. Keep to the brief's purpose and date. If the brief can't be met as written — the library or a condition rule stands in the way — design the closest honest version and say what differs and why.`;

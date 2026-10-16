@@ -915,7 +915,7 @@ describe("a money stop reaches the whole tree", () => {
     expect((await reviewersOf(two))[0]).toMatchObject({ status: "stopped_cap", error: "weekly_cap" });
   });
 
-  it("a designer's own ceiling holds its reviewer's spend too", async () => {
+  it("a designer's own ceiling holds its reviewer's spend too: the two stop, and the main run goes on (Task 7)", async () => {
     const a = await athlete();
     const mainId = (await createRun(db, a.userId, { scope: { kind: "week" }, request: null }, NOW)).run.id;
     const designerId = `designer-${mainId}`;
@@ -926,12 +926,14 @@ describe("a money stop reaches the whole tree", () => {
     });
     const { deps, requests } = scripted([turn([propose("Calm hips")], { cost: 400_000 }), turn([use("read_day", {})], { cost: 700_000 })]);
     // The designer's context and draft, its reviewer's context and read; then the reviewer's next call is refused.
-    const steps = await drive(a.userId, mainId, deps);
-    expect(steps.at(-1)!.status).toBe("stopped_cap");
+    for (let i = 0; i < 5; i++) await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
     expect(requests).toHaveLength(2);
     expect((await runRow(designerId)).status).toBe("stopped_cap");
+    expect((await reviewersOf(designerId))[0]).toMatchObject({ status: "stopped_cap", error: "run_ceiling" });
+    // A workout's own limit is not the set's: the main run is still live (it goes on with the rest).
+    expect((await runRow(mainId)).status).toBe("active");
     const lines = (await events(mainId)).map((e) => e.summary).filter((s) => s.includes("spending limit"));
-    expect(lines).toEqual(["This design reached its spending limit ($1.00) — the coach stopped here."]);
+    expect(lines).toEqual(["This workout's design reached its spending limit ($1.00) — it stopped; the rest of the set goes on."]);
   });
 });
 

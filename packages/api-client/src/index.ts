@@ -880,6 +880,8 @@ export type CoachRunStatus =
   | "waiting_athlete"
   /** A run whose draft is with its reviewer sub-run (a run's own row; the run view reads the tree's status). */
   | "waiting_review"
+  /** A main run whose set's designers are at work (a run's own row; the run view reads the tree's status). */
+  | "waiting_set"
   | "finished"
   | "failed"
   | "cancelled"

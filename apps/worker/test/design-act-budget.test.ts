@@ -24,7 +24,7 @@ import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -73,7 +73,7 @@ describe("the registry", () => {
   it("offers the read tools, then the act tools; with the one still to come, exactly the tools the prompt names", () => {
     expect(ACT_TOOLS.map((t) => t.name)).toEqual(ACT_NAMES);
     expect(allTools().map((t) => t.name)).toEqual([...READ_TOOLS, ...ACT_TOOLS].map((t) => t.name));
-    expect([...PENDING_TOOL_NAMES]).toEqual(["plan_set"]);
+    expect([...PENDING_TOOL_NAMES]).toEqual([]);
     const offered = [...allTools().map((t) => t.name), ...PENDING_TOOL_NAMES];
     expect(new Set(offered).size).toBe(offered.length);
     expect([...offered].sort()).toEqual([...PROMPT_TOOL_NAMES].sort());
@@ -87,6 +87,9 @@ describe("the registry", () => {
       record_answer: ["main"],
       remember: ["main", "designer"],
       propose_workout: ["main", "designer"],
+      plan_set: ["main"],
+      read_set: ["main"],
+      drop_workout: ["main"],
       submit_review: ["reviewer"],
       finish: ["main", "designer"],
     });

@@ -1,0 +1,202 @@
+/**
+ * plan_set(briefs[]) — the main coach plans a set: one brief per workout, each started as a designer sub-run (Stage 3
+ * spec §4, §6; principles §6.9; design-orchestrate.ts holds the mechanism). Main only, for a week or the next N only:
+ * for now or later today the main coach designs the one workout itself.
+ *
+ * A brief is `{ key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }`. Refused, teachably and with
+ * every problem at once, writing nothing:
+ *  - a date before today in the athlete's zone, or after the scope's last day (this week's, or the next N's horizon);
+ *  - more briefs than the set holds (SET_MAX_WORKOUTS, or N), or a key used twice;
+ *  - a second brief on a date without `sameDayWhy`, and a date that holds a programme session or a session already
+ *    done, skipped or missed (read from the plan) without one — with it, the brief stands and its designer is told why.
+ * Once more at most (SET_REDO_ROUNDS): a REDO names keys of the first plan only, each brief with a `note` on what to
+ * change; its designer's reviewed workout replaces the first version.
+ *
+ * The call answers `control: "set"` — the main run waits (`waiting_set`) until every designer is over, and the call's
+ * result for the model is then the set's outcome (design-orchestrate.ts `settleSet`). Its data is the loop's: the
+ * round, and on the first plan the set's estimated cost (stored in the run's state).
+ *
+ * Three statements at most: the athlete with the plan on the briefs' dates and the proposal's ops (one read), the
+ * estimate (the first plan only), and the designers' one insert (the loop's `SetHooks.start`, keyed per designer, so a
+ * replay starts none twice).
+ */
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { plannedWorkouts } from "@rg/database";
+import { SET_MAX_WORKOUTS, SET_REDO_ROUNDS } from "../design-limits.js";
+import { briefText, dayWords, designerRunId, estimateSetCost, isSetScope, setLastDay, setLimit, type SetEstimate } from "../design-orchestrate.js";
+import { FROZEN_STATES } from "../workout-doc-store.js";
+import { isErr, parseAct } from "./act-common.js";
+import { designProposalId, type DocWorkoutOp } from "./propose.js";
+import { dateField, DATE_SCHEMA, jsonList, parsedArray, readAthlete, refuse } from "./read-common.js";
+import type { DesignTool, SetBrief, SetRound } from "./types.js";
+
+const KEY = /^[A-Za-z0-9_-]{1,24}$/;
+const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
+const LIMITS = { purpose: 200, emphasis: 200, constraints: 300, why: 300, sameDayWhy: 200, note: 300 } as const;
+
+const text = (max: number) => z.string().trim().min(1).max(max);
+const brief = z
+  .object({
+    key: z.string().regex(KEY, "letters, digits, - or _ (at most 24)"),
+    date: dateField,
+    time: z.string().regex(CLOCK, "must be a time like 17:30").optional(),
+    purpose: text(LIMITS.purpose),
+    emphasis: text(LIMITS.emphasis),
+    constraints: text(LIMITS.constraints),
+    why: text(LIMITS.why),
+    sameDayWhy: text(LIMITS.sameDayWhy).optional(),
+    note: text(LIMITS.note).optional(),
+  })
+  .strict();
+const input = z.object({ briefs: z.array(brief).min(1).max(SET_MAX_WORKOUTS) }).strict();
+
+const str = (max: number, description: string) => ({ type: "string", minLength: 1, maxLength: max, description });
+
+const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }";
+
+export const planSet: DesignTool = {
+  name: "plan_set",
+  description:
+    "The main coach, for a week or the next few workouts: one brief per workout. Each brief starts a designer; this run waits, and the result says what each produced or why it was left out. Once more at most, with briefs for keys to redo, each with a note.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      briefs: {
+        type: "array",
+        minItems: 1,
+        maxItems: SET_MAX_WORKOUTS,
+        items: {
+          type: "object",
+          properties: {
+            key: { type: "string", pattern: KEY.source, description: "Your name for this workout of the set; a redo names it." },
+            date: DATE_SCHEMA,
+            time: { type: "string", description: "HH:MM, the athlete's local time (optional)." },
+            purpose: str(LIMITS.purpose, "What this workout is for."),
+            emphasis: str(LIMITS.emphasis, "The qualities it leans on."),
+            constraints: str(LIMITS.constraints, "Time, place, what to avoid."),
+            why: str(LIMITS.why, "Why it sits here in the set."),
+            sameDayWhy: str(LIMITS.sameDayWhy, "Why a second session that day: needed when another brief, a programme session or a session already over holds the date."),
+            note: str(LIMITS.note, "A redo's: what to change from the first version, and why."),
+          },
+          required: ["key", "date", "purpose", "emphasis", "constraints", "why"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["briefs"],
+    additionalProperties: false,
+  },
+  statementCost: 3,
+  roles: ["main"],
+  async run(ctx, raw) {
+    const p = parseAct(input, raw, FIELDS);
+    if (isErr(p)) return p;
+    if (!isSetScope(ctx.run.scope)) {
+      return refuse(
+        "not_for_scope",
+        "plan_set plans a set — this week, or the next few workouts; this run designs one workout.",
+        "Design it yourself: validate_workout until no error remains, then propose_workout.",
+      );
+    }
+    if (!ctx.set || ctx.run.role !== "main") return refuse("unavailable", "plan_set runs only in the main coach's run.", "Finish with what you have.");
+    const toolUseId = ctx.toolUseId ?? `call-${ctx.now.toISOString()}`;
+    const earlier = ctx.set.rounds().filter((r) => r.toolUseId !== toolUseId);
+    if (earlier.length > SET_REDO_ROUNDS) {
+      return refuse(
+        "set_done",
+        `The set was planned and redone ${SET_REDO_ROUNDS === 1 ? "once" : `${SET_REDO_ROUNDS} times`}: no more designers can be started.`,
+        "Judge the set with read_set, take a workout out with drop_workout if it must go, then call finish.",
+      );
+    }
+    const first = earlier[0];
+    const redo = first !== undefined;
+    const proposalId = designProposalId(ctx.run.id);
+    const dates = [...new Set(p.briefs.map((b) => b.date))];
+    const pw = plannedWorkouts;
+    const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
+      plan: sql`(select json_group_array(json_object('date', ${pw.effectiveDate}, 'origin', ${pw.origin}, 'state', ${pw.completionState}))
+        from ${pw} where ${pw.userId} = ${ctx.userId} and ${pw.archivedAt} is null and ${pw.effectiveDate} in ${jsonList(dates)})`,
+      ops: redo ? sql`(select ops from coach_proposals where id = ${proposalId} and user_id = ${ctx.userId})` : sql`null`,
+    });
+    const today = athlete.today;
+    const last = setLastDay(ctx.run.scope, today);
+    const plan = parsedArray(extra.plan) as Array<{ date?: unknown; origin?: unknown; state?: unknown }>;
+
+    const problems: string[] = [];
+    const seen = new Set<string>();
+    for (const b of p.briefs) {
+      if (seen.has(b.key)) problems.push(`"${b.key}": the key is used twice — each workout of the set needs its own`);
+      seen.add(b.key);
+    }
+    const limit = setLimit(ctx.run.scope);
+    if (!redo && p.briefs.length > limit) {
+      problems.push(`${p.briefs.length} briefs: this set holds at most ${limit} workout${limit === 1 ? "" : "s"}`);
+    }
+    const firstKeys = new Map((first?.briefs ?? []).map((b) => [b.key, b]));
+    if (redo) {
+      for (const b of p.briefs) {
+        if (!firstKeys.has(b.key)) problems.push(`"${b.key}": a redo names a workout of the first plan (${[...firstKeys.keys()].map((k) => `"${k}"`).join(", ")})`);
+        else if (!b.note) problems.push(`"${b.key}": a redo needs its note — what to change from the first version, and why`);
+      }
+    }
+    const scopeEnd = ctx.run.scope.kind === "week" ? "this week's last day" : "the set's last day";
+    // The dates already briefed: on a redo, the first plan's other workouts stand.
+    const held: SetBrief[] = redo ? (first?.briefs ?? []).filter((b) => !p.briefs.some((r) => r.key === b.key)) : [];
+    for (const b of p.briefs) {
+      if (b.date < today) problems.push(`"${b.key}": ${b.date} is before today (${today})`);
+      else if (b.date > last) problems.push(`"${b.key}": ${b.date} is after ${scopeEnd} (${last})`);
+      const before = [...held, ...p.briefs.slice(0, p.briefs.indexOf(b))].filter((x) => x.date === b.date);
+      const rows = plan.filter((r) => r.date === b.date);
+      const programme = rows.some((r) => r.origin === "program");
+      const over = rows.some((r) => (FROZEN_STATES as readonly unknown[]).includes(r.state));
+      if (b.sameDayWhy) continue;
+      if (before.length > 0) problems.push(`"${b.key}": ${b.date} already has another brief ("${before[0]!.key}") — give sameDayWhy to plan two that day`);
+      else if (programme) problems.push(`"${b.key}": ${b.date} holds a programme session — give sameDayWhy for a second session that day, or choose another day`);
+      else if (over) problems.push(`"${b.key}": ${b.date} holds a session already done, skipped or missed — give sameDayWhy, or choose another day`);
+    }
+    if (problems.length > 0) {
+      return refuse("invalid_briefs", `The set can't be planned as briefed: ${problems.slice(0, 10).join("; ")}.`, `Call plan_set again with every brief fixed (${FIELDS}).`);
+    }
+
+    const estimate: SetEstimate | null = redo ? null : await estimateSetCost(ctx.db, ctx.userId, p.briefs.length, ctx.now);
+    const ops = redo ? (parsedArray(extra.ops) as DocWorkoutOp[]) : [];
+    const firstOrder = [...firstKeys.keys()];
+    const designers = p.briefs.map((b, i) => {
+      const firstRun = first?.designers.find((d) => d.key === b.key)?.runId;
+      const firstOp = firstRun ? ops.find((o) => o.by?.runId === firstRun) : undefined;
+      return {
+        key: b.key,
+        runId: designerRunId(ctx.run.id, toolUseId, i, b.key),
+        brief: briefText(b, {
+          index: redo ? firstOrder.indexOf(b.key) : i,
+          count: redo ? firstOrder.length : p.briefs.length,
+          first: firstOp ? { title: firstOp.doc.title, mustFix: firstOp.review?.mustFix ?? [] } : null,
+        }),
+      };
+    });
+    const started = await ctx.set.start(designers);
+    const replaces = redo
+      ? Object.fromEntries(p.briefs.flatMap((b) => {
+          const id = first?.designers.find((d) => d.key === b.key)?.runId;
+          return id ? [[b.key, id]] : [];
+        }))
+      : undefined;
+    const round: SetRound = {
+      toolUseId,
+      redo,
+      briefs: p.briefs,
+      designers: designers.map(({ key, runId }) => ({ key, runId })),
+      ...(replaces ? { replaces } : {}),
+    };
+    const days = p.briefs.map((b) => dayWords(b.date)).join(", ");
+    return {
+      data: { round, ...(estimate ? { estimate } : {}) },
+      summary: redo
+        ? `Asked for ${p.briefs.length === 1 ? "one workout" : `${p.briefs.length} workouts`} again — a new designer for each: ${days}`
+        : `Planned ${p.briefs.length} workout${p.briefs.length === 1 ? "" : "s"} — a designer for each: ${days}`,
+      receipt: { keys: p.briefs.map((b) => b.key), dates: p.briefs.map((b) => b.date), started: started.length, redo, ...(estimate ? { estimate } : {}) },
+      control: "set",
+    };
+  },
+};

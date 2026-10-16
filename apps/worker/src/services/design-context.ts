@@ -124,8 +124,9 @@ const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 type ScopeKind = "now" | "later_today" | "week" | "next_n";
 
 /** How far ahead events and the plan are read, by scope: a workout today still answers to the days after it (the
- * 48-hour rule, a taper); a set answers to the week after it. */
-function horizonDays(kind: ScopeKind, n: number): number {
+ * 48-hour rule, a taper); a set answers to the week after it. (A set of the next N plans its workouts within it:
+ * design-orchestrate.ts.) */
+export function horizonDays(kind: ScopeKind, n: number): number {
   if (kind === "week") return 14;
   if (kind === "next_n") return Math.min(28, Math.max(14, 2 * n));
   return 7;
