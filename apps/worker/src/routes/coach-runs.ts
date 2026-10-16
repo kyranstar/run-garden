@@ -8,7 +8,9 @@
  * never answers for these paths first.
  *
  *   POST /                  { scope?, request?, rehearsal? } → { run, existing }  (one live main run per athlete: a
- *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start)
+ *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start;
+ *                           409 { error: "week_budget", spentUsd, cutoffUsd } when the week's spend and what a run of
+ *                           the scope costs would pass the weekly cutoff, and no live run is there — Task 13's fix wave)
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
  *                           With the step alarm on (COACH_STEP_ALARM, coach-run-stepper.ts): `?afterSeq=n` → { status,
  *                           armed: true, nextDue: null, events after n } at once — the run's object is armed and its
@@ -55,6 +57,7 @@ import {
   parseScopeRequest,
   runStep,
   type RunDeps,
+  WeekBudgetError,
 } from "../services/coach-runs.js";
 import { handleRunId, isMemoryHandle, undoRecordedAnswers } from "../services/design-tools/record-answer.js";
 import { undoRemembered } from "../services/design-tools/remember.js";
@@ -107,13 +110,19 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       return c.json({ error: "request_too_long", max: REQUEST_MAX_CHARS }, 400);
     }
     if (body.rehearsal !== undefined && typeof body.rehearsal !== "boolean") return c.json({ error: "bad_rehearsal" }, 400);
-    const created = await createRun(
-      c.get("db"),
-      c.get("userId"),
-      { ...asked, request: (body.request as string | null | undefined) ?? null, rehearsal: body.rehearsal === true },
-      new Date(),
-    );
-    return c.json(created);
+    try {
+      const created = await createRun(
+        c.get("db"),
+        c.get("userId"),
+        { ...asked, request: (body.request as string | null | undefined) ?? null, rehearsal: body.rehearsal === true },
+        new Date(),
+      );
+      return c.json(created);
+    } catch (e) {
+      // The week can't pay for it (Task 13's fix wave, §2.11): nothing started.
+      if (e instanceof WeekBudgetError) return c.json({ error: "week_budget", spentUsd: e.spentUsd, cutoffUsd: e.cutoffUsd }, 409);
+      throw e;
+    }
   });
 
   routes.post("/:id/step", async (c) => {

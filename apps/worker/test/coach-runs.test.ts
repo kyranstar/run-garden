@@ -1423,8 +1423,9 @@ describe("a run past its window, wherever it is found (fix round 2)", () => {
     statements = 0;
     const created = await createRun(db, userId, { scope: { kind: "now" }, request: "today's session" }, at(14 * 3600));
     // + one since Task 6: the expired run's design proposal is closed while still unreviewed; + one since fix wave 3A
-    // (A2): an expiry first reads its proposal, to propose what was reviewed.
-    expect(statements).toBeLessThanOrEqual(8);
+    // (A2): an expiry first reads its proposal, to propose what was reviewed; + one since Task 13's fix wave (§2.11): the
+    // week's spend is read before a run starts.
+    expect(statements).toBeLessThanOrEqual(9);
     expect(created).toMatchObject({ existing: false, run: { request: "today's session", status: "active" } });
     expect(created.run.id).not.toBe(old);
     expect(await runRow(old)).toMatchObject({ status: "expired", error: "expired" });

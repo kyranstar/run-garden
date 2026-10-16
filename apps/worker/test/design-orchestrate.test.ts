@@ -1362,7 +1362,8 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
 
   it("every new tool fits a model step's room, and the registry holds the prompt's names with none left pending", () => {
     const tool = (name: string) => ACT_TOOLS.find((x) => x.name === name)!;
-    expect(tool("plan_set").statementCost).toBe(3);
+    // + the week's spend in a step that made no model call (Task 13's fix wave, §2.11).
+    expect(tool("plan_set").statementCost).toBe(4);
     expect(tool("drop_workout").statementCost).toBe(2);
     expect(tool("read_set").statementCost).toBe(2);
     expect([...PENDING_TOOL_NAMES]).toEqual([]);

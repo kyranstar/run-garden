@@ -18,15 +18,17 @@
  * SIZED TO THE BUDGET: the designers at the estimate's cost per workout (on a redo, the larger of it and this set's own
  * measured average per designer) and the main coach's work still to come (the larger of SET_MAIN_RESERVE_MICROS and
  * what its average run has left to spend) must fit what the set's ceiling has left — read from the step's tree, no
- * statement — or the call is refused (`over_budget`), naming how many workouts fit. A replay is not checked again.
+ * statement — and what the WEEK has left less one call's worst case (Task 13's fix wave, §2.11: `SetHooks.week`, the
+ * step's own weekly read, or one read in a step that called no model), or the call is refused (`over_budget`), naming
+ * the tighter limit and how many workouts fit. A replay is not checked again.
  *
  * The call answers `control: "set"` — the main run waits (`waiting_set`) until every designer is over, and the call's
  * result for the model is then the set's outcome (design-orchestrate.ts `settleSet`). Its data is the loop's: the
  * round, and on the first plan the set's estimated cost (stored in the run's state).
  *
- * Three statements at most: the athlete with the plan on the briefs' dates and the proposal's ops (one read), the
- * estimate (the first plan only), and the designers' one insert (the loop's `SetHooks.start`, keyed per designer, so a
- * replay starts none twice).
+ * Four statements at most: the athlete with the plan on the briefs' dates and the proposal's ops (one read), the
+ * estimate (the first plan only), the week's spend (only in a step that made no model call), and the designers' one
+ * insert (the loop's `SetHooks.start`, keyed per designer, so a replay starts none twice).
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -45,6 +47,7 @@ import {
   type SetEstimate,
 } from "../design-orchestrate.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
+import { LLM_BUDGET } from "../llm.js";
 import { isErr, parseAct } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { dateField, DATE_SCHEMA, jsonList, parsedArray, readAthlete, refuse } from "./read-common.js";
@@ -107,7 +110,7 @@ export const planSet: DesignTool = {
     required: ["briefs"],
     additionalProperties: false,
   },
-  statementCost: 3,
+  statementCost: 4,
   cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
@@ -203,13 +206,21 @@ export const planSet: DesignTool = {
       const stored = estimate ?? budget.estimate;
       const perWorkout = Math.max(stored?.perWorkoutMicros ?? DEFAULT_WORKOUT_COST_MICROS, redo ? (budget.perDesignerMicros ?? 0) : 0);
       const mainNeed = Math.max(SET_MAIN_RESERVE_MICROS, (stored?.mainMicros ?? DEFAULT_SET_MAIN_COST_MICROS) - budget.mainSpentMicros);
-      const left = budget.ceilingMicros - budget.spentMicros;
+      const runLeft = budget.ceilingMicros - budget.spentMicros;
+      // The week too (§2.11): what it has left, less one call's worst case — the next call is checked against it.
+      const week = ctx.set.week ? await ctx.set.week() : null;
+      const weekLeft = week ? LLM_BUDGET.cutoffMicros - week.spentMicros - week.callWorstMicros : Number.POSITIVE_INFINITY;
+      const left = Math.min(runLeft, weekLeft);
       const n = p.briefs.length;
       if (perWorkout * n + mainNeed > left) {
         const fit = Math.max(0, Math.floor((left - mainNeed) / perWorkout));
+        const limit =
+          weekLeft < runLeft
+            ? `this week's AI budget has ${usd(Math.max(0, weekLeft))} left`
+            : `${usd(Math.max(0, runLeft))} of this design's ${usd(budget.ceilingMicros)} is left`;
         return refuse(
           "over_budget",
-          `${n} workout${n === 1 ? " is" : "s are"} estimated at ${usd(perWorkout * n)}, and the coach keeps ${usd(mainNeed)} to judge and finish the set: ${usd(Math.max(0, left))} of this design's ${usd(budget.ceilingMicros)} is left — enough for ${fit} workout${fit === 1 ? "" : "s"}.`,
+          `${n} workout${n === 1 ? " is" : "s are"} estimated at ${usd(perWorkout * n)}, and the coach keeps ${usd(mainNeed)} to judge and finish the set: ${limit} — enough for ${fit} workout${fit === 1 ? "" : "s"}.`,
           fit > 0
             ? `Plan ${fit} or fewer: the sessions the week needs most, around the runs.`
             : "No workout fits what is left: call finish, and say the set couldn't be designed within its limit.",

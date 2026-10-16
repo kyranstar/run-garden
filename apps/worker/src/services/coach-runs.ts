@@ -19,6 +19,8 @@ import { designContextBuilder } from "./design-context.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
 import {
+  DEFAULT_SET_MAIN_COST_MICROS,
+  DEFAULT_WORKOUT_COST_MICROS,
   designerStopLine,
   isSetScope,
   promoteSetWithWhatItHas,
@@ -914,12 +916,81 @@ export type CreateRunResult =
       ignoredRequest: { scope: RunScope; request: string | null };
     };
 
+/** Nothing started: the week's spend and what a run of the scope costs would pass the weekly cutoff (Task 13's fix wave,
+ * §2.11). The route answers it 409 `{ error: "week_budget", spentUsd, cutoffUsd }`. */
+export class WeekBudgetError extends Error {
+  constructor(
+    readonly spentUsd: number,
+    readonly cutoffUsd: number,
+  ) {
+    super("week_budget");
+  }
+}
+
+/** A now or later-today run's cost before any is measured (micros): about a set's designer with its reviewers. */
+export const DEFAULT_SINGLE_RUN_COST_MICROS = DEFAULT_WORKOUT_COST_MICROS;
+/** A week's set before any is measured: the workouts it usually plans ("usually 2–4"). */
+export const DEFAULT_WEEK_WORKOUTS = 3;
+/** The start's check measures the athlete's finished runs of the scope's kind: the newest this many, of this many days,
+ * and a median only from this many on. */
+export const START_MEDIAN_RUNS = 20;
+export const START_MEDIAN_DAYS = 30;
+export const START_MEDIAN_MIN = 3;
+
+/**
+ * Whether the week can pay for a run of `scope` (Task 13's fix wave, §2.11; audit 13b M6): the week's spend — the rolling
+ * seven days `llmBudgetStatus` reads — plus what such a run costs must stay within the weekly cutoff. What it costs: the
+ * median whole-tree cost of the athlete's finished main runs of its kind (a single workout's, or a set's) when there are
+ * START_MEDIAN_MIN of them, else the estimate (a set's: its workouts at the designer's default and the main coach's).
+ * ONE statement.
+ */
+async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): Promise<{ ok: boolean; spentMicros: number }> {
+  const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const measuredSince = new Date(now.getTime() - START_MEDIAN_DAYS * 86_400_000).toISOString();
+  const set = isSetScope(scope);
+  const kinds = set ? sql`('week', 'next_n')` : sql`('now', 'later_today')`;
+  // A main run's whole tree: its own spend, its sub-runs' and theirs (main → designer → reviewer is two deep).
+  const tree = sql`(m.cost_usd
+    + coalesce((SELECT sum(k.cost_usd) FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id), 0)
+    + coalesce((SELECT sum(g.cost_usd) FROM coach_runs g WHERE g.user_id = m.user_id
+        AND g.parent_id IN (SELECT k.id FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id)), 0))`;
+  const [row] = (await db.all(sql`
+    SELECT (SELECT coalesce(sum(${llmUsage.costMicros}), 0) FROM ${llmUsage} WHERE ${llmUsage.userId} = ${userId} AND ${llmUsage.createdAt} >= ${since}) AS spent,
+      (SELECT json_group_array(c) FROM (
+        SELECT ${tree} AS c FROM coach_runs m
+        WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.status = 'finished' AND m.created_at >= ${measuredSince}
+          AND json_valid(m.scope) AND json_extract(m.scope, '$.kind') IN ${kinds}
+        ORDER BY m.created_at DESC LIMIT ${START_MEDIAN_RUNS})) AS costs
+  `)) as Array<{ spent: number | null; costs: string | null }>;
+  const spentMicros = Math.round(Number(row?.spent ?? 0));
+  const costs = numbersOf(row?.costs ?? null)
+    .map((usd) => Math.round(usd * 1_000_000))
+    .sort((a, b) => a - b);
+  const workouts = scope.kind === "next_n" ? (scope.n ?? DEFAULT_WEEK_WORKOUTS) : DEFAULT_WEEK_WORKOUTS;
+  const estimate = set ? DEFAULT_WORKOUT_COST_MICROS * workouts + DEFAULT_SET_MAIN_COST_MICROS : DEFAULT_SINGLE_RUN_COST_MICROS;
+  const mid = costs.length >> 1;
+  const need = costs.length < START_MEDIAN_MIN ? estimate : costs.length % 2 === 1 ? costs[mid]! : Math.round((costs[mid - 1]! + costs[mid]!) / 2);
+  return { ok: spentMicros + need <= LLM_BUDGET.cutoffMicros, spentMicros };
+}
+
+/** A JSON array's finite numbers; none when it isn't one. */
+function numbersOf(text: string | null): number[] {
+  try {
+    const parsed: unknown = text ? JSON.parse(text) : [];
+    return Array.isArray(parsed) ? parsed.filter((n): n is number => typeof n === "number" && Number.isFinite(n)) : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * A new main run, unless the athlete already has a live one: then that one comes back (`existing: true`), with what
  * the screen can offer and the words this request carried, so they never vanish silently. One statement decides it
  * (an insert guarded by NOT EXISTS), so two taps can never start two. A rehearsal is in a lane of its own: it never
  * holds, nor is offered as, the athlete's one live run, nor theirs it. The run's window and timezone are fixed here.
  * A live run whose window has closed is not offered: it is expired, with its plain line, and the new run starts.
+ * A run the week can't pay for (`weekCanPay`, one statement first: Task 13's fix wave, §2.11) never starts: the answer
+ * is a `WeekBudgetError` (the route's 409) — unless a live run is there to come back as itself.
  */
 export async function createRun(db: Db, userId: string, input: CreateRunInput, now: Date): Promise<CreateRunResult> {
   const at = now.toISOString();
@@ -981,9 +1052,14 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     return { nodes, root: nodes.filter((n) => n.parentId === null && (n.settings?.rehearsal === true) === rehearsal).sort(byCreated).at(-1) };
   };
 
-  const created = await insert();
+  // The week first (§2.11): a run it can't pay for never starts — though a live run still comes back as itself.
+  const week = await weekCanPay(db, userId, scope, now);
+  const created = week.ok ? await insert() : null;
   if (created) return created;
   let { nodes, root } = await live();
+  if (!week.ok && (!root || windowClosed(root.settings, root.createdAt, now))) {
+    throw new WeekBudgetError(week.spentMicros / 1_000_000, LLM_BUDGET.cutoffMicros / 1_000_000);
+  }
   if (root && windowClosed(root.settings, root.createdAt, now) && (await expireTree(db, userId, root, nodes, now)).took) {
     const fresh = await insert();
     if (fresh) return fresh;
@@ -1645,6 +1721,9 @@ interface StepCtx {
   allowModel: boolean;
   /** What this step's model call cost, once it is known: kept on the run even if the step then breaks. */
   spent: number;
+  /** The week's spend as the step's model call read it before the call, and that call's worst case (§2.11: plan_set
+   * weighs the week from it). Absent in a step that made no model call. */
+  week?: { spentMicros: number; worstMicros: number };
 }
 
 const stop = (state: RunState | null, status: RunStatus, error: string, summary: string, kind: RunEventKind = "note", costMicros = 0): StepEnd => ({
@@ -2197,6 +2276,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   // a run may pass its own by one call's cost (its last): the week's is the account's guard rail, and is never passed.
   const week = await llmBudgetStatus(db, userId);
   if (week.spentMicros + worstMicros > LLM_BUDGET.cutoffMicros) return end({ ...stop(state, "stopped_cap", "weekly_cap", LINES.weeklyCap), stopTree: true });
+  s.week = { spentMicros: week.spentMicros, worstMicros };
 
   // ── The newest (unsent) message: the time now if the frozen clock has drifted, the last-turn note at a cap ──
   const timezone = settings.timezone || "UTC";
@@ -2796,6 +2876,13 @@ function setHooks(s: StepCtx): SetHooks {
       };
     },
     started: (runIds) => s.nodes.some((n) => runIds.includes(n.id)),
+    // The week's spend now (§2.11): the step's own weekly read and its call's cost, or — a step of queued calls — one
+    // read, with the worst case of a call on this run's state.
+    async week() {
+      if (s.week) return { spentMicros: s.week.spentMicros + s.spent, callWorstMicros: s.week.worstMicros };
+      const status = await llmBudgetStatus(s.db, s.userId);
+      return { spentMicros: status.spentMicros, callWorstMicros: callWorstMicros(s) };
+    },
     keyLine(key, line) {
       const set = s.state.set ?? { rounds: [] };
       s.state.set = { ...set, keyLines: [...(set.keyLines ?? []), { key, line }] };
@@ -2854,6 +2941,14 @@ function setHooks(s: StepCtx): SetHooks {
       return rows.filter((r) => ids.has(r.runId)).map((r) => r.runId);
     },
   };
+}
+
+/** What a model call on this run's state could cost at most — as `modelStep` reckons it before its call: the stored
+ * state and the tools written to the cache, the output at the run's ceiling. */
+function callWorstMicros(s: StepCtx): number {
+  const tools = offeredTools(s.deps.tools).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+  const promptTokens = Math.ceil((s.storedBytes + bytes(JSON.stringify(tools))) / PROMPT_BYTES_PER_TOKEN);
+  return messagesCostMicros(designModel(s.env), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: promptTokens, outputTokens: s.state.settings.maxTokens });
 }
 
 const label = (name: string): string => name.replace(/_/g, " ");

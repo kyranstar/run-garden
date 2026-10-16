@@ -324,8 +324,9 @@ describe("every request within the budget", () => {
     await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, id));
     const created = await measured("POST", "", { scope: { kind: "now" }, request: "today" });
     expect(created.body).toMatchObject({ existing: false, run: { request: "today" } });
-    // One more since fix wave 3A (A2): the expiry reads its proposal first, to propose what was reviewed.
-    expect(created.cost).toBeLessThanOrEqual(10);
+    // One more since fix wave 3A (A2): the expiry reads its proposal first, to propose what was reviewed; one more since
+    // Task 13's fix wave (§2.11): the week's spend is read before a run starts.
+    expect(created.cost).toBeLessThanOrEqual(11);
     const [old] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     expect(old!.status).toBe("expired");
   });
