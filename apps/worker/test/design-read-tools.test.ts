@@ -7,7 +7,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, workoutDocSchema } from "@rg/domain";
-import { EXERCISES, hasEquipment, TMJ } from "@rg/exercise-library";
+import { EXERCISES, FACET_VALUES, hasEquipment, TMJ, usedValues } from "@rg/exercise-library";
+import { searchLibraryTool } from "../src/services/design-tools/read-library.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { buildDesignContext } from "../src/services/design-context.js";
@@ -507,19 +508,67 @@ describe("read_objectives", () => {
 });
 
 describe("search_library and get_exercise", () => {
-  it("ranked matches with summary, purposes, contraction, muscles, gear, fit today with its reason, and the athlete's history", async () => {
+  it("ranked matches, slim: what each is in one line, dose, gear, fit today only when it isn't plain, and the athlete's history", async () => {
     const { data } = await ok("search_library", { query: "goblet squat" });
     const top = data.moves[0];
-    expect(top).toMatchObject({ id: "gobletSquat", name: "Goblet squat", patterns: ["squat"], purposes: ["strength"], contraction: ["isotonic"], dose: "5–8 reps, 2–4 sets", lastDone: day(1), done30d: 15, doneCleanly: true, rating: 1, pinned: true });
-    expect(top.summary.length).toBeGreaterThan(5);
-    expect(["fits", "care", "not"]).toContain(top.fit);
-    expect(top.fitWhy.length).toBeGreaterThan(5);
+    const goblet = EXERCISES.find((e) => e.id === "gobletSquat")!;
+    expect(top).toMatchObject({ id: "gobletSquat", name: "Goblet squat", dose: "5–8 reps, 2–4 sets", done: "15× in 30 d, last yesterday, cleanly", rating: 1, pinned: true });
+    expect(top.is).toBe([goblet.patterns, goblet.purposes, goblet.contraction, goblet.muscles.primary].map((l) => l.join(", ")).join(" · "));
+    // The card line only when asked (get_exercise has it): a choice between moves rarely needs it.
+    expect(top.summary).toBeUndefined();
+    expect((await ok("search_library", { query: "goblet squat", withSummary: true })).data.moves[0].summary).toBe(goblet.text.summary);
+    if (top.fit !== undefined) {
+      expect(["care", "not"]).toContain(top.fit);
+      expect(top.fitWhy.length).toBeGreaterThan(5);
+    }
     expect(data.matched).toBeGreaterThanOrEqual(1);
+  });
+
+  it("I3(c): a row is small — about 200 bytes a move that fits and has no history", async () => {
+    const rows = (await ok("search_library", { query: "stretch", limit: 30 }, { user: empty })).data.moves as unknown[];
+    expect(rows.length).toBeGreaterThan(10);
+    const sizes = rows.map((r) => new TextEncoder().encode(JSON.stringify(r)).length).sort((a, b) => a - b);
+    expect(sizes[Math.floor(sizes.length / 2)]).toBeLessThanOrEqual(200);
+    expect(sizes.at(-1)).toBeLessThanOrEqual(260);
+  });
+
+  it("I2: a list of words finds the moves with every word first, then those with some, each naming the words it has", async () => {
+    const r = await ok("search_library", { query: "hamstring calf stretch", limit: 20 });
+    expect(r.data.moves.length).toBeGreaterThan(0);
+    expect(r.data.allWords).toBe(0);
+    for (const m of r.data.moves as Array<{ matched?: string[] }>) expect(m.matched!.length).toBeGreaterThan(0);
+    expect(r.missing.join(" ")).not.toMatch(/no move/);
+    // A role is a word: "downshift".
+    const down = await ok("search_library", { query: "breathing downshift", filters: { role: "downshift" } });
+    expect(down.data.moves.length).toBeGreaterThan(0);
+  });
+
+  it("I2/R9: the filters offer only what some move uses; a value no move uses, or a zero, says what emptied it", async () => {
+    const schema = searchLibraryTool.inputSchema as { properties: { filters: { properties: Record<string, { enum?: string[] }> } } };
+    const used = usedValues(EXERCISES);
+    for (const facet of Object.keys(used) as Array<keyof typeof used>) {
+      expect(schema.properties.filters.properties[facet]!.enum, facet).toEqual(used[facet]);
+    }
+    // Any vocabulary value no move uses still reads, and answers teachably — never invalid_input.
+    const dead = (Object.keys(FACET_VALUES) as Array<keyof typeof FACET_VALUES>).flatMap((facet) =>
+      (FACET_VALUES[facet] as readonly string[]).filter((v) => !used[facet].includes(v)).map((v) => [facet, v] as const),
+    );
+    for (const [facet, v] of dead) {
+      const r = await ok("search_library", { filters: { [facet]: v } });
+      expect(r.data.moves, `${facet} ${v}`).toEqual([]);
+      expect(r.missing.join(" "), `${facet} ${v}`).toMatch(/no move in the library/);
+    }
+    const word = await ok("search_library", { query: "zqxv" });
+    expect(word.missing.join(" ")).toMatch(/no move says "zqxv"/);
+    // The place's gear, not the library, turned these away.
+    const turned = await ok("search_library", { query: "kettlebell", filters: { place: "mat" } });
+    expect(turned.data.moves).toEqual([]);
+    expect(turned.missing.join(" ")).toMatch(/match, but none fits/);
   });
 
   it("filters, fit today, set-aside moves left out and counted, a saved move's name marked, pages", async () => {
     const mobility = await ok("search_library", { filters: { purpose: "mobility" }, limit: 30 });
-    expect(mobility.data.moves.every((m: { purposes: string[] }) => m.purposes.includes("mobility"))).toBe(true);
+    expect(mobility.data.moves.every((m: { id: string }) => EXERCISES.find((e) => e.id === m.id)!.purposes.includes("mobility"))).toBe(true);
     const fit = await ok("search_library", { filters: { fitToday: true }, limit: 30 });
     expect(fit.data.moves.every((m: { fit: string }) => m.fit !== "not")).toBe(true);
     const squats = await ok("search_library", { query: "split squat", limit: 30 });

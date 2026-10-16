@@ -1,15 +1,21 @@
 /**
  * search_library(query, filters) and get_exercise(id) — the exercise library (Stage 3 spec §4; principles §4, §6.2).
  *
- *  - search_library: the Studio's own search (`searchLibrary`, @rg/exercise-library: text tiers, then condition fit,
- *    then the athlete's lean) over the whole library, with the vocabulary filters, a place's gear, and "fits today".
- *    Each move: its card line, patterns, purposes, contraction, primary muscles, dose range, gear, difficulty, how it
- *    fits today with the reason (the library's one `fitToday` rule, the Studio's too: every switched-on profile
- *    against today's reading — fits even on a flare day · with care, within the profile's limits · not today), when
- *    the athlete last did it, how often in 30 days, whether they have done it cleanly (`isDoneCleanly`, the
- *    validator's unlock rule, over `doneStats`), and their rating and pin. Moves the athlete set aside ("not for me")
- *    are left out and counted. A move they saved from outside has its name marked. A page that fits, paged by
- *    position (the library does not change during a run). Two statements.
+ *  - search_library: the coach's search (`agentSearch`, @rg/exercise-library, beside the Studio's `searchLibrary`:
+ *    the moves with every word in the Studio's order, then — roles, patterns and themes counting as words — those with
+ *    some of the words, most first, each naming the words it has; fix wave 13, I2) over the whole library, with the
+ *    vocabulary filters (the schema offers only the values some move uses; any vocabulary value still reads), a
+ *    place's gear, and "fits today". A zero says what emptied it: a word no move says, a value no move uses (with the
+ *    gear the moves do use), filters that match nothing together, or the place, today's reading or the set-aside
+ *    moves turning every match away. Each move, slim (about 200 bytes, I3(c)): what it is in one line (patterns ·
+ *    purposes · contraction · primary muscles), dose range, gear, difficulty, how it fits today with the reason only
+ *    when it isn't plain (the library's one `fitToday` rule, the Studio's too: every switched-on profile against
+ *    today's reading — fits even on a flare day · with care, within the profile's limits · not today), the athlete's
+ *    history with it in one line (how often in 30 days, when last, whether done cleanly — `isDoneCleanly`, the
+ *    validator's unlock rule, over `doneStats`) only when there is some, their rating and pin; its card line only with
+ *    `withSummary`. Moves the athlete set aside ("not for me") are left out and counted. A move they saved from outside
+ *    has its name marked. A page that fits, paged by position (the library does not change during a run). Two
+ *    statements.
  *  - get_exercise: one record — dose, notes for the switched-on profiles, safety and today's fit, easier and harder by
  *    name; the how-to text only with `howTo` — with the athlete's history: their rating, pin and set-aside, how many
  *    sessions, the last five sessions' sets, and their best. Three statements.
@@ -19,6 +25,7 @@ import { z } from "zod";
 import { exercisePrefs, exerciseProvenance, performedSessions, performedSets } from "@rg/database";
 import { addDays } from "@rg/domain";
 import {
+  agentSearch,
   CONTRACTIONS,
   EQUIPMENT_IDS,
   EXERCISES,
@@ -28,19 +35,20 @@ import {
   isDoneCleanly,
   LATERALITY,
   MUSCLES,
+  offeredValues,
   PATTERNS,
   POSITIONS,
   PURPOSES,
   REGIONS,
   ROLES,
-  searchLibrary,
   TAGS,
   THEMES,
   type ExerciseRecord,
   type LibraryFilters,
+  type SearchFacet,
 } from "@rg/exercise-library";
 import { namedFromRow, ownPlaceSql } from "../default-place.js";
-import { doneStats, safetyFor } from "../library-view.js";
+import { doneStats, safetyFor, type DoneStat } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
 import type { DesignTool } from "./types.js";
 import { PLACE_WORDS } from "./act-common.js";
@@ -62,6 +70,7 @@ import {
   READ_ROLES,
   readAthlete,
   refuse,
+  relativeDay,
   untrusted,
   weightWords,
   type Athlete,
@@ -123,6 +132,8 @@ const DEFAULT_LIMIT = 12;
 const MAX_LIMIT = 30;
 const THEME_IDS = THEMES.map((t) => t.id) as [string, ...string[]];
 
+// Every vocabulary value still reads — an older call, a guess — and one no move uses answers teachably (agentSearch's
+// `empty`); the schema the model is shown offers only the values some move uses.
 const filters = z
   .object({
     pattern: z.enum(PATTERNS).optional(),
@@ -142,39 +153,56 @@ const filters = z
   })
   .strict();
 const searchInput = z
-  .object({ query: z.string().max(80).optional(), filters: filters.optional(), limit: limitField(MAX_LIMIT).optional(), cursor: cursorField.optional() })
+  .object({
+    query: z.string().max(80).optional(),
+    filters: filters.optional(),
+    withSummary: z.boolean().optional(),
+    limit: limitField(MAX_LIMIT).optional(),
+    cursor: cursorField.optional(),
+  })
   .strict();
 
-const enumSchema = (values: readonly string[]) => ({ type: "string", enum: [...values] });
+/** A facet's values as the model is offered them: only those some move uses (never one that can only answer nothing). */
+const offered = (facet: SearchFacet) => ({ type: "string", enum: offeredValues(EXERCISES, facet) });
+
+/** What a move is, in one short line: its patterns · purposes · contraction · primary muscles. */
+const isWords = (ex: ExerciseRecord): string => [ex.patterns, ex.purposes, ex.contraction, ex.muscles.primary].map((l) => l.join(", ")).join(" · ");
+
+/** The athlete's history with a move, in one short line: "15× in 30 d, last yesterday, cleanly". */
+function doneWords(d: DoneStat | undefined, cleanly: boolean, today: string): string | null {
+  if (!d?.last) return null;
+  return `${d.n30}× in 30 d, last ${relativeDay(d.last, today)}, ${cleanly ? "cleanly" : "not cleanly yet"}`;
+}
 
 export const searchLibraryTool: DesignTool = {
   name: "search_library",
   description:
-    "Search the exercise library by text and filters, best match first: each move with patterns, purposes, contraction, muscles, dose range, gear, today's fit and the athlete's history with it. Pages by position.",
+    "Search the library, best match first: the moves with every word, then those with some (each lists its words in matched). Each move: what it is, dose, gear, difficulty, fit today when not plain, the athlete's history. A zero says why.",
   inputSchema: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Words: a name, muscle, region, purpose or tag. Empty: every move." },
+      query: { type: "string", description: "Words: names, muscles, regions, purposes, roles, patterns, tags. Empty: every move." },
       filters: {
         type: "object",
         properties: {
-          pattern: enumSchema(PATTERNS),
-          region: enumSchema(REGIONS),
-          role: enumSchema(ROLES),
-          equipment: enumSchema(EQUIPMENT_IDS),
-          purpose: enumSchema(PURPOSES),
-          tag: enumSchema(TAGS),
-          theme: enumSchema(THEME_IDS),
-          muscle: enumSchema(MUSCLES),
-          contraction: enumSchema(CONTRACTIONS),
-          position: enumSchema(POSITIONS),
-          laterality: enumSchema(LATERALITY),
+          pattern: offered("pattern"),
+          region: offered("region"),
+          role: offered("role"),
+          equipment: offered("equipment"),
+          purpose: offered("purpose"),
+          tag: offered("tag"),
+          theme: offered("theme"),
+          muscle: offered("muscle"),
+          contraction: offered("contraction"),
+          position: offered("position"),
+          laterality: offered("laterality"),
           maxDifficulty: { type: "integer", minimum: 1, maximum: 5 },
           place: { type: "string", description: `Only moves its gear allows: a place id (read_profile), ${PLACE_WORDS}.` },
           fitToday: { type: "boolean", description: "Only moves today's condition readings allow." },
         },
         additionalProperties: false,
       },
+      withSummary: { type: "boolean", description: "Also each move's one-line card text. Default: without (get_exercise has it)." },
       limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT),
       cursor: CURSOR_SCHEMA,
     },
@@ -224,12 +252,20 @@ export const searchLibraryTool: DesignTool = {
       },
     });
     const query = p.query ?? "";
-    const matches = searchLibrary(EXERCISES, query, libFilters, ctxOf(false));
+    const found = agentSearch(EXERCISES, query, libFilters, ctxOf(false));
+    const matches = found.hits;
     const setAside = EXERCISES.filter((ex) => prefs.get(ex.id)?.excluded);
-    const setAsideHidden = setAside.length ? searchLibrary(setAside, query, libFilters, ctxOf(true)).length : 0;
+    const setAsideHidden = setAside.length ? agentSearch(setAside, query, libFilters, ctxOf(true)).hits.length : 0;
     const limit = p.limit ?? DEFAULT_LIMIT;
     const missing: string[] = [...athlete.missing];
-    if (matches.length === 0) missing.push(`no move matches${query ? ` "${query}"` : ""} with these filters`);
+    if (matches.length === 0) {
+      if (found.turnedAway > 0) {
+        const by = [...(f.place ? ["the place's gear"] : []), ...(onlyFit ? ["today's condition reading"] : []), "the moves the athlete set aside"];
+        missing.push(`${plural(found.turnedAway, "move")} match, but none fits ${by.join(" or ")}`);
+      } else {
+        missing.push(...found.empty);
+      }
+    }
     // Paged by position: the library and the athlete's marks on it do not change during a run.
     return pagedAnswer({
       source: "the exercise library, today's condition checks and the athlete's logged sets and exercise preferences",
@@ -237,31 +273,31 @@ export const searchLibraryTool: DesignTool = {
       missing,
       rows: matches.slice(offset, offset + limit + 1),
       limit,
-      render: (ex) => {
+      // Slim (fix wave 13, I3(c)): about 200 bytes a move that fits — the card line only when asked, today's fit only
+      // when it isn't plain, the history only when there is some.
+      render: ({ record: ex, matched }) => {
         const d = done.get(ex.id);
         const pr = prefs.get(ex.id);
         const fit = fitOf(ex);
+        const gear = gearWords(ex);
+        const history = doneWords(d, isDoneCleanly(d ? { lastDate: d.last, logged: d.logged, flags: d.flags } : null, athlete.profiles), athlete.today);
         return {
           id: ex.id,
           name: nameOf(ex, saved),
-          summary: ex.text.summary,
-          patterns: ex.patterns,
-          purposes: ex.purposes,
-          contraction: ex.contraction,
-          muscles: ex.muscles.primary,
+          is: isWords(ex),
           dose: doseWords(ex.dose),
-          gear: gearWords(ex),
+          ...(gear ? { gear } : {}),
           difficulty: ex.difficulty,
-          ...(fit ? { fit: fit.state, fitWhy: fit.reason } : {}),
-          lastDone: d?.last ?? null,
-          done30d: d?.n30 ?? 0,
-          doneCleanly: isDoneCleanly(d ? { lastDate: d.last, logged: d.logged, flags: d.flags } : null, athlete.profiles),
+          ...(fit && fit.state !== "fits" ? { fit: fit.state, fitWhy: fit.reason } : {}),
+          ...(history ? { done: history } : {}),
           ...(pr?.rating ? { rating: pr.rating } : {}),
           ...(pr?.pinned ? { pinned: true } : {}),
+          ...(matched ? { matched } : {}),
+          ...(p.withSummary ? { summary: ex.text.summary } : {}),
         };
       },
-      cursorOf: (_ex, i) => encodeCursor([offset + i]),
-      data: (moves) => ({ query, matched: matches.length, setAsideHidden, moves }),
+      cursorOf: (_h, i) => encodeCursor([offset + i]),
+      data: (moves) => ({ query, matched: matches.length, ...(found.words.length > 1 ? { allWords: found.allWords } : {}), setAsideHidden, moves }),
       summary: () => `Searched the library${query ? ` for "${query}"` : ""} — ${plural(matches.length, "move")}`,
     });
   },

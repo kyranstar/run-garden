@@ -29,7 +29,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { conditionChecks, userConditions, userPreferences } from "@rg/database";
-import { addDays, daysBetween, isLocalDate, isoWeekday, todayInZone, userPreferencesSchema, weightInUnit, type UserPreferences, type WeightUnit } from "@rg/domain";
+import { addDays, dayLabel, daysBetween, isLocalDate, isoWeekday, todayInZone, userPreferencesSchema, weightInUnit, type UserPreferences, type WeightUnit } from "@rg/domain";
 import { isProfileId, profileById, UNANSWERED, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
 import { readingsOfDay } from "../condition-views.js";
 import type { Db } from "../db.js";
@@ -419,6 +419,21 @@ export function activityDateOf(tz: string, startLocal: unknown, start: unknown):
   if (typeof startLocal === "string" && /^\d{4}-\d{2}-\d{2}/.test(startLocal)) return startLocal.slice(0, 10);
   return localDateOf(tz, start);
 }
+
+/** How far a date is from today, in words: "today", "yesterday", "tomorrow", "3 d ago", "in 3 d". */
+export function relativeDay(date: string, today: string): string {
+  const d = daysBetween(date, today);
+  if (d === 0) return "today";
+  if (d === 1) return "yesterday";
+  if (d === -1) return "tomorrow";
+  return d > 1 ? `${d} d ago` : `in ${-d} d`;
+}
+
+/**
+ * A dated row's `day` (fix wave 13, I6/R10): the day's name and how far it is from today — "Tue 13 Oct · 3 d ago",
+ * "Fri 16 Oct · today" — so the model never works out a weekday or "yesterday" itself.
+ */
+export const dayWords = (date: string, today: string): string => `${dayLabel(date)} · ${relativeDay(date, today)}`;
 
 /** How old a dated reading is: "today", "1 d old", "9 d old". */
 export const ageWords = (date: string, today: string): string => {
