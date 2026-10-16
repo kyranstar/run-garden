@@ -13,6 +13,9 @@
  *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order)
  *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting; an answer to a check-in
  *                           question is kept as the athlete's answer — 7 statements in all, pinned)
+ *                           { conditionCheckId } answers an ask for today's condition check (fix wave 3A, A8): the
+ *                           athlete's check, dated their today and saved after the question (400 otherwise; another
+ *                           athlete's, or none, 404) — 7 statements, pinned
  *   POST /:id/cancel        → { run }
  *   POST /:id/undo-answer   { handle } → { undone }       (what record_answer kept from the request, or a check-in
  *                           question's kept answer, taken back; the
@@ -37,6 +40,9 @@ import {
   type RunDeps,
 } from "../services/coach-runs.js";
 import { handleRunId, undoRecordedAnswers } from "../services/design-tools/record-answer.js";
+
+/** A condition check's id, at most (ids are the app's own: `newId`). */
+const CHECK_ID_MAX_CHARS = 100;
 
 /** The routes, over `deps` (the model, the opening context, the tools); tests pass scripted ones. */
 export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<AppContext> {
@@ -91,21 +97,35 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   });
 
   routes.post("/:id/answer", async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { answers?: unknown; dismissed?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as { answers?: unknown; dismissed?: unknown; conditionCheckId?: unknown } | null;
     const dismissed = body?.dismissed === true;
     const answers = body?.answers ?? [];
+    const checkId = body?.conditionCheckId;
+    if (checkId !== undefined && (typeof checkId !== "string" || checkId.length === 0 || checkId.length > CHECK_ID_MAX_CHARS)) {
+      return c.json({ error: "bad_check" }, 400);
+    }
     const valid =
       Array.isArray(answers) &&
       answers.length <= 2 &&
       answers.every((a) => typeof a === "string" && a.length <= ANSWER_MAX_CHARS) &&
-      (dismissed || answers.some((a) => (a as string).trim().length > 0));
+      (dismissed || typeof checkId === "string" || answers.some((a) => (a as string).trim().length > 0));
     if (!body || !valid) return c.json({ error: "bad_answers" }, 400);
-    const outcome = await answerRun(c.get("db"), c.get("userId"), c.req.param("id"), { answers: answers as string[], dismissed }, new Date());
+    const outcome = await answerRun(
+      c.get("db"),
+      c.get("userId"),
+      c.req.param("id"),
+      { answers: answers as string[], dismissed, ...(typeof checkId === "string" ? { conditionCheckId: checkId } : {}) },
+      new Date(),
+    );
     switch (outcome.kind) {
       case "ok":
         return c.json({ run: outcome.run });
       case "not_found":
         return c.json({ error: "not_found" }, 404);
+      case "check_not_found":
+        return c.json({ error: "check_not_found" }, 404);
+      case "bad_answer":
+        return c.json({ error: "bad_answer", why: outcome.why }, 400);
       case "not_waiting":
         return c.json({ error: "not_waiting", status: outcome.status }, 409);
     }

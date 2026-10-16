@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
-import { accountState, coachProposals, coachRunEvents, coachRuns, llmUsage } from "@rg/database";
+import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
@@ -327,6 +327,9 @@ export interface RunState {
   /** What `awaiting` waits on: the athlete's answer (absent), the review of the draft that call proposed, or the
    * designers of the set that call (plan_set) started. */
   awaitingKind?: "review" | "set";
+  /** An ask for today's condition check (fix wave 3A, A8): answered by a check the athlete logs, saved today at or after
+   * `since` (when it was asked). */
+  awaitingCheck?: { since: string };
   /** The review awaited: the proposal the draft is in, and the reviewer sub-run reviewing it. */
   awaitingReview?: { proposalId: string; reviewRunId: string; round: number };
   /** Where the awaited review's result goes among this turn's results: the calls before it ran, the ones after it were
@@ -449,6 +452,7 @@ export function readRunState(text: string | null): RunState | null {
     lastCall: s.lastCall === "step_cap" || s.lastCall === "state_cap" ? s.lastCall : null,
     toldAt: typeof s.toldAt === "string" ? s.toldAt : null,
     ...(s.awaitingKind === "review" || s.awaitingKind === "set" ? { awaitingKind: s.awaitingKind } : {}),
+    ...(s.awaitingCheck && typeof s.awaitingCheck.since === "string" ? { awaitingCheck: { since: s.awaitingCheck.since } } : {}),
     ...(s.awaitingReview && typeof s.awaitingReview === "object" ? { awaitingReview: s.awaitingReview } : {}),
     ...(typeof s.awaitingAt === "number" ? { awaitingAt: s.awaitingAt } : {}),
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
@@ -543,6 +547,8 @@ interface RunNode {
   day?: string | null;
   /** From the state, read in SQL: a set's redo designer's first version's designer (`RunState.replaces`). */
   replaces?: string | null;
+  /** From the state, read in SQL: when an ask for today's condition check was put (`RunState.awaitingCheck`). */
+  checkSince?: string | null;
 }
 
 /** Everything but `state`, and from the state only its settings (read in SQL, so a large state is never read whole;
@@ -552,6 +558,7 @@ const NODE_COLUMNS = {
   final: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.final') END`,
   day: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.day') END`,
   replaces: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.replaces') END`,
+  checkSince: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.awaitingCheck.since') END`,
   id: coachRuns.id,
   parentId: coachRuns.parentId,
   role: coachRuns.role,
@@ -588,6 +595,7 @@ function toNode(r: NodeRow): RunNode {
     final: typeof r.final === "string" ? r.final : null,
     day: typeof r.day === "string" ? r.day : null,
     replaces: typeof r.replaces === "string" ? r.replaces : null,
+    checkSince: typeof r.checkSince === "string" ? r.checkSince : null,
   };
 }
 
@@ -1038,6 +1046,8 @@ export interface AnswerInput {
   answers: string[];
   /** The athlete skipped the question: the coach goes on with its best judgement and says so. */
   dismissed?: boolean;
+  /** An ask for today's condition check, answered (fix wave 3A, A8): the id of the check the athlete logged. */
+  conditionCheckId?: string;
 }
 
 export const ANSWER_MAX_CHARS = 500;
@@ -1045,11 +1055,25 @@ export const ANSWER_MAX_CHARS = 500;
 export type AnswerOutcome =
   | { kind: "ok"; run: CoachRunDto }
   | { kind: "not_found" }
-  | { kind: "not_waiting"; status: RunStatus };
+  | { kind: "not_waiting"; status: RunStatus }
+  /** The answer doesn't fit the wait: words for a check, a check for a question, or a check not today's, or older than
+   * the question. */
+  | { kind: "bad_answer"; why: string }
+  /** No condition check of this athlete's has that id. */
+  | { kind: "check_not_found" };
+
+/** The result the model gets when the athlete logged the condition check it asked for. */
+export const CHECK_LOGGED = "The athlete logged today's condition check. Validate again.";
+/** …and when they skipped it. */
+const CHECK_SKIPPED =
+  "The athlete skipped today's condition check: the moves its gates close stay closed. Go on without them, and say so.";
 
 /**
  * The question the run is waiting on, answered: its result for the model is the athlete's words, marked as theirs.
- * A run past its window is expired instead (with its plain line); an answer that loses to a cancel writes nothing.
+ * An ask for today's condition check is answered by the check itself (fix wave 3A, A8): a `condition_checks` row of
+ * the athlete's, dated their today and saved at or after the question — one read, before the claim — and the model is
+ * told it was logged, to validate again. A run past its window is expired instead (with its plain line); an answer that
+ * loses to a cancel writes nothing.
  */
 export async function answerRun(db: Db, userId: string, runId: string, input: AnswerInput, now: Date): Promise<AnswerOutcome> {
   const { root, nodes } = await loadTree(db, userId, runId);
@@ -1060,6 +1084,21 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
   if (windowClosed(root.settings, root.createdAt, now)) {
     await expireTree(db, userId, root, nodes, now);
     return { kind: "not_waiting", status: treeStatus(root, nodes) };
+  }
+  const checkWait = typeof waiting.checkSince === "string";
+  if (!input.dismissed) {
+    if (checkWait && !input.conditionCheckId) return { kind: "bad_answer", why: "The coach asked for today's condition check: log it, or skip." };
+    if (!checkWait && input.conditionCheckId) return { kind: "bad_answer", why: "The coach asked a question, not for a condition check." };
+  }
+  if (checkWait && !input.dismissed && input.conditionCheckId) {
+    const [check] = await db
+      .select({ localDate: conditionChecks.localDate, at: conditionChecks.at })
+      .from(conditionChecks)
+      .where(and(eq(conditionChecks.id, input.conditionCheckId), eq(conditionChecks.userId, userId)));
+    if (!check) return { kind: "check_not_found" };
+    const today = localDate(waiting.settings?.timezone || root.settings?.timezone || "UTC", now);
+    if (check.localDate !== today) return { kind: "bad_answer", why: "That check is from another day: log today's." };
+    if (check.at < waiting.checkSince!) return { kind: "bad_answer", why: "That check was logged before the coach asked: log a new one." };
   }
   const claimAt = now.toISOString();
   const [claimed] = await db
@@ -1079,6 +1118,15 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
     status = "failed";
     error = "bad_state";
     events.push({ kind: "error", summary: LINES.badState });
+  } else if (state.awaitingCheck) {
+    // Today's condition check: logged (checked above, before the claim) or skipped. The validator reads the day's
+    // readings afresh on its next call, so a logged check opens the gates that read it.
+    const logged = !input.dismissed;
+    state.results.push({ type: "tool_result", tool_use_id: state.awaiting, content: JSON.stringify(logged ? { checkLogged: true, note: CHECK_LOGGED } : { dismissed: true, note: CHECK_SKIPPED }) });
+    state.awaiting = null;
+    delete state.awaitingCheck;
+    if (state.pending.length === 0) flushResults(state);
+    events.push({ kind: "note", summary: logged ? "You logged today's condition check." : "You skipped the condition check." });
   } else {
     const questions = askedQuestions(state, state.awaiting);
     const answers = input.answers.map((a) => a.trim().slice(0, ANSWER_MAX_CHARS)).filter((a) => a.length > 0);
@@ -2025,6 +2073,8 @@ async function runTools(
     const ok = !isToolErr(result);
     if (tool?.control === "ask" && ok) {
       state.awaiting = call.id;
+      // An ask for today's condition check waits on a check the athlete logs from now on (fix wave 3A, A8).
+      if ((result.data as { check?: unknown } | null)?.check === "condition") state.awaitingCheck = { since: s.now.toISOString() };
       events.push({ kind: "question", summary: result.summary ?? "The coach has a question.", payload: { tool: call.name, data: result.data } });
       return { status: "waiting_athlete", events, proposalId: null };
     }

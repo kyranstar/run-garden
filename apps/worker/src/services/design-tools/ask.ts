@@ -12,6 +12,14 @@
  * and area, or the words typed. A question that declares none ("how long do you have?") is answered in the run only.
  * The areas are checked here, so an answer can be kept as it is given: one statement, the athlete's focus areas, read
  * only when an area is none of the library's.
+ *
+ * TODAY'S CONDITION CHECK (fix wave 3A, A8): `{ check: "condition", why }` in place of questions — no wording of the
+ * model's: the app shows its own condition check, the athlete logs it, and the answer (`POST …/answer` with the check's
+ * id, saved today, after the question) resumes the run with a result saying it was logged: validate again, and the
+ * gates that read it open. No statement.
+ *
+ * A SET'S DESIGNER CAN'T ASK (fix wave 3A, A9): the main coach asks what the set needs before plan_set, so a set's
+ * designers never stop it behind a question; the refusal teaches the designer to decide and say what it assumed.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -39,16 +47,30 @@ const question = z
   })
   .strict();
 const input = z.object({ questions: z.array(question).min(1).max(MAX_QUESTIONS, `at most ${MAX_QUESTIONS} questions at a time`) }).strict();
+/** Today's condition check asked for (fix wave 3A, A8): no wording of the model's — the app shows its own check. */
+const checkInput = z.object({ check: z.literal("condition"), why: line(WHY_MAX) }).strict();
 
 const labelOf = (c: z.infer<typeof chip>): string => (typeof c === "string" ? c : c.label);
+
+/** A set's designer can't ask (fix wave 3A, A9): the main coach asks what the set needs, before plan_set. */
+export const SET_DESIGNER_ASKS: { why: string; fix: string } = {
+  why: "In a set the main coach asks.",
+  fix: "Design on your best judgement and say what you assumed in the document's notes.",
+};
+
+/** The question's line when the coach asks for today's condition check. */
+export const CHECK_ASKED = "The coach asks you to log today's condition check.";
 
 export const askAthlete: DesignTool = {
   name: "ask_athlete",
   description:
-    "Ask one or two questions whose answers would change the design — never what a tool can read. Each has 1–6 tappable chips; the athlete may answer in their own words or skip. A check-in question (soreness, tightness, pain, energy) keeps its answer. The run waits.",
+    "The main coach's, or a designer's outside a set — never a set's designer (its main coach asks, before plan_set). { questions }: one or two whose answers change the design, each with 1–6 chips; the athlete may answer in words or skip; a check-in question keeps its answer. Or { check: \"condition\", why }: the athlete logs the check in the app, then you validate again. The run waits.",
   inputSchema: {
     type: "object",
+    description: "Either { questions } or { check: \"condition\", why }.",
     properties: {
+      check: { type: "string", enum: ["condition"], description: "Ask the athlete to log today's condition check in the app, instead of questions." },
+      why: { type: "string", minLength: 1, maxLength: WHY_MAX, description: "With check: why the design needs today's check." },
       questions: {
         type: "array",
         minItems: 1,
@@ -93,14 +115,23 @@ export const askAthlete: DesignTool = {
         },
       },
     },
-    required: ["questions"],
     additionalProperties: false,
   },
   statementCost: 1,
   roles: ["main", "designer"],
   control: "ask",
   async run(ctx, raw) {
-    const p = parseAct(input, raw, `questions: 1–${MAX_QUESTIONS}, each { text, chips (1–${MAX_CHIPS}), why, checkin? }`);
+    // A set's scope (design-orchestrate.ts `isSetScope`, not imported: the registry would import it in a cycle).
+    const inSet = ctx.run.scope.kind === "week" || ctx.run.scope.kind === "next_n";
+    if (ctx.run.role === "designer" && ctx.run.parentId !== null && inSet) {
+      return refuse("set_designer_cannot_ask", SET_DESIGNER_ASKS.why, SET_DESIGNER_ASKS.fix);
+    }
+    if (raw && typeof raw === "object" && "check" in raw) {
+      const c = parseAct(checkInput, raw, `{ check: "condition", why } — why the design needs today's check, at most ${WHY_MAX} characters`);
+      if (isErr(c)) return c;
+      return { data: { check: c.check, why: c.why }, summary: CHECK_ASKED };
+    }
+    const p = parseAct(input, raw, `questions: 1–${MAX_QUESTIONS}, each { text, chips (1–${MAX_CHIPS}), why, checkin? } — or { check: "condition", why }`);
     if (isErr(p)) return p;
     const areas: string[] = [];
     for (const [i, q] of p.questions.entries()) {
