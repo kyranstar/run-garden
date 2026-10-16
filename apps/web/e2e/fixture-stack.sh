@@ -10,6 +10,13 @@
 # COROS connection holds no credentials, so a queued push stays queued — no
 # call ever leaves the machine.
 #
+# RG_E2E_DESIGN_MODEL=scripted:<name> runs the coach designer on a script
+# (Stage 3 Task 9; coach-design-scripts.mjs: now, ask, check, credits, slow):
+# a stand-in model on loopback (coach-design-model.mjs, on RG_DESIGN_MODEL_PORT,
+# default 8897) that the worker reaches through FIXTURE_MODEL_URL — fixture
+# mode's one way to a model. Unset, the designer gets fixture mode's canned
+# answer, as before. The worker ignores a scripted id outside fixture mode.
+#
 # wrangler needs Node >= 22; the caller puts it on PATH. The migrations and
 # `wrangler dev` share one --persist-to directory, otherwise they resolve to
 # different sqlite files. apps/worker/.dev.vars must exist (dummy values are
@@ -26,6 +33,8 @@ WEB_PORT="${RG_WEB_PORT:-5271}"
 # each other's (Audit 2 E2E M5).
 STATE="${RG_E2E_STATE:-${TMPDIR:-/tmp}/rg-e2e-state-$(printf %s "$ROOT" | cksum | cut -d' ' -f1)}"
 PIDS="$STATE/pids"
+DESIGN_MODEL="${RG_E2E_DESIGN_MODEL:-}"
+MODEL_PORT="${RG_DESIGN_MODEL_PORT:-8897}"
 
 stop() {
   if [ -f "$PIDS" ]; then
@@ -33,7 +42,7 @@ stop() {
   fi
   # wrangler/vite spawn children; clear whatever still LISTENS on our ports —
   # never a client connected to them, such as a browser tab on the dev server.
-  for p in "$API_PORT" "$WEB_PORT"; do
+  for p in "$API_PORT" "$WEB_PORT" ${DESIGN_MODEL:+"$MODEL_PORT"}; do
     lsof -ti "tcp:$p" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
   done
   rm -rf "$STATE"
@@ -61,6 +70,13 @@ npx wrangler d1 migrations apply run-garden-db --local --persist-to "$STATE" >"$
 # every later test. A worker that keeps dying is left down after MAX_RESTARTS.
 # The crash this was added for (a dropped ProxyWorker -> UserWorker connection
 # exiting wrangler 4.118) is fixed in patches/wrangler@4.118.0.patch.
+MODEL_VARS=()
+if [ -n "$DESIGN_MODEL" ]; then
+  node "$ROOT/apps/web/e2e/coach-design-model.mjs" "$MODEL_PORT" >"$STATE/model.log" 2>&1 &
+  echo $! >>"$PIDS"
+  MODEL_VARS=(--var "AI_DESIGN_MODEL:$DESIGN_MODEL" --var "FIXTURE_MODEL_URL:http://127.0.0.1:$MODEL_PORT" --var AI_GATEWAY_API_KEY:stub)
+fi
+
 supervise_worker() {
   set +e
   local child="" restarts=0 rc
@@ -69,7 +85,7 @@ supervise_worker() {
     npx wrangler dev --port "$API_PORT" --persist-to "$STATE" \
       --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 --var AI_GATEWAY_BASE_URL:http://127.0.0.1:9 \
       --var "APP_URL:http://localhost:$WEB_PORT" --var "WATCH_PUSH_ENABLED:${RG_E2E_WATCH:-0}" \
-      --var COACH_DESIGNER:1 >>"$STATE/worker.log" 2>&1 &
+      --var COACH_DESIGNER:1 ${MODEL_VARS[@]+"${MODEL_VARS[@]}"} >>"$STATE/worker.log" 2>&1 &
     child=$!
     wait "$child"; rc=$?
     if [ "$rc" -gt 128 ]; then rc="$rc (signal $((rc - 128)))"; fi
