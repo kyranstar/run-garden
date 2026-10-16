@@ -1530,6 +1530,9 @@ export interface ConditionViewDto {
 
 /** A day's condition check (`POST /api/conditions/checks`); null while a restore is replacing the account. */
 export interface ConditionCheckDto {
+  /** The saved check's id: it answers a coach's ask for today's check (`conditionCheckId`). The server always gives it;
+   * a check the app kept offline for a session (never sent on its own) has none. */
+  id?: string;
   profileId: string;
   date: string;
   value: number | null;

@@ -12,25 +12,37 @@
  * The real registry and opening context, a scripted model. No key, no network. Synthetic data only: the made-up
  * athlete of design-read-fixture.ts.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
+import { profileById } from "@rg/exercise-library";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
-import { CHECK_LOGGED, createRun, runStep, type RunDeps } from "../src/services/coach-runs.js";
+import { conditionRoutes } from "../src/routes/sessions.js";
+import { checkLoggedNote, createRun, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { askAthlete, CHECK_ASKED, SET_DESIGNER_ASKS } from "../src/services/design-tools/ask.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import type { ToolContext } from "../src/services/design-tools/types.js";
 import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult, ToolResultBlock } from "../src/services/llm-messages.js";
-import { seedRichAthlete, TZ } from "./design-read-fixture.js";
+import { NOW, seedRichAthlete, TZ } from "./design-read-fixture.js";
 import { makeEnv } from "./doc-workout-fixture.js";
 import { makeTestDb, mountRoutes } from "./helpers.js";
 
 const ON = { ...makeEnv(), COACH_DESIGNER: "1" } as Env;
+
+// The routes read the clock themselves (`new Date()`): a fixed one, mid-morning in the athlete's zone, so no run of
+// these tests can straddle their local midnight (round 2, A-M9). Only Date is faked; timers stay real.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 let seq = 0;
 const use = (name: string, input: unknown): ContentBlock => ({ type: "tool_use", id: `toolu_ck${++seq}`, name, input });
@@ -66,8 +78,8 @@ function scripted(turns: MessagesResult[]) {
 const WHY = "Overhead pressing needs today's jaw reading.";
 const askCheck = () => use("ask_athlete", { check: "condition", why: WHY });
 
-/** An athlete, signed in, with a now run that has asked for today's condition check — on the real clock (the answer
- * route reads it). */
+/** An athlete, signed in, with a now run that asked for today's condition check a minute before the clock the routes
+ * read (fixed: see above). */
 async function asked() {
   let statements = 0;
   const db: Db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
@@ -75,7 +87,7 @@ async function asked() {
   const cookie = `${SESSION_COOKIE}=${await createSession(db, a.userId)}`;
   const call = askCheck();
   const { deps, requests } = scripted([t(call), t(use("finish", { summary: "Done." }))]);
-  const start = new Date();
+  const start = new Date(Date.now() - 60_000);
   const runId = (await createRun(db, a.userId, { scope: { kind: "now" }, request: "A press if the jaw allows." }, start)).run.id;
   await runStep(db, ON, runId, a.userId, start, deps); // context
   const askedAt = new Date(start.getTime() + 1_000);
@@ -130,10 +142,48 @@ describe("ask_athlete for today's condition check (A8)", () => {
     expect(out.kind === "ok" && out.result.status).toBe("finished");
     const sent = s.requests.at(-1)!.messages.flatMap((m) => (typeof m.content === "string" ? [] : m.content));
     const result = sent.find((b) => b.type === "tool_result" && (b as ToolResultBlock).tool_use_id === (s.call as { id: string }).id) as ToolResultBlock;
-    expect(JSON.parse(result.content as string)).toEqual({ checkLogged: true, note: CHECK_LOGGED });
-    expect(CHECK_LOGGED).toBe("The athlete logged today's condition check. Validate again.");
+    // Which check was logged, and its reading (round 2, A-M6 and B-M11).
+    const label = profileById("tmj").label;
+    expect(JSON.parse(result.content as string)).toEqual({ checkLogged: true, check: { profile: label, value: 2, feelingOff: false }, note: checkLoggedNote(label, 2, false) });
+    expect(checkLoggedNote(label, 2, false)).toBe(`The athlete logged today's ${label} check: 2. Validate again.`);
+    expect(checkLoggedNote(label, null, true)).toBe(`The athlete logged today's ${label} check: feeling off. Validate again.`);
     const lines = (await s.db.select().from(schema.coachRunEvents).where(eq(schema.coachRunEvents.runId, s.runId))).map((e) => e.summary);
     expect(lines).toContain("You logged today's condition check.");
+  });
+
+  it("the app's own check route gives back the saved check's id — its statements unchanged — and that id answers the ask (round 2, A-M6)", async () => {
+    const s = await asked();
+    let statements = 0;
+    const counted = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
+    // The route measured on a database of its own, the same athlete's shape: what it ran before it gave back the id.
+    const b = await seedRichAthlete(counted);
+    const bCookie = `${SESSION_COOKIE}=${await createSession(counted, b.userId)}`;
+    statements = 0;
+    const measured = await mountRoutes(counted, "/api/conditions", conditionRoutes).request(
+      "/api/conditions/checks",
+      { method: "POST", headers: { Cookie: bCookie, "content-type": "application/json" }, body: JSON.stringify({ profileId: "tmj", value: 3, feelingOff: false }) },
+      ON,
+    );
+    expect(measured.status).toBe(200);
+    // The session and the restore marker, the preferences, the restore read, the active profiles, the day's earlier
+    // check deleted, the check saved: unchanged by the id it now gives back.
+    expect(statements).toBe(7);
+    // On the athlete's own: the check logged in the app answers the coach's ask with the id the route gave back.
+    const cookie = `${SESSION_COOKIE}=${await createSession(s.db, s.a.userId)}`;
+    const logged = await mountRoutes(s.db, "/api/conditions", conditionRoutes).request(
+      "/api/conditions/checks",
+      { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify({ profileId: "tmj", value: 3, feelingOff: false }) },
+      ON,
+    );
+    const body = (await logged.json()) as { check: { id: string; profileId: string; value: number } };
+    expect(body.check).toMatchObject({ id: expect.any(String), profileId: "tmj", value: 3 });
+    const [row] = await s.db.select().from(schema.conditionChecks).where(eq(schema.conditionChecks.id, body.check.id));
+    expect(row).toMatchObject({ userId: s.a.userId, profileId: "tmj", value: 3 });
+    expect((await s.answer({ conditionCheckId: body.check.id })).status).toBe(200);
+    await s.step(60_000);
+    const sent = s.requests.at(-1)!.messages.flatMap((m) => (typeof m.content === "string" ? [] : m.content));
+    const result = sent.find((b) => b.type === "tool_result" && (b as ToolResultBlock).tool_use_id === (s.call as { id: string }).id) as ToolResultBlock;
+    expect(JSON.parse(result.content as string)).toMatchObject({ checkLogged: true, check: { profile: profileById("tmj").label, value: 3, feelingOff: false } });
   });
 
   it("a check from yesterday, or from before the question, is refused 400 — and the run still waits", async () => {
@@ -194,6 +244,9 @@ describe("ask_athlete for today's condition check (A8)", () => {
     expect(askAthlete.description).toContain('{ check: "condition", why }');
     expect(askAthlete.description).toMatch(/never a set's designer/);
     expect(askAthlete.description).toMatch(/logs the check in the app, then you validate again/);
+    // Words typed instead of a chip are the run's answer only (part B's M8): the description says so (round 2, B-M11).
+    expect(askAthlete.description).toMatch(/a check-in question keeps the chip tapped/);
+    expect(askAthlete.description.length).toBeLessThanOrEqual(400);
   });
 });
 

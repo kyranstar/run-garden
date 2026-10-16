@@ -1,6 +1,7 @@
 import { and, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
+import { isProfileId, profileById } from "@rg/exercise-library";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
@@ -1083,8 +1084,19 @@ export type AnswerOutcome =
   /** No condition check of this athlete's has that id. */
   | { kind: "check_not_found" };
 
-/** The result the model gets when the athlete logged the condition check it asked for. */
-export const CHECK_LOGGED = "The athlete logged today's condition check. Validate again.";
+/**
+ * The note the model gets when the athlete logged the condition check it asked for: which profile's check, and what it
+ * reads (round 2, A-M6 and B-M11), so the coach sees which check was logged — then validate again. (For an athlete with
+ * more than one profile whose gates read a check, the answer takes whichever check they log; matching it to the profile
+ * the coach needed is not done yet.)
+ */
+export function checkLoggedNote(profile: string, value: number | null, feelingOff: boolean): string {
+  const reading = [value !== null ? String(value) : null, feelingOff ? "feeling off" : null].filter((x) => x !== null).join(", ") || "no value";
+  return `The athlete logged today's ${profile} check: ${reading}. Validate again.`;
+}
+/** A condition profile's own label (the library's words), or its id when the library no longer knows it. */
+const profileLabel = (id: string): string => (isProfileId(id) ? profileById(id).label : id);
+
 /** …and when they skipped it. */
 const CHECK_SKIPPED =
   "The athlete skipped today's condition check: the moves its gates close stay closed. Go on without them, and say so.";
@@ -1093,7 +1105,8 @@ const CHECK_SKIPPED =
  * The question the run is waiting on, answered: its result for the model is the athlete's words, marked as theirs.
  * An ask for today's condition check is answered by the check itself (fix wave 3A, A8): a `condition_checks` row of
  * the athlete's, dated their today and saved at or after the question — one read, before the claim — and the model is
- * told it was logged, to validate again. A run past its window is expired instead (with its plain line); an answer that
+ * told it was logged — which profile's check, and its reading — to validate again. A run past its window is expired
+ * instead (with its plain line); an answer that
  * loses to a cancel writes nothing.
  */
 export async function answerRun(db: Db, userId: string, runId: string, input: AnswerInput, now: Date): Promise<AnswerOutcome> {
@@ -1111,15 +1124,18 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
     if (checkWait && !input.conditionCheckId) return { kind: "bad_answer", why: "The coach asked for today's condition check: log it, or skip." };
     if (!checkWait && input.conditionCheckId) return { kind: "bad_answer", why: "The coach asked a question, not for a condition check." };
   }
+  /** The check that answers an ask for one: which profile's, and its reading (what the coach is told). */
+  let logged: { profile: string; value: number | null; feelingOff: boolean } | null = null;
   if (checkWait && !input.dismissed && input.conditionCheckId) {
     const [check] = await db
-      .select({ localDate: conditionChecks.localDate, at: conditionChecks.at })
+      .select({ localDate: conditionChecks.localDate, at: conditionChecks.at, profileId: conditionChecks.profileId, value: conditionChecks.value, feelingOff: conditionChecks.feelingOff })
       .from(conditionChecks)
       .where(and(eq(conditionChecks.id, input.conditionCheckId), eq(conditionChecks.userId, userId)));
     if (!check) return { kind: "check_not_found" };
     const today = localDate(waiting.settings?.timezone || root.settings?.timezone || "UTC", now);
     if (check.localDate !== today) return { kind: "bad_answer", why: "That check is from another day: log today's." };
     if (check.at < waiting.checkSince!) return { kind: "bad_answer", why: "That check was logged before the coach asked: log a new one." };
+    logged = { profile: profileLabel(check.profileId), value: check.value ?? null, feelingOff: check.feelingOff === true };
   }
   const claimAt = now.toISOString();
   const [claimed] = await db
@@ -1140,14 +1156,17 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
     error = "bad_state";
     events.push({ kind: "error", summary: LINES.badState });
   } else if (state.awaitingCheck) {
-    // Today's condition check: logged (checked above, before the claim) or skipped. The validator reads the day's
-    // readings afresh on its next call, so a logged check opens the gates that read it.
-    const logged = !input.dismissed;
-    state.results.push({ type: "tool_result", tool_use_id: state.awaiting, content: JSON.stringify(logged ? { checkLogged: true, note: CHECK_LOGGED } : { dismissed: true, note: CHECK_SKIPPED }) });
+    // Today's condition check: logged (read above, before the claim) or skipped. The validator reads the day's readings
+    // afresh on its next call, so a logged check opens the gates that read it.
+    const content =
+      !input.dismissed && logged
+        ? { checkLogged: true, check: logged, note: checkLoggedNote(logged.profile, logged.value, logged.feelingOff) }
+        : { dismissed: true, note: CHECK_SKIPPED };
+    state.results.push({ type: "tool_result", tool_use_id: state.awaiting, content: JSON.stringify(content) });
     state.awaiting = null;
     delete state.awaitingCheck;
     if (state.pending.length === 0) flushResults(state);
-    events.push({ kind: "note", summary: logged ? "You logged today's condition check." : "You skipped the condition check." });
+    events.push({ kind: "note", summary: "checkLogged" in content ? "You logged today's condition check." : "You skipped the condition check." });
   } else {
     const questions = askedQuestions(state, state.awaiting);
     const answers = input.answers.map((a) => a.trim().slice(0, ANSWER_MAX_CHARS)).filter((a) => a.length > 0);

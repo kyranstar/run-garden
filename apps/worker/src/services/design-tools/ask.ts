@@ -8,8 +8,9 @@
  *
  * A CHECK-IN QUESTION (ruling 3): a question may declare a check-in it asks (`checkin: { question, area? }` — soreness,
  * tightness and pain by area, energy alone), and each chip what it records (`{ label, value?, area? }`). Its answer is
- * then kept as the athlete's answer (record-answer.ts `askedAnswerRows`, `source 'ask_athlete'`): a tapped chip's value
- * and area, or the words typed. A question that declares none ("how long do you have?") is answered in the run only.
+ * then kept as the athlete's answer (record-answer.ts `askedAnswerRows`, `source 'ask_athlete'`): the chip tapped, its
+ * value and area — words typed instead of a chip stay the run's answer only. A question that declares none ("how long
+ * do you have?") is answered in the run only.
  * The areas are checked here, so an answer can be kept as it is given: one statement, the athlete's focus areas, read
  * only when an area is none of the library's.
  *
@@ -64,7 +65,7 @@ export const CHECK_ASKED = "The coach asks you to log today's condition check.";
 export const askAthlete: DesignTool = {
   name: "ask_athlete",
   description:
-    "The main coach's, or a designer's outside a set — never a set's designer (its main coach asks, before plan_set). { questions }: one or two whose answers change the design, each with 1–6 chips; the athlete may answer in words or skip; a check-in question keeps its answer. Or { check: \"condition\", why }: the athlete logs the check in the app, then you validate again. The run waits.",
+    "The main coach's, or a designer's outside a set — never a set's designer (its main coach asks, before plan_set). { questions }: one or two whose answers change the design, each with 1–6 chips; the athlete may answer in words or skip; a check-in question keeps the chip tapped. Or { check: \"condition\", why }: the athlete logs the check in the app, then you validate again. The run waits.",
   inputSchema: {
     type: "object",
     description: "Either { questions } or { check: \"condition\", why }.",

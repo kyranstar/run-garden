@@ -1195,6 +1195,8 @@ describe("the daily check", () => {
   it("one per profile per day, replaced on a re-check", async () => {
     await activateTmj();
     expect(await recordCheck(db, userId, { profileId: "tmj", value: 4, feelingOff: false }, ctx())).toEqual({
+      // The saved check's id (fix wave 3A round 2, A-M6): it answers a coach's ask for today's check.
+      id: expect.any(String),
       profileId: "tmj",
       date: TODAY,
       value: 4,
@@ -1373,7 +1375,7 @@ describe("the routes", () => {
     await activateTmj();
     const ok = await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 2, feelingOff: false });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ check: { profileId: "tmj", date: today, value: 2, feelingOff: false } });
+    expect(await ok.json()).toEqual({ check: { id: expect.any(String), profileId: "tmj", date: today, value: 2, feelingOff: false } });
     const bad = await call("POST", "/api/conditions/checks", { profileId: "knee", value: 2 });
     expect(bad.status).toBe(422);
     const junk = await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 12 });

@@ -294,6 +294,8 @@ interface StoredBuild {
 }
 
 export interface RecordedCheck {
+  /** The saved check's id: what answers a coach's ask for today's check (`POST /api/coach/runs/:id/answer`). */
+  id: string;
   profileId: string;
   date: string;
   value: number | null;
@@ -1893,8 +1895,9 @@ export async function recordCheck(
         eq(conditionChecks.localDate, ctx.today),
       ),
     );
+  const id = newId();
   await db.insert(conditionChecks).values({
-    id: newId(),
+    id,
     userId,
     profileId: input.profileId,
     kind: "daily",
@@ -1905,5 +1908,5 @@ export async function recordCheck(
     performedSessionId: null,
     workoutId: null,
   });
-  return { profileId: input.profileId, date: ctx.today, value: input.value, feelingOff: input.feelingOff };
+  return { id, profileId: input.profileId, date: ctx.today, value: input.value, feelingOff: input.feelingOff };
 }
