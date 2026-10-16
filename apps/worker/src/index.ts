@@ -477,6 +477,10 @@ export async function weekly(db: Db, env: Env): Promise<void> {
   }
 }
 
+/** The coach's run stepper (a Durable Object class: a function, so it may be an entry export — wrangler.toml binds it as
+ * COACH_RUN_STEPPER). Its alarm runs a coach designer's steps while `COACH_STEP_ALARM` is on. */
+export { CoachRunStepper } from "./services/coach-run-stepper.js";
+
 export default {
   fetch(req: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
     if (stagingEnabled(env)) installStagingGuard();

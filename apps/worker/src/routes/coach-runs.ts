@@ -10,16 +10,23 @@
  *   POST /                  { scope?, request?, rehearsal? } → { run, existing }  (one live main run per athlete: a
  *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start)
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
+ *                           With the step alarm on (COACH_STEP_ALARM, coach-run-stepper.ts): `?afterSeq=n` → { status,
+ *                           armed: true, nextDue: null, events after n } at once — the run's object is armed and its
+ *                           alarm steps the run; never a model call in the request. A run waiting on the athlete, or
+ *                           over: { status, nextDue: null, events }, nothing armed. Sign-in, the run and its events, and
+ *                           one request to the object.
  *   GET  /current           → { run, events, proposal } | { run: null }   (what the Studio shows when it opens, Task 9:
  *                           the newest live main run, else the newest one over whose design proposal still has an op
- *                           to decide — never a rehearsal's; its last 50 events; the proposal it holds open — 2 + 3
- *                           statements, pinned)
- *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order)
+ *                           to decide, or was decided in the last 10 minutes (a reload during Approve shows what came
+ *                           of it) — never a rehearsal's; its last 50 events; that proposal — 2 + 3 statements, pinned)
+ *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order; with the step alarm on, a
+ *                           live run's object is told a client is here — its lease — and arms a step that is due)
  *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting; an answer to a check-in
  *                           question is kept as the athlete's answer — 7 statements in all, pinned)
  *                           { conditionCheckId } answers an ask for today's condition check (fix wave 3A, A8): the
  *                           athlete's check, dated their today and saved after the question (400 otherwise; another
- *                           athlete's, or none, 404) — 7 statements, pinned
+ *                           athlete's, or none, 404) — 7 statements, pinned (with the step alarm on, and one request
+ *                           to the run's object: the run it resumes is armed)
  *   POST /:id/cancel        → { run }
  *   POST /:id/undo-answer   { handle } → { undone }       (what record_answer kept from the request, or a check-in
  *                           question's kept answer, taken back; the
@@ -29,7 +36,8 @@
 import { Hono } from "hono";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { coachDesignerEnabled } from "../env.js";
+import { coachDesignerEnabled, type Env } from "../env.js";
+import { stepAlarmOn, tellStepper, type StepperOp } from "../services/coach-run-stepper.js";
 import {
   ANSWER_MAX_CHARS,
   REQUEST_MAX_CHARS,
@@ -39,6 +47,7 @@ import {
   currentRun,
   defaultRunDeps,
   getRun,
+  LIVE_STATUSES,
   noteOnTrail,
   parseScopeRequest,
   runStep,
@@ -49,6 +58,29 @@ import { undoRemembered } from "../services/design-tools/remember.js";
 
 /** A condition check's id, at most (ids are the app's own: `newId`). */
 const CHECK_ID_MAX_CHARS = 100;
+
+/** A run a step goes on from: live, and not waiting on the athlete. */
+const AT_WORK: readonly string[] = ["active", "stepping", "waiting_review", "waiting_set"];
+const isLive = (status: string): boolean => (LIVE_STATUSES as readonly string[]).includes(status);
+
+/** `afterSeq` as the reads take it: digits, at most nine (absent: 0); null when it isn't. */
+function afterSeqOf(raw: string | undefined): number | null {
+  const text = raw ?? "0";
+  return /^\d{1,9}$/.test(text) ? Number(text) : null;
+}
+
+/**
+ * A client's word to its run's object (the step alarm): a read or an answer is here (`touch`), an answer asks for the
+ * step it resumes (`arm`). A word that fails is logged and never the request's failure — the read answered — and the
+ * client's next word, or its own arm, tells the object again.
+ */
+async function tellQuietly(env: Env, runId: string, userId: string, op: StepperOp): Promise<void> {
+  try {
+    await tellStepper(env, runId, userId, op);
+  } catch (e) {
+    console.error(JSON.stringify({ level: "error", msg: "coach-runs: the run's stepper was not told", run: runId, op, error: e instanceof Error ? e.message : "unknown" }));
+  }
+}
 
 /** The routes, over `deps` (the model, the opening context, the tools); tests pass scripted ones. */
 export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<AppContext> {
@@ -82,6 +114,22 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   });
 
   routes.post("/:id/step", async (c) => {
+    if (stepAlarmOn(c.env)) {
+      // The alarm path: the run checked and read, its object armed — the step runs in the object's alarm, never here.
+      const afterSeq = afterSeqOf(c.req.query("afterSeq"));
+      if (afterSeq === null) return c.json({ error: "bad_after_seq" }, 400);
+      const read = await getRun(c.get("db"), c.get("userId"), c.req.param("id"), afterSeq);
+      if (!read) return c.json({ error: "not_found" }, 404);
+      // (A sub-run's id is no run here — the reads answer main runs only — so only a main run's object is armed.)
+      if (!AT_WORK.includes(read.run.status)) return c.json({ status: read.run.status, nextDue: null, events: read.events });
+      try {
+        await tellStepper(c.env, read.run.id, c.get("userId"), "arm");
+      } catch (e) {
+        console.error(JSON.stringify({ level: "error", msg: "coach-runs: the run's stepper was not armed", run: read.run.id, error: e instanceof Error ? e.message : "unknown" }));
+        return c.json({ error: "stepper_unavailable" }, 503);
+      }
+      return c.json({ status: read.run.status, armed: true, nextDue: null, events: read.events });
+    }
     const outcome = await runStep(c.get("db"), c.env, c.req.param("id"), c.get("userId"), new Date(), deps());
     switch (outcome.kind) {
       case "ok":
@@ -102,11 +150,13 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   });
 
   routes.get("/:id", async (c) => {
-    const raw = c.req.query("afterSeq") ?? "0";
-    const afterSeq = /^\d{1,9}$/.test(raw) ? Number(raw) : null;
+    const afterSeq = afterSeqOf(c.req.query("afterSeq"));
     if (afterSeq === null) return c.json({ error: "bad_after_seq" }, 400);
     const run = await getRun(c.get("db"), c.get("userId"), c.req.param("id"), afterSeq);
-    return run ? c.json(run) : c.json({ error: "not_found" }, 404);
+    if (!run) return c.json({ error: "not_found" }, 404);
+    // A client reading a live run is watching it: its lease (and a step that is due, armed).
+    if (stepAlarmOn(c.env) && isLive(run.run.status)) await tellQuietly(c.env, run.run.id, c.get("userId"), "touch");
+    return c.json(run);
   });
 
   routes.post("/:id/answer", async (c) => {
@@ -131,8 +181,14 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       new Date(),
     );
     switch (outcome.kind) {
-      case "ok":
-        return c.json({ run: outcome.run });
+      case "ok": {
+        // The answer resumes the run: its object armed (or, a question still open, told the athlete is here).
+        const run = outcome.run;
+        if (stepAlarmOn(c.env) && isLive(run.status)) {
+          await tellQuietly(c.env, run.id, c.get("userId"), AT_WORK.includes(run.status) ? "arm" : "touch");
+        }
+        return c.json({ run });
+      }
       case "not_found":
         return c.json({ error: "not_found" }, 404);
       case "check_not_found":

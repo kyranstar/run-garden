@@ -21,7 +21,10 @@
  *  6. `GET /api/objectives/board` over two years of runs, sessions and sets (best ever reads all of it);
  *  7. `GET /api/coach/runs/current` with 50 events;
  *  8. every tool's own call, alone, as a step runs it (`measureTool`): its scaled p50 must stay at or under the tool's
- *     declared `cpuWeight`, which the step loop spends its CPU room by.
+ *     declared `cpuWeight`, which the step loop spends its CPU room by;
+ *  9. the step alarm (COACH_STEP_ALARM, coach-run-stepper.ts): the armed `POST /step` (the run read, its object armed),
+ *     and the run's object's alarm running the tightest model step (2c) and the heaviest step of queued calls (2b.q) —
+ *     an alarm invocation is a Worker invocation, under the same budgets, and its work is the step's.
  *
  * THE MODEL'S ANSWER is the Messages API's event stream, fed to the real client (llm-messages.ts `callMessages`) through
  * its fetch seam, one event to a read — how a streamed answer arrives while the model writes it. A tool's input comes in
@@ -65,6 +68,7 @@ import { coachRoutes } from "../src/routes/coach.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import { objectiveBoardRoutes } from "../src/routes/objectives-board.js";
 import { ANSWER_MAX_BYTES, createRun, DOCUMENT_ANSWER_BYTES, noteOnTrail, STATE_MAX_BYTES, type RunDeps, type RunState } from "../src/services/coach-runs.js";
+import { CoachRunStepper } from "../src/services/coach-run-stepper.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { reviewPacket, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/services/design-review.js";
@@ -461,6 +465,47 @@ async function stateOf(db: Db, id: string): Promise<RunState> {
 
 const step = (w: World) => w.runs.request(`/api/coach/runs/${runId}/step`, { method: "POST", headers: { Cookie: cookie } }, env);
 
+// ── 9: the step alarm ──
+
+/** An object's storage, in memory (the real one is the object's own in-process SQLite: a few calls a step). */
+function memoryStorage(seed: Record<string, unknown> = {}) {
+  const data = new Map<string, unknown>(Object.entries(seed));
+  let alarm: number | null = null;
+  return {
+    get: async (k: string) => data.get(k),
+    put: async (k: string, v: unknown) => void data.set(k, structuredClone(v)),
+    delete: async (k: string) => data.delete(k),
+    deleteAll: async () => data.clear(),
+    getAlarm: async () => alarm,
+    setAlarm: async (t: number) => void (alarm = t),
+    deleteAlarm: async () => void (alarm = null),
+  };
+}
+
+/** The run's object over `db`, its run armed and a client watching: its alarm runs the step that is due. */
+const stepperOn = (db: Db): CoachRunStepper =>
+  new CoachRunStepper(
+    { storage: memoryStorage({ run: { runId, userId, touchedAt: Date.now(), nextAt: Date.now(), step: null, deaths: 0 } }) } as unknown as DurableObjectState,
+    env,
+    { db, deps: () => deps, clock: () => Date.now() },
+  );
+const alarmStep = async (w: World): Promise<void> => {
+  await stepperOn(w.db).alarm();
+};
+
+/** The Worker with the step alarm on: the namespace's objects in memory, one request each. */
+const alarmEnv = {
+  ...env,
+  COACH_STEP_ALARM: "1",
+  COACH_RUN_STEPPER: {
+    idFromName: (name: string) => ({ name }),
+    get: () => ({
+      fetch: (input: string, init?: RequestInit) =>
+        new CoachRunStepper({ storage: memoryStorage() } as unknown as DurableObjectState, env, { deps: () => deps }).fetch(new Request(input, init)),
+    }),
+  },
+} as unknown as Env;
+
 /** The step's answer, checked: its status, and the kinds of the events it wrote. */
 const expectStep = (status: string | null, kinds?: (k: string[]) => boolean) => (body: unknown) => {
   const b = body as { status: string; events: Array<{ kind: string; summary: string }> };
@@ -698,6 +743,15 @@ beforeAll(async () => {
     check: expectStep(null, (k) => k.includes("draft")),
   });
   images.set("proposed", imageOf(w.db));
+  {
+    // 9c. The same step of queued calls, run by the run's object's alarm.
+    const x = await measure("9c", "9c. the alarm: 2b.q's step (validate + propose, packet built, reviewer started)", images.get("validate-propose-queued")!, alarmStep, {
+      budget: GO_LIVE_BUDGET_MS,
+    });
+    const kinds = (await x.db.select({ kind: schema.coachRunEvents.kind }).from(schema.coachRunEvents).where(eq(schema.coachRunEvents.runId, runId))).map((e) => e.kind);
+    if (!kinds.includes("draft")) throw new Error(`9c: the alarm's step wrote no draft (${kinds.join(", ")})`);
+    x.close();
+  }
 
   // 2e. Propose alone (what the prompt asks for once the designer is confident: propose re-validates): one whole
   // document, its answer just under DOCUMENT_ANSWER_BYTES, so propose runs in the model step.
@@ -726,6 +780,21 @@ beforeAll(async () => {
     });
     images.set("nine-queued", imageOf(x.db));
     x.close();
+    // 9b. The same model step, run by the run's object's alarm: the same answer read, nine validates queued.
+    const y = await measure("9b", "9b. the alarm: 2c's model step (9 half documents streamed, none run)", images.get("read12")!, alarmStep, {
+      budget: GO_LIVE_BUDGET_MS,
+    });
+    const queued = (await stateOf(y.db, runId)).pending.length;
+    if (queued !== 9) throw new Error(`9b: the alarm's model step queued ${queued} calls, not 9`);
+    y.close();
+    // 9a. The armed step request: the run checked and read, its events after the client's last, its object armed.
+    (await measure("9a", "9a. POST /step with the step alarm on (the run read, its object armed)", images.get("read12")!,
+      (z) => z.runs.request(`/api/coach/runs/${runId}/step?afterSeq=0`, { method: "POST", headers: { Cookie: cookie } }, alarmEnv), {
+        budget: 2,
+        check: (b) => {
+          if ((b as { armed?: unknown }).armed !== true) throw new Error(`9a: not armed: ${JSON.stringify(b).slice(0, 200)}`);
+        },
+      })).close();
     (await drain("2d", (k, n) => `2d. pending step ${k}: ${n} × validate_workout of a half document`, images.get("nine-queued")!, GO_LIVE_BUDGET_MS)).close();
   }
 
@@ -1043,7 +1112,7 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "2a", "2b", "2b.q", "2e", "2c", "4b", "4c", "4d", "3", "7", "5a", "6"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "2a", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "7", "5a", "6"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
@@ -1062,7 +1131,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7"]) {
+  for (const id of ["1a", "1b", "1c", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c"]) {
     const over = KNOWN_OVER[id];
     it(
       over

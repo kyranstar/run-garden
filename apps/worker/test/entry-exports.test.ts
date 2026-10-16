@@ -14,4 +14,11 @@ describe("the Worker entry module's exports", () => {
     expect(typeof handler).toBe("object");
     expect(typeof (handler as { fetch?: unknown }).fetch).toBe("function");
   });
+
+  it("exports the coach's run stepper, the Durable Object class wrangler.toml binds (a class is a function)", () => {
+    const { CoachRunStepper } = entry as Record<string, unknown>;
+    expect(typeof CoachRunStepper).toBe("function");
+    expect(typeof (CoachRunStepper as { prototype: { alarm?: unknown } }).prototype.alarm).toBe("function");
+    expect(typeof (CoachRunStepper as { prototype: { fetch?: unknown } }).prototype.fetch).toBe("function");
+  });
 });

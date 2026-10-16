@@ -43,6 +43,18 @@ database_name = "run-garden-db"
 database_id = "00acb208-8450-4bc0-88da-6b1e75f76280"
 migrations_dir = "../../packages/database/migrations"
 
+# The coach designer's steps run in a Durable Object's alarm, one object per run (services/coach-run-stepper.ts):
+# a closed tab can't kill a step. SQLite-backed — the only kind the Workers Free plan has. The binding is declared
+# again in every environment (never inherited); the migration is inherited. Nothing reaches the object while the
+# coach designer is off here (its routes are a 404).
+[[durable_objects.bindings]]
+name = "COACH_RUN_STEPPER"
+class_name = "CoachRunStepper"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CoachRunStepper"]
+
 [triggers]
 crons = [
   "*/30 * * * *",  # calendar + provider sync
@@ -66,6 +78,9 @@ IMPORT_ENABLED = "1"
 # Program sessions on the watch (Phase 3): on since the owner approved the first live push on 2026-10-09 (plan
 # 2026-10-08-phase-3-watch.md Task 12). Only "1" is on. Staging keeps it absent; wrangler-config.test.ts pins both.
 WATCH_PUSH_ENABLED = "1"
+# The coach's steps in the run stepper's alarm (only "1" is on; anything else, the step in the client's request). On
+# here so the coach goes live with it; inert until then. Staging keeps it absent; wrangler-config.test.ts pins both.
+COACH_STEP_ALARM = "1"
 
 # ── Staging (inert: no crons, outbound fetch guarded — see docs/STAGING.md) ──
 # vars, d1_databases and triggers are declared in full; nothing here points at
@@ -89,3 +104,9 @@ migrations_dir = "../../packages/database/migrations"
 
 [env.staging.triggers]
 crons = []
+
+# The run stepper's binding (a binding is never inherited; the class's migration is). The step alarm's switch stays off
+# here: staging's coach steps in the request, as before.
+[[env.staging.durable_objects.bindings]]
+name = "COACH_RUN_STEPPER"
+class_name = "CoachRunStepper"

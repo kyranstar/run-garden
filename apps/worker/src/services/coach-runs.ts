@@ -77,8 +77,10 @@ import {
  * THE COACH DESIGNER'S RUNS AND THEIR STEP LOOP (Stage 3 spec §2; principles §6.11).
  *
  * A run (`coach_runs`) is one agent at work: the main agent, a workout's designer or its reviewer, the last two as
- * sub-runs under a parent. It advances one STEP per request, driven by the client while its screen is open (and by the
- * hourly cron for a run nobody is stepping), and everything it needs to resume lives in `state`:
+ * sub-runs under a parent. It advances one STEP per request, driven by the client while its screen is open — or, with the
+ * step alarm on (COACH_STEP_ALARM), by its object's alarm, which the client arms and keeps going while it watches
+ * (coach-run-stepper.ts) — and by the hourly cron for a run nobody is stepping; everything it needs to resume lives in
+ * `state`:
  *
  *  1. The first step builds the opening context (`deps.buildContext`) and stores it: the system blocks, sent exactly
  *     as built (the builder marks its own breakpoint on its last stable block), and the header, sent as the opening
@@ -112,15 +114,19 @@ import {
  * step adds its spend and nothing else. Its tools run only after a read that finds the claim still its own (after the
  * model call, or before a step of queued calls), and a finish makes its proposal pending in a statement guarded by the
  * same claim. A step that died (a killed invocation, a phone sent to the background mid-call) leaves the run
- * `stepping`; after COACH_RUN_STEP_STALE_MINUTES the next step takes the claim back itself (and so does the sweep),
- * counting the takeover: the third in a row with no step getting as far as its write fails the run (MAX_TAKEOVERS).
+ * `stepping`; after COACH_RUN_STEP_STALE_MINUTES the next step takes the claim back itself (and so does the sweep) — or
+ * at once, a caller that knows the claim for its own dead one (`StepOptions.ownClaim`: the run's object retrying its
+ * alarm) — counting the takeover: the third in a row with no step getting as far as its write fails the run
+ * (MAX_TAKEOVERS).
  * The stamp a step leaves is the end of the step.
  *
  * MONEY. Before every model call: the run's own ceiling (state), the step and state caps, then the weekly cap
  * (`llmBudgetStatus`, the one the whole app shares) as a hard ceiling — the call is made only when its worst case fits
  * under it. Every call is recorded in `llm_usage` by role (design_main | design_workout | design_review): a row is
  * written before the call at what a killed call could have cost — so a step killed mid-call is still counted — and set
- * to the real usage after it, or to what a broken-off answer had used, or to zero when nothing was billed. A 402
+ * to the real usage after it, or to what a broken-off answer had used, or to zero when nothing was billed. A step killed
+ * mid-call counts against its RUN's ceiling at a realistic estimate its row carries (`deadStepEstimateMicros`, at most
+ * $0.30: one dead step never stops a run by itself), and against the week at that worst case. A 402
  * records the existing out-of-credits marker and fails the run with a plain event; a call that works clears it.
  *
  * A STOP PROPOSES WHAT WAS REVIEWED (fix wave 3A, A2). A main run that stops any way but the athlete's cancel — a
@@ -389,6 +395,9 @@ export interface RunState {
   /** Times a dead step's claim on this run was taken back since a step last wrote its state (fix wave 3A, A14):
    * counted in the claim itself (or the sweep's), cleared by any step that gets as far as writing. */
   takeovers?: number;
+  /** The output tokens of this run's model calls so far, newest last (at most OUTPUTS_KEPT): their median is what a
+   * dead step's call is taken to have written (`deadStepEstimateMicros`). */
+  outputs?: number[];
   /** A reviewer's packet (design-review.ts), until its opening context is built from it. */
   packet?: string;
   /** A reviewer's draft: what its submit_review stores the review against. */
@@ -509,6 +518,7 @@ export function readRunState(text: string | null): RunState | null {
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
     ...(typeof s.textOnly === "number" ? { textOnly: s.textOnly } : {}),
     ...(typeof s.takeovers === "number" ? { takeovers: s.takeovers } : {}),
+    ...(Array.isArray(s.outputs) && s.outputs.every((n) => typeof n === "number" && Number.isFinite(n)) ? { outputs: s.outputs } : {}),
     ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
     ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
     ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds)
@@ -990,14 +1000,56 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
 }
 
 /**
+ * What a dead step's model call counts against its RUN's ceiling (the lead's ruling on the robustness pass, decision 4):
+ * a realistic estimate, never its worst case — the prompt at the cache-write rate on the run's first call, at the
+ * cache-read rate after it (the prefix was written by the call before), and the median output of the run's calls so
+ * far; with no output yet, or past it, DEAD_STEP_ESTIMATE_CAP_MICROS. Never more than the call's own worst case. One dead
+ * step can then never stop a run by itself (the smallest ceiling is $1.50). The week's ledger (`llm_usage`) keeps the
+ * worst case: the $20 cutoff stays a hard bound.
+ */
+export const DEAD_STEP_ESTIMATE_CAP_MICROS = 300_000;
+/** The outputs a run keeps for that median (`RunState.outputs`): a run makes at most 12 calls. */
+const OUTPUTS_KEPT = 12;
+
+export function deadStepEstimateMicros(
+  model: string,
+  promptTokens: number,
+  state: { calls: number; outputs?: readonly number[] },
+  worstMicros: number,
+): number {
+  const outputs = [...(state.outputs ?? [])].sort((a, b) => a - b);
+  const cap = Math.min(DEAD_STEP_ESTIMATE_CAP_MICROS, worstMicros);
+  if (outputs.length === 0) return cap;
+  const mid = outputs.length >> 1;
+  const median = outputs.length % 2 === 1 ? outputs[mid]! : Math.round((outputs[mid - 1]! + outputs[mid]!) / 2);
+  const first = state.calls === 0;
+  const estimate = messagesCostMicros(model, {
+    inputTokens: 0,
+    cacheReadTokens: first ? 0 : promptTokens,
+    cacheWriteTokens: first ? promptTokens : 0,
+    outputTokens: median,
+  });
+  return Math.min(estimate, cap);
+}
+
+/** A call's usage row, written before it with the run's estimate in its fingerprint (`run:<id>:<n>;est=<micros>`) and
+ * settled after it to `run:<id>:<n>`: a row still marked is a call whose step never came back. */
+const ESTIMATE_MARK = ";est=";
+const callFingerprint = (runId: string, n: number, estimateMicros?: number): string =>
+  `run:${runId}:${n}${estimateMicros === undefined ? "" : `${ESTIMATE_MARK}${estimateMicros}`}`;
+
+/**
  * The spend of a step that died holding a run's claim, for the update that takes that claim back: the step's usage
  * row(s) — written before its model call, stamped with the claim's own time and fingerprinted with the run — so a
- * killed call still counts toward the run's ceiling. Evaluated against the row as it was: nothing for a run that is
- * not `stepping`, so it costs no statement of its own.
+ * killed call still counts toward the run's ceiling: at the estimate its fingerprint carries while it was never settled
+ * (a call cut off with its step), at what it cost once settled (a call that answered before its step died). Evaluated
+ * against the row as it was: nothing for a run that is not `stepping`, so it costs no statement of its own.
  */
 const DEAD_STEP_SPEND = sql.raw(
   `CASE WHEN coach_runs.status = 'stepping' THEN COALESCE((` +
-    `SELECT SUM(u.cost_micros) FROM llm_usage u WHERE u.user_id = coach_runs.user_id ` +
+    `SELECT SUM(CASE WHEN instr(u.request_fingerprint, '${ESTIMATE_MARK}') > 0 ` +
+    `THEN CAST(substr(u.request_fingerprint, instr(u.request_fingerprint, '${ESTIMATE_MARK}') + ${ESTIMATE_MARK.length}) AS INTEGER) ` +
+    `ELSE u.cost_micros END) FROM llm_usage u WHERE u.user_id = coach_runs.user_id ` +
     `AND u.created_at = coach_runs.updated_at ` +
     `AND substr(u.request_fingerprint, 1, length('run:' || coach_runs.id || ':')) = 'run:' || coach_runs.id || ':'` +
     `), 0) / 1000000.0 ELSE 0 END`,
@@ -1053,6 +1105,7 @@ async function expireTree(
   root: RunNode,
   nodes: RunNode[],
   now: Date,
+  ownClaim?: string,
 ): Promise<{ took: boolean; events: CoachRunEventDto[] }> {
   const at = now.toISOString();
   const staleBefore = new Date(now.getTime() - COACH_RUN_STEP_STALE_MINUTES * 60_000).toISOString();
@@ -1074,6 +1127,7 @@ async function expireTree(
         or(
           inArray(coachRuns.status, [...RESTING]),
           and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore)),
+          ...ownDeadClaim(ownClaim),
         ),
       ),
     )
@@ -1145,11 +1199,19 @@ const OPEN_DAYS = sql.raw(
  * ten newer ones isn't shown. */
 export const CURRENT_RUN_CANDIDATES = 10;
 
+/** How long a suggestion the athlete decided comes back with its run (the robustness pass, concern 1): a reload during
+ * Approve or Decline opens on what came of it ("Added to your plan"), not on an empty composer. */
+export const CURRENT_DECIDED_MINUTES = 10;
+/** The joined proposal was decided by the athlete — approved, partly, or declined — at or after the bound time. */
+const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially_approved', 'declined') AND p.resolved_at >= ${since})`;
+
 /**
  * The run the Studio shows when it opens (Task 9): the athlete's newest live main run; else the newest main run that is
  * over whose design proposal still has an op to decide — pending, or partially approved with an op undecided, refused
  * (Task 8) or being applied (8b) — dated today or later in the athlete's zone, the proposal not past its own day (a
- * proposal the sweep hasn't expired yet is not shown as open: fix round, M8); else null. Never a rehearsal's (its lane is
+ * proposal the sweep hasn't expired yet is not shown as open: fix round, M8) — or whose proposal the athlete decided
+ * (approved, partly, declined) in the last CURRENT_DECIDED_MINUTES, so a reload during Approve opens on what came of it
+ * (the newest of these); else null. Never a rehearsal's (its lane is
  * its own: fix wave 3A, A15), never a sub-run. With its last CURRENT_RUN_EVENTS events, oldest first, and the proposal
  * it holds open. CURRENT_RUN_STATEMENTS: the pick — one statement, the proposals and the athlete's preferences (their
  * timezone: their today) read with it — then the tree and the events; the pick alone when there is none.
@@ -1159,14 +1221,15 @@ export async function currentRun(
   userId: string,
   now: Date = new Date(),
 ): Promise<{ run: CoachRunDto; events: CoachRunEventDto[]; proposal: OpenProposalDto | null } | null> {
+  const decided = decidedSince(new Date(now.getTime() - CURRENT_DECIDED_MINUTES * 60_000).toISOString());
   const candidates = (await db.all(sql`
     SELECT r.id AS id, CASE WHEN ${LIVE_ROOT} THEN 1 ELSE 0 END AS live, p.id AS proposalId, p.status AS proposalStatus,
-      p.flags AS flags, p.expires_at AS expiresAt, ${OPEN_DAYS} AS openDays,
+      p.flags AS flags, p.expires_at AS expiresAt, ${OPEN_DAYS} AS openDays, CASE WHEN ${decided} THEN 1 ELSE 0 END AS decided,
       (SELECT ${userPreferences.prefs} FROM ${userPreferences} WHERE ${userPreferences.userId} = ${userId}) AS prefs
     FROM coach_runs r LEFT JOIN coach_proposals p ON p.id = ${designProposalId("")} || r.id AND p.user_id = r.user_id
     WHERE r.user_id = ${userId} AND r.parent_id IS NULL AND r.role = 'main'
       AND coalesce(CASE WHEN json_valid(r.state) THEN json_extract(r.state, '$.settings.rehearsal') END, 0) = 0
-      AND (${LIVE_ROOT} OR ${OPEN_OP})
+      AND (${LIVE_ROOT} OR ${OPEN_OP} OR ${decided})
     ORDER BY CASE WHEN ${LIVE_ROOT} THEN 1 ELSE 0 END DESC, r.created_at DESC, r.id DESC
     LIMIT ${CURRENT_RUN_CANDIDATES}
   `)) as Array<{
@@ -1177,13 +1240,15 @@ export async function currentRun(
     flags: string | null;
     expiresAt: string | null;
     openDays: string | null;
+    decided: number;
     prefs: string | null;
   }>;
   const today = localDate(preferencesOf(candidates[0]?.prefs ?? null).timezone, now);
   /** The proposal still has an op the athlete can decide, today or later, and is not past its own day. */
   const openToday = (c: (typeof candidates)[number]): boolean =>
     !!c.proposalId && (c.expiresAt ?? "") >= today && stringsOf(c.openDays).some((d) => d >= today);
-  const pick = candidates.find((c) => Number(c.live) === 1) ?? candidates.find(openToday);
+  const decidedNow = (c: (typeof candidates)[number]): boolean => !!c.proposalId && Number(c.decided) === 1;
+  const pick = candidates.find((c) => Number(c.live) === 1) ?? candidates.find((c) => openToday(c) || decidedNow(c));
   if (!pick) return null;
   const { root, nodes } = await loadTree(db, userId, pick.id);
   if (!root) return null;
@@ -1197,7 +1262,9 @@ export async function currentRun(
     .map((r) => ({ seq: r.seq, kind: r.kind as RunEventKind, summary: r.summary, payload: r.payload ?? null, at: r.at }))
     .sort((a, b) => a.seq - b.seq);
   const proposal =
-    openToday(pick) && pick.proposalId && pick.proposalStatus ? { id: pick.proposalId, status: pick.proposalStatus, flags: stringsOf(pick.flags) } : null;
+    (openToday(pick) || decidedNow(pick)) && pick.proposalId && pick.proposalStatus
+      ? { id: pick.proposalId, status: pick.proposalStatus, flags: stringsOf(pick.flags) }
+      : null;
   return { run: runDto(root, nodes), events, proposal };
 }
 
@@ -1612,7 +1679,17 @@ export const REVIEWER_LAST_TURN_NOTE = "This is your last turn in this run. Subm
 export interface StepOptions {
   /** False: the sweep's step — run queued calls, never the model. */
   model?: boolean;
+  /**
+   * A claim the caller knows to be its own and dead: the run's object (coach-run-stepper.ts) retrying an alarm that died
+   * mid-step, which recorded the claim it took. Taken back at once — counted (A14) and its spend added, as a stale one is
+   * — never waited on for COACH_RUN_STEP_STALE_MINUTES. Any other claim keeps the stale window.
+   */
+  ownClaim?: string;
 }
+
+/** The claim condition for a dead claim the caller owns (`StepOptions.ownClaim`): none without one. */
+const ownDeadClaim = (ownClaim: string | undefined) =>
+  ownClaim === undefined ? [] : [and(eq(coachRuns.status, "stepping"), eq(coachRuns.updatedAt, ownClaim))];
 
 /**
  * Advance the run `runId` (a main run) by one step: its due run — itself, or the sub-run it waits on. `busy` when
@@ -1637,7 +1714,7 @@ export async function runStep(
   // Past its window the run expires here, waiting on a question or not, with its plain line — unless a live step
   // holds it: that step finishes its work, and the next step, answer, create or sweep expires the run.
   if (windowClosed(root.settings, root.createdAt, now)) {
-    const expired = await expireTree(db, userId, root, nodes, now);
+    const expired = await expireTree(db, userId, root, nodes, now, opts.ownClaim);
     if (!expired.took) return { kind: "busy" };
     return okStep({ status: "expired", nextDue: null, events: expired.events });
   }
@@ -1645,7 +1722,8 @@ export async function runStep(
   if (!due) return okStep({ status: root.status, nextDue: null, events: [] });
   if (due.status === "waiting_athlete") return okStep({ status: "waiting_athlete", nextDue: null, events: [] });
   const staleBefore = new Date(now.getTime() - COACH_RUN_STEP_STALE_MINUTES * 60_000).toISOString();
-  if (due.status === "stepping" && due.updatedAt >= staleBefore) return { kind: "busy" };
+  const ownDead = due.status === "stepping" && opts.ownClaim !== undefined && due.updatedAt === opts.ownClaim;
+  if (due.status === "stepping" && due.updatedAt >= staleBefore && !ownDead) return { kind: "busy" };
 
   const claimAt = now.toISOString();
   // Taking back a dead step's claim adds its spend (its pre-call usage row) to the run, so the ceiling below sees it,
@@ -1657,7 +1735,11 @@ export async function runStep(
       and(
         eq(coachRuns.id, due.id),
         eq(coachRuns.userId, userId),
-        or(inArray(coachRuns.status, [...CLAIMABLE]), and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore))),
+        or(
+          inArray(coachRuns.status, [...CLAIMABLE]),
+          and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore)),
+          ...ownDeadClaim(opts.ownClaim),
+        ),
       ),
     )
     .returning({
@@ -2047,6 +2129,8 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   // that ceiling).
   const worst = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: promptTokens, outputTokens: settings.maxTokens };
   const worstMicros = messagesCostMicros(model, worst);
+  // What it counts against the run's ceiling if its step never comes back: the realistic estimate (decision 4).
+  const deadEstimate = deadStepEstimateMicros(model, promptTokens, state, worstMicros);
   // THE WEEKLY CAP IS A HARD CEILING (fix wave 3A, A5): a call is made only when its worst case — priced as the row
   // recorded before it (round 2, A-M2), so a call admitted never records more than the cutoff — fits under the week's
   // cutoff with everything spent so far. A run's and a tree's own ceilings are checked against what has been spent, so
@@ -2075,7 +2159,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     outputTokens: worst.outputTokens,
     costMicros: worstMicros,
     cacheHit: false,
-    requestFingerprint: `run:${run.id}:${state.calls + 1}`,
+    requestFingerprint: callFingerprint(run.id, state.calls + 1, deadEstimate),
     createdAt: s.claimAt,
   });
   const result = await deps.callModel(env, {
@@ -2096,6 +2180,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
       : null;
   const spent = billed?.costMicros ?? 0;
   s.spent = spent;
+  if (billed) state.outputs = [...(state.outputs ?? []), billed.usage.outputTokens].slice(-OUTPUTS_KEPT);
 
   // ── After the call: every writer stands down for a restore; the claim may have been cancelled meanwhile ──
   const { restoring, ours } = await standing(db, userId, run.id, s.claimAt);
@@ -2112,8 +2197,9 @@ async function modelStep(s: StepCtx): Promise<Advance> {
             outputTokens: billed.usage.outputTokens,
             costMicros: billed.costMicros,
             cacheHit: billed.usage.cacheReadTokens > 0,
+            requestFingerprint: callFingerprint(run.id, state.calls + 1),
           }
-        : { inputTokens: 0, outputTokens: 0, costMicros: 0, cacheHit: false },
+        : { inputTokens: 0, outputTokens: 0, costMicros: 0, cacheHit: false, requestFingerprint: callFingerprint(run.id, state.calls + 1) },
     )
     .where(eq(llmUsage.id, usageId));
   if (!ours) return { kind: "lost", costMicros: spent };

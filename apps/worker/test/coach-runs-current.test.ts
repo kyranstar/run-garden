@@ -322,6 +322,72 @@ describe("GET /api/coach/runs/current", () => {
     expect(seqs.at(-1)).toBe(CURRENT_RUN_EVENTS + 10);
   });
 
+  it("a suggestion decided in the last 10 minutes comes back with its run — after a reload the card says what came of it", async () => {
+    const now = new Date();
+    const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
+    for (const [status, outcomes] of [
+      ["approved", ["applied"]],
+      ["declined", ["declined"]],
+      ["partially_approved", ["applied", "declined"]],
+    ] as const) {
+      await db.delete(schema.coachProposals);
+      await db.delete(schema.coachRuns);
+      const r = await run({ status: "finished" });
+      const pid = await proposal(r, status, [...outcomes]);
+      await db.update(schema.coachProposals).set({ resolvedAt: minutesAgo(9) });
+      const found = await currentRun(db, userId, now);
+      expect(found?.run.id, status).toBe(r);
+      expect(found?.proposal, status).toEqual({ id: pid, status, flags: [] });
+      // Ten minutes on, it has had its moment: the Studio opens on the composer.
+      await db.update(schema.coachProposals).set({ resolvedAt: minutesAgo(11) });
+      expect(await currentRun(db, userId, now), status).toBeNull();
+    }
+  });
+
+  it("…never a suggestion the athlete didn't decide (superseded, expired), nor a rehearsal's; the newer of a decided and an open one", async () => {
+    const now = new Date();
+    const recent = new Date(now.getTime() - 60_000).toISOString();
+    for (const status of ["superseded", "expired", "cancelled"]) {
+      await db.delete(schema.coachProposals);
+      await db.delete(schema.coachRuns);
+      const r = await run({ status: "finished" });
+      await proposal(r, status, ["declined"]);
+      await db.update(schema.coachProposals).set({ resolvedAt: recent });
+      expect(await currentRun(db, userId, now), status).toBeNull();
+    }
+    await db.delete(schema.coachProposals);
+    await db.delete(schema.coachRuns);
+    const rehearsal = await run({ status: "finished", rehearsal: true });
+    await proposal(rehearsal, "approved", ["applied"]);
+    await db.update(schema.coachProposals).set({ resolvedAt: recent });
+    expect(await currentRun(db, userId, now)).toBeNull();
+
+    await db.delete(schema.coachProposals);
+    await db.delete(schema.coachRuns);
+    const open = await run({ status: "finished" });
+    await proposal(open, "pending", [null]);
+    const decided = await run({ status: "finished" });
+    await proposal(decided, "approved", ["applied"]);
+    await db.update(schema.coachProposals).set({ resolvedAt: recent }).where(sql`id = ${designProposalId(decided)}`);
+    expect((await currentRun(db, userId, now))?.run.id).toBe(decided);
+    // Once it has had its moment, the open one is the athlete's to decide.
+    expect((await currentRun(db, userId, new Date(now.getTime() + 11 * 60_000)))?.run.id).toBe(open);
+    // A live run still comes first.
+    const live = await run({ status: "active" });
+    expect((await currentRun(db, userId, now))?.run.id).toBe(live);
+  });
+
+  it("a decided suggestion costs the read nothing more: the same pinned statements", async () => {
+    const r = await run({ status: "finished" });
+    await proposal(r, "approved", ["applied"]);
+    await db.update(schema.coachProposals).set({ resolvedAt: new Date(Date.now() - 60_000).toISOString() });
+    await events(r, 60);
+    const res = await current();
+    expect(res.body.run.id).toBe(r);
+    expect(res.body.proposal.status).toBe("approved");
+    expect(res.cost).toBe(1 + CURRENT_RUN_STATEMENTS);
+  });
+
   it("costs its pinned statements: the session, then the pick, the tree and the events", async () => {
     const live = await run({ status: "active", scope: { kind: "week" } });
     await run({ status: "active", parentId: live });

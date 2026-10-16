@@ -21,6 +21,12 @@ export interface Env {
    * orphaned runs. Absent (a 404, no sweep) in production until the owner turns it on; on in local dev and the
    * fixture stack; always on in staging. Var. */
   COACH_DESIGNER?: string;
+  /** "1" runs the coach designer's steps in a Durable Object's alarm (coach-run-stepper.ts), never in a client's
+   * request: a closed tab can't kill a step. Anything else: the step runs in `POST /api/coach/runs/:id/step` itself, as
+   * before. On in production (inert while the coach is off), local dev and the fixture stack; absent in staging. Var. */
+  COACH_STEP_ALARM?: string;
+  /** The coach's run stepper, one object per main run (`CoachRunStepper`, SQLite-backed). Absent: the switch is off. */
+  COACH_RUN_STEPPER?: DurableObjectNamespace;
 
   // Secrets
   SESSION_SECRET: string;

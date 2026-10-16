@@ -62,7 +62,8 @@ npx wrangler d1 migrations apply run-garden-db --local --persist-to "$STATE" >"$
 # No LLM, whatever .dev.vars holds (Ruling C2): fixture mode's coach wake
 # answers with a canned reply, and any other gateway call goes to a dead
 # local port instead of the real gateway. The coach designer is on
-# (COACH_DESIGNER, Stage 3); its model calls get the same canned answer.
+# (COACH_DESIGNER, Stage 3); its model calls get the same canned answer. Its
+# steps run in the run stepper's alarm (COACH_STEP_ALARM), as in production.
 #
 # Supervised: if `wrangler dev` exits on its own, its exit status goes to
 # supervisor.log and it is started again on the same state (already migrated
@@ -85,7 +86,7 @@ supervise_worker() {
     npx wrangler dev --port "$API_PORT" --persist-to "$STATE" \
       --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 --var AI_GATEWAY_BASE_URL:http://127.0.0.1:9 \
       --var "APP_URL:http://localhost:$WEB_PORT" --var "WATCH_PUSH_ENABLED:${RG_E2E_WATCH:-0}" \
-      --var COACH_DESIGNER:1 ${MODEL_VARS[@]+"${MODEL_VARS[@]}"} >>"$STATE/worker.log" 2>&1 &
+      --var COACH_DESIGNER:1 --var COACH_STEP_ALARM:1 ${MODEL_VARS[@]+"${MODEL_VARS[@]}"} >>"$STATE/worker.log" 2>&1 &
     child=$!
     wait "$child"; rc=$?
     if [ "$rc" -gt 128 ]; then rc="$rc (signal $((rc - 128)))"; fi
