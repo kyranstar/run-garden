@@ -428,10 +428,11 @@ function WorkoutItem({
     line.outcome?.status === "applied"
       ? { date: line.written?.date ?? line.date, time: line.written?.time ?? line.time, workoutId: line.outcome.workoutId, edited: line.written?.edited }
       : null;
-  // Once applied, the plan's own figures: the athlete's version's minutes after an edit (M3).
+  // Once applied, the plan's own figures: where the approve put it, and the athlete's version's minutes after an edit
+  // (M3) — never the coach's proposal beside the line that says where it went.
   const minutes = applied && line.written ? line.written.minutes : line.minutes;
   const facts = [
-    dayAndTime(line.date, line.time),
+    applied ? dayAndTime(applied.date, applied.time) : dayAndTime(line.date, line.time),
     `${minutes} min`,
     line.effort,
     line.place,
