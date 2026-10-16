@@ -394,7 +394,7 @@ function Builder({ source }: { source: BuildSource }) {
     if (Object.keys(known).length) qc.setQueryData<Record<string, CheckReading>>(readingsQuery(today), (old) => ({ ...(old ?? {}), ...known }));
   };
 
-  const { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver, startsHere } = useBuildFlows({
+  const { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver, startsHere, asNew, scheduleAsNew } = useBuildFlows({
     source,
     key,
     tplId,
@@ -761,6 +761,11 @@ function Builder({ source }: { source: BuildSource }) {
                   {status.link.label}
                 </Link>
               ) : null}
+              {status.asNew ? (
+                <button type="button" className="btn btn-small" onClick={scheduleAsNew}>
+                  Schedule it as a new workout
+                </button>
+              ) : null}
               {status.watch && !status.sent ? (
                 <button type="button" className="btn btn-small" onClick={() => setSendingWatch(status.watch!)}>
                   Send the new version
@@ -875,7 +880,7 @@ function Builder({ source }: { source: BuildSource }) {
                   {busy ? flow.what : "Start now"}
                 </button>
               ) : null}
-              {frozen ? null : isWorkout || draftRevises ? (
+              {frozen ? null : isWorkout || (draftRevises && !asNew) ? (
                 <button type="button" className="btn" disabled={(!dirty && !isDraft) || saving || busy} onClick={() => void saveChanges()}>
                   {saving ? "Saving…" : "Save changes"}
                 </button>

@@ -85,7 +85,11 @@ interface Call {
 }
 
 /** The server: the draft (null: gone), and the approve's answers in turn (an error, or the workout it made). */
-function serve(s: { draft: DesignDraftResponse | null; approve?: Array<{ error: string; status: number } | DocWorkoutDto> }): Call[] {
+function serve(s: {
+  draft: DesignDraftResponse | null;
+  /** The approve's answers in turn: an error, the op decided elsewhere meanwhile, or the workout it made. */
+  approve?: Array<{ error: string; status: number } | { settled: "applied" | "declined" } | DocWorkoutDto>;
+}): Call[] {
   const calls: Call[] = [];
   let approved = 0;
   vi.stubGlobal(
@@ -100,7 +104,14 @@ function serve(s: { draft: DesignDraftResponse | null; approve?: Array<{ error: 
         const a = s.approve?.[Math.min(approved++, (s.approve?.length ?? 1) - 1)];
         if (!a) return json({ error: "offline" }, 503);
         if ("error" in a) return json({ error: a.error }, a.status);
+        if ("settled" in a) {
+          return json({ ok: true, status: a.settled === "applied" ? "approved" : "declined", applied: [], refused: [], settled: [{ opId: body.edit.opId, outcome: a.settled, ...(a.settled === "applied" ? { workoutId: "w-theirs" } : {}) }], remaining: [] });
+        }
         return json({ ok: true, status: "partially_approved", applied: [{ opId: body.edit.opId, workout: { ...a, title: body.edit.doc.title }, warnings: [] }], refused: [], settled: [], remaining: [] });
+      }
+      // Scheduled as a new workout of the athlete's own.
+      if (method === "POST" && path === "/api/workouts") {
+        return json({ workout: workout("w-own", body.date, body.time ?? "18:00", body.doc.title), warnings: [] }, 201);
       }
       if (method === "GET" && path === "/api/plan/workouts") return json({ today: TODAY, plan: null, corosWritesEnabled: false, workouts: [] });
       return json({ error: "offline" }, 503);
@@ -231,8 +242,9 @@ describe("Edit before approve", () => {
     expect(button("Schedule…")).toBeNull();
     expect(button("Save changes")!.disabled).toBe(false);
     await click(button("Save changes"), "Save changes");
-    await until(() => text().includes("This workout changed elsewhere — reload it to see the new version."), "the refusal");
+    await until(() => text().includes("This workout changed after the coach drafted this, so the draft can't be applied."), "the refusal");
     expect(where).toBe("/studio/build/proposal/dp-1/run-a");
+    expect(button("Schedule it as a new workout")).not.toBeNull();
     await click(button("Save changes"), "Save changes");
     await until(() => where === "/studio/build/workout/w1", "the workout");
     expect(text()).toContain("Saved.");
@@ -243,7 +255,7 @@ describe("Edit before approve", () => {
   });
 
   it("a draft already approved says so and opens the workout; one gone says so", async () => {
-    serve({ draft: draftOf({ outcome: { status: "applied", at: "2026-10-11T09:00:00Z", workoutId: "w-7", rev: 1 } }) });
+    serve({ draft: draftOf({ outcome: { status: "applied", at: "2026-10-11T09:00:00Z", workoutId: "w-7", rev: 1, written: { date: TUESDAY, time: "17:30", title: "Coach's hips", minutes: 20 } } }) });
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => text().includes("This one is in your plan already."), "the line");
     expect(document.querySelector<HTMLAnchorElement>('a[href="/studio/build/workout/w-7"]')?.textContent).toBe("Open it");
@@ -251,6 +263,44 @@ describe("Edit before approve", () => {
     serve({ draft: null });
     mount("/studio/build/proposal/dp-1/run-a");
     await until(() => text().includes("That draft is gone."), "the line");
+  });
+
+  it("decided elsewhere meanwhile: the edits stay, it says so plainly, and Schedule it as a new workout makes one of the athlete's own", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    const calls = serve({ draft: draftOf(), approve: [{ settled: "applied" }] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await retype(titleField()!, "My hips");
+    await click(button("Schedule…"), "Schedule…");
+    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await until(() => text().includes("The coach's version was approved already."), "the line");
+    // Nothing lost, nowhere else.
+    expect(titleField()!.value).toBe("My hips");
+    expect(where).toBe("/studio/build/proposal/dp-1/run-a");
+    await click(button("Schedule it as a new workout"), "Schedule it as a new workout");
+    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await until(() => where === "/studio/build/workout/w-own", "the new workout");
+    const created = calls.filter((c) => c.method === "POST" && c.path === "/api/workouts");
+    expect(created.map((c) => c.body)).toEqual([expect.objectContaining({ date: TUESDAY, time: "17:30", doc: expect.objectContaining({ title: "My hips" }) })]);
+    expect(approvals(calls)).toHaveLength(1);
+  });
+
+  it("the draft's own refusals in its own words: declined elsewhere, a revision's day gone, a draft no longer open", async () => {
+    const say = async (draft: DesignDraftResponse, answer: { error: string; status: number } | { settled: "declined" }, button_: string, words: string) => {
+      serve({ draft, approve: [answer] });
+      mount("/studio/build/proposal/dp-1/run-a");
+      await until(() => titleField()?.value === "Coach's hips", "the draft");
+      await click(button(button_), button_);
+      if (button_ === "Schedule…") await click(button("Schedule", dialog("Schedule")!), "Schedule");
+      await until(() => text().includes(words), words);
+      expect(button("Schedule it as a new workout")).not.toBeNull();
+      act(() => root?.unmount());
+      host?.remove();
+    };
+    const revise = draftOf({ target: { kind: "revise", workoutId: "w1", baseRev: 3 }, date: TODAY, time: "18:00" });
+    await say(revise, { settled: "declined" }, "Save changes", "The coach's version was declined already.");
+    await say(revise, { error: "past_date", status: 422 }, "Save changes", "This workout's day has passed, so the draft can't be applied any more.");
+    await say(revise, { error: "not_pending", status: 409 }, "Save changes", "This draft isn't open any more, so it can't be approved.");
   });
 
   it("a draft the athlete declined, or a proposal no longer open, is closed", async () => {

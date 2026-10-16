@@ -487,8 +487,9 @@ export interface CoachProposalDto {
   ops: unknown[];
   /** `rejected` = the guardrails found something FATAL in it and the coach's
    * convergence retries could not fix it. Kept, inspectable, never
-   * approvable — the draft is not lost, it just cannot be applied. */
-  status: "pending" | "approved" | "declined" | "superseded" | "expired" | "rejected";
+   * approvable — the draft is not lost, it just cannot be applied. `partially_approved`: a designed proposal (Stage 3)
+   * some of whose workouts are in the plan, the rest still the athlete's to decide. */
+  status: "pending" | "partially_approved" | "approved" | "declined" | "superseded" | "expired" | "rejected";
   createdAt: string;
   expiresAt: string;
   resolvedAt?: string | null;
@@ -592,11 +593,53 @@ export interface DocWorkoutDto {
 /** Where a designed workout goes: a new workout on a day, or the next revision of a planned one. */
 export type DesignTargetDto = { kind: "new"; date: string; time?: string } | { kind: "revise"; workoutId: string; baseRev: number };
 
+/** What an approve wrote: the workout's day, time, title and minutes as the plan holds them (the athlete's, after an edit). */
+export interface DesignWrittenDto {
+  date: string;
+  /** "HH:MM". */
+  time: string;
+  title: string;
+  minutes: number;
+}
+
+/** Why a planned workout can't change (`not_editable`). */
+export type DesignNotEditableCause = "programme" | "completed" | "skipped" | "missed" | "under_way" | "unknown";
+
 /** How the athlete decided one designed workout; null while it is theirs to decide. */
 export type DesignOutcomeDto =
-  | { status: "applied"; at: string; workoutId: string; rev: number | null; edited?: true }
-  | { status: "refused"; at: string; error: string; why: string; issues?: DocIssueDto[] }
-  | { status: "declined"; at: string; reason?: string };
+  /** In the plan: as written; `edited` — the athlete's version of the draft; `moved` — on a day or time they chose. */
+  | { status: "applied"; at: string; workoutId: string; rev: number | null; written: DesignWrittenDto; edited?: true; moved?: true }
+  /** The server refused it at approval (still open): its code, plain words, and for `not_editable` its cause. */
+  | { status: "refused"; at: string; error: string; why: string; cause?: DesignNotEditableCause; issues?: DocIssueDto[] }
+  | { status: "declined"; at: string; reason?: string }
+  /** A newer plan of the coach's covers its day. */
+  | { status: "superseded"; at: string; reason: string; by: string };
+
+/** One designed workout as the manifest says it (`GET /api/coach/proposals/:id`'s `lines`): the coach's proposal, and
+ * once applied what was written. Dates are ISO, for the UI to format. */
+export interface DesignLineDto {
+  opId: string;
+  kind: "new" | "revise";
+  workoutId?: string;
+  date: string;
+  time: string | null;
+  title: string;
+  minutes: number;
+  /** "Hips and back · 24 min". */
+  summary: string;
+  /** The effort's word: "Maintain". */
+  effort: string;
+  /** The place's name. */
+  place: string;
+  /** Each part as its header says it: "Main · Superset × 3". */
+  parts: string[];
+  /** Each move with its dose: "Glute bridge 2 × 12". */
+  detail: string[];
+  reviewMean: number | null;
+  outcome: DesignOutcomeDto | null;
+  /** Applied: what the plan holds — the athlete's version and day after an edit or a move. */
+  written: (DesignWrittenDto & { summary: string; edited: boolean; moved: boolean }) | null;
+}
 
 /** `GET /api/coach/proposals/:id/ops/:opId/draft`: the op's document, as the builder loads a workout's, and where it goes. */
 export interface DesignDraftResponse {
@@ -628,11 +671,11 @@ export interface DesignApproveRequest {
  */
 export interface DesignApproveResponse {
   ok: true;
-  status: "pending" | "partially_approved" | "approved" | "declined";
-  applied: Array<{ opId: string; workout: DocWorkoutDto; warnings: DocIssueDto[]; edited?: true; watchHasOlder?: true }>;
-  refused: Array<{ opId: string; error: string; why: string; issues?: DocIssueDto[] }>;
+  status: "pending" | "partially_approved" | "approved" | "declined" | "superseded";
+  applied: Array<{ opId: string; workout: DocWorkoutDto; warnings: DocIssueDto[]; edited?: true; moved?: true; watchHasOlder?: true }>;
+  refused: Array<{ opId: string; error: string; why: string; cause?: DesignNotEditableCause; issues?: DocIssueDto[] }>;
   /** Decided before: nothing done. */
-  settled: Array<{ opId: string; outcome: "applied" | "declined"; workoutId?: string }>;
+  settled: Array<{ opId: string; outcome: "applied" | "declined" | "superseded"; workoutId?: string }>;
   remaining: string[];
 }
 
@@ -1924,9 +1967,10 @@ export const api = {
     if (res.coachDrain) void drainCoach().catch(() => undefined);
     return res;
   },
-  /** One proposal's status: what a tap whose answer never came back reads before it says anything. */
+  /** One proposal's status: what a tap whose answer never came back reads before it says anything — and for a designed
+   * proposal (with the coach designer on), its manifest `lines`, each with how its workout ended. */
   coachProposal: (proposalId: string) =>
-    get<{ id: string; status: CoachProposalDto["status"]; resolvedAt: string | null }>(`/api/coach/proposals/${proposalId}`),
+    get<{ id: string; status: CoachProposalDto["status"]; resolvedAt: string | null; lines?: DesignLineDto[] }>(`/api/coach/proposals/${proposalId}`),
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   /** A designed workout's draft, for Edit before approve (404 unless the coach designer is on). */

@@ -9,9 +9,12 @@
  *  - the place is the place's name by default-place.ts's rule — the one the document names (the athlete's, a preset,
  *    or "No equipment"), else (none named, or one deleted since) the default place;
  *  - each move is its library name and its dose as the builder's row says it (`doseSummary`);
- *  - the review's mean is the mean of its dimension scores, to one decimal (null when the review couldn't be read).
- * Each line carries how its op ended, once the athlete decided. Dates reach the UI as ISO dates for it to format; the
- * thread's receipt names a day as the coach manifest does (`dayLabel`).
+ *  - the review's mean is the set's own (design-orchestrate.ts `reviewMeanOf`: one number per review, wherever it is
+ *    shown; null when the review couldn't be read).
+ * Each line carries how its op ended, once the athlete decided — and, for an op applied, what was WRITTEN (`written`:
+ * its day, time, title and minutes as the plan holds them), which after Edit before approve is the athlete's version,
+ * never the coach's. The line's own fields stay the coach's proposal. Dates reach the UI as ISO dates for it to format;
+ * the thread's receipt names a day as the coach manifest does (`dayLabel`).
  */
 import { sql } from "drizzle-orm";
 import { locations } from "@rg/database";
@@ -20,7 +23,8 @@ import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exerci
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
-import type { DesignedOp, OpOutcome } from "./design-approve.js";
+import type { DesignedOp, OpOutcome, Written } from "./design-approve.js";
+import { reviewMeanOf } from "./design-orchestrate.js";
 import { opIdOf } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
@@ -44,10 +48,12 @@ export interface DocWorkoutLine {
   parts: string[];
   /** Each move with its dose: "Glute bridge 2 × 12". */
   detail: string[];
-  /** The review's mean score (1–5, one decimal); null when there is none to average. */
+  /** The review's mean score (1–5; `reviewMeanOf`); null when there is none to average. */
   reviewMean: number | null;
   /** How it ended; null while it is the athlete's to decide. */
   outcome: OpOutcome | null;
+  /** Applied: what the plan holds — the athlete's version and day after an edit or a move. Null otherwise. */
+  written: (Written & { summary: string; edited: boolean; moved: boolean }) | null;
 }
 
 /** A place id (or none) → the name the athlete knows it by. */
@@ -84,11 +90,11 @@ function itemLine(it: WorkoutItem): string {
   }
 }
 
-/** The mean of a review's dimension scores, to one decimal; null with none. */
-export function reviewMean(review: { scores?: Record<string, unknown> } | null | undefined): number | null {
-  const scores = Object.values(review?.scores ?? {}).filter((s): s is number => typeof s === "number" && Number.isFinite(s));
-  if (scores.length === 0) return null;
-  return Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10;
+/** What an applied op wrote, as a line says it; null for any other outcome (or an applied one recorded without it). */
+function writtenLine(o: OpOutcome | undefined): DocWorkoutLine["written"] {
+  if (o?.status !== "applied" || !o.written) return null;
+  const w = o.written;
+  return { ...w, summary: summaryLine(w.title, w.minutes), edited: !!o.edited, moved: !!o.moved };
 }
 
 /** Each op's line, in the proposal's order. */
@@ -109,8 +115,9 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
       place: placeName(doc.setting?.placeId),
       parts: doc.parts.map(partLine),
       detail: doc.parts.flatMap((p) => p.items.map(itemLine)),
-      reviewMean: reviewMean(op.review),
+      reviewMean: reviewMeanOf(op),
       outcome: op.outcome ?? null,
+      written: writtenLine(op.outcome),
     };
   });
 }

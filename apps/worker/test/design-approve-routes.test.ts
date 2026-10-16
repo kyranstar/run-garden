@@ -21,7 +21,7 @@ import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { buildDossier } from "../src/services/coach-context.js";
-import { APPROVE_FIXED, CREATE_AT_TIME_COST, CREATE_PLACED_COST, REQUEST_BUDGET, REVISE_COST, type DesignedOp } from "../src/services/design-approve.js";
+import { APPROVE_FIXED, CREATE_AT_TIME_COST, DECLINE_COST, opCostOf, REQUEST_BUDGET, REVISE_BASE, type DesignedOp } from "../src/services/design-approve.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { designProposalId, proposeWorkout, type DocWorkoutTarget } from "../src/services/design-tools/propose.js";
 import { isToolErr, type OpReview, type ToolContext } from "../src/services/design-tools/types.js";
@@ -189,8 +189,9 @@ describe("POST /api/coach/proposals/:id/approve", () => {
       chunks.push((res.json.applied as Array<{ opId: string }>).map((a) => a.opId));
       remaining = res.json.remaining as string[];
     }
-    // The worst case, pinned: two placed workouts a request.
-    expect(chunks).toEqual([opIds.slice(0, 2), opIds.slice(2, 4), opIds.slice(4, 6), opIds.slice(6)]);
+    // Pinned: each placed workout costs its day's sessions (one on most days, two on every third) plus itself, so two
+    // fit a request where both days hold one, and one alone where its day holds two.
+    expect(chunks).toEqual([opIds.slice(0, 2), opIds.slice(2, 3), opIds.slice(3, 5), opIds.slice(5, 6), opIds.slice(6)]);
     for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
     const p = await proposalOf(id);
     expect(p.status).toBe("approved");
@@ -211,7 +212,7 @@ describe("POST /api/coach/proposals/:id/approve", () => {
     const placed = await designed([{ doc: calmDoc({ title: "Placed" }), target: { kind: "new", date: today } }]);
     const one = await invoke("POST", `/api/coach/proposals/${placed.id}/approve`, {});
     expect(one.json.applied).toHaveLength(1);
-    expect(one.total).toBeLessThanOrEqual(APPROVE_FIXED + CREATE_PLACED_COST);
+    expect(one.total).toBeLessThanOrEqual(APPROVE_FIXED + opCostOf({ target: { kind: "new", date: today } }, 2));
 
     // A revision that changes the workout's length: its day's collision pass runs.
     const made = await createDocWorkout(db, userId, { date: addDays(today, 3), doc: calmDoc({ title: "Mine" }) }, { today, now: nowInstant(), prefs });
@@ -219,9 +220,40 @@ describe("POST /api/coach/proposals/:id/approve", () => {
     const rev = await designed([{ doc: longer, target: { kind: "revise", workoutId: made.workout.id, baseRev: 1 } }]);
     const revised = await invoke("POST", `/api/coach/proposals/${rev.id}/approve`, {});
     expect(revised.json.applied).toHaveLength(1);
-    expect(revised.total).toBeLessThanOrEqual(APPROVE_FIXED + REVISE_COST);
-    // Every declared cost fits a request on its own.
-    expect(APPROVE_FIXED + Math.max(CREATE_AT_TIME_COST, CREATE_PLACED_COST, REVISE_COST)).toBeLessThanOrEqual(REQUEST_BUDGET);
+    // Its day holds two runs and the workout itself.
+    expect(revised.total).toBeLessThanOrEqual(APPROVE_FIXED + REVISE_BASE + 3);
+  });
+
+  it("a pathological day — five sessions on each of two days — never puts a request past 45: the planner takes one at a time", async () => {
+    // Two days of five scheduled sessions each, close together so a sixth sends the collision pass moving them all.
+    const busy = [addDays(today, 15), addDays(today, 16)];
+    for (const [d, date] of busy.entries()) {
+      for (const [i, slot] of ["06:30", "07:00", "07:30", "12:00", "18:00"].entries()) {
+        const id = `busy-${d}-${i}`;
+        await db.insert(plannedWorkouts).values({
+          id, userId, planId: "plan-1", sourceWorkoutId: id, title: "Easy run", category: "easy", sport: "run",
+          originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: slot,
+          sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, fallbackEstimatedDurationSeconds: 3600,
+          createdAt: nowInstant(), updatedAt: nowInstant(),
+        });
+      }
+    }
+    const { id, opIds } = await designed(busy.map((date, i) => ({ doc: calmDoc({ title: `Busy ${i}` }), target: { kind: "new" as const, date } })));
+    // Each costs its day's five, itself, and the rest: two together would not fit.
+    const each = opCostOf({ target: { kind: "new", date: busy[0]! } }, 5);
+    expect(APPROVE_FIXED + 2 * each).toBeGreaterThan(REQUEST_BUDGET);
+    expect(APPROVE_FIXED + each).toBeLessThanOrEqual(REQUEST_BUDGET);
+    const chunks: string[][] = [];
+    let remaining: string[] | null = null;
+    for (let i = 0; remaining === null || remaining.length > 0; i++) {
+      if (i >= MAX_LOOP_ITERATIONS) throw new Error("the approve never finished");
+      const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, remaining ? { opIds: remaining } : {});
+      expect(res.status).toBe(200);
+      expect(res.total, `${res.total} statements`).toBeLessThanOrEqual(APPROVE_FIXED + each);
+      chunks.push((res.json.applied as Array<{ opId: string }>).map((a) => a.opId));
+      remaining = res.json.remaining as string[];
+    }
+    expect(chunks).toEqual([[opIds[0]], [opIds[1]]]);
   });
 
   it("answers what applied and what the server refused, with its reason; an unknown op id is 400 and nothing is written", async () => {
@@ -356,6 +388,16 @@ describe("POST /api/coach/proposals/:id/decline", () => {
     for (const body of [{ reason: 5 }, { opIds: ["nope"] }, { reasons: "x" }]) expect((await invoke("POST", `/api/coach/proposals/${id}/decline`, body)).status).toBe(400);
   });
 
+  it("costs at most DECLINE_COST — the session, its restore check, the proposal, the plan read, the write, the receipt", async () => {
+    const { id } = await designed([
+      { doc: calmDoc({ title: "A" }), target: { kind: "new", date: addDays(today, 2) } },
+      { doc: calmDoc({ title: "B" }), target: { kind: "new", date: addDays(today, 4) } },
+    ]);
+    const res = await invoke("POST", `/api/coach/proposals/${id}/decline`, { reason: "Not this week." });
+    expect(res.json.status).toBe("declined");
+    expect(res.total).toBeLessThanOrEqual(DECLINE_COST);
+  });
+
   it("an empty body declines the whole proposal, as the thread's decline does", async () => {
     const { id } = await designed([{ doc: calmDoc(), target: { kind: "new", date: addDays(today, 2) } }]);
     const res = await fetchNoBody(`/api/coach/proposals/${id}/decline`);
@@ -404,6 +446,17 @@ describe("the thread coach after a designed proposal is approved", () => {
     const dossier = await buildDossier(db, userId, prefs, today);
     expect(dossier.text).toContain(receipt.body);
     expect(dossier.text).toContain("no pending proposals");
+  });
+
+  it("after a partial decline, its context names only the workouts still open", async () => {
+    const { id, opIds } = await designed([
+      { doc: calmDoc({ title: "A" }), target: { kind: "new", date: addDays(today, 2) } },
+      { doc: calmDoc({ title: "B" }), target: { kind: "new", date: addDays(today, 4) } },
+    ]);
+    await invoke("POST", `/api/coach/proposals/${id}/decline`, { opIds: [opIds[0]] });
+    const line = (await buildDossier(db, userId, prefs, today)).text.split("\n").find((l) => l.includes(`pending proposal [${id}]`));
+    expect(line).toContain(`a designed workout for ${addDays(today, 4)},`);
+    expect(line).not.toContain(addDays(today, 2));
   });
 });
 

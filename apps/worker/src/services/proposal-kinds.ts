@@ -23,9 +23,13 @@ export const hasDocWorkout = (ops: unknown): boolean => Array.isArray(ops) && op
 /** A proposal's thread-coach ops: a designed workout's are left out. */
 export const coachOpsOf = (ops: unknown): CoachOp[] => (Array.isArray(ops) ? (ops.filter((o) => !isDocWorkoutOp(o)) as CoachOp[]) : []);
 
-/** The days a proposal's designed workouts are for, in order. */
+/** An op the athlete has decided — approved, declined, or superseded by a newer plan (design-approve.ts); a refused one
+ * is still theirs to decide. */
+const decided = (op: unknown): boolean => ["applied", "declined", "superseded"].includes(String((op as { outcome?: { status?: unknown } }).outcome?.status));
+
+/** The days a proposal's designed workouts still to decide are for, in order: one decided is named no more. */
 export function docWorkoutDates(ops: unknown): string[] {
   if (!Array.isArray(ops)) return [];
-  const dates = ops.filter(isDocWorkoutOp).map((o) => (o as { date?: unknown }).date);
+  const dates = ops.filter((o) => isDocWorkoutOp(o) && !decided(o)).map((o) => (o as { date?: unknown }).date);
   return [...new Set(dates.filter((d): d is string => typeof d === "string"))].sort();
 }

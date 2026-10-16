@@ -3,10 +3,12 @@
  * was made, its status (pending, approved, partially_approved, declined, superseded, expired) and the day it was
  * resolved, and what it proposed — each change's kind, day and, for a designed workout, its title and how the athlete
  * decided it (design-approve.ts): `approved` as the coach proposed it, `edited` (the athlete changed the draft, then
- * approved theirs), `declined` (with the athlete's reason, when they gave one), or `not_applied` (the server refused
- * it at approval, with why). A rehearsal (the live scenario suite) is never one of them. The title, rationale, a
- * designed workout's title and a decline's reason are others' words: marked. A page that fits, paged by key. One
- * statement: the athlete with one page of proposals.
+ * approved theirs), with `moved` and the day it went to (`plannedFor`) when the athlete chose another day or time,
+ * `declined` (with the athlete's reason, when they gave one), `not_applied` (the server refused it at approval, with
+ * why), or `superseded` (a newer plan covered its day). A rehearsal (the live scenario suite) is never one of them. The
+ * title, rationale, a designed workout's title, a decline's reason and a refusal's why (it can quote the validator, which
+ * quotes what a workout holds) are marked as others' words. A page that fits, paged by key. One statement: the athlete
+ * with one page of proposals.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -44,12 +46,19 @@ const input = z.object({ status: z.enum(STATUSES).optional(), limit: limitField(
 /** How the athlete decided a designed workout (design-approve.ts's outcome), in the tool's words; nothing while open. */
 function decided(o: Record<string, unknown>): Record<string, unknown> {
   switch (o.outcome) {
-    case "applied":
-      return { outcome: o.edited === 1 || o.edited === true ? "edited" : "approved" };
+    case "applied": {
+      const moved = (o.moved === 1 || o.moved === true) && typeof o.wDate === "string";
+      return {
+        outcome: o.edited === 1 || o.edited === true ? "edited" : "approved",
+        ...(moved ? { moved: true, plannedFor: `${o.wDate}${typeof o.wTime === "string" && o.wTime ? ` ${o.wTime}` : ""}` } : {}),
+      };
+    }
     case "declined":
       return { outcome: "declined", ...(typeof o.reason === "string" ? { reason: untrusted(o.reason) } : {}) };
     case "refused":
-      return { outcome: "not_applied", ...(typeof o.why === "string" ? { why: o.why } : {}) };
+      return { outcome: "not_applied", ...(typeof o.why === "string" ? { why: untrusted(o.why) } : {}) };
+    case "superseded":
+      return { outcome: "superseded" };
     default:
       return {};
   }
@@ -82,6 +91,7 @@ export const readProposals: DesignTool = {
             ${c.resolvedAt} as resolved_at,
             (select json_group_array(json_object('kind', ${op("$.kind")}, 'date', coalesce(${op("$.date")}, ${op("$.toDate")}),
               'title', ${op("$.doc.title")}, 'outcome', ${op("$.outcome.status")}, 'edited', ${op("$.outcome.edited")},
+              'moved', ${op("$.outcome.moved")}, 'wDate', ${op("$.outcome.written.date")}, 'wTime', ${op("$.outcome.written.time")},
               'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}

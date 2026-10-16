@@ -11,7 +11,7 @@
  *   The saves   a planned workout's changes, a template's (on the version it opened), a new template; Reload when the
  *               base changed elsewhere; Start over.
  */
-import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { useNavigate, type Location, type NavigateFunction } from "react-router-dom";
 import type { QueryClient } from "@tanstack/react-query";
 import { api, ApiError, type DocIssueDto, type DocWorkoutDto, type MeResponse, type SessionDto } from "@rg/api-client";
@@ -74,7 +74,31 @@ export interface Status {
   sent?: boolean;
   /** What the server judged that this page did not say already (a cost it could see, the frontier with its flags). */
   notes?: string[];
+  /** A coach's draft that can't be approved: the athlete's edits are kept, and scheduling them as a new workout offered. */
+  asNew?: true;
 }
+
+/**
+ * Why a coach's draft can't be approved (Edit before approve), when that is the draft's own story rather than the
+ * Studio save's — never something to try again: the plan changed since the coach drafted it, a revision's day has
+ * passed, the draft isn't open any more, or it's gone. Null for any other refusal (the Studio save's words say it).
+ */
+export function draftRefusal(e: unknown, revises: boolean): Status | null {
+  const body = e instanceof ApiError ? ((e.body ?? {}) as { error?: string }) : null;
+  if (!body) return null;
+  if (body.error === "stale_revision") return { text: "This workout changed after the coach drafted this, so the draft can't be applied.", asNew: true };
+  if (body.error === "past_date" && revises) return { text: "This workout's day has passed, so the draft can't be applied any more.", asNew: true };
+  if (body.error === "not_pending" || body.error === "not_yet") return { text: "This draft isn't open any more, so it can't be approved.", asNew: true };
+  if (e instanceof ApiError && e.status === 404) return { text: "This draft is gone.", asNew: true };
+  return null;
+}
+
+/** A coach's draft decided elsewhere meanwhile, in plain words. */
+const DECIDED_TEXT: Record<"applied" | "declined" | "superseded", string> = {
+  applied: "The coach's version was approved already.",
+  declined: "The coach's version was declined already.",
+  superseded: "A newer plan from the coach replaced this one.",
+};
 
 /** Why a write did not happen, in plain words. */
 export function refusalText(e: unknown, what: "start" | "schedule" | "save"): string {
@@ -596,20 +620,42 @@ export function useBuildFlows({
   }, [then, ready, judged, settled]);
 
   // ── Schedule, and the saves ──
+  /** The athlete took a coach's draft as a new workout of their own (it couldn't be approved): Schedule makes one. */
+  const [asNew, setAsNew] = useState(false);
+  /** Their edits, scheduled as a new workout: the Schedule sheet, and it makes one of their own. */
+  const scheduleAsNew = () => {
+    setAsNew(true);
+    setStatus(null);
+    setScheduling(true);
+  };
+  /** A coach's draft that can't be approved: the edits stay, said plainly, with scheduling them as a new workout offered. */
+  const sayDraft = (said: Status) => {
+    setScheduling(false);
+    setStatus(said);
+    focusStatus();
+  };
   /**
    * EDIT BEFORE APPROVE (Stage 3): a coach's draft saved here — Schedule (a new workout, on the day chosen) or Save
    * changes (a revision) — is that op of the proposal approved with this version, through the coach's approve, never
-   * a workout of its own; the builder is then on the workout it became. A refusal is the Studio save's own (thrown);
-   * a draft decided meanwhile goes to its workout, or says it is closed.
+   * a workout of its own; the builder is then on the workout it became. A refusal that is the Studio save's own is
+   * thrown, for the save's own words; one that is the draft's (`draftRefusal`), or a draft decided elsewhere meanwhile,
+   * keeps the athlete's edits, says so, and offers to schedule them as a new workout.
    */
   const approveDraft = async (doc: WorkoutDoc, when?: { date: string; time: string | null }): Promise<string | null> => {
     if (source.kind !== "proposal") return null;
-    const res = await api.coachDesignApprove(source.id, { edit: { opId: source.opId, doc, ...(when ?? {}) } });
+    let res: Awaited<ReturnType<typeof api.coachDesignApprove>>;
+    try {
+      res = await api.coachDesignApprove(source.id, { edit: { opId: source.opId, doc, ...(when ?? {}) } });
+    } catch (e) {
+      const said = draftRefusal(e, !when);
+      if (!said) throw e;
+      sayDraft(said);
+      return null;
+    }
     const made = res.applied.find((a) => a.opId === source.opId);
     if (!made) {
-      const before = res.settled.find((s) => s.opId === source.opId)?.workoutId;
-      if (!before) return "This draft is closed.";
-      navigate(addTargetHref({ kind: "workout", id: before }), { replace: true });
+      const before = res.settled.find((s) => s.opId === source.opId)?.outcome;
+      sayDraft({ text: before ? DECIDED_TEXT[before] : "This draft isn't open any more, so it can't be approved.", asNew: true });
       return null;
     }
     refreshPlan();
@@ -631,7 +677,7 @@ export function useBuildFlows({
     if (j.blocked) return j.blocked;
     const sent = forSchedule(j.doc, source);
     try {
-      if (source.kind === "proposal") return await approveDraft(sent, { date: when, time });
+      if (source.kind === "proposal" && !asNew) return await approveDraft(sent, { date: when, time });
       const once = await keyed("workout", cur.key);
       const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc: sent, clientId: once.clientId });
       once.landed();
@@ -643,7 +689,7 @@ export function useBuildFlows({
           .catch(() => undefined);
       }
       // A new workout or a quick start, scheduled, is that planned workout now (a second Start never makes another).
-      if (cur.key === "new" || source.kind === "quick" || source.kind === "again") adopt(res.workout, sent);
+      if (cur.key === "new" || source.kind === "quick" || source.kind === "again" || source.kind === "proposal") adopt(res.workout, sent);
       setScheduling(false);
       setStatus({ text: scheduledText(res.workout, today), link: { to: "/plan", label: "See it in Plan" }, notes: newNotes(res.warnings) });
       focusStatus();
@@ -775,5 +821,5 @@ export function useBuildFlows({
 
   // A quick start's or a template's new workout: its Start can go on with no network, and so its check's answer (R11).
   const startsHere = startsOnce(ready);
-  return { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver, startsHere };
+  return { dirtyOf, lock, startNow, skipCheck, continueToday, schedule, saveAsTemplate, saveTemplate, saveChanges, reload, startOver, startsHere, asNew, scheduleAsNew };
 }
