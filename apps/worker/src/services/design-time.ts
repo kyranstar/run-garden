@@ -24,28 +24,38 @@ export const SLOT_MIN = 15;
 export const NOW_ROUND_MIN = 5;
 const DAY_MIN = 24 * 60;
 
-/** A timezone the clock can be read in: the athlete's, or UTC when theirs doesn't read (never a thrown error). */
-function readableZone(tz: string): string {
-  try {
-    new Intl.DateTimeFormat("en-CA", { timeZone: tz });
-    return tz;
-  } catch {
-    return "UTC";
+/** Each zone's clock formatter, built once — the athlete's, or UTC's when theirs doesn't read (never a thrown error).
+ * Building one is most of reading a clock (tens of µs); propose, the approve and the manifest read it on every call.
+ * Emptied at CLOCKS_MAX, so odd spellings can't grow it without bound. */
+const CLOCKS = new Map<string, Intl.DateTimeFormat>();
+const CLOCKS_MAX = 128;
+
+function clockFormat(tz: string): Intl.DateTimeFormat {
+  let format = CLOCKS.get(tz);
+  if (!format) {
+    const options: Intl.DateTimeFormatOptions = {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    };
+    try {
+      format = new Intl.DateTimeFormat("en-CA", { ...options, timeZone: tz });
+    } catch {
+      format = new Intl.DateTimeFormat("en-CA", { ...options, timeZone: "UTC" });
+    }
+    if (CLOCKS.size >= CLOCKS_MAX) CLOCKS.clear();
+    CLOCKS.set(tz, format);
   }
+  return format;
 }
 
 /** The athlete's wall clock at `now`: their local date, and the minute of their day with its seconds as a fraction. */
 export function clockIn(tz: string, now: Date): { date: string; minutes: number } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: readableZone(tz || "UTC"),
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
+  const parts = clockFormat(tz || "UTC").formatToParts(now);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "0";
   return {
     date: `${get("year")}-${get("month")}-${get("day")}`,

@@ -106,14 +106,25 @@ export function inRange(date: LocalDate, range: DateRange): boolean {
   return date >= range.start && date <= range.end;
 }
 
+/** The formatters todayInZone has built, by the timezone asked for: building one is most of a call's cost (tens of
+ * µs), formatting with one is not. Only a zone the runtime knows is kept (an unknown one throws, as before); the
+ * cache is emptied when it reaches TODAY_FORMATS_MAX, so odd spellings can't grow it without bound. */
+const TODAY_FORMATS = new Map<string, Intl.DateTimeFormat>();
+const TODAY_FORMATS_MAX = 128;
+
 /** Current calendar date in an IANA timezone. */
 export function todayInZone(timezone: string, now: Date = new Date()): LocalDate {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+  let fmt = TODAY_FORMATS.get(timezone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    if (TODAY_FORMATS.size >= TODAY_FORMATS_MAX) TODAY_FORMATS.clear();
+    TODAY_FORMATS.set(timezone, fmt);
+  }
   return fmt.format(now); // en-CA yields YYYY-MM-DD
 }
 

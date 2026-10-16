@@ -278,13 +278,25 @@ export interface Athlete {
 
 const RESERVED_COLUMNS = new Set(["prefs", "active", "checks"]);
 
+/** Each timezone asked for, checked once: the stored one when the runtime knows it, else UTC. Checking builds a
+ * formatter (tens of µs) and every read tool reads the athlete; the answer for a name never changes. Emptied at
+ * ZONES_MAX, so odd spellings can't grow it without bound. */
+const ZONES = new Map<string, string>();
+const ZONES_MAX = 128;
+
 function zoneOrUtc(tz: string): string {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return tz;
-  } catch {
-    return "UTC";
+  let zone = ZONES.get(tz);
+  if (zone === undefined) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: tz });
+      zone = tz;
+    } catch {
+      zone = "UTC";
+    }
+    if (ZONES.size >= ZONES_MAX) ZONES.clear();
+    ZONES.set(tz, zone);
   }
+  return zone;
 }
 
 /**
