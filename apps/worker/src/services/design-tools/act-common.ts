@@ -272,7 +272,18 @@ export const WORKOUT_DOC_JSON_SCHEMA = {
         additionalProperties: false,
       },
     },
-    basedOn: { type: "object", properties: { kind: { enum: [...BASED_ON_KINDS] }, id: str(80), rev: { type: "integer", minimum: 0 } }, required: ["kind", "id"], additionalProperties: false },
+    basedOn: {
+      type: "object",
+      properties: {
+        kind: { enum: [...BASED_ON_KINDS] },
+        id: str(80),
+        rev: { type: "integer", minimum: 0 },
+        // A suggestion's op (kind proposal), as get_workout reads one back by { proposalId, opId } (Task 13's fix wave).
+        opId: str(120, "A suggestion's op, with kind proposal: the opId get_workout or read_proposals gives."),
+      },
+      required: ["kind", "id"],
+      additionalProperties: false,
+    },
     notes: { type: "string", maxLength: 500 },
   },
   required: ["title", "intent", "parts"],

@@ -332,6 +332,7 @@ describe("the document's JSON schema the model is given is the domain's", () => 
     expect(part.properties.format.enum).toEqual([...PART_FORMATS]);
     expect(part.properties.items.items.anyOf[1].properties.effort.enum).toEqual([...RUN_EFFORTS]);
     expect(S.properties.basedOn.properties.kind.enum).toEqual([...BASED_ON_KINDS]);
+    expect(Object.keys(S.properties.basedOn.properties).sort()).toEqual(["id", "kind", "opId", "rev"]);
     expect(S.properties.setting.properties.equipment.items.enum).toEqual([...EQUIPMENT_IDS]);
     expect(part.properties.items.items.anyOf.map((i: any) => i.properties.kind.const)).toEqual(["exercise", "run", "rest"]);
   });
@@ -365,7 +366,8 @@ describe("the document's JSON schema the model is given is the domain's", () => 
           ],
         },
       ],
-      basedOn: { kind: "workout", id: "w-1", rev: 2 },
+      // A suggestion's op too (Task 13's fix wave: get_workout reads one back by { proposalId, opId }).
+      basedOn: { kind: "proposal", id: "dp-1", rev: 2, opId: "op-1" },
       // Not in the schema the model is given: the tool sets it.
       source: { kind: "coach" },
       notes: "Notes.",
