@@ -451,6 +451,9 @@ describe("approve: each change through the thread coach's own applier", () => {
     const [receipt] = await db.select().from(coachMessages).where(and(eq(coachMessages.userId, rich.userId), eq(coachMessages.role, "receipt")));
     expect(receipt!.body).toMatch(/Wed 13 May · Strength — skipped/);
     expect(receipt!.body).toMatch(/Five-minute relief/);
+    // The skip resolved today: the garden's replay of it is on record for its next walk, as the thread's approve's is.
+    const [account] = await db.select().from(schema.accountState).where(eq(schema.accountState.userId, rich.userId));
+    expect(account?.gardenChangedFrom).toBe(TODAY);
   });
 
   it("shortens a watch-plan run: the length changed, and with no document no revision is written", async () => {

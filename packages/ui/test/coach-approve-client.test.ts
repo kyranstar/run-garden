@@ -97,6 +97,17 @@ describe("the coach's watch writes drain in requests of their own (ruling 3-R11)
     expect(calls.filter((c) => c === DRAIN)).toHaveLength(COACH_DRAIN_MAX);
   });
 
+  it("a designed proposal's approve drains too, when a change it applied queued a watch write (Stage 3 Task 8b)", async () => {
+    const calls = stubWorker({ [APPROVE]: [json({ ok: true, status: "approved", applied: [], changed: [], refused: [], settled: [], remaining: [], coachDrain: true })], [DRAIN]: [json({ executed: 1 }), json({ executed: 0 })] });
+    await api.coachDesignApprove("p1", {});
+    for (let i = 0; i < 5; i++) await settle();
+    expect(calls).toEqual([APPROVE, DRAIN, DRAIN]);
+    const quiet = stubWorker({ [APPROVE]: [json({ ok: true, status: "approved", applied: [], changed: [], refused: [], settled: [], remaining: [] })] });
+    await api.coachDesignApprove("p1", {});
+    await settle();
+    expect(quiet).toEqual([APPROVE]);
+  });
+
   it("an approve with nothing queued fires no drain", async () => {
     const calls = stubWorker({ [APPROVE]: [json({ ok: true })] });
     await api.coachApprove("p1");
