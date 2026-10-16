@@ -15,10 +15,12 @@ import {
   buildDesignContext,
   DESIGN_CONTEXT_STATEMENTS,
   ENFORCEMENT_LABEL,
+  gatesReadTheCheck,
   RULE_ENFORCEMENT,
   type DesignRun,
 } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS, SHARED_PROMPT, roleBlock } from "../src/services/design-prompt.js";
+import { RUN_LIMITS } from "../src/services/coach-runs.js";
 import type { SystemBlock } from "../src/services/llm-messages.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -329,7 +331,7 @@ describe("the opening message: today", () => {
     const nextN = await build({ role: "designer", scope: { kind: "next_n", n: 3 }, parentId: "run-0", brief: "b" });
     expect(nextN.header).toMatch(/Scope: one workout of a set of the next 3 workouts, designed from its brief\./);
     const reviewer = await build({ role: "reviewer", scope: { kind: "now" }, parentId: "run-2", brief: "draft", request: null });
-    expect(reviewer.header).toMatch(/Scope: one drafted workout to review; the run asked for one workout, to start now \(15:05\)\./);
+    expect(reviewer.header).toMatch(/Scope: one drafted workout to review; the run asked for one workout, to start now \(15:05\), unless the request names another day or a planned workout to change\./);
     expect(reviewer.header).toContain("The athlete gave no request: judge the draft against the scope and the brief.");
     expect((await build({ request: null })).header).toContain("The athlete gave no request: decide what fits the scope.");
   });
@@ -351,10 +353,10 @@ describe("the availability index: counts and dates, never contents", () => {
     expect(index).toMatch(/other 2 \(last 2026-03-08\)/);
     expect(index).not.toContain("A custom question!");
     expect(index).toMatch(/feedback.*2 ratings \(last 2026-03-08\)/);
-    expect(index).toMatch(/runs 1 in 30 d \(last 2026-03-08\)/);
-    expect(index).toMatch(/strength 1 in 30 d \(last 2026-03-06\)/);
-    expect(index).toMatch(/yoga 0 in 30 d \(last 2025-12-01\)/);
-    expect(index).toMatch(/logged sessions 1 in 30 d \(last 2026-03-07\)/);
+    // The watch's activities and the logged sessions apart, so "strength 1" never reads as one strength session a month.
+    expect(index).toContain(
+      "- history in 30 d: the watch's activities — runs 1 (last 2026-03-08) · strength 1 (last 2026-03-06) · yoga 0 (last 2025-12-01) · other sports none; logged sessions (strength, mobility and care, from the app or the watch) 1 (last 2026-03-07)",
+    );
     expect(index).toMatch(/plan 2026-03-10 to 2026-03-16: 3 runs, 2 programme sessions, 0 other/);
     expect(index).toMatch(/objectives: 1 active/);
     expect(index).toMatch(/HRV last 2026-03-08 \(2 d old\)/);
@@ -427,7 +429,7 @@ describe("the system blocks", () => {
     expect(system).toHaveLength(4);
     expect(system[0]!.text).toBe(SHARED_PROMPT);
     expect(system[0]!.cache_control).toEqual({ type: "ephemeral" });
-    expect(system[1]!.text).toBe(roleBlock("main"));
+    expect(system[1]!.text).toBe(roleBlock("main", RUN_LIMITS.main.maxCalls));
     expect(system[1]!.cache_control).toBeUndefined();
     expect(system[2]!.cache_control).toEqual({ type: "ephemeral" });
     expect(system[3]!.cache_control).toBeUndefined();
@@ -567,5 +569,54 @@ describe("the enforcement labels", () => {
   it("every rule a profile describes has a label, and the guides say no tool checks them", () => {
     for (const p of [TMJ]) for (const l of p.describeRules()) expect(RULE_ENFORCEMENT[l.rule], l.rule).toBeDefined();
     expect(ENFORCEMENT_LABEL).toEqual({ refused: "Refused", cost: "A cost", guide: "A guide (no tool checks this)" });
+  });
+});
+
+// ── Batch 3A end fix wave, part B (audit-3a-agent-design.md) ────────────────────────────────────────────────────────
+
+describe("3A-B — the opening message says what the code holds", () => {
+  const noCheck = `No ${TMJ.label} check is logged today: the moves its gates close stay closed until the athlete logs one.`;
+
+  it("B5: with no condition check today and a profile whose gates read it, one line says so — only on such a day", async () => {
+    expect((await build()).header).not.toContain(noCheck);
+    await db.delete(schema.conditionChecks);
+    const none = await build();
+    expect(none.header.split("\n").filter((l) => l === noCheck)).toHaveLength(1);
+    // A profile with no gate that reads the check needs no check to open one.
+    const ungated: ConditionProfile = { ...TMJ, describeRules: () => TMJ.describeRules().filter((l) => l.rule !== "allowPattern" && l.rule !== "allowRecord") };
+    expect(gatesReadTheCheck(TMJ)).toBe(true);
+    expect(gatesReadTheCheck(ungated)).toBe(false);
+  });
+
+  it("B10, B7, M14: the scope's words — another day or a planned workout may be named; the next N are new ones; the time goes in the target", async () => {
+    expect((await build({ scope: { kind: "now" } })).header).toContain(
+      "Scope: one workout, to start now (15:05), unless the request names another day or a planned workout to change.",
+    );
+    expect((await build({ scope: { kind: "next_n", n: 3 } })).header).toMatch(/Scope: the next 3 workouts — 3 new ones around what is planned, not the next 3 planned sessions — from today/);
+    const later = (await build({ scope: { kind: "later_today" } })).header;
+    expect(later).toMatch(/set it as the target's time/);
+    expect(later).not.toMatch(/and say which/);
+  });
+
+  it("M2: the athlete's units for prose; the document's fields keep their own", async () => {
+    const units = (await build()).header.split("\n").find((l) => l.startsWith("Units:"))!;
+    expect(units).toContain("Write every figure in prose — the intent, the whys, cues, notes and the finish line — in these;");
+    expect(units).toContain("the document's own fields keep theirs (load.kg, carryM, distanceM, seconds per km), with load.typed as the athlete writes it.");
+  });
+
+  it("M9: a race the profile and Settings both hold is one event — listed once, counted once", async () => {
+    const events = (await build()).header.split("\n").find((l) => l.startsWith("Events through"))!;
+    expect(events.split("2026-03-14").length - 1).toBe(1);
+    // Before the race is inside the horizon: the race and the trip after it, two events, not three.
+    const early = (await build({}, new Date("2026-03-01T20:00:00Z"))).header;
+    expect(early).toContain("- events after 2026-03-07: 2 (next 2026-03-14)");
+  });
+
+  it("B11: each role's system block states its turn budget from RUN_LIMITS", async () => {
+    for (const role of ["main", "designer", "reviewer"] as const) {
+      const ctx = await build({ role, ...(role === "main" ? {} : { parentId: "run-0", brief: "b" }) });
+      expect(ctx.system[1]!.text, role).toBe(roleBlock(role, RUN_LIMITS[role].maxCalls));
+      expect(ctx.system[1]!.text, role).toContain(`You have about ${RUN_LIMITS[role].maxCalls} turns`);
+    }
   });
 });

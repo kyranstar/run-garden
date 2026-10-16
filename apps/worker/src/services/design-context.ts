@@ -39,9 +39,13 @@ import {
   workoutTemplates,
 } from "@rg/database";
 import { EFFORT_LEVELS, addDays, daysBetween, isoWeekday, todayInZone, type ProfileDto, type UserPreferences } from "@rg/domain";
-import { EQUIPMENT, profileById, type DescribedRule, type EquipmentId, type FormatId } from "@rg/exercise-library";
+import { EQUIPMENT, profileById, type ConditionProfile, type DescribedRule, type EquipmentId, type FormatId } from "@rg/exercise-library";
 import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
 import type { Env } from "../env.js";
+// The step loop imports this module (its context builder): an import cycle, safe because RUN_LIMITS is read only when
+// a context is built, never while either module loads. (design-prompt.ts can't import the loop: the loop's review
+// module reads the prompt's rubric as it loads.)
+import { RUN_LIMITS } from "./coach-runs.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
 import { liveMemoryWhere, memoryCore } from "./memory-core.js";
@@ -433,6 +437,12 @@ const PROFILE_FORMAT_WORDS: Record<FormatId, string> = {
   straight: "straight sets", superset: "supersets", circuit: "circuits", ladder: "ladders", flow: "flows", holds: "holds",
 };
 
+/** Whether a profile has a gate that reads the day's check (a refusal it lifts only on an answered check): without a
+ * check today, what such a gate closes stays closed (validate.ts reads an unanswered check as not calm). */
+export function gatesReadTheCheck(p: Pick<ConditionProfile, "describeRules">): boolean {
+  return p.describeRules().some((l) => l.rule === "allowPattern" || l.rule === "allowRecord");
+}
+
 function conditionsSection(r: Reads): string[] {
   if (r.activeProfiles.length === 0) return ["Conditions on: none."];
   const modes = EFFORT_LEVELS.map((e) => `${e} → ${modeOfEffort(e)}`).join("; ");
@@ -454,6 +464,8 @@ function conditionsSection(r: Reads): string[] {
     const flag = p.setFlag ? `; during a session a move can be flagged "${p.setFlag.label}"` : "";
     out.push(`${p.label} — its check is "${p.check.label}", ${p.check.min}–${p.check.max}, before and after a session or on its own${flag}. Today's: ${reading}.`);
     for (const line of p.describeRules()) out.push(`- ${ENFORCEMENT_LABEL[RULE_ENFORCEMENT[line.rule]]}: ${line.text}`);
+    // Only on such a day: no check yet, and a gate that reads it (the prompt says who asks for one, and how).
+    if (!latest && gatesReadTheCheck(p)) out.push(`No ${p.label} check is logged today: the moves its gates close stay closed until the athlete logs one.`);
   }
   return out;
 }
@@ -468,10 +480,13 @@ function eventsLine(r: Reads, end: string): { line: string; beyond: string[] } {
       continue;
     }
     const when = e.end && e.end !== e.start ? `${e.start} to ${e.end}` : e.start;
-    inside.push({ start: e.start, text: `${when} ${athlete(e.label)} (${e.kind}, priority ${e.priority}${e.taper ? ", tapers" : ""})` });
+    const km = e.kind === "race" && r.profile.race?.date === e.start && r.profile.race.distanceKm ? `, ${r.profile.race.distanceKm} km` : "";
+    inside.push({ start: e.start, text: `${when} ${athlete(e.label)} (${e.kind}, priority ${e.priority}${e.taper ? ", tapers" : ""}${km})` });
   }
   const race = r.profile.race;
-  if (race && race.date >= r.today) {
+  // The race the Settings hold is the profile's own race event on that day when there is one: one event, said once.
+  const asEvent = race ? r.profile.events.some((e) => e.kind === "race" && e.start === race.date) : false;
+  if (race && race.date >= r.today && !asEvent) {
     if (race.date > end) beyond.push(race.date);
     else inside.push({ start: race.date, text: `${race.date} race day (Settings${race.distanceKm ? `, ${race.distanceKm} km` : ""})` });
   }
@@ -485,13 +500,13 @@ function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: str
   const p = r.prefs;
   switch (kind) {
     case "now":
-      return `one workout, to start now (${time})`;
+      return `one workout, to start now (${time}), unless the request names another day or a planned workout to change`;
     case "later_today":
-      return `one workout, later today — after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}) and say which`;
+      return `one workout, later today — after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}) and set it as the target's time`;
     case "week":
       return `this week — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set`;
     case "next_n":
-      return `the next ${n} workouts, from today (the plan is read through ${end}), planned as a set`;
+      return `the next ${n} workouts — ${n} new ones around what is planned, not the next ${n} planned sessions — from today (the plan is read through ${end}), planned as a set`;
   }
 }
 
@@ -546,11 +561,13 @@ function indexSection(r: Reads, end: string, beyond: string[]): string[] {
   const hist = new Map(r.history.map((h) => [h.kind, h]));
   const sport = (kind: string, word: string): string => {
     const h = hist.get(kind);
-    return h ? `${word} ${h.recent} in ${WINDOW_DAYS} d${lastWords(h.last)}` : `${word} none`;
+    return h ? `${word} ${h.recent}${lastWords(h.last)}` : `${word} none`;
   };
   const c = r.counts;
+  // The watch's activities apart from the sessions logged: "strength 1" is the watch's own record of strength work,
+  // never the count of strength sessions (audit M3).
   out.push(
-    `- history: ${[sport("run", "runs"), sport("strength", "strength"), sport("yoga", "yoga"), sport("other", "other sports")].join(" · ")} · logged sessions ${c.sessions} in ${WINDOW_DAYS} d${lastWords(c.sessionsLast)}`,
+    `- history in ${WINDOW_DAYS} d: the watch's activities — ${[sport("run", "runs"), sport("strength", "strength"), sport("yoga", "yoga"), sport("other", "other sports")].join(" · ")}; logged sessions (strength, mobility and care, from the app or the watch) ${c.sessions}${lastWords(c.sessionsLast)}`,
   );
 
   const runs = r.plan.filter((w) => RUN_CATEGORIES.has(w.category) && w.origin !== "program").length;
@@ -592,7 +609,7 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   const parts: string[] = [
     [
       `Today is ${WEEKDAYS[isoWeekday(r.today) - 1]}, ${r.today}, ${time} in ${r.tz}; ${Math.floor(left / 60)} h ${left % 60} min of the day are left.`,
-      `Units: ${distance}; weights in ${r.prefs.weightUnit}. Every figure you write uses these.`,
+      `Units: ${distance}; weights in ${r.prefs.weightUnit}. Write every figure in prose — the intent, the whys, cues, notes and the finish line — in these; the document's own fields keep theirs (load.kg, carryM, distanceM, seconds per km), with load.typed as the athlete writes it.`,
     ].join("\n"),
     conditionsSection(r).join("\n"),
     [
@@ -624,7 +641,7 @@ export async function buildDesignContext(db: Db, _env: Env, userId: string, run:
   return {
     system: [
       { type: "text", text: SHARED_PROMPT, cache_control: EPHEMERAL },
-      { type: "text", text: roleBlock(role) },
+      { type: "text", text: roleBlock(role, RUN_LIMITS[role].maxCalls) },
       { type: "text", text: profileBlock(r), cache_control: EPHEMERAL },
       { type: "text", text: memoryBlock(r) },
     ],
