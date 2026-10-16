@@ -2,15 +2,19 @@
 // foot, a tibialis raise for the shin, a calf release and ankle circles — for easing sore calves after a run, for running
 // prep, and for calf strength. Appended last, so library order breaks the engine's ties as it did before them.
 //
-// The raises and the tibialis raise have their own pattern ("ankle-raise"): a calf raise is not a squat, and counting
-// it as one would tell the coverage and the balance that squats had been done.
+// The calf raises lift the heels ("calf-raise") and the tibialis raise lifts the toes ("toe-raise"): patterns of their
+// own, since a calf raise is not a squat (counting it as one would tell the coverage and the balance that squats had been
+// done), and the two are opposite movements that pair in a superset.
+//
+// Searchable words (name, card line) keep to the calf: a stretch's card line that said "back knee" was found by "sore
+// back" and "sore knee".
 import { defineExercises } from "../define.js";
 
 export const LOWER_LEG = defineExercises([
   // ---- Stretches: the big calf muscle needs a straight knee, the deep one a bent knee ----
   {
     id: "calfStretch",
-    name: "Calf stretch · straight knee",
+    name: "Calf stretch · straight leg",
     family: "calfStretch",
     patterns: ["mobility"],
     regions: ["calves"],
@@ -28,7 +32,7 @@ export const LOWER_LEG = defineExercises([
     tags: [],
     themes: ["gentleMobility"],
     text: {
-      summary: "Hands on a wall, back knee straight and heel down: lean in to stretch the calf.",
+      summary: "Hands on a wall, rear leg straight and heel down: lean in to stretch the calf.",
       setup: [
         "Stand facing a wall with both hands on it at shoulder height.",
         "Step one foot back about a stride, toes pointing straight ahead and the heel on the floor."
@@ -48,7 +52,7 @@ export const LOWER_LEG = defineExercises([
   },
   {
     id: "soleusStretch",
-    name: "Calf stretch · bent knee",
+    name: "Calf stretch · bent leg",
     family: "calfStretch",
     patterns: ["mobility"],
     regions: ["calves", "ankles"],
@@ -67,7 +71,7 @@ export const LOWER_LEG = defineExercises([
     tags: [],
     themes: ["gentleMobility"],
     text: {
-      summary: "At a wall, sink the back knee, heel down, to stretch low in the calf near the heel.",
+      summary: "At a wall, bend the rear leg, heel down, to stretch deep in the calf just above the heel.",
       setup: [
         "Stand facing a wall with both hands on it.",
         "Step one foot back a short step, toes pointing ahead and the heel on the floor."
@@ -91,7 +95,7 @@ export const LOWER_LEG = defineExercises([
     id: "calfRaise",
     name: "Calf raise",
     family: "calfRaise",
-    patterns: ["ankle-raise"],
+    patterns: ["calf-raise"],
     regions: ["calves"],
     roles: ["accessory", "warmup"],
     position: "standing",
@@ -103,12 +107,12 @@ export const LOWER_LEG = defineExercises([
     contraction: ["isotonic"],
     muscles: { primary: ["gastrocnemius", "soleus"], secondary: ["peroneals", "feet-intrinsics"] },
     purposes: ["strength", "warmup"],
-    tags: [],
+    tags: ["running"],
     themes: [],
     providers: { coros: { key: "T1070", confidence: "exact", method: "curated" } }, // COROS: Standing Calf Raises
     harder: ["eccentricHeelDrop", "singleLegCalfRaise"],
     text: {
-      summary: "Stand tall and rise onto the balls of both feet, pause, then lower slowly.",
+      summary: "Stand tall, lift your heels to rise onto the balls of both feet, then lower slowly.",
       setup: [
         "Stand with the feet hip-width apart, toes pointing ahead.",
         "Rest your fingertips on a wall or a chair back for balance."
@@ -130,7 +134,7 @@ export const LOWER_LEG = defineExercises([
     id: "bentKneeCalfRaise",
     name: "Bent-knee calf raise",
     family: "calfRaise",
-    patterns: ["ankle-raise"],
+    patterns: ["calf-raise"],
     regions: ["calves"],
     roles: ["accessory"],
     position: "standing",
@@ -145,11 +149,13 @@ export const LOWER_LEG = defineExercises([
     purposes: ["strength"],
     tags: ["running"],
     themes: [],
+    // No harder link: the library has no single-leg or loaded bent-knee raise yet, and the straight-knee rungs (the heel
+    // drop, the single-leg raise) load the big calf muscle instead of this one. Its family offers them as other versions.
     text: {
       summary: "Knees softly bent and kept bent, rise onto the balls of both feet, then lower slowly.",
       setup: [
         "Stand with the feet hip-width apart, fingertips on a wall or a chair back.",
-        "Bend both knees a little, as if starting to sit, and keep that bend throughout."
+        "Bend both knees about 30–45°, as if starting to sit, and keep that bend throughout."
       ],
       steps: [
         "Keeping the same knee bend, rise onto the balls of the feet as high as you can.",
@@ -168,7 +174,7 @@ export const LOWER_LEG = defineExercises([
     id: "eccentricHeelDrop",
     name: "Eccentric heel drop",
     family: "calfRaise",
-    patterns: ["ankle-raise"],
+    patterns: ["calf-raise"],
     regions: ["calves", "ankles"],
     roles: ["accessory"],
     position: "standing",
@@ -197,14 +203,18 @@ export const LOWER_LEG = defineExercises([
         "Put the other foot back down and rise on both feet again.",
         "Finish the reps, then switch legs."
       ],
-      focus: ["The slow lowering is the exercise; the rise is only the way back up.", "Lower to a strong, even stretch, no further."],
+      focus: [
+        "The slow lowering is the exercise; the rise is only the way back up.",
+        "Lower to a strong, even stretch, no further.",
+        "Mild discomfort that settles by the next morning is fine; with sharp pain, or soreness at the back of the heel bone, lower only to step level or flat floor, never below."
+      ],
       mistakes: [
         "Dropping through the last part of the lowering.",
         "Rising on the working leg alone.",
         "Doing a lot the first time: slow lowering is new work, and calves new to it stay sore for a day or two."
       ],
       breathing: "Breathe in as you rise, and out slowly as you lower.",
-      conditions: { tmj: "Slow single-leg lowering invites bracing; keep a hand on the wall so the jaw can stay soft." },
+      conditions: { tmj: "The jaw braces as the heel sinks slowest, near the bottom: breathe out through soft lips there, a fingertip on the wall." },
       why: "Slow, loaded lowering toughens the calf and the tendon behind the heel for the miles they carry."
     }
   },
@@ -212,7 +222,7 @@ export const LOWER_LEG = defineExercises([
     id: "singleLegCalfRaise",
     name: "Single-leg calf raise",
     family: "calfRaise",
-    patterns: ["ankle-raise"],
+    patterns: ["calf-raise"],
     regions: ["calves", "ankles"],
     roles: ["accessory"],
     position: "standing",
@@ -253,7 +263,7 @@ export const LOWER_LEG = defineExercises([
     id: "tibialisRaise",
     name: "Tibialis raise",
     family: "tibialisRaise",
-    patterns: ["ankle-raise"],
+    patterns: ["toe-raise"],
     regions: ["ankles"],
     roles: ["accessory", "warmup"],
     equipment: { all: ["wall"] },
@@ -341,8 +351,9 @@ export const LOWER_LEG = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    // A lifted foot hangs pointed: lifting it and turning it out work against gravity; pointing it is gravity's.
-    muscles: { primary: ["tibialis", "peroneals"], secondary: ["gastrocnemius", "soleus"] },
+    // The ankle mobility family (with the knee-to-wall ankle rocks) names the muscle the move loosens: seated with the knee
+    // bent, the deep calf limits the circle's top; the shin and outer-shin muscles lengthen on its other arcs.
+    muscles: { primary: ["soleus"], secondary: ["gastrocnemius", "tibialis", "peroneals"] },
     purposes: ["mobility", "warmup", "recovery"],
     tags: ["ankle"],
     themes: ["gentleMobility"],

@@ -1,9 +1,12 @@
 // Controlled vocabularies for exercise records. Library validation rejects anything else.
 
-/** Movement patterns. `ankle-raise`: lifting the heels (a calf raise) or the toes (a tibialis raise) — neither is a squat. */
+/**
+ * Movement patterns. `calf-raise` lifts the heels, `toe-raise` lifts the toes (a tibialis raise): opposite movements, so
+ * each its own pattern (they pair in a superset), and neither a squat.
+ */
 export const PATTERNS = [
   "squat", "hinge", "lunge", "push-h", "push-v", "pull-h", "pull-v", "carry", "rotate", "anti-rotate", "anti-extend",
-  "anti-lateral", "mobility", "breathe", "release", "ankle-raise",
+  "anti-lateral", "mobility", "breathe", "release", "calf-raise", "toe-raise",
 ] as const;
 export type Pattern = (typeof PATTERNS)[number];
 
@@ -113,7 +116,7 @@ const LABELS: Record<string, string> = {
   mobility: "Mobility", breathe: "Breathing", release: "Release work",
   "push-h": "Pushing", "push-v": "Overhead pressing", "pull-h": "Rows", "pull-v": "Vertical pulling",
   "anti-rotate": "Anti-rotation", "anti-extend": "Anti-extension", "anti-lateral": "Side-bend resistance",
-  "ankle-raise": "Calf and shin raises",
+  "calf-raise": "Calf raises", "toe-raise": "Shin raises",
   "upper-back": "Upper back", "low-back": "Low back", "full-body": "Full body",
   "glute-max": "Glute max", "glute-med": "Glute med", "deep-hip-rotators": "Deep hip rotators", "hip-flexors": "Hip flexors",
   "feet-intrinsics": "Foot muscles", "rectus-abdominis": "Rectus abdominis", "transverse-abdominis": "Deep abdominals",

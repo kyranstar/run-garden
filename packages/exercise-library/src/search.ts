@@ -55,16 +55,22 @@ export function matchesFilters(ex: ExerciseRecord, f: LibraryFilters): boolean {
 const TYPO_MIN_LETTERS = 5;
 
 /**
- * What a sore area asks for: a stretch, passive work (release, massage, a relaxed hold) or recovery — what eases it,
- * never what loads it. "Sore calves" finds the calf stretches and the release, not the calf raises.
+ * What a sore or tight area asks for: a stretch, passive work (release, massage, a relaxed hold) or recovery — what
+ * eases it, never what loads it. "Sore calves" finds the calf stretches and the release, not the calf raises; "tight
+ * calves" never a hop.
  */
 const EASING: readonly string[] = ["stretch", "passive", "recovery"];
 
-/** Everyday words for the vocabulary's: a query word standing for another, or for any of a few. */
+/**
+ * Everyday words for the vocabulary's: a query word standing for another, or for any of a few. "achilles": the tendon
+ * of the calves; "lower" (back): the library's "low back" (and still every word "lower" starts).
+ */
 const ALIASES: Readonly<Record<string, string | readonly string[]>> = {
   calf: "calves", ab: "core", abs: "core", ham: "hamstrings", hammies: "hamstrings", butt: "glutes", bum: "glutes",
-  delts: "deltoids", shin: "tibialis", tspine: "thoracic", sore: EASING, soreness: EASING,
+  delts: "deltoids", shin: "tibialis", shins: "tibialis", tspine: "thoracic", achilles: "calves", lower: "low",
+  sore: EASING, soreness: EASING, tight: EASING,
 };
+const hasAlias = (w: string): boolean => Object.prototype.hasOwnProperty.call(ALIASES, w);
 
 /**
  * Where a word of the record says something, as a rank: lower is stronger. The class (tens) says which field: 0 the
@@ -143,8 +149,8 @@ const MIN_STEM = 3;
  * only after s, x, z, ch or sh ("presses" → "press", "boxes" → "box").
  */
 function variants(w: string): string[] {
-  // Own keys only: a query word like "constructor" is no alias.
-  const alias = Object.hasOwn(ALIASES, w) ? ALIASES[w] : undefined;
+  // Own keys only: a query word like "constructor" is no alias. (Not Object.hasOwn: older phones' browsers lack it.)
+  const alias = hasAlias(w) ? ALIASES[w] : undefined;
   if (alias !== undefined) return typeof alias === "string" ? [alias] : [...alias];
   const out = [w];
   const es = w.slice(0, -2);

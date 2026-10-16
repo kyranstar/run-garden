@@ -618,7 +618,7 @@ export const MOBILITY = defineExercises([
     dose: { type: "reps", range: [8, 12], secsPerRep: 3 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    tags: [],
+    tags: ["ankle"],
     contraction: ["isotonic"],
     muscles: { primary: ["soleus"], secondary: ["gastrocnemius", "tibialis"] },
     purposes: ["warmup", "mobility"],

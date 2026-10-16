@@ -95,7 +95,7 @@ export const ATHLETIC = defineExercises([
     contraction: ["plyometric"],
     muscles: { primary: ["gastrocnemius", "soleus"], secondary: ["tibialis", "feet-intrinsics", "quads"] },
     purposes: ["power", "warmup"],
-    tags: ["elastic", "ankle"],
+    tags: ["elastic", "ankle", "running"],
     themes: ["plyoIntro", "athleticBase"],
     providers: { coros: { key: "T1260", confidence: "exact", method: "curated" } }, // COROS: Straight-Leg Hops
     easier: ["snapDown"],

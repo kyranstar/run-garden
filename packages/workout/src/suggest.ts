@@ -29,7 +29,7 @@
  *     (+2), sharing the work's regions (+1), a region it leaves out (+2); with neither work nor focus, every such move,
  *     by the areas it builds. A core lift is +1 in the main part, a move that is only an accessory +1 in the accessory
  *     part (so each goes where it fits best). power: power moves, sharing the work's regions (+1), while fresh. arrive: breathing and
- *     passive moves. conditioning: conditioning moves. run: none.
+ *     settling moves (passive recovery moves), never a release or a massage. conditioning: conditioning moves. run: none.
  *   Easier first in every part: −0.5 per difficulty step above 1 (a jump's gentlest rungs first; no hard eccentric
  *   leading an accessory part).
  * - One part per move, of any kind (two warm-ups included): a move is offered in the part that wants it most (its
@@ -317,7 +317,11 @@ function scorerFor(purpose: PartPurpose, work: Work, focus: readonly string[], c
       };
 
     case "arrive":
-      return (rec) => (rec.patterns.includes("breathe") || (passiveOnly(rec) && rec.purposes.includes("recovery")) ? { fit: rec.patterns.includes("breathe") ? 2 : 1, reason: "settles your breathing before you start" } : null);
+      // Breathing, or settling into a rest (legs up, child's pose); a release or a massage belongs to the cool-down.
+      return (rec) => {
+        const settles = passiveOnly(rec) && rec.purposes.includes("recovery") && !rec.patterns.includes("release");
+        return rec.patterns.includes("breathe") || settles ? { fit: rec.patterns.includes("breathe") ? 2 : 1, reason: "settles your breathing before you start" } : null;
+      };
 
     case "conditioning":
       return (rec) => (rec.purposes.includes("conditioning") ? { fit: 1, reason: "keeps your heart rate up" } : null);

@@ -148,6 +148,30 @@ describe("one part per move: it is offered where it fits best", () => {
     expect(ids(suggest(doc, 1))).not.toContain("legsUp");
   });
 
+  it("the arrive part offers breathing and settling moves only: never a release or a massage", () => {
+    const release = new Set(EXERCISES.filter((e) => e.patterns.includes("release")).map((e) => e.id));
+    expect(release.size).toBeGreaterThan(5);
+    let offered = 0;
+    // With the breathing moves already in the workout, what is left to settle in with.
+    const breathing = EXERCISES.filter((e) => e.patterns.includes("breathe")).map((e) => ex(e.id, { holdSec: 60 }));
+    const breathed = docOf([part("arrive", "holds", breathing), part("cooldown", "holds", [])]);
+    for (const doc of [docOf([part("arrive", "holds", [])]), docOf([part("arrive", "holds", []), part("cooldown", "holds", [])]), HINGE_DAY, SQUAT_DAY, breathed]) {
+      const at = doc.parts.findIndex((p) => p.purpose === "arrive");
+      const withArrive = at >= 0 ? doc : docOf([part("arrive", "holds", []), ...doc.parts]);
+      const i = at >= 0 ? at : 0;
+      for (let seed = 1; seed <= 20; seed++) {
+        for (const x of suggest(withArrive, i, { seed })) {
+          offered += 1;
+          expect(release.has(x.libraryId), x.libraryId).toBe(false);
+          const r = rec(x.libraryId);
+          expect(r.patterns.includes("breathe") || r.contraction.every((c) => c === "passive"), x.libraryId).toBe(true);
+          expect(x.reason).toBe("settles your breathing before you start");
+        }
+      }
+    }
+    expect(offered).toBeGreaterThan(40);
+  });
+
   it("a core lift goes to the main part, a move that is only an accessory to the accessory part", () => {
     const doc = docOf([part("main", "straight", [ex("gobletSquat")]), part("accessory", "straight", [])]);
     const main = suggest(doc, 0);
@@ -193,13 +217,16 @@ describe("one part per move: it is offered where it fits best", () => {
           if (!lists[i]!.every((id) => elsewhere.includes(id))) return false;
           return suggestForPart(doc, i, LIBRARY, { ...CTX, excluded: elsewhere }).length === 0;
         };
-        const where = new Map<string, number>();
+        // Every pair of parts that list one move is judged, not only the first holder against each later one.
+        const where = new Map<string, number[]>();
         lists.forEach((list, i) => {
           for (const id of list) {
-            const first = where.get(id);
-            if (first === undefined) where.set(id, i);
-            else if (nothingElse(first) || nothingElse(i)) emptied += 1;
-            else twice.push(`${label}${doc === shell ? " (shell)" : ""}: ${id} in ${doc.parts[first]!.purpose} and ${doc.parts[i]!.purpose}`);
+            const holders = where.get(id) ?? [];
+            for (const j of holders) {
+              if (nothingElse(j) || nothingElse(i)) emptied += 1;
+              else twice.push(`${label}${doc === shell ? " (shell)" : ""}: ${id} in ${doc.parts[j]!.purpose} and ${doc.parts[i]!.purpose}`);
+            }
+            where.set(id, [...holders, i]);
           }
         });
       }

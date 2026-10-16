@@ -72,11 +72,38 @@ describe("the lower-leg records", () => {
     for (const id of LOWER_LEG) expect(rec(id).regions.some((g) => g === "calves" || g === "ankles"), id).toBe(true);
   });
 
-  test("a calf raise is not a squat: the raises have their own pattern, so they never count as squat or mobility work", () => {
-    expect(PATTERNS).toContain("ankle-raise");
-    expect(label("ankle-raise")).toBe("Calf and shin raises");
-    for (const id of [...RAISES, "tibialisRaise"]) expect(rec(id).patterns, id).toEqual(["ankle-raise"]);
-    expect(EXERCISES.filter((e) => e.patterns.includes("ankle-raise")).map((e) => e.id).sort()).toEqual([...RAISES, "tibialisRaise"].sort());
+  test("the ankle mobility family names one thing: the muscle the move loosens, the deep calf first", () => {
+    for (const id of ["ankleRocks", "ankleCircles"]) {
+      expect(rec(id).family, id).toBe("ankleMobility");
+      expect(rec(id).muscles.primary, id).toEqual(["soleus"]);
+      expect(rec(id).muscles.secondary, id).toEqual(expect.arrayContaining(["gastrocnemius", "tibialis"]));
+    }
+  });
+
+  test("a calf raise is not a squat, nor a shin raise: lifting the heels and lifting the toes are patterns of their own", () => {
+    expect(PATTERNS).toEqual(expect.arrayContaining(["calf-raise", "toe-raise"]));
+    expect(PATTERNS as readonly string[]).not.toContain("ankle-raise");
+    expect(label("calf-raise")).toBe("Calf raises");
+    expect(label("toe-raise")).toBe("Shin raises");
+    for (const id of RAISES) expect(rec(id).patterns, id).toEqual(["calf-raise"]);
+    expect(rec("tibialisRaise").patterns).toEqual(["toe-raise"]);
+    expect(EXERCISES.filter((e) => e.patterns.includes("calf-raise")).map((e) => e.id).sort()).toEqual([...RAISES].sort());
+    expect(EXERCISES.filter((e) => e.patterns.includes("toe-raise")).map((e) => e.id)).toEqual(["tibialisRaise"]);
+  });
+
+  test("the heel drop says how much discomfort is fine and what to do about pain at the heel", () => {
+    const text = Object.values(rec("eccentricHeelDrop").text).flat().join(" ");
+    expect(text).toMatch(/next morning/i);
+    expect(text).toMatch(/sharp pain/i);
+    expect(text).toMatch(/back of the heel bone/i);
+    expect(text).toMatch(/never below/i);
+    // Its jaw note is its own, not the eccentric step-down's.
+    expect(rec("eccentricHeelDrop").text.conditions.tmj).not.toBe(rec("stepDownHeelTap").text.conditions.tmj);
+    expect(rec("eccentricHeelDrop").text.conditions.tmj).toMatch(/heel/i);
+  });
+
+  test("the bent-knee raise cues its knee bend, 30–45°", () => {
+    expect([...rec("bentKneeCalfRaise").text.setup, ...rec("bentKneeCalfRaise").text.steps].join(" ")).toMatch(/30–45°/);
   });
 
   test("the calf ladder: both feet, then the eccentric heel drop, then one foot", () => {
@@ -109,9 +136,13 @@ describe("the lower-leg records", () => {
   test("tags follow the tag rule: running where running is the point, single-leg where one leg does the work", () => {
     expect(TAGS).toContain("running");
     expect(GLOSSARY.running).toBeTruthy();
-    expect(LOWER_LEG.filter((id) => rec(id).tags.includes("running")).sort()).toEqual(["bentKneeCalfRaise", "eccentricHeelDrop", "singleLegCalfRaise", "tibialisRaise"]);
+    expect(LOWER_LEG.filter((id) => rec(id).tags.includes("running")).sort()).toEqual(["bentKneeCalfRaise", "calfRaise", "eccentricHeelDrop", "singleLegCalfRaise", "tibialisRaise"]);
     expect(LOWER_LEG.filter((id) => rec(id).tags.includes("single-leg")).sort()).toEqual(["eccentricHeelDrop", "singleLegCalfRaise"]);
-    for (const id of [...STRETCHES, "calfRelease", "calfRaise"]) expect(rec(id).tags, id).toEqual([]);
+    for (const id of [...STRETCHES, "calfRelease"]) expect(rec(id).tags, id).toEqual([]);
+    // The same rule on the older lower-leg moves: the pogo hops build springy calves for running; the ankle rocks and
+    // the ankle circles are about the ankle.
+    expect(rec("pogoHop").tags).toContain("running");
+    for (const id of ["ankleRocks", "ankleCircles"]) expect(rec(id).tags, id).toContain("ankle");
   });
 
   test("the stretches and the release are cool-down moves; the raises are accessory work; nothing is a core lift", () => {
@@ -165,14 +196,46 @@ describe("searching for the lower leg", () => {
     expect(() => searchLibrary(EXERCISES, "constructor")).not.toThrow();
   });
 
-  test("everyday words reach the new moves: shin, soleus, foam roll, heel drop, ankle circles", () => {
+  test("everyday words reach the new moves: shin, soleus, foam roll, heel drop, heel raise, achilles, ankle circles", () => {
     expect(ids("tibialis")[0]).toBe("tibialisRaise");
     expect(ids("shin")).toContain("tibialisRaise");
+    expect(ids("shins")).toContain("tibialisRaise");
     expect(ids("toe raise")).toContain("tibialisRaise");
-    expect(ids("soleus").slice(0, 2).sort()).toEqual(["bentKneeCalfRaise", "soleusStretch"]);
+    // The moves that work or loosen the deep calf first, the bent-knee raise and stretch among them.
+    const soleus = searchLibrary(EXERCISES, "soleus");
+    const primary = soleus.filter((e) => e.muscles.primary.includes("soleus"));
+    expect(soleus.slice(0, primary.length)).toEqual(primary);
+    expect(primary.map((e) => e.id)).toEqual(expect.arrayContaining(["bentKneeCalfRaise", "soleusStretch"]));
     expect(ids("foam roll")).toContain("calfRelease");
     expect(ids("heel drop")[0]).toBe("eccentricHeelDrop");
+    expect(ids("heel raise")[0]).toBe("calfRaise");
+    expect(ids("achilles")).toEqual(expect.arrayContaining(["eccentricHeelDrop", ...STRETCHES]));
     expect(ids("ankle circles")[0]).toBe("ankleCircles");
-    expect(ids("running")).toEqual(expect.arrayContaining(["singleLegCalfRaise", "eccentricHeelDrop", "tibialisRaise"]));
+    expect(ids("running")).toEqual(expect.arrayContaining(["calfRaise", "singleLegCalfRaise", "eccentricHeelDrop", "tibialisRaise", "pogoHop"]));
+  });
+
+  test("\"sore\" with another area never lists the calf stretches or the release by a word of their card line", () => {
+    const calfOnly = new Set([...STRETCHES, "calfRelease"]);
+    for (const q of ["sore back", "sore low back", "sore lower back", "sore knee", "sore shins"]) {
+      const hits = searchLibrary(EXERCISES, q);
+      expect(hits.filter((e) => calfOnly.has(e.id)).map((e) => e.id), q).toEqual([]);
+      expect(hits.filter(loads).map((e) => e.id), q).toEqual([]);
+    }
+    // A sore back finds back moves first.
+    for (const q of ["sore back", "sore low back", "sore lower back"]) {
+      const first = searchLibrary(EXERCISES, q)[0];
+      expect(first?.regions.some((g) => g === "low-back" || g === "upper-back"), `${q}: ${first?.id}`).toBe(true);
+    }
+    expect(searchLibrary(EXERCISES, "sore lower back")[0]!.regions, "sore lower back").toContain("low-back");
+    // Sore shins: what eases the shin muscle, not the hip stretches whose card lines rest a shin somewhere.
+    const shins = searchLibrary(EXERCISES, "sore shins");
+    expect(shins.map((e) => e.id)).toContain("ankleCircles");
+    for (const e of shins) expect([...e.muscles.primary, ...e.muscles.secondary], e.id).toContain("tibialis");
+  });
+
+  test("\"tight calves\" lists what loosens the calves, never a hop", () => {
+    const hits = searchLibrary(EXERCISES, "tight calves");
+    expect(hits.map((e) => e.id)).toEqual(expect.arrayContaining([...STRETCHES, "calfRelease"]));
+    expect(hits.filter(loads).map((e) => e.id)).toEqual([]);
   });
 });
