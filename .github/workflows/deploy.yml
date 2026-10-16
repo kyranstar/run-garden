@@ -56,8 +56,12 @@ jobs:
 
       # The worker serves apps/web/dist via the [assets] binding, so the web
       # bundle must exist before `wrangler deploy` uploads it.
+      # VITE_STUDIO=1: the Studio tab is on in production (the owner's call, 2026-10-16). Remove it to hide the Studio
+      # again; nothing on the server changes either way (packages/ui/src/features.ts).
       - name: Build web app
         run: pnpm --filter @rg/web build
+        env:
+          VITE_STUDIO: "1"
 
       - name: Apply D1 migrations (remote)
         uses: cloudflare/wrangler-action@v3
