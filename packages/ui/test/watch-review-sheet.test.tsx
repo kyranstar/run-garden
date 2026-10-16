@@ -15,9 +15,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WatchReviewBasisDto } from "@rg/api-client";
+import { workoutDocSchema } from "@rg/domain";
 import { entryLine, WatchReviewSheet } from "../src/components/watch-review-sheet.js";
 import { offlineDb } from "../src/offline/idb.js";
-import { discardEntry, outboxEntries } from "../src/offline/outbox.js";
+import { discardEntry, enqueue, outboxEntries } from "../src/offline/outbox.js";
+import { rememberLocalStart } from "../src/offline/local-starts.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -107,6 +109,8 @@ function mount(opts: { put?: () => Response | Promise<Response>; basis?: unknown
         puts.push(JSON.parse(String(init.body)));
         return opts.put ? opts.put() : json({ status: "saved", performedId: "x", activityId: "act-1", matched: true, notes: [] });
       }
+      // The record of a quick start played offline, ahead in the outbox (R11).
+      if (path === "/api/workouts" && init?.method === "POST") return json({ workout: { id: "w-played" }, warnings: [] }, 201);
       return json({ error: "not_found" }, 404);
     }),
   );
@@ -219,6 +223,36 @@ describe("Log your session — the sheet", () => {
     expect(sent.entries[1]!.sets.map((s) => s.side)).toEqual(["left", "right"]);
     expect(sent.entries[0]!.sets.every((s) => !("from" in s))).toBe(true);
     // Sent: nothing waits in the outbox.
+    expect(await entries()).toEqual([]);
+  });
+
+  it("a quick start played offline waits ahead of it in the outbox: Save records that one too, never stalls behind it (R11 fix round 1)", async () => {
+    const db = await offlineDb();
+    const doc = workoutDocSchema.parse({
+      version: 1,
+      title: "Desk reset",
+      intent: { summary: "Undo the desk.", goals: [], focus: [], effort: "maintain" },
+      parts: [{ purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "bridge", dose: { sets: 1, reps: 10 } }] }],
+      source: { kind: "studio", ref: "quick_start:desk_reset" },
+    });
+    await rememberLocalStart(db, { localId: "local:c1", clientId: "c1", userId: USER, kind: "quick_start:desk_reset", title: "Desk reset", doc, date: "2026-10-08", time: "07:00", createdAt: 1 });
+    await enqueue(
+      db,
+      {
+        id: "p-played", source: "app", sourceRef: null, workoutId: "local:c1", buildId: "local:c1", localDate: "2026-10-08",
+        startedAt: "2026-10-08T07:00:00.000Z", endedAt: "2026-10-08T07:08:00.000Z", seconds: 480, plannedSeconds: 480, minutes: 8,
+        mode: "consistent", theme: null, locationId: "home", blockRef: null, blockNumber: null, completed: true, stepsTotal: 1, stepsDone: 1,
+        note: null, newMove: null, entries: [],
+      },
+      USER,
+      1,
+    );
+    const { puts, onSaved } = mount();
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    await click("Save");
+    await until(() => onSaved.mock.calls.length === 1, "onSaved");
+    expect(onSaved).toHaveBeenCalledWith("saved");
+    expect(puts.map((p) => (p as { workoutId: string }).workoutId)).toEqual(["w-played", SLOT]);
     expect(await entries()).toEqual([]);
   });
 

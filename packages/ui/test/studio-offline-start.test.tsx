@@ -257,6 +257,84 @@ describe("Start now of a template with no network (R11)", () => {
   });
 });
 
+/** A session the server built (and, once started, started): enough for Start to lock it and the player to open. */
+function builtSession(id: string, contentState: "built" | "started" = "built") {
+  return {
+    workoutId: id, date: TODAY, contentState, locked: contentState === "started", checks: {}, profiles: [],
+    choices: { modes: [], themes: [], locations: [] },
+    view: { mode: "consistent", proposedMode: "consistent", modeReasons: [], theme: null, proposedTheme: null, themeReasons: [], minutes: 8, location: { id: "home", name: "Home", equipment: [], implements: {} }, block: null, newMove: null },
+    build: { buildId: "b1", version: 1, date: TODAY, steps: [], items: [], exercises: {}, alternatives: {}, targets: {}, newMove: null, params: { checks: {}, overrides: {}, swaps: {} }, fromDoc: { rev: 1, swaps: [], blocked: [] } },
+    watch: null,
+  };
+}
+
+/**
+ * The network gone at Start and at the check's Save, then back before the create's retry. `checkAnswer` is what the
+ * server says to the kept answer's send once online (a 500: it fails).
+ */
+function flapping(opts: { checkAnswer?: number } = {}): Array<Call & { body?: unknown }> {
+  const calls: Array<Call & { body?: unknown }> = [];
+  let online = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const path = String(input).split("?")[0]!;
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ method, path, body });
+      if (!online) {
+        // The check's Save is the last thing to fail: the network is back after it.
+        if (method === "POST" && path === "/api/conditions/checks") online = true;
+        throw new TypeError("Failed to fetch");
+      }
+      if (method === "POST" && path === "/api/workouts") {
+        return json({ workout: { id: "w-new", date: body.date, time: body.time, title: body.doc.title, intentSummary: "", category: "mobility", sport: "mobility", origin: "studio", contentState: "outline", completionState: "scheduled", docRev: 1, minutes: 8 }, warnings: [] }, 201);
+      }
+      if (method === "POST" && path === "/api/conditions/checks") {
+        return opts.checkAnswer ? json({ error: "down" }, opts.checkAnswer) : json({ check: { ...body, date: TODAY } });
+      }
+      if (method === "POST" && path === "/api/sessions/w-new/build") return json(builtSession("w-new"));
+      if (method === "POST" && path === "/api/sessions/w-new/start") return json(builtSession("w-new", "started"));
+      return json({ error: "not_found" }, 404);
+    }),
+  );
+  return calls;
+}
+
+describe("an answer kept offline, the network back before the create (R11 fix round 1)", () => {
+  it("the create lands online: the kept answer is sent as an ordinary check before the build — the server gates and builds on it", async () => {
+    const calls = flapping();
+    mount("/studio/build/quick/desk_reset", { today: todayDto(null) });
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    const sheet = dialog("Jaw / head")!;
+    await click(buttons(sheet).find((b) => b.textContent === "3"), "3");
+    await click(button("Save", sheet), "Save");
+    await until(() => where === "/session/w-new", "the player, on the server's workout");
+    expect(posts(calls)).toEqual(["/api/workouts", "/api/conditions/checks", "/api/workouts", "/api/conditions/checks", "/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+    expect(calls.filter((c) => c.path === "/api/conditions/checks").map((c) => c.body)).toEqual([
+      { profileId: "tmj", value: 3, feelingOff: false },
+      { profileId: "tmj", value: 3, feelingOff: false },
+    ]);
+    // Online all the way from the create: nothing started on the device.
+    expect(await localStarts(await offlineDb(), ME)).toEqual([]);
+  });
+
+  it("its send fails: the build goes on, the day judged unanswered", async () => {
+    const calls = flapping({ checkAnswer: 500 });
+    mount("/studio/build/quick/desk_reset", { today: todayDto(null) });
+    await startable();
+    await click(startButton(), "Start now");
+    await until(() => !!dialog("Jaw / head"), "the check");
+    const sheet = dialog("Jaw / head")!;
+    await click(buttons(sheet).find((b) => b.textContent === "3"), "3");
+    await click(button("Save", sheet), "Save");
+    await until(() => where === "/session/w-new", "the player");
+    expect(posts(calls).slice(-3)).toEqual(["/api/conditions/checks", "/api/sessions/w-new/build", "/api/sessions/w-new/start"]);
+  });
+});
+
 describe("what an offline start needs kept on the device (R11 fix round 1)", () => {
   it("the condition profiles unknown (neither the library nor Today read kept): it needs a connection — never judged with no profiles", async () => {
     const calls = offline();

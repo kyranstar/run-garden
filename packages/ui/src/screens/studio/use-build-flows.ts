@@ -180,6 +180,12 @@ export interface BuildFlowsIn {
    * judged by no profile's rules, so an offline Start is refused (R11 fix round 1).
    */
   profilesKnown: boolean;
+  /**
+   * Answers kept offline on this page, not recorded (R11 fix round 1). Should a Start go on ONLINE after all (the
+   * network back before its create), they are sent as ordinary checks before the build, so the server gates and builds
+   * on them; one whose send fails leaves the day unanswered there.
+   */
+  keptOffline: MutableRefObject<Map<string, CheckReading>>;
 }
 
 /** A zone this runtime can read a date in: the account's day, never the device's guess (R11 fix round 1). */
@@ -240,6 +246,7 @@ export function useBuildFlows({
   recorded,
   place,
   profilesKnown,
+  keptOffline,
 }: BuildFlowsIn) {
   /** Changed since it was saved: the two read alike through the schema (its key order, its empty parts dropped). */
   const dirtyOf = (l: Loaded | null): boolean =>
@@ -324,6 +331,21 @@ export function useBuildFlows({
   };
   /** The server's warnings at a create whose check was offered before its build: shown with that build. */
   const heldNotes = useRef<string[]>([]);
+  /**
+   * A Start going on online with answers kept offline on this page (the network back before its create; R11 fix round
+   * 1): each is sent as an ordinary check before the build, so the server gates and builds on it — never attached to
+   * the session's save. One whose send fails stays kept, and the server judges the day unanswered.
+   */
+  const sendKept = async (): Promise<void> => {
+    let sent = false;
+    for (const [profileId, r] of [...keptOffline.current]) {
+      const res = await api.recordCheck({ profileId, value: r.pre, feelingOff: r.feelingOff }).catch(() => null);
+      if (!res?.check) continue;
+      keptOffline.current.delete(profileId);
+      sent = true;
+    }
+    if (sent) void qc.invalidateQueries({ queryKey: ["today"] });
+  };
   const runStart = async (): Promise<void> => {
     const cur = live.current;
     const doc0 = cur ? toProposable(cur.editor.doc) : null;
@@ -374,6 +396,7 @@ export function useBuildFlows({
         }
       }
       refreshPlan();
+      await sendKept();
       const built = await api.buildSession(id, {});
       noteChecks(built);
       const info = built.build?.fromDoc;
@@ -484,6 +507,7 @@ export function useBuildFlows({
     }
     setFlow({ step: "busy", what: "Starting…" });
     try {
+      await sendKept();
       const built = await api.buildSession(w.id, {});
       noteChecks(built);
       const info = built.build?.fromDoc;

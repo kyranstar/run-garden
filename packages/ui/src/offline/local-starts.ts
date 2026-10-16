@@ -35,6 +35,11 @@ export interface LocalStart {
   createdAt: number;
   /** The workout the server recorded for it, once it has. */
   workoutId?: string;
+  /**
+   * That workout was today's same start, still to finish (409 `started_today`), not one recorded for this: another
+   * device's, maybe — which may save first (fix round 1: then this session was not saved, the workout done that day).
+   */
+  joined?: true;
 }
 
 export function rememberLocalStart(db: OfflineDb, start: LocalStart): Promise<void> {
@@ -93,6 +98,7 @@ export async function recordedWorkoutId(db: OfflineDb, api: LocalStartApi, local
   if (!start) throw new LocalStartMissingError(localId);
   if (start.workoutId) return start.workoutId;
   let id: string;
+  let joined = false;
   try {
     const made = await api.createWorkout({ date: start.date, time: start.time, doc: start.doc, clientId: start.clientId, startNow: true, playedOffline: true });
     id = made.workout.id;
@@ -101,8 +107,9 @@ export async function recordedWorkoutId(db: OfflineDb, api: LocalStartApi, local
     const held = e instanceof ApiError && e.status === 409 && body?.error === "started_today" ? body.workout?.id : undefined;
     if (!held) throw e;
     id = held;
+    joined = true;
   }
-  await db.update<LocalStart>("starts", localId, (current) => (current ? { ...current, workoutId: id } : current));
+  await db.update<LocalStart>("starts", localId, (current) => (current ? { ...current, workoutId: id, ...(joined ? { joined: true as const } : {}) } : current));
   return id;
 }
 

@@ -143,8 +143,11 @@ export function ConditionCheckSheet({
 }: {
   condition: ConditionViewDto & { today: TodayReading | null };
   onClose: () => void;
-  /** The check as recorded, before the sheet closes (the Studio's builder judges with it at once). */
-  onSaved?: (check: ConditionCheckDto) => void;
+  /**
+   * The check as recorded, before the sheet closes (the Studio's builder judges with it at once). `kept`: not recorded —
+   * kept offline (`keepOffline`), so the builder can still send it should its Start go on online (R11 fix round 1).
+   */
+  onSaved?: (check: ConditionCheckDto, kept?: { offline: true }) => void;
   /** Offered before a Start (the builder's, CUJ R5): one tap goes on without it. Absent, there is no Skip. */
   onSkip?: () => void;
   /**
@@ -164,7 +167,7 @@ export function ConditionCheckSheet({
         if (!keepOffline || e instanceof ApiError) throw e;
         // The account's day, as the server would have dated it (CUJ J34).
         const date = accountTodayGuess(qc.getQueryData<{ today?: string }>(["today"])?.today, qc.getQueryData<{ prefs?: { timezone?: string } }>(["settings"])?.prefs?.timezone);
-        return { check: { profileId: condition.profileId, date, value, feelingOff: off } };
+        return { check: { profileId: condition.profileId, date, value, feelingOff: off }, kept: true as const };
       }
     },
     onSuccess: (res) => {
@@ -173,7 +176,7 @@ export function ConditionCheckSheet({
       // The chip reads it from Today; a session built today reads it as its pre-check.
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["session"] });
-      onSaved?.(res.check);
+      onSaved?.(res.check, "kept" in res ? { offline: true } : undefined);
       onClose();
     },
   });

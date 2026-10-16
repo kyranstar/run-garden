@@ -28,7 +28,7 @@
 import { ApiError, type CreateDocWorkoutRequest } from "@rg/api-client";
 import { canonicalJson, performedSessionSaveSchema, type PerformedSessionWire, type PerformedSessionWireInput } from "@rg/domain";
 import type { OfflineDb } from "./idb.js";
-import { forgetLocalStart, isLocalId, localStarts, LocalStartMissingError, onTheServer } from "./local-starts.js";
+import { forgetLocalStart, isLocalId, loadLocalStart, localStarts, LocalStartMissingError, onTheServer } from "./local-starts.js";
 import { drainUnstarts } from "./unstarts.js";
 
 export type OutboxState = "pending" | "conflict" | "failed";
@@ -178,10 +178,16 @@ async function forgetUnneededStart(db: OfflineDb, workoutId: string | null): Pro
  * saved first — on another device (`slot_done`, ruling 2b-R18). Either way the server refuses it every time.
  */
 export const SLOT_DONE = "slot_done";
+/**
+ * A session played offline (R11) that joined today's same start, still to finish (409 `started_today` at its create) —
+ * another device's — which saved first: not saved here, because that workout was already done that day (fix round 1).
+ * Refused every time, like `slot_done`; said plainly in Settings → Data, with a way to see the workout.
+ */
+export const DONE_TODAY = "done_today";
 
 type Outcome =
   | { kind: "saved" }
-  | { kind: "conflict"; why: "conflict" | typeof SLOT_DONE }
+  | { kind: "conflict"; why: "conflict" | typeof SLOT_DONE | typeof DONE_TODAY }
   | { kind: "failed"; error: string }
   | { kind: "transient"; error: string };
 
@@ -235,7 +241,12 @@ async function send(db: OfflineDb, api: OutboxApi, entry: OutboxEntry): Promise<
     await api.savePerformed(entry.performedId, payload);
     return { kind: "saved" };
   } catch (e) {
-    return classify(e);
+    const outcome = classify(e);
+    // Played offline, joined to another device's start of the same workout, which saved first: done that day already.
+    if (outcome.kind === "conflict" && outcome.why === SLOT_DONE && isLocalId(entry.payload.workoutId)) {
+      if ((await loadLocalStart(db, entry.payload.workoutId).catch(() => undefined))?.joined) return { kind: "conflict", why: DONE_TODAY };
+    }
+    return outcome;
   }
 }
 

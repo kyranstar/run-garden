@@ -21,7 +21,7 @@ import {
   unfinishedLocalStart,
   type LocalStart,
 } from "../../src/offline/local-starts.js";
-import { discardAccountEntries, discardEntry, drain, enqueue, entryActions, outboxEntries, retryEntry, type OutboxApi } from "../../src/offline/outbox.js";
+import { discardAccountEntries, discardEntry, DONE_TODAY, drain, enqueue, entryActions, outboxEntries, retryEntry, type OutboxApi } from "../../src/offline/outbox.js";
 import { queuedUnstarts } from "../../src/offline/unstarts.js";
 import { discardSession, saveSession } from "../../src/player/save.js";
 import { loadExtras, saveExtras } from "../../src/player/stored.js";
@@ -82,7 +82,7 @@ const save = (id: string, over: Partial<PerformedSessionWireInput> = {}): Perfor
 });
 
 type CreateOutcome = "ok" | "offline" | "started_today" | 422 | 500;
-type SaveOutcome = "ok" | "offline" | 422;
+type SaveOutcome = "ok" | "offline" | "slot_done" | 422;
 
 /** A server double: creates and saves answered from scripts, every call recorded. */
 function server(script: { create?: CreateOutcome[]; save?: SaveOutcome[] } = {}) {
@@ -103,6 +103,7 @@ function server(script: { create?: CreateOutcome[]; save?: SaveOutcome[] } = {})
       const next = script.save?.shift() ?? "ok";
       if (next === "ok") return { status: "saved" };
       if (next === "offline") throw new TypeError("Failed to fetch");
+      if (next === "slot_done") throw new ApiError(409, { error: "slot_done" });
       throw new ApiError(422, { error: "invalid_save" });
     }),
   };
@@ -183,6 +184,30 @@ describe("the outbox records a start made offline, then its session (R11)", () =
     const { api, saves } = server({ create: ["started_today"] });
     expect(await drain(db, api, { userId: ME })).toMatchObject({ saved: 1 });
     expect(saves.map((s) => s.workoutId)).toEqual(["w-today"]);
+    db.close();
+  });
+
+  it("joined today's start from another device, which saved first (409 slot_done): a conflict that says the workout was already done that day — Discard only (fix round 1)", async () => {
+    const db = await freshDb();
+    await rememberLocalStart(db, start());
+    await enqueue(db, save("p1"), ME, 2000);
+    const { api } = server({ create: ["started_today"], save: ["slot_done"] });
+    expect(await drain(db, api, { userId: ME })).toMatchObject({ saved: 0, conflicts: 1 });
+    const [left] = await outboxEntries(db);
+    expect(left).toMatchObject({ state: "conflict", lastError: DONE_TODAY });
+    expect(entryActions(left!)).toEqual(["discard"]);
+    // The workout it joined is kept with the start: what "See it" opens.
+    expect(await loadLocalStart(db, LOCAL)).toMatchObject({ workoutId: "w-today", joined: true });
+    db.close();
+  });
+
+  it("its own workout (none joined) refused as slot_done stays the slot's ordinary conflict", async () => {
+    const db = await freshDb();
+    await rememberLocalStart(db, start());
+    await enqueue(db, save("p1"), ME, 2000);
+    const { api } = server({ save: ["slot_done"] });
+    await drain(db, api, { userId: ME });
+    expect((await outboxEntries(db))[0]).toMatchObject({ state: "conflict", lastError: "slot_done" });
     db.close();
   });
 

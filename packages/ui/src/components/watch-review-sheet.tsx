@@ -202,7 +202,8 @@ export function WatchReviewSheet({
       if (db) {
         const userId = qc.getQueryData<MeResponse>(["me"])?.userId ?? (await meWithOfflineFallback().catch(() => null))?.userId ?? null;
         if (!userId) throw new Error("no signed-in account to save for");
-        result = await saveSession(db, wire, { savePerformed: api.savePerformed }, userId, {
+        // With the create: a quick start played offline waiting ahead of it is recorded too, never stalls it (R11).
+        result = await saveSession(db, wire, { savePerformed: api.savePerformed, createWorkout: api.createWorkout }, userId, {
           waitMs: saveWaitMs,
           onDrained: (r) => afterDrain(qc, r),
         });

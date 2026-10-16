@@ -358,8 +358,13 @@ function Builder({ source }: { source: BuildSource }) {
     }
   };
   const onCheck = (profileId: string) => setAsking({ profileId, then: null });
-  const onCheckSaved = (c: ConditionCheckDto) => {
-    qc.setQueryData<Record<string, CheckReading>>(readingsQuery(today), (old) => ({ ...(old ?? {}), [c.profileId]: { pre: c.value, post: null, feelingOff: c.feelingOff } }));
+  /** Answers kept offline, not recorded (R11 fix round 1): sent as ordinary checks should Start go on online. */
+  const keptOffline = useRef(new Map<string, CheckReading>());
+  const onCheckSaved = (c: ConditionCheckDto, kept?: { offline: true }) => {
+    const reading = { pre: c.value, post: null, feelingOff: c.feelingOff };
+    qc.setQueryData<Record<string, CheckReading>>(readingsQuery(today), (old) => ({ ...(old ?? {}), [c.profileId]: reading }));
+    if (kept) keptOffline.current.set(c.profileId, reading);
+    else keptOffline.current.delete(c.profileId);
     if (asking?.then === "start") setResume(true);
   };
   /** The server's readings for the day (a session read): kept, so this page judges with what the server knows. */
@@ -407,6 +412,7 @@ function Builder({ source }: { source: BuildSource }) {
     recorded,
     place: here,
     profilesKnown,
+    keptOffline,
   });
 
   // ── Not ready ──
