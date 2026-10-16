@@ -5,7 +5,8 @@
  * its ops are `doc_workout`, a kind none of them was written for. Until Task 8 brings its approval, each reader ignores
  * or describes such an op and never throws:
  *  - `GET /api/coach/state` lists only proposals the thread can act on;
- *  - approve and decline answer 409 `not_yet`;
+ *  - with the coach designer off, approve and decline answer 409 `not_yet` (on, Task 8 approves it op by op:
+ *    design-approve-routes.test.ts);
  *  - the wake's supersede step leaves a designed proposal alone;
  *  - the wake's context (coach-context) describes it;
  *  - the race hub's reading of approved proposals passes it by;
@@ -122,7 +123,7 @@ describe("GET /api/coach/state", () => {
 });
 
 describe("approve and decline", () => {
-  it("answer 409 not_yet for a designed workout's proposal, and leave it pending (Task 8 brings its approval)", async () => {
+  it("with the coach designer off, answer 409 not_yet for a designed workout's proposal, and leave it pending", async () => {
     for (const action of ["approve", "decline"]) {
       const res = await client().post(`/api/coach/proposals/${DESIGNED}/${action}`);
       expect(res.status).toBe(409);

@@ -165,6 +165,7 @@ describe("with the coach designer off", () => {
       expect(res.json).toEqual({ error: "not_yet" });
     }
     expect((await invoke("GET", `/api/coach/proposals/${id}/ops/${opIds[0]}/draft`, undefined, { designer: false })).status).toBe(404);
+    expect((await invoke("GET", `/api/coach/proposals/${id}`, undefined, { designer: false })).json).toEqual({ id, status: "pending", resolvedAt: null });
     expect((await proposalOf(id)).status).toBe("pending");
     expect(await designRows()).toEqual([]);
   });
@@ -232,9 +233,14 @@ describe("POST /api/coach/proposals/:id/approve", () => {
     expect(bad.status).toBe(400);
     expect(bad.json).toEqual({ error: "unknown_op", opIds: ["nope"] });
     expect(await designRows()).toEqual([]);
-    for (const body of [{ opIds: "all" }, { opIds: [3] }, { edit: { opId: opIds[0] } }, { nonsense: true }]) {
+    for (const body of [{ opIds: "all" }, { opIds: [3] }, { edit: { opId: opIds[0] } }, { nonsense: true }, { opIds: [opIds[0]], edit: { opId: opIds[0], doc: calmDoc() } }]) {
       expect((await invoke("POST", `/api/coach/proposals/${id}/approve`, body)).status).toBe(400);
     }
+    // A body that isn't JSON is no "approve everything".
+    const app = mountRoutes(db, "/api/coach", coachRoutes);
+    const garbled = await app.request(`/api/coach/proposals/${id}/approve`, { method: "POST", headers: { Cookie: cookie }, body: "approve everything" }, makeEnv());
+    expect(garbled.status).toBe(400);
+    expect(await designRows()).toEqual([]);
     const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, { opIds: [opIds[1]] });
     expect(res.status).toBe(200);
     expect(res.json).toMatchObject({ ok: true, status: "partially_approved", refused: [], settled: [], remaining: [] });
@@ -347,7 +353,7 @@ describe("POST /api/coach/proposals/:id/decline", () => {
       { status: "declined", at: expect.any(String), reason: "Not on a Tuesday." },
       { status: "declined", at: expect.any(String) },
     ]);
-    for (const body of [{ reason: 5 }, { opIds: ["nope"] }]) expect((await invoke("POST", `/api/coach/proposals/${id}/decline`, body)).status).toBeGreaterThanOrEqual(400);
+    for (const body of [{ reason: 5 }, { opIds: ["nope"] }, { reasons: "x" }]) expect((await invoke("POST", `/api/coach/proposals/${id}/decline`, body)).status).toBe(400);
   });
 
   it("an empty body declines the whole proposal, as the thread's decline does", async () => {
