@@ -285,12 +285,15 @@ describe("approve, some of it", () => {
   });
 
   it("two workouts on one day in one request: the second counts the first among the day's sessions", async () => {
+    // A day with nothing planned yet.
+    const empty = day(-11);
+    expect((await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.userId, rich.userId), eq(plannedWorkouts.effectiveDate, empty)))).length).toBe(0);
     const { id, opIds } = await designed([
-      { doc: calmDoc({ title: "Morning" }), target: { kind: "new", date: day(-9) } },
-      { doc: calmDoc({ title: "Evening" }), target: { kind: "new", date: day(-9) } },
+      { doc: calmDoc({ title: "Morning" }), target: { kind: "new", date: empty } },
+      { doc: calmDoc({ title: "Evening" }), target: { kind: "new", date: empty } },
     ]);
-    // Room for both only if the second is costed as the day's first: refused room, it waits.
-    const both = opCostOf({ target: { kind: "new", date: day(-9) } }, 0) * 2;
+    // Room for both only if the second is costed as the day's first: with the first counted, it waits.
+    const both = opCostOf({ target: { kind: "new", date: empty } }, 0) * 2;
     const res = await approveDesignOps(db, rich.userId, (await proposalOf(id))!, {}, ctx(), both);
     expect(res.applied.map((a) => a.opId)).toEqual([opIds[0]]);
     expect(res.remaining).toEqual([opIds[1]]);
@@ -439,6 +442,20 @@ describe("approve after a crash between the workout's write and the proposal's",
     expect(await designRows()).toHaveLength(2);
     expect((await rowOf(rich.todayDocId)).workoutDocRev).toBe(3);
     expect((await revisionsOf(rich.todayDocId)).filter((r) => r.rev > 2).map((r) => [r.rev, r.sourceRef])).toEqual([[3, approvalRef(id, again.applied[1]!.opId)]]);
+  });
+
+  it("and after the athlete saved the revised workout again in the Studio: still found by its own revision, never refused stale", async () => {
+    const { id, opIds } = await designed([{ doc: calmDoc({ title: "Wednesday" }), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } }]);
+    const untouched = (await proposalOf(id))!;
+    await approve(id);
+    await db.update(coachProposals).set({ ops: untouched.ops, status: "pending", resolvedAt: null }).where(eq(coachProposals.id, id));
+    // The athlete's own save since: revision 4.
+    await reviseDocWorkout(db, rich.userId, rich.todayDocId, { doc: calmDoc({ title: "Wednesday, mine" }), baseRev: 3 }, ctx());
+    const again = await approve(id);
+    expect(again.refused).toEqual([]);
+    expect(again.applied.map((a) => a.opId)).toEqual(opIds);
+    expect((await opOf(id, opIds[0]!)).outcome).toMatchObject({ status: "applied", rev: 3 });
+    expect((await rowOf(rich.todayDocId)).workoutDocRev).toBe(4);
   });
 });
 
@@ -741,6 +758,19 @@ describe("what was written, after Edit before approve", () => {
     expect(ops[0]).toMatchObject({ outcome: "edited", moved: true, plannedFor: `${day(-4)} 09:00` });
     expect(ops[1]).toMatchObject({ outcome: "approved" });
     expect(ops[1]).not.toHaveProperty("moved");
+  });
+
+  it("a time the athlete chose, on the coach's own day, is a move too; the coach's own day and time is none", async () => {
+    const { id, opIds } = await designed([
+      { doc: calmDoc({ title: "Friday" }), target: { kind: "new", date: later, time: "17:30" } },
+      { doc: calmDoc({ title: "Saturday" }), target: { kind: "new", date: day(-3), time: "08:00" } },
+    ]);
+    const [a, b] = opIds as [string, string];
+    const moved = await approve(id, { edit: { opId: a, doc: (await opOf(id, a)).doc, date: later, time: "06:45" } });
+    expect(moved.applied[0]).toMatchObject({ moved: true, workout: { date: later, time: "06:45" } });
+    const kept = await approve(id, { edit: { opId: b, doc: (await opOf(id, b)).doc, date: day(-3), time: "08:00" } });
+    expect(kept.applied[0]!.moved).toBeUndefined();
+    expect((await opOf(id, b)).outcome).not.toHaveProperty("moved");
   });
 
   it("the receipt says how many were declined", async () => {

@@ -303,6 +303,30 @@ describe("Edit before approve", () => {
     await say(revise, { error: "not_pending", status: 409 }, "Save changes", "This draft isn't open any more, so it can't be approved.");
   });
 
+  it("a revision's draft taken as a new workout schedules one: Schedule… stands where Save changes was", async () => {
+    serve({ draft: draftOf({ target: { kind: "revise", workoutId: "w1", baseRev: 3 }, date: TODAY, time: "18:00" }), approve: [{ settled: "declined" }] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await click(button("Save changes"), "Save changes");
+    await until(() => !!button("Schedule it as a new workout"), "the offer");
+    await click(button("Schedule it as a new workout"), "Schedule it as a new workout");
+    expect(dialog("Schedule")).not.toBeNull();
+    await click(document.querySelector('[role="dialog"] button[aria-label="Close"]'), "Close");
+    expect(button("Save changes")).toBeNull();
+    expect(button("Schedule…")).not.toBeNull();
+  });
+
+  it("a new workout's draft refused for its day is the Studio's own words, in the sheet: pick another day", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 11, 9, 0) });
+    serve({ draft: draftOf(), approve: [{ error: "past_date", status: 422 }] });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    await click(button("Schedule…"), "Schedule…");
+    await click(button("Schedule", dialog("Schedule")!), "Schedule");
+    await until(() => text().includes("That day has passed — pick today or a later day."), "the sheet's line");
+    expect(button("Schedule it as a new workout")).toBeNull();
+  });
+
   it("a draft the athlete declined, or a proposal no longer open, is closed", async () => {
     serve({ draft: draftOf({ status: "expired" }) });
     mount("/studio/build/proposal/dp-1/run-a");
