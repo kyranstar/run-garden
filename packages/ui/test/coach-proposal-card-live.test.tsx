@@ -15,12 +15,15 @@
  *
  * The server is a stubbed fetch. Synthetic data only.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DesignApproveResponse, DesignChangeLineDto, DesignLineDto } from "@rg/api-client";
+import { DESIGN_APPLYING_STALE_MS, type DesignApproveResponse, type DesignChangeLineDto, type DesignLineDto } from "@rg/api-client";
 import { ProposalCard } from "../src/screens/studio/proposal-card.js";
 import { primedClient } from "./studio-fixtures.js";
 
@@ -151,22 +154,34 @@ const posts = (calls: Call[], what: string) => calls.filter((c) => c.method === 
 const pending = (lines: DesignLineDto[], changes: DesignChangeLineDto[] = [], status = "pending") => ({ id: "dp-1", status, resolvedAt: null, lines, changes });
 
 describe("a designed suggestion's card", () => {
-  it("each workout's line: day and time, minutes, effort, place and review; its review and costs one tap down; Edit opens its draft", async () => {
-    serve({ reads: [pending([line("op-a")])] });
+  it("each workout's line: day and time, minutes, effort, place, the review's mean and what could be better; the scores one tap down; Edit opens its draft", async () => {
+    serve({ reads: [pending([line("op-a", { review: { ...line("op-a").review!, improvements: ["Hold the last bridge for a slow count of three."] } })])] });
     mount(["The coach stopped at this design's spending limit; this is what had been reviewed by then."]);
     await until(() => text().includes("Workout op-a"), "the card");
     expect(text()).toContain("The coach stopped at this design's spending limit; this is what had been reviewed by then.");
     expect(text()).toContain("Thu 6 PM · 24 min · Develop · Home · Review 4.3");
+    // On the card, no tap: what could be better, and the day's costs.
+    const card = document.querySelector<HTMLElement>(".coach-pc")!;
+    const shown = (el: Element | null) => !!el && !el.closest("[hidden]");
+    const better = [...card.querySelectorAll("li")].find((li) => li.textContent === "Hold the last bridge for a slow count of three.");
+    expect(shown(better!)).toBe(true);
+    const cost = [...card.querySelectorAll("p, li")].find((el) => el.textContent === "The test move isn't one its key result reads.");
+    expect(shown(cost!)).toBe(true);
     // One workout to decide: no checkbox.
     expect(boxes()).toHaveLength(0);
-    const detail = document.querySelector<HTMLElement>(".coach-pc-detail")!;
-    expect(detail.hidden).toBe(true);
+    // The moves, one tap on its name; the review's scores, one tap on "See the review".
+    const moves = card.querySelector<HTMLElement>(".coach-pc-detail")!;
+    expect(moves.hidden).toBe(true);
     await click(button("Workout op-a"), "the title");
-    expect(detail.hidden).toBe(false);
-    expect(detail.textContent).toContain("Intent clarity");
-    expect(detail.textContent).toContain("5 of 5 · One clear aim.");
-    expect(detail.textContent).toContain("Swapped the jumps for bridges.");
-    expect(detail.textContent).toContain("The test move isn't one its key result reads.");
+    expect(moves.hidden).toBe(false);
+    expect(moves.textContent).toContain("Glute bridge 2 × 12");
+    const review = card.querySelector<HTMLElement>(".coach-pc-review")!;
+    expect(review.hidden).toBe(true);
+    expect(review.textContent).toContain("Intent clarity");
+    await click(button("See the review"), "See the review");
+    expect(review.hidden).toBe(false);
+    expect(review.textContent).toContain("5 of 5 · One clear aim.");
+    expect(review.textContent).toContain("Swapped the jumps for bridges.");
     const edit = [...document.querySelectorAll<HTMLAnchorElement>("a")].find((a) => a.textContent === "Edit");
     expect(edit?.getAttribute("href")).toBe("/studio/build/proposal/dp-1/op-a");
   });
@@ -248,8 +263,10 @@ describe("a designed suggestion's card", () => {
     expect(link?.getAttribute("href")).toBe("/plan?week=2026-10-12&workout=w-9");
     expect(text()).toContain("Not added: Its day has passed.");
     expect(text()).not.toContain("Wed 14 Oct has passed.");
-    expect(text()).toContain("Not added: The day doesn't allow it now. The day now refuses it: tuck jumps are closed today.");
-    expect(text()).toContain("Not added: It's a programme's session: the programme plans it.");
+    expect(text()).toContain("Not added: The day doesn't allow it now: tuck jumps are closed today.");
+    expect(text()).not.toContain("The day now refuses it");
+    // A change refused is "not changed", never "not added" (fix round, M7).
+    expect(text()).toContain("Not changed: It's a programme's session: the programme plans it.");
     // Open again: the three refused ones are chosen; the applied one is not offered.
     expect(boxes()).toHaveLength(3);
     expect(button("Approve")).not.toBeNull();
@@ -300,28 +317,50 @@ describe("a designed suggestion's card", () => {
   });
 
   it("a change an approve is applying: being added, still open — Approve finishes it; a decline that meets it says it can't be declined", async () => {
-    const applying = change("adj-1", { outcome: { status: "applying", at: "", before: { date: "2026-10-13", time: "07:00", title: "Strength A", minutes: 35 } } });
+    const applying = change("adj-1", { outcome: { status: "applying", at: new Date().toISOString(), before: { date: "2026-10-13", time: "07:00", title: "Strength A", minutes: 35 } } });
     const calls = serve({
       reads: [pending([line("op-a")], [applying])],
       approve: [{ remaining: [] }],
       decline: { ok: true, status: "pending", declined: ["op-a"], settled: [], inFlight: ["adj-1"] },
     });
     mount();
-    await until(() => text().includes("Being added"), "the change in flight");
+    await until(() => text().includes("Being changed"), "the change in flight");
     // Still the athlete's: chosen with the workout.
     expect(boxes()).toHaveLength(2);
     expect(boxes().every((b) => b.checked)).toBe(true);
     await click(button("Decline"), "Decline");
     await click(button("Decline"), "Decline");
-    await until(() => text().includes("Already being added — it can't be declined now."), "the in-flight line");
+    await until(() => text().includes("Already being changed — it can't be declined now."), "the in-flight line");
     expect(posts(calls, "decline")[0]!.body).toEqual({});
     await click(button("Approve"), "Approve");
     await until(() => posts(calls, "approve").length === 1, "the approve that finishes it");
-    expect(text()).not.toContain("Already being added");
+    expect(text()).not.toContain("Already being changed");
+  });
+
+  it("a change whose approve died mid-way (its claim gone stale) says it didn't finish — approve or decline", async () => {
+    const stale = new Date(Date.now() - DESIGN_APPLYING_STALE_MS - 60_000).toISOString();
+    serve({ reads: [pending([], [change("adj-1", { outcome: { status: "applying", at: stale, before: { date: "2026-10-13", time: "07:00", title: "Strength A", minutes: 35 } } })])] });
+    mount();
+    await until(() => text().includes("Didn't finish — approve or decline"), "the stale claim");
+    expect(text()).not.toContain("Being changed");
+    expect(button("Approve")).not.toBeNull();
+    expect(button("Decline")).not.toBeNull();
+  });
+
+  it("the card's stale window is the worker's own (APPLYING_STALE_MS in design-approve.ts)", () => {
+    const source = readFileSync(
+      // A path, not `new URL(…, import.meta.url)`: Vite rewrites that form outside the package into a served URL.
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../../apps/worker/src/services/design-approve.ts"),
+      "utf8",
+    );
+    const expr = /export const APPLYING_STALE_MS = ([\d_ *]+);/.exec(source)?.[1];
+    expect(expr, "the worker's constant, a product of numbers").toBeDefined();
+    const ms = expr!.split("*").reduce((n, part) => n * Number(part.trim().replace(/_/g, "")), 1);
+    expect(ms).toBe(DESIGN_APPLYING_STALE_MS);
   });
 
   it("a decline that met every one in flight (409 in_flight) says so on its lines", async () => {
-    const applying = change("adj-1", { outcome: { status: "applying", at: "", before: { date: "2026-10-13", time: "07:00", title: "Strength A", minutes: 35 } } });
+    const applying = change("adj-1", { outcome: { status: "applying", at: new Date().toISOString(), before: { date: "2026-10-13", time: "07:00", title: "Strength A", minutes: 35 } } });
     vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
       const path = String(input).split("?")[0]!;
       if ((init?.method ?? "GET") === "GET" && path === "/api/coach/proposals/dp-1") return json(pending([], [applying]));
@@ -329,10 +368,10 @@ describe("a designed suggestion's card", () => {
       return json({ error: "offline" }, 503);
     }));
     mount();
-    await until(() => text().includes("Being added"), "the change");
+    await until(() => text().includes("Being changed"), "the change");
     await click(button("Decline"), "Decline");
     await click(button("Decline"), "Decline");
-    await until(() => text().includes("Already being added — it can't be declined now."), "the in-flight line");
+    await until(() => text().includes("Already being changed — it can't be declined now."), "the in-flight line");
     expect(text()).not.toContain("Couldn't reach the coach");
   });
 

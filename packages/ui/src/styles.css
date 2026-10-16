@@ -11044,6 +11044,10 @@ a.stu-tpl-open:focus-visible::before {
 .coach-line--now .coach-line-mark {
   color: var(--accent);
 }
+/* An outcome that is no step done (nothing proposed): the quiet ink, no colour claiming it. */
+.coach-line--neutral .coach-line-mark {
+  color: var(--ink-faint);
+}
 .coach-line-text {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -11174,11 +11178,21 @@ a.stu-tpl-open:focus-visible::before {
   color: var(--danger-ink);
 }
 
-/* Ways to train now, after a stop that proposed nothing: the Studio's own tiles. */
+/* Ways to train now, after a stop that proposed nothing: the Studio's own tiles, each saying what kind it is. */
 .coach-fallback {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+.stu-qs-kind {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  color: var(--ink-soft);
+}
+/* The words a tap carried that the coach didn't start, offered back under the field. */
+.coach-composer-back {
+  margin: 0;
+  font-size: var(--text-sm);
 }
 
 /* A designed suggestion. */
@@ -11286,6 +11300,23 @@ a.stu-tpl-open:focus-visible::before {
   align-self: flex-start;
   font-size: var(--text-sm);
 }
+/* Edit and See the review, side by side under a workout's line. */
+.coach-pc-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-6);
+}
+.coach-pc-see {
+  font-size: var(--text-sm);
+}
+.coach-pc-better {
+  margin: 0;
+  padding-left: var(--space-6);
+  font-size: var(--text-sm);
+}
+.coach-pc-review[hidden] {
+  display: none;
+}
 .coach-pc-detail {
   display: flex;
   flex-direction: column;
@@ -11319,4 +11350,13 @@ a.stu-tpl-open:focus-visible::before {
 .coach-design-link {
   padding: var(--space-3) var(--space-5);
   font-size: var(--text-sm);
+}
+
+/* The 44 px touch floor (fix round, M5): a trail line that opens to its detail and a suggestion's workout are list rows,
+   which can't be padded without stealing from their neighbours — so the row grows, on a touch screen. */
+@media (pointer: coarse) {
+  .coach-line-open,
+  .coach-pc-name {
+    min-height: var(--tap);
+  }
 }

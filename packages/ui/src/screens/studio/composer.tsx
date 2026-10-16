@@ -18,7 +18,7 @@
  *
  * Shown only with the coach designer on (`coachOn`): the Studio home renders this in its slot.
  */
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type CoachOpenProposalDto, type CoachRunDto, type CoachRunEventDto, type CoachRunScope } from "@rg/api-client";
@@ -26,7 +26,7 @@ import { useEscapeKey } from "../../components.js";
 import { IconChevron } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import type { StudioCtx } from "./model.js";
-import { ProposalCard } from "./proposal-card.js";
+import { cardShows, designProposalQuery, ProposalCard } from "./proposal-card.js";
 import {
   EXISTING_LINE,
   failureOf,
@@ -55,16 +55,21 @@ export interface CoachArrival {
   coach?: "compose";
 }
 
-/** The run the area shows, with what came with it. */
+/** The run the area shows, with its trail when known (an `existing` answer comes without it: the loop reads it). */
 interface Shown {
   run: CoachRunDto;
-  events: CoachRunEventDto[];
+  events?: CoachRunEventDto[];
 }
 
-/** The suggestion a run holds: the current read's (with its flags), else the run's own, else the newest line naming one. */
-export function proposalIdOf(run: CoachRunDto, events: readonly CoachRunEventDto[], open: CoachOpenProposalDto | null): string | null {
+/**
+ * The suggestion a run holds: the current read's (with its flags), else the run's own; else — once the run is over —
+ * the newest line naming one. While the run works a line naming it (a set's designers do) is no reason to read it: it
+ * isn't the athlete's yet (fix round, Important 1).
+ */
+export function proposalIdOf(run: CoachRunDto, events: readonly CoachRunEventDto[], open: CoachOpenProposalDto | null, over: boolean): string | null {
   if (open) return open.id;
   if (run.proposalId) return run.proposalId;
+  if (!over) return null;
   for (const e of [...events].sort((a, b) => b.seq - a.seq)) {
     const id = (e.payload as { proposalId?: unknown } | null)?.proposalId;
     if (typeof id === "string" && id.length > 0) return id;
@@ -79,43 +84,66 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: api.coachRunCurrent, retry: false, staleTime: 0 });
   const [shown, setShown] = useState<Shown | null>(null);
   const [draft, setDraft] = useState("");
-  const [existing, setExisting] = useState<{ ignored: string | null } | null>(null);
+  /** The run an `existing` answer opened: its line shows while it is live. */
+  const [existingRun, setExistingRun] = useState<string | null>(null);
+  /** The words a tap carried that the coach didn't start: offered back until taken, or a new run starts (M4). */
+  const [ignored, setIgnored] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
-  // The run current read found becomes the one shown; a later read only adds its open suggestion.
-  const found = current.data && current.data.run ? current.data : null;
+  // Only a read made since this screen opened decides what it shows — a kept one may be a run long over (fix round,
+  // Important 2). The first fresh read gives the run shown; a later one, a live run that isn't it (started on another
+  // device, or after the one shown ended), takes its place.
+  const found = current.isFetchedAfterMount && current.data && current.data.run ? current.data : null;
   useEffect(() => {
-    if (!shown && found) setShown({ run: found.run, events: found.events });
-  }, [shown, found]);
-  const seed = shown ?? (found ? { run: found.run, events: found.events } : null);
-  const { snapshot, loop } = useCoachRun(seed?.run.id ?? null, seed ?? {}, loopDeps);
-  const run = snapshot?.run ?? seed?.run ?? null;
+    if (!found) return;
+    if (!shown || (found.run.id !== shown.run.id && isLive(found.run.status))) setShown({ run: found.run, events: found.events });
+  }, [found, shown]);
+  const { snapshot, loop } = useCoachRun(shown?.run.id ?? null, shown ?? {}, loopDeps);
+  const run = snapshot?.run ?? shown?.run ?? null;
   const status = snapshot?.status ?? run?.status ?? null;
-  const events = snapshot?.events ?? seed?.events ?? [];
+  const events = snapshot?.events ?? shown?.events ?? [];
   const live = status !== null && isLive(status);
   const open = found && run && found.run.id === run.id ? found.proposal : null;
 
-  // A run that is over: read current again, for the suggestion it holds open and its flags.
+  // A run that is over: read current again (the suggestion it holds open, its flags — or a live run elsewhere), and the
+  // suggestion's own read, which may be one kept from while it was unreviewed.
   const over = run !== null && status !== null && !live;
   useEffect(() => {
-    if (over) void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
+    if (!over) return;
+    void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
+    void qc.invalidateQueries({ queryKey: ["coach-design-proposal"] });
   }, [over, run?.id, qc]);
 
   const start = useMutation({
+    networkMode: "always",
     mutationFn: (scope: CoachRunScope) => api.coachRunCreate({ scope, request: draft.trim() || null }),
     onSuccess: (res) => {
       setStartError(null);
-      setShown({ run: res.run, events: [] });
+      // A new run has no trail yet; the live run an `existing` answer opens has one, which its loop reads.
+      setShown(res.existing ? { run: res.run } : { run: res.run, events: [] });
       // The words went with the tap; a live run already there answers instead, and they are offered back.
       setDraft("");
-      setExisting(res.existing ? { ignored: res.ignoredRequest.request } : null);
+      setExistingRun(res.existing ? res.run.id : null);
+      setIgnored(res.existing ? res.ignoredRequest.request : null);
+      void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     },
     onError: (e) => {
       if (isNotAvailable(e)) setUnavailable(true);
       else setStartError("Couldn't reach the coach — try again.");
     },
   });
+
+  // Whether the coach proposed something is the suggestion's own read: shown, or not (fix round, Important 1).
+  const proposalId = run ? proposalIdOf(run, events, open, over) : null;
+  const proposalRead = useQuery({
+    queryKey: designProposalQuery(proposalId ?? ""),
+    queryFn: () => api.coachProposal(proposalId!),
+    enabled: proposalId !== null,
+    retry: false,
+  });
+  const proposed = cardShows(proposalRead.data);
+  const proposalKnown = proposalId === null || proposalRead.isSuccess || proposalRead.isError;
 
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000, enabled: over });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today, enabled: over });
@@ -137,30 +165,46 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
       </p>
     );
   }
-  // A moment while the current run is read: no composer flashing before the run it would give way to.
-  if (current.isPending && !shown) return null;
+  // A moment while the current run is read for this screen: no composer flashing before the run it would give way to,
+  // and no run kept from before shown in its place. A kept "no run" is shown at once — a fresh read adopts any run.
+  const keptNoRun = current.data !== undefined && current.data.run === null;
+  if (!current.isFetchedAfterMount && !shown && !current.isError && !keptNoRun) return null;
 
-  const notice = existing ? (
+  const offerWords = ignored !== null && ignored.trim() !== "" && ignored !== draft;
+  const wordsBack = offerWords ? (
+    <button
+      type="button"
+      className="linklike tap-pad"
+      onClick={() => {
+        setDraft(ignored ?? "");
+        setIgnored(null);
+      }}
+    >
+      Copy my words back
+    </button>
+  ) : null;
+  const existingLive = existingRun !== null && run?.id === existingRun && live;
+  const notice = existingLive ? (
     <p className="coach-run-notice" role="status">
       {EXISTING_LINE}
-      {existing.ignored && existing.ignored !== draft ? (
-        <>
-          {" "}
-          <button type="button" className="linklike tap-pad" onClick={() => setDraft(existing.ignored ?? "")}>
-            Copy my words back
-          </button>
-        </>
-      ) : null}
+      {wordsBack ? <> {wordsBack}</> : null}
     </p>
   ) : null;
   const failure = run && over ? failureOf({ status: status!, error: run.error }) : null;
-  const proposalId = run ? proposalIdOf(run, events, open) : null;
   // The ways to train now wait for the reads they are made from, so the tiles never change under the athlete's finger.
   const tilesReady = !templates.isPending && !today.isPending;
   return (
     <div className="coach-area">
-      {!live || existing ? (
-        <Composer draft={draft} onDraft={setDraft} onStart={(scope) => start.mutate(scope)} busy={start.isPending} error={startError} focus={compose && !live} />
+      {!live || existingLive ? (
+        <Composer
+          draft={draft}
+          onDraft={setDraft}
+          onStart={(scope) => start.mutate(scope)}
+          busy={start.isPending}
+          error={startError}
+          focus={compose && !live}
+          wordsBack={existingLive ? null : wordsBack}
+        />
       ) : null}
       {run && status ? (
         <RunView
@@ -171,15 +215,12 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
           dueRole={snapshot?.dueRole ?? null}
           lost={snapshot?.lost ?? false}
           onRetry={() => loop?.retry()}
-          onRun={(r) => {
-            setExisting(null);
-            loop?.setRun(r);
-          }}
+          onRun={(r) => loop?.setRun(r)}
           onRefresh={() => void loop?.refresh()}
           notice={notice}
         />
       ) : null}
-      {failure && (proposalId !== null || tilesReady) ? <StoppedLine failure={failure} proposed={proposalId !== null} tiles={tiles} /> : null}
+      {failure && proposalKnown && (proposed || tilesReady) ? <StoppedLine failure={failure} proposed={proposed} tiles={tiles} /> : null}
       {/* Whatever the run's status (fix A2): a suggestion the athlete can't decide yet (unreviewed while the coach works,
           closed with a cancel) is no card — the card hides it. */}
       {proposalId ? <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} /> : null}
@@ -196,6 +237,7 @@ export function Composer({
   error = null,
   focus = false,
   nextN = NEXT_N_DEFAULT,
+  wordsBack = null,
 }: {
   draft: string;
   onDraft: (v: string) => void;
@@ -205,6 +247,8 @@ export function Composer({
   /** Focus the field once (the Plan coach sheet's link). */
   focus?: boolean;
   nextN?: number;
+  /** The words a tap carried that the coach didn't start, offered back ("Copy my words back"; M4). */
+  wordsBack?: ReactNode;
 }) {
   const id = useId();
   const field = useRef<HTMLTextAreaElement>(null);
@@ -233,6 +277,7 @@ export function Composer({
           {draft.length} / {REQUEST_MAX_CHARS}
         </span>
       ) : null}
+      {wordsBack ? <p className="coach-composer-back">{wordsBack}</p> : null}
       <div className="coach-composer-actions">
         <button type="button" className="btn btn-primary" disabled={busy} onClick={() => onStart({ kind: "now" })}>
           Now

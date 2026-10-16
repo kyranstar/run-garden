@@ -85,6 +85,7 @@ function harness(script: Script) {
   const clock = new Clock();
   let visible = true;
   let lastStatus: CoachRunStepResult["status"] = "active";
+  const online = new Set<() => void>();
   const vis = new Set<() => void>();
   const calls = { steps: [] as number[], reads: [] as Array<{ at: number; afterSeq: number }>, inFlight: 0, maxInFlight: 0 };
   const deps: LoopDeps = {
@@ -116,12 +117,20 @@ function harness(script: Script) {
       vis.add(fn);
       return () => vis.delete(fn);
     },
+    onOnline: (fn) => {
+      online.add(fn);
+      return () => online.delete(fn);
+    },
   };
   const setVisible = (v: boolean) => {
     visible = v;
     for (const fn of vis) fn();
   };
-  return { clock, deps, calls, setVisible };
+  /** The browser says the network is back (`window`'s `online`). */
+  const goOnline = () => {
+    for (const fn of online) fn();
+  };
+  return { clock, deps, calls, setVisible, goOnline };
 }
 
 const step = (status: CoachRunStepResult["status"], events: CoachRunEventDto[] = [], dueInMs: number | null = 0, role: "main" | "reviewer" | "designer" = "main"): CoachRunStepResult => ({
@@ -134,7 +143,7 @@ const loops: CoachRunLoop[] = [];
 afterEach(() => {
   for (const l of loops.splice(0)) l.dispose();
 });
-function start(h: ReturnType<typeof harness>, seed: ConstructorParameters<typeof CoachRunLoop>[2] = { run: runDto() }, id = "run-1") {
+function start(h: ReturnType<typeof harness>, seed: ConstructorParameters<typeof CoachRunLoop>[2] = { run: runDto(), events: [] }, id = "run-1") {
   const loop = new CoachRunLoop(id, h.deps, seed);
   loops.push(loop);
   loop.start();
@@ -324,6 +333,79 @@ describe("the step loop", () => {
     start(h);
     await h.clock.advance(5_000);
     expect(h.calls.steps).toEqual([T0, T0 + 1_000]);
+  });
+
+  it("seeded with no events (an `existing` answer), it reads the trail first: a run waiting on a question shows it and isn't stepped", async () => {
+    const h = harness({
+      steps: [],
+      read: (afterSeq) => ({ run: runDto({ status: "waiting_athlete" }), events: afterSeq === 0 ? [ev(1), ev(2, "How are the hips today?")] : [] }),
+    });
+    const loop = start(h, { run: runDto({ status: "waiting_athlete" }) });
+    await h.clock.advance(10_000);
+    expect(h.calls.reads[0]).toEqual({ at: T0, afterSeq: 0 });
+    expect(loop.snapshot.events.map((e) => e.summary)).toEqual(["Line 1", "How are the hips today?"]);
+    expect(h.calls.steps).toEqual([]);
+  });
+
+  it("…and an active one is read, then stepped", async () => {
+    const h = harness({
+      steps: [step("finished", [ev(3)], null)],
+      read: (afterSeq) => ({ run: runDto({ status: h.calls.steps.length ? "finished" : "active" }), events: afterSeq === 0 ? [ev(1), ev(2)] : [] }),
+    });
+    const loop = start(h, { run: runDto({ status: "active" }) });
+    await h.clock.advance(1_000);
+    expect(h.calls.reads[0]!.afterSeq).toBe(0);
+    expect(h.calls.steps).toHaveLength(1);
+    expect(loop.snapshot.events.map((e) => e.seq)).toEqual([1, 2, 3]);
+  });
+
+  it("a read that finds the run can be stepped steps it, when nothing is scheduled or in flight (M1)", async () => {
+    let status: CoachRunDto["status"] = "waiting_athlete";
+    const h = harness({ steps: [step("finished", [], null)], read: () => ({ run: runDto({ status }), events: [] }) });
+    const loop = start(h, { run: runDto({ status: "waiting_athlete" }), events: [ev(1)] });
+    await h.clock.advance(5_000);
+    expect(h.calls.steps).toEqual([]);
+    // Answered from another device: the run reads active again.
+    status = "active";
+    await loop.refresh();
+    await h.clock.advance(10);
+    expect(h.calls.steps).toHaveLength(1);
+    expect(loop.snapshot.status).toBe("finished");
+  });
+
+  it("back online, a lost loop goes on (M2)", async () => {
+    const down = () => new TypeError("Failed to fetch");
+    const h = harness({ steps: [down(), down(), down(), down(), step("finished", [], null)] });
+    const loop = start(h);
+    await h.clock.advance(60_000);
+    expect(loop.snapshot.lost).toBe(true);
+    h.goOnline();
+    await h.clock.advance(10);
+    expect(h.calls.steps).toHaveLength(MAX_FAILURES + 1);
+    expect(loop.snapshot).toMatchObject({ lost: false, status: "finished" });
+  });
+
+  it("waiting on an old loop's step, it shows the step in flight and keeps reading the trail (M3)", async () => {
+    let release!: (r: CoachRunStepResult) => void;
+    let seq = 0;
+    const h = harness({
+      steps: [() => new Promise<CoachRunStepResult>((r) => (release = r)), step("finished", [], null)],
+      read: () => ({ run: runDto({ status: "stepping" }), events: [ev(++seq)] }),
+    });
+    const first = start(h);
+    await h.clock.advance(10);
+    first.dispose();
+    const second = start(h);
+    await h.clock.advance(10);
+    expect(second.snapshot.inFlight).toBe(true);
+    const before = h.calls.reads.length;
+    await h.clock.advance(POLL_MS * 2 + 10);
+    expect(h.calls.reads.length).toBeGreaterThanOrEqual(before + 2);
+    expect(second.snapshot.events.length).toBeGreaterThanOrEqual(2);
+    release(step("active", [], 0));
+    await h.clock.advance(1_000);
+    expect(h.calls.maxInFlight).toBe(1);
+    expect(second.snapshot).toMatchObject({ inFlight: false, status: "finished" });
   });
 
   it("disposed, it leaves no timer and asks for nothing more", async () => {

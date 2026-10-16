@@ -706,6 +706,13 @@ export interface DesignChangeBeforeDto {
   minutes: number | null;
 }
 
+/**
+ * How long an approve's claim on a change (`applying`) stands: past it, the approve that made it died, and the change
+ * didn't finish — the athlete approves or declines it again. The worker's own `APPLYING_STALE_MS` (design-approve.ts),
+ * the two pinned equal by a test.
+ */
+export const DESIGN_APPLYING_STALE_MS = 2 * 60_000;
+
 /** How the athlete decided one change; applied, it keeps the session as it stood (`before`). */
 export type DesignChangeOutcomeDto =
   | { status: "applied"; at: string; workoutId: string; before: DesignChangeBeforeDto }

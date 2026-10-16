@@ -67,9 +67,11 @@ test("the composer → a scripted run → the suggestion → Approve → the wor
   await expect(card.getByRole("button", { name: "Hips and back, gently" })).toBeVisible();
   await expect(card).toContainText("Review");
 
-  // Its review, one tap down.
-  await card.getByRole("button", { name: "Hips and back, gently" }).click();
-  await expect(card).toContainText("Intent clarity");
+  // What could be better is on the card; the review's scores, one tap down.
+  await expect(card.getByText("Hold the last bridge for a slow count of three.")).toBeVisible();
+  await expect(card.getByText("Intent clarity")).toBeHidden();
+  await card.getByRole("button", { name: "See the review" }).click();
+  await expect(card.getByText("Intent clarity")).toBeVisible();
 
   await card.getByRole("button", { name: "Approve", exact: true }).click();
   const placed = card.getByRole("link", { name: /^On your plan for / });

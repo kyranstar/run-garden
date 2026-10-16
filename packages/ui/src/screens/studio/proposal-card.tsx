@@ -24,6 +24,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   ApiError,
+  DESIGN_APPLYING_STALE_MS,
   type DesignApproveRequest,
   type DesignApproveResponse,
   type DesignChangeLineDto,
@@ -48,8 +49,21 @@ type Outcome = DesignLineDto["outcome"] | DesignChangeLineDto["outcome"];
  */
 export const isOpen = (o: Outcome): boolean => o === null || o.status === "refused" || o.status === "applying";
 
+/** A designed suggestion's read (`GET /api/coach/proposals/:id`). */
+export type ProposalRead = Awaited<ReturnType<typeof api.coachProposal>>;
+
+/**
+ * Whether the card shows for this read — what "the coach proposed something" means to the Studio (fix round,
+ * Important 1): a suggestion the athlete can see (not closed with its run, never theirs, or a rehearsal's) that holds a
+ * workout or a change. A run whose suggestion doesn't show offers the ways to train now instead.
+ */
+export function cardShows(data: ProposalRead | null | undefined): boolean {
+  if (!data || HIDDEN_STATUSES.has(data.status)) return false;
+  return (data.lines?.length ?? 0) + (data.changes?.length ?? 0) > 0;
+}
+
 /** A change an approve is applying can't be declined: said by the ops a decline named. */
-export const IN_FLIGHT_LINE = "Already being added — it can't be declined now.";
+export const IN_FLIGHT_LINE = "Already being changed — it can't be declined now.";
 
 /**
  * Approve the chosen ops (none named: all) until nothing remains: each answer's `remaining` asked for again; a 409
@@ -111,6 +125,7 @@ export function ProposalCard({ proposalId, flags = [] }: { proposalId: string; f
     for (const key of ["plan", "plan-week", "today", "coach-state"]) void qc.invalidateQueries({ queryKey: [key] });
   };
   const approve = useMutation({
+    networkMode: "always",
     mutationFn: (opIds: string[] | undefined) => {
       setInFlight(new Set());
       return approveUntilDone((body) => api.coachDesignApprove(proposalId, body), opIds, reread);
@@ -118,6 +133,7 @@ export function ProposalCard({ proposalId, flags = [] }: { proposalId: string; f
     onSettled: afterDecision,
   });
   const decline = useMutation({
+    networkMode: "always",
     mutationFn: (v: { opIds: string[] | undefined; reason: string }) =>
       api.coachDesignDecline(proposalId, { ...(v.opIds ? { opIds: v.opIds } : {}), ...(v.reason.trim() ? { reason: v.reason.trim() } : {}) }),
     onSuccess: (res) => {
@@ -134,10 +150,9 @@ export function ProposalCard({ proposalId, flags = [] }: { proposalId: string; f
   });
 
   const data = read.data;
-  if (!data || HIDDEN_STATUSES.has(data.status)) return null;
+  if (!data || !cardShows(data)) return null;
   const lines = data.lines ?? [];
   const changes = data.changes ?? [];
-  if (lines.length === 0 && changes.length === 0) return null;
   // In the card's order: the changes first (the server applies them first too), then the workouts.
   const openIds = [...changes.filter((c) => isOpen(c.outcome)).map((c) => c.opId), ...lines.filter((l) => isOpen(l.outcome)).map((l) => l.opId)];
   // The suggestion as the server holds it: closed whole (expired, or every one decided) when nothing is open in a status
@@ -239,9 +254,18 @@ function Pick({ label, checked, onToggle, busy }: { label: string; checked: bool
   );
 }
 
-/** How a decided line ended, in plain words; the open ones, nothing. */
-function OutcomeLine({ outcome, applied }: { outcome: Outcome; applied: { date: string; time: string | null; workoutId: string; edited?: boolean } | null }) {
+/** How a decided line ended, in plain words — a change's as a change ("Not changed", "Being changed"); open, nothing. */
+function OutcomeLine({
+  outcome,
+  applied,
+  change = false,
+}: {
+  outcome: Outcome;
+  applied: { date: string; time: string | null; workoutId: string; edited?: boolean } | null;
+  change?: boolean;
+}) {
   if (!outcome) return null;
+  const not = change ? "Not changed" : "Not added";
   switch (outcome.status) {
     case "applied":
       return applied ? (
@@ -260,17 +284,26 @@ function OutcomeLine({ outcome, applied }: { outcome: Outcome; applied: { date: 
       return (
         <p className="coach-pc-outcome coach-pc-outcome--refused">
           <span aria-hidden="true">! </span>
-          Not added: {r.lead}
+          {not}: {r.lead}
           {r.detail ? <span className="coach-pc-why"> {r.detail}</span> : null}
         </p>
       );
     }
     case "declined":
-      return <p className="coach-pc-outcome">Not added</p>;
+      return <p className="coach-pc-outcome">{not}</p>;
     case "superseded":
       return <p className="coach-pc-outcome">Replaced by a newer suggestion</p>;
     case "applying":
-      return <p className="coach-pc-outcome">Being added</p>;
+      // An approve's claim past its time: that approve died, and the change didn't finish (the 8b recovery).
+      if (!(Date.now() - Date.parse(outcome.at) < DESIGN_APPLYING_STALE_MS)) {
+        return (
+          <p className="coach-pc-outcome coach-pc-outcome--refused">
+            <span aria-hidden="true">! </span>
+            Didn't finish — approve or decline
+          </p>
+        );
+      }
+      return <p className="coach-pc-outcome">{change ? "Being changed" : "Being added"}</p>;
   }
 }
 
@@ -292,7 +325,11 @@ function WorkoutItem({
   busy: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [seeReview, setSeeReview] = useState(false);
   const detailId = useId();
+  const reviewId = useId();
+  const r = line.review;
+  const hasReview = !!r && (r.dimensions.length > 0 || r.changes.length > 0 || r.mustFix.length > 0 || r.accepted.length > 0 || !!r.note);
   const facts = [
     dayAndTime(line.date, line.time),
     `${line.minutes} min`,
@@ -313,11 +350,39 @@ function WorkoutItem({
         </button>
         <p className="coach-pc-facts">{facts.join(" · ")}</p>
         <OutcomeLine outcome={line.outcome} applied={applied} />
-        {editable ? (
-          <Link className="linklike coach-pc-edit tap-pad" to={editDraftHref(proposalId, line.opId)}>
-            Edit
-          </Link>
+        {/* On the card, no tap (lead's QA, Q1): what could be better, and the day's costs. */}
+        {r && r.improvements.length > 0 ? (
+          <div className="coach-pc-sub">
+            <h3 className="coach-detail-title">Could be better</h3>
+            <ul className="coach-pc-better">
+              {r.improvements.map((x, i) => (
+                <li key={i}>{x}</li>
+              ))}
+            </ul>
+          </div>
         ) : null}
+        {line.issues.length > 0 ? (
+          <div className="coach-pc-sub">
+            <h3 className="coach-detail-title">Worth knowing</h3>
+            <ul>
+              {line.issues.map((i, k) => (
+                <li key={k}>{i.message}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        <div className="coach-pc-links">
+          {editable ? (
+            <Link className="linklike coach-pc-edit tap-pad" to={editDraftHref(proposalId, line.opId)}>
+              Edit
+            </Link>
+          ) : null}
+          {hasReview ? (
+            <button type="button" className="linklike coach-pc-see tap-pad" aria-expanded={seeReview} aria-controls={reviewId} onClick={() => setSeeReview((v) => !v)}>
+              See the review
+            </button>
+          ) : null}
+        </div>
         <div id={detailId} className="coach-pc-detail" hidden={!open}>
           {line.parts.length > 0 ? <p className="coach-pc-parts">{line.parts.join(" · ")}</p> : null}
           {line.detail.length > 0 ? (
@@ -327,64 +392,52 @@ function WorkoutItem({
               ))}
             </ul>
           ) : null}
-          <ReviewDetail line={line} />
         </div>
+        {hasReview ? (
+          <div id={reviewId} className="coach-pc-review" hidden={!seeReview}>
+            <ReviewDetail review={r!} />
+          </div>
+        ) : null}
       </div>
     </li>
   );
 }
 
-function ReviewDetail({ line }: { line: DesignLineDto }) {
-  const r = line.review;
+/** The review, one tap down: every dimension's score and note, what changed between drafts, must-fix, kept costs. */
+function ReviewDetail({ review: r }: { review: NonNullable<DesignLineDto["review"]> }) {
   return (
-    <>
-      {r ? (
-        <div className="coach-detail">
-          <h3 className="coach-detail-title">Review</h3>
-          {r.note ? <p className="coach-pc-note">{r.note}</p> : null}
-          {r.dimensions.length > 0 ? (
-            <dl className="coach-detail-rows">
-              {r.dimensions.map((d) => (
-                <div key={d.id} className="coach-detail-row">
-                  <dt>{d.label}</dt>
-                  <dd>
-                    {d.score !== null ? `${d.score} of 5` : "—"}
-                    {d.note ? ` · ${d.note}` : ""}
-                  </dd>
-                </div>
+    <div className="coach-detail">
+      {r.note ? <p className="coach-pc-note">{r.note}</p> : null}
+      {r.dimensions.length > 0 ? (
+        <dl className="coach-detail-rows">
+          {r.dimensions.map((d) => (
+            <div key={d.id} className="coach-detail-row">
+              <dt>{d.label}</dt>
+              <dd>
+                {d.score !== null ? `${d.score} of 5` : "—"}
+                {d.note ? ` · ${d.note}` : ""}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {([
+        ["What changed", r.changes],
+        ["Must fix", r.mustFix],
+        ["Kept as you asked", r.accepted],
+      ] as const).map(([title, items]) =>
+        items.length > 0 ? (
+          <div key={title} className="coach-pc-sub">
+            <h4 className="coach-detail-title">{title}</h4>
+            <ul>
+              {items.map((x, i) => (
+                <li key={i}>{x}</li>
               ))}
-            </dl>
-          ) : null}
-          {([
-            ["What changed", r.changes],
-            ["Must fix", r.mustFix],
-            ["Could be better", r.improvements],
-            ["Kept as you asked", r.accepted],
-          ] as const).map(([title, items]) =>
-            items.length > 0 ? (
-              <div key={title} className="coach-pc-sub">
-                <h4 className="coach-detail-title">{title}</h4>
-                <ul>
-                  {items.map((x, i) => (
-                    <li key={i}>{x}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null,
-          )}
-        </div>
-      ) : null}
-      {line.issues.length > 0 ? (
-        <div className="coach-detail">
-          <h3 className="coach-detail-title">Worth knowing</h3>
-          <ul>
-            {line.issues.map((i, k) => (
-              <li key={k}>{i.message}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </>
+            </ul>
+          </div>
+        ) : null,
+      )}
+    </div>
   );
 }
 
@@ -422,7 +475,7 @@ function ChangeItem({
             {before.minutes !== null ? `, ${before.minutes} min` : ""}
           </p>
         ) : (
-          <OutcomeLine outcome={line.outcome} applied={null} />
+          <OutcomeLine outcome={line.outcome} applied={null} change />
         )}
         {inFlight ? <p className="coach-pc-outcome coach-pc-outcome--refused">{IN_FLIGHT_LINE}</p> : null}
         {(line.issues ?? []).map((i, k) => (

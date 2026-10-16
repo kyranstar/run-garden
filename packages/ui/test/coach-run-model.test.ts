@@ -24,6 +24,7 @@ import {
   statusWord,
   stepDelay,
   stepErrorKind,
+  tileKindWord,
   usd,
 } from "../src/screens/studio/run-model.js";
 
@@ -139,17 +140,52 @@ describe("the trail", () => {
     const sections = detailOf(line!);
     expect(sections.map((s) => s.title)).toEqual(["Asked for", "Came back"]);
     expect(sections[0]!.rows).toEqual([
-      { key: "Query", value: "single-leg" },
+      { key: "Searched for", value: "single-leg" },
       { key: "Filters", value: "part main · region hips" },
       { key: "Limit", value: "14" },
     ]);
     const back = Object.fromEntries(sections[1]!.rows.map((r) => [r.key, r.value]));
-    expect(back.From).toBe("the exercise library");
+    expect(back["Read from"]).toBe("the exercise library");
     expect(back.Missing).toBe("equipment");
     expect(back.Moves).toBe("Split squat, Step-up");
     expect(back.Note!.length).toBe(DETAIL_VALUE_MAX);
     expect(back.Note!.endsWith("…")).toBe(true);
     for (const s of sections) for (const r of s.rows) expect(r.value).not.toMatch(/[{}"]/);
+  });
+
+  it("one tap down holds no internal words: no ids, revisions or kinds; where it read from, in the athlete's words", () => {
+    const [line] = runLines([
+      ev(1, "draft", "Draft — “Hips”: 20 min — sent for review", {
+        tool: "propose_workout",
+        input: { doc: { title: "Hips" }, target: { kind: "new", date: "2026-10-16" }, changeNote: "Gentler warm-up." },
+        receipt: { proposalId: "dp-1", opId: "run-d1", workoutId: "w-9", baseRev: 2, reviewRunId: "rv-1", round: 1, id: "x" },
+        provenance: { source: "the exercise library, today's condition checks and the athlete's logged sets and exercise preferences" },
+      }),
+    ]);
+    const rows = detailOf(line!).flatMap((s) => s.rows);
+    const keys = rows.map((r) => r.key);
+    for (const internal of ["Op id", "Workout id", "Base rev", "Review run id", "Id", "Proposal id", "Kind", "Round", "Target", "Doc"]) expect(keys).not.toContain(internal);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { key: "Workout", value: "Hips" },
+        { key: "For", value: "day 2026-10-16" },
+        { key: "What changed", value: "Gentler warm-up." },
+        { key: "Read from", value: "the exercise library, today's condition checks and your logged sets and exercise preferences" },
+      ]),
+    );
+  });
+
+  it("nothing proposed is an outcome, not a step done: no ✓", () => {
+    const [line] = runLines([ev(9, "note", "Nothing was proposed.", { proposed: false })]);
+    expect(line!.glyph).toBe("neutral");
+  });
+
+  it("a question waiting on the athlete isn't a trail line (its card is on top); once answered it says it asked", () => {
+    const asked = ev(2, "question", "How are the hips today?", { tool: "ask_athlete", data: { questions: [{ text: "How are the hips today?", chips: ["tight"] }] } });
+    const check = ev(4, "question", "The coach asks you to log today's condition check.", { tool: "ask_athlete", data: { check: "condition", why: "x" } });
+    expect(runLines([ev(1, "note", "Read your request and today's plan."), asked], { waiting: true }).map((l) => l.summary)).toEqual(["Read your request and today's plan."]);
+    expect(runLines([asked, ev(3, "note", "You answered: tight"), check], { waiting: true }).map((l) => l.summary)).toEqual(["Asked you: How are the hips today?", "You answered: tight"]);
+    expect(runLines([asked, check]).map((l) => l.summary)).toEqual(["Asked you: How are the hips today?", "Asked for today's condition check."]);
   });
 
   it("a review's line opens to every score, one a row", () => {
@@ -251,16 +287,29 @@ describe("ways to train now", () => {
   const today = (origin: string, completionState = "scheduled") =>
     ({ todaySessions: [{ workout: { id: "w-1", origin, title: "Strength A", completionState, contentState: "built" }, build: { minutes: 35 } }] }) as unknown as TodayResponse;
 
-  it("the day's programme session, a pinned or recent template, then a built-in quick start", () => {
-    expect(fallbackTiles({ today: today("program"), quick, templates }).map((t) => t.title)).toEqual(["Strength A", "Pinned one", "Jaw care"]);
-    expect(fallbackTiles({ today: today("program"), quick, templates })[0]).toEqual({ key: "session:w-1", title: "Strength A", minutes: 35, href: "/plan?workout=w-1" });
+  it("the day's programme session, a pinned or recent template, then a built-in quick start — each saying what kind it is", () => {
+    const tiles = fallbackTiles({ today: today("program"), quick, templates });
+    expect(tiles.map((t) => [t.kind, t.title])).toEqual([
+      ["session", "Strength A"],
+      ["template", "Pinned one"],
+      ["quick", "Jaw care"],
+    ]);
+    expect(tiles[0]).toEqual({ key: "session:w-1", kind: "session", title: "Strength A", minutes: 35, href: "/plan?workout=w-1" });
+    expect(tiles.map(tileKindWord)).toEqual(["Today's session", "Your template", "Quick start"]);
   });
 
-  it("never two tiles of one name; a session not built yet says its own length", () => {
-    const named = { todaySessions: [{ workout: { id: "w-2", origin: "program", title: "Jaw care", completionState: "scheduled", contentState: "outline", workoutSeconds: 1800 }, build: null }] } as unknown as TodayResponse;
+  it("the day's session by its own name and length — beside a quick start of that name, it is plainly another thing", () => {
+    const named = {
+      todaySessions: [
+        { workout: { id: "w-2", origin: "program", title: "Jaw care · Gentle flow", completionState: "scheduled", contentState: "outline", workoutSeconds: 1800 }, build: { theme: "Gentle flow", minutes: null } },
+      ],
+    } as unknown as TodayResponse;
     const tiles = fallbackTiles({ today: named, quick, templates: [] });
-    expect(tiles.map((t) => t.title)).toEqual(["Jaw care", "Desk reset", "Hip opener"]);
-    expect(tiles[0]).toMatchObject({ key: "session:w-2", minutes: 30 });
+    expect(tiles.map((t) => [t.kind, t.title, t.minutes])).toEqual([
+      ["session", "Jaw care", 30],
+      ["quick", "Jaw care", 5],
+      ["quick", "Desk reset", 8],
+    ]);
   });
 
   it("no programme session to do (none, done, a Studio workout): templates and quick starts fill the three", () => {
@@ -283,9 +332,14 @@ describe("the plan's refusals, in plain words", () => {
 
   it("the server's why joins the words only where it adds to them", () => {
     expect(refusedLine({ error: "past_date", why: "Wed 13 May has passed." })).toEqual({ lead: "Its day has passed.", detail: null });
+    // Said once: the day's words, then what it refuses — never "The day doesn't allow it now. The day now refuses it: …".
     expect(refusedLine({ error: "invalid_doc", why: "The day now refuses it: tuck jumps are closed today." })).toEqual({
+      lead: "The day doesn't allow it now: tuck jumps are closed today.",
+      detail: null,
+    });
+    expect(refusedLine({ error: "invalid_doc", why: "Box jumps aren't in the library any more." })).toEqual({
       lead: "The day doesn't allow it now.",
-      detail: "The day now refuses it: tuck jumps are closed today.",
+      detail: "Box jumps aren't in the library any more.",
     });
   });
 

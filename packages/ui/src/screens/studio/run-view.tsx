@@ -14,7 +14,7 @@
  * and its why are the athlete's or the model's words: rendered as text. A line's detail is a short key: value list, cut
  * to size — never raw JSON. Status is never colour alone: each line's mark is a glyph with its word for a reader.
  */
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, ApiError, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus } from "@rg/api-client";
@@ -31,6 +31,7 @@ import {
   OUT_OF_CREDITS_FALLBACK,
   runLines,
   statusWord,
+  tileKindWord,
   usd,
   type Asked,
   type Failure,
@@ -67,9 +68,14 @@ export function RunView({ run, status, events, inFlight = false, dueRole = null,
   const shown = { ...run, status };
   const live = isLive(status);
   const word = statusWord(shown, dueRole);
-  const lines = useMemo(() => runLines(events), [events]);
-  const asked = status === "waiting_athlete" ? askedOf(events) : null;
+  const waiting = status === "waiting_athlete";
+  // While it waits on the athlete, the question is its card on top, not a line of the trail too (lead's QA, Q4).
+  const lines = useMemo(() => runLines(events, { waiting }), [events, waiting]);
+  const asked = waiting ? askedOf(events) : null;
   const estimate = estimateLine(run);
+  // What a screen reader hears as it changes: the state and the newest line — the question it waits on, a stop.
+  const question = waiting ? [...events].sort((a, b) => b.seq - a.seq).find((e) => e.kind === "question")?.summary : undefined;
+  const newest = question ?? lines.at(-1)?.summary;
   return (
     <section className="coach-run" aria-labelledby={headingId}>
       <div className="coach-run-head">
@@ -78,6 +84,9 @@ export function RunView({ run, status, events, inFlight = false, dueRole = null,
         </h2>
         <span className="coach-run-spend">{usd(run.costUsd)}</span>
       </div>
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {newest ? `Coach · ${word}. ${newest}` : `Coach · ${word}.`}
+      </p>
       {notice}
       {run.request ? <p className="coach-run-request">“{run.request}”</p> : null}
       {estimate ? <p className="coach-run-estimate">{estimate}</p> : null}
@@ -117,6 +126,7 @@ function RunLines({
   const [undone, setUndone] = useState<ReadonlySet<string>>(new Set());
   const hidden = all ? 0 : Math.max(0, lines.length - LINES_SHOWN);
   const undo = useMutation({
+    networkMode: "always",
     mutationFn: (handle: string) => api.coachRunUndoAnswer(runId, handle),
     onSuccess: (_res, handle) => {
       setUndone((s) => new Set([...s, handle]));
@@ -162,6 +172,8 @@ function RunLines({
 const GLYPH: Record<RunLine["glyph"], { mark: string; word: string }> = {
   done: { mark: "✓", word: "Done: " },
   error: { mark: "!", word: "Didn't work: " },
+  // An outcome that is no step done (nothing was proposed): a neutral mark, and no word claiming it.
+  neutral: { mark: "–", word: "" },
 };
 
 function LineItem({ line, undo, undoing }: { line: RunLine; undo: (() => void) | null; undoing: boolean }) {
@@ -174,7 +186,7 @@ function LineItem({ line, undo, undoing }: { line: RunLine; undo: (() => void) |
       <span className="coach-line-mark" aria-hidden="true">
         {g.mark}
       </span>
-      <span className="visually-hidden">{g.word}</span>
+      {g.word ? <span className="visually-hidden">{g.word}</span> : null}
       {sections.length > 0 ? (
         <button type="button" className="coach-line-text coach-line-open" aria-expanded={open} aria-controls={detailId} onClick={() => setOpen((v) => !v)}>
           {line.summary}
@@ -213,6 +225,7 @@ function LineItem({ line, undo, undoing }: { line: RunLine; undo: (() => void) |
 function CancelRun({ run, onRun }: { run: CoachRunDto; onRun?: (run: CoachRunDto) => void }) {
   const [asking, setAsking] = useState(false);
   const cancel = useMutation({
+    networkMode: "always",
     mutationFn: () => api.coachRunCancel(run.id),
     onSuccess: (res) => {
       setAsking(false);
@@ -271,6 +284,7 @@ export function QuestionCard({
   onRefresh?: () => void;
 }) {
   const send = useMutation({
+    networkMode: "always",
     mutationFn: (body: Parameters<typeof api.coachRunAnswer>[1]) => api.coachRunAnswer(run.id, body),
     onSuccess: (res) => onRun?.(res.run),
     onError: (e) => {
@@ -278,8 +292,17 @@ export function QuestionCard({
     },
   });
   const lead = [...events].sort((a, b) => b.seq - a.seq).find((e) => e.kind === "question")?.summary;
+  // The question takes the focus to its first answer when it appears — unless the athlete is typing somewhere (the
+  // composer's field): their words keep it.
+  const card = useRef<HTMLDivElement>(null);
+  const questionSeq = [...events].filter((e) => e.kind === "question").at(-1)?.seq;
+  useEffect(() => {
+    const active = typeof document === "undefined" ? null : document.activeElement;
+    if (active instanceof HTMLTextAreaElement || (active instanceof HTMLInputElement && active.type !== "checkbox" && active.type !== "radio")) return;
+    card.current?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled])")?.focus();
+  }, [questionSeq]);
   return (
-    <div className="coach-ask" role="group" aria-label="The coach asks">
+    <div ref={card} className="coach-ask" role="group" aria-label="The coach asks">
       {asked.kind === "check" ? (
         <CheckAsk lead={lead ?? null} why={asked.why} busy={send.isPending} onCheck={(id) => send.mutate({ conditionCheckId: id })} onSkip={() => send.mutate({ dismissed: true })} />
       ) : (
@@ -427,6 +450,7 @@ export function StoppedLine({ failure, proposed, tiles }: { failure: Failure; pr
       <div className="stu-quick coach-fallback-tiles">
         {tiles.map((t) => (
           <Link key={t.key} className="stu-qs" to={t.href}>
+            <span className="stu-qs-kind">{tileKindWord(t)}</span>
             <span className="stu-qs-name">{t.title}</span>
             {t.minutes !== null ? (
               <span className="stu-qs-min">

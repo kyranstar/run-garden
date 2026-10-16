@@ -88,7 +88,8 @@ export function mergeEvents(have: readonly CoachRunEventDto[], incoming: readonl
 /** The highest seq held: what a poll reads after. */
 export const lastSeq = (events: readonly CoachRunEventDto[]): number => events.reduce((m, e) => Math.max(m, e.seq), 0);
 
-export type Glyph = "done" | "error";
+/** ✓ a step done, ! one that didn't work, – an outcome that is neither (nothing was proposed). */
+export type Glyph = "done" | "error" | "neutral";
 
 /** One line of the trail. */
 export interface RunLine {
@@ -123,26 +124,41 @@ function isErrorEvent(e: CoachRunEventDto): boolean {
   return e.kind === "error" || (e.kind === "tool_result" && record(e.payload)?.ok === false);
 }
 
+/** An event's mark: ! for what went wrong, – for an outcome that is no step done (nothing proposed), else ✓. */
+function glyphOf(e: CoachRunEventDto): Glyph {
+  if (isErrorEvent(e)) return "error";
+  return record(e.payload)?.proposed === false ? "neutral" : "done";
+}
+
+/** A question's line once it was answered: what the coach asked, in the athlete's words. */
+function askedLine(e: CoachRunEventDto): string {
+  return record(record(e.payload)?.data)?.check === "condition" ? "Asked for today's condition check." : `Asked you: ${e.summary}`;
+}
+
 /**
  * The trail's lines, from the events alone (agent-design M10: never from what the model said between tools): one line
  * an event, a `tool_call` and the `tool_result` that answers it one line (the result's summary). A question is a line
- * too ("The coach asked …"); its card sits at the top while it waits.
+ * once asked ("Asked you: …"); the one the coach waits on (`waiting`) is no line — its card sits on top (lead's QA, Q4).
  */
-export function runLines(events: readonly CoachRunEventDto[]): RunLine[] {
+export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boolean } = {}): RunLine[] {
   const lines: RunLine[] = [];
   const openCalls = new Map<string, RunLine>();
-  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+  const sorted = [...events].sort((a, b) => a.seq - b.seq);
+  const pending = o.waiting ? sorted.filter((e) => e.kind === "question").at(-1) : undefined;
+  for (const e of sorted) {
+    if (e === pending) continue;
     const key = toolKey(e);
     if (e.kind === "tool_result" && key && openCalls.has(key)) {
       const line = openCalls.get(key)!;
       openCalls.delete(key);
       line.events.push(e);
       line.summary = e.summary;
-      line.glyph = isErrorEvent(e) ? "error" : "done";
+      line.glyph = glyphOf(e);
       line.undo = line.undo ?? undoHandleOf(e);
       continue;
     }
-    const line: RunLine = { key: e.seq, summary: e.summary, glyph: isErrorEvent(e) ? "error" : "done", events: [e], undo: undoHandleOf(e) };
+    const summary = e.kind === "question" ? askedLine(e) : e.summary;
+    const line: RunLine = { key: e.seq, summary, glyph: glyphOf(e), events: [e], undo: undoHandleOf(e) };
     lines.push(line);
     if (e.kind === "tool_call" && key) openCalls.set(key, line);
   }
@@ -156,13 +172,31 @@ export const DETAIL_VALUE_MAX = 160;
 /** Rows a section shows, at most. */
 export const DETAIL_ROWS_MAX = 12;
 
-/** Payload keys that say nothing to the athlete. */
-const QUIET_KEYS = new Set(["by", "ok", "tool", "untrusted", "signature", "toolUseId", "proposalId", "runId", "handle", "undo"]);
+/** Payload keys that say nothing to the athlete: the system's own ids, revisions, kinds and markers (fix round, M6). */
+const QUIET_KEYS = new Set([
+  "by", "ok", "tool", "untrusted", "signature", "toolUseId", "proposalId", "runId", "handle", "undo",
+  "id", "opId", "workoutId", "baseRev", "rev", "reviewRunId", "round", "kind", "final", "proposal", "asOf",
+]);
+
+/** Keys a tool's input or receipt uses, in the athlete's words. */
+const KEY_WORDS: Readonly<Record<string, string>> = {
+  doc: "Workout",
+  target: "For",
+  changeNote: "What changed",
+  query: "Searched for",
+  date: "Day",
+  mustFix: "Must fix",
+  questions: "Questions",
+};
+
+/** The system's words for the athlete, as they would say them. */
+const yourWords = (s: string): string => s.replace(/\bthe athlete's\b/g, "your").replace(/\bthe athlete\b/g, "you");
 
 const clip = (s: string, max = DETAIL_VALUE_MAX): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 
 /** "baseRev" → "Base rev"; "condition_safety" → "Condition safety". */
 export function keyWords(key: string): string {
+  if (KEY_WORDS[key]) return KEY_WORDS[key]!;
   const spaced = key
     .replace(/[_-]+/g, " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -232,7 +266,7 @@ export function detailOf(line: RunLine): DetailSection[] {
     }
     const back: DetailRow[] = [];
     const prov = record(p.provenance);
-    if (prov && typeof prov.source === "string") back.push({ key: "From", value: clip(prov.source) });
+    if (prov && typeof prov.source === "string") back.push({ key: "Read from", value: clip(yourWords(prov.source)) });
     if (Array.isArray(p.missing) && p.missing.length > 0) back.push({ key: "Missing", value: valueWords(p.missing) });
     if (typeof p.error === "string") back.push({ key: "Why not", value: keyWords(p.error) });
     const receipt = record(p.receipt);
@@ -371,24 +405,34 @@ export function failureOf(run: Pick<CoachRunDto, "status" | "error">): Failure |
 
 // ── Ways to train now ───────────────────────────────────────────────────────
 
+/** What a way to train now is: the day's programme session, one of the athlete's templates, a built-in quick start. */
+export type FallbackKind = "session" | "template" | "quick";
+
 export interface FallbackTile {
   key: string;
+  kind: FallbackKind;
   title: string;
   minutes: number | null;
   href: string;
 }
 
+/** A tile's kind as it says it (lead's QA, Q2): so the day's session never reads as a quick start of another length. */
+export function tileKindWord(t: Pick<FallbackTile, "kind">): string {
+  return t.kind === "session" ? "Today's session" : t.kind === "template" ? "Your template" : "Quick start";
+}
+
 /**
- * Up to three ways to train now (spec §10), as the Studio's own tiles: the day's programme session when there is one
- * still to do (Today's read: its sheet, where Start is), then a pinned or recent template, then the built-in quick
- * starts — filling the three.
+ * Up to three ways to train now (spec §10), as the Studio's own tiles, each saying what kind it is: the day's programme
+ * session when there is one still to do — by its own name (without the theme its build appends) and length — opening
+ * its sheet, where Start is (Today's read); then a pinned or recent template; then the built-in quick starts — filling
+ * the three.
  */
 export function fallbackTiles(o: {
   today: Pick<TodayResponse, "todaySessions"> | null | undefined;
   /** The quick-start tiles (`quickTiles`): built-in ones first, then pinned templates. */
-  quick: readonly FallbackTile[];
+  quick: ReadonlyArray<Omit<FallbackTile, "kind">>;
   /** The athlete's templates' tiles, in the templates list's order (pinned, then recent). */
-  templates: readonly FallbackTile[];
+  templates: ReadonlyArray<Omit<FallbackTile, "kind">>;
 }): FallbackTile[] {
   const out: FallbackTile[] = [];
   const session = (o.today?.todaySessions ?? []).find(
@@ -396,21 +440,22 @@ export function fallbackTiles(o: {
   );
   if (session) {
     const seconds = session.workout.workoutSeconds;
+    const theme = session.build?.theme;
+    const title = theme && session.workout.title.endsWith(` · ${theme}`) ? session.workout.title.slice(0, -` · ${theme}`.length) : session.workout.title;
     out.push({
       key: `session:${session.workout.id}`,
-      title: session.workout.title,
+      kind: "session",
+      title,
       // Its build's minutes; before it is built, the session's own length.
       minutes: session.build?.minutes ?? (typeof seconds === "number" && seconds > 0 ? Math.round(seconds / 60) : null),
       href: `/plan?workout=${encodeURIComponent(session.workout.id)}`,
     });
   }
-  // Never two tiles of one name (a programme session titled as a quick start is): the first stands.
-  const named = (t: FallbackTile) => out.some((x) => x.key === t.key || x.title.trim().toLowerCase() === t.title.trim().toLowerCase());
-  const template = o.templates.find((t) => !named(t));
-  if (template) out.push(template);
+  const template = o.templates[0];
+  if (template) out.push({ ...template, kind: "template" });
   for (const q of o.quick) {
     if (out.length >= 3) break;
-    if (!q.key.startsWith("template:") && !named(q)) out.push(q);
+    if (!q.key.startsWith("template:") && !out.some((x) => x.key === q.key)) out.push({ ...q, kind: "quick" });
   }
   return out.slice(0, 3);
 }
@@ -459,11 +504,21 @@ export function refusalWords(r: { error: string; cause?: string }): string {
 /** Codes whose words say it all: the why (the server's words, about this op) adds to the others. */
 const SAID_BY_CODE = new Set(["past_date", "stale_revision", "not_found", "run_unsupported", "restore_in_progress", "race"]);
 
+/** How the server begins an `invalid_doc` why (Task 8): what follows is the rule the day now refuses. */
+const DAY_REFUSES = /^The day now refuses it:\s*/;
+
 /** The refused op's line: its code's words, and the server's own why where it adds something (rendered as text). */
 export function refusedLine(r: { error: string; why: string; cause?: string }): { lead: string; detail: string | null } {
-  const lead = refusalWords(r);
   const why = r.why.trim();
-  return { lead, detail: SAID_BY_CODE.has(r.error) || why.length === 0 || why === lead ? null : why };
+  // Said once: "The day doesn't allow it now: <the rule>" — never the day's words twice (fix round, M7).
+  if (r.error === "invalid_doc" && DAY_REFUSES.test(why)) {
+    const rest = why.replace(DAY_REFUSES, "").trim();
+    if (rest) return { lead: `The day doesn't allow it now: ${rest}`, detail: null };
+  }
+  const lead = refusalWords(r);
+  // A cause the words name says it all too (the server's why for it is the same thing, shorter).
+  const named = r.error === "not_editable" && !!r.cause && r.cause !== "unknown";
+  return { lead, detail: SAID_BY_CODE.has(r.error) || named || why.length === 0 || why === lead ? null : why };
 }
 
 /** "Thu 6 PM" — a day and, when set, a time. */

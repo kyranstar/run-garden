@@ -4,6 +4,8 @@
  * each with its word for a reader), the question while the coach waits, Cancel while it is live — and, once it stopped
  * short, what stopped it, then ways to train now when nothing was proposed. Synthetic data only.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { CoachRunDto, CoachRunEventDto } from "@rg/api-client";
@@ -132,6 +134,28 @@ describe("the run view, by status", () => {
     for (const s of ["failed", "stopped_cap", "expired", "cancelled"] as const) expect(view(run({ status: s })).words).not.toContain("Cancel");
   });
 
+  it("a polite live region says the state and the newest line — a stop too", () => {
+    const live = view(run(), trail, { inFlight: true }).html;
+    expect(live).toMatch(/<p class="visually-hidden" role="status" aria-live="polite">Coach · designing\. Draft — “Wake, load, open”: 31 min<\/p>/);
+    const stopped = view(run({ status: "failed", error: "gateway_402" }), [...trail, ev(6, "error", "The AI account is out of credits — the coach stopped here.")]).html;
+    expect(stopped).toContain('aria-live="polite">Coach · stopped. The AI account is out of credits — the coach stopped here.</p>');
+  });
+
+  it("while it waits on the athlete, the question is its card on top — not a line of the trail too", () => {
+    const { html } = view(run({ status: "waiting_athlete" }), [...trail, question]);
+    const trailHtml = html.slice(html.indexOf('<ol class="coach-run-lines">'));
+    expect(trailHtml).not.toContain("How are the hips today?");
+    expect(html.slice(html.indexOf("coach-ask"), html.indexOf('<ol class="coach-run-lines">'))).toContain("How are the hips today?");
+    expect(text(view(run({ status: "active" }), [...trail, question, ev(6, "note", "You answered: tight")]).html)).toContain("Done: Asked you: How are the hips today?");
+  });
+
+  it("nothing proposed is no step done: its mark is neutral, with no word claiming it", () => {
+    const { html, words } = view(run({ status: "failed", error: "retries" }), [...trail, ev(6, "note", "Nothing was proposed.", { proposed: false })]);
+    expect(html).toContain("coach-line--neutral");
+    expect(words).not.toContain("Done: Nothing was proposed.");
+    expect(words).toContain("Nothing was proposed.");
+  });
+
   it("lost the connection: says so, with Retry", () => {
     const { words } = view(run(), trail, { lost: true });
     expect(words).toContain("Lost the connection. It'll pick up when you're back.");
@@ -153,11 +177,22 @@ describe("the run view, by status", () => {
   });
 });
 
+describe("the touch floor (fix round, M5)", () => {
+  it("a trail line that opens and a suggestion's workout reach 44 px on a touch screen", () => {
+    const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+    const blocks = [...css.matchAll(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]!);
+    const ours = blocks.find((b) => b.includes(".coach-line-open"));
+    expect(ours).toBeDefined();
+    expect(ours).toContain(".coach-pc-name");
+    expect(ours).toContain("min-height: var(--tap)");
+  });
+});
+
 describe("when it stopped short", () => {
   const tiles: FallbackTile[] = [
-    { key: "session:w-1", title: "Strength A", minutes: 35, href: "/plan?workout=w-1" },
-    { key: "template:t1", title: "Pinned one", minutes: 20, href: "/studio/build/template/t1" },
-    { key: "condition_care", title: "Jaw care", minutes: 5, href: "/studio/build/quick/condition_care" },
+    { key: "session:w-1", kind: "session", title: "Strength A", minutes: 35, href: "/plan?workout=w-1" },
+    { key: "template:t1", kind: "template", title: "Pinned one", minutes: 20, href: "/studio/build/template/t1" },
+    { key: "condition_care", kind: "quick", title: "Jaw care", minutes: 5, href: "/studio/build/quick/condition_care" },
   ];
   const stopped = (error: string, proposed: boolean, t = tiles) =>
     renderAt("/studio", createElement(StoppedLine, { failure: failureOf({ status: error === "expired" ? "expired" : "failed", error })!, proposed, tiles: t }));
@@ -169,6 +204,10 @@ describe("when it stopped short", () => {
     expect(html).toContain('href="/studio/build/template/t1"');
     expect(html).toContain('href="/studio/build/quick/condition_care"');
     expect(html.match(/class="stu-qs"/g)).toHaveLength(3);
+    // Each says what kind of thing it is (the lead's QA, Q2).
+    expect(text(html)).toContain("Today's session Strength A");
+    expect(text(html)).toContain("Your template Pinned one");
+    expect(text(html)).toContain("Quick start Jaw care");
   });
 
   it("another stop: what failed and what happens next, then the ways to train now", () => {

@@ -30,11 +30,14 @@ export interface LoopDeps {
   visible: () => boolean;
   /** Called on every visibility change; answers the unsubscribe. */
   onVisibility: (fn: () => void) => () => void;
+  /** Called when the browser says the network is back (`window`'s `online`); answers the unsubscribe. */
+  onOnline?: (fn: () => void) => () => void;
 }
 
-/** The page's own: the api client, the window's timers, the document's visibility. */
+/** The page's own: the api client, the window's timers, the document's visibility and the window's network. */
 export function browserDeps(): LoopDeps {
   const doc = typeof document === "undefined" ? null : document;
+  const win = typeof window === "undefined" ? null : window;
   return {
     step: (id) => api.coachRunStep(id),
     read: (id, afterSeq) => api.coachRun(id, afterSeq),
@@ -46,6 +49,11 @@ export function browserDeps(): LoopDeps {
       if (!doc) return () => undefined;
       doc.addEventListener("visibilitychange", fn);
       return () => doc.removeEventListener("visibilitychange", fn);
+    },
+    onOnline: (fn) => {
+      if (!win) return () => undefined;
+      win.addEventListener("online", fn);
+      return () => win.removeEventListener("online", fn);
     },
   };
 }
@@ -82,12 +90,15 @@ export class CoachRunLoop {
   private disposed = false;
   private unsubscribe: (() => void) | null = null;
   private listeners = new Set<(s: LoopSnapshot) => void>();
+  /** The seed carried the run's trail (`events`, even none): no read is needed before the first step. */
+  private readonly trailKnown: boolean;
 
   constructor(
     readonly runId: string,
     private readonly deps: LoopDeps,
     seed: { run?: CoachRunDto | null; events?: CoachRunEventDto[]; status?: CoachRunStatus } = {},
   ) {
+    this.trailKnown = seed.events !== undefined;
     this.snap = {
       run: seed.run ?? null,
       status: seed.status ?? seed.run?.status ?? "active",
@@ -108,11 +119,20 @@ export class CoachRunLoop {
     return () => this.listeners.delete(fn);
   }
 
-  /** Start stepping (when the run can be stepped) and following the page's visibility. */
+  /** Start stepping (when the run can be stepped) and following the page's visibility and the network. */
   start(): void {
     if (this.disposed) return;
-    this.unsubscribe = this.deps.onVisibility(() => this.visibilityChanged());
-    this.schedule(0);
+    const offVisibility = this.deps.onVisibility(() => this.visibilityChanged());
+    const offOnline = this.deps.onOnline?.(() => this.cameOnline()) ?? (() => undefined);
+    this.unsubscribe = () => {
+      offVisibility();
+      offOnline();
+    };
+    // Seeded without its trail (an `existing` answer: the run as it stands, its events unknown): read it first — a
+    // question it waits on shows — and the read steps a run that can be stepped (M1). Seeded with it (the current run's
+    // read; a new run, which has none yet): step at once.
+    if (!this.trailKnown) void this.read(true);
+    else this.schedule(0);
   }
 
   /** Stop: no timer left, nothing more asked; a step already out is left to finish, its answer unread. */
@@ -178,6 +198,17 @@ export class CoachRunLoop {
     }, Math.max(0, ms));
   }
 
+  /** The network is back: a loop that lost the connection goes on (M2). */
+  private cameOnline(): void {
+    if (!this.disposed && this.snap.lost) this.retry();
+  }
+
+  /** A run that can be stepped, with nothing scheduled and no step out, is stepped (never before its nextDue): M1. */
+  private stepIfIdle(): void {
+    if (this.disposed || this.snap.lost || this.snap.gone || this.snap.inFlight || this.stepTimer !== null) return;
+    if (isSteppable(this.snap.status)) this.schedule(stepDelay({ nextDueAt: this.nextDueAt, now: this.deps.now(), backoff: 0 }));
+  }
+
   private visibilityChanged(): void {
     if (this.disposed || !this.deps.visible()) return;
     // Back in view: a step owed while hidden goes now (still never before its nextDue); a lost loop tries again.
@@ -195,13 +226,18 @@ export class CoachRunLoop {
       this.owed = true;
       return;
     }
-    // Another loop of this tab on this run still has a step out (the screen was left and opened again): wait for it.
+    // Another loop of this tab on this run still has a step out (the screen was left and opened again): wait for it — a
+    // step in flight all the same, its lines read as they land (M3) — then read where it left the run.
     const other = IN_FLIGHT.get(this.runId);
     if (other) {
+      this.set({ inFlight: true });
+      this.startPoll();
       await other.catch(() => undefined);
+      this.clearPoll();
       if (this.disposed) return;
-      await this.read(false);
-      return this.schedule(0);
+      this.set({ inFlight: false });
+      await this.read(true);
+      return;
     }
     await this.step();
   }
@@ -237,10 +273,12 @@ export class CoachRunLoop {
         this.idle = 0;
         this.schedule(stepDelay({ nextDueAt: this.nextDueAt, now: this.deps.now(), backoff: 0 }));
       } else {
-        // Live, with nothing due now (another request took the claim): look again after a while.
+        // Live, with nothing due now (another request took the claim): look again after a while — scheduled first, so
+        // the read doesn't step at once — unless the read finds the run waiting or over.
         this.idle += 1;
+        this.schedule(backoffMs(this.idle));
         await this.read(true);
-        if (isSteppable(this.snap.status)) this.schedule(backoffMs(this.idle));
+        if (!isSteppable(this.snap.status)) this.clearStep();
       }
     } else {
       // Waiting on the athlete, or over: one read for the run's figures and anything the step left unsaid.
@@ -253,10 +291,12 @@ export class CoachRunLoop {
     const kind = stepErrorKind(e);
     if (kind === "gone") return this.set({ gone: true });
     if (kind === "busy") {
-      // Another tab or device is stepping: read what it has written, and try again after the backoff.
+      // Another tab or device is stepping: try again after the backoff (scheduled first, so the read doesn't step at
+      // once), and read what it has written meanwhile — a run it left waiting or over isn't stepped.
       this.busy += 1;
+      this.schedule(stepDelay({ nextDueAt: this.nextDueAt, now: this.deps.now(), backoff: backoffMs(this.busy) }));
       await this.read(true);
-      if (isSteppable(this.snap.status)) this.schedule(stepDelay({ nextDueAt: this.nextDueAt, now: this.deps.now(), backoff: backoffMs(this.busy) }));
+      if (!isSteppable(this.snap.status)) this.clearStep();
       return;
     }
     this.failures += 1;
@@ -264,7 +304,11 @@ export class CoachRunLoop {
     this.schedule(stepDelay({ nextDueAt: this.nextDueAt, now: this.deps.now(), backoff: backoffMs(this.failures) }));
   }
 
-  /** Read the run's events after the last held, and its figures; `withStatus` (no step out) takes its status too. */
+  /**
+   * Read the run's events after the last held, and its figures; `withStatus` (no step out) takes its status too — and
+   * then a run that can be stepped, with nothing scheduled and no step out, is stepped (M1): answered on another device,
+   * resumed by a refresh.
+   */
   private async read(withStatus: boolean): Promise<void> {
     if (this.disposed) return;
     try {
@@ -277,6 +321,7 @@ export class CoachRunLoop {
     } catch {
       // A read that fails changes nothing: the next one, or the next step, catches up.
     }
+    if (withStatus) this.stepIfIdle();
   }
 
   private startPoll(): void {
