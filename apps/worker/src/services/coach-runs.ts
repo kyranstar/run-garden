@@ -1169,8 +1169,22 @@ export async function getRun(
 /** How many of its latest events the Studio's read of the current run answers (`currentRun`). */
 export const CURRENT_RUN_EVENTS = 50;
 
-/** What `currentRun` spends beyond the route's own: the pick (its proposal read with it), the run's tree, its events. */
-export const CURRENT_RUN_STATEMENTS = 3;
+/** What `currentRun` spends beyond the route's own: the pick (its proposal read with it), the run's tree, its events,
+ * and the other suggestions still open (`alsoOpen`). */
+export const CURRENT_RUN_STATEMENTS = 4;
+
+/** The other suggestions still open the Studio lists under the current one, at most (Task 13's fix wave, R2). */
+export const ALSO_OPEN_MAX = 5;
+
+/** Another designed suggestion still the athlete's to decide (Task 13's fix wave, R2): its first open day and that op's
+ * time (none for a now design: it is placed when approved), and how many of its ops are still open today or later. */
+export interface AlsoOpenDto {
+  proposalId: string;
+  title: string;
+  date: string;
+  time: string | null;
+  items: number;
+}
 
 /** The design proposal a run holds open for the athlete: its id, its status and its flags (a stop's note among them). */
 export interface OpenProposalDto {
@@ -1205,6 +1219,47 @@ export const CURRENT_DECIDED_MINUTES = 10;
 /** The joined proposal was decided by the athlete — approved, partly, or declined — at or after the bound time. */
 const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially_approved', 'declined') AND p.resolved_at >= ${since})`;
 
+/** An op of the joined proposal `p` still the athlete's to decide (`OPEN_OP`'s rule for one op `o`). */
+const OPEN_ONE = sql.raw(
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust') ` +
+    `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
+);
+
+/**
+ * The athlete's other designed suggestions still open (Task 13's fix wave, R2): a design proposal (`dp-…`) pending or
+ * partly approved — so never a rehearsal's, nor one still unreviewed — not past its own day, with an op still open dated
+ * `today` or later; newest first, at most ALSO_OPEN_MAX, never `shown` (the one the run holds). One statement.
+ */
+async function alsoOpenOf(db: Db, userId: string, shown: string, today: string): Promise<AlsoOpenDto[]> {
+  const rows = (await db.all(sql`
+    SELECT p.id AS id, p.title AS title, (
+      SELECT json_group_array(json_object('date', d, 'time', t)) FROM (
+        SELECT json_extract(o.value, '$.date') AS d,
+          CASE WHEN json_extract(o.value, '$.target.atNow') THEN NULL ELSE json_extract(o.value, '$.time') END AS t
+        FROM json_each(p.ops) o WHERE ${OPEN_ONE} AND json_extract(o.value, '$.date') >= ${today}
+        ORDER BY d, coalesce(t, '')
+      )) AS open
+    FROM coach_proposals p
+    WHERE p.user_id = ${userId} AND substr(p.id, 1, ${designProposalId("").length}) = ${designProposalId("")} AND p.id <> ${shown}
+      AND p.status IN ('pending', 'partially_approved') AND json_valid(p.ops) AND p.expires_at >= ${today}
+      AND EXISTS (SELECT 1 FROM json_each(p.ops) o WHERE ${OPEN_ONE} AND json_extract(o.value, '$.date') >= ${today})
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT ${ALSO_OPEN_MAX}
+  `)) as Array<{ id: string; title: string | null; open: string | null }>;
+  return rows.flatMap((r) => {
+    let open: Array<{ date?: unknown; time?: unknown }> = [];
+    try {
+      const parsed: unknown = r.open ? JSON.parse(r.open) : [];
+      open = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      open = [];
+    }
+    const first = open[0];
+    if (!first || typeof first.date !== "string") return [];
+    return [{ proposalId: r.id, title: r.title ?? "", date: first.date, time: typeof first.time === "string" ? first.time : null, items: open.length }];
+  });
+}
+
 /**
  * The run the Studio shows when it opens (Task 9): the athlete's newest live main run; else the newest main run that is
  * over whose design proposal still has an op to decide — pending, or partially approved with an op undecided, refused
@@ -1212,15 +1267,16 @@ const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially
  * proposal the sweep hasn't expired yet is not shown as open: fix round, M8) — or whose proposal the athlete decided
  * (approved, partly, declined) in the last CURRENT_DECIDED_MINUTES, so a reload during Approve opens on what came of it
  * (an open one first: the go-live review, M6); else null. Never a rehearsal's (its lane is
- * its own: fix wave 3A, A15), never a sub-run. With its last CURRENT_RUN_EVENTS events, oldest first, and the proposal
- * it holds open. CURRENT_RUN_STATEMENTS: the pick — one statement, the proposals and the athlete's preferences (their
- * timezone: their today) read with it — then the tree and the events; the pick alone when there is none.
+ * its own: fix wave 3A, A15), never a sub-run. With its last CURRENT_RUN_EVENTS events, oldest first, the proposal it
+ * holds open, and the athlete's other suggestions still open (`alsoOpen`, Task 13's fix wave, R2: the Studio lists them
+ * under the card). CURRENT_RUN_STATEMENTS: the pick — one statement, the proposals and the athlete's preferences (their
+ * timezone: their today) read with it — then the tree, the events and the others open; the pick alone when there is none.
  */
 export async function currentRun(
   db: Db,
   userId: string,
   now: Date = new Date(),
-): Promise<{ run: CoachRunDto; events: CoachRunEventDto[]; proposal: OpenProposalDto | null } | null> {
+): Promise<{ run: CoachRunDto; events: CoachRunEventDto[]; proposal: OpenProposalDto | null; alsoOpen: AlsoOpenDto[] } | null> {
   const decided = decidedSince(new Date(now.getTime() - CURRENT_DECIDED_MINUTES * 60_000).toISOString());
   const candidates = (await db.all(sql`
     SELECT r.id AS id, CASE WHEN ${LIVE_ROOT} THEN 1 ELSE 0 END AS live, p.id AS proposalId, p.status AS proposalStatus,
@@ -1266,7 +1322,8 @@ export async function currentRun(
     (openToday(pick) || decidedNow(pick)) && pick.proposalId && pick.proposalStatus
       ? { id: pick.proposalId, status: pick.proposalStatus, flags: stringsOf(pick.flags) }
       : null;
-  return { run: runDto(root, nodes), events, proposal };
+  const alsoOpen = await alsoOpenOf(db, userId, designProposalId(root.id), today);
+  return { run: runDto(root, nodes), events, proposal, alsoOpen };
 }
 
 /** A JSON array's strings, in order (a proposal's flags, its open ops' days); none when it isn't one. */

@@ -15,10 +15,12 @@
  *                           alarm steps the run; never a model call in the request. A run waiting on the athlete, or
  *                           over: { status, nextDue: null, events }, nothing armed. Sign-in, the run and its events, and
  *                           one request to the object.
- *   GET  /current           → { run, events, proposal } | { run: null }   (what the Studio shows when it opens, Task 9:
- *                           the newest live main run, else the newest one over whose design proposal still has an op
- *                           to decide, or was decided in the last 10 minutes (a reload during Approve shows what came
- *                           of it) — never a rehearsal's; its last 50 events; that proposal — 2 + 3 statements, pinned)
+ *   GET  /current           → { run, events, proposal, alsoOpen } | { run: null }   (what the Studio shows when it opens,
+ *                           Task 9: the newest live main run, else the newest one over whose design proposal still has
+ *                           an op to decide, or was decided in the last 10 minutes (a reload during Approve shows what
+ *                           came of it) — never a rehearsal's; its last 50 events; that proposal; the other designed
+ *                           suggestions still open, newest first, at most 5 (Task 13's fix wave, R2) — 2 + 4
+ *                           statements, pinned)
  *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order; with the step alarm on, a
  *                           live run's object is told a client is here — its lease — and arms a step that is due)
  *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting; an answer to a check-in

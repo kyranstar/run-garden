@@ -396,14 +396,82 @@ describe("GET /api/coach/runs/current", () => {
     await events(live, 60);
     const res = await current();
     expect(res.status).toBe(200);
-    expect(CURRENT_RUN_STATEMENTS).toBe(3);
-    // The session is the route's own (requireUser: one statement here, within ROUTE_OVERHEAD); the read is 3, and the
-    // pick alone when there is no run to show.
+    expect(CURRENT_RUN_STATEMENTS).toBe(4);
+    // The session is the route's own (requireUser: one statement here, within ROUTE_OVERHEAD); the read is 4 — the
+    // pick, the tree, the events, the other suggestions still open — and the pick alone when there is no run to show.
     const none = await db.delete(schema.coachRuns).then(() => current());
     expect(res.cost - none.cost).toBe(CURRENT_RUN_STATEMENTS - 1);
     expect(none.cost).toBe(1 + 1);
     expect(res.cost).toBe(1 + CURRENT_RUN_STATEMENTS);
     expect(res.cost).toBeLessThanOrEqual(ROUTE_OVERHEAD + CURRENT_RUN_STATEMENTS);
+  });
+});
+
+describe("also waiting (Task 13's fix wave, R2): the other suggestions still open", () => {
+  /** Another run's open suggestion, as a design proposal: `n` ops for `dates`, the first `time`d (an atNow op's is none). */
+  async function other(o: { dates: string[]; time?: string; atNow?: boolean; status?: string; title?: string; id?: string; who?: string; outcome?: string }) {
+    const runId = await run({ status: "finished", who: o.who });
+    const id = o.id ?? designProposalId(runId);
+    const ops = o.dates.map((date, i) => ({
+      kind: "doc_workout",
+      target: { kind: "new", date, ...(o.atNow ? { atNow: true, notBefore: o.time } : {}) },
+      date,
+      ...(i === 0 && o.time ? { time: o.time } : {}),
+      doc: { title: `${o.title ?? "Other"} ${i + 1}` },
+      review: null,
+      issues: [],
+      derived: {},
+      by: { runId: `${runId}-d${i}`, role: "designer" },
+      toolUseId: `toolu_${i}`,
+      at: stamp(),
+      ...(o.outcome ? { outcome: { status: o.outcome, at: stamp() } } : {}),
+    }));
+    await db.insert(schema.coachProposals).values({
+      id, userId: o.who ?? userId, title: o.title ?? "Other", evidence: "", rationale: "", flags: [], ops, status: o.status ?? "pending",
+      createdAt: stamp(), expiresAt: addDays(today, 6),
+    });
+    return id;
+  }
+
+  it("lists the other designed suggestions with an open op today or later, newest first — never the one shown", async () => {
+    const a = await other({ title: "Calm hips", dates: [today], time: "18:00" });
+    const b = await other({ title: "Two days", dates: [addDays(today, 1), addDays(today, 2)] });
+    const shown = await run({ status: "finished" });
+    await proposal(shown, "pending", [null]);
+    const res = await current();
+    expect(res.body.run.id).toBe(shown);
+    expect(res.body.alsoOpen).toEqual([
+      { proposalId: b, title: "Two days", date: addDays(today, 1), time: null, items: 2 },
+      { proposalId: a, title: "Calm hips", date: today, time: "18:00", items: 1 },
+    ]);
+  });
+
+  it("a now suggestion reads as untimed; a live run's own proposal is never listed", async () => {
+    const now = await other({ title: "Jaw ease", dates: [today], time: "13:15", atNow: true });
+    const live = await run({ status: "active" });
+    await proposal(live, "pending", [null]);
+    const res = await current();
+    expect(res.body.run.id).toBe(live);
+    expect(res.body.alsoOpen).toEqual([{ proposalId: now, title: "Jaw ease", date: today, time: null, items: 1 }]);
+  });
+
+  it("never one decided, gone by, a rehearsal's, unreviewed, the thread's own, or another athlete's; at most five", async () => {
+    await other({ dates: [today], outcome: "applied" });
+    await other({ dates: [addDays(today, -1)] });
+    await other({ dates: [today], status: "rehearsal" });
+    await other({ dates: [today], status: "unreviewed" });
+    await other({ dates: [today], status: "declined" });
+    await other({ dates: [today], id: "thread-proposal-1" });
+    const { userId: someoneElse } = await makeTestUser(db);
+    await other({ dates: [today], who: someoneElse });
+    const shown = await run({ status: "active" });
+    expect((await current()).body.alsoOpen).toEqual([]);
+    const ids = [];
+    for (let i = 0; i < 7; i++) ids.push(await other({ title: `Open ${i}`, dates: [addDays(today, i % 3)] }));
+    const res = await current();
+    expect(res.body.run.id).toBe(shown);
+    expect(res.body.alsoOpen.map((x: { proposalId: string }) => x.proposalId)).toEqual(ids.slice(2).reverse());
+    expect(res.cost).toBe(1 + CURRENT_RUN_STATEMENTS);
   });
 });
 
