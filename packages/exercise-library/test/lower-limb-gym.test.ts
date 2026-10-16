@@ -109,8 +109,8 @@ describe("the added records", () => {
   test("gear: the barbell and machine moves only where a place has them; the stretches anywhere", () => {
     for (const id of BARBELL) expect(rec(id).equipment.all, id).toEqual(["barbell"]);
     expect(rec("legPress").equipment.all).toEqual(["machine"]);
-    expect(rec("latPulldown").equipment.oneOf.sort()).toEqual(["cable", "machine"]);
-    expect(rec("bandAssistedPullUp").equipment.all.sort()).toEqual(["band", "pull-up-bar"]);
+    expect([...rec("latPulldown").equipment.oneOf].sort()).toEqual(["cable", "machine"]);
+    expect([...rec("bandAssistedPullUp").equipment.all].sort()).toEqual(["band", "pull-up-bar"]);
     expect(rec("eccentricPullUp").equipment.all).toEqual(["pull-up-bar"]);
     for (const id of GYM) {
       expect(hasEquipment(rec(id), gear("gym")), `${id} at the gym`).toBe(true);
