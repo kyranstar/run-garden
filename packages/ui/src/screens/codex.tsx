@@ -12,7 +12,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import type { GardenPlant } from "@rg/domain";
 import { SPECIES_BY_ID, type UnlockGate } from "@rg/garden-engine";
 import { PlantSprite } from "@rg/garden-renderer";
-import { formatDayShort, formatDistance, type Units } from "../components.js";
+import { formatDayShort, formatDistance, type Units, type WorkoutMaker } from "../components.js";
 
 export interface CodexEntry {
   speciesId: string;
@@ -220,14 +220,15 @@ export const NUDGE_DISCIPLINE_LABEL: Record<NudgeDiscipline, string> = {
 };
 
 /** A planned workout, reduced to what the landing calculation needs. */
-export interface PlannedLite {
+/** A planned workout as the week's quest reads it; who made it rides along for the line that names its kind. */
+export interface PlannedLite extends Pick<WorkoutMaker, "appMade" | "origin"> {
   effectiveDate: string;
   category: string;
   /** Anything not completed/skipped/missed counts as still-to-do. */
   pending: boolean;
 }
 
-export interface LandingUnlock {
+export interface LandingUnlock extends Pick<WorkoutMaker, "appMade" | "origin"> {
   entry: CodexEntry;
   /** The date whose planned workout crosses the gate. */
   date: string;
@@ -266,7 +267,10 @@ export function landingUnlock(
       remaining -= 1;
       if (remaining === 0) {
         if (!best || w.effectiveDate < best.date) {
-          best = { entry: c, date: w.effectiveDate, category: w.category, ordinal: c.progress.target };
+          best = {
+            entry: c, date: w.effectiveDate, category: w.category, ordinal: c.progress.target,
+            ...(w.appMade !== undefined ? { appMade: w.appMade } : {}), ...(w.origin !== undefined ? { origin: w.origin } : {}),
+          };
         }
         break;
       }

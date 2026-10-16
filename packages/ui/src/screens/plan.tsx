@@ -8,7 +8,7 @@ import { approveProposal } from "../coach-approve.js";
 import {
   Banner,
   CategoryDot,
-  CATEGORY_LABELS,
+  workoutKindLabel,
   CompletionPill,
   ConfirmDialog,
   CorosPill,
@@ -74,7 +74,8 @@ export function WorkoutDetail(props: {
   );
 }
 
-function RunWorkoutDetail({
+/** The sheet every workout but an app session opens (exported for its tests). */
+export function RunWorkoutDetail({
   w,
   today,
   corosWritesEnabled,
@@ -275,7 +276,7 @@ function RunWorkoutDetail({
       <div className="stack">
         <div className="row">
           <CategoryDot category={w.category} />
-          <span className="muted">{CATEGORY_LABELS[w.category] ?? w.category}</span>
+          <span className="muted">{workoutKindLabel(w.category, w) ?? w.category}</span>
           <CompletionPill state={completion} />
           <CorosPill state={syncView} hideWhenHealthy />
         </div>

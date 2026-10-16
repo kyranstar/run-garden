@@ -134,6 +134,12 @@ export interface WorkoutDto {
   contentState?: "outline" | "built" | "started" | "done" | null;
   /** The program an app session belongs to (a Studio or template row: the account's Studio programme); null otherwise. */
   programId?: string | null;
+  /**
+   * The app made this workout: one of its own sessions (a programme's slot, an on-demand session, a Studio or template
+   * workout) or one the thread coach created. Absent for anything else — an import, and a COROS session the coach
+   * eased. The yoga kind of an app-made workout is "Mobility" (the owner, 2026-10-16).
+   */
+  appMade?: boolean;
   /** Human display name — the server substitutes category words when COROS
    * sent an opaque code ("T1004"); the raw code rides in corosName. */
   title: string;

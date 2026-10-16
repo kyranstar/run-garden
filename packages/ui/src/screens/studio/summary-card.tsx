@@ -21,7 +21,7 @@
  */
 import { useId } from "react";
 import { GLOSSARY } from "@rg/exercise-library";
-import { CATEGORY_LABELS } from "../../components.js";
+import { workoutKindLabel } from "../../components.js";
 import { Tooltip } from "../../components/tooltip.js";
 import { IconAlert, IconChevron, IconInfo } from "../../icons.js";
 import { areasWorked, BALANCE_LEVELS, balanceRows, type Judged, type Note } from "./build-model.js";
@@ -96,7 +96,7 @@ export function SummaryCard({
   const d = judged.derived;
   const errors = judged.notes.filter((n) => n.severity === "error");
   const warnings = judged.notes.filter((n) => n.severity === "warning");
-  const line = [d ? `${d.estimatedMinutes} min` : "No moves yet", d ? (CATEGORY_LABELS[d.category] ?? null) : null, place].filter(Boolean).join(" · ");
+  const line = [d ? `${d.estimatedMinutes} min` : "No moves yet", d ? (workoutKindLabel(d.category, { docSource: judged.doc?.source.kind ?? null }) ?? null) : null, place].filter(Boolean).join(" · ");
   const notesWord = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
   // Read-only, nothing here can be fixed: every note is counted as a note, in the neutral style.
   const fixing = readOnly ? 0 : errors.length;

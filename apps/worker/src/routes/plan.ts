@@ -384,6 +384,16 @@ async function loadWorkoutViews(
   return map;
 }
 
+/**
+ * The app made this row (the workout DTO's `appMade`; the owner, 2026-10-16: the yoga kind of a workout the app made is
+ * "Mobility", an import keeps "Yoga"): one of its own sessions (`appAuthoredRow`: a programme's slot, an on-demand
+ * session, a Studio or template workout — a coach-designed one is a Studio row), or one the thread coach created. The
+ * thread coach's rows have no origin; every one of its creates has a `cw-` id (`coach-apply.ts`'s `opId`, since the
+ * apply path began), which a push to the watch leaves alone (the push rewrites the source address, never the id). An
+ * import, and an imported session the coach eased, keep their own ids. Read from the row in hand: no statement.
+ */
+const appMadeRow = (w: Pick<PlannedRow, "id" | "origin">): boolean => appAuthoredRow({ origin: w.origin ?? null }) || w.id.startsWith("cw-");
+
 function workoutDto(
   w: PlannedRow,
   view?: WorkoutView,
@@ -460,6 +470,8 @@ function workoutDto(
     origin: w.origin ?? null,
     contentState: w.contentState ?? null,
     programId: appAuthoredRow(w) ? w.planId : null,
+    // Absent for an import: its payload is what it was before the field.
+    ...(appMadeRow(w) ? { appMade: true as const } : {}),
     // Lift/mobility prescription, formatted once here so the sheet can't
     // invent its own notation, and carrying the ONE fact the flat
     // stageSummary cannot: which movements the watch's own library knows

@@ -26,7 +26,7 @@ import {
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClose, IconCoach } from "../icons.js";
-import { Banner, CategoryDot, CATEGORY_LABELS, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, syncActionShort, useHeldInPlace, useIsDesktop, useSpaceAbove, watchCoverageShort } from "../components.js";
+import { Banner, CategoryDot, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, syncActionShort, useHeldInPlace, useIsDesktop, useSpaceAbove, watchCoverageShort, workoutKindLabel } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
@@ -64,6 +64,8 @@ import {
   unlockGrownBy,
   WildlifeShelf,
   type CodexEntry,
+  type LandingUnlock,
+  type PlannedLite,
   type NudgeDiscipline,
   type VisitorEntry,
   type WildlifeEntry,
@@ -749,11 +751,7 @@ function WeekRibbon({
     () =>
       landingUnlock(
         codex,
-        workouts.map((w) => ({
-          effectiveDate: w.effectiveDate,
-          category: w.category,
-          pending: !DONE_STATES.has(w.completionState),
-        })),
+        workouts.map(plannedLiteOf),
         todayDate,
       ),
     [codex, workouts, todayDate],
@@ -804,18 +802,45 @@ function WeekRibbon({
           );
         })}
       </div>
-      {landing ? (
-        <button
-          type="button"
-          className="week-pull"
-          onClick={() => onOpenSpecies(landing.entry.speciesId)}
-        >
-          <strong>{weekdayFull(landing.date)}&rsquo;s{" "}
-          {(CATEGORY_LABELS[landing.category] ?? landing.category).toLowerCase()}</strong> is your{" "}
-          {ordinalOf(landing.ordinal)} — the {landing.entry.name} arrives.
-        </button>
-      ) : null}
+      {landing ? <WeekPull landing={landing} onOpenSpecies={onOpenSpecies} /> : null}
     </div>
+  );
+}
+
+/** A planned workout as the week's quest reads it: its day, its kind, whether it is still to do, and who made it. */
+export function plannedLiteOf(w: WorkoutDto): PlannedLite {
+  return {
+    effectiveDate: w.effectiveDate,
+    category: w.category,
+    pending: !DONE_STATES.has(w.completionState),
+    ...(w.appMade !== undefined ? { appMade: w.appMade } : {}),
+    origin: w.origin ?? null,
+  };
+}
+
+/** The week strip's line under the dots: the day whose workout crosses an unlock gate, and what arrives. */
+export function WeekPull({ landing, onOpenSpecies }: { landing: LandingUnlock; onOpenSpecies: (speciesId: string) => void }) {
+  return (
+    <button
+      type="button"
+      className="week-pull"
+      onClick={() => onOpenSpecies(landing.entry.speciesId)}
+    >
+      <strong>{weekdayFull(landing.date)}&rsquo;s{" "}
+      {(workoutKindLabel(landing.category, landing) ?? landing.category).toLowerCase()}</strong> is your{" "}
+      {ordinalOf(landing.ordinal)} — the {landing.entry.name} arrives.
+    </button>
+  );
+}
+
+/** The Today card's line under a workout's title: its time, its length and its kind. */
+export function TodayMeta({ w }: { w: WorkoutDto }) {
+  return (
+    <p className="today-meta">
+      {formatTime(w.effectiveTime)} · {formatMinutes(w.workoutSeconds)} ·{" "}
+      <CategoryDot category={w.category} />{" "}
+      {(workoutKindLabel(w.category, w) ?? w.category).toLowerCase()}
+    </p>
   );
 }
 
@@ -2244,11 +2269,7 @@ export function GardenScreen() {
             ) : (
               <>
                 <h3 className="today-title">{w.title}</h3>
-                <p className="today-meta">
-                  {formatTime(w.effectiveTime)} · {formatMinutes(w.workoutSeconds)} ·{" "}
-                  <CategoryDot category={w.category} />{" "}
-                  {(CATEGORY_LABELS[w.category] ?? w.category).toLowerCase()}
-                </p>
+                <TodayMeta w={w} />
                 {(w.exercises?.length ?? 0) > 0 ? (
                   <div className="today-structure">
                     {w.exerciseRounds ? `${w.exerciseRounds} rounds of: ` : ""}

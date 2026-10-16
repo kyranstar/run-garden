@@ -75,17 +75,20 @@ describe("a template's row", () => {
 
   it("its minutes and kind are the server's, as the home's tile says them — not worked out again here", () => {
     // The document is a goblet squat (a strength workout of another length): the server's numbers are what is said.
-    expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Yoga", "Not used yet"]);
+    // The yoga kind of a template the app made says Mobility; one kept from an import says Yoga (the owner, 2026-10-16).
+    expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Mobility", "Not used yet"]);
+    const imported = { ...doc(), source: { kind: "coros_import" as const } };
+    expect(templateFacts(tpl("a", { doc: imported, minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Yoga", "Not used yet"]);
     expect(templateFacts(tpl("a", { minutes: 45, discipline: "run" }), TODAY)).toEqual(["45 min", "Run", "Not used yet"]);
     // Its "used" day is the account's (CUJ J34): 20:00 UTC on Oct 15 is already Oct 16 on Kiritimati.
     expect(templateFacts(tpl("a", { minutes: 45, discipline: "run", lastUsedAt: "2026-10-15T20:00:00.000Z" }), "2026-10-16", "Pacific/Kiritimati")).toContain("Used today");
     // One map says a kind's word, the builder's summary's too (CATEGORY_LABELS): rename a kind there, and it is renamed here.
-    const was = CATEGORY_LABELS.yoga;
-    CATEGORY_LABELS.yoga = "Mobility";
+    const was = CATEGORY_LABELS.mobility;
+    CATEGORY_LABELS.mobility = "Range";
     try {
-      expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Mobility", "Not used yet"]);
+      expect(templateFacts(tpl("a", { minutes: 34, discipline: "yoga" }), TODAY)).toEqual(["34 min", "Range", "Not used yet"]);
     } finally {
-      CATEGORY_LABELS.yoga = was!;
+      CATEGORY_LABELS.mobility = was!;
     }
     // Only a row the server said nothing of is worked out on the device.
     const derived = templateFacts(tpl("a", { minutes: null, discipline: null }), TODAY);

@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { todayInZone, type CompletionState, type SyncAction, type WatchCoverageView, type WorkoutSyncView } from "@rg/domain";
+import { appAuthoredRow, todayInZone, type CompletionState, type SyncAction, type WatchCoverageView, type WorkoutSyncView } from "@rg/domain";
 import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
   IconAlert,
@@ -875,9 +875,41 @@ export const CATEGORY_LABELS: Record<string, string> = {
   cross_training: "Cross-training",
   strength: "Strength",
   yoga: "Yoga",
+  /** The yoga kind of a workout the app made (`workoutKindLabel`): never a category of its own. */
+  mobility: "Mobility",
   rest: "Rest",
   unknown: "Run",
 };
+
+/** The document sources the app writes itself; the others are imports (`coros_import`, `standalone_import`). */
+const APP_DOC_SOURCES: ReadonlySet<string> = new Set(["engine", "coach", "studio", "template", "athlete"]);
+
+/** Who made one workout, as far as a surface knows it. */
+export interface WorkoutMaker {
+  /** The server's word for a planned row: the app made it. */
+  appMade?: boolean;
+  /** A planned row's origin. */
+  origin?: string | null;
+  /** The workout document's `source.kind`, where the document is in hand. */
+  docSource?: string | null;
+}
+
+/**
+ * The app made this workout: the server says so (`appMade`: its own sessions and the thread coach's), its origin is
+ * one of the app's own (`appAuthoredRow`), or its document's source is the app's.
+ */
+export function appMadeWorkout({ appMade, origin, docSource }: WorkoutMaker): boolean {
+  return appMade === true || appAuthoredRow({ origin: origin ?? null }) || (docSource != null && APP_DOC_SOURCES.has(docSource));
+}
+
+/**
+ * One workout's kind in a word: `CATEGORY_LABELS`' word for a category or a document's discipline, except that the yoga
+ * kind of a workout the app made is "Mobility" (the owner, 2026-10-16: "yoga is for yoga programs, this is mobility
+ * generally") — an import keeps "Yoga". The category stays `yoga`. An unknown kind, undefined.
+ */
+export function workoutKindLabel(kind: string, maker: WorkoutMaker): string | undefined {
+  return kind === "yoga" && appMadeWorkout(maker) ? CATEGORY_LABELS.mobility : CATEGORY_LABELS[kind];
+}
 
 export function CategoryDot({ category }: { category: string }) {
   return <span className={`category-dot cat-${category}`} aria-hidden />;

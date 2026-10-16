@@ -14,7 +14,7 @@
 import { deriveDoc, quickStartDoc, type QuickStart, type QuickStartKind } from "@rg/workout";
 import { EXERCISES, type CheckReading } from "@rg/exercise-library";
 import type { TemplateDto } from "@rg/api-client";
-import { accountTodayGuess, CATEGORY_LABELS, dateInZone, formatShortDate } from "../../components.js";
+import { accountTodayGuess, dateInZone, formatShortDate, workoutKindLabel } from "../../components.js";
 import { addTargetHref } from "./add-model.js";
 import { buildCtxOf, suggestCtxOf } from "./build-model.js";
 import { quickStarts, type StudioCtx } from "./model.js";
@@ -97,8 +97,8 @@ export function templateShape(t: TemplateDto): { minutes: number | null; discipl
 export function templateFacts(t: TemplateDto, today: string, timeZone?: string | null): string[] {
   if (!t.doc) return ["Can't be opened"];
   const { minutes, discipline } = templateShape(t);
-  // The app's one word for a kind — the builder's summary says the same (`CATEGORY_LABELS`).
-  const kind = discipline ? (CATEGORY_LABELS[discipline] ?? null) : null;
+  // The app's one word for a kind — the builder's summary says the same (`workoutKindLabel`).
+  const kind = discipline ? (workoutKindLabel(discipline, { docSource: t.doc.source?.kind ?? null }) ?? null) : null;
   return [minutes !== null ? `${minutes} min` : null, kind, lastUsedText(t.lastUsedAt, today, timeZone)].filter((x): x is string => !!x);
 }
 
