@@ -294,6 +294,23 @@ function proposedEntry(op: DocWorkoutOp): Record<string, unknown> {
   };
 }
 
+/**
+ * Between a workout's first version and its redo, both reviewed: Task 6's best-version rule (design-review.ts). A
+ * version whose review couldn't be read never beats one with a score; the higher mean wins; a tie goes to the redo —
+ * the main coach asked for it. Answers whether the redo is kept, and a few words on why.
+ */
+export function redoKept(redo: DocWorkoutOp, first: DocWorkoutOp): { redo: boolean; why: string } {
+  const r = reviewMeanOf(redo);
+  const f = reviewMeanOf(first);
+  const fmt = (m: number) => m.toFixed(1);
+  if (r === null && f === null) return { redo: true, why: "neither review could be read" };
+  if (r === null) return { redo: false, why: "the redo's review couldn't be read" };
+  if (f === null) return { redo: true, why: "the first version's review couldn't be read" };
+  if (r > f) return { redo: true, why: `it scored ${fmt(r)} against ${fmt(f)}` };
+  if (r === f) return { redo: true, why: `a tie at ${fmt(r)}, and the redo was asked for` };
+  return { redo: false, why: `the first version scored ${fmt(f)} against ${fmt(r)}` };
+}
+
 /** A workout's day as plan_set's result gives it: where it went, and the brief's day when the designer chose another. */
 const dayOf = (date: string, brief: SetBrief): Record<string, string> => ({ date, ...(date !== brief.date ? { briefDate: brief.date } : {}) });
 
@@ -312,8 +329,10 @@ export interface KeyLine {
  * The set's outcome once every designer of `round` is over (the main run's own step; ≤ 2 statements: the proposal, and
  * the ops and lines written when anything changed). Each brief's workout is proposed — its draft still under review
  * dropped, the reviewed version kept — or left out with its reason: an unreviewed draft is taken out, and the
- * proposal's lines say why that day has no workout. A redo's reviewed workout replaces the first version (a redo that
- * couldn't be designed keeps it), and takes back what the proposal said about its key — never another key's line.
+ * proposal's lines say why that day has no workout. A redo's reviewed workout replaces the first version when it is
+ * the better by Task 6's rule (`redoKept`: a review read beats one that couldn't be, the higher mean wins, a tie goes to
+ * the redo) — the set's line says which was kept, and why — and takes back what the proposal said about its key, never
+ * another key's line; a redo that couldn't be designed, or lost, keeps the first.
  * When the write loses to another (the proposal closed or changed), nothing is claimed taken out. Answers plan_set's
  * result for the model (with the budget left), the trail's line, and the key lines as they now stand.
  */
@@ -336,6 +355,8 @@ export async function settleSet(
   const added: KeyLine[] = [];
   const out: Array<Record<string, unknown>> = [];
   const tally = { proposed: 0, replaced: 0, keptFirst: 0, leftOut: 0 };
+  /** Which version of each redone workout was kept, and why: the set's line says so. */
+  const chosen: string[] = [];
   /** What the proposal said about a key no longer stands. */
   const takeBack = (key: string) => {
     takenBack.push(...keyLines.filter((k) => k.key === key).map((k) => k.line));
@@ -355,11 +376,21 @@ export async function settleSet(
     }
     const firstId = o.round.replaces?.[b.key];
     const first = firstId ? next.find((x) => x.by?.runId === firstId) : undefined;
+    const choice = op?.review && first ? redoKept(op, first) : null;
+    if (op && op.review && choice && !choice.redo) {
+      // The first version stays: the redo's reviewed draft is taken out.
+      next = next.filter((x) => x !== op);
+      out.push({ key: b.key, ...dayOf(first!.date, b), outcome: "kept_first", opId: opIdOf(first!), target: first!.target, kept: "first", reason: choice.why });
+      chosen.push(`${dayWords(first!.date)}: the first version kept — ${choice.why}`);
+      tally.keptFirst += 1;
+      continue;
+    }
     if (op && op.review) {
       if (first) next = next.filter((x) => x !== first);
       takeBack(b.key);
+      if (choice) chosen.push(`${dayWords(op.date)}: the redo kept — ${choice.why}`);
       const stopped = d && d.status !== "finished" ? { note: `${keptWhy(d)} after a draft was reviewed: the reviewed version stands` } : {};
-      out.push({ key: b.key, ...dayOf(op.date, b), outcome: first ? "replaced" : "proposed", ...proposedEntry(op), ...stopped });
+      out.push({ key: b.key, ...dayOf(op.date, b), outcome: first ? "replaced" : "proposed", ...(choice ? { kept: "redo", reason: choice.why } : {}), ...proposedEntry(op), ...stopped });
       tally[first ? "replaced" : "proposed"] += 1;
       continue;
     }
@@ -416,7 +447,7 @@ export async function settleSet(
       redoLeft: o.redoLeft,
       next: o.redoLeft > 0 ? NEXT_WITH_REDO : NEXT_NO_REDO,
     },
-    line: `${o.round.redo ? "The redo is in" : "The set is designed"}: ${parts.join(", ")}.${stored ? "" : " The proposal changed meanwhile, so nothing was written to it."}`,
+    line: `${o.round.redo ? "The redo is in" : "The set is designed"}: ${parts.join(", ")}.${chosen.length > 0 ? ` ${chosen.join("; ")}.` : ""}${stored ? "" : " The proposal changed meanwhile, so nothing was written to it."}`,
     keyLines: stored ? keyLinesNext : o.keyLines,
   };
 }
@@ -430,8 +461,9 @@ const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in
  * `promoteWithWhatItHas`, for a set): a draft still under review is dropped, the held reviewed version staying; a
  * workout with no review is left out, and a line says which; the days whose designers never started (`notStarted`) are
  * named; the stop's note goes in the proposal's lines. A workout a redo was designing (`redoOf`: the redo's designer →
- * its first version's) is proposed in ONE version: the redo's when it was reviewed, else the first — the redo's
- * unreviewed draft going without a line, its workout's day still holding the first version. Pending under the
+ * its first version's) is proposed in ONE version: the redo's when it was reviewed and is the better by Task 6's rule
+ * (`redoKept`; a tie to the redo), else the first — the redo's draft going without a line, its workout's day still
+ * holding the first version. Pending under the
  * finish's own guard — still `unreviewed` (a rehearsal stays one), no review under way, the ops it read — and only with
  * at least one reviewed workout. Two statements (the read, the write; none written when nothing can be proposed).
  */
@@ -449,12 +481,14 @@ export async function promoteSetWithWhatItHas(
     const running = (op.reviewLog ?? []).find((r) => r.status === "reviewing");
     return running ? (applyDrop(op, running.toolUseId, STOPPED_CHANGE) ?? op) : op;
   });
-  // One version of each workout a redo was designing: the redo's if reviewed, else the first.
+  // One version of each workout a redo was designing: the redo's when it was reviewed and is the better (a tie to the
+  // redo: `redoKept`), else the first.
   for (const [redo, first] of Object.entries(redoOf)) {
     const redone = settled.find((op) => op.by?.runId === redo);
     const firstOp = settled.find((op) => op.by?.runId === first);
-    if (redone?.review) settled = settled.filter((op) => op !== firstOp);
-    else if (redone && firstOp) settled = settled.filter((op) => op !== redone);
+    if (!redone || !firstOp) continue;
+    if (redone.review && redoKept(redone, firstOp).redo) settled = settled.filter((op) => op !== firstOp);
+    else settled = settled.filter((op) => op !== redone);
   }
   const kept = settled.filter((op) => op.review);
   const left = settled.filter((op) => !op.review);
@@ -489,8 +523,9 @@ export const SAME_SESSION_MINUTES = 180;
  * refused (a refused op stays open: design-approve.ts) — for a session the new one covers has that op's outcome set to
  * `{ status: "superseded", at, reason: SUPERSEDED_REASON, by: proposalId }`; its other ops are left alone. A session is
  * covered BY SESSION, NOT BY DAY (two sessions a day are legitimate): an older revision of a workout is covered by a
- * newer revision of the same workout; an older new workout by a newer workout on its date whose time overlaps — either
- * has no time, or the two start within SAME_SESSION_MINUTES of each other.
+ * newer revision of the same workout; an older new workout by a newer NEW workout on its date whose time overlaps —
+ * either has no time, or the two start within SAME_SESSION_MINUTES of each other. (A newer revision of a different
+ * workout, already planned, is its own session: it never supersedes a new one near it.)
  *
  * Once every designed op of an older proposal is decided (applied, declined, superseded), its status follows
  * design-approve.ts `statusOfOps` (a test holds the two together): `approved` all applied, `partially_approved` some,
@@ -511,7 +546,8 @@ export async function supersedeOlderPlans(db: Db, userId: string, proposalId: st
         AND json_extract(n.value, '$.kind') = 'doc_workout'
         AND ((json_extract(${value}, '$.target.kind') = 'revise' AND json_extract(n.value, '$.target.kind') = 'revise'
               AND json_extract(${value}, '$.target.workoutId') = json_extract(n.value, '$.target.workoutId'))
-          OR (json_extract(${value}, '$.target.kind') = 'new' AND json_extract(n.value, '$.date') = json_extract(${value}, '$.date')
+          OR (json_extract(${value}, '$.target.kind') = 'new' AND json_extract(n.value, '$.target.kind') = 'new'
+              AND json_extract(n.value, '$.date') = json_extract(${value}, '$.date')
               AND (json_extract(${value}, '$.time') IS NULL OR json_extract(n.value, '$.time') IS NULL
                 OR abs(${minutes(sql`json_extract(${value}, '$.time')`)} - ${minutes(sql`json_extract(n.value, '$.time')`)}) <= ${SAME_SESSION_MINUTES})))))`;
   const outcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${SUPERSEDED_REASON}, 'by', ${proposalId})`;

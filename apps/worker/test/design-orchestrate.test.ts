@@ -26,7 +26,7 @@ import { designContextBuilder } from "../src/services/design-context.js";
 import { DESIGNER_CEILING_MICROS, SET_MAX_WORKOUTS } from "../src/services/design-limits.js";
 import { PROMPT_TOOL_NAMES, REVIEW_DIMENSIONS, roleBlock, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { STOPPED_NOTES } from "../src/services/design-review.js";
-import { SUPERSEDED_REASON, supersedeOlderPlans } from "../src/services/design-orchestrate.js";
+import { redoKept, SUPERSEDED_REASON, supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { ACT_TOOLS, allTools, PENDING_TOOL_NAMES } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import { RESULT_BUDGET_BYTES } from "../src/services/design-tools/read-common.js";
@@ -1948,5 +1948,99 @@ describe("fix round 2 — the main run's own spend, from the tree", () => {
     expect(requests).toHaveLength(1);
     expect((await runRow(mainId)).status).toBe("waiting_set");
     expect(await designersOf(mainId)).toHaveLength(4);
+  });
+});
+
+// ── Follow-up (the approval's two minors) ───────────────────────────────
+
+describe("follow-up — a revision of another workout supersedes no new session", () => {
+  it("a newer revision of a different workout at 16:00 leaves an older new session at 18:00 standing", async () => {
+    const a = await athlete();
+    const T1 = new Date(NOW.getTime() - 3_600_000).toISOString();
+    const at = NOW.toISOString();
+    const row = (id: string, createdAt: string, ops: unknown[]) => ({
+      id: `${id}-${a.userId}`, userId: a.userId, planId: null, title: id, evidence: "", rationale: "", flags: [], ops, status: "pending", createdAt, expiresAt: TODAY,
+    });
+    await db.insert(schema.coachProposals).values([
+      row("x", at, [{ kind: "doc_workout", date: TODAY, time: "16:00", target: { kind: "revise", workoutId: "w9", baseRev: 1 }, doc: calmDoc(), by: { runId: "r-x" } }]),
+      row("evening", T1, [{ kind: "doc_workout", date: TODAY, time: "18:00", target: { kind: "new", date: TODAY, time: "18:00" }, doc: calmDoc(), by: { runId: "r-e" } }]),
+    ]);
+    expect(await supersedeOlderPlans(db, a.userId, `x-${a.userId}`, at)).toBe(0);
+    const [evening] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `evening-${a.userId}`));
+    expect((evening!.ops as Array<{ outcome?: unknown }>)[0]!.outcome).toBeUndefined();
+  });
+});
+
+describe("follow-up — a redo replaces its first version only when it is the better", () => {
+  async function redone(firstScore: number, redoScore: number) {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const redo = planSet([brief("thu", THU, { note: "Another take." })]);
+    const { deps, requests } = scripted([
+      t(planSet([brief("thu", THU)])),
+      ...designed("Thursday hips", THU, { score: firstScore }),
+      t(redo),
+      ...designed("Thursday, again", THU, { score: redoScore }),
+      t(finish("One session.")),
+    ]);
+    expect((await drive(a.userId, mainId, deps)).at(-1)!.status).toBe("finished");
+    return { mainId, result: sentData(requests, redo), designers: await designersOf(mainId) };
+  }
+
+  it("the first version scored higher: it stays, the redo's draft goes, and the set's line says so", async () => {
+    const { mainId, result, designers } = await redone(5, 3);
+    expect(result.set[0]).toMatchObject({ key: "thu", outcome: "kept_first", kept: "first", opId: designers[0]!.id, reason: "the first version scored 5.0 against 3.0" });
+    const p = (await proposalOf(mainId))!;
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday hips"]);
+    expect((await events(mainId)).map((e) => e.summary)).toContain(
+      "The redo is in: 1 kept as first designed. Thursday 14 May: the first version kept — the first version scored 5.0 against 3.0.",
+    );
+  });
+
+  it("a tie goes to the redo — the main coach asked for it", async () => {
+    const { mainId, result, designers } = await redone(4, 4);
+    expect(result.set[0]).toMatchObject({ outcome: "replaced", kept: "redo", opId: designers[1]!.id, reason: "a tie at 4.0, and the redo was asked for" });
+    expect((await proposalOf(mainId))!.ops.map((o) => o.doc.title)).toEqual(["Thursday, again"]);
+    expect((await events(mainId)).map((e) => e.summary)).toContain("The redo is in: 1 replaced. Thursday 14 May: the redo kept — a tie at 4.0, and the redo was asked for.");
+  });
+
+  it("the rule itself: a review read beats one that couldn't be; the higher mean wins; a tie to the redo", () => {
+    const op = (review: unknown) => ({ review }) as unknown as DocWorkoutOp;
+    const scored = (n: number) => op({ ...verdict(n), rounds: 1, changes: [] });
+    const unread = op({ scores: {}, notes: {}, mustFix: [], improvements: [], rounds: 1, changes: [], note: "The review could not be read." });
+    expect(redoKept(unread, scored(2)).redo).toBe(false);
+    expect(redoKept(scored(2), unread).redo).toBe(true);
+    expect(redoKept(unread, unread).redo).toBe(true);
+    expect(redoKept(scored(3), scored(4)).redo).toBe(false);
+    expect(redoKept(scored(4), scored(4)).redo).toBe(true);
+    expect(redoKept(scored(5), scored(4)).redo).toBe(true);
+  });
+
+  it("at a stop, too: a reviewed redo that scored lower than the first version is not proposed", async () => {
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const c = { cost: 100_000 };
+    const { deps } = scripted([
+      t(planSet([brief("thu", THU)])),
+      ...designed("Thursday hips", THU, { score: 5 }),
+      t(planSet([brief("thu", THU, { note: "Gentler." })])),
+      turn([propose("Thursday, gentler", THU)], c),
+      turn([submit(verdict(3))], c),
+    ]);
+    await untilDone(
+      async (i) => {
+        await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+        return (await designersOf(mainId)).length === 2;
+      },
+      { max: 30, what: "the redo's plan" },
+    );
+    const spent = Math.round((await getRun(db, a.userId, mainId, 0))!.run.costUsd * 1_000_000);
+    const s = await stateOf(mainId);
+    s.settings.ceilingMicros = spent + 200_000;
+    await db.update(schema.coachRuns).set({ state: JSON.stringify(s) }).where(eq(schema.coachRuns.id, mainId));
+    expect((await drive(a.userId, mainId, deps, { from: 100 })).at(-1)!.status).toBe("stopped_cap");
+    const p = (await proposalOf(mainId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday hips"]);
   });
 });
