@@ -10,6 +10,13 @@ import type { CoachOp } from "@rg/domain";
 /** Whether an op is a designed workout's. */
 export const isDocWorkoutOp = (op: unknown): boolean => !!op && typeof op === "object" && (op as { kind?: unknown }).kind === "doc_workout";
 
+/**
+ * A designed workout's op id: the run that designed it. Each run holds ONE op of its main run's proposal, whatever its
+ * target (design-tools/propose.ts), so the run names the op through every revision round. Approve and decline (Task 8)
+ * and a main run's lever over its set (Task 7) name an op by it.
+ */
+export const opIdOf = (op: { by: { runId: string } }): string => op.by.runId;
+
 /** Whether a proposal's ops hold a designed workout. */
 export const hasDocWorkout = (ops: unknown): boolean => Array.isArray(ops) && ops.some(isDocWorkoutOp);
 
