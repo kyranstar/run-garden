@@ -10,7 +10,8 @@
  * proposal's lines (`notes`) carry model-written words — a title, a reason — so they come marked. Main only.
  *
  * Small by contract: one statement (the proposal), and an answer within RESULT_BUDGET_BYTES — the details give way, in
- * order, before any workout does (the intent sentences, then the moves, then the must-fix wording, then the regions).
+ * order, before any workout does (the intent sentences, then the moves, then the must-fix wording, then the regions, then
+ * the repeated moves' names — counted instead).
  */
 import { z } from "zod";
 import { EXERCISES } from "@rg/exercise-library";
@@ -34,8 +35,8 @@ const cut = (text: string, max: number): string => (text.length > max ? `${text.
 const bytesOf = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
 
 /** How much of each workout is shown: 0 all; 1 without the intent; 2 nor the moves; 3 the must-fix items counted only;
- * 4 no regions. */
-type Detail = 0 | 1 | 2 | 3 | 4;
+ * 4 no regions; 5 the moves repeated on consecutive days counted, not listed. */
+type Detail = 0 | 1 | 2 | 3 | 4 | 5;
 
 function workoutOf(op: DocWorkoutOp, key: string | null, detail: Detail): Record<string, unknown> {
   const d = op.derived ?? {};
@@ -131,20 +132,22 @@ export const readSet: DesignTool = {
     const { ops, flags } = await readSetProposal(ctx.db, ctx.userId, designProposalId(ctx.run.id));
     const ordered = [...ops].sort((a, b) => (a.date === b.date ? (a.time ?? "").localeCompare(b.time ?? "") : a.date < b.date ? -1 : 1));
     const pairs = hardPairs(ordered);
+    const repeats = repeatsOnConsecutiveDays(ordered);
     const rest = {
       combined: combinedOf(ordered),
       hardDaysInARow: { count: pairs.length, pairs, counts: "the set's own workouts that develop or peak, on consecutive days (read_plan for the runs and sessions around them)" },
-      movesRepeatedOnConsecutiveDays: repeatsOnConsecutiveDays(ordered),
       notes: flags.slice(-NOTES_SHOWN).map((f) => untrusted(cut(f, NOTE_MAX))),
     };
     let result = answer({ source, now: ctx.now, missing: ops.length === 0 ? ["no workout in the set's proposal yet"] : [], data: {}, summary: "" });
-    for (const detail of [0, 1, 2, 3, 4] as Detail[]) {
+    for (const detail of [0, 1, 2, 3, 4, 5] as Detail[]) {
       const workouts = ordered.map((op) => workoutOf(op, keyOf.get(opIdOf(op)) ?? null, detail));
+      // Last of all, the repeated moves are counted rather than listed (each workout's own moves are gone by then).
+      const movesRepeatedOnConsecutiveDays = detail < 5 ? repeats : repeats.map((r) => ({ days: r.days, count: r.moves.length }));
       result = answer({
         source,
         now: ctx.now,
         missing: ops.length === 0 ? ["no workout in the set's proposal yet"] : [],
-        data: { workouts, ...rest },
+        data: { workouts, ...rest, movesRepeatedOnConsecutiveDays },
         summary: `Read the set: ${ops.length} workout${ops.length === 1 ? "" : "s"}${pairs.length > 0 ? `, ${pairs.length} pair${pairs.length === 1 ? "" : "s"} of hard days in a row` : ""}`,
       });
       const { summary: _s, ...forModel } = result;

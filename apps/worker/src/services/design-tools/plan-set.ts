@@ -15,9 +15,10 @@
  * `ToolContext.replaces`), and its reviewed workout replaces the first version. A day held by a workout dropped or left
  * out is free again.
  *
- * SIZED TO THE BUDGET: the plan's estimate (the designers', and on the first plan the main run's share) with the main
- * coach's reserve (SET_MAIN_RESERVE_MICROS) must fit what the set's ceiling has left — read from the step's tree, no
- * statement — or the call is refused (`over_budget`), naming how many workouts fit.
+ * SIZED TO THE BUDGET: the designers at the estimate's cost per workout (on a redo, the larger of it and this set's own
+ * measured average per designer) and the main coach's work still to come (the larger of SET_MAIN_RESERVE_MICROS and
+ * what its average run has left to spend) must fit what the set's ceiling has left — read from the step's tree, no
+ * statement — or the call is refused (`over_budget`), naming how many workouts fit. A replay is not checked again.
  *
  * The call answers `control: "set"` — the main run waits (`waiting_set`) until every designer is over, and the call's
  * result for the model is then the set's outcome (design-orchestrate.ts `settleSet`). Its data is the loop's: the
@@ -34,6 +35,7 @@ import { SET_MAIN_RESERVE_MICROS, SET_MAX_WORKOUTS, SET_REDO_ROUNDS } from "../d
 import {
   briefText,
   dayWords,
+  DEFAULT_SET_MAIN_COST_MICROS,
   DEFAULT_WORKOUT_COST_MICROS,
   designerRunId,
   estimateSetCost,
@@ -190,23 +192,28 @@ export const planSet: DesignTool = {
     }
 
     const estimate: SetEstimate | null = redo ? null : await estimateSetCost(ctx.db, ctx.userId, p.briefs.length, ctx.now);
-    // SIZED TO THE BUDGET: the designers' estimate (and, on the first plan, the main run's share of it) with the main
-    // coach's reserve must fit what the set's ceiling has left — from the step's tree, no statement.
-    const budget = ctx.set.budget();
-    const perWorkout = (estimate ?? budget.estimate)?.perWorkoutMicros ?? DEFAULT_WORKOUT_COST_MICROS;
-    const mainShare = estimate?.mainMicros ?? 0;
-    const left = budget.ceilingMicros - budget.spentMicros;
-    const needed = perWorkout * p.briefs.length + mainShare + SET_MAIN_RESERVE_MICROS;
-    if (needed > left) {
-      const fit = Math.max(0, Math.floor((left - mainShare - SET_MAIN_RESERVE_MICROS) / perWorkout));
+    // SIZED TO THE BUDGET (from the step's tree, no statement): the designers at the estimate's cost per workout — on a
+    // redo, the larger of it and what this set's own designers have cost — and the main coach's work still to come: the
+    // larger of its reserve and what its average run has left to spend. A replay of a call whose designers already
+    // started is not checked again: they are under way.
+    const ids = p.briefs.map((b, i) => designerRunId(ctx.run.id, toolUseId, i, b.key));
+    if (!ctx.set.started(ids)) {
+      const budget = ctx.set.budget();
+      const stored = estimate ?? budget.estimate;
+      const perWorkout = Math.max(stored?.perWorkoutMicros ?? DEFAULT_WORKOUT_COST_MICROS, redo ? (budget.perDesignerMicros ?? 0) : 0);
+      const mainNeed = Math.max(SET_MAIN_RESERVE_MICROS, (stored?.mainMicros ?? DEFAULT_SET_MAIN_COST_MICROS) - budget.mainSpentMicros);
+      const left = budget.ceilingMicros - budget.spentMicros;
       const n = p.briefs.length;
-      return refuse(
-        "over_budget",
-        `${n} workout${n === 1 ? " is" : "s are"} estimated at ${usd(perWorkout * n + mainShare)}, and the coach keeps ${usd(SET_MAIN_RESERVE_MICROS)} to judge and finish the set: ${usd(Math.max(0, left))} of this design's ${usd(budget.ceilingMicros)} is left — enough for ${fit} workout${fit === 1 ? "" : "s"}.`,
-        fit > 0
-          ? `Plan ${fit} or fewer: the sessions the week needs most, around the runs.`
-          : "No workout fits what is left: call finish, and say the set couldn't be designed within its limit.",
-      );
+      if (perWorkout * n + mainNeed > left) {
+        const fit = Math.max(0, Math.floor((left - mainNeed) / perWorkout));
+        return refuse(
+          "over_budget",
+          `${n} workout${n === 1 ? " is" : "s are"} estimated at ${usd(perWorkout * n)}, and the coach keeps ${usd(mainNeed)} to judge and finish the set: ${usd(Math.max(0, left))} of this design's ${usd(budget.ceilingMicros)} is left — enough for ${fit} workout${fit === 1 ? "" : "s"}.`,
+          fit > 0
+            ? `Plan ${fit} or fewer: the sessions the week needs most, around the runs.`
+            : "No workout fits what is left: call finish, and say the set couldn't be designed within its limit.",
+        );
+      }
     }
     const firstOrder = [...firstKeys.keys()];
     const designers = p.briefs.map((b, i) => {
@@ -214,7 +221,7 @@ export const planSet: DesignTool = {
       const replaces = redo ? first?.designers.find((d) => d.key === b.key)?.runId : undefined;
       return {
         key: b.key,
-        runId: designerRunId(ctx.run.id, toolUseId, i, b.key),
+        runId: ids[i]!,
         date: b.date,
         ...(replaces ? { replaces } : {}),
         brief: briefText(b, {

@@ -142,6 +142,11 @@ export interface SetBudget {
   ceilingMicros: number;
   /** What the main run's tree has spent, this step's model call included. */
   spentMicros: number;
+  /** What the main run itself has spent (its own calls, this step's included). */
+  mainSpentMicros: number;
+  /** This set's own measured average per designer (its reviewers included), over the designers that ran and are over;
+   * null before any has. */
+  perDesignerMicros: number | null;
   /** The set's estimate from its first plan, when there is one. */
   estimate: SetEstimate | null;
 }
@@ -157,6 +162,8 @@ export interface SetHooks {
   start(designers: SetDesignerStart[]): Promise<string[]>;
   /** What the set may still spend (no statement). */
   budget(): SetBudget;
+  /** Whether any of these designers is already in the tree: a replay of the call that started them (no statement). */
+  started(runIds: readonly string[]): boolean;
   /** A line a tool put in the proposal for one workout of the set (drop_workout's): kept with its key in the main
    * run's state, so a redo of the key that is designed takes it back. */
   keyLine(key: string, line: string): void;

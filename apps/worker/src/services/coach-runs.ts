@@ -503,6 +503,8 @@ interface RunNode {
   final?: string | null;
   /** From the state, read in SQL: a set's designer's day (`RunState.day`). */
   day?: string | null;
+  /** From the state, read in SQL: a set's redo designer's first version's designer (`RunState.replaces`). */
+  replaces?: string | null;
 }
 
 /** Everything but `state`, and from the state only its settings (read in SQL, so a large state is never read whole;
@@ -511,6 +513,7 @@ const NODE_COLUMNS = {
   settings: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.settings') END`,
   final: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.final') END`,
   day: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.day') END`,
+  replaces: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.replaces') END`,
   id: coachRuns.id,
   parentId: coachRuns.parentId,
   role: coachRuns.role,
@@ -546,6 +549,7 @@ function toNode(r: NodeRow): RunNode {
     settings: parseSettings((r.settings as string | null) ?? null),
     final: typeof r.final === "string" ? r.final : null,
     day: typeof r.day === "string" ? r.day : null,
+    replaces: typeof r.replaces === "string" ? r.replaces : null,
   };
 }
 
@@ -1340,9 +1344,11 @@ export async function runStep(
     const stopped = root.status === "stopped_cap" ? STOPPED_NOTES[root.error ?? ""] : undefined;
     // A set names the days whose designers never started.
     const notStarted = nodes.filter((n) => n.parentId === root.id && n.role === "designer" && n.steps === 0 && n.day).map((n) => n.day!);
+    // A redo designer's first version: one version of each workout is proposed.
+    const redoOf = Object.fromEntries(nodes.filter((n) => n.parentId === root.id && n.role === "designer" && n.replaces).map((n) => [n.id, n.replaces!]));
     const proposed = stopped
       ? isSetScope(root.scope)
-        ? await promoteSetWithWhatItHas(db, userId, designProposalId(root.id), stopped, notStarted)
+        ? await promoteSetWithWhatItHas(db, userId, designProposalId(root.id), stopped, notStarted, redoOf)
         : await promoteWithWhatItHas(db, userId, designProposalId(root.id), stopped)
       : false;
     if (proposed) {
@@ -2058,12 +2064,19 @@ function reviewHooks(s: StepCtx): ReviewHooks {
 function setHooks(s: StepCtx): SetHooks {
   return {
     rounds: () => s.state.set?.rounds ?? [],
-    budget: () => ({
-      ceilingMicros: s.state.settings.ceilingMicros,
-      // The tree's spend as read at the step's start, and this step's model call.
-      spentMicros: treeSpendMicros(s.nodes, s.root) + s.spent,
-      estimate: s.state.estimate ?? null,
-    }),
+    budget: () => {
+      // This set's designers that ran and are over: what each cost, its reviewers included.
+      const done = s.nodes.filter((n) => n.parentId === s.root.id && n.role === "designer" && !isLive(n.status) && n.steps > 0);
+      return {
+        ceilingMicros: s.state.settings.ceilingMicros,
+        // The tree's spend as read at the step's start, and this step's model call.
+        spentMicros: treeSpendMicros(s.nodes, s.root) + s.spent,
+        mainSpentMicros: Math.round(s.root.costUsd * 1_000_000) + s.spent,
+        perDesignerMicros: done.length > 0 ? Math.round(done.reduce((sum, d) => sum + treeSpendMicros(s.nodes, d), 0) / done.length) : null,
+        estimate: s.state.estimate ?? null,
+      };
+    },
+    started: (runIds) => s.nodes.some((n) => runIds.includes(n.id)),
     keyLine(key, line) {
       const set = s.state.set ?? { rounds: [] };
       s.state.set = { ...set, keyLines: [...(set.keyLines ?? []), { key, line }] };

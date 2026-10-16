@@ -429,17 +429,33 @@ const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in
  * A set's main run that stopped at a spending limit or its step cap proposes what was reviewed (spec §2; Task 6's
  * `promoteWithWhatItHas`, for a set): a draft still under review is dropped, the held reviewed version staying; a
  * workout with no review is left out, and a line says which; the days whose designers never started (`notStarted`) are
- * named; the stop's note goes in the proposal's lines. Pending under the finish's own guard — still `unreviewed` (a
- * rehearsal stays one), no review under way, the ops it read — and only with at least one reviewed workout. Two
- * statements (the read, the write; none written when nothing can be proposed).
+ * named; the stop's note goes in the proposal's lines. A workout a redo was designing (`redoOf`: the redo's designer →
+ * its first version's) is proposed in ONE version: the redo's when it was reviewed, else the first — the redo's
+ * unreviewed draft going without a line, its workout's day still holding the first version. Pending under the
+ * finish's own guard — still `unreviewed` (a rehearsal stays one), no review under way, the ops it read — and only with
+ * at least one reviewed workout. Two statements (the read, the write; none written when nothing can be proposed).
  */
-export async function promoteSetWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, notStarted: string[] = []): Promise<boolean> {
+export async function promoteSetWithWhatItHas(
+  db: Db,
+  userId: string,
+  proposalId: string,
+  note: string,
+  notStarted: string[] = [],
+  redoOf: Readonly<Record<string, string>> = {},
+): Promise<boolean> {
   const { ops, opsText, status, flags } = await readSetProposal(db, userId, proposalId);
   if (status !== "unreviewed" || ops.length === 0) return false;
-  const settled = ops.map((op) => {
+  let settled = ops.map((op) => {
     const running = (op.reviewLog ?? []).find((r) => r.status === "reviewing");
     return running ? (applyDrop(op, running.toolUseId, STOPPED_CHANGE) ?? op) : op;
   });
+  // One version of each workout a redo was designing: the redo's if reviewed, else the first.
+  for (const [redo, first] of Object.entries(redoOf)) {
+    const redone = settled.find((op) => op.by?.runId === redo);
+    const firstOp = settled.find((op) => op.by?.runId === first);
+    if (redone?.review) settled = settled.filter((op) => op !== firstOp);
+    else if (redone && firstOp) settled = settled.filter((op) => op !== redone);
+  }
   const kept = settled.filter((op) => op.review);
   const left = settled.filter((op) => !op.review);
   if (kept.length === 0 || reviewRunning(kept)) return false;
@@ -462,28 +478,46 @@ export async function promoteSetWithWhatItHas(db: Db, userId: string, proposalId
 // ── A newer plan supersedes an older one's days ─────────────────────────────────────────────────────────────────────
 
 /** Why an older plan's workout gives way, in plain words (its op's outcome). */
-export const SUPERSEDED_REASON = "a newer plan covers this day";
+export const SUPERSEDED_REASON = "a newer plan covers this session";
+
+/** How far apart two sessions on one day start before they are two sessions, not one (minutes). */
+export const SAME_SESSION_MINUTES = 180;
 
 /**
  * A design proposal just made pending (`proposalId`; a finish, or a stop with what it has): every OLDER designed
  * proposal of the athlete's still theirs to decide (`pending`, `partially_approved`) with an OPEN op — no outcome yet, or
- * refused (a refused op stays open: design-approve.ts) — on a day the new one covers has that op's outcome set to
- * `{ status: "superseded", at, reason: SUPERSEDED_REASON, by: proposalId }`; its other ops are left alone. Once every op
- * of an older proposal is decided (applied, declined, superseded), its status follows design-approve.ts `statusOfOps` —
- * `approved` all applied, `partially_approved` some, `declined` all declined — and, with none applied, `superseded` (by
- * the new proposal, resolved now); while any op is open it keeps its status. ONE statement: each row's ops are read
- * as that row is written, so an outcome written meanwhile is never lost. Answers how many proposals it changed.
+ * refused (a refused op stays open: design-approve.ts) — for a session the new one covers has that op's outcome set to
+ * `{ status: "superseded", at, reason: SUPERSEDED_REASON, by: proposalId }`; its other ops are left alone. A session is
+ * covered BY SESSION, NOT BY DAY (two sessions a day are legitimate): an older revision of a workout is covered by a
+ * newer revision of the same workout; an older new workout by a newer workout on its date whose time overlaps — either
+ * has no time, or the two start within SAME_SESSION_MINUTES of each other.
+ *
+ * Once every designed op of an older proposal is decided (applied, declined, superseded), its status follows
+ * design-approve.ts `statusOfOps` (a test holds the two together): `approved` all applied, `partially_approved` some,
+ * `declined` all declined, `superseded` none applied; while any op is open it keeps its status. `superseded_by` names
+ * the new proposal only when the WHOLE proposal is superseded (status `superseded`): a proposal superseded in part is
+ * still the athlete's, and each superseded op names its new proposal in its own outcome (`by`).
+ *
+ * ONE statement: each row's ops are read as that row is written, so an outcome written meanwhile is never lost.
+ * Answers how many proposals it changed.
  */
 export async function supersedeOlderPlans(db: Db, userId: string, proposalId: string, at: string): Promise<number> {
-  const days = sql`(SELECT json_extract(n.value, '$.date') FROM coach_proposals np, json_each(np.ops) n
-    WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending' AND json_valid(np.ops))`;
-  /** An op this supersedes: a designed workout's, still open, on a day the new proposal covers. */
+  const minutes = (time: SQL) => sql`(cast(substr(${time}, 1, 2) AS integer) * 60 + cast(substr(${time}, 4, 2) AS integer))`;
+  /** An op this supersedes: a designed workout's, still open, for a session one of the new proposal's covers. */
   const covered = (value: SQL) => sql`(json_extract(${value}, '$.kind') = 'doc_workout'
     AND coalesce(json_extract(${value}, '$.outcome.status'), 'open') IN ('open', 'refused')
-    AND json_extract(${value}, '$.date') IN ${days})`;
+    AND EXISTS (SELECT 1 FROM coach_proposals np, json_each(np.ops) n
+      WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending' AND json_valid(np.ops)
+        AND json_extract(n.value, '$.kind') = 'doc_workout'
+        AND ((json_extract(${value}, '$.target.kind') = 'revise' AND json_extract(n.value, '$.target.kind') = 'revise'
+              AND json_extract(${value}, '$.target.workoutId') = json_extract(n.value, '$.target.workoutId'))
+          OR (json_extract(${value}, '$.target.kind') = 'new' AND json_extract(n.value, '$.date') = json_extract(${value}, '$.date')
+              AND (json_extract(${value}, '$.time') IS NULL OR json_extract(n.value, '$.time') IS NULL
+                OR abs(${minutes(sql`json_extract(${value}, '$.time')`)} - ${minutes(sql`json_extract(n.value, '$.time')`)}) <= ${SAME_SESSION_MINUTES})))))`;
   const outcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${SUPERSEDED_REASON}, 'by', ${proposalId})`;
+  // Each designed op's outcome once this is written.
   const after = sql`(SELECT CASE WHEN ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st
-    FROM json_each(coach_proposals.ops) o)`;
+    FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') = 'doc_workout')`;
   const status = sql`(SELECT CASE
       WHEN sum(st IN ('applied', 'declined', 'superseded')) < count(*) THEN coach_proposals.status
       WHEN sum(st = 'applied') = count(*) THEN 'approved'
@@ -512,7 +546,7 @@ export const DEFAULT_WORKOUT_COST_MICROS = 700_000;
 export const DEFAULT_SET_MAIN_COST_MICROS = 400_000;
 /** How far back measured runs count. */
 export const ESTIMATE_WINDOW_DAYS = 60;
-/** Measured designers (finished, or stopped at their ceiling) needed before their average replaces the default. */
+/** Measured designers (finished, or stopped at their own ceiling) needed before their average replaces the default. */
 export const ESTIMATE_MIN_DESIGNERS = 3;
 
 export interface SetEstimate {
@@ -528,15 +562,19 @@ export interface SetEstimate {
 /** The set's estimated cost before its designers run (see the module comment). One statement. */
 export async function estimateSetCost(db: Db, userId: string, workouts: number, now: Date): Promise<SetEstimate> {
   const since = new Date(now.getTime() - ESTIMATE_WINDOW_DAYS * 86_400_000).toISOString();
-  // A designer that stopped at its own ceiling spent what a workout can cost: it counts (leaving it out would read low).
-  const designers = sql`FROM coach_runs d WHERE d.user_id = ${userId} AND d.role = 'designer'
-    AND (d.status = 'finished' OR (d.status = 'stopped_cap' AND d.error = 'run_ceiling')) AND d.created_at >= ${since}`;
+  // What a designer cost: its own spend and its reviewers'.
+  const cost = sql`(d.cost_usd + coalesce((SELECT sum(r.cost_usd) FROM coach_runs r WHERE r.user_id = ${userId} AND r.parent_id = d.id), 0))`;
+  // A designer that stopped at its OWN ceiling — it ran, and its spend reached its limit — spent what a workout can
+  // cost: it counts (leaving it out would read low). One stopped by the set's limit before it ran, or part way, doesn't.
+  const designers = sql`FROM coach_runs d WHERE d.user_id = ${userId} AND d.role = 'designer' AND d.created_at >= ${since}
+    AND (d.status = 'finished' OR (d.status = 'stopped_cap' AND d.error = 'run_ceiling' AND d.steps > 0
+      AND json_valid(d.state) AND ${cost} * 1000000 >= json_extract(d.state, '$.settings.ceilingMicros')))`;
   const mains = sql`FROM coach_runs m WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.status = 'finished' AND m.created_at >= ${since}
     AND json_valid(m.scope) AND json_extract(m.scope, '$.kind') IN ('week', 'next_n')`;
   const [row] = (await db.all(sql`
     SELECT
       (SELECT count(*) ${designers}) AS designers,
-      (SELECT coalesce(sum(d.cost_usd + coalesce((SELECT sum(r.cost_usd) FROM coach_runs r WHERE r.user_id = ${userId} AND r.parent_id = d.id), 0)), 0) ${designers}) AS designerCost,
+      (SELECT coalesce(sum(${cost}), 0) ${designers}) AS designerCost,
       (SELECT count(*) ${mains}) AS mains,
       (SELECT coalesce(sum(m.cost_usd), 0) ${mains}) AS mainCost
   `)) as Array<{ designers: number; designerCost: number; mains: number; mainCost: number }>;
