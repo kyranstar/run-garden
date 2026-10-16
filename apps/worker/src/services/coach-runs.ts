@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
@@ -549,6 +549,8 @@ interface RunNode {
   final?: string | null;
   /** From the state, read in SQL: when an ask for today's condition check was put (`RunState.awaitingCheck`). */
   checkSince?: string | null;
+  /** From the state, read in SQL: a set's estimated cost in micros, once its first plan made one (`RunState.estimate`). */
+  estimateMicros?: number | null;
 }
 
 /** Everything but `state`, and from the state only its settings (read in SQL, so a large state is never read whole;
@@ -557,6 +559,7 @@ const NODE_COLUMNS = {
   settings: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.settings') END`,
   final: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.final') END`,
   checkSince: sql<string | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.awaitingCheck.since') END`,
+  estimateMicros: sql<number | null>`CASE WHEN json_valid(${coachRuns.state}) THEN json_extract(${coachRuns.state}, '$.estimate.micros') END`,
   id: coachRuns.id,
   parentId: coachRuns.parentId,
   role: coachRuns.role,
@@ -592,6 +595,7 @@ function toNode(r: NodeRow): RunNode {
     settings: parseSettings((r.settings as string | null) ?? null),
     final: typeof r.final === "string" ? r.final : null,
     checkSince: typeof r.checkSince === "string" ? r.checkSince : null,
+    estimateMicros: typeof r.estimateMicros === "number" && Number.isFinite(r.estimateMicros) ? r.estimateMicros : null,
   };
 }
 
@@ -697,6 +701,11 @@ export interface CoachRunDto {
   createdAt: string;
   updatedAt: string;
   finishedAt: string | null;
+  /** A set's estimated cost in dollars, once its first plan made one (Task 7, `RunState.estimate`): null before it, and
+   * for a run for now or later today. The run view shows it beside the ceiling (Task 9). */
+  estimateUsd: number | null;
+  /** The run's own spending ceiling in dollars (`RunSettings.ceilingMicros`); null when its state can't be read. */
+  ceilingUsd: number | null;
 }
 
 export interface CoachRunEventDto {
@@ -737,6 +746,8 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
     createdAt: root.createdAt,
     updatedAt: root.updatedAt,
     finishedAt: root.finishedAt,
+    estimateUsd: typeof root.estimateMicros === "number" ? root.estimateMicros / 1_000_000 : null,
+    ceilingUsd: typeof root.settings?.ceilingMicros === "number" ? root.settings.ceilingMicros / 1_000_000 : null,
   };
 }
 
@@ -867,6 +878,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       createdAt: at,
       updatedAt: at,
       finishedAt: null,
+      settings: state.settings,
     };
     return { run: runDto(node, [node]), existing: false };
   };
@@ -1018,6 +1030,78 @@ export async function getRun(
     run: runDto(root, nodes),
     events: rows.map((r) => ({ seq: r.seq, kind: r.kind as RunEventKind, summary: r.summary, payload: r.payload ?? null, at: r.at })),
   };
+}
+
+/** How many of its latest events the Studio's read of the current run answers (`currentRun`). */
+export const CURRENT_RUN_EVENTS = 50;
+
+/** What `currentRun` spends beyond the route's own: the pick (its proposal read with it), the run's tree, its events. */
+export const CURRENT_RUN_STATEMENTS = 3;
+
+/** The design proposal a run holds open for the athlete: its id, its status and its flags (a stop's note among them). */
+export interface OpenProposalDto {
+  id: string;
+  status: string;
+  flags: string[];
+}
+
+/** Whether the joined design proposal `p` still has an op the athlete can decide — no outcome yet, refused (a refused op
+ * stays open: Task 8), or a change an approve is applying (Task 8b: asked again, the approve finishes it) — in a status
+ * the athlete decides in. Never errs on ops that aren't JSON. */
+const OPEN_OP = sql.raw(
+  `(p.status IN ('pending', 'partially_approved') AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust') ` +
+    `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))))`,
+);
+const LIVE_ROOT = sql.raw(`r.status IN (${LIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`);
+
+/**
+ * The run the Studio shows when it opens (Task 9): the athlete's newest live main run; else the newest main run that is
+ * over whose design proposal still has an op to decide (pending, or partially approved with an op undecided or refused —
+ * Task 8); else null. Never a rehearsal's (its lane is its own: fix wave 3A, A15), never a sub-run. With its last
+ * CURRENT_RUN_EVENTS events, oldest first, and the proposal it holds open. CURRENT_RUN_STATEMENTS: the pick — one
+ * statement, the proposal read with it — then the tree and the events; the pick alone when there is none.
+ */
+export async function currentRun(
+  db: Db,
+  userId: string,
+): Promise<{ run: CoachRunDto; events: CoachRunEventDto[]; proposal: OpenProposalDto | null } | null> {
+  const [pick] = (await db.all(sql`
+    SELECT r.id AS id, p.id AS proposalId, p.status AS proposalStatus, p.flags AS flags, CASE WHEN ${OPEN_OP} THEN 1 ELSE 0 END AS open
+    FROM coach_runs r LEFT JOIN coach_proposals p ON p.id = ${designProposalId("")} || r.id AND p.user_id = r.user_id
+    WHERE r.user_id = ${userId} AND r.parent_id IS NULL AND r.role = 'main'
+      AND coalesce(CASE WHEN json_valid(r.state) THEN json_extract(r.state, '$.settings.rehearsal') END, 0) = 0
+      AND (${LIVE_ROOT} OR ${OPEN_OP})
+    ORDER BY CASE WHEN ${LIVE_ROOT} THEN 1 ELSE 0 END DESC, r.created_at DESC, r.id DESC
+    LIMIT 1
+  `)) as Array<{ id: string; proposalId: string | null; proposalStatus: string | null; flags: string | null; open: number }>;
+  if (!pick) return null;
+  const { root, nodes } = await loadTree(db, userId, pick.id);
+  if (!root) return null;
+  const rows = await db
+    .select({ seq: coachRunEvents.seq, kind: coachRunEvents.kind, summary: coachRunEvents.summary, payload: coachRunEvents.payload, at: coachRunEvents.at })
+    .from(coachRunEvents)
+    .where(and(eq(coachRunEvents.runId, root.id), eq(coachRunEvents.userId, userId)))
+    .orderBy(desc(coachRunEvents.seq))
+    .limit(CURRENT_RUN_EVENTS);
+  const events = rows
+    .map((r) => ({ seq: r.seq, kind: r.kind as RunEventKind, summary: r.summary, payload: r.payload ?? null, at: r.at }))
+    .sort((a, b) => a.seq - b.seq);
+  const proposal =
+    Number(pick.open) === 1 && pick.proposalId && pick.proposalStatus
+      ? { id: pick.proposalId, status: pick.proposalStatus, flags: flagsOf(pick.flags) }
+      : null;
+  return { run: runDto(root, nodes), events, proposal };
+}
+
+/** A proposal's flags as stored (JSON text): its strings, in order. */
+function flagsOf(text: string | null): string[] {
+  try {
+    const parsed: unknown = text ? JSON.parse(text) : [];
+    return Array.isArray(parsed) ? parsed.filter((f): f is string => typeof f === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 // ── Cancel ──────────────────────────────────────────────────────────────

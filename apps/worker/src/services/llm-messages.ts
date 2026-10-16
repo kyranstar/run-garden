@@ -1,4 +1,4 @@
-import type { Env } from "../env.js";
+import { fixtureModeEnabled, type Env } from "../env.js";
 import { OUT_OF_CREDITS_REASON } from "./ai-credits.js";
 import { wakeGateway } from "./gateway-route.js";
 
@@ -40,8 +40,21 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const TIMEOUT_MS = 600_000;
 const STREAM_STALL_MS = 150_000;
 
+/**
+ * The fixture stack's scripted model (Task 9): `AI_DESIGN_MODEL=scripted:<name>` names a script its stand-in model on
+ * loopback serves (apps/web/e2e/coach-design-model.mjs, reached through `FIXTURE_MODEL_URL`), so the composer → run →
+ * proposal → approve journey runs with no key. A test seam, never a model: outside fixture mode — the guard `/api/dev/*`
+ * uses — a scripted id is ignored and the default model stands, so production can never be pointed at a script.
+ */
+export const SCRIPTED_MODEL_PREFIX = "scripted:";
+
+/** `wanted`, unless it is a scripted id outside fixture mode (then the default). */
+function honoured(env: Env, wanted: string | undefined): string | undefined {
+  return wanted?.startsWith(SCRIPTED_MODEL_PREFIX) && !fixtureModeEnabled(env) ? undefined : wanted;
+}
+
 export function designModel(env: Env): string {
-  return env.AI_DESIGN_MODEL || DEFAULT_DESIGN_MODEL;
+  return honoured(env, env.AI_DESIGN_MODEL) || DEFAULT_DESIGN_MODEL;
 }
 
 // ── Prices ──────────────────────────────────────────────────────────────
@@ -237,7 +250,7 @@ export async function callMessages(
   req: MessagesRequest,
   fetchImpl: typeof fetch = fetch,
 ): Promise<MessagesResult> {
-  const model = req.model || designModel(env);
+  const model = honoured(env, req.model) || designModel(env);
   const gateway = wakeGateway(env);
   if (gateway.kind === "no_key") return { ok: false, kind: "no_key", reason: "no_key" };
   if (gateway.kind === "canned") {

@@ -10,6 +10,10 @@
  *   POST /                  { scope, request?, rehearsal? } → { run, existing }   (one live main run per athlete: a
  *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start)
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
+ *   GET  /current           → { run, events, proposal } | { run: null }   (what the Studio shows when it opens, Task 9:
+ *                           the newest live main run, else the newest one over whose design proposal still has an op
+ *                           to decide — never a rehearsal's; its last 50 events; the proposal it holds open — 2 + 3
+ *                           statements, pinned)
  *   GET  /:id?afterSeq=n    → { run, events }                (events after n, in order)
  *   POST /:id/answer        { answers, dismissed? } → { run } (409 when nothing is waiting; an answer to a check-in
  *                           question is kept as the athlete's answer — 7 statements in all, pinned)
@@ -32,6 +36,7 @@ import {
   answerRun,
   cancelRun,
   createRun,
+  currentRun,
   defaultRunDeps,
   getRun,
   noteOnTrail,
@@ -86,6 +91,12 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       case "restoring":
         return c.json({ error: "restore_in_progress" }, 423);
     }
+  });
+
+  // Before `/:id`, which would otherwise take "current" for a run's id.
+  routes.get("/current", async (c) => {
+    const current = await currentRun(c.get("db"), c.get("userId"));
+    return c.json(current ?? { run: null });
   });
 
   routes.get("/:id", async (c) => {

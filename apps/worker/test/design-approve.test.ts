@@ -761,9 +761,17 @@ describe("manifest lines", () => {
       parts: ["Activation", "Main", "Cool-down · Flow"],
       detail: ["Glute bridge 2 × 12", "Goblet squat 3 × 8 · 35 lb", "Band row 3 × 12", "Couch stretch 45 s each side"],
       reviewMean: 4.25,
+      // The review as the card's expanded line shows it (Task 9; design-manifest-review.test.ts has its rules).
+      review: expect.objectContaining({
+        dimensions: expect.arrayContaining([{ id: "intent", label: "Intent clarity", score: 5, note: "Clear." }]),
+        rounds: 1,
+        note: null,
+      }),
+      issues: p.ops[0]!.issues.map((i) => ({ code: i.code, message: i.message })),
       outcome: null,
       written: null,
     });
+    expect(lines[0]!.review!.dimensions).toHaveLength(12);
     expect(lines[1]).toMatchObject({ title: "At the gym", time: null, effort: "Maintain", place: "Gym", parts: ["Main"], reviewMean: null });
     // The place, by default-place.ts's one rule: the athlete's own, a preset, "No equipment"; one deleted since, the default.
     const name = await placeNamer(db, rich.userId);

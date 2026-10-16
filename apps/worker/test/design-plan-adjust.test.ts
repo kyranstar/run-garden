@@ -764,9 +764,9 @@ describe("the manifest: one line per change, in the thread coach's own words, wi
     const { id } = await proposal({ changes: [skip(rich.outlineToday), moveTo(prog, day(-3), "17:30"), shorten(run, 30)] });
     const lines = planChangeLines((await proposalOf(id))!.ops as never);
     expect(lines).toEqual([
-      { opId: planAdjustId(rich.outlineToday), kind: "skip", workoutId: rich.outlineToday, date: TODAY, time: null, summary: "Strength — skipped", was: null, effect: "comes off the plan — A flare day: rest the jaw.", why: "Today's reading is high; a short relief session replaces it.", outcome: null },
-      { opId: planAdjustId(prog), kind: "move", workoutId: prog, date: day(-3), time: "17:30", summary: "Strength", was: "Fri 15 May", effect: null, why: "Thursday has more time.", outcome: null },
-      { opId: planAdjustId(run), kind: "adjust", workoutId: run, date: day(-3), time: null, summary: "Easy run — 30 min", was: "45 min", effect: null, why: "Legs are heavy after the hills: keep it easy and short.", outcome: null },
+      { opId: planAdjustId(rich.outlineToday), kind: "skip", workoutId: rich.outlineToday, date: TODAY, time: null, summary: "Strength — skipped", was: null, effect: "comes off the plan — A flare day: rest the jaw.", why: "Today's reading is high; a short relief session replaces it.", issues: expect.any(Array), outcome: null },
+      { opId: planAdjustId(prog), kind: "move", workoutId: prog, date: day(-3), time: "17:30", summary: "Strength", was: "Fri 15 May", effect: null, why: "Thursday has more time.", issues: expect.any(Array), outcome: null },
+      { opId: planAdjustId(run), kind: "adjust", workoutId: run, date: day(-3), time: null, summary: "Easy run — 30 min", was: "45 min", effect: null, why: "Legs are heavy after the hills: keep it easy and short.", issues: expect.any(Array), outcome: null },
     ]);
   });
 });

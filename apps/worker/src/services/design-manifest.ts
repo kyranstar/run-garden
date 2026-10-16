@@ -28,6 +28,8 @@ import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type { DesignedOp, DesignedPlanOp, OpOutcome, PlanOpOutcome, Written } from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
+import { REVIEW_DIMENSIONS } from "./design-prompt.js";
+import { acceptedLine, type AcceptedCost } from "./design-review.js";
 import { describeChange, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
@@ -53,10 +55,60 @@ export interface DocWorkoutLine {
   detail: string[];
   /** The review's mean score (1–5; `reviewMeanOf`); null when there is none to average. */
   reviewMean: number | null;
+  /** The review of the version held, as the card's expanded line shows it (Task 9); null when there is none. */
+  review: LineReview | null;
+  /** The validator's warnings for the day — the costs shown beside Approve — each its code and its message. A code the
+   * shared validator doesn't list (the tool layer's `test_unmeasured`) comes the same way: the card shows the message. */
+  issues: Array<{ code: string; message: string }>;
   /** How it ended; null while it is the athlete's to decide. */
   outcome: OpOutcome | null;
   /** Applied: what the plan holds — the athlete's version and day after an edit or a move. Null otherwise. */
   written: (Written & { summary: string; edited: boolean; moved: boolean }) | null;
+}
+
+/**
+ * A review as the athlete reads it (Task 9): each dimension scored or noted, by the rubric's own label and in its order
+ * (`REVIEW_DIMENSIONS`; one the rubric no longer has keeps its id, after them); what changed between the drafts; the
+ * must-fix items and improvements; the costs the athlete chose (`acceptedLine`); how many drafts were reviewed; and,
+ * for a review that couldn't be read, the note saying the validator's view stands. Plain text, all of it.
+ */
+export interface LineReview {
+  dimensions: Array<{ id: string; label: string; score: number | null; note: string | null }>;
+  mustFix: string[];
+  improvements: string[];
+  changes: string[];
+  accepted: string[];
+  rounds: number;
+  note: string | null;
+}
+
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+
+/** The op's review, as the athlete reads it (see `LineReview`). */
+export function lineReview(review: DesignedOp["review"]): LineReview | null {
+  if (!review) return null;
+  const scores = (review.scores ?? {}) as Record<string, unknown>;
+  const notes = (review.notes ?? {}) as Record<string, unknown>;
+  const known = new Set<string>(REVIEW_DIMENSIONS.map((d) => d.id));
+  const ids = [...REVIEW_DIMENSIONS.map((d) => d.id as string), ...[...Object.keys(scores), ...Object.keys(notes)].filter((k) => !known.has(k))];
+  const dimensions = [...new Set(ids)].flatMap((id) => {
+    const score = typeof scores[id] === "number" ? (scores[id] as number) : null;
+    const note = typeof notes[id] === "string" ? (notes[id] as string) : null;
+    if (score === null && note === null) return [];
+    return [{ id, label: REVIEW_DIMENSIONS.find((d) => d.id === id)?.label ?? id, score, note }];
+  });
+  const accepted = (review as { accepted?: unknown }).accepted;
+  return {
+    dimensions,
+    mustFix: strings(review.mustFix),
+    improvements: strings(review.improvements),
+    changes: strings(review.changes),
+    accepted: Array.isArray(accepted)
+      ? accepted.filter((a): a is AcceptedCost => !!a && typeof a === "object" && typeof (a as AcceptedCost).why === "string").map(acceptedLine)
+      : [],
+    rounds: typeof review.rounds === "number" ? review.rounds : 1,
+    note: typeof review.note === "string" ? review.note : null,
+  };
 }
 
 /** A place id (or none) → the name the athlete knows it by. */
@@ -119,6 +171,8 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
       parts: doc.parts.map(partLine),
       detail: doc.parts.flatMap((p) => p.items.map(itemLine)),
       reviewMean: reviewMeanOf(op),
+      review: lineReview(op.review),
+      issues: (op.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
       outcome: op.outcome ?? null,
       written: writtenLine(op.outcome),
     };
@@ -146,6 +200,9 @@ export interface PlanChangeLine {
   effect: string | null;
   /** The coach's reason, in its words. */
   why: string;
+  /** Its advisory notes (Task 8b: a skip past the rolling week's sanctioned rest), each its code and plain message —
+   * the card shows the message (Task 9). */
+  issues: Array<{ code: string; message: string }>;
   /** How it ended; null while it is the athlete's to decide. */
   outcome: PlanOpOutcome | null;
 }
@@ -164,6 +221,7 @@ export function planChangeLines(ops: readonly unknown[]): PlanChangeLine[] {
       was: w.was,
       effect: w.effect,
       why: c.why,
+      issues: (c.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
       outcome: c.outcome ?? null,
     };
   });

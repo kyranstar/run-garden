@@ -642,9 +642,26 @@ export interface DesignLineDto {
   /** Each move with its dose: "Glute bridge 2 × 12". */
   detail: string[];
   reviewMean: number | null;
+  /** The review of the version held, as the card's expanded line shows it (Task 9); null when there is none. */
+  review: DesignLineReviewDto | null;
+  /** The validator's warnings for the day — each its code and plain message; show the message (a code may be one the
+   * shared validator doesn't list, such as the tool layer's `test_unmeasured`). */
+  issues: Array<{ code: string; message: string }>;
   outcome: DesignOutcomeDto | null;
   /** Applied: what the plan holds — the athlete's version and day after an edit or a move. */
   written: (DesignWrittenDto & { summary: string; edited: boolean; moved: boolean }) | null;
+}
+
+/** A designed workout's review, as the athlete reads it: each dimension by the rubric's label, in its order; what changed
+ * between drafts; must-fix items and improvements; costs the athlete chose; a review that couldn't be read says so. */
+export interface DesignLineReviewDto {
+  dimensions: Array<{ id: string; label: string; score: number | null; note: string | null }>;
+  mustFix: string[];
+  improvements: string[];
+  changes: string[];
+  accepted: string[];
+  rounds: number;
+  note: string | null;
 }
 
 /** A session as it stood before a change of it was applied (Stage 3 Task 8b). */
@@ -679,6 +696,8 @@ export interface DesignChangeLineDto {
   /** What `was` can't say: a skip's reason. */
   effect: string | null;
   why: string;
+  /** Advisory notes (a skip past the rolling week's sanctioned rest): show each message. */
+  issues: Array<{ code: string; message: string }>;
   outcome: DesignChangeOutcomeDto | null;
 }
 
@@ -1048,7 +1067,28 @@ export interface CoachRunDto {
   createdAt: string;
   updatedAt: string;
   finishedAt: string | null;
+  /** A set's estimated cost in dollars, once its plan made one (null before, and for now / later today). */
+  estimateUsd: number | null;
+  /** The run's own spending ceiling in dollars; null when the server can't read it. */
+  ceilingUsd: number | null;
 }
+
+/** The design proposal a run holds open: its id, its status and its flags (a stop's note among them). */
+export interface CoachOpenProposalDto {
+  id: string;
+  status: string;
+  flags: string[];
+}
+
+/** `GET /api/coach/runs/current`: the run the Studio shows when it opens — the newest live main run, else the newest one
+ * over whose proposal still has a workout to decide — with its last events and the proposal it holds open. */
+export type CoachRunCurrentResponse =
+  | { run: CoachRunDto; events: CoachRunEventDto[]; proposal: CoachOpenProposalDto | null }
+  | { run: null };
+
+/** `POST /api/coach/runs/:id/answer`: the athlete's words (one per question), a skip, or the id of the condition check
+ * the server saved for an ask for today's check. */
+export type CoachRunAnswerBody = { answers: string[]; dismissed?: boolean } | { answers?: []; conditionCheckId: string } | { answers?: []; dismissed: true };
 
 export interface CoachRunEventDto {
   seq: number;
@@ -1584,6 +1624,9 @@ export interface ConditionCheckDto {
   feelingOff: boolean;
 }
 
+/** A check the server saved (`POST /api/conditions/checks`): always with its id — what answers a coach's ask. */
+export type SavedConditionCheckDto = ConditionCheckDto & { id: string };
+
 // ── Settings: conditions and places (worker routes: routes/conditions.ts, routes/places.ts) ────────────────────
 
 /** A condition profile the library knows, as Settings shows it — labelled by the profile itself. */
@@ -2036,7 +2079,8 @@ export const api = {
   },
   /** Decline a designed proposal, or some of its workouts; the reason is the athlete's own words. */
   coachDesignDecline: (proposalId: string, body: { opIds?: string[]; reason?: string }) =>
-    post<{ ok: true; status: DesignApproveResponse["status"]; declined: string[]; settled: DesignApproveResponse["settled"] }>(
+    // `inFlight`: changes an approve is applying — never declined; the others are, as usual.
+    post<{ ok: true; status: DesignApproveResponse["status"]; declined: string[]; settled: DesignApproveResponse["settled"]; inFlight?: string[] }>(
       `/api/coach/proposals/${encodeURIComponent(proposalId)}/decline`,
       body,
     ),
@@ -2058,9 +2102,14 @@ export const api = {
     post<CoachRunStepResult>(`/api/coach/runs/${encodeURIComponent(id)}/step`, {}, AI_TIMEOUT_MS),
   coachRun: (id: string, afterSeq = 0) =>
     get<{ run: CoachRunDto; events: CoachRunEventDto[] }>(`/api/coach/runs/${encodeURIComponent(id)}?afterSeq=${afterSeq}`),
-  coachRunAnswer: (id: string, body: { answers: string[]; dismissed?: boolean }) =>
+  coachRunAnswer: (id: string, body: CoachRunAnswerBody) =>
     post<{ run: CoachRunDto }>(`/api/coach/runs/${encodeURIComponent(id)}/answer`, body),
   coachRunCancel: (id: string) => post<{ run: CoachRunDto }>(`/api/coach/runs/${encodeURIComponent(id)}/cancel`, {}),
+  /** The run the Studio opens on (Task 9); 404 when the server's coach designer is off. */
+  coachRunCurrent: () => get<CoachRunCurrentResponse>("/api/coach/runs/current"),
+  /** Take back what an answer kept (the handle is the "You answered" line's receipt's). */
+  coachRunUndoAnswer: (id: string, handle: string) =>
+    post<{ undone: number }>(`/api/coach/runs/${encodeURIComponent(id)}/undo-answer`, { handle }),
   corosStatus: () => get<CorosStatusResponse>("/api/coros/status"),
   corosReadNow: () =>
     post<{ status: string; ingested?: number }>("/api/coros/read-now", undefined, 60_000),
@@ -2236,7 +2285,7 @@ export const api = {
    */
   drainWatch: () => post<{ executed: number }>("/api/sessions/watch/drain", {}),
   recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
-    post<{ check: ConditionCheckDto | null }>("/api/conditions/checks", body),
+    post<{ check: SavedConditionCheckDto | null }>("/api/conditions/checks", body),
   /** Whether the build the slot shows is still the day's (Start would lock it as it is); never builds. */
   sessionCurrent: (workoutId: string) => get<SessionCurrencyDto>(`/api/sessions/${encodeURIComponent(workoutId)}/current`),
   /**

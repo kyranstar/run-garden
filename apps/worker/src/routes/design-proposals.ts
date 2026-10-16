@@ -8,7 +8,8 @@
  *   POST /api/coach/proposals/:id/approve  { opIds? } → { ok, status, applied, changed, refused, settled, remaining,
  *        coachDrain? } every op named (none: all) — the workouts through the Studio's create / revise path, the changes
  *        to sessions already on the plan through the thread coach's applier (Task 8b) — within one request's budget; the
- *        rest come back in `remaining`: call again with `{ opIds: remaining }` until it is empty
+ *        rest come back in `remaining`: call again with `{ opIds: remaining }` until it is empty. The request that ends
+ *        it hands the calendar one bounded sync step, in the room its ops left (Task 9)
  *                                          { edit: { opId, doc, date?, time? } } → the same, for that op alone, with
  *        the athlete's version of its draft (Edit before approve); refused as a Studio save is (422 `invalid_doc` with
  *        every issue, `past_date`, `run_unsupported`; 409 `stale_revision` with `rev`, `not_editable`; 404), nothing
@@ -34,9 +35,11 @@ import { coachProposals } from "@rg/database";
 import { isLocalDate, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { coachDesignerEnabled } from "../env.js";
-import { loadPreferences } from "../services/calendar-sync.js";
+import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
+import { waitUntilSafe } from "../services/wait-until.js";
 import {
   approveDesignOps,
+  calendarOpsFitting,
   declineDesignOps,
   designDraft,
   designedOps,
@@ -104,7 +107,15 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
     return c.json({ error: "not_pending", status: "expired" }, 409);
   }
   try {
-    const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs });
+    const meter = { left: 0 };
+    const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs }, undefined, meter);
+    // The calendar follows the plan, as after a Studio save (Task 9): once the approve is over and this request wrote
+    // something, one bounded step in the room its declared costs left — none when the chunk was full (the half-hourly
+    // reconcile books what this leaves).
+    const maxOps = calendarOpsFitting(meter.left);
+    if (answer.remaining.length === 0 && (answer.applied.length > 0 || answer.changed.length > 0) && maxOps > 0) {
+      waitUntilSafe(c, syncCalendar(db, c.env, userId, { maxOps }).catch(() => undefined));
+    }
     return c.json({ ok: true, ...answer });
   } catch (e) {
     return failed(c, e);

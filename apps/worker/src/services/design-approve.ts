@@ -81,6 +81,7 @@ import { appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, newId, wo
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
+import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, NOT_ACTIONABLE, whyNotActionable } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
 import { recordReplayFrom } from "./garden-sync.js";
@@ -291,6 +292,29 @@ export const ADJUST_COST = 3;
  * collision pass moves, itself among them.
  */
 export const MOVE_COST = 1 + 6 + 9;
+
+/**
+ * THE CALENDAR'S STEP AFTER AN APPROVE (Task 9). A Studio save and the thread coach's approve hand the calendar one
+ * bounded sync step through waitUntil (CALENDAR_OPS_PER_REQUEST). A designed approve does too — on the request that ends
+ * the approve (nothing `remaining`) and wrote something — but only in the room its declared costs left
+ * (`calendarOpsFitting`): an approve fills its request to the budget by design, so a full chunk books nothing and leaves
+ * the calendar to the half-hourly reconcile, as every request does past its few ops.
+ *
+ * The step's declared cost, an upper bound on what it measures: the fixed part — the restore marker, the preferences,
+ * the connection and a token refresh (its fetch and its write), the window's sessions, the sync token, the list (twice
+ * when Google asks for a full read), the restore check after it, the links and suppressions (two chunks of ids), the
+ * failed ops and the token written — and an op, a Google call and up to three writes (a move's). Measured on a settled
+ * mirror (design-approve-calendar.test.ts): 11 fixed, 3 an op.
+ */
+export const CALENDAR_STEP_FIXED = 1 + 1 + 1 + 2 + 1 + 1 + 2 + 1 + 4 + 1 + 1;
+export const CALENDAR_STEP_PER_OP = 4;
+
+/** How many calendar ops fit the room an approve left (`left`: its declared statements unspent) — at most
+ * CALENDAR_OPS_PER_REQUEST, none when one doesn't fit. */
+export function calendarOpsFitting(left: number): number {
+  if (left < CALENDAR_STEP_FIXED + CALENDAR_STEP_PER_OP) return 0;
+  return Math.min(CALENDAR_OPS_PER_REQUEST, Math.floor((left - CALENDAR_STEP_FIXED) / CALENDAR_STEP_PER_OP));
+}
 
 /** What a change costs, by the sessions the day it lands on already holds (`dayRows`, this request's own included). */
 export function planOpCostOf(op: Pick<PlanAdjustOp, "op">, dayRows: number): number {
@@ -629,7 +653,8 @@ const applierWhy = (missed: string | undefined): string =>
 
 /**
  * Approve the chosen ops of a designed proposal (see the module comment). Throws `NotOpenError`, `UnknownOpError`,
- * `ProposalChangedError` — and with `edit`, the Studio's own refusal of the athlete's version.
+ * `ProposalChangedError` — and with `edit`, the Studio's own refusal of the athlete's version. `meter.left`, when given,
+ * is set to the declared statements the request left unspent (what the route's calendar step may use).
  */
 export async function approveDesignOps(
   db: Db,
@@ -638,7 +663,9 @@ export async function approveDesignOps(
   input: ApproveInput,
   ctx: DocWorkoutCtx,
   budget: number = REQUEST_BUDGET - APPROVE_FIXED,
+  meter?: { left: number },
 ): Promise<ApproveAnswer> {
+  if (meter) meter.left = budget;
   const { ops, settled, declined, todo: open } = decidable(p, input.edit ? [input.edit.opId] : input.opIds, { repair: true, workoutsOnly: !!input.edit });
   // One plan read covers at most PLAN_MAX ops; the rest wait for the next request.
   const inPlan = open.slice(0, PLAN_MAX);
@@ -799,6 +826,8 @@ export async function approveDesignOps(
   }
   if (full) remaining.push(...workouts.map(opIdOf));
   remaining.push(...overflow);
+  // The first op always goes, so `left` can fall below nothing: no room then.
+  if (meter) meter.left = Math.max(0, left);
   const drain = coachDrain ? { coachDrain: true as const } : {};
   if (outcomes.size === 0) {
     // A superseded proposal with nothing to repair is no longer the athlete's.
