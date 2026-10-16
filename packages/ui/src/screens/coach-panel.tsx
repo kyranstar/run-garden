@@ -16,6 +16,7 @@ import type {
 } from "@rg/api-client";
 import { describeOps, type CoachOp, type OpLine, type PlannedRef } from "@rg/domain";
 import { OUT_OF_CREDITS_LINE } from "../ai-credits.js";
+import { coachOn } from "../features.js";
 import {
   countNoun,
   formatDayLong,
@@ -1259,6 +1260,14 @@ export function CoachPanel({
           </span>
         </div>
       )}
+      {/* Stage 3 Task 9: the way to the coach designer — the Studio, its composer focused — with the coach designer on. */}
+      {coachOn() ? (
+        <div className="coach-design-link">
+          <Link className="linklike tap-pad" to="/studio" state={{ coach: "compose" }}>
+            Design a workout with the coach
+          </Link>
+        </div>
+      ) : null}
       {/* One scroll owner for the panel (System 1 §2), and now one thing
           inside it. The wrapper exists so the jump chip can float over the
           scroll region without scrolling with it and without taking a single

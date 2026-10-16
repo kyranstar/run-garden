@@ -1,7 +1,7 @@
 /**
  * THE STUDIO HOME (Stage 2 spec §3), under the search field:
  *
- *   [ the coach's composer — Stage 3 fills this slot ]
+ *   [ the coach's composer, or its run view and suggestion — Stage 3 (composer.tsx), with the coach designer on ]
  *   Quick starts   Jaw care 5 min · Desk reset 8 min · Hip opener 10 min · <pinned templates> · ＋ Yours
  *   [ New workout ]                              Templates (4) ›  ← the builder (Task 6); "Continue …" while one is being built
  *   Browse         All moves · Warm-up · Activation · Strength · … · Cool-down
@@ -22,10 +22,12 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, label } from "@rg/exercise-library";
+import { coachOn } from "../../features.js";
 import { IconChevron, IconClock, IconPlus } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { BuildEntry } from "./build-entry.js";
 import { ChipRow } from "./chip-row.js";
+import { StudioCoach } from "./composer.js";
 import { browseParts, browseTags, HOME_TAGS, themeCountWord, visibleThemes, type StudioCtx, type StudioFilters } from "./model.js";
 import { quickTiles, TEMPLATES_HREF } from "./templates-model.js";
 
@@ -58,8 +60,11 @@ export function StudioHome({
   const tiles = useMemo(() => quickTiles(ctx, templates.data?.templates), [ctx, templates.data]);
   return (
     <div className="stu-home">
-      {/* Stage 3: the coach's composer ("What do you want to do?" · Now · Later today) renders in this slot. */}
-      <div className="stu-composer-slot" data-slot="coach-composer" />
+      {/* Stage 3: the coach's composer (What would help today? · Now · Later today · Plan ahead) — or, while the coach
+          works, its run view — in this slot, with the coach designer on (`coachOn`); off, the slot takes no room. */}
+      <div className="stu-composer-slot" data-slot="coach-composer">
+        {coachOn() ? <StudioCoach ctx={ctx} /> : null}
+      </div>
 
       <Section title="Quick starts">
         <div className="stu-quick">
