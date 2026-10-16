@@ -80,7 +80,9 @@ describe("LocalDate math", () => {
     }
   });
 
-  it("answers exactly what a fresh formatter does, in every zone the runtime knows, across DST edges and day lines", () => {
+  // ~19k fresh formatters: ~4.5 s on a CI runner, past vitest's 5 s default on a slow one (CI and Deploy, 2026-10-16), so it
+  // gathers mismatches instead of asserting per pair, and it has its own limit.
+  it("answers exactly what a fresh formatter does, in every zone the runtime knows, across DST edges and day lines", { timeout: 30_000 }, () => {
     // The uncached reference: a formatter built for each call, as todayInZone did before it kept them.
     const fresh = (tz: string, at: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
     const edges = [
@@ -102,10 +104,16 @@ describe("LocalDate math", () => {
     const instants = [...edges, ...Array.from({ length: 24 }, () => new Date(Date.UTC(1990, 0, 1) + Math.floor(random() * 60 * 365 * 86_400_000)))];
     const zones = [...Intl.supportedValuesOf("timeZone"), "UTC", "Etc/GMT+12", "Etc/GMT-14", "america/los_angeles"];
     expect(zones.length).toBeGreaterThan(300);
+    const mismatches: string[] = [];
     for (const at of instants) {
       // Interleaved: each instant in every zone, so a zone's kept formatter is never another's.
-      for (const tz of zones) expect(todayInZone(tz, at), `${tz} ${at.toISOString()}`).toBe(fresh(tz, at));
+      for (const tz of zones) {
+        const kept = todayInZone(tz, at);
+        const want = fresh(tz, at);
+        if (kept !== want) mismatches.push(`${tz} ${at.toISOString()}: ${kept} ≠ ${want}`);
+      }
     }
+    expect(mismatches).toEqual([]);
   });
 
   it("refuses a zone the runtime doesn't know, every time — as a fresh formatter does (nothing kept for it)", () => {
