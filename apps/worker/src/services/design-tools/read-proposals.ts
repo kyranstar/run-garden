@@ -1,8 +1,8 @@
 /**
  * read_proposals(status?) — past proposals and how each ended (Stage 3 spec §4, §8): newest first, with the day it
  * was made, its status (pending, approved, partially_approved, declined, superseded, expired) and the day it was
- * resolved, and what it proposed — each change's kind, day and, for a designed workout, its title and how the athlete
- * decided it (design-approve.ts): `approved` as the coach proposed it, `edited` (the athlete changed the draft, then
+ * resolved, and what it proposed — each change's kind, day and, for a designed workout, its title, what the coach based
+ * it on (`basedOn`, as it set it), and how the athlete decided it (design-approve.ts): `approved` as the coach proposed it, `edited` (the athlete changed the draft, then
  * approved theirs), with `moved` and the day it went to (`plannedFor`) when the athlete chose another day or time,
  * `declined` (with the athlete's reason, when they gave one), `not_applied` (the server refused it at approval, with
  * why), or `superseded` (a newer plan covered its day). A rehearsal (the live scenario suite) is never one of them. The
@@ -42,6 +42,20 @@ const OPS_SHOWN = 6;
 const STATUSES = ["pending", "approved", "partially_approved", "declined", "superseded", "expired"] as const;
 
 const input = z.object({ status: z.enum(STATUSES).optional(), limit: limitField(MAX_LIMIT).optional(), cursor: cursorField.optional() }).strict();
+
+/** An id as the app writes them: shown as it is; anything else is marked as someone else's words. */
+const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+
+/**
+ * A designed workout's lineage as the coach set it (`doc.basedOn`: "like last week's" — a workout at a revision, a
+ * template, a logged session; fix wave 3A round 2, B-M2): what it was made from, so the coach learns from what the
+ * athlete approved. The workout approval makes is based on the proposal instead (design-approve.ts, Task 8).
+ */
+function lineageOf(raw: unknown): Record<string, unknown> {
+  const b = raw as { kind?: unknown; id?: unknown; rev?: unknown } | null;
+  if (!b || typeof b.kind !== "string" || typeof b.id !== "string") return {};
+  return { basedOn: { kind: b.kind, id: ID.test(b.id) ? b.id : untrusted(b.id), ...(typeof b.rev === "number" ? { rev: b.rev } : {}) } };
+}
 
 /** How the athlete decided a designed workout (design-approve.ts's outcome), in the tool's words; nothing while open. */
 function decided(o: Record<string, unknown>): Record<string, unknown> {
@@ -92,7 +106,7 @@ export const readProposals: DesignTool = {
             (select json_group_array(json_object('kind', ${op("$.kind")}, 'date', coalesce(${op("$.date")}, ${op("$.toDate")}),
               'title', ${op("$.doc.title")}, 'outcome', ${op("$.outcome.status")}, 'edited', ${op("$.outcome.edited")},
               'moved', ${op("$.outcome.moved")}, 'wDate', ${op("$.outcome.written.date")}, 'wTime', ${op("$.outcome.written.time")},
-              'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}))
+              'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}, 'basedOn', json(${op("$.doc.basedOn")})))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}
             ${at ? sql`and (${c.createdAt}, ${c.id}) <= (${at[0]}, ${at[1]})` : sql``}
@@ -120,6 +134,7 @@ export const readProposals: DesignTool = {
             kind: typeof o.kind === "string" ? o.kind : "unknown",
             ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date } : {}),
             ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),
+            ...lineageOf(o.basedOn),
             ...decided(o),
           })),
           ...(ops.length > OPS_SHOWN ? { moreOps: ops.length - OPS_SHOWN } : {}),

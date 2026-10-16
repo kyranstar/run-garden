@@ -713,6 +713,25 @@ describe("read_proposals after the athlete decided", () => {
     if (isToolErr(only)) throw new Error(only.why);
     expect((only.data as { proposals: Array<{ id: string }> }).proposals.map((p) => p.id)).toEqual([id]);
   });
+
+  it("each designed workout's lineage reads back as the coach set it; the workout approval makes is based on the proposal (round 2, B-M2)", async () => {
+    const like = { kind: "workout", id: rich.todayDocId, rev: 2 };
+    const { id, opIds } = await designed([
+      { doc: { ...calmDoc({ title: "Like Wednesday's" }), basedOn: like }, target: { kind: "new", date: tomorrow } },
+      { doc: calmDoc({ title: "From nothing" }), target: { kind: "new", date: later } },
+    ]);
+    const res = await approve(id);
+    // Task 8's ruling: what approval makes names the proposal and its op — never the coach's own lineage.
+    expect((await docOf(res.applied[0]!.workout.id)).basedOn).toEqual({ kind: "proposal", id, opId: opIds[0] });
+    const main = await run({ userId: rich.userId, role: "main", scope: { kind: "now" } });
+    statements.length = 0;
+    const read = await readProposals.run(ctxOf(rich.userId, main), {});
+    if (isToolErr(read)) throw new Error(read.why);
+    expect(statements).toHaveLength(1);
+    const mine = (read.data as { proposals: Array<{ id: string; ops: Array<Record<string, unknown>> }> }).proposals.find((p) => p.id === id)!;
+    expect(mine.ops[0]).toMatchObject({ title: { untrusted: true, text: "Like Wednesday's" }, outcome: "approved", basedOn: like });
+    expect(mine.ops[1]).not.toHaveProperty("basedOn");
+  });
 });
 
 // ── The manifest ────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -76,6 +76,7 @@ import {
 } from "../design-review.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolContext, ToolErr, ToolOk } from "./types.js";
 import {
+  ASK_FOR_CHECK,
   coachDoc,
   derivedSummary,
   docPlaceId,
@@ -87,12 +88,14 @@ import {
   issueOut,
   judge,
   mainRunIdOf,
+  noCheckToday,
   objectField,
   parseAct,
   readDocAthlete,
   runUnsupported,
   WARNINGS_SHOWN,
   withFocusRefs,
+  type CoachIssue,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, parsedJson, refuse } from "./read-common.js";
 
@@ -187,11 +190,12 @@ const target = z.discriminatedUnion("kind", [
 ]);
 const input = z.object({ doc: objectField, target, changeNote: z.string().trim().min(1).max(200).optional() }).strict();
 
-/** The guidance for a draft the validator refused. */
-function invalidFix(errors: readonly DocIssue[], today: boolean): string {
-  const gated = errors.some((e) => e.code === "condition_gate" || e.code === "condition_pattern" || e.code === "condition_never");
-  if (gated && today) {
-    return "Swap each move the day closes for one it allows, in this draft (an alternate doesn't stand in on a proposal), then validate and propose again.";
+/** The guidance for a draft the validator refused: today, a move the day closes is swapped in the draft itself — or,
+ * with no check logged yet, the main coach may ask for one (fix wave 3A round 2, B-M8). */
+function invalidFix(errors: readonly CoachIssue[], today: boolean, noCheck: boolean): string {
+  const closedToday = errors.some((e) => e.code === "condition_gate" || e.code === "condition_pattern");
+  if ((closedToday || errors.some((e) => e.code === "condition_never")) && today) {
+    return `Swap each move the day closes for one it allows, in this draft (an alternate doesn't stand in on a proposal), then propose again${closedToday && noCheck ? `; or, ${ASK_FOR_CHECK}` : ""}.`;
   }
   return "Fix each error (validate_workout lists them all, with fixes), then propose again.";
 }
@@ -346,11 +350,12 @@ export const proposeWorkout: DesignTool = {
     if (free) return free;
     const ids = idsRefusal(doc, a);
     if (ids) return ids;
-    const judged = judge(doc, await docValidateCtx(ctx, a, date));
+    const vctx = await docValidateCtx(ctx, a, date);
+    const judged = judge(doc, vctx, { keyResults: a.keyResultMeasures });
     // A run document first, as validate_workout refuses it: no fix of its errors makes it one the app can play.
     if (judged.derived?.discipline === "run") return runUnsupported();
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
-      return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, date === today));
+      return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, date === today, noCheckToday(vctx)));
     }
 
     const draftTarget: DocWorkoutTarget =

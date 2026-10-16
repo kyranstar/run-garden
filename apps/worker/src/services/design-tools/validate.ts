@@ -81,7 +81,7 @@ export const validateWorkout: DesignTool = {
     if (free) return free;
     const ids = idsRefusal(doc, a);
     if (ids) return ids;
-    const judged = judge(doc, await docValidateCtx(ctx, a, p.date));
+    const judged = judge(doc, await docValidateCtx(ctx, a, p.date), { keyResults: a.keyResultMeasures });
     if (judged.derived?.discipline === "run") return runUnsupported();
     const minutes = judged.derived?.estimatedMinutes;
     const notes = judged.warnings.length ? `, ${judged.warnings.length} note${judged.warnings.length === 1 ? "" : "s"}` : "";

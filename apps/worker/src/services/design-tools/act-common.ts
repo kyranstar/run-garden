@@ -24,8 +24,10 @@
  *    the tools already run. A focus-area id in `intent.focus` stands for its library refs (`withFocusRefs`), so the
  *    document keeps the library's ids and the validator's focus check reads them.
  *  - Issues go back to the model as `{ path, code, message, fix? }`, capped and counted; a refusal's line names each
- *    error's code. Two fixes are the tool layer's (`judge`): an unknown move's points at search_library, and a gated
- *    move's stand-in on a day ahead is offered only from its own family — none when nothing of it passes.
+ *    error's code. Some fixes are the tool layer's (`judge`): an unknown move's points at search_library, and a gated
+ *    move's stand-in — today's or a day ahead's — is offered only from its own family, none when nothing of it passes;
+ *    today, with no check answered, the main coach may ask for one. So is one advisory note: a test whose move its key
+ *    result's measure doesn't read (`test_unmeasured`, the measures read in the athlete's statement).
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -40,6 +42,8 @@ import {
   PART_PURPOSES,
   RUN_EFFORTS,
   workoutDocSchema,
+  keyResultMeasureSchema,
+  type KeyResultMeasure,
   type WorkoutDoc,
 } from "@rg/domain";
 import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
@@ -50,6 +54,7 @@ import { loadSessionsById } from "../engine-inputs.js";
 import { doneCleanlyOf, doneStats } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
 import { parsedArray, readAthlete, refuse, type Athlete } from "./read-common.js";
+import { measureWords } from "./read-objectives.js";
 import type { ToolContext, ToolErr } from "./types.js";
 
 // ── Input ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -260,6 +265,8 @@ export interface DocAthlete {
   /** The ids a document may serve or test: the athlete's objectives (not dropped) and their key results. */
   objectiveIds: Set<string>;
   keyResultIds: Set<string>;
+  /** Each of those key results' measure by id (null when the stored one no longer reads): what a test must move. */
+  keyResultMeasures: Map<string, KeyResultMeasure | null>;
 }
 
 /** Enough for a week of sessions and the last before it, under one chunk of `loadSessionsById` (90). */
@@ -295,7 +302,8 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
     actRecent: recentSql(ctx.userId, ctx.now),
     actFocus: sql`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${ctx.userId})`,
     actObjectives: sql`(select json_group_array(id) from ${live})`,
-    actKeyResults: sql`(select json_group_array(${keyResults.id}) from ${keyResults} where ${keyResults.userId} = ${ctx.userId} and ${keyResults.objectiveId} in ${live})`,
+    actKeyResults: sql`(select json_group_array(json_object('id', ${keyResults.id}, 'measure', case when json_valid(${keyResults.measure}) then json(${keyResults.measure}) end))
+      from ${keyResults} where ${keyResults.userId} = ${ctx.userId} and ${keyResults.objectiveId} in ${live})`,
     ...o.extras,
   });
   let place: DocPlace;
@@ -314,6 +322,10 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
     place = { id: d.id, equipment: d.equipment, default: true, kind: d.kind };
   }
   const ids = (raw: unknown): Set<string> => new Set(parsedArray(raw).filter((x): x is string => typeof x === "string"));
+  const krs = parsedArray(extra.actKeyResults).flatMap((x) => {
+    const k = x as { id?: unknown; measure?: unknown } | null;
+    return typeof k?.id === "string" ? [{ id: k.id, measure: k.measure }] : [];
+  });
   const focusAreas = new Map(
     parsedArray(extra.actFocus).flatMap((f) => {
       const x = f as { id?: unknown; refs?: unknown } | null;
@@ -328,7 +340,13 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
     recentIds: parsedArray(extra.actRecent).filter((x): x is string => typeof x === "string"),
     focusAreas,
     objectiveIds: ids(extra.actObjectives),
-    keyResultIds: ids(extra.actKeyResults),
+    keyResultIds: new Set(krs.map((k) => k.id)),
+    keyResultMeasures: new Map(
+      krs.map((k) => {
+        const m = keyResultMeasureSchema.safeParse(k.measure);
+        return [k.id, m.success ? m.data : null] as const;
+      }),
+    ),
   };
 }
 
@@ -488,22 +506,79 @@ export function freeTextRefusal(doc: unknown, base: WorkoutDoc | null): ToolErr 
 
 // ── Judging ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** An issue as the coach's tools raise it: the validator's (`DocIssue`), or the tool layer's own advisory — a test whose
+ * move its key result's measure doesn't read (`test_unmeasured`: fix wave 3A round 2, B-M10). */
+export type CoachIssue = Omit<DocIssue, "code"> & { code: DocIssue["code"] | "test_unmeasured" };
+
 export interface Judged {
   /** The document as the schema reads it; null when it doesn't. */
   doc: WorkoutDoc | null;
-  errors: DocIssue[];
-  warnings: DocIssue[];
+  errors: CoachIssue[];
+  warnings: CoachIssue[];
   derived: DocDerived | null;
 }
 
-/** The validator's verdict, and what is derived from the document when it can be built. */
-export function judge(raw: unknown, vctx: ValidateCtx): Judged {
-  const issues = validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw));
+/** What the coach's refusal of a move today's check closes adds when no check is logged today (fix wave 3A round 2,
+ * B-M8): a logged check may open it, and the main coach is the one who asks. */
+export const ASK_FOR_CHECK = 'if no check is logged today, the main coach may ask_athlete({ check: "condition" })';
+
+/** Today, with an active profile whose check isn't answered yet (the validator's own rule: a value, or feeling off): a
+ * gate that reads it may open once it is. */
+export function noCheckToday(vctx: ValidateCtx): boolean {
+  const d = vctx.day;
+  if (!d || d.date !== d.today) return false;
+  return vctx.activeProfiles.some((p) => {
+    const r = d.readings[p.id];
+    return !r || (r.pre == null && !r.feelingOff && !d.feelingOff);
+  });
+}
+
+/**
+ * The validator's verdict, and what is derived from the document when it can be built — with the tool layer's own fixes
+ * (`coachFix`) and, given the athlete's key results (`keyResults`: each one's measure by id, read with the athlete), its
+ * own advisory notes (`testNotes`).
+ */
+export function judge(raw: unknown, vctx: ValidateCtx, o: { keyResults?: ReadonlyMap<string, KeyResultMeasure | null> } = {}): Judged {
+  const noCheck = noCheckToday(vctx);
+  const issues: CoachIssue[] = [...validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw, noCheck)), ...testNotes(raw, o.keyResults)];
   const errors = issues.filter((i) => i.severity === "error");
   const warnings = issues.filter((i) => i.severity === "warning");
   const parsed = workoutDocSchema.safeParse(raw);
   const buildable = parsed.success && !errors.some((e) => e.code === "bounds" || e.code === "too_large");
   return { doc: parsed.success ? parsed.data : null, errors, warnings, derived: buildable ? deriveDoc(parsed.data!, EXERCISES) : null };
+}
+
+/**
+ * A scheduled test (`test.keyResultId`) whose move isn't one its key result's measure reads — done to max and logged, it
+ * would never count toward that key result (fix wave 3A round 2, B-M10): an advisory note on the move, with the move
+ * the measure reads as its fix when it reads one. A key result the athlete doesn't have is `idsRefusal`'s; one whose
+ * stored measure no longer reads has nothing to compare with.
+ */
+function testNotes(raw: unknown, keyResults: ReadonlyMap<string, KeyResultMeasure | null> | undefined): CoachIssue[] {
+  if (!keyResults || keyResults.size === 0) return [];
+  const out: CoachIssue[] = [];
+  const parts = Array.isArray((raw as { parts?: unknown } | null)?.parts) ? ((raw as { parts: unknown[] }).parts) : [];
+  parts.forEach((part, p) => {
+    const items = (part as { items?: unknown } | null)?.items;
+    if (!Array.isArray(items)) return;
+    items.forEach((item, i) => {
+      const x = item as { libraryId?: unknown; test?: { keyResultId?: unknown } } | null;
+      const id = x?.test?.keyResultId;
+      const measure = typeof id === "string" ? keyResults.get(id) : undefined;
+      if (!measure) return;
+      const own = typeof x?.libraryId === "string" ? RECORD_BY_ID.get(x.libraryId) : undefined;
+      const reads = "libraryIds" in measure ? measure.libraryIds.map((l) => RECORD_BY_ID.get(l)?.id ?? l) : [];
+      if (own && reads.includes(own.id)) return;
+      out.push({
+        path: own ? `parts[${p}].items[${i}].libraryId` : `parts[${p}].items[${i}].test.keyResultId`,
+        code: "test_unmeasured",
+        message: `${own?.name ?? "This move"} isn't a move its key result's measure reads (${measureWords(measure)}): done to max and logged, it won't count toward it.`,
+        ...(reads.length > 0 ? { fix: reads[0] } : {}),
+        severity: "warning",
+      });
+    });
+  });
+  return out;
 }
 
 /** A library record by its id or one of its old ids. */
@@ -519,27 +594,28 @@ function itemIdAt(raw: unknown, path: string): string | undefined {
 }
 
 /**
- * The two fixes the coach reads differently from the Studio (spec §4; audit M6):
+ * The fixes the coach reads differently from the Studio (spec §4; audit M6; fix wave 3A round 2, B-M7 and B-M8):
  *  - an unknown move's fix points at search_library — after the validator's near guess, when it has one;
- *  - a gated move's stand-in on a day ahead (the error: no alternate of the designer's passes on a recovery day) is
- *    offered only from the move's own family (`family`, the library's pattern family). The validator offers only a move
- *    that passes in recovery, so a stand-in is never gated itself; one from another family (a box squat for pogo hops)
- *    is another quality, so none is offered, and the message says how to choose.
+ *  - a gated move's stand-in — today's check closing it (`condition_gate`, `condition_pattern`), or a day ahead's (the
+ *    error `condition_gate_pending`: no alternate of the designer's passes on a recovery day) — is offered only from the
+ *    move's own family (`family`, the library's pattern family; a move with none has no family to keep). One from
+ *    another family (a box squat for pogo hops) is another quality, so none is offered, and the message says how to
+ *    choose; today, with no check logged, it adds that the main coach may ask for one (`ASK_FOR_CHECK`).
  */
-function coachFix(i: DocIssue, raw: unknown): DocIssue {
+function coachFix(i: DocIssue, raw: unknown, noCheck: boolean): DocIssue {
   if (i.code === "unknown_exercise") {
     const search = "find the move with search_library and use an id it shows";
     return { ...i, fix: i.fix !== undefined ? `"${i.fix}", or ${search}` : `${search[0]!.toUpperCase()}${search.slice(1)}` };
   }
-  if (i.code === "condition_gate_pending" && i.severity === "error") {
+  const today = i.code === "condition_gate" || i.code === "condition_pattern";
+  if (today || (i.code === "condition_gate_pending" && i.severity === "error")) {
     const own = RECORD_BY_ID.get(itemIdAt(raw, i.path) ?? "");
     const offered = i.fix !== undefined ? RECORD_BY_ID.get(i.fix) : undefined;
-    if (offered && own && offered.family === own.family) return i;
+    const ask = today && noCheck ? ASK_FOR_CHECK : null;
+    if (offered && own && own.family && offered.family === own.family) return ask ? { ...i, message: `${i.message} Or, ${ask}.` } : i;
     const { fix: _f, ...rest } = i;
-    return {
-      ...rest,
-      message: `${i.message} No stand-in of its own family is offered: choose an alternate yourself with search_library, or keep the move for a day whose check is known.`,
-    };
+    const choose = today ? "choose one yourself with search_library" : "choose an alternate yourself with search_library, or keep the move for a day whose check is known";
+    return { ...rest, message: `${i.message} No stand-in of its own family is offered: ${choose}${ask ? `, or, ${ask}` : ""}.` };
   }
   return i;
 }
@@ -548,7 +624,7 @@ export const ERRORS_SHOWN = 20;
 export const WARNINGS_SHOWN = 15;
 
 /** One issue as the model reads it. */
-export const issueOut = (i: DocIssue) => ({ path: i.path, code: i.code, message: i.message, ...(i.fix !== undefined ? { fix: i.fix } : {}) });
+export const issueOut = (i: CoachIssue) => ({ path: i.path, code: i.code, message: i.message, ...(i.fix !== undefined ? { fix: i.fix } : {}) });
 
 const round1 = (n: number): number => Math.round(n * 10) / 10;
 
@@ -575,7 +651,7 @@ export function derivedSummary(d: DocDerived): Record<string, unknown> {
 }
 
 /** The validator's errors, as one teachable line (the first few, then how many more). */
-export function errorsLine(errors: readonly DocIssue[], shown = 6): string {
+export function errorsLine(errors: readonly CoachIssue[], shown = 6): string {
   const head = errors.slice(0, shown).map((e) => `${e.path} (${e.code}): ${e.message}${e.fix !== undefined ? ` (fix: ${e.fix})` : ""}`);
   return `${head.join("; ")}${errors.length > shown ? `; and ${errors.length - shown} more` : ""}`;
 }

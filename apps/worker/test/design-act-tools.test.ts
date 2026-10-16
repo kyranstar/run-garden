@@ -1215,14 +1215,52 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     expect(d.movesRepeatedOnConsecutiveDays).toEqual([{ days: [day(-1), day(-2)], moves: expect.arrayContaining(["bridge"]) }]);
   });
 
-  it("a reviewer reads the set of the draft it reviews, the reviewed designer's workout marked", async () => {
+  it("a reviewer reads the set of the draft it reviews, the workout under review marked as such — never `yours` (round 2, B-M5)", async () => {
     const { main, two } = await setOfTwo();
     ok((await call("propose_workout", ctxOf(two), { doc: calmDoc({ title: "Tuesday hips" }), target: { kind: "new", date: day(-2) } })).result);
     const reviewer = await run({ role: "reviewer", parentId: two.id, scope: { kind: "week" } });
     const reviewOf = { proposalId: designProposalId(main.id), designerRunId: two.id, toolUseId: "t", round: 1 };
     const { result, count } = await call("read_set", ctxOf(reviewer, { reviewOf }), {});
     expect(count).toBeLessThanOrEqual(1);
-    expect(data(result).workouts.map((w: { title: { text: string }; yours: boolean }) => [w.title.text, w.yours])).toEqual([["Monday hips", false], ["Tuesday hips", true]]);
+    const workouts = data(result).workouts as Array<{ title: { text: string }; underReview: boolean }>;
+    expect(workouts.map((w) => [w.title.text, w.underReview])).toEqual([["Monday hips", false], ["Tuesday hips", true]]);
+    for (const w of workouts) expect(w).not.toHaveProperty("yours");
+  });
+
+  it("a revision's reviewer sees the revision under review — not the version the proposal holds (round 2, B-M5)", async () => {
+    const main = await run({ scope: { kind: "week" } });
+    const designer = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const reviewer = await run({ role: "reviewer", parentId: designer.id, scope: { kind: "week" } });
+    const held = calmDoc({ title: "Tuesday hips" });
+    const revised = calmDoc({ title: "Tuesday hips, shorter rests" });
+    const op = {
+      kind: "doc_workout", target: { kind: "new", date: day(-2) }, date: day(-2), doc: held,
+      review: { scores: { intent: 3 }, notes: { intent: "Rests too long." }, mustFix: ["Shorter rests."], improvements: [], rounds: 1, changes: [] },
+      issues: [], derived: { minutes: 30 }, by: { runId: designer.id, role: "designer" }, toolUseId: "t1", at: NOW.toISOString(),
+      candidate: { round: 2, toolUseId: "t2", reviewRunId: reviewer.id, target: { kind: "new", date: day(-2), time: "18:00" }, date: day(-2), time: "18:00", doc: revised, issues: [], derived: { minutes: 25 }, at: NOW.toISOString() },
+    };
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(main.id), userId: rich.userId, planId: null, title: "Tuesday hips", evidence: "", rationale: "", flags: [], ops: [op], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: day(-2),
+    });
+    const reviewOf = { proposalId: designProposalId(main.id), designerRunId: designer.id, toolUseId: "t2", round: 2 };
+    const { result, count } = await call("read_set", ctxOf(reviewer, { reviewOf }), {});
+    expect(count).toBe(1);
+    const [w] = data(result).workouts as Array<Record<string, unknown>>;
+    expect(w).toMatchObject({ underReview: true, title: { untrusted: true, text: "Tuesday hips, shorter rests" }, time: "18:00", minutes: 25, review: null });
+    // The designer, by contrast, reads the version its proposal holds, with its review.
+    const mine = data((await call("read_set", ctxOf(designer), {})).result).workouts[0] as Record<string, unknown>;
+    expect(mine).toMatchObject({ yours: true, title: { untrusted: true, text: "Tuesday hips" }, minutes: 30, review: { mustFixCount: 1 } });
+  });
+
+  it("a redo's designer sees the first version it redoes marked `firstVersion` (round 2, B-M5)", async () => {
+    const { main, one } = await setOfTwo();
+    const redo = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const d = data((await call("read_set", ctxOf(redo, { replaces: one.id }), {})).result);
+    expect(d.workouts).toHaveLength(1);
+    expect(d.workouts[0]).toMatchObject({ title: { text: "Monday hips" }, yours: false, firstVersion: true });
+    // A designer that redoes nothing sees no first version.
+    const plain = data((await call("read_set", ctxOf(redo), {})).result);
+    expect(plain.workouts[0]).not.toHaveProperty("firstVersion");
   });
 
   it("before any sibling is proposed: says so, never 'call plan_set' (that is the main coach's)", async () => {
@@ -1268,5 +1306,78 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     expect(tool("read_set").roles).toEqual(["main", "designer", "reviewer"]);
     expect(tool("read_set").description).toMatch(/moves repeated on consecutive days/);
     expect(tool("read_set").description).toMatch(/designers and reviewers/);
+  });
+});
+
+// ── Batch 3A end fix wave, round 2 (part B's re-review) ─────────────────────────────────────────────────────────────
+
+describe("3A round 2 — the act tools' gates and tests", () => {
+  const powerDoc = (libraryId: string) => docOf([], { parts: [{ purpose: "power", format: "straight", items: [item(libraryId, { sets: 2, reps: 5 })] }] });
+  const GATES = ["condition_gate", "condition_pattern"];
+  const ASK = 'if no check is logged today, the main coach may ask_athlete({ check: "condition" })';
+  const gateOf = (v: { errors: Array<{ code: string; path: string; message: string; fix?: string }> }) =>
+    v.errors.find((i) => GATES.includes(i.code) && i.path === "parts[0].items[0].libraryId");
+  /** The same athlete with no condition check today at all. */
+  async function unchecked() {
+    const a = await seedRichAthlete(db);
+    await db.delete(schema.conditionChecks).where(eq(schema.conditionChecks.userId, a.userId));
+    return a;
+  }
+
+  it("B-M7: a move today's check closes is offered a stand-in only from its own family — none from another", async () => {
+    const r = await run({ userId: high.userId });
+    const byId = new Map(EXERCISES.map((e) => [e.id, e]));
+    let gated = 0;
+    for (const rec of EXERCISES.filter((e) => e.contraction.includes("plyometric"))) {
+      const gate = gateOf(data((await call("validate_workout", ctxOf(r), { doc: powerDoc(rec.id), date: TODAY })).result));
+      if (!gate) continue;
+      gated += 1;
+      if (gate.fix === undefined) expect(gate.message, rec.id).toMatch(/No stand-in of its own family is offered: choose one yourself with search_library/);
+      else expect(byId.get(gate.fix)?.family, `${rec.id} → ${gate.fix}`).toBe(rec.family);
+    }
+    expect(gated).toBeGreaterThan(3);
+    // Pogo hops: nothing of their family passes today, so no stand-in — never a squat of another quality.
+    expect(gateOf(data((await call("validate_workout", ctxOf(r), { doc: powerDoc("pogoHop"), date: TODAY })).result))?.fix).toBeUndefined();
+  });
+
+  it("B-M8: with no check logged today, a gate's refusal says the main coach may ask for it — at validate and at propose; with one logged, it doesn't", async () => {
+    const none = await run({ userId: (await unchecked()).userId });
+    const gate = gateOf(data((await call("validate_workout", ctxOf(none), { doc: powerDoc("pogoHop"), date: TODAY })).result))!;
+    expect(gate.message).toContain(ASK);
+    const refused = err((await call("propose_workout", ctxOf(none), { doc: powerDoc("pogoHop"), target: { kind: "new", date: TODAY } })).result);
+    expect(refused.error).toBe("invalid_workout");
+    expect(refused.fix).toContain(ASK);
+    // A check is logged (7, a closed gate): asking again opens nothing.
+    const logged = await run({ userId: high.userId });
+    expect(gateOf(data((await call("validate_workout", ctxOf(logged), { doc: powerDoc("pogoHop"), date: TODAY })).result))!.message).not.toContain("ask_athlete");
+    expect(err((await call("propose_workout", ctxOf(logged), { doc: powerDoc("pogoHop"), target: { kind: "new", date: TODAY } })).result).fix).not.toContain("ask_athlete");
+  });
+
+  it("B-M10: a test whose move its key result's measure doesn't read is an advisory note — at validate and in the draft's costs — read in the statement already run", async () => {
+    const r = await run();
+    const krs = await db.select({ id: schema.keyResults.id, label: schema.keyResults.label }).from(schema.keyResults).where(like(schema.keyResults.objectiveId, `${rich.userId}-obj-%`));
+    const wallSit = krs.find((k) => k.label === "Wall sit hold")!.id;
+    const fiveK = krs.find((k) => k.label === "5K time")!.id;
+    const testOf = (libraryId: string, keyResultId: string) => {
+      const t = { ...item(libraryId, { holdSec: 30, max: true }), test: { keyResultId } };
+      return docOf([t], { parts: [{ purpose: "main", format: "holds", items: [t] }] });
+    };
+    const noteOf = (v: { warnings: Array<{ code: string; path: string; message: string; fix?: string }> }) => v.warnings.find((w) => w.code === "test_unmeasured");
+    // The move the measure reads: no note.
+    expect(noteOf(data((await call("validate_workout", ctxOf(r), { doc: testOf("wallSit", wallSit), date: TODAY })).result))).toBeUndefined();
+    // Another move: the note names the measure, and offers the move it reads.
+    const side = await call("validate_workout", ctxOf(r), { doc: testOf("sidePlank", wallSit), date: TODAY });
+    expect(side.count).toBeLessThanOrEqual(tool("validate_workout").statementCost);
+    const note = noteOf(data(side.result))!;
+    expect(note).toMatchObject({ path: "parts[0].items[0].libraryId", fix: "wallSit" });
+    expect(note.message).toContain("longest hold of wallSit");
+    expect(data(side.result).valid).toBe(true);
+    // A key result no move's test measures (a run's): the note, and no move to offer.
+    const run5k = noteOf(data((await call("validate_workout", ctxOf(r), { doc: testOf("wallSit", fiveK), date: TODAY })).result))!;
+    expect(run5k.fix).toBeUndefined();
+    expect(run5k.message).toContain("fastest 5000 m");
+    // The draft carries it as a cost, for the reviewer and the athlete.
+    ok((await call("propose_workout", ctxOf(r), { doc: testOf("sidePlank", wallSit), target: { kind: "new", date: TODAY } })).result);
+    expect((await proposal(r.id))!.ops[0]!.issues.map((i) => i.code)).toContain("test_unmeasured");
   });
 });

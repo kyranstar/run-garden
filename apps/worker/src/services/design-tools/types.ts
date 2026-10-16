@@ -198,8 +198,9 @@ export interface DraftForReview {
   date: string;
   /** The validated document. */
   doc: WorkoutDoc;
-  /** The validator's advisory issues, as the op keeps them (errors never reach review: they refuse the draft). */
-  issues: Array<Pick<DocIssue, "path" | "code" | "message" | "fix">>;
+  /** The validator's advisory issues, as the op keeps them (errors never reach review: they refuse the draft) — and the
+   * tool layer's own (act-common.ts `CoachIssue`: a test whose move its measure doesn't read). */
+  issues: Array<Pick<DocIssue, "path" | "message" | "fix"> & { code: DocIssue["code"] | "test_unmeasured" }>;
   derived: Record<string, unknown>;
   changeNote?: string;
 }

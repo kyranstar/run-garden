@@ -11,8 +11,9 @@
  *
  * Every role reads it (audit I7; the lead's ruling for 3A): the main coach judges its set (each workout with its key,
  * from its plan's rounds); a set's designer reads its siblings before it drafts, so it can vary from the days either
- * side (its parent's proposal; its own workout marked `yours`); a reviewer reads the set of the draft it reviews (the
- * proposal it reviews for; the reviewed designer's workout marked `yours`).
+ * side (its parent's proposal; its own workout marked `yours`, and a redo's designer the first version it redoes marked
+ * `firstVersion`); a reviewer reads the set of the draft it reviews (the proposal it reviews for; the workout under
+ * review marked `underReview`, and shown as the draft under review — a revision, not the version the proposal holds).
  *
  * Small by contract: one statement (the proposal), and an answer within RESULT_BUDGET_BYTES — the details give way, in
  * order, before any workout does (the intent sentences, then the parts, then the moves, then the must-fix wording, then
@@ -44,8 +45,33 @@ const bytesOf = (value: unknown): number => new TextEncoder().encode(JSON.string
 type Detail = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 const DETAILS: readonly Detail[] = [0, 1, 2, 3, 4, 5, 6];
 
-/** Whose view it is: the main coach's (each workout with its key), or a designer's or reviewer's (`yours` marked). */
-type View = { main: true; keyOf: ReadonlyMap<string, string> } | { main: false; yours: string | null };
+/**
+ * Whose view it is (fix wave 3A round 2, B-M5): the main coach's (each workout with its key); a designer's (its own
+ * workout marked `yours`, and a redo's designer the first version it redoes, `firstVersion`); a reviewer's (the
+ * workout under review marked `underReview` — never `yours`: it designed none — and shown as the draft under review: a
+ * revision's reviewer sees the revision, held beside the version the proposal keeps, never that version).
+ */
+type View =
+  | { role: "main"; keyOf: ReadonlyMap<string, string> }
+  | { role: "designer"; yours: string; firstVersion: string | null }
+  | { role: "reviewer"; underReview: string | null; toolUseId: string | null };
+
+/** The op as this view sees it: for a reviewer, the workout under review as the draft it reviews (its candidate, while
+ * a revision is under review — read with the op, no statement more), its review not in yet. */
+function asSeen(op: DocWorkoutOp, view: View): DocWorkoutOp {
+  const c = op.candidate;
+  if (view.role !== "reviewer" || op.by?.runId !== view.underReview || !c || c.toolUseId !== view.toolUseId) return op;
+  const { time: _held, ...rest } = op;
+  return { ...rest, target: c.target, date: c.date, ...(c.time ? { time: c.time } : {}), doc: c.doc, derived: c.derived, review: null };
+}
+
+/** The view's marks on a workout: the main coach's key; a designer's `yours` and `firstVersion`; a reviewer's
+ * `underReview`. */
+function marks(opId: string, view: View): Record<string, unknown> {
+  if (view.role === "main") return { key: view.keyOf.get(opId) ?? null };
+  if (view.role === "designer") return { yours: opId === view.yours, ...(view.firstVersion !== null && opId === view.firstVersion ? { firstVersion: true } : {}) };
+  return { underReview: opId === view.underReview };
+}
 
 /** A workout's parts, by purpose, in order. */
 const partsOf = (op: DocWorkoutOp): string[] => (op.doc?.parts ?? []).map((p) => p.purpose);
@@ -67,7 +93,7 @@ function workoutOf(op: DocWorkoutOp, view: View, detail: Detail): Record<string,
   const opId = opIdOf(op);
   return {
     opId,
-    ...(view.main ? { key: view.keyOf.get(opId) ?? null } : { yours: op.by?.runId === view.yours }),
+    ...marks(opId, view),
     date: op.date,
     ...(op.time ? { time: op.time } : {}),
     target: op.target,
@@ -141,18 +167,20 @@ export const readSet: DesignTool = {
       if (rounds.length === 0) {
         return answer({ source, now: ctx.now, missing: ["no set planned yet: call plan_set first"], data: EMPTY, summary: "No set planned yet" });
       }
-      view = { main: true, keyOf: new Map(rounds.flatMap((r) => r.designers.map((d) => [d.runId, d.key] as const))) };
+      view = { role: "main", keyOf: new Map(rounds.flatMap((r) => r.designers.map((d) => [d.runId, d.key] as const))) };
       proposalId = designProposalId(ctx.run.id);
     } else if (ctx.run.role === "designer") {
-      view = { main: false, yours: ctx.run.id };
+      view = { role: "designer", yours: ctx.run.id, firstVersion: ctx.replaces ?? null };
       proposalId = ctx.run.parentId ? designProposalId(ctx.run.parentId) : null;
     } else {
-      view = { main: false, yours: ctx.reviewOf?.designerRunId ?? null };
+      view = { role: "reviewer", underReview: ctx.reviewOf?.designerRunId ?? null, toolUseId: ctx.reviewOf?.toolUseId ?? null };
       proposalId = ctx.reviewOf?.proposalId ?? null;
     }
     if (!proposalId) return answer({ source, now: ctx.now, missing: ["no set to read: this run belongs to none"], data: EMPTY, summary: "No set to read" });
-    const { ops, flags } = await readSetProposal(ctx.db, ctx.userId, proposalId);
-    const none = ops.length === 0 ? [view.main ? "no workout in the set's proposal yet" : "no workout of the set is proposed yet"] : [];
+    const read = await readSetProposal(ctx.db, ctx.userId, proposalId);
+    const ops = read.ops.map((op) => asSeen(op, view));
+    const flags = read.flags;
+    const none = ops.length === 0 ? [view.role === "main" ? "no workout in the set's proposal yet" : "no workout of the set is proposed yet"] : [];
     const ordered = [...ops].sort((a, b) => (a.date === b.date ? (a.time ?? "").localeCompare(b.time ?? "") : a.date < b.date ? -1 : 1));
     const pairs = hardPairs(ordered);
     const repeats = repeatsOnConsecutiveDays(ordered);
