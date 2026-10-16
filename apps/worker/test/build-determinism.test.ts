@@ -351,6 +351,9 @@ describe("the build, byte for byte", () => {
       expect(json(ours) === json(mapped), "rowsOf differs from drizzle's own mapping").toBe(true);
       expect(ours).toEqual(mapped);
     }
+    // A select of some columns is not a whole row: refused, never mapped onto the wrong keys.
+    const partial = await db.select({ id: schema.performedSets.id, done: schema.performedSets.done }).from(schema.performedSets).values();
+    expect(() => rowsOf(schema.performedSets)(partial)).toThrow(/rowsOf/);
     // The rows hold what the mapping has to get right: every column type, NULLs, both booleans, empty and full JSON.
     const sets = await db.select().from(schema.performedSets);
     expect(sets.some((s) => s.side !== null) && sets.some((s) => s.loadValue === null) && sets.some((s) => s.loadValue === 0)).toBe(true);

@@ -348,6 +348,8 @@ function toSummary(rows: readonly HistoryRow[], asOf: string): HistorySummary {
  * select runs these same values through `mapResultRow`: each column's own `mapFromDriverValue` (a column that maps
  * nothing is read as it comes, and a JSON column's empty list is an empty list), NULL kept null, the keys in the
  * table's column order — without that function's generic work on every cell, which was half the CPU of a build's read.
+ * Only for a whole-row select of the one table: a row of any other width is refused rather than mapped onto the wrong
+ * keys.
  */
 export function rowsOf<T extends Table>(table: T): (raw: readonly unknown[][]) => InferSelectModel<T>[] {
   const columns: ReadonlyArray<readonly [string, Column]> = Object.entries(getTableColumns(table));
@@ -359,6 +361,7 @@ export function rowsOf<T extends Table>(table: T): (raw: readonly unknown[][]) =
   );
   return (raw) =>
     raw.map((values) => {
+      if (values.length !== keys.length) throw new Error(`rowsOf: a row of ${values.length} values for ${keys.length} columns`);
       const row: Record<string, unknown> = {};
       for (let i = 0; i < keys.length; i++) {
         const value = values[i];
