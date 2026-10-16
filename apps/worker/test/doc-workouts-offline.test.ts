@@ -4,19 +4,20 @@
  * start or a template's), dated today or up to seven days back, made to start at once (no calendar) with the device's
  * key (`clientId`, so a retry names the same row). It skips the day's gate — the day was judged on the device — and
  * still refuses a document that does not read or is too large. Such a row left with no session is removed by the daily
- * reconcile once its day is over and the outbox has had a day to deliver, and is never asked about or missed.
+ * reconcile once its day is over and the outbox has had its reach (a week) to deliver, and is never asked about or
+ * missed. (Fix round 1: a quick start's ref names a quick start the app makes; a template is one of the account's.)
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { PLAYED_OFFLINE_CALENDAR_STATE } from "../src/services/doc-workouts.js";
+import { PLAYED_OFFLINE_CALENDAR_STATE, PLAYED_OFFLINE_DAYS_BACK } from "../src/services/doc-workouts.js";
 import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
 
-const { plannedWorkouts, performedSessions } = schema;
+const { plannedWorkouts, performedSessions, workoutTemplates } = schema;
 
 const calendar = vi.hoisted(() => ({ syncs: 0 }));
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -39,8 +40,11 @@ beforeEach(async () => {
   ({ userId, prefs } = await makeTestUser(db));
   today = todayInZone(prefs.timezone);
   call = await clientFor(db, userId);
+  // The account's template "t1" (a template's document is based on it).
+  await db.insert(workoutTemplates).values({ id: "t1", userId, name: "Mine", doc: JSON.stringify(calmDoc()), createdAt: nowInstant(), updatedAt: nowInstant() });
 });
 
+const DAY_MS = 24 * 60 * 60 * 1000;
 const rowOf = async (id: string) => (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0];
 const quick = (doc: WorkoutDoc): WorkoutDoc => ({ ...doc, source: { kind: "studio", ref: "quick_start:desk_reset" } }) as WorkoutDoc;
 const fromTemplate = (doc: WorkoutDoc): WorkoutDoc => ({ ...doc, basedOn: { kind: "template", id: "t1" } }) as WorkoutDoc;
@@ -77,12 +81,23 @@ describe("POST /api/workouts with playedOffline", () => {
 
   it("only for a quick start's or a template's document: a coach's, a programme's or a new Studio workout's is refused", async () => {
     expect((await offline({ date: today, doc: fromTemplate(calmDoc()) })).status).toBe(201);
+    for (const kind of ["desk_reset", "hip_opener", "condition_care"]) {
+      expect((await offline({ date: today, doc: { ...calmDoc(), title: kind, source: { kind: "studio", ref: `quick_start:${kind}` } } })).status, kind).toBe(201);
+    }
+    const other = await makeTestUser(db);
+    await db.insert(workoutTemplates).values({ id: "t-theirs", userId: other.userId, name: "Theirs", doc: JSON.stringify(calmDoc()), createdAt: nowInstant(), updatedAt: nowInstant() });
     const refused: WorkoutDoc[] = [
       calmDoc(),
       { ...calmDoc(), source: { kind: "coach" } } as WorkoutDoc,
       { ...calmDoc(), source: { kind: "engine" } } as WorkoutDoc,
       // A coach's document dressed as a template's is still the coach's.
       { ...fromTemplate(calmDoc()), source: { kind: "coach" } } as WorkoutDoc,
+      // A quick start's ref that names no quick start the app makes (fix round 1).
+      { ...calmDoc(), source: { kind: "studio", ref: "quick_start:anything" } } as WorkoutDoc,
+      { ...calmDoc(), source: { kind: "studio", ref: "quick_start:" } } as WorkoutDoc,
+      // A template that is not the account's: another account's, or none at all (fix round 1).
+      { ...calmDoc(), basedOn: { kind: "template", id: "t-theirs" } } as WorkoutDoc,
+      { ...calmDoc(), basedOn: { kind: "template", id: "t-gone" } } as WorkoutDoc,
     ];
     for (const doc of refused) {
       const res = await offline({ date: today, doc });
@@ -146,7 +161,7 @@ describe("the session played offline lands on its workout", () => {
 });
 
 describe("the daily reconcile and a workout played offline", () => {
-  it("one left with no session is kept a day for the outbox, then removed — never asked about, never missed", async () => {
+  it("one left with no session is kept the outbox's reach (a week), then removed — never asked about, never missed", async () => {
     const made = await offline({ date: addDays(today, -3), doc: quick(calmDoc()) });
     expect(made.status).toBe(201);
     const id = made.body.workout.id as string;
@@ -154,8 +169,12 @@ describe("the daily reconcile and a workout played offline", () => {
     await reconcileCompletionStates(db, userId, prefs, new Date());
     expect((await rowOf(id))?.archivedAt ?? null).toBeNull();
     expect((await rowOf(id))!.completionState).toBe("scheduled");
-    // A day after it was made, still with no session: removed, as an abandoned Start now is.
-    const later = new Date(Date.now() + 25 * 60 * 60 * 1000);
+    // Six days on, the outbox may still deliver it (a save late in its week): kept (fix round 1).
+    await reconcileCompletionStates(db, userId, prefs, new Date(Date.now() + 6 * DAY_MS));
+    expect((await rowOf(id))?.archivedAt ?? null).toBeNull();
+    // Past the outbox's reach, still with no session: removed, as an abandoned Start now is.
+    expect(PLAYED_OFFLINE_DAYS_BACK).toBe(7);
+    const later = new Date(Date.now() + (PLAYED_OFFLINE_DAYS_BACK * 24 + 1) * 60 * 60 * 1000);
     const stats = await reconcileCompletionStates(db, userId, prefs, later);
     expect(stats.abandonedRemoved).toBe(1);
     const row = await rowOf(id);

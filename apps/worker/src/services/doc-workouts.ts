@@ -29,7 +29,7 @@
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
 import { and, eq, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
-import { corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions } from "@rg/database";
+import { corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions, workoutTemplates } from "@rg/database";
 import {
   addDays,
   DOC_ORIGINS,
@@ -42,7 +42,7 @@ import {
 } from "@rg/domain";
 import { EXERCISES, PROFILES, isDoneCleanly, isProfileId, type ConditionProfile } from "@rg/exercise-library";
 import { Hist, type HistorySession, type HistorySummary } from "@rg/session-engine";
-import { deriveDoc, makeLibraryIndex, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { deriveDoc, makeLibraryIndex, QUICK_START_KINDS, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { runAtomically, type Db } from "./db.js";
@@ -166,8 +166,8 @@ export const START_NOW_CALENDAR_STATE = "app_only";
 
 /**
  * The calendar state of a workout played offline and recorded on reconnect (`playedOffline`, R11): booked on no
- * calendar, as Start now's — and, left with no session, removed by the daily reconcile only once the outbox has had a
- * day to deliver it (its day is already over when it is made).
+ * calendar, as Start now's — and, left with no session, removed by the daily reconcile only once the outbox has had its
+ * reach, a week, to deliver it (its day is already over when it is made).
  */
 export const PLAYED_OFFLINE_CALENDAR_STATE = "app_only_offline";
 /** The calendar states of a workout started at once: never planned, never booked, never asked about. */
@@ -185,10 +185,21 @@ export class PlayedOfflineRefusedError extends Error {
   }
 }
 
-/** A document the app itself made for the athlete to start: a quick start's, or a template's (never a coach's or a programme's). */
-function appAuthored(doc: WorkoutDoc): boolean {
+/**
+ * A document the app itself made for the athlete to start (never a coach's or a programme's): a quick start's — its ref
+ * names a quick start the app makes (`QUICK_START_KINDS`) — or one of the account's own templates (fix round 1).
+ */
+async function appAuthored(db: Db, userId: string, doc: WorkoutDoc): Promise<boolean> {
   if (doc.source.kind === "coach" || doc.source.kind === "engine") return false;
-  return doc.basedOn?.kind === "template" || (doc.source.kind === "studio" && !!doc.source.ref?.startsWith("quick_start:"));
+  const ref = doc.source.ref ?? "";
+  if (doc.source.kind === "studio" && ref.startsWith("quick_start:") && (QUICK_START_KINDS as readonly string[]).includes(ref.slice("quick_start:".length))) return true;
+  if (doc.basedOn?.kind !== "template") return false;
+  const [own] = await db
+    .select({ id: workoutTemplates.id })
+    .from(workoutTemplates)
+    .where(and(eq(workoutTemplates.id, doc.basedOn.id), eq(workoutTemplates.userId, userId)))
+    .limit(1);
+  return own !== undefined;
 }
 
 /** The base revision is not the row's current one: the document changed elsewhere. */
@@ -336,7 +347,7 @@ async function validated(
   opts: { playedOffline?: boolean } = {},
 ): Promise<{ doc: WorkoutDoc; derived: DocDerived; warnings: DocIssue[] }> {
   const doc = parsedDoc(raw);
-  if (opts.playedOffline && !appAuthored(doc)) throw new PlayedOfflineRefusedError("source");
+  if (opts.playedOffline && !(await appAuthored(db, userId, doc))) throw new PlayedOfflineRefusedError("source");
   const derived = deriveDoc(doc, EXERCISES);
   if (derived.discipline === "run") throw new RunUnsupportedError();
   const ctx = await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId });
