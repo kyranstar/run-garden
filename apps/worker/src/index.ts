@@ -53,7 +53,7 @@ import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { healOutdatedPaceEncoding } from "./services/content-converge.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
-import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
+import { ensureFixtureUser, fixtureAccountEmail, seedFixtures } from "./services/fixtures.js";
 import { seedWatchSession } from "./services/fixture-watch-session.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
@@ -117,10 +117,13 @@ app.get("/api/health", (c) => c.json({ ok: true, fixtureMode: fixtureModeEnabled
 
 // ── Fixture mode (explicit, never silent) ────────────────────────────────────
 
+/** `?account=<name>`: an account of its own (the fixture address plus the name); seed it with /api/dev/seed. */
 app.post("/api/dev/fixture-login", async (c) => {
   if (!fixtureModeEnabled(c.env)) return c.json({ error: "not_in_fixture_mode" }, 403);
   const db = c.get("db");
-  const userId = await ensureFixtureUser(db, c.env.ALLOWED_GOOGLE_EMAIL || "fixture@example.com");
+  const email = fixtureAccountEmail(c.env.ALLOWED_GOOGLE_EMAIL || "fixture@example.com", c.req.query("account"));
+  if (!email) return c.json({ error: "bad_account" }, 400);
+  const userId = await ensureFixtureUser(db, email);
   const token = await createSession(db, userId, "fixture");
   c.header("Set-Cookie", sessionCookie(token, c.env.APP_URL.startsWith("https")));
   return c.json({ ok: true, userId });

@@ -919,6 +919,21 @@ export async function seedFixtureProgram(
   return id;
 }
 
+/** A fixture account's own name: what goes after the `+` in its address. */
+const FIXTURE_ACCOUNT = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * The address a fixture sign-in uses: the fixture account's (`base`), or with an account name, that address plus the
+ * name (`fixture+watch-iphone@example.com`) — an account of its own, so e2e projects running at once on one stack never
+ * share a plan or a Today. Null for a name it would not put in an address.
+ */
+export function fixtureAccountEmail(base: string, account: string | undefined): string | null {
+  if (account === undefined) return base;
+  if (!FIXTURE_ACCOUNT.test(account)) return null;
+  const at = base.lastIndexOf("@");
+  return at > 0 ? `${base.slice(0, at)}+${account}${base.slice(at)}` : `${base}+${account}`;
+}
+
 /** Fixture-mode sign-in bypass user (dev only). */
 export async function ensureFixtureUser(db: Db, email: string): Promise<string> {
   const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);

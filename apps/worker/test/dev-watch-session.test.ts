@@ -63,6 +63,46 @@ async function call(env: Env, method: string, path: string, opts: { cookie?: str
   return res;
 }
 
+describe("POST /api/dev/fixture-login", () => {
+  const login = async (env: Env, query = "") => call(env, "POST", `/api/dev/fixture-login${query}`);
+  const userIdOf = async (res: Response) => ((await res.json()) as { userId: string }).userId;
+
+  it("signs in the fixture account; with ?account= an account of its own (the address plus the name), the same one every time", async () => {
+    holder.db = makeTestDb();
+    const db = holder.db as ReturnType<typeof makeTestDb>;
+    const env = stackEnv();
+    const main = await userIdOf(await login(env));
+    const iphone = await userIdOf(await login(env, "?account=watch-iphone"));
+    const desktop = await userIdOf(await login(env, "?account=watch-desktop"));
+    expect(new Set([main, iphone, desktop]).size).toBe(3);
+    expect(await userIdOf(await login(env, "?account=watch-iphone"))).toBe(iphone);
+    expect(await userIdOf(await login(env))).toBe(main);
+    const emails = Object.fromEntries((await db.select().from(schema.users)).map((u) => [u.id, u.email]));
+    expect([emails[main], emails[iphone], emails[desktop]]).toEqual([
+      "fixture@example.com",
+      "fixture+watch-iphone@example.com",
+      "fixture+watch-desktop@example.com",
+    ]);
+  });
+
+  it("refuses an account name it would not put in an address, and signs in no one", async () => {
+    holder.db = makeTestDb();
+    const db = holder.db as ReturnType<typeof makeTestDb>;
+    const env = stackEnv();
+    for (const bad of ["", "Watch", "a@b", "a+b", "a%20b", "-a", "x".repeat(33)]) {
+      const res = await login(env, `?account=${bad}`);
+      expect(res.status, bad).toBe(400);
+      expect(res.headers.get("set-cookie"), bad).toBeNull();
+    }
+    expect(await db.select().from(schema.users)).toEqual([]);
+  });
+
+  it("is refused outside fixture mode, whatever the account", async () => {
+    holder.db = makeTestDb();
+    expect((await login(stackEnv({ FIXTURE_MODE: "0" }), "?account=watch-iphone")).status).toBe(403);
+  });
+});
+
 describe("POST /api/dev/watch-session", () => {
   it("does not exist outside fixture mode", async () => {
     holder.db = makeTestDb();
