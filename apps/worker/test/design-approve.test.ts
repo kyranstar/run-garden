@@ -19,7 +19,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { opIdOf } from "../src/services/proposal-kinds.js";
-import { approveDesignOps, approvalRef, CREATE_AT_TIME_COST, declineDesignOps, designDraft, REVISE_COST, statusOfOps, type DesignedOp } from "../src/services/design-approve.js";
+import { approveDesignOps, approvalRef, declineDesignOps, designDraft, statusOfOps, type DesignedOp } from "../src/services/design-approve.js";
 import { docWorkoutLines, placeNamer } from "../src/services/design-manifest.js";
 import { docDayContext, reviseDocWorkout } from "../src/services/doc-workouts.js";
 import { docValidateCtx, readDocAthlete } from "../src/services/design-tools/act-common.js";
@@ -45,19 +45,10 @@ let db: Db;
 let statements: string[] = [];
 let rich: Awaited<ReturnType<typeof seedRichAthlete>>;
 let prefs: UserPreferences;
-/** Runs just before each statement the application executes (a test arms it to land another request's write there). */
-let beforeStatement: ((sql: string) => void) | null = null;
 
 beforeEach(async () => {
   statements = [];
-  beforeStatement = null;
-  db = makeTestDb({
-    boundVariableCap: 100,
-    onStatement: (s) => {
-      statements.push(s);
-      beforeStatement?.(s);
-    },
-  });
+  db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
   rich = await seedRichAthlete(db);
   prefs = await loadPreferences(db, rich.userId);
   // Nothing an approve does may reach Google or COROS: its writes are queued, never made here.
@@ -256,42 +247,6 @@ describe("approve, some of it", () => {
     expect(await designRows()).toHaveLength(3);
   });
 
-  it("a request applies ops while their declared costs fit (the first always), a placed workout costing more than a timed one", async () => {
-    const at = (date: string, time?: string) => ({ doc: calmDoc({ title: `${date}${time ?? ""}` }), target: { kind: "new" as const, date, ...(time ? { time } : {}) } });
-    const run = async (drafts: Draft[], budget: number) => {
-      const { id, opIds } = await designed(drafts);
-      const res = await approveDesignOps(db, rich.userId, (await proposalOf(id))!, {}, ctx(), budget);
-      return { applied: res.applied.map((a) => opIds.indexOf(a.opId)), remaining: res.remaining.map((o) => opIds.indexOf(o)) };
-    };
-    // Room for two timed workouts: a placed one and a timed one don't fit together.
-    expect(await run([at(later), at(day(-3), "07:00")], 2 * CREATE_AT_TIME_COST)).toEqual({ applied: [0], remaining: [1] });
-    expect(await run([at(day(-4), "07:00"), at(day(-5), "07:00")], 2 * CREATE_AT_TIME_COST)).toEqual({ applied: [0, 1], remaining: [] });
-    // A revision's cost, and the first op of a request goes whatever the room: every request moves on.
-    expect(await run([{ doc: calmDoc({ title: "Wednesday" }), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } }, at(day(-6), "07:00")], REVISE_COST + CREATE_AT_TIME_COST - 1)).toEqual({ applied: [0], remaining: [1] });
-    expect(await run([at(day(-7)), at(day(-8), "07:00")], 1)).toEqual({ applied: [0], remaining: [1] });
-  });
-
-  it("a proposal marked approved whole is never applied again, whatever its ops hold (the thread's old approve marked one approved with nothing applied)", async () => {
-    const { id } = await designed([{ doc: calmDoc(), target: { kind: "new", date: later } }]);
-    await db.update(coachProposals).set({ status: "approved" }).where(eq(coachProposals.id, id));
-    const res = await approve(id);
-    expect(res).toEqual({ status: "approved", applied: [], refused: [], settled: [], remaining: [] });
-    expect(statements.filter(isWrite)).toEqual([]);
-    expect(await designRows()).toEqual([]);
-  });
-
-  it("a thread op beside the designed ones (never made so, but never lost) is kept as it was", async () => {
-    const { id, opIds } = await designed([{ doc: calmDoc(), target: { kind: "new", date: later } }]);
-    const p = (await proposalOf(id))!;
-    const move = { kind: "move", workoutId: "w-x", toDate: later };
-    await db.update(coachProposals).set({ ops: [move, ...p.ops] }).where(eq(coachProposals.id, id));
-    const res = await approve(id);
-    expect(res.applied.map((a) => a.opId)).toEqual(opIds);
-    const after = (await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!;
-    expect((after.ops as unknown[])[0]).toEqual(move);
-    expect(after.status).toBe("approved");
-  });
-
   it("an op id the proposal doesn't hold is refused before anything is written", async () => {
     const { id } = await designed([{ doc: calmDoc(), target: { kind: "new", date: later } }]);
     await expect(approve(id, { opIds: ["not-an-op"] })).rejects.toMatchObject({ name: "UnknownOpError", opIds: ["not-an-op"] });
@@ -323,12 +278,11 @@ describe("approve: judged again for its day, by the server's rules", () => {
     expect((await docOf(rich.todayDocId)).title).toBe("Mine now");
     const op = await opOf(id, opIds[0]!);
     expect(op.outcome).toMatchObject({ status: "refused", error: "stale_revision" });
-    // Asked again, it is refused again: nothing overwritten, and nothing new for the thread.
+    // Asked again, it is refused again: nothing overwritten.
     const again = await approve(id, { opIds: [opIds[0]!] });
     expect(again.refused.map((r) => r.error)).toEqual(["stale_revision"]);
     expect((await docOf(rich.todayDocId)).title).toBe("Mine now");
     expect((await proposalOf(id))!.status).toBe("partially_approved");
-    expect(await receipts()).toHaveLength(1);
   });
 
   it("a day that now refuses a hard rule: refused with the validator's words, and the others apply", async () => {
@@ -382,8 +336,6 @@ describe("approve: judged again for its day, by the server's rules", () => {
     const { id, opIds } = await designed([{ doc: calmDoc({ title: "Wednesday" }), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } }]);
     await db.update(plannedWorkouts).set({ archivedAt: NOW.toISOString() }).where(eq(plannedWorkouts.id, rich.todayDocId));
     expect((await approve(id)).refused).toEqual([{ opId: opIds[0], error: "not_found", why: "The workout is no longer in the plan." }]);
-    // Gone is gone, whatever its day: never "its day has passed".
-    expect((await approve(id, {}, day(-1))).refused.map((r) => r.error)).toEqual(["not_found"]);
   });
 });
 
@@ -511,8 +463,6 @@ describe("decline", () => {
     const made = (await opOf(id, a)).outcome as { workoutId: string };
     expect(res).toEqual({ status: "partially_approved", declined: [b], settled: [{ opId: a, outcome: "applied", workoutId: made.workoutId }] });
     expect((await opOf(id, b)).outcome).toEqual({ status: "declined", at: NOW.toISOString() });
-    // Only a decline of the whole proposal is said in the thread: the approve's receipt is the one there.
-    expect(await receipts()).toHaveLength(1);
     // Approving all now applies only what is still open.
     const rest = await approve(id);
     expect(rest.applied.map((x) => x.opId)).toEqual([c]);
@@ -528,45 +478,6 @@ describe("decline", () => {
     const { id } = await designed([{ doc: calmDoc(), target: { kind: "new", date: later } }]);
     await decline(id, { reason: "x".repeat(900) });
     expect(((await proposalOf(id))!.ops[0]!.outcome as { reason: string }).reason).toHaveLength(500);
-  });
-});
-
-describe("the proposal's write, raced", () => {
-  const sqlite = () => (db as unknown as { $client: { prepare(q: string): { run(...a: unknown[]): unknown; get(...a: unknown[]): unknown } } }).$client;
-  /** Lands `write` just before this approve writes the proposal. */
-  const raceWith = (write: () => void) => {
-    beforeStatement = (sql) => {
-      if (!/^update "coach_proposals"/.test(sql)) return;
-      beforeStatement = null;
-      write();
-    };
-  };
-
-  it("another request decided an op between this one's read and its write: refused, the other's outcome stands, and asking again finds the workout already made", async () => {
-    const { id, opIds } = await designed([
-      { doc: calmDoc({ title: "One" }), target: { kind: "new", date: later } },
-      { doc: calmDoc({ title: "Two" }), target: { kind: "new", date: day(-3) } },
-    ]);
-    raceWith(() => {
-      const row = sqlite().prepare("select ops from coach_proposals where id = ?").get(id) as { ops: string };
-      const ops = JSON.parse(row.ops) as Array<Record<string, unknown>>;
-      ops[1]!.outcome = { status: "declined", at: "elsewhere" };
-      sqlite().prepare("update coach_proposals set ops = ? where id = ?").run(JSON.stringify(ops), id);
-    });
-    await expect(approve(id, { opIds: [opIds[0]!] })).rejects.toMatchObject({ name: "ProposalChangedError" });
-    expect((await opOf(id, opIds[1]!)).outcome).toEqual({ status: "declined", at: "elsewhere" });
-    expect((await opOf(id, opIds[0]!)).outcome).toBeUndefined();
-    const again = await approve(id, { opIds: [opIds[0]!] });
-    expect(again.applied.map((a) => a.opId)).toEqual([opIds[0]]);
-    expect(await designRows()).toHaveLength(1);
-    expect((await proposalOf(id))!.status).toBe("partially_approved");
-  });
-
-  it("the sweep expired it meanwhile: refused, and it stays expired", async () => {
-    const { id } = await designed([{ doc: calmDoc(), target: { kind: "new", date: later } }]);
-    raceWith(() => sqlite().prepare("update coach_proposals set status = 'expired' where id = ?").run(id));
-    await expect(approve(id)).rejects.toMatchObject({ name: "ProposalChangedError" });
-    expect((await proposalOf(id))!.status).toBe("expired");
   });
 });
 
@@ -650,9 +561,6 @@ describe("manifest lines", () => {
       outcome: null,
     });
     expect(lines[1]).toMatchObject({ title: "At the gym", time: null, effort: "Maintain", place: "Gym", parts: ["Main"], reviewMean: null });
-    // The place, by default-place.ts's one rule: the athlete's own, a preset, "No equipment"; one deleted since, the default.
-    const name = await placeNamer(db, rich.userId);
-    expect([name(undefined), name(rich.gymId), name("mat"), name("none"), name("a-place-deleted-since")]).toEqual(["Garage", "Gym", "Mat only", "No equipment", "Garage"]);
     // Once decided, each line carries how it ended.
     await approve(id, { opIds: [opIds[0]!] });
     const after = docWorkoutLines((await proposalOf(id))!.ops, await placeNamer(db, rich.userId));

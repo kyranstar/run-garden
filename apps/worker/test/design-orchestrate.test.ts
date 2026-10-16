@@ -291,6 +291,8 @@ describe("a three-workout set, end to end", () => {
     ]);
     expect(p.ops[1]!.time).toBeUndefined(); // the brief's time guides the designer; its target says where it goes
     for (const d of await designersOf(mainId)) expect(d.status).toBe("finished");
+    // The estimate stays in the main run's state through every later step, its finish included.
+    expect((await stateOf(mainId)).estimate).toMatchObject({ workouts: 3 });
 
     // The trail: the plan, then the set's line once it was in.
     const trail = (await events(mainId)).map((e) => e.summary);
@@ -1063,7 +1065,7 @@ describe("read_set", () => {
     const doc = calmDoc({ title: "Thursday hips" });
     const op = {
       kind: "doc_workout", target: { kind: "new", date: THU }, date: THU, doc, review: { ...verdict(3, { mustFix: ["Shorter rests."] }), rounds: 1, changes: [] }, issues: [],
-      derived: { minutes: 20, regions: { glutes: 4, core: 2, hips: 1, back: 1 } }, by: { runId: "d-thu", role: "designer" }, toolUseId: "u", at: NOW.toISOString(),
+      derived: { minutes: 20, balance: { recoverySec: 20, isotonicReps: 10 }, regions: { glutes: 4, core: 2, hips: 1, back: 1 } }, by: { runId: "d-thu", role: "designer" }, toolUseId: "u", at: NOW.toISOString(),
     } as unknown as DocWorkoutOp;
     await db.insert(schema.coachProposals).values({
       id: designProposalId(mainId), userId: a.userId, planId: null, title: "Thursday hips", evidence: "", rationale: "", flags: [], ops: [op], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: THU,
@@ -1074,9 +1076,13 @@ describe("read_set", () => {
     expect(w.workouts[0]).toMatchObject({
       key: "thu",
       intent: { untrusted: true, text: doc.intent.summary },
+      // Twenty seconds is time trained: at least a minute, never 0.
+      balance: { recoveryMin: 1, isotonicReps: 10 },
       regions: { glutes: 4, core: 2, hips: 1 },
       review: { mean: 3, low: Object.fromEntries(DIMS.slice(0, 3).map((d) => [d, 3])), mustFix: [{ untrusted: true, text: "Shorter rests." }], mustFixCount: 1, rounds: 1 },
     });
+    // Its top three regions only.
+    expect(w.workouts[0].regions).toEqual({ glutes: 4, core: 2, hips: 1 });
     expect(w.hardDaysInARow).toMatchObject({ count: 0, pairs: [] });
   });
 
