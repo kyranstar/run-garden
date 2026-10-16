@@ -168,6 +168,10 @@ describe("coach plan survival rate", () => {
     for (const s of states) leaks.set(s.key, (await dossierHandles(s)).leaked);
 
     for (let i = 0; i < N; i++) {
+      // Let the worker's event loop turn now and then. Each sample's database is better-sqlite3, so every `await` here
+      // settles as a microtask and nothing else runs: 800 samples held the loop for ~55 s on CI, and vitest's worker
+      // gives up on its own messages after 60 s ("Timeout calling onTaskUpdate", a red run with every test passed).
+      if (i % 20 === 19) await new Promise<void>((resolve) => setImmediate(resolve));
       const s = states[i % states.length]!;
       const usable = INTENTS.filter((x) => x.applies(s));
       const intent = usable[Math.floor(rng() * usable.length)]!;
