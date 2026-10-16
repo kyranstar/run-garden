@@ -51,7 +51,7 @@ import { findRaceConflict } from "./race-conflict.js";
 import { buildRaceHub } from "./race-hub.js";
 import { buildReadiness } from "./readiness.js";
 import { plannedRowColumns } from "./planned-columns.js";
-import { docWorkoutDates, hasDocWorkout } from "./proposal-kinds.js";
+import { docWorkoutDates, hasDocWorkout, isDesignedProposal, openPlanChanges } from "./proposal-kinds.js";
 import { liveMemoryWhere } from "./memory-core.js";
 
 /**
@@ -235,6 +235,15 @@ const canTarget = (
  */
 const APP_BUILT_MARK = " · programme session — move, skip or remove only; never ease or adjust";
 const appBuiltMark = (w: { origin: string | null }): string => (appAuthoredRow(w) ? APP_BUILT_MARK : "");
+
+/** A designed proposal in the context's words (Stage 3): its workouts' days still to decide, and its changes to
+ * sessions already planned (Task 8b), counted. */
+function designedWords(ops: unknown): string {
+  const n = openPlanChanges(ops);
+  const changes = `${n} change${n === 1 ? " to a session" : "s to sessions"} already planned`;
+  if (!hasDocWorkout(ops)) return `a designed proposal: ${changes}`;
+  return `a designed workout for ${docWorkoutDates(ops).join(", ") || "a day to come"}${n > 0 ? ` and ${changes}` : ""}`;
+}
 
 export async function buildDossier(
   db: Db,
@@ -1026,9 +1035,10 @@ export async function buildDossier(
     `sanctioned rest used ${Math.min(sanctionedThisWeek, 1)} of 1 this rolling week (${sanctionedThisWeek} total sanctioned skips in window)`,
     ...(pendingProps.length
       ? pendingProps.map((p) =>
-          // A designed workout's proposal (Stage 3) is the athlete's to settle in the Studio: named, never acted on.
-          hasDocWorkout(p.ops)
-            ? `pending proposal [${p.id}]: ${p.title} (a designed workout for ${docWorkoutDates(p.ops).join(", ") || "a day to come"}, waiting for the athlete in the Studio)`
+          // A designed proposal (Stage 3) is the athlete's to settle in the Studio: named, never acted on — its changes to
+          // sessions already planned (Task 8b) counted beside its workouts.
+          isDesignedProposal(p.ops)
+            ? `pending proposal [${p.id}]: ${p.title} (${designedWords(p.ops)}, waiting for the athlete in the Studio)`
             : `pending proposal [${p.id}]: ${p.title} (${p.evidence})`,
         )
       : ["no pending proposals"]),

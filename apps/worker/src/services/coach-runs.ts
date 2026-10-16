@@ -2237,7 +2237,10 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
         eq(coachProposals.status, "unreviewed"),
         held,
         sql`json_valid(${coachProposals.ops}) and json_array_length(${coachProposals.ops}) > 0`,
-        sql`not exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.review') is null)`,
+        // Every designed WORKOUT reviewed: a change to a session already on the plan (adjust_plan, Task 8b) is never
+        // reviewed, so a proposal of changes alone is made pending too.
+        sql`not exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.kind') = 'doc_workout'
+          and json_extract(json_each.value, '$.review') is null)`,
         // No review under way either (design-review.ts `reviewRunning`): a dangling candidate is never shown.
         sql`not exists (select 1 from json_each(${coachProposals.ops}) o where json_extract(o.value, '$.candidate') is not null
           or exists (select 1 from json_each(json_extract(o.value, '$.reviewLog')) r where json_extract(r.value, '$.status') = 'reviewing'))`,

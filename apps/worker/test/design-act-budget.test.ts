@@ -24,7 +24,7 @@ import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -87,6 +87,7 @@ describe("the registry", () => {
       record_answer: ["main"],
       remember: ["main", "designer"],
       propose_workout: ["main", "designer"],
+      adjust_plan: ["main"],
       plan_set: ["main"],
       read_set: ["main", "designer", "reviewer"],
       drop_workout: ["main"],
@@ -270,6 +271,26 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     // Its own read; it declares one more — the loop's, once its proposal is made pending: the older plans' days it
     // covers superseded (Task 7).
     expect(tool("finish").statementCost).toBe(2);
+  });
+
+  it("adjust_plan: the athlete with the session, the proposal and the restore marker in one read, then one write — refusals and replays read only", async () => {
+    const main = await runRow(rich.userId);
+    const change = { workoutId: rich.outlineToday, change: { kind: "skip", reason: "Rest." }, why: "A flare day." };
+    const n = await most("adjust_plan", [
+      { input: change, run: main, toolUseId: "toolu_adj_budget_1" },
+      // A second change of the same session replaces the first; a replay writes nothing.
+      { input: { ...change, change: { kind: "move", toDate: day(-1) } }, run: main, toolUseId: "toolu_adj_budget_2" },
+      { input: change, run: main, toolUseId: "toolu_adj_budget_1" },
+      // Refused: a programme session re-timed, a session that isn't there, a move into the past, an empty account.
+      { input: { ...change, change: { kind: "adjust", durationMinutes: 20 } } },
+      { input: { ...change, workoutId: "nope" } },
+      { input: { ...change, change: { kind: "move", toDate: day(2) } } },
+      { input: change, userId: empty, run: await runRow(empty) },
+    ]);
+    expect(n).toBe(2);
+    expect(tool("adjust_plan").statementCost).toBe(2);
+    const refused = await measured("adjust_plan", { ...change, workoutId: "nope" }, rich.userId, await runRow(rich.userId));
+    expect(refused.count).toBe(1);
   });
 
   it("propose_workout fits a model step's tool room three times over, and every act tool fits the loop's per-tool cap", () => {

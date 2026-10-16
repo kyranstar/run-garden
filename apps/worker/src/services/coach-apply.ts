@@ -969,6 +969,34 @@ async function archiveWeek(
   return rows.map((r) => r.id);
 }
 
+/** Why a session an op names can no longer change, in the applier's own words: each completes "a session it <verb> …". */
+export const NOT_ACTIONABLE = {
+  gone: "isn't on the calendar any more",
+  done: "has already been done",
+  skipped: "was already skipped",
+  missed: "was already missed",
+  past: "has already had its day",
+} as const;
+
+/**
+ * THE ROW AN ID-ADDRESSED OP MAY STILL CHANGE — `applyOps`' own rule, as one function (Stage 3 Task 8b: the coach
+ * designer's `adjust_plan` judges a change by it when it is proposed, and its approval before the applier runs). Still
+ * on the calendar, still unresolved, its day not yet gone: undefined; otherwise why not, in the applier's words.
+ */
+export function whyNotActionable(
+  row: Pick<typeof plannedWorkouts.$inferSelect, "archivedAt" | "completionState" | "effectiveDate"> | undefined,
+  today: string,
+): string | undefined {
+  if (!row) return NOT_ACTIONABLE.gone;
+  if (row.archivedAt) return NOT_ACTIONABLE.gone;
+  if (row.completionState === "completed") return NOT_ACTIONABLE.done;
+  if (row.completionState === "skipped") return NOT_ACTIONABLE.skipped;
+  if (row.completionState === "missed") return NOT_ACTIONABLE.missed;
+  if (row.effectiveDate < today || row.completionState === "unresolved") return NOT_ACTIONABLE.past;
+  if (row.completionState !== "scheduled" && row.completionState !== "planned") return `is already ${row.completionState}`;
+  return undefined;
+}
+
 /**
  * WHICH OPS CAN LEAVE COROS HOLDING SOMETHING THE APP NO LONGER PRESCRIBES —
  * audited op by op (2026-08-17), because "ease is the one that bit" is a
@@ -1101,18 +1129,8 @@ export async function applyOps(
       .limit(1);
     // The row rides along with a refusal, so an op can recognise its OWN
     // target state (a re-apply, finding 7) rather than report it as a shortfall.
-    if (!row) return { why: "isn't on the calendar any more" };
-    if (row.archivedAt) return { row, why: "isn't on the calendar any more" };
-    if (row.completionState === "completed") return { row, why: "has already been done" };
-    if (row.completionState === "skipped") return { row, why: "was already skipped" };
-    if (row.completionState === "missed") return { row, why: "was already missed" };
-    if (row.effectiveDate < today || row.completionState === "unresolved") {
-      return { row, why: "has already had its day" };
-    }
-    if (row.completionState !== "scheduled" && row.completionState !== "planned") {
-      return { row, why: `is already ${row.completionState}` };
-    }
-    return { row };
+    const why = whyNotActionable(row, today);
+    return why === undefined ? { row: row! } : { row, why };
   };
 
   for (let i = 0; i < ops.length; i++) {

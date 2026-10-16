@@ -39,7 +39,7 @@ export const dropWorkout: DesignTool = {
       return refuse("no_set", "drop_workout takes a workout out of a planned set, and no set is planned in this run.", "Call plan_set first — or, for one workout, simply don't propose it.");
     }
     const proposalId = designProposalId(ctx.run.id);
-    const { ops, opsText, status, flags } = await readSetProposal(ctx.db, ctx.userId, proposalId);
+    const { ops, changes, opsText, status, flags } = await readSetProposal(ctx.db, ctx.userId, proposalId);
     const op = ops.find((o) => opIdOf(o) === p.opId);
     if (!op) {
       const ids = ops.map(opIdOf);
@@ -56,7 +56,7 @@ export const dropWorkout: DesignTool = {
     const when = dayWords(op.date);
     const line = `Left out “${op.doc.title}” (${when}): ${p.reason}`;
     const next = ops.filter((o) => o !== op);
-    const written = await writeSetOps(ctx.db, ctx.userId, proposalId, next, opsText, [...flags, line]);
+    const written = await writeSetOps(ctx.db, ctx.userId, proposalId, next, changes, opsText, [...flags, line]);
     if (!written) return refuse("proposal_changed", "The proposal changed while the workout was being taken out.", "Call drop_workout again.");
     // Kept with its key: a redo of the key that is designed takes the line back.
     if (key) ctx.set?.keyLine(key, line);

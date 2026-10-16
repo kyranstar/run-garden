@@ -7,7 +7,9 @@
  * summed, in read_balance's units — what the set adds, beside what read_balance says was done); hard days in a row (two
  * workouts of the set that develop or peak on consecutive days); and the moves repeated on consecutive days
  * (progression and variety, and the same tissues two days running). Runs and programme sessions around them are
- * read_plan's. The proposal's lines (`notes`) carry model-written words — a title, a reason — so they come marked.
+ * read_plan's. The proposal's lines (`notes`) carry model-written words — a title, a reason — so they come marked. The
+ * main coach's changes to sessions already on the plan (adjust_plan's, Task 8b) are listed apart (`planChanges`: the
+ * session, the change and the coach's why, marked): never a designer's work, never one of the set's workouts.
  *
  * Every role reads it (audit I7; the lead's ruling for 3A): the main coach judges its set (each workout with its key,
  * from its plan's rounds); a set's designer reads its siblings before it drafts, so it can vary from the days either
@@ -26,6 +28,7 @@ import { REVIEW_DIMENSIONS } from "../design-prompt.js";
 import { balanceInUnits, hardPairs, movesOf, opIdOf, readSetProposal, repeatsOnConsecutiveDays, reviewMeanOf } from "../design-orchestrate.js";
 import { isErr, parseAct } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
+import type { PlanAdjustOp } from "../proposal-kinds.js";
 import { answer, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
 import type { DesignTool } from "./types.js";
 
@@ -147,12 +150,26 @@ function combinedOf(ops: DocWorkoutOp[]): Record<string, unknown> {
   };
 }
 
-const EMPTY = { workouts: [], combined: null, hardDaysInARow: { count: 0, pairs: [] }, movesRepeatedOnConsecutiveDays: [], notes: [] };
+const EMPTY = { workouts: [], combined: null, hardDaysInARow: { count: 0, pairs: [] }, movesRepeatedOnConsecutiveDays: [], notes: [], planChanges: [] };
+
+/** A change of the main coach's to a session already on the plan, as the set's reader sees it beside the workouts. */
+function changeOf(c: PlanAdjustOp): Record<string, unknown> {
+  return {
+    opId: c.id,
+    change: c.op.kind,
+    workoutId: c.op.workoutId,
+    date: c.date,
+    title: untrusted(cut(c.row.title, TITLE_MAX)),
+    ...(c.op.kind === "move" ? { to: c.op.toTime ? `${c.op.toDate} ${c.op.toTime}` : c.op.toDate } : {}),
+    ...(c.op.kind === "adjust" ? { minutes: c.op.durationMinutes } : {}),
+    why: untrusted(cut(c.why, NOTE_MAX)),
+  };
+}
 
 export const readSet: DesignTool = {
   name: "read_set",
   description:
-    "The set so far (a week or the next few), for the main coach, its designers and reviewers: each workout in date order with its op id, where it goes, parts, moves, derived fields and review; the combined balance; hard days in a row; and the moves repeated on consecutive days.",
+    "The set so far (a week or the next few), for the main coach, its designers and reviewers: each workout in date order with its op id, where it goes, parts, moves, derived fields and review; the combined balance; hard days in a row; the moves repeated on consecutive days; and the main coach's changes to sessions already planned, apart.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   statementCost: 1,
   roles: ["main", "designer", "reviewer"],
@@ -188,6 +205,7 @@ export const readSet: DesignTool = {
       combined: combinedOf(ordered),
       hardDaysInARow: { count: pairs.length, pairs, counts: "the set's own workouts that develop or peak, on consecutive days (read_plan for the runs and sessions around them)" },
       notes: flags.slice(-NOTES_SHOWN).map((f) => untrusted(cut(f, NOTE_MAX))),
+      planChanges: read.changes.map(changeOf),
     };
     let result = answer({ source, now: ctx.now, missing: none, data: {}, summary: "" });
     for (const detail of DETAILS) {

@@ -602,8 +602,8 @@ export interface DesignWrittenDto {
   minutes: number;
 }
 
-/** Why a planned workout can't change (`not_editable`). */
-export type DesignNotEditableCause = "programme" | "completed" | "skipped" | "missed" | "under_way" | "unknown";
+/** Why a planned workout can't change (`not_editable`) — `studio`: a change's length refused for a Studio workout. */
+export type DesignNotEditableCause = "programme" | "studio" | "completed" | "skipped" | "missed" | "under_way" | "unknown";
 
 /** How the athlete decided one designed workout; null while it is theirs to decide. */
 export type DesignOutcomeDto =
@@ -641,6 +641,37 @@ export interface DesignLineDto {
   written: (DesignWrittenDto & { summary: string; edited: boolean; moved: boolean }) | null;
 }
 
+/** A session as it stood before a change of it was applied (Stage 3 Task 8b). */
+export interface DesignChangeBeforeDto {
+  date: string;
+  time: string;
+  title: string;
+  minutes: number | null;
+}
+
+/** How the athlete decided one change; applied, it keeps the session as it stood (`before`). */
+export type DesignChangeOutcomeDto = { status: "applied"; at: string; workoutId: string; before: DesignChangeBeforeDto } | Exclude<DesignOutcomeDto, { status: "applied" }>;
+
+/** One change to a session already on the plan (`GET /api/coach/proposals/:id`'s `changes`; Task 8b): the thread coach's
+ * own manifest line for its skip, move or length — and the coach's why. A change has no draft. */
+export interface DesignChangeLineDto {
+  opId: string;
+  kind: "skip" | "move" | "adjust";
+  workoutId: string;
+  /** The day the line is under: a move's destination, else the session's day. */
+  date: string | null;
+  /** A move's time asked for. */
+  time: string | null;
+  /** "Strength — skipped", "Easy run — 30 min", a moved session's name. */
+  summary: string;
+  /** What it replaced: a move's old day, a length's old minutes. */
+  was: string | null;
+  /** What `was` can't say: a skip's reason. */
+  effect: string | null;
+  why: string;
+  outcome: DesignChangeOutcomeDto | null;
+}
+
 /** `GET /api/coach/proposals/:id/ops/:opId/draft`: the op's document, as the builder loads a workout's, and where it goes. */
 export interface DesignDraftResponse {
   proposalId: string;
@@ -673,10 +704,14 @@ export interface DesignApproveResponse {
   ok: true;
   status: "pending" | "partially_approved" | "approved" | "declined" | "superseded";
   applied: Array<{ opId: string; workout: DocWorkoutDto; warnings: DocIssueDto[]; edited?: true; moved?: true; watchHasOlder?: true }>;
+  /** The changes to sessions already on the plan this request applied (Task 8b), each with how it stood before. */
+  changed: Array<{ opId: string; change: "skip" | "move" | "adjust"; workoutId: string; before: DesignChangeBeforeDto }>;
   refused: Array<{ opId: string; error: string; why: string; cause?: DesignNotEditableCause; issues?: DocIssueDto[] }>;
   /** Decided before: nothing done. */
   settled: Array<{ opId: string; outcome: "applied" | "declined" | "superseded"; workoutId?: string }>;
   remaining: string[];
+  /** A watch job a change queued waits: the client drains it, as after the thread's approve. */
+  coachDrain?: true;
 }
 
 /** `POST /api/workouts`: a document workout for a day (today or later). `time` left out: the athlete's window. */
@@ -1971,17 +2006,24 @@ export const api = {
     return res;
   },
   /** One proposal's status: what a tap whose answer never came back reads before it says anything — and for a designed
-   * proposal (with the coach designer on), its manifest `lines`, each with how its workout ended. */
+   * proposal (with the coach designer on), its manifest: the workouts' `lines` and the changes' (`changes`), each with
+   * how it ended. */
   coachProposal: (proposalId: string) =>
-    get<{ id: string; status: CoachProposalDto["status"]; resolvedAt: string | null; lines?: DesignLineDto[] }>(`/api/coach/proposals/${proposalId}`),
+    get<{ id: string; status: CoachProposalDto["status"]; resolvedAt: string | null; lines?: DesignLineDto[]; changes?: DesignChangeLineDto[] }>(
+      `/api/coach/proposals/${proposalId}`,
+    ),
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   /** A designed workout's draft, for Edit before approve (404 unless the coach designer is on). */
   coachDesignDraft: (proposalId: string, opId: string) =>
     get<DesignDraftResponse>(`/api/coach/proposals/${encodeURIComponent(proposalId)}/ops/${encodeURIComponent(opId)}/draft`),
-  /** Approve a designed proposal's workouts (see `DesignApproveResponse` for `remaining`), or one op's edited draft. */
-  coachDesignApprove: (proposalId: string, body: DesignApproveRequest) =>
-    post<DesignApproveResponse>(`/api/coach/proposals/${encodeURIComponent(proposalId)}/approve`, body),
+  /** Approve a designed proposal's workouts and changes (see `DesignApproveResponse` for `remaining`), or one op's edited
+   * draft. A watch job a change queued is drained as after the thread's approve. */
+  coachDesignApprove: async (proposalId: string, body: DesignApproveRequest) => {
+    const res = await post<DesignApproveResponse>(`/api/coach/proposals/${encodeURIComponent(proposalId)}/approve`, body);
+    if (res.coachDrain) void drainCoach().catch(() => undefined);
+    return res;
+  },
   /** Decline a designed proposal, or some of its workouts; the reason is the athlete's own words. */
   coachDesignDecline: (proposalId: string, body: { opIds?: string[]; reason?: string }) =>
     post<{ ok: true; status: DesignApproveResponse["status"]; declined: string[]; settled: DesignApproveResponse["settled"] }>(

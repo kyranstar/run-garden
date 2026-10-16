@@ -15,6 +15,9 @@
  * its day, time, title and minutes as the plan holds them), which after Edit before approve is the athlete's version,
  * never the coach's. The line's own fields stay the coach's proposal. Dates reach the UI as ISO dates for it to format;
  * the thread's receipt names a day as the coach manifest does (`dayLabel`).
+ *
+ * A change to a session already on the plan (Task 8b) has its own line (`planChangeLines`): the thread coach's manifest
+ * line for its skip, move or length, word for word (@rg/domain `describeOps`), and the coach's why.
  */
 import { sql } from "drizzle-orm";
 import { locations } from "@rg/database";
@@ -23,9 +26,9 @@ import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exerci
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
-import type { DesignedOp, OpOutcome, Written } from "./design-approve.js";
+import type { DesignedOp, DesignedPlanOp, OpOutcome, PlanOpOutcome, Written } from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
-import { opIdOf } from "./proposal-kinds.js";
+import { describeChange, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
 export interface DocWorkoutLine {
@@ -118,6 +121,50 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
       reviewMean: reviewMeanOf(op),
       outcome: op.outcome ?? null,
       written: writtenLine(op.outcome),
+    };
+  });
+}
+
+/**
+ * One change to a session already on the plan (Task 8b), as the athlete reads it before (and after) deciding: the
+ * thread coach's own manifest line for its op (@rg/domain `describeOps`, proposal-kinds.ts `describeChange`) — with the
+ * session as the plan held it when the coach proposed the change — and the coach's `why`.
+ */
+export interface PlanChangeLine {
+  opId: string;
+  kind: "skip" | "move" | "adjust";
+  workoutId: string;
+  /** The day the line is under: a move's destination, else the session's day. */
+  date: string | null;
+  /** A move's time asked for, else null. */
+  time: string | null;
+  /** "Strength — skipped", "Easy run — 30 min", a moved session's name. */
+  summary: string;
+  /** What it replaced: a move's old day, a length's old minutes — only a real difference. */
+  was: string | null;
+  /** What `was` can't say: a skip's reason. */
+  effect: string | null;
+  /** The coach's reason, in its words. */
+  why: string;
+  /** How it ended; null while it is the athlete's to decide. */
+  outcome: PlanOpOutcome | null;
+}
+
+/** Each change's line, in the proposal's order. */
+export function planChangeLines(ops: readonly unknown[]): PlanChangeLine[] {
+  return (ops.filter(isPlanAdjustOp) as DesignedPlanOp[]).map((c) => {
+    const w = describeChange(c);
+    return {
+      opId: c.id,
+      kind: c.op.kind,
+      workoutId: c.op.workoutId,
+      date: w.date,
+      time: w.time,
+      summary: w.summary,
+      was: w.was,
+      effect: w.effect,
+      why: c.why,
+      outcome: c.outcome ?? null,
     };
   });
 }

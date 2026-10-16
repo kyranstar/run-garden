@@ -17,7 +17,7 @@
  *    refuses both the same way (act-common.ts);
  *  - a proposal already with the athlete (`proposal_pending`: the main run's finish made it pending; "call finish");
  *  - a revision of a workout another run of this design already revises (`target_taken`) — but not the first version a
- *    set's redo replaces (`ctx.replaces`);
+ *    set's redo replaces (`ctx.replaces`) — or that a change of the proposal's skips or moves (adjust_plan, Task 8b);
  *  - a third draft from one run, once two rounds of review are done (`rounds_done`: ruling 4).
  * Everything else — the validator's warnings — goes with the draft as its costs.
  *
@@ -98,6 +98,7 @@ import {
   type CoachIssue,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, parsedJson, refuse } from "./read-common.js";
+import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
 
 /** The one proposal of a main run's design. */
 export const designProposalId = (mainRunId: string): string => `dp-${mainRunId}`;
@@ -281,13 +282,16 @@ export const proposeWorkout: DesignTool = {
     const today = a.athlete.today;
     const doc = withFocusRefs(submitted, a.focusAreas);
     const opsText = typeof a.extra.propOps === "string" ? a.extra.propOps : null;
-    const ops = ((opsText ? parsedJson(opsText) : null) as DocWorkoutOp[] | null) ?? [];
+    // Every op the proposal holds (a change by adjust_plan among them, Task 8b): this run's work is its designed workouts,
+    // and every other op is written back as it was read.
+    const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
+    const ops = all.filter(isDocWorkoutOp) as DocWorkoutOp[];
     const status = typeof a.extra.propStatus === "string" ? a.extra.propStatus : null;
     const mine = ops.find((o) => o.by.runId === ctx.run.id);
 
     // A replay of this very call: what it stored, or its review — or, when a later draft of the run's replaced it, that.
     if (ctx.toolUseId) {
-      const replayed = await replay(ctx, proposalId, ops, opsText, mine, ctx.toolUseId);
+      const replayed = await replay(ctx, proposalId, all, opsText, mine, ctx.toolUseId);
       if (replayed) return replayed;
     }
 
@@ -340,6 +344,9 @@ export const proposeWorkout: DesignTool = {
       // reviewed (design-orchestrate.ts), so it never takes the workout from it.
       if (ops.some((o) => o.by.runId !== ctx.run.id && o.by.runId !== ctx.replaces && o.target.kind === "revise" && o.target.workoutId === workoutId)) {
         return refuse("target_taken", "Another workout of this design already revises that workout.", "Propose a new workout, or revise a different one.");
+      }
+      if (all.some((o) => isPlanAdjustOp(o) && o.op.workoutId === workoutId)) {
+        return refuse("target_taken", "adjust_plan already changes that workout in this proposal.", "Revise a different workout, or propose a new one.");
       }
       date = row.date;
       time = row.time;
@@ -402,7 +409,7 @@ export const proposeWorkout: DesignTool = {
       replaced = !!mine;
       if (mine) op.replaces = [...(mine.replaces ?? []), mine.toolUseId];
     }
-    const next = [...ops.filter((o) => o.by.runId !== ctx.run.id), op];
+    const next = [...all.filter((o) => !isDocWorkoutOp(o) || (o as DocWorkoutOp).by.runId !== ctx.run.id), op];
     const written = await upsertProposal(ctx, proposalId, next, opsText, at);
     if (!written) {
       return refuse("proposal_changed", "The proposal changed while this draft was being stored.", "Call propose_workout again with the same draft.");
@@ -443,7 +450,8 @@ function withoutAbandoned(op: DocWorkoutOp): DocWorkoutOp {
 async function replay(
   ctx: ToolContext,
   proposalId: string,
-  ops: DocWorkoutOp[],
+  /** Every op the proposal holds: what a write puts back. */
+  ops: unknown[],
   opsText: string | null,
   mine: DocWorkoutOp | undefined,
   toolUseId: string,
@@ -478,9 +486,10 @@ async function replay(
     }
     return reviewedAnswer(mine, toolUseId, ctx.now);
   }
-  const stored = ops.find((o) => o.toolUseId === toolUseId);
+  const docs = ops.filter(isDocWorkoutOp) as DocWorkoutOp[];
+  const stored = docs.find((o) => o.toolUseId === toolUseId);
   if (stored) return storedAnswer(proposalId, stored, false);
-  if (ops.some((o) => o.replaces?.includes(toolUseId))) {
+  if (docs.some((o) => o.replaces?.includes(toolUseId))) {
     return {
       data: { stored: true, proposalId, superseded: true, note: "a later draft from this run replaced this one" },
       summary: "An earlier draft, already replaced",
@@ -537,9 +546,9 @@ function whyNotEditable(row: TargetRow): string | null {
  * Write the proposal with `ops`: made, or updated while it still has the status this call writes — unreviewed (a
  * rehearsal's, rehearsal), never pending: the finish made that one the athlete's, and a draft never moves it back — and
  * still holds the ops this call read (`readOps`, null for none). One statement; false when nothing was written (another
- * write came between).
+ * write came between). adjust_plan writes its changes through it too (Task 8b).
  */
-async function upsertProposal(ctx: ToolContext, id: string, ops: DocWorkoutOp[], readOps: string | null, at: string): Promise<boolean> {
+export async function upsertProposal(ctx: ToolContext, id: string, ops: readonly unknown[], readOps: string | null, at: string): Promise<boolean> {
   const status = proposalStatusOf(ctx.run.rehearsal);
   const { title, rationale, expiresAt } = proposalFields(ops);
   const json = JSON.stringify(ops);

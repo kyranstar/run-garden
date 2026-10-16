@@ -7,12 +7,14 @@
  * The names, and what each tool is for, are the ones the prompt promises (design-prompt.ts `PROMPT_TOOL_NAMES` and
  * "Using the tools well"); the descriptions stay short because the prompt already explains when to reach for which.
  * The read tools serve all three roles; the act tools follow them (`ACT_TOOLS`, each with its own roles): the
- * reviewer's `submit_review` (design-review.ts) among them, and the main coach's tools for a set — plan_set, read_set,
- * drop_workout (design-orchestrate.ts; read_set reads, but only the main coach's set). A tool the prompt names before
+ * reviewer's `submit_review` (design-review.ts) among them, the main coach's change to a session already on the plan —
+ * adjust_plan (Task 8b) — and its tools for a set — plan_set, read_set, drop_workout (design-orchestrate.ts; read_set
+ * reads every role's set). A tool the prompt names before
  * a later task adds it is listed in `PENDING_TOOL_NAMES` until it does — none now — so a test holds the registry plus
  * that list to the prompt's names exactly.
  */
 import { submitReview } from "../design-review.js";
+import { adjustPlan } from "./adjust-plan.js";
 import { askAthlete } from "./ask.js";
 import { dropWorkout } from "./drop-workout.js";
 import { finish } from "./finish.js";
@@ -63,6 +65,7 @@ export const ACT_TOOLS: DesignTool[] = [
   recordAnswer,
   remember,
   proposeWorkout,
+  adjustPlan,
   planSet,
   readSet,
   dropWorkout,

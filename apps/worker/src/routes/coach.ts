@@ -53,7 +53,7 @@ import {
 } from "../services/coach-wake.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
-import { hasDocWorkout } from "../services/proposal-kinds.js";
+import { isDesignedProposal } from "../services/proposal-kinds.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
 import { liveMemoryWhere } from "../services/memory-core.js";
@@ -262,12 +262,12 @@ coachRoutes.get("/state", async (c) => {
   const outOfCredits = await loadOutOfCredits(db, userId);
   const coachThinking = lockFresh || (pendingReply && !outOfCredits);
 
-  // A designed workout's proposal (Stage 3) is approved on its own surface, never as a thread card: both lists leave it
-  // out, so nothing here ever renders a `doc_workout` op.
+  // A designed proposal (Stage 3) is approved on its own surface, never as a thread card: both lists leave it out — one
+  // of changes alone too (Task 8b) — so nothing here ever renders a `doc_workout` or `plan_adjust` op.
   return c.json({
     messages: [...msgs].reverse(),
-    pendingProposals: pending.filter((p) => !hasDocWorkout(p.ops)),
-    settledProposals: settled.filter((p) => !hasDocWorkout(p.ops)),
+    pendingProposals: pending.filter((p) => !isDesignedProposal(p.ops)),
+    settledProposals: settled.filter((p) => !isDesignedProposal(p.ops)),
     openQuestion: openQuestion ?? null,
     memoryCount: memoryRows.length,
     lastCoachAt: lastCoach?.at ?? null,
@@ -447,9 +447,9 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
     .where(and(eq(coachProposals.id, id), eq(coachProposals.userId, userId)))
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
-  // A designed workout's proposal is approved op by op through the Studio's create and revise path (Stage 3 Task 8),
-  // never as CoachOps.
-  if (hasDocWorkout(p.ops)) return approveDesigned(c, p, (today) => sweepExpiredProposals(db, userId, today));
+  // A designed proposal is approved op by op — its workouts through the Studio's create and revise path (Stage 3 Task
+  // 8), its changes through the applier one op each (Task 8b) — never as a whole thread proposal's CoachOps.
+  if (isDesignedProposal(p.ops)) return approveDesigned(c, p, (today) => sweepExpiredProposals(db, userId, today));
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
 
   const prefs = await loadPreferences(db, userId);
@@ -512,8 +512,8 @@ coachRoutes.post("/drain", async (c) => {
 
 /**
  * One proposal's status — what the card reads after a tap whose answer never came back (a dropped connection, a
- * 5xx), before it says anything: the approve may well have applied. A designed workout's proposal answers its manifest
- * `lines` too, each with how its op ended (Stage 3 Task 8). 404 `not_found`.
+ * 5xx), before it says anything: the approve may well have applied. A designed proposal answers its manifest too: the
+ * workouts' `lines` and the changes' (`changes`), each with how its op ended (Stage 3 Tasks 8, 8b). 404 `not_found`.
  */
 coachRoutes.get("/proposals/:id", async (c) => {
   const [p] = await c
@@ -524,8 +524,8 @@ coachRoutes.get("/proposals/:id", async (c) => {
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
   const { ops, ...status } = p;
-  const lines = hasDocWorkout(ops) ? await designedLines(c, ops) : undefined;
-  return c.json(lines ? { ...status, lines } : status);
+  const manifest = isDesignedProposal(ops) ? await designedLines(c, ops) : undefined;
+  return c.json(manifest ? { ...status, ...manifest } : status);
 });
 
 /** A designed workout's draft, for Edit before approve (Stage 3 Task 8; routes/design-proposals.ts). */
@@ -542,7 +542,7 @@ coachRoutes.post("/proposals/:id/decline", async (c) => {
     .limit(1);
   if (!p) return c.json({ error: "not_found" }, 404);
   // Declined op by op too (Stage 3 Task 8), with the athlete's reason kept for the coach.
-  if (hasDocWorkout(p.ops)) return declineDesigned(c, p);
+  if (isDesignedProposal(p.ops)) return declineDesigned(c, p);
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
   await db
     .update(coachProposals)

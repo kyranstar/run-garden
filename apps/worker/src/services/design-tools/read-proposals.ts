@@ -5,9 +5,11 @@
  * it on (`basedOn`, as it set it), and how the athlete decided it (design-approve.ts): `approved` as the coach proposed it, `edited` (the athlete changed the draft, then
  * approved theirs), with `moved` and the day it went to (`plannedFor`) when the athlete chose another day or time,
  * `declined` (with the athlete's reason, when they gave one), `not_applied` (the server refused it at approval, with
- * why), or `superseded` (a newer plan covered its day). A rehearsal (the live scenario suite) is never one of them. The
+ * why), or `superseded` (a newer plan covered its day) — and each change to a session already on the plan (Task 8b):
+ * the change, the session as it was named, where it moved or its new length, a skip's reason and the coach's why, and
+ * how it ended (`approved`, `declined`, `not_applied`, `superseded`). A rehearsal (the live scenario suite) is never one of them. The
  * title, rationale, a designed workout's title, a decline's reason and a refusal's why (it can quote the validator, which
- * quotes what a workout holds) are marked as others' words. A page that fits, paged by key. One statement: the athlete
+ * quotes what a workout holds) — and a change's session name, reason and why — are marked as others' words. A page that fits, paged by key. One statement: the athlete
  * with one page of proposals.
  */
 import { sql } from "drizzle-orm";
@@ -78,10 +80,29 @@ function decided(o: Record<string, unknown>): Record<string, unknown> {
   }
 }
 
+/** A change to a session already on the plan (adjust_plan's, Task 8b), as the tool reports it: the change, the session
+ * as it was named, where it moved or its new length, a skip's reason and the coach's why — model-written, marked — and
+ * how it ended. */
+function changeOf(o: Record<string, unknown>): Record<string, unknown> {
+  const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+  const to = str(o.toDate);
+  return {
+    kind: "plan_adjust",
+    change: str(o.change) ?? "unknown",
+    ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date } : {}),
+    ...(str(o.rowTitle) ? { title: untrusted(str(o.rowTitle)!) } : {}),
+    ...(to && isLocalDate(to) ? { to: `${to}${str(o.toTime) ? ` ${str(o.toTime)}` : ""}` } : {}),
+    ...(typeof o.minutes === "number" ? { minutes: o.minutes } : {}),
+    ...(str(o.skipReason) ? { skipReason: untrusted(str(o.skipReason)!) } : {}),
+    ...(str(o.changeWhy) ? { why: untrusted(str(o.changeWhy)!) } : {}),
+    ...decided(o),
+  };
+}
+
 export const readProposals: DesignTool = {
   name: "read_proposals",
   description:
-    "Past proposals, newest first: how each ended (approved, partly approved, declined, superseded, expired, pending), what each proposed, and whether each designed workout was approved as it was, edited first, or declined.",
+    "Past proposals, newest first: how each ended (approved, partly approved, declined, superseded, expired, pending), what each proposed, and whether each designed workout or plan change was approved as it was, edited first, or declined.",
   inputSchema: {
     type: "object",
     properties: { status: { type: "string", enum: [...STATUSES] }, limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },
@@ -106,7 +127,9 @@ export const readProposals: DesignTool = {
             (select json_group_array(json_object('kind', ${op("$.kind")}, 'date', coalesce(${op("$.date")}, ${op("$.toDate")}),
               'title', ${op("$.doc.title")}, 'outcome', ${op("$.outcome.status")}, 'edited', ${op("$.outcome.edited")},
               'moved', ${op("$.outcome.moved")}, 'wDate', ${op("$.outcome.written.date")}, 'wTime', ${op("$.outcome.written.time")},
-              'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}, 'basedOn', json(${op("$.doc.basedOn")})))
+              'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}, 'basedOn', json(${op("$.doc.basedOn")}),
+              'change', ${op("$.op.kind")}, 'rowTitle', ${op("$.row.title")}, 'toDate', ${op("$.op.toDate")}, 'toTime', ${op("$.op.toTime")},
+              'minutes', ${op("$.op.durationMinutes")}, 'skipReason', ${op("$.op.reason")}, 'changeWhy', ${op("$.why")}))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}
             ${at ? sql`and (${c.createdAt}, ${c.id}) <= (${at[0]}, ${at[1]})` : sql``}
@@ -130,7 +153,7 @@ export const readProposals: DesignTool = {
           created: localDateOf(athlete.tz, r.createdAt),
           status: r.status,
           resolved: localDateOf(athlete.tz, r.resolvedAt),
-          ops: ops.slice(0, OPS_SHOWN).map((o) => ({
+          ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o) : {
             kind: typeof o.kind === "string" ? o.kind : "unknown",
             ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date } : {}),
             ...(typeof o.title === "string" ? { title: untrusted(o.title) } : {}),

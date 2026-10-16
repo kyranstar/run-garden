@@ -59,6 +59,14 @@ import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/pro
 import { refuse, untrusted } from "./design-tools/read-common.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolOk } from "./design-tools/types.js";
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
+import { describeChange, isDocWorkoutOp, isPlanAdjustOp, type PlanAdjustOp } from "./proposal-kinds.js";
+
+/** An op of a design's proposal: a designed workout, or a change to a session already on the plan (Task 8b). */
+type DesignOp = DocWorkoutOp | PlanAdjustOp;
+
+/** The designed workout run `runId` holds in `ops` (a change belongs to no run: never one). */
+const ofRun = (ops: readonly DesignOp[], runId: string): DocWorkoutOp | undefined =>
+  ops.find((o): o is DocWorkoutOp => isDocWorkoutOp(o) && (o as DocWorkoutOp).by?.runId === runId);
 
 /** Drafts one run has reviewed at most: the draft and up to two revisions of it (ruling 4; a fourth propose is
  * refused). A round dropped because its reviewer failed is not one of them. */
@@ -433,16 +441,22 @@ export function markedReview(r: ReviewWithAccepted): Record<string, unknown> {
   };
 }
 
-/** The proposal row's title, rationale and expiry, computed from its ops (propose_workout writes them; so does a
- * verdict that changes which version an op holds). */
-export function proposalFields(ops: DocWorkoutOp[]): { title: string; rationale: string; expiresAt: string } {
+/**
+ * The proposal row's title, rationale and expiry, computed from its ops (propose_workout writes them; so does a
+ * verdict that changes which version an op holds, and adjust_plan). The workouts name it, then its changes are counted
+ * ("Calm hips · 1 plan change"); a proposal of one change alone is named by it ("Strength — skipped"). It expires on its
+ * last day — a move's destination among them.
+ */
+export function proposalFields(all: readonly unknown[]): { title: string; rationale: string; expiresAt: string } {
+  const ops = all.filter(isDocWorkoutOp) as DocWorkoutOp[];
+  const changes = all.filter(isPlanAdjustOp);
+  const counted = `${changes.length} plan change${changes.length === 1 ? "" : "s"}`;
+  const workouts = ops.length === 0 ? null : ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`;
+  const title = workouts === null ? (changes.length === 1 ? describeChange(changes[0]!).title : counted) : changes.length > 0 ? `${workouts} · ${counted}` : workouts;
   return {
-    title: ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`,
-    rationale: ops
-      .map((o) => o.changeNote ?? o.doc.intent.summary)
-      .join(" · ")
-      .slice(0, 500),
-    expiresAt: ops.map((o) => o.date).sort().at(-1)!,
+    title,
+    rationale: [...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why)].join(" · ").slice(0, 500),
+    expiresAt: [...ops.map((o) => o.date), ...changes.flatMap((c) => (c.op.kind === "move" ? [c.date, c.op.toDate] : [c.date]))].sort().at(-1)!,
   };
 }
 
@@ -453,7 +467,7 @@ export const OPEN_PROPOSAL_STATUSES = ["unreviewed", "pending", "rehearsal"] as 
  * Write a design proposal's ops (and the fields computed from them) while it is open and still holds `readOps`, the
  * ops text the caller read. One statement; false when nothing was written (closed, or another write came between).
  */
-export async function updateOps(db: Db, userId: string, proposalId: string, ops: DocWorkoutOp[], readOps: string | null): Promise<boolean> {
+export async function updateOps(db: Db, userId: string, proposalId: string, ops: readonly unknown[], readOps: string | null): Promise<boolean> {
   const f = proposalFields(ops);
   const rows = (await db.all(sql`
     UPDATE coach_proposals SET ops = ${JSON.stringify(ops)}, title = ${f.title}, rationale = ${f.rationale}, expires_at = ${f.expiresAt}
@@ -464,15 +478,15 @@ export async function updateOps(db: Db, userId: string, proposalId: string, ops:
 }
 
 /** A design proposal's ops and status, as stored (one statement). */
-async function readProposal(db: Db, userId: string, proposalId: string): Promise<{ opsText: string | null; ops: DocWorkoutOp[]; status: string | null }> {
+async function readProposal(db: Db, userId: string, proposalId: string): Promise<{ opsText: string | null; ops: DesignOp[]; status: string | null }> {
   const rows = (await db.all(sql`
     SELECT ops, status FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
   `)) as Array<{ ops: string | null; status: string }>;
   const row = rows[0];
-  let ops: DocWorkoutOp[] = [];
+  let ops: DesignOp[] = [];
   try {
     const parsed: unknown = row?.ops ? JSON.parse(row.ops) : [];
-    ops = Array.isArray(parsed) ? (parsed as DocWorkoutOp[]) : [];
+    ops = Array.isArray(parsed) ? (parsed as DesignOp[]) : [];
   } catch {
     ops = [];
   }
@@ -512,7 +526,7 @@ export async function resumeAfterReview(
   const asOf = o.now.toISOString();
   const provenance = { source: "the independent reviewer's review of this draft", asOf };
   const { ops, opsText, status } = await readProposal(db, userId, o.proposalId);
-  let op = ops.find((x) => x.by?.runId === o.designerRunId);
+  let op = ofRun(ops, o.designerRunId);
   const entry = op?.reviewLog?.find((r) => r.toolUseId === o.toolUseId);
   if (!op || !entry) {
     return {
@@ -590,7 +604,7 @@ export const submitReview: DesignTool = {
     const of = ctx.reviewOf;
     if (!of) return { data: { stored: false, note: "This run has no draft to review." }, summary: "No draft to review." };
     const { ops, opsText, status } = await readProposal(ctx.db, ctx.userId, of.proposalId);
-    const op = ops.find((o) => o.by?.runId === of.designerRunId);
+    const op = ofRun(ops, of.designerRunId);
     const next = op ? applyVerdict(op, of.toolUseId, { review }) : null;
     const receipt = {
       round: of.round,
@@ -783,7 +797,7 @@ function recordLine(r: ToolRecord): string {
 }
 
 /** Whether `ops` holds an op a reviewer is reviewing now (the proposal is then not ready, whatever else it holds). */
-export function reviewRunning(ops: DocWorkoutOp[]): boolean {
+export function reviewRunning(ops: readonly DocWorkoutOp[]): boolean {
   return ops.some((o) => !!o.candidate || (o.reviewLog ?? []).some((r) => r.status === "reviewing"));
 }
 
@@ -840,9 +854,11 @@ export function dayWords(date: string): string {
   return `${WEEKDAYS[isoWeekday(date) - 1]} ${d} ${MONTHS[(m ?? 1) - 1]}`;
 }
 
-/** The proposal's line for reviewed workouts whose day passed before the run's stop (an expiry): left out. */
-export function pastDayLine(ops: DocWorkoutOp[]): string {
-  return `Its day passed before it could be proposed, so left out: ${ops.map((op) => `“${op.doc.title}” (${dayWords(op.date)})`).join(", ")}.`;
+/** The proposal's line for reviewed workouts — and changes (Task 8b) — whose day passed before the run's stop (an
+ * expiry): left out. */
+export function pastDayLine(ops: readonly DesignOp[]): string {
+  const named = (op: DesignOp) => (isPlanAdjustOp(op) ? describeChange(op).title : op.doc.title);
+  return `Its day passed before it could be proposed, so left out: ${ops.map((op) => `“${named(op)}” (${dayWords(op.date)})`).join(", ")}.`;
 }
 
 /**
@@ -878,25 +894,29 @@ async function promoteOnce(db: Db, userId: string, proposalId: string, note: str
   `)) as Array<{ ops: string | null; status: string; flags: string | null }>;
   const row = rows[0];
   if (!row || row.status !== "unreviewed" || !row.ops) return false;
-  let ops: DocWorkoutOp[];
+  let ops: DesignOp[];
   let flags: string[];
   try {
     const parsedOps: unknown = JSON.parse(row.ops);
     const parsedFlags: unknown = row.flags ? JSON.parse(row.flags) : [];
-    ops = Array.isArray(parsedOps) ? (parsedOps as DocWorkoutOp[]) : [];
+    ops = Array.isArray(parsedOps) ? (parsedOps as DesignOp[]) : [];
     flags = Array.isArray(parsedFlags) ? parsedFlags.filter((f): f is string => typeof f === "string") : [];
   } catch {
     return false;
   }
   if (ops.length === 0) return false;
-  const settled = ops.map((op) => {
-    const running = (op.reviewLog ?? []).find((r) => r.status === "reviewing");
-    return running ? (applyDrop(op, running.toolUseId, STOPPED_CHANGE) ?? op) : op;
+  const settled = ops.map((op): DesignOp => {
+    if (!isDocWorkoutOp(op)) return op;
+    const running = ((op as DocWorkoutOp).reviewLog ?? []).find((r) => r.status === "reviewing");
+    return running ? (applyDrop(op as DocWorkoutOp, running.toolUseId, STOPPED_CHANGE) ?? op) : op;
   });
   const today = opts.today;
   const past = today ? settled.filter((o) => o.date < today) : [];
   const next = settled.filter((o) => !past.includes(o));
-  if (next.length === 0 || next.some((o) => !o.review) || reviewRunning(next)) return false;
+  // A change goes only beside a reviewed workout (Task 8b): a design interrupted never shows a change alone — the
+  // workout it made way for may be what the stop cut short.
+  const workouts = next.filter(isDocWorkoutOp) as DocWorkoutOp[];
+  if (workouts.length === 0 || workouts.some((o) => !o.review) || reviewRunning(workouts)) return false;
   const lines = [note, ...(past.length > 0 ? [pastDayLine(past)] : [])];
   const f = proposalFields(next);
   const written = (await db.all(sql`

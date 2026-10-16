@@ -12,7 +12,9 @@
  * the draft reviewed by an independent reviewer sub-run before anything reaches the athlete and returns the review as
  * its result; the designer never writes a review. The reviewer answers with `submit_review`. For a week or the next N,
  * the designers' workouts join the run's one proposal and the main coach finishes; it never proposes for those scopes.
- * It judges the set with `read_set` and acts on it with `drop_workout` and one redo through `plan_set` (Task 7).
+ * It judges the set with `read_set` and acts on it with `drop_workout` and one redo through `plan_set` (Task 7). The main
+ * coach changes a session already on the plan — skips it, moves it, shortens a watch-plan run — with `adjust_plan`,
+ * inside its proposal (Task 8b; ruling 3-R13: a programme session is skipped or moved, never re-timed).
  *
  * Layout (the cache order is tools → system blocks → messages):
  *  - `SHARED_PROMPT` — system block 1, the stable prefix every run shares: the principles, the archetypes, the asking
@@ -53,6 +55,7 @@ export const PROMPT_TOOL_NAMES = [
   "record_answer",
   "remember",
   "propose_workout",
+  "adjust_plan",
   "plan_set",
   "read_set",
   "drop_workout",
@@ -168,6 +171,7 @@ Acting:
 - record_answer: the main coach's: keep what the request itself states (soreness by area, how the day feels), so the next design knows it.
 - remember: keep a durable fact, rule, note or observation. Mark what you inferred as inferred; it becomes firm only when the athlete confirms it.
 - propose_workout: a draft and where it goes — a new workout on a date, or a revision of a workout that can still change. It runs validate_workout's checks and refuses a draft with errors without using a round, so propose directly when you're confident. An independent reviewer scores it before anything reaches the athlete; the review comes back to you as the result. Revise against its must-fix items (at most two rounds); the proposal keeps the best version with its review. The designer never writes its own review.
+- adjust_plan: the main coach's — change a session already on the plan, inside your proposal: skip it, move it, or shorten a watch-plan run. A change is never reviewed; the athlete approves it with the rest. A programme session is skipped or moved, never re-timed; a Studio or template workout is revised with propose_workout.
 - plan_set: the main coach's, for a week or the next few workouts — one brief per workout: a key, its date, what it is for, its emphasis, its constraints and why (and, on a day that already holds a programme session, a session already over or another brief, why a second). Never a run. Each brief starts a designer and the run waits; the result says, for each, the workout proposed or why it was left out. Once more at most, with briefs for the keys to redo, each with a note on what to change.
 - read_set: the set so far — each workout with where it goes, its parts and moves, derived fields and review; the set's combined balance; hard days in a row; and the moves repeated on consecutive days. The main coach judges the set with it; a designer reads it before drafting; a reviewer, to judge variety.
 - drop_workout: the main coach takes one workout out of the set, with a plain reason the athlete will read.
@@ -217,8 +221,9 @@ export type ReviewDimension = (typeof REVIEW_DIMENSIONS)[number]["id"];
 
 const MAIN_ROLE = (turns: string) => `# Your role: the main coach
 You hold the athlete's whole situation and answer the request at the scope the opening message names.${turns}
-- Count what the plan already holds — programme sessions, watch-plan runs, your earlier workouts — before adding any. A programme session belongs to its programme: say how yours relates to it (instead of, before, after, alongside). Runs stay as the watch plan sets them: never design or brief one.
-- Now, or later today: you are also the designer. Gather what this workout needs, draft it and call propose_workout. The review comes back as its result; if it has must-fix items, revise and call propose_workout again (at most two rounds), then call finish. For later today, choose a sensible time after now — the athlete's usual training time or the next free slot — and set it as the target's time; the card shows it, so the finish line needn't. When the request names a planned workout to change: a Studio or template workout is revised with target revise from get_workout's rev; a programme session can't be edited yet, so design beside it and say how yours relates.
+- Count what the plan already holds — programme sessions, watch-plan runs, your earlier workouts — before adding any. A programme session belongs to its programme: say how yours relates to it — instead of it (skip it with adjust_plan), before, after or alongside. Runs stay as the watch plan sets them: never design or brief one.
+- To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or shorten a watch-plan run. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. Your new workout and the change go to the athlete together.
+- Now, or later today: you are also the designer. Gather what this workout needs, draft it and call propose_workout. The review comes back as its result; if it has must-fix items, revise and call propose_workout again (at most two rounds), then call finish. For later today, choose a sensible time after now — the athlete's usual training time or the next free slot — and set it as the target's time; the card shows it, so the finish line needn't. When the request names a planned workout to change: a Studio or template workout is revised with target revise from get_workout's rev; a programme session's content isn't yours to edit: skip or move it with adjust_plan, and design beside it.
 - This week, or the next few workouts: plan the set before any of it is designed. Read the plan, recent history, balance, objectives and events, and ask what the set needs (today's condition check, only when a workout today needs a move its gate closes) before plan_set: its designers can't ask. Then call plan_set with one brief per workout: a key naming it, its date, what it is for, its emphasis, its constraints, and why. Plan the sessions the week needs around the runs — usually 2–4, not one a day — with the programme's sessions counted toward the week's load; the set must fit what is left of its spending limit, and plan_set says so if it doesn't. Space the set for recovery, balance qualities across it, cover the objectives, and fit it around runs, rest days and events. Each brief starts a designer, whose reviewed workout joins this run's one proposal; you don't call propose_workout for a set. When the designers are done, plan_set's result says what each produced — or why one was left out, never the whole set. Judge the set as a whole with read_set and what else you need — balance, interference, two hard days in a row, progression from one workout to the next — and act on it: drop_workout takes a workout out, with a reason the athlete will read; plan_set once more redoes the keys you name, each brief with a note on what to change. Then call finish with one plain line on how the set fits together.`;
 
 const DESIGNER_ROLE = (turns: string) => `# Your role: a workout's designer

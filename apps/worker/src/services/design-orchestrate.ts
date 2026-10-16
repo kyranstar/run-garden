@@ -53,7 +53,7 @@ import { applyDrop, dayWords, meanScore, pastDayLine, PROMOTE_TRIES, proposalFie
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
-import { opIdOf } from "./proposal-kinds.js";
+import { isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp } from "./proposal-kinds.js";
 
 // ── The set's shape ─────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -119,16 +119,17 @@ export function briefText(
 // ── The proposal ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * A design proposal as stored: its ops (and their text, for a guarded write), status and lines — and, with
- * `designersOf` (a main run's id), that run's designers as they stand (`SetDesigner`), read in the same statement.
- * One statement.
+ * A design proposal as stored: its designed workouts (`ops`), the main coach's changes to sessions already on the plan
+ * apart (`changes`: adjust_plan's, Task 8b — never a designer's work, never one of the set's workouts), the ops' text
+ * for a guarded write, its status and lines — and, with `designersOf` (a main run's id), that run's designers as they
+ * stand (`SetDesigner`), read in the same statement. One statement.
  */
 export async function readSetProposal(
   db: Db,
   userId: string,
   proposalId: string,
   o: { designersOf?: string } = {},
-): Promise<{ opsText: string | null; ops: DocWorkoutOp[]; status: string | null; flags: string[]; designers: SetDesigner[] }> {
+): Promise<{ opsText: string | null; ops: DocWorkoutOp[]; changes: PlanAdjustOp[]; status: string | null; flags: string[]; designers: SetDesigner[] }> {
   const designers = o.designersOf
     ? sql`(SELECT json_group_array(json_object('runId', r.id, 'status', r.status,
         'day', CASE WHEN json_valid(r.state) THEN json_extract(r.state, '$.day') END,
@@ -150,7 +151,8 @@ export async function readSetProposal(
   const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
   return {
     opsText: row?.ops ?? null,
-    ops: list(row?.ops) as DocWorkoutOp[],
+    ops: list(row?.ops).filter(isDocWorkoutOp) as DocWorkoutOp[],
+    changes: list(row?.ops).filter(isPlanAdjustOp),
     status: row?.status ?? null,
     flags: list(row?.flags).filter((f): f is string => typeof f === "string"),
     designers: list(row?.designers).flatMap((d) => {
@@ -163,13 +165,23 @@ export async function readSetProposal(
 
 /**
  * Write a set's ops and its lines (`flags`) while the proposal is still open — never pending: that is the finish's —
- * and still holds `readOps`. With no op left the title and expiry stay as they were. One statement; false when nothing
- * was written.
+ * and still holds `readOps`. The main coach's changes (`changes`, as `readSetProposal` read them) are written back
+ * first, as they were. With no op left the title and expiry stay as they were. One statement; false when nothing was
+ * written.
  */
-export async function writeSetOps(db: Db, userId: string, proposalId: string, ops: DocWorkoutOp[], readOps: string | null, flags: string[]): Promise<boolean> {
-  const f = ops.length > 0 ? proposalFields(ops) : null;
+export async function writeSetOps(
+  db: Db,
+  userId: string,
+  proposalId: string,
+  ops: DocWorkoutOp[],
+  changes: readonly PlanAdjustOp[],
+  readOps: string | null,
+  flags: string[],
+): Promise<boolean> {
+  const all = [...changes, ...ops];
+  const f = all.length > 0 ? proposalFields(all) : null;
   const rows = (await db.all(sql`
-    UPDATE coach_proposals SET ops = ${JSON.stringify(ops)}, flags = ${JSON.stringify(flags)},
+    UPDATE coach_proposals SET ops = ${JSON.stringify(all)}, flags = ${JSON.stringify(flags)},
       title = COALESCE(${f?.title ?? null}, title), rationale = COALESCE(${f?.rationale ?? null}, rationale),
       expires_at = COALESCE(${f?.expiresAt ?? null}, expires_at)
     WHERE id = ${proposalId} AND user_id = ${userId} AND status IN ('unreviewed', 'rehearsal') AND ops IS ${readOps}
@@ -362,7 +374,7 @@ export async function settleSet(
     budget: { ceilingMicros: number; spentMicros: number };
   },
 ): Promise<{ data: Record<string, unknown>; line: string; keyLines: KeyLine[] }> {
-  const { ops, opsText, status, flags } = await readSetProposal(db, userId, o.proposalId);
+  const { ops, changes, opsText, status, flags } = await readSetProposal(db, userId, o.proposalId);
   let next = [...ops];
   let keyLines = [...o.keyLines];
   const takenBack: string[] = [];
@@ -432,7 +444,7 @@ export async function settleSet(
   for (const k of keyLinesNext) want.set(k.line, (want.get(k.line) ?? 0) + 1);
   for (const [l, n] of want) for (let i = flagsNext.filter((f) => f === l).length; i < n; i++) flagsNext.push(l);
   const changed = next.length !== ops.length || next.some((x, i) => x !== ops[i]) || flagsNext.length !== flags.length || flagsNext.some((f, i) => f !== flags[i]);
-  const stored = !changed || status === null || (await writeSetOps(db, userId, o.proposalId, next, opsText, flagsNext));
+  const stored = !changed || status === null || (await writeSetOps(db, userId, o.proposalId, next, changes, opsText, flagsNext));
   if (!stored) {
     // Another write came between: nothing was taken out of the proposal, nor added to its lines.
     for (const e of out) if (e.draftTakenOut) e.draftTakenOut = false;
@@ -512,7 +524,7 @@ export async function promoteSetWithWhatItHas(
 /** One try of `promoteSetWithWhatItHas`: made pending, nothing to propose, or the write `lost` to another. */
 async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: string, opts: { mainRunId: string; today?: string }): Promise<boolean | "lost"> {
   const today = opts.today;
-  const { ops, opsText, status, flags, designers } = await readSetProposal(db, userId, proposalId, { designersOf: opts.mainRunId });
+  const { ops, changes, opsText, status, flags, designers } = await readSetProposal(db, userId, proposalId, { designersOf: opts.mainRunId });
   if (status !== "unreviewed" || ops.length === 0) return false;
   // A redo's designer → its first version's: one version of each workout is proposed.
   const redoOf: Record<string, string> = Object.fromEntries(designers.filter((d) => d.replaces).map((d) => [d.runId, d.replaces!]));
@@ -534,6 +546,9 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
   const live = settled.filter((op) => !(today && op.date < today));
   const kept = live.filter((op) => op.review);
   const left = live.filter((op) => !op.review);
+  // The main coach's changes ride beside the reviewed workouts (Task 8b) — never alone — those whose day passed left out.
+  const pastChanges = today ? changes.filter((c) => c.date < today) : [];
+  const liveChanges = changes.filter((c) => !pastChanges.includes(c));
   if (kept.length === 0 || reviewRunning(kept)) return false;
   const undesigned = [
     ...new Set(
@@ -547,12 +562,13 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
   const lines = [
     note,
     ...(left.length > 0 ? [`Not reviewed before the stop, so left out: ${left.map((op) => `“${op.doc.title}” (${dayWords(op.date)})`).join(", ")}.`] : []),
-    ...(past.length > 0 ? [pastDayLine(past)] : []),
+    ...(past.length + pastChanges.length > 0 ? [pastDayLine([...past, ...pastChanges])] : []),
     ...(undesigned.length > 0 ? [`Not designed before the stop: ${undesigned.map(dayWords).join(", ")}.`] : []),
   ];
-  const f = proposalFields(kept);
+  const proposed = [...liveChanges, ...kept];
+  const f = proposalFields(proposed);
   const written = (await db.all(sql`
-    UPDATE coach_proposals SET status = 'pending', ops = ${JSON.stringify(kept)}, flags = ${JSON.stringify([...flags, ...lines])},
+    UPDATE coach_proposals SET status = 'pending', ops = ${JSON.stringify(proposed)}, flags = ${JSON.stringify([...flags, ...lines])},
       title = ${f.title}, rationale = ${f.rationale}, expires_at = ${f.expiresAt}
     WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'unreviewed' AND ops IS ${opsText}
     RETURNING id
@@ -573,10 +589,12 @@ export const SAME_SESSION_MINUTES = 180;
  * proposal of the athlete's still theirs to decide (`pending`, `partially_approved`) with an OPEN op — no outcome yet, or
  * refused (a refused op stays open: design-approve.ts) — for a session the new one covers has that op's outcome set to
  * `{ status: "superseded", at, reason: SUPERSEDED_REASON, by: proposalId }`; its other ops are left alone. A session is
- * covered BY SESSION, NOT BY DAY (two sessions a day are legitimate): an older revision of a workout is covered by a
- * newer revision of the same workout; an older new workout by a newer NEW workout on its date whose time overlaps —
- * either has no time, or the two start within SAME_SESSION_MINUTES of each other. (A newer revision of a different
- * workout, already planned, is its own session: it never supersedes a new one near it.)
+ * covered BY SESSION, NOT BY DAY (two sessions a day are legitimate): an older revision of a workout, or an older change
+ * to it (adjust_plan's skip, move or length, Task 8b), is covered by a newer revision of the same workout or a newer
+ * change to it — the newer wins, whichever kind each is; an older new workout by a newer NEW workout on its date whose
+ * time overlaps — either has no time, or the two start within SAME_SESSION_MINUTES of each other. (A newer revision of
+ * a different workout, already planned, is its own session: it never supersedes a new one near it; nor does a change
+ * ever supersede a new workout, or a new workout a change.)
  *
  * Once every designed op of an older proposal is decided (applied, declined, superseded), its status follows
  * design-approve.ts `statusOfOps` (a test holds the two together): `approved` all applied, `partially_approved` some,
@@ -589,22 +607,25 @@ export const SAME_SESSION_MINUTES = 180;
  */
 export async function supersedeOlderPlans(db: Db, userId: string, proposalId: string, at: string): Promise<number> {
   const minutes = (time: SQL) => sql`(cast(substr(${time}, 1, 2) AS integer) * 60 + cast(substr(${time}, 4, 2) AS integer))`;
-  /** An op this supersedes: a designed workout's, still open, for a session one of the new proposal's covers. */
-  const covered = (value: SQL) => sql`(json_extract(${value}, '$.kind') = 'doc_workout'
+  /** The planned workout a designed op is about: a revision's, or a change's (Task 8b); none for a new workout. */
+  const workoutOf = (value: SQL) => sql`(CASE json_extract(${value}, '$.kind')
+    WHEN 'plan_adjust' THEN json_extract(${value}, '$.op.workoutId')
+    WHEN 'doc_workout' THEN CASE WHEN json_extract(${value}, '$.target.kind') = 'revise' THEN json_extract(${value}, '$.target.workoutId') END END)`;
+  /** An op this supersedes: a designed one, still open, for a session one of the new proposal's covers. */
+  const covered = (value: SQL) => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust')
     AND coalesce(json_extract(${value}, '$.outcome.status'), 'open') IN ('open', 'refused')
     AND EXISTS (SELECT 1 FROM coach_proposals np, json_each(np.ops) n
       WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending' AND json_valid(np.ops)
-        AND json_extract(n.value, '$.kind') = 'doc_workout'
-        AND ((json_extract(${value}, '$.target.kind') = 'revise' AND json_extract(n.value, '$.target.kind') = 'revise'
-              AND json_extract(${value}, '$.target.workoutId') = json_extract(n.value, '$.target.workoutId'))
-          OR (json_extract(${value}, '$.target.kind') = 'new' AND json_extract(n.value, '$.target.kind') = 'new'
+        AND ((${workoutOf(value)} IS NOT NULL AND ${workoutOf(value)} = ${workoutOf(sql`n.value`)})
+          OR (json_extract(${value}, '$.kind') = 'doc_workout' AND json_extract(n.value, '$.kind') = 'doc_workout'
+              AND json_extract(${value}, '$.target.kind') = 'new' AND json_extract(n.value, '$.target.kind') = 'new'
               AND json_extract(n.value, '$.date') = json_extract(${value}, '$.date')
               AND (json_extract(${value}, '$.time') IS NULL OR json_extract(n.value, '$.time') IS NULL
                 OR abs(${minutes(sql`json_extract(${value}, '$.time')`)} - ${minutes(sql`json_extract(n.value, '$.time')`)}) <= ${SAME_SESSION_MINUTES})))))`;
   const outcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${SUPERSEDED_REASON}, 'by', ${proposalId})`;
-  // Each designed op's outcome once this is written.
+  // Each designed op's outcome once this is written — the changes' too: the proposal's status follows both kinds.
   const after = sql`(SELECT CASE WHEN ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st
-    FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') = 'doc_workout')`;
+    FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust'))`;
   const status = sql`(SELECT CASE
       WHEN sum(st IN ('applied', 'declined', 'superseded')) < count(*) THEN coach_proposals.status
       WHEN sum(st = 'applied') = count(*) THEN 'approved'

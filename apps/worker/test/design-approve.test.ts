@@ -303,7 +303,7 @@ describe("approve, some of it", () => {
     const { id } = await designed([{ doc: calmDoc(), target: { kind: "new", date: later } }]);
     await db.update(coachProposals).set({ status: "approved" }).where(eq(coachProposals.id, id));
     const res = await approve(id);
-    expect(res).toEqual({ status: "approved", applied: [], refused: [], settled: [], remaining: [] });
+    expect(res).toEqual({ status: "approved", applied: [], changed: [], refused: [], settled: [], remaining: [] });
     expect(statements.filter(isWrite)).toEqual([]);
     expect(await designRows()).toEqual([]);
   });

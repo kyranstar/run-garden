@@ -49,6 +49,8 @@ describe("the prompt text", () => {
       "submit_review",
       // Task 7: the main coach's lever over a set — judge it, take a workout out.
       "read_set", "drop_workout",
+      // Task 8b: a change to a session already on the plan, inside the proposal.
+      "adjust_plan",
     ];
     expect([...PROMPT_TOOL_NAMES].sort()).toEqual([...spec].sort());
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);
@@ -199,7 +201,7 @@ describe("3A-B — the prompt agrees with the code", () => {
   it("B7: count what the plan holds; a programme session is its programme's; programme sessions count toward the week", () => {
     const main = roleBlock("main");
     expect(main).toContain("Count what the plan already holds — programme sessions, watch-plan runs, your earlier workouts — before adding any.");
-    expect(main).toContain("A programme session belongs to its programme: say how yours relates to it (instead of, before, after, alongside).");
+    expect(main).toContain("A programme session belongs to its programme: say how yours relates to it — instead of it (skip it with adjust_plan), before, after or alongside.");
     expect(main).toContain("with the programme's sessions counted toward the week's load");
     // Part A's pinned sentence stays whole.
     expect(main).toContain("Plan the sessions the week needs around the runs — usually 2–4, not one a day");
@@ -221,9 +223,22 @@ describe("3A-B — the prompt agrees with the code", () => {
     expect(line("validate_workout")).toContain("use it while you are still shaping a draft");
   });
 
-  it("B10: the revise path, in one line of the main block", () => {
+  it("B10: the revise path, in one line of the main block — a programme session points at adjust_plan (Task 8b)", () => {
     // A template's workout is revised as a Studio one is (round 2, B-M6).
-    expect(roleBlock("main")).toContain("a Studio or template workout is revised with target revise from get_workout's rev; a programme session can't be edited yet");
+    expect(roleBlock("main")).toContain(
+      "a Studio or template workout is revised with target revise from get_workout's rev; a programme session's content isn't yours to edit: skip or move it with adjust_plan, and design beside it.",
+    );
+    expect([SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r))].join(" ")).not.toMatch(/edited yet|isn't editable yet/);
+  });
+
+  it("Task 8b: adjust_plan — the main block's line, verbatim, and its line among the tools", () => {
+    expect(roleBlock("main")).toContain(
+      "To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or shorten a watch-plan run. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. Your new workout and the change go to the athlete together.",
+    );
+    expect(line("adjust_plan")).toContain("the main coach's — change a session already on the plan, inside your proposal: skip it, move it, or shorten a watch-plan run");
+    expect(line("adjust_plan")).toContain("never reviewed");
+    expect(roleBlock("designer")).not.toContain("adjust_plan");
+    expect(roleBlock("reviewer")).not.toContain("adjust_plan");
   });
 
   it("B11: each role states its turn budget from RUN_LIMITS — and the block without a budget stays the same text", () => {

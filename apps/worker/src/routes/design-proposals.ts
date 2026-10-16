@@ -5,9 +5,10 @@
  * answer 409 `not_yet` as they did before this task, and the draft is a 404 — nothing a designed proposal holds is
  * ever applied.
  *
- *   POST /api/coach/proposals/:id/approve  { opIds? } → { ok, status, applied, refused, settled, remaining }
- *        every op named (none: all) through the Studio's create / revise path, within one request's budget — the rest
- *        come back in `remaining`: call again with `{ opIds: remaining }` until it is empty
+ *   POST /api/coach/proposals/:id/approve  { opIds? } → { ok, status, applied, changed, refused, settled, remaining,
+ *        coachDrain? } every op named (none: all) — the workouts through the Studio's create / revise path, the changes
+ *        to sessions already on the plan through the thread coach's applier (Task 8b) — within one request's budget; the
+ *        rest come back in `remaining`: call again with `{ opIds: remaining }` until it is empty
  *                                          { edit: { opId, doc, date?, time? } } → the same, for that op alone, with
  *        the athlete's version of its draft (Edit before approve); refused as a Studio save is (422 `invalid_doc` with
  *        every issue, `past_date`, `run_unsupported`; 409 `stale_revision` with `rev`, `not_editable`; 404), nothing
@@ -15,7 +16,8 @@
  *   POST /api/coach/proposals/:id/decline  { opIds?, reason? } → { ok, status, declined, settled }
  *   GET  /api/coach/proposals/:id/ops/:opId/draft → the op's document as the builder loads one (`doc`, `derived`,
  *        `rev: null`) with its `target`, `date`, `time`, `outcome` and the proposal's `status`
- *   GET  /api/coach/proposals/:id (routes/coach.ts) → for a designed proposal, also its manifest `lines`
+ *   GET  /api/coach/proposals/:id (routes/coach.ts) → for a designed proposal, also its manifest: the workouts' `lines`
+ *        and its changes to sessions already on the plan (`changes`, Task 8b) — a change has no draft (404)
  *
  * 400 `unknown_op` (an op id the proposal doesn't hold) and `bad_request`; 409 `not_pending` with the status (a
  * proposal no longer the athlete's: expired — its day passed, as a thread proposal's — declined, approved, or never
@@ -40,7 +42,7 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, placeNamer } from "../services/design-manifest.js";
+import { docWorkoutLines, placeNamer, planChangeLines } from "../services/design-manifest.js";
 import { refusal } from "./workouts.js";
 
 type C = Context<AppContext>;
@@ -133,8 +135,13 @@ export async function designedDraft(c: C): Promise<Response> {
   return c.json(draft);
 }
 
-/** A designed proposal's manifest lines, for its one-proposal read (one statement: the places' names). */
+/** A designed proposal's manifest, for its one-proposal read: the workouts' lines (one statement, the places' names —
+ * none for a proposal of changes alone) and the changes' (none). */
 export async function designedLines(c: C, ops: unknown) {
   if (!coachDesignerEnabled(c.env)) return undefined;
-  return docWorkoutLines(designedOps(ops), await placeNamer(c.get("db"), c.get("userId")));
+  const workouts = designedOps(ops);
+  return {
+    lines: workouts.length > 0 ? docWorkoutLines(workouts, await placeNamer(c.get("db"), c.get("userId"))) : [],
+    changes: planChangeLines(Array.isArray(ops) ? ops : []),
+  };
 }

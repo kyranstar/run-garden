@@ -1,0 +1,262 @@
+/**
+ * adjust_plan(workoutId, change, why) — the main coach changes a session already on the plan inside its own proposal
+ * (Stage 3 Task 8b; the lead's ruling I6, Option A): skip it (a flare day), move it, or change a watch-plan run's length.
+ * Not a new authority: the thread coach proposes exactly these (`CoachOp` skip, move, adjust), and the athlete approves
+ * them; each change is applied at approval through coach-apply's own applier (design-approve.ts). The change and the
+ * workout it makes way for go to the athlete together — one proposal, one approval.
+ *
+ * ONE op per session per proposal, of kind `plan_adjust` (proposal-kinds.ts `PlanAdjustOp`): the thread coach's op,
+ * the coach's `why` (model-written: data, marked wherever it is shown back to a model), advisory `issues`, and the session
+ * as the plan held it — what the manifest's line says it was. A second change of the same session replaces the first.
+ * Never reviewed: it is a plan change, not a document (the finish's "every op reviewed" rule counts designed workouts
+ * only). The call's tool-use id is on its op: a replay finds it and answers what it stored, writing nothing.
+ *
+ * REFUSED, each teachable, nothing written:
+ *  - a session that isn't the athlete's or is off the plan (`not_found`), or can't change by coach-apply's own rule —
+ *    done, skipped, missed, its day gone, under way (`not_changeable`; `whyNotActionable`, the applier's words);
+ *  - a length for a session its build decides (ruling 3-R13): a programme or on-demand session is skipped or moved,
+ *    never re-timed (`programme_session`: skip it and propose the shorter workout — for a set, brief it); a Studio or
+ *    template workout is revised (`revise_instead`);
+ *  - the athlete's race skipped or moved (`race_day`: the thread coach's `never_skip_race`, and the applier refuses to
+ *    move a race);
+ *  - a move into the past (`past_date`) or past the plan this run reads (`beyond_horizon`: design-context.ts
+ *    `horizonDays`), and a move or length that changes nothing (`no_change`);
+ *  - a session a workout of this proposal revises (`target_taken`: propose_workout refuses the other way round);
+ *  - a proposal already with the athlete (`proposal_pending`) or closed, a restore under way.
+ *
+ * Two statements: the athlete with the session, the proposal and the restore marker in one read, and the proposal's
+ * guarded upsert (propose_workout's own: never a pending proposal, never one another write changed meanwhile).
+ */
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { accountState, coachProposals, plannedWorkouts } from "@rg/database";
+import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle } from "@rg/domain";
+import { whyNotActionable } from "../coach-apply.js";
+import { horizonDays } from "../design-context.js";
+import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
+import { describeChange, isDocWorkoutOp, isPlanAdjustOp, planAdjustId, type PlanAdjustOp, type PlanChange, type PlanRowSnapshot } from "../proposal-kinds.js";
+import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
+import { designProposalId, upsertProposal, type DocWorkoutOp } from "./propose.js";
+import { dateField, DATE_SCHEMA, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
+import type { DesignTool, ToolContext, ToolErr, ToolOk } from "./types.js";
+
+const WHY_MAX = 300;
+const REASON_MAX = 200;
+const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** A length the athlete can play: five minutes to five hours. */
+const MINUTES = { min: 5, max: 300 } as const;
+
+const change = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("skip"), reason: z.string().trim().min(1).max(REASON_MAX) }).strict(),
+  z.object({ kind: z.literal("move"), toDate: dateField, toTime: z.string().regex(CLOCK, "must be a time like 17:30").optional() }).strict(),
+  z.object({ kind: z.literal("adjust"), durationMinutes: z.number().int().min(MINUTES.min).max(MINUTES.max) }).strict(),
+]);
+const input = z.object({ workoutId: z.string().trim().min(1).max(120), change, why: z.string().trim().min(1).max(WHY_MAX) }).strict();
+
+/** The session as the read gives it. */
+interface Row {
+  id: string;
+  date: string;
+  time: string | null;
+  title: string;
+  category: string;
+  subtype: string | null;
+  origin: string | null;
+  completion: string;
+  archived: string | null;
+  sourceSec: number | null;
+  fallbackSec: number | null;
+  swid: string | null;
+  sidp: string | null;
+  spid: string | null;
+  lvd: string | null;
+}
+
+const minutesOf = (r: Row): number | null => {
+  const sec = r.sourceSec ?? r.fallbackSec;
+  return typeof sec === "number" ? Math.round(sec / 60) : null;
+};
+
+/** The session as the manifest says it was. */
+function snapshotOf(r: Row): PlanRowSnapshot {
+  return {
+    date: r.date,
+    time: r.time ?? "",
+    title: humanizeWorkoutTitle(r.title, r.category, r.subtype),
+    minutes: minutesOf(r),
+    category: r.category,
+    origin: r.origin,
+    onWatch: hasWatchAddress({ sourceWorkoutId: r.swid, sourceIdInPlan: r.sidp, sourceProgramId: r.spid, lastVerifiedCorosDate: r.lvd }),
+  };
+}
+
+/** For a set the main coach briefs the shorter workout; for now or later today it proposes it. */
+const shorterWorkout = (ctx: ToolContext): string =>
+  ctx.run.scope.kind === "week" || ctx.run.scope.kind === "next_n"
+    ? "Skip it with adjust_plan and brief the shorter workout in plan_set; both go to the athlete together."
+    : "Skip it with adjust_plan and propose the shorter workout with propose_workout; both go to the athlete together.";
+
+/** Why this change can't be made to this session, by the applier's and the thread coach's own rules; null when it can. */
+function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>, today: string, workoutId: string): ToolErr | null {
+  if (!row || row.archived) {
+    return refuse("not_found", `No planned session of the athlete's has id ${JSON.stringify(workoutId)}.`, "Use an id from read_plan.");
+  }
+  const why = whyNotActionable({ archivedAt: row.archived, completionState: row.completion, effectiveDate: row.date }, today);
+  if (why !== undefined) {
+    return refuse("not_changeable", `That session ${why}.`, "Change a session still to come — read_plan lists them.");
+  }
+  if (c.kind === "skip" && row.category === "race") {
+    return refuse("race_day", `${dayLabel(row.date)} holds the athlete's race: a skip would take it off the plan.`, "Leave the race on the plan and design around it; the athlete decides about their race.");
+  }
+  if (c.kind === "move" && row.category === "race") {
+    return refuse("race_day", "A race can't be moved: its day is the race's.", "Leave the race where it is and design around it.");
+  }
+  if (c.kind === "adjust") {
+    // Ruling 3-R13: a session the app builds has its build's length.
+    if (appAuthoredRow({ origin: row.origin })) {
+      return docOriginRow({ origin: row.origin })
+        ? refuse("revise_instead", "A Studio or template workout's length is its document's.", "Revise it with propose_workout's revise target.")
+        : refuse("programme_session", "A programme session can't be re-timed.", shorterWorkout(ctx));
+    }
+    if (minutesOf(row) === c.durationMinutes) {
+      return refuse("no_change", `That session is already ${c.durationMinutes} min.`, "Leave it as it is, or choose another length.");
+    }
+  }
+  if (c.kind === "move") {
+    if (c.toDate < today) return refuse("past_date", `${c.toDate} is before today (${today}) where the athlete is.`, "Move it to today or a later day.");
+    const last = addDays(today, horizonDays(ctx.run.scope.kind, ctx.run.scope.n ?? 3) - 1);
+    if (c.toDate > last) return refuse("beyond_horizon", `${c.toDate} is past the plan this run reads (to ${last}).`, `Move it to a day up to ${last}.`);
+    if (c.toDate === row.date && (c.toTime ?? row.time) === row.time) {
+      return refuse("no_change", `That session is already on ${c.toDate}${row.time ? ` at ${row.time}` : ""}.`, "Leave it as it is, or choose another day or time.");
+    }
+  }
+  return null;
+}
+
+/** What a stored change answers: the change as the manifest says it, the coach's words marked. */
+function storedAnswer(proposalId: string, op: PlanAdjustOp, o: { replaced?: boolean } = {}): ToolOk {
+  const words = describeChange(op);
+  return {
+    data: {
+      stored: true,
+      proposalId,
+      opId: op.id,
+      ...(o.replaced ? { replaced: true } : {}),
+      change: { date: words.date, ...(words.time ? { time: words.time } : {}), summary: words.summary, was: words.was, effect: words.effect },
+      why: untrusted(op.why),
+      issues: op.issues,
+      next: "It goes to the athlete with your proposal, never reviewed: the athlete approves or declines it with the rest.",
+    },
+    summary: `Plan change: ${words.title}${op.op.kind === "move" ? "" : ` (${dayLabel(op.date)})`}`,
+    receipt: { proposalId, opId: op.id, workoutId: op.op.workoutId, change: op.op.kind },
+  };
+}
+
+export const adjustPlan: DesignTool = {
+  name: "adjust_plan",
+  description:
+    "The main coach: change a session already on the plan, inside your proposal — skip it, move it, or change a watch-plan run's length (a programme session is skipped or moved, never re-timed; a Studio workout is revised with propose_workout). One change per session; a second replaces it. Never reviewed: it goes to the athlete with your proposal.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      workoutId: { type: "string", description: "The session's id (read_plan)." },
+      change: {
+        anyOf: [
+          {
+            type: "object",
+            properties: { kind: { const: "skip" }, reason: { type: "string", maxLength: REASON_MAX, description: "Why it comes off, for the athlete." } },
+            required: ["kind", "reason"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            properties: { kind: { const: "move" }, toDate: DATE_SCHEMA, toTime: { type: "string", description: "HH:MM, the athlete's local time (optional)." } },
+            required: ["kind", "toDate"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            properties: { kind: { const: "adjust" }, durationMinutes: { type: "integer", minimum: MINUTES.min, maximum: MINUTES.max } },
+            required: ["kind", "durationMinutes"],
+            additionalProperties: false,
+          },
+        ],
+      },
+      why: { type: "string", maxLength: WHY_MAX, description: "Why, in one plain line the athlete reads beside the change." },
+    },
+    required: ["workoutId", "change", "why"],
+    additionalProperties: false,
+  },
+  statementCost: 2,
+  roles: ["main"],
+  async run(ctx, raw) {
+    const p = parseAct(input, raw, "workoutId, change ({ kind: skip, reason } or { kind: move, toDate, toTime? } or { kind: adjust, durationMinutes }) and why");
+    if (isErr(p)) return p;
+    const mainRunId = mainRunIdOf(ctx);
+    if (ctx.run.role !== "main" || !mainRunId) return refuse("not_for_role", "Only the main coach changes the plan.", "Say in your finish line what you would change.");
+    const proposalId = designProposalId(mainRunId);
+    const pw = plannedWorkouts;
+    const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
+      row: sql`(select json_object('id', ${pw.id}, 'date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'title', ${pw.title},
+          'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState},
+          'archived', ${pw.archivedAt}, 'sourceSec', ${pw.sourceEstimatedDurationSeconds}, 'fallbackSec', ${pw.fallbackEstimatedDurationSeconds},
+          'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate})
+        from ${pw} where ${pw.id} = ${p.workoutId} and ${pw.userId} = ${ctx.userId})`,
+      propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
+      propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
+      restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
+    });
+    const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
+    const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
+    const changes = all.filter(isPlanAdjustOp);
+
+    // A replay of this very call: what it stored — or, when a later change of the session replaced it, that.
+    if (ctx.toolUseId) {
+      const stored = changes.find((c) => c.toolUseId === ctx.toolUseId);
+      if (stored) return storedAnswer(proposalId, stored);
+      if (changes.some((c) => c.replaces?.includes(ctx.toolUseId!))) {
+        return { data: { stored: true, proposalId, superseded: true, note: "a later change of this session replaced this one" }, summary: "An earlier change, already replaced" };
+      }
+    }
+
+    const status = typeof extra.propStatus === "string" ? extra.propStatus : null;
+    if (status === "pending") return refuse("proposal_pending", "Your proposal is already with the athlete.", "Call finish.");
+    if (status !== null && !(OPEN_PROPOSAL_STATUSES as readonly string[]).includes(status)) {
+      return refuse("proposal_closed", `This design's proposal is already ${status}.`, "Finish: say what you would change, and the athlete can ask again.");
+    }
+    if (typeof extra.restoring === "string" && extra.restoring.length > 0) {
+      return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the change can be asked for again once the restore is done.");
+    }
+    const row = parsedJson(extra.row) as Row | null;
+    const refused = refusalOf(ctx, row, p.change, athlete.today, p.workoutId);
+    if (refused) return refused;
+    if (all.some((o) => isDocWorkoutOp(o) && (o as DocWorkoutOp).target.kind === "revise" && (o as DocWorkoutOp & { target: { workoutId: string } }).target.workoutId === p.workoutId)) {
+      return refuse("target_taken", "A workout of this proposal already revises that session.", "Change the revision instead, or leave the session as it is.");
+    }
+
+    // The thread coach's own op, as its schema stores one.
+    const op = coachOpSchema.parse({ ...p.change, workoutId: p.workoutId }) as PlanChange;
+    const snapshot = snapshotOf(row!);
+    const at = ctx.now.toISOString();
+    const toolUseId = ctx.toolUseId ?? `call-${at}`;
+    const id = planAdjustId(p.workoutId);
+    const before = changes.find((c) => c.id === id);
+    const next: PlanAdjustOp = {
+      kind: "plan_adjust",
+      id,
+      op,
+      why: p.why,
+      issues: op.kind === "adjust" && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : [],
+      date: snapshot.date,
+      row: snapshot,
+      toolUseId,
+      ...(before ? { replaces: [...(before.replaces ?? []), before.toolUseId] } : {}),
+      at,
+    };
+    const ops = before ? all.map((o) => (o === before ? next : o)) : [...all, next];
+    if (!(await upsertProposal(ctx, proposalId, ops, opsText, at))) {
+      return refuse("proposal_changed", "The proposal changed while the change was being stored.", "Call adjust_plan again with the same change.");
+    }
+    return storedAnswer(proposalId, next, { replaced: !!before });
+  },
+};
