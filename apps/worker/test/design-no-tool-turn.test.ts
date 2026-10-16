@@ -135,7 +135,7 @@ describe("the main run: a turn with no tool", () => {
     expect(newest(requests.at(-1)!)).toContain(NO_TOOL_NUDGE);
     // What the loop does, said as it is (round 2, A-M5 and B-M1) — the shared prompt's own line.
     expect(NO_TOOL_NUDGE).toBe(
-      "A turn without a tool call shows the athlete nothing. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).",
+      "A turn without a tool call does nothing for the athlete. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).",
     );
     expect(SHARED_PROMPT).toContain(NO_TOOL_NUDGE);
     // Pending through the finish's own promotion, the run's proposal set, no stop note.

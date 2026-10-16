@@ -159,7 +159,7 @@ describe("3A-B — the prompt agrees with the code", () => {
 
   it("B1: a turn with no tool call — the line the loop's nudge agrees with, made true (round 2, A-M5 and B-M1)", () => {
     expect(SHARED_PROMPT).toContain(
-      "A turn without a tool call shows the athlete nothing. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).",
+      "A turn without a tool call does nothing for the athlete. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).",
     );
     expect(SHARED_PROMPT).not.toContain("nothing you drafted reaches the athlete");
     // The reviewer has no finish: the shared line names its end.

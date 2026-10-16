@@ -520,7 +520,7 @@ export interface Judged {
 
 /** What the coach's refusal of a move today's check closes adds when no check is logged today (fix wave 3A round 2,
  * B-M8): a logged check may open it, and the main coach is the one who asks. */
-export const ASK_FOR_CHECK = 'if no check is logged today, the main coach may ask_athlete({ check: "condition" })';
+export const ASK_FOR_CHECK = 'if no check is logged today, the main coach may ask_athlete({ check: "condition", why })';
 
 /** Today, with an active profile whose check isn't answered yet (the validator's own rule: a value, or feeling off): a
  * gate that reads it may open once it is. */

@@ -15,7 +15,9 @@
  * from its plan's rounds); a set's designer reads its siblings before it drafts, so it can vary from the days either
  * side (its parent's proposal; its own workout marked `yours`, and a redo's designer the first version it redoes marked
  * `firstVersion`); a reviewer reads the set of the draft it reviews (the proposal it reviews for; the workout under
- * review marked `underReview`, and shown as the draft under review — a revision, not the version the proposal holds).
+ * review marked `underReview`, and shown as the draft under review — a revision, not the version the proposal holds; a
+ * redo's reviewer sees the first version the redo would replace marked `replacedBy`, and the set judged — hard days in a
+ * row, the moves repeated, the combined balance — with the redo in its place, never both).
  *
  * Small by contract: one statement (the proposal), and an answer within RESULT_BUDGET_BYTES — the details give way, in
  * order, before any workout does (the intent sentences, then the parts, then the moves, then the must-fix wording, then
@@ -57,7 +59,8 @@ const DETAILS: readonly Detail[] = [0, 1, 2, 3, 4, 5, 6];
 type View =
   | { role: "main"; keyOf: ReadonlyMap<string, string> }
   | { role: "designer"; yours: string; firstVersion: string | null }
-  | { role: "reviewer"; underReview: string | null; toolUseId: string | null };
+  /** `replaced`: a redo's reviewer's — the first version the redo under review would replace (its designer's state). */
+  | { role: "reviewer"; underReview: string | null; toolUseId: string | null; replaced: string | null };
 
 /** The op as this view sees it: for a reviewer, the workout under review as the draft it reviews (its candidate, while
  * a revision is under review — read with the op, no statement more), its review not in yet. */
@@ -73,7 +76,7 @@ function asSeen(op: DocWorkoutOp, view: View): DocWorkoutOp {
 function marks(opId: string, view: View): Record<string, unknown> {
   if (view.role === "main") return { key: view.keyOf.get(opId) ?? null };
   if (view.role === "designer") return { yours: opId === view.yours, ...(view.firstVersion !== null && opId === view.firstVersion ? { firstVersion: true } : {}) };
-  return { underReview: opId === view.underReview };
+  return { underReview: opId === view.underReview, ...(view.replaced !== null && opId === view.replaced ? { replacedBy: view.underReview } : {}) };
 }
 
 /** A workout's parts, by purpose, in order. */
@@ -169,7 +172,7 @@ function changeOf(c: PlanAdjustOp): Record<string, unknown> {
 export const readSet: DesignTool = {
   name: "read_set",
   description:
-    "The set so far (a week or the next few), for the main coach, its designers and reviewers: each workout in date order with its op id, where it goes, parts, moves, derived fields and review; the combined balance; hard days in a row; the moves repeated on consecutive days; and the main coach's changes to sessions already planned, apart.",
+    "The set so far (a week or the next few), for the main coach, its designers and reviewers: each workout in date order with its op id, where it goes, parts, moves, derived fields and review; the combined balance; hard days in a row; the moves repeated on consecutive days; the main coach's changes to planned sessions, apart. Marks: yours, firstVersion, underReview, replacedBy.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   statementCost: 1,
   roles: ["main", "designer", "reviewer"],
@@ -190,19 +193,28 @@ export const readSet: DesignTool = {
       view = { role: "designer", yours: ctx.run.id, firstVersion: ctx.replaces ?? null };
       proposalId = ctx.run.parentId ? designProposalId(ctx.run.parentId) : null;
     } else {
-      view = { role: "reviewer", underReview: ctx.reviewOf?.designerRunId ?? null, toolUseId: ctx.reviewOf?.toolUseId ?? null };
+      view = { role: "reviewer", underReview: ctx.reviewOf?.designerRunId ?? null, toolUseId: ctx.reviewOf?.toolUseId ?? null, replaced: null };
       proposalId = ctx.reviewOf?.proposalId ?? null;
     }
     if (!proposalId) return answer({ source, now: ctx.now, missing: ["no set to read: this run belongs to none"], data: EMPTY, summary: "No set to read" });
-    const read = await readSetProposal(ctx.db, ctx.userId, proposalId);
+    // A reviewer's read also reads the set's designers (in the same statement): the one under review may be a redo.
+    const mainRunId = proposalId.startsWith("dp-") ? proposalId.slice(3) : null;
+    const read = await readSetProposal(ctx.db, ctx.userId, proposalId, view.role === "reviewer" && mainRunId ? { designersOf: mainRunId } : {});
+    if (view.role === "reviewer") {
+      const under = view.underReview;
+      view = { ...view, replaced: read.designers.find((d) => d.runId === under)?.replaces ?? null };
+    }
     const ops = read.ops.map((op) => asSeen(op, view));
     const flags = read.flags;
     const none = ops.length === 0 ? [view.role === "main" ? "no workout in the set's proposal yet" : "no workout of the set is proposed yet"] : [];
     const ordered = [...ops].sort((a, b) => (a.date === b.date ? (a.time ?? "").localeCompare(b.time ?? "") : a.date < b.date ? -1 : 1));
-    const pairs = hardPairs(ordered);
-    const repeats = repeatsOnConsecutiveDays(ordered);
+    // The set as it would be: a redo's draft in its first version's place, never both.
+    const replaced = view.role === "reviewer" ? view.replaced : null;
+    const judged = ordered.filter((op) => opIdOf(op) !== replaced);
+    const pairs = hardPairs(judged);
+    const repeats = repeatsOnConsecutiveDays(judged);
     const rest = {
-      combined: combinedOf(ordered),
+      combined: combinedOf(judged),
       hardDaysInARow: { count: pairs.length, pairs, counts: "the set's own workouts that develop or peak, on consecutive days (read_plan for the runs and sessions around them)" },
       notes: flags.slice(-NOTES_SHOWN).map((f) => untrusted(cut(f, NOTE_MAX))),
       planChanges: read.changes.map(changeOf),

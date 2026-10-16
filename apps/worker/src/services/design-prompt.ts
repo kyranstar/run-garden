@@ -89,7 +89,7 @@ export function markUntrusted(from: UntrustedSource, text: string): string {
  * here, so the prompt and the nudge can't disagree (fix wave 3A round 2, A-M5 and B-M1).
  */
 export const NO_TOOL_LINE =
-  "A turn without a tool call shows the athlete nothing. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).";
+  "A turn without a tool call does nothing for the athlete. If your next turn calls no tool either, your run ends there, and only what was already reviewed is proposed. To ask, call ask_athlete. To end, call finish (a reviewer ends with submit_review).";
 
 export const SHARED_PROMPT = `You are the coach in Run Garden, a training app built for one athlete. The coach designs workouts — strength, mobility, yoga, condition care, or a mix — from the app's exercise library, each with an intent and a reason for every part, and proposes them; the role block below says which part is yours — the main coach, one workout's designer, or the independent reviewer. Runs stay on the plan as the watch plan sets them: the coach designs around them, never a run (the app can't play a run document yet). Nothing changes until the athlete taps Approve.
 

@@ -497,7 +497,9 @@ export interface SetDesigner {
  * staying; a workout with no review is left out, and a line says which; the days of designers that never got a draft
  * in — never started, or stopped before proposing (one that finished has its own line already) — are named; with
  * `today` (an expiry), a workout dated before it is left out, and a line says which; the stop's note goes in the
- * proposal's lines. A workout a redo was designing (a redo's designer names its first version's: `replaces`) is
+ * proposal's lines — never a day they already name ("No workout for …:", the set's own outcome), nor a redo's
+ * designer's (its key's first version is proposed). A workout a redo was designing (a redo's designer names its first
+ * version's: `replaces`) is
  * proposed in ONE version: the redo's when it was reviewed and is the better by Task 6's rule (`redoKept`; a tie to the
  * redo), else the first — the redo's draft going without a line, its workout's day still holding the first version.
  * The designers — the redos and the days not designed — come from the proposal's own read, every designer of the main
@@ -553,11 +555,13 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
   const undesigned = [
     ...new Set(
       designers
-        .filter((d): d is SetDesigner & { day: string } => d.day !== null && d.status !== "finished" && !ops.some((op) => op.by?.runId === d.runId))
+        // A redo's designer is never named: its key's first version is proposed.
+        .filter((d): d is SetDesigner & { day: string } => d.day !== null && d.replaces === null && d.status !== "finished" && !ops.some((op) => op.by?.runId === d.runId))
         .map((d) => d.day),
     ),
   ]
-    .filter((day) => !kept.some((op) => op.date === day) && !(today && day < today))
+    // A day the proposal's lines already say has no workout (the set's outcome said why) is not named again.
+    .filter((day) => !kept.some((op) => op.date === day) && !(today && day < today) && !flags.some((f) => f.startsWith(noWorkoutFor(day))))
     .sort();
   const lines = [
     note,

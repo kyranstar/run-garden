@@ -510,6 +510,50 @@ describe("an expiry proposes the same, whoever finds it (round 2, A-I1)", () => 
   });
 });
 
+describe("a stop names a day once (round-2 minors)", () => {
+  it("a set settled with a failed designer, then a stop: the day its proposal already says has no workout is not named again", async () => {
+    const [thu, fri, sat] = [day(-1), day(-2), day(-3)];
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const { deps } = scripted([
+      t(planSet([brief("thu", thu), brief("fri", fri), brief("sat", sat)])),
+      ...designed("Thursday trunk", thu),
+      { ...turn([]), stopReason: "refusal" },
+      ...designed("Saturday reset", sat),
+      // The main run resumes with the set's outcome, then its next call finds no key.
+      { ok: false, kind: "no_key", reason: "no_key" },
+    ]);
+    await drive(a.userId, mainId, deps);
+    expect((await runRow(mainId)).status).toBe("failed");
+    const p = (await proposalOf(mainId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday trunk", "Saturday reset"]);
+    expect(p.flags.filter((f) => f.includes(dayWords(fri)))).toHaveLength(1);
+    expect(p.flags[0]).toMatch(new RegExp(`^No workout for ${dayWords(fri)}:`));
+    expect(p.flags).not.toContainEqual(expect.stringMatching(/^Not designed before the stop/));
+  });
+
+  it("a redo's designer that never designed is not named: its key's first version is proposed", async () => {
+    const [thu, sat, sun] = [day(-1), day(-3), day(-4)];
+    const a = await athlete();
+    const mainId = await weekRun(a.userId);
+    const { deps } = scripted([
+      t(planSet([brief("thu", thu), brief("sat", sat)])),
+      ...designed("Thursday trunk", thu),
+      ...designed("Saturday reset", sat),
+      // A redo of Saturday's, briefed for Sunday; its designer fails, and the main run then finds no key.
+      t(planSet([{ ...brief("sat", sun), note: "Move it a day: Saturday is the long run." }])),
+      { ...turn([]), stopReason: "refusal" },
+      { ok: false, kind: "no_key", reason: "no_key" },
+    ]);
+    await drive(a.userId, mainId, deps);
+    const p = (await proposalOf(mainId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops.map((o) => o.doc.title)).toEqual(["Thursday trunk", "Saturday reset"]);
+    expect(p.flags).not.toContainEqual(expect.stringMatching(/^Not designed before the stop/));
+  });
+});
+
 describe("a promote that loses to a late verdict reads again before it gives up (round 2, A-M3)", () => {
   it("an expiry: the proposal is read again and proposed, the verdict kept — never closed — with one line for a day run whose workout is for a later day (A-M7)", async () => {
     const a = await athlete();
