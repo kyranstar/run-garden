@@ -1247,6 +1247,11 @@ describe("3A-B — a set's designers and reviewers read the set so far (B8, M13)
     expect(count).toBe(1);
     const [w] = data(result).workouts as Array<Record<string, unknown>>;
     expect(w).toMatchObject({ underReview: true, title: { untrusted: true, text: "Tuesday hips, shorter rests" }, time: "18:00", minutes: 25, review: null });
+    // Only the reviewer of that draft sees it: one whose draft is the version held sees the version held.
+    const held1 = { ...reviewOf, toolUseId: "t1", round: 1 };
+    const first = data((await call("read_set", ctxOf(reviewer, { reviewOf: held1 }), {})).result).workouts[0] as Record<string, unknown>;
+    expect(first).toMatchObject({ underReview: true, title: { untrusted: true, text: "Tuesday hips" }, minutes: 30 });
+    expect(first).not.toHaveProperty("time");
     // The designer, by contrast, reads the version its proposal holds, with its review.
     const mine = data((await call("read_set", ctxOf(designer), {})).result).workouts[0] as Record<string, unknown>;
     expect(mine).toMatchObject({ yours: true, title: { untrusted: true, text: "Tuesday hips" }, minutes: 30, review: { mustFixCount: 1 } });
