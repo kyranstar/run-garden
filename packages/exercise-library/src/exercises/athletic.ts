@@ -469,7 +469,7 @@ export const ATHLETIC = defineExercises([
     contraction: ["isometric"],
     muscles: { primary: ["quads"], secondary: ["glute-max", "glute-med", "adductors"] },
     purposes: ["strength"],
-    tags: ["ski", "single-leg"],
+    tags: ["ski", "single-leg", "isometric-hold"],
     themes: ["skiPrep"],
     easier: ["wallSit"],
     text: {
@@ -697,7 +697,7 @@ export const ATHLETIC = defineExercises([
     contraction: ["isometric"],
     muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["glute-max", "glute-med", "serratus-anterior"] },
     purposes: ["strength", "activation"],
-    tags: ["anti-rotation", "ski"],
+    tags: ["anti-rotation", "ski", "isometric-hold"],
     themes: ["carryDay", "skiPrep", "athleticBase"],
     easier: ["wallPallofHold"],
     harder: ["bandPallofPress"],

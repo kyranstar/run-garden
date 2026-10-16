@@ -97,7 +97,8 @@ describe("the lower-leg records", () => {
     expect(label("toe-raise")).toBe("Shin raises");
     for (const id of RAISES) expect(rec(id).patterns, id).toEqual(["calf-raise"]);
     expect(rec("tibialisRaise").patterns).toEqual(["toe-raise"]);
-    expect(EXERCISES.filter((e) => e.patterns.includes("calf-raise")).map((e) => e.id).sort()).toEqual([...RAISES].sort());
+    // And the bent-knee heel drop that came later (lower-limb-gym.ts), the bent-knee raise's next rung.
+    expect(EXERCISES.filter((e) => e.patterns.includes("calf-raise")).map((e) => e.id).sort()).toEqual([...RAISES, "bentKneeHeelDrop"].sort());
     expect(EXERCISES.filter((e) => e.patterns.includes("toe-raise")).map((e) => e.id)).toEqual(["tibialisRaise"]);
   });
 

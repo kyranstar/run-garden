@@ -97,7 +97,7 @@ export const EXTRA_CORE = defineExercises([
     contraction: ["isometric"],
     muscles: { primary: ["obliques", "transverse-abdominis"], secondary: ["serratus-anterior", "deltoids", "glute-med"] },
     purposes: ["activation", "strength"],
-    tags: ["anti-rotation"],
+    tags: ["anti-rotation", "isometric-hold"],
     themes: ["carryDay", "athleticBase"],
     harder: ["bandPallofPress"],
     text: {

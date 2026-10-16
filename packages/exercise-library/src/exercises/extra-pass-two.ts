@@ -90,7 +90,7 @@ export const EXTRA_PASS_TWO = defineExercises([
     name: "Seated hip hinge",
     family: "hingePattern",
     patterns: ["hinge", "mobility"],
-    regions: ["hips", "hamstrings"],
+    regions: ["hips", "hamstrings", "glutes"],
     roles: ["warmup", "mobility"],
     equipment: { oneOf: ["chair", "bench"] },
     position: "seated",

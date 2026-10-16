@@ -201,7 +201,7 @@ export const JAW_NECK = defineExercises([
     dose: { type: "reps", range: [5, 8], secsPerRep: 8 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
-    tags: [],
+    tags: ["isometric-hold"],
     contraction: ["isometric"],
     muscles: { primary: ["suprahyoids"], secondary: ["pterygoids"] },
     purposes: ["condition-care"],

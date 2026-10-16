@@ -157,8 +157,9 @@ export const LOWER_LEG = defineExercises([
     purposes: ["strength"],
     tags: ["running"],
     themes: [],
-    // No harder link: the library has no single-leg or loaded bent-knee raise yet, and the straight-knee rungs (the heel
-    // drop, the single-leg raise) load the big calf muscle instead of this one. Its family offers them as other versions.
+    // Its harder rung is the bent-knee heel drop (lower-limb-gym.ts): the straight-knee rungs (the heel drop, the
+    // single-leg raise) load the big calf muscle instead of this one. Its family offers them as other versions.
+    harder: ["bentKneeHeelDrop"],
     text: {
       summary: "Knees softly bent and kept bent, rise onto the balls of both feet, then lower slowly.",
       setup: [

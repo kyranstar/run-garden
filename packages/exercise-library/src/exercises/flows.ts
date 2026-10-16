@@ -55,7 +55,7 @@ export const FLOWS = defineExercises([
     contraction: ["isotonic"],
     muscles: { primary: ["thoracic-extensors"], secondary: ["rhomboids", "obliques", "serratus-anterior", "lats"] },
     purposes: ["mobility", "warmup"],
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "thoracic"],
     themes: ["deskUnwind", "gentleMobility", "upperBackNeck"],
     text: {
       summary: "Cat-cow, thread the needle and an open reach, flowing slowly on all fours.",

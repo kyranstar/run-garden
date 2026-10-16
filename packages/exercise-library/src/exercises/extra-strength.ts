@@ -100,7 +100,7 @@ export const EXTRA_STRENGTH = defineExercises([
     contraction: ["isometric"],
     muscles: { primary: ["quads"], secondary: ["glute-max", "adductors"] },
     purposes: ["strength"],
-    tags: ["ski"],
+    tags: ["ski", "isometric-hold"],
     themes: ["skiPrep"],
     providers: { coros: { key: "T1231", confidence: "exact", method: "curated" } }, // COROS: Wall Sit
     harder: ["wallSitSingleLegShift"],
@@ -139,7 +139,7 @@ export const EXTRA_STRENGTH = defineExercises([
     contraction: ["isometric"],
     muscles: { primary: ["quads", "glute-max"], secondary: ["adductors", "glute-med"] },
     purposes: ["strength"],
-    tags: ["single-leg", "ski"],
+    tags: ["single-leg", "ski", "isometric-hold"],
     themes: ["hipsPosture", "skiPrep"],
     harder: ["bwSplitSquat"],
     text: {
@@ -412,7 +412,7 @@ export const EXTRA_STRENGTH = defineExercises([
     contraction: ["isometric"],
     muscles: { primary: ["rhomboids", "middle-traps"], secondary: ["lats", "lower-traps", "biceps"] },
     purposes: ["activation", "strength"],
-    tags: ["desk-relief"],
+    tags: ["desk-relief", "isometric-hold"],
     themes: ["upperBackNeck", "deskUnwind"],
     harder: ["towelDoorRow"],
     text: {
