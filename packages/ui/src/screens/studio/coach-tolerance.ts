@@ -229,10 +229,13 @@ function toChange(v: unknown): DesignChangeLineDto | null {
   };
 }
 
-/** A set's other row on the plan: one with a day and a title to say; its time and minutes when they can be read. */
+/**
+ * A set's other row on the plan: one with a day and a title to say — a rest day with none says "Rest" — its time and
+ * minutes when they can be read.
+ */
 function toContextRow(v: unknown): DesignContextRowDto | null {
   const c = record(v);
-  const title = words(c?.title);
+  const title = words(c?.title) ?? (c?.kind === "rest" ? "Rest" : null);
   if (!c || !isDay(c.date) || !title) return null;
   const time = typeof c.time === "string" && /^\d{1,2}:\d{2}/.test(c.time) ? c.time : null;
   const minutes = num(c.minutes);

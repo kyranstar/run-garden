@@ -93,6 +93,12 @@ describe("a suggestion's new fields, read tolerantly (§2.8, §2.9)", () => {
     ]);
     expect("context" in toProposal({ id: "dp-1", status: "pending", lines: [] })).toBe(false);
   });
+
+  it("a rest day the plan holds with no title of its own says Rest", () => {
+    const read = toProposal({ id: "dp-1", status: "pending", lines: [], context: [{ date: "2026-10-18", time: null, kind: "rest", title: "", minutes: null }] });
+    expect(read.context).toEqual([{ date: "2026-10-18", time: null, kind: "rest", title: "Rest", minutes: null }]);
+    expect(contextLine(read.context![0]!)).toBe("Sun · Rest · on your plan");
+  });
 });
 
 describe("the other open suggestions, read tolerantly (R2, §2.7)", () => {
