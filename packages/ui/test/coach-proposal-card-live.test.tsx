@@ -564,6 +564,14 @@ describe("fix wave 3B: the workout's line (M1, M2, M3, M7, M8, M10)", () => {
     expect(document.querySelector(".coach-pc-outcome")!.textContent).toBe("✓ On your plan for Thu 6 PM (your version)");
   });
 
+  it("a time today that has passed since (past_time): 'That time has passed.' — still open, to approve on another time or decline", async () => {
+    serve({ reads: [pending([line("op-a", { outcome: { status: "refused", at: "", error: "past_time", why: "18:00 today has passed." } })], [], "pending")] });
+    mount();
+    await until(() => text().includes("Not added: That time has passed."), "the refusal");
+    expect(text()).not.toContain("18:00 today has passed.");
+    expect(button("Approve")).not.toBeNull();
+  });
+
   it("once applied, the line's day and time are the plan's — where the approve put it — not the coach's proposal", async () => {
     serve({ reads: [pending([applied("op-a", { time: "08:00" }, { time: "10:30" })], [], "approved")] });
     mount();

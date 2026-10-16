@@ -148,6 +148,33 @@ describe("a refused call is a neutral note (B-I4)", () => {
     expect(detailOf(coded!).flatMap((s) => s.rows)).toEqual(expect.arrayContaining([{ key: "Why not", value: "Invalid doc" }]));
   });
 
+  it("Part S's own shape: the refusal nested, its why in plain words — never a document path, a code, or the model's fix", () => {
+    const [line] = runLines([
+      ev(9, "note", "Adjusted the draft.", {
+        tool: "propose_workout",
+        input: { doc: { title: "Hips and back, gently" }, target: { kind: "new", date: "2026-10-16" } },
+        ok: false,
+        error: "invalid_doc",
+        refusal: {
+          error: "invalid_doc",
+          why: "parts[0].items[0].libraryId (unknown_exercise): There's no move \"notAMoveAnywhere\" in the library.; parts[0].items[1].dose (bad_dose): Two sets at most.",
+          fix: "Find the move with search_library and use an id it shows",
+        },
+      }),
+    ]);
+    expect(line!.glyph).toBe("neutral");
+    const rows = detailOf(line!).flatMap((s) => s.rows);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { key: "Workout", value: "Hips and back, gently" },
+        { key: "For", value: "day Fri 16 Oct" },
+        { key: "Why not", value: "There's no move \"notAMoveAnywhere\" in the library. Two sets at most." },
+      ]),
+    );
+    const words = JSON.stringify(rows);
+    for (const raw of ["parts[", "unknown_exercise", "search_library", "Refusal", "Fix"]) expect(words).not.toContain(raw);
+  });
+
   it("an error line is still an error: the loop's own stop, a tool result that failed", () => {
     expect(runLines([ev(1, "error", "The AI account is out of credits — the coach stopped here.")])[0]!.glyph).toBe("error");
     expect(runLines([ev(2, "tool_result", "Couldn't use search", { tool: "search_library", ok: false, error: "no_match" })])[0]!.glyph).toBe("error");

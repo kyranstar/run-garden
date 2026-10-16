@@ -275,8 +275,8 @@ const QUIET_KEYS = new Set([
   "by", "ok", "tool", "untrusted", "signature", "toolUseId", "proposalId", "runId", "handle", "undo",
   "id", "opId", "workoutId", "baseRev", "rev", "reviewRunId", "round", "kind", "final", "proposal", "asOf",
   "memoryId", "replaced",
-  // A set's grouping marks (fix wave 3B, B-I7): the trail's headings say them.
-  "forDay", "forTitle", "rehearsal",
+  // A set's grouping marks (fix wave 3B, B-I7): the trail's headings say them. A refusal: its "Why not" row says it.
+  "forDay", "forTitle", "rehearsal", "refusal",
 ]);
 
 /** Keys a tool's input or receipt uses, in the athlete's words. */
@@ -429,9 +429,18 @@ function setRows(set: readonly unknown[]): DetailRow[] {
   });
 }
 
-/** Why a call was refused: the server's own words when it gave them, else its code in words. */
+/** A validator's issue as the server words it for the model: "parts[0].items[1].dose (bad_dose): …" — where, and its code. */
+const ISSUE_PREFIX = /(?:^|;\s*)[\w.[\]]+ \([a-z_]+\):\s*/g;
+
+/**
+ * Why a call was refused: the server's own words when it gave them — top-level, or in Part S's `refusal` (fix wave 3B,
+ * B-I4) — each issue without its document path and code; else its code in words. Never the `fix`: that is what the
+ * model was told to do.
+ */
 function whyNot(p: Record<string, unknown>): DetailRow {
-  return { key: "Why not", value: typeof p.why === "string" && p.why.trim() ? clip(p.why.trim()) : keyWords(String(p.error ?? "refused")) };
+  const raw = typeof p.why === "string" ? p.why : record(p.refusal)?.why;
+  const why = typeof raw === "string" ? raw.replace(ISSUE_PREFIX, " ").replace(/\.\s*\./g, ".").replace(/\s+/g, " ").trim() : "";
+  return { key: "Why not", value: why ? clip(why) : keyWords(String(p.error ?? "refused")) };
 }
 
 /**
@@ -672,6 +681,9 @@ export function refusalWords(r: { error: string; cause?: string }): string {
   switch (r.error) {
     case "past_date":
       return "Its day has passed.";
+    case "past_time":
+      // A time today that has gone by since the coach chose it (fix wave 3B, Part S's B-I1).
+      return "That time has passed.";
     case "stale_revision":
       return "That workout changed after the coach read it.";
     case "not_found":
@@ -707,7 +719,7 @@ export function refusalWords(r: { error: string; cause?: string }): string {
 }
 
 /** Codes whose words say it all: the why (the server's words, about this op) adds to the others. */
-const SAID_BY_CODE = new Set(["past_date", "stale_revision", "not_found", "run_unsupported", "restore_in_progress", "race"]);
+const SAID_BY_CODE = new Set(["past_date", "past_time", "stale_revision", "not_found", "run_unsupported", "restore_in_progress", "race"]);
 
 /** How the server begins an `invalid_doc` why (Task 8): what follows is the rule the day now refuses. */
 const DAY_REFUSES = /^The day now refuses it:\s*/;

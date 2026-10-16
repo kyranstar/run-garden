@@ -328,11 +328,15 @@ describe("the plan's refusals, in plain words", () => {
     expect(refusalWords({ error: "not_editable", cause: "studio" })).toBe("Its length comes from the Studio: edit the workout there.");
     expect(refusalWords({ error: "not_editable", cause: "completed" })).toBe("It's done already.");
     expect(refusalWords({ error: "race" })).toBe("A race day stays as it is.");
+    // A time today that has gone by since (fix wave 3B, Part S's B-I1).
+    expect(refusalWords({ error: "past_time" })).toBe("That time has passed.");
     expect(refusalWords({ error: "something_new" })).toBe("The plan couldn't take it.");
   });
 
   it("the server's why joins the words only where it adds to them", () => {
     expect(refusedLine({ error: "past_date", why: "Wed 13 May has passed." })).toEqual({ lead: "Its day has passed.", detail: null });
+    // The words say it all: the server's own ("09:45 today has passed.") isn't said again.
+    expect(refusedLine({ error: "past_time", why: "09:45 today has passed." })).toEqual({ lead: "That time has passed.", detail: null });
     // Said once: the day's words, then what it refuses — never "The day doesn't allow it now. The day now refuses it: …".
     expect(refusedLine({ error: "invalid_doc", why: "The day now refuses it: tuck jumps are closed today." })).toEqual({
       lead: "The day doesn't allow it now: tuck jumps are closed today.",
