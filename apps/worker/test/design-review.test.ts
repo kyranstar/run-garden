@@ -1253,7 +1253,7 @@ describe("fix round 1 — a main run that stops proposes what it has", () => {
     expect(op.reviewLog!.map((r) => r.status)).toEqual(["reviewed", "dropped"]);
   });
 
-  it("at its own step cap after a reviewed draft: pending, with the step limit's note; a rehearsal's stays a rehearsal", async () => {
+  it("at its own step cap after a reviewed draft: pending, with the step limit's note; a rehearsal's stays a rehearsal, with the same note (13d D5)", async () => {
     for (const rehearsal of [false, true]) {
       const a = await athlete();
       const runId = await newRun(a.userId, { rehearsal });
@@ -1266,7 +1266,7 @@ describe("fix round 1 — a main run that stops proposes what it has", () => {
       expect(await runRow(runId)).toMatchObject({ error: "step_cap" });
       const p = (await proposalOf(runId))!;
       expect(p.status).toBe(rehearsal ? "rehearsal" : "pending");
-      expect(p.flags).toEqual(rehearsal ? [] : [STOPPED_NOTES.step_cap]);
+      expect(p.flags).toEqual([STOPPED_NOTES.step_cap]);
     }
   });
 
@@ -1361,18 +1361,19 @@ describe("follow-up — the stops that propose, counted (N1, N2)", () => {
     expect(p.flags).toEqual([STOPPED_NOTES.weekly_cap]);
   });
 
-  it("a rehearsal's stop reads its proposal and writes nothing to it: seven, and it stays a rehearsal", async () => {
+  it("a rehearsal's stop promotes as production's does (13d D5): nine, and it stays a rehearsal", async () => {
     const a = await athlete();
     const runId = await newRun(a.userId, { rehearsal: true });
     const { deps } = scripted([turn([propose("Calm hips")], { cost: 700_000 }), turn([submit(verdict(4))], { cost: 900_000 })]);
     for (let i = 0; i < 5; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // to the resume
     const stop = await countedStep(a.userId, runId, deps, 6);
     expect(stop.status).toBe("stopped_cap");
-    // The tree, the claim, the run's write, the proposal read (a rehearsal: no write), the line.
-    expect(stop.cost).toBe(2 + 5);
+    // The tree, the claim, the run's write, the proposal read and its write (still a rehearsal), the older plans' days
+    // (a rehearsal supersedes none), the lines.
+    expect(stop.cost).toBe(2 + 7);
     const p = (await proposalOf(runId))!;
     expect(p.status).toBe("rehearsal");
-    expect(p.flags).toEqual([]);
+    expect(p.flags).toEqual([STOPPED_NOTES.run_ceiling]);
   });
 
   it("a proposal settled between the read and the write stays as it was settled (the write's own guard)", async () => {

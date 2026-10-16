@@ -49,7 +49,7 @@ import { addDays, dayLabel, daysBetween } from "@rg/domain";
 import type { Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
 import { SET_MAX_WORKOUTS } from "./design-limits.js";
-import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, proposalFields, reviewRunning } from "./design-review.js";
+import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, PROMOTED_STATUS, proposalFields, reviewRunning, withLines, writePromoted } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
@@ -509,7 +509,8 @@ export interface SetDesigner {
  * The designers — the redos and the days not designed — come from the proposal's own read, every designer of the main
  * run `mainRunId` as it stands (fix wave 3A round 2, A-I1): never from what the caller holds, so a stop found by a step,
  * an expiry found by a create or by the sweep (which hold only the live runs) propose the same. Pending under the
- * finish's own guard — still `unreviewed` (a rehearsal stays one), no review under way, the ops it read — and only with
+ * finish's own guard — still `unreviewed` (a rehearsal's is promoted the same way and stays `rehearsal`: 13d D5), no
+ * review under way, the ops it read — and only with
  * at least one reviewed workout. A read and a write (none written when nothing can be proposed), tried again once when
  * the write lost to another (design-review.ts PROMOTE_TRIES): four statements at most.
  */
@@ -531,7 +532,9 @@ export async function promoteSetWithWhatItHas(
 async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: string, opts: { mainRunId: string; today?: string }): Promise<boolean | "lost"> {
   const today = opts.today;
   const { ops, changes, opsText, status, flags, designers } = await readSetProposal(db, userId, proposalId, { designersOf: opts.mainRunId });
-  if (status !== "unreviewed" || ops.length === 0) return false;
+  // An athlete's `unreviewed` is made pending; a rehearsal's is promoted the same way and stays a rehearsal (13d D5).
+  const to = status ? PROMOTED_STATUS[status] : undefined;
+  if (!status || !to || ops.length === 0) return false;
   // A redo's designer → its first version's: one version of each workout is proposed.
   const redoOf: Record<string, string> = Object.fromEntries(designers.filter((d) => d.replaces).map((d) => [d.runId, d.replaces!]));
   let settled = ops.map((op) => {
@@ -574,14 +577,7 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
     ...(undesigned.length > 0 ? [`Not designed before the stop: ${undesigned.map(dayLabel).join(", ")}.`] : []),
   ];
   const proposed = [...liveChanges, ...kept];
-  const f = proposalFields(proposed);
-  const written = (await db.all(sql`
-    UPDATE coach_proposals SET status = 'pending', ops = ${JSON.stringify(proposed)}, flags = ${JSON.stringify([...flags, ...lines])},
-      title = ${f.title}, rationale = ${f.rationale}, expires_at = ${f.expiresAt}
-    WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'unreviewed' AND ops IS ${opsText}
-    RETURNING id
-  `)) as Array<{ id: string }>;
-  return written.length > 0 || "lost";
+  return (await writePromoted(db, userId, proposalId, to, { ops: proposed, flags: withLines(flags, lines), readOps: opsText })) || "lost";
 }
 
 // ── A newer plan supersedes an older one's days ─────────────────────────────────────────────────────────────────────

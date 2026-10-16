@@ -554,7 +554,13 @@ function keptLines(op: DocWorkoutOp, toolUseId: string): string[] {
   const against = entry.against;
   if (entry.kept) {
     if (entry.status !== "reviewed") return ["Kept the revision — neither review could be read."];
-    return [typeof against.mean === "number" ? `Kept the revision — it scored ${fmt(entry.mean)} against round ${against.round}'s ${fmt(against.mean)}.` : "Kept the revision."];
+    if (typeof against.mean !== "number") return ["Kept the revision."];
+    // A tie goes to the revision: said as one, never "4.6 against 4.6" (13c, the run view).
+    return [
+      fmt(entry.mean) === fmt(against.mean)
+        ? `Kept the revision — it scored the same, ${fmt(entry.mean)}.`
+        : `Kept the revision — it scored ${fmt(entry.mean)} against round ${against.round}'s ${fmt(against.mean)}.`,
+    ];
   }
   return entry.status === "reviewed"
     ? [`Kept round ${against.round}'s version — it scored ${fmt(against.mean)} against ${fmt(entry.mean)}.`]
@@ -861,8 +867,9 @@ export const PROMOTE_TRIES = 2;
 
 /**
  * A main run that stopped any way but a cancel proposes what it has (spec §2; fix wave 3A, A2): its proposal
- * becomes pending under the finish's own guard — still `unreviewed` (a rehearsal stays one), every op with its review,
- * no review under way — once a draft still under review is dropped (the held, reviewed version stays; the change list
+ * becomes pending under the finish's own guard — still `unreviewed` (a rehearsal's, still `rehearsal`, is promoted the
+ * same way and stays one: `PROMOTED_STATUS`), every op with its review, no review under way — once a draft still under
+ * review is dropped (the held, reviewed version stays; the change list
  * says what was dropped). With `today` (an expiry: the athlete's local date), a workout dated before it is left out,
  * and a line says so; with none left, nothing is proposed. The stop's note is added to the proposal's own lines
  * (`flags`), never over an op's note. A read and a write guarded by the ops it read (none when nothing can be
@@ -877,13 +884,56 @@ export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: s
   return false;
 }
 
-/** One try of `promoteWithWhatItHas`: made pending, nothing to propose, or the write `lost` to another. */
+/**
+ * The statuses a stop's promote takes a proposal from, and the one it leaves it in: an athlete's `unreviewed` becomes
+ * `pending`; a rehearsal's stays `rehearsal` — never one the athlete could act on — but is otherwise promoted as
+ * production's would be (13b I3, 13d D5): the same guard, the same lines, so the live suite measures the real ending.
+ */
+export const PROMOTED_STATUS: Readonly<Record<string, "pending" | "rehearsal">> = { unreviewed: "pending", rehearsal: "rehearsal" };
+
+/**
+ * A stop's promote written: the proposal made `to` with its ops, lines and computed fields, while it still holds the
+ * ops read and the status it was read in (a rehearsal's: `rehearsal`, which it stays). One statement; whether it won.
+ */
+export async function writePromoted(
+  db: Db,
+  userId: string,
+  proposalId: string,
+  to: "pending" | "rehearsal",
+  o: { ops: readonly unknown[]; flags: readonly string[]; readOps: string | null },
+): Promise<boolean> {
+  const f = proposalFields(o.ops);
+  const ops = JSON.stringify(o.ops);
+  const flags = JSON.stringify(o.flags);
+  const rows = (await db.all(
+    to === "pending"
+      ? sql`
+    UPDATE coach_proposals SET status = 'pending', ops = ${ops}, flags = ${flags}, title = ${f.title}, rationale = ${f.rationale}, expires_at = ${f.expiresAt}
+    WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'unreviewed' AND ops IS ${o.readOps}
+    RETURNING id`
+      : sql`
+    UPDATE coach_proposals SET status = 'rehearsal', ops = ${ops}, flags = ${flags}, title = ${f.title}, rationale = ${f.rationale}, expires_at = ${f.expiresAt}
+    WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'rehearsal' AND ops IS ${o.readOps}
+    RETURNING id`,
+  )) as Array<{ id: string }>;
+  return rows.length > 0;
+}
+
+/** The proposal's lines with `lines` added — none twice: a rehearsal stays open, so a second promote of it finds the
+ * first one's lines already there. */
+export function withLines(flags: readonly string[], lines: readonly string[]): string[] {
+  return [...flags, ...lines.filter((l) => !flags.includes(l))];
+}
+
+/** One try of `promoteWithWhatItHas`: made pending (a rehearsal: promoted, still a rehearsal), nothing to propose, or the
+ * write `lost` to another. */
 async function promoteOnce(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string }): Promise<boolean | "lost"> {
   const rows = (await db.all(sql`
     SELECT ops, status, flags FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
   `)) as Array<{ ops: string | null; status: string; flags: string | null }>;
   const row = rows[0];
-  if (!row || row.status !== "unreviewed" || !row.ops) return false;
+  const to = row ? PROMOTED_STATUS[row.status] : undefined;
+  if (!row || !to || !row.ops) return false;
   let ops: DesignOp[];
   let flags: string[];
   try {
@@ -908,14 +958,7 @@ async function promoteOnce(db: Db, userId: string, proposalId: string, note: str
   const workouts = next.filter(isDocWorkoutOp) as DocWorkoutOp[];
   if (workouts.length === 0 || workouts.some((o) => !o.review) || reviewRunning(workouts)) return false;
   const lines = [note, ...(past.length > 0 ? [pastDayLine(past)] : [])];
-  const f = proposalFields(next);
-  const written = (await db.all(sql`
-    UPDATE coach_proposals SET status = 'pending', ops = ${JSON.stringify(next)}, flags = ${JSON.stringify([...flags, ...lines])},
-      title = ${f.title}, rationale = ${f.rationale}, expires_at = ${f.expiresAt}
-    WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'unreviewed' AND ops IS ${row.ops}
-    RETURNING id
-  `)) as Array<{ id: string }>;
-  return written.length > 0 || "lost";
+  return (await writePromoted(db, userId, proposalId, to, { ops: next, flags: withLines(flags, lines), readOps: row.ops })) || "lost";
 }
 
 export type { ReviewRound, DraftVersion };
