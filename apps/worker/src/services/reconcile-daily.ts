@@ -2,7 +2,7 @@ import { and, asc, eq, inArray, isNull, lt, lte, ne, notExists, or, type SQL } f
 import { calendarEventSuppressions, performedSessions, plannedWorkouts, syncErrors, syncRuns } from "@rg/database";
 import { addDays, DOC_ORIGINS, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
-import { START_NOW_CALENDAR_STATE } from "./doc-workouts.js";
+import { PLAYED_OFFLINE_CALENDAR_STATE, START_NOW_CALENDAR_STATE, STARTED_AT_ONCE_STATES } from "./doc-workouts.js";
 import { plannedRowColumns } from "./planned-columns.js";
 import { removeFromPlan } from "./plan-mutations.js";
 
@@ -15,10 +15,14 @@ import { removeFromPlan } from "./plan-mutations.js";
  *    garden), still reversible by a later match.
  *  - A workout started at once (Start now) and closed without Discard, its
  *    day ended with nothing logged, was never planned: it is removed as the
- *    player's Discard removes it, never asked about and never missed.
+ *    player's Discard removes it, never asked about and never missed. One
+ *    played offline and recorded on reconnect (R11) is made after its day:
+ *    it is removed only once the outbox has had a day to deliver its session.
  */
 
 const SYNC_GRACE_DAYS = 1; // window passes → wait one full day before asking
+/** A workout played offline, left with no session, is kept this long after it was recorded (the outbox's day). */
+export const PLAYED_OFFLINE_GRACE_MS = 24 * 60 * 60 * 1000;
 /** Unresolved this long → counts as missed. The garden reads it too: a slot completed only by an activity the garden
  * does not see is, to the garden, still open, and misses this many days after its day (garden-sync, Audit 2d I-2). */
 export const AUTO_MISS_DAYS = 7;
@@ -39,12 +43,16 @@ const ABANDONED_START_NOW_MAX = 2;
 /**
  * A workout started at once and left with nothing logged, as the player's Discard judges it (`removeAbandonedStartNow`):
  * booked on no calendar (Start now's state, which a move to a day of the plan's ends), not done, not answered
- * (completed, skipped, missed), no session saved for it.
+ * (completed, skipped, missed), no session saved for it. One played offline only once it was recorded before
+ * `recordedBefore` (the outbox's day to deliver).
  */
-function abandonedStartNow(db: Db): SQL {
+function abandonedStartNow(db: Db, recordedBefore: string): SQL {
   const pw = plannedWorkouts;
   return and(
-    eq(pw.calendarSyncState, START_NOW_CALENDAR_STATE),
+    or(
+      eq(pw.calendarSyncState, START_NOW_CALENDAR_STATE),
+      and(eq(pw.calendarSyncState, PLAYED_OFFLINE_CALENDAR_STATE), lt(pw.createdAt, recordedBefore)),
+    ),
     inArray(pw.origin, [...DOC_ORIGINS]),
     inArray(pw.completionState, ["scheduled", "unresolved"]),
     or(isNull(pw.contentState), ne(pw.contentState, "done")),
@@ -61,17 +69,18 @@ export async function reconcileCompletionStates(
   const nowIso = nowInstant(now);
   const today = todayInZone(prefs.timezone, now);
   const stats: ReconcileStats = { markedUnresolved: 0, autoMissed: 0, abandonedRemoved: 0 };
+  const recordedBefore = new Date(now.getTime() - PLAYED_OFFLINE_GRACE_MS).toISOString();
 
   // Start now, left with nothing logged, its day ended: removed as Discard removes it (calendar, watch work), only
   // while it is still so as it is archived. Not the missed pipeline: rest mode does not pause it.
   const abandoned = await db
     .select({ id: plannedWorkouts.id })
     .from(plannedWorkouts)
-    .where(and(eq(plannedWorkouts.userId, userId), lt(plannedWorkouts.effectiveDate, today), isNull(plannedWorkouts.archivedAt), abandonedStartNow(db)))
+    .where(and(eq(plannedWorkouts.userId, userId), lt(plannedWorkouts.effectiveDate, today), isNull(plannedWorkouts.archivedAt), abandonedStartNow(db, recordedBefore)))
     .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.id))
     .limit(ABANDONED_START_NOW_MAX);
   for (const w of abandoned) {
-    const removed = await removeFromPlan(db, userId, w.id, { now: nowIso, source: "auto_resolve", prefs, onlyIf: abandonedStartNow(db) });
+    const removed = await removeFromPlan(db, userId, w.id, { now: nowIso, source: "auto_resolve", prefs, onlyIf: abandonedStartNow(db, recordedBefore) });
     if (removed.removed) stats.abandonedRemoved += 1;
   }
 
@@ -96,7 +105,7 @@ export async function reconcileCompletionStates(
   for (const w of toAsk) {
     if (w.category === "rest") continue;
     // Started at once, never planned: never asked about (removed above, or by the next pass).
-    if (w.calendarSyncState === START_NOW_CALENDAR_STATE) continue;
+    if (STARTED_AT_ONCE_STATES.includes(w.calendarSyncState)) continue;
     // The user said "not yet" — honor it until the snooze lapses.
     if (w.snoozedUntil && w.snoozedUntil > today) continue;
     await db

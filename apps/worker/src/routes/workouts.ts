@@ -7,6 +7,10 @@
  *   POST /api/workouts           {date, time?, doc, clientId?} → 201 {workout, warnings}: a document workout
  *                                (services/doc-workouts.ts); a `clientId` it has seen → 200 with that row, nothing written
  *                                `startNow: true` (the builder's Start now): never planned, so booked on no calendar
+ *                                `playedOffline: true` (R11, the outbox's only): a quick start's or a template's played
+ *                                offline, recorded now — with `startNow` and `clientId`, dated today or up to a week
+ *                                back, the day's gate skipped; else 422 `played_offline_refused` with `why` (key, date,
+ *                                source)
  *   PUT  /api/workouts/:id/doc   {doc, baseRev} → {workout, rev, watchHasOlder, warnings}: its next revision
  *   DELETE /api/workouts/:id     → {ok}: a Studio or template workout never started removed, its calendar event and its
  *                                unsent watch work with it; 409 `not_removable` with its `reason` (not_studio, started,
@@ -35,6 +39,7 @@ import {
   NotEditableError,
   NotRemovableError,
   PastDateError,
+  PlayedOfflineRefusedError,
   removeDocWorkout,
   reviseDocWorkout,
   RunUnsupportedError,
@@ -64,6 +69,11 @@ const createSchema = z
     clientId: CLIENT_ID.optional(),
     /** Made to start at once (the builder's Start now): never planned, so booked on no calendar. */
     startNow: z.literal(true).optional(),
+    /**
+     * Played offline and recorded now (R11): a quick start's or a template's, today or up to a week back, with
+     * `startNow` and `clientId`; the day's gate is skipped (the device judged the day).
+     */
+    playedOffline: z.literal(true).optional(),
   })
   .strict();
 const reviseSchema = z.object({ doc: docField, baseRev: z.number().int().min(0) }).strict();
@@ -71,6 +81,7 @@ const reviseSchema = z.object({ doc: docField, baseRev: z.number().int().min(0) 
 function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof DocInvalidError) return c.json({ error: "invalid_doc", issues: e.issues }, 422);
   if (e instanceof PastDateError) return c.json({ error: "past_date" }, 422);
+  if (e instanceof PlayedOfflineRefusedError) return c.json({ error: "played_offline_refused", why: e.why }, 422);
   if (e instanceof StartedTodayError) return c.json({ error: "started_today", workout: e.workout }, 409);
   if (e instanceof RunUnsupportedError) return c.json({ error: "run_unsupported", message: "Runs can't be planned in the Studio yet." }, 422);
   if (e instanceof DocWorkoutNotFoundError) return c.json({ error: "not_found" }, 404);

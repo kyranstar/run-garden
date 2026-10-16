@@ -31,6 +31,7 @@
 import { and, eq, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
 import { corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions } from "@rg/database";
 import {
+  addDays,
   DOC_ORIGINS,
   docOriginRow,
   newId,
@@ -162,6 +163,33 @@ export class NotRemovableError extends Error {
  * plan's) makes it `pending`, as any move does: planned now, it is booked.
  */
 export const START_NOW_CALENDAR_STATE = "app_only";
+
+/**
+ * The calendar state of a workout played offline and recorded on reconnect (`playedOffline`, R11): booked on no
+ * calendar, as Start now's — and, left with no session, removed by the daily reconcile only once the outbox has had a
+ * day to deliver it (its day is already over when it is made).
+ */
+export const PLAYED_OFFLINE_CALENDAR_STATE = "app_only_offline";
+/** The calendar states of a workout started at once: never planned, never booked, never asked about. */
+export const STARTED_AT_ONCE_STATES: readonly string[] = [START_NOW_CALENDAR_STATE, PLAYED_OFFLINE_CALENDAR_STATE];
+/** How far back a workout played offline may be recorded: the outbox's reach, a week. */
+export const PLAYED_OFFLINE_DAYS_BACK = 7;
+
+/**
+ * A create of a workout played offline refused (R11): `key` — no device key, or not Start now; `date` — ahead of today,
+ * or more than a week back; `source` — not a quick start's or a template's document (a coach's or a programme's never).
+ */
+export class PlayedOfflineRefusedError extends Error {
+  constructor(readonly why: "key" | "date" | "source") {
+    super(`played_offline_refused:${why}`);
+  }
+}
+
+/** A document the app itself made for the athlete to start: a quick start's, or a template's (never a coach's or a programme's). */
+function appAuthored(doc: WorkoutDoc): boolean {
+  if (doc.source.kind === "coach" || doc.source.kind === "engine") return false;
+  return doc.basedOn?.kind === "template" || (doc.source.kind === "studio" && !!doc.source.ref?.startsWith("quick_start:"));
+}
 
 /** The base revision is not the row's current one: the document changed elsewhere. */
 export class StaleRevisionError extends Error {
@@ -305,11 +333,16 @@ async function validated(
   userId: string,
   raw: unknown,
   day: { date: string; today: string; workoutId: string },
+  opts: { playedOffline?: boolean } = {},
 ): Promise<{ doc: WorkoutDoc; derived: DocDerived; warnings: DocIssue[] }> {
   const doc = parsedDoc(raw);
+  if (opts.playedOffline && !appAuthored(doc)) throw new PlayedOfflineRefusedError("source");
   const derived = deriveDoc(doc, EXERCISES);
   if (derived.discipline === "run") throw new RunUnsupportedError();
-  const warnings = accepted(judgeDoc(doc, await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId })));
+  const ctx = await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId });
+  // Played offline: what was done is recorded, not planned — the day was judged on the device, and its gate is skipped
+  // here (judged as a template is: every reading-dependent rule on the calmest day). Everything else still holds.
+  const warnings = accepted(judgeDoc(doc, opts.playedOffline ? { ...ctx, day: null } : ctx));
   return { doc, derived, warnings };
 }
 
@@ -380,17 +413,22 @@ async function keyedRow(db: Db, userId: string, id: string): Promise<{ workout: 
 export async function createDocWorkout(
   db: Db,
   userId: string,
-  input: { date: string; time?: string | null; doc: unknown; clientId?: string; startNow?: boolean },
+  input: { date: string; time?: string | null; doc: unknown; clientId?: string; startNow?: boolean; playedOffline?: boolean },
   ctx: DocWorkoutCtx,
   source: DocWriteSource = {},
 ): Promise<{ workout: DocWorkoutDto; warnings: DocIssue[]; repeated?: true }> {
+  // Played offline (R11): a record of what was done, made with the device's key and at once — never planned.
+  if (input.playedOffline && (!input.clientId || !input.startNow)) throw new PlayedOfflineRefusedError("key");
   const id = input.clientId ? await keyedRowId(userId, input.clientId) : newId();
   if (input.clientId) {
     const made = await keyedRow(db, userId, id);
     if (made) return made;
   }
-  if (input.date < ctx.today) throw new PastDateError();
-  const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: input.date, today: ctx.today, workoutId: id });
+  if (input.playedOffline) {
+    // The day it was played: today, or up to a week back (the outbox's reach) — never ahead.
+    if (input.date > ctx.today || input.date < addDays(ctx.today, -PLAYED_OFFLINE_DAYS_BACK)) throw new PlayedOfflineRefusedError("date");
+  } else if (input.date < ctx.today) throw new PastDateError();
+  const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: input.date, today: ctx.today, workoutId: id }, { playedOffline: input.playedOffline });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
   // Start now of what today already holds, still to finish: that one is offered instead of a second (I3).
   if (input.startNow && input.date === ctx.today) {
@@ -428,7 +466,7 @@ export async function createDocWorkout(
     stageSummary: null,
     structuredJson: null,
     // Started at once (Start now): never planned, so never booked on the calendar; only a Schedule books one.
-    calendarSyncState: input.startNow ? START_NOW_CALENDAR_STATE : "not_created",
+    calendarSyncState: input.playedOffline ? PLAYED_OFFLINE_CALENDAR_STATE : input.startNow ? START_NOW_CALENDAR_STATE : "not_created",
     corosSyncState: "calendar_only",
     completionState: "scheduled",
     missingReads: 0,

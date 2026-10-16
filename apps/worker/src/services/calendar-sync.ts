@@ -316,8 +316,8 @@ export async function syncCalendar(
       if (linkByWorkout.has(w.id)) removedWorkoutIds.push(w.id);
       continue;
     }
-    // A workout started at once (the Studio's Start now) was never planned: it is booked on no calendar.
-    if (w.calendarSyncState === "app_only") {
+    // A workout started at once (the Studio's Start now, or played offline) was never planned: booked on no calendar.
+    if (w.calendarSyncState === "app_only" || w.calendarSyncState === "app_only_offline") {
       if (linkByWorkout.has(w.id)) removedWorkoutIds.push(w.id);
       continue;
     }
