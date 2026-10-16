@@ -1943,7 +1943,9 @@ async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: str
     ? await promoteSetWithWhatItHas(db, userId, proposalId, note, { mainRunId: root.id, ...(today ? { today } : {}) })
     : await promoteWithWhatItHas(db, userId, proposalId, note, today ? { today } : {});
   if (!proposed) return false;
-  await supersedeOlderPlans(db, userId, proposalId, at);
+  // A rehearsal's stop proposes as production's does (design-review.ts `PROMOTED_STATUS`), but its proposal stays a
+  // rehearsal: never pending, it supersedes nothing of the athlete's — no statement for it.
+  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at);
   return true;
 }
 

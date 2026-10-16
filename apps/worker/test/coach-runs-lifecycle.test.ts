@@ -433,7 +433,7 @@ describe("the sweep expiring an athlete's two live trees (round 2, A-M8)", () =>
     expect(race).toBeNull();
     // The sweep's read; the athlete's tree — the expiry, the proposal read, the write that lost, the read again, the
     // write, the older plans superseded, the line — at its declared cost; the rehearsal's — the expiry, the proposal read
-    // (a rehearsal's is never proposed), the close, the line.
+    // and its write (proposed as production's is, and still a rehearsal: it supersedes nothing), the line.
     expect(EXPIRE_TREE_STATEMENTS).toBe(7);
     expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS + 4);
     expect((await proposal(db, mine))!).toMatchObject({ status: "pending" });
