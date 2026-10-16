@@ -405,11 +405,7 @@ export const proposeWorkout: DesignTool = {
       // so it counts against nothing, and the draft — unreviewed — is never shown.
       const dropped = applyDrop(op, toolUseId);
       if (dropped) await updateOps(ctx.db, ctx.userId, proposalId, next.map((o) => (o === op ? dropped : o)), JSON.stringify(next));
-      return refuse(
-        "review_unavailable",
-        `The draft couldn't be sent for review (${unavailableWhy("not_started")}): it isn't reviewed and doesn't count as a round.`,
-        "Call propose_workout again with the same draft — or finish: an unreviewed draft is never shown.",
-      );
+      return notStarted();
     }
     return reviewingAnswer(proposalId, { ...version, round, reviewRunId });
   },
@@ -442,7 +438,19 @@ async function replay(
   if (mine && entry) {
     if (entry.status === "reviewing") {
       const draft = draftOf(mine, toolUseId, proposalId);
-      if (ctx.review && draft && (await ctx.review.start({ reviewRunId: entry.reviewRunId, proposalId, round: entry.round, toolUseId, draft }))) {
+      let started = false;
+      if (ctx.review && draft) {
+        try {
+          started = await ctx.review.start({ reviewRunId: entry.reviewRunId, proposalId, round: entry.round, toolUseId, draft });
+        } catch (e) {
+          // As on the first call: a reviewer that can't be started drops the round, and the draft is never shown.
+          console.error(JSON.stringify({ level: "error", msg: "propose_workout: the reviewer could not be started", error: e instanceof Error ? e.message : "unknown" }));
+          const dropped = applyDrop(mine, toolUseId);
+          if (dropped) await updateOps(ctx.db, ctx.userId, proposalId, ops.map((o) => (o === mine ? dropped : o)), opsText);
+          return notStarted();
+        }
+      }
+      if (started) {
         const v = mine.toolUseId === toolUseId ? mine : mine.candidate!;
         return reviewingAnswer(proposalId, { ...v, round: entry.round, reviewRunId: entry.reviewRunId });
       }
@@ -465,6 +473,15 @@ async function replay(
     };
   }
   return null;
+}
+
+/** A draft whose reviewer couldn't be started: its round dropped, the draft unreviewed and never shown. */
+function notStarted(): ToolErr {
+  return refuse(
+    "review_unavailable",
+    `The draft couldn't be sent for review (${unavailableWhy("not_started")}): it isn't reviewed and doesn't count as a round.`,
+    "Call propose_workout again with the same draft — or finish: an unreviewed draft is never shown.",
+  );
 }
 
 /** The review of a draft, as its propose_workout call answers it. */

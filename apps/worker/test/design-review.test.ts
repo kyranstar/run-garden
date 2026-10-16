@@ -47,7 +47,8 @@ import {
 } from "../src/services/design-review.js";
 import { defaultRunDeps, newRunState } from "../src/services/coach-runs.js";
 import { LLM_BUDGET } from "../src/services/llm.js";
-import { submitReview } from "../src/services/design-review.js";
+import { promoteWithWhatItHas, submitReview, unavailableWhy } from "../src/services/design-review.js";
+import { ANSWER_MAX_BYTES } from "../src/services/coach-runs.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import type { ContentBlock, MessageParam, MessagesOk, MessagesRequest, MessagesResult, ToolResultBlock } from "../src/services/llm-messages.js";
@@ -1281,5 +1282,138 @@ describe("fix round 1 — the athlete's answers reach the reviewer as theirs", (
     });
     expect(packet).toContain('- <untrusted from="designer run">{"tool":"ask_athlete","input":{"questions":[{"text":"How long?"}]}}</untrusted> answered: <untrusted from="athlete">');
     expect(packet).toContain("20 min ‹/untrusted›");
+  });
+});
+
+// ── Follow-up (N1–N4) ───────────────────────────────────────────────────
+
+describe("follow-up — the stops that propose, counted (N1, N2)", () => {
+  /** One step of the run, counted as the route counts it (the stop makes no model call). */
+  async function countedStep(userId: string, runId: string, deps: RunDeps, at: number) {
+    statements = 0;
+    const out = await runStep(db, env, runId, userId, new Date(NOW.getTime() + at * 1000), deps);
+    if (out.kind !== "ok") throw new Error(out.kind);
+    return { cost: ROUTE_OVERHEAD + statements, status: out.result.status };
+  }
+
+  it("a reviewer's money stop that promotes the held version: nine", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const { deps } = scripted([
+      turn([propose("Calm hips")], { cost: 100_000 }),
+      turn([submit(verdict(4))], { cost: 100_000 }),
+      turn([propose("Calm hips, again", "Again.")], { cost: 100_000 }),
+      turn([use("read_day", {})], { cost: 1_300_000 }),
+    ]);
+    // Context, draft, its reviewer's context and review, the resume, the revision, its reviewer's context and read.
+    for (let i = 0; i < 8; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
+    const stop = await countedStep(a.userId, runId, deps, 8);
+    expect(stop.status).toBe("stopped_cap");
+    // The tree, the claim, the reviewer's write, the rest of the tree stopped, the proposal read and made pending, the
+    // lines.
+    expect(stop.cost).toBe(2 + 7);
+    expect((await proposalOf(runId))!.status).toBe("pending");
+  });
+
+  it("the main run's weekly-cap stop that promotes: nine", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const { deps } = scripted([t(propose("Calm hips")), t(submit(verdict(4)))]);
+    for (let i = 0; i < 5; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // to the resume
+    await db.insert(schema.llmUsage).values({
+      id: `cap-${runId}`, userId: a.userId, kind: "coach_wake", model: "m", inputTokens: 1, outputTokens: 1, costMicros: LLM_BUDGET.cutoffMicros, cacheHit: false, createdAt: new Date().toISOString(),
+    });
+    const stop = await countedStep(a.userId, runId, deps, 6);
+    expect(stop.status).toBe("stopped_cap");
+    expect(await runRow(runId)).toMatchObject({ error: "weekly_cap" });
+    // The tree, the claim, the weekly cap, the run's write, the proposal read and made pending, the lines.
+    expect(stop.cost).toBe(2 + 7);
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("pending");
+    expect(p.flags).toEqual([STOPPED_NOTES.weekly_cap]);
+  });
+
+  it("a rehearsal's stop reads its proposal and writes nothing to it: seven, and it stays a rehearsal", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId, { rehearsal: true });
+    const { deps } = scripted([turn([propose("Calm hips")], { cost: 700_000 }), turn([submit(verdict(4))], { cost: 900_000 })]);
+    for (let i = 0; i < 5; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // to the resume
+    const stop = await countedStep(a.userId, runId, deps, 6);
+    expect(stop.status).toBe("stopped_cap");
+    // The tree, the claim, the run's write, the proposal read (a rehearsal: no write), the line.
+    expect(stop.cost).toBe(2 + 5);
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("rehearsal");
+    expect(p.flags).toEqual([]);
+  });
+
+  it("a proposal settled between the read and the write stays as it was settled (the write's own guard)", async () => {
+    const a = await athlete();
+    const id = `dp-raced-${a.userId}`;
+    const op = { kind: "doc_workout", target: { kind: "new", date: TODAY }, date: TODAY, doc: calmDoc(), review: { ...verdict(4), rounds: 1, changes: [] }, issues: [], derived: { minutes: 20 }, by: { runId: "r", role: "main" }, toolUseId: "u", at: NOW.toISOString() };
+    await db.insert(schema.coachProposals).values({ id, userId: a.userId, title: "Calm hips", evidence: "", rationale: "", flags: [], ops: [op], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: TODAY });
+    let raced = false;
+    const racingDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== "all" || typeof value !== "function") return value;
+        return async (q: { queryChunks?: Array<{ value?: unknown }> }) => {
+          const text = (q.queryChunks ?? []).map((c) => (Array.isArray(c?.value) ? c.value.join("") : "")).join("");
+          if (!raced && text.includes("UPDATE coach_proposals")) {
+            raced = true;
+            await db.update(schema.coachProposals).set({ status: "expired" }).where(eq(schema.coachProposals.id, id));
+          }
+          return (value as (q: unknown) => Promise<unknown>).call(target, q);
+        };
+      },
+    });
+    expect(await promoteWithWhatItHas(racingDb, a.userId, id, STOPPED_NOTES.run_ceiling!)).toBe(false);
+    expect(raced).toBe(true);
+    const [row] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, id));
+    expect(row).toMatchObject({ status: "expired", flags: [] });
+  });
+});
+
+describe("follow-up — a replayed draft whose reviewer can't be started (N3)", () => {
+  it("drops the round and says so, as the first call would", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const tool = allTools().find((x) => x.name === "propose_workout")!;
+    const run = { id: runId, role: "main" as const, scope: { kind: "now" as const }, parentId: null, rehearsal: false };
+    const input = { doc: calmDoc(), target: { kind: "new", date: TODAY } };
+    const base = { db, env, userId: a.userId, run, now: NOW, toolUseId: "toolu_replayed" };
+    const first = await tool.run({ ...base, review: { start: async () => true, ended: () => null } }, input);
+    expect((first as { control?: string }).control).toBe("review");
+    const quiet = (await import("vitest")).vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const replayed = await tool.run({ ...base, review: { start: async () => { throw new Error("down"); }, ended: () => null } }, input);
+      expect(replayed).toMatchObject({ error: "review_unavailable", why: expect.stringContaining("the reviewer couldn't be started") });
+    } finally {
+      quiet.mockRestore();
+    }
+    const op = (await proposalOf(runId))!.ops[0]!;
+    expect(op.review).toBeNull();
+    expect(op.reviewLog!.map((r) => r.status)).toEqual(["dropped"]);
+  });
+});
+
+describe("follow-up — a reviewer's end never reads as the design stopping (N4)", () => {
+  it("a reviewer that grew too long: its round is dropped, and its line says the reviewer couldn't finish", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const first = propose("Calm hips");
+    const huge = turn([], { text: "x".repeat(ANSWER_MAX_BYTES + 100) });
+    const { deps, requests } = scripted([t(first), huge, t(finish("Nothing to show yet."))]);
+    expect((await drive(a.userId, runId, deps)).at(-1)!.status).toBe("finished");
+    expect((await reviewersOf(runId))[0]).toMatchObject({ status: "stopped_cap", error: "state_cap" });
+    expect(sentData(requests, first)).toMatchObject({ unavailable: true, note: expect.stringContaining("the review grew too long to finish") });
+    const lines = (await events(runId)).map((e) => e.summary);
+    expect(lines).toContain("The reviewer couldn't finish: the review grew too long to finish.");
+    expect(lines.some((l) => l.startsWith("This design grew too long"))).toBe(false);
+    expect((await proposalOf(runId))!.status).toBe("unreviewed");
+  });
+
+  it("unavailableWhy names a state cap plainly", () => {
+    expect(unavailableWhy("state_cap")).toBe("the review grew too long to finish");
   });
 });

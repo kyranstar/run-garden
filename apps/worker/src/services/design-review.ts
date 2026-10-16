@@ -310,6 +310,8 @@ export function unavailableWhy(error: string | null | undefined): string {
       return "the AI account can't be reached";
     case "not_started":
       return "the reviewer couldn't be started";
+    case "state_cap":
+      return "the review grew too long to finish";
     case null:
     case undefined:
       return "the reviewer ended without one";

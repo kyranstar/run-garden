@@ -1307,15 +1307,18 @@ function nextDueOf(nodes: RunNode[], root: RunNode, at: string): StepResult["nex
   return next && steppable(next.status) ? { runId: next.id, role: next.role, at } : null;
 }
 
+/** The loop's lines that say the design itself stopped. */
+const DESIGN_STOP_LINES = new Set<string>([LINES.stateCap, LINES.stepCap, LINES.retries, LINES.rejected, LINES.refusal, LINES.internal, LINES.badState]);
+
 /**
- * A reviewer that failed is not the design stopping: its error line says the review couldn't be finished, and why — its
- * draft goes back to its designer (design-review.ts drops the round). A money stop reaches the whole tree and keeps
- * its own line; so does an unreadable review's.
+ * A reviewer that ends is not the design stopping: whenever a reviewer's run ends other than by a whole-tree stop (a
+ * spending limit, no credits, no key) or with a line of its own (an unreadable review, its step cap), any line saying
+ * the design stopped becomes "The reviewer couldn't finish: <why>." — its draft goes back to its designer, who goes on.
  */
 function reviewerLines(due: RunNode, end: StepEnd): NewEvent[] {
-  const treeWide = [OUT_OF_CREDITS_REASON, "no_key", "review_unreadable"];
-  if (due.role !== "reviewer" || end.status !== "failed" || treeWide.includes(end.error ?? "")) return end.events;
-  return end.events.map((e) => (e.kind === "error" ? { ...e, summary: `The reviewer couldn't finish: ${unavailableWhy(end.error)}.` } : e));
+  const ownLine = ["run_ceiling", "weekly_cap", OUT_OF_CREDITS_REASON, "no_key", "review_unreadable", "step_cap"];
+  if (due.role !== "reviewer" || isLive(end.status) || end.status === "finished" || ownLine.includes(end.error ?? "")) return end.events;
+  return end.events.map((e) => (DESIGN_STOP_LINES.has(e.summary) ? { ...e, summary: `The reviewer couldn't finish: ${unavailableWhy(end.error)}.` } : e));
 }
 
 /**
