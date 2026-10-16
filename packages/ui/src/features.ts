@@ -18,8 +18,8 @@
  *
  * `coach` — the coach designer in the Studio (Stage 3 Task 9): the composer, the run view and a designed workout's
  * suggestion card on the Studio home, and the Plan coach sheet's link to them. Decided by the build as `studio` is: on in
- * DEV (the dev server, the fixture stack, vitest), and in a production build only with `VITE_COACH_DESIGNER=1` — the
- * Studio is on in production, the coach not yet. It shows only where the Studio shows too (`coachOn`). Off, nothing in
+ * DEV (the dev server, the fixture stack, vitest), and in a production build only with `VITE_COACH_DESIGNER=1` — on in
+ * production since the owner's go-live, 2026-10-16 (deploy.yml). It shows only where the Studio shows too (`coachOn`). Off, nothing in
  * the app shows the composer, the run view or a designed suggestion.
  *
  * A plain object (not `as const`) so a test can switch a feature on for the length of one case.

@@ -58,10 +58,13 @@ jobs:
       # bundle must exist before `wrangler deploy` uploads it.
       # VITE_STUDIO=1: the Studio tab is on in production (the owner's call, 2026-10-16). Remove it to hide the Studio
       # again; nothing on the server changes either way (packages/ui/src/features.ts).
+      # VITE_COACH_DESIGNER=1: the coach designer shows in the Studio (the owner's go-live, 2026-10-16). Its routes answer
+      # only with COACH_DESIGNER = "1" in apps/worker/wrangler.toml; turn both off together.
       - name: Build web app
         run: pnpm --filter @rg/web build
         env:
           VITE_STUDIO: "1"
+          VITE_COACH_DESIGNER: "1"
 
       - name: Apply D1 migrations (remote)
         uses: cloudflare/wrangler-action@v3

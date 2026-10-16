@@ -1,7 +1,7 @@
 /**
  * Stage 3 Task 9 — the `coach` switch. Decided by the build as `studio` is: on in DEV (the dev server, the fixture stack,
- * vitest), and in a production build only with `VITE_COACH_DESIGNER=1` — the Studio is on in production, the coach not
- * yet. It shows only where the Studio shows too. Off, nothing in the app shows the composer, the run view or a designed
+ * vitest), and in a production build only with `VITE_COACH_DESIGNER=1` — production's build sets it since 2026-10-16.
+ * It shows only where the Studio shows too. Off, nothing in the app shows the composer, the run view or a designed
  * suggestion, and nothing asks the coach's routes; the Plan coach sheet's link to it is there only when on.
  */
 import { createElement } from "react";

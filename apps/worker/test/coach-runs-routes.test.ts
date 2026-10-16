@@ -188,9 +188,11 @@ describe("inert in production", () => {
     expect((await entry.fetch(new Request("https://app.test/api/coach/runs/r1"), ON, ctx)).status).toBe(401);
   });
 
-  it("production's config never turns it on; local dev and the fixture stack do", () => {
+  it("production's config turns it on (the owner's go-live, 2026-10-16), staging leaves it to its own switch; local dev and the fixture stack do", () => {
     const toml = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
-    expect(toml).not.toMatch(/COACH_DESIGNER/);
+    const [production, staging] = toml.split(/^\[env\.staging\]$/m) as [string, string];
+    expect(production.match(/^\s*COACH_DESIGNER\s*=.*$/gm)).toEqual(['COACH_DESIGNER = "1"']);
+    expect(staging).not.toMatch(/COACH_DESIGNER/);
     expect(readFileSync(new URL("../wrangler.dev.toml", import.meta.url), "utf8")).toMatch(/^COACH_DESIGNER = "1"$/m);
     expect(readFileSync(new URL("../.dev.vars.example", import.meta.url), "utf8")).toMatch(/^COACH_DESIGNER=1$/m);
     expect(readFileSync(new URL("../../web/e2e/fixture-stack.sh", import.meta.url), "utf8")).toContain("--var COACH_DESIGNER:1");
