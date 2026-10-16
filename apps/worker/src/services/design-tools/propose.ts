@@ -254,6 +254,7 @@ export const proposeWorkout: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 9,
+  cpuWeight: 1.6,
   roles: ["main", "designer"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, "doc (a workout document), target ({ kind: new, date, time? } or { kind: revise, workoutId, baseRev }) and optionally changeNote");

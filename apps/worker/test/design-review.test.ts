@@ -763,7 +763,9 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
       return c;
     };
     await step("main context");
-    expect((await step("validate ×2 + propose + start the reviewer")).status).toBe("active");
+    // The model step's CPU room (2.5 ms) holds the two validates (1.2 each); propose (1.6) waits for the next step.
+    expect((await step("validate ×2")).status).toBe("active");
+    expect((await step("propose + start the reviewer (queued)")).status).toBe("active");
     await step("reviewer context");
     await step("reviewer reads + an unreadable review (repair)");
     await step("reviewer's review stored, the reviewer ended");
@@ -782,7 +784,11 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     const MODEL = 9 + 1;
     expect(shapes).toEqual({
       "main context": 2 + 4 + 11,
-      "validate ×2 + propose + start the reviewer": 2 + MODEL + 6 + 6 + 8,
+      // Was one step, "validate ×2 + propose + start the reviewer": 2 + MODEL + 6 + 6 + 8 (the go-live CPU gate splits it
+      // by the model step's CPU room). A step of queued calls: the tree, the claim, the standing read, the run's write and
+      // the events.
+      "validate ×2": 2 + MODEL + 6 + 6,
+      "propose + start the reviewer (queued)": 2 + 5 + 8,
       "reviewer context": 2 + 4 + 11,
       // read_day and read_history (two statements each), and the unreadable review (refused before any read).
       "reviewer reads + an unreadable review (repair)": 2 + MODEL + 2 + 2 + 0,

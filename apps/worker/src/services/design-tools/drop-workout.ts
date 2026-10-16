@@ -31,6 +31,7 @@ export const dropWorkout: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, `opId (a workout's op id) and reason (plain words, at most ${REASON_MAX} characters)`);

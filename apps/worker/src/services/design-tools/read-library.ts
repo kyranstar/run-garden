@@ -181,6 +181,7 @@ export const searchLibraryTool: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.6,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(searchInput, raw, "optionally query, filters (the listed vocabulary), limit and cursor");
@@ -288,6 +289,7 @@ export const getExercise: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 3,
+  cpuWeight: 0.4,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(exerciseInput, raw, "a library id, and optionally howTo");

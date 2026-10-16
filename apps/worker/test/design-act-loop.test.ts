@@ -394,9 +394,10 @@ describe("finish, and a step of act tools", () => {
     statements = 0;
     const step = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 1000), deps);
     if (step.kind !== "ok") throw new Error(step.kind);
-    // What fits the model step's tool room ran in it — 6 + 6 + 9 of its 28 (fix wave 3A round 2: a stop's proposal
-    // reserves more of the step) — and the second propose_workout waits for the next step, queued.
-    expect(step.result.events.filter((e) => e.kind === "tool_result")).toHaveLength(3);
+    // What fits the model step's room ran in it, and the rest wait for the next step, queued. Its statement room (28,
+    // fix wave 3A round 2) holds 6 + 6 + 9; its CPU room (the go-live CPU gate: 2.5 ms) holds the two validates (1.2
+    // each) and not the first propose (1.6) — two ran (it was three, when only statements bounded a step).
+    expect(step.result.events.filter((e) => e.kind === "tool_result")).toHaveLength(2);
     const cost = ROUTE_OVERHEAD + statements + 1;
     expect(cost).toBeLessThanOrEqual(STEP_BUDGET);
     const finished = await drive(a.userId, runId, deps);

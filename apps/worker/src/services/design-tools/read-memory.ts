@@ -56,6 +56,7 @@ export const recallMemory: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.4,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally query, kind, limit and cursor");

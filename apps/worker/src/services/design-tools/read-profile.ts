@@ -19,6 +19,7 @@ export const readProfile: DesignTool = {
   description: "The whole profile: goals, focus areas with their library refs, upcoming events, places with equipment and implements, units, conditions, session preferences.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   statementCost: 4,
+  cpuWeight: 0.3,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "no fields");

@@ -14,6 +14,8 @@ import type { Db } from "../db.js";
  *   it); a throw is caught by the loop and answered as a generic `ToolErr`, never a stack.
  * - `statementCost` is the most D1 statements one call runs. The loop trusts it to keep a step within the Workers
  *   Free budget (≤ 45 statements + fetches per request), so a counting test pins every tool's declaration.
+ * - `cpuWeight` is the CPU one call takes (ms, measured by the go-live CPU gate): the loop trusts it to keep a step
+ *   within the free plan's 10 ms of CPU a request.
  * - A tool sees only the signed-in athlete's data: `ctx.userId` scopes every read and write.
  * - Text that came from outside the app's own code (the athlete's free text, notes, imported names) goes back to the
  *   model marked as data, `{ text, untrusted: true }`, never as an instruction.
@@ -260,6 +262,13 @@ export interface DesignTool<I = any> {
   inputSchema: Record<string, unknown>;
   /** The most D1 statements one call runs (see above). */
   statementCost: number;
+  /**
+   * The Worker CPU one call takes, in milliseconds on the go-live CPU gate's reference machine (design-cpu-bench.test.ts
+   * measures every tool and holds each declaration at or above its measured p50): a step starts a call only while its
+   * weight still fits the step's CPU room (coach-runs.ts PENDING_STEP_CPU_ROOM / MODEL_STEP_CPU_ROOM), the rest stay
+   * queued — as with statements.
+   */
+  cpuWeight: number;
   /**
    * The roles that may call it; a call from any other role is answered with a `ToolErr` (`not_for_role`). Every role
    * is offered every tool — one shared cache prefix (coach-runs.ts) — so a role-limited tool's description names its

@@ -214,6 +214,7 @@ describe("a finish and a cancel racing (A11)", () => {
       description: name,
       inputSchema: { type: "object" },
       statementCost: 20,
+      cpuWeight: 0,
       roles: ["main"],
       async run() {
         ran += 1;

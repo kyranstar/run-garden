@@ -85,13 +85,18 @@ import {
  *     breakpoint, on the newest message, moved each call — never more than four in all.
  *  2. A step with tool calls queued runs them, in order, and calls no model.
  *  3. Otherwise the step calls the model ONCE, then runs the tool calls it asked for, in order, while each next call's
- *     declared statement cost still fits the request's budget; the rest are queued for the next step. A turn's
- *     results go back to the model as one user message once every call of the turn has run.
+ *     declared statement cost and CPU weight still fit the request's budget (and at most MAX_TOOL_CALLS_PER_STEP
+ *     calls, MAX_DOCUMENT_TOOLS_PER_STEP of them document tools); the rest are queued for the next step. An answer that
+ *     carried documents (over DOCUMENT_ANSWER_BYTES) runs none: reading it was the step's CPU. A turn's results go back
+ *     to the model as one user message once every call of the turn has run.
  *
  * WHAT A STEP MAY SPEND (Workers Free: ≤ 45 D1 statements + fetches per request, the model call one fetch). The route
  * spends ROUTE_OVERHEAD before the step begins; the step's own reads and writes are fixed (PENDING_STEP_FIXED /
  * MODEL_STEP_FIXED, every one of them counted, including the ones reserved for rare paths); what is left is the tools'.
- * A tool declares its cost; a counting test pins every declaration and the worst case of every route.
+ * A tool declares its cost; a counting test pins every declaration and the worst case of every route. Its CPU too
+ * (Workers Free: 10 ms of CPU a request): a tool declares its `cpuWeight`, the go-live CPU gate (design-cpu-bench)
+ * holds every declaration at or above what it measures, and a step's tools share PENDING_STEP_CPU_ROOM, or a model
+ * step's MODEL_STEP_CPU_ROOM.
  *
  * THE HISTORY IS APPEND-ONLY. What the model has been sent is never rewritten: rewriting an earlier turn invalidates
  * the prompt cache from there on, and Opus 5.5 can refuse (400) a history whose thinking turns were edited. Thinking
@@ -253,8 +258,33 @@ export const MAX_TOOL_STATEMENT_COST = STEP_BUDGET - ROUTE_OVERHEAD - PENDING_ST
 /** What the opening context may spend (Task 3's `buildDesignContext` is pinned against it). */
 export const CONTEXT_STATEMENT_BUDGET = STEP_BUDGET - ROUTE_OVERHEAD - BASE_FIXED - LOST_CLAIM_WRITE;
 
-/** Tool calls run in one step at most (CPU; and it keeps a step's events to one insert). */
-export const MAX_TOOL_CALLS_PER_STEP = 8;
+/** Tool calls run in one step at most (CPU; and it keeps a step's events to one insert). This is how many one request
+ * runs, never what the model is told: every call of a turn (MAX_TOOL_CALLS_PER_TURN) still runs before its next turn,
+ * over as many steps as it takes. */
+export const MAX_TOOL_CALLS_PER_STEP = 5;
+/** The document tools: each reads, validates and derives a whole workout — the heaviest calls a step runs. */
+export const DOCUMENT_TOOLS: readonly string[] = ["validate_workout", "propose_workout"];
+/** Of a step's calls, document tools at most. */
+export const MAX_DOCUMENT_TOOLS_PER_STEP = 3;
+/**
+ * An answer whose content is more than this (its JSON, in bytes) carries documents. Reading its stream is most of the
+ * step's CPU (thousands of events), so the step that read it runs none of its calls: they stay queued, and the next
+ * step — which calls no model — runs them. One more request, no more model calls.
+ */
+export const DOCUMENT_ANSWER_BYTES = 16_000;
+/**
+ * THE CPU A STEP'S TOOLS MAY TAKE (Workers Free: 10 ms of CPU a request), in the tools' declared `cpuWeight` (ms on the
+ * go-live CPU gate's reference machine): a step starts a call only while its weight fits what is left, and the rest
+ * stay queued — as statements do. A step of queued calls has the most room; a model step what its answer and its call
+ * leave (an answer that carried documents runs no call at all).
+ */
+export const PENDING_STEP_CPU_ROOM = 4;
+export const MODEL_STEP_CPU_ROOM = 2.5;
+/** Weights are tenths of a ms: their sums are compared with this much slack for floating point. */
+const CPU_ROOM_EPSILON = 1e-9;
+/** The most one tool may declare: a step of queued calls always has room for its first call. A tool above it is a
+ * registry bug, and its call is answered with an error rather than queued forever. */
+export const MAX_TOOL_CPU_WEIGHT = PENDING_STEP_CPU_ROOM;
 /** Tool calls one turn may ask for (design-limits.ts, which the prompt states too); past this each gets an error
  * result and nothing runs. */
 export { MAX_TOOL_CALLS_PER_TURN };
@@ -309,7 +339,9 @@ export interface RunSettings {
 export interface PendingCall {
   id: string;
   name: string;
-  input: unknown;
+  /** Absent: the call's input is its tool_use block's in the newest assistant message — stored once, there (a state
+   * stored before the go-live CPU gate carries its own copy here). */
+  input?: unknown;
   /** Past MAX_TOOL_CALLS_PER_TURN: answered with an error, never run. */
   overflow?: boolean;
 }
@@ -1887,7 +1919,7 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
     const { restoring, ours } = await standing(s.db, s.userId, s.run.id, s.claimAt);
     if (restoring) return { kind: "restoring" };
     if (!ours) return { kind: "lost", costMicros: 0 };
-    const ran = await runTools(s, STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED);
+    const ran = await runTools(s, { statements: STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED, cpu: PENDING_STEP_CPU_ROOM });
     return end({ state, costMicros: 0, error: null, ...ran });
   }
   if (!s.allowModel) return end(IDLE);
@@ -2111,7 +2143,8 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     while (kept.length > 0 && kept.at(-1)!.type === "thinking" && !(kept.at(-1) as { signature?: string }).signature) kept.pop();
     content = kept;
   }
-  if (bytes(JSON.stringify(content)) > ANSWER_MAX_BYTES) {
+  const answerBytes = bytes(JSON.stringify(content));
+  if (answerBytes > ANSWER_MAX_BYTES) {
     return end(stop(state, "stopped_cap", "state_cap", LINES.stateCap, "note", spent));
   }
   state.messages = sent;
@@ -2165,9 +2198,13 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     return end(await finishInWords(s, said, spent));
   }
   delete state.textOnly;
-  state.pending = uses.map((u, i) => ({ id: u.id, name: u.name, input: u.input, ...(i >= MAX_TOOL_CALLS_PER_TURN ? { overflow: true } : {}) }));
+  // Queued by id and name: each input stays where it is, in the answer just stored (a document turn's would otherwise
+  // be stored twice, and its state pushed toward its cap).
+  state.pending = uses.map((u, i) => ({ id: u.id, name: u.name, ...(i >= MAX_TOOL_CALLS_PER_TURN ? { overflow: true } : {}) }));
   state.results = [];
-  const ran = await runTools(s, STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED);
+  // An answer that carried documents took most of this step's CPU to read: its calls wait, queued, for the next step.
+  if (answerBytes > DOCUMENT_ANSWER_BYTES) return end({ ...base, status: "active", events });
+  const ran = await runTools(s, { statements: STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED, cpu: MODEL_STEP_CPU_ROOM });
   return end({ ...base, ...ran, events: [...events, ...ran.events] });
 }
 
@@ -2251,13 +2288,15 @@ function offeredTools(tools: DesignTool[]): DesignTool[] {
 }
 
 /**
- * Run the queued calls in order while the next one's declared cost fits `room`, at most MAX_TOOL_CALLS_PER_STEP. An
- * ask pauses the run (the calls after it wait); a finish ends it (the calls after it are dropped). Once the queue is
- * empty the turn's results become one user message.
+ * Run the queued calls in order while the next one's declared statement cost and CPU weight fit what is left of the
+ * step's `room`: at most MAX_TOOL_CALLS_PER_STEP calls, of them MAX_DOCUMENT_TOOLS_PER_STEP document tools; the first
+ * that doesn't fit stops the step, and it and the rest stay queued for the next. An ask pauses the run (the calls after
+ * it wait); a finish ends it (the calls after it are dropped). Once the queue is empty the turn's results become one
+ * user message.
  */
 async function runTools(
   s: StepCtx,
-  room: number,
+  room: { statements: number; cpu: number },
 ): Promise<{ status: RunStatus; events: NewEvent[]; proposalId: string | null; error?: string }> {
   const { state, run } = s;
   const offered = offeredTools(s.deps.tools);
@@ -2273,8 +2312,20 @@ async function runTools(
     ...(run.role === "main" ? { set: setHooks(s) } : {}),
     ...(state.replaces ? { replaces: state.replaces } : {}),
   };
+  // A queued call's input is its tool_use block's, in the newest answer (the history holds it; the queue doesn't hold
+  // it twice) — or, in a state stored before, the queue's own copy.
+  const asked = new Map<string, unknown>();
+  for (let m = state.messages.length - 1; m >= 0; m--) {
+    const message = state.messages[m]!;
+    if (message.role !== "assistant") continue;
+    if (typeof message.content !== "string") for (const b of message.content) if (b.type === "tool_use") asked.set(b.id, b.input);
+    break;
+  }
   const events: NewEvent[] = [];
+  let statements = room.statements;
+  let cpu = room.cpu;
   let executed = 0;
+  let documents = 0;
   while (state.pending.length > 0) {
     const call = state.pending[0]!;
     const named = offered.find((t) => t.name === call.name);
@@ -2286,20 +2337,32 @@ async function runTools(
       );
       continue;
     }
-    if (tool && tool.statementCost > MAX_TOOL_STATEMENT_COST) {
+    if (tool && (tool.statementCost > MAX_TOOL_STATEMENT_COST || !(tool.cpuWeight <= MAX_TOOL_CPU_WEIGHT))) {
       state.pending.shift();
       state.results.push(errorResult(call.id, { error: "unavailable", why: `${call.name} cannot run here.`, fix: "Use another tool." }));
       continue;
     }
     const cost = tool?.statementCost ?? 0;
-    if (executed >= MAX_TOOL_CALLS_PER_STEP || cost > room) break;
-    room -= cost;
+    const weight = tool?.cpuWeight ?? 0;
+    const document = tool !== undefined && DOCUMENT_TOOLS.includes(tool.name);
+    if (
+      executed >= MAX_TOOL_CALLS_PER_STEP ||
+      cost > statements ||
+      weight > cpu + CPU_ROOM_EPSILON ||
+      (document && documents >= MAX_DOCUMENT_TOOLS_PER_STEP)
+    ) {
+      break;
+    }
+    statements -= cost;
+    cpu -= weight;
     executed += 1;
+    if (document) documents += 1;
     state.pending.shift();
+    const input = "input" in call ? call.input : asked.get(call.id);
 
     const fix = mine.length > 0 ? `Use one of: ${mine.map((t) => t.name).join(", ")}.` : "No tools are yours here: finish with what you have.";
     const result: ToolOk | ToolErr = tool
-      ? await runTool(tool, { ...ctx, toolUseId: call.id }, call.input)
+      ? await runTool(tool, { ...ctx, toolUseId: call.id }, input)
       : named
         ? run.role === "reviewer" && call.name === "finish"
           ? REVIEWER_HAS_NO_FINISH
@@ -2325,7 +2388,7 @@ async function runTools(
       events.push({
         kind: state.awaitingReview.round > 1 ? "revision" : "draft",
         summary: result.summary ?? "A draft, sent for review.",
-        payload: { tool: call.name, input: bounded(call.input, 1_500), ...(result.receipt ? { receipt: result.receipt } : {}) },
+        payload: { tool: call.name, input: bounded(input, 1_500), ...(result.receipt ? { receipt: result.receipt } : {}) },
       });
       // The calls queued after it never run before the review is read — a finish least of all: each is answered now,
       // and their answers go back with the review, in the model's order, as one message.
@@ -2348,7 +2411,7 @@ async function runTools(
       events.push({
         kind: "tool_result",
         summary: result.summary ?? "Planned the set.",
-        payload: { tool: call.name, input: bounded(call.input, 1_500), ok: true, ...(result.receipt ? { receipt: result.receipt } : {}) },
+        payload: { tool: call.name, input: bounded(input, 1_500), ok: true, ...(result.receipt ? { receipt: result.receipt } : {}) },
       });
       // As after a draft: the calls queued after it never run before the set is in, and are answered now.
       state.awaitingAt = state.results.length;
@@ -2363,7 +2426,7 @@ async function runTools(
       state.pending = [];
       state.results = [];
       // A designer's own last line, as it wrote it: its set's outcome quotes it if its workout is left out.
-      const said = (call.input as { summary?: unknown } | null)?.summary;
+      const said = (input as { summary?: unknown } | null)?.summary;
       if (run.role === "designer" && typeof said === "string") state.final = said.trim().slice(0, SUMMARY_MAX_CHARS);
       const proposalId = typeof (result.data as { proposalId?: unknown } | null)?.proposalId === "string" ? ((result.data as { proposalId: string }).proposalId) : null;
       if (proposalId) await closeProposalAtFinish(s, proposalId);
@@ -2378,9 +2441,9 @@ async function runTools(
         ? {
             kind: "tool_result",
             summary: result.summary ?? `Used ${label(call.name)}`,
-            payload: { tool: call.name, input: bounded(call.input, 1_500), ok, provenance: result.provenance, missing: result.missing, ...(result.receipt ? { receipt: result.receipt } : {}) },
+            payload: { tool: call.name, input: bounded(input, 1_500), ok, provenance: result.provenance, missing: result.missing, ...(result.receipt ? { receipt: result.receipt } : {}) },
           }
-        : refusedLine(call.name, result, call.input),
+        : refusedLine(call.name, result, input),
     );
     if (!ok && run.role === "reviewer" && result.error === "invalid_review") {
       // A review that can't be read gets one repair (this error, with what was wrong); a second ends the reviewer, and

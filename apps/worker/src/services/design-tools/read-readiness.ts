@@ -47,6 +47,7 @@ export const readReadiness: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 1,
+  cpuWeight: 0.4,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "an optional days (1–30)");

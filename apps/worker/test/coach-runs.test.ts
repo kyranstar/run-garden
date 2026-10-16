@@ -33,6 +33,12 @@ import {
   MAX_TOOL_CALLS_PER_STEP,
   MAX_TOOL_CALLS_PER_TURN,
   MAX_TOOL_STATEMENT_COST,
+  DOCUMENT_ANSWER_BYTES,
+  DOCUMENT_TOOLS,
+  MAX_DOCUMENT_TOOLS_PER_STEP,
+  MAX_TOOL_CPU_WEIGHT,
+  MODEL_STEP_CPU_ROOM,
+  PENDING_STEP_CPU_ROOM,
   ANSWER_MAX_BYTES,
   PROMPT_BYTES_PER_TOKEN,
   LINES,
@@ -101,13 +107,14 @@ const finishTurn = (summary = "Done.") => toolTurn(use("finish", { summary }));
 
 type Scripted = DesignTool & { calls: Array<{ ctx: ToolContext; input: unknown }> };
 
-function readTool(name: string, cost: number, data: unknown = { found: 1 }, roles: DesignTool["roles"] = ["main", "designer", "reviewer"]): Scripted {
+function readTool(name: string, cost: number, data: unknown = { found: 1 }, roles: DesignTool["roles"] = ["main", "designer", "reviewer"], weight = 0): Scripted {
   const calls: Scripted["calls"] = [];
   return {
     name,
     description: `Reads ${name}.`,
     inputSchema: { type: "object", properties: {} },
     statementCost: cost,
+    cpuWeight: weight,
     roles,
     calls,
     async run(ctx, input) {
@@ -125,6 +132,7 @@ function askTool(): Scripted {
     description: "Ask the athlete.",
     inputSchema: { type: "object" },
     statementCost: 1,
+    cpuWeight: 0,
     roles: ["main", "designer"],
     control: "ask",
     calls,
@@ -143,6 +151,7 @@ function finishTool(): Scripted {
     description: "End the run.",
     inputSchema: { type: "object" },
     statementCost: 0,
+    cpuWeight: 0,
     roles: ["main", "designer", "reviewer"],
     control: "finish",
     calls,
@@ -441,7 +450,9 @@ describe("tool calls that do not fit one step's budget", () => {
     expect(results.map((r) => r.tool_use_id)).toEqual(calls.map((c) => (c as { id: string }).id));
   });
 
-  it("runs at most MAX_TOOL_CALLS_PER_STEP calls a step, however cheap", async () => {
+  it("runs at most MAX_TOOL_CALLS_PER_STEP calls a step, however cheap — every call of the turn still runs before the model's next turn", async () => {
+    // Five since the go-live CPU gate (was eight): twelve calls run five, five and two, over three steps.
+    expect(MAX_TOOL_CALLS_PER_STEP).toBe(5);
     const free = readTool("read_day", 0);
     const calls = Array.from({ length: MAX_TOOL_CALLS_PER_TURN }, () => use("read_day"));
     const model = scriptedModel([toolTurn(...calls), endTurn("Done.")]);
@@ -451,7 +462,14 @@ describe("tool calls that do not fit one step's budget", () => {
     ok(await runStep(db, env, runId, userId, at(2), d));
     expect(free.calls).toHaveLength(MAX_TOOL_CALLS_PER_STEP);
     ok(await runStep(db, env, runId, userId, at(3), d));
+    expect(free.calls).toHaveLength(2 * MAX_TOOL_CALLS_PER_STEP);
+    ok(await runStep(db, env, runId, userId, at(4), d));
     expect(free.calls).toHaveLength(MAX_TOOL_CALLS_PER_TURN);
+    expect(model.requests).toHaveLength(1);
+    ok(await runStep(db, env, runId, userId, at(5), d));
+    expect(model.requests).toHaveLength(2);
+    const results = model.requests[1]!.messages.at(-1)!.content as Array<{ tool_use_id: string }>;
+    expect(results.map((r) => r.tool_use_id)).toEqual(calls.map((c) => (c as { id: string }).id));
   });
 
   it("answers calls past MAX_TOOL_CALLS_PER_TURN with an error, and never runs them", async () => {
@@ -525,6 +543,7 @@ describe("tool calls that do not fit one step's budget", () => {
       description: "x",
       inputSchema: {},
       statementCost: 0,
+      cpuWeight: 0,
       roles: ["main"],
       async run() {
         throw new Error("SQLITE_ERROR at /secret/path.ts:12");
@@ -553,6 +572,134 @@ describe("tool calls that do not fit one step's budget", () => {
     expect(result!.content).toMatch(/truncated/i);
     expect(result!.content).toMatch(/cursor|limit|page/i);
     expect((await runRow(runId)).state!.length).toBeLessThan(TOOL_RESULT_MAX_BYTES * 2);
+  });
+});
+
+// ── What one step runs: its CPU (the go-live CPU gate, design-cpu-bench.test.ts) ──────────────────────────────────
+
+describe("what one step runs, for its CPU", () => {
+  /** A turn whose content's JSON is exactly `size` bytes, asking for these calls. */
+  function turnOfSize(size: number, ...uses: ContentBlock[]): MessagesOk {
+    const content: ContentBlock[] = [thinking(), { type: "text", text: "" }, ...uses];
+    const base = new TextEncoder().encode(JSON.stringify(content)).length;
+    (content[1] as { text: string }).text = "x".repeat(size - base);
+    expect(new TextEncoder().encode(JSON.stringify(content)).length).toBe(size);
+    return answer(content, "tool_use");
+  }
+
+  it("an answer that carried documents (over DOCUMENT_ANSWER_BYTES) runs none of its calls: they wait, queued, and the next step runs them with no model call", async () => {
+    expect(DOCUMENT_ANSWER_BYTES).toBe(16_000);
+    const read = readTool("read_day", 1);
+    const model = scriptedModel([turnOfSize(DOCUMENT_ANSWER_BYTES + 1, use("read_day", { n: 1 }), use("read_day", { n: 2 })), endTurn("Done.")]);
+    const d = deps(model.callModel, [read]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), d)); // context
+    const read1 = ok(await runStep(db, env, runId, userId, at(2), d));
+    expect(read1.status).toBe("active");
+    expect(read.calls).toHaveLength(0);
+    // The model's words are on the trail now; the calls' lines come with the step that runs them.
+    expect(read1.events.map((e) => e.kind)).toEqual(["note"]);
+    expect(read1.nextDue).toMatchObject({ at: at(2).toISOString() });
+    const queued = JSON.parse((await runRow(runId)).state!) as { pending: Array<{ name: string }>; results: unknown[] };
+    // Queued by id and name: each input stays in the answer just stored, never stored twice (a document turn's would
+    // push its state toward the cap). A state stored before, whose queue holds its own copies, still runs them
+    // (coach-runs-cron, coach-runs-routes and design-review build such states).
+    const newest = (JSON.parse((await runRow(runId)).state!) as { messages: MessageParam[] }).messages.at(-1)!;
+    expect(newest.role).toBe("assistant");
+    const asked = (newest.content as Array<{ type: string; id?: string }>).filter((b) => b.type === "tool_use").map((b) => b.id);
+    expect(asked).toHaveLength(2);
+    expect(queued.pending).toEqual(asked.map((id) => ({ id, name: "read_day" })));
+    expect(queued.results).toEqual([]);
+    const ran = ok(await runStep(db, env, runId, userId, at(3), d));
+    expect(model.requests).toHaveLength(1);
+    expect(read.calls.map((c) => c.input)).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(ran.events.map((e) => e.kind)).toEqual(["tool_result", "tool_result"]);
+    // Then the model has both results, as one message.
+    ok(await runStep(db, env, runId, userId, at(4), d));
+    expect(model.requests).toHaveLength(2);
+    expect((model.requests[1]!.messages.at(-1)!.content as unknown[]).length).toBe(2);
+  });
+
+  it("an answer of exactly DOCUMENT_ANSWER_BYTES runs its calls in the step that read it", async () => {
+    const read = readTool("read_day", 1);
+    const model = scriptedModel([turnOfSize(DOCUMENT_ANSWER_BYTES, use("read_day")), endTurn("Done.")]);
+    const d = deps(model.callModel, [read]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), d));
+    ok(await runStep(db, env, runId, userId, at(2), d));
+    expect(read.calls).toHaveLength(1);
+  });
+
+  it("at most MAX_DOCUMENT_TOOLS_PER_STEP document tools a step: the next one waits, and the calls after it", async () => {
+    expect(MAX_DOCUMENT_TOOLS_PER_STEP).toBe(3);
+    expect([...DOCUMENT_TOOLS].sort()).toEqual(["propose_workout", "validate_workout"]);
+    const validate = readTool("validate_workout", 1);
+    const read = readTool("read_day", 1);
+    const model = scriptedModel([toolTurn(use("validate_workout"), use("validate_workout"), use("validate_workout"), use("validate_workout"), use("read_day")), endTurn("Done.")]);
+    const d = deps(model.callModel, [validate, read]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), d));
+    ok(await runStep(db, env, runId, userId, at(2), d));
+    expect([validate.calls.length, read.calls.length]).toEqual([3, 0]);
+    ok(await runStep(db, env, runId, userId, at(3), d));
+    expect([validate.calls.length, read.calls.length]).toEqual([4, 1]);
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it("a step starts a call only while its declared CPU weight fits what is left of the step's room; the rest wait", async () => {
+    expect([MODEL_STEP_CPU_ROOM, PENDING_STEP_CPU_ROOM, MAX_TOOL_CPU_WEIGHT]).toEqual([2.5, 4, 4]);
+    // 1 ms each: a model step has room for two, a step of queued calls for four.
+    const heavy = readTool("read_balance", 0, { found: 1 }, ["main", "designer", "reviewer"], 1);
+    const calls = Array.from({ length: 7 }, () => use("read_balance"));
+    const model = scriptedModel([toolTurn(...calls), endTurn("Done.")]);
+    const d = deps(model.callModel, [heavy]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), d));
+    ok(await runStep(db, env, runId, userId, at(2), d));
+    expect(heavy.calls).toHaveLength(2);
+    ok(await runStep(db, env, runId, userId, at(3), d));
+    expect(heavy.calls).toHaveLength(6);
+    ok(await runStep(db, env, runId, userId, at(4), d));
+    expect(heavy.calls).toHaveLength(7);
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it("weights that fill the room exactly all fit, floating point notwithstanding (4 − 1.1 − 1.3 is 1.5999…98, and 1.6 still fits)", async () => {
+    const tools = [1.1, 1.3, 1.6, 0.1].map((w, i) => readTool(`read_${i}`, 0, { found: 1 }, ["main", "designer", "reviewer"], w));
+    // A document-sized answer: nothing runs with it, so the four go to a step of queued calls (room 4).
+    const model = scriptedModel([turnOfSize(DOCUMENT_ANSWER_BYTES + 1, ...tools.map((t) => use(t.name))), endTurn("Done.")]);
+    const d = deps(model.callModel, tools);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), d));
+    ok(await runStep(db, env, runId, userId, at(2), d));
+    ok(await runStep(db, env, runId, userId, at(3), d));
+    expect(tools.map((t) => t.calls.length)).toEqual([1, 1, 1, 0]);
+    ok(await runStep(db, env, runId, userId, at(4), d));
+    expect(tools.map((t) => t.calls.length)).toEqual([1, 1, 1, 1]);
+  });
+
+  it("a call as heavy as a step of queued calls can hold waits out a model step, then runs alone; one heavier is never run", async () => {
+    const big = readTool("search_library", 0, { found: 1 }, ["main", "designer", "reviewer"], MAX_TOOL_CPU_WEIGHT);
+    const read = readTool("read_day", 0, { found: 1 }, ["main", "designer", "reviewer"], 0.1);
+    const model = scriptedModel([toolTurn(use("search_library"), use("read_day")), endTurn("Done.")]);
+    const d = deps(model.callModel, [big, read]);
+    const runId = await newMainRun();
+    ok(await runStep(db, env, runId, userId, at(1), d));
+    ok(await runStep(db, env, runId, userId, at(2), d));
+    expect([big.calls.length, read.calls.length]).toEqual([0, 0]);
+    ok(await runStep(db, env, runId, userId, at(3), d));
+    expect([big.calls.length, read.calls.length]).toEqual([1, 0]);
+    ok(await runStep(db, env, runId, userId, at(4), d));
+    expect([big.calls.length, read.calls.length]).toEqual([1, 1]);
+
+    const greedy = readTool("read_everything", 0, { found: 1 }, ["main", "designer", "reviewer"], MAX_TOOL_CPU_WEIGHT + 0.1);
+    const model2 = scriptedModel([toolTurn(use("read_everything")), endTurn("Done.")]);
+    const runId2 = await newMainRun("again");
+    await drive(runId2, deps(model2.callModel, [greedy]));
+    expect(greedy.calls).toHaveLength(0);
+    const [result] = model2.requests[1]!.messages.at(-1)!.content as Array<{ is_error?: boolean; content: string }>;
+    expect(result!.is_error).toBe(true);
+    expect(JSON.parse(result!.content).error).toBe("unavailable");
   });
 });
 

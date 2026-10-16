@@ -281,6 +281,7 @@ export const adjustPlan: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, "workoutId, change ({ kind: skip, reason } or { kind: move, toDate, toTime? } or { kind: adjust, durationMinutes }) and why");

@@ -594,6 +594,7 @@ export const submitReview: DesignTool = {
   },
   /** The proposal, then the op with the review. */
   statementCost: 2,
+  cpuWeight: 0.4,
   roles: ["reviewer"],
   control: "finish",
   async run(ctx, raw) {

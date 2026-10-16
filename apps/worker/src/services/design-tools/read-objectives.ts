@@ -99,6 +99,7 @@ export const readObjectives: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 9,
+  cpuWeight: 1.3,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally limit and cursor");

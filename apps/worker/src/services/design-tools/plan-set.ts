@@ -108,6 +108,7 @@ export const planSet: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 3,
+  cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, FIELDS);

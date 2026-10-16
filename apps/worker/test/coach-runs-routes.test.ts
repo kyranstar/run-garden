@@ -65,6 +65,7 @@ function costly(name: string, cost: number, extra: Partial<DesignTool> = {}): De
     description: name,
     inputSchema: { type: "object" },
     statementCost: cost,
+    cpuWeight: 0,
     roles: ["main"],
     async run(ctx) {
       for (let i = 0; i < cost; i++) await ctx.db.all(sql`select 1`);
@@ -497,7 +498,9 @@ describe("every request within the budget", () => {
     const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     const state = JSON.parse(row!.state!) as { messages: unknown[]; pending: unknown[]; calls: number };
     const uses = costs.map((_, i) => ({ type: "tool_use", id: `toolu_q${i}`, name: `q${i}`, input: {} }));
-    (state.messages[0] as { content: Array<{ text: string }> }).content[0]!.text += "p".repeat(150_000);
+    // Near enough the cap that the step's results (MAX_TOOL_CALLS_PER_STEP of them, ~7.8 KB each) take it past: 165 KB
+    // since a step runs five (it was 150 KB when a step ran eight).
+    (state.messages[0] as { content: Array<{ text: string }> }).content[0]!.text += "p".repeat(165_000);
     state.messages.push({ role: "assistant", content: uses });
     state.pending = uses.map((u) => ({ id: u.id, name: u.name, input: {} }));
     state.calls = 1;

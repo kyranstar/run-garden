@@ -175,6 +175,7 @@ export const recordAnswer: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.2,
   roles: ["main"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, `answers: 1–${MAX_ANSWERS}, each { question, area?, value? (0–10, only a number given), quote }`);

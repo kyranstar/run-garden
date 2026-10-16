@@ -59,6 +59,7 @@ export const validateWorkout: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 6,
+  cpuWeight: 1.2,
   roles: ["main", "designer", "reviewer"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, "doc (a workout document), date (YYYY-MM-DD) and optionally workoutId");

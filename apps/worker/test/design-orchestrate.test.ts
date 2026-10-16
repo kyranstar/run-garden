@@ -21,7 +21,7 @@ import { schema } from "@rg/database";
 import { addDays } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { cancelRun, createRun, getRun, LIVE_STATUSES, ROUTE_OVERHEAD, runStep, STEP_BUDGET, type RunDeps } from "../src/services/coach-runs.js";
+import { cancelRun, createRun, DOCUMENT_ANSWER_BYTES, getRun, LIVE_STATUSES, ROUTE_OVERHEAD, runStep, STEP_BUDGET, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { DESIGNER_CEILING_MICROS, SET_MAX_WORKOUTS } from "../src/services/design-limits.js";
 import { PROMPT_TOOL_NAMES, REVIEW_DIMENSIONS, roleBlock, SHARED_PROMPT } from "../src/services/design-prompt.js";
@@ -1063,12 +1063,13 @@ describe("a replay never starts a designer twice", () => {
   it("plan_set run again with the same call id (a step that died after its insert) starts none, and resets none", async () => {
     const a = await athlete();
     const mainId = await weekRun(a.userId);
-    // Eight reads fill the step's calls; plan_set waits for the next step, alone.
-    const reads = Array.from({ length: 8 }, () => use("read_day", {}));
+    // An answer as big as a document's runs none of its calls in the step that read it (the go-live CPU gate:
+    // DOCUMENT_ANSWER_BYTES): plan_set waits for the next step, alone. (It was eight reads filling the step's calls,
+    // when a step ran eight; how many reads fill a step now depends on their CPU weights.)
     const plan = planSet([brief("thu", THU), brief("sat", SAT), brief("mon", MON)]);
-    const { deps } = scripted([t(...reads, plan)]);
+    const { deps } = scripted([turn([plan], { text: "x".repeat(DOCUMENT_ANSWER_BYTES) })]);
     await runStep(db, env, mainId, a.userId, NOW, deps); // context
-    await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + 1000), deps); // the reads; plan_set queued
+    await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + 1000), deps); // the answer; plan_set queued
     const before = await runRow(mainId);
     expect(JSON.parse(before.state!).pending.map((c: { name: string }) => c.name)).toEqual(["plan_set"]);
     await runStep(db, env, mainId, a.userId, new Date(NOW.getTime() + 2000), deps); // plan_set: three designers

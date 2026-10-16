@@ -61,6 +61,7 @@ export const readHistory: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 1.6,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "from and to (YYYY-MM-DD), and optionally kind, limit and cursor");

@@ -26,6 +26,7 @@ export const readDay: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.3,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "an optional date (YYYY-MM-DD)");

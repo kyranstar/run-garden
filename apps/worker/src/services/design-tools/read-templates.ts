@@ -44,6 +44,7 @@ export const listTemplates: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 1,
+  cpuWeight: 1.0,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally limit and cursor");

@@ -151,6 +151,7 @@ export const remember: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 3,
+  cpuWeight: 0.2,
   roles: ["main", "designer"],
   async run(ctx, raw) {
     if ((raw as { confidence?: unknown } | null)?.confidence === "confirmed") {

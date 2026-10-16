@@ -6,18 +6,22 @@
  * Every shape is a real request through its route (`POST /api/coach/runs/:id/step`, the approve, the board, the current
  * run), each run from the same starting database:
  *  1. the first steps of a "now" run on a rich account: the opening context (its own step); the first model call, a
- *     streamed tool_use turn asking for 12 reads (8 run in that step: MAX_TOOL_CALLS_PER_STEP); the 4 queued reads;
- *  2. a heavy designer turn: a streamed answer carrying whole workout documents (~3.4k tokens each) after thinking, then
- *     4 × validate_workout — the most one model step runs (4 × 6 statements fill its room; the answer cap, 64 KB, holds
- *     no more than ~4 such documents) — or validate_workout then propose_workout, which builds the reviewer's packet and
- *     starts the reviewer, or propose_workout alone; and 5 × validate_workout of smaller documents in the step after (the
- *     pending step's room);
+ *     streamed tool_use turn asking for 12 reads (the step runs what its CPU room holds: MODEL_STEP_CPU_ROOM); the
+ *     queued reads, a step at a time (PENDING_STEP_CPU_ROOM, MAX_TOOL_CALLS_PER_STEP);
+ *  2. a heavy designer turn: a streamed answer carrying whole workout documents (~3.4k tokens each) after thinking — an
+ *     answer over DOCUMENT_ANSWER_BYTES, so the step that reads it runs none of its calls — then the steps that run them:
+ *     4 × validate_workout (the answer cap, 64 KB, holds no more than ~4 such documents), 3 in a step at most
+ *     (MAX_DOCUMENT_TOOLS_PER_STEP); or validate_workout then propose_workout, run together in the next step, which builds
+ *     the reviewer's packet and starts the reviewer; or propose_workout alone (an answer just under the threshold: it
+ *     runs in the model step); and 9 smaller documents, then their validates three steps of 3;
  *  3. a model step at a state near its cap (~190 KB): its parse, the request body, the answer, the write;
  *  4. the reviewer: its packet (cut near 24 KB, evidence first), its opening context, its submit_review turn, and the
  *     designer's resume;
  *  5. the manifest of a 7-workout set with 3 changes (`placedTimes`, `relaidDay`), and its approve, chunk by chunk;
  *  6. `GET /api/objectives/board` over two years of runs, sessions and sets (best ever reads all of it);
- *  7. `GET /api/coach/runs/current` with 50 events.
+ *  7. `GET /api/coach/runs/current` with 50 events;
+ *  8. every tool's own call, alone, as a step runs it (`measureTool`): its scaled p50 must stay at or under the tool's
+ *     declared `cpuWeight`, which the step loop spends its CPU room by.
  *
  * THE MODEL'S ANSWER is the Messages API's event stream, fed to the real client (llm-messages.ts `callMessages`) through
  * its fetch seam, one event to a read — how a streamed answer arrives while the model writes it. A tool's input comes in
@@ -60,14 +64,15 @@ import type { Env } from "../src/env.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import { objectiveBoardRoutes } from "../src/routes/objectives-board.js";
-import { ANSWER_MAX_BYTES, createRun, noteOnTrail, STATE_MAX_BYTES, type RunDeps, type RunState } from "../src/services/coach-runs.js";
+import { ANSWER_MAX_BYTES, createRun, DOCUMENT_ANSWER_BYTES, noteOnTrail, STATE_MAX_BYTES, type RunDeps, type RunState } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { reviewPacket, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/services/design-review.js";
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
-import { isToolErr, type DraftForReview, type OpReview, type ToolContext } from "../src/services/design-tools/types.js";
+import { isToolErr, type DraftForReview, type OpReview, type SetHooks, type SetRound, type ToolContext } from "../src/services/design-tools/types.js";
+import { utf8Bytes } from "../src/services/utf8.js";
 import { validateWorkout } from "../src/services/design-tools/validate.js";
 import { callMessages } from "../src/services/llm-messages.js";
 import type { Db } from "../src/services/db.js";
@@ -242,6 +247,34 @@ async function measure(
   }
   shapes.set(id, { label, samples, first, budget: o.budget });
   return last!;
+}
+
+/**
+ * One tool's call, alone, as a step runs it: the call itself, and what the loop does with its answer and input (the
+ * result's JSON and its size in bytes, the input bounded for the trail). Its scaled p50 is what the tool's declared
+ * `cpuWeight` must cover (section 8).
+ */
+async function measureTool(name: string, image: Buffer, ctx: (w: World) => ToolContext, input: unknown): Promise<void> {
+  const tool = allTools().find((t) => t.name === name);
+  if (!tool) throw new Error(`no tool ${name}`);
+  (await measure(`8.${name}`, `8. ${name} (declared ${tool.cpuWeight})`, image, async (x) => {
+    const r = await tool.run(ctx(x), input);
+    if (isToolErr(r)) throw new Error(`${name} refused: ${r.error} — ${r.why}`);
+    utf8Bytes(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }));
+    JSON.stringify(input);
+  }, { budget: null })).close();
+}
+
+/** The loop's side of a set, as a main run's step gives it (setHooks), over these rounds; starting a designer inserts
+ * nothing here (that insert is SQLite's own work). */
+function setHooksOf(rounds: SetRound[]): SetHooks {
+  return {
+    rounds: () => rounds,
+    start: async (designers) => designers.map((d) => d.runId),
+    budget: () => ({ ceilingMicros: 6_000_000, spentMicros: 120_000, mainSpentMicros: 60_000, perDesignerMicros: null, estimate: null }),
+    started: () => false,
+    keyLine: () => undefined,
+  };
 }
 
 /** Time a part of a request alone (no D1): printed, never asserted. */
@@ -419,6 +452,7 @@ const REQUEST =
 let cookie = "";
 let userId = "";
 let runId = "";
+let rich: Awaited<ReturnType<typeof seedRichAthlete>>;
 const images = new Map<string, Buffer>();
 const sizes: string[] = [];
 let calibration = 0;
@@ -442,7 +476,32 @@ const expectStep = (status: string | null, kinds?: (k: string[]) => boolean) => 
     throw new Error(`expected ${status}, got ${b.status}: ${b.events.map((e) => `${e.kind}: ${e.summary}`).join(" | ")}`);
   }
 };
-const results = (n: number) => (k: string[]) => k.filter((x) => x === "tool_result").length === n;
+const resultsIn = (k: string[]): number => k.filter((x) => x === "tool_result").length;
+const results = (n: number) => (k: string[]) => resultsIn(k) === n;
+/** Steps of queued calls a drain takes at most (a turn's twelve calls go in three). */
+const DRAIN_STEPS_MAX = 8;
+
+/**
+ * The steps of queued calls after `image`, each measured from where the last left off, until the run's queue is empty:
+ * shapes `${id}.1`, `${id}.2`, … (each labelled with how many calls it ran). Answers the database the last left (open).
+ */
+async function drain(id: string, label: (k: number, ran: number) => string, image: Buffer, budget: number): Promise<World> {
+  let from = image;
+  for (let k = 1; k <= DRAIN_STEPS_MAX; k++) {
+    let ran = 0;
+    const w = await measure(`${id}.${k}`, "", from, step, {
+      budget,
+      check: (b) => {
+        expectStep("active", (kinds) => (ran = resultsIn(kinds)) > 0)(b);
+      },
+    });
+    shapes.get(`${id}.${k}`)!.label = label(k, ran);
+    if ((await stateOf(w.db, runId)).pending.length === 0) return w;
+    from = imageOf(w.db);
+    w.close();
+  }
+  throw new Error(`${id}: the queue was not empty after ${DRAIN_STEPS_MAX} steps`);
+}
 
 const mainCtx = (db: Db): ToolContext => ({ db, env, userId, run: { id: runId, role: "main", scope: { kind: "now" }, parentId: null, rehearsal: false }, now: NOW });
 
@@ -610,7 +669,8 @@ beforeAll(async () => {
 
   // ── 1–4: a "now" run on the rich athlete, on its fixed clock ──
   const base = makeTestDb();
-  ({ userId } = await seedRichAthlete(base));
+  rich = await seedRichAthlete(base);
+  userId = rich.userId;
   cookie = `${SESSION_COOKIE}=${await createSession(base, userId)}`;
   runId = (await createRun(base, userId, { scope: { kind: "now" }, request: REQUEST }, NOW)).run.id;
   const moves = await movesForToday(base);
@@ -632,7 +692,7 @@ beforeAll(async () => {
   images.set("opened", imageOf(w.db));
   w.close();
 
-  // 1b. The first model call: a tool_use turn of 12 reads, heaviest first; the step runs 8.
+  // 1b. The first model call: a tool_use turn of 12 reads, heaviest first; the step runs what fits its CPU room.
   const twelve = streamOf([
     thinking(2_400),
     { type: "text", text: words(0, 220) },
@@ -651,17 +711,25 @@ beforeAll(async () => {
   ]);
   answer = twelve.chunks;
   sizes.push(`the 12-read answer: ${twelve.contentBytes} B of content in ${twelve.chunks.length} events`);
-  w = await measure("1b", "1b. first model step: a stream of 12 reads, 8 run", images.get("opened")!, step, { budget: GO_LIVE_BUDGET_MS, check: expectStep("active", results(8)) });
-  images.set("read8", imageOf(w.db));
+  let ran = 0;
+  w = await measure("1b", "1b. first model step: a stream of 12 reads", images.get("opened")!, step, {
+    budget: GO_LIVE_BUDGET_MS,
+    check: (b) => {
+      expectStep("active", (k) => (ran = resultsIn(k)) > 0)(b);
+    },
+  });
+  shapes.get("1b")!.label = `1b. first model step: a stream of 12 reads, ${ran} run`;
+  images.set("read1", imageOf(w.db));
   w.close();
 
-  // 1c. The 4 queued reads (no model call).
-  w = await measure("1c", "1c. pending step: the 4 queued reads", images.get("read8")!, step, { budget: 5, check: expectStep("active", results(4)) });
+  // 1c. The queued reads (no model call), a step at a time until none is left.
+  w = await drain("1c", (k, n) => `1c. pending step ${k}: ${n} queued reads`, images.get("read1")!, 5);
   images.set("read12", imageOf(w.db));
   const afterReads = await stateOf(w.db, runId);
   sizes.push(`state after the 12 reads: ${JSON.stringify(afterReads).length} B`);
 
-  // 2a. Thinking and four whole documents, each validated.
+  // 2a. Thinking and four whole documents to validate: the model step reads them and runs none (a document-sized
+  // answer); the steps after it run the validates, MAX_DOCUMENT_TOOLS_PER_STEP at a time.
   const objectiveIds = [`${userId}-obj-hold`];
   const docs = [0, 1, 2, 3].map((v) => designedDoc(moves, v, objectiveIds));
   await expectValid(w.db, docs);
@@ -673,10 +741,13 @@ beforeAll(async () => {
       `${four.contentBytes} B of content in ${four.chunks.length} events (${four.chunks.reduce((s, c) => s + c.length, 0)} B streamed)`,
   );
   answer = four.chunks;
-  (await measure("2a", "2a. model step: 4 whole documents streamed, 4 × validate_workout", images.get("read12")!, step, {
+  w = await measure("2a", "2a. model step: 4 whole documents streamed (none run: a document-sized answer)", images.get("read12")!, step, {
     budget: GO_LIVE_BUDGET_MS,
-    check: expectStep("active", results(4)),
-  })).close();
+    check: expectStep("active", results(0)),
+  });
+  images.set("four-queued", imageOf(w.db));
+  w.close();
+  (await drain("2a.q", (k, n) => `2a.q pending step ${k}: ${n} × validate_workout of a whole document`, images.get("four-queued")!, GO_LIVE_BUDGET_MS)).close();
   const tiny = { system: [], messages: [{ role: "user" as const, content: "x" }], tools: [], maxTokens: 16_000 };
   await measurePart("2a.stream", "   part: that answer's stream alone, an event a read", async () => {
     answer = four.chunks;
@@ -696,43 +767,87 @@ beforeAll(async () => {
     if (isToolErr(await validateWorkout.run(mainCtx(x.db), { doc: docs[0], date: TODAY }))) throw new Error("validate failed");
   }, { budget: null })).close();
 
-  // 2b. Validate, then propose: the reviewer's packet is built and the reviewer started, in the same step.
+  // 8. Each tool's own CPU, on the rich athlete after the twelve reads: the read tools at their widest asks, and the
+  // act tools as a designer turn calls them (a whole document to validate and propose).
+  {
+    const ctx = (x: World): ToolContext => ({ ...mainCtx(x.db), toolUseId: "toolu_bench_weight" });
+    const reads: Array<[string, unknown]> = [
+      ["read_profile", {}],
+      ["read_day", { date: TODAY }],
+      ["read_plan", { from: day(30), to: day(-60), limit: 50 }],
+      ["list_workouts", { from: day(45), to: day(-45), limit: 50 }],
+      ["get_workout", { id: rich.pastDocId }],
+      ["read_history", { from: day(91), to: TODAY, limit: 30 }],
+      ["read_balance", { from: day(91), to: TODAY }],
+      ["read_readiness", { days: 30 }],
+      ["read_answers", { since: day(91), limit: 50 }],
+      ["read_objectives", { limit: 12 }],
+      ["search_library", { query: "hip", filters: { fitToday: true }, limit: 30 }],
+      ["get_exercise", { id: "gobletSquat", howTo: true }],
+      ["list_templates", { limit: 50 }],
+      ["read_proposals", { limit: 30 }],
+      ["recall_memory", { limit: 30 }],
+    ];
+    for (const [name, input] of reads) await measureTool(name, images.get("read12")!, ctx, input);
+    await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });
+    await measureTool("propose_workout", images.get("read12")!, ctx, { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) });
+    await measureTool("ask_athlete", images.get("read12")!, ctx, {
+      questions: [{ text: "How tight are the calves today?", chips: [{ label: "a little", value: 2 }, { label: "a lot", value: 7 }], why: "It sets the range.", checkin: { question: "tightness", area: "calves" } }],
+    });
+    await measureTool("record_answer", images.get("read12")!, ctx, { answers: [{ question: "tightness", area: "calves", quote: "My calves are tight from Sunday's hills" }] });
+    await measureTool("remember", images.get("read12")!, ctx, { kind: "fact", body: words(1, 200), confidence: "stated" });
+    await measureTool("adjust_plan", images.get("read12")!, ctx, { workoutId: rich.outlineToday, change: { kind: "skip", reason: "Rest the legs today." }, why: words(2, 150) });
+    await measureTool("finish", images.get("read12")!, ctx, { summary: words(3, 200) });
+  }
+
+  // 2b. Validate, then propose: two documents, so the model step runs neither; the next runs both — the reviewer's
+  // packet is built and the reviewer started, in that step.
   answer = streamOf([
     thinking(3_000),
     { type: "text", text: words(5, 200) },
     use("validate_workout", { doc: docs[0], date: TODAY }),
     use("propose_workout", { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) }),
   ]).chunks;
-  w = await measure("2b", "2b. model step: validate + propose (packet built, reviewer started)", images.get("read12")!, step, {
+  w = await measure("2b", "2b. model step: validate + propose streamed (none run: a document-sized answer)", images.get("read12")!, step, {
+    budget: GO_LIVE_BUDGET_MS,
+    check: expectStep("active", results(0)),
+  });
+  images.set("validate-propose-queued", imageOf(w.db));
+  w.close();
+  w = await measure("2b.q", "2b.q pending step: validate + propose (packet built, reviewer started)", images.get("validate-propose-queued")!, step, {
     budget: GO_LIVE_BUDGET_MS,
     check: expectStep(null, (k) => k.includes("draft")),
   });
   images.set("proposed", imageOf(w.db));
 
-  // 2e. Propose alone (what the prompt asks for once the designer is confident: propose re-validates).
-  answer = streamOf([
+  // 2e. Propose alone (what the prompt asks for once the designer is confident: propose re-validates): one whole
+  // document, its answer just under DOCUMENT_ANSWER_BYTES, so propose runs in the model step.
+  const alone = streamOf([
     thinking(3_000),
     { type: "text", text: words(5, 200) },
     use("propose_workout", { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) }),
-  ]).chunks;
+  ]);
+  sizes.push(`the propose-alone answer: ${alone.contentBytes} B of content (a document-sized answer is over ${DOCUMENT_ANSWER_BYTES} B)`);
+  answer = alone.chunks;
   (await measure("2e", "2e. model step: one whole document streamed, propose_workout alone", images.get("read12")!, step, {
     budget: GO_LIVE_BUDGET_MS,
     check: expectStep(null, (k) => k.includes("draft")),
   })).close();
 
-  // 2c / 2d. Nine smaller documents to validate: 4 run in the model step, 5 in the next (the pending step's room).
+  // 2c / 2d. Nine smaller documents to validate: the model step reads them and runs none; the steps after it run the
+  // validates, MAX_DOCUMENT_TOOLS_PER_STEP at a time.
   {
     const halves = Array.from({ length: 9 }, (_, v) => designedDoc(moves, v, objectiveIds, "half"));
     const nine = streamOf([thinking(2_000), ...halves.map((doc) => use("validate_workout", { doc, date: TODAY }))]);
     if (nine.contentBytes > ANSWER_MAX_BYTES) throw new Error(`the 9-document answer is ${nine.contentBytes} B, over the answer cap`);
     answer = nine.chunks;
-    const x = await measure("2c", "2c. model step: 9 half documents streamed, 4 × validate_workout", images.get("read12")!, step, {
+    const x = await measure("2c", "2c. model step: 9 half documents streamed (none run: a document-sized answer)", images.get("read12")!, step, {
       budget: GO_LIVE_BUDGET_MS,
-      check: expectStep("active", results(4)),
+      check: expectStep("active", results(0)),
     });
-    images.set("validated4", imageOf(x.db));
+    images.set("nine-queued", imageOf(x.db));
     x.close();
-    (await measure("2d", "2d. pending step: 5 × validate_workout", images.get("validated4")!, step, { budget: GO_LIVE_BUDGET_MS, check: expectStep("active", results(5)) })).close();
+    (await drain("2d", (k, n) => `2d. pending step ${k}: ${n} × validate_workout of a half document`, images.get("nine-queued")!, GO_LIVE_BUDGET_MS)).close();
   }
 
   // 4a. The reviewer's packet alone: the designer's calls, ranked by evidence, cut near 24 KB.
@@ -762,17 +877,30 @@ beforeAll(async () => {
   w.close();
 
   // 4c. The reviewer's turn: thinking and submit_review.
-  answer = streamOf([
-    thinking(4_000),
-    { type: "text", text: words(7, 200) },
-    use("submit_review", {
-      scores: Object.fromEntries(REVIEW_DIMENSIONS.map((d, i) => [d.id, 3 + (i % 3)])),
-      notes: Object.fromEntries(REVIEW_DIMENSIONS.map((d, i) => [d.id, words(i, 230)])),
-      mustFix: [words(1, 220), words(2, 220)],
-      improvements: [words(3, 220), words(4, 220), words(5, 220), words(6, 220)],
-      accepted: [{ dimension: "time_fit", why: words(8, 200) }],
-    }),
-  ]).chunks;
+  const reviewInput = {
+    scores: Object.fromEntries(REVIEW_DIMENSIONS.map((d, i) => [d.id, 3 + (i % 3)])),
+    notes: Object.fromEntries(REVIEW_DIMENSIONS.map((d, i) => [d.id, words(i, 230)])),
+    mustFix: [words(1, 220), words(2, 220)],
+    improvements: [words(3, 220), words(4, 220), words(5, 220), words(6, 220)],
+    accepted: [{ dimension: "time_fit", why: words(8, 200) }],
+  };
+  {
+    // 8. submit_review's own CPU, as the reviewer calls it.
+    const x = open(images.get("reviewer-opened")!);
+    const [rv] = await x.db
+      .select({ id: schema.coachRuns.id, state: schema.coachRuns.state })
+      .from(schema.coachRuns)
+      .where(and(eq(schema.coachRuns.parentId, runId), eq(schema.coachRuns.role, "reviewer")));
+    const reviewOf = (JSON.parse(rv!.state!) as RunState).reviewOf!;
+    x.close();
+    await measureTool(
+      "submit_review",
+      images.get("reviewer-opened")!,
+      (y) => ({ db: y.db, env, userId, run: { id: rv!.id, role: "reviewer", scope: { kind: "now" }, parentId: runId, rehearsal: false }, now: NOW, reviewOf, toolUseId: "toolu_bench_review" }),
+      reviewInput,
+    );
+  }
+  answer = streamOf([thinking(4_000), { type: "text", text: words(7, 200) }, use("submit_review", reviewInput)]).chunks;
   w = await measure("4c", "4c. reviewer model step (submit_review)", images.get("reviewer-opened")!, step, { budget: 4, check: expectStep(null, (k) => k.includes("review")) });
   images.set("reviewed", imageOf(w.db));
   w.close();
@@ -853,17 +981,49 @@ beforeAll(async () => {
       const r = await adjustPlan.run(ctxOf(main), c);
       if (isToolErr(r)) throw new Error(`adjust refused: ${r.error} — ${r.why}`);
     }
+    const designers: string[] = [];
     for (let i = 0; i < 7; i++) {
-      const r = await proposeWorkout.run(ctxOf(await newRun("designer", main.id)), { doc: calmDoc({ title: `Day ${i + 1}` }), target: { kind: "new", date: addDays(today, i + 1) } });
+      const designer = await newRun("designer", main.id);
+      designers.push(designer.id);
+      const r = await proposeWorkout.run(ctxOf(designer), { doc: calmDoc({ title: `Day ${i + 1}` }), target: { kind: "new", date: addDays(today, i + 1) } });
       if (isToolErr(r)) throw new Error(`propose refused: ${r.error} — ${r.why}`);
     }
     const proposalId = designProposalId(main.id);
     const [p] = await db5.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, proposalId));
     const REVIEW: OpReview = { scores: { intent: 4, sequencing: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [], rounds: 1, changes: [] };
     const ops = (p!.ops as Array<Record<string, unknown>>).map((x) => (x.kind === "doc_workout" ? { ...x, review: REVIEW } : x));
-    await db5.update(schema.coachProposals).set({ status: "pending", ops }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
+    await db5.update(schema.coachProposals).set({ ops }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
+    images.set("set-unreviewed", imageOf(db5));
+    await db5.update(schema.coachProposals).set({ status: "pending" }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
     images.set("set", imageOf(db5));
     clientOf(db5).close();
+
+    // 8. The set's tools, on the set as the main coach holds it (its designers' round; a fresh week run for plan_set).
+    {
+      const round: SetRound = { toolUseId: "toolu_bench_plan", redo: false, briefs: [], designers: designers.map((runId, i) => ({ key: `d${i + 1}`, runId })) };
+      const setCtx = (x: World, rounds: SetRound[], run = main): ToolContext => ({ ...ctxOf(run), db: x.db, toolUseId: "toolu_bench_set", set: setHooksOf(rounds) });
+      await measureTool("read_set", images.get("set-unreviewed")!, (x) => setCtx(x, [round]), {});
+      await measureTool("drop_workout", images.get("set-unreviewed")!, (x) => setCtx(x, [round]), { opId: designers[3], reason: words(2, 120) });
+      const fresh = open(images.get("set-unreviewed")!);
+      const planner = await (async () => {
+        const id = `run-${newId()}`;
+        await fresh.db.insert(schema.coachRuns).values({ id, userId: uid, parentId: null, role: "main", scope: { kind: "week" }, request: null, status: "active", state: null, steps: 0, costUsd: 0, createdAt: stamp, updatedAt: stamp });
+        return { id, role: "main" as const, scope: { kind: "week" as const }, parentId: null, rehearsal: false };
+      })();
+      images.set("set-planner", imageOf(fresh.db));
+      fresh.close();
+      const briefs = [1, 3, 5].map((d, i) => ({
+        key: `day${i + 1}`,
+        date: addDays(today, d),
+        time: "12:30",
+        purpose: words(i, 160),
+        emphasis: words(i + 1, 160),
+        constraints: words(i + 2, 240),
+        why: words(i + 3, 240),
+        sameDayWhy: words(i + 4, 160),
+      }));
+      await measureTool("plan_set", images.get("set-planner")!, (x) => setCtx(x, [], planner), { briefs });
+    }
 
     (await measure("5a", "5a. GET /api/coach/proposals/:id (the manifest: placedTimes, relaidDay)", images.get("set")!, (x) => x.coach.request(`/api/coach/proposals/${proposalId}`, { headers: { Cookie: cookie5 } }, env), {
       budget: 3,
@@ -974,24 +1134,24 @@ function unscalable(): string | null {
 /**
  * OVER THE GO-LIVE BUDGET at this commit (scaled p50 as measured on 2026-10-16), each with the fix it waits on. Until
  * then each is held under a regression ceiling (~1.35× its measurement), so nothing gets worse unseen; once its fix
- * lands it leaves this list and meets its budget like the rest.
+ * lands it leaves this list and meets its budget like the rest. The designer's shapes (1b, 2a–2d) left it with the
+ * cheaper stream reader, the document-sized answer's queued calls and the step's CPU room.
  */
 const KNOWN_OVER: Readonly<Record<string, { measured: number; ceiling: number; waitsOn: string }>> = {
-  "1b": { measured: 8, ceiling: 11, waitsOn: "tool calls a step runs capped by CPU weight as well as by count; the athlete read once a step; Intl formats cached" },
-  "2a": { measured: 11.5, ceiling: 15.5, waitsOn: "no tool runs in the step that parsed a document-sized answer (the next step runs them); a cheaper stream reader" },
-  "2b": { measured: 7.5, ceiling: 10, waitsOn: "no tool runs in the step that parsed a document-sized answer (the next step runs them); a cheaper stream reader" },
-  "2c": { measured: 12, ceiling: 16, waitsOn: "no tool runs in the step that parsed a document-sized answer (the next step runs them); a cheaper stream reader" },
-  "2d": { measured: 6.6, ceiling: 9, waitsOn: "tool calls a step runs capped by CPU weight (a validate costs ~0.9 ms); Intl formats cached" },
   "6": { measured: 6.4, ceiling: 8.5, waitsOn: "best ever: window starts hoisted out of the per-run filter; the logged sets read as plain rows, not mapped by drizzle" },
 };
 
-/** The shape `id` — or, for "5b", every approve request — under its budget at p50 and the limit at p95 (scaled); a
+/** Shapes measured as a run of requests — the queued calls' steps, the approve's chunks — each `${id}.${k}`. */
+const GROUPS = ["1c", "2a.q", "2d", "5b"] as const;
+const inGroup = (id: string) => [...shapes.keys()].filter((k) => k.startsWith(`${id}.`));
+
+/** The shape `id` — or, for a group, every request of it — under its budget at p50 and the limit at p95 (scaled); a
  * shape over the budget, under its regression ceiling. */
 function within(id: string, ctx: TestContext): void {
   const why = unscalable();
   if (why) ctx.skip(why);
   const over = KNOWN_OVER[id];
-  const ids = id === "5b" ? [...shapes.keys()].filter((k) => k.startsWith("5b.")) : [id];
+  const ids = (GROUPS as readonly string[]).includes(id) ? inGroup(id) : [id];
   for (const s of ids.map((k) => shapes.get(k)!)) {
     if (over) {
       expect(scaled(p50Of(s)), `${s.label}: scaled p50, over the budget, under its regression ceiling`).toBeLessThan(over.ceiling);
@@ -1004,11 +1164,27 @@ function within(id: string, ctx: TestContext): void {
 
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !k.startsWith("5b."))).toEqual(["1a", "1b", "1c", "2a", "2b", "2e", "2c", "2d", "4b", "4c", "4d", "3", "7", "5a", "6"]);
-    expect([...shapes.keys()].filter((k) => k.startsWith("5b.")).length).toBeGreaterThanOrEqual(5);
+    const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "2a", "2b", "2b.q", "2e", "2c", "4b", "4c", "4d", "3", "7", "5a", "6"]);
+    // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
+    // documents' in three; the approve in five chunks or more.
+    expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
+    expect(inGroup("2a.q").map((k) => shapes.get(k)!.label)).toEqual([expect.stringContaining(": 3 ×"), expect.stringContaining(": 1 ×")]);
+    expect(inGroup("2d").map((k) => shapes.get(k)!.label)).toEqual([1, 2, 3].map(() => expect.stringContaining(": 3 ×")));
+    expect(inGroup("5b").length).toBeGreaterThanOrEqual(5);
+    expect(inGroup("8").map((k) => k.slice(2)).sort()).toEqual(allTools().map((t) => t.name).sort());
   });
 
-  for (const id of ["1a", "1b", "1c", "2a", "2b", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7"]) {
+  it("8: every tool's declared cpuWeight covers what one call of it takes (scaled p50)", (ctx) => {
+    const why = unscalable();
+    if (why) ctx.skip(why);
+    for (const t of allTools()) {
+      const s = shapes.get(`8.${t.name}`)!;
+      expect(scaled(p50Of(s)), `${t.name}: declared ${t.cpuWeight} ms`).toBeLessThanOrEqual(t.cpuWeight);
+    }
+  });
+
+  for (const id of ["1a", "1b", "1c", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7"]) {
     const over = KNOWN_OVER[id];
     it(
       over

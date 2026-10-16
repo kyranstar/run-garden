@@ -66,6 +66,7 @@ export const readAnswers: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.6,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally question, area, since (YYYY-MM-DD), limit and cursor");

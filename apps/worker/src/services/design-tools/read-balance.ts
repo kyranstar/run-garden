@@ -55,6 +55,7 @@ export const readBalance: DesignTool = {
     "The balance of what was done between two dates: contraction types, aerobic and mobility minutes, exposure by region and muscle, what runs loaded, untrained regions, and when each focus area was last trained.",
   inputSchema: { type: "object", properties: { from: DATE_SCHEMA, to: DATE_SCHEMA }, required: ["from", "to"], additionalProperties: false },
   statementCost: 2,
+  cpuWeight: 1.7,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "from and to (YYYY-MM-DD)");

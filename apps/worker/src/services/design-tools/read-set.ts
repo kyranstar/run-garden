@@ -176,6 +176,7 @@ export const readSet: DesignTool = {
     "The set so far (a week or the next few), for the main coach, its designers and reviewers: each workout in date order with its op id, where it goes, parts, moves, derived fields and review; the combined balance; hard days in a row; the moves repeated on consecutive days; the main coach's changes to planned sessions, apart. Marks: yours, firstVersion, underReview, replacedBy.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   statementCost: 1,
+  cpuWeight: 0.4,
   roles: ["main", "designer", "reviewer"],
   async run(ctx, raw) {
     const p = parseAct(input, raw, "no fields");

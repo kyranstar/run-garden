@@ -119,6 +119,7 @@ export const askAthlete: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 1,
+  cpuWeight: 0.1,
   roles: ["main", "designer"],
   control: "ask",
   async run(ctx, raw) {

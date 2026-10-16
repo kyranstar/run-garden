@@ -130,6 +130,7 @@ export const readPlan: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.4,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "from and to (YYYY-MM-DD), and optionally limit and cursor");

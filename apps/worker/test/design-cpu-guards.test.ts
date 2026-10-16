@@ -5,6 +5,8 @@
  * Behaviour is unchanged; the suites of each caller pin it.
  */
 import { afterEach, describe, expect, it } from "vitest";
+import { DOCUMENT_TOOLS, MAX_TOOL_CPU_WEIGHT, MODEL_STEP_CPU_ROOM, PENDING_STEP_CPU_ROOM } from "../src/services/coach-runs.js";
+import { allTools } from "../src/services/design-tools/index.js";
 import { readAthlete } from "../src/services/design-tools/read-common.js";
 import { clockIn } from "../src/services/design-time.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -64,5 +66,19 @@ describe("a timezone's formatter is built once, not on every read of the clock",
       expect(clockIn("Not/AZone", now)).toEqual(fresh("UTC", now));
     }
     expect(built - before).toBe(0);
+  });
+});
+
+describe("every tool declares the CPU one call takes (the bench holds each declaration to what it measures)", () => {
+  it("a weight above nothing and within what a step of queued calls holds, in tenths of a ms; the document tools are the registry's own", () => {
+    expect(MODEL_STEP_CPU_ROOM).toBeLessThan(PENDING_STEP_CPU_ROOM);
+    expect(MAX_TOOL_CPU_WEIGHT).toBe(PENDING_STEP_CPU_ROOM);
+    for (const t of allTools()) {
+      expect(t.cpuWeight, t.name).toBeGreaterThan(0);
+      expect(t.cpuWeight, t.name).toBeLessThanOrEqual(MAX_TOOL_CPU_WEIGHT);
+      expect(Math.round(t.cpuWeight * 10) / 10, t.name).toBe(t.cpuWeight);
+    }
+    const names = allTools().map((t) => t.name);
+    for (const name of DOCUMENT_TOOLS) expect(names, name).toContain(name);
   });
 });

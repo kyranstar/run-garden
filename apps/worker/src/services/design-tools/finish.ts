@@ -37,6 +37,7 @@ export const finish: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  cpuWeight: 0.1,
   roles: ["main", "designer"],
   control: "finish",
   async run(ctx, raw) {
