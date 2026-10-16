@@ -15,8 +15,9 @@ import { test, expect } from "./fixtures.js";
  *      and the Studio tab's ● says so; back, the suggestion is there;
  *   2. the tab closed mid-step: the step finishes on the server with no client at all, plus at most one more, then the
  *      run rests (the model is called only for someone watching); opened again, the coach is at work and finishes;
- *  2c. the worker killed mid-step (a deploy): the run's object takes its own claim back at once — no 15-minute wait —
- *      and the dead call counts at an estimate, so the run isn't stopped by its spending limit: it finishes;
+ *  2c. the worker killed mid-step: the run's object takes the step back once no call could still be running (the model's
+ *      deadline — 30 s on this stack, FIXTURE_MODEL_TIMEOUT_MS — and a minute), never sooner and never after a
+ *      15-minute stale wait; the dead call counts at an estimate, so the run isn't stopped by its limit: it finishes;
  *  1b, 2b. the same between an answer over 16 KB and the next step, which runs its queued calls (the `big` script):
  *      left for the Plan, the calls run there; the tab closed, the run rests and finishes once it's opened — no model
  *      asked again;
@@ -291,11 +292,11 @@ function guardAcrossKill(page: Page): { down: () => void; up: () => void; check:
   };
 }
 
-bare("2c. the worker killed mid-step (a deploy): its own claim taken back at once, the dead call counted at an estimate — the run finishes", async ({ page, context, baseURL }) => {
-  bare.setTimeout(240_000);
+bare("2c. the worker killed mid-step: the step taken back once no call could still be running, the dead call counted at an estimate — the run finishes", async ({ page, context, baseURL }) => {
+  bare.setTimeout(300_000);
   const guard = guardAcrossKill(page);
   await fresh(context.request, baseURL);
-  await model("/delay/30000");
+  await model("/delay/20000");
   await start(page, "a short, gentle hips session");
   await modelBegun(1);
   await model("/delay/");
@@ -306,10 +307,14 @@ bare("2c. the worker killed mid-step (a deploy): its own claim taken back at onc
   await expect.poll(async () => (await model("/calls")).hungUp, { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
   await workerBack(context.request, baseURL);
   guard.up();
-  // The page still open: the run picks up — within minutes, never behind a 15-minute stale claim — and finishes. The
-  // dead call counts against the run at an estimate (its worst case, at the stand-in's unknown price, is past the
-  // run's $1.50 limit by itself), so its limit doesn't stop it.
-  await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 150_000 });
+  // Restarted, the object can't know the step it recorded is dead (a deploy lets one run on in the old instance): no
+  // second call before the claim, the model's deadline and a minute — though the page reads on all the while.
+  await new Promise((r) => setTimeout(r, 10_000));
+  expect((await model("/calls")).begun).toBe(1);
+  // Then the step is taken back, and the run finishes: within minutes, never behind a 15-minute stale claim. The dead
+  // call counts against the run at an estimate (its worst case, at the stand-in's unknown price, is past the run's
+  // $1.50 limit by itself), so its limit doesn't stop it.
+  await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 200_000 });
   expect(Date.now() - killedAt).toBeLessThan(4 * 60_000);
   const done = (await current(context.request, baseURL)).run!;
   expect(done).toMatchObject({ status: "finished", error: null });
