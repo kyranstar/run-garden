@@ -38,7 +38,7 @@ import {
   sleepRecords,
   workoutTemplates,
 } from "@rg/database";
-import { EFFORT_LEVELS, addDays, daysBetween, isoWeekday, todayInZone, type ProfileDto, type UserPreferences } from "@rg/domain";
+import { EFFORT_LEVELS, addDays, coachSettings, daysBetween, isoWeekday, todayInZone, type ProfileDto, type UserPreferences } from "@rg/domain";
 import { EQUIPMENT, profileById, type ConditionProfile, type DescribedRule, type EquipmentId, type FormatId } from "@rg/exercise-library";
 import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
 import type { Env } from "../env.js";
@@ -497,15 +497,19 @@ function eventsLine(r: Reads, end: string): { line: string; beyond: string[] } {
 /** The scope as the main coach answers it. */
 function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: string): string {
   const p = r.prefs;
+  // Settings → Coach (Task 10): the athlete's preferred training times, when they set any.
+  const times = coachSettings(p.coach).trainingTimes.join(", ");
+  const preferred = times ? `; their preferred training times ${times}` : "";
+  const setTimes = times ? `; time each workout at one of the athlete's preferred training times (${times}) where it fits` : "";
   switch (kind) {
     case "now":
       return `one workout, to start now (${time}), unless the request names another day or a planned workout to change`;
     case "later_today":
-      return `one workout, later today — after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}) and set it as the target's time`;
+      return `one workout, later today — after ${time}. Choose a sensible time (the athlete's usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}; latest evening finish ${p.latestEveningFinish}${preferred}) and set it as the target's time`;
     case "week":
-      return `this week — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set`;
+      return `this week — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set${setTimes}`;
     case "next_n":
-      return `the next ${n} workouts — ${n} new ones around what is planned, not the next ${n} planned sessions — from today (the plan is read through ${end}), planned as a set`;
+      return `the next ${n} workouts — ${n} new ones around what is planned, not the next ${n} planned sessions — from today (the plan is read through ${end}), planned as a set${setTimes}`;
   }
 }
 

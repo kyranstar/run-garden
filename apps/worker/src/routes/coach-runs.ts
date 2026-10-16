@@ -7,7 +7,7 @@
  * signed in or not; then the session is checked. Mounted ahead of `/api/coach` in index.ts so the coach's own sign-in
  * never answers for these paths first.
  *
- *   POST /                  { scope, request?, rehearsal? } → { run, existing }   (one live main run per athlete: a
+ *   POST /                  { scope?, request?, rehearsal? } → { run, existing }  (one live main run per athlete: a
  *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start)
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
  *   GET  /current           → { run, events, proposal } | { run: null }   (what the Studio shows when it opens, Task 9:
@@ -40,7 +40,7 @@ import {
   defaultRunDeps,
   getRun,
   noteOnTrail,
-  parseRunScope,
+  parseScopeRequest,
   runStep,
   type RunDeps,
 } from "../services/coach-runs.js";
@@ -61,8 +61,9 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
 
   routes.post("/", async (c) => {
     const body = (await c.req.json().catch(() => null)) as { scope?: unknown; request?: unknown; rehearsal?: unknown } | null;
-    const scope = parseRunScope(body?.scope);
-    if (!body || !scope) return c.json({ error: "bad_scope" }, 400);
+    // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
+    const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
+    if (!body || !asked) return c.json({ error: "bad_scope" }, 400);
     if (body.request !== undefined && body.request !== null && typeof body.request !== "string") {
       return c.json({ error: "bad_request_text" }, 400);
     }
@@ -73,7 +74,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     const created = await createRun(
       c.get("db"),
       c.get("userId"),
-      { scope, request: (body.request as string | null | undefined) ?? null, rehearsal: body.rehearsal === true },
+      { ...asked, request: (body.request as string | null | undefined) ?? null, rehearsal: body.rehearsal === true },
       new Date(),
     );
     return c.json(created);

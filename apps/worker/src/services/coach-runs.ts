@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage } from "@rg/database";
-import { newId, todayInZone } from "@rg/domain";
+import { ceilingKindOf, COACH_CEILING_DEFAULTS_USD, coachSettings, newId, todayInZone, type CoachPreferences } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
@@ -194,12 +194,13 @@ const ROLES: readonly ToolRole[] = ["main", "designer", "reviewer"];
  * prompt and the opening context read without importing the loop (fix wave 3A round 2, B-M9). */
 export { RUN_LIMITS };
 
-/** A run's own spending ceiling, by scope (spec §2): $1.50 for now / later today, $6 for a set. */
+/** A run's own spending ceiling, by scope (spec §2): $1.50 for now / later today, $6 for a set — Settings → Coach's
+ * defaults, which the athlete may lower (`COACH_CEILING_DEFAULTS_USD`; a create passes theirs to `newRunState`). */
 export const RUN_CEILING_MICROS: Readonly<Record<RunScopeKind, number>> = {
-  now: 1_500_000,
-  later_today: 1_500_000,
-  week: 6_000_000,
-  next_n: 6_000_000,
+  now: Math.round(COACH_CEILING_DEFAULTS_USD.day * 1_000_000),
+  later_today: Math.round(COACH_CEILING_DEFAULTS_USD.day * 1_000_000),
+  week: Math.round(COACH_CEILING_DEFAULTS_USD.set * 1_000_000),
+  next_n: Math.round(COACH_CEILING_DEFAULTS_USD.set * 1_000_000),
 };
 
 const USAGE_KIND: Readonly<Record<ToolRole, string>> = {
@@ -478,6 +479,25 @@ export function parseRunScope(raw: unknown): RunScope | null {
   if (typeof kind !== "string" || !(SCOPE_KINDS as readonly string[]).includes(kind)) return null;
   if (kind !== "next_n") return { kind: kind as RunScopeKind };
   return Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 14 ? { kind: "next_n", n: n as number } : null;
+}
+
+/**
+ * A create's scope as the request gives it (Settings → Coach, Task 10): absent, the athlete's default; `next_n` with no
+ * count, their count — both resolved by `createRun` from the settings. Null for anything else that isn't a scope.
+ */
+export function parseScopeRequest(raw: unknown): { scope?: RunScope } | null {
+  if (raw === undefined) return {};
+  const kind = (raw as { kind?: unknown } | null)?.kind;
+  if (kind === "next_n" && (raw as { n?: unknown }).n === undefined) return { scope: { kind: "next_n" } };
+  const scope = parseRunScope(raw);
+  return scope ? { scope } : null;
+}
+
+/** The scope a create starts: the request's, else the athlete's default; a set of the next workouts counts theirs. */
+export function resolveRunScope(asked: RunScope | undefined, coach: CoachPreferences | undefined): RunScope {
+  const settings = coachSettings(coach);
+  const kind = asked?.kind ?? settings.defaultScope;
+  return kind === "next_n" ? { kind, n: asked?.n ?? settings.nextN } : { kind };
 }
 
 const bytes = (text: string): number => new TextEncoder().encode(text).length;
@@ -814,7 +834,8 @@ function parsePayload(text: string | null): unknown {
 // ── Creating and reading runs ───────────────────────────────────────────
 
 export interface CreateRunInput {
-  scope: RunScope;
+  /** Absent: the athlete's default scope; `next_n` with no `n`: their count (Settings → Coach). */
+  scope?: RunScope;
   request?: string | null;
   rehearsal?: boolean;
 }
@@ -846,17 +867,26 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   // A15): rehearsals and the athlete's own runs each have their one live main run.
   const rehearsal = input.rehearsal === true;
   const request = input.request?.trim().slice(0, REQUEST_MAX_CHARS) || null;
-  const timezone = (await loadPreferences(db, userId)).timezone;
-  const state = newRunState("main", input.scope, {
+  // Settings → Coach (Task 10), from the one preferences read a create makes: the scope when none is asked for, the
+  // count of "next workouts", and the athlete's own limit for the scope (else `newRunState`'s default). A rehearsal —
+  // the scenario suite — measures the system as designed: the defaults.
+  const prefs = await loadPreferences(db, userId);
+  const timezone = prefs.timezone;
+  const own = rehearsal ? undefined : prefs.coach;
+  const scope = resolveRunScope(input.scope, own);
+  const ceilingKind = ceilingKindOf(scope.kind);
+  const lowered = own?.ceilingsUsd?.[ceilingKind];
+  const state = newRunState("main", scope, {
     rehearsal,
     timezone,
-    window: runWindow(input.scope, timezone, now),
+    window: runWindow(scope, timezone, now),
+    ...(lowered !== undefined ? { ceilingMicros: Math.round(Math.min(lowered, COACH_CEILING_DEFAULTS_USD[ceilingKind]) * 1_000_000) } : {}),
   });
   const insert = async (): Promise<CreateRunResult | null> => {
     const id = newId();
     const inserted = (await db.all(sql`
       INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
-      SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(input.scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
+      SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
       WHERE NOT EXISTS (
         SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
           AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0}
@@ -868,7 +898,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       id,
       parentId: null,
       role: "main",
-      scope: input.scope,
+      scope,
       request,
       status: "active",
       steps: 0,
@@ -905,7 +935,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     run,
     existing: true,
     offer: run.status === "waiting_athlete" ? "answer_or_cancel" : "continue_or_cancel",
-    ignoredRequest: { scope: input.scope, request },
+    ignoredRequest: { scope, request },
   };
 }
 

@@ -22,6 +22,7 @@ import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from ".
 import { studioRoutes } from "./routes/studio.js";
 import { coachRoutes, sweepUserProposals } from "./routes/coach.js";
 import { coachRunRoutes } from "./routes/coach-runs.js";
+import { coachPreferenceRoutes } from "./routes/coach-preferences.js";
 import { corosRoutes } from "./routes/coros.js";
 import { syncRoutes } from "./routes/sync.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -88,6 +89,8 @@ app.route("/api/garden", gardenRoutes);
 // The coach designer's runs: 404 unless COACH_DESIGNER or staging, then requireUser. Ahead of /api/coach, whose own
 // sign-in would otherwise answer these paths first.
 app.route("/api/coach/runs", coachRunRoutes);
+// Settings → Coach: the same switch and sign-in as the runs, ahead of /api/coach for the same reason.
+app.route("/api/coach/preferences", coachPreferenceRoutes);
 app.route("/api/coach", coachRoutes);
 app.route("/api/coros", corosRoutes);
 app.route("/api/calendar", calendarRoutes);

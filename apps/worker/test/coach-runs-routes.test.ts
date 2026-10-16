@@ -250,7 +250,10 @@ describe("the routes", () => {
   });
 
   it("refuses a malformed request with 400", async () => {
-    expect((await call("POST", "", {})).status).toBe(400);
+    // No scope is the athlete's default (Settings → Coach, Task 10: coach-preferences.test.ts); a body that isn't one,
+    // or a scope that isn't one, is refused.
+    expect((await call("POST", "", [])).status).toBe(400);
+    expect((await call("POST", "", { scope: null })).status).toBe(400);
     expect((await call("POST", "", { scope: { kind: "forever" } })).status).toBe(400);
     expect((await call("POST", "", { scope: { kind: "next_n", n: 0 } })).status).toBe(400);
     expect((await call("POST", "", { scope: { kind: "now" }, request: 42 })).status).toBe(400);
