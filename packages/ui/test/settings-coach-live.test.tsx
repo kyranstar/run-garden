@@ -49,7 +49,7 @@ function fakeWorker(init: { memory?: CoachMemoryItem[]; pinRefusal?: boolean; co
       if (url === "/api/coach/memory" && method === "GET") return json({ memory: state.memory, history: [] });
       const m = url.match(/^\/api\/coach\/memory\/(.+)$/);
       if (m && method === "PATCH") {
-        if (init.pinRefusal && body.pinned === true) return json({ error: "pin_cap", max: 12, why: "You can pin up to 12. Unpin one first." }, 409);
+        if (init.pinRefusal && body.pinned === true) return json({ error: "pin_cap", max: 12, why: "Twelve are pinned already. Unpin one first." }, 409);
         state.memory = state.memory.map((x) => (x.id === m[1] ? { ...x, ...(body.body ? { body: body.body } : {}), ...(typeof body.pinned === "boolean" ? { pinned: body.pinned } : {}), ...(body.confirm ? { confidence: "confirmed" as const } : {}) } : x));
         return json({ ok: true, item: state.memory.find((x) => x.id === m[1]) });
       }
@@ -145,7 +145,7 @@ describe("the memory list", () => {
     mount(createElement(CoachMemorySection));
     await until(() => text().includes("Has a bench"), "the list");
     await click(inItem("Has a bench", "Pin"));
-    await until(() => text().includes("You can pin up to 12. Unpin one first."), "the refusal");
+    await until(() => text().includes("Twelve are pinned already. Unpin one first."), "the refusal");
     expect(text()).not.toContain("· Pinned");
   });
 
@@ -191,31 +191,38 @@ describe("Settings → Coach", () => {
     ]);
   });
 
-  it("a limit lowered is saved; one past its default is refused on the spot and never sent; back at the default is no setting", async () => {
+  /** Type into the first limit's field and press Enter. */
+  async function typeLimit(v: string) {
+    const [day] = [...document.querySelectorAll<HTMLInputElement>(".coach-limit input")];
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(day!, v);
+      day!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      day!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+  }
+
+  it("a limit lowered is saved; one past its default is refused on the spot and never sent", async () => {
     const { calls } = fakeWorker();
     mount(createElement(CoachSection));
     await until(() => text().includes("Spending limit"), "the card");
-    const [day] = [...document.querySelectorAll<HTMLInputElement>(".coach-limit input")];
-    const type = async (v: string) => {
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(day!, v);
-        day!.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-      await act(async () => {
-        day!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      });
-    };
-    await type("2");
+    await typeLimit("2");
     await until(() => text().includes("At most $1.50."), "the refusal");
     expect(writes(calls)).toEqual([]);
-    await type("0.75");
+    await typeLimit("0.75");
     await until(() => writes(calls).length === 1, "the save");
     expect(writes(calls)[0]!.body).toEqual({ ceilingsUsd: { day: 0.75 } });
     expect(text()).not.toContain("At most");
-    await until(() => !day!.disabled && day!.value === "0.75", "the saved limit back");
-    await type("1.50");
-    await until(() => writes(calls).length === 2, "the second save");
-    expect(writes(calls)[1]!.body).toEqual({});
+  });
+
+  it("a limit set back at its default is no setting at all", async () => {
+    const { calls } = fakeWorker({ coach: { nextN: 2, ceilingsUsd: { day: 0.75 } } });
+    mount(createElement(CoachSection));
+    await until(() => document.querySelector<HTMLInputElement>(".coach-limit input")?.value === "0.75", "the stored limit");
+    await typeLimit("1.50");
+    await until(() => writes(calls).length === 1, "the save");
+    expect(writes(calls)[0]!.body).toEqual({ nextN: 2 });
   });
 
   it("a server whose coach is off answers 404: the card isn't there", async () => {
