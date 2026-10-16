@@ -16,17 +16,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, type UserPreferences } from "@rg/domain";
+import { addDays, newId, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import { EXERCISES } from "@rg/exercise-library";
+import { deriveDoc } from "@rg/workout";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { approveDesignOps, type DesignedOp } from "../src/services/design-approve.js";
 import { docWorkoutLines, placeNamer } from "../src/services/design-manifest.js";
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
+import { approvalKey } from "../src/services/design-placement.js";
+import { keyedRowId } from "../src/services/doc-workouts.js";
+import { bookedSeconds } from "../src/services/session-build.js";
 import { designedManifest } from "../src/routes/design-proposals.js";
 import { designProposalId, proposeWorkout, type DocWorkoutTarget } from "../src/services/design-tools/propose.js";
 import { isToolErr, type OpReview, type RunScope, type ToolContext, type ToolErr, type ToolRole } from "../src/services/design-tools/types.js";
-import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
+import { NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { makeTestDb } from "./helpers.js";
 
@@ -66,7 +71,9 @@ const REVIEW: OpReview = {
 
 let seq = 0;
 async function run(role: ToolRole, scope: RunScope, parentId: string | null = null): Promise<ToolContext["run"]> {
-  const id = `run-${++seq}-${newId().slice(0, 8)}`;
+  return runWithId(`run-${++seq}-${newId().slice(0, 8)}`, role, scope, parentId);
+}
+async function runWithId(id: string, role: ToolRole, scope: RunScope, parentId: string | null): Promise<ToolContext["run"]> {
   await db.insert(schema.coachRuns).values({
     id, userId, parentId, role, scope: { ...scope }, request: "a short session", status: "active", state: null, steps: 0, costUsd: 0,
     createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
@@ -301,5 +308,132 @@ describe("a set's workout on a day that holds another session: the line says whe
     const before = statementsSeen;
     await designedManifest(db, userId, id, p!.ops, la("09:32"));
     expect(statementsSeen - before).toBe(1);
+  });
+});
+
+describe("the card's time, every rule the approve's writes follow (design-placement.ts)", () => {
+  // Tomorrow and the Monday after: days the fixture leaves empty.
+  const free = addDays(TODAY, 1);
+  const other = addDays(TODAY, 5);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(la("09:32"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  /** A session on the plan: a watch-plan run (no document), or a Studio workout with its document (revision 1). */
+  async function session(o: { date: string; time: string; minutes?: number; studio?: WorkoutDoc }): Promise<string> {
+    const id = `pw-${newId().slice(0, 10)}`;
+    const seconds = o.studio ? deriveDoc(o.studio, EXERCISES).estimatedMinutes * 60 : (o.minutes ?? 45) * 60;
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: o.studio ? `studio-${userId}` : "coros-plan", sourceWorkoutId: id, title: o.studio ? o.studio.title : "Easy run",
+      category: o.studio ? "strength" : "easy", sport: o.studio ? "strength" : "run", originalPlanDate: o.date, lastVerifiedCorosDate: o.date, effectiveDate: o.date,
+      effectiveTime: o.time, sourceContentFingerprint: o.studio ? "studio" : "fp", sourceEstimatedDurationSeconds: o.studio ? null : seconds,
+      fallbackEstimatedDurationSeconds: o.studio ? seconds : null, calendarBlockDurationSeconds: bookedSeconds(seconds), completionState: "scheduled",
+      origin: o.studio ? "studio" : null, contentState: "outline", workoutDoc: o.studio ? JSON.stringify(o.studio) : null, workoutDocRev: o.studio ? 1 : null,
+      createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+    });
+    return id;
+  }
+
+  /** A set's proposal: its main coach's changes first, then each workout its own designer's (ids as given). */
+  async function suggestion(o: {
+    changes?: unknown[];
+    workouts?: Array<{ target: DocWorkoutTarget; doc?: WorkoutDoc; designerId?: string }>;
+    mainId?: string;
+  }): Promise<string> {
+    const main = o.mainId ? await runWithId(o.mainId, "main", { kind: "week" }, null) : await run("main", { kind: "week" });
+    for (const c of o.changes ?? []) {
+      const r = await adjustPlan.run(ctxOf(main, la("09:32")), c);
+      if (isToolErr(r)) throw new Error(`adjust refused: ${r.why}`);
+    }
+    for (const w of o.workouts ?? []) {
+      const designer = w.designerId ? await runWithId(w.designerId, "designer", { kind: "week" }, main.id) : await run("designer", { kind: "week" }, main.id);
+      const r = await proposeWorkout.run(ctxOf(designer, la("09:32")), { doc: w.doc ?? calmDoc({ title: "Set" }), target: w.target });
+      if (isToolErr(r)) throw new Error(`propose refused: ${r.why}`);
+    }
+    const id = designProposalId(main.id);
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const ops = (p!.ops as Array<{ kind: string }>).map((x) => (x.kind === "doc_workout" ? { ...x, review: REVIEW } : x));
+    await db.update(coachProposals).set({ status: "pending", ops }).where(eq(coachProposals.id, id));
+    return id;
+  }
+  /** Each workout's line time, then each one's time once everything is approved: the two must agree. */
+  async function saidAndWritten(id: string): Promise<{ said: Array<string | null>; written: Array<string | undefined> }> {
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const lines = (await designedManifest(db, userId, id, p!.ops, la("09:32"))).lines;
+    const answer = await approveAt(id, la("09:32"));
+    expect(answer.refused).toEqual([]);
+    const rows = new Map((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).map((w) => [w.id, w.effectiveTime]));
+    return { said: lines.map((l) => l.time), written: answer.applied.map((a) => rows.get(a.workout.id)) };
+  }
+
+  it("a revision whose length now collides: its line is where the day's pass puts it", async () => {
+    // A short calm workout at 07:00 clears a run at 07:40; six times as long, it doesn't — and the run, the heavier
+    // session, keeps the window.
+    const calm = calmDoc({ title: "Calm" });
+    const studio = await session({ date: free, time: "07:00", studio: calm });
+    await session({ date: free, time: "07:40" });
+    const sixTimes = { ...calm, title: "Calm, longer", parts: Array.from({ length: 6 }, () => calm.parts).flat() };
+    const id = await suggestion({ workouts: [{ target: { kind: "revise", workoutId: studio, baseRev: 1 }, doc: sixTimes }] });
+    const { said, written } = await saidAndWritten(id);
+    expect(said[0]).not.toBe("07:00");
+    expect(written).toEqual(said);
+  });
+
+  it("a session moved onto the day first: the day is laid out again before a revision of the same length", async () => {
+    const studio = await session({ date: free, time: "07:00", studio: studioDoc({ title: "Strong hips" }) });
+    const run2 = await session({ date: other, time: "07:00" });
+    const id = await suggestion({
+      changes: [{ workoutId: run2, change: { kind: "move", toDate: free, toTime: "07:20" }, why: "Monday is full." }],
+      workouts: [{ target: { kind: "revise", workoutId: studio, baseRev: 1 }, doc: studioDoc({ title: "Strong hips, the same length" }) }],
+    });
+    const { said, written } = await saidAndWritten(id);
+    expect(said[0]).not.toBe("07:00");
+    expect(written).toEqual(said);
+  });
+
+  it("a session moved within its day keeps its new time — pinned — and the new workout goes around it", async () => {
+    await session({ date: free, time: "07:00", studio: studioDoc({ title: "Strong hips" }) });
+    const run1 = await session({ date: free, time: "12:00" });
+    const id = await suggestion({
+      changes: [{ workoutId: run1, change: { kind: "move", toDate: free, toTime: "07:20" }, why: "Run before work." }],
+      workouts: [{ target: { kind: "new", date: free } }],
+    });
+    const { said, written } = await saidAndWritten(id);
+    expect(written).toEqual(said);
+  });
+
+  it("a run given a new length first: the new workout goes after the longer run", async () => {
+    const run1 = await session({ date: free, time: "07:00", minutes: 45 });
+    const id = await suggestion({
+      changes: [{ workoutId: run1, change: { kind: "adjust", durationMinutes: 120 }, why: "A long run this week." }],
+      workouts: [{ target: { kind: "new", date: free } }],
+    });
+    const { said, written } = await saidAndWritten(id);
+    expect(written).toEqual(said);
+  });
+
+  it("two workouts alike on one day: the one whose approve key sorts first takes the window, as the approve's layout breaks the tie", async () => {
+    await session({ date: free, time: "07:00" });
+    // Designer ids whose order is the opposite of their workouts' keys: the line must follow the keys.
+    const mainId = `run-tie-${newId().slice(0, 8)}`;
+    const proposalId = designProposalId(mainId);
+    let pair: [string, string] | null = null;
+    for (let i = 0; i < 40 && !pair; i += 2) {
+      const a = `ds-tie-${String(i).padStart(2, "0")}`;
+      const b = `ds-tie-${String(i + 1).padStart(2, "0")}`;
+      if ((await keyedRowId(userId, approvalKey(proposalId, a))) > (await keyedRowId(userId, approvalKey(proposalId, b)))) pair = [a, b];
+    }
+    expect(pair).not.toBeNull();
+    const id = await suggestion({
+      mainId,
+      workouts: [
+        { target: { kind: "new", date: free }, designerId: pair![0] },
+        { target: { kind: "new", date: free }, designerId: pair![1] },
+      ],
+    });
+    const { said, written } = await saidAndWritten(id);
+    expect(written).toEqual(said);
   });
 });
