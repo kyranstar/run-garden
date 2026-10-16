@@ -34,7 +34,7 @@
  * before the facets and the pane.
  */
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useLocation, useMatch, useNavigate, useSearchParams } from "react-router-dom";
+import { Navigate, useLocation, useMatch, useNavigate, useNavigationType, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
@@ -119,6 +119,10 @@ export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKn
 /** What a history entry under the Studio carries: whether it came from the home, and how deep into moves it is. */
 interface StudioHistory {
   fromHome?: boolean;
+  /** A list's entry, a step from the home: that home entry's key. */
+  homeKey?: string;
+  /** A home that took a list's place (Clear): the home entry just below it, the same page, which Back steps over. */
+  dupOf?: string;
   /** How many move entries were pushed since the list (closing goes back that many). */
   moveDepth?: number;
   /** The list's search when the first move was opened from it. */
@@ -173,8 +177,31 @@ export function StudioScreen() {
   }, [url.q]);
 
   const state = location.state as StudioHistory | null;
-  const here = useRef({ search, state, openId });
-  here.current = { search, state, openId };
+  const here = useRef({ search, state, openId, key: location.key });
+  here.current = { search, state, openId, key: location.key };
+
+  /**
+   * Back to the home from a list that was a step from it: this entry becomes the home, in place. Never a Back — a Back
+   * lands later, and a tap made before it lands (a quick start, a move) would be undone by it. The home entry below
+   * is then the same page twice: Back steps over it (`dupOf`), so one Back still leaves the Studio from here.
+   */
+  const homeInPlace = useCallback(
+    (from: StudioHistory | null) => {
+      const { fromHome: _was, homeKey, ...rest } = from ?? {};
+      navigate({ pathname: "/studio", search: "" }, { replace: true, state: { ...rest, ...(homeKey ? { dupOf: homeKey } : {}) } satisfies StudioHistory });
+    },
+    [navigate],
+  );
+  // Back from a home that took a list's place: the entry it lands on is that same home — stepped over, on to wherever
+  // the Studio was opened from. (A Forward onto it comes from no such home, and stays.)
+  const navType = useNavigationType();
+  const left = useRef<{ key: string; state: StudioHistory | null } | null>(null);
+  useEffect(() => {
+    const from = left.current;
+    left.current = { key: location.key, state };
+    if (navType === "POP" && from && from.key !== location.key && from.state?.dupOf === location.key) navigate(-1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
 
   /** Write a state to the URL: a new entry when it opens a list from the home, back to that home when it closes. */
   const write = useCallback(
@@ -182,7 +209,7 @@ export function StudioScreen() {
       cancel();
       written.current = q;
       const next = studioSearch(q, filters, all);
-      const { search: now, state, openId } = here.current;
+      const { search: now, state, openId, key } = here.current;
       // A move is open: the list under it changes in place — the move's entry is replaced, never a new one pushed, so
       // closing it backs out of exactly the entries opening it made.
       if (openId) {
@@ -190,16 +217,16 @@ export function StudioScreen() {
         return;
       }
       if (now === "") {
-        if (next !== "") setParams(new URLSearchParams(next), { state: { ...state, fromHome: true } });
+        if (next !== "") setParams(new URLSearchParams(next), { state: { ...state, fromHome: true, homeKey: key } });
         return;
       }
       if (next === "" && state?.fromHome) {
-        navigate(-1);
+        homeInPlace(state);
         return;
       }
       setParams(new URLSearchParams(next), { replace: true, state });
     },
-    [navigate, setParams],
+    [setParams, homeInPlace],
   );
   // The latest `write`, for the field's late one: the write made by the render the typing happened in resolves its
   // address against the location of that render — a move tapped inside the pause (`/studio/move/:id`) had the list's
@@ -256,10 +283,10 @@ export function StudioScreen() {
     if (openId) return;
     if (want === search) return;
     const to = { pathname: "/studio", search: want ? `?${want}` : "" };
-    if (search === "") navigate(to, { state: { fromHome: true } satisfies StudioHistory });
-    else if (want === "" && state?.fromHome) navigate(-1);
+    if (search === "") navigate(to, { state: { fromHome: true, homeKey: location.key } satisfies StudioHistory });
+    else if (want === "" && state?.fromHome) homeInPlace(state);
     else navigate(to, { replace: true, state });
-  }, [openId, search, state, navigate, location.key]);
+  }, [openId, search, state, navigate, location.key, homeInPlace]);
   const openHref = useCallback((id: string) => moveHref(id, search), [search]);
 
   // ── Add: the one small sheet, then the line ──

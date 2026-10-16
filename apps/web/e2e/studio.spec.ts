@@ -215,9 +215,8 @@ test.describe("on the fixture stack", () => {
       await expect(detail.getByRole("link", { name: "Single-leg glute bridge" })).toBeVisible();
       await detail.getByRole("button", { name: "Close" }).click();
       await expect(detail).toHaveCount(0);
+      // Then a quick start at once: Clear goes home in place, so a tap right after it is never undone.
       await page.getByRole("button", { name: "Clear search" }).click();
-      // Clear goes Back to the home (the list was opened from it): a tap before that Back lands is undone by it.
-      await expect(page).toHaveURL(/\/studio$/);
 
       // A quick start is built on the device, at once, from what the visit read.
       await page.getByRole("link", { name: /^Hip opener/ }).click();

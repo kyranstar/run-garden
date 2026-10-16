@@ -9,7 +9,7 @@
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { BrowserRouter, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EXERCISES, hasEquipment, NO_EQUIPMENT_GEAR, PROFILES, label } from "@rg/exercise-library";
@@ -529,5 +529,70 @@ describe("typing filters, live", () => {
     });
     expect(text(/<button[^>]*stu-filters-btn[^>]*>[\s\S]*?<\/button>/.exec(html)![0])).toBe("Filters : 2 set");
     expect(text(/<button[^>]*stu-filters-btn[^>]*>[\s\S]*?<\/button>/.exec(shown("/studio?q=squat", { library: libraryDto({ tmj: true }) }))![0])).toBe("Filters");
+  });
+});
+
+describe("Clear, then a tap at once (the browser's own history)", () => {
+  // A browser's Back lands later — a task of its own — so this runs on the window's history (jsdom's), not a memory one.
+  const settle = (ms: number) => act(async () => void (await new Promise((r) => setTimeout(r, ms))));
+
+  it("Clear goes home in place: a quick start tapped straight after it opens, and Back still leaves the Studio", async () => {
+    window.history.replaceState(null, "", "/plan");
+    window.history.pushState(null, "", "/studio");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "offline" }), { status: 503 })));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root!.render(
+        createElement(
+          QueryClientProvider,
+          { client: primedClient({}) },
+          createElement(
+            BrowserRouter,
+            null,
+            createElement(
+              Routes,
+              null,
+              createElement(Route, { path: "/studio/build/*", element: createElement("p", null, "the quick start") }),
+              createElement(Route, { path: "/studio/*", element: createElement(StudioScreen) }),
+              createElement(Route, { path: "/plan", element: createElement("p", null, "the plan") }),
+            ),
+          ),
+        ),
+      );
+    });
+    try {
+      await type("gob");
+      expect(window.location.search).toBe("?q=gob");
+      // The field's pause on a clock the test moves (the window's history keeps its own, real one): Clear, the address
+      // written after the pause, and the tap on a quick start in the same breath — before any Back could have landed.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const clear = [...host!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === "Clear search")!;
+        act(() => clear.click());
+        act(() => {
+          vi.advanceTimersByTime(URL_WRITE_MS);
+          host!.querySelector<HTMLAnchorElement>('a.stu-qs[href="/studio/build/quick/hip_opener"]')!.click();
+        });
+        // Then whatever the history had queued (a Back's traversal is a task of its own) lands.
+        act(() => vi.advanceTimersByTime(20));
+      } finally {
+        vi.useRealTimers();
+      }
+      await settle(40);
+      expect(window.location.pathname).toBe("/studio/build/quick/hip_opener");
+      expect(host!.textContent).toContain("the quick start");
+      // Back: the home, once; Back again: where the Studio was opened from — never the home a second time.
+      await act(async () => window.history.back());
+      await settle(40);
+      expect(`${window.location.pathname}${window.location.search}`).toBe("/studio");
+      await act(async () => window.history.back());
+      // The home below is the same page: Back steps over it (a second traversal, a task of its own) — bounded.
+      for (let i = 0; i < 50 && window.location.pathname !== "/plan"; i++) await settle(10);
+      expect(window.location.pathname).toBe("/plan");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 });
