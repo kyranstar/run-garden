@@ -251,6 +251,8 @@ function designerWhy(error: string | null): string {
     case "no_key":
     case "gateway_402":
       return "the AI account can't be reached";
+    case "kept_stopping":
+      return "it kept stopping partway through";
     case null:
       return "it ended without a workout";
     default:

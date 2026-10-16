@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import {
   activities,
   coachLocks,
@@ -10,6 +10,7 @@ import {
   coachPlans,
   coachProposals,
   coachQuestions,
+  coachRuns,
   llmUsage,
   plannedWorkouts,
   studioPlanPushes,
@@ -56,6 +57,8 @@ import { hasDocWorkout } from "../services/proposal-kinds.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
 import { liveMemoryWhere } from "../services/memory-core.js";
+import { LIVE_STATUSES } from "../services/coach-runs.js";
+import { designProposalId } from "../services/design-tools/propose.js";
 
 /** The zone whose local date is the earliest anywhere at any moment (UTC−12; POSIX's sign is inverted). */
 const EARLIEST_ZONE = "Etc/GMT+12";
@@ -106,15 +109,20 @@ export async function sweepStaleQuestions(db: Db, userId: string, now: string): 
 }
 
 /** Expire pending proposals whose day passed or TTL lapsed (spec §3) — and a design's proposal still unreviewed
- * (Stage 3 Task 6), silently: the athlete never saw it, so there is nothing to say. */
+ * (Stage 3 Task 6), silently: the athlete never saw it, so there is nothing to say. An unreviewed one is expired only
+ * once its run is over (fix wave 3A, A10): a set still being designed across local midnight keeps its proposal, which
+ * its next designer proposes into; the run itself proposes what was reviewed, or closes it, when it ends. */
 export async function sweepExpiredProposals(db: Db, userId: string, today: string): Promise<number> {
+  const runLive = sql`exists (select 1 from ${coachRuns} r where r.user_id = ${userId} and r.parent_id is null
+    and ${coachProposals.id} = ${designProposalId("")} || r.id
+    and r.status in (${sql.join(LIVE_STATUSES.map((s) => sql`${s}`), sql`, `)}))`;
   const stale = await db
     .select()
     .from(coachProposals)
     .where(
       and(
         eq(coachProposals.userId, userId),
-        inArray(coachProposals.status, ["pending", "unreviewed"]),
+        or(eq(coachProposals.status, "pending"), and(eq(coachProposals.status, "unreviewed"), sql`not ${runLive}`)),
         lt(coachProposals.expiresAt, today),
       ),
     );

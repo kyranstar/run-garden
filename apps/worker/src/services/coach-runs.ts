@@ -90,9 +90,12 @@ import {
  *
  * ONE STEP AT A TIME. A step claims its run with a conditional update (`active` → `stepping`, stamped with the claim
  * time) and writes its outcome only while the claim is still its own: a cancel that lands meanwhile wins, and the
- * step adds its spend and nothing else. A step that died (a killed invocation, a phone sent to the background
- * mid-call) leaves the run `stepping`; after COACH_RUN_STEP_STALE_MINUTES the next step takes the claim back itself
- * (and so does the sweep). The stamp a step leaves is the end of the step.
+ * step adds its spend and nothing else. Its tools run only after a read that finds the claim still its own (after the
+ * model call, or before a step of queued calls), and a finish makes its proposal pending in a statement guarded by the
+ * same claim. A step that died (a killed invocation, a phone sent to the background mid-call) leaves the run
+ * `stepping`; after COACH_RUN_STEP_STALE_MINUTES the next step takes the claim back itself (and so does the sweep),
+ * counting the takeover: the third in a row with no step getting as far as its write fails the run (MAX_TAKEOVERS).
+ * The stamp a step leaves is the end of the step.
  *
  * MONEY. Before every model call: the run's own ceiling (state), the step and state caps, then the weekly cap
  * (`llmBudgetStatus`, the one the whole app shares) as a hard ceiling — the call is made only when its worst case fits
@@ -224,11 +227,13 @@ const STOP_PROPOSE = 3;
  * one step (a cancel taking the claim while the tools ran), while a stop that proposes never meets either — it is
  * written under the claim it holds, and finishes nothing — so the larger of the two is reserved. */
 const END_RESERVE = Math.max(LOST_CLAIM_WRITE + FINISH_WRITE, STOP_PROPOSE);
-export const PENDING_STEP_FIXED = BASE_FIXED + END_RESERVE;
-/** + the weekly-cap read, the usage row before the call, the model call, the standing read after it (the restore
- * marker and whether the claim is still the step's, in one statement), the credits marker, the usage row's update
+/** The standing read before a step's tools run — the restore marker and whether the claim is still the step's, in one
+ * statement (fix wave 3A, A11): after the model call in a model step, before the queued calls in a step of them. */
+const STANDING_READ = 1;
+export const PENDING_STEP_FIXED = BASE_FIXED + END_RESERVE + STANDING_READ;
+/** + the weekly-cap read, the usage row before the call, the model call, the credits marker, the usage row's update
  * after it. */
-export const MODEL_STEP_FIXED = PENDING_STEP_FIXED + 6;
+export const MODEL_STEP_FIXED = PENDING_STEP_FIXED + 5;
 /** The most one tool may declare: what a step of queued calls has room for. A tool above it is a registry bug, and
  * its call is answered with an error rather than queued forever. */
 export const MAX_TOOL_STATEMENT_COST = STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED;
@@ -332,6 +337,9 @@ export interface RunState {
   /** A main run's or designer's turns in a row that called no tool (fix wave 3A, A3): the first is nudged, the second
    * ends the run as a finish. A turn with a tool call clears it. */
   textOnly?: number;
+  /** Times a dead step's claim on this run was taken back since a step last wrote its state (fix wave 3A, A14):
+   * counted in the claim itself (or the sweep's), cleared by any step that gets as far as writing. */
+  takeovers?: number;
   /** A reviewer's packet (design-review.ts), until its opening context is built from it. */
   packet?: string;
   /** A reviewer's draft: what its submit_review stores the review against. */
@@ -445,6 +453,7 @@ export function readRunState(text: string | null): RunState | null {
     ...(typeof s.awaitingAt === "number" ? { awaitingAt: s.awaitingAt } : {}),
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
     ...(typeof s.textOnly === "number" ? { textOnly: s.textOnly } : {}),
+    ...(typeof s.takeovers === "number" ? { takeovers: s.takeovers } : {}),
     ...(typeof s.packet === "string" ? { packet: s.packet } : {}),
     ...(s.reviewOf && typeof s.reviewOf === "object" ? { reviewOf: s.reviewOf } : {}),
     ...(s.set && typeof s.set === "object" && Array.isArray(s.set.rounds)
@@ -812,15 +821,19 @@ export type CreateRunResult =
 /**
  * A new main run, unless the athlete already has a live one: then that one comes back (`existing: true`), with what
  * the screen can offer and the words this request carried, so they never vanish silently. One statement decides it
- * (an insert guarded by NOT EXISTS), so two taps can never start two. The run's window and timezone are fixed here.
+ * (an insert guarded by NOT EXISTS), so two taps can never start two. A rehearsal is in a lane of its own: it never
+ * holds, nor is offered as, the athlete's one live run, nor theirs it. The run's window and timezone are fixed here.
  * A live run whose window has closed is not offered: it is expired, with its plain line, and the new run starts.
  */
 export async function createRun(db: Db, userId: string, input: CreateRunInput, now: Date): Promise<CreateRunResult> {
   const at = now.toISOString();
+  // A rehearsal (the live scenario suite) is never the athlete's one live main run, nor offered as it (fix wave 3A,
+  // A15): rehearsals and the athlete's own runs each have their one live main run.
+  const rehearsal = input.rehearsal === true;
   const request = input.request?.trim().slice(0, REQUEST_MAX_CHARS) || null;
   const timezone = (await loadPreferences(db, userId)).timezone;
   const state = newRunState("main", input.scope, {
-    rehearsal: input.rehearsal,
+    rehearsal,
     timezone,
     window: runWindow(input.scope, timezone, now),
   });
@@ -831,6 +844,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(input.scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
       WHERE NOT EXISTS (
         SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
+          AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0}
       )
       RETURNING id
     `)) as Array<{ id: string }>;
@@ -858,7 +872,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       .from(coachRuns)
       .where(and(eq(coachRuns.userId, userId), inArray(coachRuns.status, [...LIVE_STATUSES])));
     const nodes = rows.map((r) => toNode(r as NodeRow));
-    return { nodes, root: nodes.filter((n) => n.parentId === null).sort(byCreated).at(-1) };
+    return { nodes, root: nodes.filter((n) => n.parentId === null && (n.settings?.rehearsal === true) === rehearsal).sort(byCreated).at(-1) };
   };
 
   const created = await insert();
@@ -891,6 +905,21 @@ const DEAD_STEP_SPEND = sql.raw(
     `AND u.created_at = coach_runs.updated_at ` +
     `AND substr(u.request_fingerprint, 1, length('run:' || coach_runs.id || ':')) = 'run:' || coach_runs.id || ':'` +
     `), 0) / 1000000.0 ELSE 0 END`,
+);
+
+/** A run whose dead step was taken back this many times in a row, never getting as far as writing its state, fails
+ * (fix wave 3A, A14): a step that dies the same way every time would otherwise be retaken, and billed, until a ceiling
+ * stopped it. */
+export const MAX_TAKEOVERS = 3;
+
+/**
+ * The state a claim leaves: as it was — or, taking back a dead step's claim (the run still `stepping`), with that
+ * takeover counted (`RunState.takeovers`). Evaluated against the row as it was, in the claim's own statement.
+ */
+const TAKEOVERS = sql.raw(
+  `CASE WHEN coach_runs.status = 'stepping' AND json_valid(coach_runs.state) ` +
+    `THEN json_set(coach_runs.state, '$.takeovers', coalesce(json_extract(coach_runs.state, '$.takeovers'), 0) + 1) ` +
+    `ELSE coach_runs.state END`,
 );
 
 /**
@@ -1229,6 +1258,7 @@ export const LINES = {
   refusal: "The model declined to design this — the coach stopped.",
   internal: "Something went wrong inside the coach — this design stopped.",
   badState: "This design's saved state can't be read — the coach stopped.",
+  keptStopping: "The coach kept stopping partway through; it's been stopped.",
   finished: "The coach finished.",
   expiredDay: "This design was for a day that has passed — start a new one for today.",
   expiredSet: "This design was left open for a day — it stopped. Start a new one when you're ready.",
@@ -1307,10 +1337,11 @@ export async function runStep(
   if (due.status === "stepping" && due.updatedAt >= staleBefore) return { kind: "busy" };
 
   const claimAt = now.toISOString();
-  // Taking back a dead step's claim adds its spend (its pre-call usage row) to the run, so the ceiling below sees it.
+  // Taking back a dead step's claim adds its spend (its pre-call usage row) to the run, so the ceiling below sees it,
+  // and counts the takeover in its state (TAKEOVERS). A main run's claim also reads its proposal's status (A17).
   const [claimed] = await db
     .update(coachRuns)
-    .set({ status: "stepping", updatedAt: claimAt, costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}` })
+    .set({ status: "stepping", updatedAt: claimAt, costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}`, state: TAKEOVERS })
     .where(
       and(
         eq(coachRuns.id, due.id),
@@ -1318,7 +1349,11 @@ export async function runStep(
         or(inArray(coachRuns.status, [...CLAIMABLE]), and(eq(coachRuns.status, "stepping"), lt(coachRuns.updatedAt, staleBefore))),
       ),
     )
-    .returning({ state: coachRuns.state, costUsd: coachRuns.costUsd });
+    .returning({
+      state: coachRuns.state,
+      costUsd: coachRuns.costUsd,
+      proposalStatus: sql<string | null>`(SELECT status FROM coach_proposals WHERE id = ${designProposalId(root.id)} AND user_id = ${userId})`,
+    });
   if (!claimed) {
     // Another request changed the run between the read and the claim: a live step holds it (busy), or it is now
     // something else — answered with what it is.
@@ -1333,6 +1368,13 @@ export async function runStep(
   let advance: Advance;
   if (!state) {
     advance = { kind: "end", end: stop(null, "failed", "bad_state", LINES.badState, "error") };
+  } else if (due.id === root.id && claimed.proposalStatus === "pending") {
+    // A main run whose proposal is already pending is one whose finish made it so and then died before the run's own
+    // write (fix wave 3A, A17): it is finished — the model is not called again to finish twice.
+    advance = { kind: "end", end: { status: "finished", state, costMicros: 0, error: null, proposalId: designProposalId(root.id), events: [{ kind: "note", summary: LINES.finished, payload: { proposalId: designProposalId(root.id) } }] } };
+  } else if ((state.takeovers ?? 0) >= MAX_TAKEOVERS) {
+    // Taken over again and again, never getting further (fix wave 3A, A14): each death is billed, so it stops here.
+    advance = { kind: "end", end: stop(null, "failed", "kept_stopping", LINES.keptStopping, "error") };
   } else {
     const ctx: StepCtx = {
       db,
@@ -1377,6 +1419,8 @@ export async function runStep(
     return okStep({ status: treeStatus(root, nodes), nextDue: nextDueOf(nodes, root, claimAt), events: [] });
   }
 
+  // A step that gets as far as writing its state made progress: its run's takeovers start again from none.
+  if (advance.end.state) delete advance.end.state.takeovers;
   const { end, json } = guardStateSize(advance.end);
   const terminal = !isLive(end.status);
   const [written] = await db
@@ -1462,7 +1506,16 @@ function nextDueOf(nodes: RunNode[], root: RunNode, at: string): StepResult["nex
 }
 
 /** The loop's lines that say the design itself stopped. */
-const DESIGN_STOP_LINES = new Set<string>([LINES.stateCap, LINES.stepCap, LINES.retries, LINES.rejected, LINES.refusal, LINES.internal, LINES.badState]);
+const DESIGN_STOP_LINES = new Set<string>([
+  LINES.stateCap,
+  LINES.stepCap,
+  LINES.retries,
+  LINES.rejected,
+  LINES.refusal,
+  LINES.internal,
+  LINES.badState,
+  LINES.keptStopping,
+]);
 
 /**
  * A reviewer that ends is not the design stopping: whenever a reviewer's run ends other than by a whole-tree stop (a
@@ -1547,6 +1600,11 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
   if (state.awaiting && state.awaitingKind === "set") return end(await resumeSet(s));
   if (state.awaiting) return end({ status: "waiting_athlete", state, costMicros: 0, error: null, proposalId: null, events: [] });
   if (state.pending.length > 0 && state.system !== null) {
+    // Queued calls run only while the claim is still this step's and no restore has begun — as after a model call
+    // (fix wave 3A, A11): a cancel that landed since the claim wins before anything is written.
+    const { restoring, ours } = await standing(s.db, s.userId, s.run.id, s.claimAt);
+    if (restoring) return { kind: "restoring" };
+    if (!ours) return { kind: "lost", costMicros: 0 };
     const ran = await runTools(s, STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED);
     return end({ state, costMicros: 0, error: null, ...ran });
   }
@@ -2062,11 +2120,15 @@ async function runTools(
  * `kept` (nothing written: a designer's, or one the guard keeps back).
  */
 async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"pending" | "rehearsal" | "kept"> {
+  // Only while the run is still live and held by this step, in the same statement (fix wave 3A, A11): a cancel that
+  // landed since the step's last look wins, and its proposal is never shown.
+  const held = sql`exists (select 1 from ${coachRuns} where ${coachRuns.id} = ${s.run.id} and ${coachRuns.userId} = ${s.userId}
+    and ${coachRuns.status} = 'stepping' and ${coachRuns.updatedAt} = ${s.claimAt})`;
   if (s.state.settings.rehearsal) {
     await s.db
       .update(coachProposals)
       .set({ status: "rehearsal" })
-      .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, s.userId), inArray(coachProposals.status, ["pending", "unreviewed"])));
+      .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, s.userId), inArray(coachProposals.status, ["pending", "unreviewed"]), held));
     return "rehearsal";
   }
   if (s.run.role !== "main") return "kept";
@@ -2078,6 +2140,7 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
         eq(coachProposals.id, proposalId),
         eq(coachProposals.userId, s.userId),
         eq(coachProposals.status, "unreviewed"),
+        held,
         sql`json_valid(${coachProposals.ops}) and json_array_length(${coachProposals.ops}) > 0`,
         sql`not exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.review') is null)`,
         // No review under way either (design-review.ts `reviewRunning`): a dangling candidate is never shown.
@@ -2415,7 +2478,7 @@ export async function sweepCoachRuns(
   if (stale.length > 0) {
     await db
       .update(coachRuns)
-      .set({ status: "active", costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}` })
+      .set({ status: "active", costUsd: sql`${coachRuns.costUsd} + ${DEAD_STEP_SPEND}`, state: TAKEOVERS })
       .where(
         and(
           eq(coachRuns.userId, userId),

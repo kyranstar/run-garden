@@ -314,6 +314,8 @@ export function unavailableWhy(error: string | null | undefined): string {
       return "the reviewer couldn't be started";
     case "state_cap":
       return "the review grew too long to finish";
+    case "kept_stopping":
+      return "the reviewer kept stopping partway through";
     case null:
     case undefined:
       return "the reviewer ended without one";
@@ -689,6 +691,7 @@ export const STOPPED_NOTES: Readonly<Record<string, string>> = {
   internal: "The coach stopped when something went wrong inside it; this is what had been reviewed by then.",
   bad_state: "The coach stopped when its saved work couldn't be read; this is what had been reviewed by then.",
   expired: "The coach's time for this design ran out; this is what had been reviewed by then.",
+  kept_stopping: "The coach kept stopping partway through; this is what had been reviewed by then.",
   /** A main run that ended in words with a review still under way, or a workout unreviewed (fix wave 3A, A3). */
   unfinished: "The coach ended before every review was in; this is what had been reviewed by then.",
 };
