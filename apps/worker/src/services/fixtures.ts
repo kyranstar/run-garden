@@ -832,10 +832,22 @@ const FIXTURE_PROFILE = "tmj";
 const isoWeekday = (date: string): number => (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7;
 
 /**
+ * The program's second preferred day: two days on, kept inside today's week (Monday to Sunday) so the week holds it
+ * whatever the hour — on a Saturday that is the Sunday (two days on was next week's Monday, and the week held no slot
+ * once today's window had passed). A Sunday has no later day in its week: its second stays two days on, and the week
+ * holds today's slot while its window is ahead.
+ */
+function secondPreferredDay(today: LocalDate): LocalDate {
+  const later = 6 - isoWeekday(today);
+  return addDays(today, later === 0 ? 2 : Math.min(2, later));
+}
+
+/**
  * The fixture's adaptive program (Phase 2a): synthetic, never personal. Starts over on every seed — the account's
  * programs, their slots, builds and blocks, its checks, conditions and places are cleared — then one program that
  * cares for the library's condition profile is created, with two places, and placed from `today`: preferred days
- * today and two days on, so the Today card has a program session and the week a second.
+ * today and a later day of this week (`secondPreferredDay`), so the Today card has a program session and the week a
+ * second.
  */
 export async function seedFixtureProgram(
   db: Db,
@@ -895,7 +907,7 @@ export async function seedFixtureProgram(
       name: profile.care?.block.label ?? profile.label,
       config: adaptiveConfigSchema.parse({
         weeklyGoal: 2,
-        preferredDays: [isoWeekday(today), isoWeekday(addDays(today, 2))],
+        preferredDays: [isoWeekday(today), isoWeekday(secondPreferredDay(today))],
         defaultMinutes: 30,
         careProfiles: [FIXTURE_PROFILE],
         placementWeeksAhead: 1,

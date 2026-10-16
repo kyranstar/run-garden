@@ -48,6 +48,22 @@ describe("seedFixtureProgram", () => {
     }
   });
 
+  it("Monday to Saturday, at any hour, the week still holds a slot after today — a Saturday's is the Sunday", async () => {
+    // 20:00 in Los Angeles (the test account's zone): today's own window has passed, so only a later day can hold one.
+    for (let d = 0; d < 6; d++) {
+      const today = addDays(MON, d);
+      const id = await seedFixtureProgram(db, userId, today, prefs, `${addDays(today, 1)}T03:00:00.000Z`);
+      const ahead = (await live(id)).filter((r) => r.effectiveDate > today && r.effectiveDate <= addDays(MON, 6));
+      expect(ahead.map((r) => r.effectiveDate), today).not.toEqual([]);
+    }
+  });
+
+  it("on a Sunday, the week's last day, the week holds today's slot while its window is ahead", async () => {
+    const sunday = addDays(MON, 6);
+    const id = await seedFixtureProgram(db, userId, sunday, prefs, `${sunday}T09:00:00.000Z`);
+    expect((await live(id)).map((r) => r.id)).toContain(slotId(id, sunday));
+  });
+
   it("gives the account two places, one of them the default", async () => {
     await seedFixtureProgram(db, userId, MON, prefs, NOW);
     const places = await db.select().from(locations).where(eq(locations.userId, userId));
