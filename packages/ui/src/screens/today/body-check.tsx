@@ -40,7 +40,12 @@ function cause(answer: NonNullable<BodyCheckDto["answer"]>, areas: readonly Body
 /** What the session was eased to: "14 km", "35 min", "a recovery session". */
 function easedTo(to: Extract<NonNullable<BodyCheckDto["change"]>, { kind: "eased" }>["to"], units: Units): string {
   if ("meters" in to) return formatDistance(to.meters, units);
-  if ("minutes" in to) return `${to.minutes} min`;
+  if ("minutes" in to) {
+    // "35 min", "1 h 27 min", "2 h".
+    const h = Math.floor(to.minutes / 60);
+    const m = to.minutes % 60;
+    return h === 0 ? `${m} min` : m === 0 ? `${h} h` : `${h} h ${m} min`;
+  }
   return `a ${to.mode} session`;
 }
 

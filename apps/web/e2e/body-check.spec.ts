@@ -8,7 +8,8 @@ import { test, expect } from "./fixtures.js";
  *
  *   - Fresh: chosen, nothing changes, no line.
  *   - A bit heavy: the engine session is rebuilt one mode down ("Eased to a … session for heavy legs"); the run is eased
- *     by the ease op ("Eased to 8.4 km …" or "… min"). Undo puts it back ("Kept as planned.") and the server's copy is
+ *     by the ease op — by time, the run being on the watch ("Eased to 1 h 27 min …"). Undo puts it back ("Kept as
+ *     planned.") and the server's copy is
  *     the plan's again.
  *   - Sore somewhere: the area picker, an area, Done — eased when the session works it, else noted.
  *
@@ -171,7 +172,7 @@ test.describe("a run of the plan", () => {
     await expect(card.locator(".body-check-line")).toHaveCount(0);
 
     await answer(page, "A bit heavy");
-    await expect(card.locator(".body-check-line")).toHaveText(/^Eased to [\d.]+ (km|mi|min) for heavy legs\s*Undo$/, { timeout: 30_000 });
+    await expect(card.locator(".body-check-line")).toHaveText(/^Eased to (\d+ h( \d+ min)?|\d+ min) for heavy legs\s*Undo$/, { timeout: 30_000 });
     const eased = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { calendarSeconds: number } }).workout;
     expect(eased.calendarSeconds).toBeLessThan(before.calendarSeconds);
     await shoot(page, "run-eased", testInfo.project.name);

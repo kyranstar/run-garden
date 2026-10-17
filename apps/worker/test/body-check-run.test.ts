@@ -94,7 +94,8 @@ async function seedRun(date: string, o: { shape?: "long" | "intervals" | "race";
     expectedDistanceMeters: shape === "intervals" ? 9000 : 20000,
     stageSummary: shape === "intervals" ? "10 min · 6 × (3 min · 90 s) · 10 min" : "20 km",
     structuredJson: null,
-    corosSyncState: "synced",
+    // On the watch: the import's own copy, at its address. Otherwise a run only the app holds (the coach planned it).
+    corosSyncState: o.watch ? "synced" : "calendar_only",
     completionState: "scheduled",
     origin: null,
     workoutDoc: JSON.stringify({ seed: "the plan's document" }),
@@ -293,6 +294,51 @@ describe("the watch", () => {
     expect(again.coachDrain).toBe(true);
     expect(await rewrites(id)).toEqual([expect.objectContaining({ status: "queued" })]);
     expect(await openContentIntents(id)).toHaveLength(1);
+  });
+
+  it("a distance run on the watch eases by time (the wire carries no distance), the rewrite queued; Undo restores its distance stages", async () => {
+    const id = await seedRun(DAY, { watch: true });
+    const stagesBefore = await stagesOf(id);
+    const out = await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    expect(out.view.change).toEqual({ kind: "eased", to: { minutes: 77 } });
+    expect(out.coachDrain).toBe(true);
+    expect((await stagesOf(id)).map((s) => [s.durationType, s.durationSeconds, s.label])).toEqual([["time", 77 * 60, "easy"]]);
+    expect(await rewrites(id)).toEqual([expect.objectContaining({ status: "queued" })]);
+    await undoBodyCheck(db, userId, id, ctx());
+    expect(await stagesOf(id)).toEqual(stagesBefore);
+    expect(await rewrites(id)).toEqual([expect.objectContaining({ status: "superseded" })]);
+  });
+
+  it("a distance run at its watch address eases by time whatever its sync state says (a change not yet on the watch)", async () => {
+    const id = await seedRun(DAY, { watch: true });
+    await db.update(plannedWorkouts).set({ corosSyncState: "calendar_only" }).where(eq(plannedWorkouts.id, id));
+    const out = await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    expect(out.view.change).toEqual({ kind: "eased", to: { minutes: 77 } });
+  });
+
+  it("a distance run COROS holds with no address the app can write to still eases by time: the watch's copy is a time, never a distance", async () => {
+    const id = await seedRun(DAY);
+    await db.update(plannedWorkouts).set({ corosSyncState: "synced" }).where(eq(plannedWorkouts.id, id));
+    const out = await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    expect(out.view.change).toEqual({ kind: "eased", to: { minutes: 77 } });
+    expect(await rewrites(id)).toEqual([]);
+  });
+
+  it("…and once its rewrite reached the watch, Undo rewrites back the plan's run in the time the plan gives it", async () => {
+    const id = await seedRun(DAY, { watch: true });
+    const stagesBefore = await stagesOf(id);
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const [job] = await rewrites(id);
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, job!.id));
+    await db.update(syncIntents).set({ resolvedAt: NOON }).where(and(eq(syncIntents.targetId, id), eq(syncIntents.kind, "content")));
+    await db.update(plannedWorkouts).set({ corosSyncState: "synced", sourceContentFingerprint: "fedcba9876543210" }).where(eq(plannedWorkouts.id, id));
+    const undo = await undoBodyCheck(db, userId, id, ctx());
+    expect(undo.coachDrain).toBe(true);
+    expect(await stagesOf(id)).toEqual(stagesBefore);
+    const back = (await rewrites(id)).find((j) => j.status === "queued");
+    const blocks = (back!.payload as { session: { run: { blocks: Array<{ kind: string; value: number; intensity?: string }> } } }).session.run.blocks;
+    // The plan's 20 km in the plan's own 110 minutes, held as it was.
+    expect(blocks).toEqual([{ kind: "duration", value: 110, intensity: "easy" }]);
   });
 
   it("with COROS writes off, nothing is queued", async () => {

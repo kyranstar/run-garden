@@ -19,8 +19,9 @@
  *    sheet makes it (`buildSessionOutcome`; its other choices kept, a new mode dropping the day's swaps as it always
  *    does). Built first when it isn't yet. Already in the gentlest mode the programme has: kept (`gentlest`).
  *  - A WATCH-PLAN RUN (a run the plan holds, not one the app built) is eased by the thread coach's own `ease` op through
- *    its own applier (`applyOps`): its distance — when every stage is one — or else its time, × 0.7, one block held
- *    easy; a long, easy or recovery run keeps its kind and name, anything harder becomes an easy run. The applier writes
+ *    its own applier (`applyOps`): its time × 0.7 — or, for a run not on the watch whose every stage is a distance, its
+ *    distance × 0.7 (a run on the watch eases by time, which the wire carries) — one block held easy; a long, easy or
+ *    recovery run keeps its kind and name, anything harder becomes an easy run. The applier writes
  *    the row, its stages, its document's next revision, the app's claim on the content, and the rewrite of the watch's
  *    copy, which the client drains (`coachDrain`, as after an approve). A run works the hips and the legs. Race day is
  *    never eased (`kept: race`).
@@ -66,6 +67,7 @@ import {
   docOriginRow,
   humanizeWorkoutTitle,
   SESSION_MODES,
+  watchAddressOf,
   type CoachSession,
   type SessionMode,
   type UserPreferences,
@@ -559,16 +561,22 @@ async function runOf(db: Db, userId: string, workoutId: string): Promise<{ row: 
 
 /**
  * The run eased: its distance × 0.7 (to the 100 m) when the plan prescribes it by distance — every stage a distance —
- * else its time × 0.7 (to the minute), one block held easy. A long, easy or recovery run keeps its kind and its name;
- * anything harder becomes an easy run. Null for a run with nothing to ease (no length).
+ * and the run is not on the watch; else its time × 0.7 (to the minute), one block held easy. A run ON THE WATCH always
+ * eases by time (the lead's ruling, 2026-10-17): the athlete runs with the watch, so the watch must hold what the app
+ * says, and the wire carries no distance block. A long, easy or recovery run keeps its kind and its name; anything
+ * harder becomes an easy run. Null for a run with nothing to ease (no length).
  */
-export function easedRun(row: Pick<typeof plannedWorkouts.$inferSelect, RunKey>, stages: readonly Pick<StageRow, "id" | "parentStageId" | "durationType">[]): { session: CoachSession; to: RunEase["to"] } | null {
+export function easedRun(
+  row: Pick<typeof plannedWorkouts.$inferSelect, RunKey>,
+  stages: readonly Pick<StageRow, "id" | "parentStageId" | "durationType">[],
+  onWatch: boolean,
+): { session: CoachSession; to: RunEase["to"] } | null {
   const seconds = row.sourceEstimatedDurationSeconds ?? row.fallbackEstimatedDurationSeconds ?? row.calendarBlockDurationSeconds;
   const minutes = Math.round((seconds / 60) * RUN_EASE_FACTOR);
   if (!(minutes > 0)) return null;
   const leaves = stages.filter((s) => !stages.some((c) => c.parentStageId === s.id));
   const meters = row.expectedDistanceMeters ?? 0;
-  const byDistance = meters >= 1000 && leaves.length > 0 && leaves.every((s) => s.durationType === "distance");
+  const byDistance = !onWatch && meters >= 1000 && leaves.length > 0 && leaves.every((s) => s.durationType === "distance");
   const kept = (KEPT_RUN_KINDS as readonly string[]).includes(row.category);
   const parsed = coachSessionSchema.safeParse({
     category: kept ? row.category : "easy",
@@ -592,21 +600,30 @@ const pick = (row: typeof plannedWorkouts.$inferSelect): RunColumns => Object.fr
 /** The applier's proposal id for the check's ease of a session on a day: its document revision's reference. */
 const easeRef = (workoutId: string, date: string): string => `body-check-${workoutId}-${date}`;
 
-/** The run as the plan has it, as the wire can carry it: each stage a block, a repeat's stages as many times as it says. */
+/**
+ * The run as the plan has it, as the wire can carry it: each stage a block, a repeat's stages as many times as it says
+ * — every block by TIME, since the wire carries no distance: a distance stage takes its share, by distance, of the time
+ * the plan gives what its timed stages leave (a 20 km run the plan says takes 110 minutes is 110 minutes). The app's own
+ * copy keeps the plan's distance stages exactly; this is only what goes back to the watch.
+ */
 function planRunSession(columns: RunColumns, stages: readonly StageRow[]): CoachSession | null {
   const ordered = [...stages].sort((a, b) => a.ord - b.ord);
-  const blocks: Array<{ kind: "duration" | "distance"; value: number; intensity?: string }> = [];
-  const block = (s: StageRow): boolean => {
-    const intensity = s.label ?? undefined;
-    if (s.durationType === "time" && s.durationSeconds) blocks.push({ kind: "duration", value: s.durationSeconds / 60, ...(intensity ? { intensity } : {}) });
-    else if (s.durationType === "distance" && s.distanceMeters) blocks.push({ kind: "distance", value: s.distanceMeters, ...(intensity ? { intensity } : {}) });
-    else return false;
-    return true;
-  };
+  const played: StageRow[] = [];
   for (const s of ordered.filter((x) => !x.parentStageId)) {
     const kids = ordered.filter((c) => c.parentStageId === s.id);
     const times = kids.length > 0 ? Math.max(1, s.repeatCount ?? 1) : 1;
-    for (let i = 0; i < times; i++) for (const k of kids.length > 0 ? kids : [s]) if (!block(k)) return null;
+    for (let i = 0; i < times; i++) played.push(...(kids.length > 0 ? kids : [s]));
+  }
+  const total = columns.sourceEstimatedDurationSeconds ?? columns.fallbackEstimatedDurationSeconds ?? columns.calendarBlockDurationSeconds;
+  const timed = played.reduce((sum, s) => sum + (s.durationType === "time" ? (s.durationSeconds ?? 0) : 0), 0);
+  const meters = played.reduce((sum, s) => sum + (s.durationType === "distance" ? (s.distanceMeters ?? 0) : 0), 0);
+  const perMeter = meters > 0 ? (total - timed) / meters : 0;
+  if (meters > 0 && !(perMeter > 0)) return null;
+  const blocks: Array<{ kind: "duration"; value: number; intensity?: string }> = [];
+  for (const s of played) {
+    const seconds = s.durationType === "time" ? (s.durationSeconds ?? 0) : s.durationType === "distance" ? Math.round((s.distanceMeters ?? 0) * perMeter) : 0;
+    if (!(seconds > 0)) return null;
+    blocks.push({ kind: "duration", value: seconds / 60, ...(s.label ? { intensity: s.label } : {}) });
   }
   const parsed = coachSessionSchema.safeParse({
     category: ["easy", "long", "quality", "recovery", "race"].includes(columns.category) ? columns.category : "easy",
@@ -672,7 +689,9 @@ async function easeRun(db: Db, userId: string, s: Subject, answer: Answer, recor
   if (prior?.state === "easing") {
     ease = prior;
   } else {
-    const plan = easedRun(run.row, run.stages);
+    // On the watch: at an address the app can write to, or COROS holds it as the import last saw (`synced`).
+    const onWatch = watchAddressOf(run.row) !== null || run.row.corosSyncState === "synced";
+    const plan = easedRun(run.row, run.stages, onWatch);
     if (!plan) return { record: { change: { kind: "ask" }, ease: record?.ease ?? null }, coachDrain: false };
     ease = { kind: "run", state: "easing", at: ctx.now, session: plan.session, to: plan.to, before: { columns: pick(run.row), doc: run.row.workoutDoc, stages: run.stages, claimed: run.claimed } };
     await writeRecord(db, userId, id, { change: record?.change ?? null, ease }, ctx);
