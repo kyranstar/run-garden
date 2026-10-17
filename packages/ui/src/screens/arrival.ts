@@ -7,8 +7,9 @@
  */
 
 import type { GardenSeenState } from "@rg/api-client";
-import { addDays, sportLabel, type GardenEvent } from "@rg/domain";
+import { addDays, sportLabel, todayInZone, type GardenEvent, type ObjectiveBoardDto } from "@rg/domain";
 import { SPECIES_BY_ID } from "@rg/garden-engine";
+import { formatKr } from "./studio/objectives-model.js";
 
 /** A garden event as the route serves it — durable, or today's preview.
  * Durable rows also carry the DB `createdAt` (recentGardenEvents selects
@@ -42,6 +43,48 @@ export interface ArrivalPlan {
   markSeenImmediately: boolean;
   /** What POST /api/garden/seen should record after this presentation. */
   nextSeen: GardenSeenState;
+}
+
+/**
+ * A garden moment that is no garden event (the new shape §7): a best ever on a key result, a finished objective. It
+ * rides the arrival block's watermark — dated today, a today line; after the watermark, a beat line; at or before it,
+ * old news — and leads its lines. It never moves the watermark.
+ */
+export interface ArrivalMoment {
+  date: string;
+  line: string;
+}
+
+/**
+ * The objectives board's moments: each key result's best ever (once it has something to beat — the board's `best`),
+ * on its day, and each completed objective, on the day it was marked complete in the athlete's zone (`tz`).
+ *
+ * Read leniently: Today calls this, and a board read that failed, came back partial or from an older shape must never
+ * break Today — what can't be read is no moment.
+ */
+export function objectiveMoments(board: ObjectiveBoardDto | null | undefined, tz: string): ArrivalMoment[] {
+  const cards = Array.isArray(board?.objectives) ? board.objectives : [];
+  return cards.flatMap((c) => {
+    if (!c || typeof c !== "object" || !c.objective) return [];
+    const bests = (Array.isArray(c.keyResults) ? c.keyResults : []).flatMap((k) =>
+      k?.best && typeof k.best.date === "string" && typeof k.best.display === "number" && k.keyResult
+        ? [{ date: k.best.date, line: `A best ever on ${k.keyResult.label}: ${formatKr(k.best.display, k.keyResult.unit, k.keyResult.measure)}.` }]
+        : [],
+    );
+    const at = Date.parse(c.objective.updatedAt);
+    const done =
+      c.objective.status === "done" && Number.isFinite(at) ? [{ date: dayInZone(tz, new Date(at)), line: `“${c.objective.title}” is complete.` }] : [];
+    return [...bests, ...done];
+  });
+}
+
+/** The day an instant falls on in `tz`; an unknown zone reads UTC. */
+function dayInZone(tz: string, at: Date): string {
+  try {
+    return todayInZone(tz, at);
+  } catch {
+    return at.toISOString().slice(0, 10);
+  }
 }
 
 export function cap(s: string): string {
@@ -145,6 +188,7 @@ export function selectArrival(
   events: ArrivalEvent[],
   seen: GardenSeenState | null,
   todayDate: string,
+  moments: readonly ArrivalMoment[] = [],
 ): ArrivalPlan {
   const durable = events.filter((e) => !e.preview);
   const preview = events.filter((e) => e.preview);
@@ -243,15 +287,23 @@ export function selectArrival(
     return true;
   };
 
-  const beatSrc = fresh
-    .filter(notConsumed)
-    .sort((a, b) => (BEAT_PRIORITY[a.kind] ?? 9) - (BEAT_PRIORITY[b.kind] ?? 9))
-    .map(eventSentence)
-    .filter((t): t is string => !!t);
-  const todaySrc = preview
-    .filter(notConsumed)
-    .map(eventSentence)
-    .filter((t): t is string => !!t);
+  // The objectives' moments lead their lines: today's whatever the watermark (as today's preview events), the rest only
+  // past it.
+  const beatSrc = [
+    ...moments.filter((m) => m.date > wm.d && m.date < todayDate).map((m) => m.line),
+    ...fresh
+      .filter(notConsumed)
+      .sort((a, b) => (BEAT_PRIORITY[a.kind] ?? 9) - (BEAT_PRIORITY[b.kind] ?? 9))
+      .map(eventSentence)
+      .filter((t): t is string => !!t),
+  ];
+  const todaySrc = [
+    ...moments.filter((m) => m.date === todayDate).map((m) => m.line),
+    ...preview
+      .filter(notConsumed)
+      .map(eventSentence)
+      .filter((t): t is string => !!t),
+  ];
 
   const tip = durable.reduce<Watermark>((acc, e) => (after(e, acc) ? { d: e.date, s: e.seq } : acc), wm);
   // Every ceremony that fired THIS call — fresh, backfilled, or preview —

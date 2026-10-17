@@ -30,6 +30,7 @@ import { Banner, CategoryDot, EmptyState, formatDayShort, formatMinutes, formatT
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
+import { useArrivalShown } from "./growth/moments.js";
 import { BotanicalCard } from "./botanical.js";
 import { MoveSheet } from "./move-sheet.js";
 import {
@@ -1460,6 +1461,8 @@ export function GardenScreen() {
     const live = today.data?.today ?? snap.state.lastSimulatedDate;
     return selectArrival(evts, seenState, live);
   }, [garden.data, today.data]);
+  // What the block shows: the plan with the objectives' garden moments in its lines (Growth, the new shape §7).
+  const arrivalShown = useArrivalShown(arrivalPlan, garden.data, today.data?.today);
 
   // Glow schedule for newly arrived plants: rarest first, 4s each, max 3.
   useEffect(() => {
@@ -1693,7 +1696,7 @@ export function GardenScreen() {
   // same-day unlocks celebrate immediately (arrival.ts).
   const seen = garden.data.seen ?? null;
   // Non-null past the early returns: the memo runs whenever garden.data exists.
-  const arrival = arrivalPlan!;
+  const arrival = arrivalShown!;
   const currentCeremony =
     viewingLive && !blockDismissed ? (arrival.ceremonies[ceremonyIndex] ?? null) : null;
   const ceremoniesDone = ceremonyIndex >= arrival.ceremonies.length;
