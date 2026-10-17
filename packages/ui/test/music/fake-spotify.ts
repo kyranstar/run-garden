@@ -47,7 +47,7 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
     ),
     player: null as null | Record<string, unknown>,
     /** Scripted answers, consumed in order, by "METHOD /path" (the path without the API base or query). */
-    script: new Map<string, Array<{ status: number; body?: unknown; headers?: Record<string, string> }>>(),
+    script: new Map<string, Array<{ status: number; body?: unknown; headers?: Record<string, string>; gate?: Promise<void> }>>(),
     validToken: "token-1",
     created: 0,
   };
@@ -67,6 +67,8 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
     const call: Call = { method, path, query: Object.fromEntries(url.searchParams), body, auth, started: ++tick, finished: 0 };
     calls.push(call);
     await Promise.resolve();
+    const gate = state.script.get(`${method} ${path}`)?.[0]?.gate;
+    if (gate) await gate;
     const res = answer(method, path, url.searchParams, body, auth);
     call.finished = ++tick;
     return res;
@@ -151,7 +153,7 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
   }
 
   /** Script the next answers to one endpoint. */
-  const script = (key: string, ...answers: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>) => {
+  const script = (key: string, ...answers: Array<{ status: number; body?: unknown; headers?: Record<string, string>; gate?: Promise<void> }>) => {
     state.script.set(key, [...(state.script.get(key) ?? []), ...answers]);
   };
 

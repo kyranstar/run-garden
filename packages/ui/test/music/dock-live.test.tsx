@@ -16,7 +16,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "@rg/api-client";
-import { MusicPanel, VOLUME_SETTLE_MS, type PanelActions } from "../../src/music/dock.js";
+import type { MusicDto } from "@rg/api-client";
+import { MUSIC_QUERY, MusicPanel, PlayerMusicTools, VOLUME_SETTLE_MS, type PanelActions } from "../../src/music/dock.js";
 import type { DockState } from "../../src/music/controller.js";
 import { openOfflineDb, type OfflineDb } from "../../src/offline/idb.js";
 import { saveBuild } from "../../src/offline/builds.js";
@@ -91,6 +92,22 @@ describe("the volume", () => {
     slide(input, "60");
     act(() => void vi.advanceTimersByTime(VOLUME_SETTLE_MS));
     expect(sent).toEqual([55, 60]);
+  });
+});
+
+describe("dark", () => {
+  it("the player's dock is not mounted at all — no controller, no listener — and on, it is", () => {
+    for (const [data, mounted] of [[null, false], [{ connected: true, music: { shortcuts: [] } }, true]] as Array<[MusicDto | null, boolean]>) {
+      const add = vi.spyOn(document, "addEventListener");
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+      qc.setQueryData(MUSIC_QUERY, data);
+      mount(createElement(QueryClientProvider, { client: qc }, createElement(PlayerMusicTools)));
+      expect(add.mock.calls.some((c) => c[0] === "visibilitychange"), String(mounted)).toBe(mounted);
+      add.mockRestore();
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+    }
   });
 });
 

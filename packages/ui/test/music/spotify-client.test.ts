@@ -71,6 +71,51 @@ describe("the client", () => {
     expect(fake.calls.slice(2).map((c) => c.auth)).toEqual(["Bearer token-2", "Bearer token-2"]);
   });
 
+  it("a 401 that arrives after another call already fetched a fresh token uses that one — never a second refresh", async () => {
+    const { fake, spotify, tokens } = setup();
+    let release: () => void = () => undefined;
+    const late = new Promise<void>((r) => (release = r));
+    fake.script("GET /me/player/devices", { status: 401 });
+    fake.script("GET /me/player", { status: 401, gate: late });
+    const a = spotify.devices();
+    const b = spotify.player();
+    await a; // A's 401, its fresh token, its retry: done
+    release(); // B's 401 only now
+    await b;
+    expect(tokens.asked).toEqual([false, true]);
+    expect(fake.calls.at(-1)!.auth).toBe("Bearer token-2");
+  });
+
+  it("a fresh ask after a 401 is never answered by a plain token fetch already under way", async () => {
+    const fake = fakeSpotify();
+    let clock = 0;
+    const asked: boolean[] = [];
+    let releasePlain: () => void = () => undefined;
+    const spotify = makeSpotify({
+      token: async (fresh) => {
+        asked.push(fresh);
+        if (!fresh && asked.length > 1) await new Promise<void>((r) => (releasePlain = r));
+        if (fresh) fake.state.validToken = "token-2";
+        return { connected: true, accessToken: fake.state.validToken, expiresAt: new Date(clock + 120_000).toISOString() };
+      },
+      fetch: fake.fetch,
+      now: () => clock,
+      sleep: async () => undefined,
+    });
+    await spotify.devices(); // token-1, good for two minutes
+    let releaseA: () => void = () => undefined;
+    fake.script("GET /me/player/devices", { status: 401, gate: new Promise<void>((r) => (releaseA = r)) });
+    const a = spotify.devices(); // sent with token-1; its 401 comes later
+    clock += 90_000; // inside the last minute: the next call fetches a plain token
+    const b = spotify.player();
+    await new Promise((r) => setTimeout(r, 0));
+    releaseA(); // A's 401 while B's plain fetch is under way
+    await new Promise((r) => setTimeout(r, 0));
+    releasePlain();
+    await Promise.all([a, b]);
+    expect(asked).toContain(true);
+  });
+
   it("a 401 asks the Worker for a fresh token once, and tries again with it", async () => {
     const { fake, spotify, tokens } = setup();
     fake.script("GET /me/player/devices", { status: 401, body: { error: { status: 401, message: "expired" } } });
@@ -110,14 +155,14 @@ describe("the client", () => {
 
   it("a 429 whose Retry-After can't be read (not exposed to the page, or empty) is the 5 s default — never 0 (review #3)", async () => {
     const { fake, spotify, slept } = setup();
-    for (const headers of [undefined, { "Retry-After": "" }, { "Retry-After": "soon" }]) {
+    for (const headers of [undefined, { "Retry-After": "" }, { "Retry-After": "soon" }, { "Retry-After": "0" }]) {
       fake.script("GET /me/player/devices", { status: 429, ...(headers ? { headers } : {}) });
       const err = (await spotify.devices().catch((e: unknown) => e)) as SpotifyError;
       expect([err.status, err.retryAfterMs]).toEqual([429, 5000]);
     }
     // Longer than an interactive call waits by itself: nothing was retried at once.
     expect(slept).toEqual([]);
-    expect(fake.calls).toHaveLength(3);
+    expect(fake.calls).toHaveLength(4);
   });
 
   it("NO_ACTIVE_DEVICE is told apart from other refusals", async () => {
