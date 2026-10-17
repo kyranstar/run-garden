@@ -135,13 +135,13 @@ describe("the view", () => {
     expect(await readBodyCheck(db, userId, id, ctx())).toMatchObject({ answer: { feel: "fresh" }, open: false });
   });
 
-  it("reads in a handful of statements", async () => {
+  it("reads in one statement: the session, its lock, the conditions, its modes, the answer and the record", async () => {
     await seedTmj(db, userId);
     const id = await seedSlot(db, userId, programId, DAY);
     await answerBodyCheck(db, userId, id, { feel: "sore", areas: ["calves"] }, ctx());
     statements = [];
     await readBodyCheck(db, userId, id, ctx());
-    expect(statements.length).toBeLessThanOrEqual(4);
+    expect(statements.length).toBe(1);
     expect(statements.filter(isWrite)).toEqual([]);
   });
 });

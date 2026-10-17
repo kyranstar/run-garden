@@ -137,6 +137,37 @@ describe("tapping the body check", () => {
     expect(open).toHaveBeenCalledWith({ request: "Legs are heavy; adapt today's session" });
   });
 
+  it("an ease that had to build the session first is finished by asking again, at once — one tap, two requests", async () => {
+    const heavy = { feel: "heavy" as const, areas: [] };
+    let posts = 0;
+    const sent = serve((method) => {
+      if (method === "GET") return json(view());
+      posts += 1;
+      return json(view({ answer: heavy, change: { kind: "eased", to: { mode: "consistent" } }, ...(posts === 1 ? { pending: true as const } : {}) }));
+    });
+    mount(createElement(BodyCheck, { workout }));
+    await until(() => !!button("A bit heavy"), "the chips");
+    await tap("A bit heavy");
+    await until(() => text().includes("Eased to a consistent session for heavy legs") && !button("Undo")?.disabled, "the line");
+    expect(sent.filter((s) => s.method === "POST").map((s) => s.body)).toEqual([
+      { workoutId: "w1", feel: "heavy" },
+      { workoutId: "w1", feel: "heavy" },
+    ]);
+  });
+
+  it("a check read while an ease is still pending is finished once, by the card", async () => {
+    const heavy = { feel: "heavy" as const, areas: [] };
+    const sent = serve((method) =>
+      method === "GET"
+        ? json(view({ answer: heavy, change: { kind: "eased", to: { mode: "consistent" } }, pending: true }))
+        : json(view({ answer: heavy, change: { kind: "eased", to: { mode: "consistent" } } })),
+    );
+    mount(createElement(BodyCheck, { workout }));
+    await until(() => sent.some((s) => s.method === "POST"), "the finish");
+    await settle(20);
+    expect(sent.filter((s) => s.method === "POST")).toEqual([{ method: "POST", path: "/api/today/body", body: { workoutId: "w1", feel: "heavy" } }]);
+  });
+
   it("a save that fails says so and keeps nothing as chosen", async () => {
     serve((method) => (method === "GET" ? json(view()) : json({ error: "offline" }, 503)));
     mount(createElement(BodyCheck, { workout }));

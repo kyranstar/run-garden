@@ -2972,20 +2972,28 @@ export interface BodyCheckDto {
   open: boolean;
   /** What the area picker offers. */
   areas: BodyAreaDto[];
+  /**
+   * An ease is recorded and not yet applied — it had to build the day's session first, and two builds don't fit one
+   * request: the client asks again with the same answer, at once, and that request applies it.
+   */
+  pending?: true;
   /** A watch write is queued: the client drains it, as after an approve. */
   coachDrain?: true;
 }
 
 /** The answer or Undo, its watch write drained as after an approve. */
-async function bodyDrained(res: Promise<BodyCheckDto>): Promise<BodyCheckDto> {
-  const view = await res;
+function bodyDrained(view: BodyCheckDto): BodyCheckDto {
   if (view.coachDrain) void drainCoach().catch(() => undefined);
   return view;
 }
 
 export const bodyCheckApi = {
   read: (workoutId: string) => get<BodyCheckDto>(withQuery("/api/today/body", new URLSearchParams({ workout: workoutId }))),
-  answer: (workoutId: string, feel: BodyFeel, areas?: readonly string[]) =>
-    bodyDrained(post<BodyCheckDto>("/api/today/body", { workoutId, feel, ...(feel === "sore" ? { areas } : {}) })),
-  undo: (workoutId: string) => bodyDrained(post<BodyCheckDto>("/api/today/body/undo", { workoutId })),
+  /** Keep the answer; an ease left pending is finished by one more request with the same answer. */
+  answer: async (workoutId: string, feel: BodyFeel, areas?: readonly string[]) => {
+    const body = { workoutId, feel, ...(feel === "sore" ? { areas } : {}) };
+    const view = await post<BodyCheckDto>("/api/today/body", body);
+    return bodyDrained(view.pending ? await post<BodyCheckDto>("/api/today/body", body) : view);
+  },
+  undo: async (workoutId: string) => bodyDrained(await post<BodyCheckDto>("/api/today/body/undo", { workoutId })),
 };

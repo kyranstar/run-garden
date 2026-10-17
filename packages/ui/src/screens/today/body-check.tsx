@@ -11,7 +11,7 @@
  * `BodyCheck` is the connected piece the Today card places (`<BodyCheck workout={…} />`); `BodyCheckPanel` draws it from
  * a view, and `bodyLine` / `askRequest` are its words.
  */
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { bodyCheckApi, type BodyAreaDto, type BodyCheckDto, type BodyFeel, type WorkoutDto } from "@rg/api-client";
 import { formatDistance, type Units } from "../../components.js";
@@ -204,6 +204,15 @@ export function BodyCheck({ workout }: { workout: Pick<WorkoutDto, "id"> }) {
     onSuccess: (next) => settled(next, read.data),
     onError: () => setError(SAVE_FAILED),
   });
+
+  // An ease left pending (a request cut off between its two halves) is finished by the card, once.
+  const finished = useRef(false);
+  const pendingAnswer = read.data?.pending ? read.data.answer : null;
+  useEffect(() => {
+    if (!pendingAnswer || finished.current) return;
+    finished.current = true;
+    answer.mutate({ feel: pendingAnswer.feel, ...(pendingAnswer.feel === "sore" ? { areas: pendingAnswer.areas } : {}) });
+  }, [pendingAnswer, answer]);
 
   // Until the read lands (or offline), the question still stands: a tap is kept by the server all the same.
   const base: BodyCheckDto = read.data ?? { workoutId: workout.id, answer: null, change: null, open: true, areas: [] };
