@@ -10,7 +10,7 @@
  * The session's own cues are Web Audio in an "ambient" audio session (the sound pass), so they mix over Spotify; the
  * dock adds no audio element and no speech — on an iPhone either would stop Spotify.
  */
-import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, musicApi, SPOTIFY_LOGIN_PATH, type MusicDto } from "@rg/api-client";
 import { Sheet } from "../components.js";
@@ -300,7 +300,8 @@ export function MusicPanel({ state, actions }: { state: DockState; actions: Pane
   return (
     <div className="music-panel">
       <NowPlayingRow state={state} actions={actions} />
-      <VolumeRow state={state} actions={actions} />
+      {/* The volume belongs to what is playing: with nothing in the player there is nothing to turn up. */}
+      {state.player ? <VolumeRow state={state} actions={actions} /> : null}
       {notice}
       {state.link ? (
         <a className="btn music-open" href={state.link} target="_blank" rel="noopener noreferrer">
@@ -465,11 +466,25 @@ export function MusicDock({ variant }: { variant: "shell" | "player" }) {
     disconnect: () => void dock.disconnect(),
   };
   return (
-    <div className={`music-dock music-dock--${variant}`}>
-      <MusicPill title={pillTitle(state, clock)} expanded={state.expanded} onOpen={() => void dock.open()} />
-      <Sheet open={state.expanded} onClose={() => void dock.close()} title="Music">
-        <MusicPanel state={state} actions={actions} />
-      </Sheet>
-    </div>
+    <DockFrame
+      variant={variant}
+      pill={<MusicPill title={pillTitle(state, clock)} expanded={state.expanded} onOpen={() => void dock.open()} />}
+      sheet={
+        <Sheet open={state.expanded} onClose={() => void dock.close()} title="Music">
+          <MusicPanel state={state} actions={actions} />
+        </Sheet>
+      }
+    />
+  );
+}
+
+/** The pill in its fixed corner, and the sheet BESIDE it, never inside: the pill's fixed box is a stacking context
+ * below the tab bar's, and a sheet drawn inside it lay under the tab bar (its Connect button under "Plan"). */
+export function DockFrame({ variant, pill, sheet }: { variant: "shell" | "player"; pill: ReactNode; sheet: ReactNode }) {
+  return (
+    <>
+      <div className={`music-dock music-dock--${variant}`}>{pill}</div>
+      {sheet}
+    </>
   );
 }

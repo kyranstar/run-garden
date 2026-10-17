@@ -17,7 +17,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { MusicDto } from "@rg/api-client";
-import { MUSIC_QUERY, MusicDock, MusicPanel, MusicPill, type PanelActions } from "../../src/music/dock.js";
+import { DockFrame, MUSIC_QUERY, MusicDock, MusicPanel, MusicPill, type PanelActions } from "../../src/music/dock.js";
 import { pillTitle } from "../../src/music/dock-model.js";
 import type { DockState } from "../../src/music/controller.js";
 import { AppShell } from "../../src/shell.js";
@@ -73,6 +73,13 @@ describe("visibility", () => {
       expect(html).not.toContain('role="dialog"');
       expect(html).not.toContain("Connect Spotify");
     }
+  });
+
+  it("the sheet is drawn beside the pill's fixed box, never inside it (inside, the tab bar covered it)", () => {
+    const html = render(
+      createElement(DockFrame, { variant: "shell", pill: createElement("button", null, "pill"), sheet: createElement("div", { role: "dialog" }, "sheet") }),
+    );
+    expect(html).toBe('<div class="music-dock music-dock--shell"><button>pill</button></div><div role="dialog">sheet</div>');
   });
 
   it("in the session player it is the smaller form", () => {
@@ -160,6 +167,10 @@ describe("the expanded sheet", () => {
     const none = panel({ devices: [] });
     expect(none).not.toContain('type="range"');
     expect(none).not.toContain("Use the side buttons");
+    // Nothing in the player: no volume to set, whatever the devices.
+    const idle = panel({ devices: [desk] });
+    expect(idle).toContain("Nothing playing");
+    expect(idle).not.toContain('type="range"');
   });
 
   it("a notice and the open-in-Spotify link while a play waits for a device", () => {
@@ -239,6 +250,17 @@ describe("the stylesheet", () => {
     expect(rule(".music-dock-room")).toContain("var(--tap)");
     expect(css).toMatch(/@media \(min-width: 1024px\) \{[^@]*\.music-dock-room \{\s*display: none;/);
     expect(css).toMatch(/\.shell--music \.side-nav \.nav-footer \{[^}]*padding-bottom: calc\(var\(--tap\)/);
+  });
+
+  it("below lg it steps aside where a page pins its own action row above the tab bar (it covered Start now); at lg it stays", () => {
+    const hide = /\.shell:has\(\.stu-build-foot\) \.music-dock--shell,\s*\.shell:has\(\.stu > \.stu-added--on\) \.music-dock--shell \{\s*display: none;/;
+    expect(css).toMatch(hide);
+    // At lg it comes back: four classes, after the rules that hide it.
+    const back = css.search(/\.shell\.shell--music \.music-dock\.music-dock--shell \{\s*display: flex;/);
+    expect(back).toBeGreaterThan(css.search(hide));
+    // The rows it steps aside for are still the ones pinned there.
+    expect(rule(".stu-build-foot")).toContain("position: sticky");
+    expect(rule(".stu > .stu-added--on")).toContain("position: sticky");
   });
 
   it("in the player it stays clear of the top bar and the safe area", () => {

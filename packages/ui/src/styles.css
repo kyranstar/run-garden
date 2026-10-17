@@ -12400,3 +12400,17 @@ a.stu-tpl-open:focus-visible::before {
   color: var(--ink);
   font: inherit;
 }
+/* A page with its own action row pinned above the tab bar (the Studio's builder, the Studio's "added" row) owns that
+   band: below lg the pill steps aside there rather than sit over "Start now". It stays mounted — only not drawn — so
+   what plays and the sheet are as they were; at lg it is in the rail and stays. */
+.shell:has(.stu-build-foot) .music-dock--shell,
+.shell:has(.stu > .stu-added--on) .music-dock--shell {
+  display: none;
+}
+@media (min-width: 1024px) {
+  /* Four classes: at least as specific as each steps-aside rule above (the "added" row's counts four: `.shell`, the
+     two inside `:has()`, the dock's), and after them. */
+  .shell.shell--music .music-dock.music-dock--shell {
+    display: flex;
+  }
+}
