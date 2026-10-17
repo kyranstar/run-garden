@@ -101,6 +101,10 @@ describe("the end of a timed hold says what comes next", () => {
     expect(plan(at([hold("a", 30, 0, "Right"), hold("b", 30, 0, "Left")])).slice(0, 4)).toEqual([...ticks(30, 3, 2, 1), [30, "next"]]);
   });
 
+  it("the same side again (another round of it): next, never switch", () => {
+    expect(plan(at([hold("a", 30, 0, "Left"), hold("a", 30, 0, "Left")])).slice(0, 4)).toEqual([...ticks(30, 3, 2, 1), [30, "next"]]);
+  });
+
   it("a set: next, and the plan ends there (a set waits for Done)", () => {
     expect(plan(at([hold("a", 30), set("b"), hold("c", 30)]))).toEqual([...ticks(30, 3, 2, 1), [30, "next"]]);
   });
@@ -148,8 +152,9 @@ describe("what plays nothing ahead", () => {
     expect(plan(at([set("a"), rest(30), hold("b", 30)]))).toEqual([]);
   });
 
-  it("a paused session", () => {
+  it("a paused session — whatever its clock says", () => {
     expect(plan(at([hold("a", 30, 8)], { paused: true }))).toEqual([]);
+    expect(plan({ ...at([hold("a", 30, 8)]), paused: true })).toEqual([]);
   });
 });
 
@@ -202,6 +207,10 @@ describe("spacing", () => {
   it("a tick never comes before its step began", () => {
     // A 2 s rest, come to by Skip at T: its countdown's first tick would be at T − 1 s.
     expect(plan(at([rest(2), set("b")]), T - 1)).toEqual([[0, "tick2"], [1, "tick1"], [2, "go"]]);
+    // A 2 s rest after a hold, and a 2 s get-ready after one: no tick at 9 s, before either began (its 10 s tick is the
+    // hold's own cue's; the hold's end gives way to the run after it).
+    expect(plan(at([hold("a", 10), rest(2), set("c")]))).toEqual([[10, "rest"], [11, "tick1"], [12, "go"]]);
+    expect(plan(at([hold("a", 10), hold("b", 30, 2)])).slice(0, 3)).toEqual([[10, "next"], [11, "tick1"], [12, "go"]]);
   });
 });
 
@@ -284,15 +293,19 @@ describe("a calm session", () => {
 
   it("not with a hold under 45 s, a set, a strength hold, or no hold at all", () => {
     expect(calmSession(stepsOf([...yin(), hold("lowLunge", 44)]), buildOf())).toBe(false);
-    expect(calmSession(stepsOf([...yin(), set("lowLunge")]), buildOf())).toBe(false);
+    // A set, however long it would take.
+    expect(calmSession(stepsOf([...yin(), { ...set("lowLunge"), seconds: 90 }]), buildOf())).toBe(false);
     expect(calmSession(stepsOf([...yin(), hold("wallSit", 60)]), buildOf())).toBe(false);
     expect(calmSession(stepsOf([rest(60)]), buildOf())).toBe(false);
   });
 
-  it("not with a jumping move", () => {
-    const jumpy = { ...exercise("lowLunge"), id: "hop", contraction: ["plyometric"] as const, purposes: ["conditioning"] as const };
+  it("not with a jumping move, nor a power one", () => {
     const b = buildOf();
-    expect(calmSession(stepsOf([...yin(), hold("hop", 60)]), { ...b, exercises: { ...b.exercises, hop: jumpy as unknown as SessionBuildDto["exercises"][string] } })).toBe(false);
+    const withMove = (id: string, over: object) => ({ ...b, exercises: { ...b.exercises, [id]: { ...exercise("lowLunge"), id, ...over } as unknown as SessionBuildDto["exercises"][string] } });
+    expect(calmSession(stepsOf([...yin(), hold("hop", 60)]), withMove("hop", { contraction: ["plyometric"], purposes: ["conditioning"] }))).toBe(false);
+    expect(calmSession(stepsOf([...yin(), hold("swing", 60)]), withMove("swing", { contraction: ["isotonic"], purposes: ["power"] }))).toBe(false);
+    // The same move, slow and held: calm.
+    expect(calmSession(stepsOf([...yin(), hold("easy", 60)]), withMove("easy", { contraction: ["isometric"], purposes: ["mobility"] }))).toBe(true);
   });
 
   it("the fixture's session (a squat, a wall sit) is not", () => {

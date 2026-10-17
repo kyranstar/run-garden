@@ -698,6 +698,18 @@ describe("the session's cues", () => {
     expect(calls.schedule.at(-1)).toEqual([{ at: T0 + 50, kind: "done" }]);
   });
 
+  it("a session that runs out to its end has its done once: from the plan, never again at the finish", async () => {
+    const only = build().steps[0]!;
+    await storedStart(build({ steps: [{ ...only, prepGap: 0, seconds: 10 }], plannedSeconds: 10 }));
+    const { cues, calls } = recordingCues();
+    mount({ cues });
+    await until(() => text().includes("1 of 1"), "the one hold");
+    expect(rel(calls.schedule.at(-1)!)).toEqual([[7, "tick3"], [8, "tick2"], [9, "tick1"], [10, "done"]]);
+    await at(T0 + 10 * S + 200);
+    await until(() => !text().includes("1 of 1"), "the review");
+    expect(calls.schedule.at(-1)).toEqual([]);
+  });
+
   it("the palette: soft keys for an ordinary session, bowls for a calm one, with the volume kept on the device", async () => {
     await storedStart();
     const first = recordingCues();

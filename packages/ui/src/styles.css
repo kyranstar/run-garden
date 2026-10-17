@@ -8380,17 +8380,20 @@ button.session-chip::after {
    From md the column centres at 520px, the top line names the session and the
    time left, and the keys show (`?`). Every control is at least a fingertip
    (44px) here, under a mouse too: the player is used at arm's length. */
+/* A column, not a four-row grid: a line that shows only sometimes (the warning that nothing is kept, the ring/silent
+   hint) sits under the progress line and never takes the stage's own row (the sound pass, 2026-10-17). */
 .player {
   min-height: 100vh;
   min-height: 100dvh;
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   color: var(--ink);
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 .player-status {
+  display: grid;
   grid-template-rows: none;
   place-content: center;
   justify-items: center;
@@ -8464,6 +8467,7 @@ button.session-chip::after {
   border-radius: var(--radius-xs);
 }
 .player-main {
+  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -8762,6 +8766,7 @@ button.session-chip::after {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-5);
+  padding: var(--space-2) 0;
   border-top: 1px solid var(--border);
 }
 .sound-choice [role="radio"] {
@@ -8829,6 +8834,7 @@ button.session-chip::after {
    post-check, the moves, a graduation offer, what is new — a note, and Save
    with Discard at the foot. One centred column from md, as the player. */
 .review {
+  display: grid;
   grid-template-rows: auto 1fr auto;
 }
 .review-head {
