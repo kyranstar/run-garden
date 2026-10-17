@@ -58,6 +58,8 @@ export const YOUR_VERSION = "(your version)";
 
 /** A line whose time the approve would refuse (the manifest's `timePassed`): Edit is beside it (the re-review). */
 export const TIME_PASSED_LINE = "That time has passed — pick another";
+/** A now design the approve can't place: no time is left today (round 2, Minor 2). Edit is beside it. */
+export const NO_TIME_LEFT_LINE = "No time left today — pick a time";
 
 /** A designed suggestion's read. */
 export const designProposalQuery = (id: string) => ["coach-design-proposal", id] as const;
@@ -483,10 +485,11 @@ function WorkoutItem({
   // Once applied, the plan's own figures: where the approve put it, and the athlete's version's minutes after an edit
   // (M3) — never the coach's proposal beside the line that says where it went.
   const minutes = applied && line.written ? line.written.minutes : line.minutes;
+  // A time the approve would refuse is never shown as if it stood (the re-review): the day alone, and a line saying so —
+  // a now design's too, once no time is left today (round 2, Minor 2: never "Now" over an approve that would fail).
+  const timePassed = line.timePassed === true && !applied && isOpen(line.outcome);
   // A now design is placed at the moment of the approve (§2.6): while open it reads as now — never a time gone by.
-  const now = line.atNow === true && !applied && isOpen(line.outcome);
-  // A time the approve would refuse is never shown as if it stood (the re-review): the day alone, and a line saying so.
-  const timePassed = line.timePassed === true && !now && !applied && isOpen(line.outcome);
+  const now = line.atNow === true && !timePassed && !applied && isOpen(line.outcome);
   const facts = [
     applied ? dayAndTime(applied.date, applied.time) : now ? "Now" : dayAndTime(line.date, timePassed ? null : line.time),
     `${minutes} min`,
@@ -506,7 +509,7 @@ function WorkoutItem({
         {/* What it is for, in one line under its title (D1). */}
         {line.intent ? <p className="coach-pc-intent">{line.intent}</p> : null}
         <p className="coach-pc-facts">{facts.join(" · ")}</p>
-        {timePassed ? <p className="coach-pc-outcome coach-pc-time-passed">{TIME_PASSED_LINE}</p> : null}
+        {timePassed ? <p className="coach-pc-outcome coach-pc-time-passed">{line.atNow ? NO_TIME_LEFT_LINE : TIME_PASSED_LINE}</p> : null}
         <OutcomeLine outcome={line.outcome} applied={applied} />
         {/* On the card, no tap: the day's costs (M1, M7). The reviewer's ideas are one tap down, in the review (R5, D2). */}
         {line.issues.length > 0 ? (

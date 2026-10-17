@@ -20,7 +20,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesignChangeLineDto, DesignLineDto } from "@rg/api-client";
-import { ProposalCard, TIME_PASSED_LINE } from "../src/screens/studio/proposal-card.js";
+import { NO_TIME_LEFT_LINE, ProposalCard, TIME_PASSED_LINE } from "../src/screens/studio/proposal-card.js";
 import { primedClient } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -251,11 +251,23 @@ describe("a set's card shows the rest of the plan (D7, §2.9)", () => {
 
 describe("a now design reads as now (§2.6)", () => {
   it("an open `atNow` line says Now, never a day's time or 'That time has passed'", async () => {
-    serve(pending([line("op-now", { date: "2026-10-11", time: "13:15", atNow: true, timePassed: true })]));
+    serve(pending([line("op-now", { date: "2026-10-11", time: "13:15", atNow: true })]));
     mount("2026-10-11");
     await until(() => text().includes("Workout op-now"), "the card");
     expect(document.querySelector(".coach-pc-facts")!.textContent).toBe("Now · 24 min · Develop · Home · Reviewed 4.3 of 5");
     expect(text()).not.toContain(TIME_PASSED_LINE);
+    expect(text()).not.toContain(NO_TIME_LEFT_LINE);
+  });
+
+  it("an atNow line the approve can't place (no time left today: `timePassed`) says so — the day alone, never 'Now' (round 2, Minor 2)", async () => {
+    serve(pending([line("op-now", { date: "2026-10-11", time: "23:55", atNow: true, timePassed: true })]));
+    mount("2026-10-11");
+    await until(() => text().includes("Workout op-now"), "the card");
+    expect(document.querySelector(".coach-pc-facts")!.textContent).toBe("Sun · 24 min · Develop · Home · Reviewed 4.3 of 5");
+    expect(document.querySelector(".coach-pc-time-passed")?.textContent).toBe("No time left today — pick a time");
+    expect(text()).not.toContain(TIME_PASSED_LINE);
+    // Edit is beside it, as for any time the approve would refuse.
+    expect([...document.querySelectorAll("a")].some((a) => a.textContent === "Edit")).toBe(true);
   });
 
   it("once applied, it says where it went, as any line does", async () => {
