@@ -37,6 +37,7 @@ import {
   coachRuns,
   conditionChecks,
   dailyHealth,
+  keyResults,
   objectives,
   performedSessions,
   plannedWorkouts,
@@ -44,7 +45,18 @@ import {
   sleepRecords,
 } from "@rg/database";
 import { EFFORT_LEVELS, addDays, coachSettings, dayLabel, isoWeekday, todayInZone, type ProfileDto, type UserPreferences } from "@rg/domain";
-import { EQUIPMENT, EXERCISES, libraryLine, profileById, usedValues, type ConditionProfile, type DescribedRule, type EquipmentId, type FormatId } from "@rg/exercise-library";
+import {
+  EQUIPMENT,
+  EXERCISES,
+  label as vocabLabel,
+  libraryLine,
+  profileById,
+  usedValues,
+  type ConditionProfile,
+  type DescribedRule,
+  type EquipmentId,
+  type FormatId,
+} from "@rg/exercise-library";
 import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
 import type { Env } from "../env.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
@@ -53,10 +65,11 @@ import type { Db } from "./db.js";
 import { RUN_LIMITS } from "./design-limits.js";
 import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
-import { SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
-import { dayWords, parsedArray, parsedJson, readTagged, relativeDay } from "./design-tools/read-common.js";
+import { focusMove, focusReadInContext, type RunFocus } from "./design-focus.js";
+import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
+import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { planTerm } from "./design-tools/read-plan.js";
-import { activitiesAround, doneEntries, doneTerms, sessionsWhere, type DoneCtx } from "./design-tools/read-sessions.js";
+import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
 import type { SystemBlock } from "./llm-messages.js";
 import { loadProfileWithPreferences } from "./profile.js";
 import { PENDING_HASH } from "./watch-sets.js";
@@ -65,11 +78,13 @@ import { PENDING_HASH } from "./watch-sets.js";
  * conditions) and seven reads — today's checks, the objectives, the memory core, the plan over the horizon, the
  * answers, the activities, and one statement of scalar counts (the watch's last sync, the open suggestions, today's
  * declines and a reviewer's draft day among them: fix wave 13) — and for a reviewer whose draft is found, one more: the
- * days around the draft's (I9). */
-export function contextStatements(role: DesignRun["role"]): number {
-  return role === "reviewer" ? 12 : 11;
+ * days around the draft's (I9); for a main run asked from something the athlete was looking at (coach everywhere, A1),
+ * one more: its focus's facts — none for a move, which the bundled library holds. */
+export function contextStatements(role: DesignRun["role"], focus?: RunFocus | null): number {
+  if (role === "reviewer") return 12;
+  return role === "main" && focus && focusReadInContext(focus.kind) ? 12 : 11;
 }
-/** The most one build runs (the step loop budgets for it): a reviewer's. */
+/** The most one build runs (the step loop budgets for it): a reviewer's, and a main run's with a focus. */
 export const DESIGN_CONTEXT_STATEMENTS = 12;
 
 /**
@@ -116,6 +131,9 @@ export interface DesignRun {
    * app with every text in it that came from a model or the athlete already marked — placed in the header as it is.
    */
   packet?: string | null;
+  /** What the athlete was looking at when they asked (coach everywhere, A1; design-focus.ts): read for a main run only
+   * — a sub-run's is never read. */
+  focus?: RunFocus | null;
 }
 
 export interface DesignContext {
@@ -286,6 +304,8 @@ interface Reads {
   draftDate: string | null;
   /** The days around a reviewer's draft day: its plan rows and what was done (fix wave 13, I9). */
   around: { plan: Array<Record<string, unknown>>; done: ReturnType<typeof doneEntries> } | null;
+  /** A main run's focus and the rows read for it (coach everywhere, A1): none for a move, which the library holds. */
+  focus: { focus: RunFocus; rows: Map<string, Array<Record<string, unknown>>> } | null;
 }
 
 /** An op still the athlete's to decide (coach-runs.ts' alsoOpen rule, R2): undecided, refused at approval, or being applied. */
@@ -305,7 +325,62 @@ function draftDateSql(userId: string, reviewerId: string): SQL {
     from ${coachRuns} r where r.id = ${reviewerId} and r.user_id = ${userId} and json_valid(r.state))`;
 }
 
-async function read(db: Db, userId: string, now: Date, horizonEnd: (today: string) => string, run: Pick<DesignRun, "id" | "role">): Promise<Reads> {
+/**
+ * A main run's focus, read (coach everywhere, A1): ONE statement, every term scoped to the athlete — so another
+ * athlete's id reads as nothing — and none for a move (the bundled library). A planned workout or a day by the plan's
+ * own term (read_plan's: its title, intent and revision with it); a session by the log's own terms — the session, its
+ * done sets and checks — with the athlete's ratings of it; an activity by the log's; an objective with its key results;
+ * a suggestion with its ops.
+ */
+async function focusRead(db: Db, userId: string, focus: RunFocus): Promise<Map<string, Array<Record<string, unknown>>>> {
+  const pw = plannedWorkouts;
+  switch (focus.kind) {
+    case "move":
+      return new Map();
+    case "workout":
+      return readTagged(db, [planTerm(userId, sql`${pw.id} = ${focus.id}`)]);
+    case "day":
+      return readTagged(db, [planTerm(userId, sql`${pw.effectiveDate} = ${focus.id}`)]);
+    case "session": {
+      const aa = athleteAnswers;
+      const [s, x, c] = doneTerms(userId, sessionsWhere(userId, sql`${performedSessions.id} = ${focus.id}`), { activitiesWhere: sql`0` });
+      const q = sql`select 'q' as t, json_object('q', ${aa.questionId}, 'subject', ${aa.subjectId}, 'num', ${aa.valueNum}, 'choice', ${aa.valueChoice},
+          'text', ${aa.text}) as j
+        from ${aa} where ${aa.userId} = ${userId} and ${aa.performedSessionId} = ${focus.id} and ${aa.questionId} in ('workout_feedback', 'exercise_feedback')`;
+      return readTagged(db, [s!, x!, c!, q]);
+    }
+    case "activity":
+      return readTagged(db, [doneTerms(userId, sql`0`, { activitiesWhere: sql`${activities.id} = ${focus.id}` })[3]!]);
+    case "objective": {
+      const o = objectives;
+      const k = keyResults;
+      return readTagged(db, [
+        sql`select 'o' as t, json_object('id', ${o.id}, 'title', ${o.title}, 'why', ${o.why}, 'status', ${o.status}) as j
+          from ${o} where ${o.userId} = ${userId} and ${o.id} = ${focus.id}`,
+        sql`select 'k' as t, json_object('id', ${k.id}, 'label', ${k.label}, 'baseline', ${k.baseline}, 'target', ${k.target}, 'unit', ${k.unit},
+            'due', ${k.dueDate}, 'position', ${k.position}) as j
+          from ${k} where ${k.userId} = ${userId} and ${k.objectiveId} = ${focus.id}`,
+      ]);
+    }
+    case "proposal": {
+      const p = coachProposals;
+      return readTagged(db, [
+        sql`select 'p' as t, json_object('id', ${p.id}, 'title', ${p.title}, 'status', ${p.status},
+            'ops', case when json_valid(${p.ops}) then json(${p.ops}) else json('[]') end) as j
+          from ${p} where ${p.userId} = ${userId} and ${p.id} = ${focus.id}`,
+      ]);
+    }
+  }
+}
+
+async function read(
+  db: Db,
+  userId: string,
+  now: Date,
+  horizonEnd: (today: string) => string,
+  run: Pick<DesignRun, "id" | "role">,
+  focus: RunFocus | null = null,
+): Promise<Reads> {
   const { profile, prefs } = await loadProfileWithPreferences(db, userId);
   const tz = zoneOrUtc(profile.timezone);
   const today = todayInZone(tz, now);
@@ -318,7 +393,8 @@ async function read(db: Db, userId: string, now: Date, horizonEnd: (today: strin
   const designPrefix = "dp-";
   const day = sql`substr(coalesce(${activities.startTimeLocal}, ${activities.startTime}), 1, 10)`;
 
-  const [checks, objectiveRows, memory, plan, answers, history, countRows] = await Promise.all([
+  const [focusRows, checks, objectiveRows, memory, plan, answers, history, countRows] = await Promise.all([
+    focus ? focusRead(db, userId, focus) : null,
     db
       .select({ id: conditionChecks.id, profileId: conditionChecks.profileId, value: conditionChecks.value, feelingOff: conditionChecks.feelingOff, at: conditionChecks.at })
       .from(conditionChecks)
@@ -422,6 +498,7 @@ async function read(db: Db, userId: string, now: Date, horizonEnd: (today: strin
     declinedToday: { n: Number(declined?.n ?? 0) || 0, reasons: Number(declined?.reasons ?? 0) || 0 },
     draftDate,
     around: draftDate ? await daysAround(db, userId, { tz, units: prefs.units === "mi" ? "mi" : "km", weightUnit: prefs.weightUnit }, today, draftDate) : null,
+    focus: focus && focusRows ? { focus, rows: focusRows } : null,
   };
 }
 
@@ -767,6 +844,202 @@ function aroundSection(around: NonNullable<Reads["around"]>, date: string, today
   return lines.join("\n");
 }
 
+// ── What the athlete asked from (coach everywhere, A1) ──────────────────────────────────────────────────────────────
+
+const ASKED_FROM = "The athlete asked from:";
+const DIFFICULTY_WORDS: Record<string, string> = { too_easy: "too easy", right: "about right", too_hard: "too hard" };
+const MOVE_NAMES = new Map(EXERCISES.flatMap((e) => [[e.id, e.name] as const, ...e.legacyIds.map((id) => [id, e.name] as const)]));
+const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v : null);
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+/** A figure as the athlete reads it: whole when it is, else to a tenth. */
+const figure = (n: number): string => String(Math.round(n * 10) / 10);
+
+/** A plan row in the header's own words, its state always said ("— scheduled" when nothing else is). */
+function planWithState(w: Reads["plan"][number], clock: { today: string; time: string }): string {
+  const words = planItem(w, clock);
+  return words !== planItemWords(w) || STATE_WORDS[w.state] ? words : `${words} — scheduled`;
+}
+
+const planRow = (row: Record<string, unknown>): Reads["plan"][number] => ({
+  id: String(row.id ?? ""),
+  date: String(row.date ?? ""),
+  time: String(row.time ?? ""),
+  category: String(row.category ?? ""),
+  subtype: str(row.subtype),
+  sport: String(row.sport ?? ""),
+  origin: str(row.origin),
+  state: String(row.state ?? "scheduled"),
+  seconds: num(row.seconds) ?? 0,
+});
+
+function workoutLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, clock: { today: string; time: string }): string[] {
+  const row = rows.get("p")?.[0];
+  if (!row) return [`${ASKED_FROM} a planned workout that is no longer on the plan (id ${id}).`];
+  const w = planRow(row);
+  const out = [`${ASKED_FROM} a planned workout (id ${id}) — ${dayWords(w.date, clock.today)}, ${planWithState(w, clock)}.`];
+  const title = str(row.title);
+  if (title) out.push(`- Its title: ${athlete(title)}`);
+  const intent = str(row.intent);
+  if (intent) out.push(`- What it is for: ${athlete(intent)}`);
+  if (num(row.rev) !== null) out.push(`- Its document is at rev ${num(row.rev)}: get_workout reads it whole.`);
+  return out;
+}
+
+function dayLines(date: string, rows: Map<string, Array<Record<string, unknown>>>, clock: { today: string; time: string }): string[] {
+  const out = [`${ASKED_FROM} a day on the plan — ${dayWords(date, clock.today)}.`];
+  const plan = rows.get("p") ?? [];
+  if (plan.length === 0) out.push("- nothing planned");
+  for (const row of plan) {
+    const title = str(row.title);
+    out.push(`- id ${String(row.id)}: ${planWithState(planRow(row), clock)}${title ? `; titled ${athlete(title)}` : ""}`);
+  }
+  return out;
+}
+
+function sessionLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, r: Reads): string[] {
+  const ctx: DoneCtx = { tz: r.tz, units: r.prefs.units === "mi" ? "mi" : "km", weightUnit: r.prefs.weightUnit, today: r.today };
+  const entry = doneEntries({ sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c") }, ctx).find((e) => e.kind === "session")?.entry;
+  if (!entry) return [`${ASKED_FROM} a session that isn't there any more (id ${id}).`];
+  const e = entry as { date: string; minutes?: number | null; mode?: string; theme?: unknown; moves?: unknown[]; played?: unknown[]; checks?: Array<{ profile: string; before: number | null; after: number | null }> };
+  const theme = typeof e.theme === "string" ? e.theme : e.theme && typeof e.theme === "object" ? athlete(String((e.theme as { text?: unknown }).text ?? "")) : null;
+  const sets = setRows(rows.get("x")).length;
+  const played = e.played?.length ?? 0;
+  const head = [dayWords(e.date, r.today), e.minutes ? `${e.minutes} min` : null, e.mode ?? null, theme].filter(Boolean).join(", ");
+  const did = `${plural(e.moves?.length ?? 0, "move")}, ${plural(sets, "set")} done${played ? `, ${plural(played, "move")} played without sets` : ""}`;
+  const out = [`${ASKED_FROM} a session they did (id ${id}) — ${head}: ${did}.`];
+  if (e.checks?.length) out.push(`- Checks: ${e.checks.map((c) => `${c.profile} ${c.before ?? "—"} before, ${c.after ?? "—"} after`).join("; ")}.`);
+  // The athlete's say on it (the review's: session-answers.ts) — the figures as given, their words marked.
+  const answers = rows.get("q") ?? [];
+  const whole = answers.find((a) => a.q === "workout_feedback");
+  const rating = [num(whole?.num) !== null ? `the session ${num(whole?.num)} of 5` : null, DIFFICULTY_WORDS[String(whole?.choice ?? "")] ?? null]
+    .filter(Boolean)
+    .join(", ");
+  const said = (a: Record<string, unknown>): number => {
+    const n = num(a.num);
+    if (n !== null) return Math.sign(n);
+    return a.choice === "loved" || a.choice === "liked" ? 1 : a.choice === "disliked" || a.choice === "not_for_me" ? -1 : 0;
+  };
+  const moves = answers.filter((a) => a.q === "exercise_feedback" && MOVE_NAMES.has(String(a.subject)));
+  const liked = moves.filter((a) => said(a) > 0).map((a) => MOVE_NAMES.get(String(a.subject))!);
+  const disliked = moves.filter((a) => said(a) < 0).map((a) => MOVE_NAMES.get(String(a.subject))!);
+  const ratings = [rating || null, liked.length ? `liked ${liked.join(", ")}` : null, disliked.length ? `didn't like ${disliked.join(", ")}` : null].filter(Boolean);
+  if (ratings.length) out.push(`- Their ratings: ${ratings.join("; ")}.`);
+  const words = str(whole?.text);
+  if (words) out.push(`- Their words: ${athlete(words)}`);
+  const note = str(rows.get("s")?.[0]?.note);
+  if (note) out.push(`- Their note: ${athlete(note)}`);
+  out.push("- read_history has its sets.");
+  return out;
+}
+
+function activityLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, r: Reads): string[] {
+  const a = activityRows(rows.get("a"), r.tz)[0];
+  if (!a) return [`${ASKED_FROM} an activity that isn't there any more (id ${id}).`];
+  const units = r.prefs.units === "mi" ? "mi" : "km";
+  const minutes = minutesOf(a.seconds);
+  const pace = a.pace && a.pace > 0 ? a.pace : a.meters && a.meters > 0 && a.seconds > 0 ? a.seconds / (a.meters / 1000) : null;
+  const facts = [
+    a.sport,
+    a.meters && a.meters > 0 ? distanceWords(a.meters, units) : null,
+    minutes ? `${minutes} min` : null,
+    a.sport === "run" && pace ? `pace ${paceWords(pace, units)}` : null,
+    a.hr ? `heart rate ${Math.round(a.hr)}` : null,
+    a.load ? `load ${Math.round(a.load)}` : null,
+    a.feel ? `felt ${a.feel} of 5` : null,
+  ].filter(Boolean);
+  // Its title is an import's (the watch's or a provider's): the sport says what it was.
+  const out = [`${ASKED_FROM} an activity (id ${id}) — ${dayWords(a.date, r.today)}: ${facts.join(", ")}.`];
+  if (a.note && a.note.trim()) out.push(`- Their note: ${athlete(a.note)}`);
+  return out;
+}
+
+function objectiveLines(id: string, rows: Map<string, Array<Record<string, unknown>>>): string[] {
+  const o = rows.get("o")?.[0];
+  if (!o) return [`${ASKED_FROM} an objective that isn't there any more (id ${id}).`];
+  const why = str(o.why);
+  const out = [`${ASKED_FROM} an objective (id ${id}, ${String(o.status ?? "active")}) — ${athlete(String(o.title ?? ""))}${why ? `; why: ${athlete(why)}` : ""}.`];
+  const krs = [...(rows.get("k") ?? [])].sort((a, b) => (num(a.position) ?? 0) - (num(b.position) ?? 0) || String(a.id).localeCompare(String(b.id)));
+  for (const k of krs) {
+    const unit = String(k.unit ?? "");
+    const from = num(k.baseline);
+    const to = num(k.target);
+    const range =
+      from !== null && to !== null
+        ? `from ${figure(from)} to ${figure(to)} ${unit}`
+        : to !== null
+          ? `target ${figure(to)} ${unit}`
+          : from !== null
+            ? `from ${figure(from)} ${unit}, no target set`
+            : "no target set";
+    const due = str(k.due);
+    out.push(`- Measure ${athlete(String(k.label ?? ""))} (id ${String(k.id)}): ${range}${due ? `, by ${dayLabel(due)}` : ""}.`);
+  }
+  if (krs.length === 0) out.push("- No measures yet.");
+  else out.push("- Progress: read_objectives measures each one from the log.");
+  return out;
+}
+
+function moveLines(id: string): string[] {
+  const rec = focusMove(id);
+  if (!rec) return [`${ASKED_FROM} a move the library doesn't hold (id ${id}).`];
+  return [
+    `${ASKED_FROM} a move in the library — ${rec.name} (id ${rec.id}): ${rec.text.summary}`,
+    `- For: ${rec.purposes.map(vocabLabel).join(", ")}; regions: ${rec.regions.map(vocabLabel).join(", ")}; difficulty ${rec.difficulty} of 5.`,
+  ];
+}
+
+const OUTCOME_WORDS: Record<string, string> = { refused: "open", applying: "being applied", applied: "approved", declined: "declined", superseded: "superseded" };
+
+function proposalLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, today: string): string[] {
+  const p = rows.get("p")?.[0];
+  if (!p) return [`${ASKED_FROM} a suggestion that isn't there any more (id ${id}).`];
+  // A suggestion's titles are a coach run's words: marked as the index marks the open ones.
+  const coach = (text: string) => markUntrusted("designer run", text);
+  const out = [`${ASKED_FROM} your suggestion (id ${id}), ${String(p.status ?? "")} — ${coach(String(p.title ?? ""))}:`];
+  for (const raw of parsedArray(p.ops)) {
+    const op = raw as {
+      kind?: unknown;
+      date?: unknown;
+      time?: unknown;
+      target?: { atNow?: unknown } | null;
+      doc?: { title?: unknown } | null;
+      derived?: { estimatedMinutes?: unknown } | null;
+      op?: { kind?: unknown; workoutId?: unknown } | null;
+      outcome?: { status?: unknown } | null;
+    };
+    const outcome = OUTCOME_WORDS[String(op.outcome?.status ?? "")] ?? "open";
+    if (op.kind === "doc_workout" && typeof op.date === "string") {
+      const when = op.target?.atNow ? "now" : (str(op.time) ?? "no time set");
+      const minutes = num(op.derived?.estimatedMinutes);
+      out.push(`- ${dayWords(op.date, today)}, ${when}: ${coach(String(op.doc?.title ?? ""))}${minutes !== null ? ` (${Math.round(minutes)} min)` : ""} — ${outcome}`);
+    } else if (op.kind === "plan_adjust" && op.op) {
+      out.push(`- a change to the plan: ${String(op.op.kind ?? "change")} workout ${String(op.op.workoutId ?? "")} — ${outcome}`);
+    }
+  }
+  return out;
+}
+
+/** The "The athlete asked from: …" block (coach everywhere, A1): the focus's facts, and the prompt's line for its kind. */
+function focusSection(f: NonNullable<Reads["focus"]>, r: Reads, time: string): string {
+  const { focus, rows } = f;
+  const clock = { today: r.today, time };
+  const lines =
+    focus.kind === "workout"
+      ? workoutLines(focus.id, rows, clock)
+      : focus.kind === "day"
+        ? dayLines(focus.id, rows, clock)
+        : focus.kind === "session"
+          ? sessionLines(focus.id, rows, r)
+          : focus.kind === "activity"
+            ? activityLines(focus.id, rows, r)
+            : focus.kind === "objective"
+              ? objectiveLines(focus.id, rows)
+              : focus.kind === "move"
+                ? moveLines(focus.id)
+                : proposalLines(focus.id, rows, r.today);
+  return [...lines, FOCUS_LINES[focus.kind]].join("\n");
+}
+
 const BRIEF_SOURCES: Record<DesignRun["role"], { from: UntrustedSource; label: string }> = {
   main: { from: "parent run", label: "The brief:" },
   designer: { from: "main coach", label: "The main coach's brief for this workout:" },
@@ -805,6 +1078,7 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
     const b = BRIEF_SOURCES[role];
     parts.push(`${b.label}\n${markUntrusted(b.from, run.brief)}`);
   }
+  if (role === "main" && r.focus) parts.push(focusSection(r.focus, r, time));
   parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");
 }
@@ -816,8 +1090,10 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
 export async function buildDesignContext(db: Db, _env: Env, userId: string, run: DesignRun, now: Date): Promise<DesignContext> {
   // Parsed before any read: a scope it doesn't know costs no statements.
   const scope = scopeOf(run.scope);
-  const r = await read(db, userId, now, (today) => addDays(today, horizonDays(scope.kind, scope.n) - 1), run);
   const role: Role = run.role === "designer" || run.role === "reviewer" ? run.role : "main";
+  // A main run's focus only (A1): a sub-run's is never read.
+  const focus = role === "main" && run.focus ? run.focus : null;
+  const r = await read(db, userId, now, (today) => addDays(today, horizonDays(scope.kind, scope.n) - 1), run, focus);
   return {
     system: [
       { type: "text", text: SHARED_PROMPT, cache_control: EPHEMERAL },

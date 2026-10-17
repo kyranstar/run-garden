@@ -7,10 +7,15 @@
  * signed in or not; then the session is checked. Mounted ahead of `/api/coach` in index.ts so the coach's own sign-in
  * never answers for these paths first.
  *
- *   POST /                  { scope?, request?, rehearsal? } → { run, existing }  (one live main run per athlete: a
+ *   POST /                  { scope?, request?, rehearsal?, focus? } → { run, existing }  (one live main run per athlete: a
  *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start;
  *                           409 { error: "week_budget", spentUsd, cutoffUsd } when the week's spend and what a run of
  *                           the scope costs would pass the weekly cutoff, and no live run is there — Task 13's fix wave)
+ *                           `focus: { kind, id }` (coach everywhere, A1; design-focus.ts): what the athlete asked from —
+ *                           400 `bad_focus` when it isn't one; 404 `focus_not_found` when it isn't theirs or isn't there
+ *                           (one statement; none for a day or a move); 400 { error: "focus_out_of_range" | "focus_is_set",
+ *                           why } for a day past the run's horizon or a set's suggestion, in words. A suggestion's focus
+ *                           with no scope takes the suggestion's own.
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
  *                           With the step alarm on (COACH_STEP_ALARM, coach-run-stepper.ts): `?afterSeq=n` → { status,
  *                           armed: true, nextDue: null, events after n } at once — the run's object is armed and its
@@ -43,6 +48,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { coachDesignerEnabled, type Env } from "../env.js";
 import { stepAlarmOn, stepperLeaseMs, tellStepper, type StepperHint, type StepperOp } from "../services/coach-run-stepper.js";
+import { FocusError, focusSchema } from "../services/design-focus.js";
 import {
   ANSWER_MAX_CHARS,
   REQUEST_MAX_CHARS,
@@ -105,7 +111,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   routes.use("*", requireUser);
 
   routes.post("/", async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { scope?: unknown; request?: unknown; rehearsal?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as { scope?: unknown; request?: unknown; rehearsal?: unknown; focus?: unknown } | null;
     // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
     const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
     if (!body || !asked) return c.json({ error: "bad_scope" }, 400);
@@ -116,17 +122,29 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       return c.json({ error: "request_too_long", max: REQUEST_MAX_CHARS }, 400);
     }
     if (body.rehearsal !== undefined && typeof body.rehearsal !== "boolean") return c.json({ error: "bad_rehearsal" }, 400);
+    // What the athlete asked from (coach everywhere, A1): a kind and an id, nothing else (design-focus.ts).
+    const focus = body.focus === undefined ? null : focusSchema.safeParse(body.focus);
+    if (focus && !focus.success) return c.json({ error: "bad_focus" }, 400);
     try {
       const created = await createRun(
         c.get("db"),
         c.get("userId"),
-        { ...asked, request: (body.request as string | null | undefined) ?? null, rehearsal: body.rehearsal === true },
+        {
+          ...asked,
+          request: (body.request as string | null | undefined) ?? null,
+          rehearsal: body.rehearsal === true,
+          ...(focus?.success ? { focus: focus.data } : {}),
+        },
         new Date(),
       );
       return c.json(created);
     } catch (e) {
       // The week can't pay for it (Task 13's fix wave, §2.11): nothing started.
       if (e instanceof WeekBudgetError) return c.json({ error: "week_budget", spentUsd: e.spentUsd, cutoffUsd: e.cutoffUsd }, 409);
+      // Not the athlete's, or not one there (404); a day the run can't plan, or a set's suggestion (400, in words).
+      if (e instanceof FocusError) {
+        return e.code === "focus_not_found" ? c.json({ error: e.code }, 404) : c.json({ error: e.code, why: e.why ?? "" }, 400);
+      }
       throw e;
     }
   });

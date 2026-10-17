@@ -16,7 +16,8 @@ import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { designContextBuilder } from "./design-context.js";
+import { designContextBuilder, horizonDays } from "./design-context.js";
+import { checkFocus, dayOutOfRange, type RunFocus } from "./design-focus.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
 import {
@@ -349,6 +350,10 @@ export interface RunSettings {
   timezone?: string;
   /** Absent (a run made without one): COACH_RUN_SET_WINDOW_HOURS from when the run began. */
   window?: RunWindow;
+  /** A main run's only: what the athlete was looking at when they asked (coach everywhere, A1; design-focus.ts) —
+   * checked as theirs at the create, read into the opening context; a follow-up's suggestion is superseded by what the
+   * run proposes (A2). Kept here, with the run's other fixed settings: no column of its own. */
+  focus?: RunFocus;
 }
 
 export interface PendingCall {
@@ -444,6 +449,8 @@ export function newRunState(
     toldAt?: string | null;
     packet?: string;
     reviewOf?: ReviewOf;
+    /** A main run's focus (A1); a sub-run is never given one. */
+    focus?: RunFocus;
   } = {},
 ): RunState {
   const limits = RUN_LIMITS[role];
@@ -460,6 +467,7 @@ export function newRunState(
       rehearsal: opts.rehearsal === true,
       ...(opts.timezone ? { timezone: opts.timezone } : {}),
       ...(opts.window ? { window: opts.window } : {}),
+      ...(opts.focus && role === "main" ? { focus: opts.focus } : {}),
     },
     system: null,
     messages: [],
@@ -590,6 +598,8 @@ export interface ContextRun {
   brief?: string;
   /** A reviewer's packet: composed by the app (design-review.ts), its outside texts already marked. */
   packet?: string;
+  /** A main run's focus (A1): what the athlete asked from, read into its opening context. */
+  focus?: RunFocus;
 }
 
 /**
@@ -800,6 +810,8 @@ export interface CoachRunDto {
   estimateUsd: number | null;
   /** The run's own spending ceiling in dollars (`RunSettings.ceilingMicros`); null when its state can't be read. */
   ceilingUsd: number | null;
+  /** What the athlete asked from (coach everywhere, A1): absent when they asked from nowhere in particular. */
+  focus?: RunFocus;
 }
 
 export interface CoachRunEventDto {
@@ -842,6 +854,7 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
     finishedAt: root.finishedAt,
     estimateUsd: typeof root.estimateMicros === "number" ? root.estimateMicros / 1_000_000 : null,
     ceilingUsd: typeof root.settings?.ceilingMicros === "number" ? root.settings.ceilingMicros / 1_000_000 : null,
+    ...(root.settings?.focus ? { focus: root.settings.focus } : {}),
   };
 }
 
@@ -926,6 +939,12 @@ export interface CreateRunInput {
   scope?: RunScope;
   request?: string | null;
   rehearsal?: boolean;
+  /**
+   * What the athlete was looking at when they asked (coach everywhere, A1; design-focus.ts): checked as theirs — a
+   * `FocusError` when it isn't, a day out of the run's horizon or a set's suggestion — and kept with the run. A
+   * suggestion's focus with no scope asked takes the suggestion's own (a follow-up).
+   */
+  focus?: RunFocus | null;
 }
 
 export const REQUEST_MAX_CHARS = 2_000;
@@ -939,7 +958,7 @@ export type CreateRunResult =
       /** What the screen can offer: answer the live run's question, or go on with it — or cancel it either way. */
       offer: "answer_or_cancel" | "continue_or_cancel";
       /** What this request asked for, not started: the screen can offer to start it once the live run is cancelled. */
-      ignoredRequest: { scope: RunScope; request: string | null };
+      ignoredRequest: { scope: RunScope; request: string | null; focus?: RunFocus };
     };
 
 /** Nothing started: the week's spend and what a run of the scope costs would pass the weekly cutoff (Task 13's fix wave,
@@ -1032,7 +1051,15 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   const prefs = await loadPreferences(db, userId);
   const timezone = prefs.timezone;
   const own = rehearsal ? undefined : prefs.coach;
-  const scope = resolveRunScope(input.scope, own);
+  // What the athlete asked from (A1): theirs, in one statement (none for a day or a move) — or nothing starts. A
+  // suggestion's answers its own scope: a follow-up that asks none takes it.
+  const focus = input.focus ?? null;
+  const checked = focus ? await checkFocus(db, userId, focus) : null;
+  const scope = resolveRunScope(input.scope ?? checked?.scope ?? undefined, own);
+  if (focus?.kind === "day") {
+    const outside = dayOutOfRange(focus.id, localDate(timezone, now), horizonDays(scope.kind, scope.n ?? DEFAULT_WEEK_WORKOUTS));
+    if (outside) throw outside;
+  }
   const ceilingKind = ceilingKindOf(scope.kind);
   const lowered = own?.ceilingsUsd?.[ceilingKind];
   const state = newRunState("main", scope, {
@@ -1040,6 +1067,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     timezone,
     window: runWindow(scope, timezone, now),
     ...(lowered !== undefined ? { ceilingMicros: Math.round(Math.min(lowered, COACH_CEILING_DEFAULTS_USD[ceilingKind]) * 1_000_000) } : {}),
+    ...(focus ? { focus: { kind: focus.kind, id: focus.id } } : {}),
   });
   const insert = async (): Promise<CreateRunResult | null> => {
     const id = newId();
@@ -1099,7 +1127,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     run,
     existing: true,
     offer: run.status === "waiting_athlete" ? "answer_or_cancel" : "continue_or_cancel",
-    ignoredRequest: { scope, request },
+    ignoredRequest: { scope, request, ...(focus ? { focus: { kind: focus.kind, id: focus.id } } : {}) },
   };
 }
 
@@ -2304,6 +2332,8 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     parentId: s.run.parentId,
     ...(s.state.brief ? { brief: s.state.brief } : {}),
     ...(s.state.packet ? { packet: s.state.packet } : {}),
+    // What the athlete asked from (A1): the main run's alone.
+    ...(s.run.role === "main" && s.state.settings.focus ? { focus: s.state.settings.focus } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;

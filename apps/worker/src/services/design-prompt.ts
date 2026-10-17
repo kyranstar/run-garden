@@ -31,6 +31,7 @@
  * loop's own nudge).
  */
 import { MAX_TOOL_CALLS_PER_TURN } from "./design-limits.js";
+import type { FocusKind } from "./design-focus.js";
 
 /** Every tool the text below names (spec §4, with ruling 4's `submit_review`). A registry that drops or renames one
  * must change the text with it. */
@@ -270,3 +271,25 @@ function turnsLine(role: keyof typeof ROLE_BLOCKS, maxCalls: number): string {
 export function roleBlock(role: "main" | "designer" | "reviewer", maxCalls?: number): string {
   return ROLE_BLOCKS[role](maxCalls === undefined ? "" : turnsLine(role, maxCalls));
 }
+
+// ── What the athlete asked from (coach everywhere, phase A1) ───────────────────────────────────────────────────────
+
+/**
+ * One line per focus kind (design-focus.ts): what the athlete most likely wants when they asked from there. The opening
+ * message carries the run's own kind's line under its "The athlete asked from: …" block (design-context.ts), never the
+ * cached system blocks: a run with no focus reads none of them. Generic, like every text here.
+ */
+export const FOCUS_LINES: Readonly<Record<FocusKind, string>> = {
+  workout:
+    "They asked from a planned workout: they most likely want it changed, swapped or explained. A Studio or template workout is revised (target revise, from get_workout's rev); a programme session or a watch-plan run is skipped or moved with adjust_plan, and yours designed beside it. Say how yours relates to it.",
+  day: "They asked from a day on the plan: they most likely want that day planned or changed. Design for that date, around what it already holds — and say how yours fits with it.",
+  session:
+    "They asked from a session they did: they most likely want what comes next to answer to it — easier, harder or different, by how it went. Read its sets with read_history before you dose from it.",
+  activity:
+    "They asked from an activity the watch recorded: they most likely want what comes next to fit around it — recovery after a hard effort, or the next session.",
+  objective:
+    "They asked from an objective: they most likely want a workout that serves it, or a test that measures it. Name it in intent.objectiveIds; read_objectives says where each measure stands.",
+  move: "They asked from a move in the library: they most likely want it in a workout, or to know where it fits. Build around it when it fits the day; when a rule or the place stands in the way, say why and offer the closest move that fits.",
+  proposal:
+    "They asked from your open suggestion: they want to change it. Propose the changed workout with propose_workout — the same day unless they asked otherwise, keeping what they didn't ask to change — and it replaces that suggestion once it is ready.",
+};
