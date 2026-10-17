@@ -4,9 +4,9 @@
  *
  *  - a planned workout's sheet — an app session's — asks about the workout (a watch-plan run's and the Plan's days no
  *    longer ask: the nav's coach sees the open workout — shape-plan.test.tsx);
- *  - an activity in Activity asks about the session it logged when it holds one, else the activity;
- *  - an objective's card asks about the objective, and its "Ask the coach" and "Ask the coach for a test" — the old
- *    prefilled links to the Studio — open the sheet with the objective and their words;
+ *  - (an activity in Growth no longer asks: the nav's coach sees an open one — growth-live.test.tsx);
+ *  - an objective's card has no Ask of its own; its "Ask the coach" and "Ask the coach for a test" — the old prefilled
+ *    links to the Studio — open the sheet seeing the objective, with their words;
  *  - a move's page in the library asks about the move.
  *
  * And with no coach in the app (no sheet mounted: the coach is off), none of them draws an Ask. The Today card's is in
@@ -17,12 +17,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import type { ActivityDto, WorkoutDto } from "@rg/api-client";
+import type { WorkoutDto } from "@rg/api-client";
 import { DEFAULT_SCHEDULING_PREFERENCES, type ObjectiveBoardCard, type ObjectiveBoardDto } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { SessionSheet } from "../src/components/session-sheet.js";
 import { RunWorkoutDetail } from "../src/screens/plan.js";
-import { ActivityDetail } from "../src/screens/runs.js";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { MoveDetail } from "../src/screens/studio/move-detail.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
@@ -129,11 +128,11 @@ describe("an objective's card", () => {
     expect(asks(board(null))).toEqual([]);
   });
 
-  it("the card asks about the objective; its test and stalled lines open the sheet with their words, not the Studio", () => {
+  it("the card has no Ask of its own (the new shape); its test and stalled lines open the sheet with their words, seeing the objective", () => {
     const html = board();
-    // The card's own Ask (its head), its measure's test line, its stalled line — each about the objective.
+    // Its measure's test line and its stalled line — each about the objective. The card's own Ask went with the new
+    // shape: the nav's coach sees an open quest.
     expect(asks(html)).toEqual([
-      { focus: "objective:o1", name: "Ask the coach about Hold a strong wall sit" },
       { focus: "objective:o1", name: "Ask the coach for a test: Hold a strong wall sit" },
       { focus: "objective:o1", name: "Ask the coach: Hold a strong wall sit" },
     ]);

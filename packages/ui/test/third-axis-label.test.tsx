@@ -1,7 +1,7 @@
 /**
  * The third garden axis reads "Yoga & mobility" wherever it is rendered (Phase 2d Task 4; spec §2d): the balance
  * meters, an axis's detail panel, the weakest-axis line, the codex's discipline chip, the life-tended arrival line and
- * the Activity page's discipline filter. Display strings only — the `yoga` key, ids and the garden's discipline stay,
+ * Growth's discipline filter. Display strings only — the `yoga` key, ids and the garden's discipline stay,
  * and a yoga SESSION is still "Yoga" (its category, its sport, its noun).
  */
 import { createElement } from "react";
@@ -17,7 +17,7 @@ import { CATEGORY_LABELS } from "../src/components.js";
 import { BalanceDetail, BalanceStrip } from "../src/screens/garden.js";
 import { NUDGE_DISCIPLINE_LABEL } from "../src/screens/codex.js";
 import { eventSentence } from "../src/screens/arrival.js";
-import { RunsScreen } from "../src/screens/runs.js";
+import { GrowthActivity } from "../src/screens/growth/activity.js";
 
 const LABEL = "Yoga &amp; mobility"; // as React escapes it in markup
 
@@ -101,8 +101,8 @@ describe('the third axis is "Yoga & mobility" wherever it is rendered', () => {
     expect(disciplineLabel("strength")).toBe("Strength");
   });
 
-  it("the Activity page's discipline filter", () => {
-    const html = withClient(createElement(RunsScreen));
+  it("Growth's discipline filter", () => {
+    const html = withClient(createElement(GrowthActivity, { period: "season" }));
     const chips = [...html.matchAll(/role="tab"[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]);
     expect(chips).toEqual(["All", "Runs", "Lifting", LABEL, "Adventures"]);
   });

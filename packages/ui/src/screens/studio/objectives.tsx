@@ -27,8 +27,12 @@
  * brought up); a stalled objective only its facts and one neutral line with a next step; no red anywhere. Evidence in
  * plain words — Measured, Few readings, At least, Not measured yet — and one not measured yet offers to ask the coach for
  * a test (fix wave 3B, B-I11); a stalled objective's "Ask the coach" offers a request toward it (Task 13, D13) — both
- * open the app's coach sheet on the board, about the objective, the request in its field, as every card's own Ask does
- * (coach everywhere, A3). A key result is a "measure" to the athlete. The athlete's words and the coach's line are text.
+ * open the app's coach sheet seeing the objective, the request written in its box. A card has no Ask of its own (the
+ * new shape: the nav's coach sees an open quest). A key result is a "measure" to the athlete. The athlete's words and
+ * the coach's line are text.
+ *
+ * In Growth (the new shape §7) the same board is the quests (`variant="quests"`): each objective a row with its bar and
+ * line (growth/quests.tsx) that opens this card in a sheet; the same actions.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
@@ -61,10 +65,11 @@ import {
   type BoardUnits,
   type ObjectiveDraft,
 } from "./objectives-model.js";
-import { AskCoach } from "./coach-ask.js";
+import { AskCoach, useCoachSeeing } from "./coach-ask.js";
 import { objectiveFocus } from "./coach-focus.js";
 import { ObjectiveSheet } from "./objectives-sheet.js";
 import { planDayHref } from "./run-model.js";
+import { QuestRow } from "../growth/quests.js";
 
 export const OBJECTIVE_BOARD_QUERY = ["objectives", "board"] as const;
 export const OBJECTIVES_HREF = "/studio/objectives";
@@ -84,7 +89,13 @@ const STATUS_WORD: Partial<Record<ObjectiveStatus, string>> = { paused: "Paused"
 
 type Editing = { id: string | null; draft: ObjectiveDraft; n: number };
 
-export function ObjectivesScreen() {
+/**
+ * The board — or Growth's quests (`variant="quests"`, the new shape §7): the same objectives and the same actions, each
+ * objective a quest row (growth/quests.tsx) that opens its full card in a sheet, under a "Quests" heading in place of
+ * the board's page head; the completed ones one tap down.
+ */
+export function ObjectivesScreen({ variant = "board" }: { variant?: "board" | "quests" } = {}) {
+  const quests = variant === "quests";
   const qc = useQueryClient();
   const q = useQuery({ queryKey: OBJECTIVE_BOARD_QUERY, queryFn: api.objectiveBoard, staleTime: 30_000 });
   const units: BoardUnits = { units: useUnits(), weightUnit: useWeightUnit() };
@@ -92,6 +103,10 @@ export function ObjectivesScreen() {
   const [completing, setCompleting] = useState<{ o: ObjectiveDto; busy: boolean; error: string | null } | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  /** The quest whose card is open (quests only). */
+  const [questId, setQuestId] = useState<string | null>(null);
+  const [doneOpen, setDoneOpen] = useState(false);
+  const headingId = useId();
   const opened = useRef(0);
   const root = useRef<HTMLDivElement>(null);
   const focusNext = useRef<string | null>(null);
@@ -103,7 +118,9 @@ export function ObjectivesScreen() {
     const el =
       want === "new"
         ? root.current.querySelector<HTMLElement>(".obj-new")
-        : [...root.current.querySelectorAll<HTMLElement>(".obj-card")].find((c) => c.dataset.id === want)?.querySelector<HTMLElement>(".obj-more");
+        : quests
+          ? [...root.current.querySelectorAll<HTMLElement>(".quest")].find((c) => c.dataset.id === want)?.querySelector<HTMLElement>(".quest-open")
+          : [...root.current.querySelectorAll<HTMLElement>(".obj-card")].find((c) => c.dataset.id === want)?.querySelector<HTMLElement>(".obj-more");
     if (!el) return;
     focusNext.current = null;
     el.focus();
@@ -177,6 +194,7 @@ export function ObjectivesScreen() {
   };
 
   const menu = menuId ? cardOf(menuId)?.objective ?? null : null;
+  const quest = questId ? cardOf(questId) : null;
   const waiting = q.isPending && q.fetchStatus === "paused";
   let body;
   if (q.isPending && !waiting) body = <Spinner label="Loading your objectives" />;
@@ -191,7 +209,34 @@ export function ObjectivesScreen() {
       </EmptyState>
     );
   } else if (!board || board.objectives.length === 0) {
-    body = <EmptyState title="No objectives yet." />;
+    body = quests ? <p className="muted">No objectives yet.</p> : <EmptyState title="No objectives yet." />;
+  } else if (quests) {
+    const { current, done } = boardSections(board.objectives);
+    const list = (cards: ObjectiveBoardCard[]) => (
+      <ul className="quest-list" role="list">
+        {cards.map((c) => (
+          <li key={c.objective.id}>
+            <QuestRow card={c} today={board.today} onOpen={() => setQuestId(c.objective.id)} />
+          </li>
+        ))}
+      </ul>
+    );
+    body = (
+      <>
+        {current.length ? list(current) : <p className="muted">No objectives under way.</p>}
+        {done.length ? (
+          <>
+            <button type="button" className="linklike dash-more" aria-expanded={doneOpen} onClick={() => setDoneOpen((v) => !v)}>
+              {`${done.length} completed`}
+              <span className="disclosure-caret" aria-hidden>
+                {doneOpen ? "▾" : "▸"}
+              </span>
+            </button>
+            {doneOpen ? list(done) : null}
+          </>
+        ) : null}
+      </>
+    );
   } else {
     const { current, done } = boardSections(board.objectives);
     const list = (cards: ObjectiveBoardCard[]) => (
@@ -218,27 +263,56 @@ export function ObjectivesScreen() {
     );
   }
 
+  const newButton = (
+    <button type="button" className={`btn obj-new${quests ? " btn-small" : ""}`} aria-haspopup="dialog" onClick={() => openSheet(null)}>
+      <IconPlus size={16} />
+      New objective
+    </button>
+  );
   return (
-    <div ref={root} className="obj">
-      <div className="stu-build-bar">
-        <Link className="btn stu-build-back" to="/studio">
-          <IconBack size={16} />
-          Studio
-        </Link>
-      </div>
-      <div className="obj-head">
-        <h1 tabIndex={-1}>Objectives</h1>
-        <button type="button" className="btn obj-new" aria-haspopup="dialog" onClick={() => openSheet(null)}>
-          <IconPlus size={16} />
-          New objective
-        </button>
-      </div>
+    <div ref={root} className={quests ? "growth-sect quests stack" : "obj"} {...(quests ? { role: "region", "aria-labelledby": headingId } : {})}>
+      {quests ? (
+        <div className="row-between growth-sect-head">
+          <h2 id={headingId} className="rank-item growth-h">
+            Quests
+          </h2>
+          {newButton}
+        </div>
+      ) : (
+        <>
+          <div className="stu-build-bar">
+            <Link className="btn stu-build-back" to="/studio">
+              <IconBack size={16} />
+              Studio
+            </Link>
+          </div>
+          <div className="obj-head">
+            <h1 tabIndex={-1}>Objectives</h1>
+            {newButton}
+          </div>
+        </>
+      )}
       {/* Empty, it is visually hidden — never display: none — so the region stays in the page and is heard when it speaks. */}
       <p className={status ? "obj-status" : "obj-status visually-hidden"} role="status">
         {status}
       </p>
       {body}
 
+      {quest && board ? (
+        <QuestSheet
+          card={quest}
+          today={board.today}
+          units={units}
+          onMore={() => {
+            setQuestId(null);
+            setMenuId(quest.objective.id);
+          }}
+          onClose={() => {
+            focusNext.current = quest.objective.id;
+            setQuestId(null);
+          }}
+        />
+      ) : null}
       {menu ? (
         <Sheet open onClose={() => setMenuId(null)} title={menu.title}>
           <div className="stu-tpl-menu">
@@ -317,6 +391,16 @@ export function ObjectivesScreen() {
   );
 }
 
+/** A quest's full card, in a sheet; while it is open the app's coach sees the objective. */
+function QuestSheet({ card, today, units, onMore, onClose }: { card: ObjectiveBoardCard; today: string; units: BoardUnits; onMore: () => void; onClose: () => void }) {
+  useCoachSeeing(objectiveFocus(card.objective));
+  return (
+    <Sheet open onClose={onClose} title={card.objective.title}>
+      <ObjectiveCard card={card} today={today} units={units} onMore={onMore} />
+    </Sheet>
+  );
+}
+
 /** A quiet ring: how far the objective's key results are toward their targets, the share in its middle. */
 function ProgressRing({ fraction }: { fraction: number }) {
   const pct = Math.round(fraction * 100);
@@ -368,8 +452,6 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
             </p>
           ) : null}
         </div>
-        {/* The coach, asked about this objective (coach everywhere, A3). */}
-        <AskCoach focus={objectiveFocus(o)} className="obj-ask" />
         <button type="button" className="btn stu-icon-btn obj-more" aria-label={`${o.title}: more`} aria-haspopup="dialog" onClick={onMore}>
           <IconMore size={18} />
         </button>

@@ -336,7 +336,7 @@ describe("heading levels do not skip", () => {
     // Insights and Garden each declare two, in mutually exclusive branches
     // (loading vs loaded; stage vs stacked) — that is legal, and the check
     // that matters is that no single RETURN carries two.
-    for (const f of ["screens/signals-panel.tsx", "screens/garden.tsx", "screens/runs.tsx",
+    for (const f of ["screens/signals-panel.tsx", "screens/garden.tsx", "screens/growth/screen.tsx",
       "screens/plan.tsx", "screens/settings.tsx", "screens/today.tsx"]) {
       const src = readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
       // `.hero-title` is rank 3 and out-specifies `h1`; an <h1> must never

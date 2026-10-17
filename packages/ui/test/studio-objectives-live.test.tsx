@@ -211,6 +211,10 @@ const writes = (calls: Call[]) => calls.filter((c) => c.method !== "GET");
 
 // ── The switch ─────────────────────────────────────────────────────────────
 
+/** The app's coach sheet (named "Coach"), and the box its words are written in. */
+const coachSheet = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.querySelector("h2")?.textContent === "Coach") ?? null;
+const coachBox = () => coachSheet()?.querySelector<HTMLTextAreaElement>("textarea") ?? null;
+
 describe("the coach switch", () => {
   it("off: /studio/objectives goes back to the Studio, and nothing reads the board", async () => {
     features.coach = false;
@@ -233,11 +237,11 @@ describe("the coach switch", () => {
     await until(() => !!cardOf("Legs"), "the card");
     expect(cardOf("Legs")!.textContent).toContain("Not measured yet");
     await click([...document.querySelectorAll("button")].find((b) => b.textContent === "Ask the coach for a test"), "Ask the coach for a test");
-    await until(() => !!document.querySelector('[role="dialog"] .coach-composer-field'), "the coach's sheet");
-    // In place: the board stays, the sheet over it.
+    await until(() => !!coachBox(), "the coach's sheet");
+    // In place: the board stays, the sheet over it — the words in its box, the objective what it sees.
     expect(where).toBe("/studio/objectives");
-    expect(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!.value).toBe("Plan a test so I can measure: Wall sit");
-    expect(document.querySelector(".coach-about")!.textContent).toContain("About: Legs");
+    expect(coachBox()!.value).toBe("Plan a test so I can measure: Wall sit");
+    expect(coachSheet()!.textContent).toContain("Legs");
   });
 
   it("a stalled objective: 'Ask the coach' opens the coach's sheet about it, a request toward it filled in (Task 13, D13; coach everywhere, A3)", async () => {
@@ -246,10 +250,10 @@ describe("the coach switch", () => {
     await until(() => !!cardOf("Stronger legs for ski season"), "the card");
     expect(cardOf("Stronger legs for ski season")!.textContent).toContain("Nothing done toward this");
     await click([...document.querySelectorAll("button")].find((b) => b.textContent === "Ask the coach"), "Ask the coach");
-    await until(() => !!document.querySelector('[role="dialog"] .coach-composer-field'), "the coach's sheet");
+    await until(() => !!coachBox(), "the coach's sheet");
     expect(where).toBe("/studio/objectives");
-    expect(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!.value).toBe("Plan a session toward my objective: Stronger legs for ski season");
-    expect(document.querySelector(".coach-about")!.textContent).toContain("About: Stronger legs for ski season");
+    expect(coachBox()!.value).toBe("Plan a session toward my objective: Stronger legs for ski season");
+    expect(coachSheet()!.textContent).toContain("Stronger legs for ski season");
   });
 });
 

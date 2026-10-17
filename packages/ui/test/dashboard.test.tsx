@@ -1,5 +1,5 @@
 /**
- * The Activity dashboard (System 2): the merge's own contracts.
+ * The Activity dashboard (System 2), now Growth's activity and records: the merge's own contracts.
  *  - flaggedSignals mirrors the old status strip's eligibility gates — a
  *    low-confidence or unrendered metric can never headline the page;
  *  - groupByWeek buckets the feed newest-week-first, newest-day-first;
@@ -14,7 +14,9 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { ActivityDto, InsightsResponse } from "@rg/api-client";
-import { efficiencyClause, flaggedSignals, groupByWeek, RunsScreen } from "../src/screens/runs.js";
+import { efficiencyClause, flaggedSignals, groupByWeek } from "../src/screens/growth/feed.js";
+import { GrowthActivity } from "../src/screens/growth/activity.js";
+import { GrowthRecords } from "../src/screens/growth/records.js";
 import { emptyInsights } from "./runs-units.test.js";
 
 type Interpreted = InsightsResponse["interpreted"][number];
@@ -124,7 +126,7 @@ function renderDash(insights: InsightsResponse, activities: ActivityDto[]): stri
     createElement(
       QueryClientProvider,
       { client: qc },
-      createElement(MemoryRouter, null, createElement(RunsScreen)),
+      createElement(MemoryRouter, null, createElement(GrowthActivity, { period: "season" }), createElement(GrowthRecords, { holds: [], period: "season" })),
     ),
   );
 }

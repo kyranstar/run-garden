@@ -10,7 +10,8 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { ActivityDto, PerformedSummaryDto } from "@rg/api-client";
-import { ActivityDetail, checkValues, feedRowMeta, RunsScreen } from "../src/screens/runs.js";
+import { ActivityDetail, checkValues, feedRowMeta } from "../src/screens/growth/feed.js";
+import { GrowthActivity } from "../src/screens/growth/activity.js";
 import { emptyInsights } from "./runs-units.test.js";
 
 const appPerformed: PerformedSummaryDto = {
@@ -80,7 +81,7 @@ function renderFeed(activities: ActivityDto[]): string {
   qc.setQueryData(["settings"], { prefs: { units: "km" } });
   qc.setQueryData(["insights", "run"], emptyInsights());
   return renderToStaticMarkup(
-    createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(RunsScreen))),
+    createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(GrowthActivity, { period: "season" }))),
   );
 }
 

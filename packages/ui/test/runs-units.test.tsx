@@ -11,7 +11,8 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { ActivityDto, InsightsResponse } from "@rg/api-client";
-import { PaceShape, RunsScreen } from "../src/screens/runs.js";
+import { PaceShape } from "../src/screens/growth/feed.js";
+import { GrowthActivity } from "../src/screens/growth/activity.js";
 
 const activity: ActivityDto = {
   id: "a1",
@@ -59,7 +60,7 @@ function renderRuns(units: "km" | "mi", over: Partial<ActivityDto> = {}): string
     createElement(
       QueryClientProvider,
       { client: qc },
-      createElement(MemoryRouter, null, createElement(RunsScreen)),
+      createElement(MemoryRouter, null, createElement(GrowthActivity, { period: "season" })),
     ),
   );
 }

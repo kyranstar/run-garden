@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { InsightsResponse, ProgressDto } from "@rg/api-client";
 import { ProgressTiles, progressShown } from "../src/screens/progress-tiles.js";
-import { RunsScreen } from "../src/screens/runs.js";
+import { GrowthActivity } from "../src/screens/growth/activity.js";
 import { emptyInsights } from "./runs-units.test.js";
 
 const LB = 0.45359237;
@@ -159,13 +159,13 @@ describe("progressShown", () => {
   });
 });
 
-describe("on the Activity page", () => {
+describe("in Growth's activity", () => {
   function page(insights: InsightsResponse): string {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     qc.setQueryData(["runs"], { activities: [] });
     qc.setQueryData(["settings"], { prefs: { units: "km" } });
     qc.setQueryData(["insights", "run"], insights);
-    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(RunsScreen))));
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(GrowthActivity, { period: "season" }))));
   }
 
   it("a Progress section with the tiles under All; none for a payload without progress", () => {

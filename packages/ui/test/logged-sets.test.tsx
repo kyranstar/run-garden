@@ -10,7 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { ActivityDto, LoggedExerciseDto } from "@rg/api-client";
-import { ActivityDetail, formatLoggedSet, LoggedSets } from "../src/screens/runs.js";
+import { ActivityDetail, formatLoggedSet, LoggedSets } from "../src/screens/growth/feed.js";
 
 const set = (over: Partial<LoggedExerciseDto["sets"][number]>) => ({ reps: null, seconds: null, load: null, side: null, ...over });
 
