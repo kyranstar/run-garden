@@ -14,8 +14,7 @@ import { PlayerScreen } from "./screens/player.js";
 import { StudioScreen } from "./screens/studio/screen.js";
 import { BuilderRoute } from "./screens/studio/builder.js";
 import { TemplatesScreen } from "./screens/studio/templates.js";
-import { ObjectivesRoute } from "./screens/studio/objectives.js";
-import { coachOn, features } from "./features.js";
+import { coachOn } from "./features.js";
 import { CoachKeeper } from "./screens/studio/run-keeper.js";
 import { CoachSheetProvider } from "./screens/studio/coach-sheet.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
@@ -38,19 +37,17 @@ const queryClient = new QueryClient({
 });
 
 /**
- * The Studio while it ships dark (`features.studio`): off, `/studio` and everything under it go home. On: the builder
- * at `/studio/build/*` (one instance across a new workout, a quick start, a template and a planned workout), the
- * templates at `/studio/templates`, the objectives board at `/studio/objectives` (with the coach on; off, the Studio),
- * else the Studio itself (its home, its list and a move's detail).
+ * The Studio's pages (the new shape, §3): no tab, but every page keeps its route — the builder at `/studio/build/*` (one
+ * instance across a new workout, a quick start, a template and a planned workout), the templates at
+ * `/studio/templates`, else the library itself (its browse, search and a move's detail), reached from the coach's opening
+ * screen and search. The objectives board became Growth's quests: its old address goes there.
  */
 export function StudioRoute() {
-  if (!features.studio) return <Navigate to="/" replace />;
   return (
     <Routes>
       <Route path="build/*" element={<BuilderRoute />} />
       <Route path="templates" element={<TemplatesScreen />} />
-      {/* The objectives board (Stage 3 Task 11): the coach's, so it goes back to the Studio while the coach is off. */}
-      <Route path="objectives" element={<ObjectivesRoute />} />
+      <Route path="objectives" element={<Navigate to="/growth" replace />} />
       <Route path="*" element={<StudioScreen />} />
     </Routes>
   );
@@ -101,29 +98,23 @@ function AuthedApp() {
       fixtureMode={me.data?.fixtureMode}
       footer={<span>{me.data?.email}</span>}
       restore={me.data?.restore ?? null}
+      who={me.data?.email ?? null}
     >
       <Routes>
         <Route path="/" element={<GardenScreen />} />
         <Route path="/plan" element={<PlanScreen />} />
-        {/* Stage 2: the Studio — search, browse by part, themes and tags, a move's detail, the builder. One gated
-            route holds them all while it ships dark (`StudioRoute`). */}
+        {/* The Studio's pages: no tab (the new shape), every page at its own route (`StudioRoute`). */}
         <Route path="/studio/*" element={<StudioRoute />} />
-        {/* The boundary sits OUTSIDE the screen rather than inside it: a
-            boundary never catches an error thrown by its own render, so
-            wrapping the screen's returned tree would have missed anything
-            the screen body itself threw (the payload destructuring, say).
-            Only this route is wrapped — the dashboard carries every chart in
-            the app now (System 2), and a chart bug must not take the rest of
-            the app down with it; everything else keeps failing loudly in dev. */}
+        {/* Growth (the new shape, §7): what Activity was, and the objectives as quests. The boundary sits OUTSIDE the
+            screen rather than inside it: a boundary never catches an error thrown by its own render, and a chart bug
+            must not take the rest of the app down with it. */}
         <Route
-          path="/runs"
+          path="/growth"
           element={
             <ErrorBoundary
-              title="Couldn't render activity"
-              // Not voided: ErrorBoundary awaits this promise before
-              // clearing its error state, so the remount happens against
-              // freshly refetched data rather than the same cached payload
-              // that crashed the first render.
+              title="Couldn't render Growth"
+              // Not voided: ErrorBoundary awaits this promise before clearing its error state, so the remount happens
+              // against freshly refetched data rather than the same cached payload that crashed the first render.
               onRetry={() =>
                 Promise.all([
                   queryClient.refetchQueries({ queryKey: ["runs"] }),
@@ -135,9 +126,9 @@ function AuthedApp() {
             </ErrorBoundary>
           }
         />
-        <Route path="/garden" element={<GardenScreen />} />
-        {/* Insights merged into the Activity dashboard (System 2). */}
-        <Route path="/insights" element={<Navigate to="/runs" replace />} />
+        {/* Activity and Insights became Growth. */}
+        <Route path="/runs" element={<Navigate to="/growth" replace />} />
+        <Route path="/insights" element={<Navigate to="/growth" replace />} />
         <Route path="/settings" element={<SettingsScreen />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

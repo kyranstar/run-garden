@@ -1,6 +1,8 @@
 /**
- * Stage 2 Task 4 — the Studio is the fifth tab (spec §2): Garden · Plan · Studio · Activity · Settings, in the bottom
- * bar and the side rail alike, with the wide treatment `/plan` has, on `/studio` and everything under it.
+ * The Studio's pages (Stage 2 Task 4, reshaped 2026-10-17 by the new shape §3): the Studio is no tab any more — its
+ * library is reached from the coach's opening screen and search — but every page keeps its route, with the wide
+ * treatment `/plan` has, on `/studio` and everything under it. The flag that shipped the tab dark is gone from the
+ * routes: the Studio is on in production (the owner's call, 2026-10-16), so its "off" branches were dead.
  */
 import { Children, createElement, type ReactElement } from "react";
 import { readFileSync } from "node:fs";
@@ -8,14 +10,13 @@ import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Navigate, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { StudioRoute } from "../src/app.js";
 import { features, studioFlag } from "../src/features.js";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { TemplatesScreen } from "../src/screens/studio/templates.js";
-import { ObjectivesRoute } from "../src/screens/studio/objectives.js";
-import { AppShell, NAV, navItems } from "../src/shell.js";
+import { AppShell, NAV } from "../src/shell.js";
 import { staticRouter } from "./studio-fixtures.js";
 
 function shellAt(path: string): string {
@@ -29,99 +30,64 @@ function shellAt(path: string): string {
   );
 }
 
-/** The links of one nav (`bottom-nav` or `side-nav`), in order, as [href, text]. */
-function links(html: string, nav: string): Array<[string, string]> {
-  const at = html.indexOf(`class="${nav}"`);
-  expect(at, nav).toBeGreaterThan(-1);
-  const body = html.slice(at, html.indexOf("</nav>", at));
-  return [...body.matchAll(/<a [^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [m[1]!, m[2]!.replace(/<[^>]+>/g, "").trim()]);
-}
-
-describe("the Studio tab", () => {
-  it("NAV has five entries, Studio between Plan and Activity", () => {
-    expect(NAV.map((n) => n.label)).toEqual(["Garden", "Plan", "Studio", "Activity", "Settings"]);
-    expect(NAV.map((n) => n.to)).toEqual(["/", "/plan", "/studio", "/runs", "/settings"]);
-  });
-
-  it("both navs carry it, in that order, and mark it current on /studio", () => {
+describe("the Studio's pages", () => {
+  it("are no tab: no nav entry leads to /studio", () => {
+    expect(NAV.map((n) => n.to)).not.toContain("/studio");
     const html = shellAt("/studio");
-    const expected: Array<[string, string]> = [
-      ["/", "Garden"],
-      ["/plan", "Plan"],
-      ["/studio", "Studio"],
-      ["/runs", "Activity"],
-      ["/settings", "Settings"],
-    ];
-    expect(links(html, "bottom-nav")).toEqual(expected);
-    expect(links(html, "side-nav")).toEqual(expected);
-    expect(html).toMatch(/<a aria-current="page" class="active" href="\/studio">/);
+    expect(html).not.toContain('href="/studio"');
   });
 
-  it("the labels stay short enough for five equal links at 320px", () => {
-    // 320 / 5 = 64px a link; the 11.2px label must fit inside it (spec §15).
+  it("the places' labels stay short enough for four equal controls at 320px", () => {
+    // 320 / 4 = 80px a control; the 11.2px label must fit inside it (spec §15).
     for (const n of NAV) expect(n.label.length, n.label).toBeLessThanOrEqual(8);
   });
 
-  it("gets the wide treatment on /studio and below it, like /plan", () => {
+  it("get the wide treatment on /studio and below it, like /plan", () => {
     for (const path of ["/studio", "/studio/move/gobletSquat", "/plan"]) {
       expect(shellAt(path), path).toContain("shell-main--wide");
     }
-    for (const path of ["/runs", "/settings", "/studios"]) {
+    for (const path of ["/growth", "/settings", "/studios"]) {
       expect(shellAt(path), path).not.toContain("shell-main--wide");
     }
   });
 
-  it("the app routes /studio, and everything under it, through the Studio's gate", () => {
+  it("the app routes /studio, and everything under it, through one route", () => {
     const app = readFileSync(fileURLToPath(new URL("../src/app.tsx", import.meta.url)), "utf8");
     expect(app).toContain('<Route path="/studio/*" element={<StudioRoute />} />');
     expect(app).toMatch(/import \{ StudioScreen \} from "\.\/screens\/studio\/screen\.js";/);
   });
-});
 
-describe("the Studio ships dark: the `studio` flag (off in production builds until it is finished)", () => {
-  afterEach(() => {
-    features.studio = true;
-  });
-
-  it("is decided by the build: on in dev, tests and the fixture stack; off in a production build unless VITE_STUDIO=1", () => {
-    expect(studioFlag({ DEV: true, PROD: false })).toBe(true);
-    expect(studioFlag({ DEV: false, PROD: true })).toBe(false);
-    expect(studioFlag({ DEV: false, PROD: true, VITE_STUDIO: "1" })).toBe(true);
-    expect(studioFlag({ DEV: false, PROD: true, VITE_STUDIO: "0" })).toBe(false);
-    // No Vite env at all (a plain Node run): off.
-    expect(studioFlag(undefined)).toBe(false);
-    // …and under vitest it is on, so every Studio suite runs against the tab as it will ship.
-    expect(features.studio).toBe(true);
-  });
-
-  it("off: the nav is the original four tabs, in both bars", () => {
-    features.studio = false;
-    expect(navItems().map((n) => n.label)).toEqual(["Garden", "Plan", "Activity", "Settings"]);
-    const html = shellAt("/plan");
-    for (const nav of ["bottom-nav", "side-nav"]) {
-      expect(links(html, nav).map(([, t]) => t), nav).toEqual(["Garden", "Plan", "Activity", "Settings"]);
-    }
-  });
-
-  it("off: /studio and everything under it (one route, `/studio/*`) go home, replacing the entry", () => {
-    // `<Navigate>` acts in an effect, which a static render never runs: what the gate RETURNS is the contract.
-    features.studio = false;
-    const el = StudioRoute();
-    expect(el.type).toBe(Navigate);
-    expect(el.props).toEqual({ to: "/", replace: true });
-  });
-
-  it("on: five tabs; /studio is the Studio, /studio/build/* the builder (Task 6), /studio/templates the templates (Task 7), /studio/objectives the objectives board (Stage 3 Task 11; the coach's own switch decides it)", () => {
-    features.studio = true;
-    expect(navItems().map((n) => n.label)).toEqual(["Garden", "Plan", "Studio", "Activity", "Settings"]);
+  it("/studio is the library, /studio/build/* the builder (Task 6), /studio/templates the templates (Task 7); the objectives board's address goes to Growth", () => {
     const el = StudioRoute();
     expect(el.type).toBe(Routes);
     const routes = Children.toArray((el.props as { children: unknown }).children) as ReactElement<{ path: string; element: ReactElement }>[];
     expect(routes.map((r) => [r.props.path, r.props.element.type])).toEqual([
       ["build/*", BuilderRoute],
       ["templates", TemplatesScreen],
-      ["objectives", ObjectivesRoute],
+      ["objectives", Navigate],
       ["*", StudioScreen],
     ]);
+    expect(routes[2]!.props.element.props).toEqual({ to: "/growth", replace: true });
+  });
+
+  it("the route no longer asks the build's flag: the Studio's pages answer whatever it says", () => {
+    const was = features.studio;
+    try {
+      features.studio = false;
+      expect(StudioRoute().type).toBe(Routes);
+    } finally {
+      features.studio = was;
+    }
+  });
+});
+
+describe("the `studio` build flag (still read by the session sheet's Edit)", () => {
+  it("is decided by the build: on in dev, tests and the fixture stack; off in a production build unless VITE_STUDIO=1", () => {
+    expect(studioFlag({ DEV: true, PROD: false })).toBe(true);
+    expect(studioFlag({ DEV: false, PROD: true })).toBe(false);
+    expect(studioFlag({ DEV: false, PROD: true, VITE_STUDIO: "1" })).toBe(true);
+    expect(studioFlag({ DEV: false, PROD: true, VITE_STUDIO: "0" })).toBe(false);
+    expect(studioFlag(undefined)).toBe(false);
+    expect(features.studio).toBe(true);
   });
 });

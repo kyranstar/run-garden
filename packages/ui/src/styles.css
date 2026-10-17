@@ -473,6 +473,8 @@ button {
   min-height: 100dvh;
 }
 .shell-main {
+  /* The athlete's mark (Settings, on a phone) sits at its top right. */
+  position: relative;
   flex: 1;
   min-width: 0;
   padding: var(--space-6);
@@ -525,7 +527,8 @@ button {
   display: flex;
   z-index: 40;
 }
-.bottom-nav a {
+.bottom-nav a,
+.bottom-nav .nav-coach {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -544,6 +547,83 @@ button {
 .bottom-nav svg {
   width: 22px;
   height: 22px;
+}
+/* THE COACH IN THE MIDDLE (the new shape, §3): a real button between Plan and Growth, its sprout on a filled pill —
+   the one filled thing in the bar, so it reads as an action rather than a place. It stays inside the bar's own height
+   (never raised over the page), which is what keeps it clear of the music pill above the bar's left edge. */
+.nav-coach {
+  position: relative;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+.bottom-nav .nav-coach {
+  color: var(--green-ink);
+}
+.nav-coach-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--space-10);
+  padding: var(--space-1) var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--green);
+  color: var(--on-accent);
+}
+.nav-coach:hover .nav-coach-pill {
+  filter: brightness(1.06);
+}
+.nav-coach:focus-visible {
+  outline: none;
+}
+.nav-coach:focus-visible .nav-coach-pill {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* Settings, on a phone: the athlete's mark at the top right of each place (a round 44 px target). From lg the rail's
+   foot holds Settings, and the mark leaves. */
+.athlete-mark {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap);
+  min-height: var(--tap);
+  border-radius: var(--radius-round);
+  text-decoration: none;
+}
+.athlete-mark > span,
+.athlete-mark > svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-9);
+  height: var(--space-9);
+  border-radius: var(--radius-round);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  box-shadow: var(--shadow);
+}
+.athlete-mark > svg {
+  padding: var(--space-2);
+}
+.athlete-mark:focus-visible {
+  outline: none;
+}
+.athlete-mark:focus-visible > span,
+.athlete-mark:focus-visible > svg {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
 }
 /* THE NAV OWNS ITS EDGE (System 4 P1). This bar is `position: fixed` and
    OPAQUE at every width below lg, so it does not push scrolling content out of
@@ -631,14 +711,46 @@ button {
     width: 19px;
     height: 19px;
   }
+  /* The rail's coach: the same filled sprout pill, in the row with its word. */
+  .side-nav .nav-coach {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--space-4) var(--space-3) var(--space-2);
+    min-height: var(--tap);
+    border-radius: var(--radius-sm);
+    font-weight: var(--weight-medium);
+    font-size: var(--text-sm);
+    text-align: left;
+  }
+  .side-nav .nav-coach:hover {
+    background: var(--bg-sunken);
+  }
+  .side-nav .nav-coach-pill {
+    min-width: 0;
+    padding: var(--space-2) var(--space-4);
+  }
+  .side-nav .nav-coach-pill svg {
+    width: 19px;
+    height: 19px;
+  }
   .side-nav .nav-footer {
     margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
     font-size: var(--text-xs);
     color: var(--ink-faint);
-    padding: 0 var(--space-4);
     /* An email address has no break opportunities, so it ran straight out of
        the rail. It has to break somewhere; anywhere beats over the edge. */
     overflow-wrap: anywhere;
+  }
+  .side-nav .nav-footer > span {
+    padding: 0 var(--space-4);
+  }
+  /* Settings lives at the rail's foot here: the athlete's mark is the phone's way in. */
+  .athlete-mark {
+    display: none;
   }
   .shell-main {
     padding: var(--space-8) var(--space-9) var(--space-10);

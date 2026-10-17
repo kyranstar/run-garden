@@ -32,23 +32,22 @@ export const IconPlan = ({ size }: IconProps) => (
   </svg>
 );
 
-export const IconGarden = ({ size }: IconProps) => (
+/** The coach's button in the nav (the new shape, §3): the garden's two-leaf sprout, standing alone — it sits on a
+ * filled pill, so it carries no ground line. */
+export const IconSprout = ({ size }: IconProps) => (
   <svg {...base(size)}>
-    <path d="M12 21v-8" />
-    <path d="M12 13c0-3.5 2.5-6 6-6 0 3.5-2.5 6-6 6Z" />
-    <path d="M12 10C12 6.5 9.5 4 6 4c0 3.5 2.5 6 6 6Z" />
-    <path d="M5 21h14" />
+    <path d="M12 21v-8.5" />
+    <path d="M12 12.5c0-3.5 2.5-6 6-6 0 3.5-2.5 6-6 6Z" />
+    <path d="M12 9.5C12 6 9.5 3.5 6 3.5c0 3.5 2.5 6 6 6Z" />
   </svg>
 );
 
-/** The Studio (Stage 2 spec §2): a dumbbell growing the garden glyph's leaf — the moves, and what they grow into. */
-export const IconStudio = ({ size }: IconProps) => (
+/** Growth (the new shape, §7): a line rising to the right, its tip a leaf. */
+export const IconGrowth = ({ size }: IconProps) => (
   <svg {...base(size)}>
-    <rect x="3.2" y="9" width="3.6" height="10" rx="1.2" />
-    <rect x="17.2" y="9" width="3.6" height="10" rx="1.2" />
-    <path d="M6.8 14h10.4" />
-    <path d="M12 14v-3.2" />
-    <path d="M12 10.8c0-3 2-5 5-5 0 3-2 5-5 5Z" />
+    <path d="M3.5 19.5h17" />
+    <path d="M4.5 16 9 11.5l3.5 3 5-5.5" />
+    <path d="M17.5 9c0-2.6 1.9-4.5 4-4.5 0 2.6-1.9 4.5-4 4.5Z" />
   </svg>
 );
 
@@ -73,19 +72,6 @@ export const IconFilters = ({ size }: IconProps) => (
 export const IconPlus = ({ size }: IconProps) => (
   <svg {...base(size)}>
     <path d="M12 5v14M5 12h14" />
-  </svg>
-);
-
-export const IconInsights = ({ size }: IconProps) => (
-  <svg {...base(size)}>
-    <path d="M4 20V10M10 20V4M16 20v-7M21 20H3" />
-  </svg>
-);
-
-export const IconRuns = ({ size }: IconProps) => (
-  <svg {...base(size)}>
-    <circle cx="12" cy="13" r="8" />
-    <path d="M12 13V9M9.5 3h5" />
   </svg>
 );
 
