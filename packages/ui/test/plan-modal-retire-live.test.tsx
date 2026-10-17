@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * The plan modal's Retire…, live (Stage 2 Task 9, fix round 1): a plan the old generator made is retired the way a coach
+ * The plan sheet's Retire…, live (Stage 2 Task 9, fix round 1): a plan the old generator made is retired the way a coach
  * plan is — Retire…, the same confirmation, and the page told which kind it is, so it asks the right route.
  */
 import { act, createElement } from "react";
@@ -9,7 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
-import { StudioModal } from "../src/screens/studio-modal.js";
+import { PlanSheet } from "../src/screens/plan-sheet.js";
 import { retirePlan } from "../src/screens/plan.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,7 +51,7 @@ function mount(p: CoachPlanDto, onRetire: (id: string, source: "coach" | "studio
         createElement(
           MemoryRouter,
           null,
-          createElement(StudioModal, { planId: p.id, plans: [p], onClose: () => undefined, onCanned: () => undefined, onRetire, onRename: () => undefined }),
+          createElement(PlanSheet, { planId: p.id, plans: [p], onClose: () => undefined, onRetire, onRename: () => undefined }),
         ),
       ),
     ),
@@ -64,7 +64,7 @@ const button = (name: string): HTMLButtonElement => {
   return found;
 };
 
-describe("Retire… in the plan modal", () => {
+describe("Retire… in the plan sheet", () => {
   it("a plan the old generator made: the same confirmation, and the page is told it is a Studio plan", () => {
     const onRetire = vi.fn(async () => null);
     mount(plan({ id: "sp1", name: "Generated Block", source: "studio" }), onRetire);

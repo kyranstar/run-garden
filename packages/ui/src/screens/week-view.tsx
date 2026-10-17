@@ -1,11 +1,9 @@
 import { useRef, useState } from "react";
-import type { PlanWeekResponse, WorkoutDto } from "@rg/api-client";
+import type { PlanWeekResponse, RaceHubResponse, WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
 import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import type { PendingGhost } from "./coach-panel.js";
-import { AskCoach } from "./studio/coach-ask.js";
-import { askableDay, dayFocus } from "./studio/coach-focus.js";
 
 /**
  * One pickable week (rework spec §6): arrows step ISO weeks, a jump menu
@@ -101,6 +99,38 @@ export function weekRangeLabel(weekStart: string): string {
     : `${short(a.month)} ${dayOfMonth(weekStart)} – ${short(b.month)} ${dayOfMonth(end)}`;
 }
 
+/** The week's title, in words (the new shape §6): this week, next, last — else its dates. */
+export function weekTitle(weekStart: string, today: string): string {
+  const thisMonday = startOfIsoWeek(today);
+  if (weekStart === thisMonday) return "This week";
+  if (weekStart === addDays(thisMonday, 7)) return "Next week";
+  if (weekStart === addDays(thisMonday, -7)) return "Last week";
+  return weekRangeLabel(weekStart);
+}
+
+/** What the week's line knows of the race: its countdown and its phase (the race hub's). */
+export type WeekRace = Pick<NonNullable<RaceHubResponse["race"]>, "daysToRace" | "phase">;
+
+/**
+ * The week's one line (the new shape §6): the race strip and the weekly brief fold into it — its dates, the plan and its
+ * week, how many of its sessions are done, the race's countdown. A part it does not know is left out, never guessed;
+ * a race gone by says nothing here (its debrief is one tap down, in the brief).
+ */
+export function weekLine({ week, planName, race }: { week: PlanWeekResponse; planName: string | null; race: WeekRace | null }): string {
+  const weekOf = week.weekIndex !== null && week.weekTotal !== null ? `week ${week.weekIndex} of ${week.weekTotal}` : null;
+  const plan = planName ? (weekOf ? `${planName}, ${weekOf}` : planName) : weekOf;
+  const done = week.sessionCount > 0 ? `${week.doneCount} of ${week.sessionCount} done` : null;
+  const raceWords =
+    !race || race.phase === "post" || race.daysToRace < 0
+      ? null
+      : race.daysToRace === 0
+        ? "Race day"
+        : race.daysToRace === 1
+          ? "Race tomorrow"
+          : `Race in ${race.daysToRace} days`;
+  return [weekRangeLabel(week.weekStart), plan, done, raceWords].filter((p): p is string => !!p).join(" · ");
+}
+
 /**
  * Where the jump menu opens (audit 2026-08-14). It hangs `top: 100%` off a
  * summary that can sit anywhere down the page — measured live in prod at
@@ -143,6 +173,9 @@ export function WeekView({
   onPick,
   onOpenWorkout,
   onGhostTap,
+  onBrief,
+  planName = null,
+  race = null,
   /** Steps the week by ±7 days from the last REQUESTED week. Clicks fired
    * inside one render tick must accumulate, so the caller owns the cursor
    * (a rendered-week or URL-derived base collapses them — live-verified:
@@ -160,6 +193,12 @@ export function WeekView({
   onOpenWorkout: (id: string) => void;
   onGhostTap: (proposalId: string) => void;
   onStep: (deltaDays: number) => void;
+  /** The line opens the week's brief (its numbers, the coach's line, the race). */
+  onBrief: () => void;
+  /** The plan the week belongs to, named on its line. */
+  planName?: string | null;
+  /** The race's countdown, on the line. */
+  race?: WeekRace | null;
   loading?: boolean;
 }) {
   const thisMonday = startOfIsoWeek(today);
@@ -208,14 +247,8 @@ export function WeekView({
           </button>
         </span>
         <h2 className="plan-week-title" tabIndex={-1}>
-          {offCurrent ? null : <span className="pw-wide">This week · </span>}
-          {weekRangeLabel(week.weekStart)}
+          {weekTitle(week.weekStart, today)}
         </h2>
-        {week.weekIndex !== null ? (
-          <span className="pill pill-neutral num">
-            <span className="pw-wide">plan </span>wk {week.weekIndex}
-          </span>
-        ) : null}
         {offCurrent ? (
           <button type="button" className="chipbtn plan-week-back" onClick={() => onPick(thisMonday)}>
             back to this week
@@ -255,6 +288,10 @@ export function WeekView({
           </details>
         ) : null}
       </div>
+      {/* The race strip and the weekly brief, folded into one line: the brief is one tap down. */}
+      <button type="button" className="plan-week-line" aria-haspopup="dialog" onClick={onBrief}>
+        {weekLine({ week, planName, race })}
+      </button>
       <div className="plan-week-grid">
         {week.days.map((day, i) => {
           const ghosts = ghostsByDate.get(day.date) ?? [];
@@ -290,8 +327,6 @@ export function WeekView({
                   </button>
                 ))}
               </div>
-              {/* The coach, asked about this day (coach everywhere, A3): the days it can plan for. */}
-              {askableDay(day.date, today) ? <AskCoach focus={dayFocus(day.date)} className="plan-week-ask" /> : null}
             </div>
           );
         })}

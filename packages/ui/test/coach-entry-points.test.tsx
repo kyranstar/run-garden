@@ -2,8 +2,8 @@
  * COACH EVERYWHERE, PHASE A3 — every entry point wears the one "Ask", with what the athlete is looking at as its focus
  * (`data-focus`: what the sheet is opened with; the button's name says it in words):
  *
- *  - a planned workout's sheet — an app session's and every other workout's — asks about the workout;
- *  - a day in the Plan's week view asks about the day (from a week back to the last day Plan ahead plans);
+ *  - a planned workout's sheet — an app session's — asks about the workout (a watch-plan run's and the Plan's days no
+ *    longer ask: the nav's coach sees the open workout — shape-plan.test.tsx);
  *  - an activity in Activity asks about the session it logged when it holds one, else the activity;
  *  - an objective's card asks about the objective, and its "Ask the coach" and "Ask the coach for a test" — the old
  *    prefilled links to the Studio — open the sheet with the objective and their words;
@@ -17,23 +17,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import type { ActivityDto, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
+import type { ActivityDto, WorkoutDto } from "@rg/api-client";
 import { DEFAULT_SCHEDULING_PREFERENCES, type ObjectiveBoardCard, type ObjectiveBoardDto } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { SessionSheet } from "../src/components/session-sheet.js";
 import { RunWorkoutDetail } from "../src/screens/plan.js";
 import { ActivityDetail } from "../src/screens/runs.js";
-import { WeekView } from "../src/screens/week-view.js";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { MoveDetail } from "../src/screens/studio/move-detail.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { OBJECTIVE_BOARD_QUERY, ObjectivesScreen } from "../src/screens/studio/objectives.js";
 import { stalledRequest, testRequest } from "../src/screens/studio/objectives-model.js";
 import { primedClient, staticRouter } from "./studio-fixtures.js";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
-const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
 
 const coach: CoachOpener = { open: () => undefined };
 
@@ -86,120 +82,14 @@ describe("a planned workout's sheet", () => {
     expect(asks(html)).toEqual([{ focus: "workout:w1", name: "Ask the coach about Fri 23 Oct · Strength · 40 min" }]);
   });
 
-  it("every other workout's sheet (a watch-plan run) asks about it too", () => {
+  it("a watch-plan run's sheet no longer asks: the nav's coach sees it (the new shape)", () => {
     const run = workout({ id: "r1", title: "Easy run", category: "easy", sport: "run", origin: null, contentState: null, programId: null, workoutSeconds: 2700 });
     const html = render(createElement(RunWorkoutDetail, { w: run, today: "2026-10-21", corosWritesEnabled: false, onClose: () => undefined }));
-    expect(asks(html)).toEqual([{ focus: "workout:r1", name: "Ask the coach about Fri 23 Oct · Easy run · 45 min" }]);
+    expect(asks(html)).toEqual([]);
   });
 
   it("no coach in the app: no Ask", () => {
     expect(asks(render(createElement(SessionSheet, { w: workout(), today: "2026-10-21", onClose: () => undefined }), { opener: null }))).toEqual([]);
-  });
-});
-
-describe("a day in the Plan's week view", () => {
-  const week = (start: string, holding: number[] = [1]): PlanWeekResponse =>
-    ({
-      weekStart: start,
-      days: Array.from({ length: 7 }, (_, i) => {
-        const date = new Date(Date.parse(`${start}T12:00:00Z`) + i * 86_400_000).toISOString().slice(0, 10);
-        return { date, workouts: holding.includes(i) ? [workout({ id: `w${i}`, effectiveDate: date })] : [] };
-      }),
-      plannedSeconds: 0,
-      doneCount: 0,
-      sessionCount: 1,
-      weekIndex: null,
-      weekTotal: null,
-      adherence4w: null,
-      loadRatio: null,
-      adventureDays: 0,
-      headline: null,
-      focus: null,
-    }) as unknown as PlanWeekResponse;
-  const view = (w: PlanWeekResponse, today: string, opener?: CoachOpener | null) =>
-    render(
-      createElement(WeekView, { week: w, today, ghostsByDate: new Map(), jumpWeeks: [], onPick: () => undefined, onOpenWorkout: () => undefined, onGhostTap: () => undefined, onStep: () => undefined }),
-      { opener },
-    );
-
-  it("each day asks about itself", () => {
-    const html = view(week("2026-10-19"), "2026-10-21");
-    expect(asks(html).map((a) => a.focus)).toEqual(["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25"].map((d) => `day:${d}`));
-    expect(asks(html)[2]!.name).toBe("Ask the coach about Wed 21 Oct");
-    // Each at its day: the Ask is inside the day's own cell.
-    const cell = html.slice(html.indexOf('data-date="2026-10-22"'), html.indexOf('data-date="2026-10-23"'));
-    expect(cell).toContain('data-focus="day:2026-10-22"');
-    expect(cell).toContain("plan-week-ask");
-  });
-
-  it("only the days a run can plan for: a week back to six days ahead (the review, I1)", () => {
-    // Next week: its Monday and Tuesday (today + 5, + 6); the days past + 6 have no Ask.
-    expect(asks(view(week("2026-10-26"), "2026-10-21")).map((a) => a.focus)).toEqual(["day:2026-10-26", "day:2026-10-27"]);
-    // Two weeks on: none.
-    expect(asks(view(week("2026-11-02"), "2026-10-21"))).toEqual([]);
-    // Two weeks back: none.
-    expect(asks(view(week("2026-10-05"), "2026-10-21"))).toEqual([]);
-  });
-
-  it("on a phone each day's Ask is the coach mark alone, named in words, on the 44 px floor; from lg, 'Ask' at the column's foot (the review, minor 2)", () => {
-    const html = view(week("2026-10-19"), "2026-10-21");
-    // The word is in the markup, a span the phone hides: the button's name says it all the same.
-    expect(html).toMatch(/class="btn btn-small ask-coach plan-week-ask"[^>]*aria-label="Ask the coach about [^"]+"[^>]*>.*?<span class="ask-coach-word">Ask<\/span><\/button>/);
-    const at = css.indexOf(".plan-week-ask .ask-coach-word {");
-    expect(at, "the phone hides the word").toBeGreaterThan(-1);
-    const hide = css.slice(at, css.indexOf("}", at));
-    expect(hide).toContain("clip");
-    expect(css.indexOf(".plan-week-ask .ask-coach-word {")).toBeLessThan(css.indexOf("@media (min-width: 1024px) {\n  .plan-week-ask {"));
-    const square = css.slice(css.indexOf("\n.plan-week-ask {"), css.indexOf("}", css.indexOf("\n.plan-week-ask {")));
-    expect(square).toContain("min-width: var(--tap)");
-    expect(square).toContain("min-height: var(--tap)");
-    const lg = css.slice(css.indexOf("@media (min-width: 1024px) {\n  .plan-week-ask {"));
-    expect(lg.slice(0, lg.indexOf("\n}"))).toMatch(/\.plan-week-ask \.ask-coach-word \{[^}]*position: static/);
-  });
-
-  it("no coach in the app: no Ask", () => {
-    expect(asks(view(week("2026-10-19"), "2026-10-21", null))).toEqual([]);
-  });
-});
-
-describe("an activity in Activity", () => {
-  const activity = (over: Partial<ActivityDto> = {}): ActivityDto =>
-    ({
-      id: "a1",
-      startTime: "2026-10-20T01:00:00Z",
-      startTimeLocal: "2026-10-19T18:00:00",
-      date: "2026-10-19",
-      title: "Evening run",
-      sport: "run",
-      durationSeconds: 2700,
-      distanceMeters: 8000,
-      avgPaceSecPerKm: 337,
-      trainingLoad: 62,
-      avgHeartRate: 148,
-      feel: 4,
-      laps: null,
-      logged: null,
-      performed: null,
-      matched: null,
-      ...over,
-    }) as ActivityDto;
-  const detail = (a: ActivityDto, opener?: CoachOpener | null) => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    qc.setQueryData(["coach-read-peek", a.id], { read: null });
-    return render(createElement(ActivityDetail, { a, units: "km", efficiency: undefined, onLink: () => undefined }), { client: qc, opener });
-  };
-
-  it("a run the watch recorded asks about the activity", () => {
-    expect(asks(detail(activity()))).toEqual([{ focus: "activity:a1", name: "Ask the coach about Mon 19 Oct · Evening run · 45 min" }]);
-  });
-
-  it("a logged session (an app save, a watch review, an import) asks about the session", () => {
-    const a = activity({ title: null, sport: "strength", performed: { id: "s1", source: "app", mode: "build", theme: "Full-body strength", checks: [], played: null } });
-    expect(asks(detail(a))).toEqual([{ focus: "session:s1", name: "Ask the coach about Mon 19 Oct · Full-body strength · 45 min" }]);
-  });
-
-  it("no coach in the app: no Ask", () => {
-    expect(asks(detail(activity(), null))).toEqual([]);
   });
 });
 

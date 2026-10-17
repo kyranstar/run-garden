@@ -7668,6 +7668,89 @@ button.session-chip {
 .plan-week-title {
   margin: 0;
 }
+/* The week's one line (the new shape §6): the plan, the count done and the race, folded into one quiet line that
+   opens the week's brief. A real button, 44 px tall, reading as a line of type. */
+.plan-week-line {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.plan-week-line:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* Your plans: one list, a row each — its name, then its kind and state — opening its sheet. */
+.your-plans {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.your-plans-h {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+.plan-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.plan-rows > li + li {
+  border-top: 1px solid var(--border);
+}
+.plan-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-5) var(--space-6);
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  cursor: pointer;
+}
+.plan-row:hover {
+  background: var(--bg-sunken);
+}
+.plan-row-name {
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+.plan-row-state {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.plan-rows-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.plan-race-mismatch {
+  padding: var(--space-5) var(--space-6);
+}
+.plan-brief-sheet .plan-brief {
+  margin: 0;
+}
 .plan-week-nav {
   display: inline-flex;
   border: 1px solid var(--border-strong);
@@ -11376,45 +11459,6 @@ a.stu-tpl-open:focus-visible::before {
   flex: 1;
   min-width: 0;
   min-height: var(--tap);
-}
-/* A day of the week view: on a phone its Ask is the coach mark alone at the row's end, level with the day's name, a
-   44 px square — its name says "Ask the coach about …" (the review, minor 2: a word on every day crowded the column);
-   from lg "Ask" at the column's foot, shown when the day is pointed at or holds the focus, so seven never crowd the
-   grid. */
-.plan-week-ask {
-  flex: none;
-  align-self: flex-start;
-  min-width: var(--tap);
-  min-height: var(--tap);
-  padding: 0;
-}
-.plan-week-ask .ask-coach-word {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-@media (min-width: 1024px) {
-  .plan-week-ask {
-    margin-top: auto;
-    min-width: 0;
-    min-height: var(--tap-own);
-    padding: var(--space-2) var(--space-5);
-  }
-  .plan-week-ask .ask-coach-word {
-    position: static;
-    width: auto;
-    height: auto;
-    overflow: visible;
-    clip: auto;
-  }
-}
-@media (min-width: 1024px) and (hover: hover) {
-  .plan-week-day:not(:hover):not(:focus-within) .plan-week-ask {
-    opacity: 0;
-  }
 }
 /* The Today card, a session's sheet, an activity, an objective, a move: the Ask sits with the actions it is one of. */
 .today-ask,

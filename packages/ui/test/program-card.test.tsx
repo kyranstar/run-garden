@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * Phase 2a Task 8 — the program card on Plan and its settings (mocks §6, open call "program settings live on the
- * program card").
+ * Phase 2a Task 8 — a program on Plan and its settings (mocks §6, open call "program settings live on the program"),
+ * as one row of "Your plans" since the new shape (2026-10-17 §6).
  *
- *  - The card: name, this week's done of the goal, the block and week, the block's core lifts. Nothing renders
- *    for an account with no active program; "New program…" waits for the player (ruling 2a-R5).
- *  - The settings sheet, from the card: weekly goal, preferred days, minutes, place, block length, modes, care
+ *  - The row: name, then its kind and state — the block and week, this week's done of the goal. Nothing for an
+ *    account with no active program; "New program…" at the list's foot (the player ships: ruling 2a-R5 is met).
+ *  - The settings sheet, from the row: weekly goal, preferred days, minutes, place, block length, modes, care
  *    on/off, name — Save patches the program; Retire asks first. Every label is plain; the care switch is named
  *    by the profile.
  *  - Program slots in the week take the yoga / strength hue by category.
@@ -17,8 +17,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProgramDto, WorkoutDto } from "@rg/api-client";
-import { features } from "../src/features.js";
-import { ProgramCard, ProgramCards } from "../src/screens/plan-cards.js";
+import { YourPlans } from "../src/screens/plan-cards.js";
 import { PlanScreen } from "../src/screens/plan.js";
 import { WorkoutCell } from "../src/screens/week-view.js";
 
@@ -70,52 +69,36 @@ function html(el: React.ReactElement): string {
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, el)));
 }
 
-// These cases were written against the dark state: each starts with the player off and turns it on where it says
-// so; afterwards the shipped default (on) is back.
-beforeEach(() => {
-  features.player = false;
-});
-afterEach(() => {
-  features.player = true;
-});
+const plans = (data: { programs: ProgramDto[]; places: typeof PLACES; profiles: typeof PROFILES } | undefined) =>
+  createElement(YourPlans, { plans: [], programs: data, today: "2026-10-05", onOpenPlan: () => undefined });
+const rows = (markup: string) => [...markup.matchAll(/<button type="button" class="plan-row"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => text(m[1]!));
 
-describe("the program card", () => {
-  it("name, this week's done of the goal, the block and week, and the core lifts", () => {
-    const out = text(html(createElement(ProgramCard, { program: program(), onOpen: () => undefined })));
-    expect(out).toContain("Garden program");
-    expect(out).toContain("1 of 4 this week");
-    expect(out).toContain("Block 2 · week 3 of 5");
-    expect(out).toContain("Squat Goblet squat");
-    expect(out).toContain("Hinge KB deadlift");
-    expect(out).toContain("Row · Press · Carry Supported row · Floor press · Suitcase carry");
+describe("a program's row", () => {
+  it("name, then its kind and state: the block and week, this week's done of the goal", () => {
+    expect(rows(html(plans({ programs: [program()], places: PLACES, profiles: PROFILES })))).toEqual([
+      "Garden program Program · Block 2 · week 3 of 5 · 1 of 4 this week",
+    ]);
   });
 
-  it("its accessible name is what it shows, then that it opens the settings (audit 2a-UI M15)", () => {
-    const out = html(createElement(ProgramCard, { program: program(), onOpen: () => undefined }));
-    // No aria-label: it would replace the count, the block and the lifts for anyone who hears the card.
-    expect(out).not.toContain("aria-label");
-    expect(out).toMatch(/<span class="visually-hidden"> settings<\/span><\/button>$/);
-    const name = text(out);
-    expect(name.startsWith("Garden program 1 of 4 this week Block 2 · week 3 of 5 Squat Goblet squat")).toBe(true);
-    expect(name.endsWith("settings")).toBe(true);
+  it("its accessible name is what it shows, and it says it opens a dialog (audit 2a-UI M15)", () => {
+    const out = html(plans({ programs: [program()], places: PLACES, profiles: PROFILES }));
+    // No aria-label: it would replace what the row shows for anyone who hears it.
+    const row = /<button type="button" class="plan-row"[^>]*>/.exec(out)![0]!;
+    expect(row).not.toContain("aria-label");
+    expect(row).toContain('aria-haspopup="dialog"');
   });
 
-  it("before its first session: no block line, no lifts", () => {
-    const out = text(html(createElement(ProgramCard, { program: program({ block: null, week: { placed: 2, done: 0, goal: 2 } }), onOpen: () => undefined })));
-    expect(out).toContain("0 of 2 this week");
-    expect(out).not.toContain("Block");
+  it("before its first session: no block, just the week's count", () => {
+    expect(rows(html(plans({ programs: [program({ block: null, week: { placed: 2, done: 0, goal: 2 } })], places: [], profiles: [] })))).toEqual([
+      "Garden program Program · 0 of 2 this week",
+    ]);
   });
 
-  it("renders nothing for an account with no active program — a retired one included — and no New program… before the player", () => {
+  it("no row for an account with no active program — a retired one included — and New program… at the foot", () => {
     const none = { programs: [], places: [], profiles: [] };
-    expect(html(createElement(ProgramCards, { data: none }))).toBe("");
-    expect(html(createElement(ProgramCards, { data: { ...none, programs: [program({ status: "retired" })] } }))).toBe("");
-    expect(text(html(createElement(ProgramCards, { data: { ...none, programs: [program()] } })))).not.toContain("New program");
-  });
-
-  it("with the player, New program… is offered", () => {
-    features.player = true;
-    expect(text(html(createElement(ProgramCards, { data: { programs: [], places: [], profiles: [] } })))).toContain("New program…");
+    expect(rows(html(plans(none)))).toEqual([]);
+    expect(rows(html(plans({ ...none, programs: [program({ status: "retired" })] })))).toEqual([]);
+    expect(text(html(plans(none)))).toContain("New program…");
   });
 });
 
@@ -220,26 +203,26 @@ describe("the Plan page waits for the programs before its first paint (audit 2a-
     // Everything else has answered; the page is still the one spinner, with no week drawn above a card to come.
     expect(calls).toEqual(expect.arrayContaining(["/api/plan/week", "/api/plan/workouts", "/api/coach/plans", "/api/plan/race"]));
     expect(host!.textContent).toContain("Loading plan");
-    expect(host!.textContent).not.toContain("This week");
+    expect(host!.textContent).not.toContain("Your plans");
     answer(ok({ programs: [program()], places: PLACES, profiles: PROFILES }));
     await settle();
     expect(host!.textContent).not.toContain("Loading plan");
-    expect(host!.textContent).toContain("This week");
-    expect(host!.querySelector(".program-card")?.textContent).toContain("1 of 4 this week");
+    expect(host!.textContent).toContain("Your plans");
+    expect(host!.querySelector(".plan-row")?.textContent).toContain("1 of 4 this week");
   });
 
-  it("an account with no program: no card, no program section", async () => {
+  it("an account with no program: no row", async () => {
     mountPlan(async () => ok({ programs: [], places: [], profiles: [] }));
     await settle();
-    expect(host!.textContent).toContain("This week");
-    expect(host!.querySelector(".program-card, .program-cards")).toBeNull();
+    expect(host!.textContent).toContain("Your plans");
+    expect(host!.querySelector(".plan-row")).toBeNull();
   });
 
   it("the programs failing paints the page at once, without the card — one attempt, no retries (audit 2a-UI M8)", async () => {
     const { calls } = mountPlan(async () => new Response(JSON.stringify({ error: "internal" }), { status: 500 }));
     await settle();
-    expect(host!.textContent).toContain("This week");
-    expect(host!.querySelector(".program-card")).toBeNull();
+    expect(host!.textContent).toContain("Your plans");
+    expect(host!.querySelector(".plan-row")).toBeNull();
     expect(calls.filter((c) => c === "/api/programs")).toHaveLength(1);
   });
 });
@@ -273,7 +256,7 @@ describe("program settings", () => {
         createElement(
           QueryClientProvider,
           { client: qc },
-          createElement(MemoryRouter, null, createElement(ProgramCards, { data: { programs: [p], places: PLACES, profiles: PROFILES } })),
+          createElement(MemoryRouter, null, plans({ programs: [p], places: PLACES, profiles: PROFILES })),
         ),
       );
     });
@@ -290,10 +273,10 @@ describe("program settings", () => {
       b.click();
     });
   };
-  /** The card opens its settings (its name is its content, then "settings": see M15 above). */
+  /** The row opens its settings. */
   const openSettings = async () => {
-    const card = document.querySelector<HTMLButtonElement>(".program-card");
-    if (!card) throw new Error(`no program card\n${document.body.textContent}`);
+    const card = document.querySelector<HTMLButtonElement>(".plan-row");
+    if (!card) throw new Error(`no program row\n${document.body.textContent}`);
     await act(async () => {
       card.click();
     });
@@ -317,7 +300,7 @@ describe("program settings", () => {
     throw new Error(`timed out waiting for: ${what}`);
   }
 
-  it("opens from the card with the program's settings, in plain labels, the care switch named by the profile", async () => {
+  it("opens from the row with the program's settings, in plain labels, the care switch named by the profile", async () => {
     mount();
     await openSettings();
     expect(document.querySelector("[role=dialog] h2")?.textContent).toBe("Garden program");

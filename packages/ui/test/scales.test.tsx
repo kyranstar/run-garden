@@ -18,10 +18,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import type { PlanDetailDto, PlanSummaryDto } from "@rg/api-client";
+import type { PlanSummaryDto } from "@rg/api-client";
 import { Card } from "../src/components.js";
 import { TimezoneNudge } from "../src/screens/today.js";
-import { PlanCards } from "../src/screens/plan-cards.js";
+import { YourPlans } from "../src/screens/plan-cards.js";
 
 const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
 
@@ -322,22 +322,14 @@ describe("a section has a heading", () => {
 
 describe("heading levels do not skip", () => {
 
-  it("the plan's sport organizers are headings, not just aria-labels", () => {
+  it("the plan list is a heading, not just an aria-label", () => {
     const plans = [
-      { id: "p1", name: "Fall Half Block", discipline: "run", source: "coros", weekIndex: 1, weekTotal: 12 },
-      { id: "p2", name: "Strength Wave", discipline: "lift", source: "coach", weekIndex: 2, weekTotal: 8 },
+      { id: "p1", name: "Fall Half Block", discipline: "run", status: "active", startDate: "2026-07-13", endDate: "2026-10-04", source: "coros" },
+      { id: "p2", name: "Strength Wave", discipline: "lift", status: "active", startDate: "2026-09-21", endDate: "2026-11-15", source: "coach" },
     ] as unknown as PlanSummaryDto[];
-    const html = render(
-      createElement(PlanCards, {
-        plans,
-        details: new Map<string, PlanDetailDto>(),
-        units: "km",
-        onOpen: () => undefined,
-      }),
-    );
-    expect(html).toMatch(/<h2 id="plan-section-run" class="plan-section-h">/);
-    expect(html).toContain("Running plans");
-    expect(html).toContain('aria-labelledby="plan-section-run"');
+    const html = render(createElement(YourPlans, { plans: plans as never, programs: undefined, today: "2026-08-11", onOpenPlan: () => undefined }));
+    expect(html).toMatch(/<h2 id="your-plans-h" class="your-plans-h">Your plans<\/h2>/);
+    expect(html).toContain('aria-labelledby="your-plans-h"');
   });
 
   it("every screen renders at most one <h1> per branch", () => {

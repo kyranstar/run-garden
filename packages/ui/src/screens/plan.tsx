@@ -3,10 +3,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek, type PlannedRef } from "@rg/domain";
-import { IconCoach } from "../icons.js";
 import { approveProposal } from "../coach-approve.js";
 import {
-  Banner,
   CategoryDot,
   workoutKindLabel,
   CompletionPill,
@@ -24,27 +22,26 @@ import {
   Spinner,
   SyncActionNote,
   SyncNotesStack,
-  useIsDesktop,
   WatchCoverageNote,
 } from "../components.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
 import { SyncPanel, undoRefusalText } from "./today.js";
-import { CoachPanel, pendingByDate } from "./coach-panel.js";
+import { pendingByDate } from "./coach-panel.js";
 import { CoachRead } from "./coach-read.js";
-import { CoachWindow } from "./coach-window.js";
-import { WeeklyBrief } from "./plan-brief.js";
+import { RaceMismatchNotice, WeeklyBrief } from "./plan-brief.js";
 import { RaceStrip, useRaceHub } from "./race-strip.js";
 import { leafStageCount, StageStructure } from "./stage-structure.js";
 import { useUnits } from "../use-units.js";
-import { PlanCards, ProgramCards } from "./plan-cards.js";
-import { StudioModal } from "./studio-modal.js";
+import { YourPlans } from "./plan-cards.js";
+import { PlanSheet } from "./plan-sheet.js";
+import { ThreadCoachCards } from "./thread-coach-cards.js";
 import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { SessionSheet } from "../components/session-sheet.js";
 import { isAppSession } from "../components/today-program.js";
-import { AskCoach } from "./studio/coach-ask.js";
+import { useCoachSeeing } from "./studio/coach-ask.js";
 import { workoutFocus } from "./studio/coach-focus.js";
 
 /**
@@ -286,8 +283,6 @@ export function RunWorkoutDetail({
           {formatDayLong(w.effectiveDate)} at {formatTime(w.effectiveTime)}
           {w.corosName ? <span className="faint"> · COROS name: {w.corosName}</span> : null}
         </p>
-        {/* The coach, asked about this workout (coach everywhere, A3): skipped, moved or its length changed. */}
-        <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
         <SyncNotesStack
           notes={workoutNotes}
           onDismiss={(id) => dismissNote.mutate(id)}
@@ -717,10 +712,7 @@ export function coachPanelProps(
   );
 }
 
-/** Flash a proposal card (ghost tap). One CoachPanel mount now, so plain
- * ids — the old idPrefix threading (audit C27) retired with the dual mount.
- * `skipScroll` still applies on desktop: the window is an overlay whose tray
- * sits at the top, already visible the moment it opens. */
+/** Flash a proposal card (a ghost's tap): the thread coach's card on the page, scrolled to. */
 function focusProposal(id: string, skipScroll: boolean): void {
   requestAnimationFrame(() => {
     const el = document.getElementById(`proposal-${id}`);
@@ -732,23 +724,6 @@ function focusProposal(id: string, skipScroll: boolean): void {
   });
 }
 
-const WINDOW_OPEN_KEY = "rg.coachWindow.open";
-const WINDOW_SEEN_KEY = "rg.coachWindow.seen";
-
-function readStorage(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-function writeStorage(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* storage unavailable — the window simply doesn't persist */
-  }
-}
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -774,7 +749,6 @@ export function retireRefusalText(e: unknown): string {
 
 export function PlanScreen() {
   const [params, setParams] = useSearchParams();
-  const isDesktop = useIsDesktop();
   const qc = useQueryClient();
   const corosCheck = useCorosReadNow();
 
@@ -792,8 +766,8 @@ export function PlanScreen() {
   // Week-paging cursor: updated synchronously on every click so a burst of
   // clicks accumulates instead of collapsing into one (live-verified).
   const weekCursor = useRef<string | null>(null);
-  // Display units for the race strip (and anything else on this page that
-  // shows a pace) — shares the Settings screen's query cache.
+  // Display units for the race (and anything else on this page that shows a
+  // pace) — shares the Settings screen's query cache.
   const units = useUnits();
   // Two-race-dates resolution — the warning must be actionable where it
   // appears. Settings holds the race day, so it refetches too.
@@ -825,66 +799,23 @@ export function PlanScreen() {
   const today = week.data ? (plan.data?.today ?? week.data.weekStart) : plan.data?.today;
 
   // ── Coach ──────────────────────────────────────────────────────────────
+  // The thread coach's own outputs stay on the Plan (its pending suggestions, its question, the week's ghosts); its chat
+  // is the one conversation now, opened from the nav (the new shape §5).
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
-  // The adaptive programs' cards (Phase 2a): in the gate, so a card never lands after the week below it. One attempt:
-  // a failure shows the page without the card at once rather than holding every account's first paint for retries.
+  // The adaptive programs (Phase 2a): in the gate, so a row never lands after the week above it. One attempt: a failure
+  // shows the page without them at once rather than holding every account's first paint for retries.
   const programs = useQuery({ queryKey: ["programs"], queryFn: api.listPrograms, staleTime: 60_000, retry: false });
-  // Subscribed here, rendered by `<RaceStrip>` — one fetch, shared key. The
-  // page's first paint waits for it, so the strip never arrives late.
+  // The race's countdown is on the week's line, so the first paint waits for it: the line never grows late.
   const raceHub = useRaceHub();
   const activePlans = useMemo(
     () =>
       (coachPlans.data?.plans ?? []).filter(
-        // A loose-session container has no weeks and no progressions to fetch —
-        // its card renders from what the list already says it holds.
+        // A loose-session container has no weeks: it names no week of its own.
         (p) => (p.status === "active" || p.status === "draft") && p.kind !== "loose",
       ),
     [coachPlans.data?.plans],
   );
-  const details = useQueries({
-    queries: activePlans.map((p) => ({
-      queryKey: ["plan-detail", p.id],
-      queryFn: () => api.planDetail(p.id),
-      staleTime: 60_000,
-    })),
-  });
-  const detailById = useMemo(() => {
-    const m = new Map<string, PlanDetailResponse | undefined>();
-    activePlans.forEach((p, i) => m.set(p.id, details[i]?.data));
-    return m;
-  }, [activePlans, details]);
-
-  const pendingCount = coach.state.data?.pendingProposals.length ?? 0;
-
-  // ── Coach window state (desktop): open on pill/ghost tap or new coach
-  // activity since last-seen; minimizing marks-seen (rework spec §6). ──────
-  const watermark = coach.state.data
-    ? `${coach.state.data.lastCoachAt ?? ""}:${pendingCount}:${coach.state.data.openQuestion?.id ?? ""}`
-    : null;
-  const [winOpen, setWinOpen] = useState(() => readStorage(WINDOW_OPEN_KEY) === "1");
-  const autoOpened = useRef(false);
-  useEffect(() => {
-    if (!isDesktop || !watermark || autoOpened.current) return;
-    const seen = readStorage(WINDOW_SEEN_KEY);
-    const hasActivity = pendingCount > 0 || !!coach.state.data?.openQuestion;
-    if (watermark !== seen && hasActivity && !winOpen) {
-      autoOpened.current = true;
-      setWinOpen(true);
-      writeStorage(WINDOW_OPEN_KEY, "1");
-    }
-  }, [isDesktop, watermark, pendingCount, coach.state.data?.openQuestion, winOpen]);
-  const openWindow = () => {
-    setWinOpen(true);
-    writeStorage(WINDOW_OPEN_KEY, "1");
-  };
-  const minimizeWindow = () => {
-    setWinOpen(false);
-    writeStorage(WINDOW_OPEN_KEY, "0");
-    if (watermark) writeStorage(WINDOW_SEEN_KEY, watermark);
-  };
-
-  const [coachOpen, setCoachOpen] = useState(false); // mobile sheet
 
   // ── What the plan holds today ──────────────────────────────────────────
   // ONE answer to "where does workout X sit, and what is it", read by two
@@ -897,12 +828,8 @@ export function PlanScreen() {
   // already planned", on no particular day; with it, "Threshold 5x5 → Easy
   // 35" on Tuesday.
   //
-  // The TITLE, not `stageSummary`. The stage line is richer where a session
-  // has structure and worthless where it does not — the fixture's recovery
-  // run carries "30 min", which turned the manifest's skip line into
-  // "30 min — skipped" and named nothing at all. The title is the app's own
-  // name for the session on every other surface (week grid, workout sheet,
-  // calendar ghost), so the manifest calls it the same thing they do.
+  // The TITLE, not `stageSummary`: the app's own name for the session on every
+  // other surface (week grid, workout sheet, calendar ghost).
   const plannedRefs = useMemo(
     () =>
       new Map(
@@ -925,36 +852,8 @@ export function PlanScreen() {
     () => pendingByDate(coach.state.data?.pendingProposals ?? [], plannedRefs),
     [plannedRefs, coach.state.data?.pendingProposals],
   );
-  const onGhostTap = (proposalId: string) => {
-    if (isDesktop) {
-      openWindow();
-      focusProposal(proposalId, true);
-    } else {
-      setCoachOpen(true);
-      focusProposal(proposalId, false);
-    }
-  };
-  const openCoachSurface = () => (isDesktop ? openWindow() : setCoachOpen(true));
-
-  // ?coach=1 — the garden's "Ask me ›" lands with the coach already open
-  // (System 1 v2). Consumed once: the param is stripped so back/refresh
-  // doesn't re-open a sheet the user closed.
-  const coachParam = params.get("coach");
-  useEffect(() => {
-    if (!coachParam) return;
-    openCoachSurface();
-    setParams(
-      (p) => {
-        const next = new URLSearchParams(p);
-        next.delete("coach");
-        return next;
-      },
-      { replace: true },
-    );
-    // openCoachSurface/setParams are stable enough for a consume-once effect;
-    // re-running on their identity would re-open the sheet on unrelated renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coachParam]);
+  // A ghost in the week is a suggestion's mark: its tap goes to the suggestion's card on the page.
+  const onGhostTap = (proposalId: string) => focusProposal(proposalId, false);
 
   // ── Jump menu: the active plans' weeks, longest plan numbering the list ─
   const jumpWeeks = useMemo(() => {
@@ -999,6 +898,8 @@ export function PlanScreen() {
   // ── Selection params ───────────────────────────────────────────────────
   const selectedId = params.get("workout");
   const selected = plan.data?.workouts.find((w) => w.id === selectedId);
+  // What the coach sees from the Plan: the open workout's sheet (the nav's Coach button picks it up).
+  useCoachSeeing(selected ? workoutFocus(selected) : null);
   const openWorkout = (id: string) => {
     const next = new URLSearchParams(params);
     next.set("workout", id);
@@ -1020,11 +921,8 @@ export function PlanScreen() {
     next.delete("plan");
     setParams(next);
   };
-
-  const cannedSend = (body: string) => {
-    openCoachSurface();
-    coach.send(body);
-  };
+  // The week's brief, opened from its line: the numbers, the coach's line, the race.
+  const [briefOpen, setBriefOpen] = useState(false);
 
   const rename = useMutation({
     mutationFn: (v: { id: string; name: string }) => api.coachPlanRename(v.id, v.name),
@@ -1043,83 +941,56 @@ export function PlanScreen() {
 
   // EVERY query that decides whether a block exists, not just the week's
   // (System 4 D1/D7a). `emptyPlan` below is an AND of two of them, so gating
-  // on `week` alone let the page state "Nothing planned yet — ask your coach
-  // for a plan" to somebody who has one: measured with /api/plan/workouts and
-  // /api/coach/plans delayed, that sentence rendered for 3.5s and was then
-  // replaced by the week grid. A false statement, not merely a shift. The
-  // race strip is in here for the same reason one step milder — arriving late
-  // it pushed the brief, the plan cards and the whole grid 80px down.
+  // on `week` alone let the page state "Nothing planned yet" to somebody who
+  // has one: measured with /api/plan/workouts and /api/coach/plans delayed,
+  // that sentence rendered for 3.5s and was then replaced by the week grid. A
+  // false statement, not merely a shift. The race is in here for the same
+  // reason one step milder: its countdown is on the week's line.
   //
-  // All four carry `placeholderData: keepPreviousData` or a stable key, so
-  // this holds the FIRST paint only: paging weeks and background refetches
-  // still render straight from cache.
+  // All carry `placeholderData: keepPreviousData` or a stable key, so this
+  // holds the FIRST paint only: paging weeks and background refetches still
+  // render straight from cache.
   if (settling(week, plan, coachPlans, raceHub, programs) || (!week.data && week.isPending))
     return <Spinner label="Loading plan" />;
   if (!week.data) return <EmptyState title="Couldn't load the plan" />;
 
-  // Shared between the window and the mobile sheet (audit C6 followup: the
-  // only visible coach surface must say SOMETHING when loading/errored).
-  const coachUnavailableCopy = coach.state.isLoading
-    ? "Reading your week…"
-    : "The coach is unreachable — manual controls all work.";
   const coachProps = coachPanelProps(coach, plannedRefs);
-  const coachPanelEl = coachProps ? (
-    <CoachPanel {...coachProps} />
-  ) : (
-    <section className="coach-panel" aria-label="Coach">
-      <div className="coach-panel-head">
-        <h2>Coach</h2>
-      </div>
-      <div className="coach-thread">
-        <p className="muted">{coachUnavailableCopy}</p>
-      </div>
-    </section>
-  );
 
   // Claimed from two answers we actually hold. `?? 0` used to turn a query
   // that had not answered — or one that had FAILED — into "you have no plan".
   const emptyPlan =
     !!plan.data && !!coachPlans.data && plan.data.workouts.length === 0 && activePlans.length === 0;
 
-  // One width contract (System 1 §6): while the coach window is up the page
-  // yields exactly the gutter the window occupies (`--coach-w`, declared once
-  // in styles.css and read by both), so the overlay stops covering 106px of
-  // every card — and minimizing gives the column its width straight back
-  // rather than leaving an empty 310px gutter.
-  const coachReservesWidth = isDesktop && winOpen;
+  // The plan the shown week belongs to, named on its line: the longest active block that holds the week.
+  const weekPlan = activePlans
+    .filter((p) => startOfIsoWeek(p.startDate) <= week.data!.weekStart && week.data!.weekStart <= p.endDate)
+    .sort((a, b) => Date.parse(b.endDate) - Date.parse(b.startDate) - (Date.parse(a.endDate) - Date.parse(a.startDate)))[0];
+  const race = raceHub.data?.race ?? null;
+  const raceMismatch = week.data.raceMismatch ?? null;
+
   return (
-    <div className={`plan-page${coachReservesWidth ? " plan-page--coach-open" : ""}`}>
+    <div className="plan-page">
       <div className="row-between screen-title">
         <h1>Plan</h1>
         <CorosCheck state={corosCheck.state} />
       </div>
       <div className="plan-page-col">
+        {/* Only when something is wrong: on a healthy day this is nothing. */}
         <SyncPanel quietWhenHealthy />
-        <RaceStrip units={units} />
-        <WeeklyBrief
-          week={week.data}
-          today={today}
-          pendingCount={pendingCount}
-          onNeedsYou={openCoachSurface}
-          onResolveRace={(keep) => resolveRace.mutate(keep)}
-          resolvingRace={resolveRace.isPending}
-        />
-        <ProgramCards data={programs.data} />
-        <PlanCards
-          plans={coachPlans.data?.plans ?? []}
-          details={detailById}
-          onOpen={openPlan}
-          onNew={(d) => openPlan(d === "run" ? "new-run" : "new-lift")}
-        />
+        {/* Two race dates: a warning that must be answerable where it appears. */}
+        {raceMismatch ? (
+          <div className="card plan-race-mismatch">
+            <RaceMismatchNotice mismatch={raceMismatch} onResolve={(keep) => resolveRace.mutate(keep)} resolving={resolveRace.isPending} />
+          </div>
+        ) : null}
         {emptyPlan ? (
           <EmptyState art="🗓" title="Nothing planned yet">
-            Ask your coach for a plan above, or start one in COROS — it syncs in automatically once
-            COROS is connected in Settings.
+            Ask the coach for a plan, or start one in COROS — it syncs in once COROS is connected in Settings.
           </EmptyState>
         ) : (
           <WeekView
-          onStep={stepWeek}
-          loading={week.isPlaceholderData}
+            onStep={stepWeek}
+            loading={week.isPlaceholderData}
             week={week.data}
             today={today ?? week.data.weekStart}
             ghostsByDate={ghostsByDate}
@@ -1127,58 +998,34 @@ export function PlanScreen() {
             onPick={pickWeek}
             onOpenWorkout={openWorkout}
             onGhostTap={onGhostTap}
+            onBrief={() => setBriefOpen(true)}
+            planName={weekPlan?.name ?? null}
+            race={race}
           />
         )}
+        {/* The thread coach's pending suggestions and its question, in the page (no window, no chat box). */}
+        {coachProps ? <ThreadCoachCards {...coachProps} /> : null}
+        <YourPlans
+          plans={coachPlans.data?.plans ?? []}
+          programs={programs.data}
+          today={today ?? week.data.weekStart}
+          onOpenPlan={openPlan}
+        />
       </div>
 
-      {isDesktop ? (
-        <CoachWindow
-          open={winOpen}
-          pendingCount={pendingCount}
-          onOpen={openWindow}
-          onMinimize={minimizeWindow}
-        >
-          {coachPanelEl}
-        </CoachWindow>
-      ) : (
-        <>
-          <button
-            type="button"
-            className="coach-pill"
-            aria-expanded={coachOpen}
-            onClick={() => setCoachOpen(true)}
-          >
-            <IconCoach size={20} />
-            Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
-          </button>
-          {/* `fill`: the coach panel owns its own scroll region, so the sheet
-              hands it a definite height instead of letting it size to the
-              viewport and paint outside the sheet (System 1 §2). */}
-          <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach" fill>
-            <div className="coach-sheet-panel">
-              {coachProps ? (
-                <CoachPanel hideHead {...coachProps} />
-              ) : (
-                <section className="coach-panel" aria-label="Coach">
-                  <div className="coach-thread">
-                    <p className="muted">{coachUnavailableCopy}</p>
-                  </div>
-                </section>
-              )}
-            </div>
-          </Sheet>
-        </>
-      )}
+      {/* The week's brief, one tap down from its line: the week's numbers and the coach's line, then the race. */}
+      <Sheet open={briefOpen} onClose={() => setBriefOpen(false)} title={week.data.weekIndex !== null && week.data.weekTotal !== null ? `Week ${week.data.weekIndex} of ${week.data.weekTotal}` : "This week"}>
+        <div className="stack plan-brief-sheet">
+          <WeeklyBrief week={week.data} today={today} />
+          <RaceStrip units={units} />
+        </div>
+      </Sheet>
 
       {planParam ? (
-        <StudioModal
+        <PlanSheet
           planId={planParam}
           plans={coachPlans.data?.plans ?? []}
           onClose={closePlan}
-          onCanned={(body) => {
-            closePlan();
-            cannedSend(body);
-          }}
           onRetire={async (id, source) => {
             try {
               await retire.mutateAsync({ id, source });

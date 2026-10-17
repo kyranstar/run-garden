@@ -1,7 +1,7 @@
 /**
  * Plan-page components (2026-08-11 rework): the weekly brief's headline and
  * chips, the pickable week view's picker/ghost/collapse rules, plan title
- * cards with progressions, and the coach window's open/minimized states.
+ * rows (one list since the new shape), and the progression headline the plan sheet's chips use.
  * Static-markup renders, same harness as coach-panel.test.tsx.
  */
 import { createElement } from "react";
@@ -11,8 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
 import { BriefExplainerSheet, HEADLINE_COPY, headlineContext, WeeklyBrief } from "../src/screens/plan-brief.js";
-import { PlanCards, progressionHeadline } from "../src/screens/plan-cards.js";
-import { CoachWindow } from "../src/screens/coach-window.js";
+import { planEntries, planRowState, progressionHeadline, YourPlans } from "../src/screens/plan-cards.js";
 import { removeConfirmCopy } from "../src/screens/plan.js";
 import {
   centerScrollTop,
@@ -149,12 +148,14 @@ describe("WeekView", () => {
         onPick: noop,
         onOpenWorkout: noop,
         onGhostTap: noop,
+        onStep: noop,
+        onBrief: noop,
       }),
     );
     expect(html.match(/plan-week-day/g)!.length).toBeGreaterThanOrEqual(7);
     expect(html).toContain("is-today");
     expect(html).toContain("cal-ghost-rewrite");
-    expect(html).toContain("This week · ");
+    expect(html).toMatch(/>This week<\/h2>/);
     expect(html).toContain("Aug 10–16");
     expect(html).not.toContain("back to this week");
   });
@@ -172,6 +173,8 @@ describe("WeekView", () => {
         onPick: noop,
         onOpenWorkout: noop,
         onGhostTap: noop,
+        onStep: noop,
+        onBrief: noop,
       }),
     );
     expect(html).toContain("back to this week");
@@ -226,7 +229,7 @@ describe("jump-to-week menu placement", () => {
   });
 });
 
-describe("PlanCards", () => {
+describe("Your plans", () => {
   // "Current" vs "upcoming" is read off the real clock — pin today inside
   // runPlan's window and before the upcoming block starts (2026-10-24), or the
   // grouping assertions rot as the calendar passes the fixtures.
@@ -272,41 +275,6 @@ describe("PlanCards", () => {
     adherencePct: 86,
   } as unknown as PlanDetailResponse;
 
-  it("renders the card with week label, progression headline, sparkline, and a new-lift card", () => {
-    const html = render(
-      createElement(PlanCards, {
-        plans: [runPlan],
-        details: new Map([["cp1", detail]]),
-        onOpen: noop,
-        onNew: noop,
-      }),
-      // Settings cache primed to miles — matching the progression's own unit,
-      // so the headline passes through unconverted.
-      { key: ["settings"], data: { prefs: { units: "mi" } } },
-    );
-    expect(html).toContain("Fall Half Block");
-    expect(html).toContain("wk 5/");
-    expect(html).toContain("Long run 8 → 13.1 mi · now 10");
-    expect(html).toContain("plan-card-spark");
-    expect(html).toContain("Plan lifting with your coach");
-    expect(html).not.toContain("Plan running with your coach");
-  });
-
-  it("converts a mile-denominated progression to km when the display preference is km", () => {
-    const html = render(
-      createElement(PlanCards, {
-        plans: [runPlan],
-        details: new Map([["cp1", detail]]),
-        onOpen: noop,
-        onNew: noop,
-      }),
-      { key: ["settings"], data: { prefs: { units: "km" } } },
-    );
-    // 8 mi → 12.9 km, 13.1 mi → 21.1 km, now 10 mi → 16.1 km.
-    expect(html).toContain("Long run 12.9 → 21.1 km · now 16.1");
-    expect(html).not.toContain("13.1 mi");
-  });
-
   it("progressionHeadline omits a redundant now and never converts non-distance units", () => {
     expect(
       progressionHeadline({ key: "k", label: "Bench", unit: "kg", from: 52, to: 66, now: 66, series: [] }, "km"),
@@ -332,7 +300,7 @@ describe("PlanCards", () => {
     ).toBe("Long run 8 → 16.1 km");
   });
 
-  it("groups plans under sport sections, vertically in time order", () => {
+  it("one list, blocks in the order they happen — an upcoming block says when it starts", () => {
     const upcoming: CoachPlanDto = {
       ...runPlan,
       id: "cp2",
@@ -341,29 +309,10 @@ describe("PlanCards", () => {
       endDate: "2026-11-20",
       raceDate: null,
     };
-    const html = render(
-      createElement(PlanCards, {
-        // Deliberately out of order — the section must sort by start date.
-        plans: [upcoming, runPlan],
-        details: new Map(),
-        onOpen: noop,
-        onNew: noop,
-      }),
-    );
-    // Run section first, then Lift; inside Run the current plan precedes
-    // the upcoming block.
-    const runSection = html.indexOf("Running plans");
-    const liftSection = html.indexOf("Lifting plans");
-    expect(runSection).toBeGreaterThanOrEqual(0);
-    expect(liftSection).toBeGreaterThan(runSection);
-    const current = html.indexOf("Fall Half Block");
-    const next = html.indexOf("Post-10K block");
-    expect(current).toBeGreaterThan(runSection);
-    expect(next).toBeGreaterThan(current);
-    expect(next).toBeLessThan(liftSection);
-    // Upcoming rows say when they run; the empty lift section still invites.
-    expect(html).toContain("upcoming ·");
-    expect(html).toContain("Plan lifting with your coach");
+    // Deliberately out of order — the list sorts by start date.
+    expect(planEntries([upcoming, runPlan], []).map((e) => (e.kind === "plan" ? e.plan.name : ""))).toEqual(["Fall Half Block", "Post-10K block"]);
+    expect(planRowState({ kind: "plan", plan: upcoming }, "2026-09-02").state).toBe("Starts Oct 24");
+    expect(planRowState({ kind: "plan", plan: runPlan }, "2026-09-02").state).toBe("Week 8 of 12 · ends Oct 4");
   });
 
   // ── A container of loose sessions is not a training block ───────────────
@@ -392,84 +341,25 @@ describe("PlanCards", () => {
     holds: { sessions: 1, done: 0, firstDate: "2026-08-18", lastDate: "2026-08-18" },
   };
 
-  it("renders a loose container by its CONTENTS, with no week counter and no progress track", () => {
-    const html = render(
-      createElement(PlanCards, {
-        plans: [looseLift, runPlan],
-        details: new Map([["cp1", detail]]),
-        onOpen: noop,
-        onNew: noop,
-      }),
-    );
-    expect(html).toContain("Lifting one-offs");
-    expect(html).toContain("4 sessions · 1 done · Aug 18 → Aug 24");
-    // The block beside it keeps every bit of block vocabulary.
-    expect(html).toContain("wk 5/");
-    // The bucket has none of it: no week count, no bar, no end date, and it is
-    // not a button into a weeks-and-progress view.
-    expect(html).not.toContain("wk 1/1");
-    const loose = /<div class="card plan-card plan-card-loose">.*?<\/div>/s.exec(html)![0]!;
-    expect(loose).not.toContain("plan-card-track");
-    expect(loose).not.toContain("ends");
-    expect(loose).not.toContain("<button");
+  it("a loose container says its CONTENTS: no week counter, no end date", () => {
+    const row = planRowState({ kind: "plan", plan: looseLift }, "2026-09-02");
+    expect(row).toEqual({ kind: "Lifting one-offs", state: "4 sessions · 1 done" });
+    expect(row.state).not.toMatch(/week|ends/i);
   });
 
-  it("gives the two production rows two distinguishable names, and the mobility one a home", () => {
+  it("gives the two production rows two distinguishable names, and the mobility one a place on the list", () => {
     const html = render(
-      createElement(PlanCards, {
-        // A mobility bucket used to render NOWHERE: the sections are run and
-        // lift, so one of the two rows production has was invisible while
-        // still winning the weekly brief's week counter.
-        plans: [looseLift, looseMobility],
-        details: new Map(),
-        onOpen: noop,
-        onNew: noop,
-      }),
+      createElement(YourPlans, { plans: [looseLift, looseMobility], programs: undefined, today: "2026-09-02", onOpenPlan: noop }),
     );
     expect(html).toContain("Lifting one-offs");
     expect(html).toContain("Mobility one-offs");
-    expect(html).toContain("One-off sessions");
-    expect(html).toContain("1 session · Aug 18");
-    // The buckets left the sport sections, so both invitations still stand.
-    expect(html).toContain("Plan running with your coach");
-    expect(html).toContain("Plan lifting with your coach");
+    expect(html).toContain("1 session");
   });
 
   it("says a bucket is empty rather than inventing a session count", () => {
-    const html = render(
-      createElement(PlanCards, {
-        plans: [{ ...looseLift, holds: { sessions: 0, done: 0, firstDate: null, lastDate: null } }],
-        details: new Map(),
-        onOpen: noop,
-        onNew: noop,
-      }),
+    expect(planRowState({ kind: "plan", plan: { ...looseLift, holds: { sessions: 0, done: 0, firstDate: null, lastDate: null } } }, "2026-09-02").state).toBe(
+      "Nothing here yet",
     );
-    expect(html).toContain("nothing filed here yet");
-  });
-});
-
-describe("CoachWindow", () => {
-  it("minimized: the pill with the pending count; open: the window with children", () => {
-    const pill = render(
-      createElement(
-        CoachWindow,
-        { open: false, pendingCount: 2, onOpen: noop, onMinimize: noop, dialogOpen: false },
-        createElement("div", { className: "inner-panel" }),
-      ),
-    );
-    expect(pill).toContain("Coach · 2");
-    expect(pill).not.toContain("coach-window");
-
-    const win = render(
-      createElement(
-        CoachWindow,
-        { open: true, pendingCount: 2, onOpen: noop, onMinimize: noop, dialogOpen: false },
-        createElement("div", { className: "inner-panel" }),
-      ),
-    );
-    expect(win).toContain("coach-window");
-    expect(win).toContain("inner-panel");
-    expect(win).toContain("Minimize the coach");
   });
 });
 

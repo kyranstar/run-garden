@@ -47,7 +47,7 @@ const src = {
   settings: read("../src/screens/settings.tsx"),
   coachPanel: read("../src/screens/coach-panel.tsx"),
   moveSheet: read("../src/screens/move-sheet.tsx"),
-  studioModal: read("../src/screens/studio-modal.tsx"),
+  studioModal: read("../src/screens/plan-sheet.tsx"),
   components: read("../src/components.tsx"),
   css: read("../src/styles.css"),
 };
@@ -292,7 +292,7 @@ describe("a disclosure trigger survives its own click", () => {
     // titled with the question, at every width.
     for (const [name, source, trigger] of [
       ["workout sheet", src.plan, "Remove from plan"],
-      ["studio modal", src.studioModal, "Retire…"],
+      ["plan sheet", src.studioModal, "Retire…"],
     ] as const) {
       const code = decomment(source);
       // The confirm is a ConfirmDialog, and the trigger says so.

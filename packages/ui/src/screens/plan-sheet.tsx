@@ -4,31 +4,41 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner } from "../components.js";
 import { startOfIsoWeek } from "@rg/domain";
-import { progressionHeadline } from "./plan-cards.js";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
+import { useCoach } from "./studio/coach-ask.js";
+
+/** How a plan is named in a request: "my Fall Half Block plan" — never "my Base plan plan". */
+const planPhrase = (title: string): string => (/\bplan$/i.test(title.trim()) ? `my ${title.trim()}` : `my ${title.trim()} plan`);
 
 /**
- * The plan modal (rework spec §7; named for the plan "studio" it was drawn as,
- * before the Studio tab): one room per plan — where you are, where it's taking
- * you (graphed), what each week holds, and every plan action. `new-run` /
- * `new-lift` render intake mode: the coach interviews you (the existing
- * canned-message pipeline). The page routes it by `?plan=<id>`, so links and
- * back work. The old AI plan generator's form and revise panel that used to
- * open in here are retired (Stage 2 spec §2); a plan it made still opens here.
+ * The words each of the plan's actions writes in the coach's box (the new shape §6): the athlete's to send, never sent
+ * for them — no canned chat message.
  */
-export function StudioModal({
+export function planRequests(title: string): { extend: string; windDown: string; ask: string } {
+  const plan = planPhrase(title);
+  return {
+    extend: `Extend ${plan} by two weeks.`,
+    windDown: `Wind down ${plan} with a taper week.`,
+    ask: `How is ${plan} going?`,
+  };
+}
+
+/**
+ * THE PLAN SHEET (the new shape §6; the plan "studio" modal before it): one room per plan — where you are, where it is
+ * taking you (graphed), what each week holds, and its actions. Extend, Wind down and Ask about this plan open the coach
+ * with the request written; Rename and Retire… are the app's own (the coach retires no plan in this wave: §8). The page
+ * routes it by `?plan=<id>`, so links and back work. A plan the retired generator made still opens here.
+ */
+export function PlanSheet({
   planId,
   plans,
   onClose,
-  onCanned,
   onRetire,
   onRename,
 }: {
   planId: string;
   plans: CoachPlanDto[];
   onClose: () => void;
-  /** Sends a canned coach message and opens the coach surface. */
-  onCanned: (body: string) => void;
   /**
    * Retire the plan; `source` says which kind, so the page asks the right route. Resolves with why it did not happen
    * (said in the confirmation, which stays open), or null.
@@ -38,12 +48,11 @@ export function StudioModal({
 }) {
   const units = useUnits();
   const weightUnit = useWeightUnit();
-  const isNew = planId === "new-run" || planId === "new-lift";
+  const coach = useCoach();
   const plan = plans.find((p) => p.id === planId);
   const detail = useQuery<PlanDetailResponse>({
     queryKey: ["plan-detail", planId],
     queryFn: () => api.planDetail(planId),
-    enabled: !isNew,
     staleTime: 60_000,
   });
   const [confirmingRetire, setConfirmingRetireState] = useState(false);
@@ -60,33 +69,6 @@ export function StudioModal({
   /** Who made it: the coach, the retired generator ("studio"), or COROS. */
   const source = (detail.data?.plan ?? plan)?.source ?? "coach";
 
-  if (isNew) {
-    const discipline = planId === "new-lift" ? "lift" : "run";
-    return (
-      <Sheet open onClose={onClose} title={`Plan ${discipline === "lift" ? "lifting" : "running"} with your coach`}>
-        <div className="stack studio-modal-intake">
-          <p className="muted">
-            The coach asks only what it can't already answer from memory — a couple of taps, then it
-            drafts the whole plan as one proposal you approve.
-          </p>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() =>
-              onCanned(
-                discipline === "lift"
-                  ? "I want a new lifting plan — interview me for what you need."
-                  : "I want a new running plan — interview me for what you need.",
-              )
-            }
-          >
-            Start the interview
-          </button>
-        </div>
-      </Sheet>
-    );
-  }
-
   const d = detail.data;
   const title = d?.plan.name ?? plan?.name ?? "Plan";
   // Race day as a labeled vertical line on every by-week chart (user
@@ -97,6 +79,7 @@ export function StudioModal({
       ) + 1
     : null;
   const raceLabel = d?.plan.raceDate ? `race · ${formatShortDate(d.plan.raceDate)}` : undefined;
+  const requests = planRequests(title);
 
   /**
    * Every plan action, handed to the Sheet as its pinned footer (System 1
@@ -110,9 +93,7 @@ export function StudioModal({
       <div className="btn-row studio-modal-actions">
         {(d?.plan ?? plan)?.source === "coros" ? (
           <p className="faint" style={{ margin: 0, alignSelf: "center" }}>
-            Imported from COROS — ask your coach to move, ease, or skip its sessions, add new ones
-            around it, or extend it with a coached block. Approved changes are written to your
-            watch.
+            Imported from COROS.
           </p>
         ) : null}
         {((d?.plan ?? plan)?.source ?? "coach") === "coach" ? (
@@ -120,20 +101,12 @@ export function StudioModal({
             {/* "Extend" and "Wind down" are things you do to a block with a
                 planned duration. A container of loose sessions has neither, so
                 it is not offered a taper. */}
-            {(d?.plan ?? plan)?.kind === "loose" ? null : (
+            {(d?.plan ?? plan)?.kind === "loose" || !coach ? null : (
               <>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onCanned(`Extend "${title}" — draft the next weeks in the same shape.`)}
-                >
+                <button type="button" className="btn" onClick={() => coach.open({ request: requests.extend })}>
                   Extend
                 </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onCanned(`Wind down "${title}" — draft the final taper week.`)}
-                >
+                <button type="button" className="btn" onClick={() => coach.open({ request: requests.windDown })}>
                   Wind down
                 </button>
               </>
@@ -177,15 +150,11 @@ export function StudioModal({
           </button>
         ) : null}
         <span className="studio-modal-grow" />
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() =>
-            onCanned(`Let's talk about "${title}" — how is it tracking, and would you change anything?`)
-          }
-        >
-          Talk to your coach about this plan
-        </button>
+        {coach ? (
+          <button type="button" className="btn btn-primary" onClick={() => coach.open({ request: requests.ask })}>
+            Ask about this plan
+          </button>
+        ) : null}
       </div>
     ) : null;
 

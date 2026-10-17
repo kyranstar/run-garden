@@ -111,10 +111,43 @@ export function BriefExplainerSheet({
   );
 }
 
+/**
+ * The two-race-dates warning, answerable where it appears (2026-08-13): a warning the athlete can't act on from where
+ * it appears just sits there.
+ */
+export function RaceMismatchNotice({
+  mismatch,
+  onResolve,
+  resolving = false,
+}: {
+  mismatch: NonNullable<PlanWeekResponse["raceMismatch"]>;
+  onResolve: (keep: "settings" | "plan") => void;
+  resolving?: boolean;
+}) {
+  return (
+    <div className="plan-brief-context" role="alert">
+      <p>
+        ⚠ Two race dates: the plan has “{mismatch.title}” on {formatShortDate(mismatch.plannedDate)}, but your race day
+        is set to {formatShortDate(mismatch.raceDate)}. Which is right?
+      </p>
+      {/* Each choice is a whole sentence, so each is a `.btn .btn-wrap` and not a `.pill`: as pills these measured
+          456px inside a 358px card and put 102px of horizontal scroll on the entire app. */}
+      <div className="plan-brief-race-actions">
+        <button type="button" className="btn btn-small btn-wrap" disabled={resolving} onClick={() => onResolve("settings")}>
+          My race is {formatShortDate(mismatch.raceDate)} — make “{mismatch.title}” a normal hard session
+        </button>
+        <button type="button" className="btn btn-small btn-wrap" disabled={resolving} onClick={() => onResolve("plan")}>
+          The plan is right — set race day to {formatShortDate(mismatch.plannedDate)}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function WeeklyBrief({
   week,
   today,
-  pendingCount,
+  pendingCount = 0,
   onNeedsYou,
   onResolveRace,
   resolvingRace = false,
@@ -122,9 +155,9 @@ export function WeeklyBrief({
   week: PlanWeekResponse;
   /** The account's today — the brief's prose is only true of THIS week. */
   today?: string;
-  /** Pending proposals — the "Needs you" chip renders only when > 0. */
-  pendingCount: number;
-  onNeedsYou: () => void;
+  /** Pending proposals — the "Needs you" chip renders only when > 0 and something can take the tap. */
+  pendingCount?: number;
+  onNeedsYou?: () => void;
   /** One-tap resolution for the two-race-dates warning — a warning the
    * athlete can't act on from where it appears just sits there (2026-08-13). */
   onResolveRace?: (keep: "settings" | "plan") => void;
@@ -147,48 +180,16 @@ export function WeeklyBrief({
     <section className="card plan-brief" aria-label="Weekly brief">
       <div className="plan-brief-head">
         <h2 className="plan-brief-headline">{headline}</h2>
-        {pendingCount > 0 ? (
+        {pendingCount > 0 && onNeedsYou ? (
           <button type="button" className="pill plan-brief-needs" onClick={onNeedsYou}>
             Needs you · {pendingCount}
           </button>
         ) : null}
       </div>
       {context ? <p className="plan-brief-context">{context}</p> : null}
-      {week.raceMismatch ? (
-        <div className="plan-brief-context" role="alert">
-          <p>
-            ⚠ Two race dates: the plan has “{week.raceMismatch.title}” on{" "}
-            {formatShortDate(week.raceMismatch.plannedDate)}, but your race day is set to{" "}
-            {formatShortDate(week.raceMismatch.raceDate)}. Which is right?
-          </p>
-          {/* Each choice is a whole sentence, so each is a `.btn .btn-wrap`
-              and not a `.pill`: as pills these measured 456px inside a 358px
-              card and put 102px of horizontal scroll on the entire app, which
-              walked every fixed right-edge control (the Settings tab, the
-              coach pill, a sheet's ✕) off-screen. */}
-          {onResolveRace ? (
-            <div className="plan-brief-race-actions">
-              <button
-                type="button"
-                className="btn btn-small btn-wrap"
-                disabled={resolvingRace}
-                onClick={() => onResolveRace("settings")}
-              >
-                My race is {formatShortDate(week.raceMismatch.raceDate)} — make “
-                {week.raceMismatch.title}” a normal hard session
-              </button>
-              <button
-                type="button"
-                className="btn btn-small btn-wrap"
-                disabled={resolvingRace}
-                onClick={() => onResolveRace("plan")}
-              >
-                The plan is right — set race day to{" "}
-                {formatShortDate(week.raceMismatch.plannedDate)}
-              </button>
-            </div>
-          ) : null}
-        </div>
+      {/* In the page the notice stands on its own (Plan, the new shape §6); here only where it can be answered. */}
+      {week.raceMismatch && onResolveRace ? (
+        <RaceMismatchNotice mismatch={week.raceMismatch} onResolve={onResolveRace} resolving={resolvingRace} />
       ) : null}
       {/* Labels compact themselves under 640px (spec R1 + "no unnecessary
           wrapping"): the numbers stay, the prose shrinks, one row fits.

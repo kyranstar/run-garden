@@ -5,6 +5,8 @@
  * request body asserted; complete asks once, plainly; a refusal is said in plain words; and the coach switch — off, the
  * route goes back to the Studio.
  */
+// The new shape (2026-10-17) sends the app's /studio/objectives to Growth, whose quests take the board's place; until
+// Growth holds them the board is mounted here at its old path directly, so its behaviour stays pinned.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -19,6 +21,7 @@ import {
   type ObjectiveDto,
 } from "@rg/domain";
 import { StudioRoute } from "../src/app.js";
+import { ObjectivesRoute } from "../src/screens/studio/objectives.js";
 import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
 import { features } from "../src/features.js";
 import { libraryDto, placesDto, primedClient, todayDto } from "./studio-fixtures.js";
@@ -152,8 +155,8 @@ function mount(path: string, o: { coach?: boolean } = {}) {
           MemoryRouter,
           { initialEntries: [path] },
           o.coach
-            ? createElement(CoachSheetProvider, null, createElement(Routes, null, createElement(Route, { path: "/studio/*", element: createElement(StudioRoute) })))
-            : createElement(Routes, null, createElement(Route, { path: "/studio/*", element: createElement(StudioRoute) })),
+            ? createElement(CoachSheetProvider, null, createElement(Routes, null, createElement(Route, { path: "/studio/objectives", element: createElement(ObjectivesRoute) }), createElement(Route, { path: "/studio/*", element: createElement(StudioRoute) })))
+            : createElement(Routes, null, createElement(Route, { path: "/studio/objectives", element: createElement(ObjectivesRoute) }), createElement(Route, { path: "/studio/*", element: createElement(StudioRoute) })),
           createElement(Where),
         ),
       ),

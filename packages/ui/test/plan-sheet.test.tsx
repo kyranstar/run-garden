@@ -1,18 +1,17 @@
 /**
- * The plan modal (`StudioModal`, 2026-08-11 rework §7): detail mode renders
- * header, prog chips, honest charts, week rows, two-step retire; intake mode
- * renders the interview CTA — and neither holds the retired AI plan
- * generator any more (Stage 2 spec §2). Detail arrives via a primed
- * QueryClient cache — the modal's own query then serves synchronously in a
- * static render.
+ * The plan sheet (`PlanSheet`, the plan modal of the 2026-08-11 rework §7, renamed by the new shape): header, prog chips,
+ * honest charts, week rows, two-step retire — and no retired AI plan generator (Stage 2 spec §2). Its asking actions
+ * (Extend, Wind down, Ask about this plan) are drawn with the coach's sheet in the app (shape-plan.test.tsx). Detail
+ * arrives via a primed QueryClient cache — the sheet's own query then serves synchronously in a static render.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanProgression } from "@rg/api-client";
-import { StudioModal } from "../src/screens/studio-modal.js";
+import { PlanSheet } from "../src/screens/plan-sheet.js";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "../src/screens/plan-charts.js";
 
 const noop = () => undefined;
@@ -21,7 +20,11 @@ function renderWithCache(el: React.ReactElement, prime?: { key: unknown[]; data:
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   if (prime) qc.setQueryData(prime.key, prime.data);
   return renderToStaticMarkup(
-    createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, el)),
+    createElement(
+      QueryClientProvider,
+      { client: qc },
+      createElement(CoachOpenContext.Provider, { value: { open: noop } }, createElement(MemoryRouter, null, el)),
+    ),
   );
 }
 
@@ -63,19 +66,18 @@ const detail: PlanDetailResponse = {
   adherencePct: 91,
 };
 
-describe("StudioModal — detail mode", () => {
+describe("PlanSheet — detail mode", () => {
   const props = {
     planId: "cp2",
     plans: [liftPlan],
     onClose: noop,
-    onCanned: noop,
     onRetire: async () => null,
     onRename: noop,
   };
   const prime = { key: ["plan-detail", "cp2"], data: detail };
 
   it("renders name, pills, dates, sessions line, prog chips, weeks, actions", () => {
-    const html = renderWithCache(createElement(StudioModal, props), prime);
+    const html = renderWithCache(createElement(PlanSheet, props), prime);
     expect(html).toContain("Strength Block B");
     expect(html).toContain("pill-lift");
     expect(html).toContain("Jul 27 → Sep 20");
@@ -85,7 +87,7 @@ describe("StudioModal — detail mode", () => {
     expect(html).toContain("W3");
     expect(html).toContain("is-current");
     expect(html).toContain("✓ done");
-    for (const action of ["Extend", "Wind down", "Rename", "Retire…", "Talk to your coach about this plan"]) {
+    for (const action of ["Extend", "Wind down", "Rename", "Retire…", "Ask about this plan"]) {
       expect(html).toContain(action);
     }
     // Retire is two-step: the destructive copy only appears after arming.
@@ -96,37 +98,15 @@ describe("StudioModal — detail mode", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     qc.setQueryData(prime.key, prime.data);
     qc.setQueryData(["settings"], { prefs: { units: "km", weightUnit: "lb" }, llm: null });
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(StudioModal, props))));
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(PlanSheet, props))));
     // 52 → 66 kg, to the half pound.
     expect(html).toContain("114.5 → <b>145.5 lb</b>");
     expect(html).not.toContain("66 kg");
   });
 
-  it("intake mode renders the interview CTA and no weeks section", () => {
-    const html = renderWithCache(
-      createElement(StudioModal, { ...props, planId: "new-run" }),
-    );
-    expect(html).toContain("Plan running with your coach");
-    expect(html).toContain("Start the interview");
-    expect(html).not.toContain("studio-modal-weeks");
-  });
-
-  /**
-   * The old AI plan generator (also called "Studio") is retired (Stage 2 spec §2): its two entries in this modal go —
-   * "Or build it yourself in the Studio" under the lifting intake, and "Revise this plan (Studio)" on a plan it made —
-   * and the coach's intake and the plan's detail stay.
-   */
-  it("the lifting intake is the coach's interview alone: the old generator's form is gone", () => {
-    const html = renderWithCache(createElement(StudioModal, { ...props, planId: "new-lift" }));
-    expect(html).toContain("Plan lifting with your coach");
-    expect(html).toContain("Start the interview");
-    expect(html).not.toContain("build it yourself");
-    expect(html).not.toContain("<details");
-  });
-
   it("a plan the old generator made still shows its detail, with nothing to revise it in", () => {
     const made: CoachPlanDto = { ...liftPlan, id: "sp1", name: "Generated Block", source: "studio" };
-    const html = renderWithCache(createElement(StudioModal, { ...props, planId: "sp1", plans: [made] }), {
+    const html = renderWithCache(createElement(PlanSheet, { ...props, planId: "sp1", plans: [made] }), {
       key: ["plan-detail", "sp1"],
       data: { ...detail, plan: made },
     });
@@ -134,7 +114,7 @@ describe("StudioModal — detail mode", () => {
     expect(html).toContain("active · on watch");
     expect(html).toContain("5 of 16 sessions done");
     expect(html).toContain("W3");
-    expect(html).toContain("Talk to your coach about this plan");
+    expect(html).toContain("Ask about this plan");
     expect(html).not.toContain("Revise this plan");
     expect(html).not.toContain("<details");
   });
@@ -142,7 +122,7 @@ describe("StudioModal — detail mode", () => {
   /** Its screens are gone, so it is retired here, as a coach plan is — and only the coach's own plans take the rest. */
   it("a running plan the old generator made offers Retire…, and nothing only a coach plan takes", () => {
     const made: CoachPlanDto = { ...liftPlan, id: "sp1", name: "Generated Block", source: "studio" };
-    const html = renderWithCache(createElement(StudioModal, { ...props, planId: "sp1", plans: [made] }), {
+    const html = renderWithCache(createElement(PlanSheet, { ...props, planId: "sp1", plans: [made] }), {
       key: ["plan-detail", "sp1"],
       data: { ...detail, plan: made },
     });
@@ -153,7 +133,7 @@ describe("StudioModal — detail mode", () => {
   it("one that is over, or already retired, offers no Retire", () => {
     for (const status of ["completed", "retired"] as const) {
       const made: CoachPlanDto = { ...liftPlan, id: "sp1", name: "Generated Block", source: "studio", status };
-      const html = renderWithCache(createElement(StudioModal, { ...props, planId: "sp1", plans: [made] }), {
+      const html = renderWithCache(createElement(PlanSheet, { ...props, planId: "sp1", plans: [made] }), {
         key: ["plan-detail", "sp1"],
         data: { ...detail, plan: made },
       });
