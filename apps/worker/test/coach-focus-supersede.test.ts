@@ -28,9 +28,17 @@ const env = { APP_URL: "https://app.test", FIXTURE_MODE: "0", AI_DEFAULT_ENABLED
 
 let db: Db;
 let statements = 0;
+/** The last statement's text (the set guard's query plan is read from it). */
+let lastSql = "";
 
 beforeAll(() => {
-  db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (text) => {
+      statements += 1;
+      lastSql = text;
+    },
+  });
 });
 
 let seq = 0;
@@ -285,6 +293,16 @@ describe("the supersede's one statement, with a follow-up's suggestion", () => {
       // Only a single suggestion (a now run's here) is a follow-up's to replace.
       expect(changed, scope.kind).toBe(scope.kind === "now" ? 1 : 0);
     }
+  });
+
+  it("the set guard finds the focus's run by its key, never by scanning the athlete's runs (the review's nit 3)", async () => {
+    const a = await seedRichAthlete(db);
+    await supersedeOlderPlans(db, a.userId, `nothing-${a.userId}`, NOW.toISOString(), { id: `dp-none-${a.userId}`, reason: "Changed: x" });
+    const sqlite = (db as unknown as { $client: { prepare: (s: string) => { all: (...a: unknown[]) => Array<{ detail: string }> } } }).$client;
+    const params = (lastSql.match(/\?/g) ?? []).map(() => null);
+    const plan = sqlite.prepare(`EXPLAIN QUERY PLAN ${lastSql}`).all(...params).map((r) => r.detail);
+    expect(plan.some((d) => /^SEARCH fr USING (INDEX sqlite_autoindex_coach_runs_1|PRIMARY KEY) \(id=\?\)/.test(d)), plan.join("\n")).toBe(true);
+    expect(plan.filter((d) => /\bfr\b/.test(d) && !/\(id=\?\)/.test(d)), plan.join("\n")).toEqual([]);
   });
 
   it("a new suggestion not (yet) pending supersedes nothing, its focus included", async () => {

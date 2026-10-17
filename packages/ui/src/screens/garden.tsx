@@ -49,7 +49,7 @@ import { ConditionCheckSheet, ConditionChips } from "../components/condition-che
 import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
 import { useUnits } from "../use-units.js";
-import { AskCoach } from "./studio/coach-ask.js";
+import { AskCoach, WithoutCoach } from "./studio/coach-ask.js";
 import { dayFocus, workoutFocus } from "./studio/coach-focus.js";
 import {
   CATEGORY_ORDER,
@@ -2298,13 +2298,6 @@ export function GardenScreen() {
             {(() => {
               const clause = leadSettled ? null : coachClause(verdict?.level, w.category);
               if (!d?.focus && !clause) return null;
-              // What the coach is asked about from the card: today's workout, a programme day's session, a rest day.
-              const about =
-                todayLayout.title?.kind === "program"
-                  ? workoutFocus(todayLayout.title.session.workout)
-                  : w.category === "rest"
-                    ? dayFocus(w.effectiveDate)
-                    : workoutFocus(w);
               return (
                 <div className="today-coach">
                   <span className="today-coach-mark" aria-hidden="true">
@@ -2320,20 +2313,14 @@ export function GardenScreen() {
                   >
                     <span className="today-coach-who">Coach</span> — {d?.focus ? `${d.focus.text} ` : ""}
                     {clause ? `${clause} ` : ""}
-                    {/* One way to ask on the card (the lead's look at the shots): the app's coach sheet, about today —
-                        the Plan's thread coach only without it. */}
-                    <AskCoach
-                      variant="link"
-                      className="today-coach-ask"
-                      label="Ask me ›"
-                      name={`Ask me about ${about.label}`}
-                      focus={about}
-                      fallback={
-                        <Link className="today-coach-ask" to="/plan?coach=1">
-                          Ask me ›
-                        </Link>
-                      }
-                    />
+                    {/* One ask on the card (the review's nit 2): with the coach's sheet in the app, the card's own Ask
+                        (its actions, or its row on a rest or programme day) is the way to ask; the Plan's thread coach
+                        only without it. */}
+                    <WithoutCoach>
+                      <Link className="today-coach-ask" to="/plan?coach=1">
+                        Ask me ›
+                      </Link>
+                    </WithoutCoach>
                   </p>
                 </div>
               );

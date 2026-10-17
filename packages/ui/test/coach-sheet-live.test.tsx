@@ -319,13 +319,13 @@ describe("starting from it", () => {
   it("a focus the server refuses is said plainly; the words stay", async () => {
     serve({
       "GET /api/coach/runs/current": { run: null },
-      "POST /api/coach/runs": json({ error: "focus_out_of_range", why: "Ask about a day from Tue Oct 14 to Mon Oct 27." }, 400),
+      "POST /api/coach/runs": json({ error: "focus_out_of_range", why: "Ask about a day from Tue 14 Oct to Mon 27 Oct." }, 400),
     });
     mount();
     await click(document.getElementById("opener"), "the opener");
     await until(() => !!field(), "the composer");
     await click(button("Now", dialog()!), "Now");
-    await until(() => text().includes("Ask about a day from Tue Oct 14 to Mon Oct 27."), "the refusal");
+    await until(() => text().includes("Ask about a day from Tue 14 Oct to Mon 27 Oct."), "the refusal");
     expect(field()!.value).toBe("Something easier?");
   });
 

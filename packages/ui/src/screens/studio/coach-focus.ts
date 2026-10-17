@@ -4,7 +4,8 @@
  *
  *  - The server takes `{ kind, id }` (`focusOfWire`); the label, the day and a suggestion's scope are the screen's own,
  *    for the chip and the scope buttons, and never sent.
- *  - The chip: "About: Thu Oct 23 · Strength · 40 min" — a day, a title, minutes, in the app's own formats.
+ *  - The chip: "About: Fri 23 Oct · Strength · 40 min" — a day, a title, minutes; the day in the domain's `dayLabel`,
+ *    the server's own words for a day (its refusal says "Ask about a day from Sat 10 Oct to …": one format, the review).
  *  - The scope by default (`focusScope`): Now — for a workout or a day too, whatever its date: one workout, which the
  *    focus's day or workout directs (Now's own words: "unless the request names another day or a planned workout to
  *    change"); never a whole week's set for one workout (the review, I1) — and a suggestion its own (a single one is a
@@ -13,8 +14,8 @@
  *    server's own range: design-focus.ts).
  */
 import { ApiError, type ActivityDto, type CoachRunFocus, type DesignLineDto, type WorkoutDto } from "@rg/api-client";
-import { addDays, type CoachScopeKind } from "@rg/domain";
-import { formatDayShort, formatMinutes } from "../../components.js";
+import { addDays, dayLabel, type CoachScopeKind } from "@rg/domain";
+import { formatMinutes } from "../../components.js";
 
 export type CoachFocusKind = CoachRunFocus["kind"];
 
@@ -42,20 +43,20 @@ const joined = (...parts: Array<string | null | undefined | false>): string => p
 /** A planned workout: its day, its title, its minutes (the plan's own estimate, else its calendar block). */
 export function workoutFocus(w: Pick<WorkoutDto, "id" | "title" | "effectiveDate" | "workoutSeconds" | "calendarSeconds">): CoachFocus {
   const seconds = w.workoutSeconds ?? w.calendarSeconds ?? null;
-  return { kind: "workout", id: w.id, date: w.effectiveDate, label: joined(formatDayShort(w.effectiveDate), w.title, seconds ? formatMinutes(seconds) : null) };
+  return { kind: "workout", id: w.id, date: w.effectiveDate, label: joined(dayLabel(w.effectiveDate), w.title, seconds ? formatMinutes(seconds) : null) };
 }
 
 /** A day of the plan. */
-export const dayFocus = (date: string): CoachFocus => ({ kind: "day", id: date, date, label: formatDayShort(date) });
+export const dayFocus = (date: string): CoachFocus => ({ kind: "day", id: date, date, label: dayLabel(date) });
 
 /** An activity — or, when it holds a logged session (an app save, a watch review, an import), that session. */
 export function activityFocus(a: Pick<ActivityDto, "id" | "date" | "title" | "sport" | "durationSeconds" | "performed">): CoachFocus {
   const minutes = a.durationSeconds > 0 ? formatMinutes(a.durationSeconds) : null;
   const sessionId = a.performed?.id;
   if (sessionId) {
-    return { kind: "session", id: sessionId, date: a.date, label: joined(formatDayShort(a.date), a.performed?.theme ?? a.title ?? "Session", minutes) };
+    return { kind: "session", id: sessionId, date: a.date, label: joined(dayLabel(a.date), a.performed?.theme ?? a.title ?? "Session", minutes) };
   }
-  return { kind: "activity", id: a.id, date: a.date, label: joined(formatDayShort(a.date), a.title ?? sportWord(a.sport), minutes) };
+  return { kind: "activity", id: a.id, date: a.date, label: joined(dayLabel(a.date), a.title ?? sportWord(a.sport), minutes) };
 }
 
 const sportWord = (sport: string): string => (sport ? sport.charAt(0).toUpperCase() + sport.slice(1).replace(/_/g, " ") : "Activity");

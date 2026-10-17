@@ -83,13 +83,13 @@ const workout = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
 describe("a planned workout's sheet", () => {
   it("an app session's sheet asks about the workout", () => {
     const html = render(createElement(SessionSheet, { w: workout(), today: "2026-10-21", onClose: () => undefined }));
-    expect(asks(html)).toEqual([{ focus: "workout:w1", name: "Ask the coach about Fri Oct 23 · Strength · 40 min" }]);
+    expect(asks(html)).toEqual([{ focus: "workout:w1", name: "Ask the coach about Fri 23 Oct · Strength · 40 min" }]);
   });
 
   it("every other workout's sheet (a watch-plan run) asks about it too", () => {
     const run = workout({ id: "r1", title: "Easy run", category: "easy", sport: "run", origin: null, contentState: null, programId: null, workoutSeconds: 2700 });
     const html = render(createElement(RunWorkoutDetail, { w: run, today: "2026-10-21", corosWritesEnabled: false, onClose: () => undefined }));
-    expect(asks(html)).toEqual([{ focus: "workout:r1", name: "Ask the coach about Fri Oct 23 · Easy run · 45 min" }]);
+    expect(asks(html)).toEqual([{ focus: "workout:r1", name: "Ask the coach about Fri 23 Oct · Easy run · 45 min" }]);
   });
 
   it("no coach in the app: no Ask", () => {
@@ -125,7 +125,7 @@ describe("a day in the Plan's week view", () => {
   it("each day asks about itself", () => {
     const html = view(week("2026-10-19"), "2026-10-21");
     expect(asks(html).map((a) => a.focus)).toEqual(["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25"].map((d) => `day:${d}`));
-    expect(asks(html)[2]!.name).toBe("Ask the coach about Wed Oct 21");
+    expect(asks(html)[2]!.name).toBe("Ask the coach about Wed 21 Oct");
     // Each at its day: the Ask is inside the day's own cell.
     const cell = html.slice(html.indexOf('data-date="2026-10-22"'), html.indexOf('data-date="2026-10-23"'));
     expect(cell).toContain('data-focus="day:2026-10-22"');
@@ -190,12 +190,12 @@ describe("an activity in Activity", () => {
   };
 
   it("a run the watch recorded asks about the activity", () => {
-    expect(asks(detail(activity()))).toEqual([{ focus: "activity:a1", name: "Ask the coach about Mon Oct 19 · Evening run · 45 min" }]);
+    expect(asks(detail(activity()))).toEqual([{ focus: "activity:a1", name: "Ask the coach about Mon 19 Oct · Evening run · 45 min" }]);
   });
 
   it("a logged session (an app save, a watch review, an import) asks about the session", () => {
     const a = activity({ title: null, sport: "strength", performed: { id: "s1", source: "app", mode: "build", theme: "Full-body strength", checks: [], played: null } });
-    expect(asks(detail(a))).toEqual([{ focus: "session:s1", name: "Ask the coach about Mon Oct 19 · Full-body strength · 45 min" }]);
+    expect(asks(detail(a))).toEqual([{ focus: "session:s1", name: "Ask the coach about Mon 19 Oct · Full-body strength · 45 min" }]);
   });
 
   it("no coach in the app: no Ask", () => {

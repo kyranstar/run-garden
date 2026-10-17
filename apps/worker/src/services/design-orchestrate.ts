@@ -647,12 +647,13 @@ export async function supersedeOlderPlans(db: Db, userId: string, proposalId: st
       WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending' AND json_valid(np.ops)
         AND ${covers(sql`n.value`, value)}))`;
   const outcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${SUPERSEDED_REASON}, 'by', ${proposalId})`;
-  /** The row is the follow-up's suggestion, still open (pending: nothing approved), and the new one is pending. (SET's
+  /** The row is the follow-up's suggestion, still open (pending: nothing approved), and the new one is pending — and no
+   * set's: its run (its id the suggestion's after the `dp-` prefix, found by its key) planned no week or next N. (SET's
    * expressions read the row as it was.) */
   const isFocused = focused
     ? sql`(coach_proposals.id = ${focused.id} AND coach_proposals.status = 'pending'
         AND EXISTS (SELECT 1 FROM coach_proposals np WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending')
-        AND NOT EXISTS (SELECT 1 FROM coach_runs fr WHERE fr.user_id = ${userId} AND 'dp-' || fr.id = coach_proposals.id
+        AND NOT EXISTS (SELECT 1 FROM coach_runs fr WHERE fr.id = substr(coach_proposals.id, 4) AND fr.user_id = ${userId}
           AND json_valid(fr.scope) AND json_extract(fr.scope, '$.kind') IN ('week', 'next_n')))`
     : sql`0`;
   /** An op the follow-up supersedes: every one of its suggestion still open. */

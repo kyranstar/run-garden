@@ -32,8 +32,6 @@ export function AskCoach({
   variant = "button",
   className,
   wrap,
-  name: named,
-  fallback = null,
 }: {
   focus: CoachFocus;
   request?: string | null;
@@ -42,15 +40,11 @@ export function AskCoach({
   className?: string;
   /** A row of its own, drawn only with the button (no empty row without the coach). */
   wrap?: string;
-  /** Its name for a reader, where the visible words are an entry point's own ("Ask me ›" → "Ask me about …"). */
-  name?: string;
-  /** What is drawn without the coach in the app (the Today card's link to the Plan's thread coach). */
-  fallback?: ReactNode;
 }) {
   const coach = useCoach();
-  if (!coach) return <>{fallback}</>;
+  if (!coach) return null;
   const classes = [variant === "link" ? "linklike tap-pad ask-coach-link" : "btn btn-small ask-coach", className].filter(Boolean).join(" ");
-  const name = named ?? (label ? `${label}: ${focus.label}` : `Ask the coach about ${focus.label}`);
+  const name = label ? `${label}: ${focus.label}` : `Ask the coach about ${focus.label}`;
   const button = (
     <button type="button" className={classes} data-focus={`${focus.kind}:${focus.id}`} aria-label={name} onClick={() => coach.open({ focus, request })}>
       {variant === "link" ? null : (
@@ -63,4 +57,12 @@ export function AskCoach({
     </button>
   );
   return wrap ? <div className={wrap}>{button}</div> : button;
+}
+
+/**
+ * Drawn only without the coach's sheet in the app: an older way to ask that the sheet's Ask replaces where it is (the
+ * Today card's "Ask me ›" to the Plan's thread coach — one ask on a card, the review's nit 2).
+ */
+export function WithoutCoach({ children }: { children: ReactNode }) {
+  return useCoach() ? null : <>{children}</>;
 }
