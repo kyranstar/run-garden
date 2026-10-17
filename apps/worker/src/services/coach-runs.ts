@@ -61,7 +61,7 @@ import { allTools } from "./design-tools/index.js";
 import { capInWords, PROSE_CEILING } from "./design-tools/act-common.js";
 import { designedLine, LINE_MAX as FINISH_LINE_MAX } from "./design-tools/finish.js";
 import { designProposalId } from "./design-tools/propose.js";
-import { clipProse } from "./design-prose.js";
+import { athleteText, clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
 import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
 import {
@@ -2447,7 +2447,10 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     .map((b) => b.text.trim())
     .filter((t) => t.length > 0)
     .join(" ");
-  if (said) events.push({ kind: "note", summary: said, ...(said.length > SUMMARY_MAX_CHARS ? { payload: { text: said } } : {}) });
+  // What the athlete reads of the turn, in their words (round 2, I1): a move by its name, a tool or "validator" as the
+  // app says it. (The model's own words stay in the history.)
+  const shownSaid = said ? athleteText(said) : "";
+  if (shownSaid) events.push({ kind: "note", summary: shownSaid, ...(shownSaid.length > SUMMARY_MAX_CHARS ? { payload: { text: shownSaid } } : {}) });
 
   const base = { state, costMicros: spent, error: null, proposalId: null };
   if (result.stopReason === "refusal") return end({ ...base, status: "failed", error: "refusal", events: [...events, { kind: "error", summary: LINES.refusal }] });
@@ -2725,7 +2728,8 @@ async function runTools(
       const proposalId = typeof (result.data as { proposalId?: unknown } | null)?.proposalId === "string" ? ((result.data as { proposalId: string }).proposalId) : null;
       if (proposalId) await closeProposalAtFinish(s, proposalId);
       // The main coach's line clipped where the athlete reads it (finish.ts, §2.1): its whole text kept in the payload.
-      const whole = run.role === "main" && typeof said === "string" && !(result.summary ?? "").startsWith(said.trim()) ? { text: clipProse(said, FINISH_KEPT_MAX) } : {};
+      const shown = typeof said === "string" ? athleteText(said.trim()) : "";
+      const whole = run.role === "main" && shown && !(result.summary ?? "").startsWith(shown) ? { text: clipProse(shown, FINISH_KEPT_MAX) } : {};
       const payload = { ...(proposalId ? { proposalId } : {}), ...whole, ...(result.receipt ? { receipt: result.receipt } : {}) };
       // A reviewer's finish is its review.
       events.push({ kind: run.role === "reviewer" ? "review" : "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });
@@ -2817,9 +2821,11 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
  */
 async function finishInWords(s: StepCtx, said: string, spent: number, o: { proposedFallback?: boolean } = {}): Promise<StepEnd> {
   const { state, run } = s;
-  // Clipped where the athlete reads it (§2.1), at its last sentence end inside the line; the whole kept in the payload.
-  const clipped = said.length > 0 ? clipProse(said, SUMMARY_MAX_CHARS) : "";
-  const longer = said.trim().length > clipped.length ? { text: clipProse(said, FINISH_KEPT_MAX) } : {};
+  // In the athlete's words (round 2, I1), clipped where they read it (§2.1) at its last sentence end inside the line;
+  // the whole kept in the payload.
+  const plain = said.length > 0 ? athleteText(said) : "";
+  const clipped = plain.length > 0 ? clipProse(plain, SUMMARY_MAX_CHARS) : "";
+  const longer = plain.trim().length > clipped.length ? { text: clipProse(plain, FINISH_KEPT_MAX) } : {};
   if (run.role !== "main") {
     // A designer's words are the main coach's (its `final`); its line is the workout it designed (M3).
     if (said.length > 0) state.final = clipProse(said, FINISH_KEPT_MAX);

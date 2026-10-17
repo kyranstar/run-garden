@@ -28,7 +28,7 @@ import type { DesignTool } from "./types.js";
 import { capInWords, isErr, mainRunIdOf, parseAct } from "./act-common.js";
 import { refuse } from "./read-common.js";
 import { reviewRunning } from "../design-review.js";
-import { clipProse } from "../design-prose.js";
+import { athleteText, clipProse } from "../design-prose.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
 
@@ -83,7 +83,8 @@ export const finish: DesignTool = {
     const own = designer ? ops.find((o) => o.by?.runId === ctx.run.id) : undefined;
     const mine = row && (ctx.run.role === "main" ? all.length > 0 : !!own);
     // A designer's line is its workout's title (M3); the main coach's, its own words clipped where the athlete reads them.
-    const lineOf = (room: number): string => (designer ? designedLine(own?.doc.title ?? null) : clipProse(said, room));
+    // The athlete's words first (round 2, I1: a library id, a tool name, "validator" as the athlete says them), then the cut.
+    const lineOf = (room: number): string => (designer ? designedLine(own?.doc.title ?? null) : clipProse(athleteText(said), room));
     if (!row || !mine || !proposalId) return { data: {}, summary: lineOf(LINE_MAX), receipt: { final: true } };
     // Kept back while any workout lacks its review, or has one under way: the loop's finish makes the rest pending
     // (coach-runs.ts, the same guard).

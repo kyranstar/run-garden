@@ -15,8 +15,9 @@ import { schema } from "@rg/database";
 import { addDays, dayLabel } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { createRun, LAST_TURN_NOTE, LINES, readRunState, runStep, type RunDeps } from "../src/services/coach-runs.js";
+import { answerRun, createRun, LAST_TURN_NOTE, LINES, readRunState, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
+import { athleteText } from "../src/services/design-prose.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
@@ -210,4 +211,20 @@ describe("R3: the last turn never loses a finished design", () => {
     expect((await trail(runId)).at(-1)!.summary).toBe("Calm hips is waiting for you.");
     expect((await proposalOf(runId))!.status).toBe("pending");
   });
+});
+
+// ── Round 2 (the whole-wave review) ─────────────────────────────────────────────────────────────────────────────────
+
+describe("round 2: the trail in the athlete's words (I1), an honest last line (Minor 1), usage never in the way (Minor 5)", () => {
+  it("a turn's words reach the trail in the athlete's words: no library id, tool name or 'validator'", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, 12);
+    const leaky = "Swapping deadBug for the bridge — the validator flagged mode_limits after read_balance.";
+    const { deps } = scripted([turn([use("read_day", {})], leaky), t(use("finish", { summary: "Calm hips is ready." }))]);
+    await drive(userId, runId, deps);
+    const line = (await trail(runId)).find((e) => e.summary.startsWith("Swapping"))!;
+    expect(line.summary).toBe(athleteText(leaky));
+    expect(line.summary).not.toMatch(/deadBug|validator|mode_limits|read_balance/);
+  });
+
 });

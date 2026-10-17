@@ -27,7 +27,7 @@ import { z } from "zod";
 import { athleteProfiles } from "@rg/database";
 import type { DesignTool } from "./types.js";
 import { capInWords, isErr, parseAct, prose } from "./act-common.js";
-import { clipProse } from "../design-prose.js";
+import { athleteText, clipProse } from "../design-prose.js";
 import { refuse } from "./read-common.js";
 import { AREA_FIX, CHECKIN_IDS, CHECKIN_QUESTIONS, focusAreasOf, libraryArea, subjectOf } from "./record-answer.js";
 
@@ -135,7 +135,7 @@ export const askAthlete: DesignTool = {
     if (raw && typeof raw === "object" && "check" in raw) {
       const c = parseAct(checkInput, raw, `{ check: "condition", why } — why the design needs today's check, ${capInWords(WHY_MAX)}`);
       if (isErr(c)) return c;
-      return { data: { check: c.check, why: clipProse(c.why, WHY_MAX) }, summary: CHECK_ASKED };
+      return { data: { check: c.check, why: clipProse(athleteText(c.why), WHY_MAX) }, summary: CHECK_ASKED };
     }
     const p = parseAct(input, raw, `questions: 1–${MAX_QUESTIONS}, each { text, chips (1–${MAX_CHIPS}), why, checkin? } — or { check: "condition", why }`);
     if (isErr(p)) return p;
@@ -172,10 +172,11 @@ export const askAthlete: DesignTool = {
       if (bad) return refuse("bad_area", `"${bad}" is no region, muscle or focus area.`, AREA_FIX);
     }
     const questions = p.questions.map((q) => ({
-      text: q.text,
+      // What the athlete reads, in their words (round 2, I1); the chips stay as given: an answer is matched to them.
+      text: athleteText(q.text),
       chips: q.chips.map(labelOf),
       allowFreeText: true as const,
-      why: clipProse(q.why, WHY_MAX),
+      why: clipProse(athleteText(q.why), WHY_MAX),
       ...(q.checkin ? { checkin: q.checkin } : {}),
     }));
     return { data: { questions }, summary: questions.map((q) => q.text).join(" · ") };
