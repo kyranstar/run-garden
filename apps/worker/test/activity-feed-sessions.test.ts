@@ -217,6 +217,8 @@ describe("a merged session — the app's save and the watch's recording (Review 
     const theme = s.build.theme ? THEMES.find((t) => t.id === s.build.theme)!.name : null;
     const playedOnly = s.build.items.filter((i) => i.exerciseId !== s.build.items[0]!.exerciseId);
     expect(row!.performed).toEqual({
+      // The session's own id (coach everywhere: the coach is asked from it).
+      id: body.id,
       source: "app",
       mode: "build",
       theme,
@@ -273,6 +275,7 @@ describe("an imported session", () => {
       ["gobletSquat", [{ v: 25, u: "lb" }]],
     ]);
     expect(row!.performed).toEqual({
+      id: expect.any(String),
       source: "import",
       mode: "consistent",
       theme: null,
@@ -291,7 +294,7 @@ describe("a watch-only strength session (the live account today)", () => {
     expect(row!.logged!.map((e) => e.name)).toEqual(["Bench Press", "Dumbbell Row", "Planks", "Push-up"]);
     // 12 kg on the watch → 26.5 lb for a pounds athlete: the watch's copy is not the athlete's typing (2a+).
     expect(row!.logged![1]!.sets[0]!.load).toEqual({ v: 26.5, u: "lb" });
-    expect(row!.performed).toEqual({ source: "watch", mode: null, theme: null, checks: [], played: null });
+    expect(row!.performed).toEqual({ id: expect.any(String), source: "watch", mode: null, theme: null, checks: [], played: null });
   });
 
   it("a run with nothing logged says null for both", async () => {

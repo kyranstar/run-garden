@@ -15,7 +15,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createRun, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
-import { FOLLOW_UP_WORDS_MAX, followUpReason, SUPERSEDED_REASON, supersedeOlderPlans } from "../src/services/design-orchestrate.js";
+import { FOLLOW_UP_WORDS_MAX, followUpOf, followUpReason, SUPERSEDED_REASON, supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
@@ -275,6 +275,12 @@ describe("the supersede's one statement, with a follow-up's suggestion", () => {
     ]);
     expect(await supersedeOlderPlans(db, a.userId, `u-${a.userId}`, NOW.toISOString(), { id: `g-${a.userId}`, reason: "Changed: x" })).toBe(0);
     expect((await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `g-${a.userId}`)))[0]!.status).toBe("pending");
+  });
+
+  it("only a suggestion's focus is a follow-up: any other kind changes no suggestion", () => {
+    expect(followUpOf({ kind: "proposal", id: "dp-r1" }, "Shorter")).toEqual({ id: "dp-r1", reason: "Changed: Shorter" });
+    for (const kind of ["workout", "day", "session", "activity", "objective", "move"]) expect(followUpOf({ kind, id: "dp-r1" }, "Shorter"), kind).toBeNull();
+    expect(followUpOf(undefined, "Shorter")).toBeNull();
   });
 
   it("the reason: the athlete's words after 'Changed: ', clipped where they read it; no words, 'Changed.'", () => {

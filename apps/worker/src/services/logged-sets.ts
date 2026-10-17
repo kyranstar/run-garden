@@ -199,6 +199,8 @@ export interface SessionCheckDto {
 
 /** The performed session an activity shows (the one `sessionPerActivity` picks). */
 export interface PerformedSummaryDto {
+  /** The session's own id: what the coach is asked from (coach everywhere, A3: a session's focus). */
+  id: string;
   source: "app" | "watch_review" | "import" | "watch";
   mode: SessionMode | null;
   /** The theme's name. */
@@ -359,6 +361,7 @@ export async function performedByActivity(
     out.set(s.activityId!, {
       logged: sets,
       performed: {
+        id: s.id,
         source: (SOURCES.has(s.source) ? s.source : WATCH_SOURCE) as PerformedSummaryDto["source"],
         mode: s.mode !== null && MODES.has(s.mode) ? (s.mode as SessionMode) : null,
         theme: themeName(s.theme),
