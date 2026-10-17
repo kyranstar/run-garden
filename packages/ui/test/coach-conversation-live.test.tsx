@@ -314,6 +314,39 @@ describe("a turn", () => {
   });
 });
 
+describe("an answer in words", () => {
+  const answer = `${"Your wall sit is up fifteen seconds in two weeks, held clean each time. ".repeat(10)}Keep the same rhythm.\n\nNext week, add five seconds.`;
+
+  it("shown whole as the coach's words the moment the run ends — wrapped, never clipped, no card — and never a trail line too", async () => {
+    let status: CoachRunDto["status"] = "active";
+    const events: CoachRunEventDto[] = [{ seq: 1, kind: "note", summary: "Read your last two weeks.", payload: null, at: "x" }];
+    const loop = drivenLoop(
+      () => run({ id: "run-a", status, scope: { kind: "auto" } as never }),
+      () => events,
+    );
+    // The conversation's read never catches up here: the answer is the run's own.
+    server(conversation([turn({ runId: "run-a", words: "How is my wall sit going?", status: "active", line: null })]), {
+      "GET /api/coach/runs/current": () => json({ run: run({ id: "run-a", status, scope: { kind: "auto" } as never }), events, proposal: null }),
+    });
+    mount({ loop: loop.deps });
+    await openCoach();
+    await until(() => !!dialog()!.querySelector(".coach-run"), "the run at work");
+    expect(dialog()!.textContent).not.toMatch(/\bauto\b/i);
+    status = "finished";
+    events.push(
+      { seq: 2, kind: "tool_call", summary: "Finishing", payload: { tool: "finish", toolUseId: "t1" }, at: "x" },
+      { seq: 3, kind: "tool_result", summary: answer, payload: { tool: "finish", toolUseId: "t1", ok: true, receipt: { final: true, answer: true } }, at: "x" },
+    );
+    await loop.answer({ status: "finished", nextDue: null, events: events.slice(1) });
+    await until(() => !!dialog()!.querySelector(".coach-msg--coach[data-turn='run-a']"), "the coach's words");
+    const said = dialog()!.querySelector<HTMLElement>(".coach-msg--coach[data-turn='run-a']")!;
+    expect([...said.querySelectorAll("p")].map((p) => p.textContent)).toEqual(answer.split("\n\n"));
+    expect(dialog()!.querySelector(".coach-pc")).toBeNull();
+    expect(dialog()!.querySelector(".coach-changes")).toBeNull();
+    expect(dialog()!.querySelector(".coach-run")).toBeNull();
+  });
+});
+
 describe("the conversation, kept", () => {
   it("comes back on open: the turns, 'Reply' — and a send continues it by its id", async () => {
     const calls = server(conversation([turn()]), {
@@ -330,6 +363,43 @@ describe("the conversation, kept", () => {
     await click(sendButton(), "Send");
     await until(() => posts(calls).length === 1, "the start");
     expect(posts(calls)[0]).toEqual({ request: "make it 10 minutes", conversationId: "run-1" });
+  });
+
+  it("opened on a conversation, the box doesn't take the focus (a phone's keyboard stays down); with words written for the athlete, it does", async () => {
+    server(conversation([turn()]));
+    mount();
+    await openCoach();
+    await until(() => !!dialog()!.querySelector(".coach-msg--athlete"), "the turns");
+    await settle(20);
+    expect(document.activeElement).not.toBe(box());
+    act(() => root?.unmount());
+    host?.remove();
+    server(conversation([turn()]));
+    function Asker() {
+      const coach = useCoach();
+      return createElement("button", { type: "button", id: "coach", onClick: () => coach?.open({ request: "and an easier one tomorrow" }) }, "Ask");
+    }
+    mount({ children: createElement(Asker) });
+    await openCoach();
+    await until(() => document.activeElement === box(), "the box focused, its words in it");
+  });
+
+  it("a run that ends while the athlete types in the box: the focus stays in the box", async () => {
+    let status: CoachRunDto["status"] = "active";
+    let conv: CoachConversationDto = conversation([turn({ runId: "run-t", status: "active", line: null })]);
+    const loop = drivenLoop(() => run({ id: "run-t", status }));
+    server(() => conv, { "GET /api/coach/runs/current": () => json({ run: run({ id: "run-t", status }), events: [], proposal: null }) });
+    mount({ loop: loop.deps });
+    await openCoach();
+    await until(() => !!dialog()!.querySelector(".coach-run"), "the run at work");
+    act(() => box()!.focus());
+    await type(box()!, "and then");
+    status = "finished";
+    conv = conversation([turn({ runId: "run-t", status: "finished", line: "Done for today." })]);
+    await loop.answer({ status: "finished", nextDue: null, events: [] });
+    await until(() => text().includes("Done for today."), "the coach's line");
+    await settle(20);
+    expect(document.activeElement).toBe(box());
   });
 
   it("'New conversation' in the sheet's menu: the opening screen, the next send a new one — and it holds when the sheet opens again", async () => {
@@ -356,6 +426,15 @@ describe("the conversation, kept", () => {
     server(NONE);
     mount();
     await openCoach();
+    await click(dialog()!.querySelector('button[aria-label="More"]'), "the menu");
+    expect(dialog()!.querySelector<HTMLButtonElement>('[role="menuitem"]')?.disabled).toBe(true);
+    act(() => root?.unmount());
+    host?.remove();
+    const working = run({ id: "run-w", status: "stepping" });
+    server(conversation([turn(), turn({ runId: "run-w", status: "stepping", line: null })]), { "GET /api/coach/runs/current": { run: working, events: [], proposal: null } });
+    mount({ loop: quietLoop(() => working) });
+    await openCoach();
+    await until(() => !!dialog()!.querySelector(".coach-run"), "the run at work");
     await click(dialog()!.querySelector('button[aria-label="More"]'), "the menu");
     expect(dialog()!.querySelector<HTMLButtonElement>('[role="menuitem"]')?.disabled).toBe(true);
   });
@@ -394,6 +473,42 @@ describe("cards", () => {
     expect(dialog()!.querySelector(".coach-pc-follow")).toBeNull();
   });
 
+  it("the newest turn's card stays whole once decided — what came of it in view, never folded to a line", async () => {
+    const applied = { status: "applied", at: "x", workoutId: "w-new", rev: 1, written: { date: TODAY, time: "18:00", title: "Hips", minutes: 24 } };
+    server(conversation([turn({ cards: [{ kind: "workout", proposalId: "dp-run-1", title: "Hips", summary: "Today · 6 PM", status: "approved" }] })]), {
+      "GET /api/coach/proposals/dp-run-1": { id: "dp-run-1", status: "approved", resolvedAt: "x", lines: [line("a", { title: "Hips", outcome: applied } as never)], changes: [] },
+    });
+    mount();
+    await openCoach();
+    await until(() => !!dialog()!.querySelector(".coach-pc"), "the whole card");
+    expect(dialog()!.querySelector(".coach-card-closed")).toBeNull();
+    expect(dialog()!.textContent).toContain("On your plan for");
+  });
+
+  it("changes to the plan: Approve all sends the changes only, by their ids — never the workout beside them", async () => {
+    let approved: any = null;
+    const read = { id: "dp-run-4", status: "pending", resolvedAt: null, lines: [line("w")], changes: [change("c1"), change("c2")] };
+    const cards = [
+      { kind: "workout" as const, proposalId: "dp-run-4", title: "Easy legs", summary: "Today · 6 PM · 24 min", status: "pending" },
+      { kind: "plan_changes" as const, proposalId: "dp-run-4", title: "Changes to your plan", summary: "2 changes to your week", status: "pending" },
+    ];
+    server(conversation([turn({ runId: "run-4", line: "Two lighter days.", cards })]), {
+      "GET /api/coach/proposals/dp-run-4": () => json(read),
+      "POST /api/coach/proposals/dp-run-4/approve": (body: any) => {
+        approved = body;
+        return json({ ok: true, status: "partially_approved", applied: [], changed: [], refused: [], settled: [], remaining: [] });
+      },
+    });
+    mount();
+    await openCoach();
+    await until(() => !!dialog()!.querySelector(".coach-changes"), "the changes card");
+    const card = dialog()!.querySelector<HTMLElement>(".coach-changes")!;
+    await until(() => !!button("Approve all", card) && !button("Approve all", card)!.disabled, "Approve all ready");
+    await click(button("Approve all", card), "Approve all");
+    await until(() => approved !== null, "the approve");
+    expect(approved).toEqual({ opIds: ["c1", "c2"] });
+  });
+
   it("changes to the plan: how many, Approve all (the changes only, by their ids) and Look closer", async () => {
     let approved: any = null;
     const read = { id: "dp-run-4", status: "pending", resolvedAt: null, lines: [line("w")], changes: [change("c1"), change("c2")] };
@@ -419,7 +534,9 @@ describe("cards", () => {
     await until(() => !!button("Approve all", card) && !button("Approve all", card)!.disabled, "Approve all ready");
     await click(button("Look closer", card), "Look closer");
     await until(() => card.textContent!.includes("Session c1 — skipped") && card.textContent!.includes("Session c2 — skipped"), "the changes, each");
-    await click(button("Approve all", card) ?? button("Approve", card), "Approve all");
+    // Looked at closer, each change's own card decides them: its Approve names the changes, never the whole suggestion.
+    expect(button("Approve all", card)).toBeNull();
+    await click(button("Approve", card), "Approve");
     await until(() => approved !== null, "the approve");
     expect(approved).toEqual({ opIds: ["c1", "c2"] });
   });

@@ -57,6 +57,7 @@ import { PlanChangesCard } from "./plan-changes-card.js";
 import { ProposalCard } from "./proposal-card.js";
 import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
 import {
+  answerOf,
   askedOf,
   existingLine,
   isLive,
@@ -155,6 +156,12 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     void qc.invalidateQueries({ queryKey: ["coach-design-proposal"] });
     void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
   }, [over, liveId, qc]);
+
+  // A run that ended in words (an answer, the new shape §5): the coach's words at once, whole — the conversation's read
+  // of its line may come a moment later.
+  const liveAnswer = liveId !== null && !working ? answerOf(snapshot?.events ?? []) : null;
+  /** A turn shown as over: the read says so, or the live run ended in words. */
+  const turnOver = (t: CoachConversationTurnDto): boolean => !isLive(t.status) || (t.runId === liveId && liveAnswer !== null);
 
   // The single question the run waits on: the box answers it in the athlete's own words.
   const asked = liveStatus === "waiting_athlete" ? askedOf(snapshot?.events ?? []) : null;
@@ -259,7 +266,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   useEffect(() => {
     const id = watched.current;
     const t = id ? turns.find((x) => x.runId === id) : null;
-    if (!id || !t || isLive(t.status)) return;
+    if (!id || !t || !turnOver(t)) return;
     watched.current = null;
     setFocusTurn(id);
   });
@@ -313,7 +320,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
               {turns.map((t, i) => (
                 <li key={t.runId} className="coach-turn">
                   {t.words ? <p className="coach-msg coach-msg--athlete">{t.words}</p> : null}
-                  {t.runId === liveId && (working || isLive(t.status)) ? (
+                  {t.runId === liveId && (working || isLive(t.status)) && liveAnswer === null ? (
                     <CoachBoundary>
                       {liveRun && liveStatus ? (
                         <RunView
@@ -340,7 +347,12 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
                       )}
                     </CoachBoundary>
                   ) : (
-                    <TurnReply turn={t} latest={i === lastIndex} today={ctx.today} timeZone={ctx.timeZone} />
+                    <TurnReply
+                      turn={t.runId === liveId && liveAnswer !== null && !t.line ? { ...t, status: liveStatus ?? t.status, line: liveAnswer } : t}
+                      latest={i === lastIndex}
+                      today={ctx.today}
+                      timeZone={ctx.timeZone}
+                    />
                   )}
                 </li>
               ))}

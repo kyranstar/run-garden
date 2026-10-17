@@ -792,7 +792,8 @@ export type DesignChangeOutcomeDto =
  * own manifest line for its skip, move or length — and the coach's why. A change has no draft. */
 export interface DesignChangeLineDto {
   opId: string;
-  kind: "skip" | "move" | "adjust";
+  /** The thread coach's single-day ops too (the new shape §5: ease, swap, remove, restore), in its manifest's words. */
+  kind: "skip" | "move" | "adjust" | "ease" | "swap" | "remove" | "restore";
   workoutId: string;
   /** The day the line is under: a move's destination, else the session's day. */
   date: string | null;
@@ -843,7 +844,7 @@ export interface DesignApproveResponse {
   status: "pending" | "partially_approved" | "approved" | "declined" | "superseded";
   applied: Array<{ opId: string; workout: DocWorkoutDto; warnings: DocIssueDto[]; edited?: true; moved?: true; watchHasOlder?: true }>;
   /** The changes to sessions already on the plan this request applied (Task 8b), each with how it stood before. */
-  changed: Array<{ opId: string; change: "skip" | "move" | "adjust"; workoutId: string; before: DesignChangeBeforeDto }>;
+  changed: Array<{ opId: string; change: DesignChangeLineDto["kind"]; workoutId: string; before: DesignChangeBeforeDto }>;
   refused: Array<{ opId: string; error: string; why: string; cause?: DesignNotEditableCause; issues?: DocIssueDto[] }>;
   /** Decided before: nothing done. */
   settled: Array<{ opId: string; outcome: "applied" | "declined" | "superseded"; workoutId?: string }>;
@@ -1169,7 +1170,8 @@ export interface CoachRunFocus {
   id: string;
 }
 export interface CoachRunScope {
-  kind: "now" | "later_today" | "week" | "next_n";
+  /** `auto`: a run created with no scope (the new shape §5) — the coach's to size; never shown as a scope. */
+  kind: "now" | "later_today" | "week" | "next_n" | "auto";
   /** `next_n` only. */
   n?: number;
 }

@@ -14,7 +14,7 @@
  * Synthetic data only.
  */
 import { describe, expect, it } from "vitest";
-import type { CoachConversationDto, CoachConversationTurnDto, TodayResponse } from "@rg/api-client";
+import type { CoachConversationDto, CoachConversationTurnDto, CoachRunEventDto, TodayResponse } from "@rg/api-client";
 import {
   BOX_PLACEHOLDER_NEW,
   BOX_PLACEHOLDER_REPLY,
@@ -31,6 +31,7 @@ import {
   type ProvisionalTurn,
 } from "../src/screens/studio/coach-conversation-model.js";
 import { toConversation } from "../src/screens/studio/coach-tolerance.js";
+import { answerOf, appliedChangeLine, isAnswerEvent, isSetScope, runLines, statusWord } from "../src/screens/studio/run-model.js";
 import { dayFocus, moveFocus, objectiveFocus, workoutFocus } from "../src/screens/studio/coach-focus.js";
 
 const TODAY = "2026-10-17";
@@ -246,5 +247,48 @@ describe("a turn's stop line, when the server said none", () => {
     expect(turnStopLine("failed")).toBe("The coach stopped before it finished.");
     expect(turnStopLine("failed", "gateway_402")).toBe("The AI account is out of credits. The coach can design again once credits are added.");
     expect(turnStopLine("stopped_cap", "weekly_cap")).toBe("This week's AI budget is used up. The coach can design again next week.");
+  });
+});
+
+describe("the server's new words (stream A: plan powers, answers, the auto scope)", () => {
+  const before = { date: "2026-10-18", time: "08:55", minutes: 30 };
+  it("each change the coach can now make says what it did: Eased, Swapped, Removed, Put back", () => {
+    const was = appliedChangeLine("skip", before).slice("Skipped".length);
+    expect(appliedChangeLine("ease", before)).toBe(`Eased${was}`);
+    expect(appliedChangeLine("swap", before)).toBe(`Swapped${was}`);
+    expect(appliedChangeLine("remove", before)).toBe(`Removed${was}`);
+    expect(appliedChangeLine("restore", before)).toBe(`Put back${was}`);
+    // One this bundle doesn't know: said as a change, never a code.
+    expect(appliedChangeLine("a_newer_kind" as never, before)).toBe(`Changed${was}`);
+  });
+
+  const ev = (seq: number, kind: CoachRunEventDto["kind"], summary: string, payload: unknown = null): CoachRunEventDto => ({ seq, kind, summary, payload, at: "x" });
+  const long = `${"Your wall sit is up fifteen seconds in two weeks, held clean each time. ".repeat(10)}Keep the same rhythm.`;
+
+  it("an answer is the coach's words: a finish's receipt says so, or a text-only answer's note — its whole summary", () => {
+    const finish = [ev(1, "tool_call", "Finishing", { tool: "finish" }), ev(2, "tool_result", long, { tool: "finish", ok: true, receipt: { final: true, answer: true } })];
+    expect(answerOf(finish)).toBe(long);
+    expect(answerOf([ev(1, "note", "Up 15 seconds.", { final: true, answer: true })])).toBe("Up 15 seconds.");
+    // A finish that proposed is no answer; nor a line with nothing in it.
+    expect(answerOf([ev(1, "tool_result", "Here's your session.", { tool: "finish", ok: true, receipt: { final: true } })])).toBeNull();
+    expect(answerOf([ev(1, "note", "  ", { answer: true })])).toBeNull();
+    expect(isAnswerEvent(finish[1]!)).toBe(true);
+    expect(isAnswerEvent(finish[0]!)).toBe(false);
+  });
+
+  it("in the conversation an answer is never a trail line too: the coach's words are the turn's", () => {
+    const events = [
+      ev(1, "note", "Read your last two weeks."),
+      ev(2, "tool_call", "Finishing", { tool: "finish", toolUseId: "t1" }),
+      ev(3, "tool_result", long, { tool: "finish", toolUseId: "t1", ok: true, receipt: { final: true, answer: true } }),
+      ev(4, "note", "Up.", { answer: true }),
+    ];
+    expect(runLines(events).map((l) => l.summary)).toContain(long);
+    expect(runLines(events, { answers: false }).map((l) => l.summary)).toEqual(["Read your last two weeks."]);
+  });
+
+  it("an auto run is never named by its scope: the coach at work is designing", () => {
+    expect(statusWord({ status: "active", error: null, scope: { kind: "auto" } })).toBe("designing");
+    expect(isSetScope({ scope: { kind: "auto" } })).toBe(false);
   });
 });

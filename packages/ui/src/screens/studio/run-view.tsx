@@ -133,7 +133,8 @@ export function RunView({
   }, [workingSince, now]);
   const slow = live && (inFlight || elsewhere) && isSlow(workingSince, clock, DESIGN_MODEL_DEADLINE_MS);
   // While it waits on the athlete, the question is its card on top, not a line of the trail too (lead's QA, Q4).
-  const lines = useMemo(() => runLines(events, { waiting }), [events, waiting]);
+  // In the conversation an answer is the coach's words, the turn's own line: never a trail line too.
+  const lines = useMemo(() => runLines(events, { waiting, answers: !quiet }), [events, waiting, quiet]);
   const asked = waiting ? askedOf(events) : null;
   // While it runs: once over, what the week has left is no longer this run's limit.
   const estimate = estimateLine(run, live ? weekLeftUsd : null);
@@ -228,7 +229,7 @@ export function TurnTrail({ runId, today = null, timeZone = null }: { runId: str
   const [open, setOpen] = useState(false);
   const id = useId();
   const read = useQuery({ queryKey: turnTrailQuery(runId), queryFn: async () => toRunRead(await api.coachRun(runId, 0)), enabled: open, retry: false });
-  const lines = useMemo(() => runLines(read.data?.events ?? []), [read.data]);
+  const lines = useMemo(() => runLines(read.data?.events ?? [], { answers: false }), [read.data]);
   return (
     <div className="coach-turn-trail">
       <button type="button" className="linklike coach-run-fold tap-pad" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>

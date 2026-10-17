@@ -25,6 +25,7 @@ import {
   type CoachRunWeekBudgetError,
   type CoachSpendDto,
   type DesignChangeBeforeDto,
+  type DesignChangeLineDto,
 } from "@rg/api-client";
 import { dayLabel, todayInZone } from "@rg/domain";
 import { formatTime, weekdayShort } from "../../components.js";
@@ -257,11 +258,33 @@ function askedLine(e: CoachRunEventDto): string {
 }
 
 /**
+ * The coach's answer in words (the new shape §5): a finish's receipt says so (`receipt.answer`), or a text-only
+ * answer's note (`answer`). Its summary is the whole answer (about 900 characters at most, clipped at a sentence).
+ */
+export function isAnswerEvent(e: CoachRunEventDto): boolean {
+  const p = record(e.payload);
+  return p?.answer === true || record(p?.receipt)?.answer === true;
+}
+
+/** The run's answer in words: the newest answer's whole summary; none when it gave none. */
+export function answerOf(events: readonly CoachRunEventDto[]): string | null {
+  const e = [...events].sort((a, b) => b.seq - a.seq).find(isAnswerEvent);
+  const said = typeof e?.summary === "string" ? e.summary.trim() : "";
+  return said || null;
+}
+
+/**
  * The trail's lines, from the events alone (agent-design M10: never from what the model said between tools): one line
  * an event, a `tool_call` and the `tool_result` that answers it one line (the result's summary). A question is a line
  * once asked ("Asked you: …"); the one the coach waits on (`waiting`) is no line — its card sits on top (lead's QA, Q4).
+ * `answers: false` (the conversation): an answer is no trail line — it is the coach's words, the turn's own line.
  */
-export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boolean } = {}): RunLine[] {
+export function runLines(events: readonly CoachRunEventDto[], o: { waiting?: boolean; answers?: boolean } = {}): RunLine[] {
+  const all = runLinesOf(events, o);
+  return o.answers === false ? all.filter((l) => !l.events.some(isAnswerEvent)) : all;
+}
+
+function runLinesOf(events: readonly CoachRunEventDto[], o: { waiting?: boolean }): RunLine[] {
   const lines: RunLine[] = [];
   const openCalls = new Map<string, RunLine>();
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
@@ -793,9 +816,20 @@ export function checkAskLabel(checkLabel: string): string {
   return `Do the ${word === word.toUpperCase() && word.length > 1 ? word : word.toLowerCase()} check`;
 }
 
+/** What each change did, in a word (the coach's plan powers too: the new shape §5); one this bundle doesn't know, "Changed". */
+const CHANGE_VERB: Readonly<Record<string, string>> = {
+  skip: "Skipped",
+  move: "Moved",
+  adjust: "Changed",
+  ease: "Eased",
+  swap: "Swapped",
+  remove: "Removed",
+  restore: "Put back",
+};
+
 /** What an approve did to a session already on the plan, and how it stood (B-I5): "Skipped · was Sun 8:55 AM, 30 min". */
-export function appliedChangeLine(kind: "skip" | "move" | "adjust", before: Pick<DesignChangeBeforeDto, "date" | "time" | "minutes">): string {
-  const verb = kind === "skip" ? "Skipped" : kind === "move" ? "Moved" : "Changed";
+export function appliedChangeLine(kind: DesignChangeLineDto["kind"], before: Pick<DesignChangeBeforeDto, "date" | "time" | "minutes">): string {
+  const verb = CHANGE_VERB[kind] ?? "Changed";
   return `${verb} · was ${dayAndTime(before.date, before.time)}${before.minutes !== null ? `, ${before.minutes} min` : ""}`;
 }
 

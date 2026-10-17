@@ -208,6 +208,11 @@ describe("the question", () => {
     mount({ loop: quietLoop(() => run(), () => [askedTwo]) });
     await until(() => !!button("Send"), "the form");
     expect(button("Send")!.disabled).toBe(true);
+    // Two questions: the form's own fields answer them, never the box.
+    expect(box()!.placeholder).toBe("Reply");
+    await type(box()!, "anything");
+    expect(sendButton()!.disabled).toBe(true);
+    await type(box()!, "");
     const chip = () => [...document.querySelectorAll<HTMLButtonElement>(".coach-ask .chip")].find((b) => b.textContent?.includes("tight"))!;
     await click(chip(), "the chip");
     expect(chip().getAttribute("aria-pressed")).toBe("true");
