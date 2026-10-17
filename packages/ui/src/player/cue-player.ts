@@ -10,6 +10,8 @@
  *    spike saw the audio clock stall and fall 2 s behind once; an offset taken at Start would carry that drift.
  *  - Scheduling replaces what was scheduled (a pause, a skip, a step change); a cue already due is not played late.
  *    Cues more than `WINDOW_MS` ahead are left for a later schedule (the caller schedules again at each step).
+ *  - Neither a new schedule nor `cancel` cuts a cue already due: it rings on (the player plans again the moment a step
+ *    changes, which is the moment its cue plays). Sound off stops it.
  *  - A cue list given before the renders are ready, or while the context is suspended or interrupted (a call, Siri),
  *    is kept and placed again, from the wall clock, once both are ready.
  */
@@ -40,10 +42,14 @@ export interface CuePlayer {
   configure(settings: SoundSettings): void;
   /** In a tap: play one cue (or the countdown into "go") now, in `palette` or the configured one. */
   preview(cue: CueKind | "count", palette?: PaletteId): void;
+  /** The audio context runs (a tap has unlocked it, and nothing has suspended it since). */
+  running(): boolean;
 }
 
 /** Cues further ahead than this are placed by a later schedule. */
 export const WINDOW_MS = 120_000;
+/** The longest a cue rings (the bowls' done renders under 7 s): a cue due longer ago than this is done. */
+const RINGS_MS = 10_000;
 
 export const cueIdOf = (cue: Pick<Cue, "kind" | "n">): CueId => (cue.kind === "tick" ? (`tick${cue.n ?? 1}` as CueId) : cue.kind);
 
@@ -86,20 +92,28 @@ export function createCuePlayer(deps: CuePlayerDeps = defaultDeps()): CuePlayer 
   const rendered = new Map<PaletteId, Record<CueId, AudioBuffer>>();
   const rendering = new Map<PaletteId, Promise<void>>();
   let wanted: readonly Cue[] = [];
-  let playing: AudioBufferSourceNode[] = [];
+  /** What is placed, each with its cue's wall-clock time. */
+  let playing: Array<{ src: AudioBufferSourceNode; at: number }> = [];
 
   const running = () => ctx !== null && ctx.state === "running";
 
-  const stopAll = () => {
-    for (const s of playing) {
+  /** Stop what is placed and not yet due — or, with `all`, what is ringing too. A cue due a while ago is forgotten. */
+  const stopAll = (all = false) => {
+    const now = deps.now();
+    const ringing: typeof playing = [];
+    for (const p of playing) {
+      if (!all && p.at <= now) {
+        if (now - p.at < RINGS_MS) ringing.push(p);
+        continue;
+      }
       try {
-        s.stop(0);
-        s.disconnect();
+        p.src.stop(0);
+        p.src.disconnect();
       } catch {
         // already stopped
       }
     }
-    playing = [];
+    playing = ringing;
   };
 
   const render = (palette: PaletteId): void => {
@@ -116,7 +130,7 @@ export function createCuePlayer(deps: CuePlayerDeps = defaultDeps()): CuePlayer 
 
   /** Place `wanted` from the wall clock, if the context runs and the palette is rendered. */
   const place = (): void => {
-    stopAll();
+    stopAll(!settings.on);
     const buffers = rendered.get(settings.palette);
     if (!ctx || !room || !buffers || !running() || !settings.on) return;
     const now = deps.now();
@@ -127,7 +141,7 @@ export function createCuePlayer(deps: CuePlayerDeps = defaultDeps()): CuePlayer 
         src.buffer = buffers[cueIdOf(cue)];
         src.connect(room.input);
         src.start(ctx.currentTime + (cue.at - now) / 1000);
-        playing.push(src);
+        playing.push({ src, at: cue.at });
       } catch {
         // a closed context: no cue
       }
@@ -206,6 +220,7 @@ export function createCuePlayer(deps: CuePlayerDeps = defaultDeps()): CuePlayer 
       }
       render(which);
     },
+    running,
   };
 }
 

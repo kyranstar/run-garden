@@ -189,6 +189,49 @@ describe("the cue player", () => {
     expect(live(t.f.sources).map((s) => s.at)).toEqual([220]);
   });
 
+  it("a new schedule, or cancel, never cuts a cue already due — it rings on; sound off stops it", async () => {
+    // The player plans again the moment a step changes, which is the moment its cue plays (the sound pass's fix).
+    const t = setup();
+    t.player.unlock();
+    await flush();
+    t.player.schedule([
+      { at: t.clock.now + 1000, kind: "go" },
+      { at: t.clock.now + 5000, kind: "done" },
+    ]);
+    const [go, done] = live(t.f.sources);
+    t.clock.now += 1200;
+    t.f.ctx.currentTime += 1.2;
+    t.player.schedule([{ at: t.clock.now + 3000, kind: "tick", n: 3 }]);
+    expect(go!.stopped).toBe(false);
+    expect(done!.stopped).toBe(true);
+    t.player.cancel();
+    expect(go!.stopped).toBe(false);
+    t.player.configure({ on: false, volume: 0.7, palette: "keys" });
+    expect(go!.stopped).toBe(true);
+  });
+
+  it("a stalled audio clock does not drift a cue: each schedule places it from the wall clock (moved from the chimes)", async () => {
+    const t = setup();
+    t.player.unlock();
+    await flush();
+    t.player.schedule([{ at: t.clock.now + 5000, kind: "go" }]);
+    expect(live(t.f.sources).map((s) => s.at)).toEqual([105]);
+    // A minute on, the audio clock has fallen 2 s behind the wall clock (158, not 160).
+    t.clock.now += 60_000;
+    t.f.ctx.currentTime = 158;
+    t.player.schedule([{ at: t.clock.now + 5000, kind: "go" }]);
+    expect(t.f.sources.at(-1)!.at).toBe(163);
+  });
+
+  it("says whether audio runs: not before the tap, and once the context does", async () => {
+    const t = setup();
+    expect(t.player.running()).toBe(false);
+    t.player.unlock();
+    expect(t.player.running()).toBe(true);
+    t.f.ctx.state = "interrupted";
+    expect(t.player.running()).toBe(false);
+  });
+
   it("a preview plays at once, and the countdown preview is three ticks and a go", async () => {
     const t = setup();
     t.player.preview("count");
