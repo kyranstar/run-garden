@@ -177,6 +177,8 @@ describe("the program session heading the card", () => {
       });
     }
     expect(card.querySelector(".today-meta")?.textContent).toBe("Done · 31 min · saved, will sync");
+    // Done as far as the athlete is concerned: nothing left to ask of the body.
+    expect(card.querySelector(".body-check")).toBeNull();
     expect(card.querySelector(".today-play")).toBeNull();
     expect(card.querySelector(".today-coach")).toBeNull();
   });

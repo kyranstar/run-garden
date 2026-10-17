@@ -1782,9 +1782,9 @@ export function GardenScreen() {
   // The eyebrow names the day in the domain's words ("Today · Mon 5 Oct": one date format with the coach's chips).
   const eyebrow = w ? `${cap(relativeDay(w.effectiveDate, d?.today ?? todayDate))} · ${dayLabel(w.effectiveDate)}` : "";
   // ONE coach line, one sentence: the coach's own words for the week when it has written some, else the morning's
-  // verdict applied to the day. Nothing for a session already settled.
+  // verdict applied to the day — never for a session already settled (there is nothing left to pace).
   const clause = leadSettled ? null : coachClause(verdict?.level, w?.category);
-  const coachWords = leadSettled ? null : d?.focus ? oneSentence(d.focus.text) : clause;
+  const coachWords = d?.focus ? oneSentence(d.focus.text) : clause;
   const coachLine = coachWords ? (
     <div className="today-coach">
       <span className="today-coach-mark" aria-hidden="true">
@@ -1802,9 +1802,10 @@ export function GardenScreen() {
       </p>
     </div>
   ) : null;
-  // How's your body? — today's session, still to do (the body check keeps the answer and adapts the day: stream E).
+  // How's your body? — today's session, still to do (the body check keeps the answer and adapts the day: stream E). A
+  // rest day's card has no place for it.
   const bodyCheck =
-    lead && lead.category !== "rest" && lead.effectiveDate === (d?.today ?? todayDate) && lead.completionState === "scheduled" && !leadSettled ? (
+    lead && lead.effectiveDate === (d?.today ?? todayDate) && lead.completionState === "scheduled" && !leadSettled ? (
       <BodyCheck workout={lead} />
     ) : null;
   // What finishing today's session grows: the drawer's "next to bloom" leads with it.

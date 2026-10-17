@@ -214,6 +214,25 @@ describe("the one card", () => {
     expect([...card().querySelectorAll("button")].map(words)).toContain("Ask");
   });
 
+  it("the body check asks only of today's session still to do: not tomorrow's, not one already done", async () => {
+    const tomorrow = { ...run, id: "run-2", effectiveDate: "2026-10-06" };
+    await mount(todayPayload({ nextWorkout: tomorrow, todaySessions: [] }));
+    expect(words(card().querySelector(".today-eyebrow"))).toBe("Tomorrow · Tue 6 Oct");
+    expect(card().querySelector(".body-check")).toBeNull();
+    act(() => root?.unmount());
+    host?.remove();
+    const done = { ...run, completionState: "completed" };
+    await mount(todayPayload({ nextWorkout: done, todaySessions: [{ workout: done, build: null }] }));
+    expect(card().querySelector(".body-check")).toBeNull();
+  });
+
+  it("a programme day: the session's own Start, then Ask, in one row; the body check and the coach line before them", async () => {
+    await mount(todayPayload({ nextWorkout: slot, todaySessions: [{ workout: slot, build: null }] }));
+    const parts = [...card().children].map((c) => c.className.split(" ")[0]);
+    expect(parts.slice(parts.indexOf("today-coach"))).toEqual(["today-coach", "body-check", "btn-row"]);
+    expect([...card().querySelectorAll(".today-actions > a, .today-actions > button")].map(words)).toEqual(["Start", "Ask"]);
+  });
+
   it("gone from the home: the week ribbon, Minimize and its pill, the grows line, Lately, the streak band, the scene's chips, the foot", async () => {
     await mount(todayPayload());
     for (const gone of [".week-ribbon", ".dock-collapse", ".dock-pill", ".dock-grows", ".lately", ".streak-band", ".garden-below", ".howworks"]) {
@@ -232,6 +251,12 @@ describe("the one card", () => {
     await mount(todayPayload(), { coach: null });
     expect([...card().querySelectorAll("button, a")].map(words)).not.toContain("Ask");
     expect(card().querySelector('a[href^="/plan?coach"]')).toBeNull();
+  });
+
+  it("on a rest day the coach sees the day", async () => {
+    const seeing = new SeeingRegistry();
+    await mount(todayPayload({ nextWorkout: rest, todaySessions: [{ workout: rest, build: null }] }), { seeing });
+    expect(seeing.current).toMatchObject({ kind: "day", id: TODAY });
   });
 });
 
@@ -294,6 +319,8 @@ describe("the garden drawer", () => {
     await act(async () => host!.querySelector<HTMLButtonElement>(".garden-handle")!.click());
     const collection = [...dialog()!.querySelectorAll("button")].find((b) => words(b).startsWith("Collection"))!;
     await act(async () => collection.click());
+    // The drawer gives way to the panel: one dialog at a time.
+    expect(document.querySelectorAll("[role=dialog]")).toHaveLength(1);
     expect(words(dialog()?.querySelector("h2"))).toMatch(/^Collection/);
   });
 });
