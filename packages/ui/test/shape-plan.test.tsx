@@ -21,6 +21,7 @@ import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, ProgramDto, Wo
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { planRequests, PlanSheet } from "../src/screens/plan-sheet.js";
 import { planRowState, YourPlans } from "../src/screens/plan-cards.js";
+import { RaceMismatchNotice, WeeklyBrief } from "../src/screens/plan-brief.js";
 import { WeekView, weekLine, weekPlanName, weekTitle } from "../src/screens/week-view.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -144,6 +145,15 @@ describe("the week first", () => {
     const html = renderToStaticMarkup(wrap(createElement(WeekView, { ...weekProps, week: week() }), { open: noop }));
     expect(html).not.toContain("ask-coach");
     expect(src("screens/week-view.tsx")).not.toContain("AskCoach");
+  });
+
+  it("the brief behind the line holds no two-race-dates notice: the page shows it, answerable, not the sheet", () => {
+    const mismatch = { workoutId: "w9", plannedDate: "2026-10-04", raceDate: "2026-10-11", title: "Half marathon" };
+    const inSheet = renderToStaticMarkup(wrap(createElement(WeeklyBrief, { week: week({ raceMismatch: mismatch }), today: "2026-08-11" }), null));
+    expect(inSheet).not.toContain("Two race dates");
+    const onPage = renderToStaticMarkup(wrap(createElement(RaceMismatchNotice, { mismatch, onResolve: noop }), null));
+    expect(onPage).toContain("Two race dates");
+    expect(onPage).toContain("The plan is right");
   });
 
   it("rest days are dashed; today is marked", () => {
