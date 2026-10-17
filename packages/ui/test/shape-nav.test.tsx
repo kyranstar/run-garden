@@ -11,7 +11,7 @@
  * The Coach button opens the app's one coach sheet (`useCoach().open`), and is not drawn without it.
  */
 import { act, createElement, type ReactElement } from "react";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRoot, type Root } from "react-dom/client";
@@ -172,6 +172,16 @@ describe("the routes", () => {
     expect(app).toContain('<Route path="/runs" element={<Navigate to="/growth" replace />} />');
     expect(app).toContain('<Route path="/insights" element={<Navigate to="/growth" replace />} />');
     expect(app).toContain('<Route path="objectives" element={<Navigate to="/growth" replace />} />');
+  });
+
+  it("/growth is Growth's own screen; Activity's file is gone", () => {
+    const route = app.slice(app.indexOf('path="/growth"'), app.indexOf('path="/runs"'));
+    expect(route).toContain("<GrowthScreen />");
+    expect(app).toContain('import { GrowthScreen } from "./screens/growth/index.js";');
+    expect(app).not.toContain("RunsScreen");
+    expect(existsSync(resolve(dirname(fileURLToPath(import.meta.url)), "../src/screens/runs.tsx"))).toBe(false);
+    // A retry reads again what Growth draws: its activity, its signals, the body map and the quests.
+    for (const key of ['["runs"]', '["insights"]', '["growth"]', '["objectives", "board"]']) expect(route).toContain(`queryKey: ${key}`);
   });
 
   it("one home: /garden is no route of its own", () => {

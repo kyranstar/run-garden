@@ -5,7 +5,7 @@ import { api, ApiError } from "@rg/api-client";
 import { AppShell } from "./shell.js";
 import { ErrorBoundary, Spinner } from "./components.js";
 import { PlanScreen } from "./screens/plan.js";
-import { RunsScreen } from "./screens/runs.js";
+import { GrowthScreen } from "./screens/growth/index.js";
 import { GardenScreen } from "./screens/garden.js";
 import { SettingsScreen } from "./screens/settings.js";
 import { WelcomeScreen } from "./screens/welcome.js";
@@ -119,10 +119,12 @@ function AuthedApp() {
                 Promise.all([
                   queryClient.refetchQueries({ queryKey: ["runs"] }),
                   queryClient.refetchQueries({ queryKey: ["insights"] }),
+                  queryClient.refetchQueries({ queryKey: ["growth"] }),
+                  queryClient.refetchQueries({ queryKey: ["objectives", "board"] }),
                 ])
               }
             >
-              <RunsScreen />
+              <GrowthScreen />
             </ErrorBoundary>
           }
         />
