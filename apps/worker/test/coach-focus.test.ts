@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, todayInZone } from "@rg/domain";
+import { addDays, dayLabel, todayInZone } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -230,23 +230,23 @@ describe("a run's focus: the athlete's own, kept with the run", () => {
     expect(await runCount(me.userId)).toBe(0);
   });
 
-  it("a day is held to the run's horizon — a week back to the last day the scope plans — and refused in words past it", async () => {
+  it("a day is held to what a run can plan — a week back to six days ahead, whatever the scope — and refused in words past it (the review, I1)", async () => {
     const today = realToday();
-    // Now plans within 7 days (today and the six after); a week back is still a day to ask about.
-    for (const date of [addDays(today, -7), today, addDays(today, 6)]) {
-      const res = await call(me, "POST", "", { scope: { kind: "now" }, focus: { kind: "day", id: date } });
-      expect(res.status, date).toBe(200);
-      await call(me, "POST", `/${res.body.run.id}/cancel`);
+    // A week back is still a day to ask about; six days ahead is the last a run plans (Now's day, a set's seven days).
+    for (const scope of [{ kind: "now" }, { kind: "week" }, { kind: "next_n", n: 7 }]) {
+      for (const date of [addDays(today, -7), today, addDays(today, 6)]) {
+        const res = await call(me, "POST", "", { scope, focus: { kind: "day", id: date } });
+        expect(res.status, `${scope.kind} ${date}`).toBe(200);
+        await call(me, "POST", `/${res.body.run.id}/cancel`);
+      }
+      // No button plans a day past +6: plan_set plans today to +6 (the review, I1) — a week's context reads further.
+      for (const date of [addDays(today, -8), addDays(today, 7), addDays(today, 13), addDays(today, 400), "1999-01-01"]) {
+        const res = await call(me, "POST", "", { scope, focus: { kind: "day", id: date } });
+        expect(res.status, `${scope.kind} ${date}`).toBe(400);
+        expect(res.body.error, date).toBe("focus_out_of_range");
+        expect(res.body.why, date).toBe(`Ask about a day from ${dayLabel(addDays(today, -7))} to ${dayLabel(addDays(today, 6))}.`);
+      }
     }
-    for (const date of [addDays(today, -8), addDays(today, 7), addDays(today, 400), "1999-01-01"]) {
-      const res = await call(me, "POST", "", { scope: { kind: "now" }, focus: { kind: "day", id: date } });
-      expect(res.status, date).toBe(400);
-      expect(res.body.error, date).toBe("focus_out_of_range");
-      expect(res.body.why, date).toMatch(/^Ask about a day from \w{3} \d{1,2} \w{3} to \w{3} \d{1,2} \w{3}\.$/);
-    }
-    // A week's plan reaches 14 days.
-    const week = await call(me, "POST", "", { scope: { kind: "week" }, focus: { kind: "day", id: addDays(today, 13) } });
-    expect(week.status).toBe(200);
   });
 
   it("a set's suggestion is refused in words — Plan ahead changes a week plan; a single suggestion with no scope asked takes its own", async () => {

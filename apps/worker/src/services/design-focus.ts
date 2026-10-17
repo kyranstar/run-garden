@@ -14,7 +14,7 @@
  * statement — none for a day or a move — and answers a suggestion's own scope (a follow-up asks nothing else): another
  * athlete's object, or one that isn't there, is `focus_not_found` (the route's 404); a set's suggestion is refused in
  * words (`focus_is_set`: a week plan is changed by planning it again). A day is held to the run's horizon by
- * `dayOutOfRange` (a week back, to the last day the scope plans: `focus_out_of_range`, in words). The focus is kept in
+ * `dayOutOfRange` (a week back, to the last day a run plans, +6: `focus_out_of_range`, in words). The focus is kept in
  * the main run's state (`settings.focus`) — no migration — and read into its opening context (design-context.ts).
  */
 import { sql } from "drizzle-orm";
@@ -49,6 +49,9 @@ export const FOCUS_SET_LINE = "Ask Plan ahead again to change a week plan.";
 
 /** How far back a day may be asked about: the week just gone (a past day's "what now?"). */
 export const FOCUS_PAST_DAYS = 7;
+/** How far ahead a day may be asked about: the last day a run can plan for — Now's one workout names a day of the next
+ * seven, and plan_set plans today to +6 (the review, I1: a week's context reads 14 days, but nothing plans past +6). */
+export const FOCUS_AHEAD_DAYS = 6;
 
 export type FocusErrorCode = "focus_not_found" | "focus_out_of_range" | "focus_is_set";
 
@@ -135,12 +138,12 @@ export async function checkFocus(db: Db, userId: string, focus: RunFocus): Promi
 }
 
 /**
- * A day the run can't plan for: before a week ago, or past the scope's horizon (`horizonDays` from today, today
- * included). The refusal's words name the days it can (`dayLabel`'s), never ISO dates.
+ * A day no run can plan for: before a week ago, or past FOCUS_AHEAD_DAYS from today — whatever the scope. The refusal's
+ * words name the days it can (`dayLabel`'s), never ISO dates.
  */
-export function dayOutOfRange(day: string, today: string, horizonDays: number): FocusError | null {
+export function dayOutOfRange(day: string, today: string): FocusError | null {
   const from = addDays(today, -FOCUS_PAST_DAYS);
-  const to = addDays(today, horizonDays - 1);
+  const to = addDays(today, FOCUS_AHEAD_DAYS);
   if (day >= from && day <= to) return null;
   return new FocusError("focus_out_of_range", `Ask about a day from ${dayLabel(from)} to ${dayLabel(to)}.`);
 }

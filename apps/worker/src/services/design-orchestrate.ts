@@ -651,7 +651,9 @@ export async function supersedeOlderPlans(db: Db, userId: string, proposalId: st
    * expressions read the row as it was.) */
   const isFocused = focused
     ? sql`(coach_proposals.id = ${focused.id} AND coach_proposals.status = 'pending'
-        AND EXISTS (SELECT 1 FROM coach_proposals np WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending'))`
+        AND EXISTS (SELECT 1 FROM coach_proposals np WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending')
+        AND NOT EXISTS (SELECT 1 FROM coach_runs fr WHERE fr.user_id = ${userId} AND 'dp-' || fr.id = coach_proposals.id
+          AND json_valid(fr.scope) AND json_extract(fr.scope, '$.kind') IN ('week', 'next_n')))`
     : sql`0`;
   /** An op the follow-up supersedes: every one of its suggestion still open. */
   const changed = (value: SQL) => sql`(${isFocused} AND ${openOp(value)})`;

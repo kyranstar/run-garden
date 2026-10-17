@@ -16,7 +16,7 @@ import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { designContextBuilder, horizonDays } from "./design-context.js";
+import { designContextBuilder } from "./design-context.js";
 import { checkFocus, dayOutOfRange, type RunFocus } from "./design-focus.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
@@ -1058,7 +1058,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   const checked = focus ? await checkFocus(db, userId, focus) : null;
   const scope = resolveRunScope(input.scope ?? checked?.scope ?? undefined, own);
   if (focus?.kind === "day") {
-    const outside = dayOutOfRange(focus.id, localDate(timezone, now), horizonDays(scope.kind, scope.n ?? DEFAULT_WEEK_WORKOUTS));
+    const outside = dayOutOfRange(focus.id, localDate(timezone, now));
     if (outside) throw outside;
   }
   const ceilingKind = ceilingKindOf(scope.kind);

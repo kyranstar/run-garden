@@ -16,8 +16,8 @@ describe("the focus lines", () => {
     expect(Object.keys(FOCUS_LINES).sort()).toEqual([...FOCUS_KINDS].sort());
     expect(FOCUS_LINES).toEqual({
       workout:
-        "They asked from a planned workout: they most likely want it changed, swapped or explained. A Studio or template workout is revised (target revise, from get_workout's rev); a programme session or a watch-plan run is skipped or moved with adjust_plan, and yours designed beside it. Say how yours relates to it.",
-      day: "They asked from a day on the plan: they most likely want that day planned or changed. Design for that date, around what it already holds — and say how yours fits with it.",
+        "They asked from a planned workout: they most likely want it changed, swapped or explained. A Studio or template workout is revised (target revise, from get_workout's rev); a programme session or a watch-plan run is skipped or moved with adjust_plan, and yours designed beside it. If its day has passed, design what comes next. Say how yours relates to it.",
+      day: "They asked from a day on the plan: they most likely want that day planned or changed. Design for that date, around what it already holds — and say how yours fits with it. If the day has passed, design what comes next.",
       session:
         "They asked from a session they did: they most likely want what comes next to answer to it — easier, harder or different, by how it went. Read its sets with read_history before you dose from it.",
       activity:

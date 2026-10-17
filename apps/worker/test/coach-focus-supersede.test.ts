@@ -266,6 +266,27 @@ describe("the supersede's one statement, with a follow-up's suggestion", () => {
     for (const id of [ids.neu, ids.partial, ids.theirs]) expect(after.get(id), id).toEqual(before.get(id));
   });
 
+  it("a set's suggestion is never superseded as a focus, even past the create's refusal (the review, minor 4)", async () => {
+    const a = await seedRichAthlete(db);
+    const T1 = new Date(NOW.getTime() - 3_600_000).toISOString();
+    for (const [i, scope] of ([{ kind: "week" }, { kind: "next_n", n: 3 }, { kind: "now" }] as const).entries()) {
+      const runId = `set-${i}-${a.userId}`;
+      await db.insert(schema.coachRuns).values({
+        id: runId, userId: a.userId, parentId: null, role: "main", scope, request: "x", status: "finished", state: null, steps: 1, costUsd: 0,
+        createdAt: T1, updatedAt: T1, finishedAt: T1,
+      });
+      const focus = `dp-${runId}`;
+      const neu = `n-${i}-${a.userId}`;
+      await db.insert(schema.coachProposals).values([
+        row(focus, a.userId, "pending", T1, [op(day(-1))]),
+        row(neu, a.userId, "pending", NOW.toISOString(), [op(day(-3))]),
+      ]);
+      const changed = await supersedeOlderPlans(db, a.userId, neu, NOW.toISOString(), { id: focus, reason: "Changed: x" });
+      // Only a single suggestion (a now run's here) is a follow-up's to replace.
+      expect(changed, scope.kind).toBe(scope.kind === "now" ? 1 : 0);
+    }
+  });
+
   it("a new suggestion not (yet) pending supersedes nothing, its focus included", async () => {
     const a = await seedRichAthlete(db);
     const T1 = new Date(NOW.getTime() - 3_600_000).toISOString();
