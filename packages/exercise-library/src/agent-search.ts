@@ -100,6 +100,16 @@ export function queryWords(query: string): string[] {
 }
 
 const wordsOfId = (s: string): string[] => s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+/** A text's words, once per text: the library's ids, labels and gear names repeat across its records. */
+const textWords = new Map<string, string[]>();
+const wordsOfText = (s: string): string[] => {
+  let words = textWords.get(s);
+  if (!words) {
+    words = wordsOfId(s);
+    textWords.set(s, words);
+  }
+  return words;
+};
 const THEME_NAME = new Map(THEMES.map((t) => [t.id, t.name]));
 
 // ── The word index (round 2, C1) ────────────────────────────────────────────────────────────────────────────────────
@@ -130,11 +140,21 @@ interface WordIndex {
   words: string[];
 }
 
-/** Every word a record says, at its strongest rank: the Studio's fields, and roles, patterns and themes beside them. */
+/** Every word a record says, at its strongest rank: the Studio's fields, and roles, patterns and themes beside them.
+ * Once per record. */
+const recordCache = new WeakMap<ExerciseRecord, Map<string, number>>();
 function recordWords(ex: ExerciseRecord): Map<string, number> {
+  const cached = recordCache.get(ex);
+  if (cached) return cached;
   const out = new Map<string, number>();
+  recordCache.set(ex, out);
   const put = (texts: readonly string[], rank: number): void => {
-    for (const w of texts.flatMap(wordsOfId)) out.set(w, Math.min(out.get(w) ?? Infinity, rank));
+    for (const t of texts) {
+      for (const w of wordsOfText(t)) {
+        const held = out.get(w);
+        if (held === undefined || rank < held) out.set(w, rank);
+      }
+    }
   };
   const listed = (ids: readonly string[], base: number): void => ids.forEach((id, i) => put([id, label(id)], base + Math.min(i, MAX_EMPHASIS)));
   put([ex.name], NAME);

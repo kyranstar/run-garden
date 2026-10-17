@@ -7,7 +7,9 @@
  * run), each run from the same starting database:
  *  1. the first steps of a "now" run on a rich account: the opening context (its own step); the first model call, a
  *     streamed tool_use turn asking for 12 reads (the step runs what its CPU room holds: MODEL_STEP_CPU_ROOM); the
- *     queued reads, a step at a time (PENDING_STEP_CPU_ROOM, MAX_TOOL_CALLS_PER_STEP);
+ *     queued reads, a step at a time (PENDING_STEP_CPU_ROOM, MAX_TOOL_CALLS_PER_STEP); and a turn of eight multi-word
+ *     searches (1d, fix wave 13 round 2, C1): the model step runs what search_library's declared weight packs, the
+ *     queued steps the rest;
  *  2. a heavy designer turn: a streamed answer carrying whole workout documents (~3.4k tokens each) after thinking — an
  *     answer over DOCUMENT_ANSWER_BYTES, so the step that reads it runs none of its calls — then the steps that run them:
  *     4 × validate_workout (the answer cap, 64 KB, holds no more than ~4 such documents), 3 in a step at most
@@ -652,6 +654,36 @@ beforeAll(async () => {
   const afterReads = await stateOf(w.db, runId);
   sizes.push(`state after the 12 reads: ${JSON.stringify(afterReads).length} B`);
 
+  // 1d. A turn of searches (fix wave 13, round 2, C1): the model asks for eight multi-word searches at once — a list of
+  // what it wants, as the live coach writes them; the model step runs what its CPU room holds by search_library's
+  // declared weight, the queued steps the rest, under the same budgets as 1b and 1c.
+  {
+    w.close();
+    const searches = [
+      "hip flexor hamstring stretch mobility",
+      "glute bridge hip thrust strength",
+      "calf soleus stretch ankle mobility warmup",
+      "thoracic rotation upper back opening breathing",
+      "core anti rotation plank side bridge",
+      "hamstring eccentric slow lowering strength hinge",
+      "jaw care neck release breathing downshift",
+      "single leg balance knee ankle landing control",
+    ];
+    answer = streamOf([thinking(1_200), { type: "text", text: words(1, 120) }, ...searches.map((query) => use("search_library", { query, filters: { fitToday: true } }))]).chunks;
+    let searched = 0;
+    const sw = await measure("1d", "1d. model step: a turn of 8 searches", images.get("opened")!, step, {
+      budget: GO_LIVE_BUDGET_MS,
+      check: (b) => {
+        expectStep("active", (k) => (searched = resultsIn(k)) > 0)(b);
+      },
+    });
+    shapes.get("1d")!.label = `1d. model step: a turn of 8 multi-word searches, ${searched} run`;
+    images.set("searched1", imageOf(sw.db));
+    sw.close();
+    (await drain("1d.q", (k, n) => `1d.q pending step ${k}: ${n} queued searches`, images.get("searched1")!, 5)).close();
+    w = open(images.get("read12")!);
+  }
+
   // 2a. Thinking and four whole documents to validate: the model step reads them and runs none (a document-sized
   // answer); the steps after it run the validates, MAX_DOCUMENT_TOOLS_PER_STEP at a time.
   const objectiveIds = [`${userId}-obj-hold`];
@@ -706,7 +738,8 @@ beforeAll(async () => {
       ["read_readiness", { days: 30 }],
       ["read_answers", { since: day(91), limit: 50 }],
       ["read_objectives", { limit: 12 }],
-      ["search_library", { query: "hip", filters: { fitToday: true }, limit: 30 }],
+      // A list of words, as the coach writes them (round 2, C1): eight words count, the most its work grows with.
+      ["search_library", { query: "hip hamstring calf stretch mobility warmup glute bridge", filters: { fitToday: true }, limit: 30 }],
       ["get_exercise", { id: "gobletSquat", howTo: true }],
       ["list_templates", { limit: 50 }],
       ["read_proposals", { limit: 30 }],
@@ -1089,7 +1122,7 @@ function unscalable(): string | null {
 const KNOWN_OVER: Readonly<Record<string, { measured: number; ceiling: number; waitsOn: string }>> = {};
 
 /** Shapes measured as a run of requests — the queued calls' steps, the approve's chunks — each `${id}.${k}`. */
-const GROUPS = ["1c", "2a.q", "2d", "5b"] as const;
+const GROUPS = ["1c", "1d.q", "2a.q", "2d", "5b"] as const;
 const inGroup = (id: string) => [...shapes.keys()].filter((k) => k.startsWith(`${id}.`));
 
 /** The shape `id` — or, for a group, every request of it — under its budget at p50 and the limit at p95 (scaled); a
@@ -1112,10 +1145,12 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "2a", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "7", "5a", "6"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "7", "5a", "6"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
+    // A turn of eight searches: the model step runs what search_library's weight packs, a queued step or more the rest.
+    expect(inGroup("1d.q").length).toBeGreaterThanOrEqual(1);
     expect(inGroup("2a.q").map((k) => shapes.get(k)!.label)).toEqual([expect.stringContaining(": 3 ×"), expect.stringContaining(": 1 ×")]);
     expect(inGroup("2d").map((k) => shapes.get(k)!.label)).toEqual([1, 2, 3].map(() => expect.stringContaining(": 3 ×")));
     expect(inGroup("5b").length).toBeGreaterThanOrEqual(5);
@@ -1131,7 +1166,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c"]) {
     const over = KNOWN_OVER[id];
     it(
       over
