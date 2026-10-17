@@ -2937,3 +2937,55 @@ export const musicApi = {
   token: (fresh: boolean) => request<SpotifyTokenDto>(`/api/music/spotify/token${fresh ? "?fresh=1" : ""}`, { cache: "no-store" }),
   disconnect: () => request<{ ok: true }>("/api/music/spotify", { method: "DELETE" }),
 };
+
+// ── The body check (the new shape, 2026-10-17) ──────────────────────────────
+
+/** "How's your body?" — the Today card's three answers. */
+export type BodyFeel = "fresh" | "heavy" | "sore";
+
+/** An area the picker offers: a body region's id, or a switched-on condition profile's, with its words. */
+export interface BodyAreaDto {
+  id: string;
+  label: string;
+}
+
+/**
+ * What the answer did to the session (the card says it in words):
+ *  - `eased`: an engine session rebuilt one mode down (`to.mode`), or a watch-plan run eased (`to.meters` or
+ *    `to.minutes`) — with Undo;
+ *  - `kept`: nothing changed — `undone` (the athlete's Undo), `quiet` (the sore area isn't worked today), `gentlest`
+ *    (no gentler session to go to), `race` (race day is never eased);
+ *  - `ask`: a workout the coach or the Studio designed is never changed by itself — the card offers the coach instead.
+ */
+export type BodyChangeDto =
+  | { kind: "eased"; to: { mode: "recovery" | "consistent" | "build" } | { meters: number } | { minutes: number } }
+  | { kind: "kept"; why: "undone" | "quiet" | "gentlest" | "race" }
+  | { kind: "ask" };
+
+/** `GET /api/today/body?workout=`: the body check of one of today's sessions. */
+export interface BodyCheckDto {
+  workoutId: string;
+  /** Today's answer for this session, or null. `areas` only with Sore. */
+  answer: { feel: BodyFeel; areas: string[] } | null;
+  change: BodyChangeDto | null;
+  /** The chips can still change: the session hasn't started, and its day is today. */
+  open: boolean;
+  /** What the area picker offers. */
+  areas: BodyAreaDto[];
+  /** A watch write is queued: the client drains it, as after an approve. */
+  coachDrain?: true;
+}
+
+/** The answer or Undo, its watch write drained as after an approve. */
+async function bodyDrained(res: Promise<BodyCheckDto>): Promise<BodyCheckDto> {
+  const view = await res;
+  if (view.coachDrain) void drainCoach().catch(() => undefined);
+  return view;
+}
+
+export const bodyCheckApi = {
+  read: (workoutId: string) => get<BodyCheckDto>(withQuery("/api/today/body", new URLSearchParams({ workout: workoutId }))),
+  answer: (workoutId: string, feel: BodyFeel, areas?: readonly string[]) =>
+    bodyDrained(post<BodyCheckDto>("/api/today/body", { workoutId, feel, ...(feel === "sore" ? { areas } : {}) })),
+  undo: (workoutId: string) => bodyDrained(post<BodyCheckDto>("/api/today/body/undo", { workoutId })),
+};

@@ -12685,3 +12685,91 @@ a.stu-tpl-open:focus-visible::before {
     display: flex;
   }
 }
+
+/* ── The body check (the new shape, 2026-10-17; screens/today/body-check.tsx) ──────────────────────────────────────
+   "How's your body?" on the Today card: three chips, the area picker under Sore, one line of what it did (with Undo)
+   or the coach offered. A chosen chip is filled AND carries its ✓ — never colour alone; the theme's own tokens, so
+   light and dark alike. Nothing moves, so there is nothing for reduced motion to hold back. */
+.body-check {
+  min-width: 0;
+}
+/* Spaced by margins, not a gap: the line's live region is always there (so a screen reader hears it change) and costs
+   no space while it says nothing. */
+.body-check > * + * {
+  margin-top: var(--space-3);
+}
+.body-check > .body-check-result:empty {
+  margin-top: 0;
+}
+.body-check-q,
+.body-check-where {
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ink-soft);
+}
+.body-check-chips {
+  --tap-clear: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.body-check .chip {
+  gap: var(--space-2);
+}
+.body-check .chip[aria-pressed="true"] {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--on-accent);
+}
+.body-check .chip:disabled {
+  cursor: default;
+}
+.body-check .chip:disabled:not([aria-pressed="true"]) {
+  opacity: 0.6;
+}
+.body-check .chip svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+.body-check-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-inline: 0;
+  margin-bottom: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  min-width: 0;
+}
+.body-check-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.body-check-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.body-check-line {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.body-check-undo {
+  font-size: var(--text-sm);
+}
+.body-check-ask {
+  align-self: flex-start;
+}
+.body-check-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--danger-ink);
+}
+

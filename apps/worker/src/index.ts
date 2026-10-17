@@ -38,6 +38,7 @@ import { lifeosRoutes } from "./routes/lifeos.js";
 import { workoutRoutes } from "./routes/workouts.js";
 import { templateRoutes } from "./routes/templates.js";
 import { musicRoutes } from "./routes/music.js";
+import { todayBodyRoutes } from "./routes/today-body.js";
 import { growthRoutes } from "./routes/growth.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
@@ -117,6 +118,8 @@ app.route("/api/import", importRoutes);
 app.route("/api/library", libraryRoutes);
 app.route("/api/workouts", workoutRoutes);
 app.route("/api/templates", templateRoutes);
+// The Today card's body check (the new shape, 2026-10-17).
+app.route("/api/today", todayBodyRoutes);
 // The music dock (Spotify): 404 for every path while SPOTIFY_CLIENT_ID is empty, then requireUser (the callback is bound
 // by its signed state instead).
 app.route("/api/music", musicRoutes);
