@@ -227,4 +227,15 @@ describe("round 2: the trail in the athlete's words (I1), an honest last line (M
     expect(line.summary).not.toMatch(/deadBug|validator|mode_limits|read_balance/);
   });
 
+  it("a refused last call with nothing to show ends on the honest lines — never the model's turn text", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, 1);
+    const refused = turn([use("propose_workout", { doc: { title: "Broken" }, target: { kind: "new", date: TODAY } })], "Here's a gentle 30-minute hip session.");
+    const { deps } = scripted([refused]);
+    expect((await drive(userId, runId, deps)).at(-1)!.status).toBe("finished");
+    const lines = (await trail(runId)).map((e) => e.summary).filter((s) => s !== "");
+    expect(lines.slice(-2)).toEqual([LINES.finished, LINES.nothingProposed]);
+    expect(await proposalOf(runId)).toBeUndefined();
+  });
+
 });

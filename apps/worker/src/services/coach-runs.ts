@@ -2181,7 +2181,7 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
   // model's words (or a refused finish's) its line — never as a stop. A step of its own: no tool ran in it, so the
   // finish's writes have the whole room. The sweep may take it too: it calls no model.
   if (state.lastCall !== null && state.lastRefused && state.pending.length === 0 && s.run.role !== "reviewer") {
-    return end(await finishInWords(s, state.lastRefused.words ?? lastWords(state), 0, { proposedFallback: true }));
+    return end(await finishInWords(s, state.lastRefused.words ?? lastWords(state), 0, { lastTurn: true }));
   }
   if (!s.allowModel) return end(IDLE);
   if (state.system === null) return end(await contextStep(s));
@@ -2819,7 +2819,7 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
  * (a review left under way, a workout unreviewed), what was reviewed proposed once the end is written, as a stop does
  * (`withWhatItHas`). No tool ran this step: at most the guard's write, the supersede, and a stop's proposal.
  */
-async function finishInWords(s: StepCtx, said: string, spent: number, o: { proposedFallback?: boolean } = {}): Promise<StepEnd> {
+async function finishInWords(s: StepCtx, said: string, spent: number, o: { lastTurn?: boolean } = {}): Promise<StepEnd> {
   const { state, run } = s;
   // In the athlete's words (round 2, I1), clipped where they read it (§2.1) at its last sentence end inside the line;
   // the whole kept in the payload.
@@ -2834,15 +2834,18 @@ async function finishInWords(s: StepCtx, said: string, spent: number, o: { propo
   const proposalId = designProposalId(run.id);
   const closed = await closeProposalAtFinish(s, proposalId);
   const shown = closed === "pending";
-  // No words of its own (a refused last call's run, R3): the standard line for what it proposed.
-  const words = clipped || (shown && o.proposedFallback ? LINES.proposedAtEnd : LINES.finished);
+  // A refused last call's run (R3) ends on its words only when it shows something — else the honest line, and the
+  // next says what came of the proposal (round 2, Minor 1: never "Here's your session" over no card). No words of its
+  // own: the standard line for what it proposed.
+  const words = o.lastTurn && !shown ? LINES.finished : clipped || (shown && o.lastTurn ? LINES.proposedAtEnd : LINES.finished);
+  const kept = o.lastTurn && !shown ? {} : longer;
   return {
     status: "finished",
     state,
     costMicros: spent,
     error: null,
     proposalId: shown ? proposalId : null,
-    events: [{ kind: "note", summary: words, ...(shown || "text" in longer ? { payload: { ...longer, ...(shown ? { proposalId } : {}) } } : {}) }],
+    events: [{ kind: "note", summary: words, ...(shown || "text" in kept ? { payload: { ...kept, ...(shown ? { proposalId } : {}) } } : {}) }],
     ...(closed === "kept" ? { withWhatItHas: STOPPED_NOTES.unfinished } : {}),
   };
 }
