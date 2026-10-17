@@ -45,6 +45,13 @@ function todayOf(messages) {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** The run's opening message: its first user message's text (what a script may read the run's focus from). */
+function openingOf(messages) {
+  const first = (messages ?? []).find((m) => m.role === "user");
+  if (!first) return "";
+  return typeof first.content === "string" ? first.content : (first.content ?? []).map((b) => b.text ?? "").join("\n");
+}
+
 /** The review's dimensions, from submit_review's own schema in the request. */
 function dimensionsOf(tools) {
   const t = (tools ?? []).find((x) => x.name === "submit_review");
@@ -117,7 +124,7 @@ const server = createServer((req, res) => {
     }
     const role = roleOf(request.system);
     const turn = (request.messages ?? []).filter((m) => m.role === "assistant").length;
-    const answer = (script[role] ?? script.main)(turn, { today: todayOf(request.messages), dimensions: dimensionsOf(request.tools), role });
+    const answer = (script[role] ?? script.main)(turn, { today: todayOf(request.messages), dimensions: dimensionsOf(request.tools), role, opening: openingOf(request.messages) });
     calls.begun += 1;
     let done = false;
     const begunAt = Date.now();

@@ -17,6 +17,10 @@
  *   credits  the AI account is out of credits (402) at the first call: nothing is proposed
  *   slow     as `now`, each answer three seconds late (a live run to look at)
  *   big      as `now`, its proposing answer over 16 KB: its calls run in the step after the one that read it
+ *   followup as `now`, but a run asked from one of its suggestions proposes that workout shorter (coach everywhere)
+ *
+ * `ctx.opening` is the run's opening message (its first user message's text): a script may read what the run was
+ * asked from in it.
  */
 
 /** A turn calling tools, the way the model answers. */
@@ -84,8 +88,30 @@ function designBig(turn, ctx) {
   return { ...answer, content: [{ type: "text", text: musing }, ...answer.content.filter((b) => b.type !== "text")] };
 }
 
+/** The follow-up's changed workout (coach everywhere, A2): the same session, shorter — the bird dogs left out. */
+export function shorterDoc() {
+  const doc = mobilityDoc();
+  return { ...doc, title: "Hips and back, shorter", parts: [{ ...doc.parts[0], items: doc.parts[0].items.slice(0, 2) }] };
+}
+
+/**
+ * As `now`, until a run is asked from one of the coach's own suggestions (the opening message's "The athlete asked
+ * from: your suggestion …" block, coach everywhere A1): then it proposes the changed workout, which replaces that
+ * suggestion (A2).
+ */
+function designFollowUp(turn, ctx) {
+  if (!/The athlete asked from: your suggestion/.test(ctx.opening ?? "")) return designAfter(0)(turn, ctx);
+  switch (turn) {
+    case 0:
+      return uses(["propose_workout", { doc: shorterDoc(), target: { kind: "new", date: ctx.today } }]);
+    default:
+      return uses(["finish", { summary: "The same session, shorter: the bird dogs left out." }]);
+  }
+}
+
 export const SCRIPTS = {
   now: { main: designAfter(0), reviewer },
+  followup: { main: designFollowUp, reviewer },
   big: { main: designBig, reviewer },
   slow: { main: designAfter(0), reviewer, delayMs: 3000 },
   ask: {
