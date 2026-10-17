@@ -16,7 +16,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
-import { type ContextBuilder, type ContextRun, type RunDeps } from "../src/services/coach-runs.js";
+import { newRunState, type ContextBuilder, type ContextRun, type RunDeps } from "../src/services/coach-runs.js";
 import { FOCUS_KINDS, FOCUS_SET_LINE } from "../src/services/design-focus.js";
 import type { MessagesRequest, MessagesResult } from "../src/services/llm-messages.js";
 import { seedOtherAthlete, seedRichAthlete, TZ } from "./design-read-fixture.js";
@@ -296,5 +296,11 @@ describe("a run's focus: the athlete's own, kept with the run", () => {
     expect(again.body).toMatchObject({ existing: true, run: { id: first.body.run.id, focus: { kind: "move", id: "gobletSquat" } } });
     expect(again.body.ignoredRequest).toEqual({ scope: { kind: "now" }, request: "back", focus: workout });
     expect((await stateOf(first.body.run.id)).settings.focus).toEqual({ kind: "move", id: "gobletSquat" });
+  });
+
+  it("only a main run's state holds one: a designer's or a reviewer's is never given it", () => {
+    const focus = { kind: "move", id: "gobletSquat" } as const;
+    expect(newRunState("main", { kind: "now" }, { focus }).settings.focus).toEqual(focus);
+    for (const role of ["designer", "reviewer"] as const) expect(newRunState(role, { kind: "now" }, { focus }).settings, role).not.toHaveProperty("focus");
   });
 });

@@ -53,6 +53,7 @@ import { SET_MAX_WORKOUTS } from "./design-limits.js";
 import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, PROMOTED_STATUS, proposalFields, reviewRunning, withLines, writePromoted } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
+import { clipProse } from "./design-prose.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
 import { isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp } from "./proposal-kinds.js";
 
@@ -586,6 +587,28 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
 /** Why an older plan's workout gives way, in plain words (its op's outcome). */
 export const SUPERSEDED_REASON = "a newer plan covers this session";
 
+/** A follow-up's suggestion (coach everywhere, A2): what it supersedes says the athlete's words, at most this many characters. */
+export const FOLLOW_UP_WORDS_MAX = 120;
+
+/** Why a suggestion a follow-up changed gives way (its ops' outcome): "Changed: <the athlete's words, clipped>", or
+ * "Changed." when they gave none. */
+export function followUpReason(request: string | null | undefined): string {
+  const words = request?.replace(/\s+/g, " ").trim() ?? "";
+  return words ? `Changed: ${clipProse(words, FOLLOW_UP_WORDS_MAX)}` : "Changed.";
+}
+
+/** The suggestion a run asked from changes (A2): a main run's proposal focus, with the reason its words give; none for
+ * any other run. */
+export function followUpOf(focus: { kind: string; id: string } | null | undefined, request: string | null | undefined): FollowUp | null {
+  return focus?.kind === "proposal" ? { id: focus.id, reason: followUpReason(request) } : null;
+}
+
+/** A follow-up's suggestion: the one it changes, and why it gives way. */
+export interface FollowUp {
+  id: string;
+  reason: string;
+}
+
 /** How far apart two sessions on one day start before they are two sessions, not one (minutes; design-cover.ts). */
 export { SAME_SESSION_MINUTES };
 
@@ -607,10 +630,16 @@ export { SAME_SESSION_MINUTES };
  * the new proposal only when the WHOLE proposal is superseded (status `superseded`): a proposal superseded in part is
  * still the athlete's, and each superseded op names its new proposal in its own outcome (`by`).
  *
+ * A FOLLOW-UP (coach everywhere, A2): a run asked from one of the coach's own suggestions (`focused`, `followUpOf`)
+ * supersedes that suggestion in the same statement — every open op of it, with the follow-up's reason ("Changed: …") —
+ * whatever its sessions, so the athlete sees one current suggestion. Only while it is still open: `pending` (nothing
+ * approved) and older than the new one, the new one pending; approved, declined or decided in part meanwhile, it is
+ * left alone. A set's suggestion is never a focus (the create refuses it, design-focus.ts).
+ *
  * ONE statement: each row's ops are read as that row is written, so an outcome written meanwhile is never lost.
  * Answers how many proposals it changed.
  */
-export async function supersedeOlderPlans(db: Db, userId: string, proposalId: string, at: string): Promise<number> {
+export async function supersedeOlderPlans(db: Db, userId: string, proposalId: string, at: string, focused: FollowUp | null = null): Promise<number> {
   /** An op this supersedes: a designed one, still open, for a session one of the new proposal's covers (design-cover.ts,
    * the rule a designer's `willReplace` reads before). */
   const covered = (value: SQL) => sql`(${openOp(value)}
@@ -618,8 +647,17 @@ export async function supersedeOlderPlans(db: Db, userId: string, proposalId: st
       WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending' AND json_valid(np.ops)
         AND ${covers(sql`n.value`, value)}))`;
   const outcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${SUPERSEDED_REASON}, 'by', ${proposalId})`;
+  /** The row is the follow-up's suggestion, still open (pending: nothing approved), and the new one is pending. (SET's
+   * expressions read the row as it was.) */
+  const isFocused = focused
+    ? sql`(coach_proposals.id = ${focused.id} AND coach_proposals.status = 'pending'
+        AND EXISTS (SELECT 1 FROM coach_proposals np WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending'))`
+    : sql`0`;
+  /** An op the follow-up supersedes: every one of its suggestion still open. */
+  const changed = (value: SQL) => sql`(${isFocused} AND ${openOp(value)})`;
+  const changedOutcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${focused?.reason ?? ""}, 'by', ${proposalId})`;
   // Each designed op's outcome once this is written — the changes' too: the proposal's status follows both kinds.
-  const after = sql`(SELECT CASE WHEN ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st
+  const after = sql`(SELECT CASE WHEN ${changed(sql`o.value`)} OR ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st
     FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust'))`;
   const status = sql`(SELECT CASE
       WHEN sum(st IN ('applied', 'declined', 'superseded')) < count(*) THEN coach_proposals.status
@@ -629,13 +667,14 @@ export async function supersedeOlderPlans(db: Db, userId: string, proposalId: st
       ELSE 'superseded' END FROM ${after})`;
   const rows = (await db.all(sql`
     UPDATE coach_proposals SET
-      ops = (SELECT json_group_array(CASE WHEN ${covered(sql`o.value`)} THEN json_set(o.value, '$.outcome', ${outcome}) ELSE json(o.value) END)
+      ops = (SELECT json_group_array(CASE WHEN ${changed(sql`o.value`)} THEN json_set(o.value, '$.outcome', ${changedOutcome})
+          WHEN ${covered(sql`o.value`)} THEN json_set(o.value, '$.outcome', ${outcome}) ELSE json(o.value) END)
         FROM json_each(coach_proposals.ops) o),
       (status, resolved_at, superseded_by) = (SELECT s, CASE WHEN s = coach_proposals.status THEN coach_proposals.resolved_at ELSE ${at} END,
         CASE WHEN s = 'superseded' THEN ${proposalId} ELSE coach_proposals.superseded_by END FROM (SELECT ${status} AS s))
     WHERE user_id = ${userId} AND id <> ${proposalId} AND status IN ('pending', 'partially_approved') AND json_valid(ops)
       AND created_at < (SELECT created_at FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId})
-      AND EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE ${covered(sql`o.value`)})
+      AND (${isFocused} OR EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE ${covered(sql`o.value`)}))
     RETURNING id
   `)) as Array<{ id: string }>;
   return rows.length;
