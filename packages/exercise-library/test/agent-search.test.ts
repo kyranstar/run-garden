@@ -114,6 +114,10 @@ describe("agentSearch: bounded work (fix wave 13, round 2, C1)", () => {
     expect(sore.hits.some((h) => h.record.purposes.includes("stretch"))).toBe(true);
     const typo = agentSearch(EXERCISES, "hamstrng zqxv");
     expect(typo.hits.some((h) => h.record.muscles.primary.includes("hamstrings") && h.matched?.join() === "hamstrng")).toBe(true);
+    // A typo is found in the index itself: two unknown words before it, which spend the Studio's record-by-record
+    // fallback, don't stop it.
+    const late = agentSearch(EXERCISES, "zqxvw zqxvy hamstrng");
+    expect(late.hits.some((h) => h.record.muscles.primary.includes("hamstrings") && h.matched?.join() === "hamstrng")).toBe(true);
   });
 
   test("a word matches a record's words by their start, a plural by its singular — never a shorter stem's other words", () => {
