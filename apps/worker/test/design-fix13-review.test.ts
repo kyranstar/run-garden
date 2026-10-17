@@ -403,7 +403,7 @@ describe("round 2 — a now design covers its own session, not the day (review I
   const before = new Date(NOW.getTime() - 3_600_000).toISOString();
   const outcomeOf = async (id: string) => {
     const [row] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, id));
-    return (row!.ops as DocWorkoutOp[])[0]!.outcome?.status ?? "open";
+    return (row!.ops as Array<{ outcome?: { status?: string } }>)[0]!.outcome?.status ?? "open";
   };
 
   it("an untimed now design whose floor is 07:00 leaves a 19:00 suggestion open; one with neither time nor floor (stored before) covers the day", async () => {
