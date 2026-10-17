@@ -7,7 +7,7 @@
  *    for a now design (§2.6) — minutes, effort word, place and review mean; the validator's costs for the day. One tap on
  *    the title opens its moves, each with its why and the moves the coach weighed instead ("or <name> — <why>"; D3);
  *    one tap on "See the review" its review (each dimension's score and note, what changed between drafts, and the
- *    ideas the coach didn't use — never on the face: R5, D2). Edit opens the draft in the builder (Task 8's route):
+ *    reviewer's ideas, "Ideas from the review" — never on the face: R5, D2). Edit opens the draft in the builder (Task 8's route):
  *    saving it there approves the athlete's version.
  *  - A set's suggestion shows the plan's other sessions in its days (`context`; D7) as quiet lines among its workouts,
  *    by day, each saying it is on the plan — in words, never by its colour alone.
@@ -577,8 +577,8 @@ function MoveItem({ move, why, alternates }: { move: string; why: string | null;
 
 /**
  * The review, one tap down: every dimension's score and note — under its heading, in the rubric's plainer words (M2) —
- * what changed between drafts, must-fix, kept costs, and the reviewer's ideas the designer didn't take (R5, D2: never on
- * the card's face).
+ * what changed between drafts, must-fix, kept costs, and the reviewer's ideas (R5, D2: never on the card's face; headed
+ * neutrally, round 2's I3 — an amend may have applied one).
  */
 function ReviewDetail({ review: r }: { review: NonNullable<DesignLineDto["review"]> }) {
   return (
@@ -602,7 +602,8 @@ function ReviewDetail({ review: r }: { review: NonNullable<DesignLineDto["review
         ["What changed", r.changes],
         ["Must fix", r.mustFix],
         ["Kept as you asked", r.accepted],
-        ["Ideas the coach didn't use", r.improvements],
+        // Neutral (round 2, I3): after an amend, an idea the coach applied is listed here still.
+        ["Ideas from the review", r.improvements],
       ] as const).map(([title, items]) =>
         items.length > 0 ? (
           <div key={title} className="coach-pc-sub">

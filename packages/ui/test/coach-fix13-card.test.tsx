@@ -119,7 +119,7 @@ const shown = (el: Element | null | undefined) => !!el && !el.closest("[hidden]"
 const withText = (sel: string, words: string) => [...document.querySelectorAll(sel)].find((el) => el.textContent?.replace(/\s+/g, " ").trim() === words) ?? null;
 
 describe("the card's face (R5, D2): no Tip", () => {
-  it("the reviewer's improvements are no Tip on the face: one tap down, in See the review, under 'Ideas the coach didn't use'", async () => {
+  it("the reviewer's improvements are no Tip on the face: one tap down, in See the review, under 'Ideas from the review'", async () => {
     serve(pending([line("op-a")]));
     mount();
     await until(() => text().includes("Workout op-a"), "the card");
@@ -130,7 +130,9 @@ describe("the card's face (R5, D2): no Tip", () => {
     expect(shown(idea)).toBe(false);
     expect(idea!.closest(".coach-pc-review")).not.toBeNull();
     const titles = [...card.querySelectorAll(".coach-pc-review .coach-detail-title")].map((h) => h.textContent);
-    expect(titles).toContain("Ideas the coach didn't use");
+    // Headed neutrally (round 2, I3): after an amend, an idea the coach applied is still listed here.
+    expect(titles).toContain("Ideas from the review");
+    expect(text()).not.toContain("didn't use");
     await click(button("See the review"), "See the review");
     expect(shown(idea)).toBe(true);
   });

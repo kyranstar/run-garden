@@ -79,12 +79,12 @@ test("the composer → a scripted run → the suggestion → Approve → the wor
   await card.getByRole("button", { name: "Hips and back, gently" }).click();
   await expect(card.getByText("Wakes the glutes before the trunk work.")).toBeVisible();
   await expect(card.getByText("or Single-leg glute bridge — harder, one side at a time")).toBeVisible();
-  // The review's scores and the ideas the coach didn't use, one tap down, in plain words (M1, M2; R5).
+  // The review's scores and the reviewer's ideas, one tap down, in plain words (M1, M2; R5; round 2's I3).
   await expect(card.getByText("Hold the last bridge for a slow count of three.")).toBeHidden();
   await expect(card.getByText("Clear purpose")).toBeHidden();
   await card.getByRole("button", { name: "See the review" }).click();
   await expect(card.getByText("Clear purpose")).toBeVisible();
-  await expect(card.getByText("Ideas the coach didn't use")).toBeVisible();
+  await expect(card.getByText("Ideas from the review")).toBeVisible();
   await expect(card.getByText("Hold the last bridge for a slow count of three.")).toBeVisible();
 
   await card.getByRole("button", { name: "Approve", exact: true }).click();
