@@ -188,12 +188,21 @@ test("in the session player the dock is one of the top bar's tools, over none of
   // The player's own lines at their fullest: this device can't keep the session (its storage refused — the warning),
   // audio not yet unlocked ("Tap for sound"), and a phone with a ring/silent switch, told once (the hint).
   await page.addInitScript(() => {
-    Object.defineProperty(window, "indexedDB", { value: { open: () => { throw new Error("refused"); } }, configurable: true });
-    Object.defineProperty(navigator, "audioSession", { value: { type: "auto" }, configurable: true });
+    const define = (target: object, key: string, value: unknown) => {
+      try {
+        Object.defineProperty(target, key, { value, configurable: true });
+      } catch {
+        /* the browser's own, kept */
+      }
+    };
+    define(window, "indexedDB", { open: () => { throw new Error("refused"); } });
+    if (!("audioSession" in navigator)) define(navigator, "audioSession", { type: "auto" });
+    if (/iPhone/.test(navigator.userAgent)) define(Navigator.prototype, "maxTouchPoints", 5);
   });
   await page.reload();
   await expect(page.locator(".player-count")).toContainText("1 of ", { timeout: 15_000 });
   await expect(page.locator(".player-warn")).toBeVisible();
+  if (info.project.name === "iphone") await expect(page.getByText("Cues follow your ring/silent switch.")).toBeVisible();
 
   const dock = page.locator(".player-top .player-tools .music-dock--player button.music-pill");
   await expect(dock).toBeVisible();

@@ -12289,7 +12289,7 @@ a.stu-tpl-open:focus-visible::before {
   padding: 0 var(--space-4);
   border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--bg-raised) 78%, transparent);
+  background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   color: var(--ink-soft);
