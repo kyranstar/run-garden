@@ -31,6 +31,9 @@ export interface Env {
    * (llm-messages.ts `designModelTimeoutMs`), so the e2e's takeover of a step that died waits seconds, not 11 minutes.
    * Ignored outside fixture mode; never set in wrangler.toml (pinned). Var. */
   FIXTURE_MODEL_TIMEOUT_MS?: string;
+  /** The music dock's Spotify app (2026-10-17): the owner's Client ID (public in a PKCE flow, so a var, not a secret).
+   * Empty or unset, every `/api/music` route is a 404 and the dock draws nothing (routes/music.ts). Var. */
+  SPOTIFY_CLIENT_ID?: string;
 
   // Secrets
   SESSION_SECRET: string;

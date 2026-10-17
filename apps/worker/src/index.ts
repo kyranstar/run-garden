@@ -37,6 +37,7 @@ import { importRoutes } from "./routes/imports.js";
 import { lifeosRoutes } from "./routes/lifeos.js";
 import { workoutRoutes } from "./routes/workouts.js";
 import { templateRoutes } from "./routes/templates.js";
+import { musicRoutes } from "./routes/music.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
@@ -113,6 +114,9 @@ app.route("/api/import", importRoutes);
 app.route("/api/library", libraryRoutes);
 app.route("/api/workouts", workoutRoutes);
 app.route("/api/templates", templateRoutes);
+// The music dock (Spotify): 404 for every path while SPOTIFY_CLIENT_ID is empty, then requireUser (the callback is bound
+// by its signed state instead).
+app.route("/api/music", musicRoutes);
 // LifeOS (the owner's habit app) reads the plan with a bearer token, never a cookie.
 app.route("/api/lifeos", lifeosRoutes);
 // The parity harness: 404 unless staging or PARITY_ENABLED, then requireUser.

@@ -32,6 +32,7 @@ import {
   sportLabel,
   startOfIsoWeek,
   todayInZone,
+  musicPreferencesSchema,
   userPreferencesSchema,
   type ActivityLap,
   type PlannedWorkout,
@@ -1427,6 +1428,11 @@ settingsRoutes.put("/", async (c) => {
   if (body && typeof body === "object" && "coach" in body && (body as { coach?: unknown }).coach !== undefined) {
     const coach = coachPreferencesSchema.safeParse((body as { coach: unknown }).coach);
     if (!coach.success) return c.json({ error: "invalid_preferences", details: coach.error.issues.map((i) => ({ ...i, path: ["coach", ...i.path] })) }, 400);
+  }
+  // The music dock's shortcuts ride the same way (`music`, read with a `.catch` too): judged on their own first.
+  if (body && typeof body === "object" && "music" in body && (body as { music?: unknown }).music !== undefined) {
+    const music = musicPreferencesSchema.safeParse((body as { music: unknown }).music);
+    if (!music.success) return c.json({ error: "invalid_preferences", details: music.error.issues.map((i) => ({ ...i, path: ["music", ...i.path] })) }, 400);
   }
   const current = await loadPreferences(db, userId);
   const parsed = userPreferencesSchema.safeParse({ ...current, ...body });

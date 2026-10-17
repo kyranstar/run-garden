@@ -85,6 +85,10 @@ COACH_STEP_ALARM = "1"
 # the owner's go-live, 2026-10-16 (Stage 3 Task 12). Only "1" is on; remove it to turn the coach's routes back into a 404.
 # The web build's VITE_COACH_DESIGNER (.github/workflows/deploy.yml) shows it. coach-runs-routes.test.ts pins it.
 COACH_DESIGNER = "1"
+# The music dock (2026-10-17): the owner's Spotify app Client ID (public in a PKCE flow, so a var). Empty, every
+# /api/music route is a 404 and the dock draws nothing. The app's redirect URI to register with Spotify is
+# APP_URL + /api/music/spotify/callback (and http://127.0.0.1:8787/api/music/spotify/callback for local dev).
+SPOTIFY_CLIENT_ID = ""
 
 # ── Staging (inert: no crons, outbound fetch guarded — see docs/STAGING.md) ──
 # vars, d1_databases and triggers are declared in full; nothing here points at
