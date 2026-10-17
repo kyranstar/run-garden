@@ -5,6 +5,15 @@
  * them; each change is applied at approval through coach-apply's own applier (design-approve.ts). The change and the
  * workout it makes way for go to the athlete together — one proposal, one approval.
  *
+ * THE COACH'S REACH (the new shape §5): beside skip, move and a length, the thread coach's proven single-session changes,
+ * each through its own applier: EASE (a watch-plan run made easy and shorter — the length or distance asked for, else
+ * EASE_SHARE of its own — the thread coach's `ease` carrying the eased session), SWAP (a run for an easier kind: an easy or
+ * a recovery run, the same `ease`, its op marked `verb: "swap"`), REMOVE (off the plan entirely, the athlete's own
+ * remove: not rest) and RESTORE (a skipped session still to come put back, the athlete's own un-skip). A session its
+ * build decides is never eased, swapped or removed (a programme session is skipped or moved: `programme_session`; a Studio
+ * or template workout revised: `revise_instead`), a race stays (`race_day`), an ease or a swap is a run's and easier
+ * (`not_a_run`, `not_easier`), a restore a skip's (`not_skipped`).
+ *
  * ONE op per session per proposal, of kind `plan_adjust` (proposal-kinds.ts `PlanAdjustOp`): the thread coach's op,
  * the coach's `why` (model-written: data, marked wherever it is shown back to a model), advisory `issues`, and the session
  * as the plan held it — what the manifest's line says it was. A second change of the same session replaces the first.
@@ -44,10 +53,10 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals, plannedWorkouts, programs } from "@rg/database";
+import { accountState, coachProposals, corosWriteJobs, plannedWorkouts, programs } from "@rg/database";
 import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle } from "@rg/domain";
 import type { ConditionProfile } from "@rg/exercise-library";
-import { whyNotActionable } from "../coach-apply.js";
+import { NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
 import { horizonDays } from "../design-context.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
@@ -72,10 +81,25 @@ export const MAX_CHANGES = 10;
  */
 export const SANCTIONED_REST_PER_ROLLING_WEEK = 1;
 
+/** An eased run's share of its length, by default (the new shape §5; the body check's own ease: about 70%). */
+export const EASE_SHARE = 0.7;
+/** The easier kinds a run may be swapped for (the new shape §5), each a run of that kind at an easy effort. */
+const SWAP_TO = ["easy", "recovery"] as const;
+/** How hard a run's kind is: a swap goes down it, never up or across. */
+const RUN_RANK: Readonly<Record<string, number>> = { race: 5, quality: 4, long: 3, easy: 2, recovery: 1 };
+/** An eased or swapped run's name, by its kind. */
+const RUN_TITLE: Readonly<Record<string, string>> = { easy: "Easy run", long: "Long run", recovery: "Recovery run" };
+
+const minutesField = z.number().int().min(MINUTES.min).max(MINUTES.max);
 const change = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("skip"), reason: prose(REASON_MAX) }).strict(),
   z.object({ kind: z.literal("move"), toDate: dateField, toTime: z.string().regex(CLOCK, "must be a time like 17:30").optional() }).strict(),
-  z.object({ kind: z.literal("adjust"), durationMinutes: z.number().int().min(MINUTES.min).max(MINUTES.max) }).strict(),
+  z.object({ kind: z.literal("adjust"), durationMinutes: minutesField }).strict(),
+  // The new shape §5: the thread coach's single-session changes.
+  z.object({ kind: z.literal("ease"), durationMinutes: minutesField.optional(), distanceKm: z.number().min(1).max(60).optional() }).strict(),
+  z.object({ kind: z.literal("swap"), to: z.enum(SWAP_TO), durationMinutes: minutesField }).strict(),
+  z.object({ kind: z.literal("remove") }).strict(),
+  z.object({ kind: z.literal("restore") }).strict(),
 ]);
 /** The words the athlete reads (a skip's reason, the change's why) are free text (Task 13's fix wave, §2.1; round 2, Minor
  * 8): kept up to four times their caps and clipped where they are stored, refused only past that, in words. */
@@ -100,6 +124,10 @@ interface Row {
   lvd: string | null;
   /** Its programme's care, when it has one (`config.careProfiles`): the profiles its sessions care for. */
   care: unknown;
+  /** Its discipline and planned distance (an ease's), and whether the app put it on the watch (a remove's line). */
+  sport?: string | null;
+  meters?: number | null;
+  pushed?: number | null;
 }
 
 const minutesOf = (r: Row): number | null => {
@@ -117,6 +145,7 @@ function snapshotOf(r: Row): PlanRowSnapshot {
     category: r.category,
     origin: r.origin,
     onWatch: hasWatchAddress({ sourceWorkoutId: r.swid, sourceIdInPlan: r.sidp, sourceProgramId: r.spid, lastVerifiedCorosDate: r.lvd }),
+    ...(r.pushed ? { appPushed: true } : {}),
   };
 }
 
@@ -165,13 +194,49 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
   if (!row || row.archived) {
     return refuse("not_found", `No planned session of the athlete's has id ${JSON.stringify(workoutId)}.`, "Use an id from read_plan.");
   }
-  const why = whyNotActionable({ archivedAt: row.archived, completionState: row.completion, effectiveDate: row.date }, today);
-  if (why !== undefined) {
-    return refuse("not_changeable", `That session ${why}.`, "Change a session still to come — read_plan lists them.");
+  // A restore reaches a skipped session (the thread coach's one op whose purpose is a resolved row), still to come.
+  if (c.kind === "restore") {
+    if (row.completion !== "skipped") {
+      return refuse("not_skipped", `That session is ${row.completion === "scheduled" || row.completion === "planned" ? "on the plan" : `already ${row.completion}`}: only a skipped one is put back.`, "Restore a skipped session — read_plan marks them.");
+    }
+    if (row.date < today) return refuse("not_changeable", `That session ${NOT_ACTIONABLE.past}: only a skip still to come is put back.`, "Restore a skipped session of today or later.");
+  } else {
+    const why = whyNotActionable({ archivedAt: row.archived, completionState: row.completion, effectiveDate: row.date }, today);
+    if (why !== undefined) {
+      return refuse("not_changeable", `That session ${why}.`, "Change a session still to come — read_plan lists them.");
+    }
   }
   const last = lastDay(ctx, today);
   if (row.date > last) {
     return refuse("beyond_horizon", `That session is on ${row.date}, past the plan this run reads (to ${last}).`, `Change a session up to ${last} — read_plan lists them.`);
+  }
+  // The thread coach's single-session changes (the new shape §5): a session the app builds is its build's — a programme
+  // session is skipped or moved, a Studio or template workout revised — and the race stays.
+  if (c.kind === "ease" || c.kind === "swap" || c.kind === "remove") {
+    if (appAuthoredRow({ origin: row.origin })) {
+      return docOriginRow({ origin: row.origin })
+        ? refuse("revise_instead", `A Studio or template workout is the athlete's document: it isn't ${c.kind === "remove" ? "removed" : "eased"} here.`, reviseIt(ctx))
+        : refuse("programme_session", `A programme session is skipped or moved, never ${c.kind === "remove" ? "removed" : "eased or swapped"}.`, c.kind === "remove" ? "Skip it with adjust_plan instead." : shorterWorkout(ctx));
+    }
+    if (row.category === "race") return refuse("race_day", `${dayLabel(row.date)} holds the athlete's race: it stays as it is.`, "Leave the race on the plan and design around it.");
+  }
+  if (c.kind === "ease" || c.kind === "swap") {
+    if (!(row.category in RUN_RANK) || (row.sport ?? "run") !== "run") {
+      return refuse("not_a_run", `That session is ${row.category}, not a run: ease and swap change a watch-plan run.`, "Skip it, or propose an easier workout beside it.");
+    }
+    const now = minutesOf(row);
+    if (c.kind === "ease") {
+      const shorter = c.durationMinutes !== undefined ? now === null || c.durationMinutes < now : true;
+      const nearer = c.distanceKm !== undefined ? !row.meters || c.distanceKm * 1000 < row.meters : true;
+      if (!shorter || !nearer) {
+        return refuse("not_easier", `That run is ${now ?? "?"} min${row.meters ? `, ${Math.round(row.meters / 100) / 10} km` : ""}: an ease makes it shorter.`, "Give a shorter durationMinutes or distanceKm, or leave both out for about 70% of it.");
+      }
+      if (now === null && c.durationMinutes === undefined) {
+        return refuse("no_length", "That run states no length to ease from.", "Give durationMinutes.");
+      }
+    } else if ((RUN_RANK[c.to] ?? 0) >= (RUN_RANK[row.category] ?? 0)) {
+      return refuse("not_easier", `That run is already ${row.category}: a swap is for an easier kind.`, `Swap it for a kind easier than ${row.category}, or ease it.`);
+    }
   }
   if (c.kind === "skip" && row.category === "race") {
     return refuse("race_day", `${dayLabel(row.date)} holds the athlete's race: a skip would take it off the plan.`, "Leave the race on the plan and design around it; the athlete decides about their race.");
@@ -214,6 +279,32 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
   return null;
 }
 
+/**
+ * The thread coach's own op for a change (its schema's parse): a skip, move or length as asked; an ease or a swap as the
+ * thread coach's `ease` carrying the eased session — a run of an easy effort, its kind kept (an easy, long or recovery
+ * run; a harder one eased is an easy run) or the easier kind swapped to, at the length or distance asked for, else about
+ * EASE_SHARE of its own (by distance when it states one); a remove or a restore as they are.
+ */
+function coachOpOf(c: z.output<typeof change>, row: Row, workoutId: string): PlanChange {
+  if (c.kind !== "ease" && c.kind !== "swap") return coachOpSchema.parse({ ...c, workoutId }) as PlanChange;
+  const category = c.kind === "swap" ? c.to : row.category === "long" || row.category === "recovery" ? row.category : "easy";
+  const now = minutesOf(row);
+  const minutes = c.durationMinutes ?? Math.max(MINUTES.min, Math.round((now ?? MINUTES.min) * EASE_SHARE));
+  // An ease with no length asked for keeps its distance's measure: about EASE_SHARE of it, to the 100 m.
+  const meters =
+    c.kind === "ease" && c.distanceKm !== undefined
+      ? Math.round(c.distanceKm * 1000)
+      : c.kind === "ease" && c.durationMinutes === undefined && row.meters
+        ? Math.round((row.meters * EASE_SHARE) / 100) * 100
+        : null;
+  const block = meters !== null ? { kind: "distance", value: meters, intensity: "easy" } : { kind: "duration", value: minutes, intensity: "easy" };
+  return coachOpSchema.parse({
+    kind: "ease",
+    workoutId,
+    session: { category, title: RUN_TITLE[category] ?? "Easy run", durationMinutes: minutes, run: { blocks: [block] } },
+  }) as PlanChange;
+}
+
 /** The rolling week's sanctioned rest, as a result counts it. */
 interface SanctionedRest {
   usedThisWeek: number;
@@ -251,7 +342,7 @@ function storedAnswer(proposalId: string, op: PlanAdjustOp, o: { replaced?: bool
 export const adjustPlan: DesignTool = {
   name: "adjust_plan",
   description:
-    "The main coach: change a session already on the plan, inside your proposal — skip it, move it, or change a watch-plan run's length (a programme session is skipped or moved, never re-timed; a Studio workout is revised with propose_workout). One change per session; a second replaces it. Never reviewed: it goes to the athlete with your proposal.",
+    "The main coach: change a session on the plan, in your proposal — skip, move, re-time, ease or swap a watch-plan run for an easier one, remove it, or restore a skipped one (a programme session is only skipped or moved; a Studio workout is revised with propose_workout). One change per session; a second replaces it. Never reviewed: the athlete approves each.",
   inputSchema: {
     type: "object",
     properties: {
@@ -276,6 +367,22 @@ export const adjustPlan: DesignTool = {
             required: ["kind", "durationMinutes"],
             additionalProperties: false,
           },
+          {
+            type: "object",
+            description: "A watch-plan run made easy and shorter: the length or distance given, else about 70% of it.",
+            properties: { kind: { const: "ease" }, durationMinutes: { type: "integer", minimum: MINUTES.min, maximum: MINUTES.max }, distanceKm: { type: "number" } },
+            required: ["kind"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            description: "A watch-plan run swapped for an easier kind of run.",
+            properties: { kind: { const: "swap" }, to: { enum: [...SWAP_TO] }, durationMinutes: { type: "integer", minimum: MINUTES.min, maximum: MINUTES.max } },
+            required: ["kind", "to", "durationMinutes"],
+            additionalProperties: false,
+          },
+          { type: "object", description: "Off the plan entirely (not rest).", properties: { kind: { const: "remove" } }, required: ["kind"], additionalProperties: false },
+          { type: "object", description: "A skipped session back on the plan.", properties: { kind: { const: "restore" } }, required: ["kind"], additionalProperties: false },
         ],
       },
       why: { type: "string", description: `Why, in one plain line the athlete reads beside the change: ${capInWords(WHY_MAX)}.` },
@@ -287,7 +394,11 @@ export const adjustPlan: DesignTool = {
   cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
-    const parsed = parseAct(input, raw, "workoutId, change ({ kind: skip, reason } or { kind: move, toDate, toTime? } or { kind: adjust, durationMinutes }) and why");
+    const parsed = parseAct(
+      input,
+      raw,
+      "workoutId, change ({ kind: skip, reason } or { kind: move, toDate, toTime? } or { kind: adjust, durationMinutes } or { kind: ease, durationMinutes?, distanceKm? } or { kind: swap, to, durationMinutes } or { kind: remove } or { kind: restore }) and why",
+    );
     if (isErr(parsed)) return parsed;
     // Clipped where the athlete reads them (§2.1): the change's why, a skip's reason.
     const p = {
@@ -304,6 +415,8 @@ export const adjustPlan: DesignTool = {
           'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState},
           'archived', ${pw.archivedAt}, 'sourceSec', ${pw.sourceEstimatedDurationSeconds}, 'fallbackSec', ${pw.fallbackEstimatedDurationSeconds},
           'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate},
+          'sport', ${pw.sport}, 'meters', ${pw.expectedDistanceMeters},
+          'pushed', exists(select 1 from ${corosWriteJobs} j where j.id = ${pw.id} || '-push' and j.user_id = ${ctx.userId}),
           'care', (select case when json_valid(${programs.config}) then json_extract(${programs.config}, '$.careProfiles') end
             from ${programs} where ${programs.id} = ${pw.planId} and ${programs.userId} = ${ctx.userId}))
         from ${pw} where ${pw.id} = ${p.workoutId} and ${pw.userId} = ${ctx.userId})`,
@@ -351,8 +464,8 @@ export const adjustPlan: DesignTool = {
       );
     }
 
-    // The thread coach's own op, as its schema stores one.
-    const op = coachOpSchema.parse({ ...p.change, workoutId: p.workoutId }) as PlanChange;
+    // The thread coach's own op, as its schema stores one (an ease's or a swap's eased session built from the row).
+    const op = coachOpOf(p.change, row!, p.workoutId);
     const snapshot = snapshotOf(row!);
     const at = ctx.now.toISOString();
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
@@ -376,6 +489,7 @@ export const adjustPlan: DesignTool = {
       kind: "plan_adjust",
       id,
       op,
+      ...(p.change.kind === "swap" ? { verb: "swap" as const } : {}),
       why: p.why,
       issues: [
         ...(op.kind === "adjust" && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : []),

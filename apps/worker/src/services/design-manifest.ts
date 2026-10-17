@@ -32,7 +32,7 @@ import { REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
-import { describeChange, isDocWorkoutOp, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
+import { changeVerb, describeChange, isDocWorkoutOp, isPlanAdjustOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
 export interface DocWorkoutLine {
@@ -268,7 +268,9 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
  */
 export interface PlanChangeLine {
   opId: string;
-  kind: "skip" | "move" | "adjust";
+  /** The change as the coach asked for it: a skip, a move, a length — and since the new shape §5 an ease, a swap (an ease
+   * to an easier kind), a remove or a restore. */
+  kind: ChangeVerb;
   workoutId: string;
   /** The day the line is under: a move's destination, else the session's day. */
   date: string | null;
@@ -295,7 +297,7 @@ export function planChangeLines(ops: readonly unknown[]): PlanChangeLine[] {
     const w = describeChange(c);
     return {
       opId: c.id,
-      kind: c.op.kind,
+      kind: changeVerb(c),
       workoutId: c.op.workoutId,
       date: w.date,
       time: w.time,

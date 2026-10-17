@@ -129,12 +129,16 @@ export async function placedTimes(
     const c = (any as PlanAdjustOp).op;
     const s = sims.get(c.workoutId);
     if (!s) continue;
-    if (c.kind === "skip") {
+    if (c.kind === "skip" || c.kind === "remove") {
       sims.delete(c.workoutId);
-    } else if (c.kind === "adjust") {
+    } else if (c.kind === "adjust" || c.kind === "ease") {
+      // An ease is the session rewritten (the new shape §5): its length is the eased session's.
       s.source = null;
-      s.session.workoutSeconds = c.durationMinutes * 60;
+      s.session.workoutSeconds = (c.kind === "ease" ? c.session.durationMinutes : c.durationMinutes) * 60;
       touched.add(s.date);
+    } else if (c.kind === "restore") {
+      // A restore's session is skipped until approved: not among the day's sessions here.
+      continue;
     } else {
       const toTime = c.toTime ?? s.session.currentTime;
       // jobs.ts pins a time change, never a day's (a moved day carries its time; the pass may move it).

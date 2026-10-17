@@ -237,7 +237,8 @@ describe("3A-B — the prompt agrees with the code", () => {
 
   it("Task 8b: adjust_plan — the main block's line, verbatim, and its line among the tools", () => {
     expect(roleBlock("main")).toContain(
-      "To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or change a watch-plan run's length. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. Your new workout and the change go to the athlete together.",
+      // The new shape §5: the thread coach's single-session changes beside them (design-plan-powers.test.ts).
+      "To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or change a watch-plan run's length — or ease it or swap it for an easier run (heavy legs), remove it, or put a skipped one back. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. Your new workout and the change go to the athlete together.",
     );
     expect(line("adjust_plan")).toContain("the main coach's — change a session already on the plan, inside your proposal: skip it, move it, or change a watch-plan run's length");
     // "Change its length", never "shorten" (fix round, 5): a length may go either way.

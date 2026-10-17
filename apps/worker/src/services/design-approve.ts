@@ -63,7 +63,7 @@
  * only — kept on each op for read_proposals. An op whose workout is there is recorded applied instead.
  *
  * CHANGES TO SESSIONS ALREADY ON THE PLAN (Task 8b; ruling I6). A `plan_adjust` op — the main coach's skip, move or
- * length of a session, adjust_plan's — goes through the THREAD COACH'S OWN APPLIER (coach-apply.ts `applyOps`, once
+ * length of a session, adjust_plan's, and since the new shape §5 its ease (a swap is one), remove and restore — goes through the THREAD COACH'S OWN APPLIER (coach-apply.ts `applyOps`, once
  * per request for that request's changes, ahead of the workouts so a day is as the coach meant it before a new workout
  * is placed on it): not a new authority, the same lever under the same approval. Each is judged first by the applier's
  * own rule (`whyNotActionable`) and the thread coach's (a race is never skipped or moved; a session its build decides is
@@ -121,7 +121,7 @@ import { approvalKey } from "./design-placement.js";
 import { approveTimeOf, clockIn, PastTimeError, pastTime, todayLeadRefusal } from "./design-time.js";
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
 import { RestoreInProgressError } from "./programs.js";
-import { describeChange, isDesignedOp, isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp, type PlanChange } from "./proposal-kinds.js";
+import { changeVerb, describeChange, isDesignedOp, isDocWorkoutOp, isPlanAdjustOp, opIdOf, type ChangeVerb, type PlanAdjustOp, type PlanChange } from "./proposal-kinds.js";
 import { FROZEN_STATES } from "./workout-doc-store.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -312,6 +312,19 @@ export const ADJUST_COST = 3;
  * collision pass moves, itself among them.
  */
 export const MOVE_COST = 1 + 6 + 9;
+/**
+ * The thread coach's single-session changes (the new shape §5), each the most its applier runs (design-plan-powers.test.ts
+ * measures them under it). An ease (a swap is one): the read (1), the row and its revision (2), its stage rows' delete and
+ * insert (2), the content intent closed and recorded (2), and its watch copy's convergence at its most — the stamp read,
+ * the open intent or the stamps taken that day, the older rewrite superseded, the job (4) — before the rows its day's
+ * collision pass moves. A remove: the read and the athlete's own remove at its most — the row read and archived (2), its
+ * queued watch writes settled, its suppression (2), its intent (2), an open move intent read and closed (2), its unpush
+ * (the stamp, the create job, the insert: 3). A restore: the read, and the athlete's own un-skip — the row read, written
+ * and its override (3); a re-apply reads the last override instead.
+ */
+export const EASE_COST = 1 + 2 + 2 + 2 + 4;
+export const REMOVE_COST = 1 + 2 + 2 + 2 + 2 + 3;
+export const RESTORE_COST = 1 + 3;
 
 /**
  * THE CALENDAR'S STEP AFTER AN APPROVE (Task 9). A Studio save and the thread coach's approve hand the calendar one
@@ -345,6 +358,13 @@ export function planOpCostOf(op: Pick<PlanAdjustOp, "op">, dayRows: number): num
       return ADJUST_COST + dayRows;
     case "move":
       return MOVE_COST + dayRows + 1;
+    // The new shape §5: an ease (a swap is one) rewrites its session — before the rows its day's collision pass moves.
+    case "ease":
+      return EASE_COST + dayRows;
+    case "remove":
+      return REMOVE_COST;
+    case "restore":
+      return RESTORE_COST;
   }
 }
 
@@ -585,7 +605,8 @@ export interface Settled {
 /** A change applied by this request (Task 8b): the session, and how it stood before. */
 export interface Changed {
   opId: string;
-  change: PlanChange["kind"];
+  /** The change as the coach asked for it (a swap's "swap": the new shape §5). */
+  change: ChangeVerb;
   workoutId: string;
   before: PlanBefore;
 }
@@ -669,19 +690,39 @@ function planVerdict(
   clock: { date: string; minutes: number },
 ): { made: PlanBefore; replayFrom: string | null } | { refusal: Omit<Refused, "opId"> } | null {
   const c = op.op;
+  // A remove's effect is its row archived (the new shape §5): made, never "not in the plan".
+  if (c.kind === "remove" && row?.archived) return { made: claimOf(op)?.before ?? beforeOf(row), replayFrom: null };
   if (!row || row.archived) return { refusal: { error: "not_found", why: "It's no longer in the plan." } };
   const claimed = claimMade(op, row, today);
   if (claimed) return claimed;
-  if (c.kind === "skip" && effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
-  const why = whyNotActionable({ archivedAt: null, completionState: row.dto.completionState, effectiveDate: row.dto.date }, today);
+  if ((c.kind === "skip" || c.kind === "restore") && effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
+  // A restore reaches a skipped session (the thread coach's rule), its day not yet gone; any other change a session
+  // still to come (the applier's own rule).
+  const why =
+    c.kind === "restore"
+      ? row.dto.completionState !== "skipped"
+        ? `is ${row.dto.completionState}`
+        : row.dto.date < today
+          ? NOT_ACTIONABLE.past
+          : undefined
+      : whyNotActionable({ archivedAt: null, completionState: row.dto.completionState, effectiveDate: row.dto.date }, today);
   if (why !== undefined) {
     const cause: NotEditableCause | null =
-      why === NOT_ACTIONABLE.done ? "completed" : why === NOT_ACTIONABLE.skipped ? "skipped" : why === NOT_ACTIONABLE.missed ? "missed" : why === NOT_ACTIONABLE.past ? null : "unknown";
+      why === NOT_ACTIONABLE.done || why === "is completed"
+        ? "completed"
+        : why === NOT_ACTIONABLE.skipped
+          ? "skipped"
+          : why === NOT_ACTIONABLE.missed || why === "is missed"
+            ? "missed"
+            : why === NOT_ACTIONABLE.past
+              ? null
+              : "unknown";
     return { refusal: cause ? { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } : { error: "past_date", why: `${dayLabel(row.dto.date)} has passed.` } };
   }
   if (c.kind === "move" && c.toDate < today) return { refusal: { error: "past_date", why: `${dayLabel(c.toDate)} has passed.` } };
-  if (c.kind !== "adjust" && row.dto.category === "race") return { refusal: { error: "race", why: "It's the athlete's race: it stays where it is." } };
-  if (c.kind === "adjust" && appAuthoredRow({ origin: row.origin })) {
+  if (c.kind !== "adjust" && c.kind !== "restore" && row.dto.category === "race") return { refusal: { error: "race", why: "It's the athlete's race: it stays where it is." } };
+  // A session its build decides is never re-timed (ruling 3-R13), eased or removed (the new shape §5).
+  if ((c.kind === "adjust" || c.kind === "ease" || c.kind === "remove") && appAuthoredRow({ origin: row.origin })) {
     const cause: NotEditableCause = docOriginRow({ origin: row.origin }) ? "studio" : "programme";
     return { refusal: { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } };
   }
@@ -695,14 +736,25 @@ function planVerdict(
   return null;
 }
 
-/** A change's effect is on the plan: the session skipped, at its new day (and time, when one was asked for), or at its
- * length. */
-const effectThere = (c: PlanChange, row: RowState): boolean =>
-  c.kind === "skip"
-    ? row.dto.completionState === "skipped"
-    : c.kind === "move"
-      ? row.dto.date === c.toDate && (c.toTime === undefined || row.dto.time === c.toTime)
-      : row.minutes === c.durationMinutes;
+/** A change's effect is on the plan: the session skipped, at its new day (and time, when one was asked for), at its
+ * length — and since the new shape §5 the eased session in its place (its name and length), off the plan, or back on
+ * it. */
+function effectThere(c: PlanChange, row: RowState): boolean {
+  switch (c.kind) {
+    case "skip":
+      return row.dto.completionState === "skipped";
+    case "move":
+      return row.dto.date === c.toDate && (c.toTime === undefined || row.dto.time === c.toTime);
+    case "adjust":
+      return row.minutes === c.durationMinutes;
+    case "ease":
+      return row.dto.title === c.session.title && row.dto.category === c.session.category && row.minutes === c.session.durationMinutes;
+    case "remove":
+      return row.archived;
+    case "restore":
+      return row.dto.completionState === "scheduled" || row.dto.completionState === "planned";
+  }
+}
 
 /**
  * A claimed change (`applying`) found made — by the approve that claimed it, which then died, threw or lost its last
@@ -714,7 +766,8 @@ const effectThere = (c: PlanChange, row: RowState): boolean =>
  */
 function claimMade(op: DesignedPlanOp, row: RowState | undefined, today: string | null): { made: PlanBefore; replayFrom: string | null } | null {
   const claim = claimOf(op);
-  if (!claim || !row || row.archived || !effectThere(op.op, row)) return null;
+  // (An archived row is a remove's effect, and no other change's.)
+  if (!claim || !row || (row.archived && op.op.kind !== "remove") || !effectThere(op.op, row)) return null;
   const resolved = op.op.kind === "skip" ? row.resolution : null;
   return { made: claim.before, replayFrom: resolved !== null && (today === null || resolved <= today) ? resolved : null };
 }
@@ -807,7 +860,7 @@ export async function approveDesignOps(
     const verdict = planVerdict(c, row, ctx.today, clockIn(ctx.prefs.timezone, new Date(ctx.now)));
     if (verdict && "made" in verdict) {
       outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before: verdict.made });
-      changed.push({ opId: c.id, change: c.op.kind, workoutId: c.op.workoutId, before: verdict.made });
+      changed.push({ opId: c.id, change: changeVerb(c), workoutId: c.op.workoutId, before: verdict.made });
       if (verdict.replayFrom !== null) {
         madeReplay = earliest(madeReplay, verdict.replayFrom);
         if (!replayCounted) left -= 1;
@@ -826,7 +879,8 @@ export async function approveDesignOps(
       outcomes.set(c.id, { status: "refused", at: ctx.now, ...verdict.refusal });
       continue;
     }
-    const day = c.op.kind === "move" ? c.op.toDate : c.op.kind === "adjust" ? row?.dto.date : undefined;
+    // The day whose collision pass the change may move sessions on: a move's new one, a length's or an ease's own.
+    const day = c.op.kind === "move" ? c.op.toDate : c.op.kind === "adjust" || c.op.kind === "ease" ? row?.dto.date : undefined;
     const cost = (batch.length === 0 ? PLAN_BATCH_FIXED - (replayCounted ? 1 : 0) : 0) + opCostOf(c, rowsOn(day));
     if (!first && cost > left) {
       remaining.push(...changes.slice(i).map((x) => x.id));
@@ -869,10 +923,11 @@ export async function approveDesignOps(
     // Each change missed by the applier names the session it couldn't change, in order; the rest it applied.
     const missed = [...res.missed];
     for (const c of batch) {
-      if (res.updated.includes(c.op.workoutId)) {
+      // A remove's session is archived by the applier (the new shape §5), every other change's updated.
+      if (res.updated.includes(c.op.workoutId) || (c.op.kind === "remove" && res.archived.includes(c.op.workoutId))) {
         const before = claimed.get(c.id)!;
         outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before });
-        changed.push({ opId: c.id, change: c.op.kind, workoutId: c.op.workoutId, before });
+        changed.push({ opId: c.id, change: changeVerb(c), workoutId: c.op.workoutId, before });
       } else {
         const refusal: Omit<Refused, "opId"> = { error: "not_editable", cause: "unknown", why: applierWhy(missed.shift()) };
         refused.push({ opId: c.id, ...refusal });
@@ -881,7 +936,9 @@ export async function approveDesignOps(
     }
     if (res.resimFrom) replayFrom = earliest(replayFrom, res.resimFrom);
     // Nothing after the applier may turn an applied change into an error (the thread route's own rule): caught.
-    if (batch.some((c) => c.op.kind === "move" && res.updated.includes(c.op.workoutId))) coachDrain = await coachDrainQueued(db, userId).catch(() => false);
+    // A move, an ease's convergence or a remove's unpush may queue a watch job for the client to drain.
+    const queues = (c: DesignedPlanOp) => (c.op.kind === "move" || c.op.kind === "ease") && res.updated.includes(c.op.workoutId) || (c.op.kind === "remove" && res.archived.includes(c.op.workoutId));
+    if (batch.some(queues)) coachDrain = await coachDrainQueued(db, userId).catch(() => false);
   }
   if (replayFrom !== null) await recordReplayFrom(db, userId, replayFrom).catch(() => undefined);
 

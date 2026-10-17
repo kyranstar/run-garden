@@ -8,9 +8,13 @@
  */
 import { dayLabel, describeOps, type CoachOp } from "@rg/domain";
 
-/** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6): never ease, swap,
- * remove, add or a programme-level op — those stay the thread coach's. */
-export type PlanChange = Extract<CoachOp, { kind: "skip" | "move" | "adjust" }>;
+/** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6), and since the new
+ * shape §5 its proven single-session ones too: ease (a swap for an easier kind is an ease, its `verb` "swap"), remove
+ * and restore — never a two-day swap, an add or a programme-level op: those stay the thread coach's. */
+export type PlanChange = Extract<CoachOp, { kind: "skip" | "move" | "adjust" | "ease" | "remove" | "restore" }>;
+
+/** A change as the coach asked for it (adjust_plan's kind): the op's own, or "swap" — an ease to an easier kind. */
+export type ChangeVerb = PlanChange["kind"] | "swap";
 
 /** What the plan held for a session when the coach proposed a change to it: the manifest's `PlannedRef`, as it was. */
 export interface PlanRowSnapshot {
@@ -24,6 +28,9 @@ export interface PlanRowSnapshot {
   origin: string | null;
   /** COROS holds it at an address (the manifest's "watch unchanged"). */
   onWatch: boolean;
+  /** The app put it on the watch (its address and its create job): a remove takes it back off (the thread coach's
+   * manifest says so). */
+  appPushed?: boolean;
 }
 
 /**
@@ -36,6 +43,8 @@ export interface PlanAdjustOp {
   /** Its op id (`planAdjustId`): one change per session per proposal — a second replaces the first. */
   id: string;
   op: PlanChange;
+  /** A swap's (the new shape §5): an ease to an easier kind of session, as the coach asked for it. */
+  verb?: "swap";
   why: string;
   /** Advisory notes for the athlete, as a workout's validator warnings are. */
   issues: Array<{ code: string; message: string }>;
@@ -51,6 +60,9 @@ export interface PlanAdjustOp {
 
 /** A change's op id: one per session per proposal. */
 export const planAdjustId = (workoutId: string): string => `adj-${workoutId}`;
+
+/** A change's kind as the coach asked for it: "swap" for an ease to an easier kind, else its op's. */
+export const changeVerb = (c: Pick<PlanAdjustOp, "op" | "verb">): ChangeVerb => c.verb ?? c.op.kind;
 
 /** A change in words: the thread coach's own manifest line for its op (@rg/domain `describeOps`), with the session as the
  * plan held it when the coach proposed the change. */
@@ -71,7 +83,16 @@ export interface ChangeWords {
 
 export function describeChange(p: Pick<PlanAdjustOp, "op" | "row">): ChangeWords {
   const planned = new Map([
-    [p.op.workoutId, { date: p.row.date, summary: p.row.title, ...(p.row.minutes !== null ? { durationMinutes: p.row.minutes } : {}), ...(p.row.onWatch ? { onWatch: true } : {}) }],
+    [
+      p.op.workoutId,
+      {
+        date: p.row.date,
+        summary: p.row.title,
+        ...(p.row.minutes !== null ? { durationMinutes: p.row.minutes } : {}),
+        ...(p.row.onWatch ? { onWatch: true } : {}),
+        ...(p.row.appPushed ? { appPushed: true } : {}),
+      },
+    ],
   ]);
   const [line] = describeOps([p.op], planned);
   return {
