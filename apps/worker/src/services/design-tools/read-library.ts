@@ -209,8 +209,9 @@ export const searchLibraryTool: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
-  // Measured (design-cpu-bench gate 8, round 2): an 8-word search, fit today, 30 rows — scaled p50 0.55 ms, p95 0.84.
-  cpuWeight: 0.8,
+  // Measured (design-cpu-bench gate 8, round 2): an 8-word search, fit today, 30 rows — scaled p50 0.55–0.61 ms, p95
+  // 0.84–1.05. Declared at about its p95, so a queued step packs four (1d.q: five at 0.8 measured 4.2–4.8 of its 5 ms).
+  cpuWeight: 1,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(searchInput, raw, "optionally query, filters (the listed vocabulary), limit and cursor");
