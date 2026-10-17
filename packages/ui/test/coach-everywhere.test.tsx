@@ -215,5 +215,7 @@ describe("the card's 'Change something…' line", () => {
     // changes too (the review, minor 5).
     const skip = { opId: "c1", kind: "skip", workoutId: "w9", date: TODAY, time: null, summary: "Strength — skipped", was: null, effect: null, why: "", issues: [], outcome: null };
     expect(card({ status: "pending", lines: [line("o1")], changes: [skip] }, follow)).not.toContain("coach-pc-follow");
+    // …even once that change was declined: a suggestion of plan changes is never one a follow-up replaces.
+    expect(card({ status: "pending", lines: [line("o1")], changes: [{ ...skip, outcome: { status: "declined", at: "x" } }] }, follow)).not.toContain("coach-pc-follow");
   });
 });

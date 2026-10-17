@@ -254,7 +254,6 @@ export function CoachArea({
     networkMode: "always",
     mutationFn: (v: StartVars) =>
       api.coachRunCreate({ ...(v.scope ? { scope: v.scope } : {}), request: v.request, ...(v.focus ? { focus: v.focus } : {}) }),
-    onMutate: () => setFieldFocus(false),
     onSuccess: (res, v) => {
       setFollowedFrom(v.followUp && v.focus ? v.focus.id : null);
       setStartError(null);
