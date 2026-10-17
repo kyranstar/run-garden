@@ -446,13 +446,19 @@ describe("also waiting (Task 13's fix wave, R2): the other suggestions still ope
     ]);
   });
 
-  it("a now suggestion reads as untimed; a live run's own proposal is never listed", async () => {
+  it("a now suggestion reads as untimed, and says it is a now design (round 2, for U); a live run's own proposal is never listed", async () => {
     const now = await other({ title: "Jaw ease", dates: [today], time: "13:15", atNow: true });
+    const timed = await other({ title: "Evening", dates: [today], time: "19:00" });
     const live = await run({ status: "active" });
     await proposal(live, "pending", [null]);
     const res = await current();
     expect(res.body.run.id).toBe(live);
-    expect(res.body.alsoOpen).toEqual([{ proposalId: now, title: "Jaw ease", date: today, time: null, items: 1 }]);
+    // `atNow` only when true: a timed row carries no key at all.
+    expect(res.body.alsoOpen).toEqual([
+      { proposalId: timed, title: "Evening", date: today, time: "19:00", items: 1 },
+      { proposalId: now, title: "Jaw ease", date: today, time: null, items: 1, atNow: true },
+    ]);
+    expect(res.cost).toBe(1 + CURRENT_RUN_STATEMENTS);
   });
 
   it("never one decided, gone by, a rehearsal's, unreviewed, the thread's own, or another athlete's; at most five", async () => {

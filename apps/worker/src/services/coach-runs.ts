@@ -1288,6 +1288,8 @@ export interface AlsoOpenDto {
   date: string;
   time: string | null;
   items: number;
+  /** Its first open op is a now design (round 2, for U: the row reads "Now"); absent otherwise. */
+  atNow?: true;
 }
 
 /** The design proposal a run holds open for the athlete: its id, its status and its flags (a stop's note among them). */
@@ -1337,9 +1339,10 @@ const OPEN_ONE = sql.raw(
 async function alsoOpenOf(db: Db, userId: string, shown: string, today: string): Promise<AlsoOpenDto[]> {
   const rows = (await db.all(sql`
     SELECT p.id AS id, p.title AS title, (
-      SELECT json_group_array(json_object('date', d, 'time', t)) FROM (
+      SELECT json_group_array(json_object('date', d, 'time', t, 'atNow', n)) FROM (
         SELECT json_extract(o.value, '$.date') AS d,
-          CASE WHEN json_extract(o.value, '$.target.atNow') THEN NULL ELSE json_extract(o.value, '$.time') END AS t
+          CASE WHEN json_extract(o.value, '$.target.atNow') THEN NULL ELSE json_extract(o.value, '$.time') END AS t,
+          CASE WHEN json_extract(o.value, '$.target.atNow') THEN 1 END AS n
         FROM json_each(p.ops) o WHERE ${OPEN_ONE} AND json_extract(o.value, '$.date') >= ${today}
         ORDER BY d, coalesce(t, '')
       )) AS open
@@ -1351,7 +1354,7 @@ async function alsoOpenOf(db: Db, userId: string, shown: string, today: string):
     LIMIT ${ALSO_OPEN_MAX}
   `)) as Array<{ id: string; title: string | null; open: string | null }>;
   return rows.flatMap((r) => {
-    let open: Array<{ date?: unknown; time?: unknown }> = [];
+    let open: Array<{ date?: unknown; time?: unknown; atNow?: unknown }> = [];
     try {
       const parsed: unknown = r.open ? JSON.parse(r.open) : [];
       open = Array.isArray(parsed) ? parsed : [];
@@ -1360,7 +1363,16 @@ async function alsoOpenOf(db: Db, userId: string, shown: string, today: string):
     }
     const first = open[0];
     if (!first || typeof first.date !== "string") return [];
-    return [{ proposalId: r.id, title: r.title ?? "", date: first.date, time: typeof first.time === "string" ? first.time : null, items: open.length }];
+    return [
+      {
+        proposalId: r.id,
+        title: r.title ?? "",
+        date: first.date,
+        time: typeof first.time === "string" ? first.time : null,
+        items: open.length,
+        ...(first.atNow === 1 ? { atNow: true as const } : {}),
+      },
+    ];
   });
 }
 
