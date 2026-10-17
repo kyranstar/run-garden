@@ -26,8 +26,9 @@ export const FIGURE: Record<BodyArea, Shape[]> = {
   neck: [rect(54, 31, 12, 9, 4)],
   shoulders: pair(ellipse(39.5, 47, 8.5, 7)),
   chest: pair(rect(46, 42, 13.5, 18, 6)),
-  arms: [...pair(rect(26.5, 56, 9, 31)), ...pair(rect(23.5, 90, 9, 29))],
-  back: pair(rect(40, 59, 5, 28)),
+  arms: [...pair(rect(30, 55, 8.5, 31)), ...pair(rect(27, 89, 8, 29))],
+  // The lats, at the torso's flanks: the back as a front figure can show it.
+  back: pair(rect(43, 61, 3.5, 27)),
   core: [rect(47, 62, 26, 34, 7)],
   hips: [{ kind: "path", d: "M47 101 Q47 98 50 98 L70 98 Q73 98 73 101 L69 113 Q60 118 51 113 Z" }],
   glutes: pair(ellipse(42.5, 106, 4.5, 9)),

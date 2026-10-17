@@ -396,7 +396,8 @@ function QuestSheet({ card, today, units, onMore, onClose }: { card: ObjectiveBo
   useCoachSeeing(objectiveFocus(card.objective));
   return (
     <Sheet open onClose={onClose} title={card.objective.title}>
-      <ObjectiveCard card={card} today={today} units={units} onMore={onMore} />
+      {/* The sheet's title names it: the card's own stays for a screen reader's outline, not drawn twice. */}
+      <ObjectiveCard card={card} today={today} units={units} onMore={onMore} titleShown={false} />
     </Sheet>
   );
 }
@@ -428,7 +429,20 @@ function ProgressRing({ fraction }: { fraction: number }) {
   );
 }
 
-function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCard; today: string; units: BoardUnits; onMore: () => void }) {
+function ObjectiveCard({
+  card,
+  today,
+  units,
+  onMore,
+  titleShown = true,
+}: {
+  card: ObjectiveBoardCard;
+  today: string;
+  units: BoardUnits;
+  onMore: () => void;
+  /** Drawn, or only named (in a sheet whose title says it). */
+  titleShown?: boolean;
+}) {
   const o = card.objective;
   const headingId = useId();
   const fraction = objectiveFraction(card);
@@ -440,7 +454,7 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
       <div className="obj-card-head">
         {fraction !== null ? <ProgressRing fraction={fraction} /> : null}
         <div className="obj-card-titles">
-          <h2 id={headingId} className="obj-title">
+          <h2 id={headingId} className={titleShown ? "obj-title" : "obj-title visually-hidden"}>
             {o.title}
           </h2>
           {o.why ? <p className="obj-why">{o.why}</p> : null}

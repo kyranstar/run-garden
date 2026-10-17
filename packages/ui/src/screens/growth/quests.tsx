@@ -23,12 +23,13 @@ export function questKr(card: ObjectiveBoardCard): { k: Kr; fraction: number } |
   return null;
 }
 
-/** "95 s of 120 s": the bar in words. */
+/** The bar in words: "96 s of 120 s" — or, where lower is better (a pace, a time), "5:55 /km · target 5:30 /km". */
 export function questProgressWords(k: Kr): string | null {
   const { keyResult: kr, progress: p } = k;
   if (p.display.current === null || kr.target === null) return null;
   const fmt = (v: number) => formatKr(v, kr.unit, kr.measure);
-  return `${p.evidence === "capped" ? "at least " : ""}${fmt(p.display.current)} of ${fmt(kr.target)}`;
+  const now = `${p.evidence === "capped" ? "at least " : ""}${fmt(p.display.current)}`;
+  return kr.direction === "down" ? `${now} · target ${fmt(kr.target)}` : `${now} of ${fmt(kr.target)}`;
 }
 
 /** A key result's best ever, when it came this week (Monday on) and sits on its trend. */

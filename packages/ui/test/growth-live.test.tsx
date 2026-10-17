@@ -197,6 +197,8 @@ describe("Growth, live", () => {
     const sheet = dialog();
     expect(sheet?.textContent).toContain("Wall sit hold");
     expect(sheet?.querySelector(".obj-card")).not.toBeNull();
+    // The sheet's title names it; the card's own title is not drawn a second time (kept for the outline).
+    expect(sheet?.querySelector(".obj-title")?.classList.contains("visually-hidden")).toBe(true);
     expect(registry.current).toMatchObject({ kind: "objective", id: "o1" });
   });
 });

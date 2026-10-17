@@ -305,13 +305,27 @@ describe("a quest", () => {
     expect(questKr(q)).toMatchObject({ fraction: 0.6 });
     expect(questProgressWords(q.keyResults[0]!)).toBe("96 s of 120 s");
     expect(questProgressWords({ ...q.keyResults[0]!, progress: progress([["2026-10-13", 96]], { evidence: "capped" }) })).toBe("at least 96 s of 120 s");
+    // Lower is better: now, and the target beside it.
+    const pace = kr("k5", "Easy pace", {
+      measure: keyResultMeasureSchema.parse({ kind: "pace_at_hr", hrLow: 120, hrHigh: 150 }),
+      direction: "down",
+      unit: "s/km",
+      baseline: 420,
+      target: 330,
+    });
+    expect(questProgressWords({ keyResult: pace, progress: progress([["2026-10-13", 355]], { unit: "s/km", display: { unit: "s/km", current: 355 } }), best: null })).toBe(
+      "5:55 /km · target 5:30 /km",
+    );
     expect(questKr(quest({ keyResults: [{ keyResult: kr("k9", "No start", { baseline: null }), progress: progress([["2026-10-13", 96]]), best: null }] }))).toBeNull();
   });
 
   it("a best ever this week, on the trend, is its line; one from before Monday, or off the trend, is not", () => {
     expect(questLine(quest(), TODAY)).toBe("Best ever this week · Wall sit hold 96 s");
     expect(bestThisWeek(quest(), TODAY)).not.toBeNull();
-    const lastWeek = quest({ keyResults: [{ ...quest().keyResults[0]!, best: { date: "2026-10-11", value: 96, display: 96 } }] });
+    // On the trend, but Sunday: last week's.
+    const lastWeek = quest({
+      keyResults: [{ ...quest().keyResults[0]!, progress: progress([["2026-09-20", 80], ["2026-10-11", 96]]), best: { date: "2026-10-11", value: 96, display: 96 } }],
+    });
     expect(questLine(lastWeek, TODAY)).toBe("3 weeks in a row");
     const offTrend = quest({ keyResults: [{ ...quest().keyResults[0]!, best: { date: "2026-10-13", value: 99, display: 99 } }] });
     expect(bestThisWeek(offTrend, TODAY)).toBeNull();

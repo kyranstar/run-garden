@@ -6371,8 +6371,8 @@ button.session-chip {
 
 /* ── Growth (the new shape §7): the period, the body map, quests, records ──
    Sections name themselves at rank 3; the body map and each quest are cards.
-   The figure's tint is the athlete's green at three strengths over the sunken
-   ground — never the only signal: the legend and "By area" say it in words. */
+   The figure's tint is the athlete's green at three strengths over a quiet
+   grey — never the only signal: the legend and "By area" say it in words. */
 .growth-title {
   flex-wrap: wrap;
   gap: var(--space-4);
@@ -6419,7 +6419,7 @@ button.session-chip {
   height: 100%;
 }
 .body-head {
-  fill: var(--bg-sunken);
+  fill: color-mix(in srgb, var(--ink-faint) 16%, var(--bg-raised));
   stroke: var(--border-strong);
   stroke-width: 1;
 }
@@ -6427,8 +6427,9 @@ button.session-chip {
   stroke: var(--border-strong);
   stroke-width: 1;
 }
+/* At rest: a quiet grey a step off the card, in either theme (the sunken ground went near-black in the dark). */
 .body-area.body-lvl-0 {
-  fill: var(--bg-sunken);
+  fill: color-mix(in srgb, var(--ink-faint) 16%, var(--bg-raised));
 }
 .body-area.body-lvl-1 {
   fill: color-mix(in srgb, var(--green) 28%, var(--bg-raised));
@@ -6495,7 +6496,7 @@ button.session-chip {
   height: 0.75rem;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xs);
-  background: var(--bg-sunken);
+  background: color-mix(in srgb, var(--ink-faint) 16%, var(--bg-raised));
 }
 .body-swatch.body-lvl-1 {
   background: color-mix(in srgb, var(--green) 28%, var(--bg-raised));
@@ -6506,8 +6507,9 @@ button.session-chip {
 .body-swatch.body-lvl-3 {
   background: var(--green);
 }
-.body-more {
-  margin-top: var(--space-5);
+/* A disclosure under a section ("By area", "2 completed") keeps its own width, at the start. */
+.growth-sect > .dash-more {
+  align-self: flex-start;
 }
 .body-list {
   margin: var(--space-4) 0 0;

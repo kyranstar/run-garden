@@ -53,10 +53,14 @@ async function get(query = "?period=month", as: string | null = cookie) {
 type SetSeed = { ex: string; reps?: number; seconds?: number; side?: "left" | "right"; perSide?: boolean; entry?: number; set?: number };
 
 /** A session logged `n` days ago, its done sets as given (each its own set unless `set` says otherwise). */
-async function session(n: number, sets: SetSeed[], o: { owner?: string; moves?: Array<{ exerciseId: string; seconds: number }>; source?: string } = {}): Promise<string> {
+async function session(
+  n: number,
+  sets: SetSeed[],
+  o: { owner?: string; moves?: Array<{ exerciseId: string; seconds: number }>; source?: string; activityId?: string } = {},
+): Promise<string> {
   const id = newId();
   await db.insert(performedSessions).values({
-    id, userId: o.owner ?? userId, source: o.source ?? "app", sourceRef: o.source === "watch" ? `w-${id}` : null, localDate: day(n), seconds: 1800,
+    id, userId: o.owner ?? userId, source: o.source ?? "app", sourceRef: o.source === "watch" ? `w-${id}` : null, activityId: o.activityId ?? null, localDate: day(n), seconds: 1800,
     movesDone: o.moves ?? [], payloadHash: "h", createdAt: T0, updatedAt: T0,
   });
   let i = 0;
@@ -169,6 +173,11 @@ describe("GET /api/growth/body", () => {
     expect((await get()).body.quiet).toEqual({ area: "arms", daysAgo: QUIET_DAYS + 3 });
   });
 
+  it("quiet from exactly QUIET_DAYS without work", async () => {
+    await session(QUIET_DAYS, sets("deadBug", 3));
+    expect((await get()).body.quiet).toEqual({ area: "core", daysAgo: QUIET_DAYS });
+  });
+
   it("an area the athlete focuses on and never worked in the period is quiet for all of it; one never worked and not a focus is not named", async () => {
     await session(QUIET_DAYS + 1, sets("gobletSquat", 3));
     await focusOn({ id: "upper-back", label: "Upper back", refs: ["upper-back"] }, { id: "left-hip", label: "Left hip", refs: ["deep-hip-rotators"] });
@@ -183,8 +192,8 @@ describe("GET /api/growth/body", () => {
       { ex: "wallSit", seconds: 70, entry: 0, set: 1 },
       { ex: "sidePlank", seconds: 40, side: "left", perSide: true, entry: 1, set: 0 },
       { ex: "sidePlank", seconds: 35, side: "right", perSide: true, entry: 1, set: 0 },
-      // Held, but no strength hold: a stretch.
-      { ex: "standingHamstringStretch", seconds: 90, entry: 2, set: 0 },
+      // Held for time and isometric, but no strength hold: a stretch.
+      { ex: "couchStretch", seconds: 90, entry: 2, set: 0 },
       // Reps, not a hold.
       { ex: "deadBug", reps: 10, entry: 3, set: 0 },
     ]);
@@ -197,6 +206,25 @@ describe("GET /api/growth/body", () => {
       { exerciseId: "sidePlank", name: expect.any(String), seconds: 35, date: day(6) },
     ]);
     expect((await get("?period=season")).body.holds[0]).toMatchObject({ exerciseId: "wallSit", seconds: 120, date: day(45) });
+  });
+
+  it("one physical session counts once: the athlete's own record's hold, not the watch's copy of the same activity", async () => {
+    const activityId = newId();
+    const date = day(4);
+    await db.insert(activities).values({
+      id: activityId, userId, sport: "strength", startTime: `${date}T15:00:00.000Z`, startTimeLocal: `${date}T08:00:00`, durationSeconds: 1800, createdAt: T0, updatedAt: T0,
+    });
+    await session(4, [{ ex: "wallSit", seconds: 50, entry: 0, set: 0 }], { activityId });
+    await session(4, [{ ex: "wallSit", seconds: 80, entry: 0, set: 0 }], { activityId, source: "watch" });
+    const { body } = await get();
+    expect(body.sessions).toBe(1);
+    expect(body.holds).toEqual([{ exerciseId: "wallSit", name: "Wall sit", seconds: 50, date }]);
+  });
+
+  it("a hold equalled later keeps the day it was first held", async () => {
+    await session(9, [{ ex: "wallSit", seconds: 60, entry: 0, set: 0 }]);
+    await session(3, [{ ex: "wallSit", seconds: 60, entry: 0, set: 0 }]);
+    expect((await get()).body.holds).toEqual([{ exerciseId: "wallSit", name: "Wall sit", seconds: 60, date: day(9) }]);
   });
 
   it("a watch's hold counts as the library move its key maps to", async () => {
