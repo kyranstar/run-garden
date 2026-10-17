@@ -257,7 +257,8 @@ export const searchLibraryTool: DesignTool = {
     const found = agentSearch(EXERCISES, query, libFilters, ctxOf(false));
     const matches = found.hits;
     const setAside = EXERCISES.filter((ex) => prefs.get(ex.id)?.excluded);
-    const setAsideHidden = setAside.length ? agentSearch(setAside, query, libFilters, ctxOf(true)).hits.length : 0;
+    // Only how many: no diagnosis of a zero (round 3, R2-M1).
+    const setAsideHidden = setAside.length ? agentSearch(setAside, query, libFilters, ctxOf(true), { explain: false }).hits.length : 0;
     const limit = p.limit ?? DEFAULT_LIMIT;
     const missing: string[] = [...athlete.missing];
     if (matches.length === 0) {

@@ -755,6 +755,22 @@ beforeAll(async () => {
     await measureTool("remember", images.get("read12")!, ctx, { kind: "fact", body: words(1, 200), confidence: "stated" });
     await measureTool("adjust_plan", images.get("read12")!, ctx, { workoutId: rich.outlineToday, change: { kind: "skip", reason: "Rest the legs today." }, why: words(2, 150) });
     await measureTool("finish", images.get("read12")!, ctx, { summary: words(3, 200) });
+
+    // A search that finds nothing (fix wave 13, round 3, R2-M1) says why from the library's word index — no move says a
+    // word, or every move is turned away (here by the place's gear) — within what search_library declares.
+    const search = allTools().find((t) => t.name === "search_library")!;
+    const zeros: Array<[string, string, unknown]> = [
+      ["8z.unknown", "8z. search_library: 8 words no move says", { query: "zqxva zqxvb zqxvc zqxvd zqxve zqxvf zqxvg zqxvh" }],
+      ["8z.away", "8z. search_library: 8 words, every move turned away by the place's gear", { query: "kettlebell swing deadlift goblet squat press row carry", filters: { place: "mat", equipment: "kettlebell" } }],
+    ];
+    for (const [id, label, input] of zeros) {
+      (await measure(id, `${label} (declared ${search.cpuWeight})`, images.get("read12")!, async (x) => {
+        const r = await search.run(ctx(x), input);
+        if (isToolErr(r)) throw new Error(`${id} refused: ${r.error}`);
+        if ((r.data as { moves: unknown[] }).moves.length > 0) throw new Error(`${id}: not a zero`);
+        utf8Bytes(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }));
+      }, { budget: search.cpuWeight })).close();
+    }
   }
 
   // 2b. Validate, then propose: two documents, so the model step runs neither; the next runs both — the reviewer's
@@ -1145,7 +1161,7 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "7", "5a", "6"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "7", "5a", "6"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
@@ -1166,7 +1182,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c"]) {
     const over = KNOWN_OVER[id];
     it(
       over

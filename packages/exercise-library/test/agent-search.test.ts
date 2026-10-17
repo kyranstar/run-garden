@@ -165,6 +165,13 @@ describe("agentSearch: a word means what it means in the Studio (round 3, R2-I1)
 });
 
 describe("agentSearch: a zero's diagnosis is bounded (round 3, R2-M1)", () => {
+  test("a count needs no diagnosis: explain false leaves a zero unexplained, and moves turned away are counted in the one pass", () => {
+    expect(agentSearch(EXERCISES, "zqxva zqxvb", {}, {}, { explain: false }).empty).toEqual([]);
+    const away = agentSearch(EXERCISES, "squat", {}, { accepts: () => false }, { explain: false });
+    expect(away.hits).toEqual([]);
+    expect(away.turnedAway).toBe(agentSearch(EXERCISES, "squat").hits.length);
+  });
+
   test("a zero names every unknown word, from the index (its cost is the CPU bench's gate)", () => {
     const query = "zqxva zqxvb zqxvc zqxvd zqxve zqxvf zqxvg zqxvh";
     const before = agentSearch(EXERCISES, query);

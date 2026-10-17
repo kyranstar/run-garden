@@ -216,12 +216,19 @@ function withinOneEdit(a: string, b: string): boolean {
   if (a === b) return true;
   if (Math.abs(a.length - b.length) > 1) return false;
   let i = 0;
-  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  while (i < a.length && i < b.length && a.charCodeAt(i) === b.charCodeAt(i)) i++;
   if (a.length === b.length) {
-    if (a.slice(i + 1) === b.slice(i + 1)) return true;
-    return a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2);
+    if (restEqual(a, i + 1, b, i + 1)) return true;
+    return a.charCodeAt(i) === b.charCodeAt(i + 1) && a.charCodeAt(i + 1) === b.charCodeAt(i) && restEqual(a, i + 2, b, i + 2);
   }
-  return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+  return a.length > b.length ? restEqual(a, i + 1, b, i) : restEqual(a, i, b, i + 1);
+}
+
+/** Whether `a` from `ai` and `b` from `bi` are the same to their ends (no string is made). */
+function restEqual(a: string, ai: number, b: string, bi: number): boolean {
+  if (a.length - ai !== b.length - bi) return false;
+  for (; ai < a.length; ai++, bi++) if (a.charCodeAt(ai) !== b.charCodeAt(bi)) return false;
+  return true;
 }
 
 /**
@@ -278,20 +285,28 @@ export interface AgentSearch {
 const byName = new Intl.Collator("en");
 
 /** The coach's search: every word first, then some of the words (see the module comment). */
-export function agentSearch(records: readonly ExerciseRecord[], query: string, filters: LibraryFilters = {}, ctx: SearchContext = {}): AgentSearch {
+export function agentSearch(
+  records: readonly ExerciseRecord[],
+  query: string,
+  filters: LibraryFilters = {},
+  ctx: SearchContext = {},
+  o: { explain?: boolean } = {},
+): AgentSearch {
   const all = queryWords(query);
   const words = all.slice(0, MAX_QUERY_WORDS);
   const dropped = all.slice(MAX_QUERY_WORDS);
   const cleaned = words.join(" ");
   const studio = searchLibrary(records, cleaned, filters, ctx);
   const hits: AgentHit[] = studio.map((record) => ({ record }));
+  // The moves the words and filters find that the caller's own yes/no turns away, counted as the pass goes (round 3,
+  // R2-M1: a zero never searches again to find them).
+  let turnedAway = 0;
+  // Each word looked up once in the index (see "The word index"), never record by record.
+  const saying = words.length > 0 ? words.map((w) => recordsSaying(indexOf(records), w)) : [];
   if (words.length > 0) {
     const taken = new Set(studio.map((e) => e.id));
     const fit = ctx.fit ?? (() => 0);
     const boost = ctx.boost ?? (() => 0);
-    // Each word looked up once in the index (see "The word index"), never record by record.
-    const index = indexOf(records);
-    const saying = words.map((w) => recordsSaying(index, w));
     const scored: Array<{ ex: ExerciseRecord; said: string[]; rank: number; fit: number; boost: number }> = [];
     records.forEach((ex, i) => {
       if (taken.has(ex.id)) return;
@@ -303,7 +318,11 @@ export function agentSearch(records: readonly ExerciseRecord[], query: string, f
         said.push(w);
         rank += r;
       });
-      if (said.length === 0 || !matchesFilters(ex, filters) || (ctx.accepts && !ctx.accepts(ex))) return;
+      if (said.length === 0 || !matchesFilters(ex, filters)) return;
+      if (ctx.accepts && !ctx.accepts(ex)) {
+        turnedAway += 1;
+        return;
+      }
       scored.push({ ex, said, rank, fit: fit(ex), boost: boost(ex.id) });
     });
     scored.sort(
@@ -311,14 +330,15 @@ export function agentSearch(records: readonly ExerciseRecord[], query: string, f
         b.said.length - a.said.length || a.rank - b.rank || a.fit - b.fit || b.boost - a.boost || byName.compare(a.ex.name, b.ex.name) || (a.ex.id < b.ex.id ? -1 : a.ex.id > b.ex.id ? 1 : 0),
     );
     for (const s of scored) hits.push(s.said.length === words.length ? { record: s.ex } : { record: s.ex, matched: s.said });
+  } else if (studio.length === 0 && ctx.accepts) {
+    turnedAway = records.filter((ex) => matchesFilters(ex, filters) && !ctx.accepts!(ex)).length;
   }
   const allWords = hits.filter((h) => !h.matched).length;
   if (hits.length > 0) return { hits, words, dropped, allWords, empty: [], turnedAway: 0 };
-
-  // Nothing: was it the caller's yes/no, or the words and filters themselves?
-  const unchecked = ctx.accepts ? agentSearch(records, query, filters, { ...ctx, accepts: undefined }).hits.length : 0;
-  if (unchecked > 0) return { hits, words, dropped, allWords: 0, empty: [], turnedAway: unchecked };
-  return { hits, words, dropped, allWords: 0, empty: whyEmpty(records, words, filters), turnedAway: 0 };
+  // Nothing: was it the caller's yes/no, or the words and filters themselves? (Only when asked: a count needs neither.)
+  if (o.explain === false) return { hits, words, dropped, allWords: 0, empty: [], turnedAway };
+  if (turnedAway > 0) return { hits, words, dropped, allWords: 0, empty: [], turnedAway };
+  return { hits, words, dropped, allWords: 0, empty: whyEmpty(records, words, filters, saying), turnedAway: 0 };
 }
 
 /** A gear's name in a sentence: "a barbell", "machines", "dumbbells". */
@@ -365,19 +385,20 @@ function deadValueNamed(used: Record<SearchFacet, string[]>, w: string): { facet
   for (const facet of LINE_FACETS) {
     for (const value of FACET_VALUES[facet] as readonly string[]) {
       if (used[facet].includes(value)) continue;
-      const names = [...wordsOfId(value), ...wordsOfId(facet === "equipment" ? (EQUIPMENT[value as EquipmentId] ?? value) : label(value))];
+      const names = [...wordsOfText(value), ...wordsOfText(facet === "equipment" ? (EQUIPMENT[value as EquipmentId] ?? value) : label(value))];
       if (fs.some((f) => names.includes(f))) return { facet, value };
     }
   }
   return null;
 }
 
-function whyEmpty(records: readonly ExerciseRecord[], words: readonly string[], filters: LibraryFilters): string[] {
+/** Why a search found nothing: the words no move says (`saying`: each word's records, as the search found them), the
+ * filter values no move uses, or none of them together. */
+function whyEmpty(records: readonly ExerciseRecord[], words: readonly string[], filters: LibraryFilters, saying: ReadonlyArray<ReadonlyMap<number, number>>): string[] {
   const out: string[] = [];
   const used = usedValues(records);
-  const index = indexOf(records);
-  for (const w of words) {
-    if (recordsSaying(index, w).size > 0) continue;
+  for (const [k, w] of words.entries()) {
+    if (saying[k]!.size > 0) continue;
     const dead = deadValueNamed(used, w);
     out.push(dead ? `no move in the library ${facetPhrase(dead.facet, [dead.value])} ("${w}")` : `no move says "${w}"`);
   }
