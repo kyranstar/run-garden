@@ -158,7 +158,9 @@ describe("any design: a time today already past is refused at propose", () => {
 describe("now: no time means the moment of the approve, rounded up to five minutes", () => {
   it("the op is marked for now; the approve places it then, pinned; the line said the same time", async () => {
     const { id, op } = await designed({ kind: "now" }, { kind: "new", date: TODAY }, la("09:31"));
-    expect(op.target).toEqual({ kind: "new", date: TODAY, atNow: true });
+    // Its floor is the propose-time clock, rounded up as the approve rounds (round 2, I2: a session that covers no
+    // evening one, by the supersede's own rule).
+    expect(op.target).toEqual({ kind: "new", date: TODAY, atNow: true, notBefore: "09:35" });
     // Read at 09:32:10, the card says 09:35; approved a minute later, it is 09:35 still.
     expect((await lineAt(op, la("09:32", 10))).time).toBe("09:35");
     const answer = await approveAt(id, la("09:33", 40));
@@ -198,8 +200,14 @@ describe("a now design floats (Task 13's fix wave, R1): its time is a floor, nev
     const { result } = await propose({ kind: "now" }, { kind: "new", date: TODAY, time: "09:00" }, la("09:32"));
     expect(isToolErr(result)).toBe(false);
     const { op } = await designed({ kind: "now" }, { kind: "new", date: TODAY, time: "09:00" }, la("09:32"));
-    expect(op.target).toEqual({ kind: "new", date: TODAY, atNow: true });
+    expect(op.target).toEqual({ kind: "new", date: TODAY, atNow: true, notBefore: "09:35" });
     expect(op.time).toBeUndefined();
+  });
+
+  it("an untimed now design proposed at 07:00 and approved at 07:20 lands at 07:20: its floor never holds it back (round 2, I2)", async () => {
+    const { id, op } = await designed({ kind: "now" }, { kind: "new", date: TODAY }, la("07:00", 20));
+    expect(op.target).toEqual({ kind: "new", date: TODAY, atNow: true, notBefore: "07:05" });
+    expect((await approveAt(id, la("07:20"))).applied[0]!.workout.time).toBe("07:20");
   });
 
   it("a later day named in a now run keeps its time as asked; so does a set's workout for today", async () => {
