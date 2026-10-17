@@ -2891,3 +2891,30 @@ export interface StudioHistoryEntryDto {
   createdAt: string;
   brief: PlanBrief;
 }
+
+// ── The music dock (2026-10-17) ─────────────────────────────────────────────
+
+/** `GET /api/music`: the Spotify connection and the dock's shortcuts. A 404 means the dock is off (no Client ID). */
+export interface MusicDto {
+  connected: boolean;
+  reason?: "reconnect";
+  music: import("@rg/domain").MusicPreferences;
+}
+
+/** `GET /api/music/spotify/token`: a short-lived access token for the page (never cached), or why there is none.
+ * `apiBase` only in fixture mode: the stand-in Spotify on this origin. */
+export type SpotifyTokenDto =
+  | { connected: true; accessToken: string; expiresAt: string; apiBase?: string }
+  | { connected: false; reason: "not_connected" | "reconnect" };
+
+/** Where the dock sends the athlete to connect Spotify (a navigation: the Worker redirects to Spotify). */
+export const SPOTIFY_LOGIN_PATH = "/api/music/spotify/login";
+
+export const musicApi = {
+  read: () => get<MusicDto>("/api/music"),
+  /** The shortcuts, whole. */
+  save: (music: import("@rg/domain").MusicPreferences) => put<{ music: import("@rg/domain").MusicPreferences }>("/api/music", music),
+  /** `fresh`: Spotify refused the last token — refresh whatever the time left. */
+  token: (fresh: boolean) => request<SpotifyTokenDto>(`/api/music/spotify/token${fresh ? "?fresh=1" : ""}`, { cache: "no-store" }),
+  disconnect: () => request<{ ok: true }>("/api/music/spotify", { method: "DELETE" }),
+};

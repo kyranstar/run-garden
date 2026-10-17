@@ -307,6 +307,10 @@ export function makeDockController(deps: DockDeps) {
       await buildMinecraft(true);
       if (state.busy === "building") set({ busy: null });
     },
+    /** A line in the sheet (the login's outcome, when it came back here). */
+    say(text: string, tone: "info" | "warn"): void {
+      set({ notice: { text, tone } });
+    },
     setEditing(editing: boolean): void {
       set({ editing, adding: null });
     },

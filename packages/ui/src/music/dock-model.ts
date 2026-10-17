@@ -74,3 +74,11 @@ export function trackEndsAt(player: PlayerState | null, readAt: number | null): 
   if (!player?.is_playing || !player.item?.duration_ms || readAt === null) return null;
   return readAt + Math.max(0, player.item.duration_ms - (player.progress_ms ?? 0));
 }
+
+/** The resting pill's words: the track's short title while it plays and until it should have ended (the dock reads
+ * Spotify only while it is open, so past that the pill can't know and shows the note alone); else null. */
+export function pillTitle(state: { player: PlayerState | null; readAt: number | null }, now: number): string | null {
+  const ends = trackEndsAt(state.player, state.readAt);
+  if (ends === null || now >= ends || !state.player?.item?.name) return null;
+  return shortTitle(state.player.item.name);
+}

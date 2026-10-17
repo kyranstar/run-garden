@@ -45,7 +45,8 @@ export function makePoller(deps: PollerDeps) {
       if (e instanceof SpotifyError && e.status === 429) wait = Math.max(POLL_MS, e.retryAfterMs ?? POLL_MS);
       else deps.onError?.(e);
     }
-    if (active && gen === generation) queue(wait, gen);
+    // Still this generation (both paths above return when the dock closed meanwhile), so still active.
+    queue(wait, gen);
   }
 
   return {

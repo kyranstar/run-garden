@@ -12123,3 +12123,280 @@ a.stu-tpl-open:focus-visible::before {
     margin-left: auto;
   }
 }
+
+/* ── The music dock (2026-10-17) ───────────────────────────────────────────
+   A Spotify remote that rests as a small pill — a note, or the track's short
+   title while it plays — and opens into a sheet. Below lg it sits above the
+   tab bar at the LEFT edge (the coach's pill owns the right), never past the
+   middle, and the page keeps a pill's height of room under its last control
+   (`.music-dock-room`) so nothing is left under it. At lg it sits in the
+   rail's bottom corner, where it covers no page at all. In the session player
+   it is the note alone, under the top bar's tools, clear of the player's own
+   controls at the foot. */
+.music-dock--shell {
+  position: fixed;
+  left: calc(var(--space-6) + env(safe-area-inset-left, 0px));
+  bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-5));
+  z-index: 30;
+  display: flex;
+  max-width: calc(50vw - var(--space-6) - var(--space-3));
+}
+.music-dock-room {
+  height: calc(var(--tap) + var(--space-5));
+}
+@media (min-width: 1024px) {
+  .music-dock--shell {
+    left: var(--space-6);
+    bottom: var(--space-6);
+    max-width: calc(clamp(9rem, calc(100vw - 880px), 210px) - 2 * var(--space-6));
+  }
+  .music-dock-room {
+    display: none;
+  }
+  .shell--music .side-nav .nav-footer {
+    padding-bottom: calc(var(--tap) + var(--space-5));
+  }
+}
+.music-dock--player {
+  position: fixed;
+  /* The player's top bar (its padding, a 44px tool and the progress line), then a step. */
+  top: calc(env(safe-area-inset-top, 0px) + var(--space-5) * 2 + var(--tap) + var(--space-6));
+  right: calc(var(--space-6) + env(safe-area-inset-right, 0px));
+  z-index: 30;
+}
+.music-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  min-width: var(--tap);
+  max-width: 100%;
+  padding: 0 var(--space-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--ink-soft);
+  box-shadow: var(--shadow-sm);
+  font: var(--weight-medium) var(--text-sm) var(--font);
+  cursor: pointer;
+}
+.music-pill:hover {
+  border-color: var(--ink-faint);
+  color: var(--ink);
+}
+.music-pill svg {
+  flex: none;
+}
+.music-pill--playing {
+  color: var(--ink);
+}
+.music-pill--playing svg {
+  color: var(--green);
+}
+.music-pill-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.music-dock--player .music-pill {
+  box-shadow: none;
+  color: var(--ink-soft);
+}
+.music-dock--player .music-pill-title {
+  display: none;
+}
+.music-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.music-now {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+}
+.music-now-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.music-now-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+.music-now-meta {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.music-now-controls {
+  display: flex;
+  flex: none;
+  gap: var(--space-3);
+}
+.music-control {
+  display: inline-grid;
+  place-items: center;
+  width: var(--tap);
+  height: var(--tap);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-round);
+  background: var(--bg-raised);
+  color: var(--ink);
+  cursor: pointer;
+}
+.music-control:hover {
+  border-color: var(--ink-faint);
+}
+.music-volume {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.music-volume label {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.music-volume input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap);
+  margin: 0;
+  accent-color: var(--green);
+}
+.music-volume-note,
+.music-notice {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.music-notice--warn,
+.music-add-error {
+  margin: 0;
+  color: var(--warn);
+  font-size: var(--text-sm);
+}
+.music-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.music-shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+.music-shortcut-row:first-child {
+  border-top: 0;
+}
+.music-shortcut {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-5);
+  min-width: 0;
+  min-height: var(--tap);
+  padding: var(--space-4) 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: var(--weight-medium) var(--text-md) var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.music-shortcut:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.music-shortcut-mark {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: calc(var(--tap) - var(--space-4));
+  height: calc(var(--tap) - var(--space-4));
+  border-radius: var(--radius-sm);
+  background: var(--green-soft);
+  color: var(--green-ink);
+  font-size: var(--text-lg);
+}
+.music-shortcut-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.music-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.music-quiet {
+  padding-left: 0;
+  padding-right: 0;
+  border-color: transparent;
+  background: none;
+  color: var(--green-ink);
+}
+.music-quiet:hover {
+  border-color: transparent;
+  text-decoration: underline;
+}
+.music-connect,
+.music-open,
+.music-disconnect {
+  align-self: flex-start;
+}
+.music-subhead {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.music-add,
+.music-playlists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.music-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.music-add-form label {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.music-add-line {
+  display: flex;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.music-add-line input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+}

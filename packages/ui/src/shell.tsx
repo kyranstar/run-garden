@@ -8,6 +8,7 @@ import { CoachBoundary } from "./screens/studio/coach-boundary.js";
 import { CoachNavMark } from "./screens/studio/run-keeper.js";
 import { useCorosReadNow } from "./screens/use-coros-read.js";
 import { RestorePendingNotice } from "./screens/restore-notice.js";
+import { MusicDock, useMusicOn } from "./music/dock.js";
 
 // Five tabs: Insights merged into Activity (System 2) — /insights redirects; the Studio sits between Plan and
 // Activity (Stage 2 spec §2). Labels stay one short word: five equal links share a 320px bar.
@@ -75,8 +76,10 @@ export function AppShell({
   useCorosReadNow();
   const immersive = pathname === "/" || pathname === "/garden";
   const wide = isWide(pathname);
+  // The music dock (Spotify): on only once the owner's Client ID is set (the server answers it); off, no room is kept.
+  const music = useMusicOn();
   return (
-    <div className="shell">
+    <div className={`shell${music ? " shell--music" : ""}`}>
       <nav className="side-nav" aria-label="Main">
         <div className="brand">{PRODUCT_NAME}</div>
         {navItems().map((item) => (
@@ -110,7 +113,11 @@ export function AppShell({
           </div>
         ) : null}
         {children}
+        {/* Room under the page's last control for the dock's pill, below lg (at lg it sits in the rail's corner). */}
+        {music ? <div className="music-dock-room" aria-hidden="true" /> : null}
       </main>
+
+      {music ? <MusicDock variant="shell" /> : null}
 
       <nav className="bottom-nav" aria-label="Main">
         {navItems().map((item) => (

@@ -508,6 +508,52 @@ describe("polling the player", () => {
     expect(reads).toHaveLength(3);
   });
 
+  it("a read still in flight when the dock closes is dropped, and nothing more is read", async () => {
+    const t = timers();
+    const states: unknown[] = [];
+    let release: (v: null) => void = () => undefined;
+    let reads = 0;
+    const poller = makePoller({
+      read: () => {
+        reads += 1;
+        return new Promise((r) => (release = r));
+      },
+      onState: (s) => states.push(s),
+      schedule: t.schedule,
+    });
+    poller.set({ expanded: true, visible: true });
+    await t.advance(0);
+    expect(reads).toBe(1);
+    poller.set({ expanded: false, visible: true });
+    release(null);
+    await t.advance(60_000);
+    expect(states).toEqual([]);
+    expect(reads).toBe(1);
+    expect(t.pending()).toBe(0);
+  });
+
+  it("a read that fails while the dock closes schedules nothing either", async () => {
+    const t = timers();
+    let fail: (e: unknown) => void = () => undefined;
+    let reads = 0;
+    const errors: unknown[] = [];
+    const poller = makePoller({
+      read: () => {
+        reads += 1;
+        return new Promise((_, reject) => (fail = reject));
+      },
+      onState: () => undefined,
+      onError: (e) => errors.push(e),
+      schedule: t.schedule,
+    });
+    poller.set({ expanded: true, visible: true });
+    await t.advance(0);
+    poller.stop();
+    fail(new Error("offline"));
+    await t.advance(60_000);
+    expect([reads, errors.length, t.pending()]).toEqual([1, 0, 0]);
+  });
+
   it("hands each read to the dock", async () => {
     const t = timers();
     const states: unknown[] = [];

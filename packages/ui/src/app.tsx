@@ -20,6 +20,7 @@ import { CoachKeeper } from "./screens/studio/run-keeper.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 import { OutboxSync } from "./components/outbox-sync.js";
+import { MusicDock } from "./music/dock.js";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -182,7 +183,13 @@ function PlayerRoute() {
     );
   }
   if (me.isError && me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/welcome" replace />;
-  return <PlayerScreen workoutId={workoutId} />;
+  return (
+    <>
+      <PlayerScreen workoutId={workoutId} />
+      {/* The music dock, in its smaller form, up out of the way of the player's controls (draws nothing while off). */}
+      <MusicDock variant="player" />
+    </>
+  );
 }
 
 export function App() {
