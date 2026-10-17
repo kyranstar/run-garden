@@ -11185,6 +11185,117 @@ a.stu-tpl-open:focus-visible::before {
   left: auto;
 }
 
+/* ── The coach, anywhere (coach everywhere, phase A3) ────────────────────────────────────────────────────────────
+   The app's one coach sheet (coach-sheet.tsx). On a phone a bottom sheet with a definite frame: the run grows inside
+   its body, never lifting its head off the finger. From lg a panel at the right edge, full height, the page dimmed
+   beside it — above the Plan's floating coach window, never beside it. */
+.sheet.coach-sheet {
+  height: 85dvh;
+}
+@media (min-width: 1024px) {
+  .coach-sheet-backdrop {
+    justify-content: flex-end;
+    align-items: stretch;
+    padding: var(--space-6);
+  }
+  .sheet.coach-sheet {
+    height: auto;
+    max-height: none;
+    width: min(460px, 40vw);
+    max-width: none;
+  }
+}
+/* What the athlete asked from, over the field: a chip, its ✕ takes it off. */
+.coach-about {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-2);
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+.coach-about-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.coach-about-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.coach-about-clear:hover {
+  color: var(--ink);
+}
+/* "Ask" with the coach mark: the one small affordance every screen that asks wears. */
+.ask-coach {
+  gap: var(--space-2);
+}
+.ask-coach-mark {
+  display: inline-flex;
+  color: var(--green-ink);
+}
+/* "Change something…" under a pending single suggestion: one line and its Send. */
+.coach-pc-follow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.coach-pc-follow-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.coach-pc-follow-field {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap);
+}
+/* A day of the week view: its Ask at the row's end on a phone, at the column's foot from lg — shown there when the day
+   is pointed at or holds the focus, so seven of them never crowd the grid. */
+.plan-week-ask {
+  flex: none;
+  align-self: center;
+}
+@media (min-width: 1024px) {
+  .plan-week-ask {
+    align-self: flex-start;
+    margin-top: auto;
+  }
+}
+@media (min-width: 1024px) and (hover: hover) {
+  .plan-week-day:not(:hover):not(:focus-within) .plan-week-ask {
+    opacity: 0;
+  }
+}
+/* The Today card, a session's sheet, an activity, an objective, a move: the Ask sits with the actions it is one of. */
+.today-ask,
+.session-ask-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.obj-ask {
+  flex: none;
+}
+.stu-detail-actions > .ask-coach {
+  align-self: flex-start;
+}
+
 /* The run view. */
 .coach-run {
   display: flex;

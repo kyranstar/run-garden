@@ -392,6 +392,8 @@ export interface ActivityDto {
 
 /** What a performed session was, as the Activity feed shows it (worker: services/logged-sets.ts). */
 export interface PerformedSummaryDto {
+  /** The session's own id (coach everywhere: the coach is asked from it); absent from an older server. */
+  id?: string;
   /** The app's own save, a watch review, an import, or the watch's derived copy. */
   source: "app" | "watch_review" | "import" | "watch";
   mode: "recovery" | "consistent" | "build" | null;
@@ -1154,6 +1156,16 @@ export type CoachRunStatus =
   | "expired"
   | "stopped_cap";
 export type CoachRunRole = "main" | "designer" | "reviewer";
+/**
+ * What the athlete was looking at when they asked (coach everywhere, A1; the worker's design-focus.ts): a planned workout,
+ * a day of the plan (`YYYY-MM-DD`), a session done, an activity, an objective, a library move, or one of the coach's own
+ * suggestions (a follow-up: what it proposes replaces it). Checked as theirs on create: 404 `focus_not_found` when it
+ * isn't; 400 `focus_out_of_range` / `focus_is_set` with `why`, in words.
+ */
+export interface CoachRunFocus {
+  kind: "workout" | "day" | "session" | "activity" | "objective" | "move" | "proposal";
+  id: string;
+}
 export interface CoachRunScope {
   kind: "now" | "later_today" | "week" | "next_n";
   /** `next_n` only. */
@@ -1181,6 +1193,8 @@ export interface CoachRunDto {
   estimateUsd: number | null;
   /** The run's own spending ceiling in dollars; null when the server can't read it. */
   ceilingUsd: number | null;
+  /** What the athlete asked from (coach everywhere, A1); absent when they asked from nowhere in particular. */
+  focus?: CoachRunFocus;
 }
 
 /** The design proposal a run holds open: its id, its status and its flags (a stop's note among them). */
@@ -1251,7 +1265,7 @@ export type CoachRunCreateResult =
       run: CoachRunDto;
       existing: true;
       offer: "answer_or_cancel" | "continue_or_cancel";
-      ignoredRequest: { scope: CoachRunScope; request: string | null };
+      ignoredRequest: { scope: CoachRunScope; request: string | null; focus?: CoachRunFocus };
     };
 
 export interface CoachRunStepResult {
@@ -2249,7 +2263,8 @@ export const api = {
   // The coach designer's runs (Stage 3; 404 unless the server turned them on). One live run per athlete: a second
   // create answers the live one (`existing`). A step is one model call — minutes at most — so it is never cut off
   // client-side; a 409 means another step holds the run (poll `coachRun` and step again).
-  coachRunCreate: (body: { scope: CoachRunScope; request?: string | null; rehearsal?: boolean }) =>
+  // No scope: the athlete's default — or, asked from a suggestion (a follow-up), the suggestion's own (A2).
+  coachRunCreate: (body: { scope?: CoachRunScope; request?: string | null; rehearsal?: boolean; focus?: CoachRunFocus }) =>
     post<CoachRunCreateResult>("/api/coach/runs", body),
   // `signal`: the step loop gives up on a request whose answer is lost (the run reads as not stepping for a while), so a
   // dropped connection never holds the loop for the whole deadline. `afterSeq`: the last event held — an armed answer

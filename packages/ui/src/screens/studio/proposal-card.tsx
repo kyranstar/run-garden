@@ -62,6 +62,11 @@ export const TIME_PASSED_LINE = "That time has passed — pick another";
 /** A now design the approve can't place: no time is left today (round 2, Minor 2). Edit is beside it. */
 export const NO_TIME_LEFT_LINE = "No time left today — pick a time";
 
+/** The follow-up line's placeholder (coach everywhere, A2): what the athlete wants changed, in their words. */
+export const FOLLOW_UP_PLACEHOLDER = "Change something…";
+/** Its words, at most (the server's own cap on a request is far above it). */
+export const FOLLOW_UP_MAX_CHARS = 500;
+
 /** A designed suggestion's read. */
 export const designProposalQuery = (id: string) => ["coach-design-proposal", id] as const;
 
@@ -191,7 +196,26 @@ function decisionError(e: unknown): string {
   return "Couldn't reach the coach — try again.";
 }
 
-export function ProposalCard({ proposalId, flags = [], today = null }: { proposalId: string; flags?: readonly string[]; today?: string | null }) {
+export function ProposalCard({
+  proposalId,
+  flags = [],
+  today = null,
+  onFollowUp,
+  followUpBusy = false,
+  followUpError = null,
+}: {
+  proposalId: string;
+  flags?: readonly string[];
+  today?: string | null;
+  /**
+   * A follow-up (coach everywhere, A2): "Change something…" under a pending single-workout suggestion sends these words
+   * as a run asked from it — whose suggestion replaces this one. Absent: no line.
+   */
+  onFollowUp?: (words: string) => void;
+  followUpBusy?: boolean;
+  /** Why the follow-up didn't start, in plain words. */
+  followUpError?: string | null;
+}) {
   const qc = useQueryClient();
   const headingId = useId();
   const card = useRef<HTMLElement>(null);
@@ -285,6 +309,10 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
   const picked = chosen === null ? openIds : openIds.filter((id) => chosen.has(id));
   const toggle = (opId: string) => setChosen(new Set(picked.includes(opId) ? picked.filter((x) => x !== opId) : [...picked, opId]));
   const busy = approve.isPending || decline.isPending;
+  // A follow-up changes one open suggestion of one workout (A2): pending, nothing in it decided, no set's (a set's read
+  // carries the plan's other days) — the server refuses a set's, and supersedes only a pending one.
+  const followable =
+    onFollowUp !== undefined && data.status === "pending" && lines.length === 1 && data.context === undefined && openIds.length === lines.length + changes.length;
   const some = picked.length < openIds.length ? picked : undefined;
   // A decline that met every one in flight says so on their lines, not here.
   const error = approve.isError ? decisionError(approve.error) : decline.isError && met.size === 0 ? decisionError(decline.error) : null;
@@ -373,7 +401,52 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
           </div>
         )
       ) : null}
+      {followable && !declining ? (
+        <FollowUpLine id={`${headingId}-change`} busy={busy || followUpBusy} error={followUpError} onSend={onFollowUp!} />
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * "Change something…" (coach everywhere, A2): one line under the suggestion, its words the follow-up's request. Empty
+ * words send nothing; the field keeps them until the follow-up's run takes the card's place.
+ */
+function FollowUpLine({ id, busy, error, onSend }: { id: string; busy: boolean; error: string | null; onSend: (words: string) => void }) {
+  const [words, setWords] = useState("");
+  return (
+    <form
+      className="coach-pc-follow"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const said = words.trim();
+        if (said && !busy) onSend(said);
+      }}
+    >
+      <label className="visually-hidden" htmlFor={id}>
+        Change something about this suggestion
+      </label>
+      <div className="coach-pc-follow-row">
+        <input
+          id={id}
+          className="stu-field coach-pc-follow-field"
+          type="text"
+          maxLength={FOLLOW_UP_MAX_CHARS}
+          placeholder={FOLLOW_UP_PLACEHOLDER}
+          value={words}
+          disabled={busy}
+          onChange={(e) => setWords(e.target.value)}
+        />
+        <button type="submit" className="btn btn-small" disabled={busy}>
+          Send
+        </button>
+      </div>
+      {error ? (
+        <p className="coach-pc-error" role="status">
+          {error}
+        </p>
+      ) : null}
+    </form>
   );
 }
 

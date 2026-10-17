@@ -17,6 +17,7 @@ import { TemplatesScreen } from "./screens/studio/templates.js";
 import { ObjectivesRoute } from "./screens/studio/objectives.js";
 import { coachOn, features } from "./features.js";
 import { CoachKeeper } from "./screens/studio/run-keeper.js";
+import { CoachSheetProvider } from "./screens/studio/coach-sheet.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 import { OutboxSync } from "./components/outbox-sync.js";
@@ -143,8 +144,15 @@ function AuthedApp() {
     </AppShell>
   );
   // With the coach designer on, the app keeps the athlete's run stepping on every screen (the run keeper): leaving the
-  // Studio mid-response no longer pauses it. Off, nothing is mounted.
-  return coachOn() ? <CoachKeeper>{shell}</CoachKeeper> : shell;
+  // Studio mid-response no longer pauses it. And one coach sheet beside it (coach everywhere, A3): every screen's "Ask"
+  // opens it in place, with what the athlete was looking at. Off, nothing is mounted — and no screen draws an Ask.
+  return coachOn() ? (
+    <CoachKeeper>
+      <CoachSheetProvider>{shell}</CoachSheetProvider>
+    </CoachKeeper>
+  ) : (
+    shell
+  );
 }
 
 function WelcomeRoute() {

@@ -1,0 +1,114 @@
+/**
+ * WHAT THE COACH IS ASKED ABOUT (coach everywhere, phase A3): the focus an entry point hands the app's coach sheet — what
+ * the athlete was looking at — with what its chip says and the scope it asks for by default.
+ *
+ *  - The server takes `{ kind, id }` (`focusOfWire`); the label, the day and a suggestion's scope are the screen's own,
+ *    for the chip and the scope buttons, and never sent.
+ *  - The chip: "About: Thu Oct 23 · Strength · 40 min" — a day, a title, minutes, in the app's own formats.
+ *  - The scope by default (`focusScope`): what is done or fixed — a session, an activity, an objective, a move, a day or
+ *    workout gone by — Now; today's day or workout Later today; a later one Plan ahead (the next 7 days); a suggestion
+ *    its own (a single one is a now or a later-today design).
+ *  - A day can be asked about from a week back to the last day Plan ahead plans (`askableDay`, the server's own range:
+ *    design-focus.ts).
+ */
+import { ApiError, type ActivityDto, type CoachRunFocus, type DesignLineDto, type WorkoutDto } from "@rg/api-client";
+import { addDays, type CoachScopeKind } from "@rg/domain";
+import { formatDayShort, formatMinutes } from "../../components.js";
+
+export type CoachFocusKind = CoachRunFocus["kind"];
+
+export interface CoachFocus extends CoachRunFocus {
+  /** What the chip says after "About: ". */
+  label: string;
+  /** A workout's or a day's date (an activity's and a session's too): the scope it asks for reads it. */
+  date?: string;
+  /** A suggestion's own scope, when the screen knows it. */
+  scope?: CoachScopeKind;
+}
+
+/** What opens the coach sheet (`useCoach().open`): what it is about, the words to start from, a scope to start with. */
+export interface CoachOpenArgs {
+  focus?: CoachFocus | null;
+  request?: string | null;
+  scope?: CoachScopeKind | null;
+}
+
+/** What the server is told: the kind and the id, nothing the screen made up. */
+export const focusOfWire = (f: Pick<CoachFocus, "kind" | "id">): CoachRunFocus => ({ kind: f.kind, id: f.id });
+
+const joined = (...parts: Array<string | null | undefined | false>): string => parts.filter((p): p is string => !!p).join(" · ");
+
+/** A planned workout: its day, its title, its minutes (the plan's own estimate, else its calendar block). */
+export function workoutFocus(w: Pick<WorkoutDto, "id" | "title" | "effectiveDate" | "workoutSeconds" | "calendarSeconds">): CoachFocus {
+  const seconds = w.workoutSeconds ?? w.calendarSeconds ?? null;
+  return { kind: "workout", id: w.id, date: w.effectiveDate, label: joined(formatDayShort(w.effectiveDate), w.title, seconds ? formatMinutes(seconds) : null) };
+}
+
+/** A day of the plan. */
+export const dayFocus = (date: string): CoachFocus => ({ kind: "day", id: date, date, label: formatDayShort(date) });
+
+/** An activity — or, when it holds a logged session (an app save, a watch review, an import), that session. */
+export function activityFocus(a: Pick<ActivityDto, "id" | "date" | "title" | "sport" | "durationSeconds" | "performed">): CoachFocus {
+  const minutes = a.durationSeconds > 0 ? formatMinutes(a.durationSeconds) : null;
+  const sessionId = a.performed?.id;
+  if (sessionId) {
+    return { kind: "session", id: sessionId, date: a.date, label: joined(formatDayShort(a.date), a.performed?.theme ?? a.title ?? "Session", minutes) };
+  }
+  return { kind: "activity", id: a.id, date: a.date, label: joined(formatDayShort(a.date), a.title ?? sportWord(a.sport), minutes) };
+}
+
+const sportWord = (sport: string): string => (sport ? sport.charAt(0).toUpperCase() + sport.slice(1).replace(/_/g, " ") : "Activity");
+
+export const objectiveFocus = (o: { id: string; title: string }): CoachFocus => ({ kind: "objective", id: o.id, label: o.title });
+
+export const moveFocus = (m: { id: string; name: string }): CoachFocus => ({ kind: "move", id: m.id, label: m.name });
+
+/**
+ * One of the coach's single-workout suggestions (a follow-up): its title, and its own scope — a now design (or one for
+ * another day, which only a Now run names) Now; one later today Later today.
+ */
+export function proposalFocus(id: string, line: Pick<DesignLineDto, "title" | "date" | "atNow">, today: string | null): CoachFocus {
+  const scope: CoachScopeKind = line.atNow || line.date !== today ? "now" : "later_today";
+  return { kind: "proposal", id, label: line.title, scope };
+}
+
+/** The scope a focus asks for by default; null leaves the athlete's own default (a suggestion whose scope isn't known). */
+export function focusScope(f: CoachFocus, today: string | null): CoachScopeKind | null {
+  switch (f.kind) {
+    case "session":
+    case "activity":
+    case "objective":
+    case "move":
+      return "now";
+    case "proposal":
+      return f.scope ?? null;
+    case "workout":
+    case "day":
+      if (!f.date || !today) return null;
+      return f.date < today ? "now" : f.date === today ? "later_today" : "week";
+  }
+}
+
+/** What the athlete asked from is gone (404 `focus_not_found`: removed, or never theirs). */
+export const FOCUS_GONE_LINE = "That isn't there any more — take it off to ask anyway.";
+
+/**
+ * A start the server refused for its focus, in plain words: gone (404 `focus_not_found` — read here, never as the coach
+ * being off), or the server's own words for a day out of reach or a set's suggestion (400 with `why`). Null otherwise.
+ */
+export function focusRefusal(e: unknown): string | null {
+  if (!(e instanceof ApiError)) return null;
+  const b = e.body as { error?: unknown; why?: unknown } | null;
+  if (e.status === 404 && b?.error === "focus_not_found") return FOCUS_GONE_LINE;
+  if (e.status === 400 && (b?.error === "focus_out_of_range" || b?.error === "focus_is_set" || b?.error === "bad_focus")) {
+    return typeof b.why === "string" && b.why.trim() ? b.why : "The coach can't be asked about that from here.";
+  }
+  return null;
+}
+
+/** How far back a day can be asked about, and how far ahead (Plan ahead's horizon: 14 days, today included). */
+export const ASK_DAYS_BACK = 7;
+export const ASK_DAYS_AHEAD = 13;
+
+/** A day the coach can be asked about: from a week back to the last day Plan ahead plans. */
+export const askableDay = (date: string, today: string): boolean => date >= addDays(today, -ASK_DAYS_BACK) && date <= addDays(today, ASK_DAYS_AHEAD);

@@ -27,19 +27,22 @@
  *    compact line each that opens its own card.
  *  - A 404 from the coach's routes: the server's coach is off. One quiet line, and nothing asked again.
  *
- * Shown only with the coach designer on (`coachOn`): the Studio home renders this in its slot.
+ * Shown only with the coach designer on (`coachOn`): the Studio home renders this in its slot — and the app's coach sheet
+ * renders the same area anywhere (`CoachArea`, coach-sheet.tsx; coach everywhere, A3), with what the athlete asked from
+ * as a chip on the composer, and the card's "Change something…" follow-up (A2).
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type CoachOpenProposalDto, type CoachRunDto, type CoachRunEventDto, type CoachRunScope } from "@rg/api-client";
+import { api, type CoachOpenProposalDto, type CoachRunDto, type CoachRunEventDto, type CoachRunFocus, type CoachRunScope } from "@rg/api-client";
 import { COACH_NEXT_N, coachSettings, type CoachScopeKind } from "@rg/domain";
 import { useEscapeKey } from "../../components.js";
 import { COACH_PREFERENCES_QUERY } from "../settings/coach-settings.js";
-import { IconChevron } from "../../icons.js";
+import { IconChevron, IconClose } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { AlsoWaiting } from "./also-waiting.js";
 import { CoachBoundary } from "./coach-boundary.js";
+import { focusOfWire, focusRefusal, focusScope, type CoachFocus, type CoachOpenArgs } from "./coach-focus.js";
 import { readCurrent, readProposal } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
 import { cardShows, designProposalQuery, ProposalCard } from "./proposal-card.js";
@@ -124,11 +127,60 @@ export function proposalIdOf(run: CoachRunDto, events: readonly CoachRunEventDto
   return null;
 }
 
+/** The Studio home's coach: the area, with what the location brought (the Plan coach sheet's link, the old arrivals). */
 export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () => LoopDeps }) {
-  const qc = useQueryClient();
   const location = useLocation();
   const arrival = location.state as CoachArrival | null;
-  const compose = arrival?.coach === "compose";
+  return (
+    <CoachArea
+      ctx={ctx}
+      loopDeps={loopDeps}
+      arrival={{ request: typeof arrival?.request === "string" ? arrival.request : null, compose: arrival?.coach === "compose" }}
+    />
+  );
+}
+
+/** What the coach area opens with: the words to start from, what it is about (a chip), a scope, and whether the field
+ * takes the focus. */
+export interface CoachAreaArrival extends CoachOpenArgs {
+  compose?: boolean;
+}
+
+/** What a start sends: a scope (none: the athlete's default, or a follow-up's suggestion's own), the words, a focus. */
+interface StartVars {
+  scope?: CoachRunScope;
+  request: string | null;
+  focus?: CoachRunFocus | null;
+  /** A follow-up from the card (A2): the composer's own words stay where they are. */
+  followUp?: boolean;
+}
+
+/**
+ * THE COACH'S AREA — the composer, the live run view, the suggestion's card — in the Studio home (`place: "studio"`)
+ * and in the app's coach sheet (`place: "sheet"`, coach-sheet.tsx; coach everywhere, A3), the same components in both:
+ *
+ *  - A focus the area opens with is a chip on the composer ("About: …"), its ✕ takes it off; the start carries it as
+ *    `{ kind, id }` and the focus's scope is the primary button (coach-focus.ts `focusScope`) — else the athlete's own
+ *    default. A focus the server refuses (gone, a day out of reach, a set's suggestion) is said in plain words.
+ *  - The suggestion's card offers "Change something…" under a pending single-workout suggestion: a follow-up, the
+ *    suggestion as its focus and the words as its request, no scope (the server takes the suggestion's own); its run's
+ *    trail takes the card's place, and its suggestion replaces the old one (A2).
+ *  - In the sheet, the current run is shown only while it is live (one run at a time: a new ask there would only be
+ *    answered by it); a run over is the Studio's to show, with "Also waiting".
+ */
+export function CoachArea({
+  ctx,
+  loopDeps,
+  arrival = {},
+  place = "studio",
+}: {
+  ctx: StudioCtx;
+  loopDeps?: () => LoopDeps;
+  arrival?: CoachAreaArrival;
+  place?: "studio" | "sheet";
+}) {
+  const qc = useQueryClient();
+  const inSheet = place === "sheet";
   // Read tolerantly (a newer server's fields), and asked again on a passing failure — never on a 404 (the coach is off).
   const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: readCurrent, retry: currentRetry, staleTime: 0 });
   // Settings → Coach's read (Task 10), shared with its card: a 404 (or no read yet) is the defaults.
@@ -138,7 +190,9 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const spend = useQuery({ queryKey: COACH_SPEND_QUERY, queryFn: api.coachSpend, retry: false });
   const budget = weekBudgetOf(spend.data);
   const [shown, setShown] = useState<Shown | null>(null);
-  const [draft, setDraft] = useState(() => (typeof arrival?.request === "string" ? arrival.request.slice(0, REQUEST_MAX_CHARS) : ""));
+  const [draft, setDraft] = useState(() => (typeof arrival.request === "string" ? arrival.request.slice(0, REQUEST_MAX_CHARS) : ""));
+  /** What the athlete asked from (A3): the composer's chip until its ✕ takes it off. */
+  const [about, setAbout] = useState<CoachFocus | null>(() => arrival.focus ?? null);
   /** The run an `existing` answer opened: its line shows while it is live. */
   const [existingRun, setExistingRun] = useState<{ id: string; offer: ExistingOffer } | null>(null);
   /** The words a tap carried that the coach didn't start: offered back until taken, or a new run starts (M4). */
@@ -152,8 +206,8 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
 
   // Only a read made since this screen opened decides what it shows — a kept one may be a run long over (fix round,
   // Important 2). The first fresh read gives the run shown; a later one, a live run that isn't it (started on another
-  // device, or after the one shown ended), takes its place.
-  const found = current.isFetchedAfterMount && current.data && current.data.run ? current.data : null;
+  // device, or after the one shown ended), takes its place. The sheet shows a run only while it is live.
+  const found = current.isFetchedAfterMount && current.data && current.data.run && (!inSheet || isLive(current.data.run.status)) ? current.data : null;
   useEffect(() => {
     if (!found) return;
     if (!shown || (found.run.id !== shown.run.id && isLive(found.run.status))) setShown({ run: found.run, events: found.events });
@@ -184,14 +238,16 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const oneTap = useOneTap();
   const start = useMutation({
     networkMode: "always",
-    mutationFn: (scope: CoachRunScope) => api.coachRunCreate({ scope, request: draft.trim() || null }),
-    onSuccess: (res) => {
+    mutationFn: (v: StartVars) =>
+      api.coachRunCreate({ ...(v.scope ? { scope: v.scope } : {}), request: v.request, ...(v.focus ? { focus: v.focus } : {}) }),
+    onSuccess: (res, v) => {
       setStartError(null);
       setBudgetLine(null);
       // A new run has no trail yet; the live run an `existing` answer opens has one, which its loop reads.
       setShown(res.existing ? { run: res.run } : { run: res.run, events: [] });
-      // The words went with the tap; a live run already there answers instead, and they are offered back.
-      setDraft("");
+      // The words went with the tap; a live run already there answers instead, and they are offered back. A follow-up's
+      // words were the card's: the composer's stay.
+      if (!v.followUp) setDraft("");
       setExistingRun(res.existing ? { id: res.run.id, offer: res.offer } : null);
       setIgnored(res.existing ? res.ignoredRequest.request : null);
       // A live run already there keeps the composer on screen, the focus where it was.
@@ -203,10 +259,13 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
       // Said as a fact, in the ink a status is, never as a failure.
       const refused = weekBudgetRefusal(e);
       setBudgetLine(refused);
+      // What it was asked about isn't one the server takes (A1): said plainly — before a 404 is read as the coach off.
+      const focusLine = focusRefusal(e);
       if (refused) {
         setStartError(null);
         void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
-      } else if (isNotAvailable(e)) setUnavailable(true);
+      } else if (focusLine) setStartError(focusLine);
+      else if (isNotAvailable(e)) setUnavailable(true);
       else setStartError("Couldn't reach the coach — try again.");
     },
   });
@@ -273,6 +332,13 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
   const failure = run && over ? failureOf({ status: status!, error: run.error }, { proposed }) : null;
   // The ways to train now wait for the reads they are made from, so the tiles never change under the athlete's finger.
   const tilesReady = !templates.isPending && !today.isPending;
+  // The focus's scope is the primary way to start (A3); without one, the athlete's own default.
+  const defaultScope = (arrival.scope ?? (about ? focusScope(about, ctx.today) : null)) || settings.defaultScope;
+  // A follow-up's failure is said on the card it was sent from; the composer's own, on the composer.
+  const followUpFailed = start.isError && start.variables?.followUp === true;
+  // A follow-up from the card (A2): the suggestion as the focus, the card's words as the request, no scope.
+  const followUp = (id: string) => (words: string) =>
+    oneTap(() => start.mutateAsync({ request: words, focus: { kind: "proposal", id }, followUp: true }));
   // Each piece in a boundary of its own (the robustness pass): one that fails to draw says so, the others stand.
   return (
     <div className="coach-area">
@@ -281,16 +347,18 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
           <Composer
             draft={draft}
             onDraft={setDraft}
-            onStart={(scope) => oneTap(() => start.mutateAsync(scope))}
+            onStart={(scope) => oneTap(() => start.mutateAsync({ scope, request: draft.trim() || null, focus: about ? focusOfWire(about) : null }))}
             busy={start.isPending}
-            error={startError}
-            focus={compose && !live}
-            defaultScope={settings.defaultScope}
+            error={followUpFailed ? null : startError}
+            focus={(arrival.compose === true || inSheet) && !live}
+            defaultScope={defaultScope}
             nextN={settings.nextN}
             wordsBack={existingLive ? null : wordsBack}
             budget={budget}
             setCeilingUsd={settings.ceilingsUsd.set}
             budgetLine={budgetLine}
+            about={about}
+            onClearAbout={() => setAbout(null)}
           />
         </CoachBoundary>
       ) : null}
@@ -324,13 +392,23 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
           closed with a cancel) is no card — the card hides it. */}
       {proposalId ? (
         <CoachBoundary>
-          <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} today={ctx.today} />
+          <ProposalCard
+            proposalId={proposalId}
+            flags={open?.flags ?? []}
+            today={ctx.today}
+            onFollowUp={followUp(proposalId)}
+            followUpBusy={start.isPending}
+            followUpError={followUpFailed ? startError : null}
+          />
         </CoachBoundary>
       ) : null}
-      {/* Always here, so a card opened in it stays while it is open, even once its suggestion leaves the list (round 2). */}
-      <CoachBoundary>
-        <AlsoWaiting items={alsoOpen} today={ctx.today} />
-      </CoachBoundary>
+      {/* Always here in the Studio, so a card opened in it stays while it is open, even once its suggestion leaves the
+          list (round 2). The sheet is about what it was opened from: the Studio says what else is waiting. */}
+      {inSheet ? null : (
+        <CoachBoundary>
+          <AlsoWaiting items={alsoOpen} today={ctx.today} />
+        </CoachBoundary>
+      )}
     </div>
   );
 }
@@ -349,6 +427,8 @@ export function Composer({
   budget = null,
   setCeilingUsd = Infinity,
   budgetLine = null,
+  about = null,
+  onClearAbout,
 }: {
   draft: string;
   onDraft: (v: string) => void;
@@ -369,12 +449,21 @@ export function Composer({
   setCeilingUsd?: number;
   /** A start the week couldn't pay for, in one plain line (409 `week_budget`): a fact, never an error's red. */
   budgetLine?: string | null;
+  /** What the athlete asked from (coach everywhere, A3): its chip, "About: …", over the field. */
+  about?: CoachFocus | null;
+  /** The chip's ✕: the start then carries no focus. */
+  onClearAbout?: () => void;
 }) {
   const id = useId();
   const headingId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (focus) field.current?.focus();
+    if (!focus) return;
+    field.current?.focus();
+    // …and once more after a dialog it opened in has taken the focus itself (the coach sheet: its effect runs after this
+    // one).
+    const t = setTimeout(() => field.current?.focus(), 0);
+    return () => clearTimeout(t);
   }, [focus]);
   const near = draft.length >= COUNTER_FROM;
   const cost = setCostLine(defaultScope, nextN, budget?.leftUsd ?? null, setCeilingUsd);
@@ -385,6 +474,16 @@ export function Composer({
       <h2 id={headingId} className="eyebrow">
         Ask the coach
       </h2>
+      {about ? (
+        <p className="coach-about">
+          <span className="coach-about-label">{`About: ${about.label}`}</span>
+          {onClearAbout ? (
+            <button type="button" className="coach-about-clear tap-pad" aria-label={`Remove “${about.label}”`} disabled={busy} onClick={onClearAbout}>
+              <IconClose size={14} />
+            </button>
+          ) : null}
+        </p>
+      ) : null}
       <label className="visually-hidden" htmlFor={id}>
         What would help today?
       </label>
