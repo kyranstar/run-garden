@@ -833,7 +833,8 @@ h1,
 .rarity,
 .today-tag,
 .today-eyebrow,
-.lately-eyebrow,
+.today-also-h,
+.garden-drawer-h,
 .dash-eyebrow,
 .progress-eyebrow,
 .coach-op-verb,
@@ -1733,11 +1734,6 @@ a.note {
   border: 1px solid var(--border);
   background: var(--bg-raised);
 }
-.garden-stage:has(.streak-band) .stage-hero {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  border-bottom: none;
-}
 .garden-scene {
   position: absolute;
   inset: 0;
@@ -1775,13 +1771,14 @@ a.note {
   background: linear-gradient(transparent, rgba(var(--scrim-rgb), 0.16) 45%, rgba(var(--scrim-rgb), 0.55));
 }
 
-/* The scene's quiet tool chips, on the picture (the rail section, retired).
-   30px boxes, so their 44px pads reach 7px — the row grants 8px and nothing
-   else sits within reach. */
+/* The scene's one quiet tool, on the picture (the fullscreen crop, below lg): at
+   the top LEFT, since the athlete's mark (Settings) holds the top right of
+   every place on a phone. 30px boxes, so their 44px pads reach 7px — the row
+   grants 8px and nothing else sits within reach. */
 .scene-tools {
   position: absolute;
   top: var(--space-4);
-  right: var(--space-4);
+  left: var(--space-4);
   display: flex;
   --tap-clear: var(--space-4);
   gap: var(--tap-clear);
@@ -1835,18 +1832,13 @@ a.note {
   opacity: 0.97;
 }
 
-/* 2b — the streak band: the celebrated metric, fused under the hero. */
+/* 2b — the ledger corner holds the beat (on the stage, bottom right); below lg
+   it is the stack. The streak band lives in the garden drawer ("Twelve weeks"). */
 .stage-ledger {
   display: contents;
 }
 .streak-band {
-  margin-top: calc(-1 * var(--space-6));
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-top: none;
-  border-radius: 0 0 var(--radius) var(--radius);
-  padding: var(--space-5) var(--space-6);
-  box-shadow: var(--shadow);
+  margin: 0;
 }
 .streak-row {
   display: flex;
@@ -1891,11 +1883,6 @@ a.note {
 .streak-current {
   background: var(--bg-raised);
   border: 1.5px dashed var(--green);
-}
-.streak-cap {
-  margin: var(--space-4) 0 0;
-  font-size: var(--text-2xs);
-  color: var(--ink-faint);
 }
 
 /* 3 — the beat: what changed. The dismiss ✕ is the stage's; on a card it is
@@ -1962,12 +1949,6 @@ a.note {
   align-items: stretch;
   gap: var(--tap-clear);
 }
-/* Below lg the Today card IS the page and never collapses; the pill is the
-   collapsed control from lg only (its whole visual treatment lives in the
-   stage block). */
-.dock-pill {
-  display: none;
-}
 .dock-panel {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -2020,24 +2001,9 @@ a.note {
 .dock-panel .card-next {
   background: transparent;
 }
-/* No `margin` on either of these two. They wear `.linklike`, which declares
-   `margin: 0` at the same specificity 1200 lines further down the sheet, so
-   the margins they used to write here had never applied to a single pixel
-   (measured: both boxes flush with the panel's content edge, 0px bottom).
-   Row spacing is `.dock-panel`'s `gap` now, which no child can overrule.
-
-   `align-self: start` keeps each box shrink-to-fit, which is what a
-   block-level <button> already was: the panel's flex default is `stretch`,
-   and under it "Minimize" grew from a 64px box to the panel's full 402px —
-   a whole row of the panel that silently closed it. */
-/* lg only: below lg the Today card is the page and never collapses. */
-.dock-collapse {
-  display: none;
-  align-self: start;
-  font-size: var(--text-xs);
-  color: var(--ink-faint);
-}
-.dock-grows {
+/* What finishing today's session grows, leading the drawer's "next to bloom": the sentence is the button, the name its
+   underline. Two classes, so `.linklike`'s own underline (declared later) loses here. */
+.garden-grows {
   display: block;
   align-self: start;
   text-align: left;
@@ -2045,14 +2011,10 @@ a.note {
   font-weight: var(--weight-medium);
   color: var(--green-ink);
 }
-/* Two classes: .linklike's own underline (declared later) must lose here —
-   the sentence is the button, the name below is the underline. */
-.linklike.dock-grows {
+.linklike.garden-grows {
   text-decoration: none;
 }
-/* Only the species name wears the link's underline — the sentence is the
-   button, the name is the promise. */
-.dock-grows-name {
+.garden-grows-name {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -2224,6 +2186,97 @@ a.note {
   gap: var(--space-5);
   padding-top: var(--space-5);
   border-top: 1px solid var(--border);
+}
+/* The card's facts: one line, then — only when they are true — the watch's notes and what needs the athlete. */
+.today-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* "Also today": another session today, one quiet row each, under the card's own actions. */
+.today-also {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.today-also-h {
+  margin: 0;
+}
+.today-also .today-sessions {
+  padding-top: 0;
+  border-top: none;
+}
+
+/* THE GARDEN DRAWER'S HANDLE, at the card's foot (the new shape §4): a real button, a grip over its words, tapped or
+   pulled up. `touch-action: none` gives the pull to the handle rather than to the page's scroll. */
+.garden-handle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-3) var(--space-6) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  touch-action: none;
+}
+.garden-handle:hover {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+.garden-handle-grip {
+  display: block;
+  width: var(--space-8);
+  height: var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+/* The drawer itself ("Your garden"): sections divided by hairlines, the way the Lately strip was. */
+.garden-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+.garden-drawer-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  margin: 0;
+}
+.garden-drawer-sec + .garden-drawer-sec {
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+.garden-drawer-h {
+  margin: 0;
+}
+.garden-drawer-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.garden-drawer-growth {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--tap);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+  text-decoration: none;
+}
+.garden-drawer-growth:hover {
+  text-decoration: underline;
 }
 /* Phase 2a — the chips beside the eyebrow: readiness, then one per switched-on condition. On a narrow card they
    wrap under the eyebrow rather than squeeze it; the 12px row gap is the room their 44px pads need. */
@@ -3095,16 +3148,6 @@ button.session-chip {
 .lately {
   display: flex;
   flex-direction: column;
-  margin: var(--space-4) var(--space-2) 0;
-}
-.lately-eyebrow {
-  color: var(--ink-faint);
-  margin-bottom: var(--space-5);
-}
-.lately-healthy {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--green-ink);
 }
 .lately-cap {
   margin: var(--space-5) 0 0;
@@ -3118,25 +3161,6 @@ button.session-chip {
 .lately-cap strong {
   color: var(--warn);
   font-weight: var(--weight-medium);
-}
-.lately-line {
-  margin: var(--space-5) 0 0;
-  padding-top: var(--space-5);
-  border-top: 1px solid var(--border);
-  font-size: var(--text-xs);
-  color: var(--ink-soft);
-  line-height: 1.5;
-}
-.lately-more {
-  align-self: flex-start;
-  margin-top: var(--space-5);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--green-ink);
-  text-decoration: none;
-}
-.lately-more:hover {
-  text-decoration: underline;
 }
 /* The meters inside the strip: the same BalanceStrip, as stacked label/track/
    caption rows rather than three columns — thin, quiet, tappable. */
@@ -3175,17 +3199,12 @@ button.session-chip {
   justify-content: center;
 }
 
-/* Below the garden: the one quiet foot line. */
-.garden-below {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-}
-/* Grants its inline disclosure the 11.2px per side its 21.6px box needs to
-   reach the 44px floor; there is no second control in this prose to rob. */
+/* The drawer's foot. Grants its inline disclosure the 11.2px per side its
+   21.6px box needs to reach the 44px floor; there is no second control in this
+   prose to rob. */
 .howworks {
   margin: var(--space-4) 0 0;
-  text-align: center;
+  text-align: left;
   font-size: var(--text-xs);
   --tap-clear: var(--space-5);
 }
@@ -3255,9 +3274,6 @@ button.session-chip {
     border-radius: 0;
     background: none;
     overflow: visible;
-  }
-  .garden-stage:has(.streak-band) .stage-hero {
-    border: none;
   }
   /* Descendant, not child: `.scene-rotor` (the portrait-fullscreen rotation
      box, `display: contents` at rest) sits between them. */
@@ -3351,203 +3367,29 @@ button.session-chip {
     opacity: 1;
   }
 
-  /* Hierarchy 4: the instrument cluster, top-right, quieter than the voice.
-     This box is also the SELECTOR for the on-scene treatment below. It used
-     to be a `variant="hud"` prop the component emitted at every width, while
-     every rule it enabled lived in here — so below lg the class was inert and
-     read like a mobile/desktop switch that wasn't one. Printed-on-artwork is
-     a property of where a thing sits, and this is the box it sits in. */
-  /* The scene chips keep the true top-right; the Lately instruments start
-     one chip-row below them. */
+  /* The scene's tool takes the stage's true top-right (no athlete's mark here: the rail's foot holds Settings). */
   .scene-tools {
     top: clamp(1.5rem, 3.4vh, 2.5rem);
+    left: auto;
     right: clamp(1.6rem, 3.2vw, 3.2rem);
   }
-  .hud-topright {
-    position: absolute;
-    top: calc(clamp(1.5rem, 3.4vh, 2.5rem) + 44px);
-    right: clamp(1.6rem, 3.2vw, 3.2rem);
-    width: 232px;
-  }
-  /* The strip carries paragraphs now, not just bar labels — white type on an
-     open sky needs the same pooled gradient the ledger corner has, strongest
-     behind the smallest type, gone before the trees. */
-  .hud-topright::before {
-    content: "";
-    position: absolute;
-    inset: calc(var(--space-6) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1);
-    z-index: 0;
-    border-radius: var(--radius-lg);
-    /* An even slab, not a corner radial: the strip is tall, and a gradient
-       that gives out by 78% left its lower lines at 1.8:1 on bright grass
-       (verify round). Soft only at the very foot. */
-    background: linear-gradient(
-      180deg,
-      rgba(var(--scrim-rgb), 0.5),
-      rgba(var(--scrim-rgb), 0.46) 72%,
-      rgba(var(--scrim-rgb), 0.28)
-    );
-    backdrop-filter: blur(6px);
-    pointer-events: none;
-  }
-  .hud-topright > * {
-    position: relative;
-    z-index: 1;
-  }
-  /* The Lately strip, printed on the artwork. */
-  .hud-topright .lately {
-    margin: 0;
-  }
-  .hud-topright .lately-eyebrow {
-    color: rgba(var(--on-scene-rgb), 0.75);
-    text-shadow: var(--scene-text-shadow);
-  }
-  .hud-topright .lately-healthy {
-    color: var(--on-scene);
-    text-shadow: var(--scene-text-shadow);
-  }
-  .hud-topright .lately-cap {
-    color: rgba(var(--on-scene-rgb), 0.85);
-    text-shadow: var(--scene-text-shadow);
-  }
-  .hud-topright .lately-cap-loss,
-  .hud-topright .lately-cap strong {
-    color: var(--on-scene-accent);
-  }
-  .hud-topright .lately-line {
-    color: rgba(var(--on-scene-rgb), 0.85);
-    text-shadow: var(--scene-text-shadow);
-    border-top-color: rgba(var(--on-scene-rgb), 0.25);
-  }
-  .hud-topright .lately-more {
-    color: var(--on-scene);
-    text-shadow: var(--scene-text-shadow);
-  }
-  .hud-topright .review-pull {
-    color: rgba(var(--on-scene-rgb), 0.85);
-    text-shadow: var(--scene-text-shadow);
-  }
-  .hud-topright .balance-bar-label {
-    color: rgba(var(--on-scene-rgb), 0.86);
-    text-shadow: var(--scene-text-shadow);
-  }
-  /* The page's selected / hover ink is dark — on the scene a selected label went nearly invisible. */
-  .hud-topright .balance-bar:hover .balance-bar-label,
-  .hud-topright .balance-bar-active .balance-bar-label {
-    color: var(--on-scene);
-  }
-  .hud-topright .balance-bar-caption {
-    color: rgba(var(--on-scene-rgb), 0.62);
-    text-shadow: var(--scene-text-shadow);
-  }
-  .hud-topright .balance-bar-track {
-    background: rgba(var(--on-scene-rgb), 0.22);
-  }
-  .hud-topright .balance-notch {
-    background: rgba(var(--on-scene-rgb), 0.65);
-  }
-  /* Same precedence as the base layer, for the same reason: `:where()` on the
-     discipline, a real class on the status, so the damage-zone amber wins on
-     the scene exactly as it wins on the page. */
-  .hud-topright .balance-bar-fill:where(.balance-run) {
-    background: #9ecfab;
-  }
-  .hud-topright .balance-bar-fill:where(.balance-strength) {
-    background: #d9a678;
-  }
-  .hud-topright .balance-bar-fill:where(.balance-yoga) {
-    background: #c2a3d8;
-  }
-  .hud-topright .balance-bar-fill.balance-low {
-    background: #e6c26a;
-  }
-
-  /* Hierarchy 5: the action dock, bottom-left. Bottom-anchored, so expanding
-     it can only grow upward — which it does as an OVERLAY over the scene,
-     reflowing nothing, with the pill itself staying exactly where it was
-     pressed (System 1 §5). The panel is the first child so it stacks above
-     that fixed pill row. */
+  /* Hierarchy 5: the card, bottom-left, over the scene — bottom-anchored, so
+     it grows upward and reflows nothing; the drawer's handle at its foot. */
   .hud-dock {
     position: absolute;
     left: clamp(1.6rem, 3.2vw, 3.2rem);
     bottom: clamp(1.3rem, 3vh, 2.2rem);
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    /* 12px: the gap the short controls inside the dock need their pads
-       clamped to (the attention row is self-padded now, but Minimize and the
-       grows line are not). */
+    align-items: stretch;
     gap: var(--tap-clear);
-    max-width: min(30rem, 40vw);
-  }
-  .dock-pill {
-    /* Back to a line of type printed on the artwork: no surface, no edge, no
-       floor — the scrim below is what lifts it off the scene. */
-    display: block;
-    position: relative;
-    width: auto;
-    min-height: 0;
-    background: none;
-    border: none;
-    border-radius: 0;
-    padding: var(--space-2) 0;
-    color: var(--on-scene);
-    font-size: var(--text-md);
-    font-weight: var(--weight-medium);
-    text-shadow: var(--scene-text-shadow);
-  }
-  /* Same scrim treatment the bottom-right corner got (see .hud-corner::before)
-     and for the same reason: this is white type — now with a small colour dot
-     in it — sitting straight on the artwork, which can be a sunlit afternoon.
-     Pooled tightly under the pill only, so the plants keep their light; the
-     z-indexes keep it behind the text rather than painted over it. */
-  .dock-pill::before {
-    content: "";
-    position: absolute;
-    inset: calc(var(--space-4) * -1) calc(var(--space-7) * -1) calc(var(--space-4) * -1) calc(var(--space-7) * -1);
-    z-index: 0;
-    border-radius: var(--radius-lg);
-    background: radial-gradient(
-      130% 130% at 0% 100%,
-      rgba(var(--scrim-rgb), 0.52),
-      rgba(var(--scrim-rgb), 0.36) 45%,
-      rgba(var(--scrim-rgb), 0) 80%
-    );
-    pointer-events: none;
-  }
-  .dock-pill > * {
-    position: relative;
-    z-index: 1;
-  }
-  .dock-pill:hover {
-    text-decoration: underline;
-    text-underline-offset: 3px;
-  }
-  /* One line on the stage, so the two spans need a separator between them —
-     decoration in CSS, so it never lands in the accessible name as a stray
-     character. In the stack the pill is a wrapping flex row and the gap does
-     this job; a "·" there becomes a leading orphan on the second row. */
-  .dock-pill-workout {
-    color: rgba(var(--on-scene-rgb), 0.92);
+    width: min(26rem, 38vw);
   }
   .dock-panel {
-    /* The stage's dock is bottom-anchored, so the panel is ABOVE the pill —
-       the one place the two presentations genuinely disagree, and it is one
-       declaration. POSITION, not `order`: this is the box the stage block
-       already describes as "an OVERLAY over the scene, reflowing nothing", so
-       lifting it out of flow is what it was always claiming to be. `order`
-       would have re-created below lg's tab-order defect up here instead —
-       and it would still have been a flex item, so the dock's own height
-       (and therefore the pill's y) would still have depended on it. */
-    position: absolute;
-    left: 0;
-    bottom: calc(100% + var(--tap-clear));
-    width: min(26rem, 38vw);
     /* Capped and internally scrollable so a short laptop viewport can never
-       let the panel grow tall enough to bury the top-left HUD behind it
+       let the card grow tall enough to bury the top-left HUD behind it
        (C1/C23) — 14rem reserves room above for the condition word/forecast,
-       below for the stage edge, and for the dock pill, which now stays put
-       underneath the open panel instead of being replaced by it. More
+       below for the stage edge, and for the drawer's handle at its foot. More
        translucent than a typical raised surface so the garden's plants still
        read through — blur stays at the stage's standard 16px (a heavier blur
        was tried and reviewed back out: it worked against silhouettes reading
@@ -3562,29 +3404,8 @@ button.session-chip {
     box-shadow: var(--shadow-lg);
     padding: var(--space-3);
   }
-  .dock-collapse {
-    display: block;
-  }
-  /* While the card is open it already names the workout in its title, and
-     Minimize is the collapse control — a visible pill under it would say the
-     same sentence twice, 12px apart (one voice per fact). */
-  .dock-pill[aria-expanded="true"] {
-    display: none;
-  }
-  /* The bar detail panel floats below the HUD instrument cluster. */
-  .hud-topright .balance-detail {
-    position: absolute;
-    top: calc(100% + var(--space-4));
-    right: 0;
-    width: 320px;
-    margin: 0;
-    background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
-    backdrop-filter: blur(16px) saturate(1.05);
-    box-shadow: var(--shadow-lg);
-    text-shadow: none;
-  }
-  /* Hierarchy 6: the ledger corner, bottom-right — the streak band and the
-     beat line, printed on the scene. The corner scrim below carries their
+  /* Hierarchy 6: the ledger corner, bottom-right — the beat line, printed on
+     the scene. The corner scrim below carries their
      contrast (the page-wide bottom scrim is too broad and too weak). */
   .stage-ledger {
     display: flex;
@@ -3629,45 +3450,6 @@ button.session-chip {
     position: relative;
     z-index: 1;
   }
-  /* The band sheds its card: white type on the corner scrim, squares intact. */
-  .streak-band {
-    margin: 0;
-    background: none;
-    border: none;
-    border-radius: 0;
-    padding: 0;
-    box-shadow: none;
-    color: var(--on-scene);
-    text-shadow: var(--scene-text-shadow);
-    width: 100%;
-  }
-  .streak-row {
-    justify-content: flex-end;
-  }
-  .streak-n {
-    color: var(--on-scene);
-  }
-  .streak-pct {
-    color: rgba(var(--on-scene-rgb), 0.8);
-  }
-  .streak-weeks {
-    margin-top: var(--space-3);
-  }
-  .streak-week {
-    min-width: 10px;
-  }
-  .streak-quiet {
-    background: rgba(var(--on-scene-rgb), 0.22);
-    border: none;
-  }
-  .streak-current {
-    background: none;
-    border-color: rgba(var(--on-scene-rgb), 0.75);
-  }
-  .streak-cap {
-    display: none;
-  }
-
   /* The timeline floats over the scene as the one central panel. */
   .stage-timeline {
     position: absolute;
@@ -3682,13 +3464,6 @@ button.session-chip {
     box-shadow: var(--shadow-lg);
   }
 
-  /* Below the stage: the maintenance content, back in the reading column —
-     which the immersive shell has stopped providing, so it provides its own. */
-  .garden-below {
-    max-width: 880px;
-    margin: 0 auto;
-    padding: var(--space-8) var(--space-9) var(--space-10);
-  }
 }
 @keyframes beat-in {
   from {
@@ -3876,65 +3651,9 @@ button.session-chip {
   }
 }
 
-/* ── Week ribbon (the week as a quest) ───────────────────────────────────── */
-.week-ribbon-strip {
-  display: flex;
-  gap: var(--space-4);
-  align-items: flex-end;
-  margin-top: var(--space-2);
-}
-.week-day {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-2xs);
-  color: var(--ink-faint);
-  padding-top: var(--space-7);
-}
-.week-day-dot {
-  width: 13px;
-  height: 13px;
-  border-radius: var(--radius-xs);
-  display: block;
-}
-.week-day-empty {
-  background: transparent;
-  border: 1px dashed var(--border-strong);
-}
-/* The dot's box before its week has answered: it holds the column's height so
-   the strip can be drawn at full size, and it draws NOTHING — a dashed
-   `week-day-empty` here would state "no workout planned" and then take it
-   back (System 4 F1). */
-.week-day-settling {
-  background: transparent;
-}
-.week-day-today .week-day-dot {
-  outline: 2px solid var(--green);
-  outline-offset: 1.5px;
-}
-/* Audit M19: --adventure-ring used to be undefined, so the 33%-alpha
-   fallback always applied — ~1.9:1 against a dark card, effectively
-   invisible. Now a full-alpha, per-theme token (defined above). */
-.week-day-adventure {
-  box-shadow: 0 0 0 2px var(--adventure-ring);
-  border-radius: var(--radius-round);
-}
-.week-day-sprite {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 22px;
-  height: 20px;
-}
-.week-day-sprite .codex-sprite {
-  height: 20px;
-}
+/* The week's quest, in the garden drawer: the day whose workout crosses an unlock, and what arrives. */
 .week-pull {
   display: block;
-  margin-top: var(--space-4);
   background: none;
   border: none;
   padding: 0;
@@ -3952,16 +3671,6 @@ button.session-chip {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-/* Horizontal inset only: the 6px bottom margin this used to carry was the
-   whole of the room between the week pull and "Minimize", and 6px is less
-   than the 12px `.dock-panel` grants every pad inside it. Vertical spacing is
-   the panel's job now (`.dock-panel > * + *`), so there is one number. */
-.dock-week {
-  margin: 0 var(--space-4);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--border);
-}
-
 /* Timeline chapters (both layouts). */
 .timeline-track {
   position: relative;
@@ -8551,13 +8260,11 @@ button.session-chip {
   .hud-beat-seeall,
   .scene-chip,
   .ready-chip,
-  .lately-more,
   .dash-more,
   .fw-earlier .linklike,
   .fw-story-more,
   .fw-fresh,
-  .dock-collapse,
-  .dock-grows,
+  .garden-grows,
   button.session-chip
 ) {
   position: relative;
@@ -8590,13 +8297,11 @@ button.session-chip {
 .hud-beat-seeall::after,
 .scene-chip::after,
 .ready-chip::after,
-.lately-more::after,
 .dash-more::after,
 .fw-earlier .linklike::after,
 .fw-story-more::after,
 .fw-fresh::after,
-.dock-collapse::after,
-.dock-grows::after,
+.garden-grows::after,
 button.session-chip::after {
   content: "";
   position: absolute;
@@ -8631,11 +8336,9 @@ button.session-chip::after {
 .coach-input,
 .coach-window,
 .row,
-.row-between,
-.week-ribbon { --tap-clear: var(--space-4); }
-/* The Lately strip's rows are 12px apart and its controls are short (the
-   30px meters, the 21.6px "All insights ›") — 12px is what their pads need
-   and what the strip's own gaps leave. `.today-head` grants the readiness
+.row-between { --tap-clear: var(--space-4); }
+/* The drawer's "last trained" rows are 12px apart and its meters are short
+   (30px) — 12px is what their pads need and what the section's own gaps leave. `.today-head` grants the readiness
    chip the 7px its 30px box needs; the eyebrow beside it is not a control. */
 .lately { --tap-clear: var(--space-5); }
 .today-head { --tap-clear: var(--space-5); }
@@ -8755,13 +8458,11 @@ button.session-chip::after {
   .hud-beat-seeall,
   .scene-chip,
   .ready-chip,
-  .lately-more,
   .dash-more,
   .fw-earlier .linklike,
   .fw-story-more,
   .fw-fresh,
-  .dock-collapse,
-  .dock-grows,
+  .garden-grows,
   button.session-chip {
     min-height: max(
       var(--tap-own, 0px),

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
  * COACH EVERYWHERE, PHASE A3 — the Today card's "Ask", live: the garden home rendered whole against a stubbed worker
- * (only the canvas scene stubbed). A planned workout's card asks about the workout — beside View workout and Move — and
- * a rest day's about the day; the tap opens the app's coach sheet (here, a recorder in its place) with that focus. With
- * no coach in the app, the card is as it always was. Synthetic data only.
+ * (only the canvas scene stubbed). A planned workout's card asks about the workout — beside View workout (the new shape:
+ * Move is one tap down, in the workout's sheet) — and a rest day's about the day; the tap opens the app's coach sheet
+ * (here, a recorder in its place) with that focus. With no coach in the app, there is no Ask, and no way round to the
+ * Plan's old thread coach either. Synthetic data only.
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -161,13 +162,13 @@ describe("the Today card's coach line (the lead's look at the shots)", () => {
     }
   });
 
-  it("no coach in the app: 'Ask me ›' is the link to the Plan's coach, as it was", async () => {
+  it("no coach in the app: the coach line keeps its words, and nothing links round to the Plan (its coach window is gone)", async () => {
     weekFocus = { text: "Hips first this week.", at: `${TODAY}T07:00:00.000Z` };
     try {
       const card = await renderCard(workout(), null);
-      const link = card.querySelector<HTMLAnchorElement>(".today-coach a.today-coach-ask")!;
-      expect(link.getAttribute("href")).toBe("/plan?coach=1");
-      expect(link.textContent).toBe("Ask me ›");
+      expect(card.querySelector(".today-coach")!.textContent).toContain("Hips first this week.");
+      expect(card.querySelector(".today-coach a")).toBeNull();
+      expect(card.textContent).not.toContain("Ask me");
     } finally {
       weekFocus = null;
     }
@@ -175,15 +176,16 @@ describe("the Today card's coach line (the lead's look at the shots)", () => {
 });
 
 describe("the Today card's Ask", () => {
-  it("a planned workout's: beside View workout and Move, about the workout — the tap opens the sheet with it", async () => {
+  it("a planned workout's: beside View workout, about the workout — the tap opens the sheet with it", async () => {
     const r = recorder();
     const card = await renderCard(workout(), r.opener);
     const actions = [...card.querySelectorAll(".today-actions .btn")].map((b) => b.textContent);
-    expect(actions).toEqual(["View workout", "Move", "Ask"]);
+    expect(actions).toEqual(["View workout", "Ask"]);
     const ask = card.querySelector<HTMLButtonElement>(".today-actions .ask-coach")!;
     expect(ask.getAttribute("aria-label")).toBe("Ask the coach about Mon 5 Oct · Easy Run with Strides · 45 min");
     await act(async () => ask.click());
-    expect(r.calls).toEqual([{ seeing: { kind: "workout", id: "run-1", date: TODAY, label: "Mon 5 Oct · Easy Run with Strides · 45 min" }, request: null }]);
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0]).toMatchObject({ seeing: { kind: "workout", id: "run-1", date: TODAY, label: "Mon 5 Oct · Easy Run with Strides · 45 min" }, request: null });
   });
 
   it("a rest day's: about the day", async () => {
@@ -197,7 +199,7 @@ describe("the Today card's Ask", () => {
 
   it("no coach in the app: the card as it always was", async () => {
     const card = await renderCard(workout(), null);
-    expect([...card.querySelectorAll(".today-actions .btn")].map((b) => b.textContent)).toEqual(["View workout", "Move"]);
+    expect([...card.querySelectorAll(".today-actions .btn")].map((b) => b.textContent)).toEqual(["View workout"]);
     expect(card.querySelector(".ask-coach, .today-ask")).toBeNull();
   });
 });

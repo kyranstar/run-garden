@@ -100,7 +100,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The home screen against `today`; resolves with the card's markup and the collapsed row's. */
+/** The home screen against `today`; resolves with the card and its markup (React's generated ids made neutral). */
 async function renderCard(today: Record<string, unknown>): Promise<{ card: HTMLElement; markup: string }> {
   vi.stubGlobal(
     "fetch",
@@ -135,7 +135,7 @@ async function renderCard(today: Record<string, unknown>): Promise<{ card: HTMLE
   }
   const card = host.querySelector<HTMLElement>("#dock-panel");
   if (!card) throw new Error(`the Today card never rendered\n${host.textContent}`);
-  return { card, markup: `${host.querySelector(".dock-pill")?.outerHTML}${card.outerHTML}` };
+  return { card, markup: card.outerHTML.replace(/:r[0-9a-z]+:/g, ":id:") };
 }
 
 const withoutPhase2a = (payload: Record<string, unknown>) => {
@@ -147,7 +147,8 @@ describe("the Today card for an account with no program (audit 2a-UI M11a)", () 
   it("is the run's card: its title and actions, no program line, no condition chip, readiness alone in its row", async () => {
     const { card } = await renderCard(todayPayload({ level: "good", reasons: ["HRV in your usual range"] }));
     expect(card.querySelector(".today-title")?.textContent).toBe("Easy Run with Strides");
-    expect([...card.querySelectorAll(".today-actions .btn")].map((b) => b.textContent)).toEqual(["View workout", "Move"]);
+    // No coach in this render, so no Ask; Move is one tap down, in the workout's sheet (the new shape §4).
+    expect([...card.querySelectorAll(".today-actions .btn")].map((b) => b.textContent)).toEqual(["View workout"]);
     expect(card.querySelector(".today-actions a")?.getAttribute("href")).toBe("/plan?workout=run-1");
     expect(card.querySelector(".today-sessions, .today-session, .condition-chip, .today-play")).toBeNull();
     const chips = [...card.querySelectorAll(".today-chips > *")];

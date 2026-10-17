@@ -101,7 +101,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderCard(today: Record<string, unknown>): Promise<{ card: HTMLElement; pill: string }> {
+async function renderCard(today: Record<string, unknown>): Promise<{ card: HTMLElement }> {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
@@ -133,28 +133,29 @@ async function renderCard(today: Record<string, unknown>): Promise<{ card: HTMLE
   }
   const card = host.querySelector<HTMLElement>("#dock-panel");
   if (!card) throw new Error(`the Today card never rendered\n${host.textContent}`);
-  return { card, pill: host.querySelector(".dock-pill")?.getAttribute("aria-label") ?? "" };
+  return { card };
 }
 
 describe("the program session heading the card", () => {
-  it("still to do: the coach's clause about today, the play action, Next: on the row", async () => {
-    const { card, pill } = await renderCard(todayPayload(slot()));
+  it("still to do: the coach's clause about today, the body check, the play action", async () => {
+    const { card } = await renderCard(todayPayload(slot()));
     expect(card.querySelector(".today-coach")?.textContent).toContain("Green lights");
+    expect(card.querySelector(".body-check")).not.toBeNull();
     expect(card.querySelector(".today-play")?.textContent).toBe("Start");
-    expect(pill).toMatch(/^Next: /);
   });
 
-  it("skipped: no coach clause about today, and the row says skipped", async () => {
-    const { card, pill } = await renderCard(todayPayload(slot({ completionState: "skipped" })));
+  it("skipped: no coach clause about today, no body check, and the card says skipped", async () => {
+    const { card } = await renderCard(todayPayload(slot({ completionState: "skipped" })));
     expect(card.querySelector(".today-coach")).toBeNull();
-    expect(pill).toMatch(/skipped$/);
+    expect(card.querySelector(".body-check")).toBeNull();
+    expect(card.querySelector(".today-session-skipped")?.textContent).toBe("Skipped");
   });
 
-  it("done: no coach clause, and the row says done — not Next:", async () => {
-    const { card, pill } = await renderCard(todayPayload(slot({ contentState: "done", completionState: "completed" })));
+  it("done: no coach clause, no body check, and the card says done", async () => {
+    const { card } = await renderCard(todayPayload(slot({ contentState: "done", completionState: "completed" })));
     expect(card.querySelector(".today-coach")).toBeNull();
-    expect(pill).not.toMatch(/^Next:/);
-    expect(pill).toMatch(/done$/);
+    expect(card.querySelector(".body-check")).toBeNull();
+    expect(card.querySelector(".today-session-done")?.textContent).toBe("Done");
   });
 
   it("saved here and waiting for the server: Done · 31 min · saved, will sync — no coach clause, no Continue", async () => {
@@ -175,11 +176,9 @@ describe("the program session heading the card", () => {
         await new Promise((r) => setTimeout(r, 10));
       });
     }
-    const pill = host!.querySelector(".dock-pill")?.getAttribute("aria-label") ?? "";
     expect(card.querySelector(".today-meta")?.textContent).toBe("Done · 31 min · saved, will sync");
     expect(card.querySelector(".today-play")).toBeNull();
     expect(card.querySelector(".today-coach")).toBeNull();
-    expect(pill).not.toMatch(/^Next:/);
   });
 
   it("a skipped session under the day's run keeps a way in: Open, not primary", async () => {

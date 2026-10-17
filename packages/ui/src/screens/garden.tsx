@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type ActivityDto, type DisciplineBalance, type TodayResponse, type WorkoutDto } from "@rg/api-client";
+import { api, type DisciplineBalance, type TodayResponse, type WorkoutDto } from "@rg/api-client";
 import {
   addDays,
+  dayLabel,
   GARDEN_CONDITION_LABELS,
-  isAdventureSport,
   sportLabel,
   type GardenConditionWord,
   type GardenEvent,
@@ -26,13 +26,12 @@ import {
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClose, IconCoach } from "../icons.js";
-import { Banner, CategoryDot, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, syncActionShort, useHeldInPlace, useIsDesktop, useSpaceAbove, watchCoverageShort, workoutKindLabel } from "../components.js";
+import { Banner, CategoryDot, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, syncActionShort, useSpaceAbove, watchCoverageShort, workoutKindLabel } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
 import { useArrivalShown } from "./growth/moments.js";
 import { BotanicalCard } from "./botanical.js";
-import { MoveSheet } from "./move-sheet.js";
 import {
   isAppSession,
   sessionDone,
@@ -47,11 +46,11 @@ import { useSignedInUserId } from "../components/outbox-sync.js";
 import { watchReviewQuery } from "../components/watch-review-sheet.js";
 import { SessionsInProgress } from "../components/sessions-in-progress.js";
 import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
-import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
 import { useUnits } from "../use-units.js";
-import { AskCoach, WithoutCoach } from "./studio/coach-ask.js";
+import { AskCoach, useCoachSeeing } from "./studio/coach-ask.js";
 import { dayFocus, workoutFocus } from "./studio/coach-focus.js";
+import { BodyCheck } from "./today/body-check.js";
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
@@ -63,7 +62,6 @@ import {
   progressText,
   RARITY_LABEL,
   SpeciesCodex,
-  SpeciesSpriteCard,
   unlockGrownBy,
   WildlifeShelf,
   type CodexEntry,
@@ -90,25 +88,6 @@ function usePrefersReducedMotion(): boolean {
   );
 }
 
-/**
- * The viewport's height, LIVE. Only the lg stage reads it (that stage is
- * `100dvh` minus whatever sits above it, so the window's height is what its
- * one heuristic is really about) — and it reads it on every render rather than
- * from a value frozen at mount, which is the bug class this file keeps
- * meeting: a measurement taken during first paint that then never updates.
- */
-function useViewportHeight(): number {
-  const [h, setH] = useState(() => (typeof window === "undefined" ? 0 : window.innerHeight));
-  useEffect(() => {
-    const onResize = () => setH(window.innerHeight);
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  return h;
-}
-
-/** A timeline day worth a tick mark — derived from snapshot deltas. */
 interface TimelineChapter {
   index: number;
   label: string;
@@ -649,7 +628,6 @@ function mondayOf(date: string): string {
   return addDays(date, -dow);
 }
 
-const DOW_LETTERS = ["M", "T", "W", "T", "F", "S", "S"];
 const DONE_STATES = new Set(["completed", "provisionally_completed", "skipped", "missed"]);
 
 function ordinalOf(n: number): string {
@@ -691,122 +669,47 @@ export function attentionPhrase(count: number): string {
 }
 
 /**
- * One subscription, two readers (System 4 D7c): the ribbon renders from it and
- * `GardenScreen` gates its first paint on it. Same key, so it is one fetch —
- * and the ribbon can no longer land 1.5s after the stage and shove the dock,
- * the balance bars and everything under them 62px down the phone.
- *
- * `enabled` is what keeps that trade honest at the OTHER width. The ribbon
- * lives inside the dock panel, and from lg the dock opens COLLAPSED by
- * default — so the screen's copy of this subscription was buying a request
- * for a box that never rendered, and then holding first paint on it: measured
- * at 1440×900 with a 3s delay on `/api/plan/workouts`, "Loading the garden"
- * held for 3078ms and `.week-ribbon` was still absent when it let go. That is
- * the trade `settling`'s own docstring refuses ("holding a whole screen
- * hostage for a footnote"). So the screen passes the DOCK'S state here: no
- * dock, no fetch, and nothing for the gate to wait on. The ribbon's own call
- * (inside the panel) leaves it at the default `true` — by the time that
- * component exists, the panel is open by definition.
+ * The week's plan, for the garden drawer's "next to bloom" (the day a workout crosses an unlock). Its one reader is
+ * `NextToBloom`, which exists only while the drawer is open — so it is never read for, nor holds, Today's first paint.
  */
-function useWeekWorkouts(monday: string, enabled = true) {
+function useWeekWorkouts(monday: string) {
   return useQuery({
     queryKey: ["week-workouts", monday],
     queryFn: () => api.workouts(monday, addDays(monday, 6)),
-    enabled,
     staleTime: 5 * 60_000,
-    // The screen's gate reads this. `keepPreviousData` keeps the gate a
-    // FIRST-paint gate: if the server's idea of today lands in a different
-    // ISO week from the client's opening guess, the key changes but the
-    // screen keeps painting from the week already in hand.
+    // If the server's idea of today lands in a different ISO week from the client's opening guess, the key changes but
+    // the drawer keeps what it already has in hand.
     placeholderData: keepPreviousData,
   });
 }
 
 /**
- * The week as a quest: seven dots from the plan, and — when completing the
- * plan genuinely crosses an unlock gate — that day carries the species'
- * sprite. At most one sprite per week; a quest, not a slot row.
+ * The drawer's "Next to bloom": what finishing today's session grows, the day this week's plan crosses an unlock (once
+ * the week has answered — nothing is claimed while it is read), and the next species per kind of workout.
  */
-function WeekRibbon({
-  todayDate,
+export function NextToBloom({
   codex,
+  todayDate,
+  grows,
   onOpenSpecies,
 }: {
-  todayDate: string;
   codex: CodexEntry[];
+  todayDate: string;
+  /** What finishing today's session grows (the card's old line), when it grows anything. */
+  grows: ReactNode;
   onOpenSpecies: (speciesId: string) => void;
 }) {
-  const monday = mondayOf(todayDate);
-  const week = useWeekWorkouts(monday);
-  const workouts = (week.data?.workouts ?? []) as WorkoutDto[];
-  // Reuses the history screen's exact queryKey/fn so the two screens share one cache entry.
-  const acts = useQuery({ queryKey: ["runs"], queryFn: () => api.activities(40), staleTime: 5 * 60_000 });
-  const adventureDates = useMemo(
-    () =>
-      new Set(
-        ((acts.data?.activities ?? []) as ActivityDto[])
-          .filter((a) => a.date >= monday && a.date <= addDays(monday, 6) && isAdventureSport(a.sport))
-          .map((a) => a.date),
-      ),
-    [acts.data, monday],
-  );
-  const landing = useMemo(
-    () =>
-      landingUnlock(
-        codex,
-        workouts.map(plannedLiteOf),
-        todayDate,
-      ),
-    [codex, workouts, todayDate],
-  );
-  // The FRAME can be drawn before the week has answered, and it has to be
-  // (System 4 F1). This strip's height is entirely structural — a 24px sprite
-  // band, a 13px dot and a day letter per column, 57.8px whatever the data
-  // says — and the panel it lives in is bottom-anchored on the stage, so a
-  // ribbon that arrives after the panel opens lifts the panel's top edge and
-  // every word already in it: measured −50px at 1440 with the endpoint
-  // delayed. So the seven columns and their day letters (which are Mon–Sun no
-  // matter what the server says) arrive with the panel, and only the dots
-  // wait. Nothing is CLAIMED while it waits: a settling dot is drawn as
-  // nothing at all, not as the dashed "no workout" state it might turn out
-  // not to be.
-  const answering = week.isLoading;
-  if (!answering && workouts.length === 0) return null;
+  const week = useWeekWorkouts(mondayOf(todayDate));
+  const landing = week.data ? landingUnlock(codex, (week.data.workouts as WorkoutDto[]).map(plannedLiteOf), todayDate) : null;
+  const trio = nextUnlocksByDiscipline(codex);
+  const nothing = !grows && !landing && !trio.run && !trio.strength && !trio.yoga;
   return (
-    <div className="week-ribbon">
-      <div className="week-ribbon-strip" aria-label="This week's plan" aria-busy={answering}>
-        {Array.from({ length: 7 }, (_, i) => addDays(monday, i)).map((date, i) => {
-          const w = workouts
-            .filter((x) => x.effectiveDate === date)
-            .sort((a, b) => (a.category === "rest" ? 1 : 0) - (b.category === "rest" ? 1 : 0))[0];
-          const lands = landing?.date === date;
-          return (
-            <div
-              key={date}
-              className={`week-day${!answering && date === todayDate ? " week-day-today" : ""}`}
-            >
-              {lands && landing ? (
-                <span className="week-day-sprite" aria-hidden="true">
-                  <SpeciesSpriteCard speciesId={landing.entry.speciesId} locked />
-                </span>
-              ) : null}
-              <span
-                className={
-                  answering
-                    ? "week-day-dot week-day-settling"
-                    : `week-day-dot${w ? ` cat-${w.category}` : " week-day-empty"}${adventureDates.has(date) ? " week-day-adventure" : ""}`
-                }
-                title={answering ? undefined : w?.title}
-              />
-              <span className="week-day-dow" aria-hidden="true">
-                {DOW_LETTERS[i]}
-              </span>
-            </div>
-          );
-        })}
-      </div>
+    <>
+      {grows}
       {landing ? <WeekPull landing={landing} onOpenSpecies={onOpenSpecies} /> : null}
-    </div>
+      <DisciplineNudges codex={codex} onOpenSpecies={onOpenSpecies} />
+      {nothing ? <p className="muted">Every species you can grow right now has bloomed.</p> : null}
+    </>
   );
 }
 
@@ -848,52 +751,6 @@ export function TodayMeta({ w }: { w: WorkoutDto }) {
 }
 
 
-// Mirrors .dock-panel's cap in styles.css (`max-height: min(32rem, calc(100dvh
-// - 14rem))`) at a 16px root, so the two never drift apart silently. The
-// reserve went 12rem → 14rem when the dock pill stopped being replaced by the
-// panel and started staying put underneath it (System 1 §5): the pill's row is
-// part of what the dock now costs the stage.
-const DOCK_PANEL_MAX_PX = 512; // 32rem
-const DOCK_PANEL_RESERVE_PX = 224; // 14rem
-
-/**
- * Would the expanded dock panel cover more than ~55% of a stage this tall?
- * (C1/C23.) The panel is bottom-anchored and absolutely positioned over the
- * same scene the condition word/forecast/beat lines read from — on a short
- * laptop window it can eat the whole top-left HUD. Exported for a focused
- * unit test; pure arithmetic, no DOM.
- */
-export function dockCoversStage(stageHeightPx: number): boolean {
-  const panelHeight = Math.min(DOCK_PANEL_MAX_PX, stageHeightPx - DOCK_PANEL_RESERVE_PX);
-  return panelHeight > 0.55 * stageHeightPx;
-}
-
-/**
- * Whether the dock starts open, with no stored preference. (audit#4 D2.)
- *
- * The heuristic above asks "would this OVERLAY cover the stage?", and that is
- * only a question at lg, where the panel is absolutely positioned over the
- * artwork the top-left HUD is printed on. Below lg the dock is an in-flow
- * accordion in the reading column: it covers nothing, it pushes, and there is
- * nothing to protect. Asking the overlay question there produced two
- * structurally different home screens on two adjacent phones — an iPhone 15
- * (844px tall) opened collapsed and an iPhone 15 Pro Max (932px) opened with a
- * 622px panel expanded, because `dockCoversStage` flips at 931px.
- *
- * So below lg the answer is a constant: OPEN. The next workout is why the app
- * gets opened, the pill alone is a teaser, and it is what the phone showed
- * before the two trees became one.
- *
- * Pure, and takes the tier as an argument rather than reading the viewport, so
- * the caller supplies a LIVE tier (a matchMedia on the same 1024px the
- * stylesheet uses) instead of a first-paint `innerHeight` guess that then
- * freezes.
- */
-export function defaultDockOpen(isDesktop: boolean, stageHeightPx: number): boolean {
-  if (!isDesktop) return true;
-  return !dockCoversStage(stageHeightPx);
-}
-
 /**
  * The dock's verdict phrases. Copy lives client-side (the house split — the
  * server sends `level` + evidence, never prose, the same way `deriveHeadline`
@@ -905,68 +762,6 @@ export const VERDICT_PHRASE: Record<ReadinessLevel, string> = {
   caution: "Take it easy",
   poor: "Recovery is low",
 };
-
-/**
- * The dock's control row — from lg only (below lg the Today card IS the page
- * and never collapses, so the stylesheet hides this row there). It names the
- * workout and toggles the card; readiness is not its job any more — the
- * verdict lives on the card's chip and in the Readiness sheet behind it, in
- * exactly one place (System 1 v2: one voice per fact).
- *
- * With no plan it renders as the status line it actually is, not as a button
- * that looks pressable and does nothing (audit#4 D1).
- */
-export function DockPill({
-  workout,
-  today,
-  onOpen,
-  expanded = false,
-  disclosable = true,
-  done = false,
-}: {
-  workout: WorkoutDto | null | undefined;
-  today: string;
-  onOpen: () => void;
-  /** The program session heading the card is done (or saved here): it is not "next" either. */
-  done?: boolean;
-  /** True while the card above is open — this row then collapses it. */
-  expanded?: boolean;
-  /** False when there is no card behind this row (no plan). */
-  disclosable?: boolean;
-}) {
-  // A program session skipped today can head the card; it is not "next" (ruling 2a-R15).
-  const skipped = workout?.completionState === "skipped";
-  const workoutLabel = !workout
-    ? "No active training plan"
-    : workout.category === "rest"
-      ? `Rest day · ${relativeDay(workout.effectiveDate, today)}`
-      : skipped
-        ? `${workout.title} · ${relativeDay(workout.effectiveDate, today)} · skipped`
-        : done
-          ? `${workout.title} · ${relativeDay(workout.effectiveDate, today)} · done`
-          : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
-  const workoutText = !workout || workout.category === "rest" || skipped || done ? workoutLabel : `Next: ${workoutLabel}`;
-  const body = <span className="dock-pill-workout">{workoutText}</span>;
-  if (!disclosable) {
-    return (
-      <p className="dock-pill dock-pill-static" aria-label={workoutText}>
-        {body}
-      </p>
-    );
-  }
-  return (
-    <button
-      type="button"
-      className="dock-pill"
-      aria-expanded={expanded}
-      aria-controls="dock-panel"
-      aria-label={workoutText}
-      onClick={onOpen}
-    >
-      {body}
-    </button>
-  );
-}
 
 /**
  * The coach's readiness-derived clause (System 1 spec §Today): the morning's
@@ -991,6 +786,19 @@ export function coachClause(
       return "Green lights this morning — today can take its full effort.";
   }
 }
+
+/**
+ * The card's one coach line is one sentence (the new shape §4): the coach's own words for the week cut at its first
+ * sentence's end, never mid-sentence; text with no sentence end stays whole.
+ */
+export function oneSentence(text: string): string {
+  const t = text.trim();
+  const m = /^(.+?[.!?])(?=\s|$)/s.exec(t);
+  return m ? m[1]! : t;
+}
+
+/** The rest day's one gentle suggestion line. */
+export const REST_LINE = "The garden rests with you today. A short walk or some easy mobility suits it, if you'd like.";
 
 /** 7h10m-style clock for the slept vital. */
 function sleepClock(seconds: number): string {
@@ -1124,24 +932,18 @@ export interface GardenParts {
   /** The condition word and the ONE cause→effect loop sentence — printed on
    *  the scene at every width. */
   condition: ReactNode;
-  /** The celebrated metric: streak, twelve week-squares, one percentage. */
-  streak: ReactNode;
   /** What changed since you last looked — one dismissible line. */
   beat: ReactNode;
   /** An unlock celebrating itself. */
   ceremony: ReactNode;
   /** Conditional banners only (timezone, calendar, sync). Empty = invisible. */
   plumbing: ReactNode;
-  /** The one card: readiness chip, the workout, the coach's line, what it
-   *  grows, the week, the attention row, the actions. */
+  /** The one card (the new shape §4): the eyebrow, the session, its facts, the coach's line, the body check, Start
+   *  and Ask — then, at its foot, the garden drawer's handle. */
   today: ReactNode;
-  /** The unboxed strip: balance meters, the one loss voice, the top insight. */
-  lately: ReactNode;
   /** The history scrubber, when it is open. */
   timeline: ReactNode;
-  /** The quiet foot: "How the garden works". */
-  below: ReactNode;
-  /** Drawers and sheets — dialogs, so their position is their own. */
+  /** Drawers and sheets — dialogs, so their position is their own (the garden drawer among them). */
   overlays: ReactNode;
 }
 
@@ -1149,13 +951,10 @@ export const GARDEN_PART_KEYS = [
   "plumbing",
   "scene",
   "condition",
-  "streak",
   "beat",
   "ceremony",
   "today",
-  "lately",
   "timeline",
-  "below",
   "overlays",
 ] as const satisfies ReadonlyArray<keyof GardenParts>;
 
@@ -1195,20 +994,54 @@ export function GardenBody({
           <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
           <div className="hud-topleft">{parts.condition}</div>
         </div>
-        <div className="stage-ledger">
-          {parts.streak}
-          {parts.beat}
-        </div>
+        <div className="stage-ledger">{parts.beat}</div>
         {/* The celebration gets its own moment — centred on the stage, after
             the band in the reading column below it. */}
         {parts.ceremony ? <div className="hud-ceremony">{parts.ceremony}</div> : null}
         <div className="hud-dock">{parts.today}</div>
-        {parts.lately ? <div className="hud-topright">{parts.lately}</div> : null}
         {parts.timeline ? <div className="stage-timeline">{parts.timeline}</div> : null}
       </div>
-      {parts.below}
       {parts.overlays}
     </div>
+  );
+}
+
+/** How far up a pull on the handle travels before it opens the drawer: past a thumb's wobble. */
+export const PULL_OPENS_PX = 24;
+
+/**
+ * The garden drawer's handle, at the Today card's foot (the new shape §4): a real button — a tap opens "Your garden",
+ * and so does a pull upward past a thumb's wobble (the pointer is held by the handle while it pulls). The grip is
+ * drawn, never announced: the words say what it opens.
+ */
+export function GardenHandle({ open, onOpen }: { open: boolean; onOpen: () => void }) {
+  const from = useRef<number | null>(null);
+  return (
+    <button
+      type="button"
+      className="garden-handle"
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      onClick={onOpen}
+      onPointerDown={(e) => {
+        from.current = e.clientY;
+        if (typeof e.pointerId === "number") e.currentTarget.setPointerCapture?.(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (from.current === null || from.current - e.clientY < PULL_OPENS_PX) return;
+        from.current = null;
+        onOpen();
+      }}
+      onPointerUp={() => {
+        from.current = null;
+      }}
+      onPointerCancel={() => {
+        from.current = null;
+      }}
+    >
+      <span className="garden-handle-grip" aria-hidden="true" />
+      Your garden
+    </button>
   );
 }
 
@@ -1250,37 +1083,11 @@ export function GardenScreen() {
   // The readiness sheet — the ONE place the morning numbers live (System 1
   // v2: the chip on the Today card opens it; no card repeats it).
   const [readinessOpen, setReadinessOpen] = useState(false);
-  // The Today card's Move control (the card absorbed NextWorkout's job).
-  const [movingToday, setMovingToday] = useState(false);
+  // The garden drawer ("Your garden"), pulled up from the card's foot (the new shape §4).
+  const [gardenOpen, setGardenOpen] = useState(false);
   // The condition check sheet, opened from its chip beside readiness (Phase 2a).
   const [checkProfile, setCheckProfile] = useState<string | null>(null);
 
-  // The "Lately" strip's insight line — the SAME query key and staleness
-  // the insights screen and ReviewPull already share: one cached fetch.
-  // not-structural: it feeds two below-the-fold text lines in a strip whose
-  // frame (eyebrow, meters, caption, link) paints without it.
-  const insights = useQuery({
-    queryKey: ["insights"],
-    queryFn: () => api.insights(),
-    staleTime: 5 * 60_000,
-  });
-  // The dock's state is a CHOICE, held as null until one is made, rather than
-  // a boolean seeded from a first-paint measurement (audit#4 D2). The seeded
-  // form froze `window.innerHeight` at mount and applied the lg overlay
-  // heuristic at every width; this one asks `defaultDockOpen` on every render
-  // with a LIVE tier, so a rotation or a resize across 1024 gets the right
-  // answer and a phone gets a constant one.
-  const [dockChoice, setDockChoice] = useState<boolean | null>(() => {
-    if (typeof window === "undefined") return null;
-    const stored = window.localStorage.getItem("rg-dock");
-    return stored === "open" ? true : stored === "collapsed" ? false : null;
-  });
-  const isDesktop = useIsDesktop();
-  // Below lg the Today card IS the page: it never collapses, so the ribbon's
-  // box always exists there and a stored desktop "minimize" cannot strand a
-  // phone (the collapsed pill is display:none below lg).
-  const cardAlwaysOpen = !isDesktop;
-  const stageHeight = useViewportHeight();
   // The arrival block: which ceremony is showing, and whether the text
   // lines were dismissed this mount. What counts as "new" comes from the
   // server-side watermark (selectArrival) — localStorage plays no part.
@@ -1328,50 +1135,12 @@ export function GardenScreen() {
   // learns that it arrived.
   const stageRef = useSpaceAbove();
 
-  const dockOpen = dockChoice ?? defaultDockOpen(isDesktop, stageHeight);
-  /* Below lg the dock panel is in the flow, so collapsing it deletes ~547px of
-     page and the browser's scroll anchoring answers by scrolling — measured at
-     390 with "Minimize" at mid-viewport, `scrollY` 657 → 113 and the dock pill
-     thrown 544px down the screen, nowhere near a clamp. The pill is the thing
-     the panel folds into and it sits ABOVE the control, so it is the thing
-     that must not move; the content below rises into the gap, which is what
-     the invariant asks for and what an accordion has always done. Applied to
-     the pill's own toggle as well, in both directions: opening grows the same
-     box and the same anchoring can fire. At lg the panel is positioned over
-     the stage, nothing reflows, and this measures a delta of 0 and does
-     nothing. */
-  const holdDockPill = useHeldInPlace(dockOpen, () =>
-    document.querySelector<HTMLElement>(".dock-pill"),
-  );
-  const setDockOpen = (open: boolean) => {
-    holdDockPill();
-    setDockChoice(open);
-    try {
-      window.localStorage.setItem("rg-dock", open ? "open" : "collapsed");
-    } catch {
-      // Private-mode storage failures only cost the remembered state.
-    }
-  };
-
-  // Subscribed here, rendered by `<WeekRibbon>` inside the dock panel — one
-  // fetch, shared key, and the gate below waits for it (System 4 D7c). The
-  // dock's state, not the tier, decides whether either happens: the panel is
-  // where the ribbon lives, so a shut dock has nothing to fetch and nothing to
-  // wait for, at ANY width. (The dock can be opened at any width, so this is
-  // not "desktop skips it" — it is "the box that reads it decides".)
-  const weekWorkouts = useWeekWorkouts(
-    mondayOf(today.data?.today ?? localTodayGuess()),
-    // The box that reads the ribbon decides: from lg that is the dock's
-    // state; below lg the card is always open.
-    dockOpen || cardAlwaysOpen,
-  );
-  // …and the GATE reads that question as it stood at MOUNT. `dockOpen` is
-  // live, so a gate reading it directly would throw the whole screen back to
-  // "Loading the garden" the moment a desktop reader opened the dock an hour
-  // in — a first-paint gate re-firing on a deliberate tap, which is the very
-  // shape of defect this system exists to remove. First paint happens once;
-  // so does this question.
-  const [gateOnRibbon] = useState(dockOpen || cardAlwaysOpen);
+  // What the coach sees from Today: today's session (a rest day, the day) — the nav's Coach and the card's Ask pick it
+  // up. Read from the payload as it stands, before the first paint's gate, as every hook must be.
+  const seenLayout = todayCardLayout(today.data?.nextWorkout ?? null, today.data?.todaySessions ?? []);
+  const seenLead =
+    seenLayout.title?.kind === "program" ? seenLayout.title.session.workout : seenLayout.title?.kind === "run" ? seenLayout.title.workout : null;
+  useCoachSeeing(!seenLead ? null : seenLead.category === "rest" ? dayFocus(seenLead.effectiveDate) : workoutFocus(seenLead));
 
   // Fetched only once the scrubber is opened, then cached — scrubbing itself
   // is then all client-side (no per-frame requests).
@@ -1585,24 +1354,16 @@ export function GardenScreen() {
     return () => window.clearInterval(id);
   }, [replaying]);
 
-  // ALL THREE queries, not just the garden's. `/api/plan/today` feeds five
-  // separate things on this screen — the forecast line, the dock panel, the
-  // pill's second half, the attention link and the week ribbon — so rendering
-  // before it lands means rendering five holes and then filling them:
-  // measured on a 390px phone with a 2.5s delay, the sentence in the pill slid
-  // 141px sideways while the rail and the whole lower page dropped 621px.
-  // `week-workouts` joined them in System 4 (D7c) for the milder version of
-  // the same thing: the ribbon returned `null` on `?? []` and then appeared
-  // above the dock, moving 54 landmarks 62px. It is in the gate only when the
-  // dock was open at mount — see `gateOnRibbon` above; with the dock shut the
-  // query never runs, so there is nothing to wait for and nothing to move.
+  // BOTH queries, not just the garden's. `/api/plan/today` feeds the card, the forecast and the drawer — so rendering
+  // before it lands means rendering holes and then filling them: measured on a 390px phone with a 2.5s delay, the
+  // card's sentence slid 141px sideways while the whole lower page dropped 621px.
   //
   // This is the recurring bug class in this codebase (a value derived while
   // its query is in flight), and its established answer here is: hold the
   // screen, then paint once. A background REFETCH is not `isLoading`, so a
   // stale-while-revalidate pass still paints immediately from cache — see
   // `settling` in components.tsx, which is this rule with a name.
-  if (settling(garden, today, gateOnRibbon ? weekWorkouts : null))
+  if (settling(garden, today))
     return <Spinner label="Loading the garden" />;
   if (!garden.data) return <EmptyState title="Couldn't load the garden" />;
 
@@ -1652,23 +1413,11 @@ export function GardenScreen() {
     setDayIndexOverride(null);
   }
 
-  // C26: the timeline and the expanded dock panel both float over the same
-  // stage real estate and can overlap at common laptop widths — minimize the
-  // dock the moment the timeline opens so they never fight for the same
-  // pixels. Transient only (setDockChoice, not setDockOpen): it doesn't touch
-  // the persisted `rg-dock` preference, and restoring on close isn't required.
-  //
-  // `isDesktop` because that is what the paragraph above is describing and
-  // was never true below lg (System 4 D5). Below lg NEITHER of them floats —
-  // the timeline and the dock are consecutive blocks in one column, so there
-  // is no overlap to avoid, and collapsing the dock was pure collateral: one
-  // tap on "Timeline" fired two opposite layout changes at once and moved 62
-  // landmarks, 21 of them ABOVE the button, which itself dropped 559px in the
-  // document. At 1440 the same line measures 0px, which is how the scoping
-  // error stayed invisible: the behaviour was correct exactly where it was
-  // tested and wrong everywhere else.
+  // The timeline is a mode of the scene, opened from the drawer: the drawer closes so the scene can be scrubbed, and
+  // the card steps aside until the timeline closes (on the stage the two would share the same pixels; in the column the
+  // card would push the scrubber below the picture it scrubs). A state, never a tier: the same at every width.
   function openTimeline() {
-    if (isDesktop) setDockChoice(false);
+    setGardenOpen(false);
     setTimelineOpen(true);
   }
 
@@ -1803,8 +1552,8 @@ export function GardenScreen() {
 
   // ONE derivation, read by the one row that voices it (D8, tightened in v2).
   const attention = gardenAttention(d);
-  // The card only exists when there is a workout to put in it.
-  const dockPanelOpen = (dockOpen || cardAlwaysOpen) && planActive;
+  // The card exists when there is a workout to put in it — and steps aside while the timeline is open.
+  const cardShown = planActive && !timelineOpen;
   // The best next thing, per axis — and what today's planned workout grows.
   const trio = nextUnlocksByDiscipline(codex);
   // Which session titles the card (Phase 2a): a run still to do today keeps it and each program session is a line
@@ -1842,19 +1591,6 @@ export function GardenScreen() {
   const latelyCaption =
     forecast?.line ??
     (anyAxisLow && liveBalance ? WEAKEST_COPY[weakestDiscipline(liveBalance)] : null);
-  const latelyHealthy = !restMode.active && !latelyCaption && !anyAxisLow;
-  // The top ranked signal — the SAME pick (and the same confidence gates)
-  // the insights status strip uses, so home and Insights can never headline
-  // different alarms on the same morning.
-  const strip = pickStatusStripMetric(insights.data?.interpreted ?? []);
-  // The insights strip's own one-liner ("⚠ Low-intensity share: 29% — …"),
-  // so home and Insights say the same words about the same alarm. Nothing
-  // renders when all signals are in range — silence, not an all-clear badge.
-  const topSignalLine =
-    strip.severity === "clear" ? null : statusStripBaseText(strip, insights.data?.interpreted ?? []).base;
-  const evidenceLine =
-    (insights.data?.evidence as { id: string; text: string } | null | undefined) ?? null;
-
   const todayFrac = maxDayIndex > 0 ? todayIndex / maxDayIndex : 1;
   const timelinePanel = (
     <div className={`timeline-panel${viewingFuture ? " timeline-projected" : ""}`}>
@@ -2042,6 +1778,48 @@ export function GardenScreen() {
   const verdict = d?.readiness.verdict ?? null;
   const streakData = d?.consistency ?? null;
 
+  // ── The card's words ─────────────────────────────────────────────────────
+  // The eyebrow names the day in the domain's words ("Today · Mon 5 Oct": one date format with the coach's chips).
+  const eyebrow = w ? `${cap(relativeDay(w.effectiveDate, d?.today ?? todayDate))} · ${dayLabel(w.effectiveDate)}` : "";
+  // ONE coach line, one sentence: the coach's own words for the week when it has written some, else the morning's
+  // verdict applied to the day. Nothing for a session already settled.
+  const clause = leadSettled ? null : coachClause(verdict?.level, w?.category);
+  const coachWords = leadSettled ? null : d?.focus ? oneSentence(d.focus.text) : clause;
+  const coachLine = coachWords ? (
+    <div className="today-coach">
+      <span className="today-coach-mark" aria-hidden="true">
+        <IconCoach size={18} />
+      </span>
+      <p
+        className="today-coach-body"
+        title={
+          d?.focus
+            ? `Your coach's focus for the week, written ${formatDayShort(d.focus.at.slice(0, 10))} — not a comment on today's readiness.`
+            : undefined
+        }
+      >
+        <span className="today-coach-who">Coach</span> — {coachWords}
+      </p>
+    </div>
+  ) : null;
+  // How's your body? — today's session, still to do (the body check keeps the answer and adapts the day: stream E).
+  const bodyCheck =
+    lead && lead.category !== "rest" && lead.effectiveDate === (d?.today ?? todayDate) && lead.completionState === "scheduled" && !leadSettled ? (
+      <BodyCheck workout={lead} />
+    ) : null;
+  // What finishing today's session grows: the drawer's "next to bloom" leads with it.
+  const growsLine =
+    grows?.progress && lead && lead.category !== "rest" && !leadSettled ? (
+      <button type="button" className="linklike garden-grows" onClick={() => setOpenSpeciesId(grows.speciesId)}>
+        Finishing today&rsquo;s session grows the <span className="garden-grows-name">{grows.name}</span>
+        {Math.max(0, grows.progress.target - grows.progress.current) === 1
+          ? " — the last one needed"
+          : grows.progress.target >= 1000
+            ? ` · ${progressText(grows.progress, units)}`
+            : ` — ${Math.max(0, grows.progress.target - grows.progress.current)} to go`}
+      </button>
+    ) : null;
+
   const parts: GardenParts = {
     scene: (
       <div className={`garden-scene${sceneFull ? " garden-scene-fullscreen" : ""}`}>
@@ -2069,35 +1847,9 @@ export function GardenScreen() {
             className="stage-scene-svg"
           />
         </div>
-        {/* The quiet tools, on the picture: what the rail section used to be.
-            Chips, not a nav block — three content drawers and (below lg) the
-            fullscreen crop toggle. */}
+        {/* The scene's one tool (below lg): its fullscreen crop. The collection, the log and the timeline live in the
+            garden drawer now (the new shape §4). */}
         <div className="scene-tools">
-          <button
-            type="button"
-            className="scene-chip"
-            onClick={() => setOpenDrawer("collection")}
-            aria-label={`Collection — ${unlockedCount} of ${codex.length} species`}
-          >
-            ❀ {unlockedCount}/{codex.length}
-          </button>
-          <button
-            type="button"
-            className="scene-chip"
-            onClick={() => setOpenDrawer("log")}
-            aria-label="Garden log"
-          >
-            ≡
-          </button>
-          <button
-            type="button"
-            className="scene-chip"
-            onClick={() => (timelineOpen ? closeTimeline() : openTimeline())}
-            aria-expanded={timelineOpen}
-            aria-label="Timeline"
-          >
-            ↺
-          </button>
           <button
             type="button"
             className="scene-chip scene-full-toggle"
@@ -2125,38 +1877,6 @@ export function GardenScreen() {
         ) : null}
       </>
     ),
-
-    streak:
-      viewingLive && streakData && streakData.adherencePct !== null ? (
-        <div className="streak-band">
-          <div className="streak-row">
-            {streakData.streakWeeks > 0 ? (
-              <>
-                <span className="streak-n">
-                  {streakData.streakWeeks} week{streakData.streakWeeks === 1 ? "" : "s"}
-                </span>
-                <span className="streak-word">consistent</span>
-                <span className="streak-pct">{streakData.adherencePct}% of plan</span>
-              </>
-            ) : (
-              <>
-                <span className="streak-n">{streakData.adherencePct}%</span>
-                <span className="streak-word">of plan done</span>
-              </>
-            )}
-          </div>
-          <div
-            className="streak-weeks"
-            role="img"
-            aria-label={`Last 12 weeks: ${streakData.weeks.filter((x) => x.band === "full").length} on plan, ${streakData.weeks.filter((x) => x.band === "partial").length} partial`}
-          >
-            {streakData.weeks.map((x) => (
-              <span key={x.weekStart} className={`streak-week streak-${x.band}`} title={`Week of ${formatDayShort(x.weekStart)}`} />
-            ))}
-          </div>
-          <p className="streak-cap">One square per week, last 12 weeks.</p>
-        </div>
-      ) : null,
 
     beat:
       viewingLive && (beatLinesAll.length > 0 || todayLinesAll.length > 0) ? (
@@ -2215,9 +1935,9 @@ export function GardenScreen() {
         </>
       ) : null,
 
-    /* THE one card (System 1 v2). The pill above it exists from lg only (the
-       stylesheet hides it below), where it is the collapsed form; below lg
-       the card is the page. */
+    /* THE one card (the new shape §4): about four parts where there were twelve — the eyebrow, the session (title and
+       one line of facts), one coach line, the body check, Start and Ask; another session today one quiet row under
+       "Also today". At its foot, the handle of the garden drawer. */
     today: (
       <>
         {/* A session left in progress on this device — yesterday's, after midnight — stays one tap away (ruling
@@ -2227,20 +1947,10 @@ export function GardenScreen() {
           shown={(d?.todaySessions ?? []).map((s) => s.workout.id)}
           userId={signedIn}
         />
-        <DockPill
-          done={leadSettled && !!lead && !sessionSkipped(lead)}
-          workout={w}
-          today={d?.today ?? todayDate}
-          expanded={dockPanelOpen}
-          disclosable={planActive}
-          onOpen={() => setDockOpen(!dockPanelOpen)}
-        />
-        {dockPanelOpen && w ? (
-          <div className="dock-panel today-card scroller" id="dock-panel">
+        {cardShown && w ? (
+          <section className="dock-panel today-card scroller" id="dock-panel" aria-label="Today">
             <div className="today-head">
-              <span className="today-eyebrow">
-                {cap(relativeDay(w.effectiveDate, d!.today))} · {formatDayShort(w.effectiveDate)}
-              </span>
+              <span className="today-eyebrow">{eyebrow}</span>
               <span className="today-chips">
                 {verdict ? (
                   <button
@@ -2258,37 +1968,64 @@ export function GardenScreen() {
               </span>
             </div>
             {todayLayout.title?.kind === "program" ? (
+              // A programme day's session leads with its own actions (Start, Open); the coach's line and the body check
+              // sit between its lines and them, and Ask is the last of them.
               <TodayProgramLead
                 session={todayLayout.title.session}
                 today={d!.today}
                 pending={leadPending}
                 offer={leadOffer}
+                beforeActions={
+                  <>
+                    {coachLine}
+                    {bodyCheck}
+                  </>
+                }
+                ask={<AskCoach focus={workoutFocus(todayLayout.title.session.workout)} />}
               />
             ) : w.category === "rest" ? (
               <>
                 <h3 className="today-title">Rest day</h3>
-                <p className="muted">
-                  A planned rest day. The garden rests with you — soil health improves today.
-                </p>
+                <p className="today-meta today-rest-line">{REST_LINE}</p>
+                {coachLine}
+                <div className="btn-row today-actions">
+                  <AskCoach focus={dayFocus(w.effectiveDate)} />
+                </div>
               </>
             ) : (
               <>
                 <h3 className="today-title">{w.title}</h3>
-                <TodayMeta w={w} />
-                {(w.exercises?.length ?? 0) > 0 ? (
-                  <div className="today-structure">
-                    {w.exerciseRounds ? `${w.exerciseRounds} rounds of: ` : ""}
-                    {w.exercises!.map((e) => e.line).join(" · ")}
-                  </div>
-                ) : w.stageSummary ? (
-                  <div className="today-structure">{w.stageSummary}</div>
-                ) : null}
-                {watchCoverageShort(w.watchCoverage) ? (
-                  <p className="faint watch-note-short">{watchCoverageShort(w.watchCoverage)}</p>
-                ) : null}
-                {syncActionShort(w.syncAction) ? (
-                  <p className="faint watch-note-short">{syncActionShort(w.syncAction)}</p>
-                ) : null}
+                <div className="today-facts">
+                  <TodayMeta w={w} />
+                  {watchCoverageShort(w.watchCoverage) ? (
+                    <p className="faint watch-note-short">{watchCoverageShort(w.watchCoverage)}</p>
+                  ) : null}
+                  {syncActionShort(w.syncAction) ? (
+                    <p className="faint watch-note-short">{syncActionShort(w.syncAction)}</p>
+                  ) : null}
+                  {/* What needs the athlete on the Plan, folded into the facts (D8: one derivation, one phrase). */}
+                  {attention.count > 0 ? (
+                    <Link
+                      className="today-attention"
+                      to={
+                        attention.count === 1 && attention.unresolved[0]
+                          ? `/plan?workout=${attention.unresolved[0].id}`
+                          : "/plan"
+                      }
+                    >
+                      ⚠ {attentionPhrase(attention.count)} <span aria-hidden="true">›</span>
+                    </Link>
+                  ) : null}
+                </div>
+                {coachLine}
+                {bodyCheck}
+                <div className="btn-row today-actions">
+                  <Link className="btn btn-primary" to={`/plan?workout=${w.id}`}>
+                    View workout
+                  </Link>
+                  {/* The coach, asked about this workout: the card's own Ask (the one per-object Ask left). */}
+                  <AskCoach focus={workoutFocus(w)} />
+                </div>
               </>
             )}
             <TodayProgramLines
@@ -2297,93 +2034,11 @@ export function GardenScreen() {
               pending={pendingSaves}
               offers={watchReviews}
               leadId={todayLayout.title?.kind === "program" ? todayLayout.title.session.workout.id : null}
+              heading="Also today"
             />
-            {(() => {
-              const clause = leadSettled ? null : coachClause(verdict?.level, w.category);
-              if (!d?.focus && !clause) return null;
-              return (
-                <div className="today-coach">
-                  <span className="today-coach-mark" aria-hidden="true">
-                    <IconCoach size={18} />
-                  </span>
-                  <p
-                    className="today-coach-body"
-                    title={
-                      d?.focus
-                        ? `Your coach's focus for the week, written ${formatDayShort(d.focus.at.slice(0, 10))} — not a comment on today's readiness.`
-                        : undefined
-                    }
-                  >
-                    <span className="today-coach-who">Coach</span> — {d?.focus ? `${d.focus.text} ` : ""}
-                    {clause ? `${clause} ` : ""}
-                    {/* One ask on the card (the review's nit 2): with the coach's sheet in the app, the card's own Ask
-                        (its actions, or its row on a rest or programme day) is the way to ask; the Plan's thread coach
-                        only without it. */}
-                    <WithoutCoach>
-                      <Link className="today-coach-ask" to="/plan?coach=1">
-                        Ask me ›
-                      </Link>
-                    </WithoutCoach>
-                  </p>
-                </div>
-              );
-            })()}
-            {grows?.progress && w.category !== "rest" && !leadSettled ? (
-              <button
-                type="button"
-                className="linklike dock-grows"
-                onClick={() => setOpenSpeciesId(grows.speciesId)}
-              >
-                🌿 Finishing it grows the <span className="dock-grows-name">{grows.name}</span>
-                {Math.max(0, grows.progress.target - grows.progress.current) === 1
-                  ? " — the last one needed"
-                  : grows.progress.target >= 1000
-                    ? ` · ${progressText(grows.progress, units)}`
-                    : ` — ${Math.max(0, grows.progress.target - grows.progress.current)} to go`}
-              </button>
-            ) : null}
-            <div className="dock-week">
-              <WeekRibbon todayDate={todayDate} codex={codex} onOpenSpecies={setOpenSpeciesId} />
-            </div>
-            {attention.count > 0 ? (
-              <Link
-                className="today-attention"
-                to={
-                  attention.count === 1 && attention.unresolved[0]
-                    ? `/plan?workout=${attention.unresolved[0].id}`
-                    : "/plan"
-                }
-              >
-                ⚠ {attentionPhrase(attention.count)} <span aria-hidden="true">›</span>
-              </Link>
-            ) : null}
-            {/* A program day's actions are its own (Start/Open, under its title); these are the run's. */}
-            {todayLayout.title?.kind !== "program" && w.category !== "rest" ? (
-              <div className="btn-row today-actions">
-                <Link className="btn btn-primary" to={`/plan?workout=${w.id}`}>
-                  View workout
-                </Link>
-                <button type="button" className="btn" onClick={() => setMovingToday(true)}>
-                  Move
-                </button>
-                {/* The coach, asked about this workout (coach everywhere, A3). */}
-                <AskCoach focus={workoutFocus(w)} />
-              </div>
-            ) : (
-              // A programme day's session, asked about; a rest day, the day.
-              <AskCoach
-                focus={todayLayout.title?.kind === "program" ? workoutFocus(todayLayout.title.session.workout) : dayFocus(w.effectiveDate)}
-                wrap="today-ask"
-              />
-            )}
-            <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
-              Minimize
-            </button>
-          </div>
+          </section>
         ) : null}
-        {/* No plan: the pill above is a status line, not a control, and this
-            is the guidance it would otherwise be hiding — a new athlete's
-            first screen (audit#4 D1). */}
+        {/* No plan: this is the guidance a new athlete's first screen needs (audit#4 D1). */}
         {!planActive ? (
           <div className="dock-panel dock-noplan">
             <EmptyState art="🌿" title="No active COROS training plan was found">
@@ -2392,80 +2047,140 @@ export function GardenScreen() {
             </EmptyState>
           </div>
         ) : null}
+        <GardenHandle open={gardenOpen} onOpen={() => setGardenOpen(true)} />
       </>
     ),
 
-    lately:
-      viewingLive && liveBalance ? (
-        <section className="lately" aria-label="Lately">
-          <span className="lately-eyebrow">Lately</span>
-          {latelyHealthy ? (
-            <p className="lately-healthy">All three disciplines are fed — the garden is thriving.</p>
-          ) : (
-            <>
-              <BalanceStrip
-                balance={liveBalance}
-                runPaused={!planActive && runDecayPaused}
-                runSheltered={runClockSheltered}
-                runTrueRecencyDays={runTrueRecencyDays}
-                quiet
-                activeKey={openBalanceKey}
-                onToggle={toggleBalanceKey}
-              />
-              {openBalanceKey ? (
-                <BalanceDetail
-                  k={openBalanceKey}
-                  balance={liveBalance}
-                  snapshot={snapshot}
-                  trio={trio}
-                  todayDate={todayDate}
-                  onOpenSpecies={setOpenSpeciesId}
-                  onClose={() => setOpenBalanceKey(null)}
-                />
-              ) : null}
-              {latelyCaption ? (
-                <p className={`lately-cap${forecast?.kind === "loss" || anyAxisLow ? " lately-cap-loss" : ""}`}>
-                  {latelyCaption}
-                </p>
-              ) : null}
-            </>
-          )}
-          {topSignalLine ? <p className="lately-line">{topSignalLine}</p> : null}
-          {evidenceLine ? <p className="lately-line">{evidenceLine.text}</p> : null}
-          <ReviewPull />
-          <Link className="lately-more" to="/runs">
-            All insights ›
-          </Link>
-        </section>
-      ) : null,
-
     timeline: timelineOpen ? timelinePanel : null,
-
-    below: (
-      <div className="garden-below">
-        <p className="howworks">
-          {/* The label does NOT change (System 4 D4) — aria-expanded and the
-              caret carry the state, so the box never re-wraps under the
-              finger that opened it. */}
-          <button
-            type="button"
-            className="linklike"
-            aria-expanded={showWeather}
-            aria-controls="garden-how-it-works"
-            onClick={() => setShowWeather((v) => !v)}
-          >
-            How the garden works
-            <span className="disclosure-caret" aria-hidden>
-              {showWeather ? "▾" : "▸"}
-            </span>
-          </button>
-        </p>
-        {howItWorks}
-      </div>
-    ),
 
     overlays: (
       <>
+        {/* THE GARDEN DRAWER (the new shape §4): everything of the garden's that is not the picture — next to bloom,
+            twelve weeks, last trained, the collection, the log and the timeline, Growth, and how the garden works. */}
+        <Sheet open={gardenOpen} onClose={() => setGardenOpen(false)} title="Your garden">
+          <div className="garden-drawer">
+            <section className="garden-drawer-sec" aria-labelledby="garden-bloom-h">
+              <h3 className="garden-drawer-h" id="garden-bloom-h">
+                Next to bloom
+              </h3>
+              <NextToBloom codex={codex} todayDate={todayDate} grows={growsLine} onOpenSpecies={setOpenSpeciesId} />
+            </section>
+            {streakData && streakData.adherencePct !== null ? (
+              <section className="garden-drawer-sec" aria-labelledby="garden-weeks-h">
+                <h3 className="garden-drawer-h" id="garden-weeks-h">
+                  Twelve weeks
+                </h3>
+                <div className="streak-band">
+                  <div className="streak-row">
+                    {streakData.streakWeeks > 0 ? (
+                      <>
+                        <span className="streak-n">
+                          {streakData.streakWeeks} week{streakData.streakWeeks === 1 ? "" : "s"}
+                        </span>
+                        <span className="streak-word">consistent</span>
+                        <span className="streak-pct">{streakData.adherencePct}% of plan</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="streak-n">{streakData.adherencePct}%</span>
+                        <span className="streak-word">of plan done</span>
+                      </>
+                    )}
+                  </div>
+                  <div
+                    className="streak-weeks"
+                    role="img"
+                    aria-label={`Last 12 weeks: ${streakData.weeks.filter((x) => x.band === "full").length} on plan, ${streakData.weeks.filter((x) => x.band === "partial").length} partial`}
+                  >
+                    {streakData.weeks.map((x) => (
+                      <span key={x.weekStart} className={`streak-week streak-${x.band}`} title={`Week of ${formatDayShort(x.weekStart)}`} />
+                    ))}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+            {liveBalance ? (
+              <section className="garden-drawer-sec lately" aria-labelledby="garden-trained-h">
+                <h3 className="garden-drawer-h" id="garden-trained-h">
+                  Last trained
+                </h3>
+                <BalanceStrip
+                  balance={liveBalance}
+                  runPaused={!planActive && runDecayPaused}
+                  runSheltered={runClockSheltered}
+                  runTrueRecencyDays={runTrueRecencyDays}
+                  quiet
+                  activeKey={openBalanceKey}
+                  onToggle={toggleBalanceKey}
+                />
+                {openBalanceKey ? (
+                  <BalanceDetail
+                    k={openBalanceKey}
+                    balance={liveBalance}
+                    snapshot={snapshot}
+                    trio={trio}
+                    todayDate={todayDate}
+                    onOpenSpecies={setOpenSpeciesId}
+                    onClose={() => setOpenBalanceKey(null)}
+                  />
+                ) : null}
+                {latelyCaption ? (
+                  <p className={`lately-cap${forecast?.kind === "loss" || anyAxisLow ? " lately-cap-loss" : ""}`}>
+                    {latelyCaption}
+                  </p>
+                ) : null}
+              </section>
+            ) : null}
+            <div className="garden-drawer-tools">
+              <button
+                type="button"
+                className="btn btn-small"
+                onClick={() => {
+                  setGardenOpen(false);
+                  setOpenDrawer("collection");
+                }}
+              >
+                Collection · {unlockedCount} of {codex.length}
+              </button>
+              <button
+                type="button"
+                className="btn btn-small"
+                onClick={() => {
+                  setGardenOpen(false);
+                  setOpenDrawer("log");
+                }}
+              >
+                Garden log
+              </button>
+              <button type="button" className="btn btn-small" aria-expanded={timelineOpen} onClick={openTimeline}>
+                Timeline
+              </button>
+            </div>
+            <ReviewPull />
+            <Link className="garden-drawer-growth" to="/growth">
+              All of your growth <span aria-hidden="true">›</span>
+            </Link>
+            <div className="garden-drawer-foot">
+              <p className="howworks">
+                {/* The label does NOT change (System 4 D4) — aria-expanded and the caret carry the state, so the box
+                    never re-wraps under the finger that opened it. */}
+                <button
+                  type="button"
+                  className="linklike"
+                  aria-expanded={showWeather}
+                  aria-controls="garden-how-it-works"
+                  onClick={() => setShowWeather((v) => !v)}
+                >
+                  How the garden works
+                  <span className="disclosure-caret" aria-hidden>
+                    {showWeather ? "▾" : "▸"}
+                  </span>
+                </button>
+              </p>
+              {howItWorks}
+            </div>
+          </div>
+        </Sheet>
         <Drawer
           open={openDrawer === "collection"}
           onClose={() => setOpenDrawer(null)}
@@ -2486,9 +2201,6 @@ export function GardenScreen() {
         </Drawer>
         {readinessOpen && d ? (
           <ReadinessSheet readiness={d.readiness} onClose={() => setReadinessOpen(false)} />
-        ) : null}
-        {w && movingToday ? (
-          <MoveSheet workout={w} open onClose={() => setMovingToday(false)} />
         ) : null}
         {(() => {
           const c = checkProfile ? d?.conditions?.find((x) => x.profileId === checkProfile) : undefined;

@@ -33,7 +33,6 @@ import {
   ConditionChips,
   conditionChipLabel,
 } from "../src/components/condition-check-sheet.js";
-import { DockPill } from "../src/screens/garden.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -305,18 +304,6 @@ describe("TodayProgramLine", () => {
       expect(out).toContain("Skipped");
       expect(out).not.toMatch(/Start|Continue|Done/);
     }
-  });
-});
-
-describe("the collapsed Today row (DockPill) for a skipped session", () => {
-  it("names it skipped, not next (ruling 2a-R15)", () => {
-    const pill = text(html(createElement(DockPill, { workout: slotWorkout({ completionState: "skipped" }), today: TODAY, onOpen: () => undefined })));
-    expect(pill).not.toContain("Next");
-    expect(pill).toContain("Garden program · Today · skipped");
-    // A session still to do reads as it always did.
-    expect(text(html(createElement(DockPill, { workout: workout(), today: TODAY, onOpen: () => undefined })))).toBe(
-      "Next: Easy Run with Strides · Today 7 AM",
-    );
   });
 });
 

@@ -25,13 +25,7 @@ import {
   labelStride,
 } from "../src/chart-kit.js";
 import { heatCellStep } from "../src/charts.js";
-import {
-  GARDEN_PART_KEYS,
-  GardenBody,
-  defaultDockOpen,
-  dockCoversStage,
-  type GardenParts,
-} from "../src/screens/garden.js";
+import { GARDEN_PART_KEYS, GardenBody, type GardenParts } from "../src/screens/garden.js";
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const rawCss = read("../src/styles.css");
@@ -378,15 +372,12 @@ describe("the garden's information exists at every width", () => {
     expect(order).toEqual([...GARDEN_PART_KEYS]);
   });
 
-  it("DOM order is the STACK order — the Today card before the Lately strip", () => {
-    // Measured (pre-v2): with the bars first, opening a bar's detail pushed
-    // the readiness verdict (and everything under it) down 184px. The card
-    // outranks the strip at both widths, so the stack agrees with the stage.
+  it("DOM order is the STACK order — the picture is the backdrop above the one card", () => {
+    // The new shape (§4): banners, the picture (with its voice), the news, the
+    // ceremony, then the card; the streak band and the Lately strip are the
+    // garden drawer's now, not the page's.
     const order = [...html.matchAll(/data-part="(\w+)"/g)].map((m) => m[1]!);
-    expect(order.indexOf("today")).toBeLessThan(order.indexOf("lately"));
-    // …and the parts a reader meets before either of them, in that order:
-    // banners, the picture (with its voice), the celebrated band, the news.
-    expect(order.slice(0, 6)).toEqual(["plumbing", "scene", "condition", "streak", "beat", "ceremony"]);
+    expect(order.slice(0, 6)).toEqual(["plumbing", "scene", "condition", "beat", "ceremony", "today"]);
   });
 
   it("nothing below lg may reshuffle the dock's DOM order", () => {
@@ -399,84 +390,42 @@ describe("the garden's information exists at every width", () => {
     // where the box is an overlay anyway and reflows nothing.
     const gardenOrder = [...css.matchAll(/\.(hud|dock|balance|garden|stage|streak|lately|today)[\w-]*[^{}]*\{[^}]*?\border:\s*\d/g)];
     expect(gardenOrder.map((m) => m[0].slice(0, 60))).toEqual([]);
-    for (const sel of [".dock-pill", ".dock-panel", ".today-attention", ".hud-dock"]) {
+    for (const sel of [".dock-panel", ".today-attention", ".hud-dock", ".garden-handle"]) {
       const rules = [...css.matchAll(new RegExp(`\\${sel} \\{([^}]*)\\}`, "g"))];
       for (const r of rules) expect(r[1], `${sel}: ${r[1]!.trim()}`).not.toMatch(/\border:/);
     }
-    // The stage's one disagreement, and what shape it has to take.
+    // The stage's one disagreement, and what shape it has to take: the card's
+    // column is POSITIONED over the artwork (bottom-anchored, growing up), the
+    // card and its handle in DOM order inside it.
     const stage = widthBlocks.find(
       (b) => b.condition === "(min-width: 1024px)" && b.body.includes(".garden-stage {"),
     )!;
-    expect(stage.body).toMatch(/\.dock-panel \{[\s\S]*?position: absolute;/);
-    expect(stage.body).toMatch(/\.dock-panel \{[\s\S]*?bottom: calc\(100% \+ var\(--tap-clear\)\);/);
+    expect(stage.body).toMatch(/\.hud-dock \{[\s\S]*?position: absolute;/);
+    expect(stage.body).toMatch(/\.hud-dock \{[\s\S]*?bottom: clamp\(/);
   });
 
   it("the screen returns that one body and nothing else", () => {
     // Two returns is how the two trees drifted in the first place.
     expect([...gardenSrc.matchAll(/return <GardenBody /g)]).toHaveLength(1);
-    // The tier is allowed to be KNOWN — the dock's default state genuinely
-    // differs between an in-flow accordion and an overlay on a stage, and
-    // asking `matchMedia` the same 1024 the stylesheet uses is how that
-    // answer stays in agreement with the CSS. What it may never do is choose
-    // between trees or between parts, so it may not appear in a conditional
-    // that produces markup.
-    for (const line of gardenCode.split("\n").filter((l) => /\bisDesktop\b/.test(l))) {
-      expect(line, line.trim()).not.toContain("<");
-      expect(line, line.trim()).not.toMatch(/\bisDesktop\b\s*\?/); // never a ternary subject
-    }
-    // `if (isDesktop)` may scope BEHAVIOUR; it may never scope a render. This
-    // used to be a flat ban on the string, which read as the same rule but
-    // was not: System 4 (D5) found the opposite failure hiding under it —
-    // `openTimeline` minimized the dock at EVERY width, though the reason it
-    // gives is that the timeline and the dock panel "float over the same
-    // stage real estate", which is only true from lg. Below lg they are
-    // consecutive blocks in one column and there was nothing to avoid, so one
-    // tap fired two opposite layout changes and moved 21 landmarks above the
-    // button. Scoping it needed a tier the file was forbidden to consult in
-    // an `if`, so the ban was pushing the code toward the bug.
-    //
-    // The relaxation is right; its FIRST implementation was not. It inspected
-    // the rest of the same LINE (`/if \(isDesktop\)(.*)\n/`), and this walks
-    // straight through a line-scoped rule while failing the flat ban it
-    // replaced — a whole component tree chosen by tier, shipping green:
-    //
-    //     if (isDesktop) {
-    //       return (
-    //         <DesktopOnlyGarden stage={stage} />
-    //       );
-    //     }
-    //
-    // So the guard reads the STATEMENT the condition governs — its balanced
-    // block, or its single statement — and in BOTH polarities, since
-    // `if (!isDesktop) { return <PhoneGarden/> }` is the same defect wearing
-    // a `!`. What it refuses is markup: JSX, a `parts` record, the body
-    // component, or a parenthesised return (how a multi-line tree comes
-    // back). A plain `return <boolean>` is fine — `defaultDockOpen` is a pure
-    // helper and answers the tier question honestly.
-    const tierIfs = [...gardenCode.matchAll(/if \(\s*!?\s*isDesktop\s*\)/g)];
-    expect(tierIfs.length, "no `if (isDesktop)` left to check").toBeGreaterThan(0);
-    for (const m of tierIfs) {
-      const body = governedStatement(gardenCode, m.index! + m[0].length);
-      expect(body, `${m[0]}${body.slice(0, 90)}`).not.toMatch(/<|\bparts\b|GardenBody|return\s*\(/);
-    }
-    // Six mentions, and every one is the same decision: the pure helper's
-    // parameter and its guard, the live subscription, `cardAlwaysOpen` (the
-    // named boolean the card/ribbon read as an operand, never a ternary), the
-    // one call that reads the helper, and the one behaviour it scopes.
-    // Nothing else knows the tier.
-    expect([...gardenCode.matchAll(/\bisDesktop\b/g)].length).toBe(6);
+    // The tier is not even KNOWN here any more. It used to decide the dock's
+    // default state (open, or Minimized to its pill on a short stage) — the new
+    // shape has no Minimize and no pill (§4), so nothing on Today asks which
+    // width it is: every difference is the stylesheet's, and the one tree
+    // cannot drift.
+    expect(gardenCode).not.toMatch(/\bisDesktop\b|\buseIsDesktop\b/);
   });
 
   it("the parts that were stage-only carry real content on the shared tree", () => {
     // Named in the type, so a future part has to be declared before it can be
     // forgotten. `today` is the readiness chip + the coach's line + the
     // attention row; `streak` is the celebrated metric; `lately` the meters.
-    for (const key of ["today", "lately", "streak", "condition"]) {
+    for (const key of ["today", "condition", "beat", "timeline"]) {
       expect(GARDEN_PART_KEYS as readonly string[], key).toContain(key);
     }
     expect(gardenSrc).toContain("<ReadinessSheet readiness={d.readiness}");
     expect(gardenSrc).toContain('className="today-attention"');
     expect(gardenSrc).toContain('className="today-coach"');
+    expect(gardenSrc).toContain('className="garden-handle"');
   });
 });
 
@@ -501,14 +450,13 @@ describe("the garden's hierarchy is not lg-only styling", () => {
       ".hud-beat",
       ".hud-beat-label",
       ".hud-dock",
-      ".dock-pill",
       ".dock-panel",
       ".streak-band",
       ".ready-chip",
       ".today-attention",
       ".today-coach",
       ".lately",
-      ".garden-below",
+      ".garden-handle",
     ]) {
       expect(baseLayer, sel).toContain(`${sel} {`);
     }
@@ -530,8 +478,6 @@ describe("the garden's hierarchy is not lg-only styling", () => {
     // nothing below lg), or a modifier whose whole meaning is "this is
     // printed on the artwork". Neither can be a feature.
     expect([...new Set(introduced)].sort()).toEqual([
-      ".dock-pill-workout", // type on the artwork; the pill itself is lg-only
-      ".hud-topright", // a positioning box for `parts.lately`
       ".shell-main--immersive", // the shell's own stage modifier
     ]);
   });
@@ -588,10 +534,15 @@ describe("a balance bar encodes ONE thing, and it is the same thing at every wid
       .map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
       .filter((r) => /background(-color)?:/.test(r.body));
   }
+  // One layer since the new shape: the meters live in the garden drawer, never on the artwork, so no width
+  // re-paints them at all.
   const layers = {
     base: fillRules(baseLayer),
-    stage: fillRules(widthBlocks.find((b) => b.body.includes(".hud-topright {"))!.body),
   };
+
+  it("no width query re-paints a meter", () => {
+    for (const b of widthBlocks) expect(fillRules(b.body), b.condition).toEqual([]);
+  });
 
   it("both layers paint both meanings — neither is width-dependent", () => {
     for (const [name, rules] of Object.entries(layers)) {
@@ -634,44 +585,6 @@ describe("a balance bar encodes ONE thing, and it is the same thing at every wid
   });
 });
 
-// ── 6. The dock's default state is a tier decision, not a measurement ──────
-
-describe("the dock's default state", () => {
-  // Every phone and small-tablet height the app actually meets, plus the two
-  // that straddled the old flip point (iPhone 15 at 844, 15 Pro Max at 932).
-  const HEIGHTS = [568, 667, 736, 812, 844, 852, 896, 926, 930, 931, 932, 956, 1024, 1180, 1366];
-
-  it("below lg it does not depend on the viewport's height at all", () => {
-    // `dockCoversStage` answers "would this OVERLAY cover the stage?" — a
-    // question that only exists at lg. Below it the dock is an in-flow
-    // accordion: it covers nothing, and asking anyway gave two adjacent
-    // phones structurally different home screens (844 → collapsed with a 78px
-    // dock, 932 → a 622px panel expanded and the rail pushed to y=1166).
-    const answers = new Set(HEIGHTS.map((h) => defaultDockOpen(false, h)));
-    expect([...answers]).toEqual([true]);
-    expect(defaultDockOpen(false, 844)).toBe(defaultDockOpen(false, 932));
-  });
-
-  it("at lg it still protects a short stage from its own overlay", () => {
-    // The heuristic is not deleted, it is scoped to the tier it describes.
-    expect(defaultDockOpen(true, 700)).toBe(false);
-    expect(defaultDockOpen(true, 1400)).toBe(true);
-    expect(defaultDockOpen(true, 930)).toBe(!dockCoversStage(930));
-  });
-
-  it("the tier comes from the same 1024 the stylesheet uses, live", () => {
-    // Not `window.innerHeight` read once during first paint and then frozen —
-    // that is the bug class this file keeps meeting. `useIsDesktop` is a
-    // matchMedia subscription on `(min-width: 1024px)`, which is `--bp-lg`.
-    expect(gardenSrc).toContain("const isDesktop = useIsDesktop();");
-    expect(gardenSrc).toMatch(/defaultDockOpen\(isDesktop, \w+\)/);
-    // The seeded-boolean form is gone: the stored preference is the only
-    // thing held as state, and `null` means "no choice made yet".
-    expect(gardenSrc).not.toMatch(/useState\(\(\) => \{[\s\S]*?dockCoversStage\(window\.innerHeight\)/);
-    expect(gardenSrc).toContain("dockChoice ?? defaultDockOpen(");
-  });
-});
-
 // ── 7. The empty state is a screen, not a disabled control ─────────────────
 
 describe("the no-plan state", () => {
@@ -689,15 +602,14 @@ describe("the no-plan state", () => {
     // The guidance may not be gated on `dockOpen` — a first screen's only
     // instruction cannot be a tap away. It is gated on `planActive` alone,
     // which is the same predicate that decides the pill is not a button.
-    const dock = gardenSrc.slice(gardenSrc.indexOf("\n    today: ("), gardenSrc.indexOf("\n    lately:"));
+    const dock = gardenSrc.slice(gardenSrc.indexOf("\n    today: ("), gardenSrc.indexOf("\n    timeline:"));
     expect(dock.length).toBeGreaterThan(200); // the slice actually found the part
     const guidance = dock.slice(dock.indexOf("dock-noplan"));
     expect(dock).toMatch(/\{!planActive \? \(\s*<div className="dock-panel dock-noplan">/);
-    expect(guidance).not.toContain("dockOpen");
-    expect(dock).toContain("disclosable={planActive}");
+    expect(guidance).not.toContain("timelineOpen");
     // …and the card is gated on the same thing, so the two can never
-    // disagree about whether there is anything to open.
-    expect(gardenSrc).toContain("const dockPanelOpen = (dockOpen || cardAlwaysOpen) && planActive;");
+    // disagree about whether there is a card at all.
+    expect(gardenSrc).toContain("const cardShown = planActive && !timelineOpen;");
   });
 });
 

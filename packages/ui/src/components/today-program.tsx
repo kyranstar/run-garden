@@ -12,7 +12,7 @@
  * place of Done on its line, and on a line of its own the next morning — which opens the review's sheet. Saved here
  * and waiting for the server, it says so instead.
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -225,12 +225,18 @@ export function TodayProgramLead({
   today,
   pending = null,
   offer = null,
+  beforeActions = null,
+  ask = null,
 }: {
   session: TodaySession;
   today: string;
   pending?: PendingSave | null;
   /** Its quick review, when offered (Phase 3). */
   offer?: WatchReviewOffer | null;
+  /** What the card says between the session's lines and its actions (the coach's line, the body check). */
+  beforeActions?: ReactNode;
+  /** The card's Ask, last in the session's own action row. */
+  ask?: ReactNode;
 }) {
   const w = session.workout;
   const b = session.build;
@@ -253,6 +259,7 @@ export function TodayProgramLead({
           <LeadLine lead={b.lead} />
         </div>
       ) : null}
+      {beforeActions}
       <div className="btn-row today-actions">
         {done && !pending ? <span className="today-session-done">Done</span> : null}
         {skipped ? <span className="today-session-skipped">Skipped</span> : null}
@@ -269,6 +276,7 @@ export function TodayProgramLead({
             Open
           </Link>
         )}
+        {ask}
       </div>
     </>
   );
@@ -350,6 +358,7 @@ export function TodayProgramLines({
   pending = {},
   offers = [],
   leadId = null,
+  heading,
 }: {
   sessions: readonly TodaySession[];
   today: string;
@@ -358,11 +367,13 @@ export function TodayProgramLines({
   offers?: readonly WatchReviewOffer[];
   /** The session heading the card: its review is offered there, not here. */
   leadId?: string | null;
+  /** A heading over the rows (the Today card's "Also today"), drawn only with a row under it. */
+  heading?: string;
 }) {
   const offerOf = (id: string) => offers.find((o) => o.workoutId === id) ?? null;
   const own = offers.filter((o) => o.workoutId !== leadId && !sessions.some((s) => s.workout.id === o.workoutId));
   if (sessions.length === 0 && own.length === 0) return null;
-  return (
+  const rows = (
     <div className="today-sessions">
       {sessions.map((s) => (
         <TodayProgramLine key={s.workout.id} session={s} today={today} pending={pending[s.workout.id] ?? null} offer={offerOf(s.workout.id)} />
@@ -371,5 +382,13 @@ export function TodayProgramLines({
         <WatchReviewLine key={o.workoutId} offer={o} today={today} pending={pending[o.workoutId] ?? null} />
       ))}
     </div>
+  );
+  return heading ? (
+    <div className="today-also">
+      <p className="today-also-h">{heading}</p>
+      {rows}
+    </div>
+  ) : (
+    rows
   );
 }

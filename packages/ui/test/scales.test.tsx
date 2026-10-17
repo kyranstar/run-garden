@@ -737,14 +737,13 @@ describe("one touch floor, enforced", () => {
     // AND resolves `var(--tap-clear)` against the CHILD's own value.
     expect(panel).toContain("display: flex");
     expect(panel).toContain("flex-direction: column");
-    // …so no child of the panel may write a vertical margin again.
-    for (const sel of [".dock-collapse", ".dock-grows", ".dock-week"])
-      expect(ruleBody(sel), sel).not.toMatch(/margin(?:-block-start|-top|-bottom)?: (?!0 )/);
-    // Stretch is the flex default and it is wrong for these two: "Minimize" is
-    // a 64px box that grew to the panel's full width, i.e. a whole row of the
-    // panel that silently closed it.
-    for (const sel of [".dock-collapse", ".dock-grows"])
-      expect(ruleBody(sel), sel).toContain("align-self: start");
+    // (Minimize, the week ribbon and the grows line left the card with the new
+    // shape; the grows line leads the garden drawer's "next to bloom".) No
+    // short linklike row in a flex column may write a vertical margin, and
+    // none may stretch: a 64px "Minimize" grew to the panel's full width, a
+    // whole row that silently closed it.
+    expect(ruleBody(".garden-grows")).not.toMatch(/margin(?:-block-start|-top|-bottom)?: (?!0 )/);
+    expect(ruleBody(".garden-grows")).toContain("align-self: start");
   });
 
   it("the timeline scrubber is grabbable without changing its 6px bar", () => {

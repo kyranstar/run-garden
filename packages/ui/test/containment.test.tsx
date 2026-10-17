@@ -24,7 +24,6 @@ import { Sheet, useSpaceAbove } from "../src/components.js";
 import { Drawer } from "../src/drawer.js";
 import { CoachPanel, ProposalCard } from "../src/screens/coach-panel.js";
 import { CorosCheck } from "../src/screens/coros-check.js";
-import { DockPill } from "../src/screens/garden.js";
 import { WeeklyBrief } from "../src/screens/plan-brief.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { FiltersSheet } from "../src/screens/studio/filters-sheet.js";
@@ -270,27 +269,6 @@ describe("disclosure anchoring", () => {
   const verdict: ReadinessVerdict = { level: "good", reasons: ["HRV 64 (base 62)"] };
   const workout = { id: "w1", title: "Hill Strides", category: "quality", sport: "run", effectiveDate: "2026-08-14", effectiveTime: "09:00" } as WorkoutDto;
 
-  it("the pill never carries the verdict — the chip is its one home", () => {
-    // v2: readiness lives on the Today card's chip and in the sheet behind
-    // it, exactly once. The pill is the collapsed workout control from lg;
-    // opening and closing it can no longer move a verdict the reader was
-    // looking at, because the pill never had one.
-    const collapsed = render(
-      createElement(DockPill, { workout, today: "2026-08-14", onOpen: noop }),
-    );
-    expect(collapsed).toContain('aria-expanded="false"');
-    expect(collapsed).not.toContain("Good to go");
-    const expanded = render(
-      createElement(DockPill, { workout, today: "2026-08-14", onOpen: noop, expanded: true }),
-    );
-    expect(expanded).toContain('aria-expanded="true"');
-    expect(expanded).not.toContain("Good to go");
-    // The workout text itself is identical in both states — the row cannot
-    // reflow under the finger that pressed it.
-    expect(collapsed.match(/aria-label="([^"]*)"/)?.[1]).toBe("Next: Hill Strides · Today 9 AM");
-    expect(expanded.match(/aria-label="([^"]*)"/)?.[1]).toBe(collapsed.match(/aria-label="([^"]*)"/)?.[1]);
-  });
-
   it("the verdict phrase exists in exactly one screen location — the chip's", () => {
     // The sheet may restate it (a dialog is its own surface); on the PAGE the
     // chip is the only bearer. Both render from VERDICT_PHRASE, so the words
@@ -298,26 +276,6 @@ describe("disclosure anchoring", () => {
     const chipCount = [...gardenSrc.matchAll(/VERDICT_PHRASE\[verdict\.level\]/g)].length;
     expect(chipCount).toBe(2); // the chip + the sheet, nothing else
     expect(gardenSrc).not.toContain("dock-pill-verdict");
-  });
-
-  it("a pill with no panel behind it is not a button", () => {
-    // The measured defect: with `nextWorkout: null` the dock rendered a pill
-    // reading "No active training plan" that did nothing when pressed at
-    // either width — `aria-expanded` stayed false, no panel mounted, because
-    // the panel was gated on a workout the pill did not require.
-    const dead = render(
-      createElement(DockPill, {
-        verdict,
-        workout: null,
-        today: "2026-08-14",
-        onOpen: noop,
-        disclosable: false,
-      }),
-    );
-    expect(dead).not.toContain("<button");
-    expect(dead).not.toContain("aria-expanded");
-    expect(dead).not.toContain("aria-controls");
-    expect(dead).toContain("No active training plan");
   });
 
   it("a centred desktop dialog freezes its geometry on the disclosure, not on open", () => {

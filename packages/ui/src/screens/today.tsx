@@ -154,7 +154,7 @@ export function ReviewPull() {
   return (
     <p className="review-pull">
       The week's story is written —{" "}
-      <Link to="/runs" onClick={markSeen}>
+      <Link to="/growth" onClick={markSeen}>
         read it →
       </Link>
     </p>

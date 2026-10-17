@@ -141,9 +141,8 @@ describe("a screen's first paint waits for every query that decides its structur
       ).toContain(q);
     }
     // The exemption may never become the majority. (The garden sits at
-    // parity: three gated, three annotated — the two timeline queries that
-    // fill a deliberately-opened panel, and the Lately strip's cached
-    // insight line.)
+    // parity: two gated, two annotated — the two timeline queries that fill a
+    // deliberately-opened panel.)
     expect(named.length).toBeGreaterThanOrEqual(exempt.length);
   });
 
@@ -155,27 +154,15 @@ describe("a screen's first paint waits for every query that decides its structur
     expect(gated).toEqual(expect.arrayContaining(["week", "plan", "coachPlans", "raceHub"]));
   });
 
-  it("the garden gates on the week the ribbon draws", () => {
-    const { gated } = gateAudit(src.garden, "GardenScreen");
-    expect(gated).toEqual(expect.arrayContaining(["garden", "today", "weekWorkouts"]));
-  });
-
-  it("…and neither fetches nor waits for it where the ribbon cannot render", () => {
-    // The ribbon lives INSIDE the dock panel, and from lg the dock opens
-    // collapsed. Gating on a query whose only reader is not on screen bought
-    // a request that fed nothing and then held first paint on it — measured
-    // 3078ms at 1440×900 with the endpoint delayed 3s, with `.week-ribbon`
-    // still absent when the spinner let go. Both halves have to be
-    // conditional: dropping it from the gate alone would leave the wasted
-    // request, and gating without disabling would leave the wasted wait.
-    expect(code.garden).toMatch(/const weekWorkouts = useWeekWorkouts\([\s\S]{0,160}?dockOpen \|\| cardAlwaysOpen,?\s*\)/);
-    expect(code.garden).toMatch(/function useWeekWorkouts\(monday: string, enabled = true\)/);
-    expect(code.garden).toMatch(/queryKey: \["week-workouts", monday\],[\s\S]{0,120}?\n\s*enabled,/);
-    // …and the gate's copy of the question is asked ONCE, at mount. Read
-    // live, opening the dock later would throw the whole painted screen back
-    // to "Loading the garden" while the query ran.
-    expect(code.garden).toContain("const [gateOnRibbon] = useState(dockOpen || cardAlwaysOpen);");
-    expect(code.garden).toMatch(/settling\(garden, today, gateOnRibbon \? weekWorkouts : null\)/);
+  it("the garden gates on its two structural queries; the drawer's week is read by the drawer alone, open", () => {
+    const { gated, named } = gateAudit(src.garden, "GardenScreen");
+    expect(gated).toEqual(expect.arrayContaining(["garden", "today"]));
+    // The week the ribbon drew is the garden drawer's "next to bloom" now (the new shape §4): its one reader is
+    // `NextToBloom`, which exists only while the drawer is open, so the screen neither fetches it nor waits on it.
+    expect(named).not.toContain("weekWorkouts");
+    const bloom = code.garden.slice(code.garden.indexOf("export function NextToBloom("), code.garden.indexOf("/** A planned workout as the week's quest reads it"));
+    expect(bloom).toContain("const week = useWeekWorkouts(mondayOf(todayDate));");
+    expect(code.garden.match(/useWeekWorkouts\(/g)).toHaveLength(2); // its declaration and that one call
   });
 });
 
@@ -203,13 +190,10 @@ describe("a default never stands in for an answer that has not arrived", () => {
     expect(branchAt).toBeLessThan(connectedAt);
   });
 
-  it("the week ribbon's `?? []` cannot fire during the first paint", () => {
-    // It still reads `?? []` for the errored case, which is honest — but the
-    // screen's gate now covers the query, so the empty array can only ever
-    // mean "the server said there are none".
-    expect(src.garden).toContain("const weekWorkouts = useWeekWorkouts(");
-    const gate = src.garden.slice(src.garden.indexOf("if (settling("), src.garden.indexOf("\n", src.garden.indexOf("if (settling(")));
-    expect(gate).toContain("weekWorkouts");
+  it("the drawer's week claims no landing while it is read: no `?? []` stands in for the week", () => {
+    const bloom = code.garden.slice(code.garden.indexOf("export function NextToBloom("), code.garden.indexOf("/** A planned workout as the week's quest reads it"));
+    expect(bloom).toContain("const landing = week.data ?");
+    expect(bloom).not.toMatch(/week\.data\?\.workouts \?\? \[\]/);
   });
 });
 
@@ -241,7 +225,7 @@ describe("a disclosure's detail is written after its trigger", () => {
     // the FIRST occurrence of that string in the file was inside the comment
     // above the button, so this scan was measuring prose. Code only, and only
     // names the app would break without.
-    const below = code.garden.slice(at(code.garden, 'className="garden-below"'));
+    const below = code.garden.slice(at(code.garden, 'className="garden-drawer-foot"'));
     expect(at(below, "{howItWorks}")).toBeGreaterThan(at(below, 'aria-controls="garden-how-it-works"'));
     expect(src.garden).toContain('<Banner kind="info" id="garden-how-it-works">');
   });

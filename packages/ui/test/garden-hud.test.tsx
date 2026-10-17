@@ -9,13 +9,8 @@
  *    (it never advances on a frozen day, so it never catches back up) —
  *    runTrueRecencyDays (derived server-side from the true calendar date of
  *    the last completed run) takes over the caption whenever known.
- *  - dockCoversStage (C1/C23): the pure viewport-height heuristic that
- *    decides whether the Next Workout dock should default to its minimized
- *    pill on a short stage, so the panel never opens already covering the
- *    HUD above it.
- *  - DockPill (System 1 v2): the collapsed control from lg names the workout
- *    and ONLY the workout — readiness moved to the Today card's chip and the
- *    Readiness sheet behind it, in exactly one place.
+ *  - (the dock's minimized pill and its default went with Minimize — the new
+ *    shape keeps the one card open at every width: shape-today.test.tsx);
  *  - ReadinessSheet: the numbers say "usually N", never "baseline median";
  *    the provenance paragraph survives the card it replaced.
  *  - loopLine (System 1 v2): the cause→effect sentence on the scene — every
@@ -30,8 +25,6 @@ import { initialSnapshot, type GardenSnapshot, type GardenState } from "@rg/gard
 import {
   BalanceStrip,
   coachClause,
-  DockPill,
-  dockCoversStage,
   forecastVoice,
   loopLine,
   ReadinessSheet,
@@ -251,49 +244,6 @@ describe("loopLine (the loop, stated on every visit)", () => {
     expect(loopLine("dry_spell", 4)).toContain("4 days without a run");
     expect(loopLine("mild_drought", 15)).toContain("15 days without a run");
     expect(loopLine("dry_spell", 1)).toContain("1 day without");
-  });
-});
-
-describe("DockPill (collapsed control, lg only)", () => {
-  it("names the workout and nothing else — readiness is the chip's job now", () => {
-    const html = render(
-      createElement(DockPill, { workout: workout(), today: "2026-08-14", onOpen: () => {} }),
-    );
-    expect(html).toContain("Next: Hill Strides · Today 9 AM");
-    expect(html).not.toContain("Good to go");
-    expect(html).not.toContain("dock-verdict");
-  });
-
-  it("keeps the rest-day and no-plan wordings", () => {
-    expect(
-      render(createElement(DockPill, { workout: workout({ category: "rest" }), today: "2026-08-14", onOpen: () => {} })),
-    ).toContain("Rest day · Today");
-    expect(
-      render(createElement(DockPill, { workout: null, today: "2026-08-14", onOpen: () => {} })),
-    ).toContain("No active training plan");
-  });
-
-  it("with no plan it is a status line, not a button", () => {
-    const html = render(
-      createElement(DockPill, { workout: null, today: "2026-08-14", onOpen: () => {}, disclosable: false }),
-    );
-    expect(html).toContain("<p");
-    expect(html).not.toContain("<button");
-  });
-});
-
-describe("dockCoversStage (C1/C23)", () => {
-  it("a short laptop-height stage: the panel would cover most of the HUD", () => {
-    expect(dockCoversStage(700)).toBe(true);
-  });
-
-  it("a tall stage: the capped panel covers well under half", () => {
-    expect(dockCoversStage(1200)).toBe(false);
-  });
-
-  it("crosses back to false above the derived break-even (~931px)", () => {
-    expect(dockCoversStage(930)).toBe(true);
-    expect(dockCoversStage(932)).toBe(false);
   });
 });
 
