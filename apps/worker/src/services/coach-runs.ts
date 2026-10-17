@@ -27,6 +27,7 @@ import {
   isSetScope,
   promoteSetWithWhatItHas,
   followUpOf,
+  followUpReason,
   settleSet,
   supersedeOlderPlans,
   type KeyLine,
@@ -2212,7 +2213,7 @@ async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: str
   if (!proposed) return false;
   // A rehearsal's stop proposes as production's does (design-review.ts `PROMOTED_STATUS`), but its proposal stays a
   // rehearsal: never pending, it supersedes nothing of the athlete's — no statement for it.
-  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request));
+  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request));
   return true;
 }
 
@@ -2984,7 +2985,7 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
     .returning({ id: coachProposals.id });
   if (promoted.length === 0) return "kept";
   // A follow-up's (A2) supersedes the suggestion it changes in this same statement.
-  await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString(), followUpOf(s.state.settings.focus, s.run.request));
+  await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString(), followUpOf(s.state.settings.focus, s.run.request), followUpReason(s.run.request));
   return "pending";
 }
 

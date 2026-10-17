@@ -647,7 +647,16 @@ export { SAME_SESSION_MINUTES };
  * ONE statement: each row's ops are read as that row is written, so an outcome written meanwhile is never lost.
  * Answers how many proposals it changed.
  */
-export async function supersedeOlderPlans(db: Db, userId: string, proposalId: string, at: string, focused: FollowUp | null = null): Promise<number> {
+export async function supersedeOlderPlans(
+  db: Db,
+  userId: string,
+  proposalId: string,
+  at: string,
+  focused: FollowUp | null = null,
+  /** Why a suggestion a workout of the new one names (`supersedes`: propose_workout's `replaces`) gives way: the follow-up's
+   * words (`followUpReason`). */
+  replacedWhy: string = focused?.reason ?? followUpReason(null),
+): Promise<number> {
   /** An op this supersedes: a designed one, still open, for a session one of the new proposal's covers (design-cover.ts,
    * the rule a designer's `willReplace` reads before). */
   const covered = (value: SQL) => sql`(${openOp(value)}
@@ -658,15 +667,19 @@ export async function supersedeOlderPlans(db: Db, userId: string, proposalId: st
   /** The row is the follow-up's suggestion, still open (pending: nothing approved), and the new one is pending — and no
    * set's: its run (its id the suggestion's after the `dp-` prefix, found by its key) planned no week or next N. (SET's
    * expressions read the row as it was.) */
-  const isFocused = focused
-    ? sql`(coach_proposals.id = ${focused.id} AND coach_proposals.status = 'pending'
+  // A suggestion a workout of the new one names (the new shape §5: propose_workout's `replaces`, kept as `supersedes`)
+  // is the follow-up's too, under the same guard.
+  const named = sql`coach_proposals.id IN (SELECT json_extract(n.value, '$.supersedes') FROM coach_proposals np, json_each(np.ops) n
+    WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND json_valid(np.ops) AND json_extract(n.value, '$.kind') = 'doc_workout'
+      AND json_extract(n.value, '$.supersedes') IS NOT NULL)`;
+  const isFocused = sql`((${focused ? sql`coach_proposals.id = ${focused.id} OR ` : sql``}${named}) AND coach_proposals.status = 'pending'
         AND EXISTS (SELECT 1 FROM coach_proposals np WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending')
         AND NOT EXISTS (SELECT 1 FROM coach_runs fr WHERE fr.id = substr(coach_proposals.id, 4) AND fr.user_id = ${userId}
-          AND ${setRunSql("fr")}))`
-    : sql`0`;
+          AND ${setRunSql("fr")}))`;
   /** An op the follow-up supersedes: every one of its suggestion still open. */
   const changed = (value: SQL) => sql`(${isFocused} AND ${openOp(value)})`;
-  const changedOutcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${focused?.reason ?? ""}, 'by', ${proposalId})`;
+  const reason = sql`CASE WHEN ${focused ? sql`coach_proposals.id = ${focused.id}` : sql`0`} THEN ${focused?.reason ?? ""} ELSE ${replacedWhy} END`;
+  const changedOutcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${reason}, 'by', ${proposalId})`;
   // Each designed op's outcome once this is written — the changes' too: the proposal's status follows both kinds.
   const after = sql`(SELECT CASE WHEN ${changed(sql`o.value`)} OR ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st
     FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust'))`;

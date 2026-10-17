@@ -164,6 +164,9 @@ export interface DocWorkoutOp {
   candidate?: DraftVersion;
   /** One entry per draft sent for review, in order. */
   reviewLog?: ReviewRound[];
+  /** A follow-up's (the new shape §5: `replaces`): the open suggestion of its conversation this workout replaces — superseded
+   * when this one is made pending (design-orchestrate.ts `supersedeOlderPlans`). Kept through the draft's revisions. */
+  supersedes?: string;
 }
 
 /** A draft as an op holds it beside the version it keeps (`candidate`). */
@@ -223,7 +226,9 @@ export const CHANGE_NOTE_MAX = 200;
 /** A draft is too long when its minutes pass its own target by more than this, or by 15% of the target if more. */
 export const TOO_LONG_MIN_OVER = 5;
 export const TOO_LONG_SHARE_OVER = 0.15;
-const input = z.object({ doc: objectField, target, changeNote: prose(CHANGE_NOTE_MAX).optional(), amend: z.boolean().optional() }).strict();
+const input = z
+  .object({ doc: objectField, target, changeNote: prose(CHANGE_NOTE_MAX).optional(), amend: z.boolean().optional(), replaces: z.string().trim().min(1).max(200).optional() })
+  .strict();
 
 /** The guidance for a draft the validator refused: today, a move the day closes is swapped in the draft itself — or,
  * with no check logged yet, the main coach may ask for one (fix wave 3A round 2, B-M8). */
@@ -284,6 +289,11 @@ export const proposeWorkout: DesignTool = {
         ],
       },
       changeNote: { type: "string", description: `What changed from your last draft, and why (a revision, or an amend): ${capInWords(CHANGE_NOTE_MAX)}.` },
+      replaces: {
+        type: "string",
+        description:
+          "The main coach's, in a conversation: the id of an open suggestion this one changes (the conversation so far lists them) — it is replaced once this one is ready.",
+      },
       amend: {
         type: "boolean",
         description:
@@ -307,6 +317,10 @@ export const proposeWorkout: DesignTool = {
         "Call plan_set with one brief per workout, then judge the set and finish.",
       );
     }
+    // A follow-up's name is the main coach's: a set's designer drafts its brief, never another suggestion's change.
+    if (p.replaces !== undefined && ctx.run.role !== "main") {
+      return refuse("not_for_role", "replaces is the main coach's: a set's designer drafts its brief.", "Call propose_workout again without replaces.");
+    }
     const mainRunId = mainRunIdOf(ctx);
     if (!mainRunId) return refuse("no_main_run", "This designer run has no main run to propose into.", "Finish with what you have.");
     const proposalId = designProposalId(mainRunId);
@@ -324,6 +338,7 @@ export const proposeWorkout: DesignTool = {
                 'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt}, 'doc', ${pw.workoutDoc})
                 from ${pw} where ${pw.id} = ${p.target.workoutId} and ${pw.userId} = ${ctx.userId})`
             : sql`null`,
+        replaced: p.replaces !== undefined ? replacedSql(ctx.userId, p.replaces) : sql`null`,
       },
     });
     if (isErr(a)) return a;
@@ -354,6 +369,11 @@ export const proposeWorkout: DesignTool = {
     // A round still `reviewing` when a NEW call comes is one whose reviewer never got going (its call failed after
     // storing the draft): this run is stepping, so no reviewer of its is live, and a review that ended was settled when
     // the run resumed. It is no round: dropped, its draft with it.
+    // A follow-up's (the new shape §5): the suggestion it names must be one it may replace — read with the athlete.
+    if (p.replaces !== undefined) {
+      const refused = replacesRefusal(p.replaces, a.extra.replaced, { own: proposalId, conversationId: ctx.run.conversationId });
+      if (refused) return refused;
+    }
     const kept = mine ? withoutAbandoned(mine) : undefined;
     // An amend: the reviewed draft's text fixed, no round, no reviewer (§2.2) — whatever rounds are left.
     if (p.amend) return amendDraft(ctx, { a, doc, target: p.target, changeNote: p.changeNote, kept, all, opsText, proposalId, today });
@@ -498,6 +518,10 @@ export const proposeWorkout: DesignTool = {
       replaced = !!mine;
       if (mine) op.replaces = [...(mine.replaces ?? []), mine.toolUseId];
     }
+    // The suggestion a follow-up replaces (the new shape §5): this call's name, else its earlier draft's — kept through
+    // the revisions.
+    const supersedes = p.replaces ?? mine?.supersedes;
+    if (supersedes) op = { ...op, supersedes };
     const next = [...all.filter((o) => !isDocWorkoutOp(o) || (o as DocWorkoutOp).by.runId !== ctx.run.id), op];
     const written = await upsertProposal(ctx, proposalId, next, opsText, at);
     if (!written) {
@@ -520,6 +544,46 @@ export const proposeWorkout: DesignTool = {
     return reviewingAnswer(proposalId, { ...version, round, reviewRunId });
   },
 };
+
+/**
+ * The suggestion a follow-up names (the new shape §5), as one subquery of the athlete's read: its status, its designed
+ * workouts and changes, the conversation its run is a turn of, and whether that run planned a set (a set's own scope,
+ * or an auto run that raised its ceiling for one — design-orchestrate.ts `setRunSql`, written here: it imports this).
+ */
+function replacedSql(userId: string, id: string) {
+  const kindIs = (k: string) => sql.raw(`json_extract(o.value, '$.kind') = '${k}'`);
+  return sql`(select json_object('status', p.status,
+      'workouts', (select count(*) from json_each(p.ops) o where ${kindIs("doc_workout")}),
+      'changes', (select count(*) from json_each(p.ops) o where ${kindIs("plan_adjust")}),
+      'conversation', (select coalesce(case when json_valid(r.state) then json_extract(r.state, '$.settings.conversationId') end, r.id)
+        from coach_runs r where r.id = substr(p.id, 4) and r.user_id = p.user_id),
+      'set', (select count(*) from coach_runs r where r.id = substr(p.id, 4) and r.user_id = p.user_id and json_valid(r.scope)
+        and (json_extract(r.scope, '$.kind') in ('week', 'next_n') or (json_extract(r.scope, '$.kind') = 'auto' and json_valid(r.state)
+          and json_extract(r.state, '$.settings.raisedAt') is not null))))
+    from ${coachProposals} p where p.id = ${id} and p.user_id = ${userId} and substr(p.id, 1, 3) = 'dp-' and json_valid(p.ops))`;
+}
+
+/**
+ * Why a follow-up can't replace the suggestion it names, in words; null when it can: an open single-workout suggestion
+ * of the athlete's in this conversation — pending (nothing in it decided), one designed workout and no change to the
+ * plan, never a set's, never this design's own.
+ */
+function replacesRefusal(id: string, raw: unknown, o: { own: string; conversationId: string | undefined }): ToolErr | null {
+  const r = parsedJson(raw) as { status?: unknown; workouts?: unknown; changes?: unknown; conversation?: unknown; set?: unknown } | null;
+  const no = (why: string) =>
+    refuse(
+      "replaces_not_open",
+      `replaces ${JSON.stringify(id)}: ${why}`,
+      "Leave replaces out to suggest it beside what is open — or name an open suggestion of this conversation by its id (the conversation so far lists them).",
+    );
+  if (id === o.own) return no("that is this design's own suggestion — revise your draft instead.");
+  if (!r) return no("no suggestion of the athlete's has that id.");
+  if (r.status !== "pending") return no(`that suggestion is ${String(r.status)}: only one still open, nothing in it decided, is replaced.`);
+  if (Number(r.set) > 0) return no("that is a week's plan: a set is changed by planning it again.");
+  if (Number(r.workouts) !== 1 || Number(r.changes) > 0) return no("that suggestion isn't one workout alone: only a single workout with no change to the plan is replaced.");
+  if (!o.conversationId || r.conversation !== o.conversationId) return no("that suggestion is from another conversation.");
+  return null;
+}
 
 /** The op without a round whose reviewer never got going: its log entry, and its draft when that was a candidate. */
 function withoutAbandoned(op: DocWorkoutOp): DocWorkoutOp {
