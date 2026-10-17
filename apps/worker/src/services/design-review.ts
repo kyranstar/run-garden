@@ -449,7 +449,9 @@ function amendLine(notes: boolean, rounds: boolean): string {
 export interface WillReplace {
   title: string;
   date: string;
+  /** "HH:MM"; null for a now design, which has no clock time (`atNow`). */
   time: string | null;
+  atNow?: true;
 }
 
 /**

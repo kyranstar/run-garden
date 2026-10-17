@@ -57,10 +57,14 @@ export const covers = (newer: SQL, older: SQL): SQL => sql`((${workoutOf(older)}
  * its own.
  */
 export function willReplaceSql(userId: string, proposalId: string, ops: SQL, runId: string): SQL {
-  return sql`(SELECT json_group_array(json_object('title', w.title, 'date', w.date, 'time', w.time)) FROM (
+  // A now design has no clock time — it is placed when approved — so it is said as now, never its floor as a time
+  // (round 2 re-review, R2-M3; `covers` still matches by that floor).
+  return sql`(SELECT json_group_array(json_object('title', w.title, 'date', w.date, 'time', w.time, 'atNow', w.atNow)) FROM (
       SELECT coalesce(json_extract(o.value, '$.doc.title'), json_extract(o.value, '$.row.title')) AS title,
         json_extract(o.value, '$.date') AS date,
-        coalesce(json_extract(o.value, '$.time'), json_extract(o.value, '$.target.notBefore'), json_extract(o.value, '$.row.time')) AS time
+        CASE WHEN json_extract(o.value, '$.target.atNow') THEN NULL
+          ELSE coalesce(json_extract(o.value, '$.time'), json_extract(o.value, '$.row.time')) END AS time,
+        CASE WHEN json_extract(o.value, '$.target.atNow') THEN 1 ELSE 0 END AS atNow
       FROM coach_proposals op, json_each(op.ops) o
       WHERE op.user_id = ${userId} AND op.id <> ${proposalId} AND op.status IN ('pending', 'partially_approved') AND json_valid(op.ops)
         AND op.created_at < (SELECT created_at FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId})
@@ -72,8 +76,9 @@ export function willReplaceSql(userId: string, proposalId: string, ops: SQL, run
       LIMIT ${WILL_REPLACE_SHOWN}) w)`;
 }
 
-/** `willReplaceSql`'s column, read: each replaced op's title, day and time ("HH:MM", or null). */
-export function willReplaceOf(column: unknown): Array<{ title: string; date: string; time: string | null }> {
+/** `willReplaceSql`'s column, read: each replaced op's title, day and time ("HH:MM", or null) — a now design's with
+ * `atNow: true` and no time. */
+export function willReplaceOf(column: unknown): Array<{ title: string; date: string; time: string | null; atNow?: true }> {
   let rows: unknown = column;
   try {
     if (typeof column === "string") rows = JSON.parse(column);
@@ -82,7 +87,9 @@ export function willReplaceOf(column: unknown): Array<{ title: string; date: str
   }
   if (!Array.isArray(rows)) return [];
   return rows.flatMap((r) => {
-    const x = r as { title?: unknown; date?: unknown; time?: unknown } | null;
-    return typeof x?.date === "string" ? [{ title: typeof x.title === "string" ? x.title : "", date: x.date, time: typeof x.time === "string" ? x.time : null }] : [];
+    const x = r as { title?: unknown; date?: unknown; time?: unknown; atNow?: unknown } | null;
+    if (typeof x?.date !== "string") return [];
+    const now = x.atNow === 1 || x.atNow === true;
+    return [{ title: typeof x.title === "string" ? x.title : "", date: x.date, time: !now && typeof x.time === "string" ? x.time : null, ...(now ? { atNow: true as const } : {}) }];
   });
 }

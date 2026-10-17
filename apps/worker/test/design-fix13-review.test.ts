@@ -428,6 +428,16 @@ describe("round 2 — a now design covers its own session, not the day (review I
     const out = await resumeAfterReview(db, a.userId, { proposalId: `dp-now3-${a.userId}`, designerRunId: "run-now", toolUseId: "u1", reviewerError: null, now: NOW });
     expect(out.result.data).toMatchObject({ willReplace: [{ title: { untrusted: true, text: "Late morning" }, date: TODAY, time: "09:30" }] });
   });
+
+  it("an open now suggestion it would replace is said as now — never its floor as a clock time (round 2 re-review, R2-M3)", async () => {
+    const a = await athlete();
+    // An older now design: placed when approved; 09:40 is only its floor (kept as its time too when the coach gave one).
+    await insert(a.userId, `on-${a.userId}`, [opAt("Older now", { atNow: true, notBefore: "09:40", time: "09:40" })], "pending", before);
+    const mine = { ...opAt("Mine", { time: "10:30", runId: "run-m" }), toolUseId: "u1", reviewLog: [{ round: 1, toolUseId: "u1", reviewRunId: "rv-1", status: "reviewed", review: verdict(4), mean: 4, kept: true }] };
+    await insert(a.userId, `dp-m-${a.userId}`, [mine], "unreviewed", NOW.toISOString());
+    const out = await resumeAfterReview(db, a.userId, { proposalId: `dp-m-${a.userId}`, designerRunId: "run-m", toolUseId: "u1", reviewerError: null, now: NOW });
+    expect((out.result.data as { willReplace: unknown[] }).willReplace).toEqual([{ title: { untrusted: true, text: "Older now" }, date: TODAY, time: null, atNow: true }]);
+  });
 });
 
 describe("round 2 — a rehearsal designer is told it replaces nothing (review Minor 9)", () => {
