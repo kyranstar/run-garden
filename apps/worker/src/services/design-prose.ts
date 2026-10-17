@@ -72,8 +72,9 @@ const FIELD_NAME = /^[a-z][a-z0-9]+(?:[A-Z][a-z0-9]+)+$/;
 /** Words that already carry their own article, so "the" or "a" before the tool's name goes. */
 const OWN_ARTICLE = /^(?:the|your|a|an|what|dropping)\b/;
 
-/** A path into the workout document ("intent.summary", "parts[1].items[0].why", "parts[2]"). */
-const DOC_PATH = /\b(?:intent|parts|items|setting|target)(?=\[\d|\.[A-Za-z])(?:\[\d+\])?(?:\.[A-Za-z]+(?:\[\d+\])?)*/g;
+/** A path into the workout document ("intent.summary", "parts[1].items[0].why", "parts[2]"): each step after a dot opens
+ * lowercase, so a sentence run on after a full stop ("the target.Then") is not one. */
+const DOC_PATH = /\b(?:intent|parts|items|setting|target)(?=\[\d|\.[a-z])(?:\[\d+\])?(?:\.[a-z][A-Za-z]*(?:\[\d+\])?)*/g;
 
 /** A document path in words: what its last step names. */
 function pathWords(path: string): string {

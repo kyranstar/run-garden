@@ -111,6 +111,8 @@ describe("athleteText", () => {
     expect(athleteText("Fix parts[1].items[0].why first.")).toBe("Fix a move's why first.");
     expect(athleteText("parts[0].items[2].cue reads well")).toBe("A move's cue reads well");
     expect(athleteText("Keep the intent. Then rest.")).toBe("Keep the intent. Then rest.");
+    expect(athleteText("Move the target.Then rest.")).toBe("Move the target.Then rest.");
+    expect(athleteText("Read the parts.Now go.")).toBe("Read the parts.Now go.");
     expect(athleteText("At parts[2] the order is odd")).toBe("At a part the order is odd");
   });
 });
