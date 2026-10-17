@@ -29,12 +29,14 @@ const day = (n: number) => addDays(TODAY, -n);
 let db: Db;
 let statements = 0;
 let userId: string;
+/** The athlete's zone: the board answers today there, not in UTC (they differ every day from 00:00 to 07:00 UTC). */
+let zone: string;
 let cookie: string;
 
 beforeEach(async () => {
   statements = 0;
   db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
-  ({ userId } = await makeTestUser(db, { weightUnit: "kg", units: "km" }));
+  ({ userId, prefs: { timezone: zone } } = await makeTestUser(db, { weightUnit: "kg", units: "km" }));
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
 });
 
@@ -345,7 +347,7 @@ describe("GET /api/objectives/board", () => {
     const { userId: other } = await makeTestUser(db);
     const theirs = await createObjective(db, other, { title: "Theirs" }, T0);
     await workout(day(1), { objectiveIds: [mine.id, theirs.id], state: "completed", owner: other });
-    const today = todayInZone("UTC");
+    const today = todayInZone(zone);
     const res = await get();
     expect(res.status).toBe(200);
     expect(res.body.today).toBe(today);
@@ -354,7 +356,7 @@ describe("GET /api/objectives/board", () => {
   });
 
   it("costs the session and OBJECTIVE_BOARD_STATEMENTS at most, every source read (strength, runs and their labels, threshold days): pinned", async () => {
-    const today = todayInZone("UTC");
+    const today = todayInZone(zone);
     await createObjective(db, userId, { title: "A", keyResults: [WALL_SIT_30, FIVE_K, EASY_PACE, THRESHOLD] }, T0);
     await createObjective(db, userId, { title: "B", keyResults: [{ label: "Predicted", measure: { kind: "predicted_time", distanceM: 10000 } }] }, T0);
     for (const n of [9, 2]) {
@@ -374,14 +376,14 @@ describe("GET /api/objectives/board", () => {
 
   it("with no objectives, reads only the preferences and the (empty) objectives", async () => {
     const res = await get();
-    expect(res.body).toEqual({ today: todayInZone("UTC"), objectives: [] });
+    expect(res.body).toEqual({ today: todayInZone(zone), objectives: [] });
     expect(res.cost).toBe(1 + 3);
   });
 
   it("keeps every bound list under D1's 100 variables, however many objectives there are", async () => {
     const ids: string[] = [];
     for (let i = 0; i < 40; i++) ids.push((await createObjective(db, userId, { title: `O${i}`, sort: i, keyResults: [WALL_SIT_30] }, T0)).id);
-    await workout(addDays(todayInZone("UTC"), -1), { objectiveIds: ids.slice(0, 10), state: "completed" });
+    await workout(addDays(todayInZone(zone), -1), { objectiveIds: ids.slice(0, 10), state: "completed" });
     const res = await get();
     expect(res.status).toBe(200);
     expect(res.body.objectives).toHaveLength(40);
