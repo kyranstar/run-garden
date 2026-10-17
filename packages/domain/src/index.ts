@@ -35,3 +35,4 @@ export * from "./standalone-backup.js";
 export * from "./workout-doc.js";
 export * from "./profile.js";
 export * from "./objective-board.js";
+export * from "./growth.js";

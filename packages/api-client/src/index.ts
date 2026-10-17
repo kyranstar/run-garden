@@ -6,6 +6,8 @@ import type {
   GardenConditionWord,
   GardenEvent,
   GardenWeatherState,
+  GrowthBodyDto,
+  GrowthPeriod,
   LiftingPlan,
   ObjectiveBoardDto,
   ObjectiveCreate,
@@ -2526,6 +2528,8 @@ export const api = {
    * ever, the workouts that served it, its streak of weeks and the coach's latest line — one read. 404 with the coach off.
    */
   objectiveBoard: () => get<ObjectiveBoardDto>("/api/objectives/board"),
+  /** Growth's body map (the new shape §7): each area's work over the last 30 or 90 days, what carried it, what was quiet, the holds. */
+  growthBody: (period: GrowthPeriod) => get<GrowthBodyDto>(`/api/growth/body?period=${period}`),
 };
 
 /** Exact shape of `GET /api/sessions/:workoutId/review-basis` (services/session-review-basis.ts). */

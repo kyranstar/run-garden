@@ -38,6 +38,7 @@ import { lifeosRoutes } from "./routes/lifeos.js";
 import { workoutRoutes } from "./routes/workouts.js";
 import { templateRoutes } from "./routes/templates.js";
 import { musicRoutes } from "./routes/music.js";
+import { growthRoutes } from "./routes/growth.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
@@ -110,6 +111,8 @@ app.route("/api/profile", profileRoutes);
 // The objectives board's one read: 404 unless COACH_DESIGNER or staging, then requireUser. Ahead of /api/objectives.
 app.route("/api/objectives/board", objectiveBoardRoutes);
 app.route("/api/objectives", objectiveRoutes);
+// Growth's body map (the new shape §7).
+app.route("/api/growth", growthRoutes);
 app.route("/api/import", importRoutes);
 app.route("/api/library", libraryRoutes);
 app.route("/api/workouts", workoutRoutes);

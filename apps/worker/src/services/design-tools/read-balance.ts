@@ -8,36 +8,26 @@
  * physical session counts once; a session's played-only moves count as played, once. Nothing logged is said, never
  * balanced as zeros. A watch move counts as the library move its key maps to; one the library has no record for is
  * named in `missing` by COROS's own name, with how many sessions logged it (fix wave 13, A2) — never dropped in
- * silence. Two statements: the athlete with the focus areas, then the range in one read.
+ * silence. Two statements: the athlete with the focus areas, then the range in one read — the computation is
+ * `readExposure` (body-exposure.ts), shared with Growth's body map.
  *
  * RUNS LOAD THE LEGS (audit I5). A run is no working set, so the regions above are the sessions' alone; what runs
  * loaded is said apart (`fromRuns`: each region a run loads — RUN_REGIONS — with the runs in the range and the last
  * one's date). A region a run loaded is never listed untrained, and a focus area that means one of them gains
  * `lastRun` beside its strength-only `lastTrained` — so a run-heavy week never reads as legs left untrained.
  */
-import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { athleteProfiles, performedSessions } from "@rg/database";
-import { dayRangeLabel, daysBetween, focusAreaSchema } from "@rg/domain";
-import { EXERCISES, MUSCLE_REGION, REGIONS, type MuscleId, type Region } from "@rg/exercise-library";
-import { derivePerformed, type BalanceProfile, type PerformedInput } from "@rg/workout";
+import { dayRangeLabel, daysBetween } from "@rg/domain";
+import { REGIONS } from "@rg/exercise-library";
 import type { DesignTool } from "./types.js";
-import { answer, checkRange, DATE_SCHEMA, dateField, isErr, parsedArray, parseInput, plural, READ_ROLES, readAthlete, readTagged, untrusted } from "./read-common.js";
-import { watchMove } from "../logged-sets.js";
-import { activitiesAround, activityRows, doneTerms, sessionRows, sessionsOnce, sessionsWhere, setRows } from "./read-sessions.js";
+import { answer, checkRange, DATE_SCHEMA, dateField, isErr, parseInput, plural, READ_ROLES, untrusted } from "./read-common.js";
+import { readExposure, regionOf, RUN_REGIONS } from "../body-exposure.js";
 
 const TOP_REGIONS = 10;
 const TOP_MUSCLES = 12;
 /** Watch moves named in `missing`, at most (the rest are counted). */
 const WATCH_NAMED = 8;
-const LIBRARY = new Set(EXERCISES.map((e) => e.id));
-const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
-
-/** The regions a run loads (the library's own region ids). */
-export const RUN_REGIONS = ["calves", "hamstrings", "quads", "hips", "ankles", "feet"] as const satisfies readonly Region[];
 const RUN_REGION_SET = new Set<string>(RUN_REGIONS);
-/** The region a focus area's ref names: itself, or the region its muscle sits under. */
-const regionOf = (ref: string): string | undefined => (REGIONS as readonly string[]).includes(ref) ? ref : MUSCLE_REGION[ref as MuscleId];
 
 /** What each figure counts. */
 const UNITS = {
@@ -67,106 +57,11 @@ export const readBalance: DesignTool = {
     if (isErr(p)) return p;
     const bad = checkRange(p.from, p.to);
     if (bad) return bad;
-    const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
-      focus: sql`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${ctx.userId})`,
-    });
-    const focus = parsedArray(typeof extra.focus === "string" ? extra.focus : null).flatMap((f) => {
-      const parsed = focusAreaSchema.safeParse(f);
-      return parsed.success ? [parsed.data] : [];
-    });
-    const scope = sessionsWhere(ctx.userId, sql`${performedSessions.localDate} between ${p.from} and ${p.to}`);
-    const [sTerm, xTerm, , aTerm] = doneTerms(ctx.userId, scope, { activitiesWhere: activitiesAround(p.from, p.to) });
-    const rows = await readTagged(ctx.db, [sTerm!, xTerm!, aTerm!]);
-
-    const all = sessionRows(rows.get("s"));
-    const chosen = sessionsOnce(all);
-    const sets = setRows(rows.get("x"));
-    // A session's own activity joins it whatever its date; the rest are the range's, by their local date.
-    const acts = new Map(activityRows(rows.get("a"), athlete.tz).map((a) => [a.id, a]));
-    const logged = new Set(all.map((s) => s.activityId).filter((id): id is string => id !== null));
-
-    const balance: BalanceProfile = { isometricSec: 0, isotonicReps: 0, eccentricReps: 0, plyoContacts: 0, aerobicSec: 0, mobilitySec: 0, recoverySec: 0 };
-    const regions = new Map<string, number>();
-    const muscles = new Map<string, number>();
-    const focusSeen = new Map<string, { last: string | null; sets: number }>(focus.map((f) => [f.id, { last: null, sets: 0 }]));
-    const unknown = new Set<string>();
-    /** Watch moves the library has no record for: COROS's name → the sessions that logged it (fix wave 13, A2). */
-    const watchUnknown = new Map<string, Set<string>>();
-    /** A logged move as the balance counts it: a watch key the library maps is that library move. */
-    const asLibrary = (id: string): string => {
-      const w = watchMove(id);
-      return w && "libraryId" in w ? w.libraryId : id;
-    };
-    const noteUnknown = (id: string, sessionId: string): void => {
-      if (LIBRARY.has(id)) return;
-      const w = watchMove(id);
-      if (w && "key" in w) {
-        const name = w.corosName ?? w.key;
-        watchUnknown.set(name, (watchUnknown.get(name) ?? new Set()).add(sessionId));
-      } else unknown.add(id);
-    };
-    const add = (input: PerformedInput) => {
-      const d = derivePerformed(input, EXERCISES);
-      for (const k of Object.keys(balance) as Array<keyof BalanceProfile>) balance[k] += d.balance[k];
-      for (const [k, v] of Object.entries(d.regionExposure)) regions.set(k, (regions.get(k) ?? 0) + v);
-      for (const [k, v] of Object.entries(d.muscleExposure)) muscles.set(k, (muscles.get(k) ?? 0) + v);
-    };
-    /**
-     * A focus area's sets: every working set of a move that trains it, once — a move counts when any of the area's refs
-     * is one of its regions or muscles, however many of them it names (an area of a region and that region's muscles
-     * never counts a set twice).
-     */
-    const trains = (exerciseId: string, f: (typeof focus)[number]): boolean => {
-      const rec = BY_ID.get(exerciseId);
-      if (!rec) return false;
-      const says = new Set<string>([...rec.regions, ...rec.muscles.primary, ...rec.muscles.secondary]);
-      return f.refs.some((ref) => says.has(ref));
-    };
-    const countFocus = (exerciseId: string, workingSets: number, date: string) => {
-      for (const f of focus) {
-        if (!trains(exerciseId, f)) continue;
-        const seen = focusSeen.get(f.id)!;
-        seen.sets += workingSets;
-        if (!seen.last || date > seen.last) seen.last = date;
-      }
-    };
-
-    for (const s of chosen) {
-      const mine = sets.filter((x) => x.session === s.id).map((x) => ({ ...x, exerciseId: asLibrary(x.exerciseId), logged: x.exerciseId }));
-      const entries = new Map<string, PerformedInput["entries"][number]>();
-      /** Working sets per move: a set done a side at a time (a row per side) is one set. */
-      const working = new Map<string, Set<string>>();
-      for (const x of mine) {
-        noteUnknown(x.logged, s.id);
-        const key = `${x.entry}:${x.exerciseId}:${x.perSide}`;
-        const e = entries.get(key) ?? { exerciseId: x.exerciseId, perSide: x.perSide, sets: [] };
-        e.sets.push({ reps: x.reps, seconds: x.seconds, loadKg: null, done: true, flags: x.flags });
-        entries.set(key, e);
-        working.set(x.exerciseId, (working.get(x.exerciseId) ?? new Set()).add(`${x.entry}:${x.index}`));
-      }
-      const loggedIds = new Set(mine.map((x) => x.exerciseId));
-      const played = s.movesDone.map((m) => ({ ...m, exerciseId: asLibrary(m.exerciseId), logged: m.exerciseId })).filter((m) => !loggedIds.has(m.exerciseId));
-      for (const m of played) noteUnknown(m.logged, s.id);
-      const a = s.activityId ? acts.get(s.activityId) : undefined;
-      add({ entries: [...entries.values()], movesDone: played, activity: a ? { sport: a.sport, durationSeconds: a.seconds, distanceMeters: a.meters } : null });
-      for (const [exerciseId, n] of working) countFocus(exerciseId, n.size, s.date);
-      for (const m of played) countFocus(m.exerciseId, 1, s.date);
-    }
-    let runs = 0;
-    let other = 0;
-    for (const a of acts.values()) {
-      if (logged.has(a.id) || a.date < p.from || a.date > p.to) continue;
-      if (a.sport === "run") runs += 1;
-      else other += 1;
-      add({ entries: [], movesDone: [], activity: { sport: a.sport, durationSeconds: a.seconds, distanceMeters: a.meters } });
-    }
-    // Every run in the range loaded the legs, a session's own run among them (by its date).
-    const ranDays = [...acts.values()].filter((a) => a.sport === "run" && a.date >= p.from && a.date <= p.to).map((a) => a.date);
-    const lastRun = ranDays.length ? ranDays.reduce((x, y) => (y > x ? y : x)) : null;
+    const { athlete, sessions: chosen, runs, other, nothing, balance, regions, muscles, focus, focusSeen, lastRun, ranDays, unknown, watchUnknown } =
+      await readExposure(ctx.db, ctx.userId, ctx.now, p);
     const fromRuns = lastRun ? Object.fromEntries(RUN_REGIONS.map((r) => [r, { runs: ranDays.length, last: lastRun }])) : {};
     const runLoaded = (region: string): boolean => lastRun !== null && RUN_REGION_SET.has(region);
 
-    const nothing = chosen.length === 0 && runs === 0 && other === 0;
     const minutes = (sec: number) => Math.round(sec / 60);
     const missing: string[] = [...athlete.missing];
     if (nothing) missing.push(`nothing logged from ${p.from} to ${p.to}`);
