@@ -80,6 +80,13 @@ const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "sev
 /** Does the quote give this number — as digits or as a word? */
 const givesNumber = (quote: string, n: number): boolean => words(quote).includes(` ${n} `) || words(quote).includes(` ${NUMBER_WORDS[n]} `);
 
+/** Until when an Undo of these rows is offered (U's need, round 2): `{ expiresAt }`, the latest last fresh day among
+ * them ("YYYY-MM-DD") — the run view keeps the Undo while an answer is fresh; nothing when none says. */
+export function undoUntil(rows: ReadonlyArray<{ expiresAt?: string | null }>): { expiresAt?: string } {
+  const days = rows.map((r) => r.expiresAt).filter((d): d is string => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d));
+  return days.length > 0 ? { expiresAt: days.sort().at(-1)! } : {};
+}
+
 /** The handle an undo names; the run's own id is in it, so an undo can only reach its own run's answers. */
 export const answerHandle = (mainRunId: string, toolUseId: string, from: "request" | "ask_athlete" = "request"): string =>
   `${from === "request" ? "ra" : "aa"}:${mainRunId}:${toolUseId}`;
@@ -236,7 +243,7 @@ export const recordAnswer: DesignTool = {
       data: ctx.run.rehearsal ? { recorded: rows.length, rehearsal: true } : { recorded: rows.length, date: athlete.today, source: "request" },
       summary: `Noted from your request: ${line}`,
       receipt: {
-        undo: { handle },
+        undo: { handle, ...undoUntil(rows) },
         recorded: rows.map((r) => ({ question: r.questionId, ...(r.subjectId ? { area: r.subjectId } : {}), ...(r.valueNum != null ? { value: r.valueNum } : {}) })),
       },
     };

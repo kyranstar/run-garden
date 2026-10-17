@@ -238,6 +238,19 @@ describe("round 2: the trail in the athlete's words (I1), an honest last line (M
     expect(await proposalOf(runId)).toBeUndefined();
   });
 
+  it("U's need: the 'You answered' line's receipt says until when its Undo is offered — the kept answer's last fresh day", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, 12);
+    const question = { text: "How sore are your calves?", chips: [{ label: "Sore", value: 6 }, { label: "Fine", value: 1 }], why: "It sets the load.", checkin: { question: "soreness", area: "calves" } };
+    const { deps } = scripted([t(use("ask_athlete", { questions: [question] }))]);
+    expect((await drive(userId, runId, deps)).at(-1)!.status).toBe("waiting_athlete");
+    expect((await answerRun(db, userId, runId, { answers: ["Sore"] }, new Date(NOW.getTime() + 60_000))).kind).toBe("ok");
+    const answered = (await trail(runId)).find((e) => e.summary.startsWith("You answered"))!;
+    const kept = (await db.select().from(schema.athleteAnswers).where(eq(schema.athleteAnswers.userId, userId))).filter((r) => r.id.startsWith(`aa:${runId}:`));
+    expect(kept).toHaveLength(1);
+    expect(answered.payload).toMatchObject({ receipt: { undo: { handle: expect.stringMatching(/^aa:/), expiresAt: kept[0]!.expiresAt } } });
+  });
+
   it("a call's usage is added after the payload is bounded: a first event near the bound keeps its words whole", async () => {
     const { userId } = await seedRichAthlete(db);
     const runId = await nowRun(userId, 12);

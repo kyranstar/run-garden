@@ -63,7 +63,7 @@ import { designedLine, LINE_MAX as FINISH_LINE_MAX } from "./design-tools/finish
 import { designProposalId } from "./design-tools/propose.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
-import { askedAnswerRows, insertAnswers } from "./design-tools/record-answer.js";
+import { askedAnswerRows, insertAnswers, undoUntil } from "./design-tools/record-answer.js";
 import {
   isToolErr,
   type DesignTool,
@@ -1624,7 +1624,7 @@ export async function answerRun(db: Db, userId: string, runId: string, input: An
     events.push(
       "dismissed" in content
         ? { kind: "note", summary: "You skipped the question." }
-        : { kind: "note", summary: `You answered: ${answers.join(" · ")}`, payload: { answers, ...(kept ? { receipt: { undo: { handle: kept.handle } } } : {}) } },
+        : { kind: "note", summary: `You answered: ${answers.join(" · ")}`, payload: { answers, ...(kept ? { receipt: { undo: { handle: kept.handle, ...undoUntil(kept.rows) } } } : {}) } },
     );
   }
   const terminal = !isLive(status);

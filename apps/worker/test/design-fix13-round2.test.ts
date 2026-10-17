@@ -131,3 +131,21 @@ describe("Minor 8: drop_workout's reason is soft-capped", () => {
   });
 });
 
+describe("U's need: record_answer's Undo says until when", () => {
+  it("receipt.undo.expiresAt is the latest fresh day of the answers the call kept", async () => {
+    const run = await mainRun("My calves are sore and my energy is low today.");
+    const out = ok(
+      await recordAnswer.run(ctxOf(run), {
+        answers: [
+          { question: "soreness", area: "calves", quote: "My calves are sore" },
+          { question: "energy", quote: "my energy is low" },
+        ],
+      }),
+    );
+    const rows = (await db.select().from(schema.athleteAnswers).where(eq(schema.athleteAnswers.userId, rich.userId))).filter((r) => r.id.startsWith(`ra:${run.id}:`));
+    expect(rows).toHaveLength(2);
+    const latest = rows.map((r) => r.expiresAt!).sort().at(-1)!;
+    expect(latest >= TODAY && latest <= addDays(TODAY, 30)).toBe(true);
+    expect((out.receipt as { undo: { handle: string; expiresAt: string } }).undo.expiresAt).toBe(latest);
+  });
+});
