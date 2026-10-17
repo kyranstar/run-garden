@@ -12,9 +12,12 @@
  * A key result's best ever counts once it has something to beat (the board's `best`: two points or more). A finished
  * objective is dated by the day it was marked complete, in the athlete's zone. Synthetic data only.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { keyResultMeasureSchema, type GardenEvent, type ObjectiveBoardCard, type ObjectiveBoardDto } from "@rg/domain";
-import { objectiveMoments, selectArrival, type ArrivalEvent, type ArrivalMoment } from "../src/screens/arrival.js";
+import { selectArrival, type ArrivalEvent, type ArrivalMoment } from "../src/screens/arrival.js";
+import { objectiveMoments } from "../src/screens/growth/moment-words.js";
 
 const TODAY = "2026-10-14";
 const YESTERDAY = "2026-10-13";
@@ -86,6 +89,14 @@ describe("objectiveMoments", () => {
 
   it("an objective under way or paused is no moment of its own", () => {
     expect(objectiveMoments(board(card("o1", "Legs"), card("o2", "Posture", { status: "paused" })), "UTC")).toEqual([]);
+  });
+});
+
+describe("arrival.ts stays light", () => {
+  it("imports no screen code: a worker test reads it, and the worker's typecheck has no JSX", () => {
+    const src = readFileSync(fileURLToPath(new URL("../src/screens/arrival.ts", import.meta.url)), "utf8");
+    const from = [...src.matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
+    expect(from.filter((f) => f!.startsWith("."))).toEqual([]);
   });
 });
 

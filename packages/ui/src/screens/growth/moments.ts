@@ -1,6 +1,6 @@
 /**
  * The objectives' garden moments on Today's arrival block (the new shape §7): a best ever on a key result, a finished
- * objective (arrival.ts `objectiveMoments`), read from the objectives board — the same read and cache as Growth's
+ * objective (moment-words.ts `objectiveMoments`), read from the objectives board — the same read and cache as Growth's
  * quests. The board is the coach's: with the coach off it is never read and there are none. The athlete's zone dates a
  * completion.
  *
@@ -13,8 +13,9 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type GardenSeenState } from "@rg/api-client";
 import { coachOn } from "../../features.js";
-import { objectiveMoments, selectArrival, type ArrivalEvent, type ArrivalMoment, type ArrivalPlan } from "../arrival.js";
+import { selectArrival, type ArrivalEvent, type ArrivalMoment, type ArrivalPlan } from "../arrival.js";
 import { OBJECTIVE_BOARD_QUERY } from "../studio/objectives.js";
+import { objectiveMoments } from "./moment-words.js";
 
 const NONE: ArrivalMoment[] = [];
 
