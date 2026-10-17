@@ -57,13 +57,12 @@ export const covers = (newer: SQL, older: SQL): SQL => sql`((${workoutOf(older)}
  * its own.
  */
 export function willReplaceSql(userId: string, proposalId: string, ops: SQL, runId: string): SQL {
-  // A now design has no clock time — it is placed when approved — so it is said as now, never its floor as a time
-  // (round 2 re-review, R2-M3; `covers` still matches by that floor).
+  // A now design is marked `atNow`: it has no clock time — it is placed when approved — so `willReplaceOf` says it as
+  // now, never its floor as a time (round 2 re-review, R2-M3; `covers` still matches by that floor).
   return sql`(SELECT json_group_array(json_object('title', w.title, 'date', w.date, 'time', w.time, 'atNow', w.atNow)) FROM (
       SELECT coalesce(json_extract(o.value, '$.doc.title'), json_extract(o.value, '$.row.title')) AS title,
         json_extract(o.value, '$.date') AS date,
-        CASE WHEN json_extract(o.value, '$.target.atNow') THEN NULL
-          ELSE coalesce(json_extract(o.value, '$.time'), json_extract(o.value, '$.row.time')) END AS time,
+        coalesce(json_extract(o.value, '$.time'), json_extract(o.value, '$.row.time')) AS time,
         CASE WHEN json_extract(o.value, '$.target.atNow') THEN 1 ELSE 0 END AS atNow
       FROM coach_proposals op, json_each(op.ops) o
       WHERE op.user_id = ${userId} AND op.id <> ${proposalId} AND op.status IN ('pending', 'partially_approved') AND json_valid(op.ops)
