@@ -94,6 +94,15 @@ describe("an engine session, A bit heavy", () => {
     const fresh = await answerBodyCheck(db, userId, id, { feel: "fresh" }, ctx());
     expect(fresh.view.pending).toBeUndefined();
     expect((await session(id)).build!.buildId).toBe(built.build!.buildId);
+    // Nor once it asks only about an area the session leaves alone.
+    const other = await seedSlot(db, userId, programId, DAY, "slot-two");
+    await answerBodyCheck(db, userId, other, { feel: "heavy" }, ctx());
+    const day = await session(other);
+    const quietArea = BODY_REGIONS.find((r) => !worked(day).has(r))!;
+    const quiet = await answerBodyCheck(db, userId, other, { feel: "sore", areas: [quietArea] }, ctx());
+    expect(quiet.view).toMatchObject({ change: { kind: "kept", why: "quiet" } });
+    expect(quiet.view.pending).toBeUndefined();
+    expect((await session(other)).build!.buildId).toBe(day.build!.buildId);
   });
 
   it("already in recovery: nothing gentler to go to — kept, nothing rebuilt", async () => {

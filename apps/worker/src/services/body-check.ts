@@ -18,15 +18,23 @@
  *    recovery, the next the programme allows — through the build path itself, the day's choice of mode as the session
  *    sheet makes it (`buildSessionOutcome`; its other choices kept, a new mode dropping the day's swaps as it always
  *    does). Built first when it isn't yet. Already in the gentlest mode the programme has: kept (`gentlest`).
- *  - A WATCH-PLAN RUN … (the next commit).
+ *  - A WATCH-PLAN RUN (a run the plan holds, not one the app built) is eased by the thread coach's own `ease` op through
+ *    its own applier (`applyOps`): its distance — when every stage is one — or else its time, × 0.7, one block held
+ *    easy; a long, easy or recovery run keeps its kind and name, anything harder becomes an easy run. The applier writes
+ *    the row, its stages, its document's next revision, the app's claim on the content, and the rewrite of the watch's
+ *    copy, which the client drains (`coachDrain`, as after an approve). A run works the hips and the legs. Race day is
+ *    never eased (`kept: race`).
  *  - A WORKOUT THE COACH OR THE STUDIO DESIGNED (a document workout), or any other session: never changed by itself —
  *    the card offers the coach instead (`ask`).
  * Nothing is ever deleted or moved.
  *
  * UNDO puts the session back as the day had it (`POST /api/today/body/undo`): an engine session is built again with the
- * choices it had before the ease — the same plan, the engine being a function of the day's inputs. The answer stays.
- * An answer that no longer asks for the ease (A bit heavy → Fresh) puts it back the same way. A session the athlete
- * changed since the ease (another mode chosen in the sheet) is left as they set it.
+ * choices it had before the ease — the same plan, the engine being a function of the day's inputs; a run is restored
+ * exactly as the plan had it (every column the ease wrote, its document's text as the next revision, its stage rows
+ * with their repeats and targets), and its watch settled — a rewrite not yet run is superseded, one that reached the
+ * watch is followed by a rewrite back. The answer stays. An answer that no longer asks for the ease (A bit heavy →
+ * Fresh) puts it back the same way. A session changed since the ease (another mode chosen in the sheet, the plan's own
+ * new version of a run) is left as it is now.
  *
  * THE RECORD of what the check did is one `audit_events` row per session and day (`body-check:<workout>:<date>`, kind
  * `body_check`): what the card says (`change`) and the ease made, with what Undo needs to put it back. It is written
@@ -39,14 +47,39 @@
  *
  * Statements: the view reads three; an answer and an Undo are pinned in body-check*.test.ts.
  */
-import { and, desc, eq, gt, isNotNull, sql } from "drizzle-orm";
-import { athleteAnswers, auditEvents, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
-import { appAuthoredRow, docOriginRow, SESSION_MODES, type SessionMode, type UserPreferences } from "@rg/domain";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import {
+  athleteAnswers,
+  auditEvents,
+  corosWriteJobs,
+  dailyHealth,
+  plannedWorkoutStages,
+  plannedWorkouts,
+  programs,
+  sessionBuilds,
+  syncIntents,
+  userConditions,
+} from "@rg/database";
+import {
+  appAuthoredRow,
+  coachSessionSchema,
+  docOriginRow,
+  humanizeWorkoutTitle,
+  SESSION_MODES,
+  type CoachSession,
+  type SessionMode,
+  type UserPreferences,
+} from "@rg/domain";
 import { EXERCISES, isProfileId, label as vocab, MUSCLE_REGION, profileById, type MuscleId } from "@rg/exercise-library";
 import type { Swaps } from "@rg/session-engine";
+import { applyOps, enqueueContentConvergence, sessionColumns } from "./coach-apply.js";
+import { coachDrainQueued } from "./coros-write-cloud.js";
 import { insertBatches, runAtomically, type Db } from "./db.js";
+import { separateDayCollisions } from "./day-placement.js";
 import { freshThrough } from "./design-tools/record-answer.js";
 import { buildSessionOutcome, NotTodayError, SessionLockedError, type BuildOverrides } from "./session-build.js";
+import { recordIntent } from "./sync-intents.js";
+import { revisionInsert } from "./workout-doc-store.js";
 
 /** The three answers, in the card's order. */
 export const BODY_FEELS = ["fresh", "heavy", "sore"] as const;
@@ -141,7 +174,29 @@ interface EngineEase {
   swaps: Swaps;
 }
 
-type Ease = EngineEase;
+/** What an ease of a watch-plan run replaces: every column a session decides (`sessionColumns`), and its document. */
+const RUN_COLUMNS = [
+  "title", "category", "qualitySubtype", "sport", "sourceEstimatedDurationSeconds", "fallbackEstimatedDurationSeconds", "calendarBlockDurationSeconds",
+  "durationEstimate", "expectedDistanceMeters", "stageSummary", "structuredJson", "corosSyncState",
+] as const satisfies ReadonlyArray<keyof typeof plannedWorkouts.$inferSelect>;
+type RunColumns = Pick<typeof plannedWorkouts.$inferSelect, (typeof RUN_COLUMNS)[number]>;
+type StageRow = typeof plannedWorkoutStages.$inferSelect;
+
+/**
+ * A watch-plan run's ease: the session the ease op wrote and how the card says it, when it was applied, and the run as
+ * the plan had it — the columns, the document's text and the stage rows the ease replaced — with whether the app
+ * already claimed its content then (a coach ease not yet on the watch).
+ */
+interface RunEase {
+  kind: "run";
+  state: EaseState;
+  at: string;
+  session: CoachSession;
+  to: { meters: number } | { minutes: number };
+  before: { columns: RunColumns; doc: string | null; stages: StageRow[]; claimed: boolean };
+}
+
+type Ease = EngineEase | RunEase;
 
 /** The record of what the check did to a session on a day (`audit_events.detail`). */
 interface BodyRecord {
@@ -263,11 +318,13 @@ function openOf(s: Subject, today: string): boolean {
 }
 
 /** What kind of session the check is adapting. */
-type SessionKind = "engine" | "designed" | "rest" | "other";
+type SessionKind = "engine" | "designed" | "run" | "race" | "rest" | "other";
 function kindOf(row: Subject["row"]): SessionKind {
   if (row.category === "rest") return "rest";
   if (row.origin === "program" || row.origin === "on_demand") return "engine";
   if (docOriginRow(row)) return "designed";
+  // A run the plan holds (imported, or one the thread coach put there): the ease op's own ground.
+  if (!appAuthoredRow(row) && row.sport === "run") return row.category === "race" ? "race" : "run";
   return "other";
 }
 
@@ -426,18 +483,20 @@ const worksSore = (answer: Answer, works: ReadonlySet<string>): boolean => answe
 async function easeEngine(db: Db, userId: string, s: Subject, answer: Answer, record: BodyRecord | null, ctx: BodyCheckCtx): Promise<Adapted> {
   const id = s.row.id;
   const prior = record?.ease?.kind === "engine" ? record.ease : null;
-  // An ease written and cut off before it was applied: finish it from what was recorded.
+  const day = await dayBuild(db, userId, id, ctx);
+  if (answer.feel === "sore" && !worksSore(answer, workedRegions(day.build.exerciseIds))) {
+    // Not an area today works: noted, and an ease of the day no longer asked for goes back (or, recorded and not yet
+    // applied, is never applied).
+    const back = await putBack(db, userId, s, record?.ease ?? null, ctx);
+    return { record: { change: { kind: "kept", why: "quiet" }, ease: back.ease }, coachDrain: back.coachDrain };
+  }
+  // An ease recorded and not yet applied (the day's session had to be built first, or a request was cut off): finish it
+  // from what was recorded.
   if (prior?.state === "easing") {
     await build(db, userId, id, { overrides: { ...prior.overrides, mode: prior.to } }, ctx);
     const rec: BodyRecord = { change: { kind: "eased", to: { mode: prior.to } }, ease: { ...prior, state: "eased" } };
     await writeRecord(db, userId, id, rec, ctx);
     return { record: rec, coachDrain: false, persisted: true };
-  }
-  const day = await dayBuild(db, userId, id, ctx);
-  if (answer.feel === "sore" && !worksSore(answer, workedRegions(day.build.exerciseIds))) {
-    // Not an area today works: noted, and an ease of the day no longer asked for goes back.
-    const back = await putBack(db, userId, s, record?.ease ?? null, ctx);
-    return { record: { change: { kind: "kept", why: "quiet" }, ease: back }, coachDrain: false };
   }
   // The day's ease still in place stands (A bit heavy → Sore in a worked area: the same ease, the card's reason changes).
   if (prior?.state === "eased" && day.build.overrides.mode === prior.to) {
@@ -471,24 +530,248 @@ async function restoreEngine(db: Db, userId: string, s: Subject, ease: EngineEas
   return { ...ease, state: "undone" };
 }
 
+// ── A watch-plan run ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** How much of a run an ease keeps: its distance, or its time, × 0.7 (design §4). */
+export const RUN_EASE_FACTOR = 0.7;
+
+/** The regions a run works (the growth body map's own reading: a run loads the hips and the legs). */
+const RUN_REGIONS: ReadonlySet<string> = new Set(["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"]);
+
+/** The run kinds an ease keeps (a long run eased is still the long run); any other run becomes an easy one. */
+const KEPT_RUN_KINDS = ["easy", "long", "recovery"] as const;
+
+/** The run as the check reads it: the whole row, its stages, and whether the app holds an open claim on its content. */
+async function runOf(db: Db, userId: string, workoutId: string): Promise<{ row: typeof plannedWorkouts.$inferSelect; stages: StageRow[]; claimed: boolean } | null> {
+  const si = syncIntents;
+  const [row] = await db
+    .select({
+      row: plannedWorkouts,
+      claimed: sql<number>`exists (select 1 from ${si} where ${and(eq(si.userId, userId), eq(si.targetId, workoutId), eq(si.kind, "content"), isNull(si.resolvedAt), isNull(si.supersededBy))})`,
+    })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!row) return null;
+  const stages = await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, workoutId)).orderBy(asc(plannedWorkoutStages.ord));
+  return { row: row.row, stages, claimed: Boolean(row.claimed) };
+}
+
+/**
+ * The run eased: its distance × 0.7 (to the 100 m) when the plan prescribes it by distance — every stage a distance —
+ * else its time × 0.7 (to the minute), one block held easy. A long, easy or recovery run keeps its kind and its name;
+ * anything harder becomes an easy run. Null for a run with nothing to ease (no length).
+ */
+export function easedRun(row: Pick<typeof plannedWorkouts.$inferSelect, RunKey>, stages: readonly Pick<StageRow, "id" | "parentStageId" | "durationType">[]): { session: CoachSession; to: RunEase["to"] } | null {
+  const seconds = row.sourceEstimatedDurationSeconds ?? row.fallbackEstimatedDurationSeconds ?? row.calendarBlockDurationSeconds;
+  const minutes = Math.round((seconds / 60) * RUN_EASE_FACTOR);
+  if (!(minutes > 0)) return null;
+  const leaves = stages.filter((s) => !stages.some((c) => c.parentStageId === s.id));
+  const meters = row.expectedDistanceMeters ?? 0;
+  const byDistance = meters >= 1000 && leaves.length > 0 && leaves.every((s) => s.durationType === "distance");
+  const kept = (KEPT_RUN_KINDS as readonly string[]).includes(row.category);
+  const parsed = coachSessionSchema.safeParse({
+    category: kept ? row.category : "easy",
+    title: kept ? humanizeWorkoutTitle(row.title, row.category, row.qualitySubtype) : "Easy run",
+    durationMinutes: minutes,
+    run: { blocks: [byDistance ? { kind: "distance", value: Math.round((meters * RUN_EASE_FACTOR) / 100) * 100, intensity: "easy" } : { kind: "duration", value: minutes, intensity: "easy" }] },
+  });
+  if (!parsed.success) return null;
+  return { session: parsed.data, to: byDistance ? { meters: Math.round((meters * RUN_EASE_FACTOR) / 100) * 100 } : { minutes } };
+}
+type RunKey = "title" | "category" | "qualitySubtype" | "sourceEstimatedDurationSeconds" | "fallbackEstimatedDurationSeconds" | "calendarBlockDurationSeconds" | "expectedDistanceMeters";
+
+/** Does the row still hold the session an ease wrote? (What `sessionColumns` makes a row say of it.) */
+function holdsRun(row: typeof plannedWorkouts.$inferSelect, session: CoachSession): boolean {
+  const c = sessionColumns(session);
+  return row.title === c.title && row.stageSummary === c.stageSummary && row.calendarBlockDurationSeconds === c.calendarBlockDurationSeconds && row.expectedDistanceMeters === c.expectedDistanceMeters;
+}
+
+const pick = (row: typeof plannedWorkouts.$inferSelect): RunColumns => Object.fromEntries(RUN_COLUMNS.map((k) => [k, row[k]])) as RunColumns;
+
+/** The applier's proposal id for the check's ease of a session on a day: its document revision's reference. */
+const easeRef = (workoutId: string, date: string): string => `body-check-${workoutId}-${date}`;
+
+/** The run as the plan has it, as the wire can carry it: each stage a block, a repeat's stages as many times as it says. */
+function planRunSession(columns: RunColumns, stages: readonly StageRow[]): CoachSession | null {
+  const ordered = [...stages].sort((a, b) => a.ord - b.ord);
+  const blocks: Array<{ kind: "duration" | "distance"; value: number; intensity?: string }> = [];
+  const block = (s: StageRow): boolean => {
+    const intensity = s.label ?? undefined;
+    if (s.durationType === "time" && s.durationSeconds) blocks.push({ kind: "duration", value: s.durationSeconds / 60, ...(intensity ? { intensity } : {}) });
+    else if (s.durationType === "distance" && s.distanceMeters) blocks.push({ kind: "distance", value: s.distanceMeters, ...(intensity ? { intensity } : {}) });
+    else return false;
+    return true;
+  };
+  for (const s of ordered.filter((x) => !x.parentStageId)) {
+    const kids = ordered.filter((c) => c.parentStageId === s.id);
+    const times = kids.length > 0 ? Math.max(1, s.repeatCount ?? 1) : 1;
+    for (let i = 0; i < times; i++) for (const k of kids.length > 0 ? kids : [s]) if (!block(k)) return null;
+  }
+  const parsed = coachSessionSchema.safeParse({
+    category: ["easy", "long", "quality", "recovery", "race"].includes(columns.category) ? columns.category : "easy",
+    title: columns.title,
+    durationMinutes: Math.round(columns.calendarBlockDurationSeconds / 60),
+    run: { blocks },
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/** The athlete's latest threshold pace (the applier's own read): what a run's pace bands are made from. */
+async function thresholdPace(db: Db, userId: string): Promise<number | undefined> {
+  const [r] = await db
+    .select({ v: dailyHealth.thresholdPaceSecPerKm })
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+    .orderBy(desc(dailyHealth.date))
+    .limit(1);
+  return r?.v ?? undefined;
+}
+
+const OPEN_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
+
+/**
+ * Apply a run's ease through the thread coach's own applier — the `ease` op: the row, its stages, its document's next
+ * revision, the app's claim on its content and the rewrite of the watch's copy (`enqueueContentConvergence`). A rewrite
+ * of this very content that an Undo superseded (the same session, from the same watch copy) is queued again: its id is
+ * the content's, so the applier's insert finds it and adds nothing.
+ */
+async function applyRunEase(db: Db, userId: string, row: typeof plannedWorkouts.$inferSelect, session: CoachSession, ctx: BodyCheckCtx): Promise<void> {
+  const applied = await applyOps(db, userId, ctx.prefs, easeRef(row.id, ctx.today), [{ kind: "ease", workoutId: row.id, session }]);
+  // Done, skipped or gone between the read and the write: the check is closed.
+  if (applied.missed.length > 0) throw new BodyCheckClosedError();
+  if (!ctx.prefs.corosWritesEnabled) return;
+  const jobs = await db
+    .select({ id: corosWriteJobs.id, payload: corosWriteJobs.payload, expected: corosWriteJobs.expectedContentFingerprint })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.workoutId, row.id), eq(corosWriteJobs.kind, "coach_update_workout"), eq(corosWriteJobs.status, "superseded")));
+  const same = jobs.filter((j) => j.expected === row.sourceContentFingerprint && JSON.stringify((j.payload as { session?: unknown }).session) === JSON.stringify(session));
+  if (same.length === 0) return;
+  await db
+    .update(corosWriteJobs)
+    .set({ status: "queued", requestedAt: ctx.now, updatedAt: ctx.now, claimedAt: null, claimedByDeviceId: null })
+    .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.id, same.map((j) => j.id)), eq(corosWriteJobs.status, "superseded")));
+}
+
+/** Ease a watch-plan run (or say the sore area isn't one it works). */
+async function easeRun(db: Db, userId: string, s: Subject, answer: Answer, record: BodyRecord | null, ctx: BodyCheckCtx): Promise<Adapted> {
+  const id = s.row.id;
+  const prior = record?.ease?.kind === "run" ? record.ease : null;
+  if (answer.feel === "sore" && !worksSore(answer, RUN_REGIONS)) {
+    const back = await putBack(db, userId, s, record?.ease ?? null, ctx);
+    return { record: { change: { kind: "kept", why: "quiet" }, ease: back.ease }, coachDrain: back.coachDrain };
+  }
+  const run = await runOf(db, userId, id);
+  if (!run) throw new BodyCheckNotFoundError();
+  if (prior?.state === "eased" && holdsRun(run.row, prior.session)) {
+    return { record: { change: { kind: "eased", to: prior.to }, ease: prior }, coachDrain: false };
+  }
+  // An ease written and cut off before it was applied is finished from what was recorded (the run as the plan had it
+  // stays the one recorded then).
+  let ease: RunEase;
+  if (prior?.state === "easing") {
+    ease = prior;
+  } else {
+    const plan = easedRun(run.row, run.stages);
+    if (!plan) return { record: { change: { kind: "ask" }, ease: record?.ease ?? null }, coachDrain: false };
+    ease = { kind: "run", state: "easing", at: ctx.now, session: plan.session, to: plan.to, before: { columns: pick(run.row), doc: run.row.workoutDoc, stages: run.stages, claimed: run.claimed } };
+    await writeRecord(db, userId, id, { change: record?.change ?? null, ease }, ctx);
+  }
+  if (!holdsRun(run.row, ease.session)) await applyRunEase(db, userId, run.row, ease.session, ctx);
+  const rec: BodyRecord = { change: { kind: "eased", to: ease.to }, ease: { ...ease, state: "eased" } };
+  await writeRecord(db, userId, id, rec, ctx);
+  return { record: rec, coachDrain: ctx.prefs.corosWritesEnabled === true && (await coachDrainQueued(db, userId)), persisted: true };
+}
+
+/**
+ * Put a watch-plan run back exactly as the plan had it — every column the ease wrote, its document's text (the next
+ * revision), its stage rows as they were — unless it has changed since the ease (an import, the coach: what it is now
+ * stands). And the watch: a rewrite the ease queued that hasn't run is superseded, and the app's claim on the content
+ * ends (the watch still holds the plan's run) unless the app held one before the ease; one that reached the watch is
+ * followed by a rewrite back to the plan's run, under a new claim — when the wire can carry it, else the claim stays
+ * open and the sync line says the watch holds another version.
+ */
+async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx: BodyCheckCtx): Promise<{ ease: RunEase; coachDrain: boolean }> {
+  const undone = { ...ease, state: "undone" as const };
+  const run = await runOf(db, userId, s.row.id);
+  if (!run || !holdsRun(run.row, ease.session)) return { ease: undone, coachDrain: false };
+  const { row } = run;
+  const pw = plannedWorkouts;
+  const jobs = await db
+    .select({ id: corosWriteJobs.id, status: corosWriteJobs.status })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.workoutId, row.id), eq(corosWriteJobs.kind, "coach_update_workout"), gte(corosWriteJobs.requestedAt, ease.at)));
+  const reached = jobs.some((j) => j.status === "verified");
+  const open = jobs.filter((j) => (OPEN_JOB_STATUSES as readonly string[]).includes(j.status)).map((j) => j.id);
+  const b = ease.before;
+  // The watch's copy is the eased run until the rewrite back lands: its sync state stays as the rewrite left it.
+  const columns: Partial<RunColumns> = reached ? Object.fromEntries(RUN_COLUMNS.filter((k) => k !== "corosSyncState").map((k) => [k, b.columns[k]])) : b.columns;
+  await runAtomically(db, [
+    db
+      .update(pw)
+      .set({
+        ...columns,
+        workoutDoc: b.doc,
+        ...(b.doc !== null ? { workoutDocRev: sql`case when ${pw.workoutDoc} is ${b.doc} then ${pw.workoutDocRev} else coalesce(${pw.workoutDocRev}, 0) + 1 end` } : {}),
+        updatedAt: ctx.now,
+      })
+      .where(and(eq(pw.id, row.id), eq(pw.userId, userId))),
+    db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
+    ...insertBatches(b.stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
+    ...(b.doc !== null ? [revisionInsert(db, { userId, workoutId: row.id, sourceKind: "athlete_edit", sourceRef: recordId(row.id, ctx.today), now: ctx.now })] : []),
+    ...(open.length > 0
+      ? [db.update(corosWriteJobs).set({ status: "superseded", updatedAt: ctx.now }).where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.id, open)))]
+      : []),
+  ]);
+  // The run is its plan's length again: the day's other sessions make room as they did for the ease.
+  await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now });
+  let coachDrain = false;
+  if (reached) {
+    await recordIntent(db, { userId, targetKind: "workout", targetId: row.id, kind: "content", source: "undo" });
+    const plan = planRunSession(b.columns, b.stages);
+    if (plan) {
+      const out = await enqueueContentConvergence(db, {
+        userId,
+        workout: row,
+        session: plan,
+        now: ctx.now,
+        corosWritesEnabled: ctx.prefs.corosWritesEnabled ?? false,
+        thresholdPaceSecPerKm: await thresholdPace(db, userId),
+      });
+      coachDrain = out.kind === "coach_update_workout";
+    }
+  } else if (!b.claimed) {
+    // Nothing reached the watch: it holds the plan's run, as the app does again — the ease's claim ends.
+    const si = syncIntents;
+    await db
+      .update(si)
+      .set({ resolvedAt: ctx.now })
+      .where(and(eq(si.userId, userId), eq(si.targetId, row.id), eq(si.kind, "content"), isNull(si.resolvedAt), isNull(si.supersededBy)));
+  }
+  return { ease: undone, coachDrain };
+}
+
 // ── The check ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Does this answer ask for the session to be eased? Heavy always; Sore when the session works a sore area (judged by the kind). */
 const asksForEase = (answer: Answer): boolean => answer.feel === "heavy" || answer.feel === "sore";
 
 /** Put back an ease of the day that is in place (or was being made), for Undo or an answer that no longer asks for it. */
-async function putBack(db: Db, userId: string, s: Subject, ease: Ease | null, ctx: BodyCheckCtx): Promise<Ease | null> {
-  if (!ease || ease.state === "undone") return ease;
-  return restoreEngine(db, userId, s, ease, ctx);
+async function putBack(db: Db, userId: string, s: Subject, ease: Ease | null, ctx: BodyCheckCtx): Promise<{ ease: Ease | null; coachDrain: boolean }> {
+  if (!ease || ease.state === "undone") return { ease, coachDrain: false };
+  if (ease.kind === "run") return restoreRun(db, userId, s, ease, ctx);
+  return { ease: await restoreEngine(db, userId, s, ease, ctx), coachDrain: false };
 }
 
 /** Adapt the session to the answer: ease it, keep it (and say why), offer the coach, or put back an ease no longer asked for. */
 async function adapt(db: Db, userId: string, s: Subject, answer: Answer, record: BodyRecord | null, ctx: BodyCheckCtx): Promise<Adapted> {
   const kind = kindOf(s.row);
   if (asksForEase(answer) && kind === "engine") return easeEngine(db, userId, s, answer, record, ctx);
+  if (asksForEase(answer) && kind === "run") return easeRun(db, userId, s, answer, record, ctx);
   const back = await putBack(db, userId, s, record?.ease ?? null, ctx);
-  const change: BodyChange | null = !asksForEase(answer) || kind === "rest" ? null : { kind: "ask" };
-  return { record: { change, ease: back }, coachDrain: false };
+  // Race day is never eased; a designed workout, or any other, is the coach's to adapt; Fresh changes nothing.
+  const change: BodyChange | null = !asksForEase(answer) || kind === "rest" ? null : kind === "race" ? { kind: "kept", why: "race" } : { kind: "ask" };
+  return { record: { change, ease: back.ease }, coachDrain: back.coachDrain };
 }
 
 const viewOf = (s: Subject, answer: Answer | null, record: BodyRecord | null, today: string): BodyCheckView => ({
@@ -540,7 +823,7 @@ export async function undoBodyCheck(db: Db, userId: string, workoutId: string, c
   const { answer, record } = s;
   if (!record?.ease || record.ease.state === "undone") return { view: viewOf(s, answer, record, ctx.today), coachDrain: false };
   const back = await putBack(db, userId, s, record.ease, ctx);
-  const next: BodyRecord = { change: { kind: "kept", why: "undone" }, ease: back };
+  const next: BodyRecord = { change: { kind: "kept", why: "undone" }, ease: back.ease };
   await writeRecord(db, userId, workoutId, next, ctx);
-  return { view: viewOf(s, answer, next, ctx.today), coachDrain: false };
+  return { view: viewOf(s, answer, next, ctx.today), coachDrain: back.coachDrain };
 }
