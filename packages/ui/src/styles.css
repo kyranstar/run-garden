@@ -343,65 +343,6 @@
     color-scheme: dark;
   }
 }
-:root[data-theme="dark"] {
-  --bg: #191b19;
-  --bg-raised: #212422;
-  --bg-sunken: #141614;
-  --ink: #e8e6df;
-  --ink-soft: #b0b3ac;
-  --ink-faint: #7d817b;
-  --border: #32362f;
-  --border-strong: #454a42;
-  --green: #6aa87d;
-  --green-soft: #24352a;
-  --green-ink: #9cc7a8;
-  --accent: #98a3dd;
-  --accent-soft: #272b3d;
-  --warn: #d0a05a;
-  --warn-soft: #3a3020;
-  --warn-ink: #d0a05a;
-  --danger: #d08070;
-  --danger-soft: #3c2722;
-  --danger-ink: #e5a294;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  /* Elevation reads off ambient light: a 16%-alpha near-black is invisible on
-     a dark surface, so the dark ramp is the same geometry at higher alpha. */
-  --shadow-sm: 0 3px 10px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.55);
-  --shadow-xl: 0 24px 60px rgba(0, 0, 0, 0.62);
-  /* An accent FILL is light in dark mode, so the type on it must be dark.
-     White on --green measured 2.80:1; near-black on it is 7.9:1. */
-  --on-accent: #141614;
-  /* Race and long are the only two category hues under the 3:1 non-text floor
-     on --bg-raised at their light values (2.65:1 and 2.99:1) — lift lightness,
-     keep the hue family. The other seven measure 3.8–7.0:1 and are unchanged. */
-  --hue-race: #c47a9b;
-  --hue-long: #8199d6;
-  /* Yoga carries text on the fill, and in dark mode that text is --on-accent's
-     near-black — so the fill must go LIGHTER here, not darker. See the light
-     block. */
-  --hue-yoga: #a184c0;
-  --rarity-uncommon-bg: #2c3c50;
-  --rarity-uncommon-ink: #a8c4e4;
-  --rarity-rare-bg: #402f3e;
-  --rarity-rare-ink: #d9a8d2;
-  --ceremony-ink: #e8c86a;
-  /* Re-stepped alongside the light block above — see that comment. */
-  --chart-1: #3da868;
-  --chart-2: #cc7a3a;
-  --chart-3: #7f8ce0;
-  --night-deep: #6a76d4;
-  --night-rem: #98a2e6;
-  --night-light: #cdd4f2;
-  --chart-track: #2b2f2c;
-  --chart-grid: #32362f;
-  --coach-tray-bg: #3a3020;
-  --lift-soft: #3a2a1c;
-  --lift-ink: #e0965a;
-  --adventure-ring: #c9a86a;
-  color-scheme: dark;
-}
 
 * {
   box-sizing: border-box;
@@ -5595,79 +5536,9 @@ button.session-chip {
    theme system) are gone: LapHrBars moved into charts.tsx and draws from
    --chart-1 / --danger / --ink-faint like every other chart. */
 
-/* ── Ambient garden (desktop screensaver window) ──────────────────────────── */
-.ambient-root {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
-  background: var(--stage-bg);
-  cursor: default;
-  user-select: none;
-  -webkit-user-select: none;
-}
-.ambient-root.ambient-hide-cursor {
-  cursor: none;
-}
-.ambient-scene {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-.ambient-caption {
-  position: absolute;
-  left: clamp(1.2rem, 3vw, 3rem);
-  bottom: clamp(1.2rem, 3vh, 2.4rem);
-  color: var(--on-scene);
-  text-shadow: var(--scene-text-shadow);
-  pointer-events: none;
-  line-height: 1.25;
-}
-.ambient-condition {
-  font-size: clamp(var(--text-xl), 3.4vw, var(--text-2xl));
-  font-weight: var(--weight-medium);
-  letter-spacing: -0.01em;
-}
-.ambient-sub {
-  margin-top: var(--space-2);
-  font-size: clamp(var(--text-sm), 1.4vw, var(--text-md));
-  opacity: 0.82;
-}
-.ambient-clock {
-  position: absolute;
-  right: clamp(1.2rem, 3vw, 3rem);
-  top: clamp(1.2rem, 3vh, 2.4rem);
-  color: var(--on-scene);
-  opacity: 0.7;
-  font-size: clamp(var(--text-md), 1.8vw, var(--text-xl));
-  font-variant-numeric: tabular-nums;
-  text-shadow: var(--scene-text-shadow);
-  pointer-events: none;
-}
-.ambient-waiting {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-4);
-  color: #cfe0d4;
-}
-/* scale-exempt: decorative emoji sized as artwork, not as type. */
-.ambient-waiting .ambient-mark {
-  font-size: 3rem;
-}
-/* scale-exempt: the sign-in screen's mark — artwork, same as above. */
+/* scale-exempt: the sign-in screen's mark — decorative emoji sized as artwork, not as type. */
 .welcome-mark {
   font-size: 2.4rem;
-}
-.ambient-waiting-hint {
-  font-size: var(--text-xs);
-  opacity: 0.55;
 }
 
 /* ── The coach panel (Plan B, 2026-08-06-coach-ux-design.md) ─────────────── */
@@ -13037,4 +12908,3 @@ a.stu-tpl-open:focus-visible::before {
   font-size: var(--text-sm);
   color: var(--danger-ink);
 }
-

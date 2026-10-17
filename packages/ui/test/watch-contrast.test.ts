@@ -30,7 +30,6 @@ function tokens(body: string): Record<string, string> {
 
 const light = tokens(block(":root {"));
 const darkMedia = tokens(block(':root:not([data-theme="light"]) {', css.indexOf("@media (prefers-color-scheme: dark)")));
-const darkForced = tokens(block(':root[data-theme="dark"] {'));
 
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
@@ -58,7 +57,6 @@ describe("the Take off confirm's \"Couldn't take it off\" (audit 3-B UI-3)", () 
   for (const [theme, t] of [
     ["light", light],
     ["dark (system)", { ...light, ...darkMedia }],
-    ["dark (chosen)", { ...light, ...darkForced }],
   ] as const) {
     it(`${theme}: on the dialog (--bg-raised) at least 4.5:1`, () => {
       expect(ratio(t["--warn-ink"]!, t["--bg-raised"]!)).toBeGreaterThanOrEqual(4.5);
@@ -71,7 +69,6 @@ describe("the watch's warn band (Couldn't send, Too long for the watch)", () => 
   for (const [theme, t] of [
     ["light", light],
     ["dark (system)", { ...light, ...darkMedia }],
-    ["dark (chosen)", { ...light, ...darkForced }],
   ] as const) {
     it(`${theme}: ${color} on ${background} is at least 4.5:1`, () => {
       expect(t[color], `${color} in ${theme}`).toBeDefined();

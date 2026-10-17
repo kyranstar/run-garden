@@ -107,8 +107,8 @@ describe("the scales exist", () => {
     expect(rootBlock).toContain("--shadow:");
     for (const s of ["--shadow-sm", "--shadow-md", "--shadow-lg", "--shadow-xl"]) {
       expect(rootBlock, s).toContain(`${s}:`);
-      // Both dark blocks (`prefers-color-scheme` and `[data-theme="dark"]`).
-      expect((css.match(new RegExp(`${s}: 0 `, "g")) ?? []).length).toBe(3);
+      // The dark block (`prefers-color-scheme`; nothing sets `data-theme`, so its old twin is gone).
+      expect((css.match(new RegExp(`${s}: 0 `, "g")) ?? []).length).toBe(2);
     }
   });
 });
@@ -225,11 +225,11 @@ describe("emphasis comes from one of three ranks", () => {
     // sitting inside a card while the page title was 1.5rem.
     expect(ruleBody(".headline-stat-value")).toContain("font-size: var(--text-xl)");
     const twoXl = [...rules.matchAll(/font-size:[^;]*--text-2xl[^;]*;/g)];
-    // Three, and no more: the h1/.rank-page rule, plus the two scene words
-    // sized against the viewport — the garden stage's condition (whose <h1> is
-    // deliberately `.visually-hidden`, because the scene is the page) and the
-    // ambient screensaver, which has no page chrome at all.
-    expect(twoXl).toHaveLength(3);
+    // Two, and no more: the h1/.rank-page rule, plus the scene word sized
+    // against the viewport — the garden stage's condition (whose <h1> is
+    // deliberately `.visually-hidden`, because the scene is the page). The
+    // ambient screensaver's went with it.
+    expect(twoXl).toHaveLength(2);
   });
 
   it("the eyebrow is ONE implementation, not nineteen", () => {
@@ -775,16 +775,16 @@ describe("every colour flips with the theme", () => {
     // 4.5:1 — and it was the only hue with no dark override at all.
     // Measured on the live fixture: 4.91:1 light, 5.70:1 dark.
     expect(rootBlock).toContain("--hue-yoga: #83649d");
-    // Once per dark block: the `prefers-color-scheme` one and the
-    // `[data-theme="dark"]` twin.
-    expect((css.match(/--hue-yoga: #a184c0/g) ?? []).length).toBe(2);
+    // Once, in the dark block (`prefers-color-scheme`; nothing sets
+    // `data-theme`, so its old twin went with the new shape's leftovers).
+    expect((css.match(/--hue-yoga: #a184c0/g) ?? []).length).toBe(1);
   });
 
   it("text on an accent fill has a token, and it flips", () => {
     expect(rules).not.toMatch(/#fff\b/);
     expect(rootBlock).toContain("--on-accent: #fff");
-    // The dark blocks give it a DARK value — an accent fill is light there.
-    expect((css.match(/--on-accent: #141614/g) ?? []).length).toBe(2);
+    // The dark block gives it a DARK value — an accent fill is light there.
+    expect((css.match(/--on-accent: #141614/g) ?? []).length).toBe(1);
     expect(ruleBody(".btn-primary")).toContain("color: var(--on-accent)");
     // Type printed on the garden artwork is a different job and does NOT flip.
     expect(rootBlock).toContain("--on-scene: #fff");
