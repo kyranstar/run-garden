@@ -11,7 +11,7 @@ export function WelcomeScreen({ fixtureMode }: { fixtureMode?: boolean }) {
             {PRODUCT_NAME}
           </h1>
           <p className="muted" style={{ marginTop: "var(--space-3)" }}>
-            Your COROS plan, fitted to your real week.
+            Runs, strength and mobility, fitted to your real week.
           </p>
         </div>
         <Card>

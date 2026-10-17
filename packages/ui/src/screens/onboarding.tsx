@@ -120,11 +120,11 @@ function ValueStep({ onNext }: { onNext: () => void }) {
   return (
     <Card>
       <h1 className="display">
-        Your COROS plan, fitted to your real week.
+        Runs, strength and mobility, fitted to your real week.
       </h1>
       <p className="muted" style={{ marginTop: "var(--space-5)" }}>
-        Mirror workouts to Calendar, move them on COROS, and grow a living garden by staying
-        consistent.
+        A coach for every kind of session, your plan on your watch and your calendar, and a living
+        garden that grows as you stay consistent.
       </p>
       <div style={{ marginTop: "var(--space-6)" }}>
         <button className="btn btn-primary" onClick={onNext} style={{ width: "100%" }}>
@@ -253,10 +253,10 @@ function GardenStep({ onDone, onBack }: { onDone: () => void; onBack: () => void
   return (
     <Card title="Your garden">
       <div className="stack">
-        <p>🌱 Every completed planned run waters the garden.</p>
+        <p>🌱 Every planned session you finish waters the garden — runs, strength and mobility each feed it.</p>
         <p>🌸 Hard workouts introduce new plants.</p>
         <p>🌳 Long-term consistency builds a whole ecosystem.</p>
-        <p>💧 A few missed runs are easy to recover from.</p>
+        <p>💧 A few missed sessions are easy to recover from.</p>
         <p>🍂 Long breaks cause a slow drought — never an instant reset.</p>
       </div>
       <div className="row-between" style={{ marginTop: "var(--space-6)" }}>

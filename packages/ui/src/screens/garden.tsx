@@ -2042,9 +2042,9 @@ export function GardenScreen() {
         {/* No plan: this is the guidance a new athlete's first screen needs (audit#4 D1). */}
         {!planActive ? (
           <div className="dock-panel dock-noplan">
-            <EmptyState art="🌿" title="No active COROS training plan was found">
-              Start a plan in COROS — it syncs in automatically once COROS is connected in
-              Settings.
+            <EmptyState art="🌿" title="Nothing planned yet">
+              Ask the coach for a run, a strength session or some mobility — or start a plan in COROS; it syncs in
+              once COROS is connected in Settings.
             </EmptyState>
           </div>
         ) : null}

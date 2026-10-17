@@ -594,8 +594,8 @@ describe("the no-plan state", () => {
     // instead was a pill reading "No active training plan" that did nothing
     // when pressed — `aria-expanded` stayed false because the panel behind it
     // was gated on the very workout that was missing.
-    expect(gardenSrc).toContain("No active COROS training plan was found");
-    expect(gardenSrc).toContain("Start a plan in COROS");
+    expect(gardenSrc).toContain('title="Nothing planned yet"');
+    expect(gardenSrc).toContain("start a plan in COROS");
   });
 
   it("is not hidden behind the disclosure it replaces", () => {

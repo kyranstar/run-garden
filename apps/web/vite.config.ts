@@ -15,7 +15,7 @@ export default defineConfig({
       manifest: {
         name: "Run Garden",
         short_name: "Run Garden",
-        description: "Your COROS plan, fitted to your real week.",
+        description: "Runs, strength and mobility, fitted to your real week.",
         theme_color: "#3e7a52",
         background_color: "#faf8f3",
         display: "standalone",
