@@ -245,11 +245,20 @@ async function fresh(row: SpotifyRow, env: Env, now: number): Promise<SpotifyTok
  * token another request already rotated away; and an `invalid_grant` that crossed such a rotation answers the other
  * request's token instead of "reconnect".
  */
-export async function spotifyAccessToken(db: Db, env: Env, clientId: string, userId: string, fetchImpl: typeof fetch, now: number): Promise<SpotifyTokenAnswer> {
+export async function spotifyAccessToken(
+  db: Db,
+  env: Env,
+  clientId: string,
+  userId: string,
+  fetchImpl: typeof fetch,
+  now: number,
+  /** Refresh whatever the time left: the page saw Spotify refuse the stored token (a 401). */
+  force = false,
+): Promise<SpotifyTokenAnswer> {
   const row = await loadSpotifyRow(db, userId);
   const state = spotifyConnectionOf(row);
   if (state !== "connected" || !row) return { connected: false, reason: state === "connected" ? "not_connected" : state };
-  const stored = await fresh(row, env, now);
+  const stored = force ? null : await fresh(row, env, now);
   if (stored) return stored;
 
   const answer = await postToken(fetchImpl, {

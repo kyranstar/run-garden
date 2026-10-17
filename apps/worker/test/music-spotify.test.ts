@@ -395,6 +395,16 @@ describe("token", () => {
     expect(tokenCalls).toEqual([]);
   });
 
+  it("?fresh=1 (the page saw a 401 for a token the server still thought good) refreshes whatever the time left", async () => {
+    await connect({ access: "at-revoked", expiresIn: 3600 });
+    answerToken = () => json({ access_token: "at-forced", expires_in: 3600 });
+    expect((await call("GET", "/api/music/spotify/token?fresh=1")).body.accessToken).toBe("at-forced");
+    expect(tokenCalls).toHaveLength(1);
+    // A revoked consent then shows as what it is.
+    answerToken = () => json({ error: "invalid_grant" }, 400);
+    expect((await call("GET", "/api/music/spotify/token?fresh=1")).body).toEqual({ connected: false, reason: "reconnect" });
+  });
+
   it("an expired token refreshes too", async () => {
     await connect({ access: "at-old", expiresIn: 3600 });
     clock += 2 * 3600_000;

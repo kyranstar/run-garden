@@ -13,7 +13,8 @@
  *   GET    /spotify/login       → 302 Spotify's authorize URL    (the session: one statement)
  *   GET    /spotify/callback    → 302 /?music=connected | error   (the restore marker, one upsert; one fetch)
  *   GET    /spotify/token       → { connected: true, accessToken, expiresAt } | { connected: false, reason }
- *                                 (session, row: two statements; near expiry a refresh: one fetch, one more write)
+ *                                 (session, row: two statements; near expiry — or with ?fresh=1, after Spotify refused
+ *                                 the token — a refresh: one fetch, one more write)
  *   DELETE /spotify             → { ok }                          (session, restore marker, one delete)
  *
  * Fixture mode (the fixture stack; never production): the login connects a fixture account without leaving the
@@ -131,7 +132,8 @@ export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
 
   r.get("/spotify/token", async (c) => {
     c.header("Cache-Control", "no-store");
-    const answer = await spotifyAccessToken(c.get("db"), c.env, spotifyClientId(c.env)!, c.get("userId"), fetchImpl, now());
+    const force = c.req.query("fresh") === "1" && !fixtureModeEnabled(c.env);
+    const answer = await spotifyAccessToken(c.get("db"), c.env, spotifyClientId(c.env)!, c.get("userId"), fetchImpl, now(), force);
     if ("unavailable" in answer) return c.json({ error: "spotify_unavailable" }, 502);
     if (answer.connected && fixtureModeEnabled(c.env)) return c.json({ ...answer, apiBase: FIXTURE_SPOTIFY_API_BASE });
     return c.json(answer);
