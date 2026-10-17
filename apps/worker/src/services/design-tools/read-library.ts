@@ -181,7 +181,7 @@ export const searchLibraryTool: DesignTool = {
   inputSchema: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Words: names, muscles, regions, purposes, roles, patterns, tags. Empty: every move." },
+      query: { type: "string", description: "Words: names, muscles, regions, purposes, roles, patterns, tags — up to 8 count. Empty: every move." },
       filters: {
         type: "object",
         properties: {
@@ -297,7 +297,15 @@ export const searchLibraryTool: DesignTool = {
         };
       },
       cursorOf: (_h, i) => encodeCursor([offset + i]),
-      data: (moves) => ({ query, matched: matches.length, ...(found.words.length > 1 ? { allWords: found.allWords } : {}), setAsideHidden, moves }),
+      // Past MAX_QUERY_WORDS a word is left out, never searched (round 2, C1): said back, so the coach can search again.
+      data: (moves) => ({
+        query,
+        matched: matches.length,
+        ...(found.words.length > 1 ? { allWords: found.allWords } : {}),
+        ...(found.dropped.length ? { wordsLeftOut: found.dropped } : {}),
+        setAsideHidden,
+        moves,
+      }),
       summary: () => `Searched the library${query ? ` for "${query}"` : ""} — ${plural(matches.length, "move")}`,
     });
   },

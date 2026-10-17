@@ -633,6 +633,12 @@ describe("search_library and get_exercise", () => {
     expect(down.data.moves.length).toBeGreaterThan(0);
   });
 
+  it("C1 (round 2): at most eight words count — the rest are said back, never searched", async () => {
+    const r = await ok("search_library", { query: "hip hamstring calf stretch mobility warmup glute bridge ankle thoracic" });
+    expect(r.data.wordsLeftOut).toEqual(["ankle", "thoracic"]);
+    expect((await ok("search_library", { query: "hip stretch" })).data.wordsLeftOut).toBeUndefined();
+  });
+
   it("I2/R9: the filters offer only what some move uses; a value no move uses, or a zero, says what emptied it", async () => {
     const schema = searchLibraryTool.inputSchema as { properties: { filters: { properties: Record<string, { enum?: string[] }> } } };
     const used = usedValues(EXERCISES);

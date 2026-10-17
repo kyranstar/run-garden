@@ -96,6 +96,33 @@ describe("agentSearch: every word first, then some of them", () => {
   });
 });
 
+describe("agentSearch: bounded work (fix wave 13, round 2, C1)", () => {
+  test("at most eight words count; the rest are said, never searched", () => {
+    const query = "hip hamstring calf stretch mobility warmup glute bridge ankle thoracic";
+    const r = agentSearch(EXERCISES, query);
+    expect(r.words).toEqual(["hip", "hamstring", "calf", "stretch", "mobility", "warmup", "glute", "bridge"]);
+    expect(r.dropped).toEqual(["ankle", "thoracic"]);
+    for (const h of r.hits) for (const w of h.matched ?? []) expect(["ankle", "thoracic"]).not.toContain(w);
+    expect(agentSearch(EXERCISES, "hip stretch").dropped).toEqual([]);
+  });
+
+  test("the some-words tier still forgives what the Studio forgives: an everyday word, a typo", () => {
+    // "sore" stands for what eases (a stretch, passive work, recovery); "hamstrng" is one letter short.
+    const sore = agentSearch(EXERCISES, "sore zqxv");
+    expect(sore.hits.length).toBeGreaterThan(0);
+    expect(sore.hits.every((h) => h.matched?.join() === "sore")).toBe(true);
+    expect(sore.hits.some((h) => h.record.purposes.includes("stretch"))).toBe(true);
+    const typo = agentSearch(EXERCISES, "hamstrng zqxv");
+    expect(typo.hits.some((h) => h.record.muscles.primary.includes("hamstrings") && h.matched?.join() === "hamstrng")).toBe(true);
+  });
+
+  test("a word matches a record's words by their start, a plural by its singular — never a shorter stem's other words", () => {
+    const r = agentSearch(EXERCISES, "lunges zqxv");
+    expect(r.hits.length).toBeGreaterThan(0);
+    expect(r.hits.every((h) => h.record.name.toLowerCase().includes("lunge") || h.record.patterns.includes("lunge") || h.record.text.summary.toLowerCase().includes("lunge"))).toBe(true);
+  });
+});
+
 describe("agentSearch: a zero says what emptied it", () => {
   test("a word no move says is named", () => {
     const r = agentSearch(EXERCISES, "zqxv");

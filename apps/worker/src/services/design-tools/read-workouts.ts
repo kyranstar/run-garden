@@ -80,7 +80,7 @@ export const listWorkouts: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
-  cpuWeight: 0.2,
+  cpuWeight: 0.3,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(listInput, raw, "from and to (YYYY-MM-DD), and optionally q, limit and cursor");
