@@ -183,7 +183,7 @@ describe("the Today card's Ask", () => {
     const ask = card.querySelector<HTMLButtonElement>(".today-actions .ask-coach")!;
     expect(ask.getAttribute("aria-label")).toBe("Ask the coach about Mon 5 Oct · Easy Run with Strides · 45 min");
     await act(async () => ask.click());
-    expect(r.calls).toEqual([{ focus: { kind: "workout", id: "run-1", date: TODAY, label: "Mon 5 Oct · Easy Run with Strides · 45 min" }, request: null }]);
+    expect(r.calls).toEqual([{ seeing: { kind: "workout", id: "run-1", date: TODAY, label: "Mon 5 Oct · Easy Run with Strides · 45 min" }, request: null }]);
   });
 
   it("a rest day's: about the day", async () => {
@@ -192,7 +192,7 @@ describe("the Today card's Ask", () => {
     const ask = card.querySelector<HTMLButtonElement>(".ask-coach")!;
     expect(ask.getAttribute("data-focus")).toBe(`day:${TODAY}`);
     await act(async () => ask.click());
-    expect(r.calls).toEqual([{ focus: { kind: "day", id: TODAY, date: TODAY, label: "Mon 5 Oct" }, request: null }]);
+    expect(r.calls).toEqual([{ seeing: { kind: "day", id: TODAY, date: TODAY, label: "Mon 5 Oct" }, request: null }]);
   });
 
   it("no coach in the app: the card as it always was", async () => {

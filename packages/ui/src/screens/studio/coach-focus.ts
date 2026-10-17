@@ -28,11 +28,14 @@ export interface CoachFocus extends CoachRunFocus {
   scope?: CoachScopeKind;
 }
 
-/** What opens the coach sheet (`useCoach().open`): what it is about, the words to start from, a scope to start with. */
+/**
+ * What opens the coach sheet (`useCoach().open`, the new shape): the words to write in the box (the athlete's to send),
+ * and what the athlete is looking at — its "Seeing" hint. `seeing` absent: what the screen registered
+ * (`useCoachSeeing`); null: nothing.
+ */
 export interface CoachOpenArgs {
-  focus?: CoachFocus | null;
   request?: string | null;
-  scope?: CoachScopeKind | null;
+  seeing?: CoachFocus | null;
 }
 
 /** What the server is told: the kind and the id, nothing the screen made up. */

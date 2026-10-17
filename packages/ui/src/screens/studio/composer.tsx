@@ -42,7 +42,7 @@ import { IconChevron, IconClose } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { AlsoWaiting } from "./also-waiting.js";
 import { CoachBoundary } from "./coach-boundary.js";
-import { focusOfWire, focusRefusal, focusScope, type CoachFocus, type CoachOpenArgs } from "./coach-focus.js";
+import { focusOfWire, focusRefusal, focusScope, type CoachFocus } from "./coach-focus.js";
 import { readCurrent, readProposal } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
 import { cardShows, designProposalQuery, ProposalCard } from "./proposal-card.js";
@@ -142,7 +142,10 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
 
 /** What the coach area opens with: the words to start from, what it is about (a chip), a scope, and whether the field
  * takes the focus. */
-export interface CoachAreaArrival extends CoachOpenArgs {
+export interface CoachAreaArrival {
+  focus?: CoachFocus | null;
+  request?: string | null;
+  scope?: CoachScopeKind | null;
   compose?: boolean;
 }
 

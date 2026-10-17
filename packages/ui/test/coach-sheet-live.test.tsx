@@ -123,7 +123,7 @@ function Screen() {
   return createElement(
     "div",
     null,
-    createElement("button", { type: "button", id: "opener", onClick: () => coach?.open({ focus: FOCUS, request: "Something easier?" }) }, "Ask about it"),
+    createElement("button", { type: "button", id: "opener", onClick: () => coach?.open({ seeing: FOCUS, request: "Something easier?" }) }, "Ask about it"),
     createElement("button", { type: "button", id: "leave", onClick: () => navigate("/elsewhere") }, "Leave"),
   );
 }

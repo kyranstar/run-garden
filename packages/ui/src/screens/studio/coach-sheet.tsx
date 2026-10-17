@@ -19,9 +19,9 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNod
 import { useLocation } from "react-router-dom";
 import { useDialogFocus } from "../../components.js";
 import { IconClose } from "../../icons.js";
-import { CoachOpenContext, type CoachOpener } from "./coach-ask.js";
+import { CoachOpenContext, CoachSeeingContext, SeeingRegistry, type CoachOpener } from "./coach-ask.js";
 import { CoachBoundary } from "./coach-boundary.js";
-import type { CoachOpenArgs } from "./coach-focus.js";
+import type { CoachFocus, CoachOpenArgs } from "./coach-focus.js";
 import { CoachArea } from "./composer.js";
 import { useStudioCtx } from "./screen.js";
 import type { LoopDeps } from "./use-coach-run.js";
@@ -29,23 +29,42 @@ import type { LoopDeps } from "./use-coach-run.js";
 /** The sheet's title (its dialog's name). */
 export const COACH_SHEET_TITLE = "Coach";
 
-/** The app's coach sheet and the opener every screen's Ask reaches: mounted once, inside the router and the run keeper. */
+/** What the sheet was opened with: the words for the box, and what it sees (named, else the screen's registration). */
+export interface CoachOpened {
+  request: string | null;
+  seeing: CoachFocus | null;
+}
+
+/**
+ * The app's coach sheet, the opener every screen reaches (`useCoach`), and the registry of what the screens show
+ * (`useCoachSeeing`): mounted once, inside the router and the run keeper.
+ */
 export function CoachSheetProvider({ children, loopDeps }: { children: ReactNode; loopDeps?: () => LoopDeps }) {
+  const [registry] = useState(() => new SeeingRegistry());
   /** What it was opened with; a new open starts a new sheet (`key`), never one left half-typed from before. */
-  const [opened, setOpened] = useState<{ args: CoachOpenArgs; key: number } | null>(null);
-  const open = useCallback((args: CoachOpenArgs) => setOpened((o) => ({ args, key: (o?.key ?? 0) + 1 })), []);
+  const [opened, setOpened] = useState<{ args: CoachOpened; key: number } | null>(null);
+  const open = useCallback(
+    (args: CoachOpenArgs = {}) => {
+      // Named (even as null) wins; otherwise what the screen shows now.
+      const seeing = args.seeing !== undefined ? args.seeing : registry.current;
+      setOpened((o) => ({ args: { request: args.request ?? null, seeing }, key: (o?.key ?? 0) + 1 }));
+    },
+    [registry],
+  );
   const opener = useMemo<CoachOpener>(() => ({ open }), [open]);
   const close = useCallback(() => setOpened(null), []);
   return (
-    <CoachOpenContext.Provider value={opener}>
-      {children}
-      {opened ? <CoachSheet key={opened.key} args={opened.args} onClose={close} loopDeps={loopDeps} /> : null}
-    </CoachOpenContext.Provider>
+    <CoachSeeingContext.Provider value={registry}>
+      <CoachOpenContext.Provider value={opener}>
+        {children}
+        {opened ? <CoachSheet key={opened.key} args={opened.args} onClose={close} loopDeps={loopDeps} /> : null}
+      </CoachOpenContext.Provider>
+    </CoachSeeingContext.Provider>
   );
 }
 
 /** The sheet itself: the dialog, and the coach's area in it. */
-export function CoachSheet({ args, onClose, loopDeps }: { args: CoachOpenArgs; onClose: () => void; loopDeps?: () => LoopDeps }) {
+export function CoachSheet({ args, onClose, loopDeps }: { args: CoachOpened; onClose: () => void; loopDeps?: () => LoopDeps }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useDialogFocus(ref, true, onClose);
@@ -74,7 +93,7 @@ export function CoachSheet({ args, onClose, loopDeps }: { args: CoachOpenArgs; o
         <div className="sheet-body scroller">
           {/* A render error stays in the sheet: it says so, and the screen under it goes on (the robustness pass). */}
           <CoachBoundary>
-            <CoachArea ctx={ctx} loopDeps={loopDeps} arrival={{ ...args, compose: true }} place="sheet" />
+            <CoachArea ctx={ctx} loopDeps={loopDeps} arrival={{ focus: args.seeing, request: args.request, compose: true }} place="sheet" />
           </CoachBoundary>
         </div>
       </div>
