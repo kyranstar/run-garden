@@ -90,7 +90,8 @@ describe("the answer", () => {
     statements = [];
     const again = await answerBodyCheck(db, userId, id, { feel: "sore", areas: ["neck"] }, ctx());
     expect(again.view.answer).toEqual({ feel: "sore", areas: ["neck"] });
-    expect(statements.filter(isWrite)).toEqual([]);
+    // One read, and nothing else: the session isn't looked at again.
+    expect(statements).toHaveLength(1);
   });
 
   it("refuses an area it doesn't know, areas without Sore, Sore without an area, and a condition that isn't switched on", async () => {
@@ -100,6 +101,13 @@ describe("the answer", () => {
     await expect(answerBodyCheck(db, userId, id, { feel: "sore", areas: [] }, ctx())).rejects.toBeInstanceOf(BodyCheckInvalidError);
     await expect(answerBodyCheck(db, userId, id, { feel: "sore", areas: ["tmj"] }, ctx())).rejects.toBeInstanceOf(BodyCheckInvalidError);
     expect(await answersOf(id)).toEqual([]);
+  });
+
+  it("a session taken off the plan is not found", async () => {
+    const id = await seedSlot(db, userId, programId, DAY);
+    await db.update(plannedWorkouts).set({ archivedAt: NOON }).where(eq(plannedWorkouts.id, id));
+    await expect(answerBodyCheck(db, userId, id, { feel: "fresh" }, ctx())).rejects.toBeInstanceOf(BodyCheckNotFoundError);
+    await expect(readBodyCheck(db, userId, id, ctx())).rejects.toBeInstanceOf(BodyCheckNotFoundError);
   });
 
   it("refuses a session that isn't the athlete's (not found), and one that isn't today's or has started (closed)", async () => {

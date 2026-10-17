@@ -98,11 +98,17 @@ export function BodyCheckPanel({ view, units, busy, error, onAnswer, onUndo, onA
     if (feel !== chosen) onAnswer(feel);
   };
   const toggleArea = (id: string) => setPicking((p) => (p ? (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]) : p));
+  // The picker closes back onto the chip that opened it, so the focus never falls to the page.
+  const soreChip = useRef<HTMLButtonElement>(null);
+  const close = () => {
+    setPicking(null);
+    soreChip.current?.focus();
+  };
   const done = () => {
     if (!picking || picking.length === 0) return;
     const order = view.areas.map((a) => a.id);
     onAnswer("sore", order.filter((id) => picking.includes(id)));
-    setPicking(null);
+    close();
   };
 
   return (
@@ -118,6 +124,7 @@ export function BodyCheckPanel({ view, units, busy, error, onAnswer, onUndo, onA
               key={feel}
               type="button"
               className="chip"
+              ref={feel === "sore" ? soreChip : undefined}
               aria-pressed={on}
               // Sore waits for the areas it offers (the read).
               disabled={locked || (feel === "sore" && view.areas.length === 0)}
@@ -131,7 +138,16 @@ export function BodyCheckPanel({ view, units, busy, error, onAnswer, onUndo, onA
         })}
       </div>
       {picking && view.open ? (
-        <fieldset className="body-check-picker" id={pickerId}>
+        <fieldset
+          className="body-check-picker"
+          id={pickerId}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              close();
+            }
+          }}
+        >
           <legend className="body-check-where">Where?</legend>
           <ChipRow
             toggle
@@ -144,7 +160,7 @@ export function BodyCheckPanel({ view, units, busy, error, onAnswer, onUndo, onA
             <button type="button" className="btn btn-small btn-primary" disabled={picking.length === 0 || busy} onClick={done}>
               Done
             </button>
-            <button type="button" className="linklike tap-pad" onClick={() => setPicking(null)}>
+            <button type="button" className="linklike tap-pad" onClick={close}>
               Cancel
             </button>
           </div>

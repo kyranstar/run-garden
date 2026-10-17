@@ -8,7 +8,7 @@ import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BodyCheckDto, WorkoutDto } from "@rg/api-client";
+import { bodyCheckApi, type BodyCheckDto, type WorkoutDto } from "@rg/api-client";
 import { BodyCheck } from "../src/screens/today/body-check.js";
 import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
 
@@ -122,6 +122,22 @@ describe("tapping the body check", () => {
       { method: "POST", path: "/api/today/body", body: { workoutId: "w1", feel: "sore", areas: ["neck", "calves"] } },
     ]);
     expect(button("Done")).toBeUndefined();
+    // The picker closes back onto the chip that opened it.
+    expect(document.activeElement).toBe(button("Sore somewhere"));
+  });
+
+  it("Escape closes the picker onto its chip and keeps nothing", async () => {
+    const sent = serve(() => json(view()));
+    mount(createElement(BodyCheck, { workout }));
+    await until(() => button("Sore somewhere")?.disabled === false, "the read");
+    await tap("Sore somewhere");
+    await tap("Hips");
+    await act(async () => {
+      button("Hips")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(button("Done")).toBeUndefined();
+    expect(document.activeElement).toBe(button("Sore somewhere"));
+    expect(sent.filter((s) => s.method === "POST")).toEqual([]);
   });
 
   it("a designed workout: Ask the coach to adapt it opens the coach with the words written", async () => {
@@ -166,6 +182,32 @@ describe("tapping the body check", () => {
     await until(() => sent.some((s) => s.method === "POST"), "the finish");
     await settle(20);
     expect(sent.filter((s) => s.method === "POST")).toEqual([{ method: "POST", path: "/api/today/body", body: { workoutId: "w1", feel: "heavy" } }]);
+  });
+
+  it("a finish the server still answers pending is asked once, never over and over", async () => {
+    const heavy = { feel: "heavy" as const, areas: [] };
+    const pending = view({ answer: heavy, change: { kind: "eased", to: { mode: "consistent" } }, pending: true });
+    const sent = serve(() => json(pending));
+    mount(createElement(BodyCheck, { workout }));
+    await until(() => sent.some((s) => s.method === "POST"), "the finish");
+    await settle(50);
+    // One finish: the api client's request and its one ask again.
+    expect(sent.filter((s) => s.method === "POST")).toHaveLength(2);
+  });
+
+  it("the api client asks again, once, when the answer comes back pending", async () => {
+    const heavy = { feel: "heavy" as const, areas: [] };
+    let posts = 0;
+    const sent = serve(() => {
+      posts += 1;
+      return json(view({ answer: heavy, change: { kind: "eased", to: { mode: "consistent" } }, ...(posts === 1 ? { pending: true as const } : {}) }));
+    });
+    const out = await bodyCheckApi.answer("w1", "heavy");
+    expect(out.pending).toBeUndefined();
+    expect(sent.map((s) => [s.method, s.path, s.body])).toEqual([
+      ["POST", "/api/today/body", { workoutId: "w1", feel: "heavy" }],
+      ["POST", "/api/today/body", { workoutId: "w1", feel: "heavy" }],
+    ]);
   });
 
   it("a save that fails says so and keeps nothing as chosen", async () => {

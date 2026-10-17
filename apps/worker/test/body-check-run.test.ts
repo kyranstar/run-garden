@@ -184,6 +184,14 @@ describe("a watch-plan run, Sore somewhere", () => {
     await answerBodyCheck(db, userId, id, { feel: "sore", areas: ["shoulders"] }, ctx());
     expect(facts(await rowOf(db, id))).toEqual(before);
   });
+
+  it("A bit heavy, then sore calves: the same ease stands — 14 km, never eased twice", async () => {
+    const id = await seedRun(DAY);
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const sore = await answerBodyCheck(db, userId, id, { feel: "sore", areas: ["calves"] }, ctx());
+    expect(sore.view.change).toEqual({ kind: "eased", to: { meters: 14000 } });
+    expect((await rowOf(db, id)).expectedDistanceMeters).toBe(14000);
+  });
 });
 
 describe("putting the run back", () => {
@@ -198,6 +206,13 @@ describe("putting the run back", () => {
     expect(facts(row)).toEqual(before);
     expect(await stagesOf(id)).toEqual(stagesBefore);
     expect(row.workoutDocRev).toBe(3);
+    // The plan's document is the next revision, the athlete's own (they took the ease back).
+    const revisions = await db.select().from(workoutDocRevisions).where(eq(workoutDocRevisions.workoutId, id)).orderBy(asc(workoutDocRevisions.rev));
+    expect(revisions.map((r) => [r.rev, r.sourceKind])).toEqual([
+      [2, "coach"],
+      [3, "athlete_edit"],
+    ]);
+    expect(revisions[1]!.doc).toBe(before.workoutDoc);
     expect(await openContentIntents(id)).toEqual([]);
     // Undo again: nothing to undo.
     statements = [];
@@ -256,8 +271,16 @@ describe("the watch", () => {
     const blocks = (back!.payload as { session: { run: { blocks: Array<{ kind: string; value: number }> } } }).session.run.blocks;
     expect(blocks.map((b) => b.value)).toEqual([10, 3, 1.5, 3, 1.5, 3, 1.5, 3, 1.5, 3, 1.5, 3, 1.5, 10]);
     expect(await openContentIntents(id)).toEqual([expect.objectContaining({ source: "undo" })]);
-    // The app's copy is the plan's again, exactly.
-    expect((await rowOf(db, id)).stageSummary).toBe("10 min · 6 × (3 min · 90 s) · 10 min");
+    // The app's copy is the plan's again, exactly — and, as after any ease, not yet the watch's.
+    expect(await rowOf(db, id)).toMatchObject({ stageSummary: "10 min · 6 × (3 min · 90 s) · 10 min", corosSyncState: "calendar_only" });
+  });
+
+  it("a claim the app held before the ease (a coach ease not yet on the watch) stays when the ease is undone", async () => {
+    const id = await seedRun(DAY, { shape: "intervals" });
+    await db.insert(syncIntents).values({ id: newId(), userId, targetKind: "workout", targetId: id, kind: "content", payload: null, source: "coach_ease", createdAt: NOON });
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    await undoBodyCheck(db, userId, id, ctx());
+    expect(await openContentIntents(id)).toHaveLength(1);
   });
 
   it("eased again after an Undo, the same rewrite the Undo superseded is queued again (it is that content's one job)", async () => {

@@ -136,7 +136,43 @@ describe("an engine session, A bit heavy", () => {
   });
 });
 
+describe("an ease cut off", () => {
+  it("a request cut off after the eased build, before the record says so: the next answer finishes it — one mode down, never two", async () => {
+    const id = await seedSlot(db, userId, programId, DAY);
+    await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    // The record's second write (the ease marked done) fails: the build is made, the record still says `easing`.
+    let records = 0;
+    const sqlite = (db as unknown as { $client: { prepare: (s: string) => unknown } }).$client;
+    const prepare = sqlite.prepare.bind(sqlite);
+    sqlite.prepare = (s: string) => {
+      if (/^insert into "audit_events"/i.test(s) && ++records === 2) throw new Error("the request was cut off");
+      return prepare(s);
+    };
+    await expect(answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx())).rejects.toThrow("cut off");
+    sqlite.prepare = prepare;
+    expect((await session(id)).build!.mode).toBe("consistent");
+    expect((await readBodyCheck(db, userId, id, ctx())).pending).toBe(true);
+    const again = await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    expect(again.view).toMatchObject({ change: { kind: "eased", to: { mode: "consistent" } } });
+    expect(again.view.pending).toBeUndefined();
+    expect((await session(id)).build!.mode).toBe("consistent");
+    // And Undo goes back to the day's own choice, not to the eased one.
+    await undoBodyCheck(db, userId, id, ctx());
+    expect((await session(id)).build!.mode).toBe("build");
+  });
+});
+
 describe("an engine session, Sore somewhere", () => {
+  it("A bit heavy, then Sore in an area the session works: the same ease stands, one mode down", async () => {
+    const id = await seedSlot(db, userId, programId, DAY);
+    const built = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    const workedArea = BODY_REGIONS.find((r) => worked(built).has(r))!;
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const sore = await answerBodyCheck(db, userId, id, { feel: "sore", areas: [workedArea] }, ctx());
+    expect(sore.view.change).toEqual({ kind: "eased", to: { mode: "consistent" } });
+    expect((await session(id)).build!.mode).toBe("consistent");
+  });
+
   it("eases it when the session works a sore area, and only notes it when it doesn't", async () => {
     const id = await seedSlot(db, userId, programId, DAY);
     const built = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
@@ -215,6 +251,7 @@ describe("putting it back", () => {
     const built = await buildSession(db, userId, other, {}, ctx());
     await db.update(sessionBuilds).set({ lockedAt: NOON }).where(eq(sessionBuilds.id, built.build!.buildId));
     await expect(answerBodyCheck(db, userId, other, { feel: "heavy" }, ctx())).rejects.toBeInstanceOf(BodyCheckClosedError);
+    expect((await readBodyCheck(db, userId, other, ctx())).open).toBe(false);
   });
 });
 

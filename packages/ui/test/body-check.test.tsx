@@ -84,6 +84,13 @@ describe("the panel", () => {
     expect(text(html)).toContain("Eased to 14 km for heavy legs Undo");
   });
 
+  it("offers Undo only after an ease: never when nothing changed", () => {
+    for (const why of ["undone", "quiet", "gentlest", "race"] as const) {
+      const html = draw(view({ answer: { feel: "sore", areas: ["neck"] }, change: { kind: "kept", why } }));
+      expect(text(html)).not.toContain("Undo");
+    }
+  });
+
   it("offers the coach instead for a designed workout, and nothing to undo", () => {
     const html = draw(view({ answer: { feel: "heavy", areas: [] }, change: { kind: "ask" } }), { onAsk: noop });
     expect(text(html)).toContain("Ask the coach to adapt it");
@@ -97,6 +104,12 @@ describe("the panel", () => {
     expect(html.match(/disabled=""/g)).toHaveLength(3);
     expect(text(html)).toContain("Eased to 35 min for heavy legs");
     expect(text(html)).not.toContain("Undo");
+  });
+
+  it("Sore somewhere waits for the areas it offers; the others don't", () => {
+    const html = draw(view({ areas: [] }));
+    expect(html.match(/disabled=""/g)).toHaveLength(1);
+    expect(html).toMatch(/disabled=""[^>]*>Sore somewhere/);
   });
 
   it("says when a save didn't go through", () => {

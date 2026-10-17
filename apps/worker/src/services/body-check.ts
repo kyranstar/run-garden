@@ -704,8 +704,8 @@ async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx
   const reached = jobs.some((j) => j.status === "verified");
   const open = jobs.filter((j) => (OPEN_JOB_STATUSES as readonly string[]).includes(j.status)).map((j) => j.id);
   const b = ease.before;
-  // The watch's copy is the eased run until the rewrite back lands: its sync state stays as the rewrite left it.
-  const columns: Partial<RunColumns> = reached ? Object.fromEntries(RUN_COLUMNS.filter((k) => k !== "corosSyncState").map((k) => [k, b.columns[k]])) : b.columns;
+  // The watch's copy is the eased run until the rewrite back lands: like any ease, the app's copy isn't the watch's yet.
+  const columns: RunColumns = reached ? { ...b.columns, corosSyncState: "calendar_only" } : b.columns;
   await runAtomically(db, [
     db
       .update(pw)
