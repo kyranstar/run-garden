@@ -51,6 +51,10 @@ export interface MusicDeps {
   now?: () => number;
   /** A request waiting for another's refresh waits through this (tests step it). */
   sleep?: (ms: number) => Promise<void>;
+  /** The token endpoint's deadline (tests shorten it). */
+  tokenTimeoutMs?: number;
+  /** Where a refresh is kept alive past the response (default: the request's own `executionCtx.waitUntil`). */
+  waitUntil?: (work: Promise<unknown>) => void;
 }
 
 export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
@@ -136,9 +140,20 @@ export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
   r.get("/spotify/token", async (c) => {
     c.header("Cache-Control", "no-store");
     const force = c.req.query("fresh") === "1" && !fixtureModeEnabled(c.env);
+    const keepAlive =
+      deps.waitUntil ??
+      ((work: Promise<unknown>) => {
+        try {
+          c.executionCtx.waitUntil(work);
+        } catch {
+          /* no execution context (a host without one): the request carries it */
+        }
+      });
     const answer = await spotifyAccessToken(c.get("db"), c.env, spotifyClientId(c.env)!, c.get("userId"), fetchImpl, now(), {
       force,
+      waitUntil: keepAlive,
       ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      ...(deps.tokenTimeoutMs !== undefined ? { tokenTimeoutMs: deps.tokenTimeoutMs } : {}),
     });
     if ("unavailable" in answer) return c.json({ error: "spotify_unavailable" }, 502);
     if (answer.connected && fixtureModeEnabled(c.env)) return c.json({ ...answer, apiBase: FIXTURE_SPOTIFY_API_BASE });

@@ -152,13 +152,18 @@ export interface SpotifyTokens {
 
 type TokenAnswer = { ok: true; tokens: SpotifyTokens } | { ok: false; invalidGrant: boolean; status: number };
 
-async function postToken(fetchImpl: typeof fetch, form: Record<string, string>): Promise<TokenAnswer> {
+/** Spotify's token endpoint is given up on after this — well inside a refresh's claim on the row
+ * (`SPOTIFY_REFRESH_LEASE_MS`), so a hung refresh lets its claim go before another request could take it over. */
+export const SPOTIFY_TOKEN_TIMEOUT_MS = 8_000;
+
+async function postToken(fetchImpl: typeof fetch, form: Record<string, string>, timeoutMs = SPOTIFY_TOKEN_TIMEOUT_MS): Promise<TokenAnswer> {
   let res: Response;
   try {
     res = await fetchImpl(SPOTIFY_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams(form).toString(),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     return { ok: false, invalidGrant: false, status: 0 };
@@ -267,6 +272,11 @@ export async function spotifyAccessToken(
     /** Refresh whatever the time left: the page saw Spotify refuse the stored token (a 401). */
     force?: boolean;
     sleep?: (ms: number) => Promise<void>;
+    /** The token endpoint's deadline (default `SPOTIFY_TOKEN_TIMEOUT_MS`). */
+    tokenTimeoutMs?: number;
+    /** Keeps the refresh and its write running if the client goes away (the request's `waitUntil`): Spotify may have
+     * rotated the refresh token already, and only this write keeps the new one. */
+    waitUntil?: (work: Promise<unknown>) => void;
   } = {},
 ): Promise<SpotifyTokenAnswer> {
   const row = await loadSpotifyRow(db, userId);
@@ -283,14 +293,34 @@ export async function spotifyAccessToken(
   `)) as unknown[];
   if (claimed.length === 0) return awaitOtherRefresh(db, env, userId, row, now, opts.sleep);
 
+  const work = refreshClaimed(db, env, clientId, userId, row, fetchImpl, now, opts.tokenTimeoutMs);
+  opts.waitUntil?.(work.catch(() => undefined));
+  return work;
+}
+
+/** The claimed refresh and its row write — one piece, so `waitUntil` keeps both alive together. */
+async function refreshClaimed(
+  db: Db,
+  env: Env,
+  clientId: string,
+  userId: string,
+  row: SpotifyRow,
+  fetchImpl: typeof fetch,
+  now: number,
+  tokenTimeoutMs: number | undefined,
+): Promise<SpotifyTokenAnswer> {
   // The claim let go: the row's meta as it was (none, when the claim was all it held).
   const release = sql`nullif(json_remove(coalesce(meta, '{}'), '$.refreshLease'), '{}')`;
   const sameToken = and(eq(providerConnections.id, row.id), eq(providerConnections.encryptedRefreshToken, row.encryptedRefreshToken!));
-  const answer = await postToken(fetchImpl, {
-    grant_type: "refresh_token",
-    refresh_token: await decryptSecret(row.encryptedRefreshToken!, env.TOKEN_ENCRYPTION_KEY),
-    client_id: clientId,
-  });
+  const answer = await postToken(
+    fetchImpl,
+    {
+      grant_type: "refresh_token",
+      refresh_token: await decryptSecret(row.encryptedRefreshToken!, env.TOKEN_ENCRYPTION_KEY),
+      client_id: clientId,
+    },
+    tokenTimeoutMs,
+  );
   if (!answer.ok) {
     if (!answer.invalidGrant) {
       console.warn("spotify refresh failed", answer.status);

@@ -174,6 +174,8 @@ export function makeDockController(deps: DockDeps) {
         rebuild,
         onCreated: async (id) => {
           if (await save({ ...state.music, minecraftPlaylistId: id })) created = id;
+          // The save ends "saving"; the tracks are still to add — still building (a tap meanwhile starts nothing).
+          set({ busy: "building" });
         },
       });
     } catch (e) {

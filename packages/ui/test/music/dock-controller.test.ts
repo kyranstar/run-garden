@@ -24,14 +24,28 @@ const PL = sid("mine");
 const phone = { id: "phone-1", name: "Phone", type: "Smartphone", supports_volume: false };
 const desk = { id: "desk-1", name: "Desktop", type: "Computer", supports_volume: true, volume_percent: 40 };
 
-function albums() {
-  return MINECRAFT_ALBUMS.slice(0, 8).map((a, i) => ({ id: sid(`mc${i}`), name: `${a.title} (Original Game Soundtrack)`, artists: [a.artists[0]!], tracks: 5 }));
+function albums(tracks = 5) {
+  return MINECRAFT_ALBUMS.slice(0, 8).map((a, i) => ({ id: sid(`mc${i}`), name: `${a.title} (Original Game Soundtrack)`, artists: [a.artists[0]!], tracks }));
 }
 
 function setup(
-  opts: { devices?: Array<typeof phone>; music?: Partial<MusicPreferences>; reason?: "not_connected" | "reconnect"; allowOpen?: boolean; renewFails?: boolean } = {},
+  opts: {
+    devices?: Array<typeof phone>;
+    music?: Partial<MusicPreferences>;
+    reason?: "not_connected" | "reconnect";
+    allowOpen?: boolean;
+    renewFails?: boolean;
+    albumTracks?: number;
+  } = {},
 ) {
-  const fake = fakeSpotify({ devices: opts.devices ?? [phone], albums: albums(), ownedPlaylists: [{ id: PL, name: "Easy run", total: 30 }] });
+  const fake = fakeSpotify({ devices: opts.devices ?? [phone], albums: albums(opts.albumTracks), ownedPlaylists: [{ id: PL, name: "Easy run", total: 30 }] });
+  /** Every call to Spotify, with what the dock said it was busy with as it went out. */
+  const observed: Array<{ method: string; path: string; busy: DockState["busy"] }> = [];
+  let dockRef: { get: () => DockState } | null = null;
+  const observing = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    observed.push({ method: (init?.method ?? "GET").toUpperCase(), path: new URL(String(input)).pathname.replace(/^\/v1/, ""), busy: dockRef?.get().busy ?? null });
+    return fake.fetch(input, init);
+  }) as typeof fetch;
   const tokens = fakeTokens(fake, { reason: opts.reason });
   const token = opts.renewFails
     ? async (fresh: boolean) =>
@@ -39,7 +53,7 @@ function setup(
           ? { connected: false as const, reason: "reconnect" as const }
           : { connected: true as const, accessToken: "a-token-spotify-refuses", expiresAt: new Date(3600_000).toISOString() }
     : tokens.token;
-  const spotify = makeSpotify({ token, fetch: fake.fetch, now: () => 0, sleep: async () => undefined });
+  const spotify = makeSpotify({ token, fetch: observing, now: () => 0, sleep: async () => undefined });
   const saved: MusicPreferences[] = [];
   const opened: string[] = [];
   const timers: Array<() => void> = [];
@@ -66,9 +80,10 @@ function setup(
     isVisible: () => true,
     newId: () => `s${++ids}`,
   });
+  dockRef = dock;
   dock.setServer({ connected: !opts.reason, ...(opts.reason === "reconnect" ? { reason: "reconnect" as const } : {}), music: { shortcuts: [], ...opts.music } });
   const commands = () => fake.calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`);
-  return { fake, dock, saved, opened, commands, state: (): DockState => dock.get() };
+  return { fake, dock, saved, opened, commands, observed, state: (): DockState => dock.get() };
 }
 
 describe("it plays only when asked", () => {
@@ -155,6 +170,26 @@ describe("the shortcuts", () => {
     expect(fake.calls.filter((c) => c.method === "POST" && c.path === "/me/playlists")).toHaveLength(1);
     expect(fake.calls.some((c) => c.method === "PUT" && c.path === `/playlists/${sid("built1")}/items`)).toBe(true);
     expect(state().build).toMatchObject({ found: 8, of: 9 });
+  });
+
+  it("the build stays busy through every item add, so a second tap or a Rebuild meanwhile starts nothing (follow-up #1)", async () => {
+    const { dock, fake, observed, state } = setup({ albumTracks: 30 }); // 240 tracks: three adds
+    let release: () => void = () => undefined;
+    fake.script(`POST /playlists/${sid("built1")}/items`, { status: 201, body: { snapshot_id: "s" }, gate: new Promise<void>((r) => (release = r)) });
+    const first = dock.tap("minecraft");
+    for (let i = 0; i < 200 && !observed.some((o) => o.method === "POST" && o.path.endsWith("/items")); i++) await new Promise((r) => setTimeout(r, 0));
+    // The first add is out (the playlist exists, its id already saved): still building.
+    expect(state().busy).toBe("building");
+    await dock.tap("minecraft");
+    await dock.rebuildMinecraft();
+    release();
+    await first;
+    const adds = observed.filter((o) => o.method === "POST" && o.path === `/playlists/${sid("built1")}/items`);
+    expect(adds).toHaveLength(3);
+    expect(adds.map((o) => o.busy)).toEqual(["building", "building", "building"]);
+    expect(fake.calls.filter((c) => c.method === "POST" && c.path === "/me/playlists")).toHaveLength(1);
+    expect(fake.calls.filter((c) => c.path === "/me/player/play")).toHaveLength(1);
+    expect(state().busy).toBeNull();
   });
 
   it("the spa slot, unset, opens the add panel for it — no play", async () => {

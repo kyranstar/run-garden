@@ -114,6 +114,47 @@ describe("dark", () => {
 describe("in the session player", () => {
   const noCues: CuePlayer = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined, configure: () => undefined, preview: () => undefined, running: () => false };
 
+  async function mountPlayer(tools: React.ReactElement | null) {
+    db = await openOfflineDb(new IDBFactory());
+    await saveBuild(db, { workoutId: SLOT, build: build(), view: view() } as unknown as SessionDto);
+    await saveExtras(db, { workoutId: SLOT, title: "Program one", profiles: profiles(), savedAt: T0 });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const player = createElement(PlayerScreen, {
+      workoutId: SLOT,
+      tools,
+      deps: { db: () => Promise.resolve(db!), getSession: () => Promise.reject(new TypeError("Failed to fetch")), cues: noCues, wake: () => () => undefined },
+    });
+    mount(
+      createElement(
+        QueryClientProvider,
+        { client: qc },
+        createElement(MemoryRouter, { initialEntries: [`/session/${SLOT}`] }, createElement(Routes, null, createElement(Route, { path: "/session/:workoutId", element: player }))),
+      ),
+    );
+    for (let i = 0; i < 300 && !document.querySelector(".player-count"); i++) await act(async () => void (await new Promise((r) => setImmediate(r))));
+  }
+  /** The step the count names: "Program one · 3 of 9 · 8:02 left" → "3 of". */
+  const count = () => /\d+ of /.exec(document.querySelector(".player-count")?.textContent ?? "")?.[0] ?? "";
+  async function press(key: string) {
+    await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+  }
+
+  it("the music sheet open over the player holds the session's keys, as the player's own panels do (follow-up #2)", async () => {
+    // The dock's sheet is the app's Sheet: a modal dialog over the player.
+    await mountPlayer(createElement("div", { role: "dialog", "aria-modal": "true", "aria-label": "Music" }));
+    expect(count()).toMatch(/^1 of /);
+    for (const key of ["ArrowRight", "ArrowLeft", "s", "i", "?", " "]) await press(key);
+    expect(count()).toMatch(/^1 of /);
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  });
+
+  it("with no sheet open, the same keys drive the session", async () => {
+    await mountPlayer(null);
+    expect(count()).toMatch(/^1 of /);
+    await press("ArrowRight");
+    expect(count()).toMatch(/^2 of /);
+  });
+
   it("the dock is one of the top bar's tools, first in its row", async () => {
     db = await openOfflineDb(new IDBFactory());
     await saveBuild(db, { workoutId: SLOT, build: build(), view: view() } as unknown as SessionDto);

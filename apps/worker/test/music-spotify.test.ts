@@ -23,7 +23,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { b64urlEncode, decryptSecret, encryptSecret } from "../src/auth/crypto.js";
 import { makeMusicRoutes } from "../src/routes/music.js";
 import { settingsRoutes } from "../src/routes/misc.js";
-import { SPOTIFY_SCOPES, SPOTIFY_TOKEN_URL } from "../src/services/spotify-auth.js";
+import { SPOTIFY_REFRESH_LEASE_MS, SPOTIFY_SCOPES, SPOTIFY_TOKEN_TIMEOUT_MS, SPOTIFY_TOKEN_URL } from "../src/services/spotify-auth.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -532,6 +532,37 @@ describe("token", () => {
     answerToken = () => json({ access_token: "at-after", expires_in: 3600 });
     expect((await call("GET", "/api/music/spotify/token")).body).toMatchObject({ connected: true, accessToken: "at-after" });
     expect(tokenCalls).toHaveLength(1);
+  });
+
+  it("a token endpoint that never answers is given up on well inside the claim's lease: a 502, the claim let go (follow-up #3)", async () => {
+    expect(SPOTIFY_TOKEN_TIMEOUT_MS).toBeLessThan(SPOTIFY_REFRESH_LEASE_MS);
+    await connect({ refresh: "rt-one", expiresIn: 60 });
+    const hanging = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("timed out", "TimeoutError")));
+      })) as typeof fetch;
+    const app = mountRoutes(db, "/api/music", makeMusicRoutes({ fetch: hanging, now: () => clock, tokenTimeoutMs: 20 }));
+    const res = await app.request("https://app.test/api/music/spotify/token", { headers: { Cookie: cookie } }, ON);
+    expect(res.status).toBe(502);
+    const row = (await spotifyRow())!;
+    expect(row.status).toBe("connected");
+    expect((row.meta as Record<string, unknown> | null)?.refreshLease).toBeUndefined();
+  });
+
+  it("the refresh and its write run under waitUntil: a client gone mid-refresh can't lose a token Spotify already rotated (follow-up #3)", async () => {
+    await connect({ refresh: "rt-one", expiresIn: 60 });
+    const handed: Array<Promise<unknown>> = [];
+    answerToken = () => json({ access_token: "at-two", expires_in: 3600, refresh_token: "rt-two" });
+    const app = mountRoutes(db, "/api/music", makeMusicRoutes({ fetch: fakeFetch, now: () => clock, waitUntil: (p) => void handed.push(p) }));
+    const ask = () => app.request("https://app.test/api/music/spotify/token", { headers: { Cookie: cookie } }, ON);
+    expect((await ask()).status).toBe(200);
+    expect(handed).toHaveLength(1);
+    await expect(handed[0]).resolves.toMatchObject({ connected: true, accessToken: "at-two" });
+    expect(await decryptSecret((await spotifyRow())!.encryptedRefreshToken!, KEY)).toBe("rt-two");
+    // A token still fresh: nothing to keep alive.
+    handed.length = 0;
+    expect((await ask()).status).toBe(200);
+    expect(handed).toEqual([]);
   });
 
   it("Spotify down is a 502 that leaves the row as it was", async () => {
