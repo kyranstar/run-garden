@@ -103,10 +103,11 @@ interface StepperRecord {
   /** The step at work — the claim it takes — written before it starts and cleared once it ends: one on record that no
    * invocation is at work on died. `ended`: its invocation threw (R2) — it has ended, whatever the platform does next. */
   step: { claimAt: string; startedAt: number; ended?: true } | null;
-  /** Invocations in a row that died with a step on record. */
+  /** Invocations in a row that died with a step on record — kept across a word that clears one, and across the stop it
+   * leads to: only a step that ends (`settle`) starts it again (round 2, Minor 6). */
   deaths: number;
   /** The stop after STEPPER_MAX_DEATHS (M3), armed for the stale window: a word that finds the run not stepping steps it
-   * now instead (R2: the dying invocations never claimed). */
+   * now instead (R2: the dying invocations never claimed) — once: a stop that follows that try waits for the window. */
   deferred?: true;
 }
 
@@ -207,11 +208,15 @@ export class CoachRunStepper implements DurableObject {
     if (hint.leaseMs !== undefined) record.leaseMs = hint.leaseMs;
     if (op === "arm" && record.nextAt === null) record.nextAt = now;
     // Not stepping (R18; go-live R1, R2): no invocation holds the run's claim — a step on record finished elsewhere (an
-    // old instance after a deploy) or died before claiming; a deferred stop's invocations never claimed. Step it now.
+    // old instance after a deploy), or a deferred stop whose invocations never claimed: step it now. Never a step that
+    // threw here (`ended`: the platform's retry and its death count have it), and a deferred stop only on its first
+    // early try — the deaths kept — so a step that throws before claiming can't loop the object while the app reads
+    // (round 2, Minor 6).
     let cleared = false;
-    if (hint.stepping === false && !this.working && (record.step !== null || record.deferred)) {
+    const finishedElsewhere = record.step !== null && !record.step.ended;
+    const deferredOnce = record.deferred === true && record.deaths <= STEPPER_MAX_DEATHS;
+    if (hint.stepping === false && !this.working && (finishedElsewhere || deferredOnce)) {
       record.step = null;
-      record.deaths = 0;
       delete record.deferred;
       record.nextAt = record.nextAt === null ? now : Math.min(record.nextAt, now);
       cleared = true;
@@ -243,12 +248,13 @@ export class CoachRunStepper implements DurableObject {
       await this.storage.setAlarm(stepTakebackAt(this.env, dead.claimAt));
       return;
     }
-    const deaths = dead ? record.deaths + 1 : 0;
+    // In a row since a step last ended — a word that cleared a step keeps the count (round 2, Minor 6).
+    const deaths = dead ? record.deaths + 1 : record.deaths;
     if (dead && deaths >= STEPPER_MAX_DEATHS) {
       // Stop trying it as our own: the claim goes to the stale window's takeover — a read arms it for then (M3) — or,
       // when a read finds the run not stepping (the dying invocations never claimed), at once (`deferred`: R2).
       console.error(JSON.stringify({ level: "error", msg: "coach-run-stepper: the step kept dying; stopped", run: record.runId, deaths }));
-      await this.save({ ...record, step: null, deaths: 0, nextAt: Date.parse(dead.claimAt) + COACH_RUN_STEP_STALE_MINUTES * 60_000, deferred: true });
+      await this.save({ ...record, step: null, deaths, nextAt: Date.parse(dead.claimAt) + COACH_RUN_STEP_STALE_MINUTES * 60_000, deferred: true });
       return;
     }
     if (dead) console.warn(JSON.stringify({ level: "warn", msg: "coach-run-stepper: taking back its own dead step", run: record.runId, retry, deaths }));

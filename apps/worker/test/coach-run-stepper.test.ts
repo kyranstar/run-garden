@@ -831,6 +831,44 @@ describe("Task 13's fix wave: the routes say whether the run is stepping (R18; g
     expect(w.storage.alarm).toBe(nowMs);
   });
 
+  it("round 2, Minor 6: a step that throws before it claims, every time, can't loop the object while the app reads — the deaths count across the not-stepping words", async () => {
+    const runId = await newRun();
+    let attempts = 0;
+    let breaking = false;
+    // The claim — the step's first write — always breaks: the run is never `stepping`, so every read says so.
+    const db2 = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "update" && breaking) {
+          attempts += 1;
+          return () => {
+            throw new Error("breaks before the claim");
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const model = scriptedModel([]);
+    const w = stepper(runId, model, undefined, db2 as Db);
+    await w.tell("arm", userId, { stepping: false, leaseMs: stepperLeaseMs({ kind: "now" }) });
+    await w.fire(); // the context step
+    breaking = true;
+    // Five minutes of a client reading every 2 s, the platform retrying each alarm that threw 2 s later.
+    for (let t = 0; t < 150; t++) {
+      advance(2_000);
+      await w.tell("touch", userId, { stepping: false, leaseMs: stepperLeaseMs({ kind: "now" }) });
+      if (w.storage.alarm !== null && w.storage.alarm <= nowMs) {
+        try {
+          await w.fire();
+        } catch {
+          w.kill(2_000);
+        }
+      }
+    }
+    // The deaths in a row, the one early try a deferred stop gets, then nothing until the stale window.
+    expect(attempts).toBeLessThanOrEqual(STEPPER_MAX_DEATHS + 2);
+    expect(model.calls).toBe(0);
+  });
+
   it("§2.12: with its lease from the route — 20 minutes for now — the run steps on with nobody reading, until the lease lapses", async () => {
     const runId = await newRun();
     const model = scriptedModel([toolTurn(use("read_day")), toolTurn(use("read_plan")), finishTurn()]);
