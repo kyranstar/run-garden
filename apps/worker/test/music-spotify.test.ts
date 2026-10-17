@@ -15,7 +15,7 @@
  * The Spotify token endpoint is faked. Synthetic data only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -376,7 +376,7 @@ describe("token", () => {
     expect(tokenCalls).toEqual([]);
   });
 
-  it("near expiry it refreshes on the server (the client id, no secret) and keeps the refresh token when none comes back — three statements, one fetch", async () => {
+  it("near expiry it refreshes on the server (the client id, no secret) and keeps the refresh token when none comes back — four statements (the claim), one fetch", async () => {
     await connect({ access: "at-old", refresh: "rt-keep", expiresIn: 3600 });
     clock += 56 * 60_000; // four minutes left: inside the margin
     answerToken = () => json({ access_token: "at-new", token_type: "Bearer", expires_in: 3600, scope: SPOTIFY_SCOPES.join(" ") });
@@ -384,7 +384,8 @@ describe("token", () => {
     expect(res.body).toEqual({ connected: true, accessToken: "at-new", expiresAt: new Date(clock + 3600_000).toISOString() });
     expect(tokenCalls).toHaveLength(1);
     expect(tokenCalls[0]!.form).toEqual({ grant_type: "refresh_token", refresh_token: "rt-keep", client_id: "test-client-id" });
-    expect(res.statements).toHaveLength(3);
+    // The session, the row, the claim, the write.
+    expect(res.statements).toHaveLength(4);
     const row = (await spotifyRow())!;
     expect(await decryptSecret(row.encryptedAccessToken!, KEY)).toBe("at-new");
     expect(await decryptSecret(row.encryptedRefreshToken!, KEY)).toBe("rt-keep");
@@ -456,6 +457,81 @@ describe("token", () => {
     const res = await call("GET", "/api/music/spotify/token");
     expect(res.body).toEqual({ connected: true, accessToken: "at-other-tab", expiresAt: new Date(clock + 3600_000).toISOString() });
     expect((await spotifyRow())!.status).toBe("connected");
+  });
+
+  it("two asks at once after the hour (the dock reads two endpoints together) refresh ONCE: the other waits for that refresh, both get its token, the row stays connected (review #1)", async () => {
+    await connect({ access: "at-one", refresh: "rt-one", expiresIn: 60 });
+    // The reviewer's interleaving: A's refresh is in flight when B asks; Spotify rotates the refresh token, so a second
+    // refresh with the old one is `invalid_grant`. A answers once B has had its turn.
+    let releaseA: () => void = () => undefined;
+    const aGate = new Promise<void>((r) => (releaseA = r));
+    answerToken = async (form) => {
+      if (form.refresh_token !== "rt-one") return json({ error: "invalid_grant" }, 400);
+      if (tokenCalls.length === 1) {
+        await aGate;
+        return json({ access_token: "at-two", expires_in: 3600, refresh_token: "rt-two" });
+      }
+      releaseA();
+      return json({ error: "invalid_grant", error_description: "Refresh token revoked" }, 400);
+    };
+    const app = mountRoutes(
+      db,
+      "/api/music",
+      makeMusicRoutes({
+        fetch: fakeFetch,
+        now: () => clock,
+        // The one waiting lets A finish meanwhile.
+        sleep: async () => {
+          releaseA();
+          await new Promise((r) => setTimeout(r, 15));
+        },
+      }),
+    );
+    const ask = async () => (await app.request("https://app.test/api/music/spotify/token", { headers: { Cookie: cookie } }, ON)).json();
+    const [a, b] = await Promise.all([ask(), ask()]);
+    expect(a).toEqual({ connected: true, accessToken: "at-two", expiresAt: new Date(clock + 3600_000).toISOString() });
+    expect(b).toEqual(a);
+    expect(tokenCalls).toHaveLength(1);
+    const row = (await spotifyRow())!;
+    expect(row.status).toBe("connected");
+    expect(await decryptSecret(row.encryptedRefreshToken!, KEY)).toBe("rt-two");
+    // The claim is let go.
+    expect((row.meta as Record<string, unknown> | null)?.refreshLease).toBeUndefined();
+  });
+
+  it("a refresh that succeeds leaves the row connected, whatever another request marked meanwhile", async () => {
+    await connect({ refresh: "rt-one", expiresIn: 60 });
+    answerToken = async () => {
+      await db.update(schema.providerConnections).set({ status: "error", lastErrorCategory: "reconnect" }).where(eq(schema.providerConnections.provider, "spotify"));
+      return json({ access_token: "at-two", expires_in: 3600 });
+    };
+    expect((await call("GET", "/api/music/spotify/token")).body).toMatchObject({ connected: true, accessToken: "at-two" });
+    const row = (await spotifyRow())!;
+    expect([row.status, row.lastErrorCategory]).toEqual(["connected", null]);
+  });
+
+  it("a refresh another request holds: wait a little and read again; still held, a 502 — never a second refresh", async () => {
+    await connect({ refresh: "rt-one", expiresIn: 60 });
+    await db.run(sql`UPDATE provider_connections SET meta = json_set(coalesce(meta, '{}'), '$.refreshLease', ${clock + 20_000}) WHERE provider = 'spotify'`);
+    let slept = 0;
+    const app = mountRoutes(db, "/api/music", makeMusicRoutes({ fetch: fakeFetch, now: () => clock, sleep: async () => void (slept += 1) }));
+    statements = [];
+    const res = await app.request("https://app.test/api/music/spotify/token", { headers: { Cookie: cookie } }, ON);
+    expect(res.status).toBe(502);
+    expect(tokenCalls).toEqual([]);
+    expect(slept).toBeGreaterThan(0);
+    expect(slept).toBeLessThanOrEqual(6);
+    // A bounded wait: the session, the row, the claim, and one read per wait.
+    expect(statements.length).toBeLessThanOrEqual(3 + slept);
+    expect((await spotifyRow())!.status).toBe("connected");
+  });
+
+  it("a claim left by a request that died is taken over once it lapses", async () => {
+    await connect({ refresh: "rt-one", expiresIn: 60 });
+    await db.run(sql`UPDATE provider_connections SET meta = json_set(coalesce(meta, '{}'), '$.refreshLease', ${clock - 1}) WHERE provider = 'spotify'`);
+    answerToken = () => json({ access_token: "at-after", expires_in: 3600 });
+    expect((await call("GET", "/api/music/spotify/token")).body).toMatchObject({ connected: true, accessToken: "at-after" });
+    expect(tokenCalls).toHaveLength(1);
   });
 
   it("Spotify down is a 502 that leaves the row as it was", async () => {

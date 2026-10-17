@@ -17,7 +17,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { MusicDto } from "@rg/api-client";
-import { DockFrame, MUSIC_QUERY, MusicDock, MusicPanel, MusicPill, type PanelActions } from "../../src/music/dock.js";
+import { DockFrame, MUSIC_QUERY, MusicDock, MusicPanel, MusicPill, PlayerMusicTools, recheckOnReturn, type PanelActions } from "../../src/music/dock.js";
 import { pillTitle } from "../../src/music/dock-model.js";
 import type { DockState } from "../../src/music/controller.js";
 import { AppShell } from "../../src/shell.js";
@@ -68,7 +68,7 @@ describe("visibility", () => {
     for (const dto of [{ connected: true, music: { shortcuts: [] } }, { connected: false, music: { shortcuts: [] } }]) {
       const html = render(createElement(MusicDock, { variant: "shell" }), dto);
       expect(html).toContain('class="music-dock music-dock--shell"');
-      expect(html).toMatch(/<button[^>]*class="music-pill"[^>]*aria-label="Music"/);
+      expect(html).toMatch(/<button[^>]*class="music-pill tap-pad"[^>]*aria-label="Music"/);
       expect(html).toContain('aria-haspopup="dialog"');
       expect(html).not.toContain('role="dialog"');
       expect(html).not.toContain("Connect Spotify");
@@ -80,6 +80,12 @@ describe("visibility", () => {
       createElement(DockFrame, { variant: "shell", pill: createElement("button", null, "pill"), sheet: createElement("div", { role: "dialog" }, "sheet") }),
     );
     expect(html).toBe('<div class="music-dock music-dock--shell"><button>pill</button></div><div role="dialog">sheet</div>');
+  });
+
+  it("in the session player it is mounted only while the dock is on — dark, nothing at all", () => {
+    expect(render(createElement(PlayerMusicTools), null)).toBe("");
+    expect(render(createElement(PlayerMusicTools))).toBe("");
+    expect(render(createElement(PlayerMusicTools), { connected: true, music: { shortcuts: [] } })).toContain("music-dock--player");
   });
 
   it("in the session player it is the smaller form", () => {
@@ -161,12 +167,14 @@ describe("the expanded sheet", () => {
   it("the volume: a slider where the device takes it, 'Use the side buttons' where it doesn't, nothing with no device", () => {
     const desktop = panel({ player: playing(desk), devices: [desk] });
     expect(desktop).toMatch(/<input[^>]*type="range"[^>]*aria-label="Volume"[^>]*value="40"/);
+    // A phone that refuses remote volume: one small line under now playing, not a line of its own.
     const handset = panel({ player: playing(phone), devices: [phone] });
     expect(handset).not.toContain('type="range"');
-    expect(handset).toContain("Use the side buttons");
+    expect(handset).toMatch(/<section class="music-now"[^>]*>.*Volume · use the side buttons.*<\/section>/);
+    expect(handset).not.toContain("music-volume-note");
     const none = panel({ devices: [] });
     expect(none).not.toContain('type="range"');
-    expect(none).not.toContain("Use the side buttons");
+    expect(none).not.toContain("side buttons");
     // Nothing in the player: no volume to set, whatever the devices.
     const idle = panel({ devices: [desk] });
     expect(idle).toContain("Nothing playing");
@@ -179,10 +187,11 @@ describe("the expanded sheet", () => {
     expect(html).toMatch(new RegExp(`<a[^>]*href="https://open.spotify.com/playlist/${ID}"[^>]*target="_blank"[^>]*>Open in Spotify</a>`));
   });
 
-  it("the build's count", () => {
-    expect(panel({ notice: { text: "8 of 9 albums found", tone: "info" }, build: { found: 8, of: 9, missing: ["Minecraft: Chaos Cubed"] } })).toContain(
-      "8 of 9 albums found",
-    );
+  it("the build's count is the Minecraft shortcut's own line, not a line standing alone", () => {
+    const html = panel({ build: { found: 8, of: 9, missing: ["Minecraft: Chaos Cubed"] }, music: { shortcuts: [], minecraftPlaylistId: ID } });
+    expect(html).toMatch(/<button[^>]*class="music-shortcut"[^>]*>.*Minecraft, complete<\/span><span class="music-shortcut-sub">8 of 9 albums found<\/span>/);
+    expect(html).not.toMatch(/role="status"[^>]*>8 of 9/);
+    expect(panel({ music: { shortcuts: [], minecraftPlaylistId: ID } })).not.toContain("albums found");
   });
 
   it("editing: remove a shortcut, rebuild Minecraft, disconnect", () => {
@@ -228,6 +237,17 @@ describe("it never stops Spotify", () => {
   });
 });
 
+describe("a login finished in another browser", () => {
+  it("is looked for when the app is back only shortly after Connect was tapped here — never on every return", () => {
+    const at = 1_000_000;
+    expect(recheckOnReturn({ connection: "not_connected", loginStartedAt: at, now: at + 60_000 })).toBe(true);
+    expect(recheckOnReturn({ connection: "reconnect", loginStartedAt: at, now: at + 9 * 60_000 })).toBe(true);
+    expect(recheckOnReturn({ connection: "not_connected", loginStartedAt: at, now: at + 11 * 60_000 })).toBe(false);
+    expect(recheckOnReturn({ connection: "not_connected", loginStartedAt: null, now: at })).toBe(false);
+    expect(recheckOnReturn({ connection: "connected", loginStartedAt: at, now: at + 1000 })).toBe(false);
+  });
+});
+
 describe("the stylesheet", () => {
   const css = readFileSync(fileURLToPath(new URL("../../src/styles.css", import.meta.url)), "utf8");
   const rule = (selector: string) => {
@@ -236,10 +256,17 @@ describe("the stylesheet", () => {
     return css.slice(at, css.indexOf("}", at));
   };
 
-  it("the pill is a fingertip, sits above the nav and the home indicator on phones, and in the rail's corner on desktop", () => {
-    expect(rule(".music-pill")).toContain("min-height: var(--tap)");
-    expect(rule(".music-pill")).toContain("min-width: var(--tap)");
+  it("the pill is compact — 36 px, the small type, a translucent ground — and still a fingertip (its pad); it sits above the nav and the home indicator on phones, at most 45% of the width, and in the rail's corner on desktop", () => {
+    const pill = rule(".music-pill");
+    expect(pill).toContain("min-height: calc(var(--tap) - var(--space-4))");
+    expect(pill).toContain("min-width: calc(var(--tap) - var(--space-4))");
+    expect(pill).toContain("var(--text-sm)");
+    expect(pill).toMatch(/background: color-mix\(in srgb, var\(--bg-raised\) \d+%, transparent\)/);
+    expect(pill).toContain("backdrop-filter");
+    // The 44px floor is the shared pad's.
+    expect(render(createElement(MusicPill, { title: null, expanded: false, onOpen: noop }))).toMatch(/class="music-pill tap-pad"/);
     const shell = rule(".music-dock--shell");
+    expect(shell).toContain("max-width: 45vw");
     expect(shell).toContain("position: fixed");
     expect(shell).toContain("var(--nav-height)");
     expect(shell).toContain("env(safe-area-inset-bottom");
@@ -263,8 +290,13 @@ describe("the stylesheet", () => {
     expect(rule(".stu > .stu-added--on")).toContain("position: sticky");
   });
 
-  it("in the player it stays clear of the top bar and the safe area", () => {
+  it("in the player it is one of the top bar's tools: in its row, never floating over the player's lines", () => {
     const player = rule(".music-dock--player");
-    expect(player).toContain("env(safe-area-inset-top");
+    expect(player).not.toContain("position: fixed");
+    // The size and edge of the player's own tools.
+    const pill = rule(".music-dock--player .music-pill");
+    expect(pill).toContain("width: var(--tap)");
+    expect(pill).toContain("height: var(--tap)");
+    expect(pill).toContain("border-radius: var(--radius-md)");
   });
 });

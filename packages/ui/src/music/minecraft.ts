@@ -68,7 +68,16 @@ const BATCH = 100;
 
 const gone = (e: unknown): boolean => e instanceof SpotifyError && (e.status === 404 || e.status === 403);
 
-export async function buildMinecraftPlaylist(spotify: Spotify, opts: { storedId?: string; rebuild?: boolean }): Promise<MinecraftBuild> {
+export async function buildMinecraftPlaylist(
+  spotify: Spotify,
+  opts: {
+    storedId?: string;
+    rebuild?: boolean;
+    /** A new playlist's id, the moment it exists — kept before any track is added, so a failure after it never makes
+     * a second one (Rebuild fills that one). */
+    onCreated?: (id: string) => Promise<void>;
+  },
+): Promise<MinecraftBuild> {
   if (opts.storedId && !opts.rebuild) return { playlistId: opts.storedId, reused: true };
 
   const uris: string[] = [];
@@ -105,6 +114,7 @@ export async function buildMinecraftPlaylist(spotify: Spotify, opts: { storedId?
   let rest = batches.slice(1);
   if (!playlistId) {
     playlistId = (await spotify.createPlaylist(MINECRAFT_PLAYLIST_NAME, DESCRIPTION, BUILD_WAIT)).id;
+    await opts.onCreated?.(playlistId);
     rest = batches;
   }
   for (const batch of rest) await spotify.addItems(playlistId, batch, BUILD_WAIT);

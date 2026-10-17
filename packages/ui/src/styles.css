@@ -12250,7 +12250,7 @@ a.stu-tpl-open:focus-visible::before {
   bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-5));
   z-index: 30;
   display: flex;
-  max-width: calc(50vw - var(--space-6) - var(--space-3));
+  max-width: 45vw;
 }
 .music-dock-room {
   height: calc(var(--tap) + var(--space-5));
@@ -12268,27 +12268,27 @@ a.stu-tpl-open:focus-visible::before {
     padding-bottom: calc(var(--tap) + var(--space-5));
   }
 }
+/* In the player it is one of the top bar's tools, in their row: nothing of the player's lies under it. */
 .music-dock--player {
-  position: fixed;
-  /* The player's top bar (its padding, a 44px tool and the progress line), then a step. */
-  top: calc(env(safe-area-inset-top, 0px) + var(--space-5) * 2 + var(--tap) + var(--space-6));
-  right: calc(var(--space-6) + env(safe-area-inset-right, 0px));
-  z-index: 30;
+  display: flex;
 }
+/* Compact: 36px, the small type, a translucent ground — the 44px floor is `.tap-pad`'s, which grows only the hit. */
 .music-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
-  min-height: var(--tap);
-  min-width: var(--tap);
+  min-height: calc(var(--tap) - var(--space-4));
+  min-width: calc(var(--tap) - var(--space-4));
   max-width: 100%;
-  padding: 0 var(--space-5);
-  border: 1px solid var(--border-strong);
+  padding: 0 var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
   border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  background: color-mix(in srgb, var(--bg-raised) 78%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: var(--ink-soft);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow);
   font: var(--weight-medium) var(--text-sm) var(--font);
   cursor: pointer;
 }
@@ -12311,7 +12311,16 @@ a.stu-tpl-open:focus-visible::before {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The player's own tool: the size and edge of `.player-icon`. */
 .music-dock--player .music-pill {
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   box-shadow: none;
   color: var(--ink-soft);
 }
@@ -12387,7 +12396,6 @@ a.stu-tpl-open:focus-visible::before {
   margin: 0;
   accent-color: var(--green);
 }
-.music-volume-note,
 .music-notice {
   margin: 0;
   color: var(--ink-soft);
@@ -12449,6 +12457,18 @@ a.stu-tpl-open:focus-visible::before {
 .music-shortcut-label {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.music-shortcut-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.music-shortcut-sub,
+.music-now-volume {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-regular);
 }
 .music-foot {
   display: flex;

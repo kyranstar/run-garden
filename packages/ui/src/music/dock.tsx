@@ -10,12 +10,12 @@
  * The session's own cues are Web Audio in an "ambient" audio session (the sound pass), so they mix over Spotify; the
  * dock adds no audio element and no speech — on an iPhone either would stop Spotify.
  */
-import { useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, musicApi, SPOTIFY_LOGIN_PATH, type MusicDto } from "@rg/api-client";
 import { Sheet } from "../components.js";
 import { makeSpotify } from "./spotify.js";
-import { makeDockController, type DockController, type DockState } from "./controller.js";
+import { makeDockController, type Connection, type DockController, type DockState } from "./controller.js";
 import { dockShortcuts, nowPlaying, pillTitle, volumeOf, type DockShortcut } from "./dock-model.js";
 
 export const MUSIC_QUERY = ["music"] as const;
@@ -69,7 +69,7 @@ export function MusicPill({ title, expanded, onOpen }: { title: string | null; e
   return (
     <button
       type="button"
-      className={`music-pill${title ? " music-pill--playing" : ""}`}
+      className={`music-pill tap-pad${title ? " music-pill--playing" : ""}`}
       aria-label={title ? `Music: ${title}` : "Music"}
       aria-haspopup="dialog"
       aria-expanded={expanded}
@@ -112,6 +112,7 @@ function NowPlayingRow({ state, actions }: { state: DockState; actions: PanelAct
             <span className="music-now-meta">
               {[now.artist, now.device ? `on ${now.device}` : null].filter(Boolean).join(" · ")}
             </span>
+            {volumeOf(state.player, state.devices)?.supported === false ? <span className="music-now-volume">Volume · use the side buttons</span> : null}
           </>
         ) : (
           <span className="music-now-meta">Nothing playing</span>
@@ -137,13 +138,43 @@ function NowPlayingRow({ state, actions }: { state: DockState; actions: PanelAct
   );
 }
 
+/** The volume is sent this long after the slider stops moving. */
+export const VOLUME_SETTLE_MS = 300;
+
+/**
+ * The volume, where the device takes it (a phone that doesn't says so under now playing). Sent as it changes once it
+ * settles — every way of moving it fires `change`: a finger, a key, and a screen reader's steps, which release no
+ * pointer and no key (review: committed only on pointer-up and key-up, VoiceOver could not set it).
+ */
 function VolumeRow({ state, actions }: { state: DockState; actions: PanelActions }) {
   const id = useId();
   const volume = volumeOf(state.player, state.devices);
   const [draft, setDraft] = useState<number | null>(null);
-  if (!volume) return null;
-  if (!volume.supported) return <p className="music-volume-note">Use the side buttons</p>;
-  const value = draft ?? volume.percent;
+  const pending = useRef<{ timer: ReturnType<typeof setTimeout>; value: number } | null>(null);
+  const send = useRef(actions.setVolume);
+  send.current = actions.setVolume;
+  // Leaving with a move not yet sent (the sheet closed): send it.
+  useEffect(
+    () => () => {
+      if (pending.current) {
+        clearTimeout(pending.current.timer);
+        send.current(pending.current.value);
+      }
+    },
+    [],
+  );
+  if (!volume?.supported) return null;
+  const change = (value: number) => {
+    setDraft(value);
+    if (pending.current) clearTimeout(pending.current.timer);
+    pending.current = {
+      value,
+      timer: setTimeout(() => {
+        pending.current = null;
+        send.current(value);
+      }, VOLUME_SETTLE_MS),
+    };
+  };
   return (
     <div className="music-volume">
       <label htmlFor={id}>Volume</label>
@@ -154,16 +185,8 @@ function VolumeRow({ state, actions }: { state: DockState; actions: PanelActions
         min={0}
         max={100}
         step={5}
-        value={value}
-        onChange={(e) => setDraft(Number(e.target.value))}
-        onPointerUp={() => {
-          if (draft !== null) actions.setVolume(draft);
-          setDraft(null);
-        }}
-        onKeyUp={() => {
-          if (draft !== null) actions.setVolume(draft);
-          setDraft(null);
-        }}
+        value={draft ?? volume.percent}
+        onChange={(e) => change(Number(e.target.value))}
       />
     </div>
   );
@@ -186,7 +209,14 @@ function ShortcutRow({ shortcut, state, actions }: { shortcut: DockShortcut; sta
         <span className="music-shortcut-mark" aria-hidden="true">
           {adding ? "+" : <NoteGlyph />}
         </span>
-        <span className="music-shortcut-label">{busyHere ? "Building the Minecraft playlist…" : shortcut.label}</span>
+        <span className="music-shortcut-text">
+          <span className="music-shortcut-label">{busyHere ? "Building the Minecraft playlist…" : shortcut.label}</span>
+          {shortcut.kind === "minecraft" && state.build && state.build.found > 0 && !busyHere ? (
+            <span className="music-shortcut-sub">
+              {state.build.found} of {state.build.of} albums found
+            </span>
+          ) : null}
+        </span>
       </button>
       {removable ? (
         <button type="button" className="btn btn-small" aria-label={`Remove ${shortcut.label}`} onClick={() => actions.remove(shortcut.id)}>
@@ -257,7 +287,7 @@ function AddPanel({ state, actions }: { state: DockState; actions: PanelActions 
               Show your playlists
             </button>
           ) : state.playlists.length === 0 ? (
-            <p className="music-volume-note">No playlists yet</p>
+            <p className="music-notice">No playlists yet</p>
           ) : (
             <ul className="music-list">
               {state.playlists.map((p) => (
@@ -291,7 +321,7 @@ export function MusicPanel({ state, actions }: { state: DockState; actions: Pane
     return (
       <div className="music-panel">
         {state.connection === "reconnect" ? <p className="music-notice music-notice--warn">Spotify needs you to sign in again.</p> : null}
-        <a className="btn btn-primary music-connect" href={SPOTIFY_LOGIN_PATH}>
+        <a className="btn btn-primary music-connect" href={SPOTIFY_LOGIN_PATH} onClick={noteLoginStarted}>
           {state.connection === "reconnect" ? "Reconnect Spotify" : "Connect Spotify"}
         </a>
       </div>
@@ -337,6 +367,42 @@ export function MusicPanel({ state, actions }: { state: DockState; actions: Pane
 }
 
 // ── The dock ─────────────────────────────────────────────────────────────────
+
+const LOGIN_KEY = "rg-music-login-at";
+/** How long after tapping Connect a return to the app looks for the connection again. */
+export const LOGIN_RECHECK_MS = 10 * 60_000;
+
+/** Connect was tapped here (kept across the navigation to the Worker's login; per tab). */
+function noteLoginStarted(): void {
+  try {
+    sessionStorage.setItem(LOGIN_KEY, String(Date.now()));
+  } catch {
+    /* no storage: the dock reads the connection again on its next load */
+  }
+}
+
+function loginStartedAt(): number | null {
+  try {
+    const at = Number(sessionStorage.getItem(LOGIN_KEY));
+    return at > 0 ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Back in the app: read the connection again only shortly after Connect was tapped here — the login may have finished
+ * in another browser (iOS opens a standalone app's login in Safari). Never on every return: the read's stale time
+ * holds otherwise (review).
+ */
+export function recheckOnReturn(s: { connection: Connection; loginStartedAt: number | null; now: number }): boolean {
+  return s.connection !== "connected" && s.loginStartedAt !== null && s.now - s.loginStartedAt <= LOGIN_RECHECK_MS;
+}
+
+/** The dock in the session player's top bar, among its tools — mounted only while the dock is on (dark: nothing). */
+export function PlayerMusicTools() {
+  return useMusicOn() ? <MusicDock variant="player" /> : null;
+}
 
 const visibleNow = (): boolean => typeof document === "undefined" || document.visibilityState !== "hidden";
 
@@ -417,7 +483,7 @@ export function MusicDock({ variant }: { variant: "shell" | "player" }) {
       void dock.setVisible(visible);
       if (visible) {
         setClock(Date.now());
-        if (dock.get().connection !== "connected") void refetch();
+        if (recheckOnReturn({ connection: dock.get().connection, loginStartedAt: loginStartedAt(), now: Date.now() })) void refetch();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -431,6 +497,12 @@ export function MusicDock({ variant }: { variant: "shell" | "player" }) {
     const outcome = params.get("music");
     if (outcome !== "connected" && outcome !== "error") return;
     params.delete("music");
+    // The login came back here: no later return needs to look for it.
+    try {
+      sessionStorage.removeItem(LOGIN_KEY);
+    } catch {
+      /* no storage */
+    }
     const rest = params.toString();
     window.history.replaceState(window.history.state, "", `${window.location.pathname}${rest ? `?${rest}` : ""}${window.location.hash}`);
     void refetch().then(async () => {

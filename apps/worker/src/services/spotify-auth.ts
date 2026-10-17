@@ -16,7 +16,7 @@
  * client id; PKCE needs no secret); a rotated refresh token is kept; `invalid_grant` marks the row and answers
  * "reconnect". No token is ever logged.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { providerConnections } from "@rg/database";
 import { newId } from "@rg/domain";
 import type { Env } from "../env.js";
@@ -239,11 +239,22 @@ async function fresh(row: SpotifyRow, env: Env, now: number): Promise<SpotifyTok
   return { connected: true, accessToken: await decryptSecret(row.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY), expiresAt: new Date(expiresAt).toISOString() };
 }
 
+/** How long a refresh may hold its claim on the row (a dead request's claim lapses after this). */
+export const SPOTIFY_REFRESH_LEASE_MS = 15_000;
+/** A request that finds a refresh under way waits this long, this many times, reading the row again each time. */
+export const SPOTIFY_REFRESH_WAIT_MS = 400;
+export const SPOTIFY_REFRESH_WAITS = 5;
+
 /**
- * An access token for the client: the stored one while it has more than the margin left; else a refresh, keeping a
- * rotated refresh token. Each write is guarded by the refresh token it read, so a slower request never puts back a
- * token another request already rotated away; and an `invalid_grant` that crossed such a rotation answers the other
- * request's token instead of "reconnect".
+ * An access token for the client: the stored one while it has more than the margin left; else a refresh.
+ *
+ * One refresh at a time per athlete (review #1): Spotify rotates the refresh token, so two refreshes racing with the
+ * same one leave the second `invalid_grant` — and the dock reads two endpoints at once, so the first open after the
+ * hour used to do exactly that and strand the connection on "Reconnect". A refresh first CLAIMS the row (a lease in
+ * `meta`, one guarded update); a request that finds it claimed waits a little and reads the row again, answering the
+ * claimer's token once it is written (a 502 if it never is — never a second refresh). A successful refresh writes the
+ * row connected again and lets the claim go; a rotated refresh token is kept; every write is guarded by the refresh
+ * token it read. An `invalid_grant` that crossed another rotation (a lapsed claim) answers the other's token.
  */
 export async function spotifyAccessToken(
   db: Db,
@@ -252,24 +263,38 @@ export async function spotifyAccessToken(
   userId: string,
   fetchImpl: typeof fetch,
   now: number,
-  /** Refresh whatever the time left: the page saw Spotify refuse the stored token (a 401). */
-  force = false,
+  opts: {
+    /** Refresh whatever the time left: the page saw Spotify refuse the stored token (a 401). */
+    force?: boolean;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<SpotifyTokenAnswer> {
   const row = await loadSpotifyRow(db, userId);
   const state = spotifyConnectionOf(row);
   if (state !== "connected" || !row) return { connected: false, reason: state === "connected" ? "not_connected" : state };
-  const stored = force ? null : await fresh(row, env, now);
+  const stored = opts.force ? null : await fresh(row, env, now);
   if (stored) return stored;
 
+  const claimed = (await db.all(sql`
+    UPDATE ${providerConnections} SET meta = json_set(coalesce(meta, '{}'), '$.refreshLease', ${now + SPOTIFY_REFRESH_LEASE_MS})
+    WHERE id = ${row.id} AND encrypted_refresh_token = ${row.encryptedRefreshToken}
+      AND coalesce(json_extract(meta, '$.refreshLease'), 0) <= ${now}
+    RETURNING id
+  `)) as unknown[];
+  if (claimed.length === 0) return awaitOtherRefresh(db, env, userId, row, now, opts.sleep);
+
+  // The claim let go: the row's meta as it was (none, when the claim was all it held).
+  const release = sql`nullif(json_remove(coalesce(meta, '{}'), '$.refreshLease'), '{}')`;
+  const sameToken = and(eq(providerConnections.id, row.id), eq(providerConnections.encryptedRefreshToken, row.encryptedRefreshToken!));
   const answer = await postToken(fetchImpl, {
     grant_type: "refresh_token",
     refresh_token: await decryptSecret(row.encryptedRefreshToken!, env.TOKEN_ENCRYPTION_KEY),
     client_id: clientId,
   });
-  const sameToken = and(eq(providerConnections.id, row.id), eq(providerConnections.encryptedRefreshToken, row.encryptedRefreshToken!));
   if (!answer.ok) {
     if (!answer.invalidGrant) {
       console.warn("spotify refresh failed", answer.status);
+      await db.update(providerConnections).set({ meta: release as never }).where(sameToken);
       return { unavailable: true };
     }
     const again = await loadSpotifyRow(db, userId);
@@ -279,7 +304,7 @@ export async function spotifyAccessToken(
     }
     await db
       .update(providerConnections)
-      .set({ status: "error", lastErrorCategory: "reconnect", updatedAt: new Date(now).toISOString() })
+      .set({ status: "error", lastErrorCategory: "reconnect", updatedAt: new Date(now).toISOString(), meta: release as never })
       .where(sameToken);
     return { connected: false, reason: "reconnect" };
   }
@@ -291,10 +316,36 @@ export async function spotifyAccessToken(
       ...(answer.tokens.refreshToken ? { encryptedRefreshToken: await encryptSecret(answer.tokens.refreshToken, env.TOKEN_ENCRYPTION_KEY) } : {}),
       accessTokenExpiresAt: expiresAt,
       ...(answer.tokens.scope !== null ? { scope: answer.tokens.scope } : {}),
+      status: "connected",
+      lastErrorCategory: null,
       updatedAt: new Date(now).toISOString(),
+      meta: release as never,
     })
     .where(sameToken);
   return { connected: true, accessToken: answer.tokens.accessToken, expiresAt };
+}
+
+/** Another request holds the refresh: read the row again a few times; its token once it is written, else a 502. */
+async function awaitOtherRefresh(
+  db: Db,
+  env: Env,
+  userId: string,
+  before: SpotifyRow,
+  now: number,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<SpotifyTokenAnswer> {
+  for (let i = 0; i < SPOTIFY_REFRESH_WAITS; i++) {
+    await sleep(SPOTIFY_REFRESH_WAIT_MS);
+    const again = await loadSpotifyRow(db, userId);
+    const state = spotifyConnectionOf(again);
+    if (state !== "connected" || !again) return { connected: false, reason: state === "connected" ? "not_connected" : state };
+    const written = again.encryptedAccessToken !== before.encryptedAccessToken || again.encryptedRefreshToken !== before.encryptedRefreshToken;
+    if (written) {
+      const theirs = await fresh(again, env, now);
+      if (theirs) return theirs;
+    }
+  }
+  return { unavailable: true };
 }
 
 export async function disconnectSpotify(db: Db, userId: string): Promise<void> {

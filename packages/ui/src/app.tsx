@@ -21,7 +21,7 @@ import { CoachSheetProvider } from "./screens/studio/coach-sheet.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 import { OutboxSync } from "./components/outbox-sync.js";
-import { MusicDock } from "./music/dock.js";
+import { PlayerMusicTools } from "./music/dock.js";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -191,13 +191,8 @@ function PlayerRoute() {
     );
   }
   if (me.isError && me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/welcome" replace />;
-  return (
-    <>
-      <PlayerScreen workoutId={workoutId} />
-      {/* The music dock, in its smaller form, up out of the way of the player's controls (draws nothing while off). */}
-      <MusicDock variant="player" />
-    </>
-  );
+  // The music dock, among the top bar's tools: never over the player's own lines (mounted only while the dock is on).
+  return <PlayerScreen workoutId={workoutId} tools={<PlayerMusicTools />} />;
 }
 
 export function App() {

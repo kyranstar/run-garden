@@ -119,11 +119,10 @@ export function makeDockController(deps: DockDeps) {
 
   const readPlayer = () => guarded(async () => set({ player: await spotify.player(), readAt: deps.now() }));
 
-  /** `keep`: a notice this tap already gave (the build's "8 of 9 albums found") stays once it plays. */
-  async function applyRemote(out: RemoteResult | null | undefined, keep: DockState["notice"] = null): Promise<void> {
+  async function applyRemote(out: RemoteResult | null | undefined): Promise<void> {
     if (!out) return;
     if (out.kind === "playing") {
-      set({ link: null, busy: null, notice: keep });
+      set({ link: null, busy: null, notice: null });
       await readPlayer();
       return;
     }
@@ -162,21 +161,36 @@ export function makeDockController(deps: DockDeps) {
     return { kind: "saved" };
   }
 
-  /** Build (or rebuild) the Minecraft playlist, keep its id, and say how many albums were found. */
+  /** Build (or rebuild) the Minecraft playlist. A new playlist's id is kept the moment it exists, so a failure after
+   * it never makes a second one; the albums found are the shortcut's own line in the sheet (`build`). */
   async function buildMinecraft(rebuild: boolean): Promise<string | null> {
     set({ busy: "building", notice: null });
     const stored = state.music.minecraftPlaylistId;
-    const built = await guarded(() => buildMinecraftPlaylist(spotify, { ...(stored ? { storedId: stored } : {}), rebuild }));
-    if (!built) return null;
+    let created: string | null = null;
+    let built: Awaited<ReturnType<typeof buildMinecraftPlaylist>>;
+    try {
+      built = await buildMinecraftPlaylist(spotify, {
+        ...(stored ? { storedId: stored } : {}),
+        rebuild,
+        onCreated: async (id) => {
+          if (await save({ ...state.music, minecraftPlaylistId: id })) created = id;
+        },
+      });
+    } catch (e) {
+      fail(e);
+      if (created && !(e instanceof NotConnected)) {
+        set({ notice: { text: "The Minecraft playlist didn't finish. Rebuild it from Edit.", tone: "warn" } });
+      }
+      return null;
+    }
     if ("reused" in built) return built.playlistId;
     if (!built.playlistId) {
       set({ busy: null, build: { found: 0, of: built.of, missing: built.missing }, notice: { text: "No Minecraft albums found on Spotify.", tone: "warn" } });
       return null;
     }
-    set({ build: { found: built.found, of: built.of, missing: built.missing }, notice: { text: `${built.found} of ${built.of} albums found`, tone: "info" } });
-    if (built.playlistId !== stored && !(await save({ ...state.music, minecraftPlaylistId: built.playlistId }))) return null;
-    const notice = state.notice;
-    set({ busy: null, notice });
+    set({ build: { found: built.found, of: built.of, missing: built.missing } });
+    if (built.playlistId !== state.music.minecraftPlaylistId && !(await save({ ...state.music, minecraftPlaylistId: built.playlistId }))) return null;
+    set({ busy: null });
     return built.playlistId;
   }
 
@@ -203,15 +217,19 @@ export function makeDockController(deps: DockDeps) {
       });
       if (state.expanded && state.connection === "connected") poller.set({ expanded: true, visible }, { firstDelayMs: POLL_MS });
     },
+    /** Closed, the dock forgets a play waiting for a device (review #2): it plays only when asked. */
     async close(): Promise<void> {
       poller.set({ expanded: false, visible });
-      set({ expanded: false, adding: null, playlists: null, editing: false });
+      remote.cancel();
+      set({ expanded: false, adding: null, playlists: null, editing: false, link: null });
     },
-    /** The page's visibility: polling follows it, and a play waiting for a device is tried again when it returns. */
+    /** The page's visibility: polling follows it, and a play waiting for a device is tried again on the return from
+     * Spotify — once (music/remote.ts). */
     async setVisible(next: boolean): Promise<void> {
       visible = next;
       poller.set({ expanded: state.expanded && state.connection === "connected", visible: next });
-      if (next && remote.pending()) await applyRemote(await guarded(() => remote.visible()));
+      if (!next) remote.hidden();
+      else if (remote.pending()) await applyRemote(await guarded(() => remote.visible()));
     },
     /** One tap on a shortcut: play it (building the Minecraft playlist first, the first time). The spa slot unset opens
      * the add panel instead. */
@@ -224,25 +242,26 @@ export function makeDockController(deps: DockDeps) {
         return;
       }
       let uri = shortcut.uri;
-      let built: DockState["notice"] = null;
+      let built = false;
       if (!uri) {
         // Only Minecraft is built on first use.
         if (shortcut.id !== MINECRAFT_SHORTCUT_ID) return;
         const playlistId = await buildMinecraft(false);
         if (!playlistId) return;
         uri = `spotify:playlist:${playlistId}`;
-        built = state.notice;
+        built = true;
       }
       const play: MusicShortcut = { id: shortcut.id, label: shortcut.label, uri, shuffle: true };
       // Known to have no device: the link opens now, inside the tap (a browser opens a new context only inside one).
       // Not after a build: that tap is long over.
-      const noDevice = built === null && state.devices !== null && chooseDevice(state.devices, deps.prefer()) === null;
+      const noDevice = !built && state.devices !== null && chooseDevice(state.devices, deps.prefer()) === null;
       const pending = remote.play(play, { noDevice });
-      set({ busy: "playing", notice: built });
-      await applyRemote(await guarded(() => pending), built);
+      set({ busy: "playing", notice: null });
+      await applyRemote(await guarded(() => pending));
       if (state.busy === "playing") set({ busy: null });
     },
     async pause(): Promise<void> {
+      remote.cancel();
       if ((await guarded(() => spotify.pause(deviceId()))) !== undefined && state.player) set({ player: { ...state.player, is_playing: false } });
     },
     async resume(): Promise<void> {
@@ -315,6 +334,7 @@ export function makeDockController(deps: DockDeps) {
       set({ editing, adding: null });
     },
     async disconnect(): Promise<void> {
+      remote.cancel();
       if (!deps.disconnect) return;
       try {
         await deps.disconnect();

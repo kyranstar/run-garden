@@ -162,9 +162,11 @@ test("no Spotify device open: the link to open it, and the play goes through onc
   await expect(sheet(page).getByRole("link", { name: "Open in Spotify" })).toHaveCount(0);
 });
 
-test("in the session player the dock is the note alone, clear of the player's controls", async ({ page, context, baseURL }, info) => {
+test("in the session player the dock is one of the top bar's tools, over none of the player's lines or controls — at 375 px with the warning and the hints showing", async ({ page, context, baseURL }, info) => {
   const req = context.request;
   await connect(req, baseURL!);
+  // The narrowest common phone.
+  if (info.project.name === "iphone") await page.setViewportSize({ width: 375, height: 812 });
   await page.goto("/studio/build/quick/desk_reset");
   await expect(page.getByRole("button", { name: "Start now" })).toBeVisible({ timeout: 30_000 });
   // The builder pins its actions above the tab bar: below lg the pill steps aside there; at lg it stays in the rail.
@@ -183,15 +185,30 @@ test("in the session player the dock is the note alone, clear of the player's co
   await expect(page).toHaveURL(/\/session\//, { timeout: 15_000 });
   await expect(page.locator(".player-count")).toContainText("1 of ");
 
-  const dock = page.locator(".music-dock--player button.music-pill");
+  // The player's own lines at their fullest: this device can't keep the session (its storage refused — the warning),
+  // audio not yet unlocked ("Tap for sound"), and a phone with a ring/silent switch, told once (the hint).
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "indexedDB", { value: { open: () => { throw new Error("refused"); } }, configurable: true });
+    Object.defineProperty(navigator, "audioSession", { value: { type: "auto" }, configurable: true });
+  });
+  await page.reload();
+  await expect(page.locator(".player-count")).toContainText("1 of ", { timeout: 15_000 });
+  await expect(page.locator(".player-warn")).toBeVisible();
+
+  const dock = page.locator(".player-top .player-tools .music-dock--player button.music-pill");
   await expect(dock).toBeVisible();
   const box = (await dock.boundingBox())!;
-  // Clear of every control of the player: its top bar's tools and its actions at the foot.
-  for (const control of await page.locator(".player-top button, .player-actions button").all()) {
-    if (!(await control.isVisible())) continue;
-    const c = (await control.boundingBox())!;
+  // Over none of the player's own: its top bar's other controls and count, the warning and the hints (and the hint's
+  // OK), and its actions at the foot.
+  const theirs = page.locator(
+    ".player-top > button, .player-top .player-tools > button, .player-count, .player-warn, .player-hint, .player-hint button, .player-actions button",
+  );
+  expect(await theirs.count()).toBeGreaterThan(4);
+  for (const el of await theirs.all()) {
+    if (!(await el.isVisible())) continue;
+    const c = (await el.boundingBox())!;
     const overlaps = box.x < c.x + c.width && c.x < box.x + box.width && box.y < c.y + c.height && c.y < box.y + box.height;
-    expect(overlaps, `the dock over "${await control.getAttribute("aria-label") ?? await control.textContent()}"`).toBe(false);
+    expect(overlaps, `the dock over "${(await el.getAttribute("aria-label")) ?? (await el.textContent())}"`).toBe(false);
   }
   await shot(page, "player", info.project.name);
   await dock.click();

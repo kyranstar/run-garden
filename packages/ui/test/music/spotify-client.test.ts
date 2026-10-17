@@ -56,6 +56,21 @@ describe("the client", () => {
     expect(tokens.asked).toEqual([false, false]);
   });
 
+  it("calls made together share one token fetch (the dock reads two endpoints at once; review #1)", async () => {
+    const { spotify, tokens } = setup({ albums: [{ id: sid("alb"), name: "An Album", artists: ["Someone"], tracks: 3 }] });
+    await Promise.all([spotify.devices(), spotify.player(), spotify.count(`spotify:album:${sid("alb")}`)]);
+    expect(tokens.asked).toEqual([false]);
+  });
+
+  it("two 401s together ask the Worker for ONE fresh token, and both try again with it", async () => {
+    const { fake, spotify, tokens } = setup();
+    fake.script("GET /me/player/devices", { status: 401 });
+    fake.script("GET /me/player", { status: 401 });
+    await Promise.all([spotify.devices(), spotify.player()]);
+    expect(tokens.asked).toEqual([false, true]);
+    expect(fake.calls.slice(2).map((c) => c.auth)).toEqual(["Bearer token-2", "Bearer token-2"]);
+  });
+
   it("a 401 asks the Worker for a fresh token once, and tries again with it", async () => {
     const { fake, spotify, tokens } = setup();
     fake.script("GET /me/player/devices", { status: 401, body: { error: { status: 401, message: "expired" } } });
@@ -91,6 +106,18 @@ describe("the client", () => {
     expect(err).toBeInstanceOf(SpotifyError);
     expect([err.status, err.retryAfterMs]).toEqual([429, 40_000]);
     expect(slept).toEqual([2000]);
+  });
+
+  it("a 429 whose Retry-After can't be read (not exposed to the page, or empty) is the 5 s default — never 0 (review #3)", async () => {
+    const { fake, spotify, slept } = setup();
+    for (const headers of [undefined, { "Retry-After": "" }, { "Retry-After": "soon" }]) {
+      fake.script("GET /me/player/devices", { status: 429, ...(headers ? { headers } : {}) });
+      const err = (await spotify.devices().catch((e: unknown) => e)) as SpotifyError;
+      expect([err.status, err.retryAfterMs]).toEqual([429, 5000]);
+    }
+    // Longer than an interactive call waits by itself: nothing was retried at once.
+    expect(slept).toEqual([]);
+    expect(fake.calls).toHaveLength(3);
   });
 
   it("NO_ACTIVE_DEVICE is told apart from other refusals", async () => {
@@ -216,6 +243,17 @@ describe("playing a shortcut", () => {
     expect(fake.calls.filter((c) => c.method === "PUT").map((c) => c.path)).toEqual(["/me/player/shuffle", "/me/player/play", "/me/player/shuffle"]);
   });
 
+  it("a shuffle refused after the play has started is not a failed play: the music is playing", async () => {
+    const { fake, spotify } = setup({ devices: [phone], ownedPlaylists: [{ id: PL, name: "Mine", total: 5 }] });
+    fake.script(
+      "PUT /me/player/shuffle",
+      { status: 404, body: { error: { status: 404, reason: "NO_ACTIVE_DEVICE" } } },
+      { status: 403, body: { error: { status: 403, reason: "UNKNOWN" } } },
+    );
+    const out = await playContext(spotify, { uri: `spotify:playlist:${PL}`, shuffle: true }, { prefer: "Smartphone", random: () => 0 });
+    expect(out).toMatchObject({ kind: "playing", device: { id: "phone-1" } });
+  });
+
   it("no device listed: no player call, and the shortcut's open link is the way on", async () => {
     const { fake, spotify } = setup({ devices: [], ownedPlaylists: [{ id: PL, name: "Mine", total: 5 }] });
     const out = await playContext(spotify, { uri: `spotify:playlist:${PL}`, shuffle: true }, { prefer: "Smartphone", random: () => 0 });
@@ -234,6 +272,7 @@ describe("playing a shortcut", () => {
 describe("the remote: the open-link fallback and the retry when the app is visible again", () => {
   function remoteWith(devices: Array<typeof phone>, opened: string[], allowOpen = true) {
     const env = setup({ devices, ownedPlaylists: [{ id: PL, name: "Mine", total: 5 }] });
+    let clock = 0;
     const remote = makeRemote({
       spotify: env.spotify,
       prefer: () => "Smartphone",
@@ -242,10 +281,10 @@ describe("the remote: the open-link fallback and the retry when the app is visib
         opened.push(url);
         return allowOpen;
       },
-      now: () => 0,
+      now: () => clock,
       sleep: async () => undefined,
     });
-    return { ...env, remote };
+    return { ...env, remote, tick: (ms: number) => (clock += ms) };
   }
   const shortcut = { id: "mine", label: "Mine", uri: `spotify:playlist:${PL}`, shuffle: true };
 
@@ -263,7 +302,8 @@ describe("the remote: the open-link fallback and the retry when the app is visib
     expect(await remote.play(shortcut)).toEqual({ kind: "opened", openUrl: `https://open.spotify.com/playlist/${PL}` });
     expect(opened).toEqual([`https://open.spotify.com/playlist/${PL}`]);
     expect(remote.pending()?.id).toBe("mine");
-    // Spotify is open now: the phone is listed.
+    // The athlete goes to Spotify (the app is hidden), and Spotify lists the phone.
+    remote.hidden();
     fake.state.devices.push({ ...phone });
     expect(await remote.visible()).toMatchObject({ kind: "playing", device: { id: "phone-1" } });
     expect(fake.calls.find((c) => c.path === "/me/player/play")!.query).toEqual({ device_id: "phone-1" });
@@ -271,14 +311,53 @@ describe("the remote: the open-link fallback and the retry when the app is visib
     expect(opened).toHaveLength(1);
   });
 
-  it("back with still no device: it looks again a few times, never opens the link twice, and keeps the play waiting", async () => {
+  it("back with still no device: it looks again a few times, never opens the link twice — then forgets the play (review #2)", async () => {
     const opened: string[] = [];
     const { remote, fake } = remoteWith([], opened);
     await remote.play(shortcut);
+    remote.hidden();
     expect(await remote.visible()).toEqual({ kind: "waiting", openUrl: `https://open.spotify.com/playlist/${PL}` });
     expect(fake.calls.filter((c) => c.path === "/me/player/devices").length).toBeGreaterThanOrEqual(3);
     expect(opened).toHaveLength(1);
+    expect(remote.pending()).toBeNull();
+    // A later return, Spotify open by then: nothing plays on its own.
+    fake.state.devices.push({ ...phone });
+    remote.hidden();
+    expect(await remote.visible()).toBeNull();
+    expect(fake.calls.some((c) => c.path === "/me/player/play")).toBe(false);
+  });
+
+  it("only a return from Spotify retries: back without having left plays nothing", async () => {
+    const opened: string[] = [];
+    const { remote, fake } = remoteWith([], opened);
+    await remote.play(shortcut);
+    fake.state.devices.push({ ...phone });
+    expect(await remote.visible()).toBeNull();
+    expect(fake.calls.some((c) => c.path === "/me/player/play")).toBe(false);
     expect(remote.pending()?.id).toBe("mine");
+  });
+
+  it("a waiting play lasts two minutes, then is forgotten", async () => {
+    const opened: string[] = [];
+    const { remote, fake, tick } = remoteWith([], opened);
+    await remote.play(shortcut);
+    remote.hidden();
+    fake.state.devices.push({ ...phone });
+    tick(2 * 60_000 + 1);
+    expect(remote.pending()).toBeNull();
+    expect(await remote.visible()).toBeNull();
+    expect(fake.calls.some((c) => c.path === "/me/player/play")).toBe(false);
+  });
+
+  it("cancel forgets a waiting play", async () => {
+    const opened: string[] = [];
+    const { remote, fake } = remoteWith([], opened);
+    await remote.play(shortcut);
+    remote.cancel();
+    remote.hidden();
+    fake.state.devices.push({ ...phone });
+    expect(await remote.visible()).toBeNull();
+    expect(fake.calls.some((c) => c.path === "/me/player/play")).toBe(false);
   });
 
   it("a link the browser wouldn't open is handed back to be tapped", async () => {
@@ -379,6 +458,14 @@ describe("the Minecraft playlist", () => {
     // No decoy's tracks.
     const decoyTrack = trackUri(albums[0]!.id, 0);
     expect(fake.state.playlists.get(built.playlistId)!.uris).not.toContain(decoyTrack);
+  });
+
+  it("the new playlist's id is handed over the moment it exists, so a failure after it can't make a second one", async () => {
+    const { fake, spotify } = setup({ albums: catalogue() });
+    const created: string[] = [];
+    fake.script(`POST /playlists/${sid("built1")}/items`, { status: 500 });
+    await expect(buildMinecraftPlaylist(spotify, { onCreated: async (id) => void created.push(id) })).rejects.toMatchObject({ status: 500 });
+    expect(created).toEqual([sid("built1")]);
   });
 
   it("all albums missing builds nothing", async () => {

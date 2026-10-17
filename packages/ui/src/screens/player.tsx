@@ -17,7 +17,7 @@
  * By touch (the sound pass, 2026-10-17): a tap on the stage pauses and resumes; Back sits beside the step's actions;
  * a rest takes −15 s as well as +15 s; the last 3 s of a timer show on its ring and number.
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, type MeResponse, type ReviewBasisDto, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
@@ -202,7 +202,16 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
   return { loaded: { kind: "ready", src, data, extras, basis, initial }, db };
 }
 
-export function PlayerScreen({ workoutId, deps: given }: { workoutId: string; deps?: Partial<PlayerDeps> }) {
+export function PlayerScreen({
+  workoutId,
+  deps: given,
+  tools,
+}: {
+  workoutId: string;
+  deps?: Partial<PlayerDeps>;
+  /** More of the top bar's tools, first in its row (the music dock, 2026-10-17; app.tsx). */
+  tools?: ReactNode;
+}) {
   // Fixed for the life of the screen (a new object each render would reload it).
   const [deps] = useState<PlayerDeps>(() => ({ ...defaultDeps, ...given }));
   const [loaded, setLoaded] = useState<Loaded>({ kind: "loading" });
@@ -251,12 +260,12 @@ export function PlayerScreen({ workoutId, deps: given }: { workoutId: string; de
       </div>
     );
   }
-  return <Playing key={loaded.initial.performedId} loaded={loaded} db={db} deps={deps} />;
+  return <Playing key={loaded.initial.performedId} loaded={loaded} db={db} deps={deps} tools={tools} />;
 }
 
 type Panel = "howto" | "swap" | "keys" | "leave" | null;
 
-function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready" }>; db: OfflineDb | null; deps: PlayerDeps }) {
+function Playing({ loaded, db, deps, tools }: { loaded: Extract<Loaded, { kind: "ready" }>; db: OfflineDb | null; deps: PlayerDeps; tools?: ReactNode }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { src, data, extras } = loaded;
@@ -741,6 +750,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
           </span>
         </span>
         <span className="player-tools">
+          {tools}
           {alternatives.length > 0 ? (
             <button type="button" className="player-icon" aria-label="Swap" onClick={() => openPanel("swap")}>
               <IconSwap size={18} />

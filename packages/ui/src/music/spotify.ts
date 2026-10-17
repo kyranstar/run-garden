@@ -100,23 +100,39 @@ interface RequestOptions {
 const sameOriginPath = (base: string | undefined): string | null =>
   base && base.startsWith("/") && !base.startsWith("//") ? base.replace(/\/+$/, "") : null;
 
+/** Spotify's Retry-After, in ms. Missing, empty or unreadable — a browser shows the page only the headers CORS
+ * exposes, and this one may not be — it is the default, never 0 (review #3: `Number(null)` was 0, a retry at once). */
 function retryAfterMs(res: Response): number {
-  const secs = Number(res.headers.get("retry-after"));
-  return Number.isFinite(secs) && secs >= 0 ? Math.ceil(secs * 1000) : DEFAULT_RETRY_MS;
+  const raw = res.headers.get("retry-after")?.trim();
+  const secs = raw ? Number(raw) : NaN;
+  return Number.isFinite(secs) && secs > 0 ? Math.ceil(secs * 1000) : DEFAULT_RETRY_MS;
 }
 
 export function makeSpotify(deps: SpotifyDeps) {
   let cached: { token: string; expiresAt: number; base: string } | null = null;
+  /** The token fetch under way, shared by every call that needs one meanwhile (review #1: the dock reads two
+   * endpoints at once, and two fetches after the hour meant two refreshes racing on the server). A fresh one is never
+   * answered by a plain one already under way. */
+  let inflight: { fresh: boolean; promise: Promise<{ token: string; expiresAt: number; base: string }> } | null = null;
 
   async function token(fresh: boolean): Promise<{ token: string; base: string }> {
     if (!fresh && cached && cached.expiresAt - deps.now() > TOKEN_EARLY_MS) return cached;
-    const answer = await deps.token(fresh);
-    if (!answer.connected) {
-      cached = null;
-      throw new NotConnected(answer.reason);
+    if (inflight && (inflight.fresh || !fresh)) return inflight.promise;
+    const promise = (async () => {
+      const answer = await deps.token(fresh);
+      if (!answer.connected) {
+        cached = null;
+        throw new NotConnected(answer.reason);
+      }
+      cached = { token: answer.accessToken, expiresAt: Date.parse(answer.expiresAt), base: sameOriginPath(answer.apiBase) ?? SPOTIFY_API };
+      return cached;
+    })();
+    inflight = { fresh, promise };
+    try {
+      return await promise;
+    } finally {
+      if (inflight?.promise === promise) inflight = null;
     }
-    cached = { token: answer.accessToken, expiresAt: Date.parse(answer.expiresAt), base: sameOriginPath(answer.apiBase) ?? SPOTIFY_API };
-    return cached;
   }
 
   async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T | null> {
@@ -136,7 +152,8 @@ export function makeSpotify(deps: SpotifyDeps) {
       });
       if (res.status === 401 && !refetched) {
         refetched = true;
-        t = await token(true);
+        // A newer token than the one refused (another call's 401 already fetched one): use it; else ask for one.
+        t = cached && cached.token !== t.token ? cached : await token(true);
         continue;
       }
       if (res.status === 429) {

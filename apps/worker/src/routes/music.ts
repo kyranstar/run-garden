@@ -14,7 +14,8 @@
  *   GET    /spotify/callback    → 302 /?music=connected | error   (the restore marker, one upsert; one fetch)
  *   GET    /spotify/token       → { connected: true, accessToken, expiresAt } | { connected: false, reason }
  *                                 (session, row: two statements; near expiry — or with ?fresh=1, after Spotify refused
- *                                 the token — a refresh: one fetch, one more write)
+ *                                 the token — a refresh: the claim, one fetch, the write; a request that finds a
+ *                                 refresh under way reads the row again a few times instead)
  *   DELETE /spotify             → { ok }                          (session, restore marker, one delete)
  *
  * Fixture mode (the fixture stack; never production): the login connects a fixture account without leaving the
@@ -48,6 +49,8 @@ export interface MusicDeps {
   /** Spotify's token endpoint is reached through this (tests fake it). */
   fetch?: typeof fetch;
   now?: () => number;
+  /** A request waiting for another's refresh waits through this (tests step it). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
@@ -133,7 +136,10 @@ export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
   r.get("/spotify/token", async (c) => {
     c.header("Cache-Control", "no-store");
     const force = c.req.query("fresh") === "1" && !fixtureModeEnabled(c.env);
-    const answer = await spotifyAccessToken(c.get("db"), c.env, spotifyClientId(c.env)!, c.get("userId"), fetchImpl, now(), force);
+    const answer = await spotifyAccessToken(c.get("db"), c.env, spotifyClientId(c.env)!, c.get("userId"), fetchImpl, now(), {
+      force,
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    });
     if ("unavailable" in answer) return c.json({ error: "spotify_unavailable" }, 502);
     if (answer.connected && fixtureModeEnabled(c.env)) return c.json({ ...answer, apiBase: FIXTURE_SPOTIFY_API_BASE });
     return c.json(answer);

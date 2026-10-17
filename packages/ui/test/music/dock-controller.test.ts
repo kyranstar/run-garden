@@ -50,6 +50,7 @@ function setup(
       saved.push(music);
       return music;
     },
+    disconnect: async () => undefined,
     prefer: () => "Smartphone",
     random: () => 0,
     openLink: (url) => {
@@ -121,8 +122,9 @@ describe("the shortcuts", () => {
     expect(id).toBeTruthy();
     expect(commands().slice(-2)).toEqual(["PUT /me/player/shuffle", "PUT /me/player/play"]);
     expect(fake.calls.find((c) => c.path === "/me/player/play")!.body).toMatchObject({ context_uri: `spotify:playlist:${id}` });
+    // The count is the Minecraft shortcut's own line in the sheet, not a notice of its own.
     expect(state().build).toEqual({ found: 8, of: 9, missing: ["Minecraft: Chaos Cubed"] });
-    expect(state().notice?.text).toBe("8 of 9 albums found");
+    expect(state().notice).toBeNull();
   });
 
   it("Minecraft with a stored playlist plays it without building", async () => {
@@ -138,8 +140,21 @@ describe("the shortcuts", () => {
     await dock.rebuildMinecraft();
     expect(fake.calls.filter((c) => c.path === `/playlists/${PL}/items` && c.method === "PUT")).toHaveLength(1);
     expect(saved.at(-1)?.minecraftPlaylistId ?? PL).toBe(PL);
-    expect(state().notice?.text).toBe("8 of 9 albums found");
+    expect(state().build).toEqual({ found: 8, of: 9, missing: ["Minecraft: Chaos Cubed"] });
     expect(fake.calls.some((c) => c.path === "/me/player/play")).toBe(false);
+  });
+
+  it("Minecraft's new playlist is kept the moment it exists: a failure after it says so, and Rebuild fills that one — never a second", async () => {
+    const { dock, fake, saved, state } = setup();
+    fake.script(`POST /playlists/${sid("built1")}/items`, { status: 500 });
+    await dock.tap("minecraft");
+    expect(saved.at(-1)!.minecraftPlaylistId).toBe(sid("built1"));
+    expect(state().notice?.text).toBe("The Minecraft playlist didn't finish. Rebuild it from Edit.");
+    expect(fake.calls.some((c) => c.path === "/me/player/play")).toBe(false);
+    await dock.rebuildMinecraft();
+    expect(fake.calls.filter((c) => c.method === "POST" && c.path === "/me/playlists")).toHaveLength(1);
+    expect(fake.calls.some((c) => c.method === "PUT" && c.path === `/playlists/${sid("built1")}/items`)).toBe(true);
+    expect(state().build).toMatchObject({ found: 8, of: 9 });
   });
 
   it("the spa slot, unset, opens the add panel for it — no play", async () => {
@@ -238,6 +253,30 @@ describe("connection and devices", () => {
     const pending = dock.tap("minecraft");
     expect(opened).toEqual([`https://open.spotify.com/playlist/${PL}`]);
     await pending;
+  });
+
+  it("an abandoned play never starts later: the dock closed after the link opened, the play is forgotten (review #2)", async () => {
+    const { dock, fake, commands } = setup({ devices: [], music: { minecraftPlaylistId: PL } });
+    await dock.open();
+    await dock.tap("minecraft");
+    await dock.close();
+    // Six minutes on, Spotify is open with something else playing, and the athlete comes back to the app.
+    fake.state.devices.push({ ...phone });
+    await dock.setVisible(false);
+    await dock.setVisible(true);
+    expect(commands()).not.toContain("PUT /me/player/play");
+  });
+
+  it("pause, and disconnecting, forget a waiting play too", async () => {
+    for (const leave of ["pause", "disconnect"] as const) {
+      const { dock, fake, commands } = setup({ devices: [], music: { minecraftPlaylistId: PL } });
+      await dock.tap("minecraft");
+      await dock[leave]();
+      fake.state.devices.push({ ...phone });
+      await dock.setVisible(false);
+      await dock.setVisible(true);
+      expect(commands(), leave).not.toContain("PUT /me/player/play");
+    }
   });
 
   it("visible again with a play waiting: it plays on the device now listed", async () => {
