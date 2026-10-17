@@ -2298,6 +2298,13 @@ export function GardenScreen() {
             {(() => {
               const clause = leadSettled ? null : coachClause(verdict?.level, w.category);
               if (!d?.focus && !clause) return null;
+              // What the coach is asked about from the card: today's workout, a programme day's session, a rest day.
+              const about =
+                todayLayout.title?.kind === "program"
+                  ? workoutFocus(todayLayout.title.session.workout)
+                  : w.category === "rest"
+                    ? dayFocus(w.effectiveDate)
+                    : workoutFocus(w);
               return (
                 <div className="today-coach">
                   <span className="today-coach-mark" aria-hidden="true">
@@ -2313,9 +2320,20 @@ export function GardenScreen() {
                   >
                     <span className="today-coach-who">Coach</span> — {d?.focus ? `${d.focus.text} ` : ""}
                     {clause ? `${clause} ` : ""}
-                    <Link className="today-coach-ask" to="/plan?coach=1">
-                      Ask me ›
-                    </Link>
+                    {/* One way to ask on the card (the lead's look at the shots): the app's coach sheet, about today —
+                        the Plan's thread coach only without it. */}
+                    <AskCoach
+                      variant="link"
+                      className="today-coach-ask"
+                      label="Ask me ›"
+                      name={`Ask me about ${about.label}`}
+                      focus={about}
+                      fallback={
+                        <Link className="today-coach-ask" to="/plan?coach=1">
+                          Ask me ›
+                        </Link>
+                      }
+                    />
                   </p>
                 </div>
               );

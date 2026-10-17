@@ -203,6 +203,14 @@ export function CoachArea({
   const [budgetLine, setBudgetLine] = useState<string | null>(null);
   /** The run a tap just started: the composer it was tapped in gives way, so the focus goes to the run (B-I9). */
   const [started, setStarted] = useState<string | null>(null);
+  /**
+   * The field takes the focus once: as the area first opens with no run to show (the sheet's open, the Plan coach link's
+   * arrival) — never again once a start went out, or a live run was shown: a run that ends draws the composer again,
+   * and the focus stays with its result (the review, I2: a screen reader moved off it, a phone's keyboard raised).
+   */
+  const [fieldFocus, setFieldFocus] = useState(() => arrival.compose === true || inSheet);
+  /** The suggestion a follow-up was asked from (A2): shown again when the follow-up ends with none (the review, minor 3). */
+  const [followedFrom, setFollowedFrom] = useState<string | null>(null);
 
   // Only a read made since this screen opened decides what it shows — a kept one may be a run long over (fix round,
   // Important 2). The first fresh read gives the run shown; a later one, a live run that isn't it (started on another
@@ -218,6 +226,12 @@ export function CoachArea({
   const events = snapshot?.events ?? shown?.events ?? [];
   const live = status !== null && isLive(status);
   const open = found && run && found.run.id === run.id ? found.proposal : null;
+  // A live run found as the area opens is about to be shown in the composer's place: no composer drawn (or focused) for
+  // the moment before it is; and once one is shown, the field never takes the focus by itself (the review, I2).
+  const adopting = shown === null && found !== null && isLive(found.run.status);
+  useEffect(() => {
+    if (live || adopting) setFieldFocus(false);
+  }, [live, adopting]);
 
   // A run that is over: read current again (the suggestion it holds open, its flags — or a live run elsewhere), and the
   // suggestion's own read, which may be one kept from while it was unreviewed.
@@ -240,7 +254,9 @@ export function CoachArea({
     networkMode: "always",
     mutationFn: (v: StartVars) =>
       api.coachRunCreate({ ...(v.scope ? { scope: v.scope } : {}), request: v.request, ...(v.focus ? { focus: v.focus } : {}) }),
+    onMutate: () => setFieldFocus(false),
     onSuccess: (res, v) => {
+      setFollowedFrom(v.followUp && v.focus ? v.focus.id : null);
       setStartError(null);
       setBudgetLine(null);
       // A new run has no trail yet; the live run an `existing` answer opens has one, which its loop reads.
@@ -333,7 +349,10 @@ export function CoachArea({
   // The ways to train now wait for the reads they are made from, so the tiles never change under the athlete's finger.
   const tilesReady = !templates.isPending && !today.isPending;
   // The focus's scope is the primary way to start (A3); without one, the athlete's own default.
-  const defaultScope = (arrival.scope ?? (about ? focusScope(about, ctx.today) : null)) || settings.defaultScope;
+  const defaultScope = (arrival.scope ?? (about ? focusScope(about) : null)) || settings.defaultScope;
+  // A follow-up that ended with no suggestion of its own — it failed, or was cancelled: the one it was asked from is
+  // still the athlete's, and its card comes back (the review, minor 3).
+  const followedBack = followedFrom !== null && over && proposalKnown && !proposed ? followedFrom : null;
   // A follow-up's failure is said on the card it was sent from; the composer's own, on the composer.
   const followUpFailed = start.isError && start.variables?.followUp === true;
   // A follow-up from the card (A2): the suggestion as the focus, the card's words as the request, no scope.
@@ -342,7 +361,7 @@ export function CoachArea({
   // Each piece in a boundary of its own (the robustness pass): one that fails to draw says so, the others stand.
   return (
     <div className="coach-area">
-      {!live || existingLive ? (
+      {(!live || existingLive) && !adopting ? (
         <CoachBoundary>
           <Composer
             draft={draft}
@@ -350,7 +369,7 @@ export function CoachArea({
             onStart={(scope) => oneTap(() => start.mutateAsync({ scope, request: draft.trim() || null, focus: about ? focusOfWire(about) : null }))}
             busy={start.isPending}
             error={followUpFailed ? null : startError}
-            focus={(arrival.compose === true || inSheet) && !live}
+            focus={fieldFocus && !live}
             defaultScope={defaultScope}
             nextN={settings.nextN}
             wordsBack={existingLive ? null : wordsBack}
@@ -400,6 +419,11 @@ export function CoachArea({
             followUpBusy={start.isPending}
             followUpError={followUpFailed ? startError : null}
           />
+        </CoachBoundary>
+      ) : null}
+      {followedBack ? (
+        <CoachBoundary>
+          <ProposalCard proposalId={followedBack} today={ctx.today} onFollowUp={followUp(followedBack)} followUpBusy={start.isPending} />
         </CoachBoundary>
       ) : null}
       {/* Always here in the Studio, so a card opened in it stays while it is open, even once its suggestion leaves the

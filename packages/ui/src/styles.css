@@ -11265,15 +11265,38 @@ a.stu-tpl-open:focus-visible::before {
   min-width: 0;
   min-height: var(--tap);
 }
-/* A day of the week view: its Ask at the row's end on a phone, level with the day's name; at the column's foot from lg
-   — shown there when the day is pointed at or holds the focus, so seven of them never crowd the grid. */
+/* A day of the week view: on a phone its Ask is the coach mark alone at the row's end, level with the day's name, a
+   44 px square — its name says "Ask the coach about …" (the review, minor 2: a word on every day crowded the column);
+   from lg "Ask" at the column's foot, shown when the day is pointed at or holds the focus, so seven never crowd the
+   grid. */
 .plan-week-ask {
   flex: none;
   align-self: flex-start;
+  min-width: var(--tap);
+  min-height: var(--tap);
+  padding: 0;
+}
+.plan-week-ask .ask-coach-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 @media (min-width: 1024px) {
   .plan-week-ask {
     margin-top: auto;
+    min-width: 0;
+    min-height: var(--tap-own);
+    padding: var(--space-2) var(--space-5);
+  }
+  .plan-week-ask .ask-coach-word {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
   }
 }
 @media (min-width: 1024px) and (hover: hover) {

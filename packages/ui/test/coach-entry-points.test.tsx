@@ -30,6 +30,10 @@ import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { OBJECTIVE_BOARD_QUERY, ObjectivesScreen } from "../src/screens/studio/objectives.js";
 import { stalledRequest, testRequest } from "../src/screens/studio/objectives-model.js";
 import { primedClient, staticRouter } from "./studio-fixtures.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
 
 const coach: CoachOpener = { open: () => undefined };
 
@@ -128,11 +132,29 @@ describe("a day in the Plan's week view", () => {
     expect(cell).toContain("plan-week-ask");
   });
 
-  it("only the days the coach can plan for: a week back to 13 days ahead", () => {
-    // Two weeks on: the days past today + 13 have no Ask.
-    expect(asks(view(week("2026-11-02"), "2026-10-21")).map((a) => a.focus)).toEqual(["day:2026-11-02", "day:2026-11-03"]);
+  it("only the days a run can plan for: a week back to six days ahead (the review, I1)", () => {
+    // Next week: its Monday and Tuesday (today + 5, + 6); the days past + 6 have no Ask.
+    expect(asks(view(week("2026-10-26"), "2026-10-21")).map((a) => a.focus)).toEqual(["day:2026-10-26", "day:2026-10-27"]);
+    // Two weeks on: none.
+    expect(asks(view(week("2026-11-02"), "2026-10-21"))).toEqual([]);
     // Two weeks back: none.
     expect(asks(view(week("2026-10-05"), "2026-10-21"))).toEqual([]);
+  });
+
+  it("on a phone each day's Ask is the coach mark alone, named in words, on the 44 px floor; from lg, 'Ask' at the column's foot (the review, minor 2)", () => {
+    const html = view(week("2026-10-19"), "2026-10-21");
+    // The word is in the markup, a span the phone hides: the button's name says it all the same.
+    expect(html).toMatch(/class="btn btn-small ask-coach plan-week-ask"[^>]*aria-label="Ask the coach about [^"]+"[^>]*>.*?<span class="ask-coach-word">Ask<\/span><\/button>/);
+    const at = css.indexOf(".plan-week-ask .ask-coach-word {");
+    expect(at, "the phone hides the word").toBeGreaterThan(-1);
+    const hide = css.slice(at, css.indexOf("}", at));
+    expect(hide).toContain("clip");
+    expect(css.indexOf(".plan-week-ask .ask-coach-word {")).toBeLessThan(css.indexOf("@media (min-width: 1024px) {\n  .plan-week-ask {"));
+    const square = css.slice(css.indexOf("\n.plan-week-ask {"), css.indexOf("}", css.indexOf("\n.plan-week-ask {")));
+    expect(square).toContain("min-width: var(--tap)");
+    expect(square).toContain("min-height: var(--tap)");
+    const lg = css.slice(css.indexOf("@media (min-width: 1024px) {\n  .plan-week-ask {"));
+    expect(lg.slice(0, lg.indexOf("\n}"))).toMatch(/\.plan-week-ask \.ask-coach-word \{[^}]*position: static/);
   });
 
   it("no coach in the app: no Ask", () => {

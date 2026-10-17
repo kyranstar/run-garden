@@ -19,7 +19,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CoachRunDto, DesignLineDto } from "@rg/api-client";
+import type { CoachRunDto, CoachRunStepResult, DesignLineDto } from "@rg/api-client";
 import { useCoach } from "../src/screens/studio/coach-ask.js";
 import { workoutFocus } from "../src/screens/studio/coach-focus.js";
 import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
@@ -93,6 +93,26 @@ const quietLoop = (r: () => CoachRunDto) => (): LoopDeps => ({
   visible: () => true,
   onVisibility: () => () => undefined,
 });
+
+/** A loop the test drives: each step waits until `answer` gives its result; the read answers the server's run. */
+function drivenLoop(server: () => CoachRunDto) {
+  const waiting: Array<(r: CoachRunStepResult) => void> = [];
+  const deps = (): LoopDeps => ({
+    step: () => new Promise<CoachRunStepResult>((r) => waiting.push(r)),
+    read: async () => ({ run: server(), events: [] }),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    now: () => Date.now(),
+    visible: () => true,
+    onVisibility: () => () => undefined,
+  });
+  const answer = async (r: CoachRunStepResult) => {
+    await until(() => waiting.length > 0, "a step out");
+    await act(async () => waiting.shift()!(r));
+    await settle(10);
+  };
+  return { deps, answer };
+}
 
 const FOCUS = workoutFocus({ id: "w1", title: "Strength", effectiveDate: TODAY, workoutSeconds: 2400, calendarSeconds: 2400 });
 
@@ -186,8 +206,9 @@ describe("the sheet, opened by the hook", () => {
     expect(d.textContent).toContain(FOCUS.label);
     expect(field()!.value).toBe("Something easier?");
     await until(() => document.activeElement === field(), "the field focused");
-    // Today's workout: Later today is the primary way to start.
-    expect(d.querySelector(".btn-primary")?.textContent).toBe("Later today");
+    // A workout (today's or another day's): Now is the primary way to start — one workout, which the request's day or
+    // workout directs (the review, I1: never a whole week's set for one workout).
+    expect(d.querySelector(".btn-primary")?.textContent).toBe("Now");
     // It stayed on the screen it was opened from.
     expect(document.getElementById("opener")).not.toBeNull();
   });
@@ -223,6 +244,43 @@ describe("the sheet, opened by the hook", () => {
     await click(document.getElementById("leave"), "Leave");
     expect(text()).toContain("elsewhere");
     expect(dialog()).toBeNull();
+  });
+});
+
+describe("the focus, once (the review, I2)", () => {
+  it("a run that ends in the sheet never pulls the focus back into the field: the composer comes back without taking it", async () => {
+    let status: CoachRunDto["status"] = "active";
+    const loop = drivenLoop(() => run({ id: "run-once", status }));
+    serve({
+      "GET /api/coach/runs/current": { run: null },
+      "POST /api/coach/runs": (body: any) => json({ run: run({ id: "run-once", request: body.request }), existing: false }),
+    });
+    mount(createElement(Screen), { loop: loop.deps });
+    await click(document.getElementById("opener"), "the opener");
+    await until(() => !!field(), "the composer");
+    await until(() => document.activeElement === field(), "the field focused on open");
+    await click(button("Now", dialog()!), "Now");
+    await until(() => !!dialog()!.querySelector(".coach-run"), "the run view");
+    // The run ends: the composer is drawn again, and the focus stays with the run's result.
+    status = "finished";
+    await loop.answer({ status: "finished", nextDue: null, events: [] });
+    await until(() => !!field(), "the composer back");
+    await settle(20);
+    expect(document.activeElement).not.toBe(field());
+  });
+
+  it("opened over a live run: when it ends, the composer comes back without taking the focus", async () => {
+    let status: CoachRunDto["status"] = "active";
+    const loop = drivenLoop(() => run({ id: "run-live-once", status, request: "the live one" }));
+    serve({ "GET /api/coach/runs/current": { run: run({ id: "run-live-once", status: "active", request: "the live one" }), events: [], proposal: null } });
+    mount(createElement(Screen), { loop: loop.deps });
+    await click(document.getElementById("opener"), "the opener");
+    await until(() => text().includes("the live one"), "the live run");
+    status = "finished";
+    await loop.answer({ status: "finished", nextDue: null, events: [] });
+    await until(() => !!field(), "the composer");
+    await settle(20);
+    expect(document.activeElement).not.toBe(field());
   });
 });
 
@@ -360,6 +418,44 @@ describe("a follow-up from the card", () => {
     await until(() => text().includes("Make it 15 minutes") && !!document.querySelector(".coach-run"), "the new run's trail");
     // The old card gives way to the new run's trail; the new suggestion's card comes when it is ready.
     expect(document.querySelector("section.coach-pc")).toBeNull();
+  });
+
+  it("a follow-up that ends with no suggestion (it failed, or was cancelled) gives the original card back (the review, minor 3)", async () => {
+    let created = false;
+    let status: CoachRunDto["status"] = "active";
+    const loop = drivenLoop(() => run({ id: "run-back", status, request: "Make it 15 minutes" }));
+    serve({
+      "GET /api/coach/runs/current": () =>
+        json(created ? { run: run({ id: "run-back", status, request: "Make it 15 minutes" }), events: [], proposal: null } : { run: run({ status: "finished", proposalId: "dp-run-1" }), events: [], proposal: { id: "dp-run-1", flags: [] } }),
+      "GET /api/coach/proposals/dp-run-1": { id: "dp-run-1", status: "pending", resolvedAt: null, lines: [line], changes: [] },
+      "POST /api/coach/runs": (body: any) => {
+        created = true;
+        return json({ run: run({ id: "run-back", status: "active", request: body.request }), existing: false });
+      },
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root!.render(
+        createElement(
+          QueryClientProvider,
+          { client: primedClient({ today: todayDto(null) }) },
+          createElement(MemoryRouter, { initialEntries: ["/studio"] }, createElement(StudioCoach, { ctx: { ...emptyStudioCtx, today: TODAY, profiles: [] }, loopDeps: loop.deps })),
+        ),
+      );
+    });
+    await until(() => !!document.querySelector(".coach-pc-follow input"), "the follow-up line");
+    await type(document.querySelector<HTMLInputElement>(".coach-pc-follow input")!, "Make it 15 minutes");
+    await act(async () => {
+      document.querySelector<HTMLFormElement>(".coach-pc-follow")!.requestSubmit();
+    });
+    await until(() => document.querySelector("section.coach-pc") === null, "the card giving way to the follow-up's trail");
+    // The follow-up's run fails, proposing nothing: the suggestion it was asked from is still the athlete's — shown again.
+    status = "failed";
+    await loop.answer({ status: "failed", nextDue: null, events: [] });
+    await until(() => !!document.querySelector("section.coach-pc"), "the original card back");
+    expect(document.querySelector("section.coach-pc")!.textContent).toContain("Hips, gently");
   });
 
   it("an empty line sends nothing", async () => {

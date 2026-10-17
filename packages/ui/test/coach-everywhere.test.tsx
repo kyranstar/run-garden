@@ -85,31 +85,30 @@ describe("what a focus is called, and the scope it asks for", () => {
     expect(activityFocus(older).kind).toBe("activity");
   });
 
-  it("the scope: Now for what is done or fixed; today's day or workout Later today; a later one Plan ahead; a suggestion its own", () => {
+  it("the scope: Now for everything but a suggestion — a workout or a day too, whatever its date; a suggestion its own (the review, I1)", () => {
+    // One workout, its day or workout named by the focus: Now (a set of seven days is never the default for one).
     for (const f of [
       { kind: "session", id: "s", label: "" },
       { kind: "activity", id: "a", label: "" },
       { kind: "objective", id: "o", label: "" },
       { kind: "move", id: "m", label: "" },
+      { kind: "workout", id: "x", label: "", date: "2026-10-20" },
+      { kind: "workout", id: "x", label: "", date: TODAY },
+      { kind: "workout", id: "x", label: "", date: "2026-10-22" },
+      { kind: "day", id: "x", label: "", date: TODAY },
+      { kind: "day", id: "x", label: "", date: "2026-10-26" },
     ] as CoachFocus[]) {
-      expect(focusScope(f, TODAY), f.kind).toBe("now");
+      expect(focusScope(f), `${f.kind} ${f.date ?? ""}`).toBe("now");
     }
-    for (const kind of ["workout", "day"] as const) {
-      expect(focusScope({ kind, id: "x", label: "", date: "2026-10-20" }, TODAY), `${kind} past`).toBe("now");
-      expect(focusScope({ kind, id: "x", label: "", date: TODAY }, TODAY), `${kind} today`).toBe("later_today");
-      expect(focusScope({ kind, id: "x", label: "", date: "2026-10-22" }, TODAY), `${kind} later`).toBe("week");
-    }
-    expect(focusScope({ kind: "proposal", id: "p", label: "", scope: "later_today" }, TODAY)).toBe("later_today");
-    expect(focusScope({ kind: "proposal", id: "p", label: "" }, TODAY)).toBeNull();
-    // Today unknown: no guess from a date.
-    expect(focusScope({ kind: "day", id: "x", label: "", date: "2026-10-22" }, null)).toBeNull();
+    expect(focusScope({ kind: "proposal", id: "p", label: "", scope: "later_today" })).toBe("later_today");
+    expect(focusScope({ kind: "proposal", id: "p", label: "" })).toBeNull();
   });
 
-  it("a day the coach can be asked about: a week back to the last day Plan ahead plans (13 ahead)", () => {
+  it("a day the coach can be asked about: a week back to six ahead — the last day any run plans (the review, I1)", () => {
     expect(askableDay("2026-10-14", TODAY)).toBe(true);
     expect(askableDay("2026-10-13", TODAY)).toBe(false);
-    expect(askableDay("2026-11-03", TODAY)).toBe(true);
-    expect(askableDay("2026-11-04", TODAY)).toBe(false);
+    expect(askableDay("2026-10-27", TODAY)).toBe(true);
+    expect(askableDay("2026-10-28", TODAY)).toBe(false);
   });
 });
 
@@ -212,5 +211,9 @@ describe("the card's 'Change something…' line", () => {
     expect(card({ status: "pending", lines: [line("o1")] })).not.toContain("coach-pc-follow");
     // Its day passed (expired), its lines undecided: no longer the athlete's to change.
     expect(card({ status: "expired", lines: [line("o1")] }, follow)).not.toContain("coach-pc-follow");
+    // One workout that comes with changes to the plan (a skip beside it): not offered — a follow-up would replace the
+    // changes too (the review, minor 5).
+    const skip = { opId: "c1", kind: "skip", workoutId: "w9", date: TODAY, time: null, summary: "Strength — skipped", was: null, effect: null, why: "", issues: [], outcome: null };
+    expect(card({ status: "pending", lines: [line("o1")], changes: [skip] }, follow)).not.toContain("coach-pc-follow");
   });
 });

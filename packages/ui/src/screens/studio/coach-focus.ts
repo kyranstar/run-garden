@@ -5,11 +5,12 @@
  *  - The server takes `{ kind, id }` (`focusOfWire`); the label, the day and a suggestion's scope are the screen's own,
  *    for the chip and the scope buttons, and never sent.
  *  - The chip: "About: Thu Oct 23 · Strength · 40 min" — a day, a title, minutes, in the app's own formats.
- *  - The scope by default (`focusScope`): what is done or fixed — a session, an activity, an objective, a move, a day or
- *    workout gone by — Now; today's day or workout Later today; a later one Plan ahead (the next 7 days); a suggestion
- *    its own (a single one is a now or a later-today design).
- *  - A day can be asked about from a week back to the last day Plan ahead plans (`askableDay`, the server's own range:
- *    design-focus.ts).
+ *  - The scope by default (`focusScope`): Now — for a workout or a day too, whatever its date: one workout, which the
+ *    focus's day or workout directs (Now's own words: "unless the request names another day or a planned workout to
+ *    change"); never a whole week's set for one workout (the review, I1) — and a suggestion its own (a single one is a
+ *    now or a later-today design). Nothing in it waits on today being known, so the primary button never flips.
+ *  - A day can be asked about from a week back to six days ahead, the last day any run plans (`askableDay`, the
+ *    server's own range: design-focus.ts).
  */
 import { ApiError, type ActivityDto, type CoachRunFocus, type DesignLineDto, type WorkoutDto } from "@rg/api-client";
 import { addDays, type CoachScopeKind } from "@rg/domain";
@@ -72,21 +73,10 @@ export function proposalFocus(id: string, line: Pick<DesignLineDto, "title" | "d
   return { kind: "proposal", id, label: line.title, scope };
 }
 
-/** The scope a focus asks for by default; null leaves the athlete's own default (a suggestion whose scope isn't known). */
-export function focusScope(f: CoachFocus, today: string | null): CoachScopeKind | null {
-  switch (f.kind) {
-    case "session":
-    case "activity":
-    case "objective":
-    case "move":
-      return "now";
-    case "proposal":
-      return f.scope ?? null;
-    case "workout":
-    case "day":
-      if (!f.date || !today) return null;
-      return f.date < today ? "now" : f.date === today ? "later_today" : "week";
-  }
+/** The scope a focus asks for by default: Now, but a suggestion's own; null leaves the athlete's own default (a
+ * suggestion whose scope isn't known). */
+export function focusScope(f: CoachFocus): CoachScopeKind | null {
+  return f.kind === "proposal" ? (f.scope ?? null) : "now";
 }
 
 /** What the athlete asked from is gone (404 `focus_not_found`: removed, or never theirs). */
@@ -106,9 +96,10 @@ export function focusRefusal(e: unknown): string | null {
   return null;
 }
 
-/** How far back a day can be asked about, and how far ahead (Plan ahead's horizon: 14 days, today included). */
+/** How far back a day can be asked about, and how far ahead: the last day any run plans (Now names a day of the next
+ * seven; Plan ahead plans today to +6) — the server's own range (design-focus.ts `FOCUS_AHEAD_DAYS`). */
 export const ASK_DAYS_BACK = 7;
-export const ASK_DAYS_AHEAD = 13;
+export const ASK_DAYS_AHEAD = 6;
 
-/** A day the coach can be asked about: from a week back to the last day Plan ahead plans. */
+/** A day the coach can be asked about: from a week back to six days ahead. */
 export const askableDay = (date: string, today: string): boolean => date >= addDays(today, -ASK_DAYS_BACK) && date <= addDays(today, ASK_DAYS_AHEAD);

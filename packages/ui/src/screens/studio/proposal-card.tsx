@@ -310,9 +310,11 @@ export function ProposalCard({
   const toggle = (opId: string) => setChosen(new Set(picked.includes(opId) ? picked.filter((x) => x !== opId) : [...picked, opId]));
   const busy = approve.isPending || decline.isPending;
   // A follow-up changes one open suggestion of one workout (A2): pending, nothing in it decided, no set's (a set's read
-  // carries the plan's other days) — the server refuses a set's, and supersedes only a pending one.
+  // carries the plan's other days) — the server refuses a set's, and supersedes only a pending one. And one workout
+  // alone: a suggestion that also changes the plan (a skip beside it) is replaced whole by its follow-up, its changes
+  // with it, so it isn't offered one (the review, minor 5).
   const followable =
-    onFollowUp !== undefined && data.status === "pending" && lines.length === 1 && data.context === undefined && openIds.length === lines.length + changes.length;
+    onFollowUp !== undefined && data.status === "pending" && lines.length === 1 && changes.length === 0 && data.context === undefined && openIds.length === 1;
   const some = picked.length < openIds.length ? picked : undefined;
   // A decline that met every one in flight says so on their lines, not here.
   const error = approve.isError ? decisionError(approve.error) : decline.isError && met.size === 0 ? decisionError(decline.error) : null;

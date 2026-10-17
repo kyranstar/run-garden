@@ -7,7 +7,7 @@
  * The app mounts the sheet only with the coach designer on (app.tsx): with no sheet in the app, there is no Ask — the
  * button is not drawn at all. Kept apart from the sheet itself so a screen that asks imports only this.
  */
-import { createContext, useContext } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { IconCoachSmall } from "../../icons.js";
 import type { CoachFocus, CoachOpenArgs } from "./coach-focus.js";
 
@@ -32,6 +32,8 @@ export function AskCoach({
   variant = "button",
   className,
   wrap,
+  name: named,
+  fallback = null,
 }: {
   focus: CoachFocus;
   request?: string | null;
@@ -40,11 +42,15 @@ export function AskCoach({
   className?: string;
   /** A row of its own, drawn only with the button (no empty row without the coach). */
   wrap?: string;
+  /** Its name for a reader, where the visible words are an entry point's own ("Ask me ›" → "Ask me about …"). */
+  name?: string;
+  /** What is drawn without the coach in the app (the Today card's link to the Plan's thread coach). */
+  fallback?: ReactNode;
 }) {
   const coach = useCoach();
-  if (!coach) return null;
+  if (!coach) return <>{fallback}</>;
   const classes = [variant === "link" ? "linklike tap-pad ask-coach-link" : "btn btn-small ask-coach", className].filter(Boolean).join(" ");
-  const name = label ? `${label}: ${focus.label}` : `Ask the coach about ${focus.label}`;
+  const name = named ?? (label ? `${label}: ${focus.label}` : `Ask the coach about ${focus.label}`);
   const button = (
     <button type="button" className={classes} data-focus={`${focus.kind}:${focus.id}`} aria-label={name} onClick={() => coach.open({ focus, request })}>
       {variant === "link" ? null : (
@@ -52,7 +58,8 @@ export function AskCoach({
           <IconCoachSmall size={16} />
         </span>
       )}
-      <span>{label ?? "Ask"}</span>
+      {/* The word: a phone's week view draws the mark alone (the name says it), styles.css `.plan-week-ask`. */}
+      <span className={variant === "link" ? undefined : "ask-coach-word"}>{label ?? "Ask"}</span>
     </button>
   );
   return wrap ? <div className={wrap}>{button}</div> : button;

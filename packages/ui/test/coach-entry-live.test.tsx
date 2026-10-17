@@ -44,6 +44,9 @@ const workout = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/** The week's focus line the coach wrote: the card's coach line shows with it. */
+let weekFocus: { text: string; at: string } | null = null;
+
 function todayPayload(w: ReturnType<typeof workout>) {
   return {
     today: TODAY,
@@ -55,7 +58,7 @@ function todayPayload(w: ReturnType<typeof workout>) {
     needsAttention: [],
     sync: { pendingCorosJobs: 0, corosConnected: true, corosWritesEnabled: false, calendarConnected: true },
     readiness: { latest: null, baseline: null, sampleDays: 10, verdict: null },
-    focus: null,
+    focus: weekFocus,
     consistency: { weeks: [], adherence: null, streak: 0 },
   };
 }
@@ -141,6 +144,36 @@ const recorder = () => {
   const calls: CoachOpenArgs[] = [];
   return { calls, opener: { open: (a: CoachOpenArgs) => calls.push(a) } as CoachOpener };
 };
+
+describe("the Today card's coach line (the lead's look at the shots)", () => {
+  it("its 'Ask me ›' opens the coach's sheet about today's workout — one ask on the card, not two places to ask", async () => {
+    weekFocus = { text: "Hips first this week.", at: `${TODAY}T07:00:00.000Z` };
+    try {
+      const r = recorder();
+      const card = await renderCard(workout(), r.opener);
+      const ask = [...card.querySelectorAll<HTMLButtonElement>(".today-coach button")].find((b) => b.textContent === "Ask me ›")!;
+      expect(ask).toBeDefined();
+      expect(ask.getAttribute("aria-label")).toBe("Ask me about Mon Oct 5 · Easy Run with Strides · 45 min");
+      expect(card.querySelector('.today-coach a[href="/plan?coach=1"]')).toBeNull();
+      await act(async () => ask.click());
+      expect(r.calls).toEqual([{ focus: { kind: "workout", id: "run-1", date: TODAY, label: "Mon Oct 5 · Easy Run with Strides · 45 min" }, request: null }]);
+    } finally {
+      weekFocus = null;
+    }
+  });
+
+  it("no coach in the app: 'Ask me ›' is the link to the Plan's coach, as it was", async () => {
+    weekFocus = { text: "Hips first this week.", at: `${TODAY}T07:00:00.000Z` };
+    try {
+      const card = await renderCard(workout(), null);
+      const link = card.querySelector<HTMLAnchorElement>(".today-coach a.today-coach-ask")!;
+      expect(link.getAttribute("href")).toBe("/plan?coach=1");
+      expect(link.textContent).toBe("Ask me ›");
+    } finally {
+      weekFocus = null;
+    }
+  });
+});
 
 describe("the Today card's Ask", () => {
   it("a planned workout's: beside View workout and Move, about the workout — the tap opens the sheet with it", async () => {
