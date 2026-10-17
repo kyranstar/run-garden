@@ -352,8 +352,11 @@ describe("a run, step by step, to finish", () => {
     expect(results.map((r) => r.status)).toEqual(["active", "active", "finished"]);
     expect(results.at(-1)).toMatchObject({ status: "finished", nextDue: null });
     expect(JSON.stringify(model.requests[1]!.messages.at(-1))).toContain("A turn without a tool call does nothing for the athlete.");
-    // No proposal was ever drafted: the finish's guard keeps nothing back, and nothing was proposed.
-    expect((await events(runId)).map((e) => e.summary).slice(-2)).toEqual(["Nothing to design today — rest is the right call.", LINES.nothingProposed]);
+    // Nothing was ever set out to be suggested: its words are an answer (the new shape §5) — its last line, with no
+    // proposal to settle and no "Nothing was suggested" after it.
+    const trail = await events(runId);
+    expect(trail.at(-1)).toMatchObject({ summary: "Nothing to design today — rest is the right call.", payload: { final: true, answer: true } });
+    expect(trail.map((e) => e.summary)).not.toContain(LINES.nothingProposed);
   });
 });
 

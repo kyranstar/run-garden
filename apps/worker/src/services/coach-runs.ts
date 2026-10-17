@@ -62,7 +62,7 @@ import {
 } from "./design-review.js";
 import { allTools } from "./design-tools/index.js";
 import { capInWords, PROSE_CEILING } from "./design-tools/act-common.js";
-import { designedLine, LINE_MAX as FINISH_LINE_MAX } from "./design-tools/finish.js";
+import { ANSWER_MAX, designedLine, LINE_MAX as FINISH_LINE_MAX } from "./design-tools/finish.js";
 import { designProposalId } from "./design-tools/propose.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
@@ -905,11 +905,13 @@ interface NewEvent {
   quiet?: true;
   /** A model call's tokens (M5), added to the payload after it is bounded (round 2, Minor 5). */
   usage?: { input: number; cacheRead: number; cacheWrite: number; output: number };
+  /** Its line's cap, when it is longer than SUMMARY_MAX_CHARS: an answer's (the new shape §5), shown whole. */
+  max?: number;
 }
 
-const line = (text: string): string => {
+const line = (text: string, max = SUMMARY_MAX_CHARS): string => {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > SUMMARY_MAX_CHARS ? `${flat.slice(0, SUMMARY_MAX_CHARS - 1)}…` : flat;
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
 /** An event's payload as stored: bounded, then its call's usage added (round 2, Minor 5); null for none. */
@@ -937,7 +939,7 @@ async function appendEvents(db: Db, userId: string, rootId: string, events: NewE
     const chunk = events.slice(i, i + EVENTS_PER_INSERT);
     const values = chunk.map(
       (e, j) =>
-        sql`(${sql.raw(String(j + 1))}, ${e.kind}, ${e.quiet ? "" : line(e.summary) || "…"}, ${payloadText(e)})`,
+        sql`(${sql.raw(String(j + 1))}, ${e.kind}, ${e.quiet ? "" : line(e.summary, e.max) || "…"}, ${payloadText(e)})`,
     );
     const rows = (await db.all(sql`
       INSERT INTO coach_run_events (id, user_id, run_id, seq, kind, summary, payload, at)
@@ -2893,12 +2895,19 @@ async function runTools(
       if (run.role === "designer" && typeof said === "string") state.final = clipProse(said, FINISH_KEPT_MAX);
       const proposalId = typeof (result.data as { proposalId?: unknown } | null)?.proposalId === "string" ? ((result.data as { proposalId: string }).proposalId) : null;
       if (proposalId) await closeProposalAtFinish(s, proposalId);
-      // The main coach's line clipped where the athlete reads it (finish.ts, §2.1): its whole text kept in the payload.
+      // The main coach's line clipped where the athlete reads it (finish.ts, §2.1): its whole text kept in the payload. An
+      // answer (the new shape §5: nothing suggested) is its line whole, up to the answer's cap — what the athlete reads.
+      const answer = (result.receipt as { answer?: unknown } | undefined)?.answer === true;
       const shown = typeof said === "string" ? athleteText(said.trim()) : "";
-      const whole = run.role === "main" && shown && !(result.summary ?? "").startsWith(shown) ? { text: clipProse(shown, FINISH_KEPT_MAX) } : {};
+      const whole = run.role === "main" && !answer && shown && !(result.summary ?? "").startsWith(shown) ? { text: clipProse(shown, FINISH_KEPT_MAX) } : {};
       const payload = { ...(proposalId ? { proposalId } : {}), ...whole, ...(result.receipt ? { receipt: result.receipt } : {}) };
       // A reviewer's finish is its review.
-      events.push({ kind: run.role === "reviewer" ? "review" : "note", summary: result.summary ?? LINES.finished, ...(Object.keys(payload).length > 0 ? { payload } : {}) });
+      events.push({
+        kind: run.role === "reviewer" ? "review" : "note",
+        summary: result.summary ?? LINES.finished,
+        ...(answer ? { max: ANSWER_MAX } : {}),
+        ...(Object.keys(payload).length > 0 ? { payload } : {}),
+      });
       return { status: "finished", events, proposalId };
     }
     state.results.push(ok ? okResult(call.id, result) : errorResult(call.id, result));
@@ -2998,6 +3007,18 @@ async function finishInWords(s: StepCtx, said: string, spent: number, o: { lastT
     if (said.length > 0) state.final = clipProse(said, FINISH_KEPT_MAX);
     return { status: "finished", state, costMicros: spent, error: null, proposalId: null, events: [{ kind: "note", summary: designedLine(state.title ?? null) }] };
   }
+  // An answer given as text (the new shape §5): a main run that never set out to suggest anything — no call to propose,
+  // to change the plan or to plan a set — ends on its words, up to the answer's cap, with no proposal to settle.
+  if (plain.length > 0 && !o.lastTurn && !setOutToSuggest(state)) {
+    return {
+      status: "finished",
+      state,
+      costMicros: spent,
+      error: null,
+      proposalId: null,
+      events: [{ kind: "note", summary: clipProse(plain, ANSWER_MAX), max: ANSWER_MAX, payload: { final: true, answer: true } }],
+    };
+  }
   const proposalId = designProposalId(run.id);
   const closed = await closeProposalAtFinish(s, proposalId);
   const shown = closed === "pending";
@@ -3016,6 +3037,16 @@ async function finishInWords(s: StepCtx, said: string, spent: number, o: { lastT
     events: [{ kind: "note", summary: words, payload: { ...kept, ...(shown ? { proposalId } : {}), final: true } }],
     ...(closed === "kept" ? { withWhatItHas: STOPPED_NOTES.unfinished } : {}),
   };
+}
+
+/** The calls that put something in a run's proposal. */
+const SUGGESTING_TOOLS: readonly string[] = ["propose_workout", "adjust_plan", "plan_set"];
+
+/** Whether the run ever called a tool that suggests something (its history's tool calls; no statement). */
+function setOutToSuggest(state: RunState): boolean {
+  return state.messages.some(
+    (m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "tool_use" && SUGGESTING_TOOLS.includes((b as ToolUseBlock).name)),
+  );
 }
 
 /** The words of the run's newest answer (its text blocks): what a finish in words says when no tool said it. */

@@ -235,16 +235,16 @@ describe("soft caps (§2.1): a change note is kept whole up to four times its ca
     expect(e.fix).toMatch(/fewer words/);
   });
 
-  it("finish is never refused for length: the athlete's line clipped at a sentence inside 300, its cap in words", async () => {
+  it("finish is never refused for length: the athlete's line clipped at a sentence inside its cap (an answer's, nothing suggested: 900), its cap in words", async () => {
     const run = await mainRun();
-    const long = `${"The session eases the hips first and then the trunk, at home. ".repeat(9)}Enjoy it.`;
-    expect(long.length).toBeGreaterThan(500);
+    const long = `${"The session eases the hips first and then the trunk, at home. ".repeat(18)}Enjoy it.`;
+    expect(long.length).toBeGreaterThan(1_000);
     const out = ok(await finish.run(ctxOf(run), { summary: long }));
-    expect(out.summary!.length).toBeLessThanOrEqual(300);
+    expect(out.summary!.length).toBeLessThanOrEqual(900);
     expect(out.summary).toMatch(/\.$/);
     expect(long.startsWith(out.summary!)).toBe(true);
     const huge = ok(await finish.run(ctxOf(run), { summary: "word ".repeat(1_200) }));
-    expect(huge.summary!.length).toBeLessThanOrEqual(300);
+    expect(huge.summary!.length).toBeLessThanOrEqual(900);
     expect(JSON.stringify(finish.inputSchema)).toContain(capInWords(300));
     expect(JSON.stringify(finish.inputSchema)).not.toContain("maxLength");
     // The main coach's line is the athlete's: none is still refused (not for length).

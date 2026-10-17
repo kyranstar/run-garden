@@ -796,7 +796,8 @@ describe("finish", () => {
   it("refuses an empty line; a long one is clipped where the athlete reads it, never refused (Task 13's fix wave, §2.1)", async () => {
     const r = await run();
     expect(err((await call("finish", ctxOf(r), { summary: "  " })).result).error).toBe("invalid_input");
-    expect(ok((await call("finish", ctxOf(r), { summary: "x".repeat(301) })).result).summary).toHaveLength(300);
+    // Nothing suggested: an answer (the new shape §5), its cap 900 — a finish that suggests keeps 300 (coach-answer.test.ts).
+    expect(ok((await call("finish", ctxOf(r), { summary: "x".repeat(901) })).result).summary).toHaveLength(900);
     expect(tool("finish").roles).toEqual(["main", "designer"]);
   });
 });

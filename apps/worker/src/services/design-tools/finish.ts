@@ -34,6 +34,9 @@ import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
 
 /** The athlete's line, at most (characters): clipped to it, never refused. */
 export const LINE_MAX = 300;
+/** An answer's soft cap (the new shape §5): a main run's finish with words only — nothing suggested — answers a question,
+ * and is clipped at its last sentence inside this, never refused. */
+export const ANSWER_MAX = 900;
 const KEPT_BACK = " (Not reviewed yet — kept back until it is.)";
 
 const input = z.object({ summary: z.string().trim().min(1).optional() }).strict();
@@ -51,7 +54,7 @@ export const finish: DesignTool = {
       summary: {
         type: "string",
         minLength: 1,
-        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits. A set's designer: optional, for the main coach only.`,
+        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits; an answer to a question, with nothing suggested, ${capInWords(ANSWER_MAX)}. A set's designer: optional, for the main coach only.`,
       },
     },
     additionalProperties: false,
@@ -85,7 +88,10 @@ export const finish: DesignTool = {
     // A designer's line is its workout's title (M3); the main coach's, its own words clipped where the athlete reads them.
     // The athlete's words first (round 2, I1: a library id, a tool name, "validator" as the athlete says them), then the cut.
     const lineOf = (room: number): string => (designer ? designedLine(own?.doc.title ?? null) : clipProse(athleteText(said), room));
-    if (!row || !mine || !proposalId) return { data: {}, summary: lineOf(LINE_MAX), receipt: { final: true } };
+    // Nothing suggested: the main coach's words are an answer (the new shape §5), its longer cap.
+    if (!row || !mine || !proposalId) {
+      return designer ? { data: {}, summary: lineOf(LINE_MAX), receipt: { final: true } } : { data: {}, summary: lineOf(ANSWER_MAX), receipt: { final: true, answer: true } };
+    }
     // Kept back while any workout lacks its review, or has one under way: the loop's finish makes the rest pending
     // (coach-runs.ts, the same guard).
     const unreviewed = row.status === "unreviewed" && (ops.some((o) => !o.review) || reviewRunning(ops));
