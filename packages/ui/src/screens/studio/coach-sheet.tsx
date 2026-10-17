@@ -1,33 +1,41 @@
 /**
- * THE COACH, ANYWHERE (coach everywhere, phase A3; the owner: "the coach should be able to do anything from any point").
- * One app-level coach sheet, mounted once beside the run keeper (app.tsx) and opened by `useCoach().open({ focus,
- * request, scope })` from any screen's "Ask" (coach-ask.tsx):
+ * THE COACH'S SHEET (the new shape §5, 2026-10-17; coach everywhere before it). One app-level sheet, mounted once beside
+ * the run keeper (app.tsx), opened by `useCoach().open({ request?, seeing? })` — the nav's Coach button, the Today
+ * card's Ask, a screen's action with its words written:
  *
- *  - It holds the Studio's own coach area — the composer, the live run view, the suggestion's card (composer.tsx
- *    `CoachArea`) — in place: asking never leaves the screen asked from. What it was opened from is the composer's chip.
- *  - A bottom sheet on a phone; a panel at the right edge from lg (1024), the page dimmed beside it — over the Plan's
- *    own floating coach window, never beside it fighting for the edge.
- *  - The dialog's contract (`useDialogFocus`): the focus moves into it — the field, once drawn — Tab stays inside,
- *    Escape closes it (a dialog opened inside it first: the stack decides), and closing gives the focus back to the
- *    Ask that opened it. Leaving the screen (a card's Edit, its "On your plan") closes it too. The run view's live
- *    region announces the coach's lines as it does in the Studio.
- *  - Its run goes on when it closes: the app's run keeper steps it on any screen, and the Studio's nav mark says so.
+ *  - It holds the coach's one conversation (coach-conversation.tsx): the opening screen for a new one, else the turns,
+ *    and the box.
+ *  - Its menu (⋯) holds "New conversation": the conversation shown is left — the opening screen, and the next send
+ *    starts a new one — and it stays left across opens (kept on this device). Nothing to leave, or the coach at work:
+ *    not offered.
+ *  - A bottom sheet on a phone; a panel at the right edge from lg (1024), the page dimmed beside it.
+ *  - The dialog's contract (`useDialogFocus`): the focus moves into it, Tab stays inside, Escape closes it (a dialog or
+ *    the menu opened inside it first), and closing gives the focus back to what opened it. Leaving the screen (a card's
+ *    Edit, its "On your plan") closes it too.
+ *  - Its run goes on when it closes: the app's run keeper steps it on any screen.
  *
- * With the coach designer off, the app mounts none, and no screen draws an Ask.
+ * With the coach designer off, the app mounts none, and `useCoach()` is null.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-import { useDialogFocus } from "../../components.js";
-import { IconClose } from "../../icons.js";
+import { useQuery } from "@tanstack/react-query";
+import { useDialogFocus, useEscapeKey } from "../../components.js";
+import { IconClose, IconMore } from "../../icons.js";
 import { CoachOpenContext, CoachSeeingContext, SeeingRegistry, type CoachOpener } from "./coach-ask.js";
 import { CoachBoundary } from "./coach-boundary.js";
+import { CoachConversation } from "./coach-conversation.js";
+import { CONVERSATION_QUERY, readLeftConversation, turnsShown, writeLeftConversation } from "./coach-conversation-model.js";
 import type { CoachFocus, CoachOpenArgs } from "./coach-focus.js";
-import { CoachArea } from "./composer.js";
+import { readConversation, readCurrent } from "./coach-tolerance.js";
+import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
+import { isLive } from "./run-model.js";
 import { useStudioCtx } from "./screen.js";
 import type { LoopDeps } from "./use-coach-run.js";
 
 /** The sheet's title (its dialog's name). */
 export const COACH_SHEET_TITLE = "Coach";
+/** The menu's one item. */
+export const NEW_CONVERSATION = "New conversation";
 
 /** What the sheet was opened with: the words for the box, and what it sees (named, else the screen's registration). */
 export interface CoachOpened {
@@ -43,6 +51,12 @@ export function CoachSheetProvider({ children, loopDeps }: { children: ReactNode
   const [registry] = useState(() => new SeeingRegistry());
   /** What it was opened with; a new open starts a new sheet (`key`), never one left half-typed from before. */
   const [opened, setOpened] = useState<{ args: CoachOpened; key: number } | null>(null);
+  /** The conversation the athlete left ("New conversation"), kept across opens. */
+  const [left, setLeftState] = useState<string | null>(readLeftConversation);
+  const setLeft = useCallback((id: string | null) => {
+    setLeftState(id);
+    writeLeftConversation(id);
+  }, []);
   const open = useCallback(
     (args: CoachOpenArgs = {}) => {
       // Named (even as null) wins; otherwise what the screen shows now.
@@ -57,14 +71,26 @@ export function CoachSheetProvider({ children, loopDeps }: { children: ReactNode
     <CoachSeeingContext.Provider value={registry}>
       <CoachOpenContext.Provider value={opener}>
         {children}
-        {opened ? <CoachSheet key={opened.key} args={opened.args} onClose={close} loopDeps={loopDeps} /> : null}
+        {opened ? <CoachSheet key={opened.key} args={opened.args} onClose={close} loopDeps={loopDeps} left={left} onLeave={setLeft} /> : null}
       </CoachOpenContext.Provider>
     </CoachSeeingContext.Provider>
   );
 }
 
-/** The sheet itself: the dialog, and the coach's area in it. */
-export function CoachSheet({ args, onClose, loopDeps }: { args: CoachOpened; onClose: () => void; loopDeps?: () => LoopDeps }) {
+/** The sheet itself: the dialog, its menu, and the conversation in it. */
+export function CoachSheet({
+  args,
+  onClose,
+  loopDeps,
+  left = null,
+  onLeave,
+}: {
+  args: CoachOpened;
+  onClose: () => void;
+  loopDeps?: () => LoopDeps;
+  left?: string | null;
+  onLeave?: (conversationId: string) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useDialogFocus(ref, true, onClose);
@@ -75,6 +101,15 @@ export function CoachSheet({ args, onClose, loopDeps }: { args: CoachOpened; onC
     if (location.key !== openedAt.current) onClose();
   }, [location.key, onClose]);
   const ctx = useStudioCtx();
+  // What "New conversation" would leave: the conversation shown — none while the coach is at work.
+  const conv = useQuery({ queryKey: CONVERSATION_QUERY, queryFn: readConversation, retry: currentRetry, staleTime: 0 });
+  const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: readCurrent, retry: currentRetry, staleTime: 0 });
+  const shown = turnsShown(conv.data, left, []);
+  const leaving = conv.data?.id ?? shown[0]?.runId ?? null;
+  const atWork = shown.some((t) => isLive(t.status)) || (current.data?.run ? isLive(current.data.run.status) : false);
+  const canLeave = leaving !== null && shown.length > 0 && !atWork;
+  /** A new conversation is a new area (no turn sent from the last one kept); words written for the athlete go once. */
+  const [epoch, setEpoch] = useState(0);
   return (
     <div
       className="sheet-backdrop coach-sheet-backdrop"
@@ -86,16 +121,75 @@ export function CoachSheet({ args, onClose, loopDeps }: { args: CoachOpened; onC
         <div className="sheet-handle" aria-hidden />
         <div className="row-between sheet-head">
           <h2 id={titleId}>{COACH_SHEET_TITLE}</h2>
-          <button type="button" className="btn sheet-close" onClick={onClose} aria-label="Close">
-            <IconClose size={16} />
-          </button>
+          <span className="coach-sheet-tools">
+            <SheetMenu
+              canLeave={canLeave}
+              onNewConversation={() => {
+                if (!leaving) return;
+                onLeave?.(leaving);
+                setEpoch((n) => n + 1);
+              }}
+            />
+            <button type="button" className="btn sheet-close" onClick={onClose} aria-label="Close">
+              <IconClose size={16} />
+            </button>
+          </span>
         </div>
-        <div className="sheet-body scroller">
-          {/* A render error stays in the sheet: it says so, and the screen under it goes on (the robustness pass). */}
-          <CoachBoundary>
-            <CoachArea ctx={ctx} loopDeps={loopDeps} arrival={{ focus: args.seeing, request: args.request, compose: true }} place="sheet" />
-          </CoachBoundary>
-        </div>
+        {/* A render error stays in the sheet: it says so, and the screen under it goes on (the robustness pass). */}
+        <CoachBoundary>
+          <CoachConversation key={epoch} ctx={ctx} loopDeps={loopDeps} request={epoch === 0 ? args.request : null} seeing={args.seeing} left={left} />
+        </CoachBoundary>
+      </div>
+    </div>
+  );
+}
+
+/** The sheet's menu (⋯): "New conversation". Escape and a tap elsewhere close it; the arrows move in it. */
+function SheetMenu({ canLeave, onNewConversation }: { canLeave: boolean; onNewConversation: () => void }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const wrap = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  useEscapeKey(open, () => {
+    setOpen(false);
+    button.current?.focus();
+  });
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    wrap.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus();
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+  return (
+    <div className="coach-sheet-menu" ref={wrap}>
+      <button
+        ref={button}
+        type="button"
+        className="btn sheet-close"
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <IconMore size={16} />
+      </button>
+      <div id={id} role="menu" aria-label="Coach" className="stu-save-menu coach-sheet-menu-list" hidden={!open}>
+        <button
+          type="button"
+          role="menuitem"
+          className="stu-save-item"
+          disabled={!canLeave}
+          onClick={() => {
+            setOpen(false);
+            onNewConversation();
+          }}
+        >
+          {NEW_CONVERSATION}
+        </button>
       </div>
     </div>
   );

@@ -11385,23 +11385,262 @@ a.stu-tpl-open:focus-visible::before {
   display: inline-flex;
   color: var(--green-ink);
 }
-/* "Change something…" under a pending single suggestion: one line and its Send. */
-.coach-pc-follow {
+/* ── The coach, a conversation (the new shape §5) ────────────────────────────────────────────────────────────────
+   coach-conversation.tsx in the coach's sheet: the turns scroll in the sheet's body, the box is pinned under them. The
+   athlete's words on the right, the coach's on the left with its mark; a run at work, quieter, between them. */
+.coach-sheet-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.coach-sheet-menu {
+  position: relative;
+}
+.coach-convo {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-6);
+  min-width: 0;
+  padding-bottom: var(--space-4);
+}
+.coach-turns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.coach-turn,
+.coach-turn-reply,
+.coach-turn-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
   min-width: 0;
 }
-.coach-pc-follow-row {
+.coach-msg {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.coach-msg--athlete {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius) var(--radius) var(--radius-xs) var(--radius);
+  background: var(--green-soft);
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.coach-msg--coach {
   display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  min-width: 0;
+  color: var(--ink);
+}
+.coach-msg-mark {
+  display: inline-flex;
+  flex: none;
   align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-round);
+  background: var(--green-soft);
+  color: var(--green-ink);
+}
+.coach-msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding-top: var(--space-2);
+}
+.coach-msg-body p {
+  margin: 0;
+}
+.coach-msg--coach:focus,
+.coach-turn-reply:focus,
+.coach-changes-closer:focus {
+  outline: none;
+}
+.coach-msg--coach:focus-visible,
+.coach-turn-reply:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+/* A run at work inside the conversation: the trail, quieter — no card of its own. */
+.coach-run--quiet {
+  padding: 0 0 0 var(--space-5);
+  border: 0;
+  border-left: 2px solid var(--border);
+  border-radius: 0;
+  background: none;
+}
+.coach-run--quiet .coach-run-title {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.coach-run--quiet .coach-run-spend {
+  font-size: var(--text-xs);
+}
+/* One question, one tap: its answers are the chips, Skip beside them. */
+.coach-ask-q--tap .stu-chipset {
+  align-items: center;
+}
+/* The opening screen: the coach's line, the chips, and the ways to start yourself. */
+.coach-opening {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.coach-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.coach-chip {
+  min-height: var(--tap);
+}
+.coach-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.coach-start-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-6);
+}
+/* An older turn's suggestion, closed: one quiet line of what came of it, its card one tap down. */
+.coach-card-closed {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
 }
-.coach-pc-follow-field {
+.coach-card-closed-line {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+/* Changes to the plan: how many, Approve all and Look closer. */
+.coach-changes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+.coach-changes-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+.coach-changes-summary,
+.coach-changes-outcome {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.coach-changes-closer .coach-pc {
+  padding: 0;
+  border: 0;
+}
+/* The box, pinned under the conversation: what the coach sees, the field and its round send button. */
+.coach-convo-foot {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.coach-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.coach-seeing {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.coach-seeing-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.coach-seeing-drop {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.coach-seeing-drop:hover {
+  color: var(--ink);
+}
+.coach-box-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.coach-box-field {
   flex: 1;
   min-width: 0;
   min-height: var(--tap);
+  max-height: 8rem;
+  resize: none;
+}
+.coach-send {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-round);
+  background: var(--green);
+  color: var(--on-accent);
+  cursor: pointer;
+}
+.coach-send:disabled {
+  background: var(--bg-sunken);
+  color: var(--ink-faint);
+  cursor: default;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .coach-send {
+    transition: background-color 0.15s ease;
+  }
 }
 /* The Today card, a session's sheet, an activity, an objective, a move: the Ask sits with the actions it is one of. */
 .today-ask,

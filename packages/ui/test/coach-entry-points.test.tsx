@@ -1,13 +1,14 @@
 /**
- * COACH EVERYWHERE, PHASE A3 — every entry point wears the one "Ask", with what the athlete is looking at as its focus
- * (`data-focus`: what the sheet is opened with; the button's name says it in words):
+ * THE ENTRY POINTS, IN THE NEW SHAPE (coach everywhere, phase A3, then the new shape §5): the per-object "Ask" went —
+ * the nav's coach sees what the screen shows (`useCoachSeeing`) — except the Today card's, and the words-carrying links
+ * (`data-focus`: what the sheet sees; the button's name says it in words):
  *
- *  - a planned workout's sheet — an app session's — asks about the workout (a watch-plan run's and the Plan's days no
- *    longer ask: the nav's coach sees the open workout — shape-plan.test.tsx);
+ *  - a planned workout's sheet no longer asks — an app session's, a watch-plan run's, the Plan's days (the nav's coach
+ *    sees the open workout — shape-plan.test.tsx);
  *  - (an activity in Growth no longer asks: the nav's coach sees an open one — growth-live.test.tsx);
  *  - an objective's card has no Ask of its own; its "Ask the coach" and "Ask the coach for a test" — the old prefilled
  *    links to the Studio — open the sheet seeing the objective, with their words;
- *  - a move's page in the library asks about the move.
+ *  - a move's page in the library no longer asks: Add alone (the nav's coach sees the move).
  *
  * And with no coach in the app (no sheet mounted: the coach is off), none of them draws an Ask. The Today card's is in
  * coach-entry-live.test.tsx (the garden renders live). Rendered statically. Synthetic data only.
@@ -76,9 +77,9 @@ const workout = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
   }) as WorkoutDto;
 
 describe("a planned workout's sheet", () => {
-  it("an app session's sheet asks about the workout", () => {
+  it("an app session's sheet no longer asks: the nav's coach sees the open workout (the new shape)", () => {
     const html = render(createElement(SessionSheet, { w: workout(), today: "2026-10-21", onClose: () => undefined }));
-    expect(asks(html)).toEqual([{ focus: "workout:w1", name: "Ask the coach about Fri 23 Oct · Strength · 40 min" }]);
+    expect(asks(html)).toEqual([]);
   });
 
   it("a watch-plan run's sheet no longer asks: the nav's coach sees it (the new shape)", () => {
@@ -170,12 +171,10 @@ describe("a move's page in the library", () => {
       ),
     );
 
-  it("asks about the move, beside Add", () => {
+  it("no longer asks: Add alone — the nav's coach sees the move (the new shape)", () => {
     const html = page();
-    expect(asks(html)).toEqual([{ focus: "move:gobletSquat", name: "Ask the coach about Goblet squat" }]);
-    const foot = html.slice(html.indexOf("stu-detail-actions"));
-    expect(foot).toContain("ask-coach");
-    expect(foot.indexOf("stu-detail-add")).toBeLessThan(foot.indexOf("ask-coach"));
+    expect(asks(html)).toEqual([]);
+    expect(html.slice(html.indexOf("stu-detail-actions"))).toContain("stu-detail-add");
   });
 
   it("no coach in the app: no Ask", () => {

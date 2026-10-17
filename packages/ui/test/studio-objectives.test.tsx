@@ -10,7 +10,7 @@
  *    streak of weeks — and never guilt: no streak at zero, no red, a stalled objective only its facts and a neutral line;
  *  - the workouts that served it (up to three, each linking to its day on the Plan) and the coach's line;
  *  - units from the athlete's settings; labels from the vocabularies' LABELS; the athlete's words as text;
- *  - the coach switch: off, the Studio home has no link (the route's redirect is in the live file);
+ *  - the Studio home has no link to the board, on or off: the objectives are Growth's (the new shape §7);
  *  - reduced motion: the ring moves only for a reader who has not asked for less.
  */
 import { createElement } from "react";
@@ -32,7 +32,7 @@ import {
 } from "@rg/domain";
 import { features } from "../src/features.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
-import { COACH_CURRENT_QUERY } from "../src/screens/studio/composer.js";
+import { COACH_CURRENT_QUERY } from "../src/screens/studio/run-keeper.js";
 import { ObjectivesScreen, OBJECTIVE_BOARD_QUERY } from "../src/screens/studio/objectives.js";
 import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
 import { ObjectiveSheet } from "../src/screens/studio/objectives-sheet.js";
@@ -495,11 +495,8 @@ describe("the coach switch", () => {
     return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter("/studio", createElement(StudioScreen))));
   }
 
-  it("on: one quiet link to the board, in the row with Templates, just before it (fix wave 3B, M10)", () => {
-    const html = home();
-    expect(html.match(/href="\/studio\/objectives"/g)).toHaveLength(1);
-    const row = html.slice(html.indexOf('<div class="stu-build-row">'), html.indexOf("<section", html.indexOf('<div class="stu-build-row">')));
-    expect(row).toMatch(/<a class="linklike stu-tpl-link" href="\/studio\/objectives">Objectives<svg[^>]*>[\s\S]*?<\/svg><\/a><a class="linklike stu-tpl-link" href="\/studio\/templates">/);
+  it("on: no link to the board in the Studio — the objectives are Growth's, in the nav (the new shape §7)", () => {
+    expect(home()).not.toContain("/studio/objectives");
   });
 
   it("off: no link", () => {

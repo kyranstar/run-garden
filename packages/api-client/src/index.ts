@@ -1261,14 +1261,63 @@ export interface CoachRunWeekBudgetError {
 /** `POST /api/coach/runs`: a new run, or the athlete's live one — nothing about it changed — with what the screen can
  * offer, and the request it did not start (to offer again once the live run is cancelled). A 409 `week_budget`
  * (`CoachRunWeekBudgetError`): the week can't pay for it. */
-export type CoachRunCreateResult =
+export type CoachRunCreateResult = (
   | { run: CoachRunDto; existing: false }
   | {
       run: CoachRunDto;
       existing: true;
       offer: "answer_or_cancel" | "continue_or_cancel";
       ignoredRequest: { scope: CoachRunScope; request: string | null; focus?: CoachRunFocus };
-    };
+    }
+) & {
+  /** The conversation the run is a turn of (the new shape); absent from an older server. */
+  conversationId?: string;
+};
+
+/**
+ * One suggestion a conversation's turn made (`GET /api/coach/conversation`; the new shape §5): a designed workout, changes
+ * to the plan, or a set of workouts — its title, one line ("3 changes to your week", "Sun 12 PM · 10 min · Recover") and
+ * the suggestion's status. Its own read (`coachProposal`) holds the rest.
+ */
+export interface CoachConversationCardDto {
+  kind: "workout" | "plan_changes" | "set";
+  proposalId: string;
+  title: string;
+  summary: string;
+  status: CoachProposalDto["status"] | (string & {});
+}
+
+/** One turn of the conversation: what the athlete wrote, and the run it started — its status, its line, its cards. */
+export interface CoachConversationTurnDto {
+  runId: string;
+  at: string;
+  /** The athlete's request, as they wrote it (untrusted text: rendered as text). */
+  words: string | null;
+  status: CoachRunStatus;
+  /** The coach's finish line or answer, plain words; null while the run works (or when it stopped with none). */
+  line: string | null;
+  cards: CoachConversationCardDto[];
+  /**
+   * The question the run waits on, if any: the first question's words and choices; every question of a two-question ask
+   * (`questions`: one answer each); `check` when the coach asks for today's condition check (its choices empty).
+   */
+  question: {
+    text: string;
+    choices: string[];
+    questions?: Array<{ text: string; choices: string[]; why?: string }>;
+    check?: true;
+  } | null;
+}
+
+/**
+ * `GET /api/coach/conversation` (the current one; `?id=` for a given one): at most 20 turns, oldest first. With no
+ * current conversation (none, or its last turn a quiet day ago), no id and no turns.
+ */
+export interface CoachConversationDto {
+  id: string | null;
+  startedAt: string | null;
+  turns: CoachConversationTurnDto[];
+}
 
 export interface CoachRunStepResult {
   status: CoachRunStatus;
@@ -2265,9 +2314,19 @@ export const api = {
   // The coach designer's runs (Stage 3; 404 unless the server turned them on). One live run per athlete: a second
   // create answers the live one (`existing`). A step is one model call — minutes at most — so it is never cut off
   // client-side; a 409 means another step holds the run (poll `coachRun` and step again).
-  // No scope: the athlete's default — or, asked from a suggestion (a follow-up), the suggestion's own (A2).
-  coachRunCreate: (body: { scope?: CoachRunScope; request?: string | null; rehearsal?: boolean; focus?: CoachRunFocus }) =>
-    post<CoachRunCreateResult>("/api/coach/runs", body),
+  // No scope: an auto run (the new shape §5) — the coach decides whether to answer, design one workout, change the plan
+  // or plan several. `conversationId`: null starts a new conversation; absent continues the current one (if its last
+  // turn is under 18 h old, else a new one).
+  coachRunCreate: (body: {
+    scope?: CoachRunScope;
+    request?: string | null;
+    rehearsal?: boolean;
+    focus?: CoachRunFocus;
+    conversationId?: string | null;
+  }) => post<CoachRunCreateResult>("/api/coach/runs", body),
+  /** The coach's conversation: the current one, or the one `id` names (404 unless the coach designer is on). */
+  coachConversation: (id?: string) =>
+    get<CoachConversationDto>(`/api/coach/conversation${id ? `?id=${encodeURIComponent(id)}` : ""}`),
   // `signal`: the step loop gives up on a request whose answer is lost (the run reads as not stepping for a while), so a
   // dropped connection never holds the loop for the whole deadline. `afterSeq`: the last event held — an armed answer
   // (the server's step alarm) carries the events after it.

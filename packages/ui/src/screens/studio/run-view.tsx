@@ -15,12 +15,11 @@
  * to size — never raw JSON. Status is never colour alone: each line's mark is a glyph with its word for a reader.
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, DESIGN_MODEL_DEADLINE_MS, type CoachRunDto, type CoachRunEventDto, type CoachRunRole, type CoachRunStatus } from "@rg/api-client";
 import { ConfirmDialog } from "../../components.js";
 import { ConditionCheckSheet } from "../../components/condition-check-sheet.js";
-import { IconChevron, IconClock } from "../../icons.js";
+import { IconChevron } from "../../icons.js";
 import {
   answerFresh,
   askedOf,
@@ -33,21 +32,19 @@ import {
   isMemoryHandle,
   isSlow,
   LOST_LINE,
-  QUICK_BELOW_LINE,
   runLines,
   SLOW_LINE,
   spentWords,
   statusWord,
   STILL_WORKING_LINE,
-  tileKindWord,
   TRAIL_FOLD_LINE,
   trailSections,
   usd,
   type Asked,
-  type Failure,
-  type FallbackTile,
+  type AskedQuestion,
   type RunLine,
 } from "./run-model.js";
+import { toRunRead } from "./coach-tolerance.js";
 import { useOneTap } from "./use-one-tap.js";
 
 /** How often the view looks at the clock while a step is at work (for "taking longer than usual"). */
@@ -91,6 +88,11 @@ export interface RunViewProps {
   /** The athlete's today and zone (Task 13, R13): an answer the coach noted keeps its Undo while it is fresh. */
   today?: string | null;
   timeZone?: string | null;
+  /**
+   * In the conversation (the new shape §5): quieter — the athlete's words are their own bubble above it, never said
+   * again here; a single question's answers send with one tap, and the box below answers in the athlete's own words.
+   */
+  quiet?: boolean;
 }
 
 export function RunView({
@@ -110,6 +112,7 @@ export function RunView({
   weekLeftUsd = null,
   today = null,
   timeZone = null,
+  quiet = false,
 }: RunViewProps) {
   const headingId = useId();
   const trailId = useId();
@@ -148,7 +151,7 @@ export function RunView({
     heading.current?.focus();
   }, [focusKey, answered]);
   return (
-    <section className="coach-run" aria-labelledby={headingId}>
+    <section className={quiet ? "coach-run coach-run--quiet" : "coach-run"} aria-labelledby={headingId}>
       <div className="coach-run-head">
         <h2 id={headingId} ref={heading} className="coach-run-title" tabIndex={-1}>
           Coach · {word}
@@ -159,13 +162,14 @@ export function RunView({
         {newest ? `Coach · ${word}. ${newest}` : `Coach · ${word}.`}
       </p>
       {notice}
-      {run.request ? <p className="coach-run-request">“{run.request}”</p> : null}
+      {run.request && !quiet ? <p className="coach-run-request">“{run.request}”</p> : null}
       {estimate ? <p className="coach-run-estimate">{estimate}</p> : null}
       {asked ? (
         <QuestionCard
           run={run}
           asked={asked}
           events={events}
+          tapToAnswer={quiet}
           onRun={(r) => {
             setAnswered((n) => n + 1);
             onRun?.(r);
@@ -212,6 +216,49 @@ export function RunView({
 }
 
 // ── The trail ───────────────────────────────────────────────────────────────
+
+/** A turn's trail, read once it is opened (`GET /api/coach/runs/:id`). */
+export const turnTrailQuery = (runId: string) => ["coach-run-trail", runId] as const;
+
+/**
+ * A turn's trail, one tap down (the conversation; §6.5: the coach's thinking kept with what it made): "How the coach
+ * made this" — the run's lines are read only once it is opened.
+ */
+export function TurnTrail({ runId, today = null, timeZone = null }: { runId: string; today?: string | null; timeZone?: string | null }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const read = useQuery({ queryKey: turnTrailQuery(runId), queryFn: async () => toRunRead(await api.coachRun(runId, 0)), enabled: open, retry: false });
+  const lines = useMemo(() => runLines(read.data?.events ?? []), [read.data]);
+  return (
+    <div className="coach-turn-trail">
+      <button type="button" className="linklike coach-run-fold tap-pad" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
+        {TRAIL_FOLD_LINE}
+        <span className="coach-run-fold-chev" aria-hidden="true">
+          <IconChevron size={14} />
+        </span>
+      </button>
+      <div id={id} className="coach-run-trail" hidden={!open}>
+        {open && read.isError ? <p className="coach-run-note">Couldn't read this — try again later.</p> : null}
+        {open && read.data ? (
+          lines.length > 0 ? (
+            <RunLines
+              lines={lines}
+              live={false}
+              inFlight={false}
+              nowWord={null}
+              runId={runId}
+              onRefresh={() => void read.refetch()}
+              today={today}
+              timeZone={timeZone}
+            />
+          ) : (
+            <p className="coach-run-note">Nothing to show for this one.</p>
+          )
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function RunLines({
   lines,
@@ -429,12 +476,15 @@ export function QuestionCard({
   events,
   onRun,
   onRefresh,
+  tapToAnswer = false,
 }: {
   run: CoachRunDto;
   asked: Asked;
   events: readonly CoachRunEventDto[];
   onRun?: (run: CoachRunDto) => void;
   onRefresh?: () => void;
+  /** One question (the conversation): an answer sends with one tap, and the box below takes the athlete's own words. */
+  tapToAnswer?: boolean;
 }) {
   const oneTap = useOneTap();
   const send = useMutation({
@@ -461,6 +511,8 @@ export function QuestionCard({
     <div ref={card} className="coach-ask" role="group" aria-label="The coach asks">
       {asked.kind === "check" ? (
         <CheckAsk lead={lead ?? null} why={asked.why} busy={send.isPending} onCheck={(id) => answer({ conditionCheckId: id })} onSkip={() => answer({ dismissed: true })} />
+      ) : tapToAnswer && asked.questions.length === 1 ? (
+        <TapAnswer question={asked.questions[0]!} busy={send.isPending} onSend={(a) => answer({ answers: [a] })} onSkip={() => answer({ dismissed: true })} />
       ) : (
         <QuestionsAsk asked={asked} busy={send.isPending} onSend={(answers) => answer({ answers })} onSkip={() => answer({ dismissed: true })} />
       )}
@@ -470,6 +522,25 @@ export function QuestionCard({
         </p>
       ) : null}
     </div>
+  );
+}
+
+/** The single question that answers with one tap (the conversation): its words, its answers, and Skip. */
+function TapAnswer({ question, busy, onSend, onSkip }: { question: AskedQuestion; busy: boolean; onSend: (answer: string) => void; onSkip: () => void }) {
+  return (
+    <fieldset className="coach-ask-q coach-ask-q--tap">
+      <legend className="coach-ask-text">{question.text}</legend>
+      <div className="stu-chipset">
+        {question.chips.map((c) => (
+          <button key={c} type="button" className="chip" disabled={busy} onClick={() => onSend(c)}>
+            {c}
+          </button>
+        ))}
+        <button type="button" className="linklike tap-pad coach-ask-skip" disabled={busy} onClick={onSkip}>
+          Skip
+        </button>
+      </div>
+    </fieldset>
   );
 }
 
@@ -592,50 +663,5 @@ function CheckAsk({ lead, why, busy, onCheck, onSkip }: { lead: string | null; w
         />
       ) : null}
     </>
-  );
-}
-
-// ── When it stopped ─────────────────────────────────────────────────────────
-
-/**
- * A run that stopped short: what stopped it and what happens next, said once (fix wave 3B, M5: the trail it ended is
- * folded) — then, only when nothing was proposed, the ways to train now the quick starts right below don't already
- * show (today's session, a recent template), and those quick starts. No route to credits: they are the owner's billing.
- */
-export function StoppedLine({ failure, proposed, tiles }: { failure: Failure; proposed: boolean; tiles: readonly FallbackTile[] }) {
-  const lead = [failure.what, failure.next].filter(Boolean).join(" ");
-  if (proposed) {
-    return (
-      <p className="coach-run-failure" role="status">
-        {lead}
-      </p>
-    );
-  }
-  if (tiles.length === 0) {
-    return (
-      <div className="coach-fallback" role="status">
-        <p className="coach-run-failure">{`${lead} Pick a quick start below.`}</p>
-      </div>
-    );
-  }
-  return (
-    <div className="coach-fallback" role="status">
-      <p className="coach-run-failure">{lead}</p>
-      <div className="stu-quick coach-fallback-tiles">
-        {tiles.map((t) => (
-          <Link key={t.key} className="stu-qs" to={t.href}>
-            <span className="stu-qs-kind">{tileKindWord(t)}</span>
-            <span className="stu-qs-name">{t.title}</span>
-            {t.minutes !== null ? (
-              <span className="stu-qs-min">
-                <IconClock />
-                {`${t.minutes} min`}
-              </span>
-            ) : null}
-          </Link>
-        ))}
-      </div>
-      <p className="coach-run-note">{QUICK_BELOW_LINE}</p>
-    </div>
   );
 }

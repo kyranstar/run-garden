@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import { ApiError, type DesignChangeLineDto, type DesignContextRowDto, type DesignLineDto } from "@rg/api-client";
 import { alsoLine } from "../src/screens/studio/also-waiting.js";
 import { toCurrent, toProposal } from "../src/screens/studio/coach-tolerance.js";
-import { setCostLine } from "../src/screens/studio/composer.js";
 import { cardRows, contextLine } from "../src/screens/studio/proposal-card.js";
 import { estimateLine, REVIEW_LABELS, reviewLabel, WEEK_USED_UP_LINE, weekBudgetOf, weekBudgetRefusal } from "../src/screens/studio/run-model.js";
 
@@ -175,13 +174,6 @@ describe("the week's budget (R11, M6, D11, §2.11)", () => {
     expect(estimateLine(run, 5.6)).toBe("About $4.23; the limit is $6.00");
     expect(estimateLine({ estimateUsd: 4.23, ceilingUsd: null, costUsd: 0 }, 2.1)).toBe("About $4.23; $2.10 left this week");
     expect(estimateLine({ estimateUsd: null, ceilingUsd: 6, costUsd: 0 }, 2.1)).toBeNull();
-  });
-
-  it("the default set's cost line says the week's left only when the week is tighter than a set's limit", () => {
-    expect(setCostLine("week", 3)).toBe("A plan for the next 7 days usually costs about $3–5.");
-    expect(setCostLine("next_n", 4, 2.1, 6)).toBe("A plan for the next 4 workouts usually costs about $3–5; $2.10 left this week.");
-    expect(setCostLine("week", 3, 6, 6)).toBe("A plan for the next 7 days usually costs about $3–5.");
-    expect(setCostLine("now", 3, 2.1, 6)).toBeNull();
   });
 
   it("the server's 409 week_budget in one plain line; any other error none", () => {

@@ -12,7 +12,6 @@ import {
   dayHeading,
   detailOf,
   EXISTING_LINE,
-  fallbackTiles,
   foldLines,
   REVIEW_LABELS,
   reviewLabel,
@@ -299,29 +298,6 @@ describe("the review's labels, from one map (M2)", () => {
     const [line] = runLines([ev(1, "review", "Review — 4.9 avg", { receipt: { mean: 4.9, scores: { intent: 5, time_fit: 4 } } })]);
     const rows = detailOf(line!)[0]!.rows;
     expect(rows).toEqual(expect.arrayContaining([{ key: REVIEW_LABELS.intent, value: "5 of 5" }, { key: REVIEW_LABELS.time_fit, value: "4 of 5" }]));
-  });
-});
-
-describe("ways to train now never repeat the quick starts right below (M5)", () => {
-  const quick = [
-    { key: "condition_care", title: "Jaw care", minutes: 5, href: "/studio/build/quick/condition_care" },
-    { key: "desk_reset", title: "Desk reset", minutes: 8, href: "/studio/build/quick/desk_reset" },
-    { key: "template:t1", title: "Pinned one", minutes: 20, href: "/studio/build/template/t1" },
-  ];
-  const session = { todaySessions: [{ workout: { id: "w-1", origin: "program", title: "Jaw care", completionState: "scheduled", contentState: "built" }, build: { minutes: 30 } }] } as unknown as TodayResponse;
-
-  it("today's session alone when a pinned template and the quick starts are all below", () => {
-    const tiles = fallbackTiles({ today: session, quick, templates: [{ key: "template:t1", title: "Pinned one", minutes: 20, href: "/studio/build/template/t1" }] });
-    expect(tiles.map((t) => [t.kind, t.title])).toEqual([["session", "Jaw care"]]);
-  });
-
-  it("a recent template not pinned among the quick starts stays", () => {
-    const tiles = fallbackTiles({ today: session, quick, templates: [{ key: "template:t9", title: "Recent one", minutes: 15, href: "/studio/build/template/t9" }] });
-    expect(tiles.map((t) => t.kind)).toEqual(["session", "template"]);
-  });
-
-  it("no session, no template off the quick starts: no tiles — the quick starts below are the ways", () => {
-    expect(fallbackTiles({ today: null, quick, templates: [] })).toEqual([]);
   });
 });
 

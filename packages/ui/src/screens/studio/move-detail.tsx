@@ -35,7 +35,7 @@ import { useWeightUnit } from "../../use-units.js";
 import { FitBadge, Term, dotted, gearLine } from "./move-row.js";
 import { doseLine, fitOf, historyLine, type StudioCtx } from "./model.js";
 import { useLibraryItem, useMoveSay, type Say } from "./prefs.js";
-import { AskCoach } from "./coach-ask.js";
+import { useCoachSeeing } from "./coach-ask.js";
 import { moveFocus } from "./coach-focus.js";
 
 /** Where a link to another move goes: its address, and the history state the screen keeps (`screen.tsx`). */
@@ -259,6 +259,8 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
   const item = useLibraryItem(rec.id);
   const { say, set, error } = useMoveSay(rec.id, ctx);
   const weightUnit = useWeightUnit();
+  // What the coach sees while the move is open (the new shape §5): its "Seeing" hint when the nav's Coach opens it.
+  useCoachSeeing(moveFocus(rec));
   const body = (
     <MoveDetailBody
       rec={rec}
@@ -279,8 +281,6 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
         <button type="button" className="btn btn-primary stu-detail-add" onClick={() => onAdd(rec)}>
           Add
         </button>
-        {/* The coach, asked about this move (coach everywhere, A3). */}
-        <AskCoach focus={moveFocus(rec)} />
       </div>
     </div>
   );

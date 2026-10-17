@@ -1,13 +1,12 @@
 /**
- * COACH EVERYWHERE, PHASE A3 — the pieces, as markup and as functions:
+ * WHAT THE COACH SEES, AND THE PIECES AROUND IT (coach everywhere; the new shape §5), as markup and as functions:
  *
- *  - what each kind of focus is called on its chip ("About: Fri 23 Oct · Strength · 40 min"), and the scope it asks
- *    for by default (a past session, an activity, an objective or a move → Now; a future day or workout → Later today
- *    or Plan ahead as fits; a suggestion → its own);
- *  - the one affordance every entry point wears: "Ask" with the coach mark, which opens the app's coach sheet with
- *    what it is about — and is not there at all without the coach;
- *  - the composer's chip, and the ✕ that takes it off;
- *  - the suggestion card's "Change something…" line: under a pending single-workout suggestion only.
+ *  - what each kind of focus is called ("Fri 23 Oct · Strength · 40 min"), a workout's kind kept for the chips;
+ *  - the one Ask the Today card keeps: "Ask" with the coach mark, which opens the coach seeing what it is about — and
+ *    is not there at all without the coach;
+ *  - the box: "Seeing: …" with a ✕ named for what it drops, and the round send button named Send;
+ *  - the suggestion's card: no "Change something…" line (the conversation's box replies), and one part of a
+ *    suggestion — its workouts, or its changes — shown alone.
  *
  * Synthetic data only.
  */
@@ -18,20 +17,10 @@ import { describe, expect, it } from "vitest";
 import type { ActivityDto, DesignLineDto, WorkoutDto } from "@rg/api-client";
 import { dayLabel } from "@rg/domain";
 import { AskCoach, CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
-import {
-  activityFocus,
-  askableDay,
-  dayFocus,
-  focusScope,
-  moveFocus,
-  objectiveFocus,
-  proposalFocus,
-  workoutFocus,
-  type CoachFocus,
-} from "../src/screens/studio/coach-focus.js";
-import { Composer } from "../src/screens/studio/composer.js";
-import { designProposalQuery, ProposalCard, FOLLOW_UP_PLACEHOLDER } from "../src/screens/studio/proposal-card.js";
-import { primedClient, staticRouter } from "./studio-fixtures.js";
+import { activityFocus, dayFocus, moveFocus, objectiveFocus, workoutFocus } from "../src/screens/studio/coach-focus.js";
+import { CoachBox } from "../src/screens/studio/coach-conversation.js";
+import { designProposalQuery, ProposalCard } from "../src/screens/studio/proposal-card.js";
+import { primedClient, staticRouter, text } from "./studio-fixtures.js";
 
 const TODAY = "2026-10-21";
 const recorder = (): CoachOpener & { calls: unknown[] } => {
@@ -52,22 +41,17 @@ const workout = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
   }) as WorkoutDto;
 
 describe("what a focus is called, and the scope it asks for", () => {
-  it("a planned workout: its day, its title, its minutes (the plan's own, else its calendar block)", () => {
-    expect(workoutFocus(workout())).toEqual({ kind: "workout", id: "w1", date: "2026-10-23", label: "Fri 23 Oct · Strength · 40 min" });
+  it("a planned workout: its day, its title, its minutes (the plan's own, else its calendar block), and its kind", () => {
+    expect(workoutFocus(workout())).toEqual({ kind: "workout", id: "w1", date: "2026-10-23", label: "Fri 23 Oct · Strength · 40 min", category: "strength" });
     expect(workoutFocus(workout({ workoutSeconds: null })).label).toBe("Fri 23 Oct · Strength · 55 min");
   });
 
-  it("a day, an objective, a move, a suggestion", () => {
+  it("a day, an objective, a move", () => {
     expect(dayFocus("2026-10-23")).toEqual({ kind: "day", id: "2026-10-23", date: "2026-10-23", label: "Fri 23 Oct" });
     // One date format with the server's own words (its refusal: "Ask about a day from …"): the domain's dayLabel.
     expect(dayFocus("2026-10-23").label).toBe(dayLabel("2026-10-23"));
     expect(objectiveFocus({ id: "o1", title: "Hold a strong wall sit" })).toEqual({ kind: "objective", id: "o1", label: "Hold a strong wall sit" });
     expect(moveFocus({ id: "gobletSquat", name: "Goblet squat" })).toEqual({ kind: "move", id: "gobletSquat", label: "Goblet squat" });
-    const line = { title: "Hips, gently", date: TODAY, atNow: true } as Pick<DesignLineDto, "title" | "date" | "atNow">;
-    expect(proposalFocus("dp-r1", line, TODAY)).toEqual({ kind: "proposal", id: "dp-r1", label: "Hips, gently", scope: "now" });
-    expect(proposalFocus("dp-r1", { title: "Evening hips", date: TODAY }, TODAY).scope).toBe("later_today");
-    // A single suggestion for another day came from a Now run that named it.
-    expect(proposalFocus("dp-r1", { title: "Thursday hips", date: "2026-10-23" }, TODAY).scope).toBe("now");
   });
 
   it("an activity: the session it logged when it holds one, else the activity itself", () => {
@@ -88,31 +72,6 @@ describe("what a focus is called, and the scope it asks for", () => {
     expect(activityFocus(older).kind).toBe("activity");
   });
 
-  it("the scope: Now for everything but a suggestion — a workout or a day too, whatever its date; a suggestion its own (the review, I1)", () => {
-    // One workout, its day or workout named by the focus: Now (a set of seven days is never the default for one).
-    for (const f of [
-      { kind: "session", id: "s", label: "" },
-      { kind: "activity", id: "a", label: "" },
-      { kind: "objective", id: "o", label: "" },
-      { kind: "move", id: "m", label: "" },
-      { kind: "workout", id: "x", label: "", date: "2026-10-20" },
-      { kind: "workout", id: "x", label: "", date: TODAY },
-      { kind: "workout", id: "x", label: "", date: "2026-10-22" },
-      { kind: "day", id: "x", label: "", date: TODAY },
-      { kind: "day", id: "x", label: "", date: "2026-10-26" },
-    ] as CoachFocus[]) {
-      expect(focusScope(f), `${f.kind} ${f.date ?? ""}`).toBe("now");
-    }
-    expect(focusScope({ kind: "proposal", id: "p", label: "", scope: "later_today" })).toBe("later_today");
-    expect(focusScope({ kind: "proposal", id: "p", label: "" })).toBeNull();
-  });
-
-  it("a day the coach can be asked about: a week back to six ahead — the last day any run plans (the review, I1)", () => {
-    expect(askableDay("2026-10-14", TODAY)).toBe(true);
-    expect(askableDay("2026-10-13", TODAY)).toBe(false);
-    expect(askableDay("2026-10-27", TODAY)).toBe(true);
-    expect(askableDay("2026-10-28", TODAY)).toBe(false);
-  });
 });
 
 describe("the Ask affordance", () => {
@@ -131,7 +90,7 @@ describe("the Ask affordance", () => {
     expect(out).toMatch(/>Ask<\/span><\/button>$/);
   });
 
-  it("its own words where an entry point had them (the objectives board's)", () => {
+  it("its own words where an entry point has them (the objectives' words-carrying links)", () => {
     const out = html(recorder(), { label: "Ask the coach for a test", variant: "link" });
     expect(out).toMatch(/class="linklike tap-pad ask-coach-link"/);
     expect(out).toContain(">Ask the coach for a test</span>");
@@ -139,32 +98,42 @@ describe("the Ask affordance", () => {
   });
 });
 
-describe("the composer's chip", () => {
-  const compose = (props: Record<string, unknown>) =>
+describe("the box", () => {
+  const box = (props: Record<string, unknown>) =>
     renderToStaticMarkup(
-      createElement(Composer, { draft: "", onDraft: () => undefined, onStart: () => undefined, ...props }),
+      createElement(CoachBox, {
+        boxRef: { current: null },
+        draft: "",
+        onDraft: () => undefined,
+        placeholder: "Ask anything",
+        canSend: false,
+        onSend: () => undefined,
+        seeing: null,
+        onDropSeeing: () => undefined,
+        ...props,
+      }),
     );
 
-  it("says what the athlete asked from, with a ✕ to take it off", () => {
-    const out = compose({ about: workoutFocus(workout()), onClearAbout: () => undefined });
-    expect(out).toContain('<p class="coach-about">');
-    expect(out).toContain("About: Fri 23 Oct · Strength · 40 min");
-    expect(out).toMatch(/<button type="button" class="coach-about-clear tap-pad" aria-label="Remove “Fri 23 Oct · Strength · 40 min”">/);
+  it("what the coach sees, muted over the box, with a ✕ named for what it drops", () => {
+    const out = box({ seeing: workoutFocus(workout()) });
+    expect(out).toContain('<p class="coach-seeing">');
+    expect(out).toContain("Seeing: Fri 23 Oct · Strength · 40 min");
+    expect(out).toMatch(/<button type="button" class="coach-seeing-drop tap-pad" aria-label="Stop showing the coach “Fri 23 Oct · Strength · 40 min”">/);
   });
 
-  it("none without a focus", () => {
-    expect(compose({})).not.toContain("coach-about");
+  it("nothing seen: no line", () => {
+    expect(box({})).not.toContain("coach-seeing");
   });
 
-  it("the scope the focus asks for is the primary button", () => {
-    const primary = (out: string) => (/<button type="button" class="btn btn-primary"[^>]*>([^<]+)</.exec(out) ?? [])[1];
-    expect(primary(compose({ defaultScope: "now" }))).toBe("Now");
-    expect(primary(compose({ defaultScope: "later_today" }))).toBe("Later today");
-    expect(primary(compose({ defaultScope: "week" }))).toBe("Plan the next 7 days");
+  it("the field is named by its placeholder; the round send button is named Send, and waits for words", () => {
+    const out = box({});
+    expect(out).toMatch(/<label class="visually-hidden" for="([^"]+)">Ask anything<\/label><textarea id="\1"/);
+    expect(out).toMatch(/<button type="submit" class="coach-send" aria-label="Send" disabled="">/);
+    expect(box({ canSend: true, draft: "hips" })).toMatch(/<button type="submit" class="coach-send" aria-label="Send">/);
   });
 });
 
-describe("the card's 'Change something…' line", () => {
+describe("the suggestion's card in the conversation", () => {
   const line = (opId: string, over: Partial<DesignLineDto> = {}): DesignLineDto =>
     ({
       opId,
@@ -186,39 +155,25 @@ describe("the card's 'Change something…' line", () => {
       written: null,
       ...over,
     }) as DesignLineDto;
-  const card = (read: Record<string, unknown>, onFollowUp?: (w: string) => void) => {
+  const skip = { opId: "c1", kind: "skip", workoutId: "w9", date: TODAY, time: null, summary: "Strength — skipped", was: null, effect: null, why: "", issues: [], outcome: null };
+  const card = (read: Record<string, unknown>, part?: "workouts" | "changes") => {
     const qc = primedClient();
     qc.setQueryData(designProposalQuery("dp-r1"), { id: "dp-r1", resolvedAt: null, changes: [], ...read });
-    return renderToStaticMarkup(
-      createElement(QueryClientProvider, { client: qc }, staticRouter("/studio", createElement(ProposalCard, { proposalId: "dp-r1", today: TODAY, onFollowUp }))),
-    );
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter("/studio", createElement(ProposalCard, { proposalId: "dp-r1", today: TODAY, part }))));
   };
-  const follow = () => undefined;
 
-  it("under a pending single-workout suggestion: one line, labelled, with Send", () => {
-    const out = card({ status: "pending", lines: [line("o1")] }, follow);
-    expect(out).toContain('<form class="coach-pc-follow"');
-    expect(out).toContain(`placeholder="${FOLLOW_UP_PLACEHOLDER}"`);
-    expect(FOLLOW_UP_PLACEHOLDER).toBe("Change something…");
-    expect(out).toMatch(/<label class="visually-hidden" for="[^"]+">Change something about this suggestion<\/label>/);
-    expect(out).toMatch(/<button type="submit" class="btn btn-small">Send<\/button>/);
+  it("no 'Change something…' line: the conversation's box replies", () => {
+    expect(card({ status: "pending", lines: [line("o1")] })).not.toContain("coach-pc-follow");
   });
 
-  it("not for a set's, two workouts, one decided, one closed — nor where no one can send it", () => {
-    expect(card({ status: "pending", lines: [line("o1")], context: [] }, follow)).not.toContain("coach-pc-follow");
-    expect(card({ status: "pending", lines: [line("o1"), line("o2")] }, follow)).not.toContain("coach-pc-follow");
-    expect(card({ status: "partially_approved", lines: [line("o1", { outcome: { status: "declined", at: "x" } }), line("o2")] }, follow)).not.toContain("coach-pc-follow");
-    expect(card({ status: "approved", lines: [line("o1", { outcome: { status: "applied", at: "x", workoutId: "w", rev: 1, written: { date: TODAY, time: "09:00", title: "x", minutes: 24 } } })] }, follow)).not.toContain(
-      "coach-pc-follow",
-    );
-    expect(card({ status: "pending", lines: [line("o1")] })).not.toContain("coach-pc-follow");
-    // Its day passed (expired), its lines undecided: no longer the athlete's to change.
-    expect(card({ status: "expired", lines: [line("o1")] }, follow)).not.toContain("coach-pc-follow");
-    // One workout that comes with changes to the plan (a skip beside it): not offered — a follow-up would replace the
-    // changes too (the review, minor 5).
-    const skip = { opId: "c1", kind: "skip", workoutId: "w9", date: TODAY, time: null, summary: "Strength — skipped", was: null, effect: null, why: "", issues: [], outcome: null };
-    expect(card({ status: "pending", lines: [line("o1")], changes: [skip] }, follow)).not.toContain("coach-pc-follow");
-    // …even once that change was declined: a suggestion of plan changes is never one a follow-up replaces.
-    expect(card({ status: "pending", lines: [line("o1")], changes: [{ ...skip, outcome: { status: "declined", at: "x" } }] }, follow)).not.toContain("coach-pc-follow");
+  it("its workouts alone, or its changes alone (two cards of one suggestion); the changes headed as changes", () => {
+    const both = { status: "pending", lines: [line("o1")], changes: [skip] };
+    expect(text(card(both, "workouts"))).toContain("Workout o1");
+    expect(text(card(both, "workouts"))).not.toContain("Strength — skipped");
+    expect(text(card(both, "changes"))).toContain("Strength — skipped");
+    expect(text(card(both, "changes"))).not.toContain("Workout o1");
+    expect(card(both, "changes")).toContain(">Each change</h2>");
+    // A part with nothing in it draws nothing.
+    expect(card({ status: "pending", lines: [line("o1")], changes: [] }, "changes")).toBe("");
   });
 });

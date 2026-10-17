@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { CoachRunDto, CoachRunEventDto } from "@rg/api-client";
-import { RunView, StoppedLine } from "../src/screens/studio/run-view.js";
-import { failureOf, type FallbackTile } from "../src/screens/studio/run-model.js";
+import { RunView } from "../src/screens/studio/run-view.js";
+import { failureOf } from "../src/screens/studio/run-model.js";
 import { renderAt, text, todayDto } from "./studio-fixtures.js";
 
 const run = (over: Partial<CoachRunDto> = {}): CoachRunDto => ({
@@ -213,38 +213,3 @@ describe("the touch floor (fix round, M5)", () => {
   });
 });
 
-describe("when it stopped short", () => {
-  const tiles: FallbackTile[] = [
-    { key: "session:w-1", kind: "session", title: "Strength A", minutes: 35, href: "/plan?workout=w-1" },
-    { key: "template:t1", kind: "template", title: "Pinned one", minutes: 20, href: "/studio/build/template/t1" },
-    { key: "condition_care", kind: "quick", title: "Jaw care", minutes: 5, href: "/studio/build/quick/condition_care" },
-  ];
-  const stopped = (error: string, proposed: boolean, t = tiles) =>
-    renderAt("/studio", createElement(StoppedLine, { failure: failureOf({ status: error === "expired" ? "expired" : "failed", error })!, proposed, tiles: t }));
-
-  it("out of credits with nothing proposed: what stopped and what's next, then the tiles it was given, each by its kind", () => {
-    const html = stopped("gateway_402", false);
-    expect(text(html)).toContain("The AI account is out of credits. The coach can design again once credits are added.");
-    expect(html).toContain('href="/plan?workout=w-1"');
-    expect(html).toContain('href="/studio/build/template/t1"');
-    expect(html).toContain('href="/studio/build/quick/condition_care"');
-    expect(html.match(/class="stu-qs"/g)).toHaveLength(3);
-    // Each says what kind of thing it is (the lead's QA, Q2).
-    expect(text(html)).toContain("Today's session Strength A");
-    expect(text(html)).toContain("Your template Pinned one");
-    expect(text(html)).toContain("Quick start Jaw care");
-  });
-
-  it("another stop: what failed and what happens next, then the ways to train now", () => {
-    const words = text(stopped("weekly_cap", false));
-    expect(words).toContain("This week's AI budget is used up. The coach can design again next week. Today's session Strength A");
-    expect(text(stopped("expired", false))).toContain("This design ran out of time.");
-    expect(text(stopped("retries", false))).toContain("The AI service didn't answer.");
-  });
-
-  it("with a suggestion proposed from what was reviewed: the failure line alone — the card follows, no tiles", () => {
-    const html = stopped("gateway_402", true);
-    expect(text(html)).toBe("The AI account is out of credits. The coach can design again once credits are added.");
-    expect(html).not.toContain("stu-qs");
-  });
-});

@@ -1,5 +1,5 @@
 /**
- * Stage 2 Task 4 — the Studio home (spec §3): the search field, the coach composer's empty slot (Stage 3 fills it),
+ * Stage 2 Task 4 — the Studio home (spec §3): the search field (no coach: it is the nav's since the new shape),
  * quick starts, browse by part, themes and tags — in that order, every label from the vocabularies, and nothing
  * condition-specific unless a condition profile is switched on.
  */
@@ -33,11 +33,11 @@ describe("the Studio home", () => {
     expect(html).toContain(`<label class="visually-hidden" for="${id}">Search moves</label>`);
   });
 
-  it("leaves the coach composer's slot at the top, empty (Stage 3)", () => {
+  it("holds no coach: the coach is one conversation, opened from the nav (the new shape §5)", () => {
     const html = home();
-    expect(html).toContain('<div class="stu-composer-slot" data-slot="coach-composer"></div>');
-    expect(html.indexOf('role="search"')).toBeLessThan(html.indexOf("coach-composer"));
-    expect(html.indexOf("coach-composer")).toBeLessThan(html.indexOf(">Quick starts</h2>"));
+    expect(html).not.toContain("coach-composer");
+    expect(html).not.toContain("Ask the coach");
+    expect(html.indexOf('role="search"')).toBeLessThan(html.indexOf(">Quick starts</h2>"));
   });
 
   it("renders quick starts, browse, themes and tags, in that order, and no result list", () => {

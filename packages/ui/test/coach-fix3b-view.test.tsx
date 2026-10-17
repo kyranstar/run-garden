@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { CoachRunDto, CoachRunEventDto } from "@rg/api-client";
-import { RunView, StoppedLine } from "../src/screens/studio/run-view.js";
-import { failureOf, QUICK_BELOW_LINE, TRAIL_FOLD_LINE, type FallbackTile } from "../src/screens/studio/run-model.js";
+import { RunView } from "../src/screens/studio/run-view.js";
+import { TRAIL_FOLD_LINE } from "../src/screens/studio/run-model.js";
 import { renderAt, text, todayDto } from "./studio-fixtures.js";
 
 const run = (over: Partial<CoachRunDto> = {}): CoachRunDto => ({
@@ -143,32 +143,6 @@ describe("the check ask (M6)", () => {
     expect(html).toMatch(/<button type="button" class="btn"[^>]*>Skip<\/button>/);
     expect(html).not.toContain("condition-chip");
     expect(words).not.toContain("Jaw check ›");
-  });
-});
-
-describe("a stop, said once (M5)", () => {
-  const session: FallbackTile = { key: "session:w-1", kind: "session", title: "Jaw care", minutes: 30, href: "/plan?workout=w-1" };
-  const stopped = (error: string, proposed: boolean, tiles: FallbackTile[]) =>
-    renderAt("/studio", createElement(StoppedLine, { failure: failureOf({ status: "failed", error })!, proposed, tiles }));
-
-  it("out of credits: what stopped and what's next, today's session, then the quick starts below — no route to credits", () => {
-    const html = stopped("gateway_402", false, [session]);
-    const words = text(html);
-    expect(words).toContain("The AI account is out of credits. The coach can design again once credits are added.");
-    expect(words).toContain("Today's session Jaw care");
-    expect(words).toContain(QUICK_BELOW_LINE);
-    expect(words).not.toContain("three ways");
-    expect(html.match(/class="stu-qs"/g)).toHaveLength(1);
-    expect(html).not.toMatch(/href="[^"]*(credit|billing|account)[^"]*"/i);
-  });
-
-  it("no tile to offer: the stop, and the quick starts below", () => {
-    const words = text(stopped("weekly_cap", false, []));
-    expect(words).toBe("This week's AI budget is used up. The coach can design again next week. Pick a quick start below.");
-  });
-
-  it("a suggestion proposed from what was reviewed: the stop alone — the card follows", () => {
-    expect(text(stopped("gateway_402", true, [session]))).toBe("The AI account is out of credits. The coach can design again once credits are added.");
   });
 });
 

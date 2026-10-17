@@ -11,7 +11,6 @@ import {
   detailOf,
   estimateLine,
   failureOf,
-  fallbackTiles,
   isSteppable,
   lastSeq,
   MAX_DUE_WAIT_MS,
@@ -24,7 +23,6 @@ import {
   statusWord,
   stepDelay,
   stepErrorKind,
-  tileKindWord,
   usd,
 } from "../src/screens/studio/run-model.js";
 
@@ -274,49 +272,6 @@ describe("what stopped a run", () => {
     expect(failureOf(run({ status: "finished" }))).toBeNull();
     expect(failureOf(run({ status: "cancelled" }))).toBeNull();
     expect(failureOf(run({ status: "active" }))).toBeNull();
-  });
-});
-
-describe("ways to train now", () => {
-  const quick = [
-    { key: "condition_care", title: "Jaw care", minutes: 5, href: "/studio/build/quick/condition_care" },
-    { key: "desk_reset", title: "Desk reset", minutes: 8, href: "/studio/build/quick/desk_reset" },
-    { key: "hip_opener", title: "Hip opener", minutes: 10, href: "/studio/build/quick/hip_opener" },
-    { key: "template:t1", title: "Pinned one", minutes: 20, href: "/studio/build/template/t1" },
-  ];
-  const templates = [{ key: "template:t1", title: "Pinned one", minutes: 20, href: "/studio/build/template/t1" }];
-  const today = (origin: string, completionState = "scheduled") =>
-    ({ todaySessions: [{ workout: { id: "w-1", origin, title: "Strength A", completionState, contentState: "built" }, build: { minutes: 35 } }] }) as unknown as TodayResponse;
-
-  const recent = [{ key: "template:t2", title: "Recent one", minutes: 15, href: "/studio/build/template/t2" }];
-
-  it("the day's programme session, then a recent template — never what the quick starts below already show (fix wave 3B, M5)", () => {
-    const tiles = fallbackTiles({ today: today("program"), quick, templates: recent });
-    expect(tiles.map((t) => [t.kind, t.title])).toEqual([
-      ["session", "Strength A"],
-      ["template", "Recent one"],
-    ]);
-    expect(tiles[0]).toEqual({ key: "session:w-1", kind: "session", title: "Strength A", minutes: 35, href: "/plan?workout=w-1" });
-    expect(tiles.map(tileKindWord)).toEqual(["Today's session", "Your template"]);
-    expect(tileKindWord({ kind: "quick" })).toBe("Quick start");
-    // A template pinned among the quick starts is one of them: not a tile again.
-    expect(fallbackTiles({ today: today("program"), quick, templates }).map((t) => t.kind)).toEqual(["session"]);
-  });
-
-  it("the day's session by its own name and length — the quick start of that name is below, never a tile beside it", () => {
-    const named = {
-      todaySessions: [
-        { workout: { id: "w-2", origin: "program", title: "Jaw care · Gentle flow", completionState: "scheduled", contentState: "outline", workoutSeconds: 1800 }, build: { theme: "Gentle flow", minutes: null } },
-      ],
-    } as unknown as TodayResponse;
-    const tiles = fallbackTiles({ today: named, quick, templates: [] });
-    expect(tiles.map((t) => [t.kind, t.title, t.minutes])).toEqual([["session", "Jaw care", 30]]);
-  });
-
-  it("no programme session to do (none, done, a Studio workout): a recent template, else nothing — the quick starts are below", () => {
-    expect(fallbackTiles({ today: today("program", "completed"), quick, templates: recent }).map((t) => t.title)).toEqual(["Recent one"]);
-    expect(fallbackTiles({ today: today("studio"), quick, templates: [] })).toEqual([]);
-    expect(fallbackTiles({ today: null, quick: quick.slice(1, 2), templates }).map((t) => t.title)).toEqual(["Pinned one"]);
   });
 });
 

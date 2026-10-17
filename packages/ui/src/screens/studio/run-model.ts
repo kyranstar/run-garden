@@ -9,8 +9,6 @@
  *   the loop's decisions: what can be stepped, how long to wait (never before `nextDue`, the backoff on top), what an
  *                  error means
  *   failureOf      what stopped the coach, in plain words, and what happens next
- *   fallbackTiles  ways to train now when nothing was proposed: the day's programme session, a recent template — the
- *                  Studio's own tiles, never one the quick starts right below already show
  *   trailSections  a set's trail by day, under the main run's own lines; foldLines, the athlete's lines never folded
  *   refusalWords   why the plan refused a workout or a change at approval, in plain words
  *
@@ -27,7 +25,6 @@ import {
   type CoachRunWeekBudgetError,
   type CoachSpendDto,
   type DesignChangeBeforeDto,
-  type TodayResponse,
 } from "@rg/api-client";
 import { dayLabel, todayInZone } from "@rg/domain";
 import { formatTime, weekdayShort } from "../../components.js";
@@ -788,63 +785,6 @@ function failureWords(run: Pick<CoachRunDto, "status" | "error">): Failure | nul
       // A rejected call answers with the gateway's own reason.
       return { what: "The AI service refused the request.", next: "Try again in a while.", credits: false };
   }
-}
-
-// ── Ways to train now ───────────────────────────────────────────────────────
-
-/** What a way to train now is: the day's programme session, one of the athlete's templates, a built-in quick start. */
-export type FallbackKind = "session" | "template" | "quick";
-
-export interface FallbackTile {
-  key: string;
-  kind: FallbackKind;
-  title: string;
-  minutes: number | null;
-  href: string;
-}
-
-/** A tile's kind as it says it (lead's QA, Q2): so the day's session never reads as a quick start of another length. */
-export function tileKindWord(t: Pick<FallbackTile, "kind">): string {
-  return t.kind === "session" ? "Today's session" : t.kind === "template" ? "Your template" : "Quick start";
-}
-
-/** Under the ways to train now: the Studio's quick starts sit right below the coach (M5). */
-export const QUICK_BELOW_LINE = "or pick a quick start below";
-
-/**
- * Ways to train now (spec §10), as the Studio's own tiles, each saying what kind it is: the day's programme session when
- * there is one still to do — by its own name (without the theme its build appends) and length — opening its sheet,
- * where Start is (Today's read); then a recent template. Never a tile the quick starts right below already show (fix
- * wave 3B, M5): a built-in quick start, or a template pinned among them.
- */
-export function fallbackTiles(o: {
-  today: Pick<TodayResponse, "todaySessions"> | null | undefined;
-  /** The quick-start tiles (`quickTiles`): built-in ones first, then pinned templates — shown below the coach. */
-  quick: ReadonlyArray<Omit<FallbackTile, "kind">>;
-  /** The athlete's templates' tiles, in the templates list's order (pinned, then recent). */
-  templates: ReadonlyArray<Omit<FallbackTile, "kind">>;
-}): FallbackTile[] {
-  const out: FallbackTile[] = [];
-  const session = (o.today?.todaySessions ?? []).find(
-    (s) => s.workout.origin === "program" && s.workout.completionState === "scheduled" && s.workout.contentState !== "done",
-  );
-  if (session) {
-    const seconds = session.workout.workoutSeconds;
-    const theme = session.build?.theme;
-    const title = theme && session.workout.title.endsWith(` · ${theme}`) ? session.workout.title.slice(0, -` · ${theme}`.length) : session.workout.title;
-    out.push({
-      key: `session:${session.workout.id}`,
-      kind: "session",
-      title,
-      // Its build's minutes; before it is built, the session's own length.
-      minutes: session.build?.minutes ?? (typeof seconds === "number" && seconds > 0 ? Math.round(seconds / 60) : null),
-      href: `/plan?workout=${encodeURIComponent(session.workout.id)}`,
-    });
-  }
-  const below = new Set(o.quick.map((q) => q.key));
-  const template = o.templates.find((t) => !below.has(t.key));
-  if (template) out.push({ ...template, kind: "template" });
-  return out;
 }
 
 /** The check ask's primary action (M6), in the profile's own word: "Do the jaw check"; an acronym keeps its capitals. */

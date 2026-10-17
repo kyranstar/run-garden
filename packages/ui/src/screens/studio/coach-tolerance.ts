@@ -13,6 +13,9 @@
 import {
   api,
   type CoachAlsoOpenDto,
+  type CoachConversationCardDto,
+  type CoachConversationDto,
+  type CoachConversationTurnDto,
   type CoachOpenProposalDto,
   type CoachRunCurrentResponse,
   type CoachRunDto,
@@ -273,3 +276,70 @@ export const readProposal = async (id: string): Promise<ProposalRead> => toPropo
 
 /** The current run, read and made safe to show. */
 export const readCurrent = async (): Promise<CoachRunCurrentResponse> => toCurrent(await api.coachRunCurrent());
+
+// ── The conversation (the new shape §5) ──
+
+type Turn = CoachConversationTurnDto;
+type Question = NonNullable<Turn["question"]>;
+
+/** A question's words and choices; none without words. A two-question ask and a check pass through. */
+function toQuestion(v: unknown): Question | null {
+  const q = record(v);
+  const t = words(q?.text);
+  if (!q || !t) return null;
+  const questions = Array.isArray(q.questions)
+    ? q.questions.flatMap((x): NonNullable<Question["questions"]> => {
+        const one = record(x);
+        const qt = words(one?.text);
+        if (!one || !qt) return [];
+        return [{ text: qt, choices: texts(one.choices), ...(typeof one.why === "string" ? { why: one.why } : {}) }];
+      })
+    : null;
+  return {
+    text: t,
+    choices: texts(q.choices),
+    ...(questions && questions.length > 0 ? { questions } : {}),
+    ...(q.check === true ? { check: true as const } : {}),
+  };
+}
+
+/** A card: its suggestion's id, or nothing; an unknown kind passes as its own word (shown as one line). */
+function toCard(v: unknown): CoachConversationCardDto | null {
+  const c = record(v);
+  if (!c || typeof c.proposalId !== "string" || !c.proposalId) return null;
+  return {
+    kind: (text(c.kind) || "workout") as CoachConversationCardDto["kind"],
+    proposalId: c.proposalId,
+    title: words(c.title) ?? "A suggestion",
+    summary: text(c.summary),
+    status: text(c.status),
+  };
+}
+
+/** One turn: a run's id or nothing; every list there, every text a text. */
+function toTurn(v: unknown): Turn | null {
+  const t = record(v);
+  if (!t || typeof t.runId !== "string" || !t.runId) return null;
+  return {
+    runId: t.runId,
+    at: text(t.at),
+    words: textOrNull(t.words),
+    status: (typeof t.status === "string" && t.status ? t.status : "finished") as CoachRunStatus,
+    line: textOrNull(t.line),
+    cards: list(t.cards).map(toCard).filter((c): c is CoachConversationCardDto => c !== null),
+    question: toQuestion(t.question),
+  };
+}
+
+/** The conversation's read: no conversation unless turns came; the turns that can be shown, oldest first. */
+export function toConversation(v: unknown): CoachConversationDto {
+  const r = record(v);
+  return {
+    id: textOrNull(r?.id) || null,
+    startedAt: textOrNull(r?.startedAt),
+    turns: list(r?.turns).map(toTurn).filter((t): t is Turn => t !== null),
+  };
+}
+
+/** The current conversation, read and made safe to show. */
+export const readConversation = async (): Promise<CoachConversationDto> => toConversation(await api.coachConversation());

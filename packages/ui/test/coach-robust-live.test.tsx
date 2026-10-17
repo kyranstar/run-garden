@@ -21,7 +21,7 @@ import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DESIGN_MODEL_DEADLINE_MS, type CoachRunDto, type CoachRunEventDto, type CoachRunStepResult } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { StudioCoach } from "../src/screens/studio/composer.js";
+import { CoachConversation } from "../src/screens/studio/coach-conversation.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { ProposalCard } from "../src/screens/studio/proposal-card.js";
 import { CoachKeeper, CoachNavMark } from "../src/screens/studio/run-keeper.js";
@@ -186,7 +186,7 @@ function app(deps: () => LoopDeps) {
     createElement(
       Routes,
       null,
-      createElement(Route, { path: "/studio", element: createElement(StudioCoach, { ctx: { ...emptyStudioCtx, profiles: [] } }) }),
+      createElement(Route, { path: "/studio", element: createElement(CoachConversation, { ctx: { ...emptyStudioCtx, profiles: [] } }) }),
       createElement(Route, { path: "/plan", element: createElement("p", null, "The plan") }),
     ),
   );
@@ -197,7 +197,11 @@ function app(deps: () => LoopDeps) {
 describe("the app's run keeper", () => {
   it("leaving the Studio mid-step, the run goes on stepping; back, the same loop shows it at work — no step asked twice", async () => {
     let server = run({ status: "active" });
-    serve({ "GET /api/coach/runs/current": () => json({ run: server, events: [ev(1)], proposal: null }) });
+    const turn = () => ({ runId: RUN_ID, at: "x", words: "hips", status: server.status, line: server.status === "finished" ? "Here's one for your hips." : null, cards: [], question: null });
+    serve({
+      "GET /api/coach/runs/current": () => json({ run: server, events: [ev(1)], proposal: null }),
+      "GET /api/coach/conversation": () => json({ id: RUN_ID, startedAt: "x", turns: [turn()] }),
+    });
     const loop = drivenLoop({ run: () => server });
     mountTree(app(loop.deps));
     await until(() => loop.stepped.length === 1, "the first step");
@@ -216,7 +220,7 @@ describe("the app's run keeper", () => {
     expect(loop.stepped).toHaveLength(2);
     server = run({ status: "finished" });
     await loop.answer(step("finished", [ev(3, "Done.")], false));
-    await until(() => text().includes("Coach · done"), "the run over");
+    await until(() => text().includes("Here's one for your hips."), "the run over: the coach's line");
   });
 
   it("a live run is stepped when the app opens on another screen", async () => {
@@ -260,7 +264,6 @@ describe("the app's run keeper", () => {
     await until(() => mark()?.textContent === "● — the coach is waiting for you", "the waiting mark");
     await act(async () => undefined);
     // Over: no mark.
-    server = run({ status: "cancelled" });
     await tap(link("Studio"), "the Studio link");
     await until(() => !!button("Cancel"), "Cancel");
     serve({ [`POST /api/coach/runs/${RUN_ID}/cancel`]: { run: run({ status: "cancelled" }) }, "GET /api/coach/runs/current": { run: null } });
@@ -272,22 +275,21 @@ describe("the app's run keeper", () => {
 // ── One tap, one request ────────────────────────────────────────────────────
 
 describe("one tap, one request", () => {
-  it("Now tapped twice — and three times — starts one run", async () => {
+  it("Send tapped twice — and three times — starts one run", async () => {
     const calls = serve({
       "GET /api/coach/runs/current": { run: null },
       "POST /api/coach/runs": (body: any) => json({ run: run({ scope: body.scope, request: body.request, status: "active" }), existing: false }),
     });
     const loop = drivenLoop({ run: () => run({ status: "active" }) });
-    mountTree(createElement(StudioCoach, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
-    await until(() => !!document.querySelector(".coach-composer-field"), "the composer");
-    await type(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!, "hips");
-    await tap(button("Now"), "Now", 3);
+    mountTree(createElement(CoachConversation, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
+    await until(() => !!document.querySelector(".coach-box textarea"), "the box");
+    await type(document.querySelector<HTMLTextAreaElement>(".coach-box textarea")!, "hips");
+    await tap(document.querySelector<HTMLButtonElement>(".coach-box button[type=submit]"), "Send", 3);
     await until(() => text().includes("Coach · designing"), "the run");
     expect(posts(calls, "/api/coach/runs")).toHaveLength(1);
-    expect(text()).not.toContain("Copy my words back");
   });
 
-  it("Send tapped three times answers once", async () => {
+  it("an answer tapped three times answers once", async () => {
     const asking = run({ status: "waiting_athlete" });
     const calls = serve({
       "GET /api/coach/runs/current": {
@@ -298,10 +300,9 @@ describe("one tap, one request", () => {
       [`POST /api/coach/runs/${RUN_ID}/answer`]: { run: run({ status: "active" }) },
     });
     const loop = drivenLoop({ run: () => asking });
-    mountTree(createElement(StudioCoach, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
+    mountTree(createElement(CoachConversation, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
     await until(() => !!button("tight"), "the question");
-    await tap(button("tight"), "a chip");
-    await tap(button("Send"), "Send", 3);
+    await tap(button("tight"), "an answer", 3);
     await settle(20);
     expect(posts(calls, `/api/coach/runs/${RUN_ID}/answer`)).toHaveLength(1);
   });
@@ -312,7 +313,7 @@ describe("one tap, one request", () => {
       [`POST /api/coach/runs/${RUN_ID}/cancel`]: { run: run({ status: "cancelled" }) },
     });
     const loop = drivenLoop({ run: () => run({ status: "active" }) });
-    mountTree(createElement(StudioCoach, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
+    mountTree(createElement(CoachConversation, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
     await until(() => !!button("Cancel"), "Cancel");
     await tap(button("Cancel"), "Cancel", 2);
     await settle(20);
@@ -368,7 +369,7 @@ describe("recovery: never a ● with nothing said", () => {
       // The page's own reads, read tolerantly: a newer shape of a field is none, never drawn raw.
       [`GET /api/coach/runs/${RUN_ID}`]: { run: { ...holding, request: { text: "a newer shape" } }, events: [] },
     });
-    mountTree(createElement(StudioCoach, { ctx: { ...emptyStudioCtx, profiles: [] } }));
+    mountTree(createElement(CoachConversation, { ctx: { ...emptyStudioCtx, profiles: [] } }));
     await until(() => text().includes(STILL_WORKING_LINE), "the still-working line");
     const nowLine = document.querySelector(".coach-line--now");
     expect(nowLine?.textContent).toContain("●");
@@ -414,16 +415,17 @@ describe("recovery: never a ● with nothing said", () => {
 describe("a newer server's answers render, never throw", () => {
   it("an unknown status and event kind: its own words, its line, no failure claimed", async () => {
     serve({
-      "GET /api/coach/runs/current": {
-        // A field of a shape this bundle never saw (the request as an object) is read as none, never drawn raw.
+      "GET /api/coach/runs/current": { run: null },
+      // A turn whose status this bundle never saw, and fields of shapes it never saw: read as none, never drawn raw.
+      "GET /api/coach/conversation": { id: RUN_ID, startedAt: "x", turns: [{ runId: RUN_ID, at: "x", words: { text: "a newer shape" }, status: "thinking_hard", line: null, cards: "nope", question: 7 }] },
+      [`GET /api/coach/runs/${RUN_ID}`]: {
         run: { ...run(), status: "thinking_hard", request: { text: "a newer shape" } },
         events: [ev(1, "Read your request"), { seq: 2, kind: "plan_v2", summary: "Planned something new", payload: { weird: [1, { a: null }] }, at: "x" }, { seq: 3, kind: "note", summary: null }],
-        proposal: null,
       },
     });
     const loop = drivenLoop({ run: () => run() });
-    mountTree(createElement(StudioCoach, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
-    await until(() => text().includes("Coach · thinking hard"), "the header");
+    mountTree(createElement(CoachConversation, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: loop.deps }));
+    await until(() => text().includes("thinking hard"), "its own words");
     await tap(button("How the coach made this"), "the trail");
     expect(text()).toContain("Planned something new");
     expect(text()).not.toContain("refused");

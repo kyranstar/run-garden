@@ -4,7 +4,7 @@
  * drawing the suggestion's card unmounted the whole app (measured on the fixture stack: a blank page). Now:
  *
  *  - the piece that failed says "Something went wrong showing the coach — reload", and its reload reloads;
- *  - the other pieces stand: a card that throws leaves the run view (its header, its trail) on screen;
+ *  - the other pieces stand: a card that throws leaves its turn (the coach's line, its trail) and the box on screen;
  *  - the objectives board that throws says so on the board, with the same reload.
  *
  * The card is replaced with one that throws (vi.mock); the board throws on its own read. Synthetic data only.
@@ -16,7 +16,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachRunDto } from "@rg/api-client";
 import { brokenLine, CoachBoundary } from "../src/screens/studio/coach-boundary.js";
-import { StudioCoach } from "../src/screens/studio/composer.js";
+import { CoachConversation } from "../src/screens/studio/coach-conversation.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { ObjectivesRoute } from "../src/screens/studio/objectives.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
@@ -143,18 +143,32 @@ describe("a render error in the coach stays in the coach", () => {
     expect(text()).toBe("Studio");
   });
 
-  it("a suggestion's card that throws: the run view stays — its header, its trail's fold — and the card says so", async () => {
+  it("a suggestion's card that throws: the turn stays — the coach's line, its trail's fold — and the box; the card says so", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     serve({
-      "GET /api/coach/runs/current": { run: run(), events: [{ seq: 1, kind: "note", summary: "Read your request", payload: null, at: "" }], proposal: { id: "dp-1", status: "pending", flags: [] } },
-      "GET /api/coach/proposals/dp-1": { id: "dp-1", status: "pending", resolvedAt: null, lines: [], changes: [] },
+      "GET /api/coach/runs/current": { run: null },
+      "GET /api/coach/conversation": {
+        id: "run-b",
+        startedAt: `${TODAY}T08:00:00.000Z`,
+        turns: [
+          {
+            runId: "run-b",
+            at: `${TODAY}T08:00:00.000Z`,
+            words: "hips",
+            status: "finished",
+            line: "Here's one for your hips.",
+            cards: [{ kind: "workout", proposalId: "dp-1", title: "Hips", summary: "Today · Now · 24 min", status: "pending" }],
+            question: null,
+          },
+        ],
+      },
     });
-    mount(createElement(StudioCoach, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: quietLoop }));
+    mount(createElement(CoachConversation, { ctx: { ...emptyStudioCtx, profiles: [] }, loopDeps: quietLoop }));
     await until(() => text().includes("Something went wrong showing the coach"), "the card's line");
-    expect(text()).toContain("Coach · done");
+    expect(text()).toContain("Here's one for your hips.");
     expect(text()).toContain("How the coach made this");
-    // The composer, beside them, stands too.
-    expect(text()).toContain("Ask the coach");
+    // The box, beside them, stands too.
+    expect(document.querySelector(".coach-box textarea")).not.toBeNull();
   });
 
   it("the objectives board that throws says so on the board", async () => {

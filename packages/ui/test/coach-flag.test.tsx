@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { coachFlag, coachOn, features } from "../src/features.js";
 import { CoachPanel } from "../src/screens/coach-panel.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
-import { COACH_CURRENT_QUERY } from "../src/screens/studio/composer.js";
+import { COACH_CURRENT_QUERY } from "../src/screens/studio/run-keeper.js";
 import { primedClient, staticRouter, text } from "./studio-fixtures.js";
 
 const was = { coach: features.coach, studio: features.studio };
@@ -67,20 +67,15 @@ describe("the coach switch", () => {
     expect(coachOn()).toBe(false);
   });
 
-  it("on: the Studio home's slot holds the composer, above the quick starts", () => {
-    const html = studioHome();
-    expect(html).toContain('placeholder="What would help today?"');
-    expect(text(html)).toContain("Later today");
-    expect(html.indexOf("What would help today?")).toBeLessThan(html.indexOf(">Quick starts</h2>"));
-  });
-
-  it("off: the slot is empty — no composer, no run view, no suggestion", () => {
-    features.coach = false;
-    const html = studioHome();
-    expect(html).toContain('<div class="stu-composer-slot" data-slot="coach-composer"></div>');
-    expect(html).not.toContain("What would help today?");
-    expect(html).not.toContain("coach-run");
-    expect(html).not.toContain("coach-pc");
+  it("on or off, the Studio home holds no coach: the coach is one conversation, opened from the nav (the new shape)", () => {
+    for (const on of [true, false]) {
+      features.coach = on;
+      const html = studioHome();
+      expect(html).not.toContain("coach-composer");
+      expect(html).not.toContain("coach-run");
+      expect(html).not.toContain("coach-pc");
+      expect(text(html)).toContain("Quick starts");
+    }
   });
 
   it("the Plan coach sheet links to the composer only when on", () => {

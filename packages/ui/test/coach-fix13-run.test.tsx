@@ -12,7 +12,7 @@
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { CoachRunDto, CoachRunEventDto } from "@rg/api-client";
-import { RunView, StoppedLine } from "../src/screens/studio/run-view.js";
+import { RunView } from "../src/screens/studio/run-view.js";
 import { detailOf, failureOf, runLines } from "../src/screens/studio/run-model.js";
 import { renderAt, text, todayDto } from "./studio-fixtures.js";
 
@@ -51,9 +51,7 @@ describe("a stop on a run that proposed (R3)", () => {
   it("state_cap with a suggestion: no 'Try a shorter request', no 'grew too long' — the coach ran out of room before its last word", () => {
     const f = failureOf({ status: "stopped_cap", error: "state_cap" }, { proposed: true })!;
     expect(f).toEqual({ what: "The coach ran out of room before its last word.", next: null, credits: false });
-    const words = text(renderAt("/studio", createElement(StoppedLine, { failure: f, proposed: true, tiles: [] })));
-    expect(words).toBe("The coach ran out of room before its last word.");
-    expect(words).not.toContain("shorter request");
+    expect(f.what).not.toContain("grew too long");
   });
 
   it("the other limits with a suggestion: what stopped, and no advice to start again — the card is the answer", () => {

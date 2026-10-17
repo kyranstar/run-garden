@@ -39,16 +39,23 @@ import {
 } from "@rg/api-client";
 import { features } from "../../features.js";
 import { editDraftHref } from "./build-model.js";
+import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
 import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { appliedChangeLine, dayAndTime, planDayHref, refusedLine, reviewLabel } from "./run-model.js";
 import { useOneTap } from "./use-one-tap.js";
 
 /** What became of the suggestion once nothing in it is open (fix wave 3B, M3); while something is, what it is. */
-export function cardHeader(lines: readonly Pick<DesignLineDto, "outcome">[], changes: readonly Pick<DesignChangeLineDto, "outcome">[]): string {
+export function cardHeader(
+  lines: readonly Pick<DesignLineDto, "outcome">[],
+  changes: readonly Pick<DesignChangeLineDto, "outcome">[],
+  /** The changes alone (the conversation's plan-changes card, looked at closer): said as changes. */
+  changesPart = false,
+): string {
   const outcomes = [...changes.map((c) => c.outcome), ...lines.map((l) => l.outcome)];
-  if (outcomes.length === 0 || outcomes.some(isOpen)) return "The coach suggests";
+  if (outcomes.length === 0 || outcomes.some(isOpen)) return changesPart ? "Each change" : "The coach suggests";
   const added = outcomes.filter((o) => o?.status === "applied").length;
+  if (changesPart) return added === outcomes.length ? "Changed" : added === 0 ? LEFT_AS_PLANNED : "Some changed";
   return added === outcomes.length ? "Added to your plan" : added === 0 ? "Not added" : "Some added";
 }
 
@@ -61,11 +68,6 @@ export const YOUR_VERSION = "(your version)";
 export const TIME_PASSED_LINE = "That time has passed — pick another";
 /** A now design the approve can't place: no time is left today (round 2, Minor 2). Edit is beside it. */
 export const NO_TIME_LEFT_LINE = "No time left today — pick a time";
-
-/** The follow-up line's placeholder (coach everywhere, A2): what the athlete wants changed, in their words. */
-export const FOLLOW_UP_PLACEHOLDER = "Change something…";
-/** Its words, at most (the server's own cap on a request is far above it). */
-export const FOLLOW_UP_MAX_CHARS = 500;
 
 /** A designed suggestion's read. */
 export const designProposalQuery = (id: string) => ["coach-design-proposal", id] as const;
@@ -200,21 +202,16 @@ export function ProposalCard({
   proposalId,
   flags = [],
   today = null,
-  onFollowUp,
-  followUpBusy = false,
-  followUpError = null,
+  part,
 }: {
   proposalId: string;
   flags?: readonly string[];
   today?: string | null;
   /**
-   * A follow-up (coach everywhere, A2): "Change something…" under a pending single-workout suggestion sends these words
-   * as a run asked from it — whose suggestion replaces this one. Absent: no line.
+   * One part of the suggestion (the conversation, where one run's workout and its changes to the plan are two cards):
+   * its workouts, or its changes — shown, approved and declined by their own ids, never the whole suggestion's.
    */
-  onFollowUp?: (words: string) => void;
-  followUpBusy?: boolean;
-  /** Why the follow-up didn't start, in plain words. */
-  followUpError?: string | null;
+  part?: "workouts" | "changes";
 }) {
   const qc = useQueryClient();
   const headingId = useId();
@@ -259,6 +256,8 @@ export function ProposalCard({
     for (const key of ["plan", "plan-week", "today", "coach-state"]) void qc.invalidateQueries({ queryKey: [key] });
     // The current read too (round 2, Minor 11): what is still open — "Also waiting" and its counts — follows at once.
     void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
+    // …and the conversation's cards, what came of each.
+    void qc.invalidateQueries({ queryKey: CONVERSATION_QUERY });
   };
   const approve = useMutation({
     networkMode: "always",
@@ -298,8 +297,9 @@ export function ProposalCard({
 
   const data = read.data;
   if (!data || !cardShows(data)) return null;
-  const lines = data.lines ?? [];
-  const changes = data.changes ?? [];
+  const lines = part === "changes" ? [] : (data.lines ?? []);
+  const changes = part === "workouts" ? [] : (data.changes ?? []);
+  if (lines.length + changes.length === 0) return null;
   // In the card's order: the changes first (the server applies them first too), then the workouts.
   const openIds = [...changes.filter((c) => isOpen(c.outcome)).map((c) => c.opId), ...lines.filter((l) => isOpen(l.outcome)).map((l) => l.opId)];
   // The suggestion as the server holds it: closed whole (expired, or every one decided) when nothing is open in a status
@@ -309,20 +309,15 @@ export function ProposalCard({
   const picked = chosen === null ? openIds : openIds.filter((id) => chosen.has(id));
   const toggle = (opId: string) => setChosen(new Set(picked.includes(opId) ? picked.filter((x) => x !== opId) : [...picked, opId]));
   const busy = approve.isPending || decline.isPending;
-  // A follow-up changes one open suggestion of one workout (A2): pending, nothing in it decided, no set's (a set's read
-  // carries the plan's other days) — the server refuses a set's, and supersedes only a pending one. And one workout
-  // alone: a suggestion that also changes the plan (a skip beside it) is replaced whole by its follow-up, its changes
-  // with it, so it isn't offered one (the review, minor 5).
-  const followable =
-    onFollowUp !== undefined && data.status === "pending" && lines.length === 1 && changes.length === 0 && data.context === undefined && openIds.length === 1;
-  const some = picked.length < openIds.length ? picked : undefined;
+  // None named is the whole suggestion: one part's are always named.
+  const some = picked.length < openIds.length || part !== undefined ? picked : undefined;
   // A decline that met every one in flight says so on their lines, not here.
   const error = approve.isError ? decisionError(approve.error) : decline.isError && met.size === 0 ? decisionError(decline.error) : null;
-  const items = cardRows(changes, lines, data.context ?? []);
+  const items = cardRows(changes, lines, part ? [] : (data.context ?? []));
   return (
     <section ref={card} className="coach-pc" aria-labelledby={headingId}>
       <h2 id={headingId} className="coach-pc-title-h">
-        {cardHeader(lines, changes)}
+        {cardHeader(lines, changes, part === "changes")}
       </h2>
       {flags.map((f, i) => (
         <p key={i} className="coach-pc-flag">
@@ -395,7 +390,7 @@ export function ProposalCard({
         ) : (
           <div className="btn-row coach-pc-actions">
             <button type="button" className="btn btn-primary" disabled={busy || picked.length === 0} onClick={() => oneTap(() => approve.mutateAsync(some))}>
-              {some ? `Approve ${some.length}` : "Approve"}
+              {picked.length < openIds.length ? `Approve ${picked.length}` : "Approve"}
             </button>
             <button type="button" className="btn" disabled={busy || picked.length === 0} onClick={() => setDeclining(true)}>
               Decline
@@ -403,52 +398,7 @@ export function ProposalCard({
           </div>
         )
       ) : null}
-      {followable && !declining ? (
-        <FollowUpLine id={`${headingId}-change`} busy={busy || followUpBusy} error={followUpError} onSend={onFollowUp!} />
-      ) : null}
     </section>
-  );
-}
-
-/**
- * "Change something…" (coach everywhere, A2): one line under the suggestion, its words the follow-up's request. Empty
- * words send nothing; the field keeps them until the follow-up's run takes the card's place.
- */
-function FollowUpLine({ id, busy, error, onSend }: { id: string; busy: boolean; error: string | null; onSend: (words: string) => void }) {
-  const [words, setWords] = useState("");
-  return (
-    <form
-      className="coach-pc-follow"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const said = words.trim();
-        if (said && !busy) onSend(said);
-      }}
-    >
-      <label className="visually-hidden" htmlFor={id}>
-        Change something about this suggestion
-      </label>
-      <div className="coach-pc-follow-row">
-        <input
-          id={id}
-          className="stu-field coach-pc-follow-field"
-          type="text"
-          maxLength={FOLLOW_UP_MAX_CHARS}
-          placeholder={FOLLOW_UP_PLACEHOLDER}
-          value={words}
-          disabled={busy}
-          onChange={(e) => setWords(e.target.value)}
-        />
-        <button type="submit" className="btn btn-small" disabled={busy}>
-          Send
-        </button>
-      </div>
-      {error ? (
-        <p className="coach-pc-error" role="status">
-          {error}
-        </p>
-      ) : null}
-    </form>
   );
 }
 
