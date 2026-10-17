@@ -210,5 +210,7 @@ describe("the card's 'Change something…' line", () => {
       "coach-pc-follow",
     );
     expect(card({ status: "pending", lines: [line("o1")] })).not.toContain("coach-pc-follow");
+    // Its day passed (expired), its lines undecided: no longer the athlete's to change.
+    expect(card({ status: "expired", lines: [line("o1")] }, follow)).not.toContain("coach-pc-follow");
   });
 });

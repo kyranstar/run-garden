@@ -275,11 +275,13 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
   const foot = (
     <div className="stu-detail-actions">
       {added}
-      <button type="button" className="btn btn-primary stu-detail-add" onClick={() => onAdd(rec)}>
-        Add
-      </button>
-      {/* The coach, asked about this move (coach everywhere, A3). */}
-      <AskCoach focus={moveFocus(rec)} />
+      <div className="stu-detail-buttons">
+        <button type="button" className="btn btn-primary stu-detail-add" onClick={() => onAdd(rec)}>
+          Add
+        </button>
+        {/* The coach, asked about this move (coach everywhere, A3). */}
+        <AskCoach focus={moveFocus(rec)} />
+      </div>
     </div>
   );
   return wide ? (

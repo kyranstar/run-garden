@@ -11265,15 +11265,14 @@ a.stu-tpl-open:focus-visible::before {
   min-width: 0;
   min-height: var(--tap);
 }
-/* A day of the week view: its Ask at the row's end on a phone, at the column's foot from lg — shown there when the day
-   is pointed at or holds the focus, so seven of them never crowd the grid. */
+/* A day of the week view: its Ask at the row's end on a phone, level with the day's name; at the column's foot from lg
+   — shown there when the day is pointed at or holds the focus, so seven of them never crowd the grid. */
 .plan-week-ask {
   flex: none;
-  align-self: center;
+  align-self: flex-start;
 }
 @media (min-width: 1024px) {
   .plan-week-ask {
-    align-self: flex-start;
     margin-top: auto;
   }
 }
@@ -11292,8 +11291,14 @@ a.stu-tpl-open:focus-visible::before {
 .obj-ask {
   flex: none;
 }
-.stu-detail-actions > .ask-coach {
-  align-self: flex-start;
+/* A move's Add and its Ask, side by side: Add keeps the width. */
+.stu-detail-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.stu-detail-buttons > .stu-detail-add {
+  flex: 1;
 }
 
 /* The run view. */
