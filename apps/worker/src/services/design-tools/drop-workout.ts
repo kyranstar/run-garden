@@ -9,13 +9,16 @@
 import { z } from "zod";
 import { dayLabel } from "@rg/domain";
 import { opIdOf, readSetProposal, writeSetOps } from "../design-orchestrate.js";
-import { isErr, parseAct } from "./act-common.js";
+import { capInWords, isErr, parseAct, prose } from "./act-common.js";
+import { clipProse } from "../design-prose.js";
 import { designProposalId } from "./propose.js";
 import { refuse, untrusted } from "./read-common.js";
 import type { DesignTool } from "./types.js";
 
 const REASON_MAX = 200;
-const input = z.object({ opId: z.string().min(1).max(200), reason: z.string().trim().min(1).max(REASON_MAX) }).strict();
+/** The reason is free text the athlete reads (Task 13's fix wave, §2.1; round 2, Minor 8): kept up to four times its cap
+ * and clipped where it is stored, refused only past that, in words. */
+const input = z.object({ opId: z.string().min(1).max(200), reason: prose(REASON_MAX) }).strict();
 
 export const dropWorkout: DesignTool = {
   name: "drop_workout",
@@ -25,7 +28,7 @@ export const dropWorkout: DesignTool = {
     type: "object",
     properties: {
       opId: { type: "string", minLength: 1, maxLength: 200, description: "The workout's op id." },
-      reason: { type: "string", minLength: 1, maxLength: REASON_MAX, description: "Why it goes, in plain words for the athlete." },
+      reason: { type: "string", minLength: 1, description: `Why it goes, in plain words for the athlete: ${capInWords(REASON_MAX)}.` },
     },
     required: ["opId", "reason"],
     additionalProperties: false,
@@ -34,8 +37,9 @@ export const dropWorkout: DesignTool = {
   cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
-    const p = parseAct(input, raw, `opId (a workout's op id) and reason (plain words, at most ${REASON_MAX} characters)`);
-    if (isErr(p)) return p;
+    const parsed = parseAct(input, raw, `opId (a workout's op id) and reason (plain words, ${capInWords(REASON_MAX)})`);
+    if (isErr(parsed)) return parsed;
+    const p = { ...parsed, reason: clipProse(parsed.reason, REASON_MAX) };
     const rounds = ctx.set?.rounds() ?? [];
     if (rounds.length === 0) {
       return refuse("no_set", "drop_workout takes a workout out of a planned set, and no set is planned in this run.", "Call plan_set first — or, for one workout, simply don't propose it.");

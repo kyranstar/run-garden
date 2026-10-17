@@ -80,3 +80,54 @@ describe("I1: what the athlete reads, in their words", () => {
   });
 });
 
+describe("Minor 8: a change's words are soft-capped", () => {
+  const long = (n: number) => `${"Today's reading is high, so the evening session comes off and a short relief session takes its place. ".repeat(12)}`.slice(0, n);
+
+  it("adjust_plan: a why and a skip's reason over their caps are kept, clipped where the athlete reads them", async () => {
+    const run = await mainRun();
+    const out = ok(await adjustPlan.run(ctxOf(run), { workoutId: rich.outlineToday, change: { kind: "skip", reason: long(500) }, why: long(700) }));
+    const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `dp-${run.id}`));
+    const op = (p!.ops as Array<{ kind: string; why: string; op: { reason?: string } }>).find((o) => o.kind === "plan_adjust")!;
+    expect(op.why.length).toBeLessThanOrEqual(300);
+    expect(op.op.reason!.length).toBeLessThanOrEqual(200);
+    expect(op.why).toMatch(/\.$/);
+    expect(out.summary).toBeDefined();
+  });
+
+  it("adjust_plan: past four times its cap, refused with the length in words", async () => {
+    const e = err(await adjustPlan.run(ctxOf(await mainRun()), { workoutId: rich.outlineToday, change: { kind: "skip", reason: "x".repeat(900) }, why: "Rest it." }));
+    expect(e.why).toContain("change.reason is 900 characters; at most 200 — about 30 words");
+    const w = err(await adjustPlan.run(ctxOf(await mainRun()), { workoutId: rich.outlineToday, change: { kind: "skip", reason: "Rest." }, why: "y".repeat(1_300) }));
+    expect(w.why).toContain("why is 1,300 characters; at most 300 — about 45 words");
+  });
+});
+
+describe("Minor 8: drop_workout's reason is soft-capped", () => {
+  async function setWithOne(): Promise<{ ctx: ToolContext; opId: string }> {
+    const id = `run-${++seq}-${newId().slice(0, 8)}`;
+    await db.insert(schema.coachRuns).values({
+      id, userId: rich.userId, parentId: null, role: "main", scope: { kind: "week" }, request: "Plan my week.",
+      status: "active", state: null, steps: 0, costUsd: 0, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+    });
+    const opId = `ds-${id}-a`;
+    const op = { kind: "doc_workout", target: { kind: "new", date: TODAY }, date: TODAY, doc: { title: "Calm hips" }, review: null, issues: [], derived: {}, by: { runId: opId, role: "designer" }, toolUseId: "t1", at: NOW.toISOString() };
+    await db.insert(schema.coachProposals).values({ id: `dp-${id}`, userId: rich.userId, title: "Calm hips", evidence: "", rationale: "", flags: [], ops: [op], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: TODAY });
+    const round = { toolUseId: "t0", redo: false, briefs: [], designers: [{ key: "a", runId: opId }] };
+    const set = { rounds: () => [round], budget: () => ({ ceilingMicros: 6_000_000, spentMicros: 0, mainSpentMicros: 0, perDesignerMicros: null, estimate: null }), keyLine: () => undefined, started: () => false, start: async () => [] };
+    return { ctx: { ...ctxOf({ id, role: "main", scope: { kind: "week" }, parentId: null, rehearsal: false }), set } as ToolContext, opId };
+  }
+
+  it("a reason over its cap is kept, clipped where the athlete reads it; past four times it, refused in words", async () => {
+    const reason = `${"The long run sits the next morning, so the legs need the evening off. ".repeat(6)}`.trim();
+    expect(reason.length).toBeGreaterThan(200);
+    const { ctx, opId } = await setWithOne();
+    const out = ok(await dropWorkout.run(ctx, { opId, reason }));
+    const said = out.summary!.split("): ")[1]!;
+    expect(said.length).toBeLessThanOrEqual(200);
+    expect(reason.startsWith(said)).toBe(true);
+    const again = await setWithOne();
+    const e = err(await dropWorkout.run(again.ctx, { opId: again.opId, reason: "z".repeat(801) }));
+    expect(e.why).toContain("reason is 801 characters; at most 200 — about 30 words");
+  });
+});
+

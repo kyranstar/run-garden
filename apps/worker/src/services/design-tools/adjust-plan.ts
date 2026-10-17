@@ -52,7 +52,8 @@ import { horizonDays } from "../design-context.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, planAdjustId, type PlanAdjustOp, type PlanChange, type PlanRowSnapshot } from "../proposal-kinds.js";
-import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
+import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
+import { clipProse } from "../design-prose.js";
 import { designProposalId, upsertProposal, type DocWorkoutOp } from "./propose.js";
 import { dateField, DATE_SCHEMA, parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 import type { DesignTool, ToolContext, ToolErr, ToolOk } from "./types.js";
@@ -72,11 +73,13 @@ export const MAX_CHANGES = 10;
 export const SANCTIONED_REST_PER_ROLLING_WEEK = 1;
 
 const change = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("skip"), reason: z.string().trim().min(1).max(REASON_MAX) }).strict(),
+  z.object({ kind: z.literal("skip"), reason: prose(REASON_MAX) }).strict(),
   z.object({ kind: z.literal("move"), toDate: dateField, toTime: z.string().regex(CLOCK, "must be a time like 17:30").optional() }).strict(),
   z.object({ kind: z.literal("adjust"), durationMinutes: z.number().int().min(MINUTES.min).max(MINUTES.max) }).strict(),
 ]);
-const input = z.object({ workoutId: z.string().trim().min(1).max(120), change, why: z.string().trim().min(1).max(WHY_MAX) }).strict();
+/** The words the athlete reads (a skip's reason, the change's why) are free text (Task 13's fix wave, §2.1; round 2, Minor
+ * 8): kept up to four times their caps and clipped where they are stored, refused only past that, in words. */
+const input = z.object({ workoutId: z.string().trim().min(1).max(120), change, why: prose(WHY_MAX) }).strict();
 
 /** The session as the read gives it. */
 interface Row {
@@ -257,7 +260,7 @@ export const adjustPlan: DesignTool = {
         anyOf: [
           {
             type: "object",
-            properties: { kind: { const: "skip" }, reason: { type: "string", maxLength: REASON_MAX, description: "Why it comes off, for the athlete." } },
+            properties: { kind: { const: "skip" }, reason: { type: "string", description: `Why it comes off, for the athlete: ${capInWords(REASON_MAX)}.` } },
             required: ["kind", "reason"],
             additionalProperties: false,
           },
@@ -275,7 +278,7 @@ export const adjustPlan: DesignTool = {
           },
         ],
       },
-      why: { type: "string", maxLength: WHY_MAX, description: "Why, in one plain line the athlete reads beside the change." },
+      why: { type: "string", description: `Why, in one plain line the athlete reads beside the change: ${capInWords(WHY_MAX)}.` },
     },
     required: ["workoutId", "change", "why"],
     additionalProperties: false,
@@ -284,8 +287,14 @@ export const adjustPlan: DesignTool = {
   cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
-    const p = parseAct(input, raw, "workoutId, change ({ kind: skip, reason } or { kind: move, toDate, toTime? } or { kind: adjust, durationMinutes }) and why");
-    if (isErr(p)) return p;
+    const parsed = parseAct(input, raw, "workoutId, change ({ kind: skip, reason } or { kind: move, toDate, toTime? } or { kind: adjust, durationMinutes }) and why");
+    if (isErr(parsed)) return parsed;
+    // Clipped where the athlete reads them (§2.1): the change's why, a skip's reason.
+    const p = {
+      ...parsed,
+      why: clipProse(parsed.why, WHY_MAX),
+      change: parsed.change.kind === "skip" ? { ...parsed.change, reason: clipProse(parsed.change.reason, REASON_MAX) } : parsed.change,
+    };
     const mainRunId = mainRunIdOf(ctx);
     if (ctx.run.role !== "main" || !mainRunId) return refuse("not_for_role", "Only the main coach changes the plan.", "Say in your finish line what you would change.");
     const proposalId = designProposalId(mainRunId);
