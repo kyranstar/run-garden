@@ -25,7 +25,7 @@ import { outboxEntries } from "../src/offline/outbox.js";
 import { drainUnstarts, queuedUnstarts } from "../src/offline/unstarts.js";
 import { saveBasis, saveExtras } from "../src/player/stored.js";
 import { PlayerScreen } from "../src/screens/player.js";
-import type { Chimes } from "../src/player/audio.js";
+import type { CuePlayer } from "../src/player/cue-player.js";
 import { build, exercise, flagLabel, profiles, SLOT, T0, TODAY, view } from "./player/fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -47,7 +47,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const noChimes: Chimes = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined };
+const noCues: CuePlayer = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined, configure: () => undefined, preview: () => undefined, running: () => false };
 const offline = () => Promise.reject(new TypeError("Failed to fetch"));
 
 async function stored(opts: { build?: SessionBuildDto; basis?: ReviewBasisDto | null } = {}) {
@@ -82,7 +82,7 @@ function mount(
       savePerformed,
       unstartSession,
       whoAmI: opts.whoAmI ?? (async () => null),
-      chimes: noChimes,
+      cues: noCues,
       wake: () => () => undefined,
       ...(opts.saveWaitMs === undefined ? {} : { saveWaitMs: opts.saveWaitMs }),
     },
@@ -452,7 +452,7 @@ describe("a session saved here and not yet synced", () => {
                 path: "/session/:workoutId",
                 element: createElement(PlayerScreen, {
                   workoutId: SLOT,
-                  deps: { db: () => Promise.resolve(db!), getSession, reviewBasis: vi.fn(offline), savePerformed: vi.fn(offline), chimes: noChimes, wake: () => () => undefined },
+                  deps: { db: () => Promise.resolve(db!), getSession, reviewBasis: vi.fn(offline), savePerformed: vi.fn(offline), cues: noCues, wake: () => () => undefined },
                 }),
               }),
             ),

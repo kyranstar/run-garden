@@ -25,7 +25,7 @@ import { offlineDb } from "../../offline/idb.js";
 import { requestPersistentStorage } from "../../offline/live.js";
 import { forgetLocalStart, isLocalId, localIdOf, rememberLocalStart, startKindOf, unfinishedLocalStart, type LocalStart } from "../../offline/local-starts.js";
 import { meWithOfflineFallback } from "../../offline/me.js";
-import { chimes } from "../../player/audio.js";
+import { cuePlayer } from "../../player/cue-player.js";
 import { localBuild } from "../../player/local-build.js";
 import { forgetStart, saveExtras } from "../../player/stored.js";
 import type { useStudioDraft } from "../../studio-drafts.js";
@@ -586,7 +586,7 @@ export function useBuildFlows({
   const startNow = async (gesture: boolean) => {
     if (gesture) {
       // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (as the session sheet's Start).
-      chimes.unlock();
+      cuePlayer.unlock();
       void requestPersistentStorage();
     }
     if (!judged?.doc || judged.blocked || flow.step === "busy") return;

@@ -8411,8 +8411,14 @@ button.session-chip::after {
   font-size: var(--text-sm);
   min-width: 0;
 }
-.player-count-title,
+.player-count-title {
+  display: none;
+}
+/* The session's time left: under the count on a phone (the sound pass, 2026-10-17); after it, with " · ", from md. */
 .player-count-left {
+  display: block;
+}
+.player-count-sep {
   display: none;
 }
 .player-tools {
@@ -8519,6 +8525,43 @@ button.session-chip::after {
   stroke: var(--green);
   stroke-linecap: round;
 }
+/* The last 3 s of a timer (the sound pass): the ring's colour shifts in step with the countdown's ticks — and keeps
+   it under reduced motion; the number's pulse is motion only (below). A rest has no ring: its number takes the colour. */
+.player-ring-fill {
+  transition: stroke 0.3s ease;
+}
+.player-ring.is-ending .player-ring-fill {
+  stroke: var(--accent);
+}
+.player-main > .player-big.is-ending {
+  color: var(--accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .player-big.is-ending {
+    animation: player-pulse 0.6s ease-out;
+  }
+}
+@keyframes player-pulse {
+  from {
+    transform: scale(1.08);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+/* Paused (a tap on the stage, Pause, or a panel): said in words, the clock dimmed around it. */
+.player-paused {
+  padding: var(--space-2) var(--space-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  color: var(--ink);
+  font-weight: var(--weight-medium);
+}
+.player.is-paused .player-ring,
+.player.is-paused .player-big {
+  opacity: 0.45;
+}
 /* A hold to max: the target, where the fill closes. */
 .player-ring-mark {
   stroke: var(--ink);
@@ -8547,6 +8590,50 @@ button.session-chip::after {
 .player-pair .btn {
   flex: 1 1 0;
   max-width: 200px;
+  padding-inline: var(--space-4);
+}
+/* Back (the step before) beside the step's actions: a small secondary control, on every step so the row never shifts. */
+.player-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.player-nav > .player-primary,
+.player-nav > .player-pair {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.player-back {
+  flex: none;
+  width: var(--tap);
+  padding: 0;
+  color: var(--ink-soft);
+}
+.player-back:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* The ring/silent switch, said once on a phone: quiet, under the progress line. */
+.player-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0 var(--space-4);
+  margin: var(--space-4) var(--space-6) 0;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+.player-hint button {
+  min-height: var(--tap);
+  padding: 0 var(--space-4);
+  border: 0;
+  background: none;
+  color: var(--green-ink);
+  font: inherit;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
 }
 .player-kbd {
   display: none;
@@ -8626,8 +8713,15 @@ button.session-chip::after {
 }
 @media (min-width: 900px) {
   .player-count-title,
-  .player-count-left {
+  .player-count-left,
+  .player-count-sep {
     display: inline;
+  }
+  .player-nav {
+    justify-content: center;
+  }
+  .player-nav > .player-primary {
+    flex: 0 1 auto;
   }
   .player-keylist dl {
     display: grid;
@@ -8646,6 +8740,78 @@ button.session-chip::after {
   .player-kbd {
     display: block;
   }
+}
+
+/* The session's sound (the sound pass, 2026-10-17): on/off, the volume, the sounds with a ▶ each — in the player's
+   Settings sheet and app Settings → Sessions → Sounds. Every control a fingertip. */
+.sound-settings {
+  display: grid;
+  min-width: 0;
+}
+.sound-volume input[type="range"] {
+  width: min(14rem, 100%);
+  min-height: var(--tap);
+  margin: 0;
+  accent-color: var(--green);
+}
+.sound-choices {
+  display: grid;
+}
+.sound-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.sound-choice [role="radio"] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--space-5);
+  min-height: var(--tap);
+  padding: var(--space-3) 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* The radio's own mark: a ring, filled when chosen (never colour alone: the dot is the sign). */
+.sound-choice [role="radio"]::before {
+  content: "";
+  grid-row: 1 / span 2;
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 2px solid var(--border-strong);
+  border-radius: var(--radius-round);
+  background: var(--bg-raised);
+}
+.sound-choice [role="radio"][aria-checked="true"]::before {
+  border-color: var(--green);
+  box-shadow: inset 0 0 0 3px var(--bg-raised);
+  background: var(--green);
+}
+.sound-choice [role="radio"] small {
+  grid-column: 2;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+}
+.sound-play {
+  display: inline-grid;
+  place-items: center;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--green-ink);
+  cursor: pointer;
+}
+.sound-play:hover {
+  border-color: var(--ink-faint);
 }
 
 /* Settings → Data: a session the server refused (Phase 2b). One quiet row. */

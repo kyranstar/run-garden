@@ -24,7 +24,7 @@ import { readLive } from "../src/offline/live.js";
 import { drain, outboxEntries } from "../src/offline/outbox.js";
 import { queuedUnstarts } from "../src/offline/unstarts.js";
 import { saveExtras } from "../src/player/stored.js";
-import type { Chimes } from "../src/player/audio.js";
+import type { CuePlayer } from "../src/player/cue-player.js";
 import { PlayerScreen } from "../src/screens/player.js";
 import { SessionsInProgress } from "../src/components/sessions-in-progress.js";
 import { UnsyncedSessions } from "../src/components/unsynced-sessions.js";
@@ -91,7 +91,7 @@ async function device(): Promise<OfflineDb> {
 }
 
 const offline = () => Promise.reject(new TypeError("Failed to fetch"));
-const noChimes: Chimes = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined };
+const noCues: CuePlayer = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined, configure: () => undefined, preview: () => undefined, running: () => false };
 
 function render(el: React.ReactElement) {
   host = document.createElement("div");
@@ -136,7 +136,7 @@ function player(d: OfflineDb, api: { savePerformed: Server["savePerformed"] | ty
         savePerformed: api.savePerformed,
         unstartSession: api.unstartSession ?? vi.fn(offline),
         whoAmI: async () => ME,
-        chimes: noChimes,
+        cues: noCues,
         wake: () => () => undefined,
         saveWaitMs: 50,
       },

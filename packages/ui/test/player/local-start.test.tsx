@@ -20,7 +20,7 @@ import { drain, outboxEntries } from "../../src/offline/outbox.js";
 import { localBuild } from "../../src/player/local-build.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
-import type { Chimes } from "../../src/player/audio.js";
+import type { CuePlayer } from "../../src/player/cue-player.js";
 import { profiles, T0, TODAY } from "./fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -46,7 +46,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const noChimes: Chimes = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined };
+const noCues: CuePlayer = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined, configure: () => undefined, preview: () => undefined, running: () => false };
 const offline = () => Promise.reject(new TypeError("Failed to fetch"));
 
 const doc = workoutDocSchema.parse({
@@ -77,7 +77,7 @@ function mount(opts: { online?: boolean } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const player = createElement(PlayerScreen, {
     workoutId: LOCAL,
-    deps: { db: () => Promise.resolve(db!), getSession, reviewBasis, savePerformed, createWorkout, unstartSession, whoAmI: async () => null, chimes: noChimes, wake: () => () => undefined, saveWaitMs: 2000 },
+    deps: { db: () => Promise.resolve(db!), getSession, reviewBasis, savePerformed, createWorkout, unstartSession, whoAmI: async () => null, cues: noCues, wake: () => () => undefined, saveWaitMs: 2000 },
   });
   root = createRoot(host);
   act(() => {

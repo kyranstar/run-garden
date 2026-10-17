@@ -22,7 +22,7 @@ import { label as vocab } from "@rg/exercise-library";
 import { CategoryDot, formatDayShort, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
 import { IconWatch } from "../icons.js";
-import { chimes } from "../player/audio.js";
+import { cuePlayer } from "../player/cue-player.js";
 import { offlineDb } from "../offline/idb.js";
 import { outboxEntries } from "../offline/outbox.js";
 import { useSignedInUserId } from "./outbox-sync.js";
@@ -111,8 +111,8 @@ export const playerHref = (w: WorkoutDto) => `/session/${encodeURIComponent(w.id
  * happen there, online (ruling 2b-R1). Continue opens the player, which plays what Start left on the device.
  */
 const playHref = (w: WorkoutDto, play: "Start" | "Continue") => (play === "Start" ? sheetHref(w) : playerHref(w));
-/** Continue is a tap: audio unlocks inside it (the player's chimes). */
-const unlockAudio = () => chimes.unlock();
+/** Continue is a tap: audio unlocks inside it (the player's cues). */
+const unlockAudio = () => cuePlayer.unlock();
 
 /**
  * A started session stays playable while its save would be taken (ruling 2b-R16, after 2b-R7): on its day and the day

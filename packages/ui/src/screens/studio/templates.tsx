@@ -31,7 +31,7 @@ import { accountTodayGuess, ConfirmDialog, EmptyState, Sheet, Spinner } from "..
 import { features } from "../../features.js";
 import { IconBack, IconMore, IconPin } from "../../icons.js";
 import { requestPersistentStorage } from "../../offline/live.js";
-import { chimes } from "../../player/audio.js";
+import { cuePlayer } from "../../player/cue-player.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { BuildEntry } from "./build-entry.js";
 import { sortTemplates, templateFacts, templateHref, type BuilderArrival } from "./templates-model.js";
@@ -111,7 +111,7 @@ export function TemplatesScreen() {
 
   const start = (t: TemplateDto) => {
     // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (as every Start does).
-    chimes.unlock();
+    cuePlayer.unlock();
     void requestPersistentStorage();
     navigate(templateHref(t.id), { state: { from: "templates", then: "start" } satisfies BuilderArrival });
   };

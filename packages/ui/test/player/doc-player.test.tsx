@@ -16,7 +16,7 @@ import { saveBuild } from "../../src/offline/builds.js";
 import { readLive } from "../../src/offline/live.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
-import type { Chimes } from "../../src/player/audio.js";
+import type { Cue, CuePlayer } from "../../src/player/cue-player.js";
 import { build, docBuild, docView, exercise, HOLD_CUE, maxBuild, PLANNED_WHY, profiles, SLOT, SQUAT_CUE, STRETCH_CUE, T0, view } from "./fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -24,7 +24,7 @@ import { build, docBuild, docView, exercise, HOLD_CUE, maxBuild, PLANNED_WHY, pr
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 let db: OfflineDb | null = null;
-let scheduled: number[][] = [];
+let scheduled: Cue[][] = [];
 /** How many steps the build started has. */
 let total = 9;
 
@@ -48,7 +48,14 @@ afterEach(() => {
   }
 });
 
-const chimes: Chimes = { unlock: () => undefined, schedule: (due) => void scheduled.push([...due]), cancel: () => undefined };
+const cues: CuePlayer = {
+  unlock: () => undefined,
+  schedule: (list) => void scheduled.push([...list]),
+  cancel: () => undefined,
+  configure: () => undefined,
+  preview: () => undefined,
+  running: () => false,
+};
 
 async function start(b: SessionBuildDto, v: SessionViewDto): Promise<void> {
   db = await openOfflineDb(new IDBFactory());
@@ -62,7 +69,7 @@ async function start(b: SessionBuildDto, v: SessionViewDto): Promise<void> {
     deps: {
       db: () => Promise.resolve(db!),
       getSession: () => Promise.reject(new TypeError("Failed to fetch")),
-      chimes,
+      cues,
       wake: () => () => undefined,
     },
   });
@@ -127,9 +134,12 @@ async function stepTo(n: number) {
 }
 /** What sits right under the move's name. */
 const underName = () => document.querySelector("h1.player-name")?.nextElementSibling ?? null;
-/** The footer's actions in order: each one's words, and whether it is the primary one. Every one is a 44px `.btn`. */
+/**
+ * The footer's actions in order: each one's words, and whether it is the primary one. Every one is a 44px `.btn`. Back
+ * (the step before, beside them on every step) is not one of the step's own.
+ */
 function actions(): Array<[string, boolean]> {
-  const buttons = [...document.querySelectorAll<HTMLButtonElement>(".player-actions button")];
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>(".player-actions button:not(.player-back)")];
   for (const b of buttons) expect(b.classList.contains("btn")).toBe(true);
   return buttons.map((b) => [b.textContent!.trim(), b.classList.contains("btn-primary")]);
 }
@@ -177,8 +187,14 @@ describe("a document workout's items, played", () => {
     await start(docBuild(), docView());
     await stepTo(8);
     expect(text()).toContain("Get ready");
-    // A chime ends the get-ready and another marks the target; none past it (it ends on Done).
-    expect(scheduled.at(-1)).toEqual([T0 + 8 * S, T0 + 48 * S]);
+    // The get-ready counts down into go, and a cue marks the target; none past it (it ends on Done).
+    expect(scheduled.at(-1)).toEqual([
+      { at: T0 + 5 * S, kind: "tick", n: 3 },
+      { at: T0 + 6 * S, kind: "tick", n: 2 },
+      { at: T0 + 7 * S, kind: "tick", n: 1 },
+      { at: T0 + 8 * S, kind: "go" },
+      { at: T0 + 48 * S, kind: "target" },
+    ]);
     await at(T0 + 38 * S);
     expect(text()).toContain("0:30");
     expect(text()).toContain("To max");
@@ -353,7 +369,7 @@ describe("a document workout's items, played", () => {
     expect(document.querySelector(".player-big")!.textContent).toBe("0:30");
     expect(text()).toContain("Paused");
     expect(text()).toContain("Held 0:22");
-    expect(actions()).toEqual([["Resume", true], ["+15 s", false], ["Skip", false]]);
+    expect(actions()).toEqual([["Resume", true], ["−15 s", false], ["+15 s", false], ["Skip", false]]);
     await click("Skip");
     await until(() => text().includes("6 of 6"), "the set");
     expect(text()).toContain("Paused");
@@ -439,7 +455,7 @@ describe("a document workout's items, played", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const player = createElement(PlayerScreen, {
       workoutId: SLOT,
-      deps: { db: () => Promise.resolve(db!), getSession: () => Promise.reject(new TypeError("Failed to fetch")), chimes, wake: () => () => undefined },
+      deps: { db: () => Promise.resolve(db!), getSession: () => Promise.reject(new TypeError("Failed to fetch")), cues, wake: () => () => undefined },
     });
     root = createRoot(host!);
     act(() => {

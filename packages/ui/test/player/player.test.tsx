@@ -11,6 +11,9 @@
  *  - ✕ asks, Leave keeps the session, and opening it again resumes on the same step with the timer where it was.
  */
 import { act, createElement } from "react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -22,7 +25,7 @@ import { saveBuild } from "../../src/offline/builds.js";
 import { readLive, type LiveSession } from "../../src/offline/live.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
-import type { Chimes } from "../../src/player/audio.js";
+import type { Cue, CuePlayer, SoundSettings } from "../../src/player/cue-player.js";
 import { build, flagLabel, profiles, SLOT, T0, view } from "./fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -50,16 +53,37 @@ afterEach(() => {
   }
 });
 
-const noChimes: Chimes = { unlock: () => undefined, schedule: () => undefined, cancel: () => undefined };
+const noCues: CuePlayer = {
+  unlock: () => undefined,
+  schedule: () => undefined,
+  cancel: () => undefined,
+  configure: () => undefined,
+  preview: () => undefined,
+  running: () => false,
+};
 
-async function storedStart(): Promise<OfflineDb> {
+/** A cue player that keeps what it was asked. */
+function recordingCues(running: () => boolean = () => false) {
+  const calls = { unlock: 0, cancel: 0, schedule: [] as Cue[][], configure: [] as SoundSettings[], preview: [] as Array<[string, string | undefined]> };
+  const cues: CuePlayer = {
+    unlock: () => void calls.unlock++,
+    schedule: (list) => void calls.schedule.push([...list]),
+    cancel: () => void calls.cancel++,
+    configure: (settings) => void calls.configure.push({ ...settings }),
+    preview: (cue, palette) => void calls.preview.push([cue, palette]),
+    running,
+  };
+  return { cues, calls };
+}
+
+async function storedStart(b = build()): Promise<OfflineDb> {
   db = await openOfflineDb(new IDBFactory());
-  await saveBuild(db, { workoutId: SLOT, build: build(), view: view() } as unknown as SessionDto);
+  await saveBuild(db, { workoutId: SLOT, build: b, view: view() } as unknown as SessionDto);
   await saveExtras(db, { workoutId: SLOT, title: "Program one", profiles: profiles(), savedAt: T0 });
   return db;
 }
 
-function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: number; noIndexedDb?: boolean } = {}) {
+function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: number; noIndexedDb?: boolean; cues?: CuePlayer; wake?: () => () => void } = {}) {
   const getSession = vi.fn(opts.getSession ?? (() => Promise.reject(new TypeError("Failed to fetch"))));
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -69,8 +93,8 @@ function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: nu
     deps: {
       db: () => (opts.noIndexedDb ? Promise.reject(new Error("IndexedDB is unavailable")) : Promise.resolve(db!)),
       getSession,
-      chimes: noChimes,
-      wake: () => () => undefined,
+      cues: opts.cues ?? noCues,
+      wake: opts.wake ?? (() => () => undefined),
       ...(opts.writeDelayMs === undefined ? {} : { writeDelayMs: opts.writeDelayMs }),
     },
   });
@@ -520,9 +544,12 @@ describe("keeping the session on the device", () => {
   });
 });
 
-/** The footer's actions in order: each one's words, and whether it is the primary one. Every one is a 44px `.btn`. */
+/**
+ * The footer's actions in order: each one's words, and whether it is the primary one. Every one is a 44px `.btn`. Back
+ * (the step before, beside them on every step) is checked on its own.
+ */
 function actions(): Array<[string, boolean]> {
-  const buttons = [...document.querySelectorAll<HTMLButtonElement>(".player-actions button")];
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>(".player-actions button:not(.player-back)")];
   for (const b of buttons) expect(b.classList.contains("btn")).toBe(true);
   return buttons.map((b) => [b.textContent!.trim(), b.classList.contains("btn-primary")]);
 }
@@ -550,7 +577,7 @@ describe("a paused session (Stage 2 minors)", () => {
     await click(/^Confirm/);
     await until(() => text().includes("4 of 9"), "the rest");
     expect(text()).toContain("Paused");
-    expect(actions()).toEqual([["Resume", true], ["+15 s", false], ["Skip", false]]);
+    expect(actions()).toEqual([["Resume", true], ["−15 s", false], ["+15 s", false], ["Skip", false]]);
     expect(hint()).toContain("Space Resume");
     await at(T0 + 60 * S);
     expect(text()).toContain("1:15");
@@ -558,7 +585,7 @@ describe("a paused session (Stage 2 minors)", () => {
     await press(" ");
     expect(text()).toContain("4 of 9");
     expect(text()).not.toContain("Paused");
-    expect(actions()).toEqual([["+15 s", false], ["Skip", false]]);
+    expect(actions()).toEqual([["−15 s", false], ["+15 s", false], ["Skip", false]]);
     await at(T0 + 70 * S);
     expect(text()).toContain("1:05");
     // The session's running time carries on with it: 13 s before the pause, running again from the Resume.
@@ -628,5 +655,274 @@ describe("leave and come back", () => {
     await until(() => text().includes("1 of 9"), "the same step");
     expect(text()).toContain("0:35");
     expect(control("Resume")).toBeDefined();
+  });
+});
+
+// ── The sound pass (2026-10-17) ─────────────────────────────────────────────────────────────────────────────────
+
+/** The cues as [seconds after T0, the cue] — a tick by its count. */
+const rel = (cues: readonly Cue[]): Array<[number, string]> => cues.map((c) => [(c.at - T0) / 1000, c.kind === "tick" ? `tick${c.n}` : c.kind]);
+const css = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src/styles.css"), "utf8");
+
+describe("the session's cues", () => {
+  it("are planned from Start on, cancelled by a pause, and planned again from the clock by Resume", async () => {
+    await storedStart();
+    const { cues, calls } = recordingCues();
+    mount({ cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    // The left side's get-ready into go, its switch, the right side's get-ready into go, its end into the set.
+    expect(rel(calls.schedule.at(-1)!)).toEqual([
+      [1, "tick2"], [2, "tick1"], [3, "go"],
+      [48, "switch"], [49, "tick2"], [50, "tick1"], [51, "go"],
+      [93, "tick3"], [94, "tick2"], [95, "tick1"], [96, "next"],
+    ]);
+    await at(T0 + 13 * S);
+    const cancelled = calls.cancel;
+    await click("Pause");
+    expect(calls.cancel).toBe(cancelled + 1);
+    await at(T0 + 20 * S);
+    await click("Resume");
+    // 13 s ran before the pause: the left side now ends 35 s after the Resume.
+    expect(rel(calls.schedule.at(-1)!).slice(0, 4)).toEqual([[55, "switch"], [56, "tick2"], [57, "tick1"], [58, "go"]]);
+  });
+
+  it("a session ended by a tap plays done at once", async () => {
+    await storedStart();
+    const { cues, calls } = recordingCues();
+    mount({ cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Leave the session");
+    await until(() => !!control("End and review"), "the question");
+    await click("End and review");
+    await until(() => !text().includes("1 of 9"), "the review");
+    expect(calls.schedule.at(-1)).toEqual([{ at: T0 + 50, kind: "done" }]);
+  });
+
+  it("the palette: soft keys for an ordinary session, bowls for a calm one, with the volume kept on the device", async () => {
+    await storedStart();
+    const first = recordingCues();
+    mount({ cues: first.cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(first.calls.configure.at(-1)).toEqual({ on: true, volume: 0.7, palette: "keys" });
+    act(() => root!.unmount());
+    host?.remove();
+    db?.close();
+    localStorage.setItem("rg-player-sound", JSON.stringify({ on: true, volume: 0.4, choice: "auto" }));
+    await storedStart(build({ mode: "recovery" }));
+    const calm = recordingCues();
+    mount({ cues: calm.cues });
+    await until(() => text().includes("1 of 9"), "the first step again");
+    expect(calm.calls.configure.at(-1)).toEqual({ on: true, volume: 0.4, palette: "bowl" });
+  });
+
+  it("audio unlocks on a tap (pointerup, touchend or click) and keeps trying until it runs; coming back to the page tries too", async () => {
+    await storedStart();
+    let runs = false;
+    const { cues, calls } = recordingCues(() => runs);
+    mount({ cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    const base = calls.unlock;
+    await act(async () => window.dispatchEvent(new Event("pointerup")));
+    await act(async () => window.dispatchEvent(new Event("touchend")));
+    expect(calls.unlock).toBe(base + 2);
+    runs = true;
+    await act(async () => window.dispatchEvent(new Event("click")));
+    expect(calls.unlock).toBe(base + 3);
+    // Running: the tap listeners are gone.
+    await act(async () => window.dispatchEvent(new Event("pointerup")));
+    await act(async () => window.dispatchEvent(new Event("click")));
+    expect(calls.unlock).toBe(base + 3);
+    await at(T0 + 1 * S);
+    expect(calls.unlock).toBe(base + 4);
+  });
+});
+
+describe("the sound settings in the player's Settings", () => {
+  it("sound on/off, the volume (live) and the sounds, each with a preview — above \"Move on when a timer ends\"", async () => {
+    await storedStart();
+    const { cues, calls } = recordingCues();
+    mount({ cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Settings");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the sheet");
+    const sound = document.querySelector<HTMLElement>('[role="dialog"] [role="switch"]')!;
+    expect(sound.getAttribute("aria-checked")).toBe("true");
+    expect(sound.compareDocumentPosition(control("Move on when a timer ends")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const radios = [...document.querySelectorAll<HTMLElement>('[role="dialog"] [role="radio"]')];
+    expect(radios.map((r) => [r.textContent!.replace(/\s+/g, " ").trim(), r.getAttribute("aria-checked")])).toEqual([
+      ["Automatic Soft keys; bowls for calm sessions", "true"],
+      ["Soft keys", "false"],
+      ["Bowls", "false"],
+      ["Kalimba", "false"],
+    ]);
+    // A preview is the countdown into go, in that sound; Automatic's is this session's (soft keys).
+    await click("Play Bowls");
+    await click("Play Automatic");
+    expect(calls.preview).toEqual([["count", "bowl"], ["count", "keys"]]);
+    await act(async () => radios[3]!.click());
+    expect(calls.configure.at(-1)).toEqual({ on: true, volume: 0.7, palette: "kalimba" });
+    expect(JSON.parse(localStorage.getItem("rg-player-sound")!)).toEqual({ on: true, volume: 0.7, choice: "kalimba" });
+    const volume = control("Volume") as HTMLInputElement;
+    expect(volume.type).toBe("range");
+    await type(volume, "40");
+    expect(calls.configure.at(-1)).toEqual({ on: true, volume: 0.4, palette: "kalimba" });
+    await act(async () => sound.click());
+    expect(calls.configure.at(-1)).toEqual({ on: false, volume: 0.4, palette: "kalimba" });
+    expect(JSON.parse(localStorage.getItem("rg-player-sound")!)).toEqual({ on: false, volume: 0.4, choice: "kalimba" });
+  });
+});
+
+describe("the ring/silent switch, said once", () => {
+  const nav = navigator as unknown as { audioSession?: unknown };
+  beforeEach(() => {
+    nav.audioSession = { type: "auto" };
+    Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, get: () => 5 });
+  });
+  afterEach(() => {
+    delete nav.audioSession;
+    delete (navigator as unknown as Record<string, unknown>).maxTouchPoints;
+  });
+  const HINT = "Cues follow your ring/silent switch.";
+
+  it("on a phone with an audio session, the first session with sound on says it — and never again", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(text()).toContain(HINT);
+    act(() => root!.unmount());
+    host?.remove();
+    mount();
+    await until(() => text().includes("1 of 9"), "the same step");
+    expect(text()).not.toContain(HINT);
+  });
+
+  it("OK puts it away", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes(HINT), "the hint");
+    await click("OK");
+    expect(text()).not.toContain(HINT);
+  });
+
+  it("not with sound off, nor without an audio session (a laptop)", async () => {
+    localStorage.setItem("rg-player-sound", JSON.stringify({ on: false, volume: 0.7, choice: "auto" }));
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(text()).not.toContain(HINT);
+    localStorage.clear();
+    delete nav.audioSession;
+    act(() => root!.unmount());
+    host?.remove();
+    mount();
+    await until(() => text().includes("1 of 9"), "the same step");
+    expect(text()).not.toContain(HINT);
+  });
+});
+
+describe("the player, by touch (the sound pass's quality of life)", () => {
+  it("Back, beside the step's actions, goes to the step before; on the first step it waits", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    const back = () => document.querySelector<HTMLButtonElement>(".player-actions .player-back")!;
+    expect(back().getAttribute("aria-label")).toBe("Back");
+    expect(back().disabled).toBe(true);
+    await click("Skip");
+    await until(() => text().includes("2 of 9"), "the right side");
+    expect(back().disabled).toBe(false);
+    await act(async () => back().click());
+    expect(text()).toContain("1 of 9");
+  });
+
+  it("−15 s beside +15 s on a rest: it shortens the rest, never below 0 — at 0 the rest is over", async () => {
+    await storedStart();
+    mount();
+    await toFirstSet();
+    await click("Done");
+    await click(/^Confirm/);
+    await until(() => text().includes("4 of 9"), "the rest");
+    expect(actions()).toEqual([["−15 s", false], ["+15 s", false], ["Skip", false]]);
+    await click("−15 s");
+    expect(text()).toContain("1:00");
+    // 60 s left: four more, and it is at 0 — over (its −15 s gone with its timer).
+    for (let i = 0; i < 4; i++) await click("−15 s");
+    expect(control("−15 s")).toBeUndefined();
+    await at(T0 + 100);
+    await until(() => text().includes("5 of 9"), "the next set");
+  });
+
+  it("a tap on the stage pauses and resumes, clearly; a tap on a control does only what it does", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await act(async () => document.querySelector<HTMLElement>("h1.player-name")!.click());
+    expect(text()).toContain("Paused");
+    expect(document.querySelector(".player")!.classList.contains("is-paused")).toBe(true);
+    await act(async () => document.querySelector<HTMLElement>(".player-main")!.click());
+    expect(text()).not.toContain("Paused");
+    // The log card is the card's own: a tap on it, or on its controls, pauses nothing.
+    await click("Skip");
+    await click("Skip");
+    await until(() => text().includes("3 of 9"), "the set");
+    await click("Done");
+    await click("Heavier");
+    await act(async () => document.querySelector<HTMLElement>(".player-log")!.click());
+    expect(text()).not.toContain("Paused");
+  });
+
+  it("the session's time left shows on phones too (no longer md and up only)", () => {
+    const sheet = css();
+    const hidden = sheet.slice(sheet.indexOf(".player-count-title"), sheet.indexOf(".player-tools {"));
+    expect(hidden).toContain("display: none");
+    expect(hidden).not.toContain(".player-count-left {\n  display: none");
+    expect(hidden).not.toMatch(/\.player-count-left,?\s*\{?\s*display: none/);
+  });
+
+  it("the screen stays on while paused, and is let go after 10 minutes of it", async () => {
+    await storedStart();
+    const lock = { held: 0, released: 0 };
+    mount({ wake: () => (lock.held++, () => void lock.released++) });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(lock).toEqual({ held: 1, released: 0 });
+    await at(T0 + 13 * S);
+    await click("Pause");
+    await at(T0 + 9 * 60 * S);
+    expect(lock).toEqual({ held: 1, released: 0 });
+    await at(T0 + 13 * S + 10 * 60 * S);
+    expect(lock).toEqual({ held: 1, released: 1 });
+    await click("Resume");
+    expect(lock).toEqual({ held: 2, released: 1 });
+  });
+
+  it("the last 3 s of a timer: the ring's colour shifts and the number pulses, a new pulse each second", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await at(T0 + 44 * S);
+    expect(document.querySelector(".player-ring.is-ending")).toBeNull();
+    expect(document.querySelector(".player-big.is-ending")).toBeNull();
+    await at(T0 + 45 * S);
+    const three = document.querySelector(".player-big.is-ending");
+    expect(document.querySelector(".player-ring.is-ending")).not.toBeNull();
+    expect(three?.textContent).toBe("0:03");
+    await at(T0 + 46 * S);
+    const two = document.querySelector(".player-big.is-ending");
+    expect(two?.textContent).toBe("0:02");
+    expect(two).not.toBe(three);
+    // Paused, it waits: no pulse.
+    await click("Pause");
+    expect(document.querySelector(".player-big.is-ending")).toBeNull();
+  });
+
+  it("the pulse is for motion only: reduced motion keeps the colour and drops the pulse", () => {
+    const sheet = css();
+    const pulse = sheet.indexOf("animation: player-pulse");
+    expect(pulse).toBeGreaterThan(-1);
+    const motionOk = sheet.lastIndexOf("@media (prefers-reduced-motion: no-preference)", pulse);
+    expect(motionOk).toBeGreaterThan(-1);
+    // Inside that block: no rule closes the block between its start and the pulse.
+    expect(sheet.slice(motionOk, pulse)).not.toMatch(/\n\}/);
+    expect(sheet).toMatch(/\.player-ring\.is-ending \.player-ring-fill \{[^}]*stroke: var\(--/);
   });
 });

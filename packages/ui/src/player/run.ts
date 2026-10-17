@@ -319,11 +319,17 @@ export function closeHowto(state: PlayerState, now: number): PlayerState {
   return resume({ ...state, howto: null }, now);
 }
 
-/** +15 s on a rest. */
-export function addRest(state: PlayerState, secs: number): PlayerState {
+/**
+ * +15 s or −15 s on a rest, at `now`. Shortened, a rest never goes below 0 left: at the soonest it ends now (so the step
+ * after it starts now, never in the past), and one already over is lengthened by nothing.
+ */
+export function addRest(state: PlayerState, secs: number, now: number): PlayerState {
   const step = stepAt(state);
   if (!step || step.kind !== "rest") return state;
-  return { ...state, restExtra: { ...state.restExtra, [state.index]: (state.restExtra[state.index] ?? 0) + secs } };
+  const was = state.restExtra[state.index] ?? 0;
+  const endsNow = elapsedMs(state.clock, now) / 1000 - step.seconds;
+  const extra = secs >= 0 ? was + secs : Math.min(was, Math.max(was + secs, endsNow));
+  return { ...state, restExtra: { ...state.restExtra, [state.index]: extra } };
 }
 
 /**

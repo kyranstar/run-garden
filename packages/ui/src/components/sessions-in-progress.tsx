@@ -27,7 +27,7 @@ import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { liveSessions } from "../offline/live.js";
 import { isLocalId, loadLocalStart } from "../offline/local-starts.js";
 import { outboxEntries } from "../offline/outbox.js";
-import { chimes } from "../player/audio.js";
+import { cuePlayer } from "../player/cue-player.js";
 import { discardHere } from "../player/save.js";
 import { loadExtras } from "../player/stored.js";
 
@@ -199,7 +199,7 @@ export function SessionsInProgress({
                 Discard
               </button>
             ) : (
-              <Link className="btn btn-primary" to={`/session/${encodeURIComponent(s.workoutId)}`} onClick={() => chimes.unlock()}>
+              <Link className="btn btn-primary" to={`/session/${encodeURIComponent(s.workoutId)}`} onClick={() => cuePlayer.unlock()}>
                 Continue
               </Link>
             )}

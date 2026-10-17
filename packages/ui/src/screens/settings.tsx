@@ -36,6 +36,7 @@ import { features } from "../features.js";
 import { OUT_OF_CREDITS_LINE } from "../ai-credits.js";
 import { CoachMemorySection } from "./settings/coach-memory.js";
 import { CoachSection } from "./settings/coach-settings.js";
+import { SoundsSection } from "./settings/sounds.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -1887,6 +1888,7 @@ export function SettingsScreen() {
       <SchedulingSection prefs={settings.data.prefs} />
       <HealthConditionsSection />
       <PlacesSection prefs={settings.data.prefs} />
+      <SoundsSection />
       <UnitsSection prefs={settings.data.prefs} />
       <ImportSection />
       <CorosSyncSection prefs={settings.data.prefs} />

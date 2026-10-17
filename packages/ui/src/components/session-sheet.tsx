@@ -45,7 +45,7 @@ import { features } from "../features.js";
 import { IconAlert, IconInfo, IconSwap, IconWatch } from "../icons.js";
 import { offlineDb } from "../offline/idb.js";
 import { readLive, requestPersistentStorage } from "../offline/live.js";
-import { chimes } from "../player/audio.js";
+import { cuePlayer } from "../player/cue-player.js";
 import { discardHere } from "../player/save.js";
 import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
@@ -604,7 +604,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           disabled={start.isPending || gatedToday}
           onClick={() => {
             // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (offline spike).
-            chimes.unlock();
+            cuePlayer.unlock();
             void requestPersistentStorage();
             start.mutate(s!.build!.buildId);
           }}
@@ -622,7 +622,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           type="button"
           className="btn btn-primary"
           onClick={() => {
-            chimes.unlock();
+            cuePlayer.unlock();
             navigate(`/session/${encodeURIComponent(w.id)}`);
           }}
         >

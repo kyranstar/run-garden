@@ -149,8 +149,34 @@ describe("a set", () => {
 describe("a rest", () => {
   const atRest = () => confirmLog(walkTo(begin(), 2, T0), { w: { v: 30, u: "lb" }, reps: 6 }, {}, T0);
 
+  it("−15 s shortens it; +15 s then −15 s is where it was", () => {
+    const shorter = addRest(atRest(), -15, T0 + 5 * S);
+    expect(stepView(shorter, T0 + 5 * S)).toMatchObject({ phase: "rest", remainingMs: 55 * S });
+    const back = addRest(addRest(atRest(), 15, T0), -15, T0 + 5 * S);
+    expect(stepView(back, T0 + 5 * S)).toMatchObject({ phase: "rest", remainingMs: 70 * S });
+  });
+
+  it("−15 s never takes it below 0: with 10 s left it ends now, and the next step starts now — never in the past", () => {
+    const now = T0 + 65 * S;
+    const ended = addRest(atRest(), -15, now);
+    expect(stepView(ended, now)).toMatchObject({ phase: "over", remainingMs: 0 });
+    const on = settle(ended, now, { autoAdvance: true });
+    expect(on.index).toBe(4);
+    expect(on.clock).toEqual({ anchor: now, bankedMs: 0 });
+    // Again and again at its very start: it ends there, and is never shorter than nothing.
+    let s = atRest();
+    for (let i = 0; i < 8; i++) s = addRest(s, -15, T0);
+    expect(stepView(s, T0)).toMatchObject({ phase: "over", remainingMs: 0 });
+    expect(s.restExtra[3]).toBe(-75);
+  });
+
+  it("−15 s on a rest already over (auto-advance off) lengthens nothing", () => {
+    const over = addRest(atRest(), -15, T0 + 100 * S);
+    expect(over.restExtra[3] ?? 0).toBe(0);
+  });
+
   it("+15 s lengthens it; it ends by itself", () => {
-    const longer = addRest(atRest(), 15);
+    const longer = addRest(atRest(), 15, T0);
     expect(stepView(longer, T0 + 80 * S)).toMatchObject({ phase: "rest", remainingMs: 10 * S });
     expect(settle(longer, T0 + 89 * S, { autoAdvance: true }).index).toBe(3);
     expect(settle(longer, T0 + 91 * S, { autoAdvance: true }).index).toBe(4);

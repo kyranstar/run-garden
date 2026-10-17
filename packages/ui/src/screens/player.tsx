@@ -9,8 +9,13 @@
  * ⓘ opens its how-to (and holds a running countdown). On desktop the keys do the same (`player/keys.ts`, `?`).
  *
  * The session in progress is written to IndexedDB on every change (debounced, flushed when the page is hidden or
- * left). Timers read the wall clock (`player/timer.ts`); chimes are placed on the audio clock from it
- * (`player/audio.ts`); the screen is kept on while playing (`player/wake.ts`).
+ * left). Timers read the wall clock (`player/timer.ts`); the session's cues — a ticking countdown into every change,
+ * and a cue that says what the change is (`player/cues.ts`) — are placed on the audio clock from it by the cue player
+ * (`player/cue-player.ts`), in the palette the athlete chose (soft keys, or bowls for a calm session, by default); the
+ * screen is kept on while playing, and for 10 minutes of a pause (`player/wake.ts`).
+ *
+ * By touch (the sound pass, 2026-10-17): a tap on the stage pauses and resumes; Back sits beside the step's actions;
+ * a rest takes −15 s as well as +15 s; the last 3 s of a timer show on its ring and number.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -24,7 +29,7 @@ import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js"
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
 import { FORMAT_LABEL, blockLabel, partLabelOf, sessionTitle } from "../components/session-sheet.js";
 import { Stepper } from "../components/set-steppers.js";
-import { IconClose, IconInfo, IconSettings, IconSwap } from "../icons.js";
+import { IconBack, IconClose, IconInfo, IconSettings, IconSwap } from "../icons.js";
 import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
@@ -32,7 +37,11 @@ import { createLiveWriter, readLive, writeLive, type LiveWriter } from "../offli
 import { isLocalId } from "../offline/local-starts.js";
 import type { OutboxApi } from "../offline/outbox.js";
 import type { UnstartApi } from "../offline/unstarts.js";
-import { chimes as appChimes, type Chimes } from "../player/audio.js";
+import { cuePlayer, type Cue, type CuePlayer } from "../player/cue-player.js";
+import { calmSession, planCues } from "../player/cues.js";
+import { hintDue, hintSeen } from "../player/sound-hint.js";
+import { readSound, soundFor, writeSound, type StoredSound } from "../player/sound-settings.js";
+import { SoundSettings } from "../components/sound-settings.js";
 import { commandFor, type PlayerCommand } from "../player/keys.js";
 import {
   addRest,
@@ -67,7 +76,7 @@ import { reviewData } from "../player/review.js";
 import { discardSession, savedHere, saveSession } from "../player/save.js";
 import { ReviewScreen } from "./review.js";
 import { offeredNow } from "../player/swap.js";
-import { clockText, elapsedMs, lengthMs, readyMs } from "../player/timer.js";
+import { clockText, elapsedMs, readyMs } from "../player/timer.js";
 import { holdWakeLock } from "../player/wake.js";
 
 export interface PlayerDeps {
@@ -84,7 +93,8 @@ export interface PlayerDeps {
   unstartSession: UnstartApi["unstartSession"];
   /** Who is signed in, when Start did not say (offline: the answer kept on the device). */
   whoAmI: () => Promise<string | null>;
-  chimes: Chimes;
+  /** The session's sounds (`player/cue-player.ts`). */
+  cues: CuePlayer;
   /** Hold the screen on; returns release. */
   wake: () => () => void;
   /** How long the clock's own changes wait before they are written (the live writer's debounce). */
@@ -101,11 +111,17 @@ const defaultDeps: PlayerDeps = {
   createWorkout: api.createWorkout,
   unstartSession: api.unstartSession,
   whoAmI: async () => (await meWithOfflineFallback().catch(() => null))?.userId ?? null,
-  chimes: appChimes,
+  cues: cuePlayer,
   wake: () => holdWakeLock(),
 };
 
 const AUTO_KEY = "rg-player-auto-advance";
+/** A pause keeps the screen on this long, then lets it go. */
+export const PAUSED_AWAKE_MS = 10 * 60_000;
+/** The plan is made again this often while playing: cues come into the cue player's window as the session goes on. */
+const REPLAN_MS = 30_000;
+/** The last stretch of a timer shown on its ring and number, in step with the countdown's ticks. */
+const ENDING_MS = 3000;
 function readAuto(): boolean {
   try {
     return localStorage.getItem(AUTO_KEY) !== "0";
@@ -322,44 +338,78 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     };
   }, [refresh]);
 
-  // ── Chimes on the audio clock: the end of each get-ready and each timer, on through the timed steps ahead ──────
+  // ── The session's cues on the audio clock: planned again whenever the step, its clock, a pause or a rest's length
+  //    changes, and every 30 s (`player/cues.ts`); a pause cancels what is ahead (a cue already sounding rings on) ───
+  /**
+   * What the cue player was given and may have played: the plan ahead, and what came due in the last few seconds (a
+   * finished session's done is never played twice).
+   */
+  const played = useRef<readonly Cue[]>([]);
+  const replan = Math.floor(now / REPLAN_MS);
   useEffect(() => {
-    if (state.finished || state.paused || state.clock.anchor === null) {
-      deps.chimes.cancel();
+    const t = Date.now();
+    const due = played.current.filter((c) => c.at <= t && t - c.at < 10_000);
+    if (!state.finished && (state.paused || state.clock.anchor === null)) {
+      deps.cues.cancel();
+      played.current = due;
       return;
     }
-    const due: number[] = [];
-    let start = state.clock.anchor - state.clock.bankedMs;
-    for (let i = state.index; i < state.live.steps.length; i++) {
-      const step = state.live.steps[i]!;
-      if (goesToMax(state, step)) {
-        // A hold to max: the end of its get-ready, and its target; it ends on Done, so nothing after it is known.
-        if (readyMs(step) > 0) due.push(start + readyMs(step));
-        due.push(start + readyMs(step) + step.seconds * 1000);
-        break;
-      }
-      const length = lengthMs(step, state.restExtra[i] ?? 0);
-      if (length === null) break;
-      if (readyMs(step) > 0) due.push(start + readyMs(step));
-      due.push(start + length);
-      start += length;
-      if (!auto || due.length > 60) break;
-    }
-    deps.chimes.schedule(due);
-  }, [state.index, state.clock, state.paused, state.finished, state.restExtra, state.live.steps, state.toMax, auto, deps.chimes]);
-  // A reload loses the audio unlock: the first tap after it unlocks again.
+    const cues = planCues(state, { auto, now: t, played: played.current });
+    played.current = [...due, ...cues];
+    deps.cues.schedule(cues);
+    // The state's other changes (a set logged, a swap elsewhere) move no cue; `replan` brings the window along.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.index, state.clock, state.paused, state.finished, state.restExtra, state.live.steps, state.toMax, auto, replan, deps.cues]);
+  // Leaving the player: nothing more is placed.
+  useEffect(() => () => deps.cues.cancel(), [deps.cues]);
+  // A reload loses the audio unlock: every tap after it tries again until audio runs (a touch's pointerdown is no
+  // user activation; its pointerup, touchend and click are), and coming back to the page tries too.
   useEffect(() => {
-    const unlock = () => deps.chimes.unlock();
-    window.addEventListener("pointerdown", unlock, { once: true });
-    return () => window.removeEventListener("pointerdown", unlock);
-  }, [deps.chimes]);
+    const kinds = ["pointerup", "touchend", "click"] as const;
+    const stop = () => {
+      for (const k of kinds) window.removeEventListener(k, tap, true);
+    };
+    const tap = () => {
+      deps.cues.unlock();
+      if (deps.cues.running()) stop();
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== "hidden") deps.cues.unlock();
+    };
+    if (!deps.cues.running()) for (const k of kinds) window.addEventListener(k, tap, true);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [deps.cues]);
 
-  // ── The screen stays on while playing ──────────────────────────────────────────────────────────────────────────
-  const playing = !state.finished && !state.paused;
+  // ── The sound: the athlete's settings (kept on the device), in bowls for a calm session when automatic ─────────
+  const calm = useMemo(() => calmSession(loaded.initial.live, src.build), [loaded.initial.live, src.build]);
+  const [sound, setSound] = useState<StoredSound>(readSound);
   useEffect(() => {
-    if (!playing) return;
+    deps.cues.configure(soundFor(sound, calm));
+  }, [sound, calm, deps.cues]);
+  const changeSound = (next: StoredSound) => {
+    writeSound(next);
+    setSound(next);
+  };
+  /** The ring/silent switch, said once: the first session with sound on, on a phone or tablet with an audio session. */
+  const [hint, setHint] = useState(() => hintDue(sound.on));
+  useEffect(() => {
+    if (hint) hintSeen();
+  }, [hint]);
+
+  // ── The screen stays on while playing, and while paused for up to 10 minutes ───────────────────────────────────
+  const [pausedSince, setPausedSince] = useState<number | null>(() => (state.paused ? Date.now() : null));
+  useEffect(() => {
+    setPausedSince(state.paused ? Date.now() : null);
+  }, [state.paused]);
+  const awake = !state.finished && (!state.paused || pausedSince === null || now - pausedSince < PAUSED_AWAKE_MS);
+  useEffect(() => {
+    if (!awake) return;
     return deps.wake();
-  }, [playing, deps]);
+  }, [awake, deps]);
 
   // ── The new move's how-to, the first time it comes up ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -633,9 +683,15 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const title = extras?.title ?? src.view.theme?.name ?? "";
   const left = timeLeft(state, now);
   const careLabel = (extras?.profiles ?? []).find((p) => p.care)?.care ?? null;
+  /** A tap on the stage — never on a control, nor on the log card — pauses or resumes. */
+  const stageTap = (e: React.MouseEvent) => {
+    const target = e.target as Element | null;
+    if (panel || logOpen || !step || target?.closest("button, a, input, select, textarea, label, [role], .player-log")) return;
+    act(state.paused ? resume : pause);
+  };
 
   return (
-    <div className="player">
+    <div className={state.paused ? "player is-paused" : "player"}>
       <header className="player-top">
         <button type="button" className="player-icon" aria-label="Leave the session" onClick={() => setPanel("leave")}>
           <IconClose size={18} />
@@ -643,9 +699,10 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
         <span className="player-count num">
           <span className="player-count-title">{title} · </span>
           {state.index + 1} of {total}
+          {/* Under the count on a phone, after it from md. */}
           <span className="player-count-left">
-            {" "}
-            · {counting ? `${clockText(elapsedMs(state.session, now))} elapsed` : `${clockText(left)} left`}
+            <span className="player-count-sep"> · </span>
+            {counting ? `${clockText(elapsedMs(state.session, now))} elapsed` : `${clockText(left)} left`}
           </span>
         </span>
         <span className="player-tools">
@@ -673,8 +730,17 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
           This session isn't being kept on this device.
         </p>
       ) : null}
+      {hint ? (
+        <p className="player-hint" role="status">
+          Cues follow your ring/silent switch.
+          <button type="button" onClick={() => setHint(false)}>
+            OK
+          </button>
+        </p>
+      ) : null}
 
-      <main className="player-main">
+      {/* A tap anywhere on the stage (not on a control) pauses or resumes: the keyboard's Space, by touch. */}
+      <main className="player-main" onClick={stageTap}>
         {step && view ? (
           <StepBody
             state={state}
@@ -721,8 +787,12 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
               setLogOpen(false);
               act(next);
             }}
-            onAddRest={() => act((s) => addRest(s, 15))}
+            onAddRest={(secs) => act((s, t) => addRest(s, secs, t))}
             onPause={() => act(state.paused ? resume : pause)}
+            onBack={() => {
+              setLogOpen(false);
+              act(prev);
+            }}
           />
         ) : null}
         <p className="player-kbd" aria-hidden="true">
@@ -806,6 +876,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
               </dt>
               <dd>Close</dd>
             </dl>
+            <SoundSettings value={sound} onChange={changeSound} calm={calm} player={deps.cues} />
             <button
               type="button"
               className="chipbtn"
@@ -971,8 +1042,11 @@ function eyebrow(step: Step, careLabel: string | null, exercise?: { contraction?
   return parts.join(" · ");
 }
 
-/** The timer's ring, filling clockwise from the top; `mark` puts a tick that far round (a hold to max's target). */
-function Ring({ fraction, mark, children }: { fraction: number; mark?: number; children: React.ReactNode }) {
+/**
+ * The timer's ring, filling clockwise from the top; `mark` puts a tick that far round (a hold to max's target). In the
+ * last 3 s of its timer (`ending`) its colour shifts, in step with the countdown's ticks.
+ */
+function Ring({ fraction, mark, ending = false, children }: { fraction: number; mark?: number; ending?: boolean; children: React.ReactNode }) {
   const r = 46;
   const c = 2 * Math.PI * r;
   const f = Math.max(0, Math.min(1, fraction));
@@ -981,7 +1055,7 @@ function Ring({ fraction, mark, children }: { fraction: number; mark?: number; c
     return { x: 50 + radius * Math.sin(a), y: 50 - radius * Math.cos(a) };
   };
   return (
-    <div className="player-ring">
+    <div className={ending ? "player-ring is-ending" : "player-ring"}>
       <svg viewBox="0 0 100 100" aria-hidden="true">
         <circle className="player-ring-track" cx="50" cy="50" r={r} />
         <circle className="player-ring-fill" cx="50" cy="50" r={r} strokeDasharray={`${c * f} ${c}`} transform="rotate(-90 50 50)" />
@@ -1028,12 +1102,20 @@ function StepBody({
 }) {
   const following = nextLine(state, step, exercises);
   const cueLine = cue ? <p className="player-cue">{cue}</p> : null;
+  // The last 3 s of a timer running down (a get-ready, a hold, a rest): the number pulses once a second, in step with
+  // the countdown's ticks — a new element each second, so its pulse starts again.
+  const ending = !state.paused && (view.phase === "ready" || view.phase === "hold" || view.phase === "rest") && view.remainingMs > 0 && view.remainingMs <= ENDING_MS;
+  const countdown = (
+    <span key={ending ? clockText(view.remainingMs) : "count"} className={ending ? "player-big num is-ending" : "player-big num"}>
+      {clockText(view.remainingMs)}
+    </span>
+  );
   if (step.kind === "rest") {
     return (
       <>
         <span className="eyebrow player-eyebrow">Rest</span>
-        <span className="player-big num">{clockText(view.remainingMs)}</span>
-        {state.paused ? <span className="player-meta">Paused</span> : null}
+        {countdown}
+        {state.paused ? <Paused /> : null}
         {heldThen ? (
           <>
             <span className="player-meta">Held {heldText(heldThen)}</span>
@@ -1073,7 +1155,7 @@ function StepBody({
               </span>
             </>
           ))}
-        {state.paused ? <span className="player-meta">Paused</span> : null}
+        {state.paused ? <Paused /> : null}
         {following ? <span className="player-next">{following}</span> : null}
       </>
     );
@@ -1091,9 +1173,9 @@ function StepBody({
       {cueLine}
       {step.side ? <span className="player-meta">{sideWord(step.side)}</span> : null}
       {held === null ? (
-        <Ring fraction={view.phaseMs > 0 ? view.remainingMs / view.phaseMs : 0}>
+        <Ring fraction={view.phaseMs > 0 ? view.remainingMs / view.phaseMs : 0} ending={ending}>
           {ready ? <span className="eyebrow player-ring-label">Get ready</span> : null}
-          <span className="player-big num">{clockText(view.remainingMs)}</span>
+          {countdown}
         </Ring>
       ) : (
         <Ring fraction={target > 0 ? (held / target) * TARGET_AT : 1} mark={TARGET_AT}>
@@ -1102,24 +1184,16 @@ function StepBody({
         </Ring>
       )}
       {toMax ? <span className="player-meta">Target {clockText(target)}</span> : null}
-      {state.paused ? <span className="player-meta">Paused</span> : null}
+      {state.paused ? <Paused /> : null}
       {following ? <span className="player-next">{following}</span> : null}
     </>
   );
 }
 
-function Actions({
-  state,
-  step,
-  phase,
-  toMax,
-  logOpen,
-  onDone,
-  onConfirm,
-  onSkip,
-  onAddRest,
-  onPause,
-}: {
+/** Paused, said plainly where the step is (the stage dims around it). */
+const Paused = () => <span className="player-paused">Paused</span>;
+
+type ActionsProps = {
   state: PlayerState;
   step: Step;
   phase: string;
@@ -1128,9 +1202,31 @@ function Actions({
   onDone: () => void;
   onConfirm: () => void;
   onSkip: () => void;
-  onAddRest: () => void;
+  /** +15 s or −15 s on a rest. */
+  onAddRest: (secs: number) => void;
   onPause: () => void;
-}) {
+  /** ← : the step before. */
+  onBack: () => void;
+};
+
+/**
+ * The step's actions, with Back (the step before) beside them — a small secondary control, there on every step (it
+ * waits on the first) so the row never shifts. The log card's Confirm stands alone.
+ */
+function Actions(props: ActionsProps) {
+  const actions = StepActions(props);
+  if (props.logOpen) return actions;
+  return (
+    <div className="player-nav">
+      <button type="button" className="btn player-back" aria-label="Back" disabled={props.state.index === 0} onClick={props.onBack}>
+        <IconBack size={18} />
+      </button>
+      {actions}
+    </div>
+  );
+}
+
+function StepActions({ state, step, phase, toMax, logOpen, onDone, onConfirm, onSkip, onAddRest, onPause }: ActionsProps) {
   if (step.kind === "set" && logOpen) {
     const rest = state.live.steps[state.index + 1];
     const label = rest?.kind === "rest" ? `Confirm · rest ${rest.seconds} s` : "Confirm";
@@ -1181,7 +1277,10 @@ function Actions({
     return (
       <div className="btn-row player-pair">
         {paused ? resumeButton : null}
-        <button type="button" className="btn" onClick={onAddRest}>
+        <button type="button" className="btn" onClick={() => onAddRest(-15)}>
+          −15 s
+        </button>
+        <button type="button" className="btn" onClick={() => onAddRest(15)}>
           +15 s
         </button>
         {skip}
