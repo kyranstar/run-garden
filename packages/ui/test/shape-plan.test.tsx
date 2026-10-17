@@ -21,7 +21,7 @@ import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, ProgramDto, Wo
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { planRequests, PlanSheet } from "../src/screens/plan-sheet.js";
 import { planRowState, YourPlans } from "../src/screens/plan-cards.js";
-import { WeekView, weekLine, weekTitle } from "../src/screens/week-view.js";
+import { WeekView, weekLine, weekPlanName, weekTitle } from "../src/screens/week-view.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -110,6 +110,20 @@ describe("the week first", () => {
     expect(line(1, "race_week")).toBe("Aug 10–16 · 1 of 6 done · Race tomorrow");
     expect(line(0, "race_week")).toBe("Aug 10–16 · 1 of 6 done · Race day");
     expect(line(-3, "post")).toBe("Aug 10–16 · 1 of 6 done");
+    // Either sign of a race gone by is enough on its own: its phase, or a countdown past zero.
+    expect(line(0, "post")).toBe("Aug 10–16 · 1 of 6 done");
+    expect(line(-1, "taper")).toBe("Aug 10–16 · 1 of 6 done");
+  });
+
+  it("the plan the line names: the longest active block holding the week, none when no block holds it", () => {
+    const block = (id: string, startDate: string, endDate: string): CoachPlanDto => ({ ...runPlan, id, name: id, startDate, endDate });
+    const plans = [block("Short", "2026-08-03", "2026-08-30"), block("Long", "2026-07-13", "2026-10-04"), block("Later", "2026-09-07", "2026-11-01")];
+    expect(weekPlanName(plans, "2026-08-10")).toBe("Long");
+    expect(weekPlanName(plans, "2026-10-26")).toBe("Later");
+    expect(weekPlanName(plans, "2026-11-09")).toBeNull();
+    // A block that starts mid-week holds that week; one that ended the Sunday before does not.
+    expect(weekPlanName([block("Midweek", "2026-08-12", "2026-08-30")], "2026-08-10")).toBe("Midweek");
+    expect(weekPlanName([block("Done", "2026-07-13", "2026-08-09")], "2026-08-10")).toBeNull();
   });
 
   it("the week's head: its title, ‹ ›, and the line as one button that opens the week's brief", () => {

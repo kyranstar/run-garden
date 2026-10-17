@@ -36,7 +36,7 @@ import { useUnits } from "../use-units.js";
 import { YourPlans } from "./plan-cards.js";
 import { PlanSheet } from "./plan-sheet.js";
 import { ThreadCoachCards } from "./thread-coach-cards.js";
-import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
+import { askable, displayCompletionState, WeekView, weekPlanName, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { SessionSheet } from "../components/session-sheet.js";
@@ -961,10 +961,6 @@ export function PlanScreen() {
   const emptyPlan =
     !!plan.data && !!coachPlans.data && plan.data.workouts.length === 0 && activePlans.length === 0;
 
-  // The plan the shown week belongs to, named on its line: the longest active block that holds the week.
-  const weekPlan = activePlans
-    .filter((p) => startOfIsoWeek(p.startDate) <= week.data!.weekStart && week.data!.weekStart <= p.endDate)
-    .sort((a, b) => Date.parse(b.endDate) - Date.parse(b.startDate) - (Date.parse(a.endDate) - Date.parse(a.startDate)))[0];
   const race = raceHub.data?.race ?? null;
   const raceMismatch = week.data.raceMismatch ?? null;
 
@@ -999,7 +995,7 @@ export function PlanScreen() {
             onOpenWorkout={openWorkout}
             onGhostTap={onGhostTap}
             onBrief={() => setBriefOpen(true)}
-            planName={weekPlan?.name ?? null}
+            planName={weekPlanName(activePlans, week.data.weekStart)}
             race={race}
           />
         )}

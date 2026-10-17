@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { PlanWeekResponse, RaceHubResponse, WorkoutDto } from "@rg/api-client";
+import type { CoachPlanDto, PlanWeekResponse, RaceHubResponse, WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
 import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
@@ -106,6 +106,16 @@ export function weekTitle(weekStart: string, today: string): string {
   if (weekStart === addDays(thisMonday, 7)) return "Next week";
   if (weekStart === addDays(thisMonday, -7)) return "Last week";
   return weekRangeLabel(weekStart);
+}
+
+/**
+ * The plan a week's line names: the longest of the active blocks that holds the week (one starting mid-week holds it;
+ * one that ended the Sunday before does not), or none.
+ */
+export function weekPlanName(blocks: ReadonlyArray<Pick<CoachPlanDto, "name" | "startDate" | "endDate">>, weekStart: string): string | null {
+  const span = (p: Pick<CoachPlanDto, "startDate" | "endDate">) => Date.parse(p.endDate) - Date.parse(p.startDate);
+  const holding = blocks.filter((p) => startOfIsoWeek(p.startDate) <= weekStart && weekStart <= p.endDate);
+  return holding.sort((a, b) => span(b) - span(a))[0]?.name ?? null;
 }
 
 /** What the week's line knows of the race: its countdown and its phase (the race hub's). */
