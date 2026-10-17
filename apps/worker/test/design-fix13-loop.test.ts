@@ -238,4 +238,14 @@ describe("round 2: the trail in the athlete's words (I1), an honest last line (M
     expect(await proposalOf(runId)).toBeUndefined();
   });
 
+  it("a call's usage is added after the payload is bounded: a first event near the bound keeps its words whole", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, 12);
+    const long = `${"The hips first, then the trunk, slow and even. ".repeat(84)}`.slice(0, 3_970).trim();
+    const { deps } = scripted([turn([use("read_day", {})], long), t(use("finish", { summary: "Calm hips is ready." }))]);
+    await drive(userId, runId, deps);
+    const first = (await trail(runId)).find((e) => e.summary.startsWith("The hips first"))!;
+    expect(first.payload).toMatchObject({ text: long, usage: { input: 100, cacheRead: 60, cacheWrite: 50, output: 40 } });
+    expect(first.payload).not.toHaveProperty("truncated");
+  });
 });

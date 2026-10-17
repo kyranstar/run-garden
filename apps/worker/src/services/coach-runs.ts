@@ -854,12 +854,23 @@ interface NewEvent {
   /** No athlete line: kept for the record with an empty summary (a refusal no one adjusted a draft after, §2.13; a
    * model call's usage with nothing else to ride on, M5). The run view shows no line for it. */
   quiet?: true;
+  /** A model call's tokens (M5), added to the payload after it is bounded (round 2, Minor 5). */
+  usage?: { input: number; cacheRead: number; cacheWrite: number; output: number };
 }
 
 const line = (text: string): string => {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > SUMMARY_MAX_CHARS ? `${flat.slice(0, SUMMARY_MAX_CHARS - 1)}…` : flat;
 };
+
+/** An event's payload as stored: bounded, then its call's usage added (round 2, Minor 5); null for none. */
+function payloadText(e: NewEvent): string | null {
+  if (e.payload === undefined && !e.usage) return null;
+  const p = e.payload === undefined ? undefined : bounded(e.payload);
+  if (!e.usage) return JSON.stringify(p);
+  const o = p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : p === undefined ? {} : { value: p };
+  return JSON.stringify({ ...o, usage: e.usage });
+}
 
 function bounded(value: unknown, max = EVENT_PAYLOAD_MAX_CHARS): unknown {
   if (value === undefined) return undefined;
@@ -877,7 +888,7 @@ async function appendEvents(db: Db, userId: string, rootId: string, events: NewE
     const chunk = events.slice(i, i + EVENTS_PER_INSERT);
     const values = chunk.map(
       (e, j) =>
-        sql`(${sql.raw(String(j + 1))}, ${e.kind}, ${e.quiet ? "" : line(e.summary) || "…"}, ${e.payload === undefined ? null : JSON.stringify(bounded(e.payload))})`,
+        sql`(${sql.raw(String(j + 1))}, ${e.kind}, ${e.quiet ? "" : line(e.summary) || "…"}, ${payloadText(e)})`,
     );
     const rows = (await db.all(sql`
       INSERT INTO coach_run_events (id, user_id, run_id, seq, kind, summary, payload, at)
@@ -2196,9 +2207,10 @@ async function advanceRun(s: StepCtx): Promise<Advance> {
 function withUsage(advance: Advance, usage: StepCtx["usage"]): Advance {
   if (!usage || advance.kind !== "end") return advance;
   const [first, ...rest] = advance.end.events;
-  if (!first) return { ...advance, end: { ...advance.end, events: [{ kind: "note", summary: "", quiet: true, payload: { usage } }] } };
-  const payload = first.payload && typeof first.payload === "object" && !Array.isArray(first.payload) ? first.payload : first.payload === undefined ? {} : { value: first.payload };
-  return { ...advance, end: { ...advance.end, events: [{ ...first, payload: { ...(payload as Record<string, unknown>), usage } }, ...rest] } };
+  if (!first) return { ...advance, end: { ...advance.end, events: [{ kind: "note", summary: "", quiet: true, usage }] } };
+  // Added to the payload only once it is bounded (appendEvents; round 2, Minor 5): it never pushes a receipt or a
+  // proposal's id out of a payload near the bound.
+  return { ...advance, end: { ...advance.end, events: [{ ...first, usage }, ...rest] } };
 }
 
 /**
