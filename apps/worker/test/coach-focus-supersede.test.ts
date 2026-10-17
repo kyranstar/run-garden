@@ -168,6 +168,20 @@ describe("a follow-up supersedes the suggestion it changes", () => {
     }
   });
 
+  it("a follow-up that stops with what was reviewed (the AI refuses its next call) supersedes it too", async () => {
+    const a = await seedRichAthlete(db);
+    const first = await firstSuggestion(a.userId, 1200);
+    const created = await createRun(db, a.userId, { focus: { kind: "proposal", id: designProposalId(first) }, request: "Gentler" }, new Date(NOW.getTime() + 1_300_000));
+    const refused = { ok: false, kind: "rejected", reason: "invalid_request", status: 400 } as MessagesResult;
+    const { deps } = scripted([turn(propose("Calm hips, gentler", day(-1))), turn(use("submit_review", verdict())), refused]);
+    const status = await drive(a.userId, created.run.id, deps, 1301);
+    expect(status).toBe("failed");
+    expect((await proposalOf(created.run.id))!.status).toBe("pending");
+    const old = (await proposalOf(first))!;
+    expect(old.status).toBe("superseded");
+    expect(old.ops[0]!.outcome).toMatchObject({ reason: "Changed: Gentler", by: designProposalId(created.run.id) });
+  });
+
   it("a run asked from anything else supersedes only by the session rule, as before", async () => {
     const a = await seedRichAthlete(db);
     const first = await firstSuggestion(a.userId, 600);
@@ -230,7 +244,8 @@ describe("the supersede's one statement, with a follow-up's suggestion", () => {
     const ids = { neu: `n-${a.userId}`, focus: `f-${a.userId}`, partial: `p-${a.userId}`, theirs: `t-${b.userId}` };
     await db.insert(schema.coachProposals).values([
       row(ids.neu, a.userId, "pending", T2, [op(day(-3))]),
-      row(ids.focus, a.userId, "pending", T1, [op(day(-1)), op(day(-2), refused)]),
+      // One op open, one refused at approval (still open), one declined (decided: left alone).
+      row(ids.focus, a.userId, "pending", T1, [op(day(-1)), op(day(-2), refused), op(day(-4), { status: "declined", at: T1 })]),
       row(ids.partial, a.userId, "partially_approved", T1, [op(day(-1)), op(day(-2), { status: "applied", at: T1, workoutId: "w", rev: 1 })]),
       row(ids.theirs, b.userId, "pending", T1, [op(day(-1))]),
     ]);
@@ -246,7 +261,7 @@ describe("the supersede's one statement, with a follow-up's suggestion", () => {
     expect(statements).toBe(1);
     const after = new Map((await db.select().from(schema.coachProposals)).map((p) => [p.id, p]));
     const changed = { status: "superseded", at, reason: "Changed: shorter", by: ids.neu };
-    expect((after.get(ids.focus)!.ops as Array<{ outcome?: unknown }>).map((o) => o.outcome)).toEqual([changed, changed]);
+    expect((after.get(ids.focus)!.ops as Array<{ outcome?: unknown }>).map((o) => o.outcome)).toEqual([changed, changed, { status: "declined", at: T1 }]);
     expect(after.get(ids.focus)).toMatchObject({ status: "superseded", supersededBy: ids.neu, resolvedAt: at });
     for (const id of [ids.neu, ids.partial, ids.theirs]) expect(after.get(id), id).toEqual(before.get(id));
   });
