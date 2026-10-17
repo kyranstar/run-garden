@@ -265,7 +265,7 @@ describe("a run, step by step, to finish", () => {
     expect(model.requests).toHaveLength(1);
     expect(readDay.calls).toHaveLength(1);
     expect(readDay.calls[0]!.input).toEqual({ date: "2026-10-12" });
-    expect(readDay.calls[0]!.ctx.run).toEqual({ id: runId, role: "main", scope: { kind: "now" }, parentId: null, rehearsal: false });
+    expect(readDay.calls[0]!.ctx.run).toEqual({ id: runId, role: "main", scope: { kind: "now" }, parentId: null, rehearsal: false, conversationId: runId });
     expect(second.status).toBe("active");
     expect(second.events.map((e) => [e.kind, e.summary])).toEqual([
       ["note", "Looking into it."],

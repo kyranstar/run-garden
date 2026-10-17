@@ -265,7 +265,7 @@ export const proposeWorkout: DesignTool = {
               date: DATE_SCHEMA,
               time: {
                 type: "string",
-                description: "HH:MM, the athlete's local time; never one already past (later today: required, 15+ minutes ahead). Now: leave it out unless the athlete named a time — a now workout is placed when it is approved, and a time given is only its earliest.",
+                description: "HH:MM, the athlete's local time; never one already past (later today: required, 15+ minutes ahead). Now: leave it out unless the athlete named a time — a now workout is placed when it is approved, and a time given is only its earliest. Scope yours to choose: left out today is right now; a time today is 15+ minutes ahead.",
               },
             },
             required: ["kind", "date"],
@@ -299,7 +299,8 @@ export const proposeWorkout: DesignTool = {
   async run(ctx, raw) {
     const p = parseAct(input, raw, "doc (a workout document), target ({ kind: new, date, time? } or { kind: revise, workoutId, baseRev }) and optionally changeNote and amend");
     if (isErr(p)) return p;
-    if (ctx.run.role === "main" && ctx.run.scope.kind !== "now" && ctx.run.scope.kind !== "later_today") {
+    // An auto run's main coach (the new shape §5) designs one workout itself, as now or later today does.
+    if (ctx.run.role === "main" && ctx.run.scope.kind !== "now" && ctx.run.scope.kind !== "later_today" && ctx.run.scope.kind !== "auto") {
       return refuse(
         "not_for_scope",
         "For a week or the next few workouts, each workout's designer proposes it; the main coach plans the set.",
@@ -392,11 +393,14 @@ export const proposeWorkout: DesignTool = {
       if (date < today) return refuse("past_date", `${date} is before today (${today}) where the athlete is.`, "Propose it for today or a later day.");
       // Never a time already past (fix wave 3B, B-I1; design-time.ts): later today's needs one 15 minutes ahead.
       const clock = clockIn(a.athlete.tz, ctx.now);
-      const later = ctx.run.role === "main" && ctx.run.scope.kind === "later_today" ? laterTodayRefusal(date, time, clock) : null;
+      // An auto run's (the new shape §5): today with no time is right now; a time it picks today is held as later today's.
+      const auto = ctx.run.role === "main" && ctx.run.scope.kind === "auto";
+      const later =
+        ctx.run.role === "main" && (ctx.run.scope.kind === "later_today" || (auto && date === today && time !== undefined)) ? laterTodayRefusal(date, time, clock) : null;
       if (later) return refuse(later.error, later.why, later.fix);
       const gone = pastTime(date, time, clock);
       // A now design for today floats: placed when it is approved, its time (if still ahead) only a floor (R1).
-      atNow = ctx.run.role === "main" && ctx.run.scope.kind === "now" && date === today;
+      atNow = ctx.run.role === "main" && (ctx.run.scope.kind === "now" || (auto && time === undefined)) && date === today;
       if (atNow && gone) time = undefined;
       // Its floor always (round 2, I2): the coach's time, else this clock rounded up as the approve rounds — so the
       // supersede reads a session at a time, never a whole day (an evening one included).

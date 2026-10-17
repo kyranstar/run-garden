@@ -88,14 +88,18 @@ function afterSeqOf(raw: string | undefined): number | null {
 
 /** What a route read of the run tells its object with every word (Task 13's fix wave): whether it reads `stepping`
  * — a step on record for a run that doesn't holds no claim (R18) — and its lease by scope (§2.12). */
-const hintOf = (run: Pick<CoachRunDto, "status" | "scope">): StepperHint => ({ stepping: run.status === "stepping", leaseMs: stepperLeaseMs(run.scope) });
+const hintOf = (run: Pick<CoachRunDto, "status" | "scope"> & Partial<Pick<CoachRunDto, "estimateUsd">>): StepperHint => ({
+  stepping: run.status === "stepping",
+  // An auto run that planned a set (the new shape §5: its set's estimate is made at its first plan) has a set's lease.
+  leaseMs: stepperLeaseMs(run.scope.kind === "auto" && typeof run.estimateUsd === "number" ? { kind: "week" } : run.scope),
+});
 
 /**
  * A client's word to its run's object (the step alarm): a read or an answer is here (`touch`), an answer asks for the
  * step it resumes (`arm`). A word that fails is logged and never the request's failure — the read answered — and the
  * client's next word, or its own arm, tells the object again.
  */
-async function tellQuietly(env: Env, run: Pick<CoachRunDto, "id" | "status" | "scope">, userId: string, op: StepperOp): Promise<void> {
+async function tellQuietly(env: Env, run: Pick<CoachRunDto, "id" | "status" | "scope"> & Partial<Pick<CoachRunDto, "estimateUsd">>, userId: string, op: StepperOp): Promise<void> {
   const runId = run.id;
   try {
     await tellStepper(env, runId, userId, op, hintOf(run));

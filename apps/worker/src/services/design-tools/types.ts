@@ -25,8 +25,9 @@ import type { Athlete } from "./read-common.js";
 /** Who a run is: the main agent, a workout's designer, or that designer's independent reviewer (spec §5, §6). */
 export type ToolRole = "main" | "designer" | "reviewer";
 
-/** What a run is asked to design (`coach_runs.scope`). */
-export type RunScopeKind = "now" | "later_today" | "week" | "next_n";
+/** What a run is asked to design (`coach_runs.scope`). `auto` (the new shape §5): no time frame up front — the main
+ * coach decides from the athlete's words whether to answer, design one workout, change the plan or plan a set. */
+export type RunScopeKind = "now" | "later_today" | "week" | "next_n" | "auto";
 export interface RunScope {
   kind: RunScopeKind;
   /** `next_n` only: how many workouts. */
@@ -45,6 +46,8 @@ export interface ToolContext {
     /** A rehearsal run (the live scenario suite): whatever it proposes is stored with status `rehearsal`, never
      * shown in the app's lists. */
     rehearsal: boolean;
+    /** A main run's conversation (the new shape §5): propose_workout's `replaces` names a suggestion of this one. */
+    conversationId?: string;
   };
   now: Date;
   /**
@@ -164,6 +167,12 @@ export interface SetBudget {
 export interface SetHooks {
   /** The rounds this main run has planned, as its state holds them (no statement). */
   rounds(): readonly SetRound[];
+  /**
+   * An auto run (the new shape §5) that plans a set: its ceiling raised to the set's, once — recorded in the run with a
+   * set's window — before plan_set weighs the set against it. No statement (the step writes the run's state); nothing
+   * for a run of a set's own scope, or one raised already.
+   */
+  raise?(): void;
   /**
    * Start the designers, in brief order: one insert, each keyed on its id — answers the ids inserted (none for a
    * designer that already exists: a replay starts nothing twice).

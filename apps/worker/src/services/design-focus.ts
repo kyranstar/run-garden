@@ -94,8 +94,10 @@ function ownedSql(userId: string, focus: RunFocus) {
     case "objective":
       return sql`select 1 as found, null as scope from ${objectives} where ${objectives.userId} = ${userId} and ${objectives.id} = ${focus.id}`;
     case "proposal":
-      // Its run's scope says whether it is a set's, and is the scope a follow-up asks for.
-      return sql`select 1 as found, (select r.scope from coach_runs r where r.user_id = p.user_id
+      // Its run's scope says whether it is a set's, and is the scope a follow-up asks for — an auto run that planned a
+      // set (the new shape §5: `raisedAt`) reads as a week's.
+      return sql`select 1 as found, (select case when json_valid(r.state) and json_extract(r.state, '$.settings.raisedAt') is not null
+            then '{"kind":"week"}' else r.scope end from coach_runs r where r.user_id = p.user_id
           and r.id = substr(p.id, ${DESIGNED_PREFIX.length + 1})) as scope
         from ${coachProposals} p where p.user_id = ${userId} and p.id = ${focus.id}
           and substr(p.id, 1, ${DESIGNED_PREFIX.length}) = ${DESIGNED_PREFIX}
@@ -109,7 +111,7 @@ function scopeOfColumn(text: unknown): RunScope | null {
   if (typeof text !== "string") return null;
   try {
     const s = JSON.parse(text) as { kind?: unknown; n?: unknown };
-    if (s.kind === "now" || s.kind === "later_today" || s.kind === "week") return { kind: s.kind };
+    if (s.kind === "now" || s.kind === "later_today" || s.kind === "week" || s.kind === "auto") return { kind: s.kind };
     if (s.kind === "next_n") return typeof s.n === "number" ? { kind: "next_n", n: s.n } : { kind: "next_n" };
   } catch {
     // An unreadable scope is no set's; the create's own scope stands.

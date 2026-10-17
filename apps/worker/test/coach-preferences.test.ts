@@ -5,8 +5,9 @@
  *  - The settings are `coach` in the user's preferences: read and written whole, the rest of the preferences untouched,
  *    and kept by a save of any other setting.
  *  - A limit may be lowered, never raised past its default: refused in plain words.
- *  - A create with no scope starts the athlete's default; "next workouts" with no count takes theirs; the run's limit is
- *    theirs when they lowered it — all from the one preferences read a create already made (its cost unchanged).
+ *  - A create with no scope is an auto run (the new shape §5: the coach decides; coach-auto.test.ts); "next workouts"
+ *    with no count takes theirs; the run's limit is theirs when they lowered it — all from the one preferences read a
+ *    create already made (its cost unchanged).
  *  - The model is named in plain words.
  *
  * Synthetic data only.
@@ -247,19 +248,19 @@ async function ceilingOf(runId: string): Promise<number> {
 }
 
 describe("a create honours the settings", () => {
-  it("no settings: a create with no scope is for now, under the default limits — five statements", async () => {
+  it("no settings: a create with no scope is an auto run, under the default limits — five statements", async () => {
     const made = await create({ request: "something easy" });
     expect(made.status).toBe(200);
-    expect(made.body.run.scope).toEqual({ kind: "now" });
+    expect(made.body.run.scope).toEqual({ kind: "auto" });
     expect(await ceilingOf(made.body.run.id)).toBe(RUN_CEILING_MICROS.now);
     // The session and the restore marker, the preferences, the week's spend (Task 13's fix wave, §2.11), the insert.
     expect(made.cost).toBe(5);
   });
 
-  it("the default scope and N: a create with no scope starts the athlete's default, next workouts with no count takes theirs", async () => {
+  it("the default scope no longer starts a run (the new shape §5: no scope is auto); next workouts with no count takes theirs", async () => {
     await prefsCall("PUT", { defaultScope: "next_n", nextN: 5 });
     const made = await create({ request: "plan ahead" });
-    expect(made.body.run.scope).toEqual({ kind: "next_n", n: 5 });
+    expect(made.body.run.scope).toEqual({ kind: "auto" });
     expect(made.cost).toBe(5);
     await db.update(schema.coachRuns).set({ status: "cancelled" }).where(eq(schema.coachRuns.id, made.body.run.id));
     expect((await create({ scope: { kind: "next_n" } })).body.run.scope).toEqual({ kind: "next_n", n: 5 });
@@ -290,7 +291,8 @@ describe("a create honours the settings", () => {
   });
 
   it("the defaults are the settings' own: $1.50 for one workout, $6 for a set", () => {
-    expect(RUN_CEILING_MICROS).toEqual({ now: 1_500_000, later_today: 1_500_000, week: 6_000_000, next_n: 6_000_000 });
+    // An auto run starts at one workout's; plan_set raises it to a set's (coach-auto.test.ts).
+    expect(RUN_CEILING_MICROS).toEqual({ now: 1_500_000, later_today: 1_500_000, week: 6_000_000, next_n: 6_000_000, auto: 1_500_000 });
   });
 
   it("the preferred training times reach the main coach's scope for later today and a set; none set, the line is as before", async () => {

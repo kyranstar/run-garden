@@ -220,7 +220,7 @@ const steppable = (status: string): boolean => (CLAIMABLE as readonly string[]).
 
 export type RunEventKind = "tool_call" | "tool_result" | "draft" | "review" | "revision" | "question" | "note" | "error";
 
-const SCOPE_KINDS: readonly RunScopeKind[] = ["now", "later_today", "week", "next_n"];
+const SCOPE_KINDS: readonly RunScopeKind[] = ["now", "later_today", "week", "next_n", "auto"];
 const ROLES: readonly ToolRole[] = ["main", "designer", "reviewer"];
 
 /** A run's limits by role — model calls (the step cap), effort, output ceiling — defined in design-limits.ts, which the
@@ -228,13 +228,23 @@ const ROLES: readonly ToolRole[] = ["main", "designer", "reviewer"];
 export { RUN_LIMITS };
 
 /** A run's own spending ceiling, by scope (spec §2): $1.50 for now / later today, $6 for a set — Settings → Coach's
- * defaults, which the athlete may lower (`COACH_CEILING_DEFAULTS_USD`; a create passes theirs to `newRunState`). */
+ * defaults, which the athlete may lower (`COACH_CEILING_DEFAULTS_USD`; a create passes theirs to `newRunState`). An auto
+ * run (the new shape §5) starts at one workout's, and plan_set raises it to a set's (`RunSettings.setCeilingMicros`). */
 export const RUN_CEILING_MICROS: Readonly<Record<RunScopeKind, number>> = {
   now: Math.round(COACH_CEILING_DEFAULTS_USD.day * 1_000_000),
   later_today: Math.round(COACH_CEILING_DEFAULTS_USD.day * 1_000_000),
   week: Math.round(COACH_CEILING_DEFAULTS_USD.set * 1_000_000),
   next_n: Math.round(COACH_CEILING_DEFAULTS_USD.set * 1_000_000),
+  auto: Math.round(COACH_CEILING_DEFAULTS_USD.day * 1_000_000),
 };
+
+/** The limit a scope starts under (Settings → Coach): one workout's — an auto run's too, until it plans a set — or a
+ * set's. */
+export const startCeilingKind = (kind: RunScopeKind): "day" | "set" => (kind === "auto" ? "day" : ceilingKindOf(kind));
+
+/** Whether a main run plans a set: of a set's own scope, or an auto run that planned one (`RunSettings.raisedAt`). */
+export const runIsSet = (scope: RunScope, settings: Pick<RunSettings, "raisedAt"> | undefined): boolean =>
+  isSetScope(scope) || (scope.kind === "auto" && typeof settings?.raisedAt === "string");
 
 const USAGE_KIND: Readonly<Record<ToolRole, string>> = {
   main: "design_main",
@@ -359,6 +369,11 @@ export interface RunSettings {
   /** A main run's only: the conversation it is a turn of (the new shape §5; coach-conversation.ts) — its first run's id,
    * fixed by the create's own insert. Absent on a run made before conversations: it is a conversation of its own. */
   conversationId?: string;
+  /** An auto run's only (the new shape §5): the set's ceiling plan_set raises it to — the athlete's lower "set" limit,
+   * else the default. */
+  setCeilingMicros?: number;
+  /** An auto run's only: when plan_set raised its ceiling to `setCeilingMicros` (once), with a set's window from then. */
+  raisedAt?: string;
 }
 
 export interface PendingCall {
@@ -456,6 +471,8 @@ export function newRunState(
     reviewOf?: ReviewOf;
     /** A main run's focus (A1); a sub-run is never given one. */
     focus?: RunFocus;
+    /** An auto main run's: the set's ceiling plan_set may raise it to (default: a set's). */
+    setCeilingMicros?: number;
   } = {},
 ): RunState {
   const limits = RUN_LIMITS[role];
@@ -473,6 +490,7 @@ export function newRunState(
       ...(opts.timezone ? { timezone: opts.timezone } : {}),
       ...(opts.window ? { window: opts.window } : {}),
       ...(opts.focus && role === "main" ? { focus: opts.focus } : {}),
+      ...(scope.kind === "auto" && role === "main" ? { setCeilingMicros: opts.setCeilingMicros ?? RUN_CEILING_MICROS.week } : {}),
     },
     system: null,
     messages: [],
@@ -489,7 +507,8 @@ export function newRunState(
 /** A new main run's window: the athlete's local day for now / later today, a day from `now` for a set. A timezone
  * that can't be read counts as UTC. */
 export function runWindow(scope: RunScope, timezone: string, now: Date): RunWindow {
-  return scope.kind === "now" || scope.kind === "later_today"
+  // An auto run starts as one workout's: its day (a set it plans gets a set's window from then: `SetHooks.raise`).
+  return scope.kind === "now" || scope.kind === "later_today" || scope.kind === "auto"
     ? { kind: "day", date: localDate(timezone, now) }
     : { kind: "until", at: new Date(now.getTime() + COACH_RUN_SET_WINDOW_HOURS * 3_600_000).toISOString() };
 }
@@ -569,21 +588,23 @@ export function parseRunScope(raw: unknown): RunScope | null {
 }
 
 /**
- * A create's scope as the request gives it (Settings → Coach, Task 10): absent, the athlete's default; `next_n` with no
- * count, their count — both resolved by `createRun` from the settings. Null for anything else that isn't a scope.
+ * A create's scope as the request gives it: absent, an auto run (the new shape §5: the coach decides — no time frame up
+ * front); `next_n` with no count, the athlete's count (Settings → Coach, Task 10, resolved by `createRun`). Null for
+ * anything else that isn't a scope.
  */
 export function parseScopeRequest(raw: unknown): { scope?: RunScope } | null {
-  if (raw === undefined) return {};
+  if (raw === undefined) return { scope: { kind: "auto" } };
   const kind = (raw as { kind?: unknown } | null)?.kind;
   if (kind === "next_n" && (raw as { n?: unknown }).n === undefined) return { scope: { kind: "next_n" } };
   const scope = parseRunScope(raw);
   return scope ? { scope } : null;
 }
 
-/** The scope a create starts: the request's, else the athlete's default; a set of the next workouts counts theirs. */
+/** The scope a create starts: the request's, else an auto run (the new shape §5: the coach decides — Settings → Coach's
+ * default scope no longer starts one); a set of the next workouts counts theirs. */
 export function resolveRunScope(asked: RunScope | undefined, coach: CoachPreferences | undefined): RunScope {
   const settings = coachSettings(coach);
-  const kind = asked?.kind ?? settings.defaultScope;
+  const kind = asked?.kind ?? "auto";
   return kind === "next_n" ? { kind, n: asked?.n ?? settings.nextN } : { kind };
 }
 
@@ -1017,7 +1038,12 @@ async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): P
   const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
   const measuredSince = new Date(now.getTime() - START_MEDIAN_DAYS * 86_400_000).toISOString();
   const set = isSetScope(scope);
-  const kinds = set ? sql`('week', 'next_n')` : sql`('now', 'later_today')`;
+  // An auto run is a set's when it planned one (`raisedAt`), else one workout's (the new shape §5).
+  const kindOf = sql.raw(
+    `CASE WHEN json_extract(m.scope, '$.kind') IN ('week', 'next_n') THEN 'set' ` +
+      `WHEN json_extract(m.scope, '$.kind') = 'auto' AND json_valid(m.state) AND json_extract(m.state, '$.settings.raisedAt') IS NOT NULL THEN 'set' ` +
+      `WHEN json_extract(m.scope, '$.kind') IN ('now', 'later_today', 'auto') THEN 'single' END`,
+  );
   // A main run's whole tree: its own spend, its sub-runs' and theirs (main → designer → reviewer is two deep).
   const tree = sql`(m.cost_usd
     + coalesce((SELECT sum(k.cost_usd) FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id), 0)
@@ -1029,7 +1055,7 @@ async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): P
         SELECT ${tree} AS c FROM coach_runs m
         WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.created_at >= ${measuredSince}
           AND (m.status = 'finished' OR (m.status = 'stopped_cap' AND m.error = 'run_ceiling'))
-          AND json_valid(m.scope) AND json_extract(m.scope, '$.kind') IN ${kinds}
+          AND json_valid(m.scope) AND ${kindOf} = ${set ? "set" : "single"}
         ORDER BY m.created_at DESC LIMIT ${START_MEDIAN_RUNS})) AS costs
   `)) as Array<{ spent: number | null; costs: string | null }>;
   const spentMicros = Math.round(Number(row?.spent ?? 0));
@@ -1083,13 +1109,16 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     const outside = dayOutOfRange(focus.id, localDate(timezone, now));
     if (outside) throw outside;
   }
-  const ceilingKind = ceilingKindOf(scope.kind);
+  const ceilingKind = startCeilingKind(scope.kind);
   const lowered = own?.ceilingsUsd?.[ceilingKind];
+  // An auto run's set ceiling, for plan_set to raise it to: the athlete's lower set limit, else the default.
+  const loweredSet = scope.kind === "auto" ? own?.ceilingsUsd?.set : undefined;
   const state = newRunState("main", scope, {
     rehearsal,
     timezone,
     window: runWindow(scope, timezone, now),
     ...(lowered !== undefined ? { ceilingMicros: Math.round(Math.min(lowered, COACH_CEILING_DEFAULTS_USD[ceilingKind]) * 1_000_000) } : {}),
+    ...(loweredSet !== undefined ? { setCeilingMicros: Math.round(Math.min(loweredSet, COACH_CEILING_DEFAULTS_USD.set) * 1_000_000) } : {}),
     ...(focus ? { focus: { kind: focus.kind, id: focus.id } } : {}),
   });
   const insert = async (): Promise<CreateRunResult | null> => {
@@ -2175,7 +2204,7 @@ const okStep = (result: StepResult): StepOutcome => ({ kind: "ok", result });
  */
 async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: string, at: string, today?: string): Promise<boolean> {
   const proposalId = designProposalId(root.id);
-  const proposed = isSetScope(root.scope)
+  const proposed = runIsSet(root.scope, root.settings)
     ? await promoteSetWithWhatItHas(db, userId, proposalId, note, { mainRunId: root.id, ...(today ? { today } : {}) })
     : await promoteWithWhatItHas(db, userId, proposalId, note, today ? { today } : {});
   if (!proposed) return false;
@@ -2729,7 +2758,14 @@ async function runTools(
     db: s.db,
     env: s.env,
     userId: s.userId,
-    run: { id: run.id, role: run.role, scope: run.scope, parentId: run.parentId, rehearsal: state.settings.rehearsal },
+    run: {
+      id: run.id,
+      role: run.role,
+      scope: run.scope,
+      parentId: run.parentId,
+      rehearsal: state.settings.rehearsal,
+      ...(run.role === "main" && state.settings.conversationId ? { conversationId: state.settings.conversationId } : {}),
+    },
     now: s.now,
     ...(s.deps.review && run.role !== "reviewer" ? { review: reviewHooks(s) } : {}),
     ...(state.reviewOf ? { reviewOf: state.reviewOf } : {}),
@@ -3085,6 +3121,14 @@ function reviewHooks(s: StepCtx): ReviewHooks {
 function setHooks(s: StepCtx): SetHooks {
   return {
     rounds: () => s.state.set?.rounds ?? [],
+    // An auto run that plans a set (the new shape §5): its ceiling raised to a set's, once, with a set's window from now.
+    raise() {
+      const settings = s.state.settings;
+      if (s.run.scope.kind !== "auto" || settings.raisedAt) return;
+      settings.ceilingMicros = settings.setCeilingMicros ?? RUN_CEILING_MICROS.week;
+      settings.raisedAt = s.now.toISOString();
+      settings.window = { kind: "until", at: new Date(s.now.getTime() + COACH_RUN_SET_WINDOW_HOURS * 3_600_000).toISOString() };
+    },
     budget: () => {
       // This set's designers: what each cost, its reviewers included. (Main plans again only once every one of them is
       // over — `waiting_set` — and a designer that never ran is one only a whole-tree stop leaves, after which nothing
@@ -3115,9 +3159,12 @@ function setHooks(s: StepCtx): SetHooks {
       if (designers.length === 0) return [];
       const { state, run } = s;
       const at = s.now.toISOString();
+      // An auto run's set is a week's (the new shape §5): its designers and their reviewers read and act as a week's do
+      // — a set's designer never asks.
+      const scope: RunScope = isSetScope(run.scope) ? run.scope : { kind: "week" };
       const rows = designers.map((d) => ({
         ...d,
-        state: newRunState("designer", run.scope, {
+        state: newRunState("designer", scope, {
           rehearsal: state.settings.rehearsal,
           // A workout's own; the main run's holds the whole set above it (the highest ceiling reached stops a run).
           ceilingMicros: DESIGNER_CEILING_MICROS,
@@ -3133,7 +3180,7 @@ function setHooks(s: StepCtx): SetHooks {
         if (r.replaces) r.state.replaces = r.replaces;
       }
       const values = rows.map(
-        (r) => sql`(${r.runId}, ${s.userId}, ${run.id}, 'designer', ${JSON.stringify(run.scope)}, ${run.request}, 'active', ${JSON.stringify(r.state)}, 0, 0, ${at}, ${at})`,
+        (r) => sql`(${r.runId}, ${s.userId}, ${run.id}, 'designer', ${JSON.stringify(scope)}, ${run.request}, 'active', ${JSON.stringify(r.state)}, 0, 0, ${at}, ${at})`,
       );
       const inserted = (await s.db.all(sql`
         INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
@@ -3148,7 +3195,7 @@ function setHooks(s: StepCtx): SetHooks {
           id: r.runId,
           parentId: run.id,
           role: "designer",
-          scope: run.scope,
+          scope,
           request: run.request,
           status: "active",
           steps: 0,

@@ -164,18 +164,18 @@ const BODY_QUESTIONS = ["soreness", "tightness", "pain"] as const;
 const FEEDBACK_QUESTIONS = new Set(["exercise_feedback", "workout_feedback"]);
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-type ScopeKind = "now" | "later_today" | "week" | "next_n";
+type ScopeKind = "now" | "later_today" | "week" | "next_n" | "auto";
 
 /** How far ahead events and the plan are read, by scope: a workout today still answers to the days after it (the
- * 48-hour rule, a taper); a set answers to the week after it. (A set of the next N plans its workouts within it:
- * design-orchestrate.ts.) */
+ * 48-hour rule, a taper); a set answers to the week after it — and so does an auto run, which may plan one (the new
+ * shape §5). (A set of the next N plans its workouts within it: design-orchestrate.ts.) */
 export function horizonDays(kind: ScopeKind, n: number): number {
-  if (kind === "week") return 14;
+  if (kind === "week" || kind === "auto") return 14;
   if (kind === "next_n") return Math.min(28, Math.max(14, 2 * n));
   return 7;
 }
 
-const SCOPE_KINDS: readonly ScopeKind[] = ["now", "later_today", "week", "next_n"];
+const SCOPE_KINDS: readonly ScopeKind[] = ["now", "later_today", "week", "next_n", "auto"];
 /** "Next N" without its N: the setting's default (spec §6). */
 const DEFAULT_NEXT_N = 3;
 /** The most workouts one "next N" run plans (the runs route's own bound). */
@@ -728,12 +728,19 @@ function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: str
       return `the next 7 days — workouts from ${r.today} to ${addDays(r.today, 6)}, planned as a set${setTimes}`;
     case "next_n":
       return `the next ${n} workouts — ${n} new ones around what is planned, not the next ${n} planned sessions — from today (the plan is read through ${end}), planned as a set${setTimes}`;
+    case "auto":
+      // The new shape §5: no time frame up front. The usual times are what "a sensible time" is read from.
+      return `yours to choose from the request — an answer in words, one workout (right now: today with no time; otherwise a time that suits — their usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}${preferred}), changes to the plan, or a set of workouts from ${r.today} to ${addDays(r.today, 6)} with plan_set (the plan is read through ${end})`;
   }
 }
 
 /** The scope in each role's own terms: a designer designs one workout of a set, a reviewer judges one draft. */
 function scopeLine(role: DesignRun["role"], kind: ScopeKind, n: number, r: Reads, time: string, end: string): string {
   const set = kind === "week" ? `a set for the next 7 days (${r.today} to ${addDays(r.today, 6)})` : kind === "next_n" ? `a set of the next ${n} workouts` : null;
+  // An auto run's own draft (the new shape §5): the request is its time frame.
+  if (kind === "auto" && role !== "main") {
+    return role === "reviewer" ? "Scope: one drafted workout to review; the request set its time." : "Scope: one workout, designed from its brief.";
+  }
   if (role === "designer") {
     return set ? `Scope: one workout of ${set}, designed from its brief.` : `Scope: one workout, designed from its brief; the run asked for ${scopeWords(kind, n, r, time, end)}.`;
   }

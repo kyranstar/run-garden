@@ -82,7 +82,7 @@ const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, empha
 export const planSet: DesignTool = {
   name: "plan_set",
   description:
-    "The main coach, for a week or the next few workouts: one brief per workout. Each brief starts a designer; this run waits, and the result says what each produced or why it was left out. Once more at most, with briefs for keys to redo, each with a note.",
+    "The main coach, for a week, the next few workouts or more than one workout: one brief per workout. Each brief starts a designer; this run waits, and the result says what each produced or why it was left out. Once more at most, with briefs for keys to redo, each with a note.",
   inputSchema: {
     type: "object",
     properties: {
@@ -117,7 +117,8 @@ export const planSet: DesignTool = {
   async run(ctx, raw) {
     const p = parseAct(input, raw, FIELDS);
     if (isErr(p)) return p;
-    if (!isSetScope(ctx.run.scope)) {
+    // An auto run (the new shape §5) may plan a set too: the coach chose one from the athlete's words.
+    if (!isSetScope(ctx.run.scope) && ctx.run.scope.kind !== "auto") {
       return refuse(
         "not_for_scope",
         "plan_set plans a set — the next 7 days, or the next few workouts; this run designs one workout.",
@@ -176,7 +177,7 @@ export const planSet: DesignTool = {
         if (b.note) problems.push(`"${b.key}": a note is a redo's (plan_set's second call) — say it in why or constraints`);
       }
     }
-    const scopeEnd = ctx.run.scope.kind === "week" ? "the last of the next 7 days" : "the set's last day";
+    const scopeEnd = ctx.run.scope.kind === "next_n" ? "the set's last day" : "the last of the next 7 days";
     // The dates already briefed: on a redo, the first plan's other workouts that still stand (one dropped or left out
     // holds no day).
     const held: SetBrief[] = redo ? (first?.briefs ?? []).filter((b) => !p.briefs.some((r) => r.key === b.key) && firstOpOf(b.key)) : [];
@@ -203,6 +204,8 @@ export const planSet: DesignTool = {
     // started is not checked again: they are under way.
     const ids = p.briefs.map((b, i) => designerRunId(ctx.run.id, toolUseId, i, b.key));
     if (!ctx.set.started(ids)) {
+      // An auto run plans a set at a set's ceiling (the new shape §5): raised once, before the set is weighed against it.
+      ctx.set.raise?.();
       const budget = ctx.set.budget();
       const stored = estimate ?? budget.estimate;
       const perWorkout = Math.max(stored?.perWorkoutMicros ?? DEFAULT_WORKOUT_COST_MICROS, redo ? (budget.perDesignerMicros ?? 0) : 0);

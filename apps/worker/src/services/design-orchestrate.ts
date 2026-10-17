@@ -62,13 +62,21 @@ import { isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp } from "./pro
 /** A scope a set is planned for. */
 export const isSetScope = (scope: RunScope): boolean => scope.kind === "week" || scope.kind === "next_n";
 
+/** In SQL, a main run (`alias`) that planned a set: of a set's own scope, or an auto run that planned one (the new shape
+ * §5: plan_set raised it, `settings.raisedAt`). */
+export const setRunSql = (alias: string) =>
+  sql.raw(
+    `(json_valid(${alias}.scope) AND (json_extract(${alias}.scope, '$.kind') IN ('week', 'next_n') OR (json_extract(${alias}.scope, '$.kind') = 'auto' ` +
+      `AND json_valid(${alias}.state) AND json_extract(${alias}.state, '$.settings.raisedAt') IS NOT NULL)))`,
+  );
+
 /** The most workouts a set of this scope plans. */
 export const setLimit = (scope: RunScope): number => (scope.kind === "next_n" ? Math.min(scope.n ?? 3, SET_MAX_WORKOUTS) : SET_MAX_WORKOUTS);
 
-/** The last day a set's workouts may fall on: this week's last day, or the end of the next N's horizon (the plan the
- * main coach was shown reaches that far: design-context.ts `horizonDays`). */
+/** The last day a set's workouts may fall on: this week's last day (an auto run's set is a week's: the new shape §5), or
+ * the end of the next N's horizon (the plan the main coach was shown reaches that far: design-context.ts `horizonDays`). */
 export function setLastDay(scope: RunScope, today: string): string {
-  const days = scope.kind === "week" ? 7 : horizonDays("next_n", scope.n ?? 3);
+  const days = scope.kind === "week" || scope.kind === "auto" ? 7 : horizonDays("next_n", scope.n ?? 3);
   return addDays(today, days - 1);
 }
 
@@ -654,7 +662,7 @@ export async function supersedeOlderPlans(db: Db, userId: string, proposalId: st
     ? sql`(coach_proposals.id = ${focused.id} AND coach_proposals.status = 'pending'
         AND EXISTS (SELECT 1 FROM coach_proposals np WHERE np.id = ${proposalId} AND np.user_id = ${userId} AND np.status = 'pending')
         AND NOT EXISTS (SELECT 1 FROM coach_runs fr WHERE fr.id = substr(coach_proposals.id, 4) AND fr.user_id = ${userId}
-          AND json_valid(fr.scope) AND json_extract(fr.scope, '$.kind') IN ('week', 'next_n')))`
+          AND ${setRunSql("fr")}))`
     : sql`0`;
   /** An op the follow-up supersedes: every one of its suggestion still open. */
   const changed = (value: SQL) => sql`(${isFocused} AND ${openOp(value)})`;
@@ -716,7 +724,7 @@ export async function estimateSetCost(db: Db, userId: string, workouts: number, 
     AND (d.status = 'finished' OR (d.status = 'stopped_cap' AND d.error = 'run_ceiling'
       AND json_valid(d.state) AND ${cost} * 1000000 >= json_extract(d.state, '$.settings.ceilingMicros')))`;
   const mains = sql`FROM coach_runs m WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.status = 'finished' AND m.created_at >= ${since}
-    AND json_valid(m.scope) AND json_extract(m.scope, '$.kind') IN ('week', 'next_n')`;
+    AND ${setRunSql("m")}`;
   const [row] = (await db.all(sql`
     SELECT
       (SELECT count(*) ${designers}) AS designers,

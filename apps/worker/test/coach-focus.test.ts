@@ -249,7 +249,7 @@ describe("a run's focus: the athlete's own, kept with the run", () => {
     }
   });
 
-  it("a set's suggestion is refused in words — Plan ahead changes a week plan; a single suggestion with no scope asked takes its own", async () => {
+  it("a set's suggestion is refused in words — Plan ahead changes a week plan; with no scope asked, a single one's follow-up is an auto run", async () => {
     for (const scope of [{ kind: "week" }, { kind: "next_n", n: 3 }]) {
       const id = await suggestion(me.userId, scope);
       const res = await call(me, "POST", "", { focus: { kind: "proposal", id }, request: "shorter" });
@@ -260,7 +260,8 @@ describe("a run's focus: the athlete's own, kept with the run", () => {
     const later = await suggestion(me.userId, { kind: "later_today" });
     const res = await call(me, "POST", "", { focus: { kind: "proposal", id: later }, request: "shorter" });
     expect(res.status).toBe(200);
-    expect(res.body.run.scope).toEqual({ kind: "later_today" });
+    // No scope asked: an auto run (the new shape §5) — the coach reads the time frame from the words.
+    expect(res.body.run.scope).toEqual({ kind: "auto" });
     await call(me, "POST", `/${res.body.run.id}/cancel`);
     // A scope asked for is the athlete's word: it stands.
     const asked = await call(me, "POST", "", { scope: { kind: "now" }, focus: { kind: "proposal", id: later }, request: "shorter" });
