@@ -27,7 +27,7 @@ import {
   provenanceWords,
 } from "../src/screens/settings/coach-memory-model.js";
 import { MemoryItem, MemoryList } from "../src/screens/settings/coach-memory.js";
-import { CoachSection, CoachSettingsView, readLimit } from "../src/screens/settings/coach-settings.js";
+import { CoachLimits, readLimit, spendLine, spendOf, TrainingTimes, TrainingTimesView } from "../src/screens/settings/coach-settings.js";
 
 const noop = () => undefined;
 const item = (over: Partial<CoachMemoryItem> = {}): CoachMemoryItem => ({
@@ -154,72 +154,56 @@ const dto = (coach: CoachPreferencesDto["coach"] = {}): CoachPreferencesDto => (
   model: { id: "anthropic/claude-opus-5.5", name: "Claude Opus 5.5" },
 });
 
-function view(d: CoachPreferencesDto, spend = true): string {
-  return html(
-    createElement(CoachSettingsView, {
-      data: d,
-      spend: spend ? { since: "2026-10-09T00:00:00.000Z", spentMicros: 3_200_000, spentUsd: 3.2, warnMicros: 5_000_000, cutoffMicros: 20_000_000 } : null,
-      onSave: noop,
-    }),
-  );
+function view(d: CoachPreferencesDto): string {
+  return html(createElement(CoachLimits, { data: d, onSave: noop }));
 }
 
-describe("Settings → Coach", () => {
+const times = (d: CoachPreferencesDto): string => html(createElement(TrainingTimesView, { data: d, onSave: noop }));
+
+const coachSpend = (usd: number) => ({ since: "2026-10-09T00:00:00.000Z", spentMicros: Math.round(usd * 1e6), spentUsd: usd, warnMicros: 5_000_000, cutoffMicros: 20_000_000 });
+
+describe("Settings → Coach & AI (the new shape: no time frame up front, one spend line)", () => {
   const was = { coach: features.coach, studio: features.studio };
   afterEach(() => Object.assign(features, was));
 
-  it("the defaults: Now pressed, three workouts, no times, the full limits, the model and the week's spend", () => {
+  it("the defaults: the full limits for one request and the model — no 'Start with', no 'Next workouts'", () => {
     const markup = view(dto());
-    expect(markup).toMatch(/aria-pressed="true"[^>]*>Now</);
-    expect(markup).toMatch(/aria-pressed="false"[^>]*>Next 3 workouts</);
-    expect(markup).toMatch(/aria-pressed="false"[^>]*>Next 7 days</);
-    expect(markup).toMatch(/<option value="3" selected="">3<\/option>/);
-    expect(text(markup)).toContain("None set.");
     expect(markup).toContain('value="1.50"');
     expect(markup).toContain('value="6.00"');
     expect(markup).toMatch(/max="1.5"/);
     expect(markup).toMatch(/max="6"/);
     expect(text(markup)).toContain("Model Claude Opus 5.5");
-    expect(text(markup)).toContain("AI spend this week $3.20 of $20.00");
     expect(markup).not.toContain("anthropic/");
+    expect(text(markup)).not.toMatch(/Start with|Next workouts|Later today|Next 7 days/);
   });
 
-  it("the words (fix wave 3B): Next 7 days and Next N workouts, never 'This week'; a request, never a run (M8, B-I12)", () => {
+  it("the words: a request, never a run; one workout, or a plan of several", () => {
     const words = text(view(dto()));
-    expect(words).toContain("Now Later today Next 7 days Next 3 workouts");
     expect(words).toContain("Spending limit for one request");
-    expect(words).toContain("Now or later today");
-    expect(words).toContain("Plan ahead");
-    expect(words).not.toContain("This week");
+    expect(words).toContain("One workout");
+    expect(words).toContain("A plan of several");
     expect(words).not.toMatch(/\brun\b/);
   });
 
-  it("past the week's warning: one plain line, the cutoff still ahead (M4)", () => {
-    const spend = (usd: number) =>
-      text(
-        html(
-          createElement(CoachSettingsView, {
-            data: dto(),
-            spend: { since: "2026-10-09T00:00:00.000Z", spentMicros: Math.round(usd * 1e6), spentUsd: usd, warnMicros: 5_000_000, cutoffMicros: 20_000_000 },
-            onSave: noop,
-          }),
-        ),
-      );
-    expect(spend(5.07)).toContain("AI spend this week $5.07 of $20.00");
-    expect(spend(5.07)).toContain("Over $5 this week — the coach keeps going until $20.");
-    expect(spend(4.99)).not.toContain("Over $5");
-    expect(spend(5)).not.toContain("Over $5");
+  it("one spend line: the week's spend, past the warning that the coach keeps going, at the cutoff that it waits (M4)", () => {
+    const line = (usd: number) => spendLine(spendOf(coachSpend(usd), null)!);
+    expect(line(3.2)).toBe("AI this week: $3.20 of $20.00");
+    expect(line(5.07)).toBe("AI this week: $5.07 of $20.00 — past $5, the coach keeps going until $20.");
+    expect(line(5)).toBe("AI this week: $5.00 of $20.00");
+    expect(line(20)).toBe("AI this week: $20.00 of $20.00 — paused until the week clears.");
+    // Without the coach's own count, the settings' answer for the same week.
+    expect(spendLine(spendOf(null, { spentDollars: 1.2, cutoffDollars: 20, warn: false, cutoff: false })!)).toBe("AI this week: $1.20 of $20.00");
+    expect(spendOf(null, null)).toBeNull();
   });
 
-  it("what the athlete set", () => {
-    const markup = view(dto({ defaultScope: "next_n", nextN: 5, trainingTimes: ["18:30", "07:00"], ceilingsUsd: { day: 1 } }), false);
-    expect(markup).toMatch(/aria-pressed="true"[^>]*>Next 5 workouts</);
-    expect(markup).toMatch(/<option value="5" selected="">5<\/option>/);
+  it("what the athlete set: a lowered limit; the coach's training times, in order, with room for three", () => {
+    const d = dto({ trainingTimes: ["18:30", "07:00"], ceilingsUsd: { day: 1 } });
+    expect(view(d)).toContain('value="1.00"');
+    const markup = times(d);
     expect(markup.indexOf('value="07:00"')).toBeLessThan(markup.indexOf('value="18:30"'));
-    expect(markup).toContain('value="1.00"');
-    expect(text(markup)).not.toContain("AI spend this week");
+    expect(text(times(dto()))).toContain("None set.");
     // Three times: no room for another.
-    expect(view(dto({ trainingTimes: ["07:00", "12:00", "18:00"] }))).not.toContain("Add a time");
+    expect(times(dto({ trainingTimes: ["07:00", "12:00", "18:00"] }))).not.toContain("Add a time");
   });
 
   it("a limit typed past its default is refused in plain words; lower is fine", () => {
@@ -232,14 +216,14 @@ describe("Settings → Coach", () => {
     expect(readLimit("set", "$4.5")).toEqual({ usd: 4.5 });
   });
 
-  it("hidden without the coach designer: nothing rendered, nothing read", () => {
+  it("the training times are hidden without the coach designer: nothing rendered, nothing read", () => {
     features.coach = false;
     features.studio = true;
     const qc = new QueryClient();
-    expect(html(createElement(QueryClientProvider, { client: qc }, createElement(CoachSection)))).toBe("");
+    expect(html(createElement(QueryClientProvider, { client: qc }, createElement(TrainingTimes)))).toBe("");
     features.coach = true;
     features.studio = false;
-    expect(html(createElement(QueryClientProvider, { client: qc }, createElement(CoachSection)))).toBe("");
+    expect(html(createElement(QueryClientProvider, { client: qc }, createElement(TrainingTimes)))).toBe("");
     expect(qc.getQueryCache().getAll()).toHaveLength(0);
   });
 });

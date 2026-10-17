@@ -1,5 +1,5 @@
 /**
- * App Settings → Sessions → Sounds (the sound pass, 2026-10-17): one row that says what is set ("Automatic · 70%", or
+ * App Settings → Training → Sounds (the sound pass, 2026-10-17; its own card since the new shape): one row that says what is set ("Automatic · 70%", or
  * "Off") and opens the session's sound controls (`SoundSettings`), so the athlete can set them before a session. What
  * is set is kept on this device (`writeSound`), where the player reads it, and handed to the cue player at once, so a
  * preview plays at the volume set. Outside a session nothing is calm: Automatic plays soft keys.
@@ -21,7 +21,7 @@ export function SoundsSection({ player = cuePlayer }: { player?: Pick<CuePlayer,
     player.configure(soundFor(next, false));
   };
   return (
-    <Card title="Sessions" className="settings-new">
+    <Card title="Sounds">
       <button
         type="button"
         className="place-row"

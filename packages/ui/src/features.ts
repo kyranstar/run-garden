@@ -6,15 +6,13 @@
  * created before a session can be played and saved). Built in 2b Task 7 (the player, the review and the outbox); on in
  * production since the ship gate of 2026-10-08 (a real build measured on the owner's account: outcome ok).
  *
- * `import` — Settings → Import, the standalone tool's backup (Phase 2c). Off, the Import card does not render and
- * nothing in the app reaches the importer: imported history must stay out of the garden, and the gate that keeps it
- * out lands in Phase 2d, which turns this on.
+ * (`import` — Settings → Import — shipped with Phase 2d and its gate went with the new shape: the Import card is in
+ * Settings → Data & account in every build.)
  *
- * `studio` — the Studio tab (Stage 2): the fifth nav entry and the `/studio` routes. It ships dark while it is being
- * built, because the app deploys from this branch before the Studio is finished. Unlike the two above it is decided by
- * the BUILD, not by a constant: on wherever Vite says DEV — the dev server, the fixture stack the e2e and screenshot
- * runs use, and vitest — and off in a production build unless that build sets `VITE_STUDIO=1`. Off, the nav is the
- * original four tabs and `/studio` (and everything under it) redirects home.
+ * `studio` — the Studio (Stage 2). Unlike `player` it is decided by the BUILD, not by a constant: on wherever Vite says
+ * DEV — the dev server, the fixture stack the e2e and screenshot runs use, and vitest — and off in a production build
+ * unless that build sets `VITE_STUDIO=1` (production does). Since the new shape the Studio is no tab and its routes
+ * answer whatever this says; the session sheet's Edit still reads it.
  *
  * `coach` — the coach designer in the Studio (Stage 3 Task 9): the composer, the run view and a designed workout's
  * suggestion card on the Studio home, and the Plan coach sheet's link to them. Decided by the build as `studio` is: on in
@@ -47,9 +45,8 @@ export function coachFlag(env: BuildEnv | undefined): boolean {
 // literal answer). The package has no Vite client types of its own, hence the local shape.
 const buildEnv = (import.meta as ImportMeta & { env?: BuildEnv }).env;
 
-export const features: { player: boolean; import: boolean; studio: boolean; coach: boolean } = {
+export const features: { player: boolean; studio: boolean; coach: boolean } = {
   player: true,
-  import: true,
   studio: studioFlag(buildEnv),
   coach: coachFlag(buildEnv),
 };

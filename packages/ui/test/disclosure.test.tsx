@@ -180,7 +180,7 @@ describe("a default never stands in for an answer that has not arrived", () => {
   });
 
   it("Settings never decides `connected` from a query in flight", () => {
-    const at = src.settings.indexOf("export function CorosConnectSection()");
+    const at = src.settings.indexOf("export function CorosConnectSection(");
     const body = src.settings.slice(at, src.settings.indexOf("\nfunction DiagRows", at));
     // The `connected` boolean may stay as it is — what must exist is a branch
     // ABOVE it that renders neither answer while the query is still loading.

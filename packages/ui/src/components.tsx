@@ -1,6 +1,8 @@
 import {
   Component,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -933,23 +935,30 @@ export function CategoryDot({ category }: { category: string }) {
  * The section is `aria-labelledby` its own heading, so the region announces
  * with the name you can see.
  */
+/**
+ * The heading level a Card's title takes when the card names none: 2 on a page, or what an enclosing group says (the
+ * Settings groups, the new shape: a group is an h2, so its cards' titles are h3).
+ */
+export const CardLevelContext = createContext<2 | 3 | 4>(2);
+
 export function Card({
   title,
   children,
   className,
-  level = 2,
+  level,
   anchor,
 }: {
   title?: string;
   children: ReactNode;
   className?: string;
-  /** Heading level for `title`. 2 by default; 3 inside a dialog. */
+  /** Heading level for `title`: the enclosing group's (2 on a page); 3 inside a dialog. */
   level?: 2 | 3 | 4;
   /** Element id, so a link elsewhere can jump to this card. */
   anchor?: string;
 }) {
   const id = useId();
-  const Heading = `h${level}` as "h2" | "h3" | "h4";
+  const inherited = useContext(CardLevelContext);
+  const Heading = `h${level ?? inherited}` as "h2" | "h3" | "h4";
   return (
     <section id={anchor} className={`card ${className ?? ""}`} aria-labelledby={title ? id : undefined}>
       {title ? (

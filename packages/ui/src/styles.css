@@ -2940,6 +2940,46 @@ button.session-chip {
   opacity: 0.75;
 }
 
+/* ── Settings, in five groups (the new shape): a group's heading, then its cards one heading level under it ──── */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.settings-group + .settings-group {
+  margin-top: var(--space-6);
+}
+.settings-group-h {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+.settings-group-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.settings-group-cards > .card + .card {
+  margin-top: 0;
+}
+/* A card's "Saved." — a live region kept in the page, quiet, empty until there is news. */
+.settings-saved {
+  margin: 0;
+  min-height: 1lh;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.settings-saved:empty {
+  min-height: 0;
+}
+/* The one line of the week's AI spend. */
+.coach-spend {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+
 /* ── Settings: health conditions, places and equipment, units, import (Phase 2c; mocks §7) ───────────────────────
    One row grammar for the new cards: the words take the squeeze, the control never does, and every row clears the
    44px floor under any pointer (these are list rows a thumb hits). */

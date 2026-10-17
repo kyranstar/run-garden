@@ -20,6 +20,7 @@ import { formatWeightIn, withWeightUnit, type UserPreferences, type Weight, type
 import {
   Banner,
   Card,
+  CardLevelContext,
   formatDayLong,
   formatDayShort,
   formatShortDate,
@@ -32,10 +33,8 @@ import { RestorePendingNotice } from "./restore-notice.js";
 import { UnsyncedSessions } from "../components/unsynced-sessions.js";
 import { forgetOfflineIdentity } from "../offline/me.js";
 import { PlaceSheet } from "../components/place-sheet.js";
-import { features } from "../features.js";
-import { OUT_OF_CREDITS_LINE } from "../ai-credits.js";
 import { CoachMemorySection } from "./settings/coach-memory.js";
-import { CoachSection } from "./settings/coach-settings.js";
+import { CoachAiSection, TrainingTimes } from "./settings/coach-settings.js";
 import { SoundsSection } from "./settings/sounds.js";
 
 const TZ_OPTIONS: string[] = (() => {
@@ -59,18 +58,29 @@ function TimeField({
   label,
   value,
   onChange,
+  onCommit,
   hint,
 }: {
   id: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
+  /** The field was left: save what it holds. */
+  onCommit?: (v: string) => void;
   hint?: string;
 }) {
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
-      <input id={id} type="time" value={value} onChange={(e) => onChange(e.target.value)} />
+      <input
+        id={id}
+        type="time"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={(e) => {
+          if (e.target.value) onCommit?.(e.target.value);
+        }}
+      />
       {hint ? <span className="hint">{hint}</span> : null}
     </div>
   );
@@ -81,12 +91,15 @@ function NumberField({
   label,
   value,
   onChange,
+  onCommit,
   suffix,
 }: {
   id: string;
   label: string;
   value: number;
   onChange: (v: number) => void;
+  /** The field was left: save what it holds. */
+  onCommit?: (v: number) => void;
   suffix: string;
 }) {
   return (
@@ -101,6 +114,7 @@ function NumberField({
         max={180}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
+        onBlur={(e) => onCommit?.(Number(e.target.value))}
       />
     </div>
   );
@@ -110,54 +124,48 @@ function NumberField({
 const FEET_PER_METRE = 3.28084;
 
 /** What the Scheduling card saves — its own fields, never another card's. */
-const SCHEDULING_KEYS = [
-  "weekdayMorningTime",
-  "weekdayEveningTime",
-  "weekendMorningTime",
-  "defaultWindow",
-  "eveningReminderTime",
-  "latestEveningFinish",
-  "raceDate",
-  "bufferBeforeMinutes",
-  "bufferAfterMinutes",
-  "raceDistanceKm",
-  "raceCourseProfile",
-  "raceCourseClimbMetres",
-  "timezone",
-] as const satisfies ReadonlyArray<keyof UserPreferences>;
-
-export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
-  const qc = useQueryClient();
-  const [draft, setDraft] = useState(prefs);
-  const [saved, setSaved] = useState(false);
-  const save = useMutation({
-    // Only this card's own fields: the draft was copied when the page opened, and sending it whole would put back
-    // whatever another card has changed since — a unit, a switch (Phase 2c).
-    mutationFn: () => api.updateSettings(Object.fromEntries(SCHEDULING_KEYS.map((k) => [k, draft[k]])) as Partial<UserPreferences>),
-    onSuccess: () => {
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
-      void qc.invalidateQueries({ queryKey: ["settings"] });
-      void qc.invalidateQueries({ queryKey: ["today"] });
-    },
-  });
-  const set = <K extends keyof UserPreferences>(k: K, v: UserPreferences[K]) =>
+/**
+ * Settings saved as you go (the new shape): a choice saves itself on the tap, a typed value when it is left — each
+ * alone, so it can never put back a setting another card changed since the page opened. One quiet line says it took.
+ */
+function useSaveAsYouGo(prefs: UserPreferences) {
+  const save = useSaveSetting();
+  const live = useLivePrefs(prefs);
+  const [draft, setDraft] = useState(live);
+  // What the server holds comes back after each save: the fields follow it.
+  useEffect(() => setDraft(live), [live]);
+  const set = <K extends keyof UserPreferences>(k: K, v: UserPreferences[K]) => setDraft((d) => ({ ...d, [k]: v }));
+  const commit = <K extends keyof UserPreferences>(k: K, v: UserPreferences[K]) => {
     setDraft((d) => ({ ...d, [k]: v }));
-  // Climb follows the same preference as every other distance: feet for a
-  // miles athlete. Storage stays metric.
-  const climbUnit = prefs.units === "mi" ? "ft" : "m";
+    if (v !== live[k]) save.mutate({ [k]: v } as Partial<UserPreferences>);
+  };
+  const status = save.isError ? "Couldn't save — try again." : save.isSuccess ? "Saved." : "";
+  return { draft, set, commit, status, live };
+}
 
+/** The line that says a save took (or didn't): a live region kept in the page, empty until there is news. */
+function SavedLine({ status }: { status: string }) {
   return (
-    <Card title="Scheduling">
-      <TimeField id="s-wm" label="Weekday morning run" value={draft.weekdayMorningTime} onChange={(v) => set("weekdayMorningTime", v)} />
-      <TimeField id="s-we" label="Weekday evening run" value={draft.weekdayEveningTime} onChange={(v) => set("weekdayEveningTime", v)} />
-      <TimeField id="s-sm" label="Weekend morning run" value={draft.weekendMorningTime} onChange={(v) => set("weekendMorningTime", v)} />
+    <p className="settings-saved" role="status">
+      {status}
+    </p>
+  );
+}
+
+/** Settings → Training → Times: the run times, the reminder, the buffers and the zone — and the coach's own times. */
+export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
+  const { draft, set, commit, status } = useSaveAsYouGo(prefs);
+  return (
+    <Card title="Times">
+      <TimeField id="s-wm" label="Weekday morning run" value={draft.weekdayMorningTime} onChange={(v) => set("weekdayMorningTime", v)} onCommit={(v) => commit("weekdayMorningTime", v)} />
+      <TimeField id="s-we" label="Weekday evening run" value={draft.weekdayEveningTime} onChange={(v) => set("weekdayEveningTime", v)} onCommit={(v) => commit("weekdayEveningTime", v)} />
+      <TimeField id="s-sm" label="Weekend morning run" value={draft.weekendMorningTime} onChange={(v) => set("weekendMorningTime", v)} onCommit={(v) => commit("weekendMorningTime", v)} />
       <div className="field">
         <label htmlFor="s-window">Preferred window</label>
         <select
           id="s-window"
           value={draft.defaultWindow}
-          onChange={(e) => set("defaultWindow", e.target.value as "morning" | "evening")}
+          onChange={(e) => commit("defaultWindow", e.target.value as "morning" | "evening")}
         >
           <option value="morning">Morning</option>
           <option value="evening">Evening</option>
@@ -165,50 +173,78 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
       </div>
       <TimeField
         id="s-rem"
-        label="Previous-evening reminder"
+        label="Evening-before reminder"
         value={draft.eveningReminderTime}
         onChange={(v) => set("eveningReminderTime", v)}
-        hint="“Morning run tomorrow at 7:00 AM. Protect tonight's sleep.”"
+        onCommit={(v) => commit("eveningReminderTime", v)}
+        hint="The night before a morning run."
       />
-      <TimeField id="s-fin" label="Latest evening finish" value={draft.latestEveningFinish} onChange={(v) => set("latestEveningFinish", v)} />
+      <TimeField id="s-fin" label="Latest evening finish" value={draft.latestEveningFinish} onChange={(v) => set("latestEveningFinish", v)} onCommit={(v) => commit("latestEveningFinish", v)} />
+      <div className="row" style={{ gap: "var(--space-5)" }}>
+        <NumberField id="s-before" label="Buffer before" value={draft.bufferBeforeMinutes} onChange={(v) => set("bufferBeforeMinutes", v)} onCommit={(v) => commit("bufferBeforeMinutes", v)} suffix="min" />
+        <NumberField id="s-after" label="Buffer after" value={draft.bufferAfterMinutes} onChange={(v) => set("bufferAfterMinutes", v)} onCommit={(v) => commit("bufferAfterMinutes", v)} suffix="min" />
+      </div>
+      <div className="field">
+        <label htmlFor="s-tz">Timezone</label>
+        <input
+          id="s-tz"
+          type="text"
+          list="tz-options"
+          value={draft.timezone}
+          onChange={(e) => set("timezone", e.target.value)}
+          onBlur={(e) => {
+            if (e.target.value.trim()) commit("timezone", e.target.value.trim());
+          }}
+          placeholder="Start typing a city…"
+          autoComplete="off"
+        />
+        <datalist id="tz-options">
+          {TZ_OPTIONS.map((tz) => (
+            <option key={tz} value={tz} />
+          ))}
+        </datalist>
+        <span className="hint">Follows Google Calendar once it is connected.</span>
+      </div>
+      {/* The coach's training times: the times it may plan into, beside the run times (the new shape: one place). */}
+      <TrainingTimes />
+      <SavedLine status={status} />
+    </Card>
+  );
+}
+
+/** Settings → Training → Race: the day, the distance, the course. Saved as you go. */
+export function RaceSection({ prefs }: { prefs: UserPreferences }) {
+  const { draft, set, commit, status, live } = useSaveAsYouGo(prefs);
+  // Climb follows the same preference as every other distance: feet for a miles athlete. Storage stays metric.
+  const climbUnit = live.units === "mi" ? "ft" : "m";
+  const climbShown =
+    draft.raceCourseClimbMetres === null ? "" : climbUnit === "ft" ? Math.round(draft.raceCourseClimbMetres * FEET_PER_METRE) : draft.raceCourseClimbMetres;
+  const climbStored = (text: string): number | null =>
+    text === "" ? null : climbUnit === "ft" ? Math.round((Number(text) / FEET_PER_METRE) * 10) / 10 : Number(text);
+  return (
+    <Card title="Race">
       <div className="field">
         <label htmlFor="s-race">Race day</label>
-        <input
-          id="s-race"
-          type="date"
-          value={draft.raceDate ?? ""}
-          onChange={(e) => set("raceDate", e.target.value || null)}
-        />
-        <span className="hint">
-          Marked on your plan charts and cards; the coach plans the final weeks around it. Clear it
-          when there's no race on the horizon.
-        </span>
-      </div>
-      <div className="row" style={{ gap: "var(--space-5)" }}>
-        <NumberField id="s-before" label="Buffer before" value={draft.bufferBeforeMinutes} onChange={(v) => set("bufferBeforeMinutes", v)} suffix="min" />
-        <NumberField id="s-after" label="Buffer after" value={draft.bufferAfterMinutes} onChange={(v) => set("bufferAfterMinutes", v)} suffix="min" />
+        <input id="s-race" type="date" value={draft.raceDate ?? ""} onChange={(e) => commit("raceDate", e.target.value || null)} />
+        <span className="hint">The coach plans the last weeks around it.</span>
       </div>
       <div className="field">
         <label htmlFor="s-race-dist">Race distance</label>
         <select
           id="s-race-dist"
           value={draft.raceDistanceKm === null ? "" : String(draft.raceDistanceKm)}
-          onChange={(e) => set("raceDistanceKm", e.target.value === "" ? null : Number(e.target.value))}
+          onChange={(e) => commit("raceDistanceKm", e.target.value === "" ? null : Number(e.target.value))}
         >
           <option value="">Not set</option>
           <option value="5">5K</option>
           <option value="10">10K</option>
           <option value="21.0975">Half marathon</option>
           <option value="42.195">Marathon</option>
-          {draft.raceDistanceKm !== null &&
-          ![5, 10, 21.0975, 42.195].includes(draft.raceDistanceKm) ? (
+          {draft.raceDistanceKm !== null && ![5, 10, 21.0975, 42.195].includes(draft.raceDistanceKm) ? (
             <option value={String(draft.raceDistanceKm)}>{draft.raceDistanceKm} km</option>
           ) : null}
         </select>
-        <span className="hint">
-          Turns your measured threshold into a goal time on the Plan page. Without it the race
-          strip shows your threshold pace and makes no time prediction.
-        </span>
+        <span className="hint">Turns your threshold into a goal time.</span>
       </div>
       <div className="field">
         <label htmlFor="s-course">Race course</label>
@@ -216,12 +252,7 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
           <select
             id="s-course"
             value={draft.raceCourseProfile ?? ""}
-            onChange={(e) =>
-              set(
-                "raceCourseProfile",
-                e.target.value === "" ? null : (e.target.value as "flat" | "rolling" | "hilly"),
-              )
-            }
+            onChange={(e) => commit("raceCourseProfile", e.target.value === "" ? null : (e.target.value as "flat" | "rolling" | "hilly"))}
           >
             <option value="">Not set</option>
             <option value="flat">Flat</option>
@@ -236,23 +267,9 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
               max={climbUnit === "ft" ? 65000 : 20000}
               placeholder="climb"
               aria-label={`Race course total climb in ${climbUnit === "ft" ? "feet" : "metres"}`}
-              value={
-                draft.raceCourseClimbMetres === null
-                  ? ""
-                  : climbUnit === "ft"
-                    ? Math.round(draft.raceCourseClimbMetres * FEET_PER_METRE)
-                    : draft.raceCourseClimbMetres
-              }
-              onChange={(e) =>
-                set(
-                  "raceCourseClimbMetres",
-                  e.target.value === ""
-                    ? null
-                    : climbUnit === "ft"
-                      ? Math.round((Number(e.target.value) / FEET_PER_METRE) * 10) / 10
-                      : Number(e.target.value),
-                )
-              }
+              value={climbShown}
+              onChange={(e) => set("raceCourseClimbMetres", climbStored(e.target.value))}
+              onBlur={(e) => commit("raceCourseClimbMetres", climbStored(e.target.value))}
             />
             {/* The unit must never be a placeholder — it vanishes the moment
                 a value is typed, and a climb read as metres instead of feet
@@ -260,36 +277,9 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
             <b aria-hidden>{climbUnit}</b>
           </span>
         </div>
-        <span className="hint">
-          The course's total climb from the race's own page is best; the category is the fallback.
-          Compared against the climb your own runs actually carry.
-        </span>
+        <span className="hint">The course&rsquo;s total climb, else its kind.</span>
       </div>
-      <div className="field">
-        <label htmlFor="s-tz">Timezone</label>
-        <input
-          id="s-tz"
-          type="text"
-          list="tz-options"
-          value={draft.timezone}
-          onChange={(e) => set("timezone", e.target.value)}
-          placeholder="Start typing a city…"
-          autoComplete="off"
-        />
-        <datalist id="tz-options">
-          {TZ_OPTIONS.map((tz) => (
-            <option key={tz} value={tz} />
-          ))}
-        </datalist>
-        <span className="hint">Type to search. Auto-synced from your Google Calendar when you connect it.</span>
-      </div>
-      <div className="row" style={{ gap: "var(--space-4)" }}>
-        <button className="btn btn-primary" disabled={save.isPending} onClick={() => save.mutate()}>
-          Save scheduling
-        </button>
-        {saved ? <span className="pill pill-ok">Saved</span> : null}
-        {save.isError ? <span className="pill pill-warn">Couldn't save</span> : null}
-      </div>
+      <SavedLine status={status} />
     </Card>
   );
 }
@@ -331,7 +321,7 @@ export function HealthConditionsSection() {
   const profiles = list.data?.profiles ?? [];
   if (list.isError || (list.isSuccess && profiles.length === 0)) return null;
   return (
-    <Card title="Health conditions" className="settings-new">
+    <Card title="Health conditions">
       {profiles.map((p) => {
         const on = toggle.isPending && toggle.variables?.profileId === p.profileId ? toggle.variables.active : p.active;
         return (
@@ -382,7 +372,7 @@ export function PlacesSection({ prefs }: { prefs: UserPreferences }) {
 
   if (places.isError) return null;
   return (
-    <Card title="Places & equipment" className="settings-new">
+    <Card title="Places & equipment">
       {(places.data?.places ?? []).map((p) => (
         <button key={p.id} type="button" className="place-row" onClick={() => setOpen(p)}>
           <span className="place-row-main">
@@ -489,7 +479,7 @@ export function UnitsSection({ prefs: initial }: { prefs: UserPreferences }) {
   const prefs = useLivePrefs(initial);
   const save = useSaveSetting();
   return (
-    <Card title="Units" className="settings-new">
+    <Card title="Units">
       <UnitChoice name="Distance" setting="units" value={prefs.units} options={[{ value: "km", label: "km" }, { value: "mi", label: "mi" }]} save={save} />
       <UnitChoice name="Temperature" setting="temperatureUnit" value={prefs.temperatureUnit} options={[{ value: "F", label: "°F" }, { value: "C", label: "°C" }]} save={save} />
       <UnitChoice name="Weights" setting="weightUnit" value={prefs.weightUnit} options={[{ value: "lb", label: "lb" }, { value: "kg", label: "kg" }]} save={save} />
@@ -684,8 +674,8 @@ function ImportSummaryRows({ s }: { s: ImportSummary }) {
 /**
  * Import (spec §2c; mocks §7; Phase 2c Task 5): the standalone tool's backup — a dry run first and its summary (what
  * comes in; history stays out of the garden), then Import, then the tool's own numbers to compare with its Progress
- * tab (`ImportNumbers`). A backup already imported shows those numbers straight away. Hidden until the garden gate
- * keeps imported history out of the garden (`features.import`, Phase 2d): nothing reaches the importer before then.
+ * tab (`ImportNumbers`). A backup already imported shows those numbers straight away. In Settings → Data & account
+ * (the new shape); the garden gate that once hid it (Phase 2d) keeps imported history out of the garden server-side.
  */
 export function ImportSection() {
   const qc = useQueryClient();
@@ -698,7 +688,6 @@ export function ImportSection() {
       for (const k of ["places", "conditions", "programs", "settings", "library", "today", "plan", "activities"]) void qc.invalidateQueries({ queryKey: [k] });
     },
   });
-  if (!features.import) return null;
 
   const choose = async (e: ChangeEvent<HTMLInputElement>) => {
     const chosen = e.target.files?.[0];
@@ -727,7 +716,7 @@ export function ImportSection() {
   const finished = run.isSuccess || nothingNew;
 
   return (
-    <Card title="Import" className="settings-new">
+    <Card title="Import">
       <label className="place-row place-file">
         <span className="place-row-main">
           <b>From the standalone tool…</b>
@@ -1031,7 +1020,7 @@ function ConnectionsSection() {
   const calendarChosen = !!settings.data?.prefs.calendarId;
 
   return (
-    <Card title="Connections">
+    <Card title="Google Calendar">
       <div className="switch-row">
         <div>
           <strong>Google Calendar</strong>
@@ -1062,8 +1051,6 @@ function ConnectionsSection() {
           </a>
         )}
       </div>
-
-      <CorosSleepRow conn={conn("coros_mcp")} />
 
       <Sheet open={chooseOpen} onClose={() => setChooseOpen(false)} title="Choose a calendar">
         <div className="stack">
@@ -1098,9 +1085,10 @@ function ConnectionsSection() {
  * in the browser before the request — the plaintext never leaves this
  * device. Exposed states: disconnected form / connected line / rejected
  * credentials with the form re-opened. */
-export function CorosConnectSection() {
+export function CorosConnectSection({ prefs }: { prefs?: UserPreferences } = {}) {
   const qc = useQueryClient();
   const status = useQuery({ queryKey: ["coros-status"], queryFn: api.corosStatus });
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [region, setRegion] = useState<"us" | "eu" | "cn">("us");
@@ -1141,7 +1129,7 @@ export function CorosConnectSection() {
   const badCreds = s?.lastErrorCategory === "bad_credentials" || result === "bad_credentials";
 
   return (
-    <Card title="COROS connection">
+    <Card title="COROS">
       {/* System 4 D2. `connected = s?.connected === true` reads "not connected"
           out of a query that has not answered, so a connected athlete was
           shown the whole ~300px connect form — email, password, region, the
@@ -1230,76 +1218,41 @@ export function CorosConnectSection() {
           </div>
         </form>
       )}
+      {prefs ? <CorosWritesRow prefs={prefs} /> : null}
+      <CorosSleepRow conn={me.data?.connections.find((c) => c.provider === "coros_mcp")} />
       <BackfillRow />
     </Card>
   );
 }
 
 
-function CorosSyncSection({ prefs }: { prefs: UserPreferences }) {
+/** COROS's one switch: a move made here goes back to the watch's calendar too. A real switch; a tap saves it. */
+function CorosWritesRow({ prefs }: { prefs: UserPreferences }) {
   const qc = useQueryClient();
+  const live = useLivePrefs(prefs);
   const toggle = useMutation({
     mutationFn: (corosWritesEnabled: boolean) => api.updateSettings({ corosWritesEnabled }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["settings"] });
-      void qc.invalidateQueries({ queryKey: ["plan"] });
-      void qc.invalidateQueries({ queryKey: ["today"] });
+      for (const k of ["settings", "plan", "today"]) void qc.invalidateQueries({ queryKey: [k] });
     },
   });
+  const on = toggle.isPending && toggle.variables !== undefined ? toggle.variables : live.corosWritesEnabled;
   return (
-    <Card title="COROS sync">
-      <div className="switch-row">
-        <div>
-          <strong>Write date changes back to COROS</strong>
-          <p className="faint">
-            When you move a workout here, your COROS calendar is updated to match (verified
-            after every write). When off, moves only change Run Garden and Google Calendar —
-            workouts you move show “Not synced to COROS”.
-          </p>
-        </div>
-        <button
-          className="btn btn-small"
-          disabled={toggle.isPending}
-          onClick={() => toggle.mutate(!prefs.corosWritesEnabled)}
-        >
-          {prefs.corosWritesEnabled ? "Disable" : "Enable"}
-        </button>
+    <div className="setting-row">
+      <div>
+        <div>Write date changes back to COROS</div>
+        <small>A workout moved here moves on your watch too.</small>
       </div>
-    </Card>
-  );
-}
-
-export function AiSection({ prefs }: { prefs: UserPreferences }) {
-  const qc = useQueryClient();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  const toggle = useMutation({
-    mutationFn: (aiEnabled: boolean) => api.updateSettings({ aiEnabled }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["settings"] }),
-  });
-  const llm = settings.data?.llm;
-  return (
-    <Card title="AI">
-      <div className="switch-row">
-        <div>
-          <strong>Activity reads &amp; weekly narration</strong>
-          <p className="faint">
-            This switch gates the coach&apos;s automatic activity reads and the weekly review
-            narration. Coach chat and check-ins are also AI-powered but run only when you ask.
-            Scheduling, sync, and the garden are fully deterministic.
-          </p>
-        </div>
-        <button className="btn btn-small" disabled={toggle.isPending} onClick={() => toggle.mutate(!prefs.aiEnabled)}>
-          {prefs.aiEnabled ? "Disable AI" : "Enable AI"}
-        </button>
-      </div>
-      {llm?.outOfCreditsSince ? <p className="ai-credits ai-credits-note">{OUT_OF_CREDITS_LINE}</p> : null}
-      {llm ? (
-        <p className="muted" style={{ marginTop: "var(--space-4)" }}>
-          Spend this week: ${llm.spentDollars.toFixed(2)} of ${llm.cutoffDollars.toFixed(0)} cutoff
-          {llm.cutoff ? " — AI calls paused until the rolling week clears." : llm.warn ? " — approaching the warning level." : "."}
-        </p>
-      ) : null}
-    </Card>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Write date changes back to COROS"
+        className="program-switch"
+        disabled={toggle.isPending}
+        onClick={() => toggle.mutate(!live.corosWritesEnabled)}
+      />
+    </div>
   );
 }
 
@@ -1826,7 +1779,7 @@ function GardenSection() {
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["garden"] }),
   });
   return (
-    <Card title="Garden rest mode">
+    <Card title="Rest mode">
       {rest.active ? (
         <div className="stack">
           <Banner kind="info">
@@ -1861,6 +1814,38 @@ function GardenSection() {
   );
 }
 
+/** A group of Settings (the new shape): its heading, and its cards one heading level under it. */
+function SettingsGroup({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+  return (
+    <section className="settings-group" aria-labelledby={id}>
+      <h2 id={id} className="settings-group-h">
+        {title}
+      </h2>
+      <CardLevelContext.Provider value={3}>
+        <div className="settings-group-cards">{children}</div>
+      </CardLevelContext.Provider>
+    </section>
+  );
+}
+
+/** Settings → Data & account → Account: who is signed in, and Sign out. */
+function AccountSection({ email, signingOut, onSignOut }: { email: string | null; signingOut: boolean; onSignOut: () => void }) {
+  return (
+    <Card title="Account">
+      {email ? <p className="muted">Signed in as {email}</p> : null}
+      <div>
+        <button className="btn" disabled={signingOut} onClick={onSignOut}>
+          Sign out
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * SETTINGS (the new shape, 2026-10-17): five groups behind the athlete's mark — Connections, Training, Coach & AI,
+ * Garden, Data & account. Every card saves as you go.
+ */
 export function SettingsScreen() {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
@@ -1876,33 +1861,38 @@ export function SettingsScreen() {
 
   if (settings.isLoading) return <Spinner label="Loading settings" />;
   if (!settings.data) return <Banner kind="warn">Couldn't load settings.</Banner>;
+  const prefs = settings.data.prefs;
 
   return (
-    <div className="stack">
+    <div className="stack settings-page">
       <div className="row-between screen-title">
         <h1>Settings</h1>
-        <span className="faint">{me.data?.email}</span>
       </div>
-      <ConnectionsSection />
-      <CorosConnectSection />
-      <SchedulingSection prefs={settings.data.prefs} />
-      <HealthConditionsSection />
-      <PlacesSection prefs={settings.data.prefs} />
-      <SoundsSection />
-      <UnitsSection prefs={settings.data.prefs} />
-      <ImportSection />
-      <CorosSyncSection prefs={settings.data.prefs} />
-      <AiSection prefs={settings.data.prefs} />
-      <CoachSection />
-      <CoachMemorySection />
-      <GardenSection />
-      <DiagnosticsSection />
-      <DataSection />
-      <div>
-        <button className="btn" disabled={logout.isPending} onClick={() => logout.mutate()}>
-          Sign out
-        </button>
-      </div>
+      <SettingsGroup id="settings-connections" title="Connections">
+        <ConnectionsSection />
+        <CorosConnectSection prefs={prefs} />
+      </SettingsGroup>
+      <SettingsGroup id="settings-training" title="Training">
+        <SchedulingSection prefs={prefs} />
+        <RaceSection prefs={prefs} />
+        <UnitsSection prefs={prefs} />
+        <PlacesSection prefs={prefs} />
+        <HealthConditionsSection />
+        <SoundsSection />
+      </SettingsGroup>
+      <SettingsGroup id="settings-coach" title="Coach & AI">
+        <CoachAiSection prefs={prefs} />
+        <CoachMemorySection />
+      </SettingsGroup>
+      <SettingsGroup id="settings-garden" title="Garden">
+        <GardenSection />
+      </SettingsGroup>
+      <SettingsGroup id="settings-data" title="Data & account">
+        <DataSection />
+        <ImportSection />
+        <DiagnosticsSection />
+        <AccountSection email={me.data?.email ?? null} signingOut={logout.isPending} onSignOut={() => logout.mutate()} />
+      </SettingsGroup>
     </div>
   );
 }

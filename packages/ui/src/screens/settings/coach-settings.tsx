@@ -1,8 +1,10 @@
 /**
- * SETTINGS → COACH (Stage 3 Task 10; spec §6): how the coach starts when you don't say, how many "next workouts", your
- * training times, each request's spending limit (lowered, never raised past its default), the model in use and this
- * week's AI spend — past the week's warning, one plain line that the coach keeps going to the cutoff (fix wave 3B, M4). Shown only with the coach designer on (`coachOn`); a server whose coach is off (a 404) shows nothing.
- * Each change saves at once, the settings whole (`PUT /api/coach/preferences`).
+ * SETTINGS → COACH & AI (Stage 3 Task 10; spec §6; reshaped by the new shape, 2026-10-17): the AI switch, each request's
+ * spending limit (lowered, never raised past its default), the model in use, and ONE line of this week's AI spend; the
+ * coach's training times live beside the run times (Settings → Training). The coach decides how much to plan from the
+ * athlete's words now (no time-frame up front), so "Start with" and "Next workouts" are gone. The coach's parts show
+ * only with the coach designer on (`coachOn`); a server whose coach is off (a 404) shows none. Each change saves at
+ * once, the coach's settings whole (`PUT /api/coach/preferences`).
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,34 +12,24 @@ import { api, ApiError, type CoachPreferencesDto, type CoachSpendDto } from "@rg
 import {
   COACH_CEILING_DEFAULTS_USD,
   COACH_CEILING_MIN_USD,
-  COACH_NEXT_N,
   COACH_TRAINING_TIMES_MAX,
   type CoachCeilingKind,
   type CoachPreferences,
-  type CoachScopeKind,
+  type UserPreferences,
 } from "@rg/domain";
+import { OUT_OF_CREDITS_LINE } from "../../ai-credits.js";
 import { Card } from "../../components.js";
 import { coachOn } from "../../features.js";
 
-/** The settings' read: the composer reads it too (its default scope and N). */
+/** The coach's settings' read. */
 export const COACH_PREFERENCES_QUERY = ["coach-preferences"] as const;
 
 const usd = (v: number): string => `$${v.toFixed(2)}`;
 
-/** The scopes, in the composer's words (fix wave 3B, M8): "Next 7 days", "Next 3 workouts" — never "This week". */
-export function scopeChoices(nextN: number): Array<{ value: CoachScopeKind; label: string }> {
-  return [
-    { value: "now", label: "Now" },
-    { value: "later_today", label: "Later today" },
-    { value: "week", label: "Next 7 days" },
-    { value: "next_n", label: `Next ${nextN} workouts` },
-  ];
-}
-
-/** Each limit by what it covers: a workout for today, or planning ahead — the composer's own button. */
+/** Each limit by what a request asks for: one workout, or a plan of several (a request that plans raises its run to it). */
 const LIMITS: ReadonlyArray<{ kind: CoachCeilingKind; label: string }> = [
-  { kind: "day", label: "Now or later today" },
-  { kind: "set", label: "Plan ahead" },
+  { kind: "day", label: "One workout" },
+  { kind: "set", label: "A plan of several" },
 ];
 
 /** "$5", "$5.50": whole dollars bare. */
@@ -107,121 +99,53 @@ function LimitRow({ kind, label, value, busy, onSave }: { kind: CoachCeilingKind
   );
 }
 
-/** The card, from what the server answered (rendered as it is by a test). */
-export function CoachSettingsView({
+/** What a week's AI spend reads as: what the coach's own count says, else the settings' (the same week, the same cap). */
+export interface SpendLike {
+  spentUsd: number;
+  cutoffUsd: number;
+  warnUsd: number | null;
+  cutoff: boolean;
+}
+
+export function spendOf(coach: CoachSpendDto | null | undefined, llm: { spentDollars: number; cutoffDollars: number; warn: boolean; cutoff: boolean } | null | undefined): SpendLike | null {
+  if (coach) {
+    return {
+      spentUsd: coach.spentUsd,
+      cutoffUsd: coach.cutoffMicros / 1_000_000,
+      warnUsd: coach.warnMicros / 1_000_000,
+      cutoff: coach.spentMicros >= coach.cutoffMicros,
+    };
+  }
+  if (llm) return { spentUsd: llm.spentDollars, cutoffUsd: llm.cutoffDollars, warnUsd: null, cutoff: llm.cutoff };
+  return null;
+}
+
+/**
+ * THE ONE SPEND LINE (the new shape: Coach & AI, one spend line): "AI this week: $1.20 of $20.00" — past the week's
+ * warning, that the coach keeps going to the cutoff (fix wave 3B, M4); at the cutoff, that it waits for the week.
+ */
+export function spendLine(s: SpendLike): string {
+  const head = `AI this week: ${usd(s.spentUsd)} of ${usd(s.cutoffUsd)}`;
+  if (s.cutoff) return `${head} — paused until the week clears.`;
+  if (s.warnUsd !== null && s.spentUsd > s.warnUsd) return `${head} — past ${dollars(s.warnUsd * 1_000_000)}, the coach keeps going until ${dollars(s.cutoffUsd * 1_000_000)}.`;
+  return head;
+}
+
+/** The coach's limits for one request, and the model in use (rendered as it is by a test). */
+export function CoachLimits({
   data,
-  spend,
   busy = false,
   error = null,
   onSave,
 }: {
   data: CoachPreferencesDto;
-  spend: CoachSpendDto | null;
   busy?: boolean;
   error?: string | null;
   onSave: (next: CoachPreferences) => void;
 }) {
   const { coach, settings } = data;
-  const nId = useId();
-  const [times, setTimes] = useState<string[]>(settings.trainingTimes);
-  // After "Add a time", the focus goes to the new time's field (fix wave 3B, B-I9).
-  const timesBox = useRef<HTMLDivElement>(null);
-  const [added, setAdded] = useState(false);
-  useEffect(() => {
-    if (!added) return;
-    setAdded(false);
-    [...(timesBox.current?.querySelectorAll<HTMLInputElement>('input[type="time"]') ?? [])].at(-1)?.focus();
-  }, [added]);
-  // What was saved comes back as the list (sorted, each once): the rows follow it.
-  const saved = settings.trainingTimes.join(",");
-  useEffect(() => setTimes(saved ? saved.split(",") : []), [saved]);
-  const saveTimes = (next: string[]) => {
-    const kept = [...new Set(next.filter((t) => /^\d{2}:\d{2}$/.test(t)))].sort();
-    const { trainingTimes: _old, ...rest } = coach;
-    onSave(kept.length > 0 ? { ...rest, trainingTimes: kept } : rest);
-  };
   return (
-    <Card title="Coach">
-      <div className="coach-setting">
-        <span className="coach-setting-label" id={`${nId}-scope`}>
-          Start with
-        </span>
-        <div className="program-seg coach-scope-seg" role="group" aria-labelledby={`${nId}-scope`}>
-          {scopeChoices(settings.nextN).map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              aria-pressed={settings.defaultScope === o.value}
-              disabled={busy}
-              onClick={() => {
-                if (o.value !== settings.defaultScope) onSave({ ...coach, defaultScope: o.value });
-              }}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="setting-row">
-        <label htmlFor={nId}>Next workouts</label>
-        <select
-          id={nId}
-          className="coach-n"
-          value={settings.nextN}
-          disabled={busy}
-          onChange={(e) => onSave({ ...coach, nextN: Number(e.target.value) })}
-        >
-          {Array.from({ length: COACH_NEXT_N.max - COACH_NEXT_N.min + 1 }, (_, i) => COACH_NEXT_N.min + i).map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="coach-setting" ref={timesBox}>
-        <span className="coach-setting-label">Training times</span>
-        {times.length === 0 ? <p className="faint">None set.</p> : null}
-        {times.map((t, i) => (
-          <div key={`${i}-${t}`} className="coach-time-row">
-            <input
-              type="time"
-              aria-label={`Training time ${i + 1}`}
-              defaultValue={t}
-              disabled={busy}
-              onBlur={(e) => {
-                const next = times.map((x, j) => (j === i ? e.target.value : x));
-                setTimes(next);
-                if (e.target.value && e.target.value !== t) saveTimes(next);
-              }}
-            />
-            <button
-              type="button"
-              className="linklike tap-pad"
-              disabled={busy}
-              onClick={() => {
-                const next = times.filter((_, j) => j !== i);
-                setTimes(next);
-                saveTimes(next);
-              }}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
-        {times.length < COACH_TRAINING_TIMES_MAX ? (
-          <button
-            type="button"
-            className="btn btn-small"
-            disabled={busy || times.includes("")}
-            onClick={() => {
-              setTimes([...times, ""]);
-              setAdded(true);
-            }}
-          >
-            Add a time
-          </button>
-        ) : null}
-      </div>
+    <>
       <div className="coach-setting">
         <span className="coach-setting-label">Spending limit for one request</span>
         {LIMITS.map((l) => (
@@ -239,31 +163,19 @@ export function CoachSettingsView({
         <span>Model</span>
         <span className="coach-setting-value">{data.model.name}</span>
       </div>
-      {spend ? (
-        <div className="setting-row">
-          <span>AI spend this week</span>
-          <span className="coach-setting-value">
-            {usd(spend.spentUsd)} of {usd(spend.cutoffMicros / 1_000_000)}
-          </span>
-        </div>
-      ) : null}
-      {/* Past the week's warning, one plain line: the cutoff is still ahead (fix wave 3B, M4). */}
-      {spend && spend.spentMicros > spend.warnMicros && spend.spentMicros < spend.cutoffMicros ? (
-        <p className="coach-setting-why">{`Over ${dollars(spend.warnMicros)} this week — the coach keeps going until ${dollars(spend.cutoffMicros)}.`}</p>
-      ) : null}
       {error ? (
         <p className="coach-setting-why" role="status">
           {error}
         </p>
       ) : null}
-    </Card>
+    </>
   );
 }
 
-function CoachSectionLive() {
+/** The coach's settings, read and saved whole (`PUT /api/coach/preferences`); none when the server's coach is off. */
+function useCoachPreferences() {
   const qc = useQueryClient();
   const prefs = useQuery({ queryKey: COACH_PREFERENCES_QUERY, queryFn: api.coachPreferences, retry: false });
-  const spend = useQuery({ queryKey: ["coach-spend"], queryFn: api.coachSpend, retry: false });
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
     mutationFn: (next: CoachPreferences) => api.coachPreferencesUpdate(next),
@@ -273,13 +185,134 @@ function CoachSectionLive() {
     },
     onError: () => setError("Couldn't save that — try again."),
   });
-  // A server whose coach is off answers 404: nothing to set.
-  if (prefs.error instanceof ApiError && prefs.error.status === 404) return null;
-  if (!prefs.data) return null;
-  return <CoachSettingsView data={prefs.data} spend={spend.data ?? null} busy={save.isPending} error={error} onSave={(next) => save.mutate(next)} />;
+  // A server whose coach is off answers 404: nothing to set (nor from an answer that is not the settings at all).
+  const off = (prefs.error instanceof ApiError && prefs.error.status === 404) || !prefs.data?.settings;
+  return { data: off ? undefined : prefs.data, busy: save.isPending, error, save: (next: CoachPreferences) => save.mutate(next) };
 }
 
-/** Settings → Coach: only with the coach designer on. */
-export function CoachSection() {
-  return coachOn() ? <CoachSectionLive /> : null;
+function CoachLimitsLive() {
+  const p = useCoachPreferences();
+  return p.data ? <CoachLimits data={p.data} busy={p.busy} error={p.error} onSave={p.save} /> : null;
+}
+
+/**
+ * The coach's training times (the times it may plan into), beside the run times in Settings → Training (the new shape:
+ * the times merged). Each change saves at once; after "Add a time" the focus goes to the new time's field (fix wave 3B,
+ * B-I9). Drawn from what the server answered (a test renders it so).
+ */
+export function TrainingTimesView({ data, busy = false, onSave }: { data: CoachPreferencesDto; busy?: boolean; onSave: (next: CoachPreferences) => void }) {
+  const { coach, settings } = data;
+  const [times, setTimes] = useState<string[]>(settings.trainingTimes);
+  const timesBox = useRef<HTMLDivElement>(null);
+  const [added, setAdded] = useState(false);
+  useEffect(() => {
+    if (!added) return;
+    setAdded(false);
+    [...(timesBox.current?.querySelectorAll<HTMLInputElement>('input[type="time"]') ?? [])].at(-1)?.focus();
+  }, [added]);
+  // What was saved comes back as the list (sorted, each once): the rows follow it.
+  const saved = settings.trainingTimes.join(",");
+  useEffect(() => setTimes(saved ? saved.split(",") : []), [saved]);
+  const saveTimes = (next: string[]) => {
+    const kept = [...new Set(next.filter((t) => /^\d{2}:\d{2}$/.test(t)))].sort();
+    const { trainingTimes: _old, ...rest } = coach;
+    onSave(kept.length > 0 ? { ...rest, trainingTimes: kept } : rest);
+  };
+  return (
+    <div className="coach-setting" ref={timesBox}>
+      <span className="coach-setting-label">The coach&rsquo;s training times</span>
+      {times.length === 0 ? <p className="faint">None set.</p> : null}
+      {times.map((t, i) => (
+        <div key={`${i}-${t}`} className="coach-time-row">
+          <input
+            type="time"
+            aria-label={`Training time ${i + 1}`}
+            defaultValue={t}
+            disabled={busy}
+            onBlur={(e) => {
+              const next = times.map((x, j) => (j === i ? e.target.value : x));
+              setTimes(next);
+              if (e.target.value && e.target.value !== t) saveTimes(next);
+            }}
+          />
+          <button
+            type="button"
+            className="linklike tap-pad"
+            disabled={busy}
+            onClick={() => {
+              const next = times.filter((_, j) => j !== i);
+              setTimes(next);
+              saveTimes(next);
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      {times.length < COACH_TRAINING_TIMES_MAX ? (
+        <button
+          type="button"
+          className="btn btn-small"
+          disabled={busy || times.includes("")}
+          onClick={() => {
+            setTimes([...times, ""]);
+            setAdded(true);
+          }}
+        >
+          Add a time
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function TrainingTimesLive() {
+  const p = useCoachPreferences();
+  return p.data ? <TrainingTimesView data={p.data} busy={p.busy} onSave={p.save} /> : null;
+}
+
+/** The coach's training times, in Settings → Training: only with the coach designer on. */
+export function TrainingTimes() {
+  return coachOn() ? <TrainingTimesLive /> : null;
+}
+
+/**
+ * SETTINGS → COACH & AI (the new shape): one card — the AI switch (the activity reads and the week's story, the only AI
+ * that runs unasked), the coach's limits for one request and its model (with the coach designer on), and ONE line of
+ * the week's AI spend. Each change saves at once.
+ */
+export function CoachAiSection({ prefs }: { prefs: UserPreferences }) {
+  const qc = useQueryClient();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const coachSpend = useQuery({ queryKey: ["coach-spend"], queryFn: api.coachSpend, retry: false, enabled: coachOn() });
+  const live = settings.data?.prefs ?? prefs;
+  const toggle = useMutation({
+    mutationFn: (aiEnabled: boolean) => api.updateSettings({ aiEnabled }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+  const on = toggle.isPending && toggle.variables !== undefined ? toggle.variables : live.aiEnabled;
+  const llm = settings.data?.llm ?? null;
+  const spend = spendOf(coachOn() ? coachSpend.data : null, llm);
+  return (
+    <Card title="Coach & AI">
+      <div className="setting-row">
+        <div>
+          <div>Activity reads and the week&rsquo;s story</div>
+          <small>The only AI that runs without you asking.</small>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={on}
+          aria-label="Activity reads and the week's story"
+          className="program-switch"
+          disabled={toggle.isPending}
+          onClick={() => toggle.mutate(!live.aiEnabled)}
+        />
+      </div>
+      {coachOn() ? <CoachLimitsLive /> : null}
+      {spend ? <p className="coach-spend">{spendLine(spend)}</p> : null}
+      {llm?.outOfCreditsSince ? <p className="ai-credits ai-credits-note">{OUT_OF_CREDITS_LINE}</p> : null}
+    </Card>
+  );
 }

@@ -1,20 +1,21 @@
 /**
  * Settings — the distance unit (units sweep, 2026-08), which Phase 2c moved
  * from Scheduling to the Units card (mocks §7; its saving is tested in
- * settings-cards.test.tsx), and the race course climb's unit beside its box.
- * Static-markup render, same harness as studio-modal.test.tsx.
+ * settings-cards.test.tsx), and the race course climb's unit beside its box
+ * (the Race card since the new shape). Static-markup render.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
-import { AiSection, SchedulingSection, UnitsSection } from "../src/screens/settings.js";
+import { RaceSection, SchedulingSection, UnitsSection } from "../src/screens/settings.js";
+import { CoachAiSection } from "../src/screens/settings/coach-settings.js";
 
-function render(prefs: UserPreferences): string {
+function render(prefs: UserPreferences, card: typeof SchedulingSection | typeof RaceSection = SchedulingSection): string {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   return renderToStaticMarkup(
-    createElement(QueryClientProvider, { client: qc }, createElement(SchedulingSection, { prefs })),
+    createElement(QueryClientProvider, { client: qc }, createElement(card, { prefs })),
   );
 }
 
@@ -43,23 +44,24 @@ describe("race course climb field", () => {
     // 140 ft typed into a field that silently meant metres is off by 3.3×
     // (live-reported 2026-08-14) — the unit must stay visible once the box
     // has a value in it.
-    const mi = render({ ...DEFAULT_USER_PREFERENCES, units: "mi", raceCourseClimbMetres: 42.7 });
+    const mi = render({ ...DEFAULT_USER_PREFERENCES, units: "mi", raceCourseClimbMetres: 42.7 }, RaceSection);
     expect(mi).toContain(">ft</b>");
     expect(mi).toContain('value="140"');
 
-    const km = render({ ...DEFAULT_USER_PREFERENCES, units: "km", raceCourseClimbMetres: 140 });
+    const km = render({ ...DEFAULT_USER_PREFERENCES, units: "km", raceCourseClimbMetres: 140 }, RaceSection);
     expect(km).toContain(">m</b>");
     expect(km).toContain('value="140"');
   });
 });
 
-describe("the AI card", () => {
+describe("the Coach & AI card", () => {
   // The AI plan generator that sat in the Plan screen's plan modal is retired (Stage 2 spec §2); the card no longer
-  // lists it among what is AI-powered.
-  it("names what is AI-powered on request — coach chat and check-ins — and not the retired plan generator", () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(AiSection, { prefs: DEFAULT_USER_PREFERENCES })));
-    expect(html).toContain("Coach chat and check-ins are also AI-powered but run only when you ask.");
+  // lists it among what is AI-powered. Its switch names the AI that runs unasked, in a short line (the new shape).
+  it("its switch names the AI that runs without asking — and not the retired plan generator", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, enabled: false } } });
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES })));
+    expect(html).toContain('role="switch"');
+    expect(html).toContain("The only AI that runs without you asking.");
     expect(html).not.toContain("plan generation");
   });
 });

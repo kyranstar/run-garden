@@ -4,7 +4,7 @@
  *
  * The worker now answers a gateway 402 with `out_of_credits` and keeps a record of it (services/ai-credits.ts). Every
  * place that waits on the coach must stop waiting on it and say so in one plain line: the chat (instead of "Coach is
- * thinking…", with a Retry), an effort's read card, and Settings → AI. The athlete's message stays in the thread.
+ * thinking…", with a Retry), an effort's read card, and Settings → Coach & AI. The athlete's message stays in the thread.
  */
 import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -16,7 +16,7 @@ import { OUT_OF_CREDITS_LINE } from "../src/ai-credits.js";
 import { CoachPanel } from "../src/screens/coach-panel.js";
 import { CoachRead } from "../src/screens/coach-read.js";
 import { coachPanelProps, usePlanCoach } from "../src/screens/plan.js";
-import { AiSection } from "../src/screens/settings.js";
+import { CoachAiSection } from "../src/screens/settings/coach-settings.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -207,12 +207,13 @@ describe("an effort's read card", () => {
   });
 });
 
-describe("Settings → AI", () => {
+describe("Settings → Coach & AI", () => {
   function settingsWorker(outOfCreditsSince: string | null) {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        json({
+      vi.fn(async (url: string) =>
+        // The settings answer; the coach's own reads are not this test's (a server whose coach is off: 404).
+        url.startsWith("/api/settings") ? json({
           prefs: DEFAULT_USER_PREFERENCES,
           llm: {
             spentDollars: 1.2,
@@ -223,22 +224,22 @@ describe("Settings → AI", () => {
             cutoff: false,
             outOfCreditsSince,
           },
-        }),
+        }) : json({ error: "not_found" }, 404),
       ),
     );
   }
 
   it("shows the line while the account is empty", async () => {
     settingsWorker("2026-10-08T09:00:00.000Z");
-    mount(createElement(AiSection, { prefs: DEFAULT_USER_PREFERENCES }));
-    await until(() => text().includes("Spend this week"), "the card");
+    mount(createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES }));
+    await until(() => text().includes("AI this week"), "the card");
     expect(text()).toContain(OUT_OF_CREDITS_LINE);
   });
 
   it("and not otherwise", async () => {
     settingsWorker(null);
-    mount(createElement(AiSection, { prefs: DEFAULT_USER_PREFERENCES }));
-    await until(() => text().includes("Spend this week"), "the card");
+    mount(createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES }));
+    await until(() => text().includes("AI this week"), "the card");
     expect(text()).not.toContain(OUT_OF_CREDITS_LINE);
   });
 });

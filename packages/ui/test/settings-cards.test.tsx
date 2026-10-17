@@ -5,9 +5,9 @@
  *  - Labels are plain and every condition word comes from the profile registry (via the API): a profile this test
  *    makes up is shown by its own name, and no other condition word appears.
  *  - Review Focus 3: a weight list typed as "10, 15, 20 lb, 12kg" is sent exactly as typed and shown back as typed.
- *  - Units save on a tap, one setting at a time; Scheduling saves only its own fields, so it can never put back a unit
- *    (or any other setting) changed elsewhere since the page opened.
- *  - The Import card stays hidden until the garden gate (`features.import`): nothing reaches the importer.
+ *  - Units save on a tap, one setting at a time; so does every Times field (saved as you go since the new shape), each
+ *    alone, so none can put back a unit (or any other setting) changed elsewhere since the page opened.
+ *  - The Import card is in Settings → Data & account (its old garden gate's off branch was dead and is gone).
  */
 import { act, createElement, type ReactElement } from "react";
 import { readFileSync } from "node:fs";
@@ -18,7 +18,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
 import type { ConditionSettingDto, PlaceDto, ProvenanceImportSummaryDto, StandaloneImportSummaryDto } from "@rg/api-client";
-import { features } from "../src/features.js";
 import {
   HealthConditionsSection,
   ImportSection,
@@ -105,16 +104,12 @@ function mount(el: ReactElement) {
   });
 }
 
-beforeEach(() => {
-  features.import = false;
-});
 afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
   root = null;
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
-  features.import = false;
 });
 
 const all = () => [...document.querySelectorAll<HTMLElement>("button, input, select, [role=switch]")];
@@ -321,29 +316,19 @@ describe("Units", () => {
   });
 });
 
-describe("Scheduling", () => {
-  it("saves its own fields only — never a unit or a switch another card owns", async () => {
+describe("Times", () => {
+  it("saves each field alone, as it is set — never a unit or a switch another card owns", async () => {
     const { calls } = fakeWorker();
     mount(createElement(SchedulingSection, { prefs: { ...DEFAULT_USER_PREFERENCES, units: "mi", weightUnit: "kg", aiEnabled: false } }));
-    await press("Save scheduling");
+    await setValue(document.querySelector<HTMLSelectElement>("#s-window")!, "evening");
     await until(() => calls.some((c) => c.method === "PUT"), "the save");
-    const body = calls.find((c) => c.method === "PUT")!.body as Record<string, unknown>;
-    for (const k of ["units", "temperatureUnit", "weightUnit", "equipmentWishlist", "aiEnabled", "corosWritesEnabled", "theme", "gardenRestMode"]) {
-      expect(body, k).not.toHaveProperty(k);
-    }
-    expect(body).toMatchObject({ weekdayMorningTime: "07:00", timezone: DEFAULT_USER_PREFERENCES.timezone });
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([{ defaultWindow: "evening" }]);
+    await until(() => text().includes("Saved."), "the saved line");
   });
 });
 
 describe("Import", () => {
-  it("is hidden until the garden gate: no card, no file picker", () => {
-    fakeWorker();
-    mount(createElement(ImportSection));
-    expect(host!.innerHTML).toBe("");
-  });
-
-  it("with the gate open, the standalone row takes a backup file", () => {
-    features.import = true;
+  it("the standalone row takes a backup file", () => {
     fakeWorker();
     mount(createElement(ImportSection));
     expect(text()).toContain("From the standalone tool…");
@@ -446,9 +431,6 @@ const rowsOf = (selector: string) =>
   });
 
 describe("Import: the summary sheet (mocks §7)", () => {
-  beforeEach(() => {
-    features.import = true;
-  });
 
   it("a backup file is read with a dry run; the sheet says what will come in and that history stays out of the garden", async () => {
     const calls = importWorker((dry) => summary({ dryRun: dry }));
@@ -568,9 +550,6 @@ describe("Import: the summary sheet (mocks §7)", () => {
 });
 
 describe("Import: each refusal in its own words (Audit C M-3)", () => {
-  beforeEach(() => {
-    features.import = true;
-  });
 
   it("a backup from a newer version of the tool says so, not that it isn't a backup", async () => {
     importWorker(() => ({ status: 422, body: { error: "invalid_backup", reason: "newer_version", issues: [] } }));
@@ -623,9 +602,6 @@ describe("Import: the row shows keyboard focus (Audit C M-4)", () => {
 });
 
 describe("Import: the result sheet — the tool's own numbers, to compare with its Progress tab", () => {
-  beforeEach(() => {
-    features.import = true;
-  });
 
   async function imported() {
     const calls = importWorker((dry) => summary({ dryRun: dry }));
@@ -774,9 +750,6 @@ async function chooseLinks(contents: string) {
 }
 
 describe("Import: saved-post links", () => {
-  beforeEach(() => {
-    features.import = true;
-  });
 
   it("a second row takes the links file, in plain words", () => {
     linksWorker(() => linksSummary());

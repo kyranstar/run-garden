@@ -14,10 +14,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoachMemoryItem } from "@rg/api-client";
-import { coachSettings, type CoachPreferences } from "@rg/domain";
+import { coachSettings, DEFAULT_USER_PREFERENCES, type CoachPreferences } from "@rg/domain";
 import { features } from "../src/features.js";
 import { CoachMemorySection } from "../src/screens/settings/coach-memory.js";
-import { CoachSection } from "../src/screens/settings/coach-settings.js";
+import { CoachAiSection, TrainingTimes } from "../src/screens/settings/coach-settings.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -229,23 +229,17 @@ describe("the memory list", () => {
   });
 });
 
-describe("Settings → Coach", () => {
-  it("a tap on a scope or a count saves the settings whole", async () => {
+const coachAi = () => createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES });
+
+describe("Settings → Coach & AI", () => {
+  it("one card: the AI switch, the limits, the model and one line of the week's spend", async () => {
     const { calls } = fakeWorker({ coach: { ceilingsUsd: { day: 1 } } });
-    mount(createElement(CoachSection));
-    await until(() => text().includes("AI spend this week") && text().includes("$1.25 of $20.00"), "the card and the week's spend");
-    await click(buttons().find((b) => b.textContent === "Next 7 days"));
-    await until(() => buttons().find((b) => b.textContent === "Next 7 days")?.getAttribute("aria-pressed") === "true", "pressed");
-    const select = document.querySelector<HTMLSelectElement>("select.coach-n")!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "5");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await until(() => text().includes("Next 5 workouts"), "N");
-    expect(writes(calls).map((c) => c.body)).toEqual([
-      { ceilingsUsd: { day: 1 }, defaultScope: "week" },
-      { ceilingsUsd: { day: 1 }, defaultScope: "week", nextN: 5 },
-    ]);
+    mount(coachAi());
+    await until(() => text().includes("AI this week: $1.25 of $20.00") && text().includes("Spending limit"), "the card and the week's spend");
+    expect(document.querySelector('[role="switch"]')).not.toBeNull();
+    expect(text()).toContain("Claude Opus 5.5");
+    expect(text()).not.toMatch(/Start with|Next workouts/);
+    expect(writes(calls)).toEqual([]);
   });
 
   /** Type into the first limit's field and press Enter. */
@@ -262,7 +256,7 @@ describe("Settings → Coach", () => {
 
   it("a limit lowered is saved; one past its default is refused on the spot and never sent", async () => {
     const { calls } = fakeWorker();
-    mount(createElement(CoachSection));
+    mount(coachAi());
     await until(() => text().includes("Spending limit"), "the card");
     await typeLimit("2");
     await until(() => text().includes("At most $1.50."), "the refusal");
@@ -275,16 +269,16 @@ describe("Settings → Coach", () => {
 
   it("a limit set back at its default is no setting at all", async () => {
     const { calls } = fakeWorker({ coach: { nextN: 2, ceilingsUsd: { day: 0.75 } } });
-    mount(createElement(CoachSection));
+    mount(coachAi());
     await until(() => document.querySelector<HTMLInputElement>(".coach-limit input")?.value === "0.75", "the stored limit");
     await typeLimit("1.50");
     await until(() => writes(calls).length === 1, "the save");
     expect(writes(calls)[0]!.body).toEqual({ nextN: 2 });
   });
 
-  it("Add a time: the focus goes to the new time's field (fix wave 3B, B-I9)", async () => {
+  it("Add a time (the coach's training times, beside the run times): the focus goes to the new time's field (fix wave 3B, B-I9)", async () => {
     fakeWorker({ coach: { trainingTimes: ["07:00"] } });
-    mount(createElement(CoachSection));
+    mount(createElement(TrainingTimes));
     await until(() => !!buttons().find((b) => b.textContent === "Add a time"), "Add a time");
     await click(buttons().find((b) => b.textContent === "Add a time"));
     const fields = [...document.querySelectorAll<HTMLInputElement>('input[type="time"]')];
@@ -293,12 +287,14 @@ describe("Settings → Coach", () => {
     expect(fields[1]!.getAttribute("aria-label")).toBe("Training time 2");
   });
 
-  it("a server whose coach is off answers 404: the card isn't there", async () => {
+  it("a server whose coach is off answers 404: no limits and no times — the AI switch stays", async () => {
     fakeWorker({ coachOff: true });
-    mount(createElement(CoachSection));
+    mount(createElement("div", null, coachAi(), createElement(TrainingTimes)));
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30));
     });
-    expect(text()).toBe("");
+    expect(document.querySelector('[role="switch"]')).not.toBeNull();
+    expect(text()).not.toContain("Spending limit");
+    expect(document.querySelector('input[type="time"]')).toBeNull();
   });
 });
