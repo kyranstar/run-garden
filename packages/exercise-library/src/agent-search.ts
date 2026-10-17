@@ -1,6 +1,6 @@
 import { EQUIPMENT } from "./equipment.js";
 import type { ExerciseRecord } from "./record.js";
-import { matchesFilters, searchLibrary, wordRank, type LibraryFilters, type SearchContext } from "./search.js";
+import { matchesFilters, queryVariants, searchLibrary, type LibraryFilters, type SearchContext } from "./search.js";
 import { THEMES } from "./themes.js";
 import { CONTRACTIONS, EQUIPMENT_IDS, label, LATERALITY, MUSCLES, PATTERNS, POSITIONS, PURPOSES, REGIONS, ROLES, TAGS, type EquipmentId } from "./vocab.js";
 
@@ -117,9 +117,10 @@ const THEME_NAME = new Map(THEMES.map((t) => [t.id, t.name]));
 // The some-words tier asked the Studio's typo-forgiving `wordRank` for every record and every word: 175 records × 8
 // words of word-by-word scans and one-edit tests (1.3–1.7 ms a search). It now looks a word up once in an index of the
 // library's words, built once per records array (per isolate for the shipped library): each distinct word, the records
-// that say it and how strongly. A word matches a record's word by its start, a plural by its singular (the Studio's
-// rule); one that matches none is tried as a one-letter typo against the index's words; only then — for the Studio's
-// everyday words ("sore", "abs") — is `wordRank` asked, record by record, for at most MAX_STUDIO_FALLBACK words.
+// that say it and how strongly. A word means what it means to the Studio (`queryVariants`: an everyday word by its
+// vocabulary words, a plural by its singular) and a record says it as the Studio's `wordRank` would — by a word's start,
+// else by a one-letter typo — so the some-words tier credits a word to the Studio's own moves (round 3, R2-I1), plus the
+// roles, patterns and themes the index adds. No record is ever asked on its own, a zero's diagnosis included (R2-M1).
 
 /** Where a word says something, as a rank (the Studio's classes): lower is stronger. */
 const NAME = 0;
@@ -128,34 +129,43 @@ const SECONDARY = 20;
 const TYPO = 30;
 /** A list position past this counts as this (the Studio's emphasis). */
 const MAX_EMPHASIS = 9;
-/** The words per search the Studio's own `wordRank` is still asked about, record by record, at most. */
-const MAX_STUDIO_FALLBACK = 2;
 /** Words of five or more letters forgive one typo (the Studio's rule). */
 const TYPO_MIN_LETTERS = 5;
 
-interface WordIndex {
-  /** Each distinct word → the records (by position) that say it, and how strongly. */
+/** Words → the records (by position) that say them and how strongly, and the words themselves for the scans. */
+interface Postings {
   postings: Map<string, Map<number, number>>;
-  /** The index's words, for the prefix and typo scans. */
   words: string[];
 }
 
-/** Every word a record says, at its strongest rank: the Studio's fields, and roles, patterns and themes beside them.
- * Once per record. */
-const recordCache = new WeakMap<ExerciseRecord, Map<string, number>>();
-function recordWords(ex: ExerciseRecord): Map<string, number> {
+interface WordIndex {
+  /** The words the Studio's own index holds (`wordRank`'s fields), read as the Studio reads a word. */
+  studio: Postings;
+  /** Roles, patterns and themes: what the Studio's index leaves out, read by the word as written. */
+  extra: Postings;
+}
+
+type RecordWords = { studio: Map<string, number>; extra: Map<string, number> };
+
+/** Every word a record says, at its strongest rank — the Studio's fields, and apart from them its roles, patterns and
+ * themes (ids, labels, a theme's name). Once per record. */
+const recordCache = new WeakMap<ExerciseRecord, RecordWords>();
+function recordWords(ex: ExerciseRecord): RecordWords {
   const cached = recordCache.get(ex);
   if (cached) return cached;
-  const out = new Map<string, number>();
-  recordCache.set(ex, out);
-  const put = (texts: readonly string[], rank: number): void => {
-    for (const t of texts) {
-      for (const w of wordsOfText(t)) {
-        const held = out.get(w);
-        if (held === undefined || rank < held) out.set(w, rank);
+  const words: RecordWords = { studio: new Map(), extra: new Map() };
+  recordCache.set(ex, words);
+  const putIn =
+    (out: Map<string, number>) =>
+    (texts: readonly string[], rank: number): void => {
+      for (const t of texts) {
+        for (const w of wordsOfText(t)) {
+          const held = out.get(w);
+          if (held === undefined || rank < held) out.set(w, rank);
+        }
       }
-    }
-  };
+    };
+  const put = putIn(words.studio);
   const listed = (ids: readonly string[], base: number): void => ids.forEach((id, i) => put([id, label(id)], base + Math.min(i, MAX_EMPHASIS)));
   put([ex.name], NAME);
   listed(ex.muscles.primary, NAME);
@@ -164,9 +174,8 @@ function recordWords(ex: ExerciseRecord): Map<string, number> {
   put([ex.text.summary, ex.id, ex.family, ...ex.contraction, ...gear, ...gear.map((g) => EQUIPMENT[g])], CHIP);
   for (const ids of [ex.tags, ex.purposes]) put([...ids, ...ids.map(label)], CHIP);
   listed(ex.muscles.secondary, SECONDARY);
-  // What the Studio's index leaves out: roles, patterns and themes (ids, labels, a theme's name).
-  put([...ex.roles, ...ex.roles.map(label), ...ex.patterns, ...ex.patterns.map(label), ...ex.themes, ...ex.themes.map((t) => THEME_NAME.get(t) ?? t)], CHIP);
-  return out;
+  putIn(words.extra)([...ex.roles, ...ex.roles.map(label), ...ex.patterns, ...ex.patterns.map(label), ...ex.themes, ...ex.themes.map((t) => THEME_NAME.get(t) ?? t)], CHIP);
+  return words;
 }
 
 const indexCache = new WeakMap<readonly ExerciseRecord[], WordIndex>();
@@ -175,22 +184,25 @@ const indexCache = new WeakMap<readonly ExerciseRecord[], WordIndex>();
 function indexOf(records: readonly ExerciseRecord[]): WordIndex {
   const cached = indexCache.get(records);
   if (cached) return cached;
-  const postings = new Map<string, Map<number, number>>();
-  records.forEach((ex, i) => {
-    for (const [w, rank] of recordWords(ex)) {
-      const p = postings.get(w) ?? new Map<number, number>();
-      p.set(i, rank);
-      postings.set(w, p);
-    }
-  });
-  const index = { postings, words: [...postings.keys()] };
+  const build = (part: keyof RecordWords): Postings => {
+    const postings = new Map<string, Map<number, number>>();
+    records.forEach((ex, i) => {
+      for (const [w, rank] of recordWords(ex)[part]) {
+        const p = postings.get(w) ?? new Map<number, number>();
+        p.set(i, rank);
+        postings.set(w, p);
+      }
+    });
+    return { postings, words: [...postings.keys()] };
+  };
+  const index = { studio: build("studio"), extra: build("extra") };
   indexCache.set(records, index);
   return index;
 }
 
-/** A query word and its singular, by the Studio's rule: "lunges" → "lunge", "presses" → "press"; never a stem under
- * three letters ("toes" is never "to"). */
-function variants(w: string): string[] {
+/** A word as written and its singular (the Studio's plural rule, without its everyday words): "lunges" → "lunge",
+ * "presses" → "press"; never a stem under three letters. For the roles, patterns and themes. */
+function plainVariants(w: string): string[] {
   const out = [w];
   const es = w.slice(0, -2);
   if (w.endsWith("es") && es.length >= 3 && /(s|x|z|ch|sh)$/.test(es)) out.push(es);
@@ -213,25 +225,31 @@ function withinOneEdit(a: string, b: string): boolean {
 }
 
 /**
- * The records that say one query word, and how strongly (by position in `records`): by the start of a word they say (a
- * plural by its singular); else as a one-letter typo of one; else, while `fallback` allows, by the Studio's own
- * `wordRank` (its everyday words: "sore" for what eases, "abs" for the core).
+ * The records that say one query word, and how strongly (by position in the records), as the Studio's `wordRank` reads
+ * it, record by record (round 3, R2-I1): the word stands for what the Studio's `queryVariants` says — an everyday
+ * word's vocabulary words instead of it ("abs" → core, "tight" → what eases), else the word and its singular; a record
+ * says it by the start of one of its words, at its strongest rank, else — a word of five letters or more — by a
+ * one-letter typo of one, at the typo's rank. Beside them, a record whose role, pattern or theme says the word as
+ * written ("downshift" is a role; "abs" never reaches the "core" role, which names a session's main lift). All from the
+ * index: no record is asked on its own.
  */
-function recordsSaying(records: readonly ExerciseRecord[], index: WordIndex, w: string, fallback: { left: number }): Map<number, number> {
+function recordsSaying(index: WordIndex, w: string): Map<number, number> {
   const out = new Map<number, number>();
-  const take = (x: string, floor = 0): void => {
-    for (const [i, rank] of index.postings.get(x)!) out.set(i, Math.min(out.get(i) ?? Infinity, Math.max(rank, floor)));
-  };
-  const vs = variants(w);
-  for (const x of index.words) if (vs.some((v) => x.startsWith(v))) take(x);
-  if (out.size > 0) return out;
-  if (w.length >= TYPO_MIN_LETTERS) for (const x of index.words) if (vs.some((v) => withinOneEdit(v, x))) take(x, TYPO);
-  if (out.size > 0 || fallback.left <= 0) return out;
-  fallback.left -= 1;
-  records.forEach((ex, i) => {
-    const rank = wordRank(ex, w);
-    if (rank !== null) out.set(i, rank);
-  });
+  const vs = queryVariants(w);
+  const typos: string[] = [];
+  for (const x of index.studio.words) {
+    if (vs.some((v) => x.startsWith(v))) {
+      for (const [i, rank] of index.studio.postings.get(x)!) out.set(i, Math.min(out.get(i) ?? Infinity, rank));
+    } else if (w.length >= TYPO_MIN_LETTERS && vs.some((v) => withinOneEdit(v, x))) typos.push(x);
+  }
+  // A typo counts only for a record that says none of the words by their start (the Studio's order, per record).
+  const prefixed = new Set(out.keys());
+  for (const x of typos) for (const i of index.studio.postings.get(x)!.keys()) if (!prefixed.has(i)) out.set(i, TYPO);
+  const plain = plainVariants(w);
+  for (const x of index.extra.words) {
+    if (!plain.some((v) => x.startsWith(v))) continue;
+    for (const [i, rank] of index.extra.postings.get(x)!) out.set(i, Math.min(out.get(i) ?? Infinity, rank));
+  }
   return out;
 }
 
@@ -273,8 +291,7 @@ export function agentSearch(records: readonly ExerciseRecord[], query: string, f
     const boost = ctx.boost ?? (() => 0);
     // Each word looked up once in the index (see "The word index"), never record by record.
     const index = indexOf(records);
-    const fallback = { left: MAX_STUDIO_FALLBACK };
-    const saying = words.map((w) => recordsSaying(records, index, w, fallback));
+    const saying = words.map((w) => recordsSaying(index, w));
     const scored: Array<{ ex: ExerciseRecord; said: string[]; rank: number; fit: number; boost: number }> = [];
     records.forEach((ex, i) => {
       if (taken.has(ex.id)) return;
@@ -344,7 +361,7 @@ function facetPhrase(facet: SearchFacet, values: readonly string[]): string {
 /** The facet value no move uses that a word names ("barbell", "machines"), if any: a word naming gear or a pattern the
  * library lacks is answered as that, not as an unknown word. */
 function deadValueNamed(used: Record<SearchFacet, string[]>, w: string): { facet: SearchFacet; value: string } | null {
-  const fs = variants(w);
+  const fs = queryVariants(w);
   for (const facet of LINE_FACETS) {
     for (const value of FACET_VALUES[facet] as readonly string[]) {
       if (used[facet].includes(value)) continue;
@@ -359,10 +376,8 @@ function whyEmpty(records: readonly ExerciseRecord[], words: readonly string[], 
   const out: string[] = [];
   const used = usedValues(records);
   const index = indexOf(records);
-  // Only on a zero, and every word is asked about: a word the Studio forgives is never called unknown.
-  const fallback = { left: words.length };
   for (const w of words) {
-    if (recordsSaying(records, index, w, fallback).size > 0) continue;
+    if (recordsSaying(index, w).size > 0) continue;
     const dead = deadValueNamed(used, w);
     out.push(dead ? `no move in the library ${facetPhrase(dead.facet, [dead.value])} ("${w}")` : `no move says "${w}"`);
   }

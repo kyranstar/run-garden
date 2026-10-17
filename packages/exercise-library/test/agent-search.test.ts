@@ -7,6 +7,7 @@ import {
   offeredValues,
   searchLibrary,
   usedValues,
+  wordRank,
   type ExerciseRecord,
   type SearchFacet,
 } from "../src/index.js";
@@ -124,6 +125,51 @@ describe("agentSearch: bounded work (fix wave 13, round 2, C1)", () => {
     const r = agentSearch(EXERCISES, "lunges zqxv");
     expect(r.hits.length).toBeGreaterThan(0);
     expect(r.hits.every((h) => h.record.name.toLowerCase().includes("lunge") || h.record.patterns.includes("lunge") || h.record.text.summary.toLowerCase().includes("lunge"))).toBe(true);
+  });
+});
+
+describe("agentSearch: a word means what it means in the Studio (round 3, R2-I1)", () => {
+  // The some-words tier credits a word to exactly the moves the Studio's own `wordRank` credits it to — its everyday
+  // words ("abs" is the core, "tight" what eases) by their meaning, never by a raw prefix ("absorb", "butterfly") —
+  // plus the roles, patterns and themes the coach's index adds.
+  const credited = (w: string) =>
+    agentSearch(EXERCISES, `${w} zqxvw`)
+      .hits.filter((h) => h.matched?.includes(w))
+      .map((h) => h.record.id)
+      .sort();
+  const studio = (w: string) => EXERCISES.filter((e) => wordRank(e, w) !== null).map((e) => e.id).sort();
+
+  test.each(["abs", "butt", "tight", "achilles", "tspine", "calf", "sore", "hamstrings", "glute", "lunges", "hamstrng"])("%s: the Studio's moves, every one", (w) => {
+    const theirs = studio(w);
+    expect(theirs.length, w).toBeGreaterThan(0);
+    const ours = credited(w);
+    expect(ours).toEqual(expect.arrayContaining(theirs));
+    // Anything more is a move whose role, pattern or theme says the word — never a raw prefix the Studio turns away.
+    for (const id of ours.filter((x) => !theirs.includes(x))) {
+      const ex = EXERCISES.find((e) => e.id === id)!;
+      const extras = [...ex.roles, ...ex.patterns, ...ex.themes].join(" ").toLowerCase();
+      expect(extras, `${w}: ${id}`).toMatch(new RegExp(w.slice(0, 4)));
+    }
+  });
+
+  test("the reviewer's table: everyday words keep their moves, and only those", () => {
+    // An everyday word is read only as what it stands for: exactly the Studio's moves (no role, pattern or theme starts
+    // with these words as written; "abs" never reaches the "core" role, a session's main lift).
+    for (const w of ["abs", "butt", "tight", "achilles", "tspine", "sore"]) expect(credited(w), w).toEqual(studio(w));
+    expect(credited("abs")).not.toContain("dropLanding");
+    expect(credited("butt")).not.toContain("reclinedButterfly");
+    for (const w of ["abs", "butt", "tight", "achilles"]) expect(credited(w).length, w).toBeGreaterThanOrEqual(15);
+    const tight = agentSearch(EXERCISES, "tight hamstrings");
+    expect(tight.hits.length).toBeGreaterThanOrEqual(studio("tight").length);
+  });
+});
+
+describe("agentSearch: a zero's diagnosis is bounded (round 3, R2-M1)", () => {
+  test("a zero names every unknown word, from the index (its cost is the CPU bench's gate)", () => {
+    const query = "zqxva zqxvb zqxvc zqxvd zqxve zqxvf zqxvg zqxvh";
+    const before = agentSearch(EXERCISES, query);
+    expect(before.hits).toEqual([]);
+    expect(before.empty).toEqual(["zqxva", "zqxvb", "zqxvc", "zqxvd", "zqxve", "zqxvf", "zqxvg", "zqxvh"].map((w) => `no move says "${w}"`));
   });
 });
 

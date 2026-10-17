@@ -166,6 +166,13 @@ function variants(w: string): string[] {
   return out;
 }
 
+/**
+ * What one query word stands for, as this search reads it (`variants`): an everyday word's vocabulary words ("abs" →
+ * core, "sore" → stretch, passive, recovery) instead of the word, else the word and its singular. Exported for the
+ * coach's search (agent-search.ts), so a word means the same in both; this search is unchanged by it.
+ */
+export const queryVariants = (w: string): string[] => variants(w);
+
 /** The strongest rank at which the record says this query word, or null. */
 function rankOfWord(words: ReadonlyMap<string, number>, w: string, next?: string): number | null {
   let best: number | null = null;
