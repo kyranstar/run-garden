@@ -1202,6 +1202,8 @@ export interface CoachAlsoOpenDto {
   time: string | null;
   /** How many of its workouts and changes are still to decide. */
   items: number;
+  /** A "now" design (its time null): placed at the moment of the approve. Absent where the server doesn't say. */
+  atNow?: true;
 }
 
 /** `GET /api/coach/runs/current`: the run the Studio shows when it opens — the newest live main run, else the newest one

@@ -40,6 +40,7 @@ import {
 import { features } from "../../features.js";
 import { editDraftHref } from "./build-model.js";
 import { readProposal } from "./coach-tolerance.js";
+import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { appliedChangeLine, dayAndTime, planDayHref, refusedLine, reviewLabel } from "./run-model.js";
 import { useOneTap } from "./use-one-tap.js";
 
@@ -232,6 +233,8 @@ export function ProposalCard({ proposalId, flags = [], today = null }: { proposa
     setChosen(null);
     await reread();
     for (const key of ["plan", "plan-week", "today", "coach-state"]) void qc.invalidateQueries({ queryKey: [key] });
+    // The current read too (round 2, Minor 11): what is still open — "Also waiting" and its counts — follows at once.
+    void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
   };
   const approve = useMutation({
     networkMode: "always",

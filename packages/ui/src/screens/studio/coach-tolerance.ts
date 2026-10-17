@@ -97,7 +97,17 @@ function toAlsoOpen(v: unknown): CoachAlsoOpenDto[] {
     if (!a || typeof a.proposalId !== "string" || !a.proposalId || !isDay(a.date)) return [];
     const time = typeof a.time === "string" && /^\d{1,2}:\d{2}/.test(a.time) ? a.time : null;
     const items = num(a.items);
-    return [{ proposalId: a.proposalId, title: words(a.title) ?? "A suggestion", date: a.date, time, items: items !== null && items > 0 ? Math.round(items) : 1 }];
+    return [
+      {
+        proposalId: a.proposalId,
+        title: words(a.title) ?? "A suggestion",
+        date: a.date,
+        time,
+        items: items !== null && items > 0 ? Math.round(items) : 1,
+        // Now only when the server says so in so many words (round 2, Minor 11).
+        ...(a.atNow === true ? { atNow: true as const } : {}),
+      },
+    ];
   });
 }
 

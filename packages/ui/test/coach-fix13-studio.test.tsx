@@ -226,6 +226,60 @@ describe("Also waiting (R2, §2.7)", () => {
   });
 });
 
+describe("Also waiting after a decision (round 2, Minor 11)", () => {
+  const applied = (l: DesignLineDto): DesignLineDto => ({
+    ...l,
+    outcome: { status: "applied", at: "", workoutId: `w-${l.opId}`, rev: 1, written: { date: l.date, time: l.time ?? "18:00", title: l.title, minutes: l.minutes } },
+    written: { date: l.date, time: l.time ?? "18:00", title: l.title, minutes: l.minutes, summary: "", edited: false, moved: false },
+  });
+  const twoOps = [line("op-a", "Hips", { date: "2026-10-12" }), line("op-b", "Back", { date: "2026-10-13" })];
+
+  /** The server as an approve leaves it: the current read's list, and the suggestion's read, before and after. */
+  function decided(o: { alsoAfter: unknown[]; dp2After: DesignLineDto[]; approve: { status: string; remaining?: string[] } }) {
+    let approved = false;
+    return serve({
+      "GET /api/coach/runs/current": () =>
+        json({ run: run(), events: [], proposal: { id: "dp-1", status: "pending", flags: [] }, alsoOpen: approved ? o.alsoAfter : [{ proposalId: "dp-2", title: "Your next workouts", date: "2026-10-12", time: null, items: 2 }] }),
+      "GET /api/coach/proposals/dp-1": proposal("dp-1", [line("op-1", "Gym session")]),
+      "GET /api/coach/proposals/dp-2": () => json(proposal("dp-2", approved ? o.dp2After : twoOps)),
+      "POST /api/coach/proposals/dp-2/approve": () => {
+        approved = true;
+        return json({ ok: true, applied: [], changed: [], refused: [], settled: [], remaining: [], ...o.approve });
+      },
+    });
+  }
+  const approveIn = (scope: Element) => [...scope.querySelectorAll<HTMLButtonElement>("button")].find((b) => /^Approve( \d+)?$/.test(b.textContent?.trim() ?? "")) ?? null;
+  const boxesIn = (scope: Element) => [...scope.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+
+  it("deciding one of its cards reads the current run again: the line's count follows at once", async () => {
+    const calls = decided({ alsoAfter: [{ proposalId: "dp-2", title: "Your next workouts", date: "2026-10-13", time: null, items: 1 }], dp2After: [applied(twoOps[0]!), twoOps[1]!], approve: { status: "partially_approved" } });
+    mount();
+    await until(() => alsoLines().length === 1, "the line");
+    expect(alsoLines()[0]!.textContent).toBe("Your next workouts · Mon · 2 to decide");
+    await click(alsoLines()[0], "the line");
+    await until(() => !!alsoSection()!.querySelector(".coach-pc") && boxesIn(alsoSection()!).length === 2, "its card");
+    const before = calls.filter((c) => c.method === "GET" && c.path === "/api/coach/runs/current").length;
+    await click(boxesIn(alsoSection()!)[1], "Back's checkbox");
+    await click(approveIn(alsoSection()!), "Approve 1");
+    await until(() => alsoLines()[0]?.textContent === "Your next workouts · Tue", "the line read again");
+    expect(calls.filter((c) => c.method === "GET" && c.path === "/api/coach/runs/current").length).toBeGreaterThan(before);
+  });
+
+  it("one decided whole leaves the list, but stays while its card is open — what came of it in view — and goes once closed", async () => {
+    decided({ alsoAfter: [], dp2After: twoOps.map(applied), approve: { status: "approved" } });
+    mount();
+    await until(() => alsoLines().length === 1, "the line");
+    await click(alsoLines()[0], "the line");
+    await until(() => !!approveIn(alsoSection()!), "its card");
+    await click(approveIn(alsoSection()!), "Approve");
+    await until(() => (alsoSection()?.textContent ?? "").includes("Added to your plan"), "the outcome");
+    // Nothing left to decide: no count on its line.
+    expect(alsoLines()[0]!.textContent).toBe("Your next workouts · Mon");
+    await click(alsoLines()[0], "the line again");
+    await until(() => alsoSection() === null, "the list gone");
+  });
+});
+
 // ── The week's budget ───────────────────────────────────────────────────────
 
 describe("the week's budget (R11, M6, D11, §2.11)", () => {

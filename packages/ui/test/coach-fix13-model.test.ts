@@ -141,6 +141,20 @@ describe("the other open suggestions, read tolerantly (R2, §2.7)", () => {
     expect(alsoLine({ title: "Hips", date: "2026-10-11", time: "13:05", items: 1 })).toBe("Hips · Sun 1:05 PM");
     expect(alsoLine({ title: "Your week", date: "2026-10-13", time: null, items: 3 })).toBe("Your week · Tue · 3 to decide");
   });
+
+  it("a now design reads Now; one for today with no time, Today — never the bare weekday (round 2, Minor 11)", () => {
+    expect(alsoLine({ title: "Jaw reset", date: "2026-10-11", time: null, items: 1, atNow: true }, "2026-10-11")).toBe("Jaw reset · Now");
+    expect(alsoLine({ title: "Hips", date: "2026-10-11", time: null, items: 1 }, "2026-10-11")).toBe("Hips · Today");
+    // Timed, or another day: its day and time, as before.
+    expect(alsoLine({ title: "Hips", date: "2026-10-11", time: "18:00", items: 1 }, "2026-10-11")).toBe("Hips · Sun 6 PM");
+    expect(alsoLine({ title: "Hips", date: "2026-10-12", time: null, items: 1 }, "2026-10-11")).toBe("Hips · Mon");
+  });
+
+  it("atNow on an open suggestion's row only when the server says true", () => {
+    const rows = toCurrent({ run: null, alsoOpen: [{ proposalId: "dp-2", title: "Jaw reset", date: "2026-10-11", time: null, items: 1, atNow: true }, { proposalId: "dp-3", title: "Hips", date: "2026-10-11", time: null, items: 1, atNow: "yes" }] }).alsoOpen!;
+    expect(rows[0]!.atNow).toBe(true);
+    expect("atNow" in rows[1]!).toBe(false);
+  });
 });
 
 describe("the week's budget (R11, M6, D11, §2.11)", () => {

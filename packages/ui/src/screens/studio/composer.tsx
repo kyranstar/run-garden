@@ -327,11 +327,10 @@ export function StudioCoach({ ctx, loopDeps }: { ctx: StudioCtx; loopDeps?: () =
           <ProposalCard proposalId={proposalId} flags={open?.flags ?? []} today={ctx.today} />
         </CoachBoundary>
       ) : null}
-      {alsoOpen.length > 0 ? (
-        <CoachBoundary>
-          <AlsoWaiting items={alsoOpen} today={ctx.today} />
-        </CoachBoundary>
-      ) : null}
+      {/* Always here, so a card opened in it stays while it is open, even once its suggestion leaves the list (round 2). */}
+      <CoachBoundary>
+        <AlsoWaiting items={alsoOpen} today={ctx.today} />
+      </CoachBoundary>
     </div>
   );
 }
