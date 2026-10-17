@@ -1112,34 +1112,43 @@ export function CoachComposer({
           Send
         </button>
       </form>
-      {question ? (
-        <div className="coach-question" role="group" aria-label="Coach question">
-          <span className="faint">{question.body}</span>
-          <span className="row" style={{ gap: "var(--space-3)" }}>
-            {question.chips.map((chip) => (
-              <button
-                key={chip}
-                type="button"
-                className="chipbtn"
-                disabled={busy}
-                onClick={() => onAnswer(question.id, chip)}
-              >
-                {chip}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="chipbtn"
-              aria-label="Dismiss question"
-              title="Dismiss — the coach can ask again later"
-              disabled={busy}
-              onClick={() => onDismiss(question.id)}
-            >
-              ✕
-            </button>
-          </span>
-        </div>
-      ) : null}
+      {question ? <CoachQuestionRow question={question} onAnswer={onAnswer} onDismiss={onDismiss} busy={busy} /> : null}
+    </div>
+  );
+}
+
+/** The thread coach's open question: its words, its tappable answers, and ✕ to dismiss it (the Plan shows it too). */
+export function CoachQuestionRow({
+  question,
+  onAnswer,
+  onDismiss,
+  busy,
+}: {
+  question: CoachQuestionDto;
+  onAnswer: (id: string, answer: string) => void;
+  onDismiss: (id: string) => void;
+  busy?: boolean;
+}) {
+  return (
+    <div className="coach-question" role="group" aria-label="Coach question">
+      <span className="faint">{question.body}</span>
+      <span className="row" style={{ gap: "var(--space-3)" }}>
+        {question.chips.map((chip) => (
+          <button key={chip} type="button" className="chipbtn" disabled={busy} onClick={() => onAnswer(question.id, chip)}>
+            {chip}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="chipbtn"
+          aria-label="Dismiss question"
+          title="Dismiss — the coach can ask again later"
+          disabled={busy}
+          onClick={() => onDismiss(question.id)}
+        >
+          ✕
+        </button>
+      </span>
     </div>
   );
 }
