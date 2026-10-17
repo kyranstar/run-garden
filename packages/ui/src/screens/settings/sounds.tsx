@@ -22,7 +22,16 @@ export function SoundsSection({ player = cuePlayer }: { player?: Pick<CuePlayer,
   };
   return (
     <Card title="Sessions" className="settings-new">
-      <button type="button" className="place-row" aria-haspopup="dialog" onClick={() => setOpen(true)}>
+      <button
+        type="button"
+        className="place-row"
+        aria-haspopup="dialog"
+        onClick={() => {
+          // The cue player has what is stored, so a preview plays at the stored volume from the first tap.
+          player.configure(soundFor(sound, false));
+          setOpen(true);
+        }}
+      >
         <span className="place-row-main">
           <b>Sounds</b>
           <small>{soundSummary(sound)}</small>

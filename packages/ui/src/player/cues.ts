@@ -129,9 +129,12 @@ function holdEnd(step: Step, after: Step | undefined): CueKind {
 /** A HOLD this long or longer is slow enough for a calm session. */
 export const CALM_HOLD_SECS = 45;
 
-/** A strength or jumping move: never part of a calm session. */
+/**
+ * A strength or jumping move: never part of a calm session. A move kept in a build before records had purposes (an
+ * in-progress session from before 2026-10-10) is read without them, never a crash: this runs as the player renders.
+ */
 const effortful = (ex: SessionExerciseDto | undefined): boolean =>
-  !!ex && (ex.purposes.includes("strength") || ex.purposes.includes("power") || isPlyometric(ex));
+  !!ex && (!!ex.purposes?.includes("strength") || !!ex.purposes?.includes("power") || isPlyometric(ex));
 
 /**
  * A calm session — bowls, when the palette is automatic: a recovery session (an engine build's mode, or a document's

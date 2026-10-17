@@ -10,8 +10,10 @@
  *    spike saw the audio clock stall and fall 2 s behind once; an offset taken at Start would carry that drift.
  *  - Scheduling replaces what was scheduled (a pause, a skip, a step change); a cue already due is not played late.
  *    Cues more than `WINDOW_MS` ahead are left for a later schedule (the caller schedules again at each step).
- *  - Neither a new schedule nor `cancel` cuts a cue already due: it rings on (the player plans again the moment a step
- *    changes, which is the moment its cue plays). Sound off stops it.
+ *  - Neither a new schedule nor `cancel` cuts a cue already ringing: it rings on (the player plans again the moment a
+ *    step changes, which is the moment its cue plays). Ringing is judged on the AUDIO clock: a cue due by the wall clock
+ *    that has not started there (iOS freezes `currentTime` while the page is hidden) is stopped, never played late.
+ *    Sound off stops everything. Coming back to the page (`unlock` on a running context) places the cues again.
  *  - A cue list given before the renders are ready, or while the context is suspended or interrupted (a call, Siri),
  *    is kept and placed again, from the wall clock, once both are ready.
  */
@@ -48,8 +50,10 @@ export interface CuePlayer {
 
 /** Cues further ahead than this are placed by a later schedule. */
 export const WINDOW_MS = 120_000;
-/** The longest a cue rings (the bowls' done renders under 7 s): a cue due longer ago than this is done. */
-const RINGS_MS = 10_000;
+/** The longest a cue rings (the bowls' done renders under 7 s): a cue started longer ago than this is done. */
+const RINGS_S = 10;
+/** A cue whose audio start is this close ahead has, for all purposes, started (the two clocks never agree exactly). */
+const STARTED_SLACK_S = 0.25;
 
 export const cueIdOf = (cue: Pick<Cue, "kind" | "n">): CueId => (cue.kind === "tick" ? (`tick${cue.n ?? 1}` as CueId) : cue.kind);
 
@@ -92,18 +96,22 @@ export function createCuePlayer(deps: CuePlayerDeps = defaultDeps()): CuePlayer 
   const rendered = new Map<PaletteId, Record<CueId, AudioBuffer>>();
   const rendering = new Map<PaletteId, Promise<void>>();
   let wanted: readonly Cue[] = [];
-  /** What is placed, each with its cue's wall-clock time. */
-  let playing: Array<{ src: AudioBufferSourceNode; at: number }> = [];
+  /** What is placed: each source, its cue's wall-clock time and its start on the audio clock. */
+  let playing: Array<{ src: AudioBufferSourceNode; at: number; start: number }> = [];
 
   const running = () => ctx !== null && ctx.state === "running";
 
-  /** Stop what is placed and not yet due — or, with `all`, what is ringing too. A cue due a while ago is forgotten. */
+  /**
+   * Stop what is placed — all but what is ringing: due by the wall clock and started on the audio clock, within its
+   * ring. With `all`, what is ringing too. Everything else is stopped, a cue the audio clock never reached included.
+   */
   const stopAll = (all = false) => {
     const now = deps.now();
+    const audioNow = ctx?.currentTime ?? 0;
     const ringing: typeof playing = [];
     for (const p of playing) {
-      if (!all && p.at <= now) {
-        if (now - p.at < RINGS_MS) ringing.push(p);
+      if (!all && p.at <= now && p.start <= audioNow + STARTED_SLACK_S && audioNow - p.start < RINGS_S) {
+        ringing.push(p);
         continue;
       }
       try {
@@ -135,13 +143,15 @@ export function createCuePlayer(deps: CuePlayerDeps = defaultDeps()): CuePlayer 
     if (!ctx || !room || !buffers || !running() || !settings.on) return;
     const now = deps.now();
     for (const cue of wanted) {
-      if (cue.at < now || cue.at - now > WINDOW_MS) continue;
+      // Due already (or at this very moment: the plan before's), or beyond the window: not placed.
+      if (cue.at <= now || cue.at - now > WINDOW_MS) continue;
       try {
         const src = ctx.createBufferSource();
         src.buffer = buffers[cueIdOf(cue)];
         src.connect(room.input);
-        src.start(ctx.currentTime + (cue.at - now) / 1000);
-        playing.push({ src, at: cue.at });
+        const start = ctx.currentTime + (cue.at - now) / 1000;
+        src.start(start);
+        playing.push({ src, at: cue.at, start });
       } catch {
         // a closed context: no cue
       }
@@ -167,6 +177,9 @@ export function createCuePlayer(deps: CuePlayerDeps = defaultDeps()): CuePlayer 
       }
       const state = ctx.state as string;
       if (state === "suspended" || state === "interrupted") void ctx.resume().catch(() => undefined);
+      // Back on the page with the context running all along (its clock may have stood still while hidden): place the
+      // cues again from the wall clock.
+      else if (running()) place();
       render(settings.palette);
     } catch {
       ctx = null;

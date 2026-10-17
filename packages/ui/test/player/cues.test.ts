@@ -308,6 +308,14 @@ describe("a calm session", () => {
     expect(calmSession(stepsOf([...yin(), hold("easy", 60)]), withMove("easy", { contraction: ["isometric"], purposes: ["mobility"] }))).toBe(true);
   });
 
+  it("a move kept before records had purposes (an in-progress build from before 2026-10-10) is read, never a crash", () => {
+    const b = buildOf();
+    const { purposes: _p, contraction: _c, ...old } = exercise("lowLunge") as unknown as Record<string, unknown>;
+    const kept = { ...b, exercises: { ...b.exercises, oldMove: { ...old, id: "oldMove" } as unknown as SessionBuildDto["exercises"][string] } };
+    expect(() => calmSession(stepsOf([...yin(), hold("oldMove", 60)]), kept)).not.toThrow();
+    expect(calmSession(stepsOf([...yin(), hold("oldMove", 60)]), kept)).toBe(true);
+  });
+
   it("the fixture's session (a squat, a wall sit) is not", () => {
     expect(calmSession(stepsOf(build().steps), build())).toBe(false);
   });

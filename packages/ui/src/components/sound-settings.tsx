@@ -5,9 +5,10 @@
  * the value (on the device, `writeSound`) and hands it to the cue player.
  *
  * A preview plays inside its own tap (`cuePlayer.preview` unlocks audio there), at the volume the cue player was last
- * given.
+ * given. The sounds are one radio group by the keys: one tab stop (the choice), arrows move the choice and the focus,
+ * wrapping, and Home and End go to the first and the last.
  */
-import { useId } from "react";
+import { useId, useRef, type KeyboardEvent } from "react";
 import { cuePlayer, type CuePlayer } from "../player/cue-player.js";
 import { PALETTE_NAMES } from "../player/sound-palettes.js";
 import { resolvePalette, type SoundChoice, type StoredSound } from "../player/sound-settings.js";
@@ -34,6 +35,24 @@ export function SoundSettings({
   player?: Pick<CuePlayer, "preview">;
 }) {
   const id = useId();
+  const radios = useRef<Array<HTMLButtonElement | null>>([]);
+  const onKey = (e: KeyboardEvent, i: number) => {
+    const last = CHOICES.length - 1;
+    const to =
+      e.key === "ArrowDown" || e.key === "ArrowRight"
+        ? (i + 1) % CHOICES.length
+        : e.key === "ArrowUp" || e.key === "ArrowLeft"
+          ? (i + last) % CHOICES.length
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? last
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    onChange({ ...value, choice: CHOICES[to]! });
+    radios.current[to]?.focus();
+  };
   return (
     <div className="sound-settings">
       <div className="setting-row">
@@ -64,9 +83,19 @@ export function SoundSettings({
         Sounds
       </h3>
       <div role="radiogroup" aria-label="Sounds" className="sound-choices">
-        {CHOICES.map((c) => (
+        {CHOICES.map((c, i) => (
           <div key={c} className="sound-choice">
-            <button type="button" role="radio" aria-checked={value.choice === c} onClick={() => onChange({ ...value, choice: c })}>
+            <button
+              ref={(el) => {
+                radios.current[i] = el;
+              }}
+              type="button"
+              role="radio"
+              aria-checked={value.choice === c}
+              tabIndex={value.choice === c ? 0 : -1}
+              onClick={() => onChange({ ...value, choice: c })}
+              onKeyDown={(e) => onKey(e, i)}
+            >
               <span>{choiceName(c)}</span>
               {c === "auto" ? (
                 <>

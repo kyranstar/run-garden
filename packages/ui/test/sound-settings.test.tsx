@@ -8,6 +8,9 @@
  * session; what is set is kept on this device, where the player reads it.
  */
 import { act, createElement, useState } from "react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
@@ -107,11 +110,52 @@ describe("the sound control", () => {
     expect(calls.preview).toEqual([["count", "keys"], ["count", "kalimba"], ["count", "bowl"]]);
   });
 
-  it("every control is a fingertip (44px) and a word, never a colour alone", () => {
+  it("the sounds are one radio group by the keys: arrows move the choice and the focus, wrapping; Home and End; one tab stop", async () => {
+    const seen: StoredSound[] = [];
+    const { player } = fakePlayer();
+    render(createElement(Harness, { calm: false, player, seen }));
+    const radios = () => [...document.querySelectorAll<HTMLElement>('[role="radio"]')];
+    expect(radios().map((r) => r.tabIndex)).toEqual([0, -1, -1, -1]);
+    const key = async (k: string) => {
+      const el = document.activeElement as HTMLElement;
+      await act(async () => el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })));
+    };
+    radios()[0]!.focus();
+    await key("ArrowDown");
+    expect(seen.at(-1)!.choice).toBe("keys");
+    expect(document.activeElement).toBe(radios()[1]);
+    expect(radios().map((r) => r.tabIndex)).toEqual([-1, 0, -1, -1]);
+    await key("ArrowRight");
+    expect(seen.at(-1)!.choice).toBe("bowl");
+    await key("End");
+    expect(seen.at(-1)!.choice).toBe("kalimba");
+    await key("ArrowDown");
+    expect(seen.at(-1)!.choice).toBe("auto");
+    expect(document.activeElement).toBe(radios()[0]);
+    await key("ArrowUp");
+    expect(seen.at(-1)!.choice).toBe("kalimba");
+    await key("Home");
+    expect(seen.at(-1)!.choice).toBe("auto");
+  });
+
+  it("renders on the server: a real switch, each sound by name, the choice marked in words (aria), not by colour alone", () => {
     const html = renderToStaticMarkup(createElement(SoundSettings, { value: { on: true, volume: 0.7, choice: "keys" }, onChange: () => undefined }));
     expect(html).toContain('class="program-switch"');
     expect(html).toContain("Soft keys");
     expect(html).toContain('aria-checked="true"');
+  });
+
+  it("every control is a fingertip: the switch, the slider, each sound and each ▶ are 44px (--tap)", () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../src/styles.css"), "utf8");
+    const rule = (sel: string) => {
+      const at = css.indexOf(`\n${sel} {`);
+      expect(at, sel).toBeGreaterThan(-1);
+      return css.slice(at, css.indexOf("}", at));
+    };
+    expect(rule(".program-switch")).toMatch(/width: var\(--tap\);[\s\S]*height: var\(--tap\);/);
+    expect(rule('.sound-volume input[type="range"]')).toContain("min-height: var(--tap);");
+    expect(rule('.sound-choice [role="radio"]')).toContain("min-height: var(--tap);");
+    expect(rule(".sound-play")).toMatch(/width: var\(--tap\);[\s\S]*height: var\(--tap\);/);
   });
 });
 
@@ -126,6 +170,8 @@ describe("app Settings: Sounds", () => {
     expect(document.querySelector('[role="switch"]')).toBeNull();
     await act(async () => row!.click());
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    // Opened: the cue player has what is stored, so a preview plays at the stored volume.
+    expect(calls.configure).toEqual([{ on: true, volume: 0.4, palette: "kalimba" }]);
     const radios = [...document.querySelectorAll<HTMLElement>('[role="dialog"] [role="radio"]')];
     await act(async () => radios[0]!.click());
     expect(readSound()).toEqual({ on: true, volume: 0.4, choice: "auto" });

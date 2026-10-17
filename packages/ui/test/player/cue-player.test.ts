@@ -210,6 +210,46 @@ describe("the cue player", () => {
     expect(go!.stopped).toBe(true);
   });
 
+  it("back 8 s after an interruption with the audio clock frozen (iOS): what the wall clock passed is stopped, never played late; what is ahead is placed again", async () => {
+    const t = setup();
+    t.player.unlock();
+    await flush();
+    t.player.schedule([
+      { at: t.clock.now + 2000, kind: "tick", n: 3 },
+      { at: t.clock.now + 5000, kind: "go" },
+      { at: t.clock.now + 30_000, kind: "rest" },
+    ]);
+    const [tick, go, rest] = live(t.f.sources);
+    // Hidden (Spotify, a call): the context is interrupted and its clock stands still at 100 while 8 s pass.
+    t.f.ctx.state = "interrupted";
+    t.clock.now += 8000;
+    t.player.unlock();
+    t.f.ctx.onstatechange?.();
+    expect([tick!.stopped, go!.stopped, rest!.stopped]).toEqual([true, true, true]);
+    expect(live(t.f.sources).map((s) => s.at)).toEqual([122]);
+  });
+
+  it("back 60 s later with the context still running but its clock frozen: the page's return places everything again", async () => {
+    const t = setup();
+    t.player.unlock();
+    await flush();
+    t.player.schedule([2000, 5000, 30_000, 90_000].map((d) => ({ at: t.clock.now + d, kind: "next" as const })));
+    const before = live(t.f.sources);
+    t.clock.now += 60_000;
+    // The page is visible again: the player unlocks (a no-op for a running context), and the cue player places anew.
+    t.player.unlock();
+    expect(before.map((s) => s.stopped)).toEqual([true, true, true, true]);
+    expect(live(t.f.sources).map((s) => s.at)).toEqual([130]);
+  });
+
+  it("a cue due at this very moment is the plan before's: it is not placed again", async () => {
+    const t = setup();
+    t.player.unlock();
+    await flush();
+    t.player.schedule([{ at: t.clock.now, kind: "go" }]);
+    expect(live(t.f.sources)).toHaveLength(0);
+  });
+
   it("a stalled audio clock does not drift a cue: each schedule places it from the wall clock (moved from the chimes)", async () => {
     const t = setup();
     t.player.unlock();

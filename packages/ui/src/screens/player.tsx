@@ -341,14 +341,15 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   // ── The session's cues on the audio clock: planned again whenever the step, its clock, a pause or a rest's length
   //    changes, and every 30 s (`player/cues.ts`); a pause cancels what is ahead (a cue already sounding rings on) ───
   /**
-   * What the cue player was given and may have played: the plan ahead, and what came due in the last few seconds (a
-   * finished session's done is never played twice).
+   * What the cue player was given and may have played: the plan ahead, what came due in the last few seconds, and any
+   * done that came due — kept until the finish, however long after it (auto-advance off: Next may come minutes later),
+   * so a finished session's done is never played twice.
    */
   const played = useRef<readonly Cue[]>([]);
   const replan = Math.floor(now / REPLAN_MS);
   useEffect(() => {
     const t = Date.now();
-    const due = played.current.filter((c) => c.at <= t && t - c.at < 10_000);
+    const due = played.current.filter((c) => c.at <= t && (c.kind === "done" || t - c.at < 10_000));
     if (!state.finished && (state.paused || state.clock.anchor === null)) {
       deps.cues.cancel();
       played.current = due;
@@ -362,27 +363,6 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   }, [state.index, state.clock, state.paused, state.finished, state.restExtra, state.live.steps, state.toMax, auto, replan, deps.cues]);
   // Leaving the player: nothing more is placed.
   useEffect(() => () => deps.cues.cancel(), [deps.cues]);
-  // A reload loses the audio unlock: every tap after it tries again until audio runs (a touch's pointerdown is no
-  // user activation; its pointerup, touchend and click are), and coming back to the page tries too.
-  useEffect(() => {
-    const kinds = ["pointerup", "touchend", "click"] as const;
-    const stop = () => {
-      for (const k of kinds) window.removeEventListener(k, tap, true);
-    };
-    const tap = () => {
-      deps.cues.unlock();
-      if (deps.cues.running()) stop();
-    };
-    const onVisible = () => {
-      if (document.visibilityState !== "hidden") deps.cues.unlock();
-    };
-    if (!deps.cues.running()) for (const k of kinds) window.addEventListener(k, tap, true);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [deps.cues]);
 
   // ── The sound: the athlete's settings (kept on the device), in bowls for a calm session when automatic ─────────
   const calm = useMemo(() => calmSession(loaded.initial.live, src.build), [loaded.initial.live, src.build]);
@@ -394,6 +374,39 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     writeSound(next);
     setSound(next);
   };
+  // Whether audio runs, read on every tick of the clock and after every tap. With sound on and audio not running (a
+  // reload, a cold start, an interruption iOS never ended), every tap tries to unlock it — a touch's pointerdown is no
+  // user activation; its pointerup, touchend and click are — and the player says so, quietly. Coming back to the page
+  // tries too (and has the cue player place its cues again from the wall clock).
+  const [audioRunning, setAudioRunning] = useState(() => deps.cues.running());
+  useEffect(() => {
+    setAudioRunning(deps.cues.running());
+  }, [now, deps.cues]);
+  const audioLocked = sound.on && !audioRunning;
+  useEffect(() => {
+    if (!audioLocked) return;
+    const kinds = ["pointerup", "touchend", "click"] as const;
+    const tap = () => {
+      deps.cues.unlock();
+      setAudioRunning(deps.cues.running());
+    };
+    for (const k of kinds) window.addEventListener(k, tap, true);
+    return () => {
+      for (const k of kinds) window.removeEventListener(k, tap, true);
+    };
+  }, [audioLocked, deps.cues]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "hidden") deps.cues.unlock();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [deps.cues]);
+  /** The first tap on the stage while audio is locked is audio's own: it unlocks, and pauses nothing. */
+  const unlockTapTaken = useRef(false);
+  useEffect(() => {
+    if (audioRunning) unlockTapTaken.current = false;
+  }, [audioRunning]);
   /** The ring/silent switch, said once: the first session with sound on, on a phone or tablet with an audio session. */
   const [hint, setHint] = useState(() => hintDue(sound.on));
   useEffect(() => {
@@ -683,12 +696,34 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const title = extras?.title ?? src.view.theme?.name ?? "";
   const left = timeLeft(state, now);
   const careLabel = (extras?.profiles ?? []).find((p) => p.care)?.care ?? null;
-  /** A tap on the stage — never on a control, nor on the log card — pauses or resumes. */
+  /**
+   * A tap on the stage — never on a control, nor on the log card — resumes what is paused, and pauses a timer running
+   * down (a get-ready, a hold, a rest). A set waits for Done, a hold to max counts up to its result and a timer already
+   * over waits for Next: a tap leaves them alone. The first tap while audio is locked is audio's own.
+   */
   const stageTap = (e: React.MouseEvent) => {
     const target = e.target as Element | null;
-    if (panel || logOpen || !step || target?.closest("button, a, input, select, textarea, label, [role], .player-log")) return;
-    act(state.paused ? resume : pause);
+    if (panel || logOpen || !step || !view || target?.closest("button, a, input, select, textarea, label, [role], .player-log")) return;
+    if (audioLocked && !unlockTapTaken.current) {
+      unlockTapTaken.current = true;
+      return;
+    }
+    if (state.paused) return act(resume);
+    const runningDown = view.phase === "ready" || view.phase === "rest" || (view.phase === "hold" && !toMax);
+    if (runningDown) act(pause);
   };
+  /**
+   * The timer's last 3 s show where its countdown's ticks play: the plan has ticks into this end (a hold under 4 s, a
+   * rest before a get-ready and a run given way to the next one have none).
+   */
+  const ticking =
+    !!view &&
+    !state.paused &&
+    view.remainingMs > 0 &&
+    view.remainingMs <= ENDING_MS &&
+    planCues(state, { auto, now: now + view.remainingMs - ENDING_MS - 1 }).some(
+      (c) => c.kind === "tick" && c.at >= now + view.remainingMs - ENDING_MS && c.at < now + view.remainingMs,
+    );
 
   return (
     <div className={state.paused ? "player is-paused" : "player"}>
@@ -730,6 +765,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
           This session isn't being kept on this device.
         </p>
       ) : null}
+      {audioLocked ? (
+        <p className="player-hint" role="status">
+          Tap for sound
+        </p>
+      ) : null}
       {hint ? (
         <p className="player-hint" role="status">
           Cues follow your ring/silent switch.
@@ -753,6 +793,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             cue={step.exerciseId === plannedMoveOf(src.build, step.slotKey) ? (src.build.fromDoc?.slots?.[step.slotKey]?.cue ?? null) : null}
             toMax={toMax}
             open={open}
+            ticking={ticking}
             held={logOpen ? null : heldBefore(state)}
             onEditHeld={editHeld}
             log={
@@ -1077,6 +1118,7 @@ function StepBody({
   cue,
   toMax,
   open,
+  ticking,
   held: heldThen,
   onEditHeld,
   log,
@@ -1095,6 +1137,8 @@ function StepBody({
   toMax: boolean;
   /** A hold to max with no target, played as a set: it counts up from its start. */
   open: boolean;
+  /** The timer's end has its countdown's ticks in the plan: its last 3 s show. */
+  ticking: boolean;
   /** During the rest after a hold to max that counted: what was held. */
   held: ReturnType<typeof heldBefore>;
   onEditHeld: () => void;
@@ -1102,9 +1146,9 @@ function StepBody({
 }) {
   const following = nextLine(state, step, exercises);
   const cueLine = cue ? <p className="player-cue">{cue}</p> : null;
-  // The last 3 s of a timer running down (a get-ready, a hold, a rest): the number pulses once a second, in step with
-  // the countdown's ticks — a new element each second, so its pulse starts again.
-  const ending = !state.paused && (view.phase === "ready" || view.phase === "hold" || view.phase === "rest") && view.remainingMs > 0 && view.remainingMs <= ENDING_MS;
+  // The last 3 s of a timer running down (a get-ready, a hold, a rest) where its ticks play: the number pulses once a
+  // second, in step with them — a new element each second, so its pulse starts again.
+  const ending = ticking && (view.phase === "ready" || view.phase === "hold" || view.phase === "rest");
   const countdown = (
     <span key={ending ? clockText(view.remainingMs) : "count"} className={ending ? "player-big num is-ending" : "player-big num"}>
       {clockText(view.remainingMs)}

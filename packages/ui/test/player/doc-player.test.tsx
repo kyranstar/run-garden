@@ -224,6 +224,18 @@ describe("a document workout's items, played", () => {
     expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 70 });
   });
 
+  it("a tap on the stage never pauses a hold to max: the time held is the result, and a stray tap would understate it", async () => {
+    await start(docBuild(), docView());
+    await stepTo(8);
+    await at(T0 + 38 * S);
+    // Twice: the first tap after a load is audio's own (it unlocks, and pauses nothing); the second is a plain tap.
+    for (let i = 0; i < 2; i++) {
+      await act(async () => document.querySelector<HTMLElement>("h1.player-name")!.click());
+      expect(text()).not.toContain("Paused");
+    }
+    expect(actions().at(-1)).toEqual(["Done", true]);
+  });
+
   it("Space is Done on a hold to max (once the get-ready is over)", async () => {
     await start(docBuild(), docView());
     await stepTo(8);

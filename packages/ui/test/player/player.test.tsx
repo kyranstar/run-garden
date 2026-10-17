@@ -660,6 +660,8 @@ describe("leave and come back", () => {
 
 // ── The sound pass (2026-10-17) ─────────────────────────────────────────────────────────────────────────────────
 
+/** A tap on the stage, away from every control. */
+const stage = () => document.querySelector<HTMLElement>(".player-main")!.click();
 /** The cues as [seconds after T0, the cue] — a tick by its count. */
 const rel = (cues: readonly Cue[]): Array<[number, string]> => cues.map((c) => [(c.at - T0) / 1000, c.kind === "tick" ? `tick${c.n}` : c.kind]);
 const css = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src/styles.css"), "utf8");
@@ -710,6 +712,23 @@ describe("the session's cues", () => {
     expect(calls.schedule.at(-1)).toEqual([]);
   });
 
+  it("auto-advance off: the last hold's done plays at its end, and a Next tapped long after it plays none again", async () => {
+    localStorage.setItem("rg-player-auto-advance", "0");
+    const only = build().steps[0]!;
+    await storedStart(build({ steps: [{ ...only, prepGap: 0, seconds: 10 }], plannedSeconds: 10 }));
+    const { cues, calls } = recordingCues();
+    mount({ cues });
+    await until(() => text().includes("1 of 1"), "the one hold");
+    expect(rel(calls.schedule.at(-1)!).at(-1)).toEqual([10, "done"]);
+    // Its done has played; 50 s later (planned again at the half-minutes in between), Next ends the session.
+    await at(T0 + 10 * S + 200);
+    await at(T0 + 35 * S);
+    await at(T0 + 60 * S);
+    await click("Next");
+    await until(() => !text().includes("1 of 1"), "the review");
+    expect(calls.schedule.at(-1)).toEqual([]);
+  });
+
   it("the palette: soft keys for an ordinary session, bowls for a calm one, with the volume kept on the device", async () => {
     await storedStart();
     const first = recordingCues();
@@ -746,6 +765,26 @@ describe("the session's cues", () => {
     expect(calls.unlock).toBe(base + 3);
     await at(T0 + 1 * S);
     expect(calls.unlock).toBe(base + 4);
+    expect(text()).not.toContain("Tap for sound");
+    // Later the context stops running (iOS left it interrupted): the taps listen again, and the player says so.
+    runs = false;
+    await at(T0 + 2 * S);
+    expect(text()).toContain("Tap for sound");
+    await act(async () => window.dispatchEvent(new Event("pointerup")));
+    expect(calls.unlock).toBe(base + 6);
+  });
+
+  it("while audio is locked (a reload, a cold start) the player says, quietly, to tap for sound — not with sound off", async () => {
+    await storedStart();
+    mount({ cues: recordingCues(() => false).cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(document.querySelector(".player-hint")?.textContent).toBe("Tap for sound");
+    act(() => root!.unmount());
+    host?.remove();
+    localStorage.setItem("rg-player-sound", JSON.stringify({ on: false, volume: 0.7, choice: "auto" }));
+    mount({ cues: recordingCues(() => false).cues });
+    await until(() => text().includes("1 of 9"), "the same step");
+    expect(text()).not.toContain("Tap for sound");
   });
 });
 
@@ -864,23 +903,73 @@ describe("the player, by touch (the sound pass's quality of life)", () => {
     await until(() => text().includes("5 of 9"), "the next set");
   });
 
-  it("a tap on the stage pauses and resumes, clearly; a tap on a control does only what it does", async () => {
+  it("a tap on the stage pauses a timer running down, and resumes; a tap on a control does only what it does", async () => {
     await storedStart();
-    mount();
+    mount({ cues: recordingCues(() => true).cues });
     await until(() => text().includes("1 of 9"), "the first step");
+    // The get-ready, then the hold: each pauses and resumes.
     await act(async () => document.querySelector<HTMLElement>("h1.player-name")!.click());
     expect(text()).toContain("Paused");
     expect(document.querySelector(".player")!.classList.contains("is-paused")).toBe(true);
-    await act(async () => document.querySelector<HTMLElement>(".player-main")!.click());
+    await act(async () => stage());
     expect(text()).not.toContain("Paused");
-    // The log card is the card's own: a tap on it, or on its controls, pauses nothing.
-    await click("Skip");
-    await click("Skip");
-    await until(() => text().includes("3 of 9"), "the set");
+    await at(T0 + 13 * S);
+    await act(async () => stage());
+    expect(text()).toContain("Paused");
+    await act(async () => stage());
+    expect(text()).not.toContain("Paused");
+  });
+
+  it("a set waits for Done: a tap on it pauses nothing, so its rest never starts paused", async () => {
+    await storedStart();
+    mount({ cues: recordingCues(() => true).cues });
+    await toFirstSet();
+    await act(async () => document.querySelector<HTMLElement>("h1.player-name")!.click());
+    expect(text()).not.toContain("Paused");
     await click("Done");
     await click("Heavier");
     await act(async () => document.querySelector<HTMLElement>(".player-log")!.click());
+    await click(/^Confirm/);
+    await until(() => text().includes("4 of 9"), "the rest");
     expect(text()).not.toContain("Paused");
+    // A rest runs down: a tap pauses it.
+    await act(async () => stage());
+    expect(text()).toContain("Paused");
+  });
+
+  it("a timer already over (auto-advance off) is not paused by a tap; a paused set is resumed by one", async () => {
+    await storedStart();
+    mount({ cues: recordingCues(() => true).cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Settings");
+    await click("Move on when a timer ends");
+    await press("Escape");
+    await at(T0 + 60 * S);
+    await act(async () => stage());
+    expect(text()).not.toContain("Paused");
+    expect(actions()).toEqual([["Next", true]]);
+    // Paused on the right side, Skip to the set: it arrives paused, and a tap resumes it.
+    await click("Next");
+    await until(() => text().includes("2 of 9"), "the right side");
+    await click("Pause");
+    await click("Skip");
+    await until(() => text().includes("3 of 9"), "the set, paused");
+    expect(text()).toContain("Paused");
+    await act(async () => stage());
+    expect(text()).not.toContain("Paused");
+  });
+
+  it("the tap that unlocks audio after a reload pauses nothing; the next one does", async () => {
+    await storedStart();
+    const { cues, calls } = recordingCues(() => false);
+    mount({ cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    const base = calls.unlock;
+    await act(async () => stage());
+    expect(calls.unlock).toBe(base + 1);
+    expect(text()).not.toContain("Paused");
+    await act(async () => stage());
+    expect(text()).toContain("Paused");
   });
 
   it("the session's time left shows on phones too (no longer md and up only)", () => {
@@ -907,21 +996,28 @@ describe("the player, by touch (the sound pass's quality of life)", () => {
     expect(lock).toEqual({ held: 2, released: 1 });
   });
 
-  it("the last 3 s of a timer: the ring's colour shifts and the number pulses, a new pulse each second", async () => {
+  it("the last 3 s of a timer, in step with its ticks: the ring's colour shifts and the number pulses, a new pulse each second", async () => {
     await storedStart();
     mount();
     await until(() => text().includes("1 of 9"), "the first step");
     await at(T0 + 44 * S);
     expect(document.querySelector(".player-ring.is-ending")).toBeNull();
     expect(document.querySelector(".player-big.is-ending")).toBeNull();
+    // The left side's last 3 s have no ticks (they give way to the right side's get-ready): no pulse.
     await at(T0 + 45 * S);
-    const three = document.querySelector(".player-big.is-ending");
-    expect(document.querySelector(".player-ring.is-ending")).not.toBeNull();
-    expect(three?.textContent).toBe("0:03");
-    await at(T0 + 46 * S);
+    expect(document.querySelector(".player-big.is-ending")).toBeNull();
+    // The right side's get-ready ticks at 49 and 50 s into go.
+    await at(T0 + 49 * S);
     const two = document.querySelector(".player-big.is-ending");
+    expect(document.querySelector(".player-ring.is-ending")).not.toBeNull();
     expect(two?.textContent).toBe("0:02");
-    expect(two).not.toBe(three);
+    await at(T0 + 50 * S);
+    const one = document.querySelector(".player-big.is-ending");
+    expect(one?.textContent).toBe("0:01");
+    expect(one).not.toBe(two);
+    // The right side's hold ends with its own ticks (93–95 s).
+    await at(T0 + 93 * S);
+    expect(document.querySelector(".player-big.is-ending")?.textContent).toBe("0:03");
     // Paused, it waits: no pulse.
     await click("Pause");
     expect(document.querySelector(".player-big.is-ending")).toBeNull();
