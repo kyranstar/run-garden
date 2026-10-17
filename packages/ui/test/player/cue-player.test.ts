@@ -242,6 +242,18 @@ describe("the cue player", () => {
     expect(live(t.f.sources).map((s) => s.at)).toEqual([130]);
   });
 
+  it("a cue whose ring is over (started more than 10 s ago on the audio clock) is stopped and let go", async () => {
+    const t = setup();
+    t.player.unlock();
+    await flush();
+    t.player.schedule([{ at: t.clock.now + 1000, kind: "go" }]);
+    const [go] = live(t.f.sources);
+    t.clock.now += 13_000;
+    t.f.ctx.currentTime += 13;
+    t.player.schedule([]);
+    expect(go!.stopped).toBe(true);
+  });
+
   it("a cue due at this very moment is the plan before's: it is not placed again", async () => {
     const t = setup();
     t.player.unlock();

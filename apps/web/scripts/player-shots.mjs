@@ -97,8 +97,9 @@ async function run() {
       await page.waitForTimeout(300);
       shots.push(await shoot(page, vp, scheme, "player-last3s"));
 
-      // Paused by a tap on the stage.
+      // Paused by a tap on the stage (while audio is locked, the first tap is audio's own: then a second).
       await page.locator("h1.player-name").click();
+      if (!(await page.locator(".player.is-paused").isVisible().catch(() => false))) await page.locator("h1.player-name").click();
       await page.locator(".player.is-paused").waitFor();
       shots.push(await shoot(page, vp, scheme, "player-paused"));
 
