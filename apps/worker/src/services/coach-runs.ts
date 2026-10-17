@@ -966,7 +966,8 @@ export const START_MEDIAN_MIN = 3;
 /**
  * Whether the week can pay for a run of `scope` (Task 13's fix wave, §2.11; audit 13b M6): the week's spend — the rolling
  * seven days `llmBudgetStatus` reads — plus what such a run costs must stay within the weekly cutoff. What it costs: the
- * median whole-tree cost of the athlete's finished main runs of its kind (a single workout's, or a set's) when there are
+ * median whole-tree cost of the athlete's main runs of its kind that finished or stopped at their own ceiling (round 2,
+ * Minor 7: those are what such a run really costs) (a single workout's, or a set's) when there are
  * START_MEDIAN_MIN of them, else the estimate (a set's: its workouts at the designer's default and the main coach's).
  * ONE statement.
  */
@@ -984,7 +985,8 @@ async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): P
     SELECT (SELECT coalesce(sum(${llmUsage.costMicros}), 0) FROM ${llmUsage} WHERE ${llmUsage.userId} = ${userId} AND ${llmUsage.createdAt} >= ${since}) AS spent,
       (SELECT json_group_array(c) FROM (
         SELECT ${tree} AS c FROM coach_runs m
-        WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.status = 'finished' AND m.created_at >= ${measuredSince}
+        WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.created_at >= ${measuredSince}
+          AND (m.status = 'finished' OR (m.status = 'stopped_cap' AND m.error = 'run_ceiling'))
           AND json_valid(m.scope) AND json_extract(m.scope, '$.kind') IN ${kinds}
         ORDER BY m.created_at DESC LIMIT ${START_MEDIAN_RUNS})) AS costs
   `)) as Array<{ spent: number | null; costs: string | null }>;

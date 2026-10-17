@@ -74,12 +74,12 @@ async function spent(micros: number) {
 }
 
 /** A finished main run of `kind` whose tree cost `own` + its sub-runs' (a designer, and its reviewer under it). */
-async function finishedRun(kind: "now" | "week", own: number, sub = 0, subSub = 0) {
+async function finishedRun(kind: "now" | "week", own: number, sub = 0, subSub = 0, end: { status: string; error: string | null } = { status: "finished", error: null }) {
   const at = new Date(Date.now() - 86_400_000).toISOString();
   const id = `run-${newId().slice(0, 10)}`;
   const row = (rid: string, parentId: string | null, role: string, cost: number) => ({
-    id: rid, userId, parentId, role, scope: { kind }, request: "x", status: "finished", state: JSON.stringify(newRunState("main", { kind })),
-    steps: 3, costUsd: cost, createdAt: at, updatedAt: at, finishedAt: at,
+    id: rid, userId, parentId, role, scope: { kind }, request: "x", status: parentId ? "finished" : end.status, error: parentId ? null : end.error,
+    state: JSON.stringify(newRunState("main", { kind })), steps: 3, costUsd: cost, createdAt: at, updatedAt: at, finishedAt: at,
   });
   await db.insert(schema.coachRuns).values(row(id, null, "main", own));
   if (sub || subSub) {
@@ -120,6 +120,16 @@ describe("starting a run the week can't pay for (§2.11)", () => {
     expect((await create({ scope: { kind: "now" } })).status).toBe(200);
     await db.delete(schema.coachRuns).where(eq(schema.coachRuns.status, "active"));
     await spent(100_000);
+    expect((await create({ scope: { kind: "now" } })).status).toBe(409);
+  });
+
+  it("round 2, Minor 7: a run stopped at its own ceiling counts in the median — what such a run really costs; other stops don't", async () => {
+    await finishedRun("now", 0.3);
+    await finishedRun("now", 0.3);
+    for (let i = 0; i < 3; i++) await finishedRun("now", 1.5, 0, 0, { status: "stopped_cap", error: "run_ceiling" });
+    for (let i = 0; i < 3; i++) await finishedRun("now", 0.1, 0, 0, { status: "stopped_cap", error: "state_cap" });
+    // Measured: 0.3, 0.3, 1.5, 1.5, 1.5 — a median of $1.50, over the $1.00 the week has left.
+    await spent(cutoff - 1_000_000);
     expect((await create({ scope: { kind: "now" } })).status).toBe(409);
   });
 
