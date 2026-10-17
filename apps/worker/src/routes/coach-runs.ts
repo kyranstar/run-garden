@@ -7,7 +7,10 @@
  * signed in or not; then the session is checked. Mounted ahead of `/api/coach` in index.ts so the coach's own sign-in
  * never answers for these paths first.
  *
- *   POST /                  { scope?, request?, rehearsal?, focus? } → { run, existing }  (one live main run per athlete: a
+ *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId? } → { run, existing, conversationId }
+ *                           (the new shape §5: no conversationId, the current conversation — its newest ask under 18 hours
+ *                           old — else a new one; null, a new one; a run's id, the conversation it is a turn of; 400
+ *                           `bad_conversation` for one that can't be an id) (one live main run per athlete: a
  *                           second create answers the live run with `offer` and the `ignoredRequest` it did not start;
  *                           409 { error: "week_budget", spentUsd, cutoffUsd } when the week's spend and what a run of
  *                           the scope costs would pass the weekly cutoff, and no live run is there — Task 13's fix wave)
@@ -48,6 +51,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { coachDesignerEnabled, type Env } from "../env.js";
 import { stepAlarmOn, stepperLeaseMs, tellStepper, type StepperHint, type StepperOp } from "../services/coach-run-stepper.js";
+import { CONVERSATION_ID } from "../services/coach-conversation.js";
 import { FocusError, focusSchema } from "../services/design-focus.js";
 import {
   ANSWER_MAX_CHARS,
@@ -111,7 +115,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   routes.use("*", requireUser);
 
   routes.post("/", async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { scope?: unknown; request?: unknown; rehearsal?: unknown; focus?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as { scope?: unknown; request?: unknown; rehearsal?: unknown; focus?: unknown; conversationId?: unknown } | null;
     // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
     const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
     if (!body || !asked) return c.json({ error: "bad_scope" }, 400);
@@ -125,6 +129,11 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     // What the athlete asked from (coach everywhere, A1): a kind and an id, nothing else (design-focus.ts).
     const focus = body.focus === undefined ? null : focusSchema.safeParse(body.focus);
     if (focus && !focus.success) return c.json({ error: "bad_focus" }, 400);
+    // The conversation (the new shape §5): absent, the current one; null, a new one; a run's id, that one's.
+    const conversationId = body.conversationId;
+    if (conversationId !== undefined && conversationId !== null && (typeof conversationId !== "string" || !CONVERSATION_ID.test(conversationId))) {
+      return c.json({ error: "bad_conversation" }, 400);
+    }
     try {
       const created = await createRun(
         c.get("db"),
@@ -134,6 +143,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
           request: (body.request as string | null | undefined) ?? null,
           rehearsal: body.rehearsal === true,
           ...(focus?.success ? { focus: focus.data } : {}),
+          ...(conversationId !== undefined ? { conversationId: conversationId as string | null } : {}),
         },
         new Date(),
       );

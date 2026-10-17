@@ -496,7 +496,8 @@ describe("the budget", () => {
     expect(contextStatements("main")).toBe(11);
     expect(contextStatements("designer")).toBe(11);
     expect(contextStatements("reviewer")).toBe(12);
-    expect(DESIGN_CONTEXT_STATEMENTS).toBe(12);
+    // A main run with a focus and a conversation to read (the new shape §5): one more each.
+    expect(DESIGN_CONTEXT_STATEMENTS).toBe(13);
     expect(DESIGN_CONTEXT_STATEMENTS).toBeLessThanOrEqual(20);
   });
 

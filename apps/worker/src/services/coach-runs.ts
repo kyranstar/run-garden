@@ -48,6 +48,7 @@ import {
   type ToolUseBlock,
 } from "./llm-messages.js";
 import { COACH_RUN_LEFT_MINUTES, COACH_RUN_SET_WINDOW_HOURS, COACH_RUN_STEP_STALE_MINUTES } from "./cron-limits.js";
+import { CONVERSATION_QUIET_HOURS } from "./coach-conversation.js";
 import {
   closeUnreviewed,
   PROMOTE_TRIES,
@@ -355,6 +356,9 @@ export interface RunSettings {
    * checked as theirs at the create, read into the opening context; a follow-up's suggestion is superseded by what the
    * run proposes (A2). Kept here, with the run's other fixed settings: no column of its own. */
   focus?: RunFocus;
+  /** A main run's only: the conversation it is a turn of (the new shape §5; coach-conversation.ts) — its first run's id,
+   * fixed by the create's own insert. Absent on a run made before conversations: it is a conversation of its own. */
+  conversationId?: string;
 }
 
 export interface PendingCall {
@@ -601,6 +605,9 @@ export interface ContextRun {
   packet?: string;
   /** A main run's focus (A1): what the athlete asked from, read into its opening context. */
   focus?: RunFocus;
+  /** A main run's conversation (the new shape §5): its turns before this one are read into its opening context — none
+   * when it is the conversation's first (its id the run's own). */
+  conversationId?: string;
 }
 
 /**
@@ -813,6 +820,9 @@ export interface CoachRunDto {
   ceilingUsd: number | null;
   /** What the athlete asked from (coach everywhere, A1): absent when they asked from nowhere in particular. */
   focus?: RunFocus;
+  /** The conversation the run is a turn of (the new shape §5): its first run's id — the run's own for a run made before
+   * conversations. */
+  conversationId: string;
 }
 
 export interface CoachRunEventDto {
@@ -856,8 +866,12 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
     estimateUsd: typeof root.estimateMicros === "number" ? root.estimateMicros / 1_000_000 : null,
     ceilingUsd: typeof root.settings?.ceilingMicros === "number" ? root.settings.ceilingMicros / 1_000_000 : null,
     ...(root.settings?.focus ? { focus: root.settings.focus } : {}),
+    conversationId: conversationOf(root),
   };
 }
+
+/** The conversation a main run is a turn of: its settings' — or, made before conversations, its own id. */
+const conversationOf = (root: Pick<RunNode, "id" | "settings">): string => root.settings?.conversationId ?? root.id;
 
 // ── Events ──────────────────────────────────────────────────────────────
 
@@ -946,16 +960,24 @@ export interface CreateRunInput {
    * suggestion's focus with no scope asked takes the suggestion's own (a follow-up).
    */
   focus?: RunFocus | null;
+  /**
+   * The conversation this ask is a turn of (the new shape §5; coach-conversation.ts): absent, the current one — its
+   * newest run asked under CONVERSATION_QUIET_HOURS ago — else a new one; null, a new one; an id (of any turn of it,
+   * its first run's being the conversation's), that one, when it is the athlete's in this run's lane — else a new one.
+   */
+  conversationId?: string | null;
 }
 
 export const REQUEST_MAX_CHARS = 2_000;
 
 export type CreateRunResult =
-  | { run: CoachRunDto; existing: false }
+  | { run: CoachRunDto; existing: false; conversationId: string }
   | {
       /** The athlete's live run, as it is: nothing about it changed. */
       run: CoachRunDto;
       existing: true;
+      /** The live run's conversation. */
+      conversationId: string;
       /** What the screen can offer: answer the live run's question, or go on with it — or cancel it either way. */
       offer: "answer_or_cancel" | "continue_or_cancel";
       /** What this request asked for, not started: the screen can offer to start it once the live run is cancelled. */
@@ -1072,16 +1094,33 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   });
   const insert = async (): Promise<CreateRunResult | null> => {
     const id = newId();
+    // The conversation (the new shape §5), found in the insert itself — no statement of its own: a turn's is its
+    // settings' (a run made before conversations: its own id), in this run's lane (a rehearsal's apart).
+    const lane = (alias: string) =>
+      sql.raw(`coalesce(CASE WHEN json_valid(${alias}.state) THEN json_extract(${alias}.state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0}`);
+    const turnOf = (alias: string) =>
+      sql.raw(`coalesce(CASE WHEN json_valid(${alias}.state) THEN json_extract(${alias}.state, '$.settings.conversationId') END, ${alias}.id)`);
+    const quietSince = new Date(now.getTime() - CONVERSATION_QUIET_HOURS * 3_600_000).toISOString();
+    const conversation =
+      input.conversationId === null
+        ? sql`${id}`
+        : typeof input.conversationId === "string"
+          ? sql`coalesce((SELECT ${turnOf("g")} FROM coach_runs g WHERE g.id = ${input.conversationId} AND g.user_id = ${userId}
+              AND g.parent_id IS NULL AND ${lane("g")}), ${id})`
+          : sql`coalesce((SELECT ${turnOf("n")} FROM coach_runs n WHERE n.user_id = ${userId} AND n.parent_id IS NULL
+              AND n.created_at >= ${quietSince} AND ${lane("n")} ORDER BY n.created_at DESC, n.id DESC LIMIT 1), ${id})`;
     const inserted = (await db.all(sql`
       INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
-      SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
+      SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active',
+        json_set(${JSON.stringify(state)}, '$.settings.conversationId', ${conversation}), 0, 0, ${at}, ${at}
       WHERE NOT EXISTS (
         SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
           AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0}
       )
-      RETURNING id
-    `)) as Array<{ id: string }>;
+      RETURNING id, json_extract(state, '$.settings.conversationId') AS conversationId
+    `)) as Array<{ id: string; conversationId: string | null }>;
     if (inserted.length === 0) return null;
+    state.settings.conversationId = inserted[0]!.conversationId ?? id;
     const node: RunNode = {
       id,
       parentId: null,
@@ -1098,7 +1137,8 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       finishedAt: null,
       settings: state.settings,
     };
-    return { run: runDto(node, [node]), existing: false };
+    const run = runDto(node, [node]);
+    return { run, existing: false, conversationId: run.conversationId };
   };
   const live = async () => {
     const rows = await db
@@ -1127,6 +1167,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   return {
     run,
     existing: true,
+    conversationId: run.conversationId,
     offer: run.status === "waiting_athlete" ? "answer_or_cancel" : "continue_or_cancel",
     ignoredRequest: { scope, request, ...(focus ? { focus: { kind: focus.kind, id: focus.id } } : {}) },
   };
@@ -1876,8 +1917,37 @@ export const REVIEW_NUDGE =
   "Your review wasn't submitted. Return it by calling submit_review: a whole score from 1 to 5 and a one-line note for every dimension, the must-fix items and the improvements.";
 
 /** The plain line for a run that outlived its window. */
-export function expiredLine(settings: RunSettings | undefined): string {
+export function expiredLine(settings: Pick<RunSettings, "window"> | undefined): string {
   return settings?.window?.kind === "day" ? LINES.expiredDay : LINES.expiredSet;
+}
+
+/** A stop's own line, by its reason (`CoachRunDto.error`): what the loop wrote when it stopped. */
+const STOP_LINES: Readonly<Record<string, string>> = {
+  weekly_cap: LINES.weeklyCap,
+  step_cap: LINES.stepCap,
+  state_cap: LINES.stateCap,
+  [OUT_OF_CREDITS_REASON]: LINES.outOfCredits,
+  no_key: LINES.noKey,
+  retries: LINES.retries,
+  refusal: LINES.refusal,
+  internal: LINES.internal,
+  bad_state: LINES.badState,
+  kept_stopping: LINES.keptStopping,
+};
+
+/**
+ * The plain line a main run that is over without a finish of its own ended on — a cancel's, an expiry's, a stop's, the
+ * loop's own words (the conversation's turn says it: the new shape §5); null for a live run and a finished one (its
+ * finish says it).
+ */
+export function endedLine(status: string, error: string | null, settings: Pick<RunSettings, "window" | "ceilingMicros"> | undefined): string | null {
+  if (status === "cancelled") return "Cancelled.";
+  if (status === "expired") return expiredLine(settings);
+  if (status !== "stopped_cap" && status !== "failed") return null;
+  if (error === "run_ceiling" && typeof settings?.ceilingMicros === "number") {
+    return `This design reached its spending limit (${usd(settings.ceilingMicros)}) — the coach stopped here.`;
+  }
+  return STOP_LINES[error ?? ""] ?? LINES.rejected;
 }
 
 /** Told to the model on its last call, in the newest (not yet sent) user message (fix wave 3A, A3: never an invitation
@@ -2336,6 +2406,8 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     // What the athlete asked from (A1): only a main run's state holds one (`newRunState`), and the context reads a main
     // run's alone.
     ...(s.state.settings.focus ? { focus: s.state.settings.focus } : {}),
+    // Its conversation (the new shape §5): only a main run's state holds one.
+    ...(s.state.settings.conversationId && s.run.role === "main" ? { conversationId: s.state.settings.conversationId } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;
@@ -2904,7 +2976,8 @@ async function finishInWords(s: StepCtx, said: string, spent: number, o: { lastT
     costMicros: spent,
     error: null,
     proposalId: shown ? proposalId : null,
-    events: [{ kind: "note", summary: words, ...(shown || "text" in kept ? { payload: { ...kept, ...(shown ? { proposalId } : {}) } } : {}) }],
+    // `final`: the run's last line, as a finish's receipt marks its own — what its conversation's turn says (the new shape §5).
+    events: [{ kind: "note", summary: words, payload: { ...kept, ...(shown ? { proposalId } : {}), final: true } }],
     ...(closed === "kept" ? { withWhatItHas: STOPPED_NOTES.unfinished } : {}),
   };
 }

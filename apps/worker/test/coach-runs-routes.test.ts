@@ -229,6 +229,7 @@ describe("the routes", () => {
     expect((await call("POST", "", { scope: { kind: "week" }, request: "my week" })).body).toEqual({
       run: expect.objectContaining({ id, request: "hips", scope: { kind: "now" } }),
       existing: true,
+      conversationId: id,
       offer: "continue_or_cancel",
       ignoredRequest: { scope: { kind: "week" }, request: "my week" },
     });

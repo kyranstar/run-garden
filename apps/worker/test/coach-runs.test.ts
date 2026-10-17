@@ -364,7 +364,8 @@ describe("the opening context", () => {
     const created = await createRun(db, userId, { scope: { kind: "next_n", n: 3 }, request: "my next three" }, at(0));
     const main = created.run.id;
     ok(await runStep(db, env, main, userId, at(1), d));
-    expect(contextCalls).toEqual([{ id: main, role: "main", scope: { kind: "next_n", n: 3 }, request: "my next three", parentId: null }]);
+    // Its conversation too (the new shape §5): a first turn's is its own id.
+    expect(contextCalls).toEqual([{ id: main, role: "main", scope: { kind: "next_n", n: 3 }, request: "my next three", parentId: null, conversationId: main }]);
     // A sub-run made without its context gets one built for it, with its brief.
     const id = newId();
     await db.insert(schema.coachRuns).values({
@@ -1588,6 +1589,7 @@ describe("creating a run", () => {
     expect(second).toEqual({
       run: expect.objectContaining({ id: first.run.id, request: "hips", scope: { kind: "now" } }),
       existing: true,
+      conversationId: first.run.id,
       offer: "continue_or_cancel",
       ignoredRequest: { scope: { kind: "week" }, request: "my week" },
     });
@@ -1617,6 +1619,7 @@ describe("creating a run", () => {
       rehearsal: false,
       timezone: "America/Los_Angeles",
       window: { kind: "day", date: localDay },
+      conversationId: now.run.id,
     });
     expect(state.messages).toEqual([]);
     await cancelRun(db, userId, now.run.id, at(1));

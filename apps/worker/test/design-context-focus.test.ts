@@ -207,7 +207,8 @@ describe("where it sits, and what it costs", () => {
       expect(contextStatements("main", focus), kind).toBe(base.statements + added);
       expect(h.statements, kind).toBeLessThanOrEqual(DESIGN_CONTEXT_STATEMENTS);
     }
-    expect(DESIGN_CONTEXT_STATEMENTS).toBe(12);
+    // A focus's one, and a later turn's conversation (the new shape §5): coach-conversation.test.ts.
+    expect(DESIGN_CONTEXT_STATEMENTS).toBe(13);
   });
 
   it("in the opening message — after the index, before the request — never in the cached system blocks", async () => {
