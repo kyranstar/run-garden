@@ -34,6 +34,7 @@ import { features } from "../src/features.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { COACH_CURRENT_QUERY } from "../src/screens/studio/composer.js";
 import { ObjectivesScreen, OBJECTIVE_BOARD_QUERY } from "../src/screens/studio/objectives.js";
+import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
 import { ObjectiveSheet } from "../src/screens/studio/objectives-sheet.js";
 import { GoalsSheet } from "../src/screens/studio/goals-sheet.js";
 import { newDoc } from "@rg/workout";
@@ -138,11 +139,15 @@ const STALLED = card(objective("o4", "Mobility every week", { keyResults: [WALL]
 
 const BOARD: ObjectiveBoardDto = { today: TODAY, objectives: [LEGS_CARD, UNTRUSTED, DONE, STALLED] };
 
-function boardHtml(board: ObjectiveBoardDto = BOARD, units: { units?: "km" | "mi"; weightUnit?: "kg" | "lb" } = {}): string {
+function boardHtml(board: ObjectiveBoardDto = BOARD, units: { units?: "km" | "mi"; weightUnit?: "kg" | "lb" } = {}, coach = true): string {
   const qc = primedClient();
   qc.setQueryData(OBJECTIVE_BOARD_QUERY, board);
   qc.setQueryData(["settings"], { prefs: { ...DEFAULT_SCHEDULING_PREFERENCES, units: units.units ?? "km", weightUnit: units.weightUnit ?? "kg" } });
-  return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter("/studio/objectives", createElement(ObjectivesScreen))));
+  // The app's coach sheet is mounted with the coach on (the board's only), and its Asks open it (coach everywhere, A3).
+  const opener = coach ? { open: () => undefined } : null;
+  return renderToStaticMarkup(
+    createElement(QueryClientProvider, { client: qc }, createElement(CoachOpenContext.Provider, { value: opener }, staticRouter("/studio/objectives", createElement(ObjectivesScreen)))),
+  );
 }
 
 /** One card's markup, by its objective id. */
@@ -321,7 +326,8 @@ describe("the board", () => {
 
   it("a key result not measured yet offers to ask the coach for a test; a measured one doesn't (fix wave 3B, B-I11)", () => {
     const none = krOf(cardOf(boardHtml(), "o1"), "Easy pace");
-    expect(none).toMatch(/<a class="linklike obj-ask-test tap-pad" href="\/studio">Ask the coach for a test<\/a>/);
+    // A button that opens the coach's sheet about the objective, the request in it (coach everywhere, A3).
+    expect(none).toMatch(/<button type="button" class="linklike tap-pad ask-coach-link obj-ask-test" data-focus="objective:o1" aria-label="Ask the coach for a test: [^"]+"><span>Ask the coach for a test<\/span><\/button>/);
     expect(krOf(cardOf(boardHtml(), "o1"), "5K time")).not.toContain("Ask the coach for a test");
     expect(krOf(cardOf(boardHtml(), "o1"), "Squat estimated max")).not.toContain("Ask the coach for a test");
   });
@@ -394,7 +400,7 @@ describe("the board", () => {
   it("a stalled objective shows its facts and one neutral line, with a next step", () => {
     const c = cardOf(boardHtml(), "o4");
     expect(text(c)).toContain("Nothing done toward this in the last 4 weeks.");
-    expect(c).toMatch(/<a[^>]*href="\/studio"[^>]*>Ask the coach<\/a>/);
+    expect(c).toMatch(/<button type="button" class="linklike tap-pad ask-coach-link" data-focus="objective:o4"[^>]*><span>Ask the coach<\/span><\/button>/);
     expect(text(cardOf(boardHtml(), "o1"))).not.toContain("Nothing done toward this");
   });
 

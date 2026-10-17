@@ -49,6 +49,8 @@ import { ConditionCheckSheet, ConditionChips } from "../components/condition-che
 import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
 import { useUnits } from "../use-units.js";
+import { AskCoach } from "./studio/coach-ask.js";
+import { dayFocus, workoutFocus } from "./studio/coach-focus.js";
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
@@ -2356,8 +2358,16 @@ export function GardenScreen() {
                 <button type="button" className="btn" onClick={() => setMovingToday(true)}>
                   Move
                 </button>
+                {/* The coach, asked about this workout (coach everywhere, A3). */}
+                <AskCoach focus={workoutFocus(w)} />
               </div>
-            ) : null}
+            ) : (
+              // A programme day's session, asked about; a rest day, the day.
+              <AskCoach
+                focus={todayLayout.title?.kind === "program" ? workoutFocus(todayLayout.title.session.workout) : dayFocus(w.effectiveDate)}
+                wrap="today-ask"
+              />
+            )}
             <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
               Minimize
             </button>

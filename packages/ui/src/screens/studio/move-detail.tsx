@@ -13,7 +13,7 @@
  *   EASIER AND HARDER  each a link to that move
  *   YOUR HISTORY     last done · times in 30 days · best set or hold; 👍 👎 · Pin · Not for me
  *   ──────────────────────────────────────────────────────
- *   [ Add ]
+ *   [ Add ]  [ Ask ]       (Ask: the app's coach sheet, about this move — coach everywhere, A3)
  *
  * Everything but the history and the athlete's say is the bundled library, so the detail opens at once and offline;
  * the move's own read (`GET /api/library/:id`) adds the best set and the freshest say when it answers. Terms explain
@@ -35,6 +35,8 @@ import { useWeightUnit } from "../../use-units.js";
 import { FitBadge, Term, dotted, gearLine } from "./move-row.js";
 import { doseLine, fitOf, historyLine, type StudioCtx } from "./model.js";
 import { useLibraryItem, useMoveSay, type Say } from "./prefs.js";
+import { AskCoach } from "./coach-ask.js";
+import { moveFocus } from "./coach-focus.js";
 
 /** Where a link to another move goes: its address, and the history state the screen keeps (`screen.tsx`). */
 export interface MoveLink {
@@ -276,6 +278,8 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
       <button type="button" className="btn btn-primary stu-detail-add" onClick={() => onAdd(rec)}>
         Add
       </button>
+      {/* The coach, asked about this move (coach everywhere, A3). */}
+      <AskCoach focus={moveFocus(rec)} />
     </div>
   );
   return wide ? (

@@ -41,6 +41,8 @@ import { CorosCheck } from "./coros-check.js";
 import { checkWord } from "../components/condition-check-sheet.js";
 import { MODE_LABEL } from "../components/today-program.js";
 import { ProgressTiles, progressShown } from "./progress-tiles.js";
+import { AskCoach } from "./studio/coach-ask.js";
+import { activityFocus } from "./studio/coach-focus.js";
 
 function dayDiff(a: string, b: string): number {
   return Math.round((Date.parse(a) - Date.parse(b)) / 86_400_000);
@@ -586,6 +588,8 @@ export function ActivityDetail({
             Link to a workout
           </button>
         )}
+        {/* The coach, asked about this session — or this activity (coach everywhere, A3). */}
+        <AskCoach focus={activityFocus(a)} />
       </p>
       {clause ? <p className="fw-trend">{clause}</p> : null}
       {peek.data?.read && !generating ? (

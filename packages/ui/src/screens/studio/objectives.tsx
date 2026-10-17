@@ -26,8 +26,9 @@
  * Gentle (§2.10): a streak from one week and never at zero; a best ever only when it is on the trend (an old one is not
  * brought up); a stalled objective only its facts and one neutral line with a next step; no red anywhere. Evidence in
  * plain words — Measured, Few readings, At least, Not measured yet — and one not measured yet offers to ask the coach for
- * a test (fix wave 3B, B-I11); a stalled objective's "Ask the coach" opens the composer with a request toward it (Task
- * 13, D13). A key result is a "measure" to the athlete. The athlete's words and the coach's line are text.
+ * a test (fix wave 3B, B-I11); a stalled objective's "Ask the coach" offers a request toward it (Task 13, D13) — both
+ * open the app's coach sheet on the board, about the objective, the request in its field, as every card's own Ask does
+ * (coach everywhere, A3). A key result is a "measure" to the athlete. The athlete's words and the coach's line are text.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
@@ -60,7 +61,8 @@ import {
   type BoardUnits,
   type ObjectiveDraft,
 } from "./objectives-model.js";
-import type { CoachArrival } from "./composer.js";
+import { AskCoach } from "./coach-ask.js";
+import { objectiveFocus } from "./coach-focus.js";
 import { ObjectiveSheet } from "./objectives-sheet.js";
 import { planDayHref } from "./run-model.js";
 
@@ -366,6 +368,8 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
             </p>
           ) : null}
         </div>
+        {/* The coach, asked about this objective (coach everywhere, A3). */}
+        <AskCoach focus={objectiveFocus(o)} className="obj-ask" />
         <button type="button" className="btn stu-icon-btn obj-more" aria-label={`${o.title}: more`} aria-haspopup="dialog" onClick={onMore}>
           <IconMore size={18} />
         </button>
@@ -374,7 +378,7 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
       {card.keyResults.length ? (
         <ul className="obj-krs">
           {card.keyResults.map((k) => (
-            <KeyResultRow key={k.keyResult.id} k={k} units={units} />
+            <KeyResultRow key={k.keyResult.id} k={k} units={units} objective={o} />
           ))}
         </ul>
       ) : (
@@ -398,10 +402,9 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
       {stalled(card, today) ? (
         <p className="obj-quiet">
           {`Nothing done toward this in the last ${STALL_DAYS / 7} weeks. `}
-          {/* The composer opens with a request toward it in the field (Task 13, D13), as the test link does. */}
-          <Link className="tap-pad" to="/studio" state={{ coach: "compose", request: stalledRequest(card.objective.title) } satisfies CoachArrival}>
-            Ask the coach
-          </Link>
+          {/* The coach's sheet opens on it, about this objective, a request toward it in the field (Task 13, D13; coach
+              everywhere, A3: in place of the link to the Studio's composer), as the test line does. */}
+          <AskCoach variant="link" label="Ask the coach" focus={objectiveFocus(o)} request={stalledRequest(card.objective.title)} />
         </p>
       ) : null}
       {card.note ? (
@@ -413,7 +416,16 @@ function ObjectiveCard({ card, today, units, onMore }: { card: ObjectiveBoardCar
   );
 }
 
-function KeyResultRow({ k, units }: { k: ObjectiveBoardCard["keyResults"][number]; units: BoardUnits }) {
+function KeyResultRow({
+  k,
+  units,
+  objective,
+}: {
+  k: ObjectiveBoardCard["keyResults"][number];
+  units: BoardUnits;
+  /** Whose measure it is: what the coach is asked about for a test. */
+  objective: { id: string; title: string };
+}) {
   const { keyResult: kr, progress: p, best } = k;
   const m = kr.measure;
   const fmt = (v: number) => formatKr(v, kr.unit, m);
@@ -460,11 +472,10 @@ function KeyResultRow({ k, units }: { k: ObjectiveBoardCard["keyResults"][number
       ) : (
         <p className="obj-quiet">{p.missing ?? "Nothing measured yet."}</p>
       )}
-      {/* Not measured yet: the coach can plan a test — the composer opens with the request in it (fix wave 3B, B-I11). */}
+      {/* Not measured yet: the coach can plan a test — its sheet opens about the objective, the request in the field
+          (fix wave 3B, B-I11; coach everywhere, A3). */}
       {p.evidence === "none" ? (
-        <Link className="linklike obj-ask-test tap-pad" to="/studio" state={{ coach: "compose", request: testRequest(kr.label) } satisfies CoachArrival}>
-          Ask the coach for a test
-        </Link>
+        <AskCoach variant="link" label="Ask the coach for a test" className="obj-ask-test" focus={objectiveFocus(objective)} request={testRequest(kr.label)} />
       ) : null}
       {bestOnTrend ? (
         <p className="obj-best">

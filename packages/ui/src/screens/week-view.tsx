@@ -4,6 +4,8 @@ import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
 import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import type { PendingGhost } from "./coach-panel.js";
+import { AskCoach } from "./studio/coach-ask.js";
+import { askableDay, dayFocus } from "./studio/coach-focus.js";
 
 /**
  * One pickable week (rework spec §6): arrows step ISO weeks, a jump menu
@@ -288,6 +290,8 @@ export function WeekView({
                   </button>
                 ))}
               </div>
+              {/* The coach, asked about this day (coach everywhere, A3): the days it can plan for. */}
+              {askableDay(day.date, today) ? <AskCoach focus={dayFocus(day.date)} className="plan-week-ask" /> : null}
             </div>
           );
         })}

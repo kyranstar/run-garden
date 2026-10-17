@@ -44,6 +44,8 @@ import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { SessionSheet } from "../components/session-sheet.js";
 import { isAppSession } from "../components/today-program.js";
+import { AskCoach } from "./studio/coach-ask.js";
+import { workoutFocus } from "./studio/coach-focus.js";
 
 /**
  * What "Remove from plan" does, said before the athlete confirms. A session the
@@ -284,6 +286,8 @@ export function RunWorkoutDetail({
           {formatDayLong(w.effectiveDate)} at {formatTime(w.effectiveTime)}
           {w.corosName ? <span className="faint"> · COROS name: {w.corosName}</span> : null}
         </p>
+        {/* The coach, asked about this workout (coach everywhere, A3): skipped, moved or its length changed. */}
+        <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
         <SyncNotesStack
           notes={workoutNotes}
           onDismiss={(id) => dismissNote.mutate(id)}

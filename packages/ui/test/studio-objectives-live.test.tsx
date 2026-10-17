@@ -19,6 +19,7 @@ import {
   type ObjectiveDto,
 } from "@rg/domain";
 import { StudioRoute } from "../src/app.js";
+import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
 import { features } from "../src/features.js";
 import { libraryDto, placesDto, primedClient, todayDto } from "./studio-fixtures.js";
 
@@ -134,7 +135,8 @@ function serve(initial: ObjectiveDto[] = [], refuse: { status: number; body: unk
 
 // ── Mounting and driving ───────────────────────────────────────────────────
 
-function mount(path: string) {
+/** With `coach`, the app's coach sheet is mounted around the routes, as app.tsx mounts it with the coach on. */
+function mount(path: string, o: { coach?: boolean } = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -149,7 +151,9 @@ function mount(path: string) {
         createElement(
           MemoryRouter,
           { initialEntries: [path] },
-          createElement(Routes, null, createElement(Route, { path: "/studio/*", element: createElement(StudioRoute) })),
+          o.coach
+            ? createElement(CoachSheetProvider, null, createElement(Routes, null, createElement(Route, { path: "/studio/*", element: createElement(StudioRoute) })))
+            : createElement(Routes, null, createElement(Route, { path: "/studio/*", element: createElement(StudioRoute) })),
           createElement(Where),
         ),
       ),
@@ -220,26 +224,29 @@ describe("the coach switch", () => {
     expect(where).toBe("/studio/objectives");
   });
 
-  it("a measure not measured yet: 'Ask the coach for a test' opens the composer with the request in it (fix wave 3B, B-I11)", async () => {
+  it("a measure not measured yet: 'Ask the coach for a test' opens the coach's sheet on the board, about the objective, the request in it (fix wave 3B, B-I11; coach everywhere, A3)", async () => {
     serve([objective("o1", "Legs", { keyResults: [kr("k1", "o1", "Wall sit")] })]);
-    mount("/studio/objectives");
+    mount("/studio/objectives", { coach: true });
     await until(() => !!cardOf("Legs"), "the card");
     expect(cardOf("Legs")!.textContent).toContain("Not measured yet");
-    await click([...document.querySelectorAll("a")].find((a) => a.textContent === "Ask the coach for a test"), "Ask the coach for a test");
-    await until(() => where === "/studio", "the Studio");
-    await until(() => !!document.querySelector(".coach-composer-field"), "the composer");
+    await click([...document.querySelectorAll("button")].find((b) => b.textContent === "Ask the coach for a test"), "Ask the coach for a test");
+    await until(() => !!document.querySelector('[role="dialog"] .coach-composer-field'), "the coach's sheet");
+    // In place: the board stays, the sheet over it.
+    expect(where).toBe("/studio/objectives");
     expect(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!.value).toBe("Plan a test so I can measure: Wall sit");
+    expect(document.querySelector(".coach-about")!.textContent).toContain("About: Legs");
   });
 
-  it("a stalled objective: 'Ask the coach' opens the composer with a request toward it filled in (Task 13, D13)", async () => {
+  it("a stalled objective: 'Ask the coach' opens the coach's sheet about it, a request toward it filled in (Task 13, D13; coach everywhere, A3)", async () => {
     serve([objective("o1", "Stronger legs for ski season")]);
-    mount("/studio/objectives");
+    mount("/studio/objectives", { coach: true });
     await until(() => !!cardOf("Stronger legs for ski season"), "the card");
     expect(cardOf("Stronger legs for ski season")!.textContent).toContain("Nothing done toward this");
-    await click([...document.querySelectorAll("a")].find((a) => a.textContent === "Ask the coach"), "Ask the coach");
-    await until(() => where === "/studio", "the Studio");
-    await until(() => !!document.querySelector(".coach-composer-field"), "the composer");
+    await click([...document.querySelectorAll("button")].find((b) => b.textContent === "Ask the coach"), "Ask the coach");
+    await until(() => !!document.querySelector('[role="dialog"] .coach-composer-field'), "the coach's sheet");
+    expect(where).toBe("/studio/objectives");
     expect(document.querySelector<HTMLTextAreaElement>(".coach-composer-field")!.value).toBe("Plan a session toward my objective: Stronger legs for ski season");
+    expect(document.querySelector(".coach-about")!.textContent).toContain("About: Stronger legs for ski season");
   });
 });
 
