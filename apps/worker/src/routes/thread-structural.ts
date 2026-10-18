@@ -35,6 +35,7 @@ import { syncCalendar } from "../services/calendar-sync.js";
 import { coachDrainQueued } from "../services/coros-write-cloud.js";
 import { calendarOpsFitting } from "../services/design-approve.js";
 import { REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
+import { isDesignedProposal } from "../services/proposal-kinds.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
 type C = Context<AppContext>;
@@ -54,9 +55,12 @@ export const THREAD_APPROVE_FINISH = 1 + 1;
 /** The statements a request's chunks may spend. */
 export const THREAD_CHUNK_BUDGET = REQUEST_BUDGET - THREAD_APPROVE_FIXED - THREAD_APPROVE_FINISH;
 
-/** Whether a thread proposal is part-applied: one of its ops began (or finished) its apply. */
+/** Whether a thread proposal is part-applied: one of its ops began (or finished) its apply. A designed proposal's ops
+ * keep their own record (`outcome`, design-approve.ts) and are never this. */
 export const structuralStarted = (ops: unknown): boolean =>
-  Array.isArray(ops) && ops.some((o) => !!o && typeof o === "object" && "progress" in o && !!(o as StoredOp).progress);
+  Array.isArray(ops) &&
+  !isDesignedProposal(ops) &&
+  ops.some((o) => !!o && typeof o === "object" && "progress" in o && !!(o as StoredOp).progress);
 
 const finished = (o: StoredOp) => o.progress?.step === "done" || o.progress?.step === "refused";
 

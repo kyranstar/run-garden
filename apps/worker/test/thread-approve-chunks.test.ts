@@ -15,6 +15,7 @@ import { addDays, coachOpSchema, newId, nowInstant, startOfIsoWeek, todayInZone,
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { coachRoutes, sweepExpiredProposals } from "../src/routes/coach.js";
+import { structuralStarted } from "../src/routes/thread-structural.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -147,6 +148,15 @@ describe("a structural thread approve, a chunk a request", () => {
     expect(last.status).toBe(200);
     expect((await proposalRow(id)).status).toBe("approved");
     expect(await planRows(`cp-${id}-0`)).toHaveLength(40);
+  });
+
+  it("part-applied is a thread proposal's own mark: never a designed proposal's", () => {
+    const progress = { step: "sessions", done: 3 };
+    expect(structuralStarted([{ kind: "createPlan" }, { kind: "skip" }])).toBe(false);
+    expect(structuralStarted([{ kind: "createPlan", progress }])).toBe(true);
+    expect(structuralStarted([{ kind: "skip", progress: { step: "done", done: 0 } }, { kind: "createPlan" }])).toBe(true);
+    expect(structuralStarted([{ kind: "plan_adjust", progress }])).toBe(false);
+    expect(structuralStarted(null)).toBe(false);
   });
 
   it("one not begun is expired as before", async () => {
