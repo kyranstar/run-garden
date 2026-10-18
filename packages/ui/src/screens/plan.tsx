@@ -724,6 +724,23 @@ export function nothingAppliedOf(messages: ReadonlyArray<Pick<CoachMessageDto, "
   return last && last.role === "receipt" && last.body.includes("Nothing was applied") ? last.body : null;
 }
 
+/**
+ * The thread coach's reply in words (C's `reply` on its cards): its newest message after the athlete's latest request
+ * (Extend or Wind down answered with no suggestion). A receipt is not its words; nothing asked, or nothing said since:
+ * none.
+ */
+export function replyOf(messages: ReadonlyArray<Pick<CoachMessageDto, "role" | "body" | "at">>): { text: string; at: string } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (msg.role === "user") return null;
+    if (msg.role === "coach") {
+      // Its newest word counts only when the athlete asked something before it.
+      return messages.slice(0, i).some((x) => x.role === "user") ? { text: msg.body, at: msg.at } : null;
+    }
+  }
+  return null;
+}
+
 /** Flash a proposal card (a ghost's tap): the thread coach's card on the page, scrolled to. */
 function focusProposal(id: string, skipScroll: boolean): void {
   requestAnimationFrame(() => {
@@ -1012,7 +1029,7 @@ export function PlanScreen() {
           />
         )}
         {/* The thread coach's pending suggestions and its question, in the page (no window, no chat box). */}
-        {coachProps ? <ThreadCoachCards {...coachProps} nothingApplied={nothingAppliedOf(coach.state.data?.messages ?? [])} /> : null}
+        {coachProps ? <ThreadCoachCards {...coachProps} nothingApplied={nothingAppliedOf(coach.state.data?.messages ?? [])} reply={replyOf(coach.state.data?.messages ?? [])} /> : null}
         <YourPlans
           plans={coachPlans.data?.plans ?? []}
           programs={programs.data}

@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoachMessageDto, CoachPlanDto, PlanDetailResponse } from "@rg/api-client";
 import { initialSnapshot } from "@rg/garden-engine";
 import { GARDEN_PART_KEYS, GardenBody, GardenScreen, type GardenParts } from "../src/screens/garden.js";
-import { nothingAppliedOf } from "../src/screens/plan.js";
+import { nothingAppliedOf, replyOf } from "../src/screens/plan.js";
 import { THREAD_REQUESTS, PlanSheet } from "../src/screens/plan-sheet.js";
 import { YourPlans } from "../src/screens/plan-cards.js";
 import { TimezoneNudge } from "../src/screens/today.js";
@@ -465,7 +465,7 @@ describe("I4 — Extend, Wind down and a new plan go to the thread coach", () =>
     const plan = read("screens/plan.tsx");
     expect(plan).toMatch(/<PlanSheet[\s\S]*?onAskThread=\{coach\.send\}[\s\S]*?threadBusy=\{coach\.busy\}/);
     expect(plan).not.toMatch(/<YourPlans[^/]*?onAskThread/);
-    expect(plan).toContain("<ThreadCoachCards {...coachProps} nothingApplied={nothingAppliedOf(coach.state.data?.messages ?? [])} />");
+    expect(plan).toContain("<ThreadCoachCards {...coachProps} nothingApplied={nothingAppliedOf(coach.state.data?.messages ?? [])}");
   });
 });
 
@@ -480,5 +480,19 @@ describe("minors — the last wake's lost work reaches the Plan", () => {
     // Only a receipt is the app's account of a lost wake: the coach's own words quoting it are not.
     expect(nothingAppliedOf([m("1", "coach", "Last time: Nothing was applied. This time it went through.")])).toBeNull();
     expect(nothingAppliedOf([])).toBeNull();
+  });
+
+  it("the thread coach's reply in words: its newest message after the athlete's latest request; else none", () => {
+    const asked = m("1", "user", 'Extend "Fall Half Block" — draft the next weeks in the same shape.');
+    expect(replyOf([asked, m("2", "coach", "Two more weeks fit before your race."), m("3", "coach", "Here is the shape I'd keep.")])).toEqual({
+      text: "Here is the shape I'd keep.",
+      at: "2026-10-03T08:00:00Z",
+    });
+    // A receipt is not its words; nothing said yet, or nothing asked: none.
+    expect(replyOf([asked, m("2", "receipt", "1 change made.")])).toBeNull();
+    expect(replyOf([m("1", "coach", "An older word."), m("2", "user", "Wind down please")])).toBeNull();
+    expect(replyOf([m("1", "coach", "A word with nothing asked.")])).toBeNull();
+    expect(replyOf([])).toBeNull();
+    expect(read("screens/plan.tsx")).toMatch(/<ThreadCoachCards[^>]*reply=\{replyOf\(coach\.state\.data\?\.messages \?\? \[\]\)\}/);
   });
 });
