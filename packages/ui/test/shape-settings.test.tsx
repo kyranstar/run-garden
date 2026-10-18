@@ -43,7 +43,20 @@ const coachPrefs = {
   model: { name: "A model" },
 };
 
+/** How the stub worker answers: PUTs held until released, failing, or settings reads held (a refetch that lags). */
+const ctl = { holdPuts: false, failPuts: false, holdGets: false, held: [] as Array<() => void> };
+const release = async () => {
+  const next = ctl.held.shift();
+  next?.();
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 10));
+  });
+};
+const parked = <T,>(answer: () => T): Promise<T> => new Promise((ok) => ctl.held.push(() => ok(answer())));
+
 function worker(prefs: Partial<UserPreferences> = {}) {
+  ctl.holdPuts = ctl.failPuts = ctl.holdGets = false;
+  ctl.held = [];
   const state = { prefs: { ...DEFAULT_USER_PREFERENCES, ...prefs } as UserPreferences };
   const calls: Array<{ method: string; path: string; body: unknown }> = [];
   const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
@@ -54,10 +67,17 @@ function worker(prefs: Partial<UserPreferences> = {}) {
       const body = req?.body ? JSON.parse(String(req.body)) : null;
       const path = url.replace(/\?.*$/, "");
       calls.push({ method, path, body });
-      if (path === "/api/settings" && method === "GET") return json({ prefs: state.prefs, llm: { spentDollars: 1.2, cutoffDollars: 20, warn: false, cutoff: false, outOfCreditsSince: null } });
+      if (path === "/api/settings" && method === "GET") {
+        const answer = () => json({ prefs: state.prefs, llm: { spentDollars: 1.2, cutoffDollars: 20, warn: false, cutoff: false, outOfCreditsSince: null } });
+        return ctl.holdGets ? parked(answer) : answer();
+      }
       if (path === "/api/settings" && method === "PUT") {
-        state.prefs = { ...state.prefs, ...body };
-        return json({ ok: true, prefs: state.prefs });
+        if (ctl.failPuts) return json({ error: "internal" }, 500);
+        const answer = () => {
+          state.prefs = { ...state.prefs, ...body };
+          return json({ ok: true, prefs: state.prefs });
+        };
+        return ctl.holdPuts ? parked(answer) : answer();
       }
       if (path === "/api/auth/me") return json({ email: "sam@example.test", connections: [], fixtureMode: false, restore: null });
       if (path === "/api/conditions") return json({ profiles: [{ profileId: "p-x", label: "Knee", active: false, since: null }] });
@@ -113,7 +133,8 @@ describe("five groups", () => {
     await mount();
     expect(cards(group("Connections"))).toEqual(["Google Calendar", "COROS"]);
     expect(cards(group("Training"))).toEqual(["Times", "Race", "Units", "Places & equipment", "Health conditions", "Sounds"]);
-    expect(cards(group("Coach & AI"))).toEqual(["Coach & AI", "Coach memory"]);
+    // The card does not repeat its group's name (the integrated review).
+    expect(cards(group("Coach & AI"))).toEqual(["AI and spending", "Coach memory"]);
     expect(cards(group("Garden"))).toEqual(["Rest mode"]);
     expect(cards(group("Data & account"))).toEqual(["Your data", "Import", "Diagnostics", "Account"]);
   });
@@ -199,6 +220,108 @@ describe("saving as you go, with real switches", () => {
     expect(lines).toHaveLength(1);
     expect(words(lines[0])).toBe("AI this week: $1.20 of $20.00");
     expect(words(host!)).not.toContain("Spend this week");
+  });
+});
+
+const field = <T extends HTMLElement>(sel: string) => host!.querySelector<T>(sel)!;
+async function type(el: HTMLInputElement | HTMLSelectElement, value: string) {
+  const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+    el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+  });
+}
+async function leave(el: HTMLElement) {
+  await act(async () => {
+    el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
+}
+const puts = (calls: Array<{ method: string; path: string; body: unknown }>) => calls.filter((c) => c.method === "PUT" && c.path === "/api/settings").map((c) => c.body);
+
+describe("saving as you go, done right (the integrated review, I5)", () => {
+  it("a field being typed in is never overwritten when another field's save brings the settings back", async () => {
+    const { calls } = worker();
+    await mount();
+    const tz = field<HTMLInputElement>("#s-tz");
+    await type(tz, "Europe/Lo");
+    await type(field<HTMLSelectElement>("#s-window"), "evening");
+    await until(() => puts(calls).length === 1 && calls.filter((c) => c.method === "GET" && c.path === "/api/settings").length >= 2, "the save and the settings read again");
+    expect(tz.value).toBe("Europe/Lo");
+  });
+
+  it("race day saves once the date is whole, or when it is left — never a half-typed year", async () => {
+    const { calls } = worker();
+    await mount();
+    const day = field<HTMLInputElement>("#s-race");
+    await type(day, "0002-10-12");
+    await type(day, "0020-10-12");
+    await type(day, "0202-10-12");
+    expect(puts(calls)).toEqual([]);
+    await type(day, "2027-10-12");
+    await until(() => puts(calls).length === 1, "the save");
+    expect(puts(calls)).toEqual([{ raceDate: "2027-10-12" }]);
+  });
+
+  it("saves go one at a time, and the last value wins", async () => {
+    const { calls } = worker();
+    await mount();
+    ctl.holdPuts = true;
+    const before = field<HTMLInputElement>("#s-before");
+    for (const v of ["5", "6", "7"]) {
+      await type(before, v);
+      await leave(before);
+    }
+    // One in flight; the two that followed wait, and only the last of them goes.
+    expect(puts(calls)).toEqual([{ bufferBeforeMinutes: 5 }]);
+    await release();
+    await until(() => puts(calls).length === 2, "the second save");
+    expect(puts(calls)).toEqual([{ bufferBeforeMinutes: 5 }, { bufferBeforeMinutes: 7 }]);
+    await release();
+    expect(before.value).toBe("7");
+  });
+
+  it("a failed save says so and keeps what was typed", async () => {
+    worker();
+    await mount();
+    ctl.failPuts = true;
+    const window = field<HTMLSelectElement>("#s-window");
+    await type(window, "evening");
+    await until(() => words(host!).includes("Couldn't save — try again."), "the failure");
+    expect(window.value).toBe("evening");
+  });
+});
+
+describe("switches hold their place (the integrated review, minors)", () => {
+  it("a switch stays where it was tapped while the settings are read again", async () => {
+    worker({ corosWritesEnabled: false });
+    await mount();
+    ctl.holdGets = true;
+    const writes = field<HTMLButtonElement>('[role="switch"][aria-label="Write date changes back to COROS"]');
+    await act(async () => writes.click());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(writes.getAttribute("aria-checked")).toBe("true");
+    ctl.holdGets = false;
+    while (ctl.held.length) await release();
+    expect(writes.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("a failed toggle goes back and says so", async () => {
+    worker({ aiEnabled: true });
+    await mount();
+    ctl.failPuts = true;
+    const ai = field<HTMLButtonElement>('[role="switch"][aria-label="Activity reads and the week\'s story"]');
+    await act(async () => ai.click());
+    await until(() => words(host!).includes("Couldn't save that — try again."), "the failure");
+    expect(ai.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("headings nest (the integrated review, minors)", () => {
+  it("a card's own sections are one level under its title", () => {
+    expect(src("screens/settings/coach-memory.tsx")).toMatch(/useContext\(CardLevelContext\)/);
+    expect(src("screens/settings/coach-memory.tsx")).not.toContain('<h3 className="card-title">{label}</h3>');
   });
 });
 

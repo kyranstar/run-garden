@@ -5,10 +5,10 @@
  * is one tap down under it. Edit and delete send what they always have: deleting is total — the next dossier simply
  * lacks the item — so it asks first, inline on the item: "Delete for good?" Yes · No (fix wave 3B, M9).
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachMemoryItem } from "@rg/api-client";
-import { Card, formatShortDate } from "../../components.js";
+import { Card, CardLevelContext, formatShortDate } from "../../components.js";
 import { confidenceWords, DELETE_ASK, groupItems, historyOf, MEMORY_CAPTION, MEMORY_GROUPS, metaLine, PIN_CAP_LINE } from "./coach-memory-model.js";
 
 /** One item: its words, what it is, its actions, and the versions it replaced (collapsed). */
@@ -137,6 +137,8 @@ export function MemoryList({
   history: readonly CoachMemoryItem[];
   render: (item: CoachMemoryItem, history: CoachMemoryItem[]) => ReactNode;
 }) {
+  // One level under the card's own title (an h3 in a Settings group: these are h4s), never beside it.
+  const Heading = `h${Math.min(6, useContext(CardLevelContext) + 1)}` as "h3" | "h4" | "h5";
   return (
     <>
       {MEMORY_GROUPS.map(({ kind, label }) => {
@@ -144,7 +146,7 @@ export function MemoryList({
         if (group.length === 0) return null;
         return (
           <div key={kind} className="memory-group">
-            <h3 className="card-title">{label}</h3>
+            <Heading className="card-title">{label}</Heading>
             {group.map((m) => (
               <div key={m.id}>{render(m, historyOf(m.id, history))}</div>
             ))}

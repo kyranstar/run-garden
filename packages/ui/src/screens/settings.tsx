@@ -35,6 +35,7 @@ import { forgetOfflineIdentity } from "../offline/me.js";
 import { PlaceSheet } from "../components/place-sheet.js";
 import { CoachMemorySection } from "./settings/coach-memory.js";
 import { CoachAiSection, TrainingTimes } from "./settings/coach-settings.js";
+import { useLivePrefs, useSaveAsYouGo, useSettingSwitch } from "./settings/save.js";
 import { SoundsSection } from "./settings/sounds.js";
 
 const TZ_OPTIONS: string[] = (() => {
@@ -128,20 +129,6 @@ const FEET_PER_METRE = 3.28084;
  * Settings saved as you go (the new shape): a choice saves itself on the tap, a typed value when it is left — each
  * alone, so it can never put back a setting another card changed since the page opened. One quiet line says it took.
  */
-function useSaveAsYouGo(prefs: UserPreferences) {
-  const save = useSaveSetting();
-  const live = useLivePrefs(prefs);
-  const [draft, setDraft] = useState(live);
-  // What the server holds comes back after each save: the fields follow it.
-  useEffect(() => setDraft(live), [live]);
-  const set = <K extends keyof UserPreferences>(k: K, v: UserPreferences[K]) => setDraft((d) => ({ ...d, [k]: v }));
-  const commit = <K extends keyof UserPreferences>(k: K, v: UserPreferences[K]) => {
-    setDraft((d) => ({ ...d, [k]: v }));
-    if (v !== live[k]) save.mutate({ [k]: v } as Partial<UserPreferences>);
-  };
-  const status = save.isError ? "Couldn't save — try again." : save.isSuccess ? "Saved." : "";
-  return { draft, set, commit, status, live };
-}
 
 /** The line that says a save took (or didn't): a live region kept in the page, empty until there is news. */
 function SavedLine({ status }: { status: string }) {
@@ -212,6 +199,9 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
   );
 }
 
+/** A date whose year is whole: four digits from 1900 on (a year typed digit by digit passes through "0002"). */
+const wholeDate = (v: string): boolean => /^(19|20|21)\d\d-\d\d-\d\d$/.test(v);
+
 /** Settings → Training → Race: the day, the distance, the course. Saved as you go. */
 export function RaceSection({ prefs }: { prefs: UserPreferences }) {
   const { draft, set, commit, status, live } = useSaveAsYouGo(prefs);
@@ -225,7 +215,14 @@ export function RaceSection({ prefs }: { prefs: UserPreferences }) {
     <Card title="Race">
       <div className="field">
         <label htmlFor="s-race">Race day</label>
-        <input id="s-race" type="date" value={draft.raceDate ?? ""} onChange={(e) => commit("raceDate", e.target.value || null)} />
+        <input
+          id="s-race"
+          type="date"
+          value={draft.raceDate ?? ""}
+          // Saved once the date is whole (a typed year passes through "0002", "0020", "0202") or when it is left.
+          onChange={(e) => (e.target.value === "" || wholeDate(e.target.value) ? commit("raceDate", e.target.value || null) : set("raceDate", e.target.value))}
+          onBlur={(e) => commit("raceDate", e.target.value || null)}
+        />
         <span className="hint">The coach plans the last weeks around it.</span>
       </div>
       <div className="field">
@@ -302,10 +299,7 @@ function useSaveSetting() {
 }
 
 /** The settings as they are now (a save elsewhere on the page included), the page's copy until they load. */
-function useLivePrefs(prefs: UserPreferences): UserPreferences {
-  const live = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  return live.data?.prefs ?? prefs;
-}
+
 
 /** Each condition profile the library knows, by its own name, with an on/off switch (spec §2c). */
 export function HealthConditionsSection() {
@@ -1228,15 +1222,7 @@ export function CorosConnectSection({ prefs }: { prefs?: UserPreferences } = {})
 
 /** COROS's one switch: a move made here goes back to the watch's calendar too. A real switch; a tap saves it. */
 function CorosWritesRow({ prefs }: { prefs: UserPreferences }) {
-  const qc = useQueryClient();
-  const live = useLivePrefs(prefs);
-  const toggle = useMutation({
-    mutationFn: (corosWritesEnabled: boolean) => api.updateSettings({ corosWritesEnabled }),
-    onSuccess: () => {
-      for (const k of ["settings", "plan", "today"]) void qc.invalidateQueries({ queryKey: [k] });
-    },
-  });
-  const on = toggle.isPending && toggle.variables !== undefined ? toggle.variables : live.corosWritesEnabled;
+  const writes = useSettingSwitch("corosWritesEnabled", prefs, ["plan", "today"]);
   return (
     <div className="setting-row">
       <div>
@@ -1246,12 +1232,17 @@ function CorosWritesRow({ prefs }: { prefs: UserPreferences }) {
       <button
         type="button"
         role="switch"
-        aria-checked={on}
+        aria-checked={writes.on}
         aria-label="Write date changes back to COROS"
         className="program-switch"
-        disabled={toggle.isPending}
-        onClick={() => toggle.mutate(!live.corosWritesEnabled)}
+        disabled={writes.busy}
+        onClick={writes.flip}
       />
+      {writes.failed ? (
+        <p className="settings-saved" role="status">
+          Couldn't save that — try again.
+        </p>
+      ) : null}
     </div>
   );
 }

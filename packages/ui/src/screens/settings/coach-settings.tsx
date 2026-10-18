@@ -20,6 +20,7 @@ import {
 import { OUT_OF_CREDITS_LINE } from "../../ai-credits.js";
 import { Card } from "../../components.js";
 import { coachOn } from "../../features.js";
+import { useSettingSwitch } from "./save.js";
 
 /** The coach's settings' read. */
 export const COACH_PREFERENCES_QUERY = ["coach-preferences"] as const;
@@ -282,19 +283,14 @@ export function TrainingTimes() {
  * the week's AI spend. Each change saves at once.
  */
 export function CoachAiSection({ prefs }: { prefs: UserPreferences }) {
-  const qc = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const coachSpend = useQuery({ queryKey: ["coach-spend"], queryFn: api.coachSpend, retry: false, enabled: coachOn() });
-  const live = settings.data?.prefs ?? prefs;
-  const toggle = useMutation({
-    mutationFn: (aiEnabled: boolean) => api.updateSettings({ aiEnabled }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["settings"] }),
-  });
-  const on = toggle.isPending && toggle.variables !== undefined ? toggle.variables : live.aiEnabled;
+  const ai = useSettingSwitch("aiEnabled", prefs, []);
   const llm = settings.data?.llm ?? null;
   const spend = spendOf(coachOn() ? coachSpend.data : null, llm);
   return (
-    <Card title="Coach & AI">
+    // Not the group's name again (the integrated review's minors): the card is the AI and what it spends.
+    <Card title="AI and spending">
       <div className="setting-row">
         <div>
           <div>Activity reads and the week&rsquo;s story</div>
@@ -303,13 +299,18 @@ export function CoachAiSection({ prefs }: { prefs: UserPreferences }) {
         <button
           type="button"
           role="switch"
-          aria-checked={on}
+          aria-checked={ai.on}
           aria-label="Activity reads and the week's story"
           className="program-switch"
-          disabled={toggle.isPending}
-          onClick={() => toggle.mutate(!live.aiEnabled)}
+          disabled={ai.busy}
+          onClick={ai.flip}
         />
       </div>
+      {ai.failed ? (
+        <p className="settings-saved" role="status">
+          Couldn't save that — try again.
+        </p>
+      ) : null}
       {coachOn() ? <CoachLimitsLive /> : null}
       {spend ? <p className="coach-spend">{spendLine(spend)}</p> : null}
       {llm?.outOfCreditsSince ? <p className="ai-credits ai-credits-note">{OUT_OF_CREDITS_LINE}</p> : null}
