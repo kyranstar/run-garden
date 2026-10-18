@@ -29,6 +29,20 @@ export const GOAL_LABELS: Record<(typeof GOAL_IDS)[number], string> = {
 export const PART_PURPOSES = ["arrive", "warmup", "activation", "main", "power", "accessory", "conditioning", "run", "care", "cooldown"] as const;
 export const PART_FORMATS = ["straight", "superset", "circuit", "flow", "intervals", "steady", "ladder", "holds"] as const;
 export const RUN_EFFORTS = ["easy", "recovery", "steady", "long", "tempo", "threshold", "interval", "hills", "strides", "race", "by_feel"] as const;
+/** Each run effort in plain words, for every screen that names one (designed runs, §8 §3). */
+export const RUN_EFFORT_LABELS: Record<(typeof RUN_EFFORTS)[number], string> = {
+  easy: "Easy",
+  recovery: "Recovery",
+  steady: "Steady",
+  long: "Long",
+  tempo: "Tempo",
+  threshold: "Threshold",
+  interval: "Interval",
+  hills: "Hills",
+  strides: "Strides",
+  race: "Race pace",
+  by_feel: "By feel",
+};
 export const EFFORT_LEVELS = ["recover", "maintain", "develop", "peak"] as const;
 export const DOC_SOURCES = ["engine", "coach", "studio", "coros_import", "standalone_import", "athlete", "template"] as const;
 export const BASED_ON_KINDS = ["workout", "template", "performed", "proposal"] as const;
