@@ -208,11 +208,18 @@ describe("refused in words, writing nothing, unless it names an open single-work
       expect(e.why, what).toMatch(/replaces/);
       expect(e.fix, what).toMatch(/Leave replaces out/);
     }
+    // Its own is named as its own: the draft is revised, never replaced.
+    expect((await refusal(ctx, designProposalId(ctx.run.id))).why).toMatch(/this design's own suggestion — revise your draft instead/);
     expect(await proposalOf(ctx.run.id)).toBeUndefined();
     // The conversation's own open suggestion is taken.
     const ok = await proposeWorkout.run(ctx, { doc: calmDoc({ title: "Changed" }), target: { kind: "new", date: TODAY }, replaces: designProposalId(a.id) });
     expect(isToolErr(ok), JSON.stringify(ok)).toBe(false);
     expect((await proposalOf(ctx.run.id))!.ops[0]!.supersedes).toBe(designProposalId(a.id));
+    // A later draft of the run's that names none keeps the name its first gave (no review here: the draft is replaced).
+    const again = await proposeWorkout.run({ ...ctx, toolUseId: "call-again" }, { doc: calmDoc({ title: "Changed again" }), target: { kind: "new", date: TODAY } });
+    expect(isToolErr(again), JSON.stringify(again)).toBe(false);
+    const [op] = (await proposalOf(ctx.run.id))!.ops;
+    expect([op!.doc.title, op!.supersedes]).toEqual(["Changed again", designProposalId(a.id)]);
   });
 
   it("a set's designer never names one", async () => {

@@ -331,6 +331,23 @@ describe("GET /api/coach/conversation", () => {
     ]);
   });
 
+  it("a suggestion the athlete never saw is no card: one still under review, a rehearsal's, one closed with its run", async () => {
+    const draft = (runId: string, status: string) =>
+      db.insert(schema.coachProposals).values({
+        id: designProposalId(runId), userId, planId: null, title: "Draft", evidence: "", rationale: "", flags: [], status, createdAt: NOW.toISOString(), expiresAt: TODAY,
+        ops: [{ kind: "doc_workout", target: { kind: "new", date: TODAY }, date: TODAY, doc: calmDoc({ title: "Draft" }), review: null, issues: [], derived: { minutes: 20 }, by: { runId, role: "main" }, toolUseId: "t", at: NOW.toISOString() }],
+      });
+    const ids: string[] = [];
+    for (const [i, status] of ["cancelled", "rehearsal", "unreviewed"].entries()) {
+      const made = await createRun(db, userId, { request: `Ask ${i}.` }, at(i * 1000));
+      await draft(made.run.id, status);
+      if (status !== "unreviewed") await cancelRun(db, userId, made.run.id, at(i * 1000 + 500));
+      ids.push(made.run.id);
+    }
+    const conv = await read();
+    expect(conv.body.turns.map((t: { runId: string; cards: unknown[] }) => [t.runId, t.cards])).toEqual(ids.map((id) => [id, []]));
+  });
+
   it(`at most ${CONVERSATION_TURNS_MAX} turns, the newest of them, oldest first`, async () => {
     const ids: string[] = [];
     for (let i = 0; i < CONVERSATION_TURNS_MAX + 3; i++) {

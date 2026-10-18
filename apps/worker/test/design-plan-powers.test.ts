@@ -275,6 +275,30 @@ describe("approve, op by op, through the thread coach's appliers", () => {
     expect(await rowOf(easeMe)).toMatchObject({ title: "Tempo run" });
   });
 
+  it("judged again at the tap: a remove the athlete made since is made, an ease already in place is made, a session the app builds since is refused", async () => {
+    const removeMe = await planned({ date: day(-4) });
+    const easeMe = await planned({ date: day(-1), minutes: 50 });
+    const becameProgramme = await planned({ date: day(-3) });
+    const id = await proposal([
+      change(removeMe, { kind: "remove" }),
+      change(easeMe, { kind: "ease", durationMinutes: 30 }),
+      change(becameProgramme, { kind: "ease", durationMinutes: 30 }),
+    ]);
+    // Since: the athlete removed one themselves, eased another the same way, and the third became a programme's.
+    await db.update(plannedWorkouts).set({ archivedAt: NOW.toISOString(), archiveReason: "user_removed" }).where(eq(plannedWorkouts.id, removeMe));
+    await db.update(plannedWorkouts).set({ title: "Easy run", category: "easy", sourceEstimatedDurationSeconds: null, fallbackEstimatedDurationSeconds: 30 * 60 }).where(eq(plannedWorkouts.id, easeMe));
+    await db.update(plannedWorkouts).set({ origin: "program" }).where(eq(plannedWorkouts.id, becameProgramme));
+    const res = await approve(id);
+    expect(res.changed.map((c) => [c.change, c.workoutId])).toEqual([
+      ["remove", removeMe],
+      ["ease", easeMe],
+    ]);
+    expect(res.refused).toEqual([expect.objectContaining({ opId: planAdjustId(becameProgramme), error: "not_editable", cause: "programme" })]);
+    // Made: nothing of the plan written for them — and the programme's session is left as it is.
+    expect(statements.filter((s) => /^\s*update\s+"?planned_workouts/i.test(s))).toEqual([]);
+    expect(await rowOf(becameProgramme)).toMatchObject({ title: "Tempo run" });
+  });
+
   it("each kind's cost is the most it runs (pinned)", async () => {
     const measured: Record<string, number> = {};
     for (const [kind, make] of [
