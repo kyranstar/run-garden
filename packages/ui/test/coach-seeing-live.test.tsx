@@ -114,7 +114,31 @@ describe("open() and what the screen registered", () => {
     expect(dialog()!.textContent).toContain(WORKOUT.label);
   });
 
-  it("open({ seeing }) names its own; open({ seeing: null }) sees nothing at all", async () => {
+  it("opened before the screen knows what it shows (its data still loading): what it registers then is seen — until ✕ drops it", async () => {
+    quietServer();
+    let show: ((f: CoachFocus | null) => void) | null = null;
+    function Late() {
+      const [seen, setSeen] = useState<CoachFocus | null>(null);
+      show = setSeen;
+      useCoachSeeing(seen);
+      const coach = useCoach();
+      return createElement("button", { type: "button", id: "opener", onClick: () => coach?.open() }, "Coach");
+    }
+    mount(createElement(Late));
+    await click(document.getElementById("opener"), "the coach button");
+    await until(() => !!box(), "the box");
+    expect(dialog()!.textContent).not.toContain(WORKOUT.label);
+    act(() => show!(WORKOUT));
+    await until(() => dialog()!.textContent!.includes(`Seeing: ${WORKOUT.label}`), "what the screen registered late");
+    await click(dialog()!.querySelector(".coach-seeing button"), "✕");
+    expect(dialog()!.querySelector(".coach-seeing")).toBeNull();
+    // Dropped: a later registration doesn't bring it back.
+    act(() => show!({ ...DAY }));
+    await settle(10);
+    expect(dialog()!.querySelector(".coach-seeing")).toBeNull();
+  });
+
+  it("open({ seeing }) names its own — the screen's later registration doesn't replace it; open({ seeing: null }) sees nothing at all", async () => {
     quietServer();
     mount(createElement(Screen, { seeing: WORKOUT, ask: { seeing: MOVE } }));
     await click(document.getElementById("opener"), "the coach button");

@@ -66,10 +66,10 @@ const OBJECTIVE_CHIP_MAX = 32;
  * Two to four starter chips; a tap sends one as the athlete's words. With nothing seen, the general ones (and a question
  * about an objective whose title fits a chip); with something seen, its own.
  */
-export function starterChips(seeing: Pick<CoachFocus, "kind" | "category"> | null, o: { objective?: string | null } = {}): string[] {
+export function starterChips(seeing: Pick<CoachFocus, "kind" | "category" | "sport"> | null, o: { objective?: string | null } = {}): string[] {
   switch (seeing?.kind) {
     case "workout":
-      return ["Shorten it", "Move it", seeing.category === "run" ? "Why this run?" : "Why this session?"];
+      return ["Shorten it", "Move it", seeing.sport === "run" || seeing.category === "run" ? "Why this run?" : "Why this session?"];
     case "day":
       return ["Plan this day", "Make it lighter", "I'm short on time"];
     case "move":

@@ -11,8 +11,8 @@ import { test, expect } from "./fixtures.js";
  * The stack runs the coach's steps in its run stepper's alarm (COACH_STEP_ALARM, as production does): a step request
  * only arms the run, and no client connection carries a step.
  *
- *   1. leaving the Studio mid-step (and during a question): the run goes on stepping on the Plan — the app's run keeper —
- *      and the Studio tab's ● says so; back, the suggestion is there;
+ *   1. leaving the coach mid-step (and during a question): the run goes on stepping on the Plan — the app's run keeper —
+ *      and the nav's Coach ● says so; back in the coach, the suggestion is there;
  *   2. the tab closed mid-step: the run goes on with no client at all, to its end (Task 13, §2.12: a run the athlete
  *      started keeps going unwatched, within its lease's window); opened again, its suggestion is there;
  *  2c. the worker killed mid-step: the run's object takes the step back once no call could still be running (the model's
@@ -24,8 +24,8 @@ import { test, expect } from "./fixtures.js";
  *   3. a reload mid-step, during Approve and during Decline: the run finishes; the decision lands once, never twice;
  *      after the reload the card says what came of it;
  *   4. offline mid-step, then back: the run picks up by itself;
- *   9. Now, Send, Approve, Decline and Cancel tapped twice or three times: one request each;
- *  12. a render error inside the coach (injected): the coach says so in place, and the Studio and the app go on.
+ *   9. Send, an answer, Approve, Decline and Cancel tapped twice or three times: one request each;
+ *  12. a render error inside the coach (injected): the coach says so in place, and the conversation and the app go on.
  *
  * Needs the fixture stack on the scripted model, and skips itself otherwise:
  *
@@ -33,7 +33,8 @@ import { test, expect } from "./fixtures.js";
  *   RG_E2E_DESIGN_MODEL=scripted:now RG_BASE=http://localhost:5271 pnpm --filter @rg/web exec playwright test coach-robustness --workers=1
  *
  * (RG_DESIGN_MODEL_PORT names the stand-in's port when it isn't the default.) One live run per athlete, and the
- * projects share the fixture account: each journey starts from the empty composer. A full run records about $3–4 of
+ * projects share the fixture account: each journey starts a new conversation (the new shape §5: the coach's sheet,
+ * opened from the nav). A full run records about $3–4 of
  * the fixture account's weekly AI budget ($20, each call's worst case held back before it): start a fresh stack every
  * few runs, or the coach stops for the week's budget.
  */
@@ -152,18 +153,45 @@ async function workerBack(request: APIRequestContext, baseURL: string | undefine
 /** The main navigation as this viewport shows it (the bottom bar on a phone, the rail on a desktop). */
 const nav = (page: Page): Locator => page.locator('nav[aria-label="Main"]:visible');
 
+/** The coach's sheet, and its box. */
+const sheetOf = (page: Page): Locator => page.getByRole("dialog", { name: "Coach" });
+const boxOf = (page: Page): Locator => sheetOf(page).locator(".coach-box textarea");
+
+/** The nav's Coach (the phone's bar, or the rail): its ● says what the coach is doing. */
+const coachButton = (page: Page): Locator => nav(page).locator("button.nav-coach");
+
+/** Open the coach's sheet from the nav. */
+async function openCoach(page: Page) {
+  await coachButton(page).click();
+  await expect(boxOf(page)).toBeVisible({ timeout: 20_000 });
+  await expect(sheetOf(page).locator(".coach-opening, .coach-turns").first()).toBeVisible({ timeout: 20_000 });
+}
+
+/** A new conversation: the opening screen, whatever an earlier journey left. */
+async function newConversation(page: Page) {
+  if (await sheetOf(page).locator(".coach-opening").isVisible()) return;
+  await sheetOf(page).getByRole("button", { name: "More" }).click();
+  await sheetOf(page).getByRole("menuitem", { name: "New conversation" }).click();
+  await expect(sheetOf(page).locator(".coach-opening")).toBeVisible();
+}
+
+/** Close the coach's sheet and go to a place in the nav. */
+async function leaveFor(page: Page, name: RegExp) {
+  await page.keyboard.press("Escape");
+  await expect(sheetOf(page)).toHaveCount(0);
+  await nav(page).getByRole("link", { name }).click();
+}
+
 async function start(page: Page, words: string) {
-  await page.goto("/studio");
-  const field = page.getByPlaceholder("What would help today?");
-  await expect(field).toBeVisible({ timeout: 20_000 });
-  await field.fill(words);
+  await page.goto("/");
+  await openCoach(page);
+  await newConversation(page);
+  await boxOf(page).fill(words);
   const created = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/coach/runs");
-  await page.getByRole("button", { name: "Now", exact: true }).click();
+  await sheetOf(page).getByRole("button", { name: "Send" }).click();
   await created;
-  // An earlier run whose suggestion was decided in the last 10 minutes may have been on screen with its card: the new
-  // run takes its place (it has no suggestion yet).
   await expect(page.locator("section.coach-pc")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: /^Coach · / })).toBeVisible();
+  await expect(sheetOf(page).getByRole("heading", { name: /^Coach · / })).toBeVisible();
 }
 
 const card = (page: Page) => page.locator("section.coach-pc");
@@ -188,7 +216,7 @@ function coachRequests(page: Page): Record<string, number> {
 
 // The journeys share the fixture account (one live run at a time): run them with --workers=1.
 
-test("1. leaving the Studio mid-step, the coach goes on — on the Plan, and through a question", async ({ page, context, baseURL }) => {
+test("1. leaving the coach mid-step, the coach goes on — on the Plan, and through a question", async ({ page, context, baseURL }) => {
   test.setTimeout(150_000);
   await fresh(context.request, baseURL);
   await model("/delay/12000");
@@ -196,15 +224,15 @@ test("1. leaving the Studio mid-step, the coach goes on — on the Plan, and thr
   await modelBegun(1);
   await model("/delay/");
 
-  // Mid-response, to the Plan: the Studio tab says the coach is at work, and the run goes on to the end there.
-  await nav(page).getByRole("link", { name: /^Plan/ }).click();
+  // Mid-response, to the Plan: the nav's Coach says the coach is at work, and the run goes on to the end there.
+  await leaveFor(page, /^Plan/);
   await expect(page).toHaveURL(/\/plan/);
-  await expect(nav(page).getByRole("link", { name: /^Studio/ })).toContainText("the coach is working");
+  await expect(coachButton(page)).toContainText("the coach is working");
   await expect.poll(async () => (await current(context.request, baseURL)).run?.status, { timeout: 60_000 }).toBe("finished");
-  await expect(nav(page).getByRole("link", { name: /^Studio/ })).not.toContainText("the coach is working");
+  await expect(coachButton(page)).not.toContainText("the coach is working");
 
-  // Back: the suggestion is there.
-  await nav(page).getByRole("link", { name: /^Studio/ }).click();
+  // Back in the coach: the suggestion is there.
+  await openCoach(page);
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 20_000 });
 
   // A question: the athlete leaves and comes back; it waits for them, and their answer goes on to the end.
@@ -212,12 +240,12 @@ test("1. leaving the Studio mid-step, the coach goes on — on the Plan, and thr
   await model("/use/ask");
   await start(page, "hips, after a question");
   await expect(page.getByText("How do your hips feel today?", { exact: true })).toBeVisible({ timeout: 30_000 });
-  await nav(page).getByRole("link", { name: /^Plan/ }).click();
-  await expect(nav(page).getByRole("link", { name: /^Studio/ })).toContainText("the coach is waiting for you");
-  await nav(page).getByRole("link", { name: /^Studio/ }).click();
+  await leaveFor(page, /^Plan/);
+  await expect(coachButton(page)).toContainText("the coach is waiting for you");
+  await openCoach(page);
   await expect(page.getByText("How do your hips feel today?", { exact: true })).toBeVisible();
+  // One tap answers it.
   await page.getByRole("button", { name: "Tight" }).click();
-  await page.getByRole("button", { name: "Send" }).click();
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 60_000 });
 });
 
@@ -239,7 +267,8 @@ test("2. the tab closed mid-step: the coach goes on with no client at all, to it
 
   // Opened again: its suggestion is there, and no model asked again.
   page = await context.newPage();
-  await page.goto("/studio");
+  await page.goto("/");
+  await openCoach(page);
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 30_000 });
   expect((await model("/calls")).begun).toBe(4);
 });
@@ -320,12 +349,12 @@ test("1b. between a big answer's two steps: the athlete leaves for the Plan — 
   await start(page, "a short, gentle hips session");
   await expect.poll(seen, { timeout: 60_000 }).toBe(true);
   // The step that read the answer is done; the one that runs its calls is next: to the Plan.
-  await nav(page).getByRole("link", { name: /^Plan/ }).click();
+  await leaveFor(page, /^Plan/);
   await expect(page).toHaveURL(/\/plan/);
   await expect.poll(async () => (await current(context.request, baseURL)).run?.status, { timeout: 60_000 }).toBe("finished");
   // Two main turns before the finish, the reviewer, the finish: the queued calls asked no model.
   expect((await model("/calls")).begun).toBe(4);
-  await nav(page).getByRole("link", { name: /^Studio/ }).click();
+  await openCoach(page);
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 20_000 });
 });
 
@@ -342,7 +371,8 @@ test("2b. between a big answer's two steps: the tab is closed — the run goes o
   await expect.poll(async () => (await current(context.request, baseURL)).run?.status, { timeout: 120_000, intervals: [1_000] }).toBe("finished");
   expect((await model("/calls")).begun).toBe(4);
   page = await context.newPage();
-  await page.goto("/studio");
+  await page.goto("/");
+  await openCoach(page);
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 30_000 });
   expect((await model("/calls")).begun).toBe(4);
 });
@@ -375,7 +405,7 @@ bare("3. a reload mid-step, during Approve and during Decline: the run finishes,
   await modelBegun(1);
   await model("/delay/");
   await page.reload();
-  await expect(page.getByRole("heading", { name: /^Coach · / })).toBeVisible();
+  await openCoach(page);
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 90_000 });
 
   // Approve, then reload before its answer is drawn: it lands once.
@@ -383,7 +413,7 @@ bare("3. a reload mid-step, during Approve and during Decline: the run finishes,
   const proposalId = (await current(context.request, baseURL)).proposal!.id;
   await card(page).getByRole("button", { name: "Approve", exact: true }).click();
   await page.reload();
-  await expect(page.getByPlaceholder("What would help today?")).toBeVisible({ timeout: 20_000 });
+  await openCoach(page);
   await expect
     .poll(async () => ((await (await context.request.get(`${baseURL}/api/coach/proposals/${proposalId}`)).json()) as { status: string }).status, { timeout: 20_000 })
     .toBe("approved");
@@ -392,6 +422,7 @@ bare("3. a reload mid-step, during Approve and during Decline: the run finishes,
   // minutes) — a reload that read before the approve landed reads again once it shows; nothing offers a second approve.
   await expect(async () => {
     await page.reload();
+    await openCoach(page);
     await expect(card(page).getByRole("heading", { name: "Added to your plan" })).toBeVisible({ timeout: 5_000 });
   }).toPass({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
@@ -404,13 +435,14 @@ bare("3. a reload mid-step, during Approve and during Decline: the run finishes,
   await card(page).getByRole("button", { name: "Decline" }).click();
   await card(page).locator(".coach-pc-decline").getByRole("button", { name: "Decline" }).click();
   await page.reload();
-  await expect(page.getByPlaceholder("What would help today?")).toBeVisible({ timeout: 20_000 });
+  await openCoach(page);
   await expect
     .poll(async () => ((await (await context.request.get(`${baseURL}/api/coach/proposals/${declineId}`)).json()) as { status: string }).status, { timeout: 20_000 })
     .toBe("declined");
   expect(await todayCopies(context.request, baseURL)).toBe(before + 1);
   await expect(async () => {
     await page.reload();
+    await openCoach(page);
     await expect(card(page).getByRole("heading", { name: "Not added" })).toBeVisible({ timeout: 5_000 });
   }).toPass({ timeout: 30_000 });
   checkGuard();
@@ -431,20 +463,20 @@ test("4. offline mid-step, then back: the run picks up by itself", async ({ page
   await expect(page.getByText("Can't reach the coach right now. It keeps trying.")).toHaveCount(0);
 });
 
-test("9. Now, Send, Approve, Decline and Cancel tapped twice or three times: one request each", async ({ page, context, baseURL }) => {
+test("9. Send, an answer, Approve, Decline and Cancel tapped twice or three times: one request each", async ({ page, context, baseURL }) => {
   test.setTimeout(180_000);
   await fresh(context.request, baseURL);
   await model("/use/ask");
   const seen = coachRequests(page);
-  await page.goto("/studio");
-  await page.getByPlaceholder("What would help today?").fill("tapped three times");
-  await page.getByRole("button", { name: "Now", exact: true }).click({ clickCount: 3 });
+  await page.goto("/");
+  await openCoach(page);
+  await newConversation(page);
+  await boxOf(page).fill("tapped three times");
+  await sheetOf(page).getByRole("button", { name: "Send" }).click({ clickCount: 3 });
   await expect(page.getByText("How do your hips feel today?", { exact: true })).toBeVisible({ timeout: 30_000 });
   expect(seen["POST /api/coach/runs"]).toBe(1);
-  await expect(page.getByText("Copy my words back")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Tight" }).click();
-  await page.getByRole("button", { name: "Send" }).click({ clickCount: 3 });
+  await page.getByRole("button", { name: "Tight" }).click({ clickCount: 3 });
   await expect(card(page).getByRole("button", { name: TITLE })).toBeVisible({ timeout: 60_000 });
   expect(seen["POST /api/coach/runs/:id/answer"]).toBe(1);
 
@@ -466,14 +498,14 @@ test("9. Now, Send, Approve, Decline and Cancel tapped twice or three times: one
   await start(page, "cancelled twice");
   await modelBegun(1);
   await page.getByRole("button", { name: "Cancel" }).dblclick();
-  await expect(page.getByRole("heading", { name: "Coach · cancelled" })).toBeVisible({ timeout: 20_000 });
+  await expect(sheetOf(page).locator(".coach-msg--coach", { hasText: /cancel/i })).toBeVisible({ timeout: 20_000 });
   expect(seen["POST /api/coach/runs/:id/cancel"]).toBe(1);
   await model("/delay/");
 });
 
 // A render error is what this journey injects: the page's own error report for it is expected, so it runs without the
 // suite's "no page error" guard — and asserts instead that the app stood.
-bare("12. a render error inside the coach stays in the coach: said in place, the Studio and the app go on", async ({ page, context, baseURL }) => {
+bare("12. a render error inside the coach stays in the coach: said in place, the conversation and the app go on", async ({ page, context, baseURL }) => {
   bare.setTimeout(120_000);
   await fresh(context.request, baseURL);
   // Dev-only, test-side: a change line whose reason, as the card reads it, throws (no app code knows of this).
@@ -495,13 +527,12 @@ bare("12. a render error inside the coach stays in the coach: said in place, the
   });
   await start(page, "a short, gentle hips session");
   // The run finishes; its suggestion's card throws as it draws.
-  await expect(page.getByRole("heading", { name: "Coach · done" })).toBeVisible({ timeout: 90_000 });
-  await expect(page.getByText("Something went wrong showing the coach — reload")).toBeVisible({ timeout: 30_000 });
-  // The run view and the composer beside it stand; the Studio's own sections too; the app's navigation works.
-  await expect(page.getByRole("heading", { name: "Coach · done" })).toBeVisible();
-  await expect(page.getByPlaceholder("What would help today?")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Quick starts" })).toBeVisible();
-  await nav(page).getByRole("link", { name: /^Plan/ }).click();
+  await expect(page.getByText("Something went wrong showing the coach — reload")).toBeVisible({ timeout: 90_000 });
+  // The turn stands — the athlete's words, the coach's line — and the box; the app's navigation works.
+  await expect(sheetOf(page).locator(".coach-msg--athlete", { hasText: "a short, gentle hips session" })).toBeVisible();
+  await expect(sheetOf(page).locator(".coach-turn-reply .coach-msg--coach")).toBeVisible();
+  await expect(boxOf(page)).toBeVisible();
+  await leaveFor(page, /^Plan/);
   await expect(page).toHaveURL(/\/plan/);
   await expect(page.locator("#root")).not.toBeEmpty();
   await page.unroute("**/api/coach/proposals/*");

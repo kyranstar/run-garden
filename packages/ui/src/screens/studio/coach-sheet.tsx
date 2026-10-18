@@ -41,6 +41,11 @@ export const NEW_CONVERSATION = "New conversation";
 export interface CoachOpened {
   request: string | null;
   seeing: CoachFocus | null;
+  /**
+   * The opener named what it sees (even as nothing). Unnamed (the nav's Coach), the sheet follows what the screen
+   * registers — a screen still loading its data registers a moment after the tap.
+   */
+  named: boolean;
 }
 
 /**
@@ -59,9 +64,10 @@ export function CoachSheetProvider({ children, loopDeps }: { children: ReactNode
   }, []);
   const open = useCallback(
     (args: CoachOpenArgs = {}) => {
-      // Named (even as null) wins; otherwise what the screen shows now.
-      const seeing = args.seeing !== undefined ? args.seeing : registry.current;
-      setOpened((o) => ({ args: { request: args.request ?? null, seeing }, key: (o?.key ?? 0) + 1 }));
+      // Named (even as null) wins; otherwise what the screen shows now — and then.
+      const named = args.seeing !== undefined;
+      const seeing = named ? (args.seeing ?? null) : registry.current;
+      setOpened((o) => ({ args: { request: args.request ?? null, seeing, named }, key: (o?.key ?? 0) + 1 }));
     },
     [registry],
   );
@@ -137,7 +143,15 @@ export function CoachSheet({
         </div>
         {/* A render error stays in the sheet: it says so, and the screen under it goes on (the robustness pass). */}
         <CoachBoundary>
-          <CoachConversation key={epoch} ctx={ctx} loopDeps={loopDeps} request={epoch === 0 ? args.request : null} seeing={args.seeing} left={left} />
+          <CoachConversation
+            key={epoch}
+            ctx={ctx}
+            loopDeps={loopDeps}
+            request={epoch === 0 ? args.request : null}
+            seeing={args.seeing}
+            followSeen={!args.named}
+            left={left}
+          />
         </CoachBoundary>
       </div>
     </div>

@@ -20,8 +20,10 @@ export interface CoachFocus extends CoachRunFocus {
   label: string;
   /** A workout's or a day's date (an activity's and a session's too): the scope it asks for reads it. */
   date?: string;
-  /** A workout's kind ("run", "strength", …): the starter chips say a run's as a run. Never sent. */
+  /** A workout's category ("easy", "strength", …). Never sent. */
   category?: string;
+  /** A workout's sport ("run", "strength", …): the starter chips say a run's as a run. Never sent. */
+  sport?: string;
 }
 
 /**
@@ -41,7 +43,7 @@ const joined = (...parts: Array<string | null | undefined | false>): string => p
 
 /** A planned workout: its day, its title, its minutes (the plan's own estimate, else its calendar block). */
 export function workoutFocus(
-  w: Pick<WorkoutDto, "id" | "title" | "effectiveDate" | "workoutSeconds" | "calendarSeconds"> & { category?: string | null },
+  w: Pick<WorkoutDto, "id" | "title" | "effectiveDate" | "workoutSeconds" | "calendarSeconds"> & { category?: string | null; sport?: string | null },
 ): CoachFocus {
   const seconds = w.workoutSeconds ?? w.calendarSeconds ?? null;
   return {
@@ -50,6 +52,7 @@ export function workoutFocus(
     date: w.effectiveDate,
     label: joined(dayLabel(w.effectiveDate), w.title, seconds ? formatMinutes(seconds) : null),
     ...(w.category ? { category: w.category } : {}),
+    ...(w.sport ? { sport: w.sport } : {}),
   };
 }
 

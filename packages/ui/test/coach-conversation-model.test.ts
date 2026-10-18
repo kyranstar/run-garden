@@ -145,8 +145,14 @@ describe("the starter chips", () => {
   it("a workout seen: shorten it, move it, and why — a run's said as a run", () => {
     const strength = workoutFocus({ id: "w1", title: "Strength", effectiveDate: TODAY, workoutSeconds: 2400, calendarSeconds: null, category: "strength" });
     expect(starterChips(strength)).toEqual(["Shorten it", "Move it", "Why this session?"]);
-    const runW = workoutFocus({ id: "w2", title: "Long run", effectiveDate: TODAY, workoutSeconds: 3600, calendarSeconds: null, category: "run" });
+    // A run is known by its sport: its category is the kind of run ("long", "recovery", "easy").
+    const runW = workoutFocus({ id: "w2", title: "Long run", effectiveDate: TODAY, workoutSeconds: 3600, calendarSeconds: null, category: "long", sport: "run" });
     expect(starterChips(runW)).toEqual(["Shorten it", "Move it", "Why this run?"]);
+    expect(starterChips(workoutFocus({ id: "w3", title: "Recovery run", effectiveDate: TODAY, workoutSeconds: 1800, calendarSeconds: null, category: "recovery", sport: "run" }))).toEqual([
+      "Shorten it",
+      "Move it",
+      "Why this run?",
+    ]);
   });
 
   it("a day, a move, an objective: their own", () => {

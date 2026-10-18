@@ -2,8 +2,8 @@ import type { APIRequestContext } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
 
 /**
- * THE COACH DESIGNER, END TO END (Stage 3 Task 9; Batch 3B's gate): the Studio's composer → a run on the scripted model
- * → the suggestion → Approve → the workout on the Plan. Everything but the model is the real app and the real worker:
+ * THE COACH DESIGNER, END TO END (Stage 3 Task 9; Batch 3B's gate; the new shape §5): the nav's Coach → the
+ * conversation's box → a run on the scripted model → the suggestion → Approve → the workout on the Plan. Everything but the model is the real app and the real worker:
  * the step loop, the opening context, the tools, the independent reviewer, the proposal, the approve.
  *
  * Needs the fixture stack on the scripted model, and skips itself otherwise:
@@ -12,7 +12,7 @@ import { test, expect } from "./fixtures.js";
  *   RG_E2E_DESIGN_MODEL=scripted:now RG_BASE=http://localhost:5271 pnpm --filter @rg/web exec playwright test coach-designer --workers=1
  *
  * One live run per athlete, and the projects share the fixture account: each journey first cancels a run left live and
- * declines a suggestion left open, so it starts from the empty composer.
+ * declines a suggestion left open, and starts a new conversation.
  */
 
 test.skip(process.env.RG_E2E_DESIGN_MODEL !== "scripted:now", "needs the fixture stack on the scripted model (RG_E2E_DESIGN_MODEL=scripted:now)");
@@ -46,28 +46,34 @@ async function clearTheCoach(request: APIRequestContext, baseURL: string | undef
   }
 }
 
-test("the composer → a scripted run → the suggestion → Approve → the workout is on the Plan", async ({ page, context, baseURL }) => {
+test("the conversation's box → a scripted run → the suggestion → Approve → the workout is on the Plan", async ({ page, context, baseURL }) => {
   test.setTimeout(120_000);
   await signIn(context.request, baseURL);
   await clearTheCoach(context.request, baseURL);
 
-  await page.goto("/studio");
-  const field = page.getByPlaceholder("What would help today?");
+  await page.goto("/");
+  await page.locator("button.nav-coach:visible").first().click();
+  const sheet = page.getByRole("dialog", { name: "Coach" });
+  const field = sheet.locator(".coach-box textarea");
   await expect(field).toBeVisible();
+  await expect(sheet.locator(".coach-opening, .coach-turns").first()).toBeVisible();
+  if (!(await sheet.locator(".coach-opening").isVisible())) {
+    await sheet.getByRole("button", { name: "More" }).click();
+    await sheet.getByRole("menuitem", { name: "New conversation" }).click();
+  }
   await field.fill("a short, gentle hips session");
-  await page.getByRole("button", { name: "Now", exact: true }).click();
+  await sheet.getByRole("button", { name: "Send" }).click();
 
-  // The run view stands in the composer's place while the coach works; its lines are the events'.
-  await expect(page.getByRole("heading", { name: /^Coach · / })).toBeVisible();
-  await expect(page.getByText("“a short, gentle hips session”")).toBeVisible();
+  // The run at work in the conversation, under the athlete's words; its lines are the events'.
+  await expect(sheet.getByRole("heading", { name: /^Coach · / })).toBeVisible();
+  await expect(sheet.locator(".coach-msg--athlete", { hasText: "a short, gentle hips session" })).toBeVisible();
 
-  // The run finishes on its own (the client steps it) and its suggestion opens under the composer. The card's heading
+  // The run finishes on its own (the client steps it): the coach's line, and its suggestion under it. The card's heading
   // says what became of it once decided (fix wave 3B, M3), so the card is found by its own box.
-  await expect(page.getByRole("region", { name: "The coach suggests" })).toBeVisible({ timeout: 60_000 });
-  const card = page.locator("section.coach-pc");
-  await expect(page.getByRole("heading", { name: "Coach · done" })).toBeVisible();
-  // Once over, the trail folds to one line; the card's Approve sits high (B-I7).
-  await expect(page.getByRole("button", { name: "How the coach made this" })).toHaveAttribute("aria-expanded", "false");
+  await expect(sheet.getByRole("region", { name: "The coach suggests" })).toBeVisible({ timeout: 60_000 });
+  const card = sheet.locator("section.coach-pc");
+  // Once over, the run's trail is one tap down; the card's Approve sits high (B-I7).
+  await expect(sheet.getByRole("button", { name: "How the coach made this" })).toHaveAttribute("aria-expanded", "false");
   await expect(card.getByRole("button", { name: "Hips and back, gently" })).toBeVisible();
   await expect(card).toContainText("Reviewed");
 

@@ -20,6 +20,9 @@
  *   followup as `now`, but a run asked from one of its suggestions proposes that workout shorter (coach everywhere)
  *   auto_answer  an auto run (no scope: the new shape §5) that answers in words — reads, then finishes, nothing suggested
  *   auto_design  an auto run that designs one workout for right now (today, no time), as `now`
+ *   reply        the conversation: as `now`, until the conversation so far holds a workout it suggested — then that
+ *                workout shorter, naming it in `replaces`
+ *   plan_change  the conversation: skips the session the athlete is looking at (adjust_plan), then finishes
  *   auto_set     an auto run that plans a set: plan_set with two briefs (tomorrow, three days on), each designed and
  *                reviewed, then the finish
  *
@@ -160,8 +163,40 @@ function autoSetDesigner(turn, ctx) {
   return uses(["finish", {}]);
 }
 
+/**
+ * A reply in the conversation (the new shape §5): as `now` — until the opening's "The conversation so far" holds a
+ * workout it suggested; then it proposes that workout shorter, naming it in `replaces` (the coach's own follow-up).
+ */
+function designReply(turn, ctx) {
+  const id = [...(ctx.opening ?? "").matchAll(/Suggested a workout \(id ([^)\s]+)\)/g)].at(-1)?.[1];
+  if (!id) return designAfter(0)(turn, ctx);
+  switch (turn) {
+    case 0:
+      return uses(["propose_workout", { doc: shorterDoc(), target: { kind: "new", date: ctx.today }, replaces: id }]);
+    default:
+      return uses(["finish", { summary: "The same session, shorter: the bird dogs left out." }]);
+  }
+}
+
+/** The words a plan change finishes with. */
+export const PLAN_CHANGE_LINE = "One session off, so the legs come back for the weekend.";
+
+/**
+ * A change to the plan (the new shape §5, the coach's reach): it skips the session the athlete is looking at — the
+ * opening's "The athlete asked from: a planned workout (id …)", else the first of a day's — then finishes; no workout.
+ */
+function planChange(turn, ctx) {
+  const opening = ctx.opening ?? "";
+  const id = /a planned workout \(id ([^)\s]+)\)/.exec(opening)?.[1] ?? /^- id ([^:\s]+):/m.exec(opening)?.[1];
+  if (turn === 0 && id) return uses(["adjust_plan", { workoutId: id, change: { kind: "skip", reason: "A lighter day." }, why: "The legs asked for a lighter day." }]);
+  return uses(["finish", { summary: PLAN_CHANGE_LINE }]);
+}
+
 export const SCRIPTS = {
   now: { main: designAfter(0), reviewer },
+  // The conversation (the new shape §5): a reply that changes the suggestion before it; a change to the plan.
+  reply: { main: designReply, reviewer },
+  plan_change: { main: planChange, reviewer },
   // The new shape §5: a run asked with no scope is the coach's to size.
   auto_answer: { main: autoAnswer, reviewer },
   auto_design: { main: designAfter(0), reviewer },

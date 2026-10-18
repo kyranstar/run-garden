@@ -51,7 +51,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const WORKOUT = workoutFocus({ id: "w1", title: "Long run", effectiveDate: TODAY, workoutSeconds: 3600, calendarSeconds: 3600, category: "run" });
+const WORKOUT = workoutFocus({ id: "w1", title: "Long run", effectiveDate: TODAY, workoutSeconds: 3600, calendarSeconds: 3600, category: "long", sport: "run" });
 
 const turn = (over: Partial<CoachConversationTurnDto> = {}): CoachConversationTurnDto => ({
   runId: "run-1",

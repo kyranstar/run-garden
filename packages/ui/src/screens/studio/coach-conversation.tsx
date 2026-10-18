@@ -38,6 +38,7 @@ import {
 } from "@rg/api-client";
 import { IconArrowUp, IconClose } from "../../icons.js";
 import { useBottomAnchor } from "../coach-panel.js";
+import { useCoachSeen } from "./coach-ask.js";
 import { CoachBoundary } from "./coach-boundary.js";
 import {
   boxPlaceholder,
@@ -91,6 +92,8 @@ export interface CoachConversationProps {
   request?: string | null;
   /** What the coach sees as the sheet opens: the "Seeing" hint. */
   seeing?: CoachFocus | null;
+  /** Opened with nothing named (the nav's Coach): what the screen registers is what it sees, until dropped. */
+  followSeen?: boolean;
   /** The conversation the athlete left ("New conversation"): not shown, and a send starts a new one. */
   left?: string | null;
 }
@@ -104,7 +107,7 @@ function paragraphs(text: string) {
     .map((p, i) => <p key={i}>{p}</p>);
 }
 
-export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenAtOpen = null, left = null }: CoachConversationProps) {
+export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenAtOpen = null, followSeen = false, left = null }: CoachConversationProps) {
   const qc = useQueryClient();
   const conv = useQuery({ queryKey: CONVERSATION_QUERY, queryFn: readConversation, retry: currentRetry, staleTime: 0 });
   // The current run: a live one the conversation doesn't hold (an older client's), the suggestions still open, and a
@@ -114,7 +117,12 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const budget = weekBudgetOf(spend.data);
 
   const [draft, setDraft] = useState(() => (request ?? "").slice(0, REQUEST_MAX_CHARS));
-  const [seeing, setSeeing] = useState<CoachFocus | null>(seenAtOpen);
+  // What it sees: what it was opened with — or, opened with nothing named, what the screen registers (a screen still
+  // loading its data registers a moment after the tap) — until the athlete's ✕ drops it.
+  const registered = useCoachSeen();
+  const [dropped, setDropped] = useState(false);
+  const seeing = dropped ? null : followSeen ? (registered ?? seenAtOpen) : seenAtOpen;
+  const setSeeing = (f: null) => setDropped(f === null);
   /** Turns a send here started, until the read has them. */
   const [sent, setSent] = useState<ProvisionalTurn[]>([]);
   /** The conversation the server last named for a send. */

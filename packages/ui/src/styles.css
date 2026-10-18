@@ -10929,6 +10929,12 @@ a.stu-tpl-open:focus-visible::before {
 .coach-sheet-menu {
   position: relative;
 }
+/* "New conversation" with nothing to leave, or the coach at work: said as unavailable, in the faint ink. */
+.coach-sheet-menu-list .stu-save-item:disabled {
+  background: none;
+  color: var(--ink-faint);
+  cursor: default;
+}
 .coach-convo {
   display: flex;
   flex-direction: column;
@@ -11000,14 +11006,16 @@ a.stu-tpl-open:focus-visible::before {
 .coach-changes-closer:focus {
   outline: none;
 }
+/* Inside its own box: the scroller's edge would clip a ring drawn outside it. */
 .coach-msg--coach:focus-visible,
 .coach-turn-reply:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
   border-radius: var(--radius-sm);
 }
-/* A run at work inside the conversation: the trail, quieter — no card of its own. */
-.coach-run--quiet {
+/* A run at work inside the conversation: the trail, quieter — no card of its own (two classes: the run view's own rule
+   comes later in the sheet). */
+.coach-run.coach-run--quiet {
   padding: 0 0 0 var(--space-5);
   border: 0;
   border-left: 2px solid var(--border);
