@@ -34,6 +34,22 @@ describe("wrangler staging env", () => {
   });
 });
 
+describe("the thread coach's switch (§8 §6): off everywhere it is not asked for", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("is absent from production, staging and local dev — so off: only \"1\" is on, and only a Worker var or secret sets it", () => {
+    expect(toml).not.toMatch(/THREAD_COACH/);
+    expect(read("../wrangler.dev.toml")).not.toMatch(/THREAD_COACH/);
+  });
+
+  it("the fixture stack never turns it on; the two replay specs that drive the thread coach name it in how they run", () => {
+    expect(read("../../web/e2e/fixture-stack.sh")).not.toMatch(/THREAD_COACH/);
+    for (const spec of ["coach-guardrail-replay.spec.ts", "coach-lift-replay.spec.ts"]) {
+      expect(read(`../../web/e2e/${spec}`)).toMatch(/npx wrangler dev [^\n]*\n[^\n]*--var THREAD_COACH:1/);
+    }
+  });
+});
+
 describe("the coach's step alarm: a Durable Object per run (the robustness pass, Phase 3 (d))", () => {
   const production = toml.slice(0, toml.indexOf("[env.staging]"));
   const binding = (prefix: string) =>

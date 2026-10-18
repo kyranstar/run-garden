@@ -12,7 +12,7 @@ import {
 import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
 import { computeWeeklyFacts, DISCIPLINES } from "@rg/analytics";
 import type { Env } from "./env.js";
-import { coachDesignerEnabled, fixtureModeEnabled, stagingEnabled } from "./env.js";
+import { coachDesignerEnabled, fixtureModeEnabled, stagingEnabled, threadCoachEnabled } from "./env.js";
 import { installStagingGuard } from "./services/staging.js";
 import { withDb, requireUser, type AppContext } from "./auth/middleware.js";
 import { authRoutes } from "./routes/auth.js";
@@ -322,9 +322,12 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       await healLegacySyncState(db, userId);
       await stillOurs();
       // Coach trigger marks are cheap SQL — a fired row waits for the next
-      // wake; nothing here thinks (spec §1).
-      await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone)).catch(() => []);
-      await stillOurs();
+      // wake; nothing here thinks (spec §1). Only while the thread coach runs (THREAD_COACH, §8 §6): stepped back, no
+      // wake will ever read a mark — its signals are the coach's "needs you" chips, computed when they are read.
+      if (threadCoachEnabled(env)) {
+        await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone)).catch(() => []);
+        await stillOurs();
+      }
       await sweepUserProposals(db, userId, prefs.timezone).catch(() => undefined);
       await stillOurs();
       // ONE HEAVY STEP PER ACCOUNT PER INVOCATION (cron reliability, part 2): the garden's walk of more than a

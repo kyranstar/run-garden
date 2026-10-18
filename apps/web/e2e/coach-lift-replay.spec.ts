@@ -6,11 +6,14 @@ import { test, expect } from "@playwright/test";
  * HOW TO RUN (three processes; see docs/TESTING.md for the base stack):
  *   node apps/web/e2e/coach-lift-replay-model.mjs                  # :8899
  *   cd apps/worker && npx wrangler dev --port 8840 \
- *     --var FIXTURE_MODE:1 --var APP_URL:http://localhost:5240 \
+ *     --var FIXTURE_MODE:1 --var THREAD_COACH:1 --var APP_URL:http://localhost:5240 \
  *     --var FIXTURE_MODEL_URL:http://127.0.0.1:8899 --var AI_GATEWAY_API_KEY:stub
  *   RG_API_PORT=8840 RG_WEB_PORT=5240 pnpm --filter @rg/web dev     # :5240
  *   RG_BASE=http://localhost:5240 RG_MODEL_STUB=1 \
  *     pnpm --filter @rg/web exec playwright test e2e/coach-lift-replay.spec.ts
+ *
+ * THREAD_COACH:1 — the thread coach this replays has stepped back everywhere else (§8 §6): without it, the message
+ * is kept with a receipt and nothing wakes.
  *
  * Skipped without RG_MODEL_STUB: the coach reply has to come from the local
  * recorded-model server, and against a real gateway this would burn tokens
@@ -50,6 +53,7 @@ test("the athlete's verbatim ski-prep message produces real proposals with real 
     timeout: 90_000,
   });
   expect(res.ok()).toBeTruthy();
+  expect((await res.json()).status, "the thread coach is off: start the worker with --var THREAD_COACH:1").not.toBe("skipped");
 
   // The wake is awaited inside the POST above (2026-08-17), so by the time
   // it answered, the thread is finished.

@@ -106,7 +106,9 @@ async function coachMessages(userId: string) {
 
 describe("the fixture stack never reaches the LLM gateway (Audit 2 I1, Ruling C2)", () => {
   it("the Plan page's open wake on a freshly seeded fixture user: a canned reply, no network", async () => {
-    const env = stackEnv();
+    // The thread coach's engine runs only with its switch on (§8 §6): the fixture stack itself runs it off, the replay
+    // specs' stack on — and on, it still never reaches the network.
+    const env = stackEnv({ THREAD_COACH: "1" });
     const { cookie, userId } = await seededFixtureUser(env);
     const db = holder.db as ReturnType<typeof makeTestDb>;
     const usageBefore = (await db.select().from(schema.llmUsage)).length; // the seed's own rows
@@ -128,7 +130,7 @@ describe("the fixture stack never reaches the LLM gateway (Audit 2 I1, Ruling C2
   });
 
   it("a message wake in fixture mode answers too, without the network — even with a key and a gateway URL", async () => {
-    const env = stackEnv({ AI_GATEWAY_API_KEY: "a-real-looking-key", AI_GATEWAY_BASE_URL: "https://ai-gateway.vercel.sh/v1" });
+    const env = stackEnv({ THREAD_COACH: "1", AI_GATEWAY_API_KEY: "a-real-looking-key", AI_GATEWAY_BASE_URL: "https://ai-gateway.vercel.sh/v1" });
     const { cookie } = await seededFixtureUser(env);
     const network = recordNetwork();
     const res = await worker.fetch(
@@ -145,7 +147,7 @@ describe("the fixture stack never reaches the LLM gateway (Audit 2 I1, Ruling C2
   });
 
   it("fixture mode reaches a model only at a loopback FIXTURE_MODEL_URL (the coach replay specs' recorded model)", async () => {
-    const env = stackEnv({ AI_GATEWAY_API_KEY: "stub", FIXTURE_MODEL_URL: "http://127.0.0.1:8899" });
+    const env = stackEnv({ THREAD_COACH: "1", AI_GATEWAY_API_KEY: "stub", FIXTURE_MODEL_URL: "http://127.0.0.1:8899" });
     const { cookie } = await seededFixtureUser(env);
     const network = recordNetwork();
     const res = await call(env, "/api/coach/wake", cookie);
@@ -154,7 +156,7 @@ describe("the fixture stack never reaches the LLM gateway (Audit 2 I1, Ruling C2
     expect(network.every(isLoopback)).toBe(true);
 
     // A FIXTURE_MODEL_URL that is not loopback is ignored: the canned reply.
-    const remote = stackEnv({ AI_GATEWAY_API_KEY: "stub", FIXTURE_MODEL_URL: "https://ai-gateway.vercel.sh/v1" });
+    const remote = stackEnv({ THREAD_COACH: "1", AI_GATEWAY_API_KEY: "stub", FIXTURE_MODEL_URL: "https://ai-gateway.vercel.sh/v1" });
     const second = await seededFixtureUser(remote);
     const network2 = recordNetwork();
     await call(remote, "/api/coach/wake", second.cookie);
@@ -166,7 +168,7 @@ describe("the fixture stack never reaches the LLM gateway (Audit 2 I1, Ruling C2
     holder.db = db;
     const { userId } = await makeTestUser(db);
     const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
-    const env = stackEnv({ FIXTURE_MODE: "0", AI_DEFAULT_ENABLED: "1", APP_URL: "https://app.test" });
+    const env = stackEnv({ THREAD_COACH: "1", FIXTURE_MODE: "0", AI_DEFAULT_ENABLED: "1", APP_URL: "https://app.test" });
     const network = recordNetwork();
     const res = await call(env, "/api/coach/wake", cookie);
     expect(((await res.json()) as { status: string }).status).toBe("error");

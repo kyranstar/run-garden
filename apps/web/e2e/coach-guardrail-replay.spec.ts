@@ -25,7 +25,7 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
  * HOW TO RUN (three processes):
  *   node apps/web/e2e/coach-guardrail-replay-model.mjs                # :8898
  *   cd apps/worker && npx wrangler dev --port 8844 \
- *     --var FIXTURE_MODE:1 --var APP_URL:http://localhost:5244 \
+ *     --var FIXTURE_MODE:1 --var THREAD_COACH:1 --var APP_URL:http://localhost:5244 \
  *     --var FIXTURE_MODEL_URL:http://127.0.0.1:8898 --var AI_GATEWAY_API_KEY:stub
  *   RG_API_PORT=8844 RG_WEB_PORT=5244 pnpm --filter @rg/web dev        # :5244
  *   RG_BASE=http://localhost:5244 RG_MODEL_STUB=1 \
@@ -64,6 +64,8 @@ async function ask(
 ): Promise<{ receipts: string[]; pending: Pending[] }> {
   const res = await request.post(`${baseURL}/api/coach/message`, { data: { body }, timeout: 90_000 });
   expect(res.ok(), await res.text()).toBeTruthy();
+  // The thread coach has stepped back everywhere else (§8 §6): without THREAD_COACH:1 the words are kept, nothing wakes.
+  expect((await res.json()).status, "the thread coach is off: start the worker with --var THREAD_COACH:1").not.toBe("skipped");
   const state = await (await request.get(`${baseURL}/api/coach/state`)).json();
   return {
     receipts: (state.messages as Array<{ role: string; body: string }>)

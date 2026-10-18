@@ -28,6 +28,8 @@ function makeEnv(): Env {
     GOOGLE_CLIENT_ID: "c",
     GOOGLE_CLIENT_SECRET: "c",
     AI_GATEWAY_API_KEY: "test-key",
+    // The thread coach's engine, which these pin, runs only with its switch on (§8 §6; thread-coach-switch.test.ts).
+    THREAD_COACH: "1",
   } as Env;
 }
 

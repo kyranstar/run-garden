@@ -27,6 +27,12 @@ export interface Env {
   COACH_STEP_ALARM?: string;
   /** The coach's run stepper, one object per main run (`CoachRunStepper`, SQLite-backed). Absent: the switch is off. */
   COACH_RUN_STEPPER?: DurableObjectNamespace;
+  /** "1" runs the THREAD coach (the old Plan coach, coach-wake.ts): Plan visits advise wakes, `/wake`, `/message` and a
+   * question's answer wake it, and `/state` and the hourly cron mark its triggers. Anything else (absent in production,
+   * §8 §6): it has stepped back — its routes answer for cached old clients without a wake, its old proposals stay
+   * approvable, and its free signals are the coach's "needs you" chips (coach-nudges.ts). The escape hatch: set it as a
+   * Worker var or secret, no deploy. Var. */
+  THREAD_COACH?: string;
   /** Fixture mode only (the fixture stack, local dev): a design call's deadline in ms, shorter than the 10 minutes
    * (llm-messages.ts `designModelTimeoutMs`), so the e2e's takeover of a step that died waits seconds, not 11 minutes.
    * Ignored outside fixture mode; never set in wrangler.toml (pinned). Var. */
@@ -77,6 +83,9 @@ export const watchPushEnabled = (env: Env | undefined): boolean => env?.WATCH_PU
 /** The coach designer's switch: staging, or COACH_DESIGNER = "1". A missing env (a test host with none) is off. */
 export const coachDesignerEnabled = (env: Env | undefined): boolean =>
   !!env && (stagingEnabled(env) || env.COACH_DESIGNER === "1");
+
+/** The thread coach's switch (§8 §6): only "1" is on. A missing env (a test host with none) is off. */
+export const threadCoachEnabled = (env: Env | undefined): boolean => env?.THREAD_COACH === "1";
 
 export function fixtureModeEnabled(env: Env): boolean {
   return env.FIXTURE_MODE === "1";

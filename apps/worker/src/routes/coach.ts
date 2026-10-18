@@ -31,8 +31,9 @@ import {
 } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
+import { threadCoachEnabled } from "../env.js";
 import { restoreInProgress } from "../services/account-state.js";
-import { loadOutOfCredits } from "../services/ai-credits.js";
+import { loadOutOfCredits, type OutOfCredits } from "../services/ai-credits.js";
 import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { recordReplayFrom, REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -50,6 +51,7 @@ import {
   recordAthleteMessage,
   wake,
   WAKE_LOCK_STALE_MINUTES,
+  type WakeResult,
 } from "../services/coach-wake.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
@@ -69,6 +71,9 @@ import { designProposalId } from "../services/design-tools/propose.js";
  */
 
 export const coachRoutes = new Hono<AppContext>();
+
+/** What `/message` answers a cached old client with while the thread coach has stepped back (§8 §6): a receipt. */
+export const THREAD_COACH_STEPPED_BACK = "Your coach is now behind the Coach button.";
 coachRoutes.use("*", requireUser);
 
 async function receipt(
@@ -160,13 +165,17 @@ coachRoutes.get("/state", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
+  // The thread coach has stepped back (§8 §6, `THREAD_COACH` off): this read still sweeps and lists what it left — its
+  // pending proposals stay approvable until they expire, its question answerable — but it marks no trigger, advises no
+  // wake, and is never "thinking": a cached old client polling it starts nothing and waits on nothing.
+  const threadCoach = threadCoachEnabled(c.env);
   // A restore is replacing the account (ruling B9): the read answers, but it
   // expires, sweeps and marks nothing — a trigger evaluated against a
   // half-restored account would recommend a paid wake on a false signal.
   if (!(await restoreInProgress(db, userId))) {
     await sweepExpiredProposals(db, userId, today);
     await sweepStaleQuestions(db, userId, nowInstant());
-    await evaluateTriggers(db, userId, prefs, today).catch(() => []);
+    if (threadCoach) await evaluateTriggers(db, userId, prefs, today).catch(() => []);
   }
 
   const before = c.req.query("before");
@@ -230,50 +239,13 @@ coachRoutes.get("/state", async (c) => {
     .limit(1);
   // Live memory only (memory-core.ts): never a rehearsal run's, never an item a newer one superseded.
   const memoryRows = await db.select().from(coachMemory).where(liveMemoryWhere(userId, today));
-  const triggers = await pendingTriggers(db, userId);
   const [lastCoach] = await db
     .select()
     .from(coachMessages)
     .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
     .orderBy(desc(coachMessages.at))
     .limit(1);
-  // Shares the wake pipeline's own "would an open wake be redundant?" check,
-  // and passes the TRIGGERS rather than their count: which kind is pending is
-  // the whole question. An unanswered message always earns a wake; an ambient
-  // signal has to outlive the quiet window after the last briefing, because
-  // otherwise a page visit minutes after a full briefing bills another Opus
-  // call to say the same thing (live, 2026-08-17 — see
-  // AMBIENT_TRIGGER_QUIET_MINUTES). A recent failed/resting attempt still
-  // wins over both.
-  const wakeAdvised = !(await openWakeIsFresh(db, userId, triggers));
-
-  // "Coach is thinking" must survive navigation (user report 2026-08-12) —
-  // and, since 2026-08-17, it is what the client watches INSTEAD of the
-  // wake's own response, which it no longer waits for. Either way the truth
-  // comes from the server: a live wake lock, or a still-unanswered message.
-  //
-  // Same window as the lock's own takeover (`WAKE_LOCK_STALE_MINUTES`), and
-  // the holder heartbeats: a wake that is genuinely alive keeps saying so
-  // however long it thinks, and a wake whose isolate died stops claiming to
-  // think within one window rather than misreporting for ten minutes.
-  const [wakeLock] = await db
-    .select()
-    .from(coachLocks)
-    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake")))
-    .limit(1);
-  const lockFresh =
-    !!wakeLock && Date.now() - Date.parse(wakeLock.claimedAt) < WAKE_LOCK_STALE_MINUTES * 60_000;
-  const pendingReply = triggers.some(
-    (t) => t.kind === "unanswered_message" && Date.now() - Date.parse(t.firedAt) < 5 * 60_000,
-  );
-  // THE AI ACCOUNT IS OUT OF CREDITS (owner report 2026-10-09). A 402 ends a
-  // wake in a second and leaves the reply owed, so `pendingReply` alone said
-  // "thinking" for five minutes about nothing — and the screen had nothing else
-  // to say. The record (ai-credits.ts) is what it says instead; a wake actually
-  // running (`lockFresh`) still reads as thinking, which is right while it is
-  // the call that finds out the credits are back.
-  const outOfCredits = await loadOutOfCredits(db, userId);
-  const coachThinking = lockFresh || (pendingReply && !outOfCredits);
+  const signals = await threadSignals(db, userId, threadCoach);
 
   // A designed proposal (Stage 3) is approved on its own surface, never as a thread card: both lists leave it out — one
   // of changes alone too (Task 8b) — so nothing here ever renders a `doc_workout` or `plan_adjust` op.
@@ -284,11 +256,64 @@ coachRoutes.get("/state", async (c) => {
     openQuestion: openQuestion ?? null,
     memoryCount: memoryRows.length,
     lastCoachAt: lastCoach?.at ?? null,
-    wakeAdvised,
-    coachThinking,
-    outOfCredits,
+    ...signals,
   });
 });
+
+/**
+ * What `/state` says of the thread coach's own doings: whether a Plan visit should wake it, whether it is thinking, and
+ * whether its AI account is out of credits.
+ *
+ * Stepped back (`on` false, §8 §6): it advises no wake and is never out of credits — that line's Retry would ask a coach
+ * that answers no one — and it is thinking only while a wake still holds its lock (one in flight across the switch).
+ * Never over an old unanswered mark: nothing will answer it now, and an old client would show "thinking" for five
+ * minutes about nothing.
+ */
+async function threadSignals(
+  db: Db,
+  userId: string,
+  on: boolean,
+): Promise<{ wakeAdvised: boolean; coachThinking: boolean; outOfCredits: OutOfCredits | null }> {
+  // "Coach is thinking" must survive navigation (user report 2026-08-12) —
+  // and, since 2026-08-17, it is what the client watches INSTEAD of the
+  // wake's own response, which it no longer waits for. Either way the truth
+  // comes from the server: a live wake lock, or a still-unanswered message.
+  //
+  // Same window as the lock's own takeover (`WAKE_LOCK_STALE_MINUTES`), and
+  // the holder heartbeats: a wake that is genuinely alive keeps saying so
+  // however long it thinks, and a wake whose isolate died stops claiming to
+  // think within one window rather than misreporting for ten minutes.
+  const [wakeLock] = await db
+    .select({ claimedAt: coachLocks.claimedAt })
+    .from(coachLocks)
+    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake")))
+    .limit(1);
+  const lockFresh =
+    !!wakeLock && Date.now() - Date.parse(wakeLock.claimedAt) < WAKE_LOCK_STALE_MINUTES * 60_000;
+  if (!on) return { wakeAdvised: false, coachThinking: lockFresh, outOfCredits: null };
+
+  const triggers = await pendingTriggers(db, userId);
+  // Shares the wake pipeline's own "would an open wake be redundant?" check,
+  // and passes the TRIGGERS rather than their count: which kind is pending is
+  // the whole question. An unanswered message always earns a wake; an ambient
+  // signal has to outlive the quiet window after the last briefing, because
+  // otherwise a page visit minutes after a full briefing bills another Opus
+  // call to say the same thing (live, 2026-08-17 — see
+  // AMBIENT_TRIGGER_QUIET_MINUTES). A recent failed/resting attempt still
+  // wins over both.
+  const wakeAdvised = !(await openWakeIsFresh(db, userId, triggers));
+  const pendingReply = triggers.some(
+    (t) => t.kind === "unanswered_message" && Date.now() - Date.parse(t.firedAt) < 5 * 60_000,
+  );
+  // THE AI ACCOUNT IS OUT OF CREDITS (owner report 2026-10-09). A 402 ends a
+  // wake in a second and leaves the reply owed, so `pendingReply` alone said
+  // "thinking" for five minutes about nothing — and the screen had nothing else
+  // to say. The record (ai-credits.ts) is what it says instead; a wake actually
+  // running (`lockFresh`) still reads as thinking, which is right while it is
+  // the call that finds out the credits are back.
+  const outOfCredits = await loadOutOfCredits(db, userId);
+  return { wakeAdvised, coachThinking: lockFresh || (pendingReply && !outOfCredits), outOfCredits };
+}
 
 /**
  * What the coach actually costs, by kind, over the same rolling 7 days the
@@ -374,6 +399,9 @@ coachRoutes.get("/spend", async (c) => {
  * persists its briefing the first moment one parses.
  */
 coachRoutes.post("/wake", async (c) => {
+  // Stepped back (§8 §6): a cached old client's Plan visit or Check in starts nothing — "skipped", as a wake with
+  // nothing to say answers, before a statement is read.
+  if (!threadCoachEnabled(c.env)) return c.json({ status: "skipped" } satisfies WakeResult);
   const db = c.get("db");
   const userId = c.get("userId");
   const { force } = await c.req.json<{ force?: boolean }>().catch(() => ({ force: false }));
@@ -440,6 +468,18 @@ coachRoutes.post("/message", async (c) => {
   const { body } = await c.req.json<{ body?: string }>().catch(() => ({ body: undefined }));
   if (!body || typeof body !== "string" || body.length > 4000) {
     return c.json({ error: "bad_request" }, 400);
+  }
+  if (!threadCoachEnabled(c.env)) {
+    // Stepped back (§8 §6): a cached old client's message (its Extend, its Wind down, its chat) is kept, and answered
+    // with where the coach is now — no wake, and no awaiting-reply mark, which nothing would ever answer and which an
+    // old client reads as "thinking" for five minutes. One statement, both rows; the receipt a millisecond after the
+    // words, so the thread reads them in that order.
+    const at = Date.now();
+    await db.insert(coachMessages).values([
+      { id: newId(), userId, role: "user", body, refs: {}, at: new Date(at).toISOString() },
+      { id: newId(), userId, role: "receipt", body: THREAD_COACH_STEPPED_BACK, refs: {}, at: new Date(at + 1).toISOString() },
+    ]);
+    return c.json({ status: "skipped" } satisfies WakeResult);
   }
   const prefs = await loadPreferences(db, userId);
   // The words and the awaiting-reply trigger land BEFORE anything that can
@@ -593,6 +633,8 @@ coachRoutes.post("/questions/:id/answer", async (c) => {
     .update(coachQuestions)
     .set({ answeredAt: now, memoryId })
     .where(eq(coachQuestions.id, id));
+  // Stepped back (§8 §6): the answer is kept as the fact above, and wakes no one.
+  if (!threadCoachEnabled(c.env)) return c.json({ ok: true, memoryId, wake: { status: "skipped" } satisfies WakeResult });
   // The answer continues the conversation like any message.
   const prefs = await loadPreferences(db, userId);
   await recordAthleteMessage(db, userId, answer);
