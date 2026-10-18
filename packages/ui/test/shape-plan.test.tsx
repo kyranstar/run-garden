@@ -222,10 +222,10 @@ describe("Your plans, one list", () => {
     expect(html).not.toContain('class="plan-row"');
   });
 
-  it("its foot: a new program (a plan asked of the coach comes with §8: shape-fixes)", () => {
+  it("its foot: a new program, and a plan asked of the coach (§8 §6: thread-coach-steps-back)", () => {
     const html = renderToStaticMarkup(wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), { open: noop }));
     expect(html).toContain("New program…");
-    expect(html).not.toContain("Plan with the coach");
+    expect(html).toContain("Plan with the coach");
   });
 });
 
@@ -253,18 +253,22 @@ describe("the plan sheet's actions open the coach with the words written", () =>
     const qc = client([{ key: ["plan-detail", plan.id], data: { ...detail, plan } }]);
     act(() =>
       root!.render(
-        wrap(createElement(PlanSheet, { planId: plan.id, plans: [plan], onClose: noop, onRetire: async () => null, onRename: noop, onAskThread: noop }), coach, qc),
+        wrap(createElement(PlanSheet, { planId: plan.id, plans: [plan], onClose: noop, onRetire: async () => null, onRename: noop }), coach, qc),
       ),
     );
   }
   const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === name);
 
   it("the words: the plan named plainly, never doubled", () => {
-    expect(planRequests("Fall Half Block")).toEqual({ ask: "How is my Fall Half Block plan going?" });
+    expect(planRequests("Fall Half Block")).toEqual({
+      ask: "How is my Fall Half Block plan going?",
+      extend: "Extend my Fall Half Block plan by two weeks",
+      windDown: "Wind down my Fall Half Block plan",
+    });
     expect(planRequests("Base plan").ask).toBe("How is my Base plan going?");
   });
 
-  it("Ask about this plan opens the conversation with its request (Extend and Wind down ask the thread coach: shape-fixes)", () => {
+  it("Ask about this plan opens the conversation with its request (Extend and Wind down too: thread-coach-steps-back)", () => {
     const calls: unknown[] = [];
     mount(runPlan, { open: (a) => calls.push(a) });
     act(() => button("Ask about this plan")!.click());

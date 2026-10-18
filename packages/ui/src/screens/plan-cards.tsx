@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { CoachPlanDto, PlanProgression, ProgramDto, ProgramsResponse } from "@rg/api-client";
 import { formatShortDate, type Units } from "../components.js";
 import { ProgramSettingsSheet } from "../components/program-settings-sheet.js";
+import { useCoach } from "./studio/coach-ask.js";
 
 const KM_PER_MI = 1.609344;
 
@@ -98,6 +99,9 @@ export function planEntries(plans: readonly CoachPlanDto[], programs: readonly P
   ];
 }
 
+/** The words "Plan with the coach" writes in the conversation's box (§8 §6): the athlete's to send, never sent for them. */
+export const NEW_PLAN_REQUEST = "Help me plan my next few weeks";
+
 export function YourPlans({
   plans,
   programs,
@@ -110,6 +114,7 @@ export function YourPlans({
   today: string;
   onOpenPlan: (id: string) => void;
 }) {
+  const coach = useCoach();
   // A program's settings ("new": a new program), opened from its row or the list's foot.
   const [programOpen, setProgramOpen] = useState<string | null>(null);
   const programList = programs?.programs ?? [];
@@ -144,11 +149,16 @@ export function YourPlans({
           })}
         </ul>
       ) : null}
-      {/* A plan asked of the coach comes with §8's whole plans: its interview needs a chat the Plan no longer has. */}
+      {/* A plan asked of the coach (§8 §6): the conversation opens with the words written, the athlete's to send. */}
       <div className="plan-rows-foot">
         <button type="button" className="btn btn-small" aria-haspopup="dialog" onClick={() => setProgramOpen("new")}>
           New program…
         </button>
+        {coach ? (
+          <button type="button" className="btn btn-small" onClick={() => coach.open({ request: NEW_PLAN_REQUEST })}>
+            Plan with the coach
+          </button>
+        ) : null}
       </div>
       {programOpen && (programOpen === "new" || editing) ? (
         <ProgramSettingsSheet

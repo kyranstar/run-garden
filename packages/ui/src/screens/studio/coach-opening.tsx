@@ -2,6 +2,7 @@
  * THE COACH'S OPENING SCREEN (the new shape §5: "Coach, opened from the nav"), for a new conversation:
  *
  *   🌱 A middling morning — steady suits today.          ← one coach line from the day's own data (no model call)
+ *   [Ease me back in] [Get me ready for race day]        ← "needs you" chips, when something does (§8 §6; at most two)
  *   [Something for right now] [Plan my week] [I'm sore]  ← starter chips; with something seen, its own
  *   Also waiting · …                                     ← suggestions still open from before, when there are any
  *   OR START SOMETHING YOURSELF
@@ -9,11 +10,13 @@
  *   Build your own · Templates · Browse moves · Log your session (a watch session to log)
  *
  * A chip is the athlete's words: one tap sends it. The box under it all is the conversation's own (coach-conversation).
+ * A "needs you" chip says its `label` and sends its `request` (`GET /api/coach/nudges`: the thread coach's old signals —
+ * a missed session, a return after a gap, a plan's outline week, a race or a plan's end close — read, never spent on).
  */
 import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { api, type CoachAlsoOpenDto } from "@rg/api-client";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { api, type CoachAlsoOpenDto, type CoachNudgeDto } from "@rg/api-client";
 import { LogYourSession } from "../../components/today-program.js";
 import { IconCoachSmall } from "../../icons.js";
 import { AlsoWaiting } from "./also-waiting.js";
@@ -26,6 +29,11 @@ import { TEMPLATES_HREF } from "./templates-model.js";
 
 /** The heading over the ways to start without the coach. */
 export const START_YOURSELF = "Or start something yourself";
+
+/** The "needs you" chips' read (the opening screen's; kept a minute, so an opening shows them at once). */
+export const NUDGES_QUERY = ["coach-nudges"] as const;
+/** At most this many "needs you" chips, before the starters (the server's own cap, held here too). */
+export const NUDGES_SHOWN = 2;
 
 /** The coach's words, left, with its mark: a line of the conversation (the opening's, a turn's answer). */
 export function CoachSays({ children, turn, focusable = false }: { children: ReactNode; turn?: string; focusable?: boolean }) {
@@ -61,6 +69,9 @@ export function CoachOpening({
   const objectives = useQuery({ queryKey: ["objectives"], queryFn: api.listObjectives, staleTime: 60_000, retry: false });
   const objective = (objectives.data?.objectives ?? []).find((o) => o.status === "active")?.title ?? null;
   const chips = starterChips(seeing, { objective });
+  // A failed read is no chips, never a line: the starters stand alone.
+  const nudgeRead = useQuery({ queryKey: NUDGES_QUERY, queryFn: api.coachNudges, retry: false, staleTime: 60_000, placeholderData: keepPreviousData });
+  const nudges: CoachNudgeDto[] = (nudgeRead.data?.nudges ?? []).slice(0, NUDGES_SHOWN);
   const offer = today.data?.watchReviews?.[0] ?? null;
   return (
     <div className="coach-opening">
@@ -68,6 +79,11 @@ export function CoachOpening({
         <p>{openingLine(today.data)}</p>
       </CoachSays>
       <div className="coach-chips" role="group" aria-label="Ways to start">
+        {nudges.map((n) => (
+          <button key={n.id} type="button" className="chip coach-chip coach-chip--needs" disabled={busy} onClick={() => onAsk(n.request)}>
+            {n.label}
+          </button>
+        ))}
         {chips.map((c) => (
           <button key={c} type="button" className="chip coach-chip" disabled={busy} onClick={() => onAsk(c)}>
             {c}

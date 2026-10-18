@@ -5,8 +5,8 @@
  * on the phone, and when Today's card title or its first action is not on the phone's first screen (no banners: the
  * account's own zone, the fixture's "Fixture mode" line hidden).
  * The integrated review's fix round adds: Today on a phone WITH its banners (a device clock in another zone, the
- * calendar paused), a workout sheet's own Ask, a plan's Extend sent to the thread coach (its POST answered here, never
- * a model), and the coach's ● on the nav (a run started on the scripted model, last). Needs the fixture stack (the
+ * calendar paused), a workout sheet's own Ask, a plan's Extend opening the coach with its words written (§8 §6), and
+ * the coach's ● on the nav (a run started on the scripted model, last). Needs the fixture stack (the
  * coach on).
  *
  *   RG_BASE=http://localhost:5282 node apps/web/scripts/shape-shots.mjs
@@ -196,9 +196,8 @@ async function run() {
       await context.close();
     }
 
-    // Extend asks the thread coach, says so in one quiet line, and waits until it answers. The fixture has no plan the
-    // coach made (Extend is a coach plan's), so its run plan is shown here as one; the thread coach's POST is answered
-    // here (no model, nothing sent).
+    // Extend opens the coach with its words written (§8 §6), the athlete's to send. The fixture has no plan the coach
+    // made (Extend is a coach plan's), so its run plan is shown here as one; nothing is sent.
     for (const scheme of ["light", "dark"]) {
       for (const vp of VIEWPORTS) {
         const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height }, colorScheme: scheme, deviceScaleFactor: 2, timezoneId: zone });
@@ -215,7 +214,6 @@ async function run() {
         await page.route((url) => /^\/api\/coach\/plans\/[^/]+\/detail$/.test(url.pathname), (r) =>
           asCoach(r, (b) => (b.plan?.discipline === "run" ? { ...b, plan: { ...b.plan, source: "coach" } } : b)),
         );
-        await page.route((url) => url.pathname === "/api/coach/message", (r) => r.fulfill({ json: { status: "skipped" } }));
         await page.goto(`${BASE}/plan`, { waitUntil: "networkidle" });
         await page.getByRole("heading", { name: "Your plans" }).waitFor({ timeout: 30_000 });
         const runPlan = (await (await context.request.get(`${BASE}/api/coach/plans`)).json()).plans.find((x) => x.discipline === "run");
@@ -224,8 +222,10 @@ async function run() {
         await row.click();
         const sheet = page.getByRole("dialog").first();
         await sheet.getByRole("button", { name: "Extend" }).click();
-        await sheet.locator(".plan-asked").waitFor();
-        await shoot(page, vp, scheme, "7b-plan-sheet-asked-the-thread-coach");
+        const coachSheet = page.getByRole("dialog", { name: "Coach" });
+        await coachSheet.locator(".coach-box textarea").waitFor();
+        console.log(`Extend's words @ ${vp.name} ${scheme}: ${await coachSheet.locator(".coach-box textarea").inputValue()}`);
+        await shoot(page, vp, scheme, "7b-plan-sheet-extend-opens-the-coach");
         await context.close();
       }
     }

@@ -1,5 +1,5 @@
 import { useUnits, useWeightUnit } from "../use-units.js";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner } from "../components.js";
@@ -10,27 +10,21 @@ import { useCoach } from "./studio/coach-ask.js";
 /** How a plan is named in a request: "my Fall Half Block plan" — never "my Base plan plan". */
 const planPhrase = (title: string): string => (/\bplan$/i.test(title.trim()) ? `my ${title.trim()}` : `my ${title.trim()} plan`);
 
-/** The words "Ask about this plan" writes in the conversation's box: the athlete's to send, never sent for them. */
-export function planRequests(title: string): { ask: string } {
-  return { ask: `How is ${planPhrase(title)} going?` };
+/**
+ * The words the sheet's coach actions write in the conversation's box — the athlete's to send, never sent for them:
+ * "Ask about this plan", Extend and Wind down (§8 §6: the conversation works on whole plans now).
+ */
+export function planRequests(title: string): { ask: string; extend: string; windDown: string } {
+  const plan = planPhrase(title);
+  return { ask: `How is ${plan} going?`, extend: `Extend ${plan} by two weeks`, windDown: `Wind down ${plan}` };
 }
 
 /**
- * What Extend and Wind down send the THREAD coach (the integrated review, I4): the conversation can't change a whole
- * plan in this wave (§8), the thread coach can — so they go to it, in its own words as before, and its suggestion lands
- * on Plan with its other cards. No chat to watch: the sheet says so in one quiet line.
- */
-export const THREAD_REQUESTS = {
-  extend: (title: string) => `Extend "${title}" — draft the next weeks in the same shape.`,
-  windDown: (title: string) => `Wind down "${title}" — draft the final taper week.`,
-};
-
-/**
  * THE PLAN SHEET (the new shape §6; the plan "studio" modal before it): one room per plan — where you are, where it is
- * taking you (graphed), what each week holds, and its actions. Extend and Wind down ask the thread coach (its message,
- * its words: `THREAD_REQUESTS`); "Ask about this plan" opens the conversation with the request written; Rename and
- * Retire… are the app's own (the coach retires no plan in this wave: §8). The page routes it by `?plan=<id>`, so links
- * and back work. A plan the retired generator made still opens here.
+ * taking you (graphed), what each week holds, and its actions. Extend, Wind down and "Ask about this plan" open the
+ * conversation with the request written (`planRequests`; §8 §6 — the thread coach has stepped back); Rename and Retire…
+ * are the app's own. The page routes it by `?plan=<id>`, so links and back work. A plan the retired generator made
+ * still opens here.
  */
 export function PlanSheet({
   planId,
@@ -38,8 +32,6 @@ export function PlanSheet({
   onClose,
   onRetire,
   onRename,
-  onAskThread,
-  threadBusy = false,
 }: {
   planId: string;
   plans: CoachPlanDto[];
@@ -50,10 +42,6 @@ export function PlanSheet({
    */
   onRetire: (id: string, source: "coach" | "studio") => Promise<string | null>;
   onRename: (id: string, name: string) => void;
-  /** Send the thread coach a message (Extend, Wind down); none: those two are not offered. */
-  onAskThread?: (body: string) => void;
-  /** The thread coach is thinking (its request out, or its wake running): Extend and Wind down wait. */
-  threadBusy?: boolean;
 }) {
   const units = useUnits();
   const weightUnit = useWeightUnit();
@@ -67,27 +55,6 @@ export function PlanSheet({
   const [confirmingRetire, setConfirmingRetireState] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [retireError, setRetireError] = useState<string | null>(null);
-  /** The thread coach was asked: one quiet line says where its answer will be. */
-  const [askedThread, setAskedThread] = useState(false);
-  // From the tap until the thread coach has answered (it was seen thinking, and is no longer), Extend and Wind down
-  // wait: a second tap would send the request again.
-  const [asking, setAsking] = useState(false);
-  const sawThinking = useRef(false);
-  useEffect(() => {
-    if (!asking) return;
-    if (threadBusy) sawThinking.current = true;
-    else if (sawThinking.current) {
-      sawThinking.current = false;
-      setAsking(false);
-    }
-  }, [asking, threadBusy]);
-  const waiting = asking || threadBusy;
-  const askThread = (body: string) => {
-    if (waiting) return;
-    setAsking(true);
-    onAskThread?.(body);
-    setAskedThread(true);
-  };
   const setConfirmingRetire = (open: boolean) => {
     setRetireError(null);
     setConfirmingRetireState(open);
@@ -130,13 +97,13 @@ export function PlanSheet({
           <>
             {/* "Extend" and "Wind down" are things you do to a block with a
                 planned duration. A container of loose sessions has neither, so
-                it is not offered a taper. */}
-            {(d?.plan ?? plan)?.kind === "loose" || !onAskThread ? null : (
+                it is not offered a taper. Each opens the coach with its words. */}
+            {(d?.plan ?? plan)?.kind === "loose" || !coach ? null : (
               <>
-                <button type="button" className="btn" disabled={waiting} onClick={() => askThread(THREAD_REQUESTS.extend(title))}>
+                <button type="button" className="btn" onClick={() => coach.open({ request: requests.extend })}>
                   Extend
                 </button>
-                <button type="button" className="btn" disabled={waiting} onClick={() => askThread(THREAD_REQUESTS.windDown(title))}>
+                <button type="button" className="btn" onClick={() => coach.open({ request: requests.windDown })}>
                   Wind down
                 </button>
               </>
@@ -205,11 +172,6 @@ export function PlanSheet({
   const footer =
     actions !== null ? (
       <>
-        {askedThread ? (
-          <p className="plan-asked" role="status">
-            Asked your coach. Its suggestion will appear on Plan.
-          </p>
-        ) : null}
         {actions}
         <div id="studio-rename" className="disclosure-body">
           {renaming ? (

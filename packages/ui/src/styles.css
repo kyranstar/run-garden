@@ -11126,6 +11126,13 @@ a.stu-tpl-open:focus-visible::before {
 .coach-chip {
   min-height: var(--tap);
 }
+/* A "needs you" chip (§8 §6): something in the week asks for the athlete — the coach's own green, first in the row.
+   Its words say what; the colour only groups. */
+.coach-chip--needs {
+  border-color: var(--green);
+  background: var(--green-soft);
+  color: var(--green-ink);
+}
 .coach-start {
   display: flex;
   flex-direction: column;
@@ -11275,12 +11282,6 @@ a.stu-tpl-open:focus-visible::before {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-4);
-}
-/* "Asked your coach…": the thread coach was sent a plan's request; one quiet line says where the answer lands. */
-.plan-asked {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--ink-soft);
 }
 /* A move's Add and its Ask, side by side: Add keeps the width. */
 .stu-detail-buttons {

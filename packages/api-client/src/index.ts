@@ -1321,6 +1321,16 @@ export interface CoachConversationDto {
   turns: CoachConversationTurnDto[];
 }
 
+/**
+ * A "needs you" chip (§8 §6): the thread coach's free signals, read when the coach's opening screen asks. `label` is the
+ * chip's words; a tap sends `request` as the athlete's. `id` is stable while its condition holds.
+ */
+export interface CoachNudgeDto {
+  id: string;
+  label: string;
+  request: string;
+}
+
 export interface CoachRunStepResult {
   status: CoachRunStatus;
   /** Step again at `at`; null: nothing to step (finished, stopped, or waiting on the athlete). */
@@ -2183,10 +2193,6 @@ function drainedWatch<T extends { watchDrain?: boolean }>(res: T): T {
 /** Most coach drain requests one approve or Retry fires; the hourly lane runs whatever is left. */
 export const COACH_DRAIN_MAX = 8;
 
-/** Most requests one thread approve that shapes a plan, or one Retire, asks (each answers `remaining` until done,
- * §8 §4): a 40-session plan takes four or five. */
-export const STRUCTURAL_ROUNDS_MAX = 20;
-
 /**
  * Run the coach's queued watch writes — one a request (ruling 3-R11, 2026-10-10): an approve answers `coachDrain`,
  * the banner's Retry `rewritesRetried`, and neither runs the writes itself any more (an approve that did measured 65
@@ -2270,16 +2276,10 @@ export const api = {
   /** A cached read or null — never generates, never spends (System 2). */
   coachReadPeek: (activityId: string) =>
     get<{ read: CoachAnalyzeResult["read"] | null }>(`/api/coach/analyze/${activityId}`),
-  /** Approve a thread proposal. One that shapes a plan is applied a chunk a request (§8 §4): asked again while the
-   * answer says `remaining`, at most STRUCTURAL_ROUNDS_MAX; its watch writes drained once it is done. */
   coachApprove: async (proposalId: string) => {
-    for (let i = 0; i < STRUCTURAL_ROUNDS_MAX; i++) {
-      const res = await post<{ ok: boolean; coachDrain?: boolean; remaining?: boolean }>(`/api/coach/proposals/${proposalId}/approve`);
-      if (res.remaining) continue;
-      if (res.coachDrain) void drainCoach().catch(() => undefined);
-      return res;
-    }
-    throw new Error("approve_unfinished");
+    const res = await post<{ ok: boolean; coachDrain?: boolean }>(`/api/coach/proposals/${proposalId}/approve`);
+    if (res.coachDrain) void drainCoach().catch(() => undefined);
+    return res;
   },
   /** One proposal's status: what a tap whose answer never came back reads before it says anything — and for a designed
    * proposal (with the coach designer on), its manifest: the workouts' `lines` and the changes' (`changes`), each with
@@ -2336,6 +2336,8 @@ export const api = {
     focus?: CoachRunFocus;
     conversationId?: string | null;
   }) => post<CoachRunCreateResult>("/api/coach/runs", body),
+  /** The coach's "needs you" chips: at most two, computed on read, nothing written (404 unless the coach designer is on). */
+  coachNudges: () => get<{ nudges: CoachNudgeDto[] }>("/api/coach/nudges"),
   /** The coach's conversation: the current one, or the one `id` names (404 unless the coach designer is on). */
   coachConversation: (id?: string) =>
     get<CoachConversationDto>(`/api/coach/conversation${id ? `?id=${encodeURIComponent(id)}` : ""}`),
@@ -2375,14 +2377,7 @@ export const api = {
     get<PlanDetailResponse>(`/api/coach/plans/${encodeURIComponent(id)}/detail`),
   coachPlanRename: (id: string, name: string) =>
     post<{ ok: boolean }>(`/api/coach/plans/${id}/rename`, { name }),
-  /** Retire a coach plan: its sessions ahead are taken off a slice a request (§8 §4), asked again while `remaining`. */
-  coachPlanRetire: async (id: string) => {
-    for (let i = 0; i < STRUCTURAL_ROUNDS_MAX; i++) {
-      const res = await post<{ ok: boolean; remaining?: boolean }>(`/api/coach/plans/${id}/retire`);
-      if (!res.remaining) return { ok: res.ok };
-    }
-    throw new Error("retire_unfinished");
-  },
+  coachPlanRetire: (id: string) => post<{ ok: boolean }>(`/api/coach/plans/${id}/retire`),
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
   gardenTimeline: () => get<GardenTimelineResponse>("/api/garden/timeline"),

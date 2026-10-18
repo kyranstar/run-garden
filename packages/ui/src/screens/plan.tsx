@@ -443,14 +443,6 @@ export function RunWorkoutDetail({
   );
 }
 
-/** Client-only id for an optimistic echo — collision-safe enough for a
- * single browser tab composing messages one at a time. */
-let localIdSeq = 0;
-function newLocalId(): string {
-  localIdSeq += 1;
-  return `${Date.now()}-${localIdSeq}`;
-}
-
 /** Turns a failed approve/decline into copy that says what actually
  * happened (audit C17) — a 409 not_pending means the proposal already
  * resolved (expired, or acted on from another tab), NOT that this tap did
@@ -470,9 +462,14 @@ const WAKE_BRIDGE_MS = 15_000;
 
 /**
  * Coach data wiring (Plan B Task B2): one shared ["coach-state"] query feeds
- * the panel AND the week's ghost diffs. On mount, a wake fires only when
- * the server says it's worth it (wakeAdvised) — quiet opens stay free, and
- * the server's single-flight lock makes racing tabs harmless.
+ * the thread coach's cards AND the week's ghost diffs.
+ *
+ * THE PLAN WAKES NO COACH (§8 §6). It used to fire a wake on mount whenever
+ * the server advised one (`wakeAdvised`) — the thread coach's only automatic
+ * spend, about $0.35 a Plan visit. The thread coach has stepped back: what it
+ * left (its pending suggestions, its question) is still read and acted on
+ * here, and nothing is sent to it — Extend, Wind down and a new plan open the
+ * conversation instead. A wake is asked for only by the athlete's own Retry.
  */
 export function usePlanCoach() {
   const qc = useQueryClient();
@@ -522,94 +519,6 @@ export function usePlanCoach() {
     // Settles when the wake FINISHES (minutes), or never. Either is fine —
     // the poll has already carried the reply by then.
     onSettled: invalidate,
-  });
-  const wakeFired = useRef(false);
-  useEffect(() => {
-    if (state.data?.wakeAdvised && !wakeFired.current) {
-      wakeFired.current = true;
-      wakeMut.mutate(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.data?.wakeAdvised]);
-
-  const echo = (localId: string, body: string) => {
-    // Optimistic echo: the athlete's words appear instantly.
-    qc.setQueryData(["coach-state"], (cur: unknown) => {
-      const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
-      if (!c?.messages) return cur;
-      return {
-        ...c,
-        messages: [
-          ...c.messages,
-          { id: localId, role: "user", body, refs: {}, at: new Date().toISOString() },
-        ],
-      };
-    });
-  };
-  const markSendFailed = (localId: string, body: string) => {
-    qc.setQueryData(["coach-state"], (cur: unknown) => {
-      const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
-      if (!c?.messages) return cur;
-      // The echo may already be gone (e.g. a refetch replaced it) — if so,
-      // re-add it rather than silently dropping the failure.
-      if (c.messages.some((m) => m.id === localId)) {
-        return { ...c, messages: c.messages.map((m) => (m.id === localId ? { ...m, failed: true } : m)) };
-      }
-      return {
-        ...c,
-        messages: [...c.messages, { id: localId, role: "user", body, refs: {}, at: new Date().toISOString(), failed: true }],
-      };
-    });
-  };
-  const send = useMutation({
-    mutationFn: (v: { localId: string; body: string }) => api.coachMessage(v.body),
-    onMutate: (v) => {
-      echo(v.localId, v.body);
-      fired();
-    },
-    // Audit C16: a network-failed send used to silently vanish — the draft
-    // was cleared on submit, and `onSettled: invalidate` (which ran even on
-    // error) replaced the cache with the server's truth, which never saw
-    // the message. Only invalidate on success now; on failure, mark the
-    // optimistic echo itself so CoachThread can offer a retry instead of
-    // erasing it.
-    onError: (err, v) => {
-      // Audit C16 residual: an abort can fire AFTER the request reached the
-      // server — the route persists the athlete's message before the wake
-      // spends a second thinking, so an abort doesn't prove the words were
-      // lost the way a network error (never left the browser) does. The send
-      // carries no deadline of its own any more, but a navigation or an
-      // unload still aborts it in flight.
-      // Refetch first and only mark it failed if it's genuinely absent.
-      const isAbort = err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
-      if (isAbort) {
-        void qc.invalidateQueries({ queryKey: ["coach-state"] }).then(() => {
-          const cur = qc.getQueryData(["coach-state"]) as
-            | { messages?: Array<{ role: string; body: string }> }
-            | undefined;
-          const persisted = cur?.messages?.some((m) => m.role === "user" && m.body === v.body);
-          if (persisted) return; // it sent — the refetch already carries it
-          markSendFailed(v.localId, v.body);
-        });
-        return;
-      }
-      markSendFailed(v.localId, v.body);
-    },
-    onSuccess: (res, v) => {
-      // Opportunistic, never depended on — this lands when the wake is done,
-      // long after the poll has shown the reply.
-      // "busy": another wake held the lock past our patience — the message
-      // IS saved server-side, but no reply came. Mark the echo so the
-      // existing retry affordance offers to ask again (audit finding 16).
-      if (res.status === "busy") {
-        markSendFailed(v.localId, v.body);
-        return;
-      }
-      // Out of credits: the words ARE saved and still owed a reply — no retry
-      // mark on the echo; the panel's own line says why and offers Retry.
-      endIfOutOfCredits(res.status);
-      invalidate();
-    },
   });
   const [proposalErrors, setProposalErrors] = useState<Record<string, string>>({});
   const clearProposalError = (id: string) =>
@@ -662,15 +571,6 @@ export function usePlanCoach() {
     outOfCredits: !!state.data?.outOfCredits,
     acting: approve.isPending || decline.isPending,
     proposalErrors,
-    send: (b: string) => send.mutate({ localId: `local-${newLocalId()}`, body: b }),
-    resend: (localId: string, body: string) => {
-      qc.setQueryData(["coach-state"], (cur: unknown) => {
-        const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
-        if (!c?.messages) return cur;
-        return { ...c, messages: c.messages.filter((m) => m.id !== localId) };
-      });
-      send.mutate({ localId: `local-${newLocalId()}`, body });
-    },
     checkIn: () => wakeMut.mutate(true),
     approve: (id: string) => approve.mutate(id),
     decline: (id: string) => decline.mutate(id),
@@ -699,13 +599,11 @@ export function coachPanelProps(
       acting: coach.acting,
       proposalErrors: coach.proposalErrors,
       planned,
-      onSend: coach.send,
       onApprove: coach.approve,
       onDecline: coach.decline,
       onAnswer: coach.answer,
       onDismiss: coach.dismissQuestion,
       onCheckIn: coach.checkIn,
-      onRetrySend: coach.resend,
       outOfCredits: coach.outOfCredits,
       // A check-in: the wake's dossier carries every message still owed a
       // reply, so asking again answers them once the credits are back.
@@ -718,6 +616,9 @@ export function coachPanelProps(
  * The thread coach's last wake lost its work (the integrated review's minors): when the newest message is a receipt
  * that applied nothing, its words — "… Nothing was applied. Ask again …" — for the Plan's coach cards; else none. A
  * message from the athlete after it means they asked again, and the line goes.
+ *
+ * Unused since §8 §6 (the Plan sends the thread coach nothing, so it passes neither line); kept with the thread coach's
+ * code until the owner's clean-up.
  */
 export function nothingAppliedOf(messages: ReadonlyArray<Pick<CoachMessageDto, "role" | "body">>): string | null {
   const last = messages.at(-1);
@@ -727,7 +628,7 @@ export function nothingAppliedOf(messages: ReadonlyArray<Pick<CoachMessageDto, "
 /**
  * The thread coach's reply in words (C's `reply` on its cards): its newest message after the athlete's latest request
  * (Extend or Wind down answered with no suggestion). A receipt is not its words; nothing asked, or nothing said since:
- * none.
+ * none. Unused since §8 §6, as `nothingAppliedOf`.
  */
 export function replyOf(messages: ReadonlyArray<Pick<CoachMessageDto, "role" | "body" | "at">>): { text: string; at: string } | null {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -1029,7 +930,9 @@ export function PlanScreen() {
           />
         )}
         {/* The thread coach's pending suggestions and its question, in the page (no window, no chat box). */}
-        {coachProps ? <ThreadCoachCards {...coachProps} nothingApplied={nothingAppliedOf(coach.state.data?.messages ?? [])} reply={replyOf(coach.state.data?.messages ?? [])} /> : null}
+        {/* Its words to a request the Plan sent (`reply`, `nothingApplied`) are not passed: the Plan sends it none now,
+            and an old one would stay on the page for good (§8 §6). */}
+        {coachProps ? <ThreadCoachCards {...coachProps} /> : null}
         <YourPlans
           plans={coachPlans.data?.plans ?? []}
           programs={programs.data}
@@ -1061,8 +964,6 @@ export function PlanScreen() {
             }
           }}
           onRename={(id, name) => rename.mutate({ id, name })}
-          onAskThread={coach.send}
-          threadBusy={coach.busy}
         />
       ) : null}
 
