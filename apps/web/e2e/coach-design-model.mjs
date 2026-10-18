@@ -52,19 +52,9 @@ function openingOf(messages) {
   return typeof first.content === "string" ? first.content : (first.content ?? []).map((b) => b.text ?? "").join("\n");
 }
 
-/**
- * The review's dimensions: the rubric the reviewer's own block lists (§8 §3: a run's draft is reviewed on the run
- * rubric, any other on the workout rubric — one block each, and submit_review's schema names both, requiring only the
- * dimensions they share), else submit_review's required ones.
- */
-function dimensionsOf(tools, system) {
-  const text = (Array.isArray(system) ? system.map((b) => b.text ?? "").join("\n") : String(system ?? "")) || "";
-  const from = text.indexOf("Score every dimension");
-  const to = text.indexOf("Score by the anchors", from);
-  if (from >= 0 && to > from) {
-    const ids = [...text.slice(from, to).matchAll(/^- ([a-z_]+) — /gm)].map((m) => m[1]);
-    if (ids.length > 0) return ids;
-  }
+/** The review's dimensions, from submit_review's own schema in the request (a run's reviewer is offered the run
+ * rubric's: §8 §3). */
+function dimensionsOf(tools) {
   const t = (tools ?? []).find((x) => x.name === "submit_review");
   return t?.input_schema?.properties?.scores?.required ?? [];
 }
@@ -135,7 +125,7 @@ const server = createServer((req, res) => {
     }
     const role = roleOf(request.system);
     const turn = (request.messages ?? []).filter((m) => m.role === "assistant").length;
-    const answer = (script[role] ?? script.main)(turn, { today: todayOf(request.messages), dimensions: dimensionsOf(request.tools, request.system), role, opening: openingOf(request.messages) });
+    const answer = (script[role] ?? script.main)(turn, { today: todayOf(request.messages), dimensions: dimensionsOf(request.tools), role, opening: openingOf(request.messages) });
     calls.begun += 1;
     let done = false;
     const begunAt = Date.now();

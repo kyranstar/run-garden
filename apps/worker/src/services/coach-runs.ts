@@ -59,6 +59,7 @@ import {
   reviewPacket,
   reviewRubricOf,
   STOPPED_NOTES,
+  submitReviewSchema,
   stoppedNote,
   toolRecords,
   unavailableWhy,
@@ -2517,7 +2518,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   }
   // The call's size: the stored state and the tools, at PROMPT_BYTES_PER_TOKEN (fix wave 3A, A13).
   const model = designModel(env);
-  const tools = offeredTools(deps.tools).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+  const tools = toolSpecs(deps.tools, state);
   const promptTokens = Math.ceil((size + bytes(JSON.stringify(tools))) / PROMPT_BYTES_PER_TOKEN);
   // What a killed call could have cost at most: the whole prompt written to the cache (the dearest input, $5 a million
   // on Opus 5.5 against $4 uncached), at PROMPT_BYTES_PER_TOKEN, and the output at the call's ceiling (a call writes at
@@ -2783,6 +2784,20 @@ async function standing(db: Db, userId: string, runId: string, claimAt: string):
 function offeredTools(tools: DesignTool[]): DesignTool[] {
   const seen = new Set<string>();
   return tools.filter((t) => !seen.has(t.name) && seen.add(t.name));
+}
+
+/**
+ * The tools as the model is offered them: each its name, description and input schema — a run's reviewer's
+ * submit_review with the run rubric's schema (designed runs, §8 §3: every dimension it scores required, as
+ * `parseReview` demands); every other run's as the tool declares them.
+ */
+export function toolSpecs(tools: DesignTool[], state: Pick<RunState, "reviewOf">): Array<{ name: string; description: string; input_schema: Record<string, unknown> }> {
+  const runRubric = state.reviewOf?.rubric === "run";
+  return offeredTools(tools).map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: runRubric && t.name === "submit_review" ? submitReviewSchema("run") : t.inputSchema,
+  }));
 }
 
 /**
@@ -3310,7 +3325,7 @@ function setHooks(s: StepCtx): SetHooks {
 /** What a model call on this run's state could cost at most — as `modelStep` reckons it before its call: the stored
  * state and the tools written to the cache, the output at the run's ceiling. */
 function callWorstMicros(s: StepCtx): number {
-  const tools = offeredTools(s.deps.tools).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+  const tools = toolSpecs(s.deps.tools, s.state);
   const promptTokens = Math.ceil((s.storedBytes + bytes(JSON.stringify(tools))) / PROMPT_BYTES_PER_TOKEN);
   return messagesCostMicros(designModel(s.env), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: promptTokens, outputTokens: s.state.settings.maxTokens });
 }

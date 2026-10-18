@@ -112,9 +112,6 @@ export const reviewerRunId = (designerRunId: string, toolUseId: string): string 
 const DIMENSION_IDS: readonly string[] = REVIEW_DIMENSIONS.map((d) => d.id);
 /** A rubric's dimension ids, in its order (designed runs, §8 §3: a run's are its own). */
 const idsOf = (rubric: ReviewRubric): readonly string[] => reviewDimensions(rubric).map((d) => d.id);
-/** Every rubric's ids, and those every rubric shares: what submit_review's schema names and requires. */
-const ALL_IDS: readonly string[] = [...new Set([...DIMENSION_IDS, ...idsOf("run")])];
-const SHARED_IDS: readonly string[] = DIMENSION_IDS.filter((d) => idsOf("run").includes(d));
 /** The dimensions only a run's rubric has: a review scoring one was given on it. */
 const RUN_ONLY_IDS: readonly string[] = idsOf("run").filter((d) => !DIMENSION_IDS.includes(d));
 
@@ -182,7 +179,8 @@ const reviewInput = z
   })
   .strict();
 
-const ACCEPTABLE_IDS = ALL_IDS.filter((d) => d !== NEVER_ACCEPTED);
+/** A rubric's dimensions a cost the athlete chose may be listed under: all but condition safety. */
+const acceptableIds = (rubric: ReviewRubric): string[] => idsOf(rubric).filter((d) => d !== NEVER_ACCEPTED);
 
 const reviewFix = (ids: readonly string[]): string =>
   `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (${capInWords(REVIEW_NOTE_MAX)}) for each of ${ids.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why } — never ${NEVER_ACCEPTED}.`;
@@ -708,21 +706,23 @@ const SCORE = { type: "integer", minimum: 1, maximum: 5 } as const;
 const NOTE = { type: "string", minLength: 1 } as const;
 const ITEM = { type: "string", minLength: 1 } as const;
 
-export const submitReview: DesignTool = {
-  name: "submit_review",
-  description:
-    "The reviewer's verdict, given once; it ends your run. Every dimension scored 1–5 with a one-line note to the athlete; must-fix: anything at 2 or less, and any guide line or rule no tool checks; the key improvements. A cost the document explains is judged on that explanation. `accepted`, at most 3 { dimension, why }: a cost the athlete chose in their own words — never a must-fix.",
-  inputSchema: {
+/**
+ * submit_review's input schema for a rubric (designed runs, §8 §3): every dimension of THAT rubric named and required —
+ * exactly what `parseReview` demands of it — so the model is never steered to leave one out. A workout's is the schema
+ * as it always was, byte for byte; a run's reviewer is offered the run's (coach-runs.ts `toolSpecs`, from its
+ * `reviewOf.rubric`).
+ */
+export function submitReviewSchema(rubric: ReviewRubric = "workout"): Record<string, unknown> {
+  const ids = idsOf(rubric);
+  return {
     type: "object",
     properties: {
-      // Every rubric's dimensions, those all share required: the draft's own rubric (a run's, or a workout's) is checked
-      // by `parseReview`, its ids in the packet.
-      scores: { type: "object", properties: Object.fromEntries(ALL_IDS.map((d) => [d, SCORE])), required: [...SHARED_IDS], additionalProperties: false },
+      scores: { type: "object", properties: Object.fromEntries(ids.map((d) => [d, SCORE])), required: [...ids], additionalProperties: false },
       notes: {
         type: "object",
-        description: `One line per dimension of the draft's rubric, written to the athlete: ${capInWords(REVIEW_NOTE_MAX)} each.`,
-        properties: Object.fromEntries(ALL_IDS.map((d) => [d, NOTE])),
-        required: [...SHARED_IDS],
+        description: `One line per dimension, written to the athlete: ${capInWords(REVIEW_NOTE_MAX)} each.`,
+        properties: Object.fromEntries(ids.map((d) => [d, NOTE])),
+        required: [...ids],
         additionalProperties: false,
       },
       mustFix: { type: "array", maxItems: MUST_FIX_MAX, description: `Each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
@@ -734,7 +734,7 @@ export const submitReview: DesignTool = {
         items: {
           type: "object",
           properties: {
-            dimension: { type: "string", enum: [...ACCEPTABLE_IDS] },
+            dimension: { type: "string", enum: acceptableIds(rubric) },
             why: { type: "string", minLength: 1, description: "The cost they chose, in a few words to them: \"heavier legs for Sunday's run\"." },
           },
           required: ["dimension", "why"],
@@ -744,7 +744,15 @@ export const submitReview: DesignTool = {
     },
     required: ["scores", "notes", "mustFix", "improvements"],
     additionalProperties: false,
-  },
+  };
+}
+
+export const submitReview: DesignTool = {
+  name: "submit_review",
+  description:
+    "The reviewer's verdict, given once; it ends your run. Every dimension scored 1–5 with a one-line note to the athlete; must-fix: anything at 2 or less, and any guide line or rule no tool checks; the key improvements. A cost the document explains is judged on that explanation. `accepted`, at most 3 { dimension, why }: a cost the athlete chose in their own words — never a must-fix.",
+  // The workout rubric's (a run's reviewer is offered the run's: `submitReviewSchema("run")`).
+  inputSchema: submitReviewSchema("workout"),
   /** The proposal, then the op with the review. */
   statementCost: 2,
   cpuWeight: 0.4,
