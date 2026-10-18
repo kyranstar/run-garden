@@ -58,6 +58,11 @@ describe("a designed run's line", () => {
   it("what the watch does when it's approved: time only with no threshold, not yet when a distance can't be timed, nothing said with writes off", () => {
     const timed: WorkoutDoc = { ...DOC, parts: DOC.parts.slice(0, 2) };
     expect(docWorkoutLines([op(timed)], place, { now: NOW, prefs }, { thresholdSecPerKm: null, corosWritesEnabled: true })[0]!.run!.watch).toBe("time_only");
+    // One step owing its pace is time only; a run whose efforts take no band (by feel) owes none: it goes as designed.
+    const one: WorkoutDoc = { ...DOC, parts: DOC.parts.slice(0, 1) };
+    expect(docWorkoutLines([op(one)], place, { now: NOW, prefs }, { thresholdSecPerKm: null, corosWritesEnabled: true })[0]!.run!.watch).toBe("time_only");
+    const byFeel: WorkoutDoc = { ...DOC, parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", effort: "by_feel", target: { durationSec: 1800 } }] }] };
+    expect(docWorkoutLines([op(byFeel)], place, { now: NOW, prefs }, { thresholdSecPerKm: null, corosWritesEnabled: true })[0]!.run!.watch).toBe("goes");
     expect(docWorkoutLines([op(DOC)], place, { now: NOW, prefs }, { thresholdSecPerKm: null, corosWritesEnabled: true })[0]!.run!.watch).toBe("needs_threshold");
     expect(docWorkoutLines([op(DOC)], place, { now: NOW, prefs }, { thresholdSecPerKm: 289, corosWritesEnabled: false })[0]!.run!.watch).toBeNull();
   });

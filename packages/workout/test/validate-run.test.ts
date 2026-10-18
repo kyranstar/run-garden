@@ -97,6 +97,10 @@ describe("run_pace_far", () => {
     // Within 30 s of either edge is near.
     expect(check(paced("tempo", 330, 340))).toEqual([]);
     expect(codes(check(paced("tempo", 340, 350)))).toEqual(["error:run_pace_far@parts[0].items[0].target.pace"]);
+    // The edges themselves: a middle exactly 30 s past either edge of the band is near; a second more is far.
+    expect(check(paced("tempo", 339, 349))).toEqual([]);
+    expect(check(paced("tempo", 264, 274))).toEqual([]);
+    expect(codes(check(paced("tempo", 263, 273)))).toEqual(["error:run_pace_far@parts[0].items[0].target.pace"]);
   });
 
   it("an effort with no band, or no threshold known, is not judged", () => {
@@ -164,6 +168,8 @@ describe("run_volume_jump", () => {
     expect(codes(issues)).toEqual(["warning:run_volume_jump@parts"]);
     expect(issues[0]!.message).toBe("With this run the week's running comes to 250 minutes, 25% over your last four weeks' average of 200 a week.");
     expect(check(TEMPO, { weekMinutes: 170, fourWeekAvgMinutes: 200 })).toEqual([]);
+    // Just past 10% (221 of 200) is a cost; 10% itself (220, above) is not.
+    expect(codes(check(TEMPO, { weekMinutes: 171, fourWeekAvgMinutes: 200 }))).toEqual(["warning:run_volume_jump@parts"]);
     expect(check(TEMPO, { weekMinutes: 500, fourWeekAvgMinutes: null })).toEqual([]);
     expect(check(TEMPO, { weekMinutes: 500, fourWeekAvgMinutes: 0 })).toEqual([]);
   });
