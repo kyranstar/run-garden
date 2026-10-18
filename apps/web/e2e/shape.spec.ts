@@ -60,6 +60,11 @@ test("Today: the one card's action, the garden drawer, and Ask opening the coach
   await expect(card.locator(".today-eyebrow")).toHaveText(/^[A-Z][\w ]* · \w{3} \d{1,2} \w{3}$/);
   // Gone from the home: the week ribbon, Minimize, the Lately strip.
   await expect(page.locator(".week-ribbon, .dock-collapse, .lately")).toHaveCount(0);
+  // On a phone the athlete's mark is on the picture's top-right (no row of its own); from lg the rail holds Settings.
+  const wide = (page.viewportSize()?.width ?? 0) >= 1024;
+  await expect(page.locator(".athlete-mark")).toHaveCount(1);
+  if (wide) await expect(page.locator(".athlete-mark")).toBeHidden();
+  else await expect(page.locator(".stage-hero .athlete-mark")).toBeVisible();
 
   // The drawer, from the handle at the card's foot.
   await page.getByRole("button", { name: "Your garden" }).click();

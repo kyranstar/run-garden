@@ -10,7 +10,7 @@
  *
  * The Coach button opens the app's one coach sheet (`useCoach().open`), and is not drawn without it.
  */
-import { act, createElement, type ReactElement } from "react";
+import { act, createElement, useContext, type ReactElement } from "react";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppShell, NAV } from "../src/shell.js";
+import { SceneMarkContext } from "../src/scene-mark.js";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,8 +32,11 @@ function wrap(path: string, el: ReactElement, coach: CoachOpener | null): ReactE
   return createElement(QueryClientProvider, { client: client() }, coach ? createElement(CoachOpenContext.Provider, { value: coach }, routed) : routed);
 }
 
+/** The page: on Today, it wears whatever mark the shell hands its picture (scene-mark.ts). */
+const Page = () => createElement("div", { className: "probe-page" }, useContext(SceneMarkContext));
+
 function shellAt(path: string, coach: CoachOpener | null = { open: () => undefined }, who: string | null = "sam@example.test"): string {
-  return renderToStaticMarkup(wrap(path, createElement(AppShell, { who, children: null }), coach));
+  return renderToStaticMarkup(wrap(path, createElement(AppShell, { who, children: createElement(Page) }), coach));
 }
 
 /** One nav's controls, in order, as [kind, href or "", text] — links and buttons alike. */
@@ -131,7 +135,7 @@ describe("three places and one coach", () => {
 });
 
 describe("Settings is the athlete's mark (phones)", () => {
-  it("each place carries the mark at its top right: a link to Settings, named so, showing the athlete's initial", () => {
+  it("each place carries the mark at its top right (Today's on its picture): a link to Settings, named so, showing the athlete's initial", () => {
     for (const path of ["/", "/plan", "/growth"]) {
       const html = shellAt(path);
       const mark = /<a ([^>]*class="athlete-mark"[^>]*)>([\s\S]*?)<\/a>/.exec(html);

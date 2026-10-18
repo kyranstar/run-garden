@@ -538,6 +538,15 @@ body:has(.coach-sheet) .bottom-nav .nav-coach {
   justify-content: flex-end;
   margin: calc(-1 * var(--space-4)) 0 var(--space-2);
 }
+/* On Today the mark sits on the picture's top-right corner instead (scene-mark.ts), as the scene's tool sits at its
+   top-left: its solid chip reads over any scene, in both themes. The row's room goes to the card. */
+.athlete-on-scene {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  margin: 0;
+  z-index: 5;
+}
 .athlete-mark {
   display: inline-flex;
   align-items: center;

@@ -66,25 +66,37 @@ async function run() {
     const zone = (await (await probe.request.get(`${BASE}/api/settings`)).json()).prefs.timezone;
     await probe.close();
 
-    // Today on a phone with NO banners (the fixture's own "Fixture mode" line hidden — production has none — and the
-    // calendar connected): the card's title and its first action on the first screen, above the bar — or it fails.
-    for (const scheme of ["light", "dark"]) {
-      const vp = VIEWPORTS[0];
-      const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height }, colorScheme: scheme, deviceScaleFactor: 2, timezoneId: zone });
-      await context.request.post(`${BASE}/api/dev/fixture-login`);
-      const page = await context.newPage();
-      await page.route((url) => url.pathname === "/api/plan/today", async (r) => {
-        const res = await r.fetch();
-        const body = await res.json();
-        body.sync = { ...body.sync, calendarConnected: true };
-        await r.fulfill({ response: res, json: body });
-      });
-      await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
-      await page.locator("#dock-panel").waitFor();
-      await page.addStyleTag({ content: ".shell-main > .banner { display: none !important; }" });
-      await shoot(page, vp, scheme, "1a-today-no-banners");
-      await assertAboveFold(page, `1a-today-no-banners @ ${vp.name} ${scheme}`);
-      await context.close();
+    // Today on a phone with NO banners, then with ONE (the calendar line — production usually shows one: it or the
+    // watch-version line): the card's title and its first action on the first screen, above the bar — or it fails. The
+    // fixture's own "Fixture mode" line is hidden (production has none), and its sync is read as in order (the fixture
+    // keeps failed writes from the e2e runs: their line is a banner of its own).
+    for (const [name, calendarConnected] of [["1a-today-no-banners", true], ["1d-today-one-banner", false]]) {
+      for (const scheme of ["light", "dark"]) {
+        const vp = VIEWPORTS[0];
+        const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height }, colorScheme: scheme, deviceScaleFactor: 2, timezoneId: zone });
+        await context.request.post(`${BASE}/api/dev/fixture-login`);
+        const page = await context.newPage();
+        await page.route((url) => url.pathname === "/api/plan/today", async (r) => {
+          const res = await r.fetch();
+          const body = await res.json();
+          body.sync = { ...body.sync, calendarConnected };
+          await r.fulfill({ response: res, json: body });
+        });
+        await page.route((url) => url.pathname === "/api/sync/status", async (r) => {
+          const res = await r.fetch();
+          const body = await res.json();
+          const cloud = body.cloud ? { ...body.cloud, error: null } : body.cloud;
+          await r.fulfill({ response: res, json: { ...body, state: "in_sync", pendingCount: 0, issueCount: 0, contentStaleCount: 0, cloud } });
+        });
+        await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+        await page.locator("#dock-panel").waitFor();
+        await page.addStyleTag({ content: ".shell-main > .banner { display: none !important; }" });
+        const banners = await page.locator(".garden-plumbing .banner, .garden-plumbing [role='status']").count();
+        console.log(`${name} @ ${vp.name} ${scheme}: ${banners} plumbing line(s)`);
+        await shoot(page, vp, scheme, name);
+        await assertAboveFold(page, `${name} @ ${vp.name} ${scheme}`);
+        await context.close();
+      }
     }
 
     for (const scheme of ["light", "dark"]) {

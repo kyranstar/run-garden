@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type DisciplineBalance, type TodayResponse, type WorkoutDto } from "@rg/api-client";
@@ -43,6 +43,7 @@ import {
   useRefusedReviews,
 } from "../components/today-program.js";
 import { useSignedInUserId } from "../components/outbox-sync.js";
+import { SceneMarkContext } from "../scene-mark.js";
 import { watchReviewQuery } from "../components/watch-review-sheet.js";
 import { SessionsInProgress } from "../components/sessions-in-progress.js";
 import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
@@ -981,6 +982,7 @@ export function GardenBody({
   parts: GardenParts;
   stageRef?: (el: HTMLElement | null) => void;
 }) {
+  const sceneMark = useContext(SceneMarkContext);
   return (
     <div className="garden-home">
       {/* The stage's largest type is the condition word, not this — the <h1>
@@ -993,6 +995,8 @@ export function GardenBody({
           <div className="stage-scrim stage-scrim-top" aria-hidden="true" />
           <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
           <div className="hud-topleft">{parts.condition}</div>
+          {/* The athlete's mark at the picture's top-right, on a phone (the shell hands it over: scene-mark.ts). */}
+          {sceneMark}
         </div>
         {/* The celebration gets its own moment — centred on the stage, after
             the picture in the reading column below it. */}

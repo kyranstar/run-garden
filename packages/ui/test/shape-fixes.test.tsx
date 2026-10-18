@@ -13,7 +13,7 @@
  *
  * Synthetic data only.
  */
-import { act, createElement, type ReactElement } from "react";
+import { act, createElement, useContext, type ReactElement } from "react";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,8 @@ import { THREAD_REQUESTS, PlanSheet } from "../src/screens/plan-sheet.js";
 import { NEW_PLAN_THREAD_REQUEST, YourPlans } from "../src/screens/plan-cards.js";
 import { TimezoneNudge } from "../src/screens/today.js";
 import { CoachOpenContext, CoachSeeingContext, SeeingRegistry, type CoachOpener } from "../src/screens/studio/coach-ask.js";
+import { AppShell } from "../src/shell.js";
+import { SceneMarkContext } from "../src/scene-mark.js";
 
 vi.mock("@rg/garden-renderer", () => ({ GardenScene: () => null }));
 
@@ -116,6 +118,60 @@ describe("I2 — the coach's ● is seen on the green pill", () => {
     }
     expect(baseRule(".nav-coach-mark")).toContain("position: absolute");
     expect(baseRule(".nav-coach-pill")).toContain("position: relative");
+  });
+});
+
+describe("the athlete's mark on Today's picture (phones; the lead's follow-up to I1)", () => {
+  // The page a place renders: here, whatever the shell hands the picture.
+  const Probe = () => createElement("div", { "data-probe": "" }, useContext(SceneMarkContext));
+  const shellAt = (path: string) =>
+    renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, enabled: false } } }) },
+        createElement(MemoryRouter, { initialEntries: [path] }, createElement(AppShell, { who: "sam@example.test", children: createElement(Probe) })),
+      ),
+    );
+
+  it("on Today the shell hands its mark to the picture, and draws no row of its own; the other places keep the row", () => {
+    const today = shellAt("/");
+    expect(today).toMatch(/<div data-probe=""><div class="athlete-row athlete-on-scene"><a [^>]*class="athlete-mark"/);
+    expect(today.match(/class="athlete-mark"/g)).toHaveLength(1);
+    for (const path of ["/plan", "/growth"]) {
+      const html = shellAt(path);
+      expect(html, path).toMatch(/<div class="athlete-row"><a [^>]*class="athlete-mark"/);
+      expect(html, path).toContain('<div data-probe=""></div>');
+    }
+  });
+
+  it("Today's picture carries it, over the scene", () => {
+    const marked = Object.fromEntries(GARDEN_PART_KEYS.map((k) => [k, createElement("i", { "data-part": k })])) as unknown as GardenParts;
+    const html = renderToStaticMarkup(
+      createElement(SceneMarkContext.Provider, { value: createElement("b", { "data-mark": "" }) }, createElement(GardenBody, { parts: marked })),
+    );
+    const hero = html.slice(html.indexOf('class="stage-hero"'), html.indexOf('class="hud-dock"'));
+    expect(hero).toContain("data-mark");
+    // Without a mark handed to it (a page outside the shell), nothing is drawn for it.
+    expect(renderToStaticMarkup(createElement(GardenBody, { parts: marked }))).not.toContain("athlete");
+  });
+
+  it("at the picture's top-right, a 44 px target, a solid chip whose letter reads in both themes; gone at lg with the row", () => {
+    const at = baseRule(".athlete-on-scene");
+    for (const decl of ["position: absolute", "top: var(--space-4)", "right: var(--space-4)", "margin: 0"]) expect(at).toContain(decl);
+    expect(at).toMatch(/z-index: \d+/);
+    expect(baseRule(".athlete-mark")).toContain("min-width: var(--tap)");
+    expect(baseRule(".athlete-mark")).toContain("min-height: var(--tap)");
+    const chip = baseRule(".athlete-mark > span");
+    const [bg, ink, edge] = [tokenOf(chip, "background"), tokenOf(chip, "color"), tokenOf(chip, "border")];
+    expect([bg, ink, edge]).toEqual(["--bg-raised", "--ink", "--border-strong"]);
+    for (const [theme, t] of [["light", light], ["dark", dark]] as const) {
+      expect(ratio(t[ink!]!, t[bg!]!), `${theme}: the letter on its chip`).toBeGreaterThanOrEqual(4.5);
+    }
+    expect(lg).toMatch(/\.athlete-row \{\s*display: none;/);
+  });
+
+  it("no empty box for a restore that isn't there: the row's room is the page's", () => {
+    expect(shellAt("/plan")).not.toContain('<div style="margin-bottom:var(--space-6)"></div>');
   });
 });
 

@@ -9,6 +9,7 @@ import { CoachNavMark } from "./screens/studio/run-keeper.js";
 import { useCorosReadNow } from "./screens/use-coros-read.js";
 import { RestorePendingNotice } from "./screens/restore-notice.js";
 import { MusicDock, useMusicOn } from "./music/dock.js";
+import { SceneMarkContext } from "./scene-mark.js";
 
 /**
  * THE NEW SHAPE'S NAV (2026-10-17 design §3): three places — Today, Plan, Growth — and one coach in the middle. The
@@ -78,13 +79,14 @@ function PlaceLink({ item }: { item: (typeof NAV)[number] }) {
 /**
  * Settings, on a phone: the athlete's mark at the top right of each place — their address's first letter in a round
  * 44 px target, or the settings glyph while no address is known — on a row of its own above the page, so it never sits
- * over a banner or a place's own title row (Plan's COROS check, Growth's Month / Season). From lg the rail's foot holds
- * Settings instead.
+ * over a banner or a place's own title row (Plan's COROS check, Growth's Month / Season). On Today it sits on the
+ * picture's top-right corner instead (`onScene`, handed over through `SceneMarkContext`), so the card gains the row's
+ * room. From lg the rail's foot holds Settings instead.
  */
-function AthleteMark({ who }: { who: string | null | undefined }) {
+function AthleteMark({ who, onScene = false }: { who: string | null | undefined; onScene?: boolean }) {
   const initial = who?.trim().charAt(0).toUpperCase() ?? "";
   return (
-    <div className="athlete-row">
+    <div className={onScene ? "athlete-row athlete-on-scene" : "athlete-row"}>
       <Link className="athlete-mark" to="/settings" aria-label="Settings">
         {initial ? <span aria-hidden="true">{initial}</span> : <IconSettings />}
       </Link>
@@ -127,6 +129,8 @@ export function AppShell({
   useCorosReadNow();
   const immersive = pathname === "/";
   const wide = isWide(pathname);
+  // The athlete's mark: a row of its own above each place — on Today, the picture's to wear (scene-mark.ts).
+  const mark = PLACES.has(pathname) ? <AthleteMark who={who} onScene={immersive} /> : null;
   // The music dock (Spotify): on only once the owner's Client ID is set (the server answers it); off, no room is kept.
   const music = useMusicOn();
   return (
@@ -146,7 +150,7 @@ export function AppShell({
       <main
         className={`shell-main${immersive ? " shell-main--immersive" : ""}${wide ? " shell-main--wide" : ""}`}
       >
-        {PLACES.has(pathname) ? <AthleteMark who={who} /> : null}
+        {immersive ? null : mark}
         {staging ? (
           <div className="banner banner-info" style={{ marginBottom: "var(--space-6)" }} role="status">
             Staging
@@ -159,12 +163,12 @@ export function AppShell({
         ) : null}
         {/* Settings carries the same notice on its Data card, beside the file
             picker "Restore again" needs. */}
-        {pathname !== "/settings" ? (
+        {pathname !== "/settings" && restore ? (
           <div style={{ marginBottom: "var(--space-6)" }}>
             <RestorePendingNotice restore={restore} onRestoreAgain={() => navigate("/settings#your-data")} />
           </div>
         ) : null}
-        {children}
+        <SceneMarkContext.Provider value={immersive ? mark : null}>{children}</SceneMarkContext.Provider>
         {/* Room under the page's last control for the dock's pill, below lg (at lg it sits in the rail's corner). */}
         {music ? <div className="music-dock-room" aria-hidden="true" /> : null}
       </main>
