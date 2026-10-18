@@ -226,6 +226,10 @@ export function runCtxOf(raw: unknown): RunCtx {
 
 // ── The approved run's row (`createDesignedRun`) ────────────────────────────────────────────────────────────────────
 
+/** The fingerprint a designed run's row is seeded with until its create lands (the verify writes the wire's own): a value
+ * no COROS read could be mistaken for (`isUpstreamFingerprint`), by which the plan's coverage knows the row. */
+export const DESIGNED_RUN_SEED = "designed-run";
+
 /** A stage row as `planned_workout_stages` takes it. */
 type StageRow = typeof plannedWorkoutStages.$inferInsert;
 
@@ -374,7 +378,7 @@ export async function createDesignedRun(
     effectiveDate: date,
     effectiveTime: input.time ?? windowTimeFor({ category: derived.category, date }, ctx.prefs),
     // A seed no COROS read could be mistaken for (`isUpstreamFingerprint`): the create's verify writes the wire's own.
-    sourceContentFingerprint: "designed-run",
+    sourceContentFingerprint: DESIGNED_RUN_SEED,
     sourceVersion: null,
     sourceEstimatedDurationSeconds: null,
     fallbackEstimatedDurationSeconds: seconds,

@@ -31,6 +31,7 @@ import {
   looksLikeCodeTitle,
   newId,
   nowInstant,
+  RUN_EFFORT_LABELS,
   sportLabel,
   startOfIsoWeek,
   syncAction,
@@ -40,6 +41,7 @@ import {
   WATCH_CREATE_JOB_KINDS,
   type LocalDate,
   type PlannedWorkout,
+  type RunEffort,
   type SessionLead,
   type SyncAction,
   type UserPreferences,
@@ -78,6 +80,7 @@ import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
+import { DESIGNED_RUN_SEED } from "../services/designed-runs.js";
 import { reopenedDocColumns } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -172,11 +175,48 @@ function needsRunStages(w: PlannedRow, contentRewritten: boolean): boolean {
  *
  * `null` = nothing to say: the content is COROS's own, or it is a rest day.
  */
+/** A stage row as the coverage reads it: how it is measured and targeted, its label, and — for a designed run's
+ * repeats — its place in the structure. */
+interface CoverageStage {
+  durationType: string;
+  targetType: string | null;
+  label: string | null;
+  id?: string;
+  parentStageId?: string | null;
+  kind?: string;
+  repeatCount?: number | null;
+}
+
+/**
+ * A DESIGNED RUN's shape (§8 §3) from its stage rows, until its create lands (a row the approve wrote: its seed
+ * fingerprint, `DESIGNED_RUN_SEED`; once verified, COROS holds it and the coverage says nothing): its steps written out
+ * as the watch gets them (a repeat's children its count of times), a distance going as its time; a step whose effort a
+ * threshold would pace (its label) with no band, owed one; and with no threshold-paced step anywhere, a distance with no
+ * pace can't be timed — the wire's own rules (`runWatchSteps`), read off the rows.
+ */
+function designedRunShape(stages: ReadonlyArray<CoverageStage>): WatchSessionShape {
+  const children = (id: string | undefined) => stages.filter((c) => id !== undefined && c.parentStageId === id);
+  const leaves = stages
+    .filter((s) => !s.parentStageId)
+    .flatMap((s) => (s.kind === "repeat" ? Array.from({ length: Math.max(1, s.repeatCount ?? 1) }, () => children(s.id)).flat() : [s]));
+  const banded = (s: CoverageStage) => s.label !== null && PACED_EFFORT_WORDS.has(s.label);
+  const thresholdKnown = leaves.some((s) => banded(s) && s.targetType === "pace");
+  return {
+    discipline: "run",
+    runBlocks: leaves.map((s) => (s.durationType === "distance" ? "distance" : "duration")),
+    paceTargetsOwed: leaves.filter((s) => banded(s) && s.targetType !== "pace").length,
+    exercises: [],
+    distanceAsTime: { untimed: thresholdKnown ? 0 : leaves.filter((s) => s.durationType === "distance" && s.targetType !== "pace").length },
+  };
+}
+/** The efforts a threshold paces, as a designed run's stage labels say them (`RUN_EFFORT_LABELS`, lower case). */
+const PACED_EFFORT_WORDS = new Set(["recovery", "easy", "long", "steady", "tempo", "threshold", "interval"].map((e) => RUN_EFFORT_LABELS[e as RunEffort].toLowerCase()));
+
 function watchShapeOfRow(
   w: PlannedRow,
   contentRewritten: boolean,
   /** This row's stage rows, when loaded (see `needsRunStages`). */
-  stages: ReadonlyArray<{ durationType: string; targetType: string | null; label: string | null }>,
+  stages: ReadonlyArray<CoverageStage>,
 ): WatchSessionShape | null {
   if (!authoredHere(w, contentRewritten) || w.category === "rest") return null;
   const discipline = w.sport === "strength" ? "lift" : w.sport === "yoga" ? "mobility" : "run";
@@ -208,6 +248,7 @@ function watchShapeOfRow(
       }),
     };
   }
+  if (w.sourceContentFingerprint === DESIGNED_RUN_SEED) return designedRunShape(stages);
   return {
     discipline,
     runBlocks: stages.map((s) => (s.durationType === "distance" ? "distance" : "duration")),
@@ -228,7 +269,7 @@ function watchShapeOfRow(
 function watchCoverageOfRow(
   w: PlannedRow,
   contentRewritten: boolean,
-  stages: ReadonlyArray<{ durationType: string; targetType: string | null; label: string | null }>,
+  stages: ReadonlyArray<CoverageStage>,
 ): WatchCoverageView | undefined {
   const shape = watchShapeOfRow(w, contentRewritten, stages);
   if (!shape) return undefined;
@@ -304,17 +345,22 @@ async function loadWorkoutViews(
                 durationType: plannedWorkoutStages.durationType,
                 targetType: plannedWorkoutStages.targetType,
                 label: plannedWorkoutStages.label,
+                // A designed run's repeats (§8 §3): written out as the watch gets them.
+                id: plannedWorkoutStages.id,
+                parentStageId: plannedWorkoutStages.parentStageId,
+                kind: plannedWorkoutStages.kind,
+                repeatCount: plannedWorkoutStages.repeatCount,
               })
               .from(plannedWorkoutStages)
               .where(inArray(plannedWorkoutStages.workoutId, chunk)),
           ),
         )
       : [];
-  const stagesByWorkout = new Map<string, Array<{ durationType: string; targetType: string | null; label: string | null }>>();
+  const stagesByWorkout = new Map<string, CoverageStage[]>();
   for (const rows of stageChunks) {
     for (const s of rows) {
       const list = stagesByWorkout.get(s.workoutId) ?? [];
-      list.push({ durationType: s.durationType, targetType: s.targetType, label: s.label });
+      list.push({ durationType: s.durationType, targetType: s.targetType, label: s.label, id: s.id, parentStageId: s.parentStageId, kind: s.kind, repeatCount: s.repeatCount });
       stagesByWorkout.set(s.workoutId, list);
     }
   }

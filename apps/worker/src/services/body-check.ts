@@ -66,9 +66,13 @@ import {
   coachSessionSchema,
   docOriginRow,
   humanizeWorkoutTitle,
+  isRunDoc,
+  parseStoredWorkoutDoc,
+  runWatchSessionOf,
   SESSION_MODES,
   watchAddressOf,
   type CoachSession,
+  type RunWatchSession,
   type SessionMode,
   type UserPreferences,
 } from "@rg/domain";
@@ -664,6 +668,15 @@ function planRunSession(columns: RunColumns, stages: readonly StageRow[]): Coach
   return parsed.success ? parsed.data : null;
 }
 
+/** A designed run's session for the watch (§8 §3): its document's, when the row holds the coach's approved run (a
+ * proposal's, every item a run segment or a rest); else null — a plan run goes back as its stage rows say. */
+function designedRunSession(docText: string | null): RunWatchSession | null {
+  const doc = parseStoredWorkoutDoc(docText);
+  if (!doc || doc.basedOn?.kind !== "proposal" || !isRunDoc(doc)) return null;
+  const made = runWatchSessionOf(doc);
+  return "session" in made ? made.session : null;
+}
+
 /** The athlete's latest threshold pace (the applier's own read): what a run's pace bands are made from. */
 async function thresholdPace(db: Db, userId: string): Promise<number | undefined> {
   const [r] = await db
@@ -793,7 +806,9 @@ async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx
   let coachDrain = false;
   if (reached) {
     await recordIntent(db, { userId, targetKind: "workout", targetId: row.id, kind: "content", source: "undo" });
-    const plan = planRunSession(b.columns, b.stages);
+    // A designed run (§8 §3) goes back as it was designed — its own session, through the builder its create used — never
+    // as its stage rows flattened.
+    const plan = designedRunSession(b.doc) ?? planRunSession(b.columns, b.stages);
     if (plan) {
       const out = await enqueueContentConvergence(db, {
         userId,
