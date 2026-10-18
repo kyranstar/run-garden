@@ -116,12 +116,12 @@ describe("the week first", () => {
     expect(line(-1, "taper")).toBe("Aug 10–16 · 1 of 6 done");
   });
 
-  it("the plan the line names: the one block holding the week (two or more: how many — review-3), none when no block holds it", () => {
+  it("the plan the line names: the week's main plan (no sessions told: a tie, to the earlier start — review-3's re-check), none when no block holds it", () => {
     const block = (id: string, startDate: string, endDate: string): CoachPlanDto => ({ ...runPlan, id, name: id, startDate, endDate });
     const plans = [block("Short", "2026-08-03", "2026-08-30"), block("Long", "2026-07-13", "2026-10-04"), block("Later", "2026-09-07", "2026-11-01")];
-    expect(weekPlanName(plans, "2026-08-10")).toBe("2 plans");
+    expect(weekPlanName(plans, "2026-08-10")).toBe("Long");
     expect(weekPlanName(plans, "2026-10-26")).toBe("Later");
-    expect(weekPlanName(plans, "2026-09-14")).toBe("2 plans");
+    expect(weekPlanName(plans, "2026-09-14")).toBe("Long");
     expect(weekPlanName(plans, "2026-11-09")).toBeNull();
     // A block that starts mid-week holds that week; one that ended the Sunday before does not.
     expect(weekPlanName([block("Midweek", "2026-08-12", "2026-08-30")], "2026-08-10")).toBe("Midweek");
@@ -138,9 +138,9 @@ describe("the week first", () => {
     const line = /<button type="button" class="plan-week-line"[^>]*>([\s\S]*?)<\/button>/.exec(html);
     expect(line).not.toBeNull();
     expect(line![1]!.replace(/<[^>]+>/g, "")).toBe("Aug 10–16 · Fall Half Block, week 5 of 12 · 1 of 6 done · Race in 24 days");
-    // Two plans holding the week (review-3): how many, and no week count — the count is one block's.
-    const two = renderToStaticMarkup(wrap(createElement(WeekView, { ...weekProps, week: week(), planName: "2 plans", planWeek: false, race: null }), null));
-    expect(/<button type="button" class="plan-week-line"[^>]*>([\s\S]*?)<\/button>/.exec(two)![1]!.replace(/<[^>]+>/g, "")).toBe("Aug 10–16 · 2 plans · 1 of 6 done");
+    // Two plans holding the week (review-3's re-check): the main one, no count of another's, "+1" for the other.
+    const two = renderToStaticMarkup(wrap(createElement(WeekView, { ...weekProps, week: week(), planName: "Fall Half Block", planWeekOf: null, planMore: 1, race: null }), null));
+    expect(/<button type="button" class="plan-week-line"[^>]*>([\s\S]*?)<\/button>/.exec(two)![1]!.replace(/<[^>]+>/g, "")).toBe("Aug 10–16 · Fall Half Block +1 · 1 of 6 done");
     // The plan's week was a pill of its own; it is the line's now.
     expect(html).not.toContain("pill pill-neutral num");
   });

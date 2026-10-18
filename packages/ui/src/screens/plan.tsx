@@ -941,8 +941,7 @@ export function PlanScreen() {
             onOpenWorkout={openWorkout}
             onGhostTap={onGhostTap}
             onBrief={() => setBriefOpen(true)}
-            planName={weekPlan(activePlans, week.data.weekStart).name}
-            planWeek={weekPlan(activePlans, week.data.weekStart).ownWeek}
+            {...weekPlan(activePlans, week.data.weekStart, week.data)}
             race={race}
           />
         )}

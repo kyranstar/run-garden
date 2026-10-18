@@ -529,6 +529,8 @@ function workoutDto(
     origin: w.origin ?? null,
     contentState: w.contentState ?? null,
     programId: appAuthoredRow(w) ? w.planId : null,
+    // The plan the row is in, whatever made it: the week's line names the plan holding most of the week (review-3).
+    planId: w.planId,
     // Absent for an import: its payload is what it was before the field.
     ...(appMadeRow(w) ? { appMade: true as const } : {}),
     // Lift/mobility prescription, formatted once here so the sheet can't

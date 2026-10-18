@@ -644,6 +644,10 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     expect(body.plannedSeconds).toBe(2400 + 3600 + 5400);
     expect(body.weekIndex).toBe(5);
     expect(body.weekTotal).toBe(12);
+    // Each row says the plan it is in (review-3: the week's line names the plan holding most of the week).
+    const rows = (body.days as Array<{ workouts: Array<{ planId?: unknown }> }>).flatMap((d) => d.workouts);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(typeof r.planId).toBe("string");
     expect((body.focus as { text: string }).text).toContain("Saturday");
     expect(body.adventureDays).toBe(0);
   });

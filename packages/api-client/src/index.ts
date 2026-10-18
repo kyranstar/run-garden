@@ -150,6 +150,8 @@ export interface WorkoutDto {
   contentState?: "outline" | "built" | "started" | "done" | null;
   /** The program an app session belongs to (a Studio or template row: the account's Studio programme); null otherwise. */
   programId?: string | null;
+  /** The plan the row is in — a coach block, a watch plan, a programme — whatever made it. Absent from an older server. */
+  planId?: string;
   /**
    * The app made this workout: one of its own sessions (a programme's slot, an on-demand session, a Studio or template
    * workout) or one the thread coach created. Absent for anything else — an import, and a COROS session the coach
