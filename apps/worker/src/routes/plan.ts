@@ -199,7 +199,8 @@ function designedRunShape(stages: ReadonlyArray<CoverageStage>): WatchSessionSha
   const leaves = stages
     .filter((s) => !s.parentStageId)
     .flatMap((s) => (s.kind === "repeat" ? Array.from({ length: Math.max(1, s.repeatCount ?? 1) }, () => children(s.id)).flat() : [s]));
-  const banded = (s: CoverageStage) => s.label !== null && PACED_EFFORT_WORDS.has(s.label);
+  // A recovery goes bare (`runStepBand`, review-2 M1): never owed a band. A warm-up at recovery effort is a warm-up.
+  const banded = (s: CoverageStage) => s.kind !== "recovery" && s.label !== null && PACED_EFFORT_WORDS.has(s.label);
   const thresholdKnown = leaves.some((s) => banded(s) && s.targetType === "pace");
   return {
     discipline: "run",

@@ -157,7 +157,7 @@ describe("approving a designed run", () => {
       ["warmup", null, 600, 349, 409, "easy"],
       ["repeat", 3, null, null, null, null],
       ["work", null, 480, 299, 314, "tempo"],
-      ["recovery", null, 120, 379, 439, "recovery"],
+      ["recovery", null, 120, null, null, "recovery"],
       ["cooldown", null, 600, 349, 409, "easy"],
     ]);
     expect(stages[2]!.parentStageId).toBe(stages[1]!.id);

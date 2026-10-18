@@ -16,9 +16,10 @@
  * validator refuses both first), and more than the watch's steps once the repeats are written out (`too_many_steps`).
  *
  * THE STEPS (`runWatchSteps`): the repeats written out step by step (a rest between rounds after each round but the
- * last), at most RUN_WATCH_MAX_STEPS. Each step's pace band is the one the coach wrote (`asked`), else its effort's from
- * the threshold (`paceBandFor`, the one function the card, the validator and the wire share; `threshold`), else none —
- * by feel, strides, hills, a race pace with no distance, or no threshold known. A distance goes as its time at its
+ * last), at most RUN_WATCH_MAX_STEPS. Each step's pace band (`runStepBand`) is the one the coach wrote (`asked`), else
+ * its effort's from the threshold (`paceBandFor`, the one function the card, the validator and the wire share;
+ * `threshold`), else none — a recovery (review-2 M1), by feel, strides, hills, a race pace with no distance, or no
+ * threshold known. A distance goes as its time at its
  * band's middle (`conversionPaceFor`: an effort with no band borrows the nearest one's, for its time only); with no
  * threshold and no pace asked a distance can't be timed (`unresolved`) and the run can't go to the watch. THE PREVIEW
  * IS THE WIRE: the run card's steps and the program `buildRunWatchProgram` writes are this one function's output.
@@ -180,6 +181,10 @@ export interface RunWatchResolved {
  * wire read this one function.
  */
 export function runStepBand(s: RunWatchStep, thresholdSecPerKm: number | null | undefined): { band: PaceBand | null; from: "asked" | "threshold" | null } {
+  // A RECOVERY GOES BARE (review-2 M1): on the watch a closed band through a recovery nags a walked or shuffled one
+  // ("too slow"), the thread coach's rests have always gone bare, and a band on an exerciseType 4 step is a shape no
+  // capture holds. A named pace still times a recovery's distance (`runWatchSteps`); it is just not a target.
+  if (s.role === "recovery") return { band: null, from: null };
   if (s.pace) return { band: s.pace, from: "asked" };
   const band = s.effort ? paceBandFor(s.effort, thresholdSecPerKm, s.target.kind === "distance" ? { distanceM: s.target.meters } : {}) : null;
   return { band, from: band ? "threshold" : null };
@@ -197,7 +202,7 @@ export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresh
     const distanceM = s.target.kind === "distance" ? s.target.meters : undefined;
     const asked = s.pace ?? null;
     const { band, from } = runStepBand(s, thresholdSecPerKm);
-    if (from === null && s.effort && paceBandFor(s.effort, SOME_THRESHOLD, distanceM !== undefined ? { distanceM } : {})) paceOwed += 1;
+    if (from === null && s.role !== "recovery" && s.effort && paceBandFor(s.effort, SOME_THRESHOLD, distanceM !== undefined ? { distanceM } : {})) paceOwed += 1;
     const mid = asked ? (asked.fastSecPerKm + asked.slowSecPerKm) / 2 : s.effort ? conversionPaceFor(s.effort, thresholdSecPerKm, distanceM !== undefined ? { distanceM } : {}) : null;
     let secs: number | null;
     if (s.target.kind === "time") {
@@ -224,7 +229,8 @@ export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresh
     else if (source === null) return; // a rest between rounds: standing
     else if (!source.effort) return; // a standing rest
     else {
-      const mid = r.pace ? (r.pace.fastSecPerKm + r.pace.slowSecPerKm) / 2 : conversionPaceFor(source.effort, thresholdSecPerKm);
+      const p = r.pace ?? source.pace ?? null; // a recovery's named pace times it, though it carries no band
+      const mid = p ? (p.fastSecPerKm + p.slowSecPerKm) / 2 : conversionPaceFor(source.effort, thresholdSecPerKm);
       meters = mid ? meters + ((r.seconds ?? 0) / mid) * 1000 : null;
     }
   };

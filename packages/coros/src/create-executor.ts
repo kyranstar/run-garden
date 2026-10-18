@@ -380,11 +380,15 @@ export type RunBlockRole = "warmup" | "work" | "cooldown" | "recovery";
  * proved plain English round-trips, so the words go on the wire directly).
  *
  * `originId`: the catalog ids are spike-verified for warmup and work ONLY
- * (COROS_WRITE_PROTOCOL.md TEST B). No cooldown/recovery run-catalog id has
- * ever been observed on this account — the synced catalog is sportType 4
- * only, and COROS's own run programs carry no `originId` at all — so the
- * generic work id rides along and the ROLE is carried by `exerciseType`,
- * which is the field the read path actually reads.
+ * (COROS_WRITE_PROTOCOL.md TEST B), and the app's cool-down and recovery steps
+ * carry the work id with the ROLE in `exerciseType`, the field the read path
+ * reads. COROS's OWN programs do carry originIds for those roles
+ * (docs/reports/coros-inspect-2026-08-02.json: 425895456971866112 for a
+ * cool-down, T1122, and 425895398452936705 for a recovery, T1123), or "0" with
+ * a custom name in its sample workouts — so the app's combination (role 3 or 4
+ * with the work id) is one no capture holds (review-2 M3). Left as it has been
+ * written since before §8; the supervised live check reads what the watch
+ * makes of it.
  */
 const RUN_ROLE_WIRE: Record<RunBlockRole, { exerciseType: number; name: string; originId: string }> = {
   warmup: { exerciseType: 1, name: "Warm up", originId: RUN_WARMUP_ORIGIN_ID },

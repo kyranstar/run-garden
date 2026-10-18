@@ -25,7 +25,7 @@ const RUN: DesignRunDto = {
       rounds: 3,
       steps: [
         { role: "work", effort: "tempo", seconds: 480, meters: null, pace: { fastSecPerKm: 299, slowSecPerKm: 314 }, asked: false, why: "Comfortably hard." },
-        { role: "recovery", effort: "recovery", seconds: 120, meters: null, pace: { fastSecPerKm: 379, slowSecPerKm: 439 }, asked: false, why: null },
+        { role: "recovery", effort: "recovery", seconds: 120, meters: null, pace: null, asked: false, why: null },
       ],
     },
     { rounds: 1, steps: [{ role: "cooldown", effort: "easy", seconds: 758, meters: 2000, pace: { fastSecPerKm: 349, slowSecPerKm: 409 }, asked: false, why: "Settle." }] },

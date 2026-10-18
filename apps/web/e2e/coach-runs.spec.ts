@@ -7,7 +7,7 @@ import { test, expect } from "./fixtures.js";
  * their paces from the athlete's threshold, a distance's time on the watch, the totals, "Goes to your watch when you
  * approve" → Approve → "Added to your plan" → the row in the coach lane with its stages, and its watch create queued as a
  * `run_watch` session whose program — built by the lane's own builder, never sent (the fixture's COROS holds no
- * credentials) — carries each step's role, time and pace bytes. Everything but the model is the real app and worker.
+ * credentials) — carries each step's role, time and pace bytes (a recovery bare). Everything but the model is the real app and worker.
  *
  * Needs the fixture stack on the scripted model, and skips itself otherwise:
  *
@@ -24,7 +24,7 @@ const LIVE = ["active", "stepping", "waiting_athlete", "waiting_review", "waitin
 const SHOTS = process.env.RG_COACH_SHOTS ?? null;
 /** The scripted finish (coach-design-scripts.mjs `RUN_LINE`). */
 const RUN_LINE = "Three tempo blocks tomorrow, easy either side.";
-/** A threshold of 4:49 /km: tempo 4:59–5:14, easy 5:49–6:49, recovery 6:19–7:19 (`paceBandFor`). */
+/** A threshold of 4:49 /km: tempo 4:59–5:14, easy 5:49–6:49 (`paceBandFor`); a recovery carries none. */
 const THRESHOLD = 289;
 
 async function model(path: string): Promise<void> {
@@ -123,7 +123,8 @@ test("a designed run: asked for → its card with its steps and paces → Approv
     const pace = (km: string, mi: string) => (units === "km" ? `${km} /km` : `${mi} /mi`);
     await expect(steps.nth(0)).toHaveText(`10 min · Easy · ${pace("5:49–6:49", "9:22–10:58")}`);
     await expect(steps.nth(1)).toHaveText(`8 min · Tempo · ${pace("4:59–5:14", "8:01–8:25")}`);
-    await expect(steps.nth(2)).toHaveText(`2 min · Recovery · ${pace("6:19–7:19", "10:10–11:47")}`);
+    // A recovery goes bare (review-2 M1): no band on the card, as on the watch.
+    await expect(steps.nth(2)).toHaveText("2 min · Recovery");
     await expect(steps.nth(3)).toContainText("on your watch as 13 min");
     await expect(card.locator(".coach-pc-run-label").nth(1)).toHaveText("3 ×");
     await expect(card.locator(".coach-pc-run-watch")).toHaveText("Goes to your watch when you approve");
@@ -168,6 +169,7 @@ test("a designed run: asked for → its card with its steps and paces → Approv
     expect(job.steps.map((s) => s.exerciseType)).toEqual([1, 2, 4, 2, 4, 2, 4, 3]);
     expect(job.steps.map((s) => s.targetValue)).toEqual([600, 480, 120, 480, 120, 480, 120, 758]);
     expect(job.steps[1]).toMatchObject({ intensityType: 3, intensityValue: 299_000, intensityValueExtend: 314_000, intensityMultiplier: 1000 });
+    expect(job.steps.map((s) => s.intensityType)).toEqual([3, 3, 5, 3, 5, 3, 5, 3]);
 
     // On Plan, tomorrow: the run as a plan run shows.
     await sheet(page).getByRole("button", { name: "Close" }).first().click().catch(() => undefined);

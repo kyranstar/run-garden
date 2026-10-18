@@ -44,7 +44,7 @@ describe("a designed run's line", () => {
           rounds: 3,
           steps: [
             { role: "work", effort: "tempo", seconds: 480, meters: null, pace: { fastSecPerKm: 299, slowSecPerKm: 314 }, asked: false, why: "Comfortably hard." },
-            { role: "recovery", effort: "recovery", seconds: 120, meters: null, pace: { fastSecPerKm: 379, slowSecPerKm: 439 }, asked: false, why: null },
+            { role: "recovery", effort: "recovery", seconds: 120, meters: null, pace: null, asked: false, why: null },
           ],
         },
         { rounds: 1, steps: [{ role: "cooldown", effort: "easy", seconds: 758, meters: 2000, pace: { fastSecPerKm: 349, slowSecPerKm: 409 }, asked: false, why: "Settle." }] },
@@ -98,5 +98,17 @@ describe("a pace the athlete named, in whole seconds everywhere (review-2 I1)", 
     const session = (runWatchSessionOf(named) as { session: never }).session;
     const [step] = buildProgramFor({ happenDay: "20260312", name: "Steady", session, thresholdPaceSecPerKm: 289 }, new Map()).exercises!;
     expect(step).toMatchObject({ intensityValue: 298_000, intensityValueExtend: 311_000 });
+  });
+});
+
+describe("a recovery, bare on the card, in the stage rows and on the wire (review-2 M1)", () => {
+  it("no band for a recovery step anywhere: the preview stays the wire", () => {
+    const [line] = docWorkoutLines([op(DOC)], place, { now: NOW, prefs }, { thresholdSecPerKm: 289, corosWritesEnabled: true });
+    expect(line!.run!.segments[1]!.steps[1]).toMatchObject({ role: "recovery", effort: "recovery", seconds: 120, pace: null });
+    const recovery = designedRunStages("wo-1", DOC, 289).find((s) => s.kind === "recovery");
+    expect(recovery).toMatchObject({ targetType: "none", targetLow: null, targetHigh: null, label: "recovery" });
+    const session = (runWatchSessionOf(DOC) as { session: never }).session;
+    const steps = buildProgramFor({ happenDay: "20260312", name: "Tempo", session, thresholdPaceSecPerKm: 289 }, new Map()).exercises!;
+    expect(steps.filter((e) => e.exerciseType === 4).every((e) => e.intensityType === 5)).toBe(true);
   });
 });

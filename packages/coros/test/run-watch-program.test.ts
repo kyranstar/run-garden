@@ -57,8 +57,16 @@ describe("buildRunWatchProgram — the bytes", () => {
     expect(steps.map((s) => s.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     // Tempo at 289: 4:59–5:14/km, in ms/km with the multiplier the watch reads them by.
     expect(steps[1]).toMatchObject({ intensityType: 3, intensityValue: 299_000, intensityValueExtend: 314_000, intensityMultiplier: 1000, intensityDisplayUnit: 2 });
-    expect(steps[2]).toMatchObject({ intensityType: 3, intensityValue: 379_000, intensityValueExtend: 439_000 });
+    // A recovery goes bare (review-2 M1).
+    expect(steps[2]).toMatchObject({ intensityType: 5, intensityValue: 0 });
     expect(steps[7]).toMatchObject({ intensityType: 3, intensityValue: 349_000, intensityValueExtend: 409_000 });
+  });
+
+  it("a recovery step goes bare — no exerciseType 4 step carries a band, as the thread coach's rests never have (review-2 M1)", () => {
+    const steps = buildRunWatchProgram(spec()).exercises!.map(wire);
+    const recoveries = steps.filter((s) => s.exerciseType === 4);
+    expect(recoveries).toHaveLength(3);
+    for (const r of recoveries) expect(r).toMatchObject({ intensityType: 5, intensityValue: 0 });
   });
 
   it("is the card's steps, byte for byte: seconds and bands from `runWatchSteps`", () => {
@@ -136,7 +144,7 @@ describe("the dispatch and the pace owed", () => {
 
   it("missingPaceTargets counts a run_watch session's steps with no band for want of a threshold", () => {
     const timed: RunWatchSession = { ...TEMPO, segments: TEMPO.segments.slice(0, 2) };
-    expect(missingPaceTargets(timed, undefined)).toBe(7);
+    expect(missingPaceTargets(timed, undefined)).toBe(4);
     expect(missingPaceTargets(timed, THRESHOLD)).toBe(0);
   });
 });

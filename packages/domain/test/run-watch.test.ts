@@ -167,6 +167,21 @@ describe("runWatchSteps — the steps on the watch, from the freshest threshold"
     expect(r.totalMeters).toBe(Math.round(meters));
   });
 
+  it("a recovery carries no band — not its effort's, not one named — as the thread coach's rests go bare; a distance of it is still timed by its pace (review-2 M1)", () => {
+    const doc = tempoRun();
+    doc.parts[1]!.items.push({ kind: "run", effort: "recovery", target: { distanceM: 400, pace: { fastSecPerKm: 380, slowSecPerKm: 400 } } });
+    const steps = runWatchSteps(sessionOf(doc), 289).steps;
+    expect(steps.filter((s) => s.role === "recovery").map((s) => [s.seconds, s.pace, s.paceFrom])).toEqual([
+      [120, null, null], [156, null, null], [120, null, null], [156, null, null], [120, null, null], [156, null, null],
+    ]);
+    // A warm-up at recovery effort is a warm-up: its band stays.
+    const warm = tempoRun();
+    warm.parts[0]!.items[0] = { kind: "run", effort: "recovery", target: { durationSec: 600 } };
+    expect(runWatchSteps(sessionOf(warm), 289).steps[0]).toMatchObject({ role: "warmup", pace: { fastSecPerKm: 379, slowSecPerKm: 439 } });
+    // With no threshold a recovery owes no pace: only the warm-up, the tempo blocks and the cool-down do.
+    expect(runWatchSteps(sessionOf(tempoRun()), null).paceOwed).toBe(5);
+  });
+
   it("puts a standing rest between rounds, never after the last", () => {
     const doc = tempoRun();
     doc.parts[1]!.restBetweenRoundsSec = 45;
@@ -194,10 +209,10 @@ describe("runWatchSteps — the steps on the watch, from the freshest threshold"
     expect(feel).toMatchObject({ seconds: 300, pace: null });
   });
 
-  it("with no threshold: no step carries a pace (each owed one), and a distance can't be timed", () => {
+  it("with no threshold: no step carries a pace (each but a recovery owed one), and a distance can't be timed", () => {
     const r = runWatchSteps(sessionOf(tempoRun()), null);
     expect(r.steps.every((s) => s.pace === null)).toBe(true);
-    expect(r.paceOwed).toBe(8);
+    expect(r.paceOwed).toBe(5);
     expect(r.unresolved).toBe(1);
     expect(r.steps[7]).toMatchObject({ seconds: null, meters: 2000 });
     expect(r.totalMeters).toBeNull();
@@ -241,6 +256,6 @@ describe("what the watch will show of a designed run", () => {
   it("timed with no threshold: on the watch, with no pace targets", () => {
     const timed = tempoRun();
     timed.parts = timed.parts.slice(0, 2);
-    expect(coverage(timed, null)).toEqual({ discipline: "run", coverage: "partial", gaps: [{ code: "pace_targets_owed", count: 7 }] });
+    expect(coverage(timed, null)).toEqual({ discipline: "run", coverage: "partial", gaps: [{ code: "pace_targets_owed", count: 4 }] });
   });
 });

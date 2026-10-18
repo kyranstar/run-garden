@@ -77,7 +77,8 @@ describe("a designed run, read on the plan", () => {
 
   it("timed with no threshold: on the watch with no pace targets — the steps a threshold would pace, written out, counted", async () => {
     const w = await workout(await made(run({ durationSec: 600 }), "d"));
-    // Warm-up, three tempo reps and their jogs, cool-down: eight steps on the watch, as `runWatchSteps` counts them.
-    expect(w.watchCoverage).toEqual({ coverage: "partial", discipline: "run", gaps: [{ code: "pace_targets_owed", count: 8 }] });
+    // Warm-up, three tempo reps, cool-down: five steps a threshold would pace, as `runWatchSteps` counts them (the jogs go
+    // bare: review-2 M1).
+    expect(w.watchCoverage).toEqual({ coverage: "partial", discipline: "run", gaps: [{ code: "pace_targets_owed", count: 5 }] });
   });
 });

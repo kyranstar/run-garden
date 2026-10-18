@@ -87,7 +87,7 @@ describe("a designed run, A bit heavy, then Undo", () => {
     // The app's copy is the designed run again: its stages with their bands, its document.
     const stages = await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, id)).orderBy(asc(plannedWorkoutStages.ord));
     expect(stages.map((s) => [s.kind, s.repeatCount, s.targetLow, s.label])).toEqual([
-      ["warmup", null, 349, "easy"], ["repeat", 3, null, null], ["work", null, 299, "tempo"], ["recovery", null, 379, "recovery"], ["cooldown", null, 349, "easy"],
+      ["warmup", null, 349, "easy"], ["repeat", 3, null, null], ["work", null, 299, "tempo"], ["recovery", null, null, "recovery"], ["cooldown", null, 349, "easy"],
     ]);
   });
 });
