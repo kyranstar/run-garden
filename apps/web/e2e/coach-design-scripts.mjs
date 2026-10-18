@@ -18,6 +18,10 @@
  *   slow     as `now`, each answer three seconds late (a live run to look at)
  *   big      as `now`, its proposing answer over 16 KB: its calls run in the step after the one that read it
  *   followup as `now`, but a run asked from one of its suggestions proposes that workout shorter (coach everywhere)
+ *   auto_answer  an auto run (no scope: the new shape §5) that answers in words — reads, then finishes, nothing suggested
+ *   auto_design  an auto run that designs one workout for right now (today, no time), as `now`
+ *   auto_set     an auto run that plans a set: plan_set with two briefs (tomorrow, three days on), each designed and
+ *                reviewed, then the finish
  *
  * `ctx.opening` is the run's opening message (its first user message's text): a script may read what the run was
  * asked from in it.
@@ -109,8 +113,59 @@ function designFollowUp(turn, ctx) {
   }
 }
 
+/** A day `n` after `today` ("YYYY-MM-DD"). */
+function dayAfter(today, n) {
+  const d = new Date(`${today}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The words an auto run answers a question with (the new shape §5): a finish with words only, nothing suggested. */
+export const AUTO_ANSWER =
+  "Your holds have grown steadily over the last three weeks. Keep them twice a week, and add ten seconds when the last one feels easy.";
+
+/** An auto run that answers in words: it reads the history, then finishes with the answer — nothing suggested. */
+function autoAnswer(turn, ctx) {
+  return turn === 0 ? uses(["read_history", { from: dayAfter(ctx.today, -21), to: ctx.today }]) : uses(["finish", { summary: AUTO_ANSWER }]);
+}
+
+/**
+ * An auto run that plans a set (the new shape §5): plan_set with two briefs — raising the run to a set's ceiling — each
+ * designer drafting its day's workout, each reviewed, then the main coach's finish.
+ */
+function autoSetMain(turn, ctx) {
+  if (turn === 0) {
+    const brief = (key, n) => ({
+      key,
+      date: dayAfter(ctx.today, n),
+      purpose: "Hips and trunk, steady.",
+      emphasis: "Control over load.",
+      constraints: "About 20 minutes, at home.",
+      why: "Spaced away from the runs.",
+      // The fixture plan holds a programme session on most days: a short piece beside it, said so.
+      sameDayWhy: "A short, gentle piece beside the day's session.",
+    });
+    return uses(["plan_set", { briefs: [brief("first", 1), brief("second", 3)] }]);
+  }
+  return uses(["finish", { summary: "Two short sessions, spaced around your runs." }]);
+}
+
+/** A set's designer: its brief's day (from the opening message's "Read the brief for …" day), a draft, a finish. */
+function autoSetDesigner(turn, ctx) {
+  if (turn === 0) {
+    // The brief's own line: "Date: Thu 14 May (2026-05-14)." (design-orchestrate.ts `briefText`).
+    const date = /Date: [^(\n]*\((\d{4}-\d{2}-\d{2})\)/.exec(ctx.opening ?? "")?.[1] ?? ctx.today;
+    return uses(["propose_workout", { doc: mobilityDoc(), target: { kind: "new", date } }]);
+  }
+  return uses(["finish", {}]);
+}
+
 export const SCRIPTS = {
   now: { main: designAfter(0), reviewer },
+  // The new shape §5: a run asked with no scope is the coach's to size.
+  auto_answer: { main: autoAnswer, reviewer },
+  auto_design: { main: designAfter(0), reviewer },
+  auto_set: { main: autoSetMain, designer: autoSetDesigner, reviewer },
   followup: { main: designFollowUp, reviewer },
   big: { main: designBig, reviewer },
   slow: { main: designAfter(0), reviewer, delayMs: 3000 },
