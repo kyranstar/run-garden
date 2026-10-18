@@ -29,7 +29,9 @@
  *     an alarm invocation is a Worker invocation, under the same budgets, and its work is the step's;
  * 10. the conversation (the new shape §5): an auto run's opening context as a later turn of a conversation — the
  *     conversation so far read and written, six turns of the longest words and lines, each with a set's seven whole
- *     workouts and three changes (10a) — and `GET /api/coach/conversation` over twenty such turns (10b).
+ *     workouts and three changes (10a) — and `GET /api/coach/conversation` over twenty such turns (10b);
+ * 11. Growth's body map (the new shape §7), `GET /api/growth/body`, over a busy season — two strength sessions of 18
+ *     working sets and a run every day for 90 days: the month (11a) and the season (11b).
  *
  * THE MODEL'S ANSWER is the Messages API's event stream, fed to the real client (llm-messages.ts `callMessages`) through
  * its fetch seam, one event to a read — how a streamed answer arrives while the model writes it. A tool's input comes in
@@ -73,6 +75,7 @@ import { coachRoutes } from "../src/routes/coach.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import { makeCoachConversationRoutes } from "../src/routes/coach-conversation.js";
 import { objectiveBoardRoutes } from "../src/routes/objectives-board.js";
+import { growthRoutes } from "../src/routes/growth.js";
 import { ANSWER_MAX_BYTES, createRun, DOCUMENT_ANSWER_BYTES, noteOnTrail, STATE_MAX_BYTES, type RunDeps, type RunState } from "../src/services/coach-runs.js";
 import { CoachRunStepper } from "../src/services/coach-run-stepper.js";
 import { designContextBuilder } from "../src/services/design-context.js";
@@ -209,6 +212,7 @@ interface World {
   coach: Hono<AppContext>;
   board: Hono<AppContext>;
   conversation: Hono<AppContext>;
+  growth: Hono<AppContext>;
   close(): void;
 }
 
@@ -226,6 +230,7 @@ function open(image: Buffer): World {
     coach: mountRoutes(db, "/api/coach", coachRoutes),
     board: mountRoutes(db, "/api/objectives/board", objectiveBoardRoutes),
     conversation: mountRoutes(db, "/api/coach/conversation", makeCoachConversationRoutes({ now: () => NOW })),
+    growth: mountRoutes(db, "/api/growth", growthRoutes),
     close: () => client.close(),
   };
 }
@@ -1142,11 +1147,76 @@ beforeAll(async () => {
     })).close();
   }
 
+  // ── 11: Growth's body map over a busy season (the new shape §7) ──
+  {
+    const db11 = makeTestDb();
+    const { userId: uid } = await makeTestUser(db11, { timezone: TZ, weightUnit: "kg", units: "km" });
+    await seedBusySeason(db11, uid, today);
+    const cookie11 = `${SESSION_COOKIE}=${await createSession(db11, uid)}`;
+    const count = async (t: typeof schema.performedSets | typeof schema.activities | typeof schema.performedSessions) => (await db11.select({ n: sql<number>`count(*)` }).from(t))[0]!.n;
+    sizes.push(`a busy season: ${await count(schema.performedSessions)} sessions, ${await count(schema.performedSets)} sets, ${await count(schema.activities)} runs`);
+    images.set("season", imageOf(db11));
+    clientOf(db11).close();
+    for (const [id, period] of [["11a", "month"], ["11b", "season"]] as const) {
+      (await measure(id, `${id}. GET /api/growth/body?period=${period} (two sessions of 18 sets and a run a day)`, images.get("season")!, (x) =>
+        x.growth.request(`/api/growth/body?period=${period}`, { headers: { Cookie: cookie11 } }, env), {
+        budget: GO_LIVE_BUDGET_MS,
+        check: (b) => expect((b as { sessions: number }).sessions).toBe(period === "month" ? 60 : 180),
+      })).close();
+    }
+  }
+
   calibrationAfter = calibrate();
   loadAfter = loadavg();
   calibration = (calibrationBefore + calibrationAfter) / 2;
   report();
 }, 600_000);
+
+/**
+ * A busy season for Growth's body map (11): every day of the last 90, two strength sessions of 18 working sets (six
+ * moves of three sets: loaded moves, a timed hold, a side-at-a-time hold, played moves) and a run; two focus areas.
+ */
+async function seedBusySeason(db: Db, uid: string, today: string): Promise<void> {
+  const T0 = at(today);
+  const MOVES: Array<{ id: string; seconds?: number; perSide?: boolean }> = [
+    { id: "gobletSquat" }, { id: "bandRow" }, { id: "deadBug" }, { id: "wallSit", seconds: 45 }, { id: "sidePlank", seconds: 30, perSide: true }, { id: "calfRaise" },
+    { id: "chinTuck" }, { id: "catCow" }, { id: "plankBlock", seconds: 40 },
+  ];
+  await db.insert(schema.athleteProfiles).values({
+    id: newId(), userId: uid, updatedAt: T0,
+    focusAreas: [{ id: "hips", label: "Hips", refs: ["hips"] }, { id: "upper-back", label: "Upper back", refs: ["upper-back", "rhomboids"] }],
+  });
+  const sessions: Array<typeof schema.performedSessions.$inferInsert> = [];
+  const sets: Array<typeof schema.performedSets.$inferInsert> = [];
+  const runs: Array<typeof schema.activities.$inferInsert> = [];
+  for (let n = 0; n < 90; n++) {
+    const date = addDays(today, -n);
+    for (let k = 0; k < 2; k++) {
+      const id = newId();
+      sessions.push({
+        id, userId: uid, source: "app", localDate: date, seconds: 2400, payloadHash: `h${n}-${k}`, createdAt: T0, updatedAt: T0,
+        movesDone: [{ exerciseId: "catCow", seconds: 60 }, { exerciseId: "worldsGreatestStretch", seconds: 90 }],
+      });
+      for (let e = 0; e < 6; e++) {
+        const m = MOVES[(n + k * 3 + e) % MOVES.length]!;
+        for (let s = 0; s < 3; s++) {
+          const base = { performedSessionId: id, entryIndex: e, exerciseId: m.id, setIndex: s, done: true };
+          if (m.perSide) {
+            sets.push({ id: newId(), ...base, seconds: m.seconds! + s, perSide: true, side: s % 2 ? "left" : "right" });
+          } else if (m.seconds) sets.push({ id: newId(), ...base, seconds: m.seconds + s });
+          else sets.push({ id: newId(), ...base, reps: 8 + s, loadValue: 16, loadUnit: "kg", loadKg: 16 });
+        }
+      }
+    }
+    runs.push({
+      id: newId(), userId: uid, sport: "run", startTime: `${date}T14:00:00.000Z`, startTimeLocal: `${date}T07:00:00`, durationSeconds: 2400 + n * 7,
+      distanceMeters: 7000, avgHeartRate: 140, avgPaceSecPerKm: 343, createdAt: T0, updatedAt: T0,
+    });
+  }
+  for (let i = 0; i < sessions.length; i += 200) await db.insert(schema.performedSessions).values(sessions.slice(i, i + 200));
+  for (let i = 0; i < sets.length; i += 500) await db.insert(schema.performedSets).values(sets.slice(i, i + 500));
+  for (let i = 0; i < runs.length; i += 200) await db.insert(schema.activities).values(runs.slice(i, i + 200));
+}
 
 afterAll(() => {
   vi.useRealTimers();
@@ -1224,7 +1294,7 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "10a", "10b", "7", "5a", "6"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "10a", "10b", "7", "5a", "6", "11a", "11b"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
@@ -1245,7 +1315,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c", "10a", "10b"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b"]) {
     const over = KNOWN_OVER[id];
     it(
       over

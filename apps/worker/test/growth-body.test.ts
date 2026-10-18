@@ -21,6 +21,7 @@ import type { Env } from "../src/env.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { growthRoutes } from "../src/routes/growth.js";
 import { areaLevel, GROWTH_BODY_STATEMENTS } from "../src/services/growth-body.js";
+import { RUN_REGIONS } from "../src/services/body-exposure.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const { activities, athleteProfiles, performedSessions, performedSets } = schema;
@@ -127,14 +128,20 @@ describe("GET /api/growth/body", () => {
     expect(body.sessions).toBe(1);
   });
 
-  it("runs load the hips and the legs: those areas count the period's runs, and the latest run is their last day", async () => {
+  it("a move both logged with sets and played counts by its sets, once", async () => {
+    await session(3, sets("bandRow", 3), { moves: [{ exerciseId: "bandRow", seconds: 60 }] });
+    expect(area((await get()).body, "back")).toMatchObject({ sets: 3 });
+  });
+
+  it("runs work the hips, glutes, quads, hamstrings and calves (RUN_REGIONS, the one list): those areas count the period's runs, and the latest run is their last day", async () => {
+    expect([...RUN_REGIONS]).toEqual(["hips", "glutes", "quads", "hamstrings", "calves"]);
     await run(2);
     await run(9);
     await run(40);
     const { body } = await get();
     expect(body.runs).toBe(2);
-    for (const id of ["hips", "quads", "hamstrings", "calves"]) expect(area(body, id), id).toMatchObject({ sets: 0, runs: 2, last: day(2), daysAgo: 2 });
-    for (const id of ["glutes", "core", "back"]) expect(area(body, id), id).toMatchObject({ runs: 0, level: 0 });
+    for (const id of ["hips", "glutes", "quads", "hamstrings", "calves"]) expect(area(body, id), id).toMatchObject({ sets: 0, runs: 2, last: day(2), daysAgo: 2 });
+    for (const id of ["core", "back", "neck"]) expect(area(body, id), id).toMatchObject({ runs: 0, level: 0 });
     // The season holds the older run too.
     expect(area((await get("?period=season")).body, "calves")).toMatchObject({ runs: 3 });
   });
@@ -164,9 +171,20 @@ describe("GET /api/growth/body", () => {
     expect(body.carried).toEqual(["core", "hips"]);
   });
 
+  it("an area that carried the period is never the quiet one: the quiet area comes from the rest", async () => {
+    // Six runs, nine to fourteen days ago, carry the hips and the glutes (and the legs); the core was worked two days ago.
+    for (let n = 9; n <= 14; n++) await run(n);
+    await session(2, sets("deadBug", 3));
+    const { body } = await get();
+    expect(body.carried).toEqual(["hips", "glutes"]);
+    // The hips were the longest without work, but carried the month: the quads are named, the next head to foot.
+    expect(body.quiet).toEqual({ area: "quads", daysAgo: 9 });
+  });
+
   it("the quiet area: of those worked, the one longest without work — from QUIET_DAYS on, never before", async () => {
-    await session(QUIET_DAYS - 1, sets("deadBug", 3));
-    await session(1, sets("gobletSquat", 3));
+    // The core and the hips carry it (six sets each); the glutes and the quads, worked yesterday, are the rest.
+    await session(QUIET_DAYS - 1, sets("deadBug", 6));
+    await session(1, sets("gobletSquat", 6));
     expect((await get()).body.quiet).toBeNull();
     await session(QUIET_DAYS + 3, sets("bandRow", 3));
     // The back and the arms both last worked QUIET_DAYS + 3 days ago: head to foot, the arms come first.
@@ -174,6 +192,8 @@ describe("GET /api/growth/body", () => {
   });
 
   it("quiet from exactly QUIET_DAYS without work", async () => {
+    // Yesterday's squats carry the month; the core was worked QUIET_DAYS ago.
+    await session(1, sets("gobletSquat", 6));
     await session(QUIET_DAYS, sets("deadBug", 3));
     expect((await get()).body.quiet).toEqual({ area: "core", daysAgo: QUIET_DAYS });
   });
@@ -219,6 +239,14 @@ describe("GET /api/growth/body", () => {
     const { body } = await get();
     expect(body.sessions).toBe(1);
     expect(body.holds).toEqual([{ exerciseId: "wallSit", name: "Wall sit", seconds: 50, date }]);
+  });
+
+  it("a side logged with no time is no side held: the other side's time stands", async () => {
+    await session(4, [
+      { ex: "sidePlank", seconds: 0, side: "left", perSide: true, entry: 0, set: 0 },
+      { ex: "sidePlank", seconds: 35, side: "right", perSide: true, entry: 0, set: 0 },
+    ]);
+    expect((await get()).body.holds).toEqual([{ exerciseId: "sidePlank", name: expect.any(String), seconds: 35, date: day(4) }]);
   });
 
   it("a hold equalled later keeps the day it was first held", async () => {

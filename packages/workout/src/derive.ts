@@ -168,11 +168,21 @@ const mobilityFlow = (part: WorkoutPart): boolean => part.purpose === "main" && 
 const QUALITY_EFFORTS = new Set(["tempo", "threshold", "interval", "hills"]);
 
 /** Resolve a library id (current or legacy). */
+/**
+ * A library's index, made once per library array (the library is a constant: `derivePerformed` over a season's sessions
+ * built it once a session — most of Growth's season read; the new shape's integrated review, I2).
+ */
+const INDEXES = new WeakMap<readonly ExerciseRecord[], (id: string) => ExerciseRecord | undefined>();
+
 export function makeLibraryIndex(library: readonly ExerciseRecord[]): (id: string) => ExerciseRecord | undefined {
+  const made = INDEXES.get(library);
+  if (made) return made;
   const byId = new Map<string, ExerciseRecord>();
   for (const e of library) for (const legacy of e.legacyIds) if (!byId.has(legacy)) byId.set(legacy, e);
   for (const e of library) byId.set(e.id, e);
-  return (id) => byId.get(id);
+  const find = (id: string) => byId.get(id);
+  INDEXES.set(library, find);
+  return find;
 }
 
 interface Tally {

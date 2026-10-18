@@ -1028,7 +1028,9 @@ const input = (x: unknown) => x;
 // ── Batch 3A end fix wave, part B (audit-3a-agent-design.md) ────────────────────────────────────────────────────────
 
 describe("3A-B — read_balance counts what runs load (B6)", () => {
-  const RUN_REGIONS = ["calves", "hamstrings", "quads", "hips", "ankles", "feet"];
+  // What a run works (the new shape's one list, body-exposure.ts RUN_REGIONS): the glutes too; the ankles and feet no
+  // longer stand in for a run.
+  const RUN_REGIONS = ["hips", "glutes", "quads", "hamstrings", "calves"];
 
   it("the audit's probe — five runs in fourteen days: no leg region a run loads is untrained, and fromRuns says so per region", async () => {
     const { data } = await ok("read_balance", { from: day(14), to: TODAY });
