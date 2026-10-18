@@ -54,6 +54,7 @@ import { focusOfWire, focusRefusal, type CoachFocus } from "./coach-focus.js";
 import { CoachOpening, CoachSays } from "./coach-opening.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
+import { PlanCard } from "./plan-card.js";
 import { PlanChangesCard } from "./plan-changes-card.js";
 import { ProposalCard } from "./proposal-card.js";
 import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
@@ -442,7 +443,9 @@ function TurnCards({ cards, latest, today }: { cards: readonly CoachConversation
         const key = `${card.kind}:${card.proposalId}`;
         const part = card.kind === "plan_changes" ? "changes" : card.kind === "workout" && changesOf.has(card.proposalId) ? "workouts" : undefined;
         let body;
-        if (!latest && !cardIsOpen(card)) body = <ClosedCard card={card} today={today} part={part} />;
+        // A whole plan (§8 §5): its own card, closed as one line of what came of it when an older turn's is done.
+        if (card.kind === "plan") body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
+        else if (!latest && !cardIsOpen(card)) body = <ClosedCard card={card} today={today} part={part} />;
         else if (card.kind === "plan_changes") body = <PlanChangesCard card={card} today={today} />;
         else if (card.kind === "workout" || card.kind === "set") body = <ProposalCard proposalId={card.proposalId} today={today} part={part} />;
         // A kind this bundle doesn't know: its one line, its card one tap down.
