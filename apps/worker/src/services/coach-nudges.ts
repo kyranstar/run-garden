@@ -21,9 +21,12 @@ import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, PLAN_ENDING_DAYS, REFIRE_WINDOW_M
  *   5. a running plan ending within 21 days — "Plan what comes after my half marathon plan".
  * The pressing first: what just happened, then what the plan needs to keep going, then what is coming.
  *
- * A chip the athlete already asked in the last three days (its label in the words of one of their own runs: a request
- * whose day count moved since still counts) stays away, and the next one takes its place: never the same nudge twice
- * while the coach is working on it.
+ * A chip the athlete already asked in the last three days stays away, and the next one takes its place: never the same
+ * nudge twice while the coach is working on it — each tap is a paid run (review-1 I3). Every request holds its label and
+ * then says what the coach should know ("Plan what comes after my 10K plan — it ends in 12 days."), so "asked" is the
+ * label in the words of one of the athlete's own runs, read alike whatever the case, spacing or punctuation (`asWords`):
+ * the chip's own request sent counts, one sent yesterday with its count a day off counts, and so does the athlete typing
+ * the chip's words themselves.
  *
  * Cost: at most five statements, three on a quiet account (the missed sessions, the activities, the plans; their outline
  * weeks only with a running plan; the athlete's recent asks only with a chip to offer). Every text here is the app's,
@@ -103,6 +106,11 @@ function inDays(days: number): string {
 
 const daysBetween = (from: LocalDate, to: LocalDate): number => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
 
+/** Words compared as the athlete's: lower case, any run of punctuation and spacing as one space. */
+export function asWords(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
 export async function readNudges(db: Db, userId: string, prefs: UserPreferences, today: LocalDate, now: Date): Promise<CoachNudge[]> {
   const [missedRows, recent, plans] = await Promise.all([
     db
@@ -148,8 +156,12 @@ export async function readNudges(db: Db, userId: string, prefs: UserPreferences,
     const named = missed.slice(0, 3).map((w) => `${w.date === today ? "today" : weekdayOf(w.date)}'s ${sessionNoun(w)}`);
     found.push(
       missed.length === 1
-        ? { id: `missed:${missed[0]!.id}`, label: `Rework my week around ${named[0]}`, request: `I missed ${named[0]}. Rework my week around it.` }
-        : { id: `missed:${missed[0]!.id}`, label: "Rework my week around the sessions I missed", request: `I missed ${listed(named)}. Rework my week around them.` },
+        ? { id: `missed:${missed[0]!.id}`, label: `Rework my week around ${named[0]}`, request: `Rework my week around ${named[0]} — I missed it.` }
+        : {
+            id: `missed:${missed[0]!.id}`,
+            label: "Rework my week around the sessions I missed",
+            request: `Rework my week around the sessions I missed: ${listed(named)}.`,
+          },
     );
   }
 
@@ -210,12 +222,8 @@ export async function readNudges(db: Db, userId: string, prefs: UserPreferences,
   // 5. A plan ending: the soonest.
   const ending = blocks.find((p) => p.endDate >= today && p.endDate <= addDays(today, PLAN_ENDING_DAYS));
   if (ending) {
-    const phrase = planPhrase(ending.name);
-    found.push({
-      id: `ending:${ending.id}`,
-      label: `Plan what comes after ${phrase}`,
-      request: `${phrase.charAt(0).toUpperCase()}${phrase.slice(1)} ends ${inDays(daysBetween(today, ending.endDate))}. Plan what comes after it.`,
-    });
+    const label = `Plan what comes after ${planPhrase(ending.name)}`;
+    found.push({ id: `ending:${ending.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.endDate))}.` });
   }
 
   if (found.length === 0) return [];
@@ -232,6 +240,7 @@ export async function readNudges(db: Db, userId: string, prefs: UserPreferences,
     )
     .orderBy(desc(coachRuns.createdAt))
     .limit(RECENT_ASKS_MAX);
-  const words = asked.map((r) => (r.request ?? "").toLowerCase());
-  return found.filter((n) => !words.some((w) => w.includes(n.label.toLowerCase()))).slice(0, NUDGES_MAX);
+  const words = asked.map((r) => asWords(r.request ?? ""));
+  const sent = (n: CoachNudge) => words.some((w) => w.includes(asWords(n.label)));
+  return found.filter((n) => !sent(n)).slice(0, NUDGES_MAX);
 }

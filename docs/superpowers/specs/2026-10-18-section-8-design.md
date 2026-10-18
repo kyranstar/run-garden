@@ -169,6 +169,8 @@ The conversation coach becomes the only coach.
 ## 6. The thread coach steps back (stream T)
 - **The switch:** `THREAD_COACH` (on only when "1"). It is pinned in `wrangler-config.test.ts` and absent from
   production's vars (so off). The fixture stack sets it for the two replay specs that need it, until they are retired.
+  - **Escape hatch, server-side only:** turned back on, it restores triggers, `wakeAdvised` and wakes for cached old
+    clients and the cron, but the current client has no thread-coach entry points (no Plan wake, nothing sent to it).
 - **When off:**
   - `/coach/state` says `wakeAdvised: false`, and no triggers are evaluated into wakes.
   - `/wake` answers `{ status: "skipped" }`.

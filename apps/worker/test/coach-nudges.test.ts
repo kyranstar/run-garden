@@ -17,7 +17,7 @@ import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { makeCoachNudgesRoutes } from "../src/routes/coach-nudges.js";
-import { NUDGES_MAX, readNudges, type CoachNudge } from "../src/services/coach-nudges.js";
+import { asWords, NUDGES_MAX, readNudges, type CoachNudge } from "../src/services/coach-nudges.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -159,7 +159,7 @@ describe("a missed session in the last 2 days", () => {
       {
         id: "missed:w1",
         label: `Rework my week around ${weekday(day)}'s tempo`,
-        request: `I missed ${weekday(day)}'s tempo. Rework my week around it.`,
+        request: `Rework my week around ${weekday(day)}'s tempo — I missed it.`,
       },
     ]);
   });
@@ -182,7 +182,7 @@ describe("a missed session in the last 2 days", () => {
       {
         id: "missed:w2",
         label: "Rework my week around the sessions I missed",
-        request: `I missed ${weekday(a)}'s tempo and ${weekday(b)}'s easy run. Rework my week around them.`,
+        request: `Rework my week around the sessions I missed: ${weekday(a)}'s tempo and ${weekday(b)}'s easy run.`,
       },
     ]);
   });
@@ -277,7 +277,7 @@ describe("a plan ending within 21 days", () => {
       {
         id: "ending:cp1",
         label: "Plan what comes after my half marathon plan",
-        request: "My half marathon plan ends in 21 days. Plan what comes after it.",
+        request: "Plan what comes after my half marathon plan — it ends in 21 days.",
       },
     ]);
   });
@@ -321,6 +321,53 @@ describe("at most two, the most pressing first", () => {
     await seedRun("Ease me back in", hourAgo, "parent");
     await seedRun("Ease me back in", new Date(Date.now() - 73 * 3_600_000).toISOString());
     expect(ids(await nudges())).toEqual([`comeback:${addDays(today, -1)}`, "horizon:cp1"]);
+  });
+
+  it("every rule's chip stays away once its own request was sent — the next day too, its count moved (review-1 I3)", async () => {
+    const minuteAgo = () => new Date(Date.now() - 60_000).toISOString();
+    const dayAgo = new Date(Date.now() - 24 * 3_600_000).toISOString();
+    /** The chip a seeded condition offers, then: its own request sent, it is gone. */
+    async function sentAway(seed: () => Promise<void>, kind: string, sent?: (chip: CoachNudge) => string): Promise<void> {
+      await db.delete(schema.coachRuns);
+      await seed();
+      const chip = (await nudges()).find((n) => n.id.startsWith(`${kind}:`));
+      expect(chip, kind).toBeDefined();
+      // The rule's invariant: its request holds its label, which is what "asked" reads.
+      expect(asWords(chip!.request), kind).toContain(asWords(chip!.label));
+      await seedRun(sent ? sent(chip!) : chip!.request, sent ? dayAgo : minuteAgo());
+      expect((await nudges()).map((n) => n.id), kind).not.toContain(chip!.id);
+    }
+    await sentAway(() => seedSession({ id: "w1", date: addDays(today, -1), state: "missed" }), "missed");
+    await db.delete(schema.plannedWorkouts);
+    await sentAway(async () => {
+      await seedSession({ id: "w1", date: addDays(today, -1), state: "missed" });
+      await seedSession({ id: "w2", date: addDays(today, -2), state: "skipped", category: "easy", qualitySubtype: null });
+    }, "missed");
+    await db.delete(schema.plannedWorkouts);
+    await sentAway(async () => {
+      await seedActivity("a1", addDays(today, -1));
+      await seedActivity("a2", addDays(today, -9));
+    }, "comeback");
+    await db.delete(schema.activities);
+    await sentAway(async () => {
+      await seedPlan({ id: "cp1", name: "10K", endDate: addDays(today, 60) });
+      await seedWeek("cp1", addDays(today, 6), "shape");
+    }, "horizon");
+    await db.delete(schema.coachPlanWeeks);
+    await db.delete(schema.coachPlans);
+    await sentAway(() => setRace(addDays(today, 12)), "race");
+    // Sent yesterday, when the race was a day further off: still the same ask.
+    await sentAway(async () => undefined, "race", (chip) => chip.request.replace("12 days", "13 days"));
+    await setRace(null);
+    await sentAway(() => seedPlan({ id: "cp2", name: "half marathon", endDate: addDays(today, 20) }), "ending");
+    await sentAway(async () => undefined, "ending", (chip) => chip.request.replace("20 days", "21 days"));
+  });
+
+  it("the athlete's own words count too: the request or the label, whatever the case, spacing or punctuation", async () => {
+    await seedPlan({ id: "cp1", name: "half marathon", endDate: addDays(today, 20) });
+    expect(ids(await nudges())).toEqual(["ending:cp1"]);
+    await seedRun("plan what comes after my half-marathon plan!!", new Date().toISOString());
+    expect(await nudges()).toEqual([]);
   });
 
   it("writes nothing, and costs at most five statements", async () => {
