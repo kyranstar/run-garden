@@ -222,10 +222,9 @@ describe("Your plans, one list", () => {
     expect(html).not.toContain('class="plan-row"');
   });
 
-  it("its foot: a new program, and a plan asked of the coach (only with the coach)", () => {
-    const opened: unknown[] = [];
+  it("its foot: a new program, and a plan asked of the thread coach (only when it can be asked: shape-fixes)", () => {
     const withCoach = renderToStaticMarkup(
-      wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), { open: (a) => opened.push(a) }),
+      wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop, onAskThread: noop }), { open: noop }),
     );
     expect(withCoach).toContain("New program…");
     expect(withCoach).toContain("Plan with the coach");
@@ -261,32 +260,22 @@ describe("the plan sheet's actions open the coach with the words written", () =>
     const qc = client([{ key: ["plan-detail", plan.id], data: { ...detail, plan } }]);
     act(() =>
       root!.render(
-        wrap(createElement(PlanSheet, { planId: plan.id, plans: [plan], onClose: noop, onRetire: async () => null, onRename: noop }), coach, qc),
+        wrap(createElement(PlanSheet, { planId: plan.id, plans: [plan], onClose: noop, onRetire: async () => null, onRename: noop, onAskThread: noop }), coach, qc),
       ),
     );
   }
   const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === name);
 
   it("the words: the plan named plainly, never doubled", () => {
-    expect(planRequests("Fall Half Block")).toEqual({
-      extend: "Extend my Fall Half Block plan by two weeks.",
-      windDown: "Wind down my Fall Half Block plan with a taper week.",
-      ask: "How is my Fall Half Block plan going?",
-    });
-    expect(planRequests("Base plan").extend).toBe("Extend my Base plan by two weeks.");
+    expect(planRequests("Fall Half Block")).toEqual({ ask: "How is my Fall Half Block plan going?" });
+    expect(planRequests("Base plan").ask).toBe("How is my Base plan going?");
   });
 
-  it("Extend, Wind down and Ask about it each open the coach with their request", () => {
+  it("Ask about this plan opens the conversation with its request (Extend and Wind down ask the thread coach: shape-fixes)", () => {
     const calls: unknown[] = [];
     mount(runPlan, { open: (a) => calls.push(a) });
-    act(() => button("Extend")!.click());
-    act(() => button("Wind down")!.click());
     act(() => button("Ask about this plan")!.click());
-    expect(calls).toEqual([
-      { request: "Extend my Fall Half Block plan by two weeks." },
-      { request: "Wind down my Fall Half Block plan with a taper week." },
-      { request: "How is my Fall Half Block plan going?" },
-    ]);
+    expect(calls).toEqual([{ request: "How is my Fall Half Block plan going?" }]);
   });
 
   it("Retire… stays the app's own two-step confirm (the coach retires no plan in this wave)", () => {
@@ -302,9 +291,8 @@ describe("the plan sheet's actions open the coach with the words written", () =>
     expect(button("Ask about this plan")).toBeDefined();
   });
 
-  it("without the coach, none of the asking buttons is drawn", () => {
+  it("without the conversation coach, its Ask is not drawn", () => {
     mount(runPlan, null);
-    expect(button("Extend")).toBeUndefined();
     expect(button("Ask about this plan")).toBeUndefined();
     expect(button("Rename")).toBeDefined();
   });
@@ -327,12 +315,12 @@ describe("the Plan screen keeps no coach window of its own", () => {
   });
 
   it("the thread coach's pending suggestions and its question stay, as cards", () => {
-    expect(plan).toContain("<ThreadCoachCards {...coachProps} />");
+    expect(plan).toContain("<ThreadCoachCards {...coachProps}");
   });
 
-  it("the open workout's sheet is what the coach sees", () => {
+  it("the open workout's sheet is what the coach sees — and, modal, it keeps its own Ask (the integrated review, I3)", () => {
     expect(plan).toContain("useCoachSeeing(selected ? workoutFocus(selected) : null)");
-    expect(plan).not.toContain("<AskCoach");
+    expect(plan).toContain('<AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />');
   });
 
   it("the week comes first; the sync panel only when something is wrong; no race strip or brief card of their own", () => {

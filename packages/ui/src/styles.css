@@ -499,10 +499,17 @@ button {
   cursor: pointer;
   color: var(--ink-soft);
 }
-.bottom-nav .nav-coach {
-  color: var(--green-ink);
+/* The Coach's word wears the bar's ink, like the places' words; green only while its sheet is open (the sheet is the
+   page's last child, so the body knows). */
+body:has(.coach-sheet) .bottom-nav .nav-coach {
+  color: var(--green);
+}
+/* The pill's padding comes off the column, so its word sits level with the places' words. */
+.bottom-nav .nav-coach-pill {
+  margin-block: calc(-1 * var(--space-1));
 }
 .nav-coach-pill {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1668,7 +1675,8 @@ a.note {
    full-viewport stage and every stage rule reads through it. */
 .stage-hero {
   position: relative;
-  height: clamp(280px, 42vh, 420px);
+  /* 240–300 px on a phone, so the card under it is on the first screen (the integrated review, I1). */
+  height: clamp(240px, 34vh, 300px);
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--border);
@@ -1750,7 +1758,8 @@ a.note {
   position: absolute;
   left: var(--space-6);
   right: var(--space-6);
-  bottom: var(--space-5);
+  /* Clear of the card, which overlaps the picture's foot. */
+  bottom: calc(var(--space-10) + var(--space-5));
   text-align: left;
   color: var(--on-scene);
   text-shadow: var(--scene-text-shadow);
@@ -1888,6 +1897,13 @@ a.note {
   flex-direction: column;
   align-items: stretch;
   gap: var(--tap-clear);
+  position: relative;
+  z-index: 1;
+}
+/* On a phone the card overlaps the picture's foot (the mock: the card on the scene) — only straight after it, never
+   over a ceremony that sits between them. */
+.stage-hero + .hud-dock {
+  margin-top: calc(-1 * var(--space-10));
 }
 .dock-panel {
   border: 1px solid var(--border);
@@ -1902,7 +1918,7 @@ a.note {
      lg block): re-painting covers over glass makes them visible at rest. */
   background-color: var(--bg-raised);
   --scroll-surface: var(--bg-raised);
-  padding: var(--space-3);
+  padding: var(--space-6);
   /* A NESTED container has to name its own clearance and GRANT it — see "the
      value inherits" in the touch floor. `.hud-dock`'s 12px reached in here
      and licensed every pad inside the panel to reach 12px, but the panel was
@@ -3353,11 +3369,15 @@ button.session-chip {
     left: auto;
     right: clamp(1.6rem, 3.2vw, 3.2rem);
   }
-  /* Hierarchy 5: the card, bottom-left, over the scene — bottom-anchored, so
-     it grows upward and reflows nothing; the drawer's handle at its foot. */
+  /* Hierarchy 5: the card, bottom-RIGHT over the scene — bottom-anchored, so
+     it grows upward and reflows nothing; the drawer's handle at its foot. It
+     shows its rows and its actions whole (no inner scroll: the integrated
+     review), and on the right a tall card never covers the voice at the top
+     left. */
   .hud-dock {
     position: absolute;
-    left: clamp(1.6rem, 3.2vw, 3.2rem);
+    left: auto;
+    right: clamp(1.6rem, 3.2vw, 3.2rem);
     bottom: clamp(1.3rem, 3vh, 2.2rem);
     display: flex;
     flex-direction: column;
@@ -3365,24 +3385,20 @@ button.session-chip {
     gap: var(--tap-clear);
     width: min(26rem, 38vw);
   }
+  .stage-hero + .hud-dock {
+    margin-top: 0;
+  }
   .dock-panel {
-    /* Capped and internally scrollable so a short laptop viewport can never
-       let the card grow tall enough to bury the top-left HUD behind it
-       (C1/C23) — 14rem reserves room above for the condition word/forecast,
-       below for the stage edge, and for the drawer's handle at its foot. More
-       translucent than a typical raised surface so the garden's plants still
-       read through — blur stays at the stage's standard 16px (a heavier blur
-       was tried and reviewed back out: it worked against silhouettes reading
-       through, the opposite of the goal). */
-    max-height: min(32rem, calc(100dvh - 14rem));
-    /* Its own covers must paint in the panel's glass, not a flat surface. */
-    --scroll-surface: color-mix(in srgb, var(--bg-raised) 72%, transparent);
+    /* More translucent than a typical raised surface so the garden's plants
+       still read through — blur stays at the stage's standard 16px (a heavier
+       blur was tried and reviewed back out: it worked against silhouettes
+       reading through, the opposite of the goal). */
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
     backdrop-filter: blur(16px) saturate(1.05);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
-    padding: var(--space-3);
+    padding: var(--space-6);
   }
   /* Hierarchy 6: the ledger corner, bottom-right — the beat line, printed on
      the scene. The corner scrim below carries their
@@ -3390,12 +3406,12 @@ button.session-chip {
   .stage-ledger {
     display: flex;
     position: absolute;
-    right: clamp(1.6rem, 3.2vw, 3.2rem);
+    left: clamp(1.6rem, 3.2vw, 3.2rem);
     bottom: clamp(1.3rem, 3vh, 2.2rem);
     flex-direction: column;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: var(--space-5);
-    text-align: right;
+    text-align: left;
     max-width: min(22rem, 30vw);
     /* Everything in this corner is printed on the artwork — including the
        beat line, which inherited theme ink and measured 1.06:1 on daytime
@@ -3415,11 +3431,11 @@ button.session-chip {
   .stage-ledger::before {
     content: "";
     position: absolute;
-    inset: calc(var(--space-6) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1) calc(var(--space-9) * -1);
+    inset: calc(var(--space-6) * -1) calc(var(--space-9) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1);
     z-index: 0;
     border-radius: var(--radius-lg);
     background: radial-gradient(
-      135% 125% at 100% 100%,
+      135% 125% at 0% 100%,
       rgba(var(--scrim-rgb), 0.55),
       rgba(var(--scrim-rgb), 0.38) 45%,
       rgba(var(--scrim-rgb), 0) 78%
@@ -4986,6 +5002,24 @@ button.session-chip {
   gap: var(--space-4);
   align-items: center;
 }
+/* The time zone prompt, one line (the integrated review, I1): its words take the squeeze, its two short choices never
+   wrap. */
+.tz-nudge {
+  flex-wrap: nowrap;
+}
+.tz-nudge-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tz-nudge .banner-actions {
+  flex: none;
+  flex-wrap: nowrap;
+  margin-top: 0;
+}
+
 /* A banner's actions are a CONTAINER, never loose buttons in the prose: loose,
    the line box between them is whatever the font gives (0px of visual gap),
    and two 44px hit pads then overlap inside each other's visible boxes. Wraps,
@@ -11214,6 +11248,18 @@ a.stu-tpl-open:focus-visible::before {
   flex-wrap: wrap;
   gap: var(--space-4);
 }
+/* A sheet's own small Ask (the integrated review, I3), a row of its own under the sheet's first line. */
+.session-ask-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+/* "Asked your coach…": the thread coach was sent a plan's request; one quiet line says where the answer lands. */
+.plan-asked {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
 /* A move's Add and its Ask, side by side: Add keeps the width. */
 .stu-detail-buttons {
   display: flex;
@@ -12133,22 +12179,23 @@ a.stu-tpl-open:focus-visible::before {
   margin: 0;
   overflow-wrap: anywhere;
 }
-.bottom-nav a:has(> .nav-coach-mark) {
-  position: relative;
-}
+/* The run keeper's ● on the Coach's pill (the integrated review, I2): at the pill's top-right corner, an ink dot ringed
+   in the bar's own surface — the ring parts it from the green, the ink reads on the ring, in both themes. */
 .nav-coach-mark {
   position: absolute;
-  top: var(--space-3);
-  left: calc(50% + var(--space-5));
-  font-size: var(--text-2xs);
-  line-height: 1;
-  color: var(--green);
+  top: calc(-1 * var(--space-1));
+  right: calc(-1 * var(--space-1));
+  line-height: 0;
 }
-@media (min-width: 1024px) {
-  .side-nav .nav-coach-mark {
-    position: static;
-    margin-left: auto;
-  }
+.nav-coach-mark > [aria-hidden] {
+  display: block;
+  width: var(--space-4);
+  height: var(--space-4);
+  border-radius: var(--radius-round);
+  background: var(--ink);
+  box-shadow: 0 0 0 2px var(--bg-raised);
+  font-size: 0;
+  color: transparent;
 }
 
 /* ── The music dock (2026-10-17) ───────────────────────────────────────────

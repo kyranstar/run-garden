@@ -55,6 +55,8 @@ import { addTargetHref, editableWorkout } from "../screens/studio/add-model.js";
 import type { BuilderArrival } from "../screens/studio/templates-model.js";
 import { refusalText } from "../screens/studio/use-build-flows.js";
 import { focusAfterRemove } from "../screens/week-view.js";
+import { AskCoach } from "../screens/studio/coach-ask.js";
+import { workoutFocus } from "../screens/studio/coach-focus.js";
 import { continuable, MODE_LABEL } from "./today-program.js";
 import { WatchPreviewSheet } from "./watch-preview-sheet.js";
 
@@ -829,6 +831,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
             reading
           )}
         </p>
+        {/* A modal sheet hides the nav, so it keeps its own small Ask, seeing the workout (the integrated review, I3). */}
+        <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
         {notKept ? (
           <Banner kind="warn">
             This session isn't being kept on this device. It plays while you're online, and a reload starts it again.

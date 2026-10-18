@@ -2,7 +2,6 @@ import { useState } from "react";
 import type { CoachPlanDto, PlanProgression, ProgramDto, ProgramsResponse } from "@rg/api-client";
 import { formatShortDate, type Units } from "../components.js";
 import { ProgramSettingsSheet } from "../components/program-settings-sheet.js";
-import { useCoach } from "./studio/coach-ask.js";
 
 const KM_PER_MI = 1.609344;
 
@@ -99,22 +98,28 @@ export function planEntries(plans: readonly CoachPlanDto[], programs: readonly P
   ];
 }
 
-/** The words a new plan starts from, written in the coach's box. */
-export const NEW_PLAN_REQUEST = "Help me plan my training for the next few weeks.";
+/**
+ * What "Plan with the coach" sends the THREAD coach (the integrated review, I4): its intake, as the plan modal's was —
+ * the conversation can't build a whole plan in this wave (§8). Its draft lands on Plan with its other cards.
+ */
+export const NEW_PLAN_THREAD_REQUEST = "I want a new plan — interview me for what you need.";
 
 export function YourPlans({
   plans,
   programs,
   today,
   onOpenPlan,
+  onAskThread,
 }: {
   plans: readonly CoachPlanDto[];
   /** `GET /api/programs`: the programs, and the places and profiles their settings pick from (absent: none). */
   programs: ProgramsResponse | undefined;
   today: string;
   onOpenPlan: (id: string) => void;
+  /** Send the thread coach a message ("Plan with the coach"); none: it is not offered. */
+  onAskThread?: (body: string) => void;
 }) {
-  const coach = useCoach();
+  const [askedThread, setAskedThread] = useState(false);
   // A program's settings ("new": a new program), opened from its row or the list's foot.
   const [programOpen, setProgramOpen] = useState<string | null>(null);
   const programList = programs?.programs ?? [];
@@ -153,12 +158,24 @@ export function YourPlans({
         <button type="button" className="btn btn-small" aria-haspopup="dialog" onClick={() => setProgramOpen("new")}>
           New program…
         </button>
-        {coach ? (
-          <button type="button" className="btn btn-small" onClick={() => coach.open({ request: NEW_PLAN_REQUEST })}>
+        {onAskThread ? (
+          <button
+            type="button"
+            className="btn btn-small"
+            onClick={() => {
+              onAskThread(NEW_PLAN_THREAD_REQUEST);
+              setAskedThread(true);
+            }}
+          >
             Plan with the coach
           </button>
         ) : null}
       </div>
+      {askedThread ? (
+        <p className="plan-asked" role="status">
+          Asked your coach. Its suggestion will appear on Plan.
+        </p>
+      ) : null}
       {programOpen && (programOpen === "new" || editing) ? (
         <ProgramSettingsSheet
           program={editing ?? null}

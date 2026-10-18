@@ -951,9 +951,9 @@ export const GARDEN_PART_KEYS = [
   "plumbing",
   "scene",
   "condition",
-  "beat",
   "ceremony",
   "today",
+  "beat",
   "timeline",
   "overlays",
 ] as const satisfies ReadonlyArray<keyof GardenParts>;
@@ -985,7 +985,7 @@ export function GardenBody({
     <div className="garden-home">
       {/* The stage's largest type is the condition word, not this — the <h1>
           is hidden at both widths and the labelling stays consistent. */}
-      <h1 className="visually-hidden">Garden</h1>
+      <h1 className="visually-hidden">Today</h1>
       {parts.plumbing ? <div className="garden-plumbing">{parts.plumbing}</div> : null}
       <div className="garden-stage" ref={stageRef}>
         <div className="stage-hero">
@@ -994,11 +994,13 @@ export function GardenBody({
           <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
           <div className="hud-topleft">{parts.condition}</div>
         </div>
-        <div className="stage-ledger">{parts.beat}</div>
         {/* The celebration gets its own moment — centred on the stage, after
-            the band in the reading column below it. */}
+            the picture in the reading column below it. */}
         {parts.ceremony ? <div className="hud-ceremony">{parts.ceremony}</div> : null}
         <div className="hud-dock">{parts.today}</div>
+        {/* The news of the day comes after the card (the integrated review, I1): on a phone the card leads, just
+            under the picture; on the stage this is the bottom corner's box, wherever it sits in the DOM. */}
+        <div className="stage-ledger">{parts.beat}</div>
         {parts.timeline ? <div className="stage-timeline">{parts.timeline}</div> : null}
       </div>
       {parts.overlays}
@@ -1140,7 +1142,7 @@ export function GardenScreen() {
   const seenLayout = todayCardLayout(today.data?.nextWorkout ?? null, today.data?.todaySessions ?? []);
   const seenLead =
     seenLayout.title?.kind === "program" ? seenLayout.title.session.workout : seenLayout.title?.kind === "run" ? seenLayout.title.workout : null;
-  useCoachSeeing(!seenLead ? null : seenLead.category === "rest" ? dayFocus(seenLead.effectiveDate) : workoutFocus(seenLead));
+  useCoachSeeing(!seenLead ? null : seenLead.category === "rest" ? dayFocus(seenLead.effectiveDate, { rest: true }) : workoutFocus(seenLead));
 
   // Fetched only once the scrubber is opened, then cached — scrubbing itself
   // is then all client-side (no per-frame requests).
@@ -1724,7 +1726,7 @@ export function GardenScreen() {
   // in its sheet, evidence in the Lately strip.
   const calendarBanner =
     d && !d.sync.calendarConnected ? (
-      <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
+      <Banner kind="info">Calendar mirroring is paused.</Banner>
     ) : null;
 
   const sheets = (
@@ -1802,6 +1804,17 @@ export function GardenScreen() {
       </p>
     </div>
   ) : null;
+  // What needs the athlete on the Plan, folded into the card's facts whatever leads it (D8: one derivation, one phrase;
+  // the integrated review, I6).
+  const attentionLink =
+    attention.count > 0 ? (
+      <Link
+        className="today-attention"
+        to={attention.count === 1 && attention.unresolved[0] ? `/plan?workout=${attention.unresolved[0].id}` : "/plan"}
+      >
+        ⚠ {attentionPhrase(attention.count)} <span aria-hidden="true">›</span>
+      </Link>
+    ) : null;
   // How's your body? — today's session, still to do (the body check keeps the answer and adapts the day: stream E). A
   // rest day's card has no place for it.
   const bodyCheck =
@@ -1949,7 +1962,7 @@ export function GardenScreen() {
           userId={signedIn}
         />
         {cardShown && w ? (
-          <section className="dock-panel today-card scroller" id="dock-panel" aria-label="Today">
+          <section className="dock-panel today-card" id="dock-panel" aria-label="Today">
             <div className="today-head">
               <span className="today-eyebrow">{eyebrow}</span>
               <span className="today-chips">
@@ -1978,6 +1991,7 @@ export function GardenScreen() {
                 offer={leadOffer}
                 beforeActions={
                   <>
+                    {attentionLink}
                     {coachLine}
                     {bodyCheck}
                   </>
@@ -1988,9 +2002,10 @@ export function GardenScreen() {
               <>
                 <h3 className="today-title">Rest day</h3>
                 <p className="today-meta today-rest-line">{REST_LINE}</p>
+                {attentionLink}
                 {coachLine}
                 <div className="btn-row today-actions">
-                  <AskCoach focus={dayFocus(w.effectiveDate)} />
+                  <AskCoach focus={dayFocus(w.effectiveDate, { rest: true })} />
                 </div>
               </>
             ) : (
@@ -2004,19 +2019,7 @@ export function GardenScreen() {
                   {syncActionShort(w.syncAction) ? (
                     <p className="faint watch-note-short">{syncActionShort(w.syncAction)}</p>
                   ) : null}
-                  {/* What needs the athlete on the Plan, folded into the facts (D8: one derivation, one phrase). */}
-                  {attention.count > 0 ? (
-                    <Link
-                      className="today-attention"
-                      to={
-                        attention.count === 1 && attention.unresolved[0]
-                          ? `/plan?workout=${attention.unresolved[0].id}`
-                          : "/plan"
-                      }
-                    >
-                      ⚠ {attentionPhrase(attention.count)} <span aria-hidden="true">›</span>
-                    </Link>
-                  ) : null}
+                  {attentionLink}
                 </div>
                 {coachLine}
                 {bodyCheck}

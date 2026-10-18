@@ -41,12 +41,13 @@ function CoachButton() {
     <button type="button" className="nav-coach" onClick={() => coach.open()}>
       <span className="nav-coach-pill">
         <IconSprout />
+        {/* The run keeper's ● at the pill's corner: an ink dot ringed in the bar's surface, seen on the green in both
+            themes. A mark that fails to draw just isn't there. */}
+        <CoachBoundary quiet>
+          <CoachNavMark />
+        </CoachBoundary>
       </span>
       Coach
-      {/* A mark that fails to draw just isn't there. */}
-      <CoachBoundary quiet>
-        <CoachNavMark />
-      </CoachBoundary>
     </button>
   );
 }

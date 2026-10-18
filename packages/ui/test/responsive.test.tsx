@@ -361,11 +361,12 @@ describe("the garden's information exists at every width", () => {
   });
 
   it("DOM order is the STACK order — the picture is the backdrop above the one card", () => {
-    // The new shape (§4): banners, the picture (with its voice), the news, the
-    // ceremony, then the card; the streak band and the Lately strip are the
-    // garden drawer's now, not the page's.
+    // The new shape (§4): banners, the picture (with its voice), the ceremony,
+    // then the card — and the day's news after it (the integrated review, I1:
+    // the card on the first screen); the streak band and the Lately strip are
+    // the garden drawer's now, not the page's.
     const order = [...html.matchAll(/data-part="(\w+)"/g)].map((m) => m[1]!);
-    expect(order.slice(0, 6)).toEqual(["plumbing", "scene", "condition", "beat", "ceremony", "today"]);
+    expect(order.slice(0, 6)).toEqual(["plumbing", "scene", "condition", "ceremony", "today", "beat"]);
   });
 
   it("nothing below lg may reshuffle the dock's DOM order", () => {

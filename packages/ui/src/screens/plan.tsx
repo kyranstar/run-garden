@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
+import { api, ApiError, type CoachMessageDto, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek, type PlannedRef } from "@rg/domain";
 import { approveProposal } from "../coach-approve.js";
 import {
@@ -41,7 +41,7 @@ import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { SessionSheet } from "../components/session-sheet.js";
 import { isAppSession } from "../components/today-program.js";
-import { useCoachSeeing } from "./studio/coach-ask.js";
+import { AskCoach, useCoachSeeing } from "./studio/coach-ask.js";
 import { workoutFocus } from "./studio/coach-focus.js";
 
 /**
@@ -283,6 +283,8 @@ export function RunWorkoutDetail({
           {formatDayLong(w.effectiveDate)} at {formatTime(w.effectiveTime)}
           {w.corosName ? <span className="faint"> · COROS name: {w.corosName}</span> : null}
         </p>
+        {/* A modal sheet hides the nav, so it keeps its own small Ask, seeing the workout (the integrated review, I3). */}
+        <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
         <SyncNotesStack
           notes={workoutNotes}
           onDismiss={(id) => dismissNote.mutate(id)}
@@ -712,6 +714,16 @@ export function coachPanelProps(
   );
 }
 
+/**
+ * The thread coach's last wake lost its work (the integrated review's minors): when the newest message is a receipt
+ * that applied nothing, its words — "… Nothing was applied. Ask again …" — for the Plan's coach cards; else none. A
+ * message from the athlete after it means they asked again, and the line goes.
+ */
+export function nothingAppliedOf(messages: ReadonlyArray<Pick<CoachMessageDto, "role" | "body">>): string | null {
+  const last = messages.at(-1);
+  return last && last.role === "receipt" && last.body.includes("Nothing was applied") ? last.body : null;
+}
+
 /** Flash a proposal card (a ghost's tap): the thread coach's card on the page, scrolled to. */
 function focusProposal(id: string, skipScroll: boolean): void {
   requestAnimationFrame(() => {
@@ -1000,12 +1012,13 @@ export function PlanScreen() {
           />
         )}
         {/* The thread coach's pending suggestions and its question, in the page (no window, no chat box). */}
-        {coachProps ? <ThreadCoachCards {...coachProps} /> : null}
+        {coachProps ? <ThreadCoachCards {...coachProps} nothingApplied={nothingAppliedOf(coach.state.data?.messages ?? [])} /> : null}
         <YourPlans
           plans={coachPlans.data?.plans ?? []}
           programs={programs.data}
           today={today ?? week.data.weekStart}
           onOpenPlan={openPlan}
+          onAskThread={coach.send}
         />
       </div>
 
@@ -1032,6 +1045,7 @@ export function PlanScreen() {
             }
           }}
           onRename={(id, name) => rename.mutate({ id, name })}
+          onAskThread={coach.send}
         />
       ) : null}
 

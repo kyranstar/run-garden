@@ -104,7 +104,7 @@ describe("three places and one coach", () => {
     expect(button[2]).toMatch(/<svg[^>]*aria-hidden="true"/);
     expect(button[2].replace(/<[^>]+>/g, "")).toBe("Coach");
     // Filled: the green fill and the ink that sits on an accent fill, in both themes (tokens only).
-    const rule = /\.nav-coach-pill \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    const rule = /\n\.nav-coach-pill \{([^}]*)\}/.exec(css)?.[1] ?? "";
     expect(rule).toContain("background: var(--green)");
     expect(rule).toContain("color: var(--on-accent)");
     expect(rule).toContain("border-radius: var(--radius-pill)");

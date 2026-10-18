@@ -87,7 +87,7 @@ describe("PlanSheet — detail mode", () => {
     expect(html).toContain("W3");
     expect(html).toContain("is-current");
     expect(html).toContain("✓ done");
-    for (const action of ["Extend", "Wind down", "Rename", "Retire…", "Ask about this plan"]) {
+    for (const action of ["Rename", "Retire…", "Ask about this plan"]) {
       expect(html).toContain(action);
     }
     // Retire is two-step: the destructive copy only appears after arming.

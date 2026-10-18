@@ -202,15 +202,12 @@ export function TimezoneNudge() {
   const deviceOffset = offsetNow(deviceTz);
   const prefsOffset = offsetNow(prefsTz);
   if (!deviceOffset || !prefsOffset || deviceOffset === prefsOffset) return null;
+  // One line (the integrated review, I1): a few words and two short choices, the zones themselves in the choices'
+  // names (an IANA id can be long — "America/Argentina/Buenos_Aires" — so it never sits in the line).
   return (
-    <Banner kind="info">
-      Your device clock says {deviceTz} ({deviceOffset}), but your days here run on {prefsTz} (
-      {prefsOffset}) — traveling?
-      {/* Actions, and an IANA zone id can be long ("America/Argentina/
-          Buenos_Aires") — `.btn-wrap` so a long zone wraps inside the banner
-          instead of a nowrap pill widening the page.
-
-          They live in their OWN container, not loose in the banner's prose.
+    <div className="banner banner-info tz-nudge">
+      <span className="tz-nudge-text">Days run on {prefsOffset}.</span>
+      {/* They live in their OWN container, not loose in the banner's prose.
           Loose, they were two inline buttons in a text flow with `row-gap:
           normal` — a 0px visual gap — and each one's 44px hit pad reached
           2.2px into the other's visible box: a tap on the bottom edge of
@@ -220,15 +217,17 @@ export function TimezoneNudge() {
       <span className="banner-actions tap-clear">
         <button
           type="button"
-          className="btn btn-small btn-wrap"
+          className="btn btn-small"
+          aria-label={`Switch to ${deviceTz}`}
           disabled={adopt.isPending}
           onClick={() => adopt.mutate(deviceTz)}
         >
-          Switch to {deviceTz}
+          Use {deviceOffset}
         </button>
         <button
           type="button"
-          className="btn btn-small btn-wrap"
+          className="btn btn-small"
+          aria-label={`Keep ${prefsTz}`}
           onClick={() => {
             try {
               sessionStorage.setItem(storageKey, "1");
@@ -238,9 +237,9 @@ export function TimezoneNudge() {
             setDismissed(true);
           }}
         >
-          Keep {prefsTz}
+          Keep
         </button>
       </span>
-    </Banner>
+    </div>
   );
 }
