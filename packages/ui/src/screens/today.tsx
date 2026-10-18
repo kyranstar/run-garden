@@ -176,6 +176,11 @@ function offsetNow(timeZone: string): string | null {
   }
 }
 
+/** A zone by its city, as a person says it: "America/New_York" → "New York", "Asia/Tokyo" → "Tokyo", "UTC" → "UTC". */
+export function zoneCity(tz: string): string {
+  return (tz.split("/").at(-1) ?? tz).replace(/_/g, " ");
+}
+
 /**
  * Travel nudge: prefs.timezone anchors every "today" in the product (garden
  * day rollover, coach dossier, plan week), but it only ever changes by hand —
@@ -202,11 +207,14 @@ export function TimezoneNudge() {
   const deviceOffset = offsetNow(deviceTz);
   const prefsOffset = offsetNow(prefsTz);
   if (!deviceOffset || !prefsOffset || deviceOffset === prefsOffset) return null;
-  // One line (the integrated review, I1): a few words and two short choices, the zones themselves in the choices'
-  // names (an IANA id can be long — "America/Argentina/Buenos_Aires" — so it never sits in the line).
+  // One sentence with both zones by their cities, and two short choices whose names start with their visible words.
+  const deviceCity = zoneCity(deviceTz);
+  const prefsCity = zoneCity(prefsTz);
   return (
     <div className="banner banner-info tz-nudge">
-      <span className="tz-nudge-text">Days run on {prefsOffset}.</span>
+      <span className="tz-nudge-text">
+        Your device is on {deviceCity} time; your days run on {prefsCity} time.
+      </span>
       {/* They live in their OWN container, not loose in the banner's prose.
           Loose, they were two inline buttons in a text flow with `row-gap:
           normal` — a 0px visual gap — and each one's 44px hit pad reached
@@ -218,16 +226,16 @@ export function TimezoneNudge() {
         <button
           type="button"
           className="btn btn-small"
-          aria-label={`Switch to ${deviceTz}`}
+          aria-label={`Use ${deviceCity} time`}
           disabled={adopt.isPending}
           onClick={() => adopt.mutate(deviceTz)}
         >
-          Use {deviceOffset}
+          Use {deviceCity}
         </button>
         <button
           type="button"
           className="btn btn-small"
-          aria-label={`Keep ${prefsTz}`}
+          aria-label={`Keep ${prefsCity} time`}
           onClick={() => {
             try {
               sessionStorage.setItem(storageKey, "1");

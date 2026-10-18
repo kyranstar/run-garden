@@ -1018,7 +1018,6 @@ export function PlanScreen() {
           programs={programs.data}
           today={today ?? week.data.weekStart}
           onOpenPlan={openPlan}
-          onAskThread={coach.send}
         />
       </div>
 
@@ -1046,6 +1045,7 @@ export function PlanScreen() {
           }}
           onRename={(id, name) => rename.mutate({ id, name })}
           onAskThread={coach.send}
+          threadBusy={coach.busy}
         />
       ) : null}
 

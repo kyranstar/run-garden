@@ -262,6 +262,22 @@ describe("saving as you go, done right (the integrated review, I5)", () => {
     expect(puts(calls)).toEqual([{ raceDate: "2027-10-12" }]);
   });
 
+  it("race day: a whole date, then the field left, is one save (and one calendar sync), not two", async () => {
+    const { calls } = worker();
+    await mount();
+    ctl.holdPuts = true;
+    const day = field<HTMLInputElement>("#s-race");
+    await type(day, "2027-10-12");
+    await leave(day);
+    expect(puts(calls)).toEqual([{ raceDate: "2027-10-12" }]);
+    while (ctl.held.length) await release();
+    await leave(day);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(puts(calls)).toEqual([{ raceDate: "2027-10-12" }]);
+  });
+
   it("race day: what was typed is saved when the field is left, whole or not", async () => {
     const { calls } = worker();
     await mount();

@@ -98,28 +98,18 @@ export function planEntries(plans: readonly CoachPlanDto[], programs: readonly P
   ];
 }
 
-/**
- * What "Plan with the coach" sends the THREAD coach (the integrated review, I4): its intake, as the plan modal's was —
- * the conversation can't build a whole plan in this wave (§8). Its draft lands on Plan with its other cards.
- */
-export const NEW_PLAN_THREAD_REQUEST = "I want a new plan — interview me for what you need.";
-
 export function YourPlans({
   plans,
   programs,
   today,
   onOpenPlan,
-  onAskThread,
 }: {
   plans: readonly CoachPlanDto[];
   /** `GET /api/programs`: the programs, and the places and profiles their settings pick from (absent: none). */
   programs: ProgramsResponse | undefined;
   today: string;
   onOpenPlan: (id: string) => void;
-  /** Send the thread coach a message ("Plan with the coach"); none: it is not offered. */
-  onAskThread?: (body: string) => void;
 }) {
-  const [askedThread, setAskedThread] = useState(false);
   // A program's settings ("new": a new program), opened from its row or the list's foot.
   const [programOpen, setProgramOpen] = useState<string | null>(null);
   const programList = programs?.programs ?? [];
@@ -154,28 +144,12 @@ export function YourPlans({
           })}
         </ul>
       ) : null}
+      {/* A plan asked of the coach comes with §8's whole plans: its interview needs a chat the Plan no longer has. */}
       <div className="plan-rows-foot">
         <button type="button" className="btn btn-small" aria-haspopup="dialog" onClick={() => setProgramOpen("new")}>
           New program…
         </button>
-        {onAskThread ? (
-          <button
-            type="button"
-            className="btn btn-small"
-            onClick={() => {
-              onAskThread(NEW_PLAN_THREAD_REQUEST);
-              setAskedThread(true);
-            }}
-          >
-            Plan with the coach
-          </button>
-        ) : null}
       </div>
-      {askedThread ? (
-        <p className="plan-asked" role="status">
-          Asked your coach. Its suggestion will appear on Plan.
-        </p>
-      ) : null}
       {programOpen && (programOpen === "new" || editing) ? (
         <ProgramSettingsSheet
           program={editing ?? null}

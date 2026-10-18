@@ -42,6 +42,8 @@ export function useSaveAsYouGo(prefs: Prefs) {
   /** The changes waiting while a save is out, merged: the last value of each field wins. */
   const waiting = useRef<Partial<Prefs> | null>(null);
   const out = useRef(false);
+  /** The save that is out, as sent: a value already on its way is not sent again (a whole race date, then a blur). */
+  const sending = useRef<Partial<Prefs> | null>(null);
   const [status, setStatus] = useState("");
 
   // What the server holds comes back after each save: the fields follow it — all but the ones the athlete holds.
@@ -58,6 +60,7 @@ export function useSaveAsYouGo(prefs: Prefs) {
     const body = waiting.current;
     waiting.current = null;
     out.current = true;
+    sending.current = body;
     try {
       const res = await api.updateSettings(body);
       // A field is the server's again once what it holds is what was saved and nothing newer waits for it.
@@ -70,6 +73,7 @@ export function useSaveAsYouGo(prefs: Prefs) {
       setStatus(SAVE_FAILED);
     } finally {
       out.current = false;
+      sending.current = null;
       if (waiting.current) void flush();
     }
   };
@@ -83,6 +87,7 @@ export function useSaveAsYouGo(prefs: Prefs) {
   const commit = <K extends keyof Prefs>(k: K, v: Prefs[K]) => {
     setDraft((d) => ({ ...d, [k]: v }));
     const pendingHere = waiting.current !== null && k in waiting.current;
+    if (!pendingHere && sending.current && k in sending.current && sending.current[k] === v) return;
     if (v === live[k] && !pendingHere && !out.current) {
       held.current.delete(k);
       return;

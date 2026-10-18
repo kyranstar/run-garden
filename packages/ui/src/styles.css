@@ -5025,22 +5025,20 @@ button.session-chip {
   gap: var(--space-4);
   align-items: center;
 }
-/* The time zone prompt, one line (the integrated review, I1): its words take the squeeze, its two short choices never
-   wrap. */
+/* The time zone prompt: one sentence with both zones, never cut short; its two short choices beside it when there is
+   room, under it (to the right) when not — and never apart. */
 .tz-nudge {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 .tz-nudge-text {
-  flex: 1;
+  flex: 1 1 16rem;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .tz-nudge .banner-actions {
   flex: none;
   flex-wrap: nowrap;
   margin-top: 0;
+  margin-left: auto;
 }
 
 /* A banner's actions are a CONTAINER, never loose buttons in the prose: loose,

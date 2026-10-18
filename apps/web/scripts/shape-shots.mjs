@@ -190,12 +190,13 @@ async function run() {
       await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
       await page.locator("#dock-panel").waitFor();
       await page.locator(".tz-nudge").waitFor();
+      console.log(`the time zone prompt @ ${vp.name} ${scheme}: ${(await page.locator(".tz-nudge").innerText()).replace(/\s+/g, " ")}`);
       console.log(`above the fold WITH banners @ ${vp.name} ${scheme}: ${JSON.stringify(await aboveFold(page))}`);
       await shoot(page, vp, scheme, "1c-today-with-banners");
       await context.close();
     }
 
-    // Extend and "Plan with the coach" ask the thread coach, and say so in one quiet line. The fixture has no plan the
+    // Extend asks the thread coach, says so in one quiet line, and waits until it answers. The fixture has no plan the
     // coach made (Extend is a coach plan's), so its run plan is shown here as one; the thread coach's POST is answered
     // here (no model, nothing sent).
     for (const scheme of ["light", "dark"]) {
@@ -225,11 +226,6 @@ async function run() {
         await sheet.getByRole("button", { name: "Extend" }).click();
         await sheet.locator(".plan-asked").waitFor();
         await shoot(page, vp, scheme, "7b-plan-sheet-asked-the-thread-coach");
-        await page.keyboard.press("Escape");
-        await page.getByRole("button", { name: "Plan with the coach" }).click();
-        await page.locator(".plan-asked").waitFor();
-        await page.locator(".plan-asked").scrollIntoViewIfNeeded();
-        await shoot(page, vp, scheme, "7c-your-plans-asked-the-thread-coach");
         await context.close();
       }
     }

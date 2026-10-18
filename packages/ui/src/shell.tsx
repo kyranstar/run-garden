@@ -79,18 +79,16 @@ function PlaceLink({ item }: { item: (typeof NAV)[number] }) {
 /**
  * Settings, on a phone: the athlete's mark at the top right of each place — their address's first letter in a round
  * 44 px target, or the settings glyph while no address is known — on a row of its own above the page, so it never sits
- * over a banner or a place's own title row (Plan's COROS check, Growth's Month / Season). On Today it sits on the
- * picture's top-right corner instead (`onScene`, handed over through `SceneMarkContext`), so the card gains the row's
- * room. From lg the rail's foot holds Settings instead.
+ * over a banner or a place's own title row (Plan's COROS check, Growth's Month / Season). On Today the page wears it
+ * (handed over through `SceneMarkContext`): on the picture's top-right corner, so the card gains the row's room, or on
+ * a row while there is no picture yet. From lg the rail's foot holds Settings instead.
  */
-function AthleteMark({ who, onScene = false }: { who: string | null | undefined; onScene?: boolean }) {
+function AthleteMark({ who }: { who: string | null | undefined }) {
   const initial = who?.trim().charAt(0).toUpperCase() ?? "";
   return (
-    <div className={onScene ? "athlete-row athlete-on-scene" : "athlete-row"}>
-      <Link className="athlete-mark" to="/settings" aria-label="Settings">
-        {initial ? <span aria-hidden="true">{initial}</span> : <IconSettings />}
-      </Link>
-    </div>
+    <Link className="athlete-mark" to="/settings" aria-label="Settings">
+      {initial ? <span aria-hidden="true">{initial}</span> : <IconSettings />}
+    </Link>
   );
 }
 
@@ -130,7 +128,7 @@ export function AppShell({
   const immersive = pathname === "/";
   const wide = isWide(pathname);
   // The athlete's mark: a row of its own above each place — on Today, the picture's to wear (scene-mark.ts).
-  const mark = PLACES.has(pathname) ? <AthleteMark who={who} onScene={immersive} /> : null;
+  const mark = PLACES.has(pathname) ? <AthleteMark who={who} /> : null;
   // The music dock (Spotify): on only once the owner's Client ID is set (the server answers it); off, no room is kept.
   const music = useMusicOn();
   return (
@@ -150,7 +148,7 @@ export function AppShell({
       <main
         className={`shell-main${immersive ? " shell-main--immersive" : ""}${wide ? " shell-main--wide" : ""}`}
       >
-        {immersive ? null : mark}
+        {immersive || !mark ? null : <div className="athlete-row">{mark}</div>}
         {staging ? (
           <div className="banner banner-info" style={{ marginBottom: "var(--space-6)" }} role="status">
             Staging

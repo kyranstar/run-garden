@@ -1,5 +1,5 @@
 import { useUnits, useWeightUnit } from "../use-units.js";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner } from "../components.js";
@@ -39,6 +39,7 @@ export function PlanSheet({
   onRetire,
   onRename,
   onAskThread,
+  threadBusy = false,
 }: {
   planId: string;
   plans: CoachPlanDto[];
@@ -51,6 +52,8 @@ export function PlanSheet({
   onRename: (id: string, name: string) => void;
   /** Send the thread coach a message (Extend, Wind down); none: those two are not offered. */
   onAskThread?: (body: string) => void;
+  /** The thread coach is thinking (its request out, or its wake running): Extend and Wind down wait. */
+  threadBusy?: boolean;
 }) {
   const units = useUnits();
   const weightUnit = useWeightUnit();
@@ -66,7 +69,22 @@ export function PlanSheet({
   const [retireError, setRetireError] = useState<string | null>(null);
   /** The thread coach was asked: one quiet line says where its answer will be. */
   const [askedThread, setAskedThread] = useState(false);
+  // From the tap until the thread coach has answered (it was seen thinking, and is no longer), Extend and Wind down
+  // wait: a second tap would send the request again.
+  const [asking, setAsking] = useState(false);
+  const sawThinking = useRef(false);
+  useEffect(() => {
+    if (!asking) return;
+    if (threadBusy) sawThinking.current = true;
+    else if (sawThinking.current) {
+      sawThinking.current = false;
+      setAsking(false);
+    }
+  }, [asking, threadBusy]);
+  const waiting = asking || threadBusy;
   const askThread = (body: string) => {
+    if (waiting) return;
+    setAsking(true);
     onAskThread?.(body);
     setAskedThread(true);
   };
@@ -115,10 +133,10 @@ export function PlanSheet({
                 it is not offered a taper. */}
             {(d?.plan ?? plan)?.kind === "loose" || !onAskThread ? null : (
               <>
-                <button type="button" className="btn" onClick={() => askThread(THREAD_REQUESTS.extend(title))}>
+                <button type="button" className="btn" disabled={waiting} onClick={() => askThread(THREAD_REQUESTS.extend(title))}>
                   Extend
                 </button>
-                <button type="button" className="btn" onClick={() => askThread(THREAD_REQUESTS.windDown(title))}>
+                <button type="button" className="btn" disabled={waiting} onClick={() => askThread(THREAD_REQUESTS.windDown(title))}>
                   Wind down
                 </button>
               </>

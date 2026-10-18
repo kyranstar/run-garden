@@ -996,7 +996,7 @@ export function GardenBody({
           <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
           <div className="hud-topleft">{parts.condition}</div>
           {/* The athlete's mark at the picture's top-right, on a phone (the shell hands it over: scene-mark.ts). */}
-          {sceneMark}
+          {sceneMark ? <div className="athlete-row athlete-on-scene">{sceneMark}</div> : null}
         </div>
         {/* The celebration gets its own moment — centred on the stage, after
             the picture in the reading column below it. */}
@@ -1053,6 +1053,7 @@ export function GardenHandle({ open, onOpen }: { open: boolean; onOpen: () => vo
 
 export function GardenScreen() {
   const units = useUnits();
+  const sceneMark = useContext(SceneMarkContext);
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   // Sessions saved on this device and not yet taken by the server (Phase 2b) — read only on a day with an app session.
@@ -1369,9 +1370,22 @@ export function GardenScreen() {
   // screen, then paint once. A background REFETCH is not `isLoading`, so a
   // stale-while-revalidate pass still paints immediately from cache — see
   // `settling` in components.tsx, which is this rule with a name.
+  // No picture yet (loading, or it couldn't load): the athlete's mark keeps its way to Settings on a row of its own.
+  const markRow = sceneMark ? <div className="athlete-row">{sceneMark}</div> : null;
   if (settling(garden, today))
-    return <Spinner label="Loading the garden" />;
-  if (!garden.data) return <EmptyState title="Couldn't load the garden" />;
+    return (
+      <>
+        {markRow}
+        <Spinner label="Loading the garden" />
+      </>
+    );
+  if (!garden.data)
+    return (
+      <>
+        {markRow}
+        <EmptyState title="Couldn't load the garden" />
+      </>
+    );
 
   const snapshot = garden.data.snapshot as unknown as GardenSnapshot;
   const condition = garden.data.condition as GardenConditionWord;

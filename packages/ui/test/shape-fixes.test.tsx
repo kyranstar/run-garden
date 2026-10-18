@@ -27,7 +27,7 @@ import { initialSnapshot } from "@rg/garden-engine";
 import { GARDEN_PART_KEYS, GardenBody, GardenScreen, type GardenParts } from "../src/screens/garden.js";
 import { nothingAppliedOf } from "../src/screens/plan.js";
 import { THREAD_REQUESTS, PlanSheet } from "../src/screens/plan-sheet.js";
-import { NEW_PLAN_THREAD_REQUEST, YourPlans } from "../src/screens/plan-cards.js";
+import { YourPlans } from "../src/screens/plan-cards.js";
 import { TimezoneNudge } from "../src/screens/today.js";
 import { CoachOpenContext, CoachSeeingContext, SeeingRegistry, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { AppShell } from "../src/shell.js";
@@ -135,7 +135,7 @@ describe("the athlete's mark on Today's picture (phones; the lead's follow-up to
 
   it("on Today the shell hands its mark to the picture, and draws no row of its own; the other places keep the row", () => {
     const today = shellAt("/");
-    expect(today).toMatch(/<div data-probe=""><div class="athlete-row athlete-on-scene"><a [^>]*class="athlete-mark"/);
+    expect(today).toMatch(/<div data-probe=""><a [^>]*class="athlete-mark"/);
     expect(today.match(/class="athlete-mark"/g)).toHaveLength(1);
     for (const path of ["/plan", "/growth"]) {
       const html = shellAt(path);
@@ -150,7 +150,7 @@ describe("the athlete's mark on Today's picture (phones; the lead's follow-up to
       createElement(SceneMarkContext.Provider, { value: createElement("b", { "data-mark": "" }) }, createElement(GardenBody, { parts: marked })),
     );
     const hero = html.slice(html.indexOf('class="stage-hero"'), html.indexOf('class="hud-dock"'));
-    expect(hero).toContain("data-mark");
+    expect(hero).toContain('<div class="athlete-row athlete-on-scene"><b data-mark=""></b></div>');
     // Without a mark handed to it (a page outside the shell), nothing is drawn for it.
     expect(renderToStaticMarkup(createElement(GardenBody, { parts: marked }))).not.toContain("athlete");
   });
@@ -168,6 +168,39 @@ describe("the athlete's mark on Today's picture (phones; the lead's follow-up to
       expect(ratio(t[ink!]!, t[bg!]!), `${theme}: the letter on its chip`).toBeGreaterThanOrEqual(4.5);
     }
     expect(lg).toMatch(/\.athlete-row \{\s*display: none;/);
+  });
+
+  it("while the garden loads, and when it can't, Today still carries the mark — on a row of its own (no picture yet)", async () => {
+    window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })) as unknown as typeof window.matchMedia;
+    for (const [what, answer] of [
+      ["loading", () => new Promise<Response>(() => undefined)],
+      ["failed", async () => new Response("{}", { status: 500, headers: { "Content-Type": "application/json" } })],
+    ] as const) {
+      vi.stubGlobal("fetch", vi.fn(answer));
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      act(() =>
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: qc },
+            createElement(MemoryRouter, null, createElement(SceneMarkContext.Provider, { value: createElement("b", { "data-mark": "" }) }, createElement(GardenScreen))),
+          ),
+        ),
+      );
+      try {
+        const words = what === "loading" ? "Loading the garden" : "Couldn't load the garden";
+        for (let i = 0; i < 200 && !host.innerHTML.includes(words); i++) await act(async () => void (await new Promise((r) => setTimeout(r, 5))));
+        expect(host.innerHTML, what).toContain(words);
+        expect(host.innerHTML, what).toContain('<div class="athlete-row"><b data-mark=""></b></div>');
+      } finally {
+        act(() => root.unmount());
+        host.remove();
+        vi.unstubAllGlobals();
+      }
+    }
   });
 
   it("no empty box for a restore that isn't there: the row's room is the page's", () => {
@@ -207,16 +240,31 @@ describe("I1 — Today's card above the fold on a phone", () => {
     expect(baseRule(".dock-panel")).toContain("padding: var(--space-6)");
   });
 
-  it("the time zone prompt is one line: a few words and two short buttons, the zones in their names", () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    qc.setQueryData(["settings"], { prefs: { timezone: "Asia/Tokyo" } });
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(TimezoneNudge)));
-    const text = html.replace(/<button[\s\S]*?<\/button>/g, "").replace(/<[^>]+>/g, "").trim();
-    expect(text.length).toBeLessThanOrEqual(24);
-    const buttons = [...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => [m[1], m[2]!.replace(/<[^>]+>/g, "")]);
-    expect(buttons.map(([name]) => name)).toEqual([expect.stringMatching(/^Switch to /), "Keep Asia/Tokyo"]);
-    for (const [, label] of buttons) expect(label!.length).toBeLessThanOrEqual(12);
-    expect(baseRule(".tz-nudge")).toContain("flex-wrap: nowrap");
+  it("the time zone prompt says both zones in one sentence, and each button's name holds its visible words", () => {
+    const real = Intl.DateTimeFormat.prototype.resolvedOptions;
+    const spy = vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (this: Intl.DateTimeFormat) {
+      return { ...real.call(this), timeZone: "Asia/Tokyo" };
+    });
+    try {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+      qc.setQueryData(["settings"], { prefs: { timezone: "America/New_York" } });
+      const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(TimezoneNudge)));
+      const text = html.replace(/<button[\s\S]*?<\/button>/g, "").replace(/<[^>]+>/g, "").trim();
+      expect(text).toBe("Your device is on Tokyo time; your days run on New York time.");
+      const buttons = [...html.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g)].map((m) => {
+        const shown = m[2]!.replace(/<[^>]+>/g, "").trim();
+        return [/aria-label="([^"]+)"/.exec(m[1]!)?.[1] ?? shown, shown];
+      });
+      expect(buttons.map(([, shown]) => shown)).toEqual(["Use Tokyo", "Keep"]);
+      // Label in name: a voice user says what they see.
+      for (const [name, shown] of buttons) expect(name!.toLowerCase().startsWith(shown!.toLowerCase()), `${name} / ${shown}`).toBe(true);
+      expect(buttons.map(([name]) => name)).toEqual(["Use Tokyo time", "Keep New York time"]);
+    } finally {
+      spy.mockRestore();
+    }
+    // The sentence is never cut short; the two choices never break apart.
+    expect(baseRule(".tz-nudge-text")).not.toContain("text-overflow");
+    expect(baseRule(".tz-nudge .banner-actions")).toContain("flex-wrap: nowrap");
     expect(read("screens/garden.tsx")).toContain("<Banner kind=\"info\">Calendar mirroring is paused.</Banner>");
   });
 });
@@ -347,7 +395,6 @@ describe("I4 — Extend, Wind down and a new plan go to the thread coach", () =>
   it("the thread coach's own words, as before", () => {
     expect(THREAD_REQUESTS.extend("Fall Half Block")).toBe('Extend "Fall Half Block" — draft the next weeks in the same shape.');
     expect(THREAD_REQUESTS.windDown("Fall Half Block")).toBe('Wind down "Fall Half Block" — draft the final taper week.');
-    expect(NEW_PLAN_THREAD_REQUEST).toBe("I want a new plan — interview me for what you need.");
   });
 
   it("Extend and Wind down send the thread coach their words, never open the conversation, and say so quietly", async () => {
@@ -361,8 +408,6 @@ describe("I4 — Extend, Wind down and a new plan go to the thread coach", () =>
     await act(async () => button("Extend")!.click());
     expect(sent).toEqual(['Extend "Fall Half Block" — draft the next weeks in the same shape.']);
     expect(document.querySelector('[role="status"]')?.textContent).toBe(ASKED);
-    await act(async () => button("Wind down")!.click());
-    expect(sent[1]).toBe('Wind down "Fall Half Block" — draft the final taper week.');
     expect(opened).toEqual([]);
     // "Ask about this plan" stays the conversation's.
     await act(async () => button("Ask about this plan")!.click());
@@ -375,18 +420,51 @@ describe("I4 — Extend, Wind down and a new plan go to the thread coach", () =>
     expect(button("Wind down")).toBeUndefined();
   });
 
-  it("Plan with the coach: the thread coach's intake, and the quiet line under the list", async () => {
+  it("Extend and Wind down wait while a request is out and until the thread coach answers: a second tap sends nothing", async () => {
     const sent: string[] = [];
-    mount(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop, onAskThread: (b: string) => sent.push(b) }), { open: noop });
-    await act(async () => button("Plan with the coach")!.click());
-    expect(sent).toEqual(["I want a new plan — interview me for what you need."]);
-    expect(document.querySelector('[role="status"]')?.textContent).toBe(ASKED);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, enabled: false } } });
+    qc.setQueryData(["plan-detail", "cp1"], detail);
+    const draw = (threadBusy: boolean) =>
+      act(() =>
+        root!.render(
+          createElement(
+            QueryClientProvider,
+            { client: qc },
+            createElement(
+              MemoryRouter,
+              null,
+              createElement(PlanSheet, { planId: "cp1", plans: [coachPlan], onClose: noop, onRetire: async () => null, onRename: noop, onAskThread: (b: string) => sent.push(b), threadBusy }),
+            ),
+          ),
+        ),
+      );
+    draw(false);
+    await act(async () => button("Extend")!.click());
+    await act(async () => button("Extend")!.click());
+    await act(async () => button("Wind down")!.click());
+    expect(sent).toHaveLength(1);
+    expect(button("Extend")!.disabled && button("Wind down")!.disabled).toBe(true);
+    draw(true); // the thread coach is thinking
+    expect(button("Extend")!.disabled).toBe(true);
+    draw(false); // it has answered
+    expect(button("Wind down")!.disabled).toBe(false);
+    await act(async () => button("Wind down")!.click());
+    expect(sent).toEqual(['Extend "Fall Half Block" — draft the next weeks in the same shape.', 'Wind down "Fall Half Block" — draft the final taper week.']);
   });
 
-  it("the Plan wires both to the thread coach's send, and passes its cards the lost work's receipt", () => {
+  it("no Plan with the coach until §8: its interview needs the thread's chat, which the Plan no longer has", () => {
+    mount(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), { open: noop });
+    expect(button("Plan with the coach")).toBeUndefined();
+    expect(read("screens/plan-cards.tsx")).not.toContain("Plan with the coach");
+  });
+
+  it("the Plan wires the sheet to the thread coach's send and its thinking, and passes its cards the lost work's receipt", () => {
     const plan = read("screens/plan.tsx");
-    expect(plan).toMatch(/<PlanSheet[\s\S]*?onAskThread=\{coach\.send\}/);
-    expect(plan).toMatch(/<YourPlans[\s\S]*?onAskThread=\{coach\.send\}/);
+    expect(plan).toMatch(/<PlanSheet[\s\S]*?onAskThread=\{coach\.send\}[\s\S]*?threadBusy=\{coach\.busy\}/);
+    expect(plan).not.toMatch(/<YourPlans[^/]*?onAskThread/);
     expect(plan).toContain("<ThreadCoachCards {...coachProps} nothingApplied={nothingAppliedOf(coach.state.data?.messages ?? [])} />");
   });
 });

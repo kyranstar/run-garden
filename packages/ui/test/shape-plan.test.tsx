@@ -222,17 +222,10 @@ describe("Your plans, one list", () => {
     expect(html).not.toContain('class="plan-row"');
   });
 
-  it("its foot: a new program, and a plan asked of the thread coach (only when it can be asked: shape-fixes)", () => {
-    const withCoach = renderToStaticMarkup(
-      wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop, onAskThread: noop }), { open: noop }),
-    );
-    expect(withCoach).toContain("New program…");
-    expect(withCoach).toContain("Plan with the coach");
-    const without = renderToStaticMarkup(
-      wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), null),
-    );
-    expect(without).toContain("New program…");
-    expect(without).not.toContain("Plan with the coach");
+  it("its foot: a new program (a plan asked of the coach comes with §8: shape-fixes)", () => {
+    const html = renderToStaticMarkup(wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), { open: noop }));
+    expect(html).toContain("New program…");
+    expect(html).not.toContain("Plan with the coach");
   });
 });
 
