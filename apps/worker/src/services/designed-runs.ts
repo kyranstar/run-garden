@@ -172,7 +172,8 @@ export function runCtxOf(raw: unknown): RunCtx {
   const o = (parsedJson(raw) ?? {}) as { t?: unknown; near?: unknown; week?: unknown; avg?: unknown };
   const t = typeof o.t === "number" && Number.isFinite(o.t) ? o.t : null;
   const near = parsedJson(o.near);
-  const nearby: RunCtx["nearby"] = (Array.isArray(near) ? near : []).flatMap((x) => {
+  type Near = RunCtx["nearby"][number];
+  const nearby: Near[] = (Array.isArray(near) ? near : []).flatMap((x): Near[] => {
     const r = x as { d?: unknown; c?: unknown; s?: unknown; t?: unknown; doc?: unknown };
     if (typeof r.d !== "string") return [];
     const title = typeof r.t === "string" && r.t.trim() ? r.t : r.s === "run" ? "A hard run" : "Strength";
