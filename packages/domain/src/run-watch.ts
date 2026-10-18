@@ -134,6 +134,18 @@ export function runWatchStepOf(item: WorkoutItem, purpose: WorkoutDoc["parts"][n
   return { role, effort: item.effort, target, ...(t.pace ? { pace: { fastSecPerKm: Math.round(t.pace.fastSecPerKm), slowSecPerKm: Math.round(t.pace.slowSecPerKm) } } : {}) };
 }
 
+/**
+ * A row's designed run as the watch takes it: the session of the coach's approved run (a proposal's document, every
+ * item a run segment or a rest), else null — a plan run, a Studio workout, an import. Every path that rebuilds a
+ * session from a row reads this before its stage rows (the body check's Undo; review-2 M2: the operator's content
+ * convergence and absent push), so a designed run never goes back as its stage rows read as a thread-coach run.
+ */
+export function designedRunSession(doc: WorkoutDoc | null): RunWatchSession | null {
+  if (!doc || doc.basedOn?.kind !== "proposal" || !isRunDoc(doc)) return null;
+  const made = runWatchSessionOf(doc);
+  return "session" in made ? made.session : null;
+}
+
 /** A designed run's session for the watch job (see the module comment), or why the wire can't hold it. */
 export function runWatchSessionOf(doc: WorkoutDoc): { session: RunWatchSession } | { refused: RunWatchRefusal } {
   const segments: RunWatchSegment[] = [];

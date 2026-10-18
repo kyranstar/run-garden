@@ -26,7 +26,18 @@
 
 import { and, desc, eq, gte, inArray, isNotNull, isNull } from "drizzle-orm";
 import { auditEvents, dailyHealth, plannedWorkouts, plannedWorkoutStages } from "@rg/database";
-import { appAuthoredRow, newId, nowInstant, todayInZone, watchAddressOf } from "@rg/domain";
+import {
+  appAuthoredRow,
+  designedRunSession,
+  isRunWatchSession,
+  newId,
+  nowInstant,
+  parseStoredWorkoutDoc,
+  todayInZone,
+  watchAddressOf,
+  type CoachSession,
+  type RunWatchSession,
+} from "@rg/domain";
 import { chunkIds, runAtomically, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { enqueueWatchCreate, sessionColumns, sessionDoc, watchPushable, writeStages } from "./coach-apply.js";
@@ -124,7 +135,26 @@ export async function pushAbsentSessions(
     }
   }
 
-  const toPush: Array<{ row: (typeof rows)[number]; session: NonNullable<ReturnType<typeof sessionFromRow>> }> = [];
+  // A DESIGNED RUN goes as its document's session (review-2 M2), never its stage rows read as a thread-coach run: the
+  // documents of the runs among the candidates, one statement a chunk; and the athlete's threshold, which times its
+  // distances (read here, before the plan, so the dry run answers as the write would).
+  const docs = new Map<string, string | null>();
+  for (const ids of chunkIds(rows.filter((r) => r.sport === "run").map((r) => r.id))) {
+    for (const r of await db.select({ id: plannedWorkouts.id, doc: plannedWorkouts.workoutDoc }).from(plannedWorkouts).where(inArray(plannedWorkouts.id, ids))) {
+      docs.set(r.id, r.doc);
+    }
+  }
+  // The athlete's own threshold, from the same place the ease path reads it —
+  // a run pushed without it loses its pace bands and lands as bare timers.
+  const [threshold] = await db
+    .select({ v: dailyHealth.thresholdPaceSecPerKm })
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+    .orderBy(desc(dailyHealth.date))
+    .limit(1);
+  const thresholdPaceSecPerKm = threshold?.v ?? undefined;
+
+  const toPush: Array<{ row: (typeof rows)[number]; session: CoachSession | RunWatchSession }> = [];
   for (const row of rows) {
     const base = {
       workoutId: row.id,
@@ -132,7 +162,7 @@ export async function pushAbsentSessions(
       title: row.title,
       sport: row.sport,
     };
-    const session = sessionFromRow(row, stagesByWorkout.get(row.id) ?? []);
+    const session = designedRunSession(parseStoredWorkoutDoc(docs.get(row.id) ?? null)) ?? sessionFromRow(row, stagesByWorkout.get(row.id) ?? []);
     if (!session) {
       report.rows.push({
         ...base,
@@ -141,15 +171,17 @@ export async function pushAbsentSessions(
       });
       continue;
     }
-    if (!watchPushable(session)) {
+    if (!watchPushable(session, thresholdPaceSecPerKm)) {
       report.rows.push({
         ...base,
         action: "unpushable",
         // The one thing the athlete can act on, and the same distinction
         // `watch-coverage.ts` draws for the plan page.
-        reason: session.run
-          ? "this run is prescribed by distance, and COROS structured workouts take duration blocks"
-          : "at least one movement is not in your COROS exercise library, so the session has no id to send",
+        reason: isRunWatchSession(session)
+          ? "this designed run has a distance no pace can time yet — no threshold pace is known, so the watch can't be given its time"
+          : session.run
+            ? "this run is prescribed by distance, and COROS structured workouts take duration blocks"
+            : "at least one movement is not in your COROS exercise library, so the session has no id to send",
       });
       continue;
     }
@@ -187,15 +219,6 @@ export async function pushAbsentSessions(
   });
   report.backup = { auditEventId, kind: PUSH_ABSENT_BACKUP_KIND, table: "audit_events" };
 
-  // The athlete's own threshold, from the same place the ease path reads it —
-  // a run pushed without it loses its pace bands and lands as bare timers.
-  const [threshold] = await db
-    .select({ v: dailyHealth.thresholdPaceSecPerKm })
-    .from(dailyHealth)
-    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
-    .orderBy(desc(dailyHealth.date))
-    .limit(1);
-  const thresholdPaceSecPerKm = threshold?.v ?? undefined;
   for (const { row, session } of toPush) {
     // THE SAME enqueue the live add path uses, so a backfilled push and an
     // approved one cannot be two different things.

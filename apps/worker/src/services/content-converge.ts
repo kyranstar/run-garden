@@ -76,14 +76,18 @@ import {
   appAuthoredRow,
   coachSessionSchema,
   COACH_STAMPING_JOB_KINDS,
+  designedRunSession,
+  isRunWatchSession,
   newId,
   nowInstant,
   paceBandFor,
+  parseStoredWorkoutDoc,
   sessionSummaryLine,
   todayInZone,
   watchAddressOf,
   type CoachSession,
   type PaceIntensity,
+  type RunWatchSession,
   type UserPreferences,
 } from "@rg/domain";
 import { RUN_PACE_WIRE } from "@rg/coros";
@@ -247,8 +251,8 @@ export function sessionFromRow(row: PlannedRow, stages: StageRow[]): CoachSessio
  * fallback — it is exactly the prose that makes the row unfixable, so the report
  * shows the operator what there is instead of a structure.
  */
-function describePrescription(session: CoachSession | null, row: WorkoutRow): string | null {
-  return session ? sessionSummaryLine(session) : row.stageSummary;
+function describePrescription(session: CoachSession | RunWatchSession | null, row: WorkoutRow): string | null {
+  return session && !isRunWatchSession(session) ? sessionSummaryLine(session) : row.stageSummary;
 }
 
 export interface ConvergeOptions {
@@ -456,13 +460,16 @@ export async function convergeDivergedContent(
   }
 
   const reports: ContentConvergeRowReport[] = [];
-  const toWrite: Array<{ row: WorkoutRow; session: CoachSession; report: ContentConvergeRowReport }> = [];
+  const toWrite: Array<{ row: WorkoutRow; session: CoachSession | RunWatchSession; report: ContentConvergeRowReport }> = [];
 
   for (const row of rows) {
     // Soonest first (`rows` is in date order): the rest wait for the next run, and are not reported on this one.
     if (opts.maxWrites !== undefined && toWrite.length >= opts.maxWrites) break;
     const stages = stagesByWorkout.get(row.id) ?? [];
-    const session = sessionFromRow(row, stages);
+    // A DESIGNED RUN's session is its document's (review-2 M2) — its tempo, its bare recoveries, its repeats — never its
+    // stage rows read as a thread-coach run ("tempo" as threshold, the jog as easy work, a repeat unpushable).
+    const designed = designedRunSession(parseStoredWorkoutDoc(row.workoutDoc));
+    const session: CoachSession | RunWatchSession | null = designed ?? sessionFromRow(row, stages);
     const base: ContentConvergeRowReport = {
       workoutId: row.id,
       effectiveDate: row.effectiveDate,
@@ -565,7 +572,21 @@ export async function convergeDivergedContent(
       continue;
     }
 
-    const action = watchPushable(session) ? ("rewrite" as const) : ("unpush" as const);
+    // A designed run this run can't time — a distance, and no threshold in hand (`only` read none) — is left as the
+    // watch holds it: its distance waits on a threshold, not on a fix, so it is never unpushed, nor rebuilt otherwise.
+    const anchorOf = thresholdPaceSecPerKm ?? outdatedPace.get(row.id);
+    if (designed && !watchPushable(designed, anchorOf)) {
+      reports.push({
+        ...base,
+        action: "skipped",
+        address: located,
+        reason:
+          "a designed run with a distance no pace can time yet (no threshold in hand): its watch copy is left as it is —" +
+          " never unpushed, never rebuilt from its stage rows",
+      });
+      continue;
+    }
+    const action = watchPushable(session, designed ? anchorOf : undefined) ? ("rewrite" as const) : ("unpush" as const);
     const report: ContentConvergeRowReport = {
       ...base,
       action,
