@@ -231,7 +231,7 @@ function localTime(tz: string, at: Date): string {
 }
 
 /** The instant `date` begins in `tz` (ISO): a timestamp at or after it falls on that local date or later. */
-function startOfLocalDate(tz: string, date: string): string {
+export function startOfLocalDate(tz: string, date: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
     hourCycle: "h23",

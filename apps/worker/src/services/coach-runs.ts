@@ -4,6 +4,7 @@ import {
   ceilingKindOf,
   COACH_CEILING_DEFAULTS_USD,
   coachSettings,
+  addDays,
   dayLabel,
   newId,
   todayInZone,
@@ -16,7 +17,7 @@ import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { designContextBuilder } from "./design-context.js";
+import { designContextBuilder, startOfLocalDate } from "./design-context.js";
 import { checkFocus, dayOutOfRange, type RunFocus } from "./design-focus.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
@@ -508,10 +509,32 @@ export function newRunState(
 /** A new main run's window: the athlete's local day for now / later today, a day from `now` for a set. A timezone
  * that can't be read counts as UTC. */
 export function runWindow(scope: RunScope, timezone: string, now: Date): RunWindow {
-  // An auto run starts as one workout's: its day (a set it plans gets a set's window from then: `SetHooks.raise`).
-  return scope.kind === "now" || scope.kind === "later_today" || scope.kind === "auto"
+  // An auto run (the new shape §5; the lead's ruling, M3): two hours at least from its start, or to the athlete's next
+  // midnight when that is later — a question asked at 23:50 still stands at 00:30 (a set it plans gets a set's window
+  // from then: `SetHooks.raise`).
+  if (scope.kind === "auto") {
+    const midnight = Date.parse(nextLocalMidnight(timezone, now));
+    return { kind: "until", at: new Date(Math.max(now.getTime() + AUTO_WINDOW_MIN_HOURS * 3_600_000, midnight)).toISOString() };
+  }
+  return scope.kind === "now" || scope.kind === "later_today"
     ? { kind: "day", date: localDate(timezone, now) }
     : { kind: "until", at: new Date(now.getTime() + COACH_RUN_SET_WINDOW_HOURS * 3_600_000).toISOString() };
+}
+
+/** An auto run stays open at least this long from its start (the lead's ruling, M3). */
+export const AUTO_WINDOW_MIN_HOURS = 2;
+
+/** The instant the athlete's next local day begins (a zone that can't be read counts as UTC). */
+function nextLocalMidnight(timezone: string, now: Date): string {
+  const tz = (() => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+      return timezone;
+    } catch {
+      return "UTC";
+    }
+  })();
+  return startOfLocalDate(tz, addDays(localDate(tz, now), 1));
 }
 
 /** Has the run's window closed at `now`? A run made without one stays open COACH_RUN_SET_WINDOW_HOURS from its start.
@@ -589,12 +612,13 @@ export function parseRunScope(raw: unknown): RunScope | null {
 }
 
 /**
- * A create's scope as the request gives it: absent, an auto run (the new shape §5: the coach decides — no time frame up
- * front); `next_n` with no count, the athlete's count (Settings → Coach, Task 10, resolved by `createRun`). Null for
- * anything else that isn't a scope.
+ * A create's scope as the request gives it: absent, none — `createRun` then takes a suggestion's own scope when the
+ * run is asked from one (an old client's follow-up, as before: the review, M2), else starts an auto run (the new shape
+ * §5: the coach decides); `next_n` with no count, the athlete's count (Settings → Coach, Task 10). Null for anything else
+ * that isn't a scope.
  */
 export function parseScopeRequest(raw: unknown): { scope?: RunScope } | null {
-  if (raw === undefined) return { scope: { kind: "auto" } };
+  if (raw === undefined) return {};
   const kind = (raw as { kind?: unknown } | null)?.kind;
   if (kind === "next_n" && (raw as { n?: unknown }).n === undefined) return { scope: { kind: "next_n" } };
   const scope = parseRunScope(raw);
@@ -3167,7 +3191,10 @@ function setHooks(s: StepCtx): SetHooks {
       // is planned.)
       const done = s.nodes.filter((n) => n.parentId === s.root.id && n.role === "designer");
       return {
-        ceilingMicros: s.state.settings.ceilingMicros,
+        // An auto run not yet raised weighs its set against the set's ceiling it would rise to (plan_set raises it only
+        // once the set fits: the review, M1).
+        ceilingMicros:
+          s.run.scope.kind === "auto" && !s.state.settings.raisedAt ? (s.state.settings.setCeilingMicros ?? RUN_CEILING_MICROS.week) : s.state.settings.ceilingMicros,
         // The tree's spend as read at the step's start, and this step's model call.
         spentMicros: treeSpendMicros(s.nodes, s.root) + s.spent,
         mainSpentMicros: Math.round(s.root.costUsd * 1_000_000) + s.spent,

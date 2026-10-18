@@ -376,7 +376,7 @@ export const proposeWorkout: DesignTool = {
     }
     const kept = mine ? withoutAbandoned(mine) : undefined;
     // An amend: the reviewed draft's text fixed, no round, no reviewer (§2.2) — whatever rounds are left.
-    if (p.amend) return amendDraft(ctx, { a, doc, target: p.target, changeNote: p.changeNote, kept, all, opsText, proposalId, today });
+    if (p.amend) return amendDraft(ctx, { a, doc, target: p.target, changeNote: p.changeNote, replaces: p.replaces, kept, all, opsText, proposalId, today });
     // The draft and two revisions at most (ruling 4): a further draft is never reviewed, so it is never proposed.
     const log = kept?.reviewLog ?? [];
     if (ctx.review && countedRounds(log) >= REVIEW_ROUNDS) {
@@ -782,6 +782,8 @@ async function amendDraft(
     doc: Record<string, unknown>;
     target: z.infer<typeof target>;
     changeNote: string | undefined;
+    /** The suggestion it names (`replaces`, checked by the caller): kept on the op, as a draft's is (the review, M5). */
+    replaces: string | undefined;
     kept: DocWorkoutOp | undefined;
     all: unknown[];
     opsText: string | null;
@@ -832,6 +834,7 @@ async function amendDraft(
     derived: derivedSummary(judged.derived),
     reviewLog: [...(kept.reviewLog ?? []), entry],
     review: { ...kept.review, changes: [...kept.review.changes, change] },
+    ...(o.replaces ? { supersedes: o.replaces } : {}),
   };
   const next = [...o.all.filter((x) => !isDocWorkoutOp(x) || (x as DocWorkoutOp).by.runId !== ctx.run.id), op];
   const written = await upsertProposal(ctx, o.proposalId, next, o.opsText, ctx.now.toISOString());

@@ -204,8 +204,7 @@ export const planSet: DesignTool = {
     // started is not checked again: they are under way.
     const ids = p.briefs.map((b, i) => designerRunId(ctx.run.id, toolUseId, i, b.key));
     if (!ctx.set.started(ids)) {
-      // An auto run plans a set at a set's ceiling (the new shape §5): raised once, before the set is weighed against it.
-      ctx.set.raise?.();
+      // (An auto run's set is weighed against the set's ceiling it would rise to: `SetHooks.budget`.)
       const budget = ctx.set.budget();
       const stored = estimate ?? budget.estimate;
       const perWorkout = Math.max(stored?.perWorkoutMicros ?? DEFAULT_WORKOUT_COST_MICROS, redo ? (budget.perDesignerMicros ?? 0) : 0);
@@ -231,6 +230,9 @@ export const planSet: DesignTool = {
         );
       }
     }
+    // An auto run that plans a set (the new shape §5) rises to the set's ceiling and window only now — once the set fits
+    // (or its designers are already under way: a replay) — never on a refusal, which leaves it one workout's.
+    ctx.set.raise?.();
     const firstOrder = [...firstKeys.keys()];
     const designers = p.briefs.map((b, i) => {
       const firstOp = redo ? firstOpOf(b.key) : undefined;

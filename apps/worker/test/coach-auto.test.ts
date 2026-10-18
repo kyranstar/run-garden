@@ -20,7 +20,7 @@ import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import { COACH_RUN_SET_WINDOW_HOURS } from "../src/services/cron-limits.js";
-import { createRun, RUN_CEILING_MICROS, runStep, WeekBudgetError, type RunDeps } from "../src/services/coach-runs.js";
+import { answerRun, createRun, RUN_CEILING_MICROS, runStep, WeekBudgetError, type RunDeps } from "../src/services/coach-runs.js";
 import { buildDesignContext, designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS, roleBlock } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
@@ -144,13 +144,13 @@ async function post(body: unknown) {
 const cancelAll = () => db.update(schema.coachRuns).set({ status: "cancelled" });
 
 describe("a create with no scope is an auto run", () => {
-  it("starts as one workout's: the single ceiling and the day's window, the set's ceiling kept for plan_set; a scope sent is as before", async () => {
+  it("starts as one workout's: the single ceiling and its own window, the set's ceiling kept for plan_set; a scope sent is as before", async () => {
     const made = await post({ request: "Something for my hips." });
     expect(made.status).toBe(200);
     expect(made.body.run.scope).toEqual({ kind: "auto" });
     expect(made.body.run.ceilingUsd).toBe(1.5);
     const { state } = await stateOf(made.body.run.id);
-    expect(state.settings).toMatchObject({ ceilingMicros: RUN_CEILING_MICROS.now, setCeilingMicros: RUN_CEILING_MICROS.week, window: { kind: "day" } });
+    expect(state.settings).toMatchObject({ ceilingMicros: RUN_CEILING_MICROS.now, setCeilingMicros: RUN_CEILING_MICROS.week, window: { kind: "until" } });
     expect(state.settings.raisedAt).toBeUndefined();
     expect(RUN_CEILING_MICROS.auto).toBe(RUN_CEILING_MICROS.now);
     await cancelAll();
@@ -296,7 +296,30 @@ describe("plan_set in an auto run", () => {
     const answer = sent(requests, plan);
     expect(answer.is_error).toBe(true);
     expect(answer.body.error).toBe("over_budget");
+    // (A run ceiling's own figure: a set's, as plan_set weighs it — the week's is the tighter.)
     expect(answer.body.why).toMatch(/this week's AI budget has/);
+    // Refused, the run is still one workout's: its ceiling and its day's window, never raised.
+    const { state } = await stateOf(run.run.id);
+    expect(state.settings).toMatchObject({ ceilingMicros: RUN_CEILING_MICROS.now, window: { kind: "until" } });
+    expect(state.settings.raisedAt).toBeUndefined();
+    expect(Date.parse(state.settings.window.at)).toBeLessThan(NOW.getTime() + COACH_RUN_SET_WINDOW_HOURS * 3_600_000);
+  });
+
+  it("an auto run stays open two hours at least, or to the athlete's midnight when that is later: a question at 23:50 still stands at 00:30", async () => {
+    // 09:30 in Los Angeles: open to its midnight.
+    const morning = await createRun(db, userId, { request: "Something." }, NOW);
+    const { state: m } = await stateOf(morning.run.id);
+    expect(m.settings.window).toEqual({ kind: "until", at: "2026-05-14T07:00:00.000Z" });
+    await db.update(schema.coachRuns).set({ status: "cancelled" }).where(eq(schema.coachRuns.id, morning.run.id));
+    // 23:50 in Los Angeles: two hours, past its midnight.
+    const late = new Date("2026-05-14T06:50:00Z");
+    const run = await createRun(db, userId, { request: "Something for tomorrow morning?" }, late);
+    expect((await stateOf(run.run.id)).state.settings.window).toEqual({ kind: "until", at: "2026-05-14T08:50:00.000Z" });
+    const ask = use("ask_athlete", { questions: [{ text: "Before work or after?", chips: ["Before", "After"], why: "It decides the time." }] });
+    const d = scripted([turn(ask)]).deps;
+    for (let i = 1; i <= 2; i++) await runStep(db, env, run.run.id, userId, new Date(late.getTime() + i * 1000), d);
+    const answered = await answerRun(db, userId, run.run.id, { answers: ["Before"] }, new Date("2026-05-14T07:30:00Z"));
+    expect(answered.kind).toBe("ok");
   });
 
   it("old scopes are as they were: a now run can't plan a set, a week's main coach doesn't propose", async () => {

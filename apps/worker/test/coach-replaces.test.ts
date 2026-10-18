@@ -138,6 +138,24 @@ describe("a follow-up names the suggestion it changes", () => {
     expect((await proposalOf(a.id))!.status).toBe("superseded");
   });
 
+  it("an amend that names it keeps it: the reviewed draft's text fixed, the suggestion it changes named", async () => {
+    const a = await first();
+    const b = await asked(
+      "Make it ten minutes.",
+      [
+        turn(propose("Calm hips, ten minutes")),
+        turn(use("submit_review", verdict())),
+        turn(propose("Calm hips, ten short minutes", { amend: true, changeNote: "A clearer title.", replaces: designProposalId(a.id) })),
+        turn(use("finish", { summary: "Shorter." })),
+      ],
+      100,
+    );
+    expect(b.status).toBe("finished");
+    const neu = (await proposalOf(b.id))!;
+    expect([neu.ops[0]!.doc.title, neu.ops[0]!.supersedes]).toEqual(["Calm hips, ten short minutes", designProposalId(a.id)]);
+    expect((await proposalOf(a.id))!.status).toBe("superseded");
+  });
+
   it("only while both are pending: one approved meanwhile is left alone", async () => {
     const a = await first();
     const pid = designProposalId(a.id);
