@@ -414,12 +414,15 @@ describe("the race line's phase sentence (§8 §6)", () => {
     await savePreferences(db, userId, { ...prefs, raceDate: addDays(today, 23) });
     const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
     const app = mountRoutes(db, "/api/plan", planRoutes);
-    const read = async () =>
+    const race = async () =>
       ((await (await app.request("/api/plan/race", { headers: { Cookie: cookie } }, {} as Env)).json()) as {
-        race: { raceLine: { text: string; at: string } | null };
-      }).race.raceLine;
+        race: { raceLine: { text: string; at: string } | null; raceLineSource?: "coach" | "app" };
+      }).race;
+    const read = async () => (await race()).raceLine;
 
     expect((await read())?.text).toBe("3 weeks to go — sharpening, then the taper.");
+    // The app's own words, said so (review-3): the strip doesn't sign them "Coach".
+    expect((await race()).raceLineSource).toBe("app");
     // The dossier's read: no line of the coach's, so the wake is still asked to write one.
     expect((await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 23) }, today))!.raceLine).toBeNull();
 
@@ -432,6 +435,7 @@ describe("the race line's phase sentence (§8 §6)", () => {
       at: nowInstant(),
     });
     expect((await read())?.text).toBe("Two quality sessions left before the taper.");
+    expect((await race()).raceLineSource).toBe("coach");
   });
 
   it("after the race, no sentence (the debrief speaks); with no race, no hub", async () => {

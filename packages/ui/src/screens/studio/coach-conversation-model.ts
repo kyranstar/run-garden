@@ -19,6 +19,13 @@ import { failureOf, isLive } from "./run-model.js";
 /** The conversation's read (the sheet and the run keeper's ending read it again). */
 export const CONVERSATION_QUERY = ["coach-conversation"] as const;
 
+/**
+ * The "needs you" chips' read (the opening screen's). Read afresh at every opening (never kept): a chip asked — tapped,
+ * typed in the box, or from another device — must not come back, since each tap is a paid run (review-3 I1). Every turn
+ * sent marks it stale (a run started, an answer typed or tapped); a tapped chip leaves it at once.
+ */
+export const NUDGES_QUERY = ["coach-nudges"] as const;
+
 /** The box, with nothing shown yet, and inside a conversation. */
 export const BOX_PLACEHOLDER_NEW = "Ask anything";
 export const BOX_PLACEHOLDER_REPLY = "Reply";

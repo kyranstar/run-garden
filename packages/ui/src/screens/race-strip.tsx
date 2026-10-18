@@ -29,6 +29,21 @@ const PHASE_LABEL: Record<NonNullable<RaceHubResponse["race"]>["phase"], string>
   post: "raced",
 };
 
+/** The race line, signed "Coach" when it is the coach's — never the app's own phase sentence (§8 §6). */
+function RaceLine({ race }: { race: NonNullable<RaceHubResponse["race"]> }) {
+  if (!race.raceLine) return null;
+  return (
+    <p className="race-line">
+      {race.raceLineSource === "app" ? null : (
+        <>
+          <span className="plan-brief-who">Coach</span>{" "}
+        </>
+      )}
+      {race.raceLine.text}
+    </p>
+  );
+}
+
 function StaminaSpark({ points }: { points: Array<{ date: string; value: number }> }) {
   if (points.length < 2) return null;
   const w = 120;
@@ -130,11 +145,7 @@ export function RaceStrip({ units }: { units: Units }) {
             <span> Once the run syncs, its result shows here.</span>
           )}
         </div>
-        {race.raceLine ? (
-          <p className="race-line">
-            <span className="plan-brief-who">Coach</span> {race.raceLine.text}
-          </p>
-        ) : null}
+        <RaceLine race={race} />
       </section>
     );
   }
@@ -263,11 +274,7 @@ export function RaceStrip({ units }: { units: Units }) {
               </ul>
             </div>
           </div>
-          {race.raceLine ? (
-            <p className="race-line">
-              <span className="plan-brief-who">Coach</span> {race.raceLine.text}
-            </p>
-          ) : null}
+          <RaceLine race={race} />
         </div>
       ) : null}
     </section>

@@ -45,6 +45,7 @@ import {
   cardIsOpen,
   closedCardLine,
   CONVERSATION_QUERY,
+  NUDGES_QUERY,
   conversationToSend,
   turnsShown,
   turnStopLine,
@@ -204,6 +205,9 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       );
       void qc.invalidateQueries({ queryKey: CONVERSATION_QUERY });
       void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
+      // A turn sent may have asked what a "needs you" chip offers (review-3 I1): the chips are read again now, though no
+      // opening shows them — the next opening never shows a stale one first.
+      void qc.invalidateQueries({ queryKey: NUDGES_QUERY, refetchType: "all" });
     },
     onError: (e) => {
       // The week can't pay for it (§2.11): a fact, in the ink a status is — the words kept.
@@ -226,6 +230,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       setDraft("");
       setLine(null);
       loop?.setRun(res.run);
+      void qc.invalidateQueries({ queryKey: NUDGES_QUERY, refetchType: "all" });
     },
     onError: (e) => {
       if (e instanceof ApiError && e.status === 409) {

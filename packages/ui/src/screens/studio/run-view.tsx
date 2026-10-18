@@ -45,6 +45,7 @@ import {
   type RunLine,
 } from "./run-model.js";
 import { toRunRead } from "./coach-tolerance.js";
+import { NUDGES_QUERY } from "./coach-conversation-model.js";
 import { useOneTap } from "./use-one-tap.js";
 
 /** How often the view looks at the clock while a step is at work (for "taking longer than usual"). */
@@ -488,10 +489,15 @@ export function QuestionCard({
   tapToAnswer?: boolean;
 }) {
   const oneTap = useOneTap();
+  const qc = useQueryClient();
   const send = useMutation({
     networkMode: "always",
     mutationFn: (body: Parameters<typeof api.coachRunAnswer>[1]) => api.coachRunAnswer(run.id, body),
-    onSuccess: (res) => onRun?.(res.run),
+    onSuccess: (res) => {
+      onRun?.(res.run);
+      // An answer is a turn sent: the "needs you" chips are read again (review-3 I1).
+      void qc.invalidateQueries({ queryKey: NUDGES_QUERY, refetchType: "all" });
+    },
     onError: (e) => {
       if (e instanceof ApiError && e.status === 409) onRefresh?.();
     },

@@ -60,6 +60,9 @@ export interface RaceHub {
   stamina: Array<{ date: string; value: number }>;
   checklist: RaceChecklistItem[];
   raceLine: { text: string; at: string } | null;
+  /** Whose words the race line is (the screen's read, `withPhaseLine`): the coach's, or the app's own phase sentence —
+   * which the strip doesn't sign "Coach". Absent with no line, and from the hub itself. */
+  raceLineSource?: "coach" | "app";
   terrain: TerrainReport;
   debrief: {
     activityId: string;
@@ -101,9 +104,11 @@ export function racePhaseLine(phase: RaceHub["phase"], daysToRace: number): stri
  * Only the screen's read: the wake's dossier reads `buildRaceHub` itself, and is still asked to write a line of its own.
  */
 export function withPhaseLine(hub: RaceHub | null, now: Date = new Date()): RaceHub | null {
-  if (!hub || hub.raceLine) return hub;
+  if (!hub) return hub;
+  if (hub.raceLine) return { ...hub, raceLineSource: "coach" };
   const text = racePhaseLine(hub.phase, hub.daysToRace);
-  return text ? { ...hub, raceLine: { text, at: now.toISOString() } } : hub;
+  // `raceLine` keeps its shape, so an older client still shows the sentence (signed "Coach", as it signs every line).
+  return text ? { ...hub, raceLine: { text, at: now.toISOString() }, raceLineSource: "app" } : hub;
 }
 
 /**

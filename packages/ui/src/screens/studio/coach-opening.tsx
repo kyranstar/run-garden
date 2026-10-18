@@ -15,13 +15,13 @@
  */
 import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type CoachAlsoOpenDto, type CoachNudgeDto } from "@rg/api-client";
 import { LogYourSession } from "../../components/today-program.js";
 import { IconCoachSmall } from "../../icons.js";
 import { AlsoWaiting } from "./also-waiting.js";
 import { BUILD_NEW_HREF } from "./build-entry.js";
-import { openingLine, starterChips } from "./coach-conversation-model.js";
+import { NUDGES_QUERY, openingLine, starterChips } from "./coach-conversation-model.js";
 import type { CoachFocus } from "./coach-focus.js";
 import type { StudioCtx } from "./model.js";
 import { QuickStarts } from "./quick-starts.js";
@@ -30,8 +30,7 @@ import { TEMPLATES_HREF } from "./templates-model.js";
 /** The heading over the ways to start without the coach. */
 export const START_YOURSELF = "Or start something yourself";
 
-/** The "needs you" chips' read (the opening screen's; kept a minute, so an opening shows them at once). */
-export const NUDGES_QUERY = ["coach-nudges"] as const;
+export { NUDGES_QUERY };
 /** At most this many "needs you" chips, before the starters (the server's own cap, held here too). */
 export const NUDGES_SHOWN = 2;
 
@@ -70,8 +69,15 @@ export function CoachOpening({
   const objective = (objectives.data?.objectives ?? []).find((o) => o.status === "active")?.title ?? null;
   const chips = starterChips(seeing, { objective });
   // A failed read is no chips, never a line: the starters stand alone.
-  const nudgeRead = useQuery({ queryKey: NUDGES_QUERY, queryFn: api.coachNudges, retry: false, staleTime: 60_000, placeholderData: keepPreviousData });
+  const qc = useQueryClient();
+  const nudgeRead = useQuery({ queryKey: NUDGES_QUERY, queryFn: api.coachNudges, retry: false, staleTime: 0 });
   const nudges: CoachNudgeDto[] = (nudgeRead.data?.nudges ?? []).slice(0, NUDGES_SHOWN);
+  /** A chip tapped goes at once, before any read comes back — and a read already on its way is cancelled, so its late
+   * answer can't bring it back. */
+  const dropNudge = (id: string) => {
+    void qc.cancelQueries({ queryKey: NUDGES_QUERY });
+    qc.setQueryData<{ nudges: CoachNudgeDto[] }>(NUDGES_QUERY, (cur) => (cur ? { nudges: cur.nudges.filter((x) => x.id !== id) } : cur));
+  };
   const offer = today.data?.watchReviews?.[0] ?? null;
   return (
     <div className="coach-opening">
@@ -80,7 +86,11 @@ export function CoachOpening({
       </CoachSays>
       <div className="coach-chips" role="group" aria-label="Ways to start">
         {nudges.map((n) => (
-          <button key={n.id} type="button" className="chip coach-chip coach-chip--needs" disabled={busy} onClick={() => onAsk(n.request)}>
+          <button key={n.id} type="button" className="chip coach-chip coach-chip--needs" disabled={busy} onClick={() => {
+              dropNudge(n.id);
+              onAsk(n.request);
+            }}
+          >
             {n.label}
           </button>
         ))}

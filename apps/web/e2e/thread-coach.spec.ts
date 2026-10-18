@@ -119,14 +119,25 @@ test("a race close: a needs-you chip first on the coach's opening screen, and th
     await (await mainNav(page)).getByRole("button", { name: "Coach" }).click();
     const sheet = coachSheet(page);
     await expect(sheet.locator(".coach-box textarea")).toBeVisible({ timeout: 20_000 });
+    // The conversation as it stands first (a spec before may have left one open), then a new one if it isn't.
+    await expect(sheet.locator(".coach-opening, .coach-turns").first()).toBeVisible({ timeout: 20_000 });
+    if (!(await sheet.locator(".coach-opening").isVisible())) {
+      await sheet.getByRole("button", { name: "More" }).click();
+      await sheet.getByRole("menuitem", { name: "New conversation" }).click();
+      await expect(sheet.locator(".coach-opening")).toBeVisible();
+    }
     const needs = sheet.locator(".coach-chips .coach-chip--needs");
     await expect(needs.filter({ hasText: "Get me ready for race day" })).toHaveCount(1, { timeout: 15_000 });
     // The needs-you chips come first in the row.
     const all = await sheet.locator(".coach-chips button").evaluateAll((els) => els.map((e) => e.classList.contains("coach-chip--needs")));
     expect(all.indexOf(false)).toBe(nudges.nudges.length);
 
-    const strip = (await (await context.request.get(`${baseURL}/api/plan/race`)).json()) as { race: { raceLine: { text: string } | null } };
+    const strip = (await (await context.request.get(`${baseURL}/api/plan/race`)).json()) as {
+      race: { raceLine: { text: string } | null; raceLineSource?: string };
+    };
     expect(strip.race.raceLine?.text).toBe("10 days to go — the taper: a little less running, more rest.");
+    // The app's own words, never signed "Coach".
+    expect(strip.race.raceLineSource).toBe("app");
   } finally {
     await context.request.put(`${baseURL}/api/settings`, { data: { raceDate: before } });
   }

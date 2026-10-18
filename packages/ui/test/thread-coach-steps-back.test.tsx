@@ -20,7 +20,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoachConversationDto, CoachPlanDto, PlanDetailResponse } from "@rg/api-client";
+import type { CoachConversationDto, CoachConversationTurnDto, CoachPlanDto, CoachRunDto, CoachRunEventDto, PlanDetailResponse } from "@rg/api-client";
 import { useCoach, useCoachSeeing, CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { workoutFocus } from "../src/screens/studio/coach-focus.js";
 import { GENERAL_CHIPS } from "../src/screens/studio/coach-conversation-model.js";
@@ -28,7 +28,11 @@ import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
 import { NEW_PLAN_REQUEST, YourPlans } from "../src/screens/plan-cards.js";
 import { planRequests, PlanSheet } from "../src/screens/plan-sheet.js";
 import { usePlanCoach } from "../src/screens/plan.js";
-import { button, click, dialog, json, quietLoop, run, serve, settle, until, type Call, type Routes as Served } from "./coach-live-harness.js";
+import { RaceStrip } from "../src/screens/race-strip.js";
+import { api, type RaceHubResponse } from "@rg/api-client";
+import { button, click, dialog, json, quietLoop, run, serve, settle, type, until, type Call, type Routes as Served } from "./coach-live-harness.js";
+import { NUDGES_QUERY } from "../src/screens/studio/coach-opening.js";
+import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
 import { primedClient, todayDto, TODAY } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -81,24 +85,27 @@ function server(more: Served = {}): Call[] {
   });
 }
 
-function mountSheet(seeing: typeof WORKOUT | null = null): void {
+function mountSheet(seeing: typeof WORKOUT | null = null, o: { loop?: () => LoopDeps; client?: QueryClient } = {}): QueryClient {
+  const client = o.client ?? primedClient({ today: todayDto(null) });
   render(
     createElement(
       MemoryRouter,
       { initialEntries: ["/plan"] },
       createElement(
         CoachSheetProvider,
-        { loopDeps: quietLoop(() => run()) },
+        { loopDeps: o.loop ?? quietLoop(() => run()) },
         createElement(Routes, null, createElement(Route, { path: "/plan", element: createElement(Screen, { seeing }) })),
       ),
     ),
-    primedClient({ today: todayDto(null) }),
+    client,
   );
+  return client;
 }
 
 const box = () => dialog()?.querySelector<HTMLTextAreaElement>(".coach-box textarea") ?? null;
 const chipButtons = () => [...(dialog()?.querySelectorAll<HTMLButtonElement>(".coach-chips button") ?? [])];
 const chips = () => chipButtons().map((b) => b.textContent?.trim());
+const nudgeReads = (calls: Call[]) => calls.filter((c) => c.path === "/api/coach/nudges").length;
 const posts = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.path === "/api/coach/runs").map((c) => c.body as { request: string });
 
 async function openCoach() {
@@ -150,6 +157,166 @@ describe("the opening screen's \"needs you\" chips", () => {
     mountSheet();
     await openCoach();
     await settle();
+    expect(chips()).toEqual([...GENERAL_CHIPS]);
+  });
+
+  // ── A chip asked is a chip gone (review-3 I1): each tap is a paid run ──
+
+  /** A server whose nudges answer MISSED until a run is asked, then none; its conversation the one turn asked. */
+  function askingServer(more: Served = {}): { calls: Call[]; asked: () => boolean } {
+    let asked = false;
+    const turnOf = (words: string): CoachConversationTurnDto => ({ runId: "run-n", at: `${TODAY}T08:00:00.000Z`, words, status: "finished", line: "Done — it's on your plan.", cards: [], question: null });
+    let words = "";
+    const calls = server({
+      "GET /api/coach/nudges": () => ({ nudges: asked ? [] : [MISSED] }),
+      "GET /api/coach/conversation": () => (asked ? { id: "run-n", startedAt: `${TODAY}T08:00:00.000Z`, turns: [turnOf(words)] } : NONE),
+      "POST /api/coach/runs": (body: unknown) => {
+        asked = true;
+        words = (body as { request: string }).request;
+        return json({ run: run({ id: "run-n", request: words }), existing: false, conversationId: "run-n" });
+      },
+      ...more,
+    });
+    return { calls, asked: () => asked };
+  }
+  const finished = () => quietLoop(() => run({ id: "run-n", status: "finished", finishedAt: `${TODAY}T08:01:00.000Z` }));
+  async function newConversation() {
+    await until(() => !!dialog()!.querySelector(".coach-msg--athlete"), "the turn");
+    await until(() => !(dialog()!.querySelector<HTMLButtonElement>('[role="menuitem"]')?.disabled ?? false), "the turn over");
+    await click(dialog()!.querySelector('button[aria-label="More"]'), "the menu");
+    await click(dialog()!.querySelector('[role="menuitem"]'), "New conversation");
+    await until(() => !!dialog()!.querySelector(".coach-opening"), "the opening screen");
+    await settle(20);
+  }
+
+  it("a chip tapped is gone on a new conversation — read again once the turn is sent", async () => {
+    const { calls } = askingServer();
+    mountSheet(null, { loop: finished });
+    await openCoach();
+    await until(() => chips()[0] === MISSED.label, "the nudge");
+    await click(button(MISSED.label, dialog()!), "the nudge chip");
+    await until(() => posts(calls).length === 1, "the start");
+    // Read again at once, with the opening gone: never a stale chip shown first on the next opening.
+    await until(() => nudgeReads(calls) === 2, "the read again after the send");
+    await newConversation();
+    expect(chips()).toEqual([...GENERAL_CHIPS]);
+  });
+
+  it("its words typed in the box count too: the read is asked again after any turn sent", async () => {
+    const { calls } = askingServer();
+    mountSheet(null, { loop: finished });
+    await openCoach();
+    await until(() => chips()[0] === MISSED.label, "the nudge");
+    await type(box()!, MISSED.label);
+    await click(dialog()!.querySelector(".coach-box button[type=submit]"), "Send");
+    await until(() => posts(calls).length === 1, "the start");
+    await until(() => nudgeReads(calls) === 2, "the read again after the send");
+    await newConversation();
+    expect(chips()).toEqual([...GENERAL_CHIPS]);
+  });
+
+  it("a chip tapped can't be tapped again before the read comes back: it goes at once", async () => {
+    let reads = 0;
+    const { calls } = askingServer();
+    const served = globalThis.fetch;
+    // Every read after the first never answers: only the tap itself can have taken the chip away.
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) =>
+      String(input).split("?")[0] === "/api/coach/nudges" && ++reads > 1 ? new Promise(() => undefined) : served(input, init),
+    );
+    mountSheet(null, { loop: finished });
+    await openCoach();
+    await until(() => chips()[0] === MISSED.label, "the nudge");
+    await click(button(MISSED.label, dialog()!), "the nudge chip");
+    await until(() => posts(calls).length === 1, "the start");
+    await newConversation();
+    expect(chips()).toEqual([...GENERAL_CHIPS]);
+  });
+
+  it("a read already on its way when the chip is tapped can't bring it back", async () => {
+    let reads = 0;
+    let late: ((r: Response) => void) | null = null;
+    let release: (() => void) | null = null;
+    const { calls } = askingServer();
+    const served = globalThis.fetch;
+    // The first read answers; the second is still on its way when the chip is tapped, and answers with it while the run
+    // is still being asked for (so nothing else has read since); every read after that never answers.
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+      const path = String(input).split("?")[0];
+      if (path === "/api/coach/runs" && init?.method === "POST") {
+        return new Promise<void>((r) => (release = r)).then(() => served(input, init));
+      }
+      if (path !== "/api/coach/nudges") return served(input, init);
+      reads += 1;
+      if (reads === 1) return served(input, init);
+      if (reads === 2) return new Promise<Response>((resolve) => (late = resolve));
+      return new Promise(() => undefined);
+    });
+    mountSheet(null, { loop: finished });
+    await openCoach();
+    await until(() => chips()[0] === MISSED.label, "the nudge");
+    await click(dialog()!.querySelector('button[aria-label="Close"]'), "✕");
+    await openCoach();
+    await until(() => reads === 2 && chips()[0] === MISSED.label, "the second read on its way, the chip kept meanwhile");
+    await click(button(MISSED.label, dialog()!), "the nudge chip");
+    await until(() => release !== null, "the run asked for");
+    await act(async () => late!(json({ nudges: [MISSED] })));
+    await settle(20);
+    // Still the opening, the run not yet answered: the late read hasn't brought it back.
+    expect(chips()).toEqual([...GENERAL_CHIPS]);
+    await act(async () => release!());
+    await until(() => posts(calls).length === 1, "the start");
+    await newConversation();
+    expect(chips()).toEqual([...GENERAL_CHIPS]);
+  });
+
+  it("an answer to the coach's question, tapped or typed, has them read again", async () => {
+    const asking: CoachRunEventDto[] = [
+      { seq: 1, kind: "question", summary: "Home or gym?", payload: { tool: "ask_athlete", data: { questions: [{ text: "Home or gym?", chips: ["Home", "Gym"] }] } }, at: "x" },
+    ];
+    const live: CoachRunDto = run({ id: "run-q", status: "waiting_athlete" });
+    const turn: CoachConversationTurnDto = { runId: "run-q", at: `${TODAY}T08:00:00.000Z`, words: "Something for tonight", status: "waiting_athlete", line: null, cards: [], question: { text: "Home or gym?", choices: ["Home", "Gym"] } };
+    const calls = server({
+      "GET /api/coach/conversation": { id: "run-q", startedAt: turn.at, turns: [turn] },
+      "GET /api/coach/runs/current": { run: live, events: asking, proposal: null },
+      "POST /api/coach/runs/run-q/answer": () => json({ run: { ...live, status: "active" } }),
+      "GET /api/coach/nudges": { nudges: [] },
+    });
+    // The read as an opening left it earlier: its data, and its way to read again.
+    const client = primedClient({ today: todayDto(null) });
+    client.setQueryDefaults(NUDGES_QUERY, { queryFn: api.coachNudges });
+    client.setQueryData(NUDGES_QUERY, { nudges: [MISSED] });
+    mountSheet(null, { loop: quietLoop(() => live, () => asking), client });
+    await openCoach();
+    await until(() => !!button("Home", dialog()!), "the answers");
+    expect(client.getQueryState(NUDGES_QUERY)?.isInvalidated).toBe(false);
+    expect(nudgeReads(calls)).toBe(0); // no opening: nothing read yet
+    await click(button("Home", dialog()!), "an answer");
+    // Read again then and there, though no opening shows them.
+    await until(() => nudgeReads(calls) === 1, "the read again after a tapped answer");
+    // …and one typed in the box, the athlete's own words.
+    act(() => root?.unmount());
+    host?.remove();
+    const typed = primedClient({ today: todayDto(null) });
+    typed.setQueryDefaults(NUDGES_QUERY, { queryFn: api.coachNudges });
+    typed.setQueryData(NUDGES_QUERY, { nudges: [MISSED] });
+    mountSheet(null, { loop: quietLoop(() => live, () => asking), client: typed });
+    await openCoach();
+    await until(() => box()!.placeholder === "Answer in your own words", "the box answering");
+    await type(box()!, "The park, actually");
+    await click(dialog()!.querySelector(".coach-box button[type=submit]"), "Send");
+    await until(() => nudgeReads(calls) === 2, "the read again after a typed answer");
+  });
+
+  it("each opening reads them afresh: a chip answered elsewhere is gone the next time the sheet opens", async () => {
+    let nudges = [MISSED];
+    server({ "GET /api/coach/nudges": () => ({ nudges }) });
+    mountSheet();
+    await openCoach();
+    await until(() => chips()[0] === MISSED.label, "the nudge");
+    await click(dialog()!.querySelector('button[aria-label="Close"]'), "✕");
+    nudges = []; // asked from another device
+    await openCoach();
+    await settle(20);
     expect(chips()).toEqual([...GENERAL_CHIPS]);
   });
 
@@ -249,6 +416,62 @@ describe("\"Plan with the coach\" is back in Your plans", () => {
     mountPlan(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), null);
     expect(plain("Plan with the coach")).toBeUndefined();
     expect(plain("New program…")).toBeDefined();
+  });
+});
+
+// ── The race line says whose words it is (review-3) ────────────────────────
+
+describe("the race strip's line says whose words it is", () => {
+  const hub = (over: Record<string, unknown>): RaceHubResponse =>
+    ({
+      race: {
+        raceDate: "2026-10-28",
+        daysToRace: 10,
+        taperStartDate: "2026-10-07",
+        phase: "taper",
+        goal: null,
+        terrain: { recent: null, raceMetresPerKm: null, comparison: null },
+        stamina: [],
+        checklist: [],
+        raceLine: { text: "10 days to go — the taper: a little less running, more rest.", at: "2026-10-18T08:00:00Z" },
+        debrief: null,
+        ...over,
+      },
+    }) as unknown as RaceHubResponse;
+  async function lineOf(data: RaceHubResponse): Promise<HTMLElement> {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, enabled: false } } });
+    qc.setQueryData(["race-hub"], data);
+    render(createElement(RaceStrip, { units: "km" }), qc);
+    const toggle = document.querySelector<HTMLButtonElement>(".race-strip-toggle");
+    if (toggle) await act(async () => toggle.click());
+    const line = document.querySelector<HTMLElement>(".race-line");
+    expect(line).not.toBeNull();
+    return line!;
+  }
+  const unmount = () => {
+    act(() => root?.unmount());
+    host?.remove();
+  };
+
+  it("the app's own sentence, unsigned; the coach's line, signed Coach; an older server's, signed as before", async () => {
+    const app = await lineOf(hub({ raceLineSource: "app" }));
+    expect(app.textContent).toBe("10 days to go — the taper: a little less running, more rest.");
+    expect(app.querySelector(".plan-brief-who")).toBeNull();
+    unmount();
+    const coach = await lineOf(hub({ raceLineSource: "coach", raceLine: { text: "Two quality sessions left.", at: "x" } }));
+    expect(coach.querySelector(".plan-brief-who")?.textContent).toBe("Coach");
+    expect(coach.textContent).toBe("Coach Two quality sessions left.");
+    unmount();
+    const older = await lineOf(hub({ raceLine: { text: "Two quality sessions left.", at: "x" } }));
+    expect(older.querySelector(".plan-brief-who")?.textContent).toBe("Coach");
+  });
+
+  it("after the race too", async () => {
+    const post = await lineOf(hub({ phase: "post", daysToRace: -2, raceLineSource: "app", raceLine: { text: "Rest comes first now.", at: "x" } }));
+    expect(post.querySelector(".plan-brief-who")).toBeNull();
+    unmount();
+    const coach = await lineOf(hub({ phase: "post", daysToRace: -2, raceLineSource: "coach", raceLine: { text: "Well run.", at: "x" } }));
+    expect(coach.querySelector(".plan-brief-who")?.textContent).toBe("Coach");
   });
 });
 

@@ -1092,6 +1092,9 @@ export interface RaceHubResponse {
       note?: string;
     }>;
     raceLine: { text: string; at: string } | null;
+    /** Whose words the line is: the coach's, or the app's own phase sentence (§8 §6), not signed "Coach". Absent from an
+     * older server: the coach's. */
+    raceLineSource?: "coach" | "app";
     /** Measured climb per km recently, against the described course. */
     terrain: {
       recent: {
