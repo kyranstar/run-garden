@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or } from "drizzle-orm";
 import {
   calendarEventSuppressions,
   coachPlanWeeks,
@@ -21,6 +21,7 @@ import {
   paceBandFor,
   sessionExercises,
   sessionSport,
+  startOfIsoWeek,
   todayInZone,
   watchAddressOf,
   type CoachOp,
@@ -30,15 +31,16 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, runAtomically, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, insertBatches, runAtomically, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
-import { coachStamp, recordedStampFor, stampName, takenStampsOn } from "./coros-stamp.js";
+import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
 import {
   enqueueUnpushIfOurs,
   removeFromPlan,
   settleWatchJobsOnArchive,
+  settleWatchJobsOnArchiveStatements,
   unskipWorkout,
 } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
@@ -390,6 +392,58 @@ export function sessionDoc(workoutId: string, session: CoachSession, weightUnit:
 }
 
 /**
+ * A new session's `planned_workouts` row — its insert, skipped on a conflict — and its workout document: the one shape
+ * every coach insert writes (`insertSessions`, and a plan's chunk of sessions, §8 §4).
+ */
+function sessionRowInsert(
+  db: Db,
+  userId: string,
+  { id, planId, date, session }: NewSession,
+  now: string,
+  opts: { prefs?: UserPreferences; thresholdPaceSecPerKm?: number },
+) {
+  // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15) — and
+  // in the SAME slot the importer would have chosen, from the one shared
+  // window function (`day-placement.ts`), rather than a second hand-rolled copy
+  // of the rule. Whether this session can keep that slot, or has to queue up
+  // behind what already occupies the day, is settled by `separateDayCollisions`
+  // once the whole apply has landed: a coach add on top of a plan session is
+  // now the ordinary case, and two 09:00 appointments is not a day.
+  const effectiveTime = opts.prefs
+    ? windowTimeFor({ category: session.category, date }, opts.prefs)
+    : "07:00";
+  const doc = sessionDoc(id, session, opts.prefs?.weightUnit, opts.thresholdPaceSecPerKm);
+  const insert = db
+    .insert(plannedWorkouts)
+    .values({
+      id,
+      userId,
+      planId,
+      sourceWorkoutId: id,
+      originalPlanDate: date,
+      // "" = COROS has never verified this row (audit#2 #1): the absence
+      // sweep must skip it and the sync pill must not read "synced". The
+      // create's verify stamps the real date.
+      lastVerifiedCorosDate: "",
+      effectiveDate: date,
+      effectiveTime,
+      completionState: "scheduled",
+      createdAt: now,
+      updatedAt: now,
+      // Everything the SESSION decides — the same writer `ease` uses.
+      ...sessionColumns(session),
+      // The SEED for a column that is otherwise only ever written by something
+      // that has observed COROS. A brand-new row has no upstream copy, so the
+      // app's own hash is the only honest placeholder; the create's verify
+      // replaces it with the wire's fingerprint as soon as there is one.
+      sourceContentFingerprint: fingerprint(session),
+      ...newRowDocColumns(doc),
+    })
+    .onConflictDoNothing();
+  return { id, doc, insert };
+}
+
+/**
  * The op's new sessions: every row, with its workout document at revision 1, and the revisions of those documents —
  * ONE batch, so the op costs one revision statement however many sessions it adds (Stage 1 dual-write; a rest day has
  * no document, and a conversion that fails is NULL — never a failed apply). A re-apply inserts nothing, so it revises
@@ -403,47 +457,7 @@ async function insertSessions(
   opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences; thresholdPaceSecPerKm?: number; proposalId?: string } = {},
 ): Promise<void> {
   if (sessions.length === 0) return;
-  const rows = sessions.map(({ id, planId, date, session }) => {
-    // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15) — and
-    // in the SAME slot the importer would have chosen, from the one shared
-    // window function (`day-placement.ts`), rather than a second hand-rolled copy
-    // of the rule. Whether this session can keep that slot, or has to queue up
-    // behind what already occupies the day, is settled by `separateDayCollisions`
-    // once the whole apply has landed: a coach add on top of a plan session is
-    // now the ordinary case, and two 09:00 appointments is not a day.
-    const effectiveTime = opts.prefs
-      ? windowTimeFor({ category: session.category, date }, opts.prefs)
-      : "07:00";
-    const doc = sessionDoc(id, session, opts.prefs?.weightUnit, opts.thresholdPaceSecPerKm);
-    const insert = db
-      .insert(plannedWorkouts)
-      .values({
-        id,
-        userId,
-        planId,
-        sourceWorkoutId: id,
-        originalPlanDate: date,
-        // "" = COROS has never verified this row (audit#2 #1): the absence
-        // sweep must skip it and the sync pill must not read "synced". The
-        // create's verify stamps the real date.
-        lastVerifiedCorosDate: "",
-        effectiveDate: date,
-        effectiveTime,
-        completionState: "scheduled",
-        createdAt: now,
-        updatedAt: now,
-        // Everything the SESSION decides — the same writer `ease` uses.
-        ...sessionColumns(session),
-        // The SEED for a column that is otherwise only ever written by something
-        // that has observed COROS. A brand-new row has no upstream copy, so the
-        // app's own hash is the only honest placeholder; the create's verify
-        // replaces it with the wire's fingerprint as soon as there is one.
-        sourceContentFingerprint: fingerprint(session),
-        ...newRowDocColumns(doc),
-      })
-      .onConflictDoNothing();
-    return { id, doc, insert };
-  });
+  const rows = sessions.map((s) => sessionRowInsert(db, userId, s, now, opts));
   await runAtomically(db, [
     ...rows.map((r) => r.insert),
     ...revisionInserts(db, {
@@ -503,32 +517,7 @@ export async function enqueueWatchCreate(
   // coach add or a sent program session — already holds the base, so this one gets " (2)".
   const name = coachStamp(session.title, date, await takenStampsOn(db, userId, date, { jobId }));
   {
-    const insert = db
-      .insert(corosWriteJobs)
-      .values({
-        id: jobId,
-        userId,
-        workoutId: id,
-        kind: "coach_create_workout",
-        expectedContentFingerprint: fingerprint(session),
-        originalDate: date,
-        destinationDate: date,
-        // The name is the OWNERSHIP STAMP on COROS and must be unique per
-        // plan — raw titles ("Long Run" ×6) refuse every create after the
-        // first (audit#2 #7). Machine plumbing that happens to be legible:
-        // `coros-stamp.ts` strips it back off on the way in, so the stamp
-        // never becomes the athlete's session name.
-        payload: {
-          workoutId: id,
-          happenDay: date,
-          name,
-          session,
-          ...(thresholdPaceSecPerKm ? { thresholdPaceSecPerKm } : {}),
-        },
-        requestedAt: now,
-        status: "queued",
-        updatedAt: now,
-      });
+    const insert = db.insert(corosWriteJobs).values(watchCreateValues(userId, id, date, session, now, name, thresholdPaceSecPerKm));
     // Re-applying an approve must be idempotent (audit#2 #13) — the
     // deterministic id makes skip-on-conflict exactly right.
     await (reviveFailed
@@ -559,6 +548,43 @@ export async function enqueueWatchCreate(
       : insert.onConflictDoNothing());
   }
   return jobId;
+}
+
+/** A coach session's create job (`${id}-push`), queued, under the stamp `name` — `enqueueWatchCreate`'s, and a plan's
+ * chunk of sessions' (§8 §4), which reads every day's stamps at once and writes its jobs in its batch. */
+function watchCreateValues(
+  userId: string,
+  id: string,
+  date: string,
+  session: CoachSession,
+  now: string,
+  name: string,
+  thresholdPaceSecPerKm?: number,
+) {
+  return {
+    id: `${id}-push`,
+    userId,
+    workoutId: id,
+    kind: "coach_create_workout",
+    expectedContentFingerprint: fingerprint(session),
+    originalDate: date,
+    destinationDate: date,
+    // The name is the OWNERSHIP STAMP on COROS and must be unique per
+    // plan — raw titles ("Long Run" ×6) refuse every create after the
+    // first (audit#2 #7). Machine plumbing that happens to be legible:
+    // `coros-stamp.ts` strips it back off on the way in, so the stamp
+    // never becomes the athlete's session name.
+    payload: {
+      workoutId: id,
+      happenDay: date,
+      name,
+      session,
+      ...(thresholdPaceSecPerKm ? { thresholdPaceSecPerKm } : {}),
+    },
+    requestedAt: now,
+    status: "queued",
+    updatedAt: now,
+  } satisfies typeof corosWriteJobs.$inferInsert;
 }
 
 // ── Convergence: keeping the watch's copy equal to the app's ────────────────
@@ -1039,13 +1065,7 @@ export async function applyOps(
   const today = todayInZone(prefs.timezone);
   // One read for the whole proposal: the athlete's latest COROS threshold
   // anchors every pace band this apply writes (2026-08-14).
-  const [thresholdRow] = await db
-    .select({ v: dailyHealth.thresholdPaceSecPerKm })
-    .from(dailyHealth)
-    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
-    .orderBy(desc(dailyHealth.date))
-    .limit(1);
-  const thresholdPaceSecPerKm = thresholdRow?.v ?? undefined;
+  const thresholdPaceSecPerKm = (await latestThreshold(db, userId)) ?? undefined;
   /** What every new session of this apply is written with. */
   const sessionOpts = { corosWritesEnabled: prefs.corosWritesEnabled, prefs, thresholdPaceSecPerKm, proposalId };
   const out: ApplyResult = { created: [], updated: [], archived: [], missed: [], resimFrom: null };
@@ -1640,6 +1660,597 @@ export async function applyOps(
   await separateDayCollisions(db, userId, [...touchedDates], prefs, { from: today, now });
 
   return out;
+}
+
+/** The athlete's latest COROS threshold pace — what every pace band an apply writes is anchored on (2026-08-14). */
+async function latestThreshold(db: Db, userId: string): Promise<number | null> {
+  const [row] = await db
+    .select({ v: dailyHealth.thresholdPaceSecPerKm })
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+    .orderBy(desc(dailyHealth.date))
+    .limit(1);
+  return row?.v ?? null;
+}
+
+// ── Structural ops in resumable chunks (§8 §4, 2026-10-18) ──────────────────
+
+/**
+ * A WHOLE PLAN WITHIN A REQUEST'S BUDGET.
+ *
+ * `applyOps` applies an op whole, and a plan is too big for that: a seven-session `createPlan` measured 68 statements
+ * through the approve route against the free plan's 50 an invocation, so it died part way, and a retry started again
+ * from op 0. `applyStructuralChunk` applies ONE structural op a slice at a time, each call within the `budget` it is
+ * given, and hands back where it got to (`progress`, JSON the caller stores on the op) until it says `done`:
+ *
+ *  · `createPlan` — the plan row and its shape weeks; then its sessions, a chunk a call; then a `firm` week row for
+ *    each week the sessions fill (`plan_horizon` reads them, coach-triggers.ts).
+ *  · `firmUp` — the plan read; the sessions in chunks; the week's `firm` row.
+ *  · `reshapeWeek`, `windDown` — the plan read; the week(s)' still-scheduled sessions archived a slice at a time; then
+ *    the new sessions in chunks.
+ *  · `retirePlan` — the plan read; every future still-scheduled session archived a slice at a time; then the plan's
+ *    status.
+ *  · `extendPlan`, `resolveRaceConflict` — one step each, as in `applyOps`.
+ *
+ * A plan another hand removed (or never the athlete's) is `refused` in words, never a success for nothing.
+ *
+ * RETRIED, IT DOES NOTHING TWICE. Every id is the proposal's and the op's (`cw-<proposal>-<op>-<n>`, `cp-…`, the
+ * same ids `applyOps` writes), and a progress the caller failed to store is simply met again:
+ *
+ *  · a chunk of sessions is ONE batch — the rows, their documents' revisions, their stage rows and their watch
+ *    creates — so a row that is there is a whole session, and a chunk re-run skips the sessions it finds (one read
+ *    for the rows and their days at once). Nothing is half a row;
+ *  · an archive slice RE-READS what is still scheduled, and settles each row (the watch's unpush, then its
+ *    suppression, its queued writes and its archive in one batch) before it counts as archived; its suppression's
+ *    id is the op's, so a slice re-run writes none twice. The op's own new sessions are never in its slice.
+ *
+ * BETWEEN TWO CALLS the plan reads sensibly: the plan row and some of its sessions, each whole; a week half
+ * archived; the status last.
+ *
+ * THE BUDGET is statements, counted as they are spent: a batch is its statements, and the reads and the steps that
+ * run their own (the day's collision pass, a watch unpush) are counted at their most. A unit is applied when it fits
+ * what is left — except a call's FIRST unit, which always runs, so every call moves on: a caller with a leftover calls
+ * only when at least STRUCTURAL_MIN_BUDGET is left. `spent` is what the call spent.
+ *
+ * The context the appliers need beyond the seam's: the athlete's `prefs` (their zone for today, watch writes, units
+ * and day windows). The threshold pace is read once per op and kept on its progress.
+ */
+export const STRUCTURAL_OP_KINDS = [
+  "createPlan",
+  "extendPlan",
+  "windDown",
+  "retirePlan",
+  "firmUp",
+  "reshapeWeek",
+  "resolveRaceConflict",
+] as const;
+export type StructuralOp = Extract<CoachOp, { kind: (typeof STRUCTURAL_OP_KINDS)[number] }>;
+export const isStructuralOp = (op: { kind: string }): op is StructuralOp => (STRUCTURAL_OP_KINDS as readonly string[]).includes(op.kind);
+
+/** Where a structural op got to: JSON, stored on the op by the caller and handed back on the next call. */
+export type StructuralProgress = { step: string; done: number; [k: string]: unknown };
+
+export type StructuralChunkResult =
+  | { status: "more"; progress: StructuralProgress; spent: number }
+  /** `summary`: one plain line ("Added “10K block” with 8 sessions"). */
+  | { status: "done"; spent: number; summary: string }
+  /** `reason`: in words, a whole sentence. */
+  | { status: "refused"; reason: string; spent: number };
+
+export interface StructuralChunkInput {
+  userId: string;
+  proposalId: string;
+  opIndex: number;
+  /** A structural op (`isStructuralOp`); any other is refused. */
+  op: CoachOp;
+  /** Null: not started. */
+  progress: StructuralProgress | null;
+  /** The statements this call may spend (its first unit runs whatever it costs). */
+  budget: number;
+  now: Date;
+  /** The athlete's preferences: their zone (today), watch writes, units, day windows. */
+  prefs: UserPreferences;
+}
+
+/**
+ * The least a caller with a leftover should call with: a chunk's reads and one session at its ordinary most (the
+ * threshold, the rows and days, the stamps; the row, its revision, two stage statements and its watch create; the
+ * collision pass's two reads and two of its day's rows moved).
+ */
+export const STRUCTURAL_MIN_BUDGET = 3 + 5 + 4;
+
+/** A chunk's sessions read at once: their ids and days bound well under D1's 100 variables. */
+const SESSION_WINDOW = 24;
+/** An archive slice's rows at most: two suppression statements. */
+const ARCHIVE_SLICE_MAX = 36;
+/** A watch unpush at its most (`enqueueUnpushIfOurs`): the stamp read, the create job read, the insert. */
+const UNPUSH_COST = 3;
+/** A programme slot's way off the watch, at its most — never a coach plan's row, counted for safety. */
+const PROGRAMME_UNPUSH_COST = 10;
+/** `resolveRaceConflict` at its most: the conflict's reads and its one write. */
+const RACE_CONFLICT_COST = 6;
+
+interface Chunk {
+  db: Db;
+  userId: string;
+  proposalId: string;
+  opIndex: number;
+  now: string;
+  today: string;
+  prefs: UserPreferences;
+  writesOn: boolean;
+  budget: number;
+  spent: number;
+}
+
+type StepResult = { p: StructuralProgress; stalled?: true } | { refused: string };
+
+/** Whether a unit costing `cost` may run: it fits what is left, or it is the call's first. */
+const may = (k: Chunk, cost: number, first: boolean): boolean => first || k.spent + cost <= k.budget;
+
+export async function applyStructuralChunk(db: Db, input: StructuralChunkInput): Promise<StructuralChunkResult> {
+  const { op } = input;
+  if (!isStructuralOp(op)) return { status: "refused", reason: "This change isn't one that shapes a plan.", spent: 0 };
+  const k: Chunk = {
+    db,
+    userId: input.userId,
+    proposalId: input.proposalId,
+    opIndex: input.opIndex,
+    now: input.now.toISOString(),
+    today: todayInZone(input.prefs.timezone, input.now),
+    prefs: input.prefs,
+    writesOn: input.prefs.corosWritesEnabled ?? false,
+    budget: input.budget,
+    spent: 0,
+  };
+  let p: StructuralProgress = input.progress ? { ...input.progress } : { step: "start", done: 0 };
+  // Bounded: every step either moves on or stalls, and a call's budget ends it long before this.
+  for (let steps = 0; steps < 1000; steps++) {
+    if (p.step === "done") return { status: "done", spent: k.spent, summary: structuralSummary(op, p) };
+    if (k.spent > 0 && k.spent >= k.budget) break;
+    const r = await structuralStep(k, op, p, k.spent === 0);
+    if ("refused" in r) return { status: "refused", reason: r.refused, spent: k.spent };
+    p = r.p;
+    if (r.stalled) break;
+  }
+  return { status: "more", progress: p, spent: k.spent };
+}
+
+/** Why an op addressed to a plan did nothing: the plan isn't there (removed by hand, or never the athlete's). */
+const PLAN_GONE: Record<Exclude<StructuralOp["kind"], "createPlan" | "resolveRaceConflict">, string> = {
+  retirePlan: "That plan isn't there any more, so nothing was retired.",
+  extendPlan: "That plan isn't there any more, so it wasn't extended.",
+  windDown: "That plan isn't there any more, so nothing was eased down.",
+  firmUp: "That plan isn't there any more, so no sessions were added.",
+  reshapeWeek: "That plan isn't there any more, so the week was left as it was.",
+};
+
+async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress, first: boolean): Promise<StepResult> {
+  const sessionIdOf = (n: number) => `cw-${k.proposalId}-${k.opIndex}-${n}`;
+  switch (op.kind) {
+    case "createPlan": {
+      const planId = `cp-${k.proposalId}-${k.opIndex}`;
+      if (p.step === "start") {
+        const stmts = [
+          k.db
+            .insert(coachPlans)
+            .values({
+              id: planId,
+              userId: k.userId,
+              discipline: op.discipline,
+              name: op.name,
+              status: "active",
+              startDate: op.startDate,
+              endDate: op.endDate,
+              raceDate: op.raceDate ?? null,
+              stampPrefix: op.name,
+              createdAt: k.now,
+              updatedAt: k.now,
+            })
+            .onConflictDoNothing(),
+          ...shapeWeekStatements(k, planId, op.shapeWeeks),
+        ];
+        if (!may(k, stmts.length, first)) return { p, stalled: true };
+        await runAtomically(k.db, stmts);
+        k.spent += stmts.length;
+        return { p: { ...p, step: "sessions", done: 0, name: op.name } };
+      }
+      if (p.step === "sessions") return sessionsStep(k, p, planId, op.firmSessions, sessionIdOf, "firm", first);
+      if (p.step === "firm") {
+        // The weeks the plan's sessions fill are firm — so `plan_horizon` sees where its detail runs out.
+        const stmts = firmWeekStatements(k, planId, op.firmSessions.map((s) => s.date), (monday) => `cw-${k.proposalId}-${k.opIndex}-firm-${monday}`);
+        if (!may(k, stmts.length, first)) return { p, stalled: true };
+        await runAtomically(k.db, stmts);
+        k.spent += stmts.length;
+        return { p: { ...p, step: "done", done: 0 } };
+      }
+      break;
+    }
+    case "firmUp": {
+      if (p.step === "start") return checkPlan(k, op, p, op.planId, "sessions", first);
+      if (p.step === "sessions") return sessionsStep(k, p, op.planId, op.sessions, sessionIdOf, "firm", first);
+      if (p.step === "firm") {
+        const stmts = [
+          k.db
+            .insert(coachPlanWeeks)
+            .values({ id: `cw-${k.proposalId}-${k.opIndex}-wk`, planId: op.planId, weekStart: op.weekStart, state: "firm", shape: null })
+            .onConflictDoUpdate({ target: [coachPlanWeeks.planId, coachPlanWeeks.weekStart], set: { state: "firm", shape: null } }),
+        ];
+        if (!may(k, stmts.length, first)) return { p, stalled: true };
+        await runAtomically(k.db, stmts);
+        k.spent += stmts.length;
+        return { p: { ...p, step: "done", done: 0 } };
+      }
+      break;
+    }
+    case "reshapeWeek":
+    case "windDown": {
+      if (p.step === "start") return checkPlan(k, op, p, op.planId, "archive", first);
+      if (p.step === "archive") {
+        // Taper or rework: the week(s)' unstarted sessions go first — never this op's own new ones (a re-run after
+        // its sessions began must not archive them).
+        const weeks =
+          op.kind === "reshapeWeek" ? [op.weekStart] : [...new Set(op.sessions.map((s) => startOfIsoWeek(s.date)))];
+        const own = op.sessions.map((_, n) => sessionIdOf(n));
+        return archiveStep(k, p, op.planId, { weeks }, own, "sessions", first);
+      }
+      if (p.step === "sessions") return sessionsStep(k, p, op.planId, op.sessions, sessionIdOf, "done", first);
+      break;
+    }
+    case "retirePlan": {
+      if (p.step === "start") return checkPlan(k, op, p, op.planId, "archive", first);
+      // Every future still-scheduled session of the plan — re-read each slice, so one archived since is not counted.
+      if (p.step === "archive") return archiveStep(k, p, op.planId, { from: k.today }, [], "status", first);
+      if (p.step === "status") {
+        if (!may(k, 1, first)) return { p, stalled: true };
+        await k.db
+          .update(coachPlans)
+          .set({ status: "retired", updatedAt: k.now })
+          .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, k.userId)));
+        k.spent += 1;
+        return { p: { ...p, step: "done", done: 0 } };
+      }
+      break;
+    }
+    case "extendPlan": {
+      if (p.step === "start") {
+        if (!may(k, 1 + 2 + 1, first)) return { p, stalled: true };
+        const [plan] = await k.db
+          .select({ name: coachPlans.name, endDate: coachPlans.endDate })
+          .from(coachPlans)
+          .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, k.userId)))
+          .limit(1);
+        k.spent += 1;
+        if (!plan) return { refused: PLAN_GONE.extendPlan };
+        const lastEnd = addDays(op.shapeWeeks.map((w) => w.weekStart).sort().at(-1)!, 6);
+        const stmts = [
+          ...shapeWeekStatements(k, op.planId, op.shapeWeeks),
+          ...(plan.endDate < lastEnd
+            ? [
+                k.db
+                  .update(coachPlans)
+                  .set({ endDate: lastEnd, updatedAt: k.now })
+                  .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, k.userId))),
+              ]
+            : []),
+        ];
+        await runAtomically(k.db, stmts);
+        k.spent += stmts.length;
+        return { p: { ...p, step: "done", done: 0, name: plan.name } };
+      }
+      break;
+    }
+    case "resolveRaceConflict": {
+      if (p.step === "start") {
+        if (!may(k, RACE_CONFLICT_COST, first)) return { p, stalled: true };
+        // Approving after the banner already converged the dates is a clean no-op — it re-checks the data.
+        const resolved = await resolveRaceConflict(k.db, k.userId, k.prefs, op.keep);
+        k.spent += RACE_CONFLICT_COST;
+        return { p: { ...p, step: "done", done: 0, resolved: resolved !== null } };
+      }
+      break;
+    }
+  }
+  // A progress this op never writes: start it over (every step is idempotent).
+  return { p: { step: "start", done: 0 } };
+}
+
+/** The plan an op names, the athlete's: its name kept for the summary, or the op refused in words. One read. */
+async function checkPlan(
+  k: Chunk,
+  op: Extract<StructuralOp, { planId: string }>,
+  p: StructuralProgress,
+  planId: string,
+  next: string,
+  first: boolean,
+): Promise<StepResult> {
+  if (!may(k, 1, first)) return { p, stalled: true };
+  const [plan] = await k.db
+    .select({ name: coachPlans.name })
+    .from(coachPlans)
+    .where(and(eq(coachPlans.id, planId), eq(coachPlans.userId, k.userId)))
+    .limit(1);
+  k.spent += 1;
+  if (!plan) return { refused: PLAN_GONE[op.kind] };
+  return { p: { ...p, step: next, done: 0, name: plan.name } };
+}
+
+/** A plan's shape weeks, as insert statements that skip a week already written (ids the op's own). */
+function shapeWeekStatements(k: Chunk, planId: string, weeks: readonly { weekStart: string; volumeTarget: string; keySessions: string[] }[]) {
+  const rows = weeks.map((wk) => ({
+    id: `cw-${k.proposalId}-${k.opIndex}-${wk.weekStart}`,
+    planId,
+    weekStart: wk.weekStart,
+    state: "shape",
+    shape: { volumeTarget: wk.volumeTarget, keySessions: wk.keySessions },
+  }));
+  return insertBatches(rows).map((batch) => k.db.insert(coachPlanWeeks).values(batch).onConflictDoNothing());
+}
+
+/** A `firm` week row for every week these days fall in — a shape row for the week becomes firm. */
+function firmWeekStatements(k: Chunk, planId: string, dates: readonly string[], idOf: (monday: string) => string) {
+  const mondays = [...new Set(dates.map((d) => startOfIsoWeek(d)))].sort();
+  const rows = mondays.map((monday) => ({ id: idOf(monday), planId, weekStart: monday, state: "firm", shape: null }));
+  return insertBatches(rows).map((batch) =>
+    k.db
+      .insert(coachPlanWeeks)
+      .values(batch)
+      .onConflictDoUpdate({ target: [coachPlanWeeks.planId, coachPlanWeeks.weekStart], set: { state: "firm", shape: null } }),
+  );
+}
+
+/** A row the day's collision pass places (`separateDayCollisions`' own filter): live, scheduled, not a rest day. */
+const placeable = (r: { archivedAt: string | null; completionState: string; category: string; effectiveDate: string }, today: string) =>
+  r.archivedAt === null && r.completionState === "scheduled" && r.category !== "rest" && r.effectiveDate >= today;
+
+/** The collision pass over these days at its most: nothing when no day holds two sessions; else its two reads and
+ * every session on each such day moved. */
+function placementCost(live: ReadonlyMap<string, number>, days: ReadonlySet<string>): number {
+  const colliding = [...days].filter((d) => (live.get(d) ?? 0) >= 2);
+  return colliding.length === 0 ? 0 : 2 + colliding.reduce((sum, d) => sum + live.get(d)!, 0);
+}
+
+/** The statements a session's insert costs in a chunk's batch: its row, its stage rows, its watch create. */
+function sessionUnitCost(k: Chunk, session: CoachSession, threshold: number | null): number {
+  const stages = insertBatches(coachStageRows("x", session, threshold ?? undefined)).length;
+  return 1 + stages + (k.writesOn && watchPushable(session) ? 1 : 0);
+}
+
+/**
+ * The next chunk of an op's sessions, from `p.done`: ONE batch for the rows, their revisions, their stage rows and
+ * their watch creates (each under the next free stamp of its day), then the collision pass over the days it touched.
+ * A session whose row is there already (a chunk re-run) is skipped whole.
+ */
+async function sessionsStep(
+  k: Chunk,
+  p: StructuralProgress,
+  planId: string,
+  sessions: readonly { date: string; session: CoachSession }[],
+  idOf: (n: number) => string,
+  next: string,
+  first: boolean,
+): Promise<StepResult> {
+  if (p.done >= sessions.length) return { p: { ...p, step: next, done: 0 } };
+  let threshold = p.threshold as number | null | undefined;
+  if (threshold === undefined) {
+    if (!may(k, 1, first)) return { p, stalled: true };
+    threshold = await latestThreshold(k.db, k.userId);
+    k.spent += 1;
+    p = { ...p, threshold };
+  }
+  const window = sessions.slice(p.done, p.done + SESSION_WINDOW).map((s, n) => ({ ...s, id: idOf(p.done + n) }));
+  // The reads, and the first session at its own cost, must fit (a call's first unit aside).
+  if (!may(k, 3 + sessionUnitCost(k, window[0]!.session, threshold), first)) return { p, stalled: true };
+  const ids = window.map((w) => w.id);
+  const days = [...new Set(window.map((w) => w.date))];
+  const seen = await k.db
+    .select({
+      id: plannedWorkouts.id,
+      effectiveDate: plannedWorkouts.effectiveDate,
+      archivedAt: plannedWorkouts.archivedAt,
+      completionState: plannedWorkouts.completionState,
+      category: plannedWorkouts.category,
+    })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.userId, k.userId), or(inArray(plannedWorkouts.id, ids), inArray(plannedWorkouts.effectiveDate, days))));
+  k.spent += 1;
+  const there = new Set(seen.map((r) => r.id));
+  const live = new Map<string, number>();
+  for (const r of seen) {
+    if (days.includes(r.effectiveDate) && placeable(r, k.today)) live.set(r.effectiveDate, (live.get(r.effectiveDate) ?? 0) + 1);
+  }
+  const pushDays = [...new Set(window.filter((w) => !there.has(w.id) && k.writesOn && watchPushable(w.session)).map((w) => w.date))];
+  let taken = new Map<string, Set<string>>();
+  if (pushDays.length > 0) {
+    taken = await takenStampsOnDays(k.db, k.userId, pushDays);
+    k.spent += 1;
+  }
+
+  const picked: typeof window = [];
+  const touched = new Set<string>();
+  let units = 0;
+  let done = p.done;
+  for (const w of window) {
+    const isNew = !there.has(w.id);
+    const liveAfter = new Map(live);
+    if (isNew && placeable({ archivedAt: null, completionState: "scheduled", category: w.session.category, effectiveDate: w.date }, k.today)) {
+      liveAfter.set(w.date, (liveAfter.get(w.date) ?? 0) + 1);
+    }
+    const unit = isNew ? sessionUnitCost(k, w.session, threshold) : 0;
+    const revision = isNew && picked.length === 0 ? 1 : 0;
+    const cost = units + unit + revision + (picked.length > 0 ? 1 : 0) + placementCost(liveAfter, new Set([...touched, w.date]));
+    if (!(first && done === p.done) && k.spent + cost > k.budget) break;
+    if (isNew) {
+      picked.push(w);
+      units += unit;
+      for (const [d, n] of liveAfter) live.set(d, n);
+    }
+    touched.add(w.date);
+    done += 1;
+  }
+  if (done === p.done) return { p, stalled: true };
+
+  const threshold_ = threshold ?? undefined;
+  const rows = picked.map((w) => sessionRowInsert(k.db, k.userId, { id: w.id, planId, date: w.date, session: w.session }, k.now, { prefs: k.prefs, thresholdPaceSecPerKm: threshold_ }));
+  const watch = [];
+  for (const w of picked) {
+    if (!k.writesOn || !watchPushable(w.session)) continue;
+    // The stamp is unique per day across both lanes (ruling 3-R12) — this chunk's own sessions of the day included.
+    const dayTaken = taken.get(w.date) ?? new Set<string>();
+    const name = coachStamp(w.session.title, w.date, dayTaken);
+    dayTaken.add(name);
+    taken.set(w.date, dayTaken);
+    watch.push(k.db.insert(corosWriteJobs).values(watchCreateValues(k.userId, w.id, w.date, w.session, k.now, name, threshold_)).onConflictDoNothing());
+  }
+  const stmts = [
+    ...rows.map((r) => r.insert),
+    ...revisionInserts(k.db, {
+      userId: k.userId,
+      workoutIds: rows.filter((r) => r.doc !== null).map((r) => r.id),
+      sourceKind: "coach",
+      sourceRef: k.proposalId,
+      now: k.now,
+    }),
+    ...picked.flatMap((w) =>
+      insertBatches(coachStageRows(w.id, w.session, threshold_)).map((batch) => k.db.insert(plannedWorkoutStages).values(batch).onConflictDoNothing()),
+    ),
+    ...watch,
+  ];
+  if (stmts.length > 0) {
+    await runAtomically(k.db, stmts);
+    k.spent += stmts.length;
+  }
+  // Placement, over every day the chunk touched — the same pass the importer runs, so two sessions never share an
+  // hour; nothing to do (and nothing read) when no day holds two.
+  const placing = placementCost(live, touched);
+  if (placing > 0) {
+    await separateDayCollisions(k.db, k.userId, [...touched], k.prefs, { from: k.today, now: k.now });
+    k.spent += placing;
+  }
+  return { p: done >= sessions.length ? { ...p, step: next, done: 0 } : { ...p, done } };
+}
+
+/** One archive slice, then on to `next` once nothing in scope is still scheduled. */
+async function archiveStep(
+  k: Chunk,
+  p: StructuralProgress,
+  planId: string,
+  scope: { from: string } | { weeks: readonly string[] },
+  exclude: readonly string[],
+  next: string,
+  first: boolean,
+): Promise<StepResult> {
+  const r = await archiveSlice(k, planId, scope, exclude, first);
+  if (r === "stalled") return { p, stalled: true };
+  const archived = (typeof p.archived === "number" ? p.archived : 0) + r.archived;
+  return { p: r.more ? { ...p, archived, done: p.done + r.archived } : { ...p, step: next, done: 0, archived } };
+}
+
+/**
+ * Archive the plan's still-scheduled sessions in scope, as many as the budget holds: re-read each slice. Each row's
+ * watch unpush first (idempotent: its job id is the row's), then ONE batch — its suppression (id the op's own), its
+ * queued watch writes settled, the archive — so a slice re-run finds the rows it finished gone and redoes nothing.
+ */
+async function archiveSlice(
+  k: Chunk,
+  planId: string,
+  scope: { from: string } | { weeks: readonly string[] },
+  exclude: readonly string[],
+  first: boolean,
+): Promise<{ archived: number; more: boolean } | "stalled"> {
+  if ("weeks" in scope && scope.weeks.length === 0) return { archived: 0, more: false };
+  if (!may(k, 4, first)) return "stalled";
+  const limit = Math.max(1, Math.min(ARCHIVE_SLICE_MAX, k.budget - k.spent - 4));
+  const inScope =
+    "from" in scope
+      ? gte(plannedWorkouts.effectiveDate, scope.from)
+      : or(...scope.weeks.map((m) => and(gte(plannedWorkouts.effectiveDate, m), lte(plannedWorkouts.effectiveDate, addDays(m, 6)))));
+  const rows = await k.db
+    .select()
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, k.userId),
+        eq(plannedWorkouts.planId, planId),
+        eq(plannedWorkouts.completionState, "scheduled"),
+        // A row already archived (a re-run, or the athlete's own remove) is not archived — nor suppressed — twice.
+        isNull(plannedWorkouts.archivedAt),
+        inScope,
+        ...(exclude.length > 0 ? [notInArray(plannedWorkouts.id, [...exclude])] : []),
+      ),
+    )
+    .orderBy(plannedWorkouts.effectiveDate, plannedWorkouts.id)
+    .limit(limit + 1);
+  k.spent += 1;
+  if (rows.length === 0) return { archived: 0, more: false };
+
+  const unpushCost = (w: typeof plannedWorkouts.$inferSelect): number =>
+    appAuthoredRow(w) ? PROGRAMME_UNPUSH_COST : k.writesOn && watchAddressOf(w) ? UNPUSH_COST : 0;
+  const batchCost = (n: number) => Math.ceil(n / 18) + 2 * Math.ceil(n / 90);
+  const picked: (typeof rows)[number][] = [];
+  let unpushing = 0;
+  for (const w of rows.slice(0, limit)) {
+    const cost = batchCost(picked.length + 1) + unpushing + unpushCost(w);
+    if (!(first && picked.length === 0) && k.spent + cost > k.budget) break;
+    picked.push(w);
+    unpushing += unpushCost(w);
+  }
+  if (picked.length === 0) return "stalled";
+
+  for (const w of picked) {
+    if (unpushCost(w) > 0) await enqueueUnpushIfOurs(k.db, k.userId, w, k.now, k.prefs);
+  }
+  const ids = picked.map((w) => w.id);
+  const suppressions = picked.map((w) => ({
+    id: `sup-${k.proposalId}-${k.opIndex}-${w.id}`,
+    workoutId: w.id,
+    eventId: null,
+    reason: "user_removed",
+    createdAt: k.now,
+  }));
+  const stmts = [
+    ...insertBatches(suppressions).map((batch) => k.db.insert(calendarEventSuppressions).values(batch).onConflictDoNothing()),
+    ...settleWatchJobsOnArchiveStatements(k.db, k.userId, ids, k.now),
+    ...chunkIds(ids).map((chunk) =>
+      k.db
+        .update(plannedWorkouts)
+        .set({ archivedAt: k.now, archiveReason: "user_removed", updatedAt: k.now })
+        .where(and(eq(plannedWorkouts.userId, k.userId), inArray(plannedWorkouts.id, chunk))),
+    ),
+  ];
+  await runAtomically(k.db, stmts);
+  k.spent += stmts.length + unpushing;
+  return { archived: picked.length, more: rows.length > picked.length };
+}
+
+const countOf = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** What a finished structural op did, in one plain line. */
+function structuralSummary(op: StructuralOp, p: StructuralProgress): string {
+  const name = `“${typeof p.name === "string" ? p.name : "your plan"}”`;
+  const archived = typeof p.archived === "number" ? p.archived : 0;
+  switch (op.kind) {
+    case "createPlan": {
+      const parts = [
+        op.firmSessions.length > 0 ? countOf(op.firmSessions.length, "session") : null,
+        op.shapeWeeks.length > 0 ? `${countOf(op.shapeWeeks.length, "week")} sketched out` : null,
+      ].filter((x): x is string => x !== null);
+      return parts.length > 0 ? `Added “${op.name}” with ${parts.join(" and ")}` : `Added “${op.name}”`;
+    }
+    case "firmUp":
+      return `Added ${countOf(op.sessions.length, "session")} to ${name}`;
+    case "reshapeWeek":
+      return op.sessions.length > 0 ? `Reworked a week of ${name} with ${countOf(op.sessions.length, "session")}` : `Cleared a week of ${name}`;
+    case "windDown":
+      return op.sessions.length > 0 ? `Eased ${name} down with ${countOf(op.sessions.length, "gentler session")}` : `Eased ${name} down`;
+    case "retirePlan":
+      return archived > 0 ? `Retired ${name} and took ${countOf(archived, "session")} off your plan` : `Retired ${name}`;
+    case "extendPlan":
+      return `Extended ${name} by ${countOf(op.shapeWeeks.length, "week")}`;
+    case "resolveRaceConflict":
+      if (p.resolved === false) return "Your race day and your plan already agree";
+      return op.keep === "plan" ? "Your race day now follows your plan" : "Your plan now follows your race day";
+  }
 }
 
 /** A bucket's span is a report on its contents, not a plan: it widens in both

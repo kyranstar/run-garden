@@ -122,6 +122,38 @@ export async function takenStampsOn(
 }
 
 /**
+ * `takenStampsOn` for several days in ONE statement — the same jobs, the same statuses — keyed by day (§8 §4: a plan's
+ * chunk of sessions reads every day's stamps at once, then hands each new session the next free one, adding it to its
+ * day's set as it goes). A day with nothing taken is absent; at most 80 days (bound variables).
+ */
+export async function takenStampsOnDays(db: Db, userId: string, dates: readonly string[]): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  const days = [...new Set(dates)];
+  if (days.length === 0) return out;
+  if (days.length > 80) throw new Error("takenStampsOnDays: at most 80 days");
+  const day = sql<string>`json_extract(${corosWriteJobs.payload}, '$.happenDay')`;
+  const rows = await db
+    .select({ day, payload: corosWriteJobs.payload })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.kind, [...STAMPING_JOB_KINDS]),
+        notInArray(corosWriteJobs.status, [...SPENT_STAMP_STATUSES]),
+        inArray(day, days),
+      ),
+    );
+  for (const r of rows) {
+    const name = (r.payload as { name?: unknown } | null)?.name;
+    if (typeof name !== "string" || typeof r.day !== "string") continue;
+    const set = out.get(r.day) ?? new Set<string>();
+    set.add(name);
+    out.set(r.day, set);
+  }
+  return out;
+}
+
+/**
  * Job kinds whose payload holds a program name we wrote to COROS. Deletes are
  * excluded on purpose: they carry the same stamp but they remove a program,
  * they never name one, so they can teach us nothing a create hasn't already.

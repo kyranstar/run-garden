@@ -1,7 +1,7 @@
 import { and, eq, inArray, type SQL } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { appAuthoredRow, newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
 import { enqueueProgramUnpush } from "./watch-push.js";
@@ -67,6 +67,26 @@ export async function settleWatchJobsOnArchive(
         inArray(corosWriteJobs.kind, [...WATCH_PLACING_KINDS]),
       ),
     );
+}
+
+/**
+ * `settleWatchJobsOnArchive` for many rows at once, as statements for the caller's batch (§8 §4: a plan's archive
+ * slice settles its rows' queued writes in the same batch that archives them) — one per 90 rows.
+ */
+export function settleWatchJobsOnArchiveStatements(db: Db, userId: string, workoutIds: readonly string[], now: string) {
+  return chunkIds([...workoutIds]).map((ids) =>
+    db
+      .update(corosWriteJobs)
+      .set({ status: "superseded", updatedAt: now })
+      .where(
+        and(
+          eq(corosWriteJobs.userId, userId),
+          inArray(corosWriteJobs.workoutId, ids),
+          eq(corosWriteJobs.status, "queued"),
+          inArray(corosWriteJobs.kind, [...WATCH_PLACING_KINDS]),
+        ),
+      ),
+  );
 }
 
 /**
