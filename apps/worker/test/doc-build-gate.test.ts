@@ -602,3 +602,27 @@ describe("slotsForDay (Start of a build sent to the watch)", () => {
     expect(alt.steps).toEqual(sent["core:0"]!.alternates![0]!.steps);
   });
 });
+
+describe("a document saved with run segments among its moves (before designed runs, §8 §3)", () => {
+  /** The landings workout with a 10-minute easy run after it: what the coach could propose before run_mixed. */
+  const mixed = (): WorkoutDoc => {
+    const doc = landingsDoc();
+    return workoutDocSchema.parse({ ...doc, parts: [...doc.parts, { purpose: "run", format: "steady", items: [{ kind: "run", effort: "easy", target: { durationSec: 600 } }] }] });
+  };
+
+  it("still plays as it did: the rule refuses saving one, never playing one already saved", () => {
+    const doc = mixed();
+    expect(validateWorkoutDoc(doc, ctxAt(1)).filter((i) => i.code === "run_mixed")).toHaveLength(1);
+    expect(gateDoc(doc, ctxAt(1)).blocked).toEqual([]);
+  });
+
+  it("a save refuses it, today or ahead", () => {
+    expect(judgeDoc(mixed(), ctxAt(1)).errors.map((i) => i.code)).toEqual(["run_mixed"]);
+    // On a day a gate refuses a move (the save's own swap pass), it is still refused, never turned into a warning.
+    const today = judgeDoc(mixed(), ctxAt(9));
+    expect(today.errors.map((i) => i.code)).toContain("run_mixed");
+    expect(today.warnings.map((i) => i.code)).not.toContain("run_mixed");
+    const ahead = { ...ctxAt(1), day: { date: "2026-10-09", today: DAY, readings: {} } };
+    expect(judgeDoc(mixed(), ahead).errors.map((i) => i.code)).toEqual(["run_mixed"]);
+  });
+});

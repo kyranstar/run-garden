@@ -78,6 +78,26 @@
  * - too_long_for_watch (warning, at "parts"): see Size.
  * - unknown_focus (warning): a focus id that is neither a region nor a muscle.
  * - unknown_equipment (warning): a `setting.equipment` id the library does not know.
+ * RUNS (designed runs, §8 §3): a run is a document of run segments and rests only (`isRunDoc`); its pace is computed
+ *   from the athlete's threshold (@rg/domain `paceBandFor`, the one function the card and the wire read). The athlete's
+ *   running (`ctx.run`) is what the rules that count read; without it, only the document's own rules apply.
+ * - run_mixed (error): run segments and moves in one document — at each segment when the moves are more, else at each
+ *   move. Nothing else of a run is judged in such a document.
+ * - run_open (error, at the segment's target): an open segment, which the watch can't hold.
+ * - run_too_long (error, at "parts"): more than RUN_WATCH_MAX_STEPS steps once the repeats are written out.
+ * - run_pace_far (error, at the segment's target.pace): a pace the coach wrote whose middle lies more than PACE_FAR_SEC
+ *   beyond either edge of its effort's band (race pace: the band for the segment's own distance). An effort with no
+ *   band, or no threshold known, is not judged.
+ * - run_pace_owed (warning, at "parts"): no threshold known (`ctx.run.thresholdSecPerKm` null) and a segment whose effort
+ *   takes a band from one: the watch shows the time with no pace targets — or, a distance with no pace written, can't
+ *   time it, and the run stays off the watch.
+ * - run_hard_close (warning, at intent.effort): a quality or race run (derived) the day before, the day of or the day
+ *   after another quality run or hard lower-body strength (`ctx.run.nearby`): under 48 hours apart. One per session.
+ * - run_long_share (warning, at "parts"): a long run (derived) past LONG_SHARE of the week's running with it, when the
+ *   week holds other running (`ctx.run.weekMinutes`).
+ * - run_volume_jump (warning, at "parts"): the week's running with this run more than VOLUME_JUMP over the last four
+ *   weeks' weekly average (`ctx.run.fourWeekAvgMinutes`, when above zero).
+ *   A run's minutes are its steps' on the watch (`runWatchSteps`, a distance at its band's middle), else derived.
  * Not checked here: `test.keyResultId` and `intent.objectiveIds` (opaque without the database).
  *
  * FIXES for the condition, mode, athlete and place codes: the item's alternates first, then its easier variants (three
@@ -87,7 +107,20 @@
  * then its patterns, then its regions, in library order.
  */
 import type { ZodIssue } from "zod";
-import { workoutDocSchema, type WorkoutDoc, type WorkoutDose, type WorkoutItem, type WorkoutPart } from "@rg/domain";
+import {
+  daysBetween,
+  paceBandFor,
+  RUN_EFFORT_LABELS,
+  RUN_WATCH_MAX_STEPS,
+  runDocStepCount,
+  runWatchSessionOf,
+  runWatchSteps,
+  workoutDocSchema,
+  type WorkoutDoc,
+  type WorkoutDose,
+  type WorkoutItem,
+  type WorkoutPart,
+} from "@rg/domain";
 import {
   EQUIPMENT,
   EQUIPMENT_IDS,
@@ -136,6 +169,14 @@ export const DOC_ISSUE_CODES = [
   "unknown_focus",
   "unknown_equipment",
   "care_share",
+  "run_mixed",
+  "run_open",
+  "run_too_long",
+  "run_pace_far",
+  "run_pace_owed",
+  "run_hard_close",
+  "run_long_share",
+  "run_volume_jump",
 ] as const;
 export type DocIssueCode = (typeof DOC_ISSUE_CODES)[number];
 
@@ -170,6 +211,18 @@ export interface DayContext {
   recent?: { last: HistorySession | null; week: readonly HistorySession[] };
 }
 
+/** The athlete's running, as the rules that count read it for a run document (designed runs, §8 §3). */
+export interface RunCtx {
+  /** Their threshold pace, seconds per km; null when none is known. */
+  thresholdSecPerKm: number | null;
+  /** Hard sessions near the run's day, planned or done: a quality run, or hard lower-body strength. */
+  nearby: ReadonlyArray<{ date: string; kind: "quality_run" | "hard_legs"; title: string }>;
+  /** The running already planned in the run's week (Monday to Sunday), this run aside, in minutes. */
+  weekMinutes: number;
+  /** The last four weeks' running, a week on average, in minutes; null when none can be read. */
+  fourWeekAvgMinutes: number | null;
+}
+
 export interface ValidateCtx {
   library: readonly ExerciseRecord[];
   activeProfiles: readonly ConditionProfile[];
@@ -179,6 +232,8 @@ export interface ValidateCtx {
   excluded?: readonly string[];
   /** The place's equipment; absent: not checked. */
   equipment?: readonly string[];
+  /** The athlete's running, for a run document; absent: only the document's own run rules. */
+  run?: RunCtx;
 }
 
 type Part = WorkoutPart;
@@ -225,6 +280,23 @@ const EASY_WORK = new Set<string>(["activation", "mobility"]);
 const CARE_SHARE_FLOOR = 2 / 3;
 /** A floating-point product that should be whole (0.1 × 30 × 2/3) is not let down by a hair. */
 const EPSILON = 1e-9;
+/** How far beyond its effort's band a written pace's middle may lie, seconds per km, before it is another effort. */
+const PACE_FAR_SEC = 30;
+/** A long run's share of the week's running past which it is out of proportion. */
+const LONG_SHARE = 0.3;
+/** How far over the last four weeks' average a week's running may go. */
+const VOLUME_JUMP = 0.1;
+/** Hard running wants 48 hours: a hard session this many days either side is too close. */
+const HARD_CLOSE_DAYS = 1;
+/** A derived run category that is hard running. */
+const HARD_RUN = new Set<string>(["quality", "race"]);
+const MIXED_RUN = "Runs and moves go in workouts of their own: this one mixes run segments with exercises.";
+type RunItem = Extract<WorkoutItem, { kind: "run" }>;
+/** "4:59": seconds per km as a pace reads. */
+const paceText = (sec: number): string => {
+  const s = Math.round(sec);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
 
 /** Case and separators ignored: "goblet-squat", "Goblet squat" and "gobletSquat" read alike. */
 const keyOf = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -518,6 +590,87 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
 
   // ── Care: a cared-for profile's care part, against its share of the minutes ──
   checkCare();
+
+  // ── Runs: a document of their own, that the watch can hold, judged by what code can count ──
+  checkRun();
+
+  function checkRun(): void {
+    const items = doc.parts.flatMap((p, pi) => p.items.map((item, ii) => ({ item, at: `parts[${pi}].items[${ii}]` })));
+    const runs = items.filter((x) => x.item.kind === "run");
+    if (runs.length === 0) return;
+    const moves = items.filter((x) => x.item.kind === "exercise" || x.item.kind === "free_exercise");
+    if (moves.length > 0) {
+      for (const x of runs.length <= moves.length ? runs : moves) add({ path: x.at, code: "run_mixed", message: MIXED_RUN, severity: "error" });
+      return;
+    }
+    for (const x of runs) {
+      const t = (x.item as RunItem).target;
+      if (t.durationSec === undefined && t.distanceM === undefined) {
+        add({ path: `${x.at}.target`, code: "run_open", message: "An open segment can't go to the watch: give it a time or a distance.", severity: "error" });
+      }
+    }
+    const steps = runDocStepCount(doc);
+    if (steps > RUN_WATCH_MAX_STEPS) {
+      add({ path: "parts", code: "run_too_long", message: `This run has ${steps} steps once its repeats are written out, and the watch takes ${RUN_WATCH_MAX_STEPS}: fewer repeats, or longer ones.`, severity: "error" });
+    }
+    const run = ctx.run;
+    const threshold = run?.thresholdSecPerKm ?? null;
+    for (const x of runs) {
+      const it = x.item as RunItem;
+      const written = it.target.pace;
+      const band = written ? paceBandFor(it.effort, threshold, it.target.distanceM !== undefined ? { distanceM: it.target.distanceM } : {}) : null;
+      if (!written || !band) continue;
+      const mid = (written.fastSecPerKm + written.slowSecPerKm) / 2;
+      if (mid >= band.fastSecPerKm - PACE_FAR_SEC && mid <= band.slowSecPerKm + PACE_FAR_SEC) continue;
+      const theirs = it.effort === "race" ? "race pace for its distance" : `a ${RUN_EFFORT_LABELS[it.effort].toLowerCase()} effort's`;
+      add({
+        path: `${x.at}.target.pace`, code: "run_pace_far", severity: "error",
+        message: `This pace, ${paceText(written.fastSecPerKm)}–${paceText(written.slowSecPerKm)}/km, is far from ${theirs} ${paceText(band.fastSecPerKm)}–${paceText(band.slowSecPerKm)}/km: name the effort it is, or leave the pace to the app.`,
+      });
+    }
+    if (!run) return;
+    const made = runWatchSessionOf(doc);
+    const resolved = "session" in made ? runWatchSteps(made.session, threshold) : null;
+    if (resolved && threshold === null && (resolved.unresolved > 0 || resolved.paceOwed > 0)) {
+      add({
+        path: "parts", code: "run_pace_owed", severity: "warning",
+        message: resolved.unresolved > 0
+          ? "No threshold pace is known yet, so the watch can't time this run's distances: it stays off the watch until one is."
+          : "No threshold pace is known yet, so the watch shows this run's time with no pace targets.",
+      });
+    }
+    const derived = deriveDoc(doc, ctx.library);
+    const seconds = resolved?.totalSeconds ?? derived.estimatedMinutes * 60;
+    const minutes = Math.round(seconds / 60);
+    if (day && HARD_RUN.has(derived.category)) {
+      for (const n of run.nearby) {
+        const gap = daysBetween(day.date, n.date);
+        if (Math.abs(gap) > HARD_CLOSE_DAYS) continue;
+        const when = gap < 0 ? "the day before" : gap > 0 ? "the day after" : "the same day";
+        add({ path: "intent.effort", code: "run_hard_close", severity: "warning", message: `${n.title} is ${when}: hard running wants 48 hours from other hard running and hard leg strength.` });
+      }
+    }
+    if (derived.category === "long" && run.weekMinutes > 0) {
+      const total = run.weekMinutes + minutes;
+      const share = minutes / total;
+      if (share > LONG_SHARE + EPSILON) {
+        add({
+          path: "parts", code: "run_long_share", severity: "warning",
+          message: `This long run is ${Math.round(share * 100)}% of the week's running (${minutes} of ${Math.round(total)} minutes); about ${Math.round(LONG_SHARE * 100)}% keeps it in proportion.`,
+        });
+      }
+    }
+    const avg = run.fourWeekAvgMinutes;
+    if (avg !== null && avg > 0) {
+      const total = run.weekMinutes + minutes;
+      if (total > avg * (1 + VOLUME_JUMP) + EPSILON) {
+        add({
+          path: "parts", code: "run_volume_jump", severity: "warning",
+          message: `With this run the week's running comes to ${Math.round(total)} minutes, ${Math.round((total / avg - 1) * 100)}% over your last four weeks' average of ${Math.round(avg)} a week.`,
+        });
+      }
+    }
+  }
 
   function checkJumps(): void {
     let jumpsPart: number | null = null;

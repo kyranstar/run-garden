@@ -72,6 +72,17 @@ export function runWatchStepCount(segments: readonly RunWatchSegment[]): number 
   return segments.reduce((n, s) => n + s.rounds * s.steps.length + (s.restBetweenRoundsSec ? s.rounds - 1 : 0), 0);
 }
 
+/** A part's rest between rounds as the watch takes it: whole seconds, none for a part of one round. */
+const restBetweenOf = (part: WorkoutDoc["parts"][number]): number => {
+  const rounds = part.rounds ?? 1;
+  return part.restBetweenRoundsSec !== undefined && rounds > 1 ? Math.round(part.restBetweenRoundsSec) : 0;
+};
+
+/** The steps a run document writes out to on the watch (its repeats, the rests between rounds): the validator's count. */
+export function runDocStepCount(doc: Pick<WorkoutDoc, "parts">): number {
+  return doc.parts.reduce((n, p) => n + (p.rounds ?? 1) * p.items.length + (restBetweenOf(p) > 0 ? (p.rounds ?? 1) - 1 : 0), 0);
+}
+
 export const runWatchSessionSchema = z
   .object({
     kind: z.literal("run_watch"),
@@ -121,9 +132,8 @@ export function runWatchSessionOf(doc: WorkoutDoc): { session: RunWatchSession }
       if (step === "mixed" || step === "open") return { refused: step };
       steps.push(step);
     }
-    const rounds = part.rounds ?? 1;
-    const rest = part.restBetweenRoundsSec !== undefined && rounds > 1 ? Math.round(part.restBetweenRoundsSec) : 0;
-    segments.push({ rounds, steps, ...(rest > 0 ? { restBetweenRoundsSec: rest } : {}) });
+    const rest = restBetweenOf(part);
+    segments.push({ rounds: part.rounds ?? 1, steps, ...(rest > 0 ? { restBetweenRoundsSec: rest } : {}) });
   }
   if (runWatchStepCount(segments) > RUN_WATCH_MAX_STEPS) return { refused: "too_many_steps" };
   return { session: { kind: "run_watch", title: doc.title, segments } };

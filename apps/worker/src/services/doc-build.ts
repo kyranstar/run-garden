@@ -119,11 +119,17 @@ export function freshJump(rec: ExerciseRecord, ctx: ValidateCtx): boolean {
 const atAlternate = (i: DocIssue): boolean => i.path.includes(".alternates[");
 
 /**
+ * Rules of what may be SAVED, never of what is played (designed runs, §8 §3): a document saved before the rule — the
+ * coach's strength workout with a run part, from before `run_mixed` — plays as it always did; a new save is refused.
+ */
+const SAVE_ONLY = new Set<string>(["run_mixed"]);
+
+/**
  * The errors that stop a document being played as it stands: every error but those at alternates (a gated alternate
- * is only an option the day takes away, see `gateDoc`).
+ * is only an option the day takes away, see `gateDoc`) and the rules of saving alone (`SAVE_ONLY`).
  */
 export function playedErrors(issues: readonly DocIssue[]): DocIssue[] {
-  return issues.filter((i) => i.severity === "error" && !atAlternate(i));
+  return issues.filter((i) => i.severity === "error" && !atAlternate(i) && !SAVE_ONLY.has(i.code));
 }
 
 /** The document as the day allows it (see the header). */
@@ -187,14 +193,15 @@ export function judgeDoc(doc: WorkoutDoc, ctx: ValidateCtx): { errors: DocIssue[
   const gated = gateDoc(doc, ctx);
   const find = makeLibraryIndex(ctx.library);
   const stillBlocked = (i: DocIssue): boolean => gated.blocked.some((b) => b.path === i.path && b.code === i.code);
+  const saveOnly = issues.filter((i) => i.severity === "error" && SAVE_ONLY.has(i.code));
   const resolved = issues
-    .filter((i) => i.severity === "error" && !stillBlocked(i))
+    .filter((i) => i.severity === "error" && !stillBlocked(i) && !SAVE_ONLY.has(i.code))
     .map((i): DocIssue => {
       const swap = gated.swaps.find((s) => i.path === `${s.path}.libraryId`);
       if (!swap) return { ...i, severity: "warning" };
       return { ...i, severity: "warning", message: `${i.message} ${find(swap.to)?.name ?? swap.to} stands in today.`, fix: swap.to };
     });
-  return { errors: gated.blocked, warnings: [...warnings, ...resolved] };
+  return { errors: [...gated.blocked, ...saveOnly], warnings: [...warnings, ...resolved] };
 }
 
 /** What the validator reads of a day when only its errors matter: the active profiles and each one's reading. */
