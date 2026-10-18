@@ -30,6 +30,11 @@ import { RUN_EFFORTS, type WorkoutDoc, type WorkoutItem } from "./workout-doc.js
 
 /** The most steps a designed run puts on the watch, its repeats written out (phase 1). */
 export const RUN_WATCH_MAX_STEPS = 60;
+/**
+ * The shortest step the app puts on the watch, in seconds (review-2 (e)): COROS's own minimum is unknown, a step of a
+ * second or two is a shape no capture holds, and strides of 10–20 s stay fine. The validator refuses a shorter one.
+ */
+export const RUN_STEP_MIN_SEC = 10;
 /** What a step is for, as the watch announces it. */
 export const RUN_STEP_ROLES = ["warmup", "work", "recovery", "cooldown"] as const;
 export type RunStepRole = (typeof RUN_STEP_ROLES)[number];
@@ -176,6 +181,20 @@ export interface RunWatchResolved {
 }
 
 /**
+ * A step's seconds on the watch: the time asked, or a distance at its pace's middle (the one named, else its effort's
+ * conversion pace: `conversionPaceFor`); null when a distance can't be timed. The steps and the validator read it.
+ */
+export function runStepSeconds(s: RunWatchStep, thresholdSecPerKm: number | null | undefined): number | null {
+  if (s.target.kind === "time") return s.target.seconds;
+  const mid = s.pace
+    ? (s.pace.fastSecPerKm + s.pace.slowSecPerKm) / 2
+    : s.effort
+      ? conversionPaceFor(s.effort, thresholdSecPerKm, { distanceM: s.target.meters })
+      : null;
+  return mid !== null ? Math.max(1, Math.round((s.target.meters / 1000) * mid)) : null;
+}
+
+/**
  * The pace band a step carries on the watch and where it came from: the one the athlete named (`asked`), else its
  * effort's from the threshold (race pace: for the step's own distance), else none. The steps, the stage rows and the
  * wire read this one function.
@@ -200,16 +219,11 @@ export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresh
   let meters: number | null = 0;
   const resolve = (s: RunWatchStep): RunWatchStepResolved => {
     const distanceM = s.target.kind === "distance" ? s.target.meters : undefined;
-    const asked = s.pace ?? null;
     const { band, from } = runStepBand(s, thresholdSecPerKm);
     if (from === null && s.role !== "recovery" && s.effort && paceBandFor(s.effort, SOME_THRESHOLD, distanceM !== undefined ? { distanceM } : {})) paceOwed += 1;
-    const mid = asked ? (asked.fastSecPerKm + asked.slowSecPerKm) / 2 : s.effort ? conversionPaceFor(s.effort, thresholdSecPerKm, distanceM !== undefined ? { distanceM } : {}) : null;
-    let secs: number | null;
-    if (s.target.kind === "time") {
-      secs = s.target.seconds;
-    } else {
+    const secs = runStepSeconds(s, thresholdSecPerKm);
+    if (s.target.kind === "distance") {
       distanceAsTime += 1;
-      secs = mid !== null ? Math.max(1, Math.round((s.target.meters / 1000) * mid)) : null;
       if (secs === null) unresolved += 1;
     }
     return {

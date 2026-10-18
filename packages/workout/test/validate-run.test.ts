@@ -75,6 +75,26 @@ describe("the watch's own limits on a run", () => {
     expect(codes(check(open))).toEqual(["error:run_open@parts[0].items[0].target"]);
   });
 
+  it("run_step_short: a step under 10 s on the watch — a time, a distance at its pace, a rest, a rest between rounds; strides of 10–20 s are fine (review-2 (e))", () => {
+    const strides = (sec: number) => docOf([part("run", "intervals", [run("strides", { durationSec: sec }), run("recovery", { durationSec: 60 })], { rounds: 4 })]);
+    const issues = check(strides(8));
+    expect(codes(issues)).toEqual(["error:run_step_short@parts[0].items[0].target"]);
+    expect(issues[0]!.message).toBe("This step is 8 s on the watch, under the 10 s a watch step needs: make it longer, or fold it into the step beside it.");
+    expect(check(strides(10))).toEqual([]);
+    expect(check(strides(20))).toEqual([]);
+    // 9.6 s goes to the watch as 10.
+    expect(check(strides(9.6))).toEqual([]);
+    // A distance at its band's middle: 30 m at interval's 276.5 s/km is 8 s; 40 m is 11. With no threshold it can't be
+    // timed, so it isn't judged here (run_pace_owed says it stays off the watch).
+    const reps = (m: number) => docOf([part("run", "intervals", [run("interval", { distanceM: m }), run("recovery", { durationSec: 60 })], { rounds: 4 })]);
+    expect(codes(check(reps(30)))).toEqual(["error:run_step_short@parts[0].items[0].target"]);
+    expect(check(reps(40))).toEqual([]);
+    expect(codes(check(reps(30), { thresholdSecPerKm: null })).filter((c) => c.includes("run_step_short"))).toEqual([]);
+    // A rest is a step on the watch, and so is the rest between rounds.
+    const rests = docOf([part("run", "intervals", [run("interval", { durationSec: 120 }), { kind: "rest", seconds: 5 }], { rounds: 4, restBetweenRoundsSec: 6 })]);
+    expect(codes(check(rests))).toEqual(["error:run_step_short@parts[0].items[1]", "error:run_step_short@parts[0].restBetweenRoundsSec"]);
+  });
+
   it("run_too_long: more than 60 steps once the repeats are written out", () => {
     const reps = (rounds: number) => docOf([part("run", "intervals", [run("interval", { durationSec: 60 }), run("recovery", { durationSec: 60 })], { rounds })]);
     expect(check(reps(30))).toEqual([]);

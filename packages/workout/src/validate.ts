@@ -85,6 +85,9 @@
  *   move. Nothing else of a run is judged in such a document.
  * - run_open (error, at the segment's target): an open segment, which the watch can't hold.
  * - run_too_long (error, at "parts"): more than RUN_WATCH_MAX_STEPS steps once the repeats are written out.
+ * - run_step_short (error, at a segment's target, a rest, or a part's restBetweenRoundsSec): a step under
+ *   RUN_STEP_MIN_SEC on the watch (`runStepSeconds`: a distance at its pace's middle; one that can't be timed is not
+ *   judged) — COROS's own minimum is unknown (review-2 (e)).
  * - run_pace_far (error, at the segment's target.pace): a pace the coach wrote whose middle lies more than PACE_FAR_SEC
  *   beyond either edge of its effort's band (race pace: the band for the segment's own distance). An effort with no
  *   band, or no threshold known, is not judged.
@@ -111,9 +114,12 @@ import {
   daysBetween,
   paceBandFor,
   RUN_EFFORT_LABELS,
+  RUN_STEP_MIN_SEC,
   RUN_WATCH_MAX_STEPS,
   runDocStepCount,
+  runStepSeconds,
   runWatchSessionOf,
+  runWatchStepOf,
   runWatchSteps,
   workoutDocSchema,
   type WorkoutDoc,
@@ -172,6 +178,7 @@ export const DOC_ISSUE_CODES = [
   "run_mixed",
   "run_open",
   "run_too_long",
+  "run_step_short",
   "run_pace_far",
   "run_pace_owed",
   "run_hard_close",
@@ -609,6 +616,22 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         add({ path: `${x.at}.target`, code: "run_open", message: "An open segment can't go to the watch: give it a time or a distance.", severity: "error" });
       }
     }
+    // The watch's shortest step (review-2 (e)): each segment and rest as the watch takes it (`runWatchStepOf`), and the
+    // rest between rounds.
+    const shortStep = (seconds: number | null, path: string): void => {
+      if (seconds === null || seconds >= RUN_STEP_MIN_SEC) return;
+      add({
+        path, code: "run_step_short", severity: "error",
+        message: `This step is ${seconds} s on the watch, under the ${RUN_STEP_MIN_SEC} s a watch step needs: make it longer, or fold it into the step beside it.`,
+      });
+    };
+    doc.parts.forEach((p, pi) => {
+      p.items.forEach((item, ii) => {
+        const step = runWatchStepOf(item, p.purpose);
+        if (typeof step !== "string") shortStep(runStepSeconds(step, ctx.run?.thresholdSecPerKm ?? null), item.kind === "run" ? `parts[${pi}].items[${ii}].target` : `parts[${pi}].items[${ii}]`);
+      });
+      if (p.restBetweenRoundsSec !== undefined && (p.rounds ?? 1) > 1) shortStep(Math.max(1, Math.round(p.restBetweenRoundsSec)), `parts[${pi}].restBetweenRoundsSec`);
+    });
     const steps = runDocStepCount(doc);
     if (steps > RUN_WATCH_MAX_STEPS) {
       add({ path: "parts", code: "run_too_long", message: `This run has ${steps} steps once its repeats are written out, and the watch takes ${RUN_WATCH_MAX_STEPS}: fewer repeats, or longer ones.`, severity: "error" });

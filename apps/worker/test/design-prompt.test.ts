@@ -125,6 +125,7 @@ describe("the prompt text", () => {
       run_mixed: "a run mixed with moves",
       run_open: "a run the watch can't hold (an open segment",
       run_too_long: "more than 60 steps)",
+      run_step_short: "a step under 10 s",
       run_pace_far: "a written pace far from its effort",
     };
     const warningsOnly: DocIssueCode[] = [
@@ -182,7 +183,7 @@ describe("3A-B — the prompt agrees with the code", () => {
     expect(all).not.toMatch(/never design|Runs are never designed|Never a run|can't play a run/);
     expect(SHARED_PROMPT).toContain("The coach designs runs too, each a run of its own (Runs, below); a run already on the plan may be skipped, moved, eased or given another length with adjust_plan.");
     const runs = SHARED_PROMPT.slice(SHARED_PROMPT.indexOf("Runs. "), SHARED_PROMPT.indexOf("Conditions. "));
-    expect(runs).toContain("Design one when the athlete asks for a run, or when the day you are asked to shape is a run day on the plan");
+    expect(runs).toContain("Design one when the athlete asks for a run, or the day you are asked to shape is a run day on the plan");
     expect(runs).toContain("never among moves");
     expect(runs).toContain("format intervals with rounds");
     expect(runs).toContain("Name the effort; the app computes its pace from the athlete's threshold");

@@ -90,7 +90,7 @@ describe("validateWorkoutDoc — a clean workout", () => {
         "condition_pattern", "dose_mismatch", "equipment_unavailable", "excluded_by_athlete", "format_mismatch", "jump_placement", "legacy_id",
         "mode_above_day", "mode_limits", "progression_jump", "too_large", "too_long_for_watch", "unknown_equipment", "unknown_exercise", "unknown_focus",
         // Designed runs (§8 §3): validate-run.test.ts.
-        "run_mixed", "run_open", "run_too_long", "run_pace_far", "run_pace_owed", "run_hard_close", "run_long_share", "run_volume_jump",
+        "run_mixed", "run_open", "run_too_long", "run_step_short", "run_pace_far", "run_pace_owed", "run_hard_close", "run_long_share", "run_volume_jump",
       ].sort(),
     );
   });
