@@ -300,7 +300,11 @@ export function questionOf(payloadText: string | null): ConversationQuestion | n
 const shownStatus = (status: string): string => (status === "waiting_review" || status === "waiting_set" ? "active" : status);
 
 /** A line for a run that is over without a finish of its own (coach-runs.ts `endedLine`, handed in: no cycle). */
-export type EndedLine = (status: string, error: string | null, settings: { window?: { kind: "day"; date: string } | { kind: "until"; at: string }; ceilingMicros: number } | undefined) => string | null;
+export type EndedLine = (
+  status: string,
+  error: string | null,
+  settings: { window?: { kind: "day"; date: string } | { kind: "until"; at: string }; ceilingMicros: number; setCeilingMicros?: number; raisedAt?: string } | undefined,
+) => string | null;
 
 /** One run as a turn. */
 function turnOf(row: TurnRow, today: string, endedLine: EndedLine): ConversationTurn {

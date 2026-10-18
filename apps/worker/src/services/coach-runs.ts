@@ -1369,7 +1369,7 @@ async function expireTree(
   const proposed = await proposeWhatItHas(db, userId, root, STOPPED_NOTES.expired!, at, today);
   if (!proposed) await closeUnreviewed(db, userId, designProposalId(root.id), "expired", at);
   const lines: NewEvent[] =
-    proposed && root.settings?.window?.kind === "day"
+    proposed && windowIsADay(root.settings)
       ? [{ kind: "note", summary: LINES.expiredDayLater, payload: { proposalId: designProposalId(root.id) } }]
       : [{ kind: "note", summary: expiredLine(root.settings) }, proposedLine(root, proposed, LINES.proposed)];
   const events = await appendEvents(db, userId, root.id, lines, at);
@@ -1973,8 +1973,15 @@ export const REVIEW_NUDGE =
   "Your review wasn't submitted. Return it by calling submit_review: a whole score from 1 to 5 and a one-line note for every dimension, the must-fix items and the improvements.";
 
 /** The plain line for a run that outlived its window. */
-export function expiredLine(settings: Pick<RunSettings, "window"> | undefined): string {
-  return settings?.window?.kind === "day" ? LINES.expiredDay : LINES.expiredSet;
+export function expiredLine(settings: Pick<RunSettings, "window" | "setCeilingMicros" | "raisedAt"> | undefined): string {
+  return windowIsADay(settings) ? LINES.expiredDay : LINES.expiredSet;
+}
+
+/** Whether a run's window is its day's: a day's, or an auto run's while it is one workout's — open to the athlete's
+ * next midnight at least (`runWindow`), so once it closes, the day it was for has passed. An auto run that planned a set
+ * (`raisedAt`) has a set's. */
+function windowIsADay(settings: Pick<RunSettings, "window" | "setCeilingMicros" | "raisedAt"> | undefined): boolean {
+  return settings?.window?.kind === "day" || (settings?.setCeilingMicros !== undefined && !settings.raisedAt);
 }
 
 /** A stop's own line, by its reason (`CoachRunDto.error`): what the loop wrote when it stopped. */
@@ -1996,7 +2003,11 @@ const STOP_LINES: Readonly<Record<string, string>> = {
  * loop's own words (the conversation's turn says it: the new shape §5); null for a live run and a finished one (its
  * finish says it).
  */
-export function endedLine(status: string, error: string | null, settings: Pick<RunSettings, "window" | "ceilingMicros"> | undefined): string | null {
+export function endedLine(
+  status: string,
+  error: string | null,
+  settings: Pick<RunSettings, "window" | "ceilingMicros" | "setCeilingMicros" | "raisedAt"> | undefined,
+): string | null {
   if (status === "cancelled") return "Cancelled.";
   if (status === "expired") return expiredLine(settings);
   if (status !== "stopped_cap" && status !== "failed") return null;

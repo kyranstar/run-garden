@@ -20,7 +20,7 @@ import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import { COACH_RUN_SET_WINDOW_HOURS } from "../src/services/cron-limits.js";
-import { answerRun, createRun, RUN_CEILING_MICROS, runStep, WeekBudgetError, type RunDeps } from "../src/services/coach-runs.js";
+import { answerRun, createRun, endedLine, LINES, RUN_CEILING_MICROS, runStep, WeekBudgetError, type RunDeps, type RunSettings } from "../src/services/coach-runs.js";
 import { buildDesignContext, designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS, roleBlock } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
@@ -320,6 +320,40 @@ describe("plan_set in an auto run", () => {
     for (let i = 1; i <= 2; i++) await runStep(db, env, run.run.id, userId, new Date(late.getTime() + i * 1000), d);
     const answered = await answerRun(db, userId, run.run.id, { answers: ["Before"] }, new Date("2026-05-14T07:30:00Z"));
     expect(answered.kind).toBe("ok");
+  });
+
+  it("an auto run that outlives its window says its day has passed, as a day's run does (its window ends at its midnight at least); one that planned a set says a set's", async () => {
+    // 23:50 in Los Angeles, a question left unanswered: the step after 01:50 finds the window closed.
+    const late = new Date("2026-05-14T06:50:00Z");
+    const run = await createRun(db, userId, { request: "Something for tomorrow morning?" }, late);
+    const ask = use("ask_athlete", { questions: [{ text: "Before work or after?", chips: ["Before", "After"], why: "It decides the time." }] });
+    const d = scripted([turn(ask)]).deps;
+    for (let i = 1; i <= 2; i++) await runStep(db, env, run.run.id, userId, new Date(late.getTime() + i * 1000), d);
+    await runStep(db, env, run.run.id, userId, new Date("2026-05-14T09:00:00Z"), d);
+    const linesOf = async (id: string) =>
+      (await db.select().from(schema.coachRunEvents).where(eq(schema.coachRunEvents.runId, id)).orderBy(schema.coachRunEvents.seq)).map((e) => e.summary);
+    expect((await stateOf(run.run.id)).row.status).toBe("expired");
+    expect((await linesOf(run.run.id)).slice(-2)).toEqual([LINES.expiredDay, LINES.nothingProposed]);
+    // The conversation's line for it, and for an auto run that planned a set (a set's window from its raise).
+    const settings = (await stateOf(run.run.id)).state.settings as RunSettings;
+    expect(endedLine("expired", "expired", settings)).toBe(LINES.expiredDay);
+    expect(endedLine("expired", "expired", { ...settings, raisedAt: late.toISOString(), window: { kind: "until", at: "2026-05-15T06:50:00.000Z" } })).toBe(LINES.expiredSet);
+
+    // One whose workout for a later day is suggested as it closes says so in one line, as a day's run does.
+    const t0 = new Date("2026-05-14T09:01:00Z");
+    const second = await createRun(db, userId, { request: "Something for tomorrow?" }, t0);
+    const morning = use("ask_athlete", { questions: [{ text: "Morning or evening?", chips: ["Morning", "Evening"], why: "It decides the time." }] });
+    const s = scripted([turn(propose("Friday hips", { date: day(-2) })), turn(use("submit_review", verdict())), turn(morning)]).deps;
+    let status = "";
+    for (let i = 1; i <= 20 && status !== "waiting_athlete"; i++) {
+      const out = await runStep(db, env, second.run.id, userId, new Date(t0.getTime() + i * 1000), s);
+      if (out.kind === "ok") status = out.result.status;
+    }
+    expect(status).toBe("waiting_athlete");
+    await runStep(db, env, second.run.id, userId, new Date("2026-05-15T08:00:00Z"), s);
+    expect((await stateOf(second.run.id)).row.status).toBe("expired");
+    expect((await proposalOf(second.run.id))!.status).toBe("pending");
+    expect((await linesOf(second.run.id)).at(-1)).toBe(LINES.expiredDayLater);
   });
 
   it("old scopes are as they were: a now run can't plan a set, a week's main coach doesn't propose", async () => {
