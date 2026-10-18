@@ -259,6 +259,18 @@ describe("the opening message: today", () => {
     expect(header).toMatch(/\blb\b/);
   });
 
+  it("designed runs (§8 §3): the running line — threshold, each effort's pace from it, four weeks' running — in every role, in the athlete's units", async () => {
+    const runningOf = (header: string) => header.split("\n").find((l) => l.startsWith("Running:"));
+    // No threshold yet; one 30-minute watch run with no distance, two days ago.
+    expect(runningOf((await build()).header)).toBe(
+      "Running: no threshold pace known yet, so a run's steps carry no pace targets (the watch shows time only). Last 4 weeks, newest first: 30, 0, 0, 0 min; 8 min a week on average.",
+    );
+    await db.insert(schema.dailyHealth).values({ id: `${userId}:t`, userId, date: "2026-03-09", thresholdPaceSecPerKm: 289, contentFingerprint: "f", updatedAt: at("2026-03-09") });
+    for (const role of ["main", "designer", "reviewer"] as const) {
+      expect(runningOf((await build({ role })).header)).toMatch(/^Running: threshold 7:45 \/mi \(9 Mar\)\. Effort paces \/mi — recovery 10:10–11:47, .*, interval 7:13–7:37\. /);
+    }
+  });
+
   it("carries each active profile's generated rules, each labelled by how it is enforced, with today's reading and its time", async () => {
     const { header } = await build();
     for (const l of TMJ.describeRules()) expect(header).toContain(`- ${ENFORCEMENT_LABEL[RULE_ENFORCEMENT[l.rule]]}: ${l.text}`);

@@ -67,6 +67,7 @@ import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
 import { focusMove, focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
+import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, type RunningFacts } from "./designed-runs.js";
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { planTerm } from "./design-tools/read-plan.js";
@@ -315,11 +316,13 @@ interface Reads {
   focus: { focus: RunFocus; rows: Map<string, Array<Record<string, unknown>>> } | null;
   /** A later turn's conversation so far (the new shape §5), newest first; null for a first turn or any other run. */
   conversation: TurnRow[] | null;
+  /** The athlete's running (designed runs, §8 §3): their threshold and the last four weeks — read in the counts statement. */
+  running: RunningFacts;
 }
 
 /** An op still the athlete's to decide (coach-runs.ts' alsoOpen rule, R2): undecided, refused at approval, or being applied. */
 const OPEN_OP = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust') ` +
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 
@@ -477,11 +480,13 @@ async function read(
         (select max(${dailyHealth.date}) from ${dailyHealth} where ${dailyHealth.userId} = ${userId} and ${dailyHealth.hrv} is not null) as hrvLast,
         (select max(${dailyHealth.date}) from ${dailyHealth} where ${dailyHealth.userId} = ${userId}
            and ${dailyHealth.restingHeartRate} is not null) as rhrLast,
-        (select max(${sleepRecords.date}) from ${sleepRecords} where ${sleepRecords.userId} = ${userId}) as sleepLast`) as Promise<
-      Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null }>
+        (select max(${sleepRecords.date}) from ${sleepRecords} where ${sleepRecords.userId} = ${userId}) as sleepLast,
+        ${thresholdSql(userId)} as runThreshold,
+        ${runWeeksSql(userId, today)} as runWeeks`) as Promise<
+      Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null; runThreshold: unknown; runWeeks: unknown }>
     >,
   ]);
-  const { open: openJson, declined: declinedJson, draftDate: rawDraft, ...counts } = countRows[0]!;
+  const { open: openJson, declined: declinedJson, draftDate: rawDraft, runThreshold, runWeeks, ...counts } = countRows[0]!;
   const open = parsedArray(openJson)
     .flatMap((x) => {
       const o = x as { title?: unknown; date?: unknown; c?: unknown };
@@ -511,6 +516,7 @@ async function read(
     around: draftDate ? await daysAround(db, userId, { tz, units: prefs.units === "mi" ? "mi" : "km", weightUnit: prefs.weightUnit }, today, draftDate) : null,
     focus: focus && focusRows ? { focus, rows: focusRows } : null,
     conversation: conversationTurns,
+    running: runningFactsOf(runThreshold, runWeeks),
   };
 }
 
@@ -1025,6 +1031,8 @@ function proposalLines(id: string, rows: Map<string, Array<Record<string, unknow
       derived?: { estimatedMinutes?: unknown } | null;
       op?: { kind?: unknown; workoutId?: unknown } | null;
       outcome?: { status?: unknown } | null;
+      title?: unknown;
+      summary?: unknown;
     };
     const outcome = OUTCOME_WORDS[String(op.outcome?.status ?? "")] ?? "open";
     if (op.kind === "doc_workout" && typeof op.date === "string") {
@@ -1033,6 +1041,9 @@ function proposalLines(id: string, rows: Map<string, Array<Record<string, unknow
       out.push(`- ${dayWords(op.date, today)}, ${when}: ${coach(String(op.doc?.title ?? ""))}${minutes !== null ? ` (${Math.round(minutes)} min)` : ""} — ${outcome}`);
     } else if (op.kind === "plan_adjust" && op.op) {
       out.push(`- a change to the plan: ${String(op.op.kind ?? "change")} workout ${String(op.op.workoutId ?? "")} — ${outcome}`);
+    } else if (op.kind === "plan_structure" && op.op) {
+      // A whole plan change (§8 §5): its change, its card's words — the coach's own, marked.
+      out.push(`- a plan (${String(op.op.kind ?? "change")}): ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);
     }
   }
   return out;
@@ -1085,6 +1096,8 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
     conditionsSection(r, role).join("\n"),
     [
       `Today's plan: ${todays.length ? `${todays.map((w) => planItem(w, { today: r.today, time })).join("; ")}.` : "nothing planned."}`,
+      // Designed runs (§8 §3): every run carries it — at most RUNNING_LINE_MAX characters, whatever was asked.
+      runningLine(r.running, r.prefs.units === "mi" ? "mi" : "km"),
       events.line,
       scopeLine(role, kind, n, r, time, end),
     ].join("\n"),
