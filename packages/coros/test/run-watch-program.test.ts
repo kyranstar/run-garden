@@ -362,13 +362,13 @@ describe("a renaming rewrite whose read-back throws is verified on its retry; an
     const today = new Date().toISOString().slice(0, 10);
     const day = new Date(`${today}T00:00:00Z`);
     day.setUTCDate(day.getUTCDate() + 10);
-    return { client, today, happenDay: day.toISOString().slice(0, 10).replaceAll("-", "") };
+    return { client, today, server, happenDay: day.toISOString().slice(0, 10).replaceAll("-", "") };
   }
   const easy = (minutes: number): CoachSession => ({ category: "easy", title: "Easy", durationMinutes: minutes, run: { blocks: [{ kind: "duration", value: minutes, intensity: "easy" }] } });
   const four: RunWatchSession = { ...TEMPO, segments: [TEMPO.segments[0]!, { ...TEMPO.segments[1]!, rounds: 4 }, TEMPO.segments[2]!] };
   /** Create `from` under one stamp, then rewrite it to `to` under another, retrying once as the lane does. */
   async function renamed(wrap: Wrap, from: RunWatchSession | CoachSession, to: RunWatchSession | CoachSession) {
-    const { client, today, happenDay } = await on(wrap);
+    const { client, today, happenDay, server } = await on(wrap);
     const name = "Session — created";
     const made = await createWorkout(client, { ...spec(), happenDay, name, session: from } as CreateWorkoutSpec, { today, catalog: new Map(), log: noop });
     expect(made.ok, made.error).toBe(true);
@@ -378,7 +378,7 @@ describe("a renaming rewrite whose read-back throws is verified on its retry; an
         { target: { happenDay, name, idInPlan: made.serverIdInPlan!, programId: made.serverProgramId!, planId: made.serverPlanId! }, session: to, name: "Session — renamed", thresholdPaceSecPerKm: THRESHOLD },
         { catalog: new Map(), today, log: noop },
       );
-    return { rewrite, client, happenDay };
+    return { rewrite, client, happenDay, server };
   }
 
   it("a designed run's rewrite lands, its read-back throws; the retry finds its own new stamp at the address and verifies it", async () => {
@@ -398,6 +398,21 @@ describe("a renaming rewrite whose read-back throws is verified on its retry; an
     const changed = await renamed({ throwReadAfterUpdate: true, change: (p) => void ((p.exercises ?? [])[0]!.exerciseType = 3) }, easy(30), easy(20));
     expect(await changed.rewrite()).toMatchObject({ ok: false, reason: "error" });
     expect(await changed.rewrite()).toMatchObject({ ok: false, reason: "verification_failed" });
+  });
+
+  it("a retry that finds its own new stamp twice in the plan is not verified", async () => {
+    const { rewrite, server } = await renamed({ throwReadAfterUpdate: true }, TEMPO, four);
+    expect(await rewrite()).toMatchObject({ ok: false, reason: "error" });
+    // A second copy under the new stamp, at another address.
+    const plan = server.state.schedule;
+    const landed = plan.programs!.find((p) => p.name === "Session — renamed")!;
+    const entity = plan.entities!.find((e) => String(e.idInPlan) === String(landed.idInPlan))!;
+    const idInPlan = String(Number(landed.idInPlan) + 50);
+    plan.entities!.push({ ...structuredClone(entity), id: `dup-${idInPlan}`, idInPlan, planProgramId: idInPlan });
+    plan.programs!.push({ ...structuredClone(landed), id: `dup-${idInPlan}`, idInPlan });
+    const retried = await rewrite();
+    expect(retried).toMatchObject({ ok: false, reason: "verification_failed" });
+    expect(retried.error).toMatch(/2 workout\(s\) under the new stamp/);
   });
 
   it("an update COROS made an insert — the old stamped copy beside the new — is never verified, renamed or not", async () => {
