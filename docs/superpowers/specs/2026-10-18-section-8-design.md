@@ -32,9 +32,17 @@ The conversation coach becomes the only coach.
    - A distance segment goes as its time at the band's middle pace, and the card says so ("on your watch as 42 min").
    - With no threshold known, the steps carry no pace, and the card says the watch will show time only.
    - This stays inside the wire shape the app already writes and verifies.
-3. **Distance targets and repeat groups on the wire (phase 2)** are built and pinned byte for byte against COROS's own
-   captured programs, behind a switch that is off. They are switched on only after one live check on the owner's
-   account (create on a far date, read back, delete), which needs the owner's explicit yes.
+   - **After review (2026-10-18):**
+     - Recovery steps carry no band, as the thread coach's rests never have, so a walked recovery doesn't nag.
+     - A pace the athlete names is rounded to whole seconds.
+     - A step under 10 s is refused.
+     - A designed run's create and rewrite compare what COROS stored with what was sent. A copy saved differently stays
+       owned and verified (`watch_copy_differs`), and the plan says so in plain words. What remains unverified live is
+       topology and size: recovery steps between work steps, the cool-down and recovery roles, long flat programs and
+       short steps. The first designed run is a supervised check.
+3. **Distance targets and repeat groups on the wire (phase 2)** are **not built in this wave**. They need one live check on
+   the owner's account (create on a far date, read back, delete), which needs the owner's explicit yes; the builder and
+   its off switch come with that check.
 4. **A whole plan's sessions are the thread coach's session specs**, the same shape `createPlan` writes today, not a
    reviewed document per session.
    - **Why:** cost. At about $0.70 per designed workout, a 16-session block would pass the $6 set ceiling.
@@ -99,8 +107,9 @@ The conversation coach becomes the only coach.
   - The create and update job schemas take the union, so the body check's ease and Undo rewrite with the same builder.
   - `watchPushable` and `watchCoverage` learn the shape.
   - "The preview is the wire": the card's steps are built by the same function.
-- **Phase 2 (behind the off switch):** distance steps (`targetType 5`, metres × 100) and repeat groups (`exerciseType 0`,
-  `isGroup`, `sets`), golden-tested against the captured programs. The renormalizing mock learns distance.
+- **Phase 2 (later, with the owner's live check; not built in this wave):** distance steps (`targetType 5`, metres × 100)
+  and repeat groups (`exerciseType 0`, `isGroup`, `sets`), golden-tested against the captured programs. The renormalizing
+  mock learns distance.
 - **UI:**
   - **The suggestion card for a run:** its steps with effort, time or distance and pace in the athlete's units, the
     total time and distance, and "Goes to your watch when you approve" (or "Your watch will show time only").
@@ -145,6 +154,10 @@ The conversation coach becomes the only coach.
     the athlete asked for a plan or a stretch of weeks.
 - **`programme_change`** (last, if the wave has room): one op mapped onto `updateProgram` + `placeSlots` (weekly goal,
   preferred days, length, modes, care) for an adaptive programme. Approved the same way.
+  **Not built in this wave:** `placeSlots` has no statement pin yet, and the approve request already spends most of its
+  45. A programme is changed in its settings until that is measured.
+- **Overlap (after review):** a createPlan that overlaps a running coach block of the same discipline carries an advisory
+  ("Overlaps your 10K build (19 Oct – 15 Nov)"). It never refuses.
 - **Approve:** `design-approve` applies `plan_structure` after plan changes and before workouts, as its own cost
   class, through P's `applyStructuralChunk`, under the existing claim / takeover, answering `remaining` until done.
   The outcome is recorded on the op.
