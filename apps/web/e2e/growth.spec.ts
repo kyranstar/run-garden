@@ -70,8 +70,10 @@ test("Growth: the body map, quests, records and activity; Month / Season; the qu
   await signIn(context.request, baseURL);
   await withNeckFocus(context.request, baseURL, async () => {
     await page.goto("/growth");
-    await expect(page.getByRole("heading", { level: 1, name: "Growth" })).toBeVisible();
-    for (const h of ["Your body", "Quests", "Records", "Activity"]) await expect(page.getByRole("heading", { level: 2, name: h })).toBeVisible();
+    // The first visit to Growth on the fixture stack compiles its module on the dev server: on a CI runner's WebKit that
+    // took over the 5 s default (CI, 2026-10-18), so the first page waits as long as a cold first page needs.
+    await expect(page.getByRole("heading", { level: 1, name: "Growth" })).toBeVisible({ timeout: 20_000 });
+    for (const h of ["Your body", "Quests", "Records", "Activity"]) await expect(page.getByRole("heading", { level: 2, name: h })).toBeVisible({ timeout: 15_000 });
 
     // The figure: every area, its words beside it.
     const figure = page.getByRole("img", { name: /^Body map\./ });
