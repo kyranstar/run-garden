@@ -721,6 +721,35 @@ export interface DesignLineDto {
    * now. Absent where the server doesn't say.
    */
   atNow?: true;
+  /** A designed run (§8 §3): its steps as the watch gets them, its totals, what the watch does on approve. */
+  run?: DesignRunDto;
+}
+
+/** One step of a designed run as the card shows it — the wire's own numbers (metric: seconds, metres, s/km). */
+export interface DesignRunStepDto {
+  role: "warmup" | "work" | "recovery" | "cooldown";
+  /** The document's effort id ("tempo", "by_feel"); null for a standing rest. */
+  effort: string | null;
+  /** Its seconds on the watch — a distance's at its pace's middle; null when a distance can't be timed. */
+  seconds: number | null;
+  /** The distance asked, when it was one. */
+  meters: number | null;
+  pace: { fastSecPerKm: number; slowSecPerKm: number } | null;
+  /** The pace is one the athlete asked for. */
+  asked: boolean;
+  why: string | null;
+}
+
+/**
+ * A designed run's card body (§8 §3): each part's steps once with its rounds, the totals, and what the watch does when
+ * it's approved — `goes` (with pace targets), `time_only` (no threshold known yet), `needs_threshold` (a distance can't
+ * be timed: it stays off the watch), null (COROS writes off: nothing is sent).
+ */
+export interface DesignRunDto {
+  segments: Array<{ rounds: number; restBetweenRoundsSec?: number; steps: DesignRunStepDto[] }>;
+  totalSeconds: number | null;
+  totalMeters: number | null;
+  watch: "goes" | "time_only" | "needs_threshold" | null;
 }
 
 /** A move the coach weighed instead of one in the workout, and why it was the other choice. */
@@ -1316,6 +1345,8 @@ export interface CoachConversationCardDto {
   status: CoachProposalDto["status"] | (string & {});
   /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more". */
   lines?: string[];
+  /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (its line's `run`). */
+  sport?: "run";
 }
 
 /** One turn of the conversation: what the athlete wrote, and the run it started — its status, its line, its cards. */

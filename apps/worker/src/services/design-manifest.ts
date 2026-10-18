@@ -21,13 +21,28 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import { locations, userPreferences } from "@rg/database";
-import { dayLabel, doseSummary, NO_EQUIPMENT_PLACE, userPreferencesSchema, type UserPreferences, type WorkoutItem, type WorkoutPart } from "@rg/domain";
+import {
+  dayLabel,
+  doseSummary,
+  isRunDoc,
+  NO_EQUIPMENT_PLACE,
+  runWatchSessionOf,
+  runWatchSteps,
+  userPreferencesSchema,
+  type RunEffort,
+  type RunStepRole,
+  type UserPreferences,
+  type WorkoutDoc,
+  type WorkoutItem,
+  type WorkoutPart,
+} from "@rg/domain";
 import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type { DesignedOp, DesignedPlanOp, DesignedStructureOp, OpOutcome, PlanOpOutcome, PlanStructureOutcome, Written } from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
+import { runningFactsOf, thresholdSql } from "./designed-runs.js";
 import { REVIEW_DIMENSIONS, RUN_REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
@@ -81,6 +96,8 @@ export interface DocWorkoutLine {
   outcome: OpOutcome | null;
   /** Applied: what the plan holds — the athlete's version and day after an edit or a move. Null otherwise. */
   written: (Written & { summary: string; edited: boolean; moved: boolean }) | null;
+  /** A designed run's steps, totals and what the watch does (§8 §3); absent for any other workout. */
+  run?: RunLine;
 }
 
 /**
@@ -234,11 +251,76 @@ function lineTime(op: DesignedOp, category: string, at: LineClock): { time: stri
 }
 
 /** Each op's line, in the proposal's order, its time read at `at`. */
-export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceNamer, at: LineClock): DocWorkoutLine[] {
+/** What a designed run's line reads of the athlete (§8 §3): their threshold, and whether an approve puts it on the watch. */
+export interface RunLineCtx {
+  thresholdSecPerKm: number | null;
+  corosWritesEnabled: boolean;
+}
+
+/** One step of a designed run, as the card shows it (and the watch gets it). */
+export interface RunLineStep {
+  role: RunStepRole;
+  /** Its effort, the document's own word (`RUN_EFFORT_LABELS` names it); null for a standing rest. */
+  effort: RunEffort | null;
+  /** Its seconds on the watch — a distance's at its pace's middle; null when a distance can't be timed. */
+  seconds: number | null;
+  /** The distance asked, when it was one. */
+  meters: number | null;
+  /** The pace band it carries, or none. */
+  pace: { fastSecPerKm: number; slowSecPerKm: number } | null;
+  /** The band is one the athlete asked for (the coach wrote it), not the threshold's. */
+  asked: boolean;
+  why: string | null;
+}
+
+/**
+ * A DESIGNED RUN as its card shows it (§8 §3): each part's steps once, with its rounds (and its rest between them) —
+ * each step from `runWatchSteps`, the very function the wire builds from (the preview is the wire); its totals; and what
+ * the watch does once it is approved: `goes` (paced), `time_only` (no threshold known: no pace targets), `needs_threshold`
+ * (a distance no pace can time: it stays off the watch), or null when COROS writes are off (an approve sends nothing).
+ */
+export interface RunLine {
+  segments: Array<{ rounds: number; restBetweenRoundsSec?: number; steps: RunLineStep[] }>;
+  totalSeconds: number | null;
+  totalMeters: number | null;
+  watch: "goes" | "time_only" | "needs_threshold" | null;
+}
+
+/** A designed run's line (see `RunLine`), or null for any other workout. */
+export function runLine(doc: WorkoutDoc, ctx: RunLineCtx): RunLine | null {
+  if (!isRunDoc(doc)) return null;
+  const made = runWatchSessionOf(doc);
+  if (!("session" in made)) return null;
+  const whole = runWatchSteps(made.session, ctx.thresholdSecPerKm);
+  const segments = made.session.segments.map((seg, p) => {
+    // Each part's steps once: its rounds are the card's "3 ×", its own steps resolved by the wire's function.
+    const once = runWatchSteps({ segments: [{ rounds: 1, steps: seg.steps }] }, ctx.thresholdSecPerKm).steps;
+    const items = doc.parts[p]?.items ?? [];
+    return {
+      rounds: seg.rounds,
+      ...(seg.restBetweenRoundsSec ? { restBetweenRoundsSec: seg.restBetweenRoundsSec } : {}),
+      steps: once.map((st, i): RunLineStep => ({
+        role: st.role,
+        effort: st.effort ?? null,
+        seconds: st.seconds,
+        meters: st.meters ?? null,
+        pace: st.pace,
+        asked: st.paceFrom === "asked",
+        why: itemWhy(items[i] ?? { kind: "rest", seconds: 1 }),
+      })),
+    };
+  });
+  const watch = !ctx.corosWritesEnabled ? null : whole.unresolved > 0 ? "needs_threshold" : whole.paceOwed > 0 ? "time_only" : "goes";
+  return { segments, totalSeconds: whole.totalSeconds, totalMeters: whole.totalMeters, watch };
+}
+
+export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceNamer, at: LineClock, running: RunLineCtx = { thresholdSecPerKm: null, corosWritesEnabled: false }): DocWorkoutLine[] {
   return ops.map((op) => {
     const doc = op.doc;
     const derived = deriveDoc(doc, EXERCISES);
-    const minutes = derived.estimatedMinutes;
+    const run = runLine(doc, running);
+    // A run's minutes are its steps' on the watch (a distance at its pace), else derived.
+    const minutes = run?.totalSeconds != null ? Math.round(run.totalSeconds / 60) : derived.estimatedMinutes;
     const when = lineTime(op, derived.category, at);
     const items = doc.parts.flatMap((p) => p.items);
     return {
@@ -264,6 +346,7 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
       issues: (op.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
       outcome: op.outcome ?? null,
       written: writtenLine(op.outcome),
+      ...(run ? { run } : {}),
     };
   });
 }
@@ -365,14 +448,14 @@ export async function manifestReads(
   dayRows: SQL = sql`null`,
   /** A set's other sessions in its days (`setContextSql`), in the same statement. */
   context: SQL = sql`null`,
-): Promise<{ placeName: PlaceNamer; prefs: UserPreferences; dayRows: unknown; context: SetContextRow[] | null }> {
+): Promise<{ placeName: PlaceNamer; prefs: UserPreferences; dayRows: unknown; context: SetContextRow[] | null; thresholdSecPerKm: number | null }> {
   const l = locations;
   const [row] = (await db.all(
     sql`select ${defaultPlaceSql(userId)} as fallback,
       (select json_group_array(json_object('id', ${l.id}, 'name', ${l.name})) from ${l} where ${l.userId} = ${userId}) as own,
       (select ${userPreferences.prefs} from ${userPreferences} where ${userPreferences.userId} = ${userId}) as prefs,
-      ${dayRows} as dayRows, ${context} as context`,
-  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown; dayRows: unknown; context: unknown }>;
+      ${dayRows} as dayRows, ${context} as context, ${thresholdSql(userId)} as threshold`,
+  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown; dayRows: unknown; context: unknown; threshold: unknown }>;
   let stored: unknown = {};
   try {
     stored = typeof row?.prefs === "string" ? JSON.parse(row.prefs) : (row?.prefs ?? {});
@@ -396,7 +479,9 @@ export async function manifestReads(
     if (id === NO_EQUIPMENT_PLACE) return noEquipmentPlace().name;
     return LOCATION_PRESETS.find((p) => p.id === id)?.name ?? fallback;
   };
-  return { placeName, prefs, dayRows: row?.dayRows ?? null, context: contextRows(row?.context ?? null) };
+  // A designed run's card reads the athlete's threshold (§8 §3): in this statement, no other.
+  const thresholdSecPerKm = runningFactsOf(row?.threshold ?? null, null).threshold?.secPerKm ?? null;
+  return { placeName, prefs, dayRows: row?.dayRows ?? null, context: contextRows(row?.context ?? null), thresholdSecPerKm };
 }
 
 // ── A set's other sessions (Task 13's fix wave, §2.9; 13d D7) ───────────────────────────────────────────────────────

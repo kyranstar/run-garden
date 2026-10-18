@@ -11797,6 +11797,50 @@ a.stu-tpl-open:focus-visible::before {
 .coach-pc-alt {
   color: var(--ink-soft);
 }
+/* A designed run's steps on its card (§8 §3): each part's label (warm-up, "3 ×", cool-down) beside its steps. */
+.coach-pc-run {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.coach-pc-run-steps,
+.coach-pc-run-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.coach-pc-run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.coach-pc-run-part {
+  display: grid;
+  grid-template-columns: minmax(0, 5.5em) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: baseline;
+}
+.coach-pc-run-label {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.coach-pc-run-items > li + li {
+  margin-top: var(--space-1);
+}
+.coach-pc-run-step {
+  display: block;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.coach-pc-run-watch {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
 /* A set's other session on the plan (D7): a quiet line among the suggested workouts — it says so in words too. */
 .coach-pc-context {
   margin: 0;

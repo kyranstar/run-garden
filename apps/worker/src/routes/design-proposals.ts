@@ -198,7 +198,8 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   const today = clockIn(reads.prefs.timezone, now).date;
   const placed = await placedTimes(userId, proposalId, all, reads.dayRows, { now, today, prefs: reads.prefs });
   return {
-    lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }),
+    // A designed run's card (§8 §3): its steps with the athlete's threshold, and whether an approve sends it to the watch.
+    lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }, { thresholdSecPerKm: reads.thresholdSecPerKm, corosWritesEnabled: reads.prefs.corosWritesEnabled === true }),
     changes: planChangeLines(all),
     ...withPlans,
     ...(reads.context ? { context: reads.context } : {}),

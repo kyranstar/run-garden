@@ -447,6 +447,8 @@ function TurnCards({ cards, latest, today }: { cards: readonly CoachConversation
         if (card.kind === "plan") body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
         else if (!latest && !cardIsOpen(card)) body = <ClosedCard card={card} today={today} part={part} />;
         else if (card.kind === "plan_changes") body = <PlanChangesCard card={card} today={today} />;
+        // A designed run (§8 §3): the workout card, its body the run's steps and its watch line (the line's `run`).
+        else if (card.kind === "workout" && card.sport === "run") body = <ProposalCard proposalId={card.proposalId} today={today} part={part} />;
         else if (card.kind === "workout" || card.kind === "set") body = <ProposalCard proposalId={card.proposalId} today={today} part={part} />;
         // A kind this bundle doesn't know: its one line, its card one tap down.
         else body = <ClosedCard card={card} today={today} />;

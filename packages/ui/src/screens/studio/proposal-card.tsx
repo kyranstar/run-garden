@@ -44,6 +44,8 @@ import { readProposal } from "./coach-tolerance.js";
 import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { appliedChangeLine, dayAndTime, planDayHref, refusedLine, reviewLabel } from "./run-model.js";
 import { useOneTap } from "./use-one-tap.js";
+import { useUnits } from "../../use-units.js";
+import { RunSteps } from "./run-card.js";
 
 /** What became of the suggestion once nothing in it is open (fix wave 3B, M3); while something is, what it is. */
 export function cardHeader(
@@ -501,6 +503,7 @@ function WorkoutItem({
 }) {
   const [open, setOpen] = useState(false);
   const [seeReview, setSeeReview] = useState(false);
+  const units = useUnits();
   const detailId = useId();
   const reviewId = useId();
   const r = line.review;
@@ -537,6 +540,8 @@ function WorkoutItem({
         {/* What it is for, in one line under its title (D1). */}
         {line.intent ? <p className="coach-pc-intent">{line.intent}</p> : null}
         <p className="coach-pc-facts">{facts.join(" · ")}</p>
+        {/* A designed run (§8 §3): its steps on the face, and what the watch does when it is approved. */}
+        {line.run ? <RunSteps run={line.run} units={units} open={open} decided={!isOpen(line.outcome)} /> : null}
         {timePassed ? <p className="coach-pc-outcome coach-pc-time-passed">{line.atNow ? NO_TIME_LEFT_LINE : TIME_PASSED_LINE}</p> : null}
         <OutcomeLine outcome={line.outcome} applied={applied} />
         {/* On the card, no tap: the day's costs (M1, M7). The reviewer's ideas are one tap down, in the review (R5, D2). */}
@@ -556,7 +561,8 @@ function WorkoutItem({
               Start
             </Link>
           ) : null}
-          {editable ? (
+          {/* A run is never opened in the builder (it plays no runs): it is changed through the coach. */}
+          {editable && !line.run ? (
             <Link className="linklike coach-pc-edit tap-pad" to={editDraftHref(proposalId, line.opId)}>
               Edit
             </Link>
@@ -567,9 +573,9 @@ function WorkoutItem({
             </button>
           ) : null}
         </div>
-        <div id={detailId} className="coach-pc-detail" hidden={!open}>
-          {line.parts.length > 0 ? <p className="coach-pc-parts">{line.parts.join(" · ")}</p> : null}
-          {line.detail.length > 0 ? (
+        <div id={detailId} className="coach-pc-detail" hidden={!open || !!line.run}>
+          {line.parts.length > 0 && !line.run ? <p className="coach-pc-parts">{line.parts.join(" · ")}</p> : null}
+          {line.detail.length > 0 && !line.run ? (
             <ul className="coach-pc-moves">
               {line.detail.map((d, i) => (
                 <MoveItem key={i} move={d} why={line.whys?.[i] ?? null} alternates={line.alternates?.[i] ?? []} />

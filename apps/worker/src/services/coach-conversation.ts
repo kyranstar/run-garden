@@ -54,6 +54,8 @@ export interface ConversationCard {
   status: string;
   /** A whole plan's (§8 §5): the thread coach's own manifest lines, at most 8, then "and N more". */
   lines?: string[];
+  /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (the manifest's). */
+  sport?: "run";
 }
 
 export interface ConversationQuestion {
@@ -103,6 +105,8 @@ interface OpBrief {
   row: string | null;
   outcome: string | null;
   reason: string | null;
+  /** A designed workout's derived discipline: a run's card says so (§8 §3). */
+  discipline?: string | null;
   /** A whole plan change's (§8 §5): its card's title and line, and its manifest lines. */
   planTitle?: string | null;
   planSummary?: string | null;
@@ -187,7 +191,7 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'kind', ${op("$.kind")}, 'date', ${op("$.date")}, 'time', ${op("$.time")}, 'atNow', ${op("$.target.atNow")},
           'title', ${op("$.doc.title")}, 'minutes', ${op("$.derived.minutes")}, 'effort', ${op("$.doc.intent.effort")},
           'by', ${op("$.by.role")}, 'change', ${op("$.op.kind")}, 'row', ${op("$.row.title")},
-          'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")},
+          'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")}, 'discipline', ${op("$.derived.discipline")},
           'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} = 'plan_structure' THEN ${op("$.lines")} END)))
         FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
@@ -296,7 +300,13 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
     return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans];
   }
   return [
-    ...workouts.map((w): ConversationCard => ({ kind: "workout", ...base, title: str(w.title) ?? "A workout", summary: workoutSummary(w, today) })),
+    ...workouts.map((w): ConversationCard => ({
+      kind: "workout",
+      ...base,
+      title: str(w.title) ?? "A workout",
+      summary: workoutSummary(w, today),
+      ...(w.discipline === "run" ? { sport: "run" as const } : {}),
+    })),
     ...changesCard(),
     ...plans,
   ];
