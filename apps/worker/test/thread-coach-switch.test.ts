@@ -174,6 +174,13 @@ describe("the thread coach off (production)", () => {
     expect(body.outOfCredits).toBeNull();
   });
 
+  it("GET /state still reads a wake in flight across the switch as thinking — until its lock goes stale", async () => {
+    await db.insert(schema.coachLocks).values({ userId, kind: "wake", token: "t", claimedAt: nowInstant() });
+    expect(((await (await client().get("/api/coach/state")).json()) as State).coachThinking).toBe(true);
+    await db.update(schema.coachLocks).set({ claimedAt: new Date(Date.now() - 6 * 60_000).toISOString() });
+    expect(((await (await client().get("/api/coach/state")).json()) as State).coachThinking).toBe(false);
+  });
+
   it("GET /state costs 11 statements with the sign-in, and writes nothing on a quiet account", async () => {
     await client().get("/api/coach/state");
     expect(statements.filter(isWrite)).toEqual([]);
@@ -207,6 +214,8 @@ describe("the thread coach off (production)", () => {
       ["user", "Extend \"Fall Half\" — draft the next weeks in the same shape."],
       ["receipt", STEPPED_BACK],
     ]);
+    // The receipt strictly after the words, so every read of the thread (newest first, oldest first) orders them so.
+    expect(thread[1]!.at > thread[0]!.at).toBe(true);
     expect(await triggerRows()).toEqual([]);
     expect(fetchSpy).not.toHaveBeenCalled();
 

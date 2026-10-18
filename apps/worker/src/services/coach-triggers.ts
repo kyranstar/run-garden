@@ -31,13 +31,13 @@ export type CoachTriggerKind =
   | "notable_read"
   | "unanswered_message";
 
-const REFIRE_WINDOW_MS = 72 * 3600 * 1000;
+export const REFIRE_WINDOW_MS = 72 * 3600 * 1000;
 const SLEEP_DEFICIT_HOURS = 6;
 const HRV_Z_THRESHOLD = -1;
-const FIRM_HORIZON_DAYS = 14;
-const PLAN_ENDING_DAYS = 21;
+export const FIRM_HORIZON_DAYS = 14;
+export const PLAN_ENDING_DAYS = 21;
 const RACE_WINDOW_DAYS = 14;
-const COMEBACK_GAP_DAYS = 7;
+export const COMEBACK_GAP_DAYS = 7;
 
 export interface PendingTrigger {
   id: string;

@@ -23,6 +23,7 @@ import { studioRoutes } from "./routes/studio.js";
 import { coachRoutes, sweepUserProposals } from "./routes/coach.js";
 import { coachRunRoutes } from "./routes/coach-runs.js";
 import { coachConversationRoutes } from "./routes/coach-conversation.js";
+import { coachNudgesRoutes } from "./routes/coach-nudges.js";
 import { coachPreferenceRoutes } from "./routes/coach-preferences.js";
 import { corosRoutes } from "./routes/coros.js";
 import { syncRoutes } from "./routes/sync.js";
@@ -96,6 +97,8 @@ app.route("/api/garden", gardenRoutes);
 app.route("/api/coach/runs", coachRunRoutes);
 // The coach, a conversation (the new shape §5): the same switch and sign-in as the runs, ahead of /api/coach.
 app.route("/api/coach/conversation", coachConversationRoutes);
+// The coach's "needs you" chips (§8 §6): ahead of /api/coach, like the conversation.
+app.route("/api/coach/nudges", coachNudgesRoutes);
 // Settings → Coach: the same switch and sign-in as the runs, ahead of /api/coach for the same reason.
 app.route("/api/coach/preferences", coachPreferenceRoutes);
 app.route("/api/coach", coachRoutes);
