@@ -441,6 +441,9 @@ describe("I4 — Extend, Wind down and a new plan go to the thread coach", () =>
           ),
         ),
       );
+    // The thread coach already thinking (asked from elsewhere): they wait from the start.
+    draw(true);
+    expect(button("Extend")!.disabled && button("Wind down")!.disabled).toBe(true);
     draw(false);
     await act(async () => button("Extend")!.click());
     await act(async () => button("Extend")!.click());
@@ -490,6 +493,8 @@ describe("minors — the last wake's lost work reaches the Plan", () => {
     });
     // A receipt is not its words; nothing said yet, or nothing asked: none.
     expect(replyOf([asked, m("2", "receipt", "1 change made.")])).toBeNull();
+    // A newer request not yet answered: the older answer is not its reply.
+    expect(replyOf([asked, m("2", "coach", "Two more weeks fit."), m("3", "user", "Wind down instead")])).toBeNull();
     expect(replyOf([m("1", "coach", "An older word."), m("2", "user", "Wind down please")])).toBeNull();
     expect(replyOf([m("1", "coach", "A word with nothing asked.")])).toBeNull();
     expect(replyOf([])).toBeNull();
