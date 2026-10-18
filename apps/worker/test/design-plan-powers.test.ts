@@ -97,17 +97,32 @@ async function proposalOf(id: string) {
 const planOps = async (id: string) => (await proposalOf(id))!.ops.filter((o): o is DesignedPlanOp => o.kind === "plan_adjust");
 const rowOf = async (id: string) => (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0]!;
 
-/** A planned session of the athlete's: a watch-plan run unless said otherwise. */
-async function planned(o: { date: string; category?: string; origin?: string | null; title?: string; minutes?: number; meters?: number; state?: string; sport?: string }): Promise<string> {
+/** A planned session of the athlete's: a watch-plan run unless said otherwise — on the watch (COROS holds it as the import
+ * last saw it, `synced`) unless `sync` says otherwise; `distanceStage`: the plan prescribes it by one distance stage. */
+async function planned(o: {
+  date: string;
+  category?: string;
+  origin?: string | null;
+  title?: string;
+  minutes?: number;
+  meters?: number;
+  state?: string;
+  sport?: string;
+  sync?: string;
+  distanceStage?: boolean;
+}): Promise<string> {
   const id = `pw-${newId().slice(0, 10)}`;
   await db.insert(plannedWorkouts).values({
     id, userId: rich.userId, planId: "coros-plan", sourceWorkoutId: id, title: o.title ?? "Tempo run", category: o.category ?? "quality",
     sport: o.sport ?? "run", originalPlanDate: o.date, lastVerifiedCorosDate: o.date, effectiveDate: o.date, effectiveTime: "18:00",
     sourceContentFingerprint: "fp", sourceEstimatedDurationSeconds: (o.minutes ?? 50) * 60, calendarBlockDurationSeconds: (o.minutes ?? 50) * 60,
-    expectedDistanceMeters: o.meters ?? null, completionState: o.state ?? "scheduled", origin: o.origin ?? null,
+    expectedDistanceMeters: o.meters ?? null, completionState: o.state ?? "scheduled", origin: o.origin ?? null, corosSyncState: o.sync ?? "synced",
     ...(o.state === "skipped" ? { resolutionDate: TODAY, sanctionedBy: "coach" } : {}),
     createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
   });
+  if (o.distanceStage) {
+    await db.insert(schema.plannedWorkoutStages).values({ id: `${id}-s1`, workoutId: id, parentStageId: null, ord: 0, kind: "work", durationType: "distance", distanceMeters: o.meters ?? 10_000 });
+  }
   return id;
 }
 const programmeSession = async (): Promise<string> => {
@@ -134,8 +149,9 @@ async function approve(id: string, opIds?: string[]) {
 }
 
 describe("adjust_plan: ease, swap, remove and restore, into the run's one proposal", () => {
-  it("eases a watch-plan run: the thread coach's ease, an easy run at about 70% of its length — two statements", async () => {
-    const run = await planned({ date: day(-1), minutes: 50, meters: 10_000 });
+  it("eases a run on the watch by TIME — the wire carries no distance — an easy run at about 70% of its length: two statements", async () => {
+    // Prescribed by distance, and on the watch: its time, eased (the owner's ruling; the body check's own `easedRun`).
+    const run = await planned({ date: day(-1), minutes: 50, meters: 10_000, distanceStage: true });
     const r = await mainRun();
     const { res, count } = await adjust(r, change(run, { kind: "ease" }));
     expect(count).toBe(2);
@@ -146,14 +162,41 @@ describe("adjust_plan: ease, swap, remove and restore, into the run's one propos
     expect(op!.op).toEqual({
       kind: "ease",
       workoutId: run,
-      session: { category: "easy", title: "Easy run", durationMinutes: 35, run: { blocks: [{ kind: "distance", value: 7_000, intensity: "easy" }] } },
+      session: { category: "easy", title: "Easy run", durationMinutes: 35, run: { blocks: [{ kind: "duration", value: 35, intensity: "easy" }] } },
     });
     expect(EASE_SHARE).toBe(0.7);
-    // A length or a distance asked for is the length or distance.
+    // A length asked for is the length; a distance asked for is that distance's time at the run's own pace (10 km in 50
+    // minutes: 5 km is 25 minutes).
     const asked = await planned({ date: day(-3), minutes: 60 });
     ok((await adjust(r, change(asked, { kind: "ease", durationMinutes: 30 }))).res);
+    const sessionOf = async (id: string) => ((await planOps(designProposalId(r.id))).find((o) => o.op.workoutId === id)!.op as { session: unknown }).session;
+    expect(await sessionOf(asked)).toEqual({ category: "easy", title: "Easy run", durationMinutes: 30, run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] } });
+    const byKm = await planned({ date: day(-4), minutes: 50, meters: 10_000, distanceStage: true });
+    ok((await adjust(r, change(byKm, { kind: "ease", distanceKm: 5 }))).res);
+    expect(await sessionOf(byKm)).toEqual({ category: "easy", title: "Easy run", durationMinutes: 25, run: { blocks: [{ kind: "duration", value: 25, intensity: "easy" }] } });
+  });
+
+  it("eases a run off the watch by its distance when the plan prescribes it so — or by the distance asked for", async () => {
+    const run = await planned({ date: day(-1), minutes: 50, meters: 10_000, distanceStage: true, sync: "calendar_only" });
+    const r = await mainRun();
+    ok((await adjust(r, change(run, { kind: "ease" }))).res);
+    const [op] = await planOps(designProposalId(r.id));
+    expect((op!.op as { session: unknown }).session).toEqual({ category: "easy", title: "Easy run", durationMinutes: 35, run: { blocks: [{ kind: "distance", value: 7_000, intensity: "easy" }] } });
+    const asked = await planned({ date: day(-3), minutes: 50, meters: 10_000, sync: "calendar_only" });
+    ok((await adjust(r, change(asked, { kind: "ease", distanceKm: 6 }))).res);
     const eased = (await planOps(designProposalId(r.id))).find((o) => o.op.workoutId === asked)!;
-    expect((eased.op as { session: unknown }).session).toEqual({ category: "easy", title: "Easy run", durationMinutes: 30, run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] } });
+    expect((eased.op as { session: { run: unknown } }).session.run).toEqual({ blocks: [{ kind: "distance", value: 6_000, intensity: "easy" }] });
+  });
+
+  it("a swap never lengthens the session: a length past the original's is capped at it", async () => {
+    const run = await planned({ date: day(-1), minutes: 40 });
+    const r = await mainRun();
+    ok((await adjust(r, change(run, { kind: "swap", to: "easy", durationMinutes: 70 }))).res);
+    const [op] = await planOps(designProposalId(r.id));
+    expect((op!.op as { session: { durationMinutes: number; run: unknown } }).session).toMatchObject({
+      durationMinutes: 40,
+      run: { blocks: [{ kind: "duration", value: 40, intensity: "easy" }] },
+    });
   });
 
   it("swaps a day's run for an easier kind: an easy or a recovery run, through the same applier", async () => {
@@ -332,8 +375,9 @@ describe("approve, op by op, through the thread coach's appliers", () => {
       expect(res.status).toBe("approved");
       return statements.length - 3;
     };
-    // A run COROS holds, the import's own fingerprint on it: the ease's rewrite is queued (the second proof).
-    const imported = await planned({ date: day(-1) });
+    // A run COROS holds, the import's own fingerprint on it, prescribed by distance: the ease's rewrite is queued (the
+    // second proof) — by time, so the watch is rewritten, never emptied, and holds what the plan now says.
+    const imported = await planned({ date: day(-1), minutes: 50, meters: 10_000, distanceStage: true });
     await db
       .update(plannedWorkouts)
       .set({ sourceWorkoutId: "123:45", sourceIdInPlan: "7", sourceProgramId: "999", lastVerifiedCorosDate: day(-1), sourceContentFingerprint: "0123456789abcdef" })
@@ -341,6 +385,10 @@ describe("approve, op by op, through the thread coach's appliers", () => {
     const eased = await measure(change(imported, { kind: "ease" }));
     const jobs = await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.workoutId, imported));
     expect(jobs.map((j) => j.kind)).toEqual(["coach_update_workout"]);
+    const wire = (jobs[0]!.payload as { session: { durationMinutes: number; run: { blocks: Array<{ kind: string; value: number }> } } }).session;
+    expect(wire.run.blocks).toEqual([{ kind: "duration", value: 35, intensity: "easy" }]);
+    const row = await rowOf(imported);
+    expect([row.calendarBlockDurationSeconds, row.expectedDistanceMeters]).toEqual([wire.durationMinutes * 60, null]);
     // A session the app put on the watch, its create verified: the remove queues its unpush.
     const pushed = await planned({ date: day(-4) });
     await db

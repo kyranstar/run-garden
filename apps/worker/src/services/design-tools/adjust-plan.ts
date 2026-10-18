@@ -6,9 +6,10 @@
  * workout it makes way for go to the athlete together — one proposal, one approval.
  *
  * THE COACH'S REACH (the new shape §5): beside skip, move and a length, the thread coach's proven single-session changes,
- * each through its own applier: EASE (a watch-plan run made easy and shorter — the length or distance asked for, else
- * EASE_SHARE of its own — the thread coach's `ease` carrying the eased session), SWAP (a run for an easier kind: an easy or
- * a recovery run, the same `ease`, its op marked `verb: "swap"`), REMOVE (off the plan entirely, the athlete's own
+ * each through its own applier: EASE (a watch-plan run made easy and shorter — the length asked for, else the body
+ * check's own `easedRun`: EASE_SHARE of it — by TIME when the run is on the watch (`runOnWatch`: the wire carries no
+ * distance), by distance only off it; the thread coach's `ease` carrying the eased session), SWAP (a run for an easier
+ * kind: an easy or a recovery run, never longer than it, the same `ease`, its op marked `verb: "swap"`), REMOVE (off the plan entirely, the athlete's own
  * remove: not rest) and RESTORE (a skipped session still to come put back, the athlete's own un-skip). A session its
  * build decides is never eased, swapped or removed (a programme session is skipped or moved: `programme_session`; a Studio
  * or template workout revised: `revise_instead`), a race stays (`race_day`), an ease or a swap is a run's and easier
@@ -53,9 +54,10 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals, corosWriteJobs, plannedWorkouts, programs } from "@rg/database";
+import { accountState, coachProposals, corosWriteJobs, plannedWorkouts, plannedWorkoutStages, programs } from "@rg/database";
 import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle } from "@rg/domain";
 import type { ConditionProfile } from "@rg/exercise-library";
+import { easedRun, runOnWatch } from "../body-check.js";
 import { NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
 import { horizonDays } from "../design-context.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
@@ -128,6 +130,10 @@ interface Row {
   sport?: string | null;
   meters?: number | null;
   pushed?: number | null;
+  /** An ease's too (`easedRun`): its calendar block, whether COROS holds it as the import saw it, and its stages. */
+  blockSec?: number | null;
+  sync?: string | null;
+  stages?: unknown;
 }
 
 const minutesOf = (r: Row): number | null => {
@@ -287,22 +293,55 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
  */
 function coachOpOf(c: z.output<typeof change>, row: Row, workoutId: string): PlanChange {
   if (c.kind !== "ease" && c.kind !== "swap") return coachOpSchema.parse({ ...c, workoutId }) as PlanChange;
-  const category = c.kind === "swap" ? c.to : row.category === "long" || row.category === "recovery" ? row.category : "easy";
+  const op = (session: Record<string, unknown>) => coachOpSchema.parse({ kind: "ease", workoutId, session }) as PlanChange;
+  const timed = (category: string, title: string, minutes: number) => ({
+    category,
+    title,
+    durationMinutes: minutes,
+    run: { blocks: [{ kind: "duration", value: minutes, intensity: "easy" }] },
+  });
   const now = minutesOf(row);
-  const minutes = c.durationMinutes ?? Math.max(MINUTES.min, Math.round((now ?? MINUTES.min) * EASE_SHARE));
-  // An ease with no length asked for keeps its distance's measure: about EASE_SHARE of it, to the 100 m.
-  const meters =
-    c.kind === "ease" && c.distanceKm !== undefined
-      ? Math.round(c.distanceKm * 1000)
-      : c.kind === "ease" && c.durationMinutes === undefined && row.meters
-        ? Math.round((row.meters * EASE_SHARE) / 100) * 100
-        : null;
-  const block = meters !== null ? { kind: "distance", value: meters, intensity: "easy" } : { kind: "duration", value: minutes, intensity: "easy" };
-  return coachOpSchema.parse({
-    kind: "ease",
-    workoutId,
-    session: { category, title: RUN_TITLE[category] ?? "Easy run", durationMinutes: minutes, run: { blocks: [block] } },
-  }) as PlanChange;
+  // A swap never lengthens the session it replaces: its length is capped at the original's.
+  if (c.kind === "swap") return op(timed(c.to, RUN_TITLE[c.to] ?? "Easy run", now !== null ? Math.min(c.durationMinutes, now) : c.durationMinutes));
+  // The ease is the body check's own (`easedRun`, one rule): about 70% of the run, its kind kept or made easy — by TIME
+  // when the run is on the watch (the wire carries no distance: a distance block would leave the watch holding the old
+  // run, or take it off), by its distance when off the watch and the plan prescribes it so.
+  const onWatch = runOnWatch({ sourceWorkoutId: row.swid ?? "", sourceIdInPlan: row.sidp, sourceProgramId: row.spid, lastVerifiedCorosDate: row.lvd ?? "", corosSyncState: row.sync ?? "" });
+  const eased = easedRun(
+    {
+      title: row.title,
+      category: row.category,
+      qualitySubtype: row.subtype,
+      sourceEstimatedDurationSeconds: row.sourceSec,
+      fallbackEstimatedDurationSeconds: row.fallbackSec,
+      calendarBlockDurationSeconds: row.blockSec ?? (now ?? MINUTES.min) * 60,
+      expectedDistanceMeters: row.meters ?? null,
+    },
+    parsedStages(row.stages),
+    onWatch,
+  );
+  const category = eased?.session.category ?? (row.category === "long" || row.category === "recovery" ? row.category : "easy");
+  const title = eased?.session.title ?? RUN_TITLE[category] ?? "Easy run";
+  if (c.durationMinutes !== undefined) return op(timed(category, title, c.durationMinutes));
+  if (c.distanceKm !== undefined) {
+    // The distance asked for, at the run's own pace: its time on the watch, its distance off it.
+    const pace = now !== null && row.meters ? (now * 60) / row.meters : null;
+    const minutes = pace !== null ? Math.max(MINUTES.min, Math.round((c.distanceKm * 1000 * pace) / 60)) : (eased?.session.durationMinutes ?? MINUTES.min);
+    if (onWatch) return op(timed(category, title, minutes));
+    return op({ category, title, durationMinutes: minutes, run: { blocks: [{ kind: "distance", value: Math.round(c.distanceKm * 1000), intensity: "easy" }] } });
+  }
+  return eased ? op(eased.session) : op(timed(category, title, Math.max(MINUTES.min, Math.round((now ?? MINUTES.min) * EASE_SHARE))));
+}
+
+/** A row's stages as the read gives them (JSON): what `easedRun` reads of them. */
+function parsedStages(raw: unknown): Array<{ id: string; parentStageId: string | null; durationType: string }> {
+  const list = typeof raw === "string" ? (parsedJson(raw) as unknown) : raw;
+  return (Array.isArray(list) ? list : []).flatMap((s) => {
+    const x = s as { id?: unknown; parentStageId?: unknown; durationType?: unknown } | null;
+    return typeof x?.id === "string" && typeof x.durationType === "string"
+      ? [{ id: x.id, parentStageId: typeof x.parentStageId === "string" ? x.parentStageId : null, durationType: x.durationType }]
+      : [];
+  });
 }
 
 /** The rolling week's sanctioned rest, as a result counts it. */
@@ -369,14 +408,14 @@ export const adjustPlan: DesignTool = {
           },
           {
             type: "object",
-            description: "A watch-plan run made easy and shorter: the length or distance given, else about 70% of it.",
+            description: "A watch-plan run made easy and shorter: the length given, else about 70% of it — by time on the watch (a distance given is its time at the run's pace).",
             properties: { kind: { const: "ease" }, durationMinutes: { type: "integer", minimum: MINUTES.min, maximum: MINUTES.max }, distanceKm: { type: "number" } },
             required: ["kind"],
             additionalProperties: false,
           },
           {
             type: "object",
-            description: "A watch-plan run swapped for an easier kind of run.",
+            description: "A watch-plan run swapped for an easier kind of run, never longer than it.",
             properties: { kind: { const: "swap" }, to: { enum: [...SWAP_TO] }, durationMinutes: { type: "integer", minimum: MINUTES.min, maximum: MINUTES.max } },
             required: ["kind", "to", "durationMinutes"],
             additionalProperties: false,
@@ -415,7 +454,9 @@ export const adjustPlan: DesignTool = {
           'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState},
           'archived', ${pw.archivedAt}, 'sourceSec', ${pw.sourceEstimatedDurationSeconds}, 'fallbackSec', ${pw.fallbackEstimatedDurationSeconds},
           'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate},
-          'sport', ${pw.sport}, 'meters', ${pw.expectedDistanceMeters},
+          'sport', ${pw.sport}, 'meters', ${pw.expectedDistanceMeters}, 'blockSec', ${pw.calendarBlockDurationSeconds}, 'sync', ${pw.corosSyncState},
+          'stages', (select json_group_array(json_object('id', st.id, 'parentStageId', st.parent_stage_id, 'durationType', st.duration_type))
+            from ${plannedWorkoutStages} st where st.workout_id = ${pw.id}),
           'pushed', exists(select 1 from ${corosWriteJobs} j where j.id = ${pw.id} || '-push' and j.user_id = ${ctx.userId}),
           'care', (select case when json_valid(${programs.config}) then json_extract(${programs.config}, '$.careProfiles') end
             from ${programs} where ${programs.id} = ${pw.planId} and ${programs.userId} = ${ctx.userId}))

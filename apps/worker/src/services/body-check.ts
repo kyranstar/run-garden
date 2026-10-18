@@ -559,6 +559,14 @@ async function runOf(db: Db, userId: string, workoutId: string): Promise<{ row: 
   return { row: row.row, stages, claimed: Boolean(row.claimed) };
 }
 
+/** A run on the watch — at an address the app can write to, or held by COROS as the import last saw it (`synced`) —
+ * eases by time (the lead's ruling): `easedRun`'s `onWatch`, the body check's and the coach's adjust_plan's one rule. */
+export function runOnWatch(
+  row: Pick<typeof plannedWorkouts.$inferSelect, "sourceWorkoutId" | "sourceIdInPlan" | "sourceProgramId" | "lastVerifiedCorosDate" | "corosSyncState">,
+): boolean {
+  return watchAddressOf(row) !== null || row.corosSyncState === "synced";
+}
+
 /**
  * The run eased: its distance × 0.7 (to the 100 m) when the plan prescribes it by distance — every stage a distance —
  * and the run is not on the watch; else its time × 0.7 (to the minute), one block held easy. A run ON THE WATCH always
@@ -690,7 +698,7 @@ async function easeRun(db: Db, userId: string, s: Subject, answer: Answer, recor
     ease = prior;
   } else {
     // On the watch: at an address the app can write to, or COROS holds it as the import last saw (`synced`).
-    const onWatch = watchAddressOf(run.row) !== null || run.row.corosSyncState === "synced";
+    const onWatch = runOnWatch(run.row);
     const plan = easedRun(run.row, run.stages, onWatch);
     if (!plan) return { record: { change: { kind: "ask" }, ease: record?.ease ?? null }, coachDrain: false };
     ease = { kind: "run", state: "easing", at: ctx.now, session: plan.session, to: plan.to, before: { columns: pick(run.row), doc: run.row.workoutDoc, stages: run.stages, claimed: run.claimed } };
