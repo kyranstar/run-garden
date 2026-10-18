@@ -138,5 +138,7 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // prefix's growth is coach-shape-pins.test.ts's to hold.
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(5660);
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(1300);
+    // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
+    expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);
   });
 });

@@ -136,6 +136,8 @@ export interface DesignRun {
    * app with every text in it that came from a model or the athlete already marked — placed in the header as it is.
    */
   packet?: string | null;
+  /** A reviewer of a run's draft (designed runs, §8 §3): its role block holds the run rubric. */
+  rubric?: "run" | null;
   /** What the athlete was looking at when they asked (coach everywhere, A1; design-focus.ts): read for a main run only
    * — a sub-run's is never read. */
   focus?: RunFocus | null;
@@ -1134,7 +1136,7 @@ export async function buildDesignContext(db: Db, _env: Env, userId: string, run:
   return {
     system: [
       { type: "text", text: SHARED_PROMPT, cache_control: EPHEMERAL },
-      { type: "text", text: roleBlock(role, RUN_LIMITS[role].maxCalls) },
+      { type: "text", text: roleBlock(role, RUN_LIMITS[role].maxCalls, role === "reviewer" && run.rubric === "run" ? "run" : "workout") },
       { type: "text", text: profileBlock(r), cache_control: EPHEMERAL },
       { type: "text", text: memoryBlock(r) },
     ],

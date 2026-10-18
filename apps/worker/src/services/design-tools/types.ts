@@ -261,6 +261,8 @@ export interface ReviewOf {
   designerRunId: string;
   toolUseId: string;
   round: number;
+  /** A run's draft (designed runs, §8 §3): the reviewer's block holds the run rubric. Absent: the workout rubric. */
+  rubric?: "run";
 }
 
 /** A teachable error: the model sees all three and can correct itself. */

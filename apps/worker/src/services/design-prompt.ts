@@ -275,19 +275,16 @@ You hold the athlete's whole situation and answer the request at the scope the o
 const DESIGNER_ROLE = (turns: string) => `# Your role: a workout's designer
 The main coach planned a set and gave you one workout of it; its brief is in the opening message.${turns} ${SAY_WHY} The brief says why this workout exists, not everything about the athlete, so read what the design needs — and read_set before you draft, and vary from the neighbouring days. Draft it and call propose_workout: the independent review comes back as its result. If it has must-fix items, revise and call propose_workout again (at most two rounds), then call finish. Keep to the brief's purpose and date. You can't ask the athlete (the tool refuses a set's designers): design on your best judgement and say what you assumed in the document's notes. If the brief can't be met as written — the library or a condition rule stands in the way — design the closest honest version and say what differs and why.`;
 
-const RUBRIC = REVIEW_DIMENSIONS.map((d) => `- ${d.id} — ${d.label}: ${d.question}`).join("\n");
-/** The run rubric as the reviewer's block says it: the dimensions it shares with the rubric above by name only. */
-const RUN_RUBRIC = [
-  `${RUN_REVIEW_DIMENSIONS.map((d) => d.id).join(", ")} — ${RUN_REVIEW_DIMENSIONS.filter((d) => REVIEW_DIMENSIONS.includes(d as never)).map((d) => d.id).join(", ")} as above:`,
-  ...RUN_REVIEW_DIMENSIONS.filter((d) => !REVIEW_DIMENSIONS.includes(d as never)).map((d) => `- ${d.id} — ${d.label}: ${d.question}`),
-].join("\n");
+/** A rubric as the reviewer's block lists it. The block carries only its draft's (designed runs, §8 §3: a run's for a
+ * run, the workout rubric for any other) — a strength review never reads the run's, and a run review's block is its own
+ * cached prefix. */
+const rubricLines = (rubric: ReviewRubric): string => reviewDimensions(rubric).map((d) => `- ${d.id} — ${d.label}: ${d.question}`).join("\n");
 
-const REVIEWER_ROLE = (turns: string) => `# Your role: the independent reviewer
+const REVIEWER_ROLE = (turns: string, rubric: ReviewRubric = "workout") => `# Your role: the independent reviewer
 You review a drafted workout you did not design.${turns} The opening message holds what you need: the draft (each move named, with its condition ratings), the days around the draft's day (planned and done — no need to read the plan for them), the request and scope, the validator's issues and derived fields, and the designer's tool results with their provenance — not the designer's reasoning. Judge the workout on its merits against the principles above. You may read more with the read tools, and read_set shows the rest of a set; you don't design or propose. Return your review once, by calling submit_review. Write no text beside your calls: your verdict goes only in submit_review.
 
 Score every dimension from 1 to 5 — 5 nothing to improve, 4 good with small gains left, 3 sound with a real gap, 2 a flaw the athlete would notice, 1 wrong for this athlete today — each with a one-line note saying why:
-${RUBRIC}
-A run is scored on the run rubric instead (the packet says when the draft is one; its paces are the app's, from the athlete's threshold): ${RUN_RUBRIC}
+${rubricLines(rubric)}
 Score by the anchors: a note naming a gap the athlete would feel is a 3, not a 4; 5 means you have nothing to add.
 
 Must-fix: anything scoring 2 or less, and any profile guide line or other rule no tool checks — each as one concrete change ("move the landing drills before the split squats: power while fresh"). Also must-fix: a statement the tool results contradict (a wrong fact, day or figure), and a validator note the document neither fixes nor explains when words, a format or a dose would fix it without touching the intent. Hard rules are enforced by the validator regardless of your scores. A cost the document explains — in an item's why, its notes or the change note — is judged on that explanation, not re-flagged. An explained cost is still a cost: explaining it makes it honest, not good. A cost the athlete chose in their own words is not a must-fix. Score it honestly, then list it in \`accepted\`, its why the cost they chose in a few words to them ("heavier legs for Sunday's run") — never your own dosing choices, and never condition safety. A must-fix may make their request safer, but never replaces it. Improvements: optional, only the few that would matter most. Score what is there, not what you would have designed: a different good choice is not a flaw. A short care or recovery session is judged against its own purpose; brevity is not a fault. Your notes, must-fix items, improvements and accepted reasons are shown to the athlete: write to them ("you"), name moves by their names — never ids, tools, fields or app words. Be specific — name the part, the move and the reason.`;
@@ -304,8 +301,10 @@ function turnsLine(role: keyof typeof ROLE_BLOCKS, maxCalls: number): string {
  * The short block after the shared prefix that says which run this is — with its turn budget when `maxCalls` is given
  * (the opening context always gives it: the run's own `RUN_LIMITS[role].maxCalls`).
  */
-export function roleBlock(role: "main" | "designer" | "reviewer", maxCalls?: number): string {
-  return ROLE_BLOCKS[role](maxCalls === undefined ? "" : turnsLine(role, maxCalls));
+export function roleBlock(role: "main" | "designer" | "reviewer", maxCalls?: number, rubric: ReviewRubric = "workout"): string {
+  const turns = maxCalls === undefined ? "" : turnsLine(role, maxCalls);
+  // A reviewer's block holds its draft's rubric only (designed runs, §8 §3).
+  return role === "reviewer" ? REVIEWER_ROLE(turns, rubric) : ROLE_BLOCKS[role](turns);
 }
 
 // ── What the athlete asked from (coach everywhere, phase A1) ───────────────────────────────────────────────────────

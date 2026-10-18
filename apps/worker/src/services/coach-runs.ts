@@ -57,6 +57,7 @@ import {
   promoteWithWhatItHas,
   resumeAfterReview,
   reviewPacket,
+  reviewRubricOf,
   STOPPED_NOTES,
   stoppedNote,
   toolRecords,
@@ -652,6 +653,8 @@ export interface ContextRun {
   brief?: string;
   /** A reviewer's packet: composed by the app (design-review.ts), its outside texts already marked. */
   packet?: string;
+  /** A reviewer of a run's draft (designed runs, §8 §3): its block holds the run rubric. */
+  rubric?: "run";
   /** A main run's focus (A1): what the athlete asked from, read into its opening context. */
   focus?: RunFocus;
   /** A main run's conversation (the new shape §5): its turns before this one are read into its opening context — none
@@ -2473,6 +2476,7 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     parentId: s.run.parentId,
     ...(s.state.brief ? { brief: s.state.brief } : {}),
     ...(s.state.packet ? { packet: s.state.packet } : {}),
+    ...(s.state.reviewOf?.rubric === "run" ? { rubric: "run" as const } : {}),
     // What the athlete asked from (A1): only a main run's state holds one (`newRunState`), and the context reads a main
     // run's alone.
     ...(s.state.settings.focus ? { focus: s.state.settings.focus } : {}),
@@ -3148,7 +3152,14 @@ function reviewHooks(s: StepCtx): ReviewHooks {
         window: rootSettings.window ?? state.settings.window,
         toldAt: state.toldAt,
         packet,
-        reviewOf: { proposalId: req.proposalId, designerRunId: run.id, toolUseId: req.toolUseId, round: req.round },
+        reviewOf: {
+          proposalId: req.proposalId,
+          designerRunId: run.id,
+          toolUseId: req.toolUseId,
+          round: req.round,
+          // A run's draft is reviewed on the run rubric (designed runs, §8 §3).
+          ...(reviewRubricOf(req.draft.doc) === "run" ? { rubric: "run" as const } : {}),
+        },
       });
       // A set's designer's reviewer: its lines carry the workout's day and the draft's title (B-I7).
       if (state.day) Object.assign(reviewerState, { day: state.day, title: req.draft.doc.title, ...(state.key ? { key: state.key } : {}) });
