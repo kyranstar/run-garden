@@ -475,6 +475,37 @@ describe("applyStructuralChunk: what it writes", () => {
     });
   }
 
+  it("every call moves on, whatever its budget: a budget of 1 still ends, its first unit run each time", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 5));
+    await pushed(w, ["cw-seed-0-0"]);
+    const created = await applyAll(w, "p1", { kind: "createPlan", discipline: "run", name: "Tiny", startDate: w.monday, endDate: addDays(w.monday, 6), firmSessions: sessionsFrom(w.monday, 3), shapeWeeks: [] }, 1);
+    expect(created.at(-1)!.result.status).toBe("done");
+    const retired = await applyAll(w, "p2", { kind: "retirePlan", planId }, 1);
+    expect(retired.at(-1)!.result.status).toBe("done");
+    for (const call of [...created, ...retired]) expect(call.result.spent).toBeGreaterThan(0);
+  });
+
+  it("an archived session's queued watch writes are settled, never left to put it on the watch", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 9));
+    const queued = (await planState(w)).jobs.filter((j) => j.status === "queued").map((j) => j.id);
+    expect(queued.length).toBeGreaterThan(0);
+    await applyAll(w, "p1", { kind: "retirePlan", planId }, 10);
+    const { jobs } = await planState(w);
+    expect(jobs.filter((j) => queued.includes(j.id)).map((j) => j.status)).toEqual(queued.map(() => "superseded"));
+  });
+
+  it("extending moves the plan's end to its last new week's Sunday, and never earlier", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 3));
+    const last = addDays(w.monday, 7 * 8);
+    await applyAll(w, "p1", { kind: "extendPlan", planId, shapeWeeks: [{ weekStart: last, volumeTarget: "x", keySessions: [] }] }, 10);
+    expect((await planState(w)).plans[0]!.end).toBe(addDays(last, 6));
+    await applyAll(w, "p2", { kind: "extendPlan", planId, shapeWeeks: [{ weekStart: w.monday, volumeTarget: "x", keySessions: [] }] }, 10);
+    expect((await planState(w)).plans[0]!.end).toBe(addDays(last, 6));
+  });
+
   it("an op that is not structural is refused", async () => {
     const w = await world();
     const r = await chunk(w, { kind: "skip", workoutId: "x" } as CoachOp, null, 45);

@@ -43,7 +43,8 @@ import { COACH_DRAIN_KINDS, coachDrainQueued, executeCloudJobs } from "../servic
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
 import { loggedTopKgByWeek } from "../services/logged-sets.js";
-import { applyOps } from "../services/coach-apply.js";
+import { applyOps, isStructuralOp } from "../services/coach-apply.js";
+import { approveStructural, retireInChunks, structuralStarted } from "./thread-structural.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, isLoosePlan, plansEndedOn } from "../services/coach-plans.js";
 import {
@@ -138,6 +139,8 @@ export async function sweepExpiredProposals(db: Db, userId: string, today: strin
   const room = { rejudges: SWEEP_REJUDGES };
   let expired = 0;
   for (const p of stale) {
+    // A plan part-applied is never expired under the athlete: its next approve finishes it (§8 §4).
+    if (structuralStarted(p.ops)) continue;
     const claims = await expiryOfClaims(db, userId, p, today, now, room);
     if (!claims) continue;
     // Guarded: a proposal another request settled meanwhile is not expired, and gets no receipt.
@@ -516,10 +519,13 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
   // re-asserts the wake's fatal checks at the tap: nothing an op names can be
   // dated before today, and nothing resolved since the wake is touched.)
   const today = todayInZone(prefs.timezone);
-  if (p.expiresAt < today) {
+  // …but a plan part-applied (§8 §4) is the athlete's already: its next approve finishes it, whatever the date.
+  if (p.expiresAt < today && !structuralStarted(p.ops)) {
     await sweepExpiredProposals(db, userId, today);
     return c.json({ error: "not_pending", status: "expired" }, 409);
   }
+  // A proposal that shapes a plan is approved a chunk a request, answering `remaining` until done (thread-structural.ts).
+  if ((p.ops as CoachOp[]).some(isStructuralOp)) return approveStructural(c, p, prefs, (body) => receipt(db, userId, body, p.id));
   const applied = await applyOps(db, userId, prefs, p.id, p.ops as CoachOp[]);
   await db
     .update(coachProposals)
@@ -1329,14 +1335,8 @@ coachRoutes.post("/plans/:id/retire", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  const applied = await applyOps(db, userId, prefs, `retire-${c.req.param("id")}`, [
-    { kind: "retirePlan", planId: c.req.param("id") },
-  ]);
-  // A tap on "retire" against a plan that is not there is a 404, not a
-  // receipt saying it was retired.
-  if (applied.missed.length > 0) return c.json({ error: "not_found" }, 404);
-  await receipt(db, userId, "Plan retired — completed history stays.");
-  return c.json({ ok: true, applied });
+  // A slice a request, `remaining` until the plan is retired (§8 §4; thread-structural.ts).
+  return retireInChunks(c, c.req.param("id"), prefs, (body) => receipt(db, userId, body));
 });
 
 /** Expiry sweep for the hourly cron (all users handled by the caller). */

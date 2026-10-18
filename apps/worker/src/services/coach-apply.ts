@@ -1060,7 +1060,14 @@ export async function applyOps(
   prefs: UserPreferences,
   proposalId: string,
   ops: CoachOp[],
+  /**
+   * `only`: apply just the ops at these indices, each under its own index's ids, as if the others were absent; and
+   * `priorRefs`: the before-states the proposal already holds, which this apply never overwrites — a thread proposal
+   * that shapes a plan applies its other ops a run at a time, between its structural ops' chunks (§8 §4).
+   */
+  opts: { only?: (i: number) => boolean; priorRefs?: Record<string, { date?: string; summary?: string; durationMinutes?: number }> | null } = {},
 ): Promise<ApplyResult> {
+  const inScope = (i: number) => !opts.only || opts.only(i);
   const now = nowInstant();
   const today = todayInZone(prefs.timezone);
   // One read for the whole proposal: the athlete's latest COROS threshold
@@ -1080,8 +1087,8 @@ export async function applyOps(
   // row, written to the proposal so history can never drift again.
   const touchedIds = [
     ...new Set(
-      ops.flatMap((o) =>
-        o.kind === "ease" || o.kind === "move" || o.kind === "skip" ? [o.workoutId] : [],
+      ops.flatMap((o, i) =>
+        inScope(i) && (o.kind === "ease" || o.kind === "move" || o.kind === "skip") ? [o.workoutId] : [],
       ),
     ),
   ];
@@ -1113,7 +1120,7 @@ export async function applyOps(
     );
     await db
       .update(coachProposals)
-      .set({ appliedRefs })
+      .set({ appliedRefs: { ...appliedRefs, ...(opts.priorRefs ?? {}) } })
       .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, userId)));
   }
   /** Every day this apply put a session on, changed the length of, or moved one
@@ -1154,6 +1161,7 @@ export async function applyOps(
   };
 
   for (let i = 0; i < ops.length; i++) {
+    if (!inScope(i)) continue;
     const op = ops[i]!;
     const opId = (n: number | string) => `cw-${proposalId}-${i}-${n}`;
     switch (op.kind) {

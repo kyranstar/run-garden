@@ -2283,10 +2283,15 @@ describe("one clock per wake", () => {
     // Threading the wake's date in here would freeze a stale calendar into the
     // mutation, so if a future tidy-up "finishes the job" by making this a
     // parameter too, it should have to delete this test and read why.
+    // Two reads, one an entry point: `applyOps`' own, and a structural chunk's (§8 §4), from the `now` of the approve
+    // request that calls it — each its tap's clock, never a wake's.
     const code = codeOf("coach-apply.ts");
-    expect([...code.matchAll(/todayInZone\(/g)]).toHaveLength(1);
+    expect([...code.matchAll(/todayInZone\(/g)]).toHaveLength(2);
     const at = code.indexOf("export async function applyOps(");
     expect(code.slice(at, code.indexOf("):", at))).not.toContain("today: LocalDate");
+    const chunk = code.indexOf("export interface StructuralChunkInput");
+    expect(code.slice(chunk, code.indexOf("}", chunk))).toContain("now: Date");
+    expect(code.slice(chunk, code.indexOf("}", chunk))).not.toMatch(/today\??:/);
   });
 
   /**

@@ -227,7 +227,8 @@ describe("coach routes", () => {
     const res = await client().post("/api/coach/proposals/p-ghost/approve");
     expect(res.status).toBe(200);
     const applied = (await res.json()) as { applied: { missed: string[] } };
-    expect(applied.applied.missed).toEqual(["the plan it retires isn't there any more, so nothing was retired"]);
+    // A plan's op is applied in chunks now (§8 §4): its refusal is the chunk's sentence, said inside the line.
+    expect(applied.applied.missed).toEqual(["that plan isn't there any more, so nothing was retired"]);
     const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
     const receipt = msgs.find((m) => m.role === "receipt" && m.body.includes("Retire the autumn block"));
     expect(receipt?.body).toContain("isn't there any more");
