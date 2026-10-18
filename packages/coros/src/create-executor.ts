@@ -38,9 +38,13 @@ import {
   coachSessionSchema,
   daysBetween,
   isProgramWatchSession,
+  isRunWatchSession,
+  runWatchSessionSchema,
+  runWatchSteps,
   studioSessionSchema,
   type CoachSession,
   type ProgramWatchSession,
+  type RunWatchSession,
   type StudioSession,
   type StudioWeight,
 } from "@rg/domain";
@@ -72,8 +76,9 @@ export interface CreateWorkoutSpec {
   name: string;
   /** A studio LIFT session, or a coach session (run sessions push as
    * structured run programs; coach lift sessions share the studio shape), or
-   * a program session's resolved watch steps (Phase 3, `buildProgramWatchProgram`). */
-  session: StudioSession | CoachSession | ProgramWatchSession;
+   * a program session's resolved watch steps (Phase 3, `buildProgramWatchProgram`), or a designed run's session
+   * (§8 §3, `buildRunWatchProgram`). */
+  session: StudioSession | CoachSession | ProgramWatchSession | RunWatchSession;
   /** The athlete's COROS-measured lactate-threshold pace (sec/km). When
    * present, run blocks carry pace targets derived from it; when absent the
    * workout pushes with no intensity target, exactly as before. */
@@ -93,9 +98,11 @@ export interface CreateWorkoutSpec {
  * no honest pace band and never will.
  */
 export function missingPaceTargets(
-  session: CoachSession,
+  session: CoachSession | RunWatchSession,
   thresholdPaceSecPerKm?: number,
 ): number {
+  // A designed run (§8 §3): its steps whose effort takes a band from a threshold, with none known.
+  if (isRunWatchSession(session)) return runWatchSteps(session, thresholdPaceSecPerKm).paceOwed;
   const blocks = session.run?.blocks ?? [];
   return blocks.filter(
     (b) => b.intensity != null && b.intensity !== "rest" && !paceBandFor(b.intensity, thresholdPaceSecPerKm),
@@ -511,56 +518,66 @@ export function buildRunProgram(spec: {
     );
   }
 
+  const roles = runBlockRoles(run.blocks);
+  const exercises: RawCorosExercise[] = run.blocks.map((b, index) =>
+    // WHOLE seconds, explicitly rounded. `value` is minutes and is no
+    // longer guaranteed integral — a 15-second stride is 0.25 minutes, and
+    // the domain's own quantiser lands on `round(seconds)/60`, which is
+    // exact "to within 2.3e-13". Every app-side consumer rounds that away;
+    // the wire is the one consumer that cannot, and `targetValue:
+    // 899.9999999999999` is not a number to hand a watch.
+    runStepExercise(index + 1, roles[index]!, Math.round(b.value * 60), paceBandFor(b.intensity, spec.thresholdPaceSecPerKm)),
+  );
+  return runProgramOf(spec.name, exercises);
+}
+
+/**
+ * One flat run step on the wire — the live-verified topology both run builders write (`buildRunProgram`,
+ * `buildRunWatchProgram`): its role (`exerciseType`, name, origin), whole seconds (targetType 2), and its pace band
+ * when it has one.
+ */
+function runStepExercise(id: number, role: RunBlockRole, seconds: number, band: { fastSecPerKm: number; slowSecPerKm: number } | null): RawCorosExercise {
+  const wire = RUN_ROLE_WIRE[role];
   // Pace targets round-trip EXACTLY on this wire (spike-verified: HR does
   // not — the server remaps it onto the account's own zones). Bounds are
   // milliseconds per km: intensityValue is the fast edge, extend the slow.
-  let anyPaceTarget = false;
-  const roles = runBlockRoles(run.blocks);
-  const exercises: RawCorosExercise[] = run.blocks.map((b, index) => {
-    const id = index + 1;
-    const wire = RUN_ROLE_WIRE[roles[index]!];
-    const band = paceBandFor(b.intensity, spec.thresholdPaceSecPerKm);
-    if (band) anyPaceTarget = true;
-    return {
-      ...EXERCISE_METADATA,
-      id,
-      name: wire.name,
-      exerciseType: wire.exerciseType,
-      sportType: 1,
-      targetType: 2, // TIME, whole seconds
-      // WHOLE seconds, explicitly rounded. `value` is minutes and is no
-      // longer guaranteed integral — a 15-second stride is 0.25 minutes, and
-      // the domain's own quantiser lands on `round(seconds)/60`, which is
-      // exact "to within 2.3e-13". Every app-side consumer rounds that away;
-      // the wire is the one consumer that cannot, and `targetValue:
-      // 899.9999999999999` is not a number to hand a watch.
-      targetValue: Math.round(b.value * 60),
-      ...(band
-        ? {
-            intensityType: 3, // PACE
-            intensityValue: band.fastSecPerKm * 1000,
-            intensityValueExtend: band.slowSecPerKm * 1000,
-            // The watch reads the bounds as milliseconds only with intensityMultiplier 1000 (COROS's own pace steps
-            // carry it, with intensityDisplayUnit 2). With the metadata's 0 it took them as SECONDS per km, and the
-            // per-mile conversion wrapped at 16 bits: threshold reps showed "78'59 – 722'43" (live, 2026-10-09).
-            intensityMultiplier: 1000,
-            intensityDisplayUnit: 2,
-          }
-        : { intensityType: 5, intensityValue: 0 }), // none
-      sets: 1,
-      sortNo: TOP_SORT * id,
-      restType: 3,
-      restValue: 0,
-      groupId: "0",
-      isGroup: false,
-      originId: wire.originId,
-    };
-  });
+  return {
+    ...EXERCISE_METADATA,
+    id,
+    name: wire.name,
+    exerciseType: wire.exerciseType,
+    sportType: 1,
+    targetType: 2, // TIME, whole seconds
+    targetValue: seconds,
+    ...(band
+      ? {
+          intensityType: 3, // PACE
+          intensityValue: band.fastSecPerKm * 1000,
+          intensityValueExtend: band.slowSecPerKm * 1000,
+          // The watch reads the bounds as milliseconds only with intensityMultiplier 1000 (COROS's own pace steps
+          // carry it, with intensityDisplayUnit 2). With the metadata's 0 it took them as SECONDS per km, and the
+          // per-mile conversion wrapped at 16 bits: threshold reps showed "78'59 – 722'43" (live, 2026-10-09).
+          intensityMultiplier: 1000,
+          intensityDisplayUnit: 2,
+        }
+      : { intensityType: 5, intensityValue: 0 }), // none
+    sets: 1,
+    sortNo: TOP_SORT * id,
+    restType: 3,
+    restValue: 0,
+    groupId: "0",
+    isGroup: false,
+    originId: wire.originId,
+  };
+}
 
+/** The run program around its steps (sportType 1, structured; the server computes its duration and distance). */
+function runProgramOf(name: string, exercises: RawCorosExercise[]): RawCorosProgram {
+  const anyPaceTarget = exercises.some((e) => (e as { intensityType?: unknown }).intensityType === 3);
   return {
     idInPlan: 0,
     planId: "",
-    name: spec.name,
+    name,
     overview: "",
     sportType: 1,
     subType: 65535, // structured
@@ -593,6 +610,38 @@ export function buildRunProgram(spec: {
     version: 0,
     exercises,
   };
+}
+
+/**
+ * Build a DESIGNED RUN's program (§8 §3, phase 1) from its job's `run_watch` session — the conversation coach's run,
+ * a workout document's warm-up, run parts and cool-down.
+ *
+ * THE STEPS ARE `runWatchSteps`' — the run card's own, so the preview is the wire — resolved here, at the write, from the
+ * freshest threshold the lane has: the repeats written out (at most RUN_WATCH_MAX_STEPS), each step its role, whole
+ * seconds (a distance as its time at its band's middle) and its band (the one the athlete asked for, else its effort's
+ * from the threshold, else none: a bare timer, as `buildRunProgram` writes one). The envelope is `buildRunProgram`'s
+ * live-verified one, step for step: flat time steps, no groups, no distance targets (phase 2's). A distance no pace
+ * can time — no threshold and none asked — is refused before any wire call, as is a session that doesn't parse.
+ */
+export function buildRunWatchProgram(spec: {
+  happenDay: string;
+  name: string;
+  session: RunWatchSession;
+  thresholdPaceSecPerKm?: number;
+}): RawCorosProgram {
+  const parsed = runWatchSessionSchema.safeParse(spec.session);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((issue) => `${issue.path.join(".") || "session"}: ${issue.message}`).join("; ");
+    throw new Error(`cannot build "${spec.name}": invalid session — ${detail}`);
+  }
+  const resolved = runWatchSteps(parsed.data, spec.thresholdPaceSecPerKm);
+  if (resolved.unresolved > 0) {
+    throw new Error(`cannot build "${spec.name}": ${resolved.unresolved} distance step(s) with no pace to time them by (no threshold, none asked)`);
+  }
+  return runProgramOf(
+    spec.name,
+    resolved.steps.map((s, index) => runStepExercise(index + 1, s.role, s.seconds!, s.pace)),
+  );
 }
 
 /** The load encoding is identical in both vocabularies; the types are not. */
@@ -910,6 +959,9 @@ export function buildStrengthProgram(
   if (isProgramWatchSession(spec.session)) {
     throw new Error(`cannot build "${spec.name}": a program session builds through buildProgramWatchProgram`);
   }
+  if (isRunWatchSession(spec.session)) {
+    throw new Error(`cannot build "${spec.name}": a designed run builds through buildRunWatchProgram`);
+  }
   const { steps, rounds } = readStrengthSession(spec.session, spec.name);
   if (steps.length === 0) {
     throw new Error(`cannot build "${spec.name}": the session has no exercises`);
@@ -1023,8 +1075,13 @@ export function buildStrengthProgram(
  * (`coachSessionSchema`'s one-body refinement), and a `StudioSession` carries
  * none of them, so the presence of `run` is the whole test.
  */
-export function isRunSession(session: StudioSession | CoachSession | ProgramWatchSession): boolean {
+export function isRunSession(session: StudioSession | CoachSession | ProgramWatchSession | RunWatchSession): boolean {
   return Boolean((session as { run?: unknown }).run);
+}
+
+/** A run session's blocks, or a designed run's steps written out: what a pace debt is counted out of. */
+export function runStepCount(session: CoachSession | RunWatchSession): number {
+  return isRunWatchSession(session) ? runWatchSteps(session, null).steps.length : (session.run?.blocks.length ?? 0);
 }
 
 /**
@@ -1051,6 +1108,10 @@ export function buildProgramFor(
   // discipline body, so neither of the other builders could read it.
   if (isProgramWatchSession(spec.session)) {
     return buildProgramWatchProgram({ ...spec, session: spec.session }, catalog);
+  }
+  // A designed run (§8 §3): its own builder, the same envelope.
+  if (isRunWatchSession(spec.session)) {
+    return buildRunWatchProgram({ happenDay: spec.happenDay, name: spec.name, session: spec.session, thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm });
   }
   if (isRunSession(spec.session)) {
     return buildRunProgram({
@@ -1687,8 +1748,8 @@ export async function createWorkout(
   let paceTargetsOwed = 0;
   try {
     program = buildProgramFor(spec, opts.catalog);
-    if (isRunSession(spec.session)) {
-      const session = spec.session as CoachSession;
+    if (isRunSession(spec.session) || isRunWatchSession(spec.session)) {
+      const session = spec.session as CoachSession | RunWatchSession;
       paceTargetsOwed = missingPaceTargets(session, spec.thresholdPaceSecPerKm);
       if (paceTargetsOwed > 0) {
         // NOT silent any more (audit 2026-08-17 #6). All three sessions the
@@ -1697,7 +1758,7 @@ export async function createWorkout(
         // 289 s/km had existed since that same day. The executor cannot fix
         // that (it has no database); it can refuse to hide it.
         log(
-          `  no pace band for ${paceTargetsOwed}/${session.run?.blocks.length ?? 0} block(s)` +
+          `  no pace band for ${paceTargetsOwed}/${runStepCount(session)} block(s)` +
             ` — they push as bare timers (threshold=${spec.thresholdPaceSecPerKm ?? "none"})`,
         );
       }

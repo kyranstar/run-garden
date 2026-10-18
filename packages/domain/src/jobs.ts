@@ -3,6 +3,15 @@ import { isLocalDate } from "./time.js";
 import { studioSessionSchema } from "./studio.js";
 import { coachSessionSchema } from "./coach.js";
 import { programWatchSessionSchema, WATCH_STAMP_MAX } from "./watch-push.js";
+import { runWatchSessionSchema } from "./run-watch.js";
+
+/**
+ * What a coach job puts on (or back on) the watch: a coach session — or a designed run's (§8 §3, `run_watch`), built
+ * at the write by its own builder. The run first: a coach session never parses as one (its `kind`), and a run is never a
+ * coach session (it has no category). The create and the update take the same union, so a designed run's ease and its
+ * Undo rewrite it through the same builder.
+ */
+export const coachJobSessionSchema = z.union([runWatchSessionSchema, coachSessionSchema]);
 
 export const COROS_WRITE_JOB_STATUSES = [
   "queued", // waiting for a capable executor
@@ -72,7 +81,7 @@ export const coachCreateWorkoutJobSchema = z
     workoutId: z.string().min(1),
     happenDay: localDate,
     name: z.string().min(1),
-    session: coachSessionSchema,
+    session: coachJobSessionSchema,
     /** Threshold pace (sec/km) the approved pace bands were derived from. */
     thresholdPaceSecPerKm: z.number().positive().optional(),
     /** Executor-side retry counter (transient failures requeue, cap 3). */
@@ -136,7 +145,7 @@ const coachUpdateWorkoutBase = {
   programId: z.string().min(1),
   corosPlanId: z.string().min(1),
   /** What the app now holds, and what the watch must end up saying. */
-  session: coachSessionSchema,
+  session: coachJobSessionSchema,
   /** Threshold pace (sec/km) known at enqueue time. The executor prefers a
    * fresher reading — see `latestThresholdPace` — so this is a floor, not an
    * instruction. */

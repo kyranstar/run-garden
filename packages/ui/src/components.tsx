@@ -394,6 +394,15 @@ export function watchCoverageSentences(view: WatchCoverageView | undefined): str
           `Your watch will show the steps but no pace targets${gap.count ? ` on ${gap.count} of them` : ""} — Run Garden doesn't know your threshold pace yet.`,
         );
         break;
+      // A designed run (§8 §3): the wire carries time, so a distance goes as its time at its pace.
+      case "distance_as_time":
+        out.push(
+          `Your watch times the distance step${gap.count && gap.count > 1 ? "s" : ""} — each runs for the time it takes at its pace, and Run Garden keeps the distance.`,
+        );
+        break;
+      case "distance_needs_threshold":
+        out.push("Your COROS watch won't show this yet — its distances need your threshold pace to be timed.");
+        break;
       case "filed_as_strength":
         out.push(
           "On your watch this files under Strength — COROS has no mobility category. Every step is there; only the label is coarse.",
@@ -424,6 +433,10 @@ export function watchCoverageShort(view: WatchCoverageView | undefined): string 
       return `Not on your watch — your COROS library has no ${listPhrase(lead.names ?? [])}`;
     case "pace_targets_owed":
       return "On your watch, without pace targets";
+    case "distance_as_time":
+      return "On your watch, distances by time";
+    case "distance_needs_threshold":
+      return "Not on your watch yet — needs your threshold pace";
     case "filed_as_strength":
       return "On your watch, filed under Strength";
     case "cues_ride_as_text":

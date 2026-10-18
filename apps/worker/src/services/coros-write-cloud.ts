@@ -32,7 +32,9 @@ import {
   coachUpdateWorkoutJobSchema,
   createScheduledWorkoutJobSchema,
   deleteScheduledWorkoutJobSchema,
+  isRunWatchSession,
   programSessionPushJobSchema,
+  type RunWatchSession,
 } from "@rg/domain";
 import { watchPushEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
@@ -84,10 +86,15 @@ export const CLOUD_DEVICE_ID = "cloud";
  * (`pace_encoding_outdated`, content-converge.ts). The stored payload is kept whole — `attempts` included — and only
  * gains the field; a lift or mobility build carries no pace and claims no encoding.
  */
-function paceWireStamp(payload: unknown, session: CoachSession): { payload?: Record<string, unknown> } {
-  if (!session.run) return {};
+function paceWireStamp(payload: unknown, session: CoachSession | RunWatchSession): { payload?: Record<string, unknown> } {
+  // A designed run (§8 §3) is a run build: the same encoding, the same stamp.
+  if (!isRunWatchSession(session) && !session.run) return {};
   return { payload: { ...((payload ?? {}) as Record<string, unknown>), paceWire: RUN_PACE_WIRE } };
 }
+
+/** A lift or mobility session resolves its steps against the COROS catalog; a run — a coach run or a designed one (§8
+ * §3) — never touches it, so the ~382-row read is paid only when there is something to resolve. */
+const needsCatalog = (session: CoachSession | RunWatchSession): boolean => !isRunWatchSession(session) && !session.run;
 
 async function latestThresholdPace(db: Db, userId: string): Promise<number | undefined> {
   const [row] = await db
@@ -391,7 +398,7 @@ export async function executeCloudJobs(
         // A lift/mobility session needs the COROS catalog to resolve its
         // steps; a run session never touches it, so the ~382-row read is
         // paid only when there is something to resolve.
-        const catalog = spec.session.run ? new Map<string, string>() : await exerciseNameMap(db);
+        const catalog = needsCatalog(spec.session) ? await exerciseNameMap(db) : new Map<string, string>();
         const result = await createWorkout(
           client,
           {
@@ -738,7 +745,7 @@ export async function executeCloudJobs(
         // Lift/mobility needs the catalog to resolve its steps; a run never
         // touches it, so the ~382-row read is paid only when there is something
         // to resolve. Same rule the create branch uses.
-        const catalog = spec.session.run ? new Map<string, string>() : await exerciseNameMap(db);
+        const catalog = needsCatalog(spec.session) ? await exerciseNameMap(db) : new Map<string, string>();
         // WHICH PROOF THIS JOB CARRIES — see `jobs.ts` and `content-executor.ts`
         // THE SECOND PROOF. The schema union guarantees exactly one is present;
         // this reads whichever it is and hands the executor the matching target.

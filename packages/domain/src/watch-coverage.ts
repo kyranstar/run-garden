@@ -43,6 +43,7 @@
  * both adapters reach the same verdict.
  */
 import type { CoachExercise, CoachSession } from "./coach.js";
+import { isRunWatchSession, runWatchSteps, type RunWatchSession } from "./run-watch.js";
 
 /**
  * How much of what Run Garden holds reaches the watch.
@@ -78,6 +79,12 @@ export type WatchGapCode =
    * whole, and the names are the actionable part.
    */
   | "off_catalog"
+  /** A designed run's distance steps (§8 §3, phase 1): on the watch as their time at their pace band's middle — the
+   * wire carries time; the app keeps the distance. `count` is how many. */
+  | "distance_as_time"
+  /** A designed run's distance steps with no pace to time them by: no threshold known, none asked. The run stays off
+   * the watch until the threshold is known. */
+  | "distance_needs_threshold"
   /** Steps that will arrive on the watch with no pace band, because Run
    * Garden does not know the athlete's threshold pace yet. Mirrors
    * `missingPaceTargets` in the create executor, `rest` blocks excluded. */
@@ -135,6 +142,9 @@ export interface WatchSessionShape {
   discipline: "run" | "lift" | "mobility";
   /** How each run block is measured. Empty for a non-run or a bodyless one. */
   runBlocks: ReadonlyArray<"duration" | "distance">;
+  /** A designed run (§8 §3): its distance blocks go as their time (`distance_as_time`), unless `untimed` of them have
+   * no pace to time them by. */
+  distanceAsTime?: { untimed: number };
   /** Blocks that name an intensity the wire will carry no pace band for.
    * A caller that cannot know (the manifest has no threshold pace) passes 0,
    * which is the honest answer: it declines to claim rather than guess. */
@@ -160,8 +170,17 @@ export function watchCoverage(shape: WatchSessionShape): WatchCoverageView {
     if (shape.runBlocks.length === 0) {
       return { ...base, coverage: "none", gaps: [{ code: "empty_body" }] };
     }
-    if (shape.runBlocks.includes("distance")) {
+    const distances = shape.runBlocks.filter((b) => b === "distance").length;
+    if (distances > 0 && !shape.distanceAsTime) {
       return { ...base, coverage: "none", gaps: [{ code: "distance_target" }] };
+    }
+    if (shape.distanceAsTime && shape.distanceAsTime.untimed > 0) {
+      return { ...base, coverage: "none", gaps: [{ code: "distance_needs_threshold", count: shape.distanceAsTime.untimed }] };
+    }
+    if (distances > 0) {
+      const gaps: WatchGap[] = [{ code: "distance_as_time", count: distances }];
+      if (shape.paceTargetsOwed > 0) gaps.push({ code: "pace_targets_owed", count: shape.paceTargetsOwed });
+      return { ...base, coverage: "partial", gaps };
     }
     if (shape.paceTargetsOwed > 0) {
       return {
@@ -215,7 +234,23 @@ export function watchSessionShape(s: CoachSession): WatchSessionShape {
   };
 }
 
-/** The coverage of a proposed session — the manifest's one call. */
-export function sessionWatchCoverage(s: CoachSession): WatchCoverageView {
-  return watchCoverage(watchSessionShape(s));
+/**
+ * A designed run's shape (§8 §3): its steps written out with the athlete's threshold (`runWatchSteps`, the wire's own),
+ * each step a block; its distances go as their time, and the steps owed a band are counted — the caller holds the
+ * threshold, so the count is a claim it can make (null: none known).
+ */
+export function runWatchShape(s: RunWatchSession, thresholdSecPerKm: number | null): WatchSessionShape {
+  const r = runWatchSteps(s, thresholdSecPerKm);
+  return {
+    discipline: "run",
+    runBlocks: r.steps.map((step) => (step.meters !== undefined ? "distance" : "duration")),
+    paceTargetsOwed: r.paceOwed,
+    exercises: [],
+    distanceAsTime: { untimed: r.unresolved },
+  };
+}
+
+/** The coverage of a proposed session — the manifest's one call; a designed run's with the athlete's threshold. */
+export function sessionWatchCoverage(s: CoachSession | RunWatchSession, thresholdSecPerKm: number | null = null): WatchCoverageView {
+  return watchCoverage(isRunWatchSession(s) ? runWatchShape(s, thresholdSecPerKm) : watchSessionShape(s));
 }

@@ -92,7 +92,7 @@
  * brand-new `idInPlan`. `not_found` is terminal here, always.
  */
 
-import type { CoachSession, StudioSession } from "@rg/domain";
+import { isRunWatchSession, type CoachSession, type RunWatchSession, type StudioSession } from "@rg/domain";
 import {
   corosDayToLocalDate,
   corosProgramFingerprint,
@@ -113,6 +113,7 @@ import {
   isRunSession,
   missingPaceTargets,
   observationSpan,
+  runStepCount,
   ownedPlacements,
   ownershipAmbiguities,
   planView,
@@ -185,11 +186,12 @@ export interface UpdateWorkoutContentSpec {
   target: UpdateContentTarget;
   /**
    * The workout's NEW intent — a coach run/lift/mobility session, or a studio
-   * lift session. Built through `buildProgramFor`, the same dispatch
+   * lift session, or a designed run's (§8 §3: its ease and its Undo rewrite
+   * through the same builder). Built through `buildProgramFor`, the same dispatch
    * `createWorkout` uses, so the wire ends up carrying exactly the program a
    * fresh create of this session would have carried.
    */
-  session: StudioSession | CoachSession;
+  session: StudioSession | CoachSession | RunWatchSession;
   /**
    * The name the rewritten program carries.
    *
@@ -527,12 +529,12 @@ export async function updateWorkoutContent(
       },
       opts.catalog,
     );
-    if (isRunSession(spec.session)) {
-      const session = spec.session as CoachSession;
+    if (isRunSession(spec.session) || isRunWatchSession(spec.session)) {
+      const session = spec.session as CoachSession | RunWatchSession;
       paceTargetsOwed = missingPaceTargets(session, spec.thresholdPaceSecPerKm);
       if (paceTargetsOwed > 0) {
         log(
-          `  no pace band for ${paceTargetsOwed}/${session.run?.blocks.length ?? 0} block(s)` +
+          `  no pace band for ${paceTargetsOwed}/${runStepCount(session)} block(s)` +
             ` — they rewrite as bare timers (threshold=${spec.thresholdPaceSecPerKm ?? "none"})`,
         );
       }

@@ -24,8 +24,11 @@ import {
   startOfIsoWeek,
   todayInZone,
   watchAddressOf,
+  isRunWatchSession,
+  runWatchSteps,
   type CoachOp,
   type CoachSession,
+  type RunWatchSession,
   type UserPreferences,
   type WeightUnit,
   type WorkoutDoc,
@@ -349,7 +352,13 @@ export function coachStageRows(workoutId: string, session: CoachSession, thresho
  * (`sessionSport` → "yoga"); only the watch's own filing is coarse, and
  * `watch-coverage.ts` is where that gets disclosed.
  */
-export function watchPushable(session: CoachSession): boolean {
+export function watchPushable(session: CoachSession | RunWatchSession, thresholdPaceSecPerKm?: number | null): boolean {
+  // A DESIGNED RUN (§8 §3): every step written out has its time — a distance timed at its band's middle, which needs a
+  // pace (the threshold's, or one the athlete asked for). The same `runWatchSteps` the wire builds from.
+  if (isRunWatchSession(session)) {
+    const r = runWatchSteps(session, thresholdPaceSecPerKm ?? null);
+    return r.steps.length > 0 && r.unresolved === 0;
+  }
   if (session.run) {
     return session.run.blocks.length > 0 && session.run.blocks.every((b) => b.kind === "duration");
   }
@@ -502,7 +511,8 @@ export async function enqueueWatchCreate(
   userId: string,
   id: string,
   date: string,
-  session: CoachSession,
+  /** A coach session, or a designed run's (§8 §3). */
+  session: CoachSession | RunWatchSession,
   now: string,
   thresholdPaceSecPerKm?: number,
   /** A human is asking again — retry a job of this id that previously failed.
@@ -511,7 +521,7 @@ export async function enqueueWatchCreate(
    *  `enqueueContentConvergence`'s `reviveFailed`. */
   reviveFailed = false,
 ): Promise<string | null> {
-  if (!watchPushable(session)) return null;
+  if (!watchPushable(session, thresholdPaceSecPerKm)) return null;
   const jobId = `${id}-push`;
   // The stamp is unique per day across both lanes (ruling 3-R12): a second session of this title on this day — a
   // coach add or a sent program session — already holds the base, so this one gets " (2)".
@@ -556,7 +566,7 @@ function watchCreateValues(
   userId: string,
   id: string,
   date: string,
-  session: CoachSession,
+  session: CoachSession | RunWatchSession,
   now: string,
   name: string,
   thresholdPaceSecPerKm?: number,
@@ -742,8 +752,8 @@ export async function enqueueContentConvergence(
     /** The row as it stood BEFORE the rewrite: its fingerprint and address are
      *  what COROS is still holding. */
     workout: typeof plannedWorkouts.$inferSelect;
-    /** What the app now prescribes. */
-    session: CoachSession;
+    /** What the app now prescribes: a coach session, or a designed run's (§8 §3: its Undo rewrites it back). */
+    session: CoachSession | RunWatchSession;
     /**
      * A HUMAN IS ASKING AGAIN — revive a job of this id that previously failed.
      *
@@ -809,7 +819,7 @@ export async function enqueueContentConvergence(
     updatedAt: v.now,
   };
 
-  if (!watchPushable(v.session)) {
+  if (!watchPushable(v.session, v.thresholdPaceSecPerKm)) {
     // AN IMPORTED SESSION IS NEVER UNPUSHED, and this is the one place the
     // "leaving the watch prescribing withdrawn work is indefensible" rule loses.
     //

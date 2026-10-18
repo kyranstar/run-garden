@@ -5,6 +5,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  coachCreateWorkoutJobSchema,
+  coachUpdateWorkoutJobSchema,
+  sessionWatchCoverage,
   isRunDoc,
   isRunWatchSession,
   RUN_EFFORT_LABELS,
@@ -196,5 +199,37 @@ describe("isRunWatchSession", () => {
     expect(isRunWatchSession(sessionOf(tempoRun()))).toBe(true);
     expect(isRunWatchSession({ kind: "program_watch" })).toBe(false);
     expect(isRunWatchSession({ title: "Easy", run: { blocks: [] } })).toBe(false);
+  });
+});
+
+describe("the watch jobs take a designed run's session (the create, and the update its ease and Undo write)", () => {
+  const base = { workoutId: "w-1", happenDay: "2026-10-20", name: "Tempo blocks — 2026-10-20" };
+  const address = { idInPlan: "45", programId: "45", corosPlanId: "p-1", recordedName: base.name };
+  it("parses one, and still a coach session; refuses a malformed one", () => {
+    const session = sessionOf(tempoRun());
+    expect(coachCreateWorkoutJobSchema.parse({ ...base, session, thresholdPaceSecPerKm: 289 }).session).toEqual(session);
+    expect(coachUpdateWorkoutJobSchema.parse({ ...base, ...address, session }).session).toEqual(session);
+    const coach = { title: "Easy", category: "easy", durationMinutes: 30, run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] } };
+    expect(coachCreateWorkoutJobSchema.safeParse({ ...base, session: coach }).success).toBe(true);
+    expect(coachCreateWorkoutJobSchema.safeParse({ ...base, session: { ...session, segments: [] } }).success).toBe(false);
+    expect(coachCreateWorkoutJobSchema.safeParse({ ...base, session: { ...session, extra: 1 } }).success).toBe(false);
+  });
+});
+
+describe("what the watch will show of a designed run", () => {
+  const coverage = (doc: WorkoutDoc, threshold: number | null) => sessionWatchCoverage(sessionOf(doc), threshold);
+  it("a timed run with a threshold crosses whole: silence", () => {
+    const timed = tempoRun();
+    timed.parts[2] = { purpose: "cooldown", format: "steady", items: [{ kind: "run", effort: "easy", target: { durationSec: 600 } }] };
+    expect(coverage(timed, 289)).toEqual({ discipline: "run", coverage: "full", gaps: [] });
+  });
+  it("a distance goes as its time: partial, said; with no threshold to time it, it can't go", () => {
+    expect(coverage(tempoRun(), 289)).toEqual({ discipline: "run", coverage: "partial", gaps: [{ code: "distance_as_time", count: 1 }] });
+    expect(coverage(tempoRun(), null)).toEqual({ discipline: "run", coverage: "none", gaps: [{ code: "distance_needs_threshold", count: 1 }] });
+  });
+  it("timed with no threshold: on the watch, with no pace targets", () => {
+    const timed = tempoRun();
+    timed.parts = timed.parts.slice(0, 2);
+    expect(coverage(timed, null)).toEqual({ discipline: "run", coverage: "partial", gaps: [{ code: "pace_targets_owed", count: 7 }] });
   });
 });
