@@ -107,6 +107,17 @@ describe("runWatchSessionOf", () => {
     });
   });
 
+  it("rounds a pace the athlete named to whole seconds: 8:00–8:20 /mi is 298.258–310.686 s/km, the watch's 298–311 (review-2 I1)", () => {
+    const doc = tempoRun();
+    doc.parts[1] = {
+      purpose: "run",
+      format: "steady",
+      items: [{ kind: "run", effort: "steady", target: { durationSec: 1200, pace: { fastSecPerKm: 480 / 1.609344, slowSecPerKm: 500 / 1.609344 } } }],
+    };
+    expect(sessionOf(doc).segments[1]!.steps[0]!.pace).toEqual({ fastSecPerKm: 298, slowSecPerKm: 311 });
+    expect(runWatchSteps(sessionOf(doc), 289).steps[1]).toMatchObject({ pace: { fastSecPerKm: 298, slowSecPerKm: 311 }, paceFrom: "asked" });
+  });
+
   it("refuses what the wire can't hold: a move among the runs, an open segment, more than the watch's steps", () => {
     const mixed = tempoRun();
     mixed.parts[0]!.items.push({ kind: "exercise", libraryId: "glute-bridge", dose: { reps: 10 } });

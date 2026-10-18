@@ -552,8 +552,11 @@ function runStepExercise(id: number, role: RunBlockRole, seconds: number, band: 
     ...(band
       ? {
           intensityType: 3, // PACE
-          intensityValue: band.fastSecPerKm * 1000,
-          intensityValueExtend: band.slowSecPerKm * 1000,
+          // Whole seconds × 1000, always (review-2 I1): every pace this app has written live was one, and a named pace
+          // in s/km is a fraction (8:00 /mi = 298.258) whose × 1000 is not even an integer (256.1 → 256100.00000000003).
+          // The session rounds it first (`runWatchStepOf`); this is the second guard, for a job queued before it did.
+          intensityValue: Math.round(band.fastSecPerKm) * 1000,
+          intensityValueExtend: Math.round(band.slowSecPerKm) * 1000,
           // The watch reads the bounds as milliseconds only with intensityMultiplier 1000 (COROS's own pace steps
           // carry it, with intensityDisplayUnit 2). With the metadata's 0 it took them as SECONDS per km, and the
           // per-mile conversion wrapped at 16 bits: threshold reps showed "78'59 – 722'43" (live, 2026-10-09).

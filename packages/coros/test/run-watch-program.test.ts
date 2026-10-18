@@ -106,6 +106,18 @@ describe("buildRunWatchProgram — the bytes", () => {
     expect(steps[5]).toMatchObject({ intensityValue: 280_000, intensityValueExtend: 290_000 });
   });
 
+  it("a pace the athlete named goes on the wire in whole seconds × 1000 — even from a session that still holds the fraction (review-2 I1)", () => {
+    // 8:00–8:20 /mi: 298.258–310.686 s/km. A job queued before the session rounded it still carries the fraction.
+    const named: RunWatchSession = {
+      kind: "run_watch",
+      title: "Marathon pace",
+      segments: [{ rounds: 1, steps: [{ role: "work", effort: "steady", target: { kind: "time", seconds: 1200 }, pace: { fastSecPerKm: 480 / 1.609344, slowSecPerKm: 500 / 1.609344 } }] }],
+    };
+    const [step] = buildRunWatchProgram(spec(named)).exercises!.map(wire);
+    expect(step).toMatchObject({ intensityType: 3, intensityValue: 298_000, intensityValueExtend: 311_000, intensityMultiplier: 1000 });
+    expect(Number.isInteger(step!.intensityValue) && Number.isInteger(step!.intensityValueExtend)).toBe(true);
+  });
+
   it("with no threshold: time steps go as bare timers, and a distance with no pace is refused before any wire call", () => {
     const timed: RunWatchSession = { ...TEMPO, segments: TEMPO.segments.slice(0, 2) };
     const steps = buildRunWatchProgram(spec(timed, null)).exercises!.map(wire);

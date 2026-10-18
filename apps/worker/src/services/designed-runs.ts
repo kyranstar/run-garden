@@ -24,7 +24,9 @@ import {
   paceBandFor,
   parseStoredWorkoutDoc,
   RUN_EFFORT_LABELS,
+  runStepBand,
   runWatchSessionOf,
+  runWatchStepOf,
   runWatchSteps,
   type RunEffort,
   type WorkoutDoc,
@@ -241,7 +243,8 @@ const SUBTYPE_OF: ReadonlyArray<[RunEffort, string]> = [["interval", "intervals"
 /**
  * A designed run's stage rows (the plan's own structure: Today, Plan and the session sheet read them, the body check
  * eases from them): the document's stages (`stagesFromDoc` — a part with rounds a repeat holding its items), each run
- * segment with the pace band the watch gets (the one asked for, else its effort's from the threshold) and its effort in
+ * segment with the pace band the watch gets (`runStepBand`: the one asked for in whole seconds, else its effort's from
+ * the threshold) and its effort in
  * words as its label ("tempo", as a coach run's stage says its intensity). The stored document keeps only what was
  * authored; the bands are computed, so they live here.
  */
@@ -259,9 +262,11 @@ export function designedRunStages(workoutId: string, doc: WorkoutDoc, thresholdS
             return item;
           }
           labels.push(RUN_EFFORT_LABELS[item.effort].toLowerCase());
-          const t = item.target;
-          const band = t.pace ? null : paceBandFor(item.effort, thresholdSecPerKm, t.distanceM !== undefined ? { distanceM: t.distanceM } : {});
-          return band ? { ...item, target: { ...t, pace: band } } : item;
+          // The band the watch gets, from the step the watch gets (`runWatchStepOf`: a named pace in whole seconds).
+          const step = runWatchStepOf(item, part.purpose);
+          const band = typeof step === "string" ? null : runStepBand(step, thresholdSecPerKm).band;
+          const { pace: _named, ...target } = item.target;
+          return { ...item, target: band ? { ...target, pace: band } : target };
         }),
       };
     }),

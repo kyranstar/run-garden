@@ -11,6 +11,8 @@ import { userPreferencesSchema } from "@rg/domain";
 import { cardsOf } from "../src/services/coach-conversation.js";
 import type { DesignedOp } from "../src/services/design-approve.js";
 import { docWorkoutLines } from "../src/services/design-manifest.js";
+import { designedRunStages } from "../src/services/designed-runs.js";
+import { buildProgramFor } from "@rg/coros";
 
 const NOW = new Date("2026-03-10T16:00:00Z");
 const prefs: UserPreferences = userPreferencesSchema.parse({ timezone: "UTC" });
@@ -80,5 +82,21 @@ describe("the conversation's card of a run", () => {
     expect(run).toMatchObject({ kind: "workout", sport: "run", title: "Tempo blocks" });
     const [lift] = cardsOf(null, { id: "dp-2", title: "Hips", status: "pending", ops: [brief("strength")] }, "2026-03-10");
     expect(lift).not.toHaveProperty("sport");
+  });
+});
+
+describe("a pace the athlete named, in whole seconds everywhere (review-2 I1)", () => {
+  it("the card, the stage rows and the wire agree: 8:00–8:20 /mi is 298–311 s/km, 298000–311000 on the wire", () => {
+    const named: WorkoutDoc = {
+      ...DOC,
+      parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", effort: "steady", target: { durationSec: 1200, pace: { fastSecPerKm: 480 / 1.609344, slowSecPerKm: 500 / 1.609344 } } }] }],
+    };
+    const [line] = docWorkoutLines([op(named)], place, { now: NOW, prefs }, { thresholdSecPerKm: 289, corosWritesEnabled: true });
+    expect(line!.run!.segments[0]!.steps[0]).toMatchObject({ pace: { fastSecPerKm: 298, slowSecPerKm: 311 }, asked: true });
+    const [stage] = designedRunStages("wo-1", named, 289);
+    expect(stage).toMatchObject({ targetType: "pace", targetLow: 298, targetHigh: 311 });
+    const session = (runWatchSessionOf(named) as { session: never }).session;
+    const [step] = buildProgramFor({ happenDay: "20260312", name: "Steady", session, thresholdPaceSecPerKm: 289 }, new Map()).exercises!;
+    expect(step).toMatchObject({ intensityValue: 298_000, intensityValueExtend: 311_000 });
   });
 });

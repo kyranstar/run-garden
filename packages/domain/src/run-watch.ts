@@ -107,7 +107,13 @@ export function isRunDoc(doc: Pick<WorkoutDoc, "parts">): boolean {
 
 export type RunWatchRefusal = "mixed" | "open" | "too_many_steps";
 
-function stepOf(item: WorkoutItem, purpose: WorkoutDoc["parts"][number]["purpose"]): RunWatchStep | "mixed" | "open" {
+/**
+ * One document item as the watch takes it (the session's step, and the stage rows' — `designedRunStages`): its role,
+ * its effort, its target in whole seconds, and a pace the athlete named ROUNDED TO WHOLE SECONDS (review-2 I1: the
+ * wire has only ever carried whole seconds × 1000, and "8:00 /mi" is 298.258 s/km — the card, the stage rows and the
+ * wire all read this one rounded copy). A move is `mixed`, an open segment `open`.
+ */
+export function runWatchStepOf(item: WorkoutItem, purpose: WorkoutDoc["parts"][number]["purpose"]): RunWatchStep | "mixed" | "open" {
   if (item.kind === "rest") return { role: "recovery", target: { kind: "time", seconds: Math.max(1, Math.round(item.seconds)) } };
   if (item.kind !== "run") return "mixed";
   const t = item.target;
@@ -119,7 +125,7 @@ function stepOf(item: WorkoutItem, purpose: WorkoutDoc["parts"][number]["purpose
         ? { kind: "distance", meters: t.distanceM }
         : null;
   if (!target) return "open";
-  return { role, effort: item.effort, target, ...(t.pace ? { pace: { fastSecPerKm: t.pace.fastSecPerKm, slowSecPerKm: t.pace.slowSecPerKm } } : {}) };
+  return { role, effort: item.effort, target, ...(t.pace ? { pace: { fastSecPerKm: Math.round(t.pace.fastSecPerKm), slowSecPerKm: Math.round(t.pace.slowSecPerKm) } } : {}) };
 }
 
 /** A designed run's session for the watch job (see the module comment), or why the wire can't hold it. */
@@ -128,7 +134,7 @@ export function runWatchSessionOf(doc: WorkoutDoc): { session: RunWatchSession }
   for (const part of doc.parts) {
     const steps: RunWatchStep[] = [];
     for (const item of part.items) {
-      const step = stepOf(item, part.purpose);
+      const step = runWatchStepOf(item, part.purpose);
       if (step === "mixed" || step === "open") return { refused: step };
       steps.push(step);
     }
@@ -168,6 +174,17 @@ export interface RunWatchResolved {
   unresolved: number;
 }
 
+/**
+ * The pace band a step carries on the watch and where it came from: the one the athlete named (`asked`), else its
+ * effort's from the threshold (race pace: for the step's own distance), else none. The steps, the stage rows and the
+ * wire read this one function.
+ */
+export function runStepBand(s: RunWatchStep, thresholdSecPerKm: number | null | undefined): { band: PaceBand | null; from: "asked" | "threshold" | null } {
+  if (s.pace) return { band: s.pace, from: "asked" };
+  const band = s.effort ? paceBandFor(s.effort, thresholdSecPerKm, s.target.kind === "distance" ? { distanceM: s.target.meters } : {}) : null;
+  return { band, from: band ? "threshold" : null };
+}
+
 /** The run's steps on the watch with the athlete's threshold (see the module comment). Pure. */
 export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresholdSecPerKm: number | null | undefined): RunWatchResolved {
   const steps: RunWatchStepResolved[] = [];
@@ -179,8 +196,8 @@ export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresh
   const resolve = (s: RunWatchStep): RunWatchStepResolved => {
     const distanceM = s.target.kind === "distance" ? s.target.meters : undefined;
     const asked = s.pace ?? null;
-    const band = asked ?? (s.effort ? paceBandFor(s.effort, thresholdSecPerKm, distanceM !== undefined ? { distanceM } : {}) : null);
-    if (!asked && !band && s.effort && paceBandFor(s.effort, SOME_THRESHOLD, distanceM !== undefined ? { distanceM } : {})) paceOwed += 1;
+    const { band, from } = runStepBand(s, thresholdSecPerKm);
+    if (from === null && s.effort && paceBandFor(s.effort, SOME_THRESHOLD, distanceM !== undefined ? { distanceM } : {})) paceOwed += 1;
     const mid = asked ? (asked.fastSecPerKm + asked.slowSecPerKm) / 2 : s.effort ? conversionPaceFor(s.effort, thresholdSecPerKm, distanceM !== undefined ? { distanceM } : {}) : null;
     let secs: number | null;
     if (s.target.kind === "time") {
@@ -196,7 +213,7 @@ export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresh
       seconds: secs,
       ...(distanceM !== undefined ? { meters: distanceM } : {}),
       pace: band,
-      paceFrom: asked ? "asked" : band ? "threshold" : null,
+      paceFrom: from,
     };
   };
   const tally = (r: RunWatchStepResolved, source: RunWatchStep | null) => {
