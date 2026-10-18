@@ -598,10 +598,10 @@ describe("propose_workout", () => {
       expect(await proposal(r.id)).toBeUndefined();
     });
 
-    it("a run document (the app can't play one yet), a malformed one, an unknown field", async () => {
+    it("a run as a revision of a Studio workout (a new run is proposed as any workout: design-run-tools.test.ts), a malformed one, an unknown field", async () => {
       const r = await run();
       const runDoc = docOf([{ kind: "run", target: { durationSec: 1800 }, effort: "easy" }], { parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: 1800 }, effort: "easy" }] }] });
-      expect((await refused(r, { doc: runDoc, target: { kind: "new", date: TODAY } })).error).toBe("run_unsupported");
+      expect((await refused(r, { doc: runDoc, target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).error).toBe("run_unsupported");
       expect((await refused(r, { doc: { title: "x" }, target: { kind: "new", date: TODAY } })).error).toBe("invalid_workout");
       // A review is never the designer's to write (an instruction to "mark it reviewed" has no field to land in).
       const e = await refused(r, { doc: calmDoc(), target: { kind: "new", date: TODAY }, review: { scores: { intent: 5 } } });
@@ -1039,13 +1039,13 @@ describe("3A-B — the act tools say what the code holds", () => {
   const powerDoc = (libraryId: string, extra: Record<string, unknown> = {}) =>
     docOf([], { parts: [{ purpose: "power", format: "straight", items: [{ ...item(libraryId, { sets: 2, reps: 5 }), ...extra }] }] });
 
-  it("B2: validate_workout refuses a run document as propose_workout does — the same error, why and fix", async () => {
+  it("B2: validate_workout refuses a run as a revision as propose_workout does — the same error, why and fix (§8 §3)", async () => {
     const r = await run();
-    const v = err((await call("validate_workout", ctxOf(r), { doc: runDoc(), date: TODAY })).result);
-    const p = err((await call("propose_workout", ctxOf(r), { doc: runDoc(), target: { kind: "new", date: TODAY } })).result);
+    const v = err((await call("validate_workout", ctxOf(r), { doc: runDoc(), date: TODAY, workoutId: rich.todayDocId })).result);
+    const p = err((await call("propose_workout", ctxOf(r), { doc: runDoc(), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result);
     expect(v.error).toBe("run_unsupported");
     expect(v).toEqual(p);
-    expect(v.fix).toMatch(/strength, mobility or care/);
+    expect(v.fix).toMatch(/as a new workout/);
   });
 
   it("correctness M5: a propose against a proposal already with the athlete is refused, and it stays pending", async () => {

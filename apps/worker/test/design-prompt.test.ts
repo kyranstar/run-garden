@@ -120,10 +120,16 @@ describe("the prompt text", () => {
       condition_pattern: "a condition's refusal",
       condition_gate: "a condition's refusal",
       condition_gate_pending: "a condition's refusal",
+      // Designed runs (§8 §3).
+      run_mixed: "a run mixed with moves",
+      run_open: "a run the watch can't hold (an open segment",
+      run_too_long: "more than 60 steps)",
+      run_pace_far: "a written pace far from its effort",
     };
     const warningsOnly: DocIssueCode[] = [
       "legacy_id", "care_share", "condition_mode", "condition_format", "condition_flare", "mode_limits", "mode_above_day", "excluded_by_athlete",
       "equipment_unavailable", "progression_jump", "dose_mismatch", "jump_placement", "too_long_for_watch", "unknown_focus", "unknown_equipment",
+      "run_pace_owed", "run_hard_close", "run_long_share", "run_volume_jump",
     ];
     expect([...Object.keys(errors), ...warningsOnly].sort()).toEqual([...DOC_ISSUE_CODES].sort());
     const fatal = SHARED_PROMPT.slice(SHARED_PROMPT.indexOf("Fatal only when wrong"));
@@ -170,17 +176,26 @@ describe("3A-B — the prompt agrees with the code", () => {
     expect(SHARED_PROMPT).toMatch(/To end, call finish \(a reviewer ends with submit_review\)\./);
   });
 
-  it("B2: runs are not designed by the coach — they stay on the plan; the archetype is around a run; a run document is fatal; no run brief", () => {
-    expect(SHARED_PROMPT).not.toMatch(/designs workouts — runs/);
-    // Task 8b fix round (5): a watch-plan run may be changed, never designed.
-    expect(SHARED_PROMPT).toContain("Runs are never designed. A watch-plan run may be skipped, moved, or given another length with adjust_plan");
-    expect(roleBlock("main")).toContain("Runs are never designed. A watch-plan run may be skipped, moved, or given another length with adjust_plan");
-    expect([SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r))].join(" ")).not.toMatch(/Runs stay/);
-    expect(SHARED_PROMPT).not.toContain("Easy run + mobility");
+  it("B2, now designed runs (§8 §3): a run is designed as a run of its own — when asked, or on a run day — its efforts named and its paces computed; a run on the plan is changed with adjust_plan; a run brief only when asked", () => {
+    const all = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r))].join(" ");
+    expect(all).not.toMatch(/never design|Runs are never designed|Never a run|can't play a run/);
+    expect(SHARED_PROMPT).toContain("The coach designs runs too, each a run of its own (Runs, below); a run already on the plan may be skipped, moved, eased or given another length with adjust_plan.");
+    const runs = SHARED_PROMPT.slice(SHARED_PROMPT.indexOf("Runs. "), SHARED_PROMPT.indexOf("Conditions. "));
+    expect(runs).toContain("Design one when the athlete asks for a run, or when the day you are asked to shape is a run day on the plan");
+    expect(runs).toContain("never among moves");
+    expect(runs).toContain("format intervals with rounds");
+    expect(runs).toContain("Name the effort; the app computes its pace from the athlete's threshold");
+    expect(runs).toContain("leave target.pace out unless the athlete asked for a pace");
+    // Every effort the document takes, by its own name.
+    for (const e of ["easy", "recovery", "steady", "long", "tempo", "threshold", "interval", "hills", "strides", "race", "by_feel"]) expect(runs).toContain(e);
+    expect(roleBlock("main")).toContain("Design a run when they ask for one, or the day you shape is a run day (Runs, above)");
     expect(SHARED_PROMPT).toContain("- Around a run: activation before it, or mobility after it — its own mobility workout on the run's day, timed relative to the run.");
-    expect(fatal).toContain("a mostly-running document");
-    expect(roleBlock("main")).toContain("never design or brief one");
-    expect(line("plan_set")).toContain("Never a run.");
+    expect(SHARED_PROMPT).toContain("- A quality run: easy warm-up → the work at its named effort");
+    expect(fatal).not.toContain("a mostly-running document");
+    expect(fatal).toContain("a run as a revision of a Studio workout");
+    expect(line("plan_set")).toContain("A run only when the athlete asked for runs in it.");
+    // Generic: no athlete's pace, distance or race in the text (a public repository).
+    expect(runs).not.toMatch(/\d+:\d\d|\bkm\b|\bmi\b|marathon|10K/);
   });
 
   it("B3: the reason for an accepted cost goes where the reviewer can see it, and the reviewer judges it there", () => {

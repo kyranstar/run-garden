@@ -18,9 +18,9 @@
  *    malformed document. A move the day closes is refused even in a revision whose alternate the day allows: a
  *    proposal states what will be played, so the designer swaps it in this revision (the Studio's save lets the
  *    alternate stand in; a proposal never leans on that);
- *  - a document whose discipline is a run (`run_unsupported`: the app can't play one yet, so it could never be
- *    approved), and an objective or key result id that isn't the athlete's (`unknown_objective`) — validate_workout
- *    refuses both the same way (act-common.ts);
+ *  - a run as a revision of a Studio or template workout (`run_unsupported`: designed runs, §8 §3 — a new run is
+ *    judged as a run, with the athlete's running read in the athlete's statement), and an objective or key result id
+ *    that isn't the athlete's (`unknown_objective`) — validate_workout refuses both the same way (act-common.ts);
  *  - a proposal already with the athlete (`proposal_pending`: the main run's finish made it pending; "call finish");
  *  - a revision of a workout another run of this design already revises (`target_taken`) — but not the first version a
  *    set's redo replaces (`ctx.replaces`) — or that a change of the proposal's skips or moves (adjust_plan, Task 8b);
@@ -103,6 +103,7 @@ import {
   docValidateCtx,
   errorsLine,
   freeTextRefusal,
+  holdsRun,
   idsRefusal,
   isErr,
   issueOut,
@@ -113,6 +114,7 @@ import {
   parseAct,
   prose,
   readDocAthlete,
+  runCtxExtra,
   runUnsupported,
   WARNINGS_SHOWN,
   withFocusRefs,
@@ -325,10 +327,14 @@ export const proposeWorkout: DesignTool = {
     if (!mainRunId) return refuse("no_main_run", "This designer run has no main run to propose into.", "Finish with what you have.");
     const proposalId = designProposalId(mainRunId);
     const submitted = coachDoc(p.doc, mainRunId);
+    // A run is a new workout, never a revision of a Studio or template one (designed runs, §8 §3).
+    const run = holdsRun(submitted);
+    if (run && p.target.kind === "revise") return runUnsupported();
     const pw = plannedWorkouts;
     const a = await readDocAthlete(ctx, {
       placeId: docPlaceId(submitted),
       extras: {
+        ...(run && p.target.kind === "new" ? runCtxExtra(ctx, p.target.date) : {}),
         propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
         propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
         restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
@@ -461,8 +467,6 @@ export const proposeWorkout: DesignTool = {
     if (ids) return ids;
     const vctx = await docValidateCtx(ctx, a, date);
     const judged = judge(doc, vctx, { keyResults: a.keyResultMeasures });
-    // A run document first, as validate_workout refuses it: no fix of its errors makes it one the app can play.
-    if (judged.derived?.discipline === "run") return runUnsupported();
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
       return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, date === today, noCheckToday(vctx)));
     }

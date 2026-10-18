@@ -17,8 +17,9 @@
  *    profile's choice, the place marked default, the first made, the Home preset). At most 1 + 1 + 4 statements.
  *  - A free-text move is refused (`freeTextRefusal`): no rule can judge a move with no library record. A revision may
  *    keep one its workout already holds, unchanged.
- *  - A run document is refused (`runUnsupported`), by validate_workout and propose_workout alike: the app can't play
- *    one yet, so it could never be approved.
+ *  - A run (designed runs, §8 §3) is judged as a run, with the athlete's running read in the athlete's statement
+ *    (`runCtxExtra` → the validator's `ctx.run`). Refused only as a revision of a Studio or template workout
+ *    (`runUnsupported`), by validate_workout and propose_workout alike: a new run is proposed as any workout is.
  *  - The ids a document names beyond the library — `intent.objectiveIds`, an item's `test.keyResultId` — must be the
  *    athlete's own (`idsRefusal`, fatal: an invented id would attach the workout to nothing), read in the statement
  *    the tools already run. A focus-area id in `intent.focus` stands for its library refs (`withFocusRefs`), so the
@@ -50,6 +51,7 @@ import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR,
 import { deriveDoc, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { defaultFromRow, defaultPlaceSql, namedFromRow, ownPlaceSql, type PlaceGear } from "../default-place.js";
 import { recentOf } from "../doc-workouts.js";
+import { runCtxOf, runCtxSql } from "../designed-runs.js";
 import { loadSessionsById } from "../engine-inputs.js";
 import { doneCleanlyOf, doneStats } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
@@ -451,14 +453,29 @@ export function idsRefusal(doc: Record<string, unknown>, a: Pick<DocAthlete, "ob
   );
 }
 
-/** A run document: the app can't play one yet, so it could never be approved (validate_workout and propose_workout). */
+/**
+ * A run as a revision (designed runs, §8 §3): a Studio or template workout is played in the app, a run goes to the watch,
+ * so one never becomes the other (validate_workout and propose_workout). A new run is proposed as any workout is.
+ */
 export function runUnsupported(): ToolErr {
   return refuse(
     "run_unsupported",
-    "This draft is mostly running, and the app can't play a run document yet, so it could never be approved.",
-    "Keep runs on the plan as they are; propose strength, mobility or care work around them.",
+    "A run can't replace a Studio or template workout: the one is played in the app, the run goes to the watch.",
+    "Propose the run as a new workout (target new); if the old one goes, take it off with adjust_plan in the same suggestion.",
   );
 }
+
+/** Whether a submitted document holds a run segment (read before it is parsed: the run's context is read with it). */
+export function holdsRun(doc: Record<string, unknown>): boolean {
+  const parts = Array.isArray(doc.parts) ? (doc.parts as unknown[]) : [];
+  return parts.some((part) => {
+    const items = (part as { items?: unknown } | null)?.items;
+    return Array.isArray(items) && items.some((i) => (i as { kind?: unknown } | null)?.kind === "run");
+  });
+}
+
+/** The athlete's running for a run on `date`, read in the athlete's statement (`readDocAthlete`'s extras): `actRun`. */
+export const runCtxExtra = (ctx: ToolContext, date: string): Record<string, SQL> => ({ actRun: runCtxSql(ctx.userId, date) });
 
 /**
  * The validator's context for `date` (see the module comment): what docDayContext gives the create path, the day's
@@ -480,6 +497,8 @@ export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: stri
     day: { date, today, readings, done, recent: recentOf(sessions, today) },
     excluded: a.setAside,
     equipment: a.place.equipment,
+    // A run's: the athlete's running, read with the athlete (`runCtxExtra`) — designed runs, §8 §3.
+    ...(a.extra.actRun !== undefined ? { run: runCtxOf(a.extra.actRun) } : {}),
   };
 }
 

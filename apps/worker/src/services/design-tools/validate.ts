@@ -10,7 +10,8 @@
  * It refuses what propose_workout refuses whatever the day (act-common.ts), so a draft never passes here only to be
  * refused there: a free-text move (`freeTextRefusal` — told which workout the draft revises, `workoutId`, it allows the
  * free-text moves that workout's document already holds, unchanged), an objective or key result id that isn't the
- * athlete's (`idsRefusal`), and a run document (`runUnsupported`). A focus-area id stands for its refs (`withFocusRefs`).
+ * athlete's (`idsRefusal`), and a run as a revision of one (`runUnsupported`; designed runs, §8 §3 — a new run is judged
+ * as a run, with the athlete's running read in the athlete's statement). A focus-area id stands for its refs (`withFocusRefs`).
  * Six statements at most: the athlete (with the gear, the set-aside moves, the recent sessions' ids and the revised
  * workout's document), the moves done cleanly, and the recent sessions (four).
  */
@@ -27,6 +28,7 @@ import {
   docValidateCtx,
   ERRORS_SHOWN,
   freeTextRefusal,
+  holdsRun,
   idsRefusal,
   isErr,
   issueOut,
@@ -35,6 +37,7 @@ import {
   objectField,
   parseAct,
   readDocAthlete,
+  runCtxExtra,
   runUnsupported,
   WARNINGS_SHOWN,
   withFocusRefs,
@@ -47,7 +50,7 @@ const input = z.object({ doc: objectField, date: dateField, workoutId: z.string(
 export const validateWorkout: DesignTool = {
   name: "validate_workout",
   description:
-    "Check a draft for its date, free: the errors to fix (a condition's refusal, an unknown move, a malformed part) and the advisory notes, with the minutes, balance and gear derived from it. It refuses what propose_workout refuses (a run document, an id that isn't the athlete's). Use it while you are still shaping a draft.",
+    "Check a draft for its date, free: the errors to fix (a condition's refusal, an unknown move, a malformed part) and the advisory notes, with the minutes, balance and gear derived from it. It refuses what propose_workout refuses (a run as a revision of a Studio workout, an id that isn't the athlete's). A run is judged as a run, with the athlete's running. Use it while you are still shaping a draft.",
   inputSchema: {
     type: "object",
     properties: {
@@ -65,12 +68,16 @@ export const validateWorkout: DesignTool = {
     const p = parseAct(input, raw, "doc (a workout document), date (YYYY-MM-DD) and optionally workoutId");
     if (isErr(p)) return p;
     const submitted = coachDoc(p.doc, mainRunIdOf(ctx) ?? ctx.run.id);
+    // A run is a new workout, never a revision of a Studio or template one (designed runs, §8 §3).
+    const run = holdsRun(submitted);
+    if (run && p.workoutId) return runUnsupported();
     const pw = plannedWorkouts;
     const a = await readDocAthlete(ctx, {
       placeId: docPlaceId(submitted),
-      ...(p.workoutId
-        ? { extras: { baseDoc: sql`(select ${pw.workoutDoc} from ${pw} where ${and(eq(pw.id, p.workoutId), eq(pw.userId, ctx.userId), isNull(pw.archivedAt))})` } }
-        : {}),
+      extras: {
+        ...(p.workoutId ? { baseDoc: sql`(select ${pw.workoutDoc} from ${pw} where ${and(eq(pw.id, p.workoutId), eq(pw.userId, ctx.userId), isNull(pw.archivedAt))})` } : {}),
+        ...(run ? runCtxExtra(ctx, p.date) : {}),
+      },
     });
     if (isErr(a)) return a;
     const today = a.athlete.today;
@@ -83,7 +90,6 @@ export const validateWorkout: DesignTool = {
     const ids = idsRefusal(doc, a);
     if (ids) return ids;
     const judged = judge(doc, await docValidateCtx(ctx, a, p.date), { keyResults: a.keyResultMeasures });
-    if (judged.derived?.discipline === "run") return runUnsupported();
     const minutes = judged.derived?.estimatedMinutes;
     const notes = judged.warnings.length ? `, ${judged.warnings.length} note${judged.warnings.length === 1 ? "" : "s"}` : "";
     return {

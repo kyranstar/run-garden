@@ -283,7 +283,8 @@ describe("a cost the athlete chose (13c R15, 13b I8)", () => {
     const r = parseReview({ ...v, scores: { ...v.scores, condition_safety: 2 }, accepted: [{ dimension: "condition_safety", why: "They asked for it." }] });
     expect(r).toMatchObject({ error: "invalid_review", why: expect.stringContaining("accepted.0.dimension: condition safety is never accepted") });
     const schema = submitReview.inputSchema as { properties: { accepted: { items: { properties: { dimension: { enum: string[] } } } } } };
-    expect(schema.properties.accepted.items.properties.dimension.enum).toEqual(DIMS.filter((d) => d !== "condition_safety"));
+    // With a run's own dimensions (designed runs, §8 §3: design-review-run.test.ts).
+    expect(schema.properties.accepted.items.properties.dimension.enum).toEqual([...DIMS, "structure", "pace"].filter((d) => d !== "condition_safety"));
   });
 
   it("its line is written to the athlete: '<Label> — kept as you asked: <why>', in the athlete's words", () => {

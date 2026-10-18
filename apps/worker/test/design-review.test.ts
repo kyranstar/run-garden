@@ -1562,7 +1562,8 @@ describe("fix wave 3A — a cost the athlete chose is not a must-fix (A7)", () =
     expect(many).toMatchObject({ error: "invalid_review" });
     const schema = submitReview.inputSchema as { properties: { accepted: { maxItems: number; items: { properties: { dimension: { enum: string[] } } } } } };
     expect(schema.properties.accepted.maxItems).toBe(3);
-    expect(schema.properties.accepted.items.properties.dimension.enum).toEqual(DIMS.filter((d) => d !== "condition_safety"));
+    // With a run's own dimensions (designed runs, §8 §3: design-review-run.test.ts).
+    expect(schema.properties.accepted.items.properties.dimension.enum).toEqual([...DIMS, "structure", "pace"].filter((d) => d !== "condition_safety"));
   });
 
   it("the review's receipt and the designer's result show it as kept as the athlete asked; the athlete's review keeps it", async () => {

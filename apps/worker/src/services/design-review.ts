@@ -15,7 +15,7 @@
  *     and cut near TOOL_RECORDS_MAX_BYTES with a line saying what was left out. Never the designer's reasoning: no assistant text,
  *     no thinking. An earlier draft's review is left out too: each review is independent.
  *  3. The reviewer may read; it answers with `submit_review` — reviewer-only, its finish — which checks the review
- *     (`parseReview`: every REVIEW_DIMENSIONS id, a whole score 1..5, a note — free text is never refused for length
+ *     (`parseReview`: every id of the draft's rubric — a run's, RUN_REVIEW_DIMENSIONS, else REVIEW_DIMENSIONS — a whole score 1..5, a note — free text is never refused for length
  *     below PROSE_CEILING times its cap, and is kept whole for the designer; the card clips it) and stores it on the op
  *     (`applyVerdict`). A review that can't be read gets ONE repair (a teachable error back to the reviewer, or a
  *     nudge after an answer with no call); a second ends the reviewer, and the validator's view stands, said in the
@@ -52,12 +52,12 @@
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
-import { dayLabel } from "@rg/domain";
+import { dayLabel, isRunDoc, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
-import { markUntrusted, REVIEW_DIMENSIONS } from "./design-prompt.js";
+import { markUntrusted, REVIEW_DIMENSIONS, reviewDimensions, type ReviewRubric } from "./design-prompt.js";
 import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/propose.js";
 import { capInWords, PROSE_CEILING, proseTooLong } from "./design-tools/act-common.js";
 import { refuse, untrusted } from "./design-tools/read-common.js";
@@ -110,6 +110,18 @@ export function overCeiling(field: string, text: string, max: number): string | 
 export const reviewerRunId = (designerRunId: string, toolUseId: string): string => `rv-${designerRunId}-${toolUseId}`;
 
 const DIMENSION_IDS: readonly string[] = REVIEW_DIMENSIONS.map((d) => d.id);
+/** A rubric's dimension ids, in its order (designed runs, §8 §3: a run's are its own). */
+const idsOf = (rubric: ReviewRubric): readonly string[] => reviewDimensions(rubric).map((d) => d.id);
+/** Every rubric's ids, and those every rubric shares: what submit_review's schema names and requires. */
+const ALL_IDS: readonly string[] = [...new Set([...DIMENSION_IDS, ...idsOf("run")])];
+const SHARED_IDS: readonly string[] = DIMENSION_IDS.filter((d) => idsOf("run").includes(d));
+/** The dimensions only a run's rubric has: a review scoring one was given on it. */
+const RUN_ONLY_IDS: readonly string[] = idsOf("run").filter((d) => !DIMENSION_IDS.includes(d));
+
+/** The rubric a draft is reviewed on: a run's (`isRunDoc`), else every other workout's. */
+export function reviewRubricOf(doc: Pick<WorkoutDoc, "parts">): ReviewRubric {
+  return isRunDoc(doc) ? "run" : "workout";
+}
 
 const bytes = utf8Bytes;
 
@@ -170,9 +182,10 @@ const reviewInput = z
   })
   .strict();
 
-const ACCEPTABLE_IDS = DIMENSION_IDS.filter((d) => d !== NEVER_ACCEPTED);
+const ACCEPTABLE_IDS = ALL_IDS.filter((d) => d !== NEVER_ACCEPTED);
 
-const REVIEW_FIX = `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (${capInWords(REVIEW_NOTE_MAX)}) for each of ${DIMENSION_IDS.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why } — never ${NEVER_ACCEPTED}.`;
+const reviewFix = (ids: readonly string[]): string =>
+  `Call submit_review again with { scores, notes, mustFix, improvements, accepted? }: a whole score from 1 to 5 and a one-line note (${capInWords(REVIEW_NOTE_MAX)}) for each of ${ids.join(", ")}; must-fix items (at most ${MUST_FIX_MAX}) and improvements (at most ${IMPROVEMENTS_MAX}), each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}; and, when a low score is a cost the athlete chose in their own words, up to ${ACCEPTED_MAX} accepted items { dimension (one of the ids above), why } — never ${NEVER_ACCEPTED}.`;
 
 /** A dimension's id in plain words, for one no label names: "pace_feel" → "Pace feel" — never shown raw. */
 export function idInWords(id: string): string {
@@ -187,7 +200,7 @@ export function idInWords(id: string): string {
  * clips the reason first.
  */
 export function acceptedLine(a: AcceptedCost, label?: string): string {
-  const named = label ?? REVIEW_DIMENSIONS.find((d) => d.id === a.dimension)?.label ?? idInWords(a.dimension);
+  const named = label ?? [...REVIEW_DIMENSIONS, ...reviewDimensions("run")].find((d) => d.id === a.dimension)?.label ?? idInWords(a.dimension);
   return `${named} — kept as you asked: ${athleteText(a.why)}`;
 }
 
@@ -196,7 +209,9 @@ export function acceptedLine(a: AcceptedCost, label?: string): string {
  * unknown (in the scores, the notes, or an accepted cost), a score that isn't a whole number from 1 to 5, a note that is
  * empty or too long, a malformed list.
  */
-export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
+export function parseReview(raw: unknown, rubric: ReviewRubric = "workout"): ReviewWithAccepted | ToolErr {
+  const dims = reviewDimensions(rubric);
+  const ids: readonly string[] = dims.map((d) => d.id);
   const problems: string[] = [];
   const parsed = reviewInput.safeParse(raw ?? {});
   if (!parsed.success) {
@@ -213,7 +228,7 @@ export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
   const noteIn = given.notes && typeof given.notes === "object" ? (given.notes as Record<string, unknown>) : {};
   const missingScores: string[] = [];
   const missingNotes: string[] = [];
-  for (const d of DIMENSION_IDS) {
+  for (const d of ids) {
     const s = scoreIn[d];
     if (s === undefined) missingScores.push(d);
     else if (typeof s !== "number" || !Number.isInteger(s) || s < 1 || s > 5) problems.push(`scores.${d}: ${JSON.stringify(s)} is not a whole score from 1 to 5`);
@@ -228,13 +243,13 @@ export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
   if (missingScores.length > 0) problems.push(`scores: missing ${missingScores.join(", ")}`);
   if (missingNotes.length > 0) problems.push(`notes: missing ${missingNotes.join(", ")}`);
   for (const [label, o] of [["scores", scoreIn], ["notes", noteIn]] as const) {
-    const unknown = Object.keys(o).filter((k) => !DIMENSION_IDS.includes(k));
+    const unknown = Object.keys(o).filter((k) => !ids.includes(k));
     if (unknown.length > 0) problems.push(`${label}: no dimension ${unknown.map((k) => JSON.stringify(k)).join(", ")}`);
   }
   const acceptedIn = Array.isArray((raw as { accepted?: unknown } | null)?.accepted) ? ((raw as { accepted: unknown[] }).accepted) : [];
   for (const [i, a] of acceptedIn.entries()) {
     const d = (a as { dimension?: unknown } | null)?.dimension;
-    if (typeof d === "string" && !DIMENSION_IDS.includes(d)) problems.push(`accepted.${i}.dimension: no dimension ${JSON.stringify(d)}`);
+    if (typeof d === "string" && !ids.includes(d)) problems.push(`accepted.${i}.dimension: no dimension ${JSON.stringify(d)}`);
     if (d === NEVER_ACCEPTED) {
       problems.push(`accepted.${i}.dimension: condition safety is never accepted — a condition's costs always show beside Approve; score it, and list a must-fix if the dose needs one`);
     }
@@ -254,7 +269,7 @@ export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
     if (over) problems.push(over);
   }
   if (problems.length > 0 || !parsed.success) {
-    return refuse("invalid_review", `The review can't be read: ${[...new Set(problems)].slice(0, 10).join("; ")}.`, REVIEW_FIX);
+    return refuse("invalid_review", `The review can't be read: ${[...new Set(problems)].slice(0, 10).join("; ")}.`, reviewFix(ids));
   }
   const accepted = parsed.data.accepted ?? [];
   const chosen = new Set(accepted.map((a) => a.dimension));
@@ -264,7 +279,7 @@ export function parseReview(raw: unknown): ReviewWithAccepted | ToolErr {
   // (`accepted`, fix wave 3A, A7): kept as they asked, never made a must-fix. (A hard rule is the validator's: a draft
   // that breaks one is refused before any review.)
   if (mustFix.length === 0) {
-    mustFix = REVIEW_DIMENSIONS.filter((d) => scores[d.id]! <= 2 && !chosen.has(d.id))
+    mustFix = dims.filter((d) => scores[d.id]! <= 2 && !chosen.has(d.id))
       .map((d) => `${d.label}: ${notes[d.id]}`)
       .slice(0, MUST_FIX_MAX);
   }
@@ -691,12 +706,14 @@ export const submitReview: DesignTool = {
   inputSchema: {
     type: "object",
     properties: {
-      scores: { type: "object", properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, SCORE])), required: [...DIMENSION_IDS], additionalProperties: false },
+      // Every rubric's dimensions, those all share required: the draft's own rubric (a run's, or a workout's) is checked
+      // by `parseReview`, its ids in the packet.
+      scores: { type: "object", properties: Object.fromEntries(ALL_IDS.map((d) => [d, SCORE])), required: [...SHARED_IDS], additionalProperties: false },
       notes: {
         type: "object",
-        description: `One line per dimension, written to the athlete: ${capInWords(REVIEW_NOTE_MAX)} each.`,
-        properties: Object.fromEntries(DIMENSION_IDS.map((d) => [d, NOTE])),
-        required: [...DIMENSION_IDS],
+        description: `One line per dimension of the draft's rubric, written to the athlete: ${capInWords(REVIEW_NOTE_MAX)} each.`,
+        properties: Object.fromEntries(ALL_IDS.map((d) => [d, NOTE])),
+        required: [...SHARED_IDS],
         additionalProperties: false,
       },
       mustFix: { type: "array", maxItems: MUST_FIX_MAX, description: `Each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
@@ -725,12 +742,21 @@ export const submitReview: DesignTool = {
   roles: ["reviewer"],
   control: "finish",
   async run(ctx, raw) {
-    const review = parseReview(raw);
-    if ("error" in review) return review;
+    // Read as the rubric its scores name (a run's when it scores a dimension only a run's has): a review that can't be read
+    // costs no statement. Then the draft's own rubric (designed runs, §8 §3: a run is judged as a run) decides, from the
+    // proposal the review is stored in — a review on the other rubric is refused with the draft's dimensions.
+    const named = Object.keys(((raw ?? {}) as { scores?: Record<string, unknown> }).scores ?? {});
+    const asked: ReviewRubric = named.some((k) => RUN_ONLY_IDS.includes(k)) ? "run" : "workout";
+    const parsed = parseReview(raw, asked);
+    if ("error" in parsed) return parsed;
     const of = ctx.reviewOf;
     if (!of) return { data: { stored: false, note: "This run has no draft to review." }, summary: "No draft to review." };
     const { ops, opsText, status } = await readProposal(ctx.db, ctx.userId, of.proposalId);
     const op = ofRun(ops, of.designerRunId);
+    const draft = op ? draftOf(op, of.toolUseId, of.proposalId) : null;
+    const rubric = draft ? reviewRubricOf(draft.doc) : asked;
+    const review = rubric === asked ? parsed : parseReview(raw, rubric);
+    if ("error" in review) return review;
     const next = op ? applyVerdict(op, of.toolUseId, { review }) : null;
     const receipt = {
       round: of.round,
@@ -857,6 +883,11 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
     `Up to ${REVIEWER_MAX_CALLS} turns; most reviews need no reads.`,
     `Where it goes: ${noBrackets(targetWords(d))}.`,
     `The draft (each move named, with its condition ratings):\n${markUntrusted("designer run", JSON.stringify(packetDoc(d.doc)))}`,
+    ...(reviewRubricOf(d.doc) === "run"
+      ? [
+          `This draft is a run: score it on the run rubric — ${idsOf("run").join(", ")}. Its paces are the app's, computed from the athlete's threshold (the running line gives each effort's band); a pace written in the draft is one the athlete asked for.`,
+        ]
+      : []),
     ...(d.changeNote ? [`What changed from the last draft, in the designer's words: ${markUntrusted("designer run", d.changeNote)}`] : []),
     ...(o.brief ? [`The main coach's brief for this workout:\n${markUntrusted("main coach", o.brief)}`] : []),
   ];

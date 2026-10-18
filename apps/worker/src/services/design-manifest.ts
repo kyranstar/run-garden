@@ -28,7 +28,7 @@ import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type { DesignedOp, DesignedPlanOp, OpOutcome, PlanOpOutcome, Written } from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
-import { REVIEW_DIMENSIONS } from "./design-prompt.js";
+import { REVIEW_DIMENSIONS, RUN_REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
@@ -113,10 +113,16 @@ export const LEGACY_LABELS: Readonly<Record<string, string>> = {
   equipment_fit: "Equipment fit",
 };
 
-/** A dimension's label: the rubric's, a retired one's (`LEGACY_LABELS`), else its id in plain words. */
+/** A dimension's label: the rubric's (a run's included), a retired one's (`LEGACY_LABELS`), else its id in plain words. */
 export function dimensionLabel(id: string): string {
-  return REVIEW_DIMENSIONS.find((d) => d.id === id)?.label ?? LEGACY_LABELS[id] ?? idInWords(id);
+  return [...REVIEW_DIMENSIONS, ...RUN_REVIEW_DIMENSIONS].find((d) => d.id === id)?.label ?? LEGACY_LABELS[id] ?? idInWords(id);
 }
+
+/** The rubric a stored review was given on: a run's when it scores a dimension only a run's has (§8 §3). */
+const rubricOfScores = (keys: readonly string[]): readonly { id: string }[] => {
+  const runOnly = RUN_REVIEW_DIMENSIONS.filter((d) => !REVIEW_DIMENSIONS.some((x) => x.id === d.id)).map((d) => d.id as string);
+  return keys.some((k) => runOnly.includes(k)) ? RUN_REVIEW_DIMENSIONS : REVIEW_DIMENSIONS;
+};
 
 /** What changed between drafts, as the card shows a line of it (a change note and why it wasn't kept), at most. */
 export const CHANGE_SHOWN_MAX = 300;
@@ -129,8 +135,9 @@ export function lineReview(review: DesignedOp["review"]): LineReview | null {
   if (!review) return null;
   const scores = (review.scores ?? {}) as Record<string, unknown>;
   const notes = (review.notes ?? {}) as Record<string, unknown>;
-  const known = new Set<string>(REVIEW_DIMENSIONS.map((d) => d.id));
-  const ids = [...REVIEW_DIMENSIONS.map((d) => d.id as string), ...[...Object.keys(scores), ...Object.keys(notes)].filter((k) => !known.has(k))];
+  const rubric = rubricOfScores([...Object.keys(scores), ...Object.keys(notes)]);
+  const known = new Set<string>(rubric.map((d) => d.id));
+  const ids = [...rubric.map((d) => d.id as string), ...[...Object.keys(scores), ...Object.keys(notes)].filter((k) => !known.has(k))];
   const dimensions = [...new Set(ids)].flatMap((id) => {
     const score = typeof scores[id] === "number" ? (scores[id] as number) : null;
     const note = typeof notes[id] === "string" ? shown(notes[id] as string, REVIEW_NOTE_MAX) : null;
