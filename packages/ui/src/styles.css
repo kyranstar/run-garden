@@ -10986,8 +10986,8 @@ a.stu-tpl-open:focus-visible::before {
 .coach-sheet-menu {
   position: relative;
 }
-/* The thread coach's cards on the Plan (thread-coach-cards.tsx): its suggestions, its question, and its two plain lines
-   — out of credits (with Retry) and the work a wake lost. */
+/* The thread coach's cards on the Plan (thread-coach-cards.tsx): its suggestions, its question, and its plain lines —
+   out of credits (with Retry), its reply in words, and the work a wake lost. */
 .thread-coach-cards {
   display: flex;
   flex-direction: column;
@@ -11002,6 +11002,7 @@ a.stu-tpl-open:focus-visible::before {
   gap: var(--space-4);
   margin: 0;
 }
+.thread-coach-reply,
 .thread-coach-lost {
   margin: 0;
   font-size: var(--text-sm);
