@@ -36,6 +36,7 @@ const TOOL_WORDS: Record<PromptToolName, string> = {
   read_profile: "your profile",
   read_day: "the day",
   read_plan: "your plan",
+  read_plans: "your plans",
   list_workouts: "your workouts",
   get_workout: "the workout",
   read_history: "your history",
