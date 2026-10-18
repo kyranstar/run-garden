@@ -188,13 +188,13 @@ describe("the Today card's Ask", () => {
     expect(r.calls[0]).toMatchObject({ seeing: { kind: "workout", id: "run-1", date: TODAY, label: "Mon 5 Oct · Easy Run with Strides · 45 min" }, request: null });
   });
 
-  it("a rest day's: about the day", async () => {
+  it("a rest day's: about the day, seen as a rest day (its own chips: the integrated review)", async () => {
     const r = recorder();
     const card = await renderCard(workout({ id: "rest-1", title: "Rest", category: "rest", sport: "rest" }), r.opener);
     const ask = card.querySelector<HTMLButtonElement>(".ask-coach")!;
     expect(ask.getAttribute("data-focus")).toBe(`day:${TODAY}`);
     await act(async () => ask.click());
-    expect(r.calls).toEqual([{ seeing: { kind: "day", id: TODAY, date: TODAY, label: "Mon 5 Oct" }, request: null }]);
+    expect(r.calls).toEqual([{ seeing: { kind: "day", id: TODAY, date: TODAY, label: "Mon 5 Oct", rest: true }, request: null }]);
   });
 
   it("no coach in the app: the card as it always was", async () => {
