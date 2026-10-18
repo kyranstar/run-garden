@@ -187,6 +187,16 @@ describe("nothing can be done, and that is the answer", () => {
   });
 });
 
+describe("COROS stored a run differently from what was sent (review-2 I2)", () => {
+  it("says so, by nobody, with no control — and only while nothing louder is true", () => {
+    expect(syncAction({ ...ok, watchCopyDiffers: true })).toEqual({ agent: "nobody", code: "watch_copy_differs" });
+    // A day gone asks nothing; a date the two disagree on, or a write on its way, is the louder fact.
+    expect(syncAction({ ...ok, watchCopyDiffers: true, settled: true })).toBeNull();
+    expect(syncAction({ ...ok, watchCopyDiffers: true, view: "calendar_only" })).toEqual({ agent: "athlete", code: "retry_write", control: "retry" });
+    expect(syncAction({ ...ok, watchCopyDiffers: true, view: "syncing", write: "sending" })).toEqual({ agent: "app", code: "sending" });
+  });
+});
+
 describe("the agents partition the vocabulary", () => {
   it("gives every code exactly one agent, and a control only to the athlete", () => {
     const situations: SyncSituation[] = [
@@ -205,6 +215,7 @@ describe("the agents partition the vocabulary", () => {
       },
       { ...ok, view: "calendar_only", coverage: coverage({ gaps: [{ code: "empty_body" }] }) },
       { ...ok, view: "content_stale" },
+      { ...ok, watchCopyDiffers: true },
     ];
     const seen = new Map<SyncActionCode, string>();
     for (const s of situations) {
@@ -229,6 +240,7 @@ describe("the agents partition the vocabulary", () => {
       "name_it_on_the_watch",
       "lives_here",
       "watch_keeps_old_copy",
+      "watch_copy_differs",
     ];
     expect([...seen.keys()].sort()).toEqual([...CODES].sort());
   });

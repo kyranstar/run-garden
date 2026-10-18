@@ -88,6 +88,31 @@ describe("a designed run's create, through the write lane", () => {
     expect((job!.payload as { paceWire?: number }).paceWire).toBe(2);
   });
 
+  it("COROS stores it differently: still verified — it is ours, on that day, and every later move, ease and removal needs that — and the job says what differs (review-2 I2)", async () => {
+    const { db, userId, prefs, server, date } = await setup();
+    await row(db, userId, "wo-diff", date);
+    await threshold(db, userId, todayInZone(prefs.timezone), 289);
+    expect(await enqueueWatchCreate(db, userId, "wo-diff", date, sessionOf(run()), nowInstant(), 289)).toBe("wo-diff-push");
+    // A COROS that files the first recovery as work.
+    const inner = server.fetchImpl;
+    const fetchImpl = async function (input: string | URL | Request, init?: RequestInit): Promise<Response> {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname === "/training/schedule/update" && typeof init?.body === "string") {
+        const body = JSON.parse(init.body) as { programs?: Array<{ exercises?: Array<Record<string, unknown>> }> };
+        for (const p of body.programs ?? []) p.exercises![2]!.exerciseType = 2;
+        return inner(input, { ...init, body: JSON.stringify(body) });
+      }
+      return inner(input, init);
+    } as typeof fetch;
+    await executeCloudJobs(db, env(), userId, prefs, { fetchImpl });
+    const [job] = await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, "wo-diff-push"));
+    expect(job).toMatchObject({ status: "verified", lastErrorCategory: "watch_copy_differs" });
+    expect(job!.lastErrorDetail).toContain("ex[2].exerciseType 4→2");
+    const [wo] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "wo-diff"));
+    expect(wo).toMatchObject({ corosSyncState: "synced", lastVerifiedCorosDate: date });
+    expect(wo!.sourceIdInPlan).not.toBeNull();
+  });
+
   it("with no threshold anywhere: a timed run goes as bare timers and the debt is recorded", async () => {
     const { db, userId, prefs, server, date } = await setup();
     await row(db, userId, "wo-bare", date);

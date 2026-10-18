@@ -102,6 +102,7 @@ describe("syncActionCopy (2026-08-17)", () => {
     ["name_it_on_the_watch", "athlete"],
     ["lives_here", "nobody"],
     ["watch_keeps_old_copy", "nobody"],
+    ["watch_copy_differs", "nobody"],
   ] as const;
 
   it("gives an instruction to the athlete and to nobody else", () => {
@@ -116,7 +117,7 @@ describe("syncActionCopy (2026-08-17)", () => {
   it("never words a boundary as a failure", () => {
     // "Not on your watch" read as a bug report for months. The two states
     // nobody can fix must not contain the vocabulary of breakage.
-    for (const code of ["lives_here", "watch_keeps_old_copy"] as const) {
+    for (const code of ["lives_here", "watch_keeps_old_copy", "watch_copy_differs"] as const) {
       const { says } = syncActionCopy({ agent: "nobody", code });
       expect(says).not.toMatch(/fail|error|couldn't|broken|problem/i);
     }

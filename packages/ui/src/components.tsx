@@ -540,6 +540,13 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
           " rewrite it. Run this one — what's here is the session.",
         todo: null,
       };
+    case "watch_copy_differs":
+      return {
+        says:
+          "COROS saved this run a little differently from what Run Garden sent, so your watch" +
+          " may not match the steps here. Follow the steps here.",
+        todo: null,
+      };
   }
 }
 

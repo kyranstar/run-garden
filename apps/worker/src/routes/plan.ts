@@ -23,6 +23,7 @@ import { computeConsistency } from "@rg/analytics";
 import {
   addDays,
   coachExerciseSchema,
+  COACH_STAMPING_JOB_KINDS,
   exerciseCuesAsText,
   formatExercise,
   hasWatchAddress,
@@ -325,6 +326,10 @@ async function loadWorkoutViews(
             // on the watch or take it off (`isUnpushKind`). The sync view itself
             // is kind-blind and stays that way.
             kind: corosWriteJobs.kind,
+            // A verified write that read back differently (`watch_copy_differs`, review-2 I2), and when: the newest
+            // verified write is what the watch holds.
+            lastErrorCategory: corosWriteJobs.lastErrorCategory,
+            verifiedAt: corosWriteJobs.verifiedAt,
           })
           .from(corosWriteJobs)
           .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.workoutId, chunk))),
@@ -376,9 +381,15 @@ async function loadWorkoutViews(
   // a live attempt), and an unpush is distinguished from a send because the two
   // promise opposite things to the athlete.
   const lanes = new Map<string, WriteLane>();
+  /** Each row's newest verified write of its content to the watch (a coach create or rewrite): did it read back as sent? */
+  const newestWrite = new Map<string, { at: string; differs: boolean }>();
   for (const jobs of jobChunks) {
     for (const j of jobs) {
       if ((WATCH_CREATE_JOB_KINDS as readonly string[]).includes(j.kind) && j.status === "verified") pushedIds.add(j.workoutId);
+      if ((COACH_STAMPING_JOB_KINDS as readonly string[]).includes(j.kind) && j.status === "verified" && j.verifiedAt) {
+        const prior = newestWrite.get(j.workoutId);
+        if (!prior || j.verifiedAt > prior.at) newestWrite.set(j.workoutId, { at: j.verifiedAt, differs: j.lastErrorCategory === "watch_copy_differs" });
+      }
       if ((IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status)) {
         pendingIds.add(j.workoutId);
         if (lanes.get(j.workoutId) !== "sending") {
@@ -414,6 +425,7 @@ async function loadWorkoutViews(
       connected: presence.online,
       writesEnabled: prefs.corosWritesEnabled,
       write,
+      ...(newestWrite.get(w.id)?.differs ? { watchCopyDiffers: true } : {}),
       // Completed, skipped, missed, or simply past: its watch copy is history
       // and nothing is going to be sent for it. Same rule the content
       // convergence backfill applies when it picks rows.

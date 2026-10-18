@@ -53,8 +53,10 @@ import {
   corosDayToLocalDate,
   corosProgramFingerprint,
   corosStructureFingerprint,
+  describeProgramDelta,
   localDateToCorosDay,
   programTextFingerprint,
+  sameProgramContent,
   type RawCorosEntity,
   type RawCorosExercise,
   type RawCorosProgram,
@@ -163,6 +165,15 @@ export interface CreateResult {
    * its targets, and nothing else in the pipeline can notice.
    */
   paceTargetsOwed?: number;
+  /**
+   * A DESIGNED RUN's create only (review-2 I2): what COROS stored differently
+   * from what this call sent, field by field (`describeProgramDelta`: a role,
+   * a band, a time), when the read-back differs — COROS's own estimates
+   * (duration, distance) and its re-encoding set aside (`storedContentDelta`).
+   * The create still landed (`ok`, its ids): the program is ours, on that day.
+   * Absent when the two agree, and for every other session.
+   */
+  contentDelta?: string;
   /**
    * `corosProgramFingerprint` of the program this call actually PUT ON THE
    * WIRE — after `/training/program/calculate` spliced its duration and load
@@ -1701,6 +1712,25 @@ export async function issueGuardedDelete(
 /** Days either side of the target date the pre/post-write reads cover. */
 const WRITE_WINDOW_PAD_DAYS = 3;
 
+/**
+ * What COROS stored differently from the program sent, field by field — or undefined when it holds what was sent
+ * (review-2 I2). By VALUE (`sameProgramContent`, the content rewrite's own verdict, content-executor.ts): COROS's
+ * re-encoding (`"871.00"` stored as `871`, its own step ids) is no change, and neither are its own estimates —
+ * `duration` and `estimatedTime` (the rewrite sets those aside too: renormalizing-coros.ts rule 4) and the program's
+ * `distance`, its estimate from the same steps. Every step that decides them is compared: its role, target, time and
+ * band.
+ */
+export function storedContentDelta(sent: RawCorosProgram, stored: RawCorosProgram): string | undefined {
+  const asSent: RawCorosProgram = {
+    ...stored,
+    duration: sent.duration,
+    estimatedTime: sent.estimatedTime,
+    distance: sent.distance,
+    estimatedDistance: sent.estimatedDistance,
+  };
+  return sameProgramContent(sent, asSent) ? undefined : describeProgramDelta(sent, asSent, 20);
+}
+
 function isoOf(happenDay: string): string {
   return corosDayToLocalDate(Number(happenDay));
 }
@@ -1983,11 +2013,16 @@ export async function createWorkout(
       // into "3 × open Reverse Lunge / open Reverse Lunge", reps gone,
       // movements duplicated, minutes after the push succeeded.
       const observed = found.program ? corosProgramFingerprint(found.program) : undefined;
+      // WHAT COROS CHANGED ON SAVE, for a designed run (review-2 I2): the stamp
+      // found on the day is all this verify proves, so a role stored as another
+      // or a band dropped would read "synced" and nothing would ever notice.
+      const contentDelta = isRunWatchSession(spec.session) && found.program ? storedContentDelta(program, found.program) : undefined;
       return {
         ok: true,
         code,
         ...ids,
         ...owed,
+        ...(contentDelta ? { contentDelta } : {}),
         wireFingerprint: observed ?? wireFingerprint,
         wireTextFingerprint: programTextFingerprint(found.program ?? program),
         wireStructureFingerprint: corosStructureFingerprint(found.program ?? program),

@@ -78,7 +78,12 @@ export type SyncActionCode =
   /** COROS is holding a version of this session that nothing can rewrite — it
    * was pushed before the content lane existed, or its ownership stamp cannot
    * be re-proven. The app's copy is the one to run. */
-  | "watch_keeps_old_copy";
+  | "watch_keeps_old_copy"
+  /** COROS stored this session differently from what Run Garden sent (a
+   * designed run's create read back by value, review-2 I2): on the watch, on
+   * its day, and maybe not as the steps here say. The app's copy is the one to
+   * follow; the job holds the differences for a supervised read. */
+  | "watch_copy_differs";
 
 export interface SyncAction {
   agent: SyncActor;
@@ -122,6 +127,13 @@ export interface SyncSituation {
   writesEnabled: boolean;
   /** What this row's write jobs are doing. */
   write: WriteLane;
+  /**
+   * The newest verified write that put this session on the watch read back
+   * differently from what was sent (`watch_copy_differs` on the job, review-2
+   * I2). Absent or false: the watch holds what was sent, as far as anything
+   * read it.
+   */
+  watchCopyDiffers?: boolean;
   /**
    * The session's story is over: it is completed, skipped, missed, or its day
    * has passed. Nothing is going to be sent for it, so nothing should be asked
@@ -190,6 +202,11 @@ function coverageAction(coverage: WatchCoverageView): SyncAction | null {
  */
 export function syncAction(s: SyncSituation): SyncAction | null {
   if (s.settled) return null;
+
+  // On the watch on its day, and COROS stored it differently: said before the
+  // silence a synced session keeps. Anything louder (a date, a write in
+  // flight) is said instead, by the rules below.
+  if (s.view === "synced" && s.watchCopyDiffers) return { agent: "nobody", code: "watch_copy_differs" };
 
   const carried = s.coverage === undefined || s.coverage.coverage === "full";
   if (s.view === "synced" && carried) return null;

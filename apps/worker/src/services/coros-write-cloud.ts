@@ -452,6 +452,17 @@ export async function executeCloudJobs(
               updatedAt: done,
             })
             .where(eq(plannedWorkouts.id, spec.workoutId));
+          // COROS STORED A DESIGNED RUN DIFFERENTLY (review-2 I2): the job stays
+          // `verified` — the program is ours, on that day, and every later move,
+          // ease, Undo and removal proves ownership by a verified create's stamp
+          // (`recordedStampFor`) — and says so: `watch_copy_differs`, with the
+          // field-level differences for a supervised read, which the plan view
+          // turns into a line for the athlete until a later write verifies by
+          // value. It outranks the pace debt (one category): the steps
+          // themselves differ.
+          if (result.contentDelta) {
+            console.error(`coach create stored differently (${spec.name}): ${result.contentDelta}`);
+          }
           await db
             .update(corosWriteJobs)
             // `verifiedAt` is what a "verified" row MEANS — applyJobResult
@@ -464,9 +475,11 @@ export async function executeCloudJobs(
               verifiedAt: done,
               completedAt: done,
               updatedAt: done,
-              ...(result.paceTargetsOwed
-                ? { lastErrorCategory: "pace_targets_owed" }
-                : { lastErrorCategory: null }),
+              ...(result.contentDelta
+                ? { lastErrorCategory: "watch_copy_differs", lastErrorDetail: detailOf(result.contentDelta) }
+                : result.paceTargetsOwed
+                  ? { lastErrorCategory: "pace_targets_owed" }
+                  : { lastErrorCategory: null }),
               ...paceWireStamp(job.payload, spec.session),
             })
             .where(eq(corosWriteJobs.id, job.id));

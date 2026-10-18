@@ -6,6 +6,7 @@
  * /api/plan/workouts/:id`. Synthetic data.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, todayInZone, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -80,5 +81,27 @@ describe("a designed run, read on the plan", () => {
     // Warm-up, three tempo reps, cool-down: five steps a threshold would pace, as `runWatchSteps` counts them (the jogs go
     // bare: review-2 M1).
     expect(w.watchCoverage).toEqual({ coverage: "partial", discipline: "run", gaps: [{ code: "pace_targets_owed", count: 5 }] });
+  });
+});
+
+describe("a designed run COROS stored differently from what was sent (review-2 I2)", () => {
+  it("says so on the plan — the watch may not match the steps here — until a later write is verified by value", async () => {
+    const id = await made(run({ durationSec: 600 }), "e");
+    const date = addDays(today, 2);
+    // On the watch: its create landed and verified, and the read-back differed.
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ lastVerifiedCorosDate: date, sourceWorkoutId: "4242:8", sourceIdInPlan: "8", sourceProgramId: "8", corosSyncState: "synced", sourceContentFingerprint: "fp-observed" })
+      .where(eq(schema.plannedWorkouts.id, id));
+    const job = (jobId: string, kind: string, verifiedAt: string, differs: boolean) => ({
+      id: jobId, userId, workoutId: id, kind, expectedContentFingerprint: "x", originalDate: date, destinationDate: date, payload: {},
+      requestedAt: verifiedAt, status: "verified", verifiedAt, updatedAt: verifiedAt,
+      ...(differs ? { lastErrorCategory: "watch_copy_differs", lastErrorDetail: "ex[2].exerciseType 4→2" } : {}),
+    });
+    await db.insert(schema.corosWriteJobs).values(job(`${id}-push`, "coach_create_workout", "2026-03-10T07:00:00.000Z", true));
+    expect((await workout(id)).syncAction).toEqual({ agent: "nobody", code: "watch_copy_differs" });
+    // A later rewrite (an ease, an Undo), verified by value: the watch holds what was sent.
+    await db.insert(schema.corosWriteJobs).values(job(`${id}-rw`, "coach_update_workout", "2026-03-11T07:00:00.000Z", false));
+    expect((await workout(id)).syncAction).toBeUndefined();
   });
 });

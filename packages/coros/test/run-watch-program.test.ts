@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { runWatchSteps, type CoachSession, type RunWatchSession } from "@rg/domain";
-import { normalizeCorosSchedule, type RawCorosExercise } from "@rg/providers";
+import { normalizeCorosSchedule, type RawCorosExercise, type RawCorosProgram } from "@rg/providers";
 import { CorosClient } from "../src/client.js";
 import { buildProgramFor, buildRunProgram, buildRunWatchProgram, createWorkout, missingPaceTargets, type CreateWorkoutSpec } from "../src/create-executor.js";
 import { nextMonday } from "./mock-coros-server.js";
@@ -171,5 +171,64 @@ describe("the round trip: a COROS that re-encodes what it stores, read back by t
     expect(workout.stages.map((st) => (st.targetType === "pace" ? [st.targetLow, st.targetHigh] : null))).toEqual(
       resolved.map((st) => (st.pace ? [st.pace.fastSecPerKm, st.pace.slowSecPerKm] : null)),
     );
+  });
+});
+
+describe("the create's read-back of a designed run: what COROS changed on save, said (review-2 I2)", () => {
+  /** A logged-in client on `server`, and a spec dated ten days out. */
+  async function on(server: ReturnType<typeof renormalizingCoros>, session: RunWatchSession | CoachSession = TEMPO) {
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    const today = new Date().toISOString().slice(0, 10);
+    const day = new Date(`${today}T00:00:00Z`);
+    day.setUTCDate(day.getUTCDate() + 10);
+    const s = { ...spec(), session, happenDay: day.toISOString().slice(0, 10).replaceAll("-", "") } as CreateWorkoutSpec;
+    return createWorkout(client, s, { today, catalog: new Map(), log: noop });
+  }
+  /** A COROS that also changes what it stores: `change` rewrites each program written, after the re-encoding. */
+  function changing(change: (p: RawCorosProgram) => void) {
+    const server = renormalizingCoros({ baseMonday: nextMonday() });
+    const inner = server.fetchImpl;
+    server.fetchImpl = async function (input: string | URL | Request, init?: RequestInit): Promise<Response> {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname === "/training/schedule/update" && typeof init?.body === "string") {
+        const body = JSON.parse(init.body) as { programs?: RawCorosProgram[] };
+        for (const p of body.programs ?? []) change(p);
+        return inner(input, { ...init, body: JSON.stringify(body) });
+      }
+      return inner(input, init);
+    } as typeof fetch;
+    return server;
+  }
+
+  it("COROS's own estimates and re-encoding are not a change: against the renormalizing mock, nothing to say", async () => {
+    const server = renormalizingCoros({ baseMonday: nextMonday() });
+    const result = await on(server);
+    expect(result.ok, result.error).toBe(true);
+    expect(server.reencoded).toBe(1);
+    expect(result.contentDelta).toBeUndefined();
+  });
+
+  it("a recovery stored as work, a band dropped: the create still lands, and says what differs, field by field", async () => {
+    const result = await on(
+      changing((p) => {
+        const steps = (p.exercises ?? []) as Array<RawCorosExercise & Record<string, unknown>>;
+        steps[2]!.exerciseType = 2;
+        steps[1]!.intensityType = 5;
+        steps[1]!.intensityValue = 0;
+        delete steps[1]!.intensityValueExtend;
+      }),
+    );
+    expect(result.ok, result.error).toBe(true);
+    expect(result.contentDelta).toContain("ex[2].exerciseType 4→2");
+    expect(result.contentDelta).toContain("ex[1].intensityType 3→5");
+    expect(result.contentDelta).toContain("ex[1].intensityValue 299000→0");
+  });
+
+  it("only a designed run is compared on its create: a thread-coach run lands as it always has", async () => {
+    const blocks: CoachSession = { category: "easy", title: "Easy", durationMinutes: 30, run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] } };
+    const result = await on(changing((p) => void ((p.exercises ?? [])[0]!.exerciseType = 3)), blocks);
+    expect(result.ok, result.error).toBe(true);
+    expect(result.contentDelta).toBeUndefined();
   });
 });
