@@ -7,6 +7,8 @@
  * Takes the same props the window's panel took (`coachPanelProps`), so the Plan hands it the same object.
  * Synthetic data only.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -187,6 +189,23 @@ describe("the thread coach's reply in words", () => {
 
   it("a sentence that ends in a closing quote ends there", () => {
     expect(clipReply(`She said "go easy." ${"and on ".repeat(10)}`, 30)).toBe('She said "go easy."');
+  });
+
+  it("one just at the limit is shown whole, uncut", () => {
+    const text = `${"word ".repeat(119)}words`;
+    expect(text).toHaveLength(REPLY_MAX_CHARS);
+    expect(clipReply(text)).toBe(text);
+  });
+
+  it("quiet: the small, soft ink of the section's other plain lines", () => {
+    const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+    const at = css.indexOf("\n.thread-coach-reply,");
+    expect(at, "the reply's rule").toBeGreaterThan(-1);
+    const rule = css.slice(at, css.indexOf("}", at));
+    expect(rule).toContain(".thread-coach-lost {");
+    expect(rule).toContain("font-size: var(--text-sm);");
+    expect(rule).toContain("color: var(--ink-soft);");
+    expect(rule).toContain("margin: 0;");
   });
 
   it("a short one is shown whole, its spacing made plain", () => {
