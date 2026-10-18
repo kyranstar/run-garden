@@ -68,6 +68,8 @@ test("a block the coach built, retired from Plan a slice a request: off the plan
     await page.locator("button.nav-coach:visible").first().click();
     await expect(sheet(page)).toBeVisible();
     await expect(box(page)).toBeVisible();
+    // The conversation as it stands first (an account a run before left one open), then a new one if it isn't.
+    await expect(sheet(page).locator(".coach-opening, .coach-turns").first()).toBeVisible();
     if (!(await sheet(page).locator(".coach-opening").isVisible())) {
       await sheet(page).getByRole("button", { name: "More" }).click();
       await sheet(page).getByRole("menuitem", { name: "New conversation" }).click();
