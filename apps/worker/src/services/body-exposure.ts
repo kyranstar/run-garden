@@ -43,11 +43,12 @@ const LIBRARY = new Set(EXERCISES.map((e) => e.id));
 const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
 
 /**
- * WHAT A RUN WORKS — the one list (the new shape, the lead's ruling of 2026-10-18): the hips, the glutes, the quads, the
- * hamstrings and the calves, as the library's region ids, head to foot. `read_balance` (its `fromRuns`, what it never
- * calls untrained), Growth's body map and Today's body check all read it from here.
+ * WHAT A RUN WORKS — the one list (the new shape, the lead's ruling of 2026-10-18 and its amendment): the hips, the
+ * glutes, the quads, the hamstrings, the calves, and the ankles and feet — which a run loads hardest of all — as the
+ * library's region ids, head to foot. `read_balance` (its `fromRuns`, what it never calls untrained), Growth's body map
+ * (whose calves are the lower leg: calves, ankles and feet) and Today's body check all read it from here.
  */
-export const RUN_REGIONS = ["hips", "glutes", "quads", "hamstrings", "calves"] as const satisfies readonly Region[];
+export const RUN_REGIONS = ["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"] as const satisfies readonly Region[];
 
 /** What a library move names — its regions and muscles — read once a move (a focus area asks it of every set). */
 const NAMES = new Map<string, ReadonlySet<string>>();

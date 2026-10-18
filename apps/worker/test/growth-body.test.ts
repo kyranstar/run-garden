@@ -133,8 +133,8 @@ describe("GET /api/growth/body", () => {
     expect(area((await get()).body, "back")).toMatchObject({ sets: 3 });
   });
 
-  it("runs work the hips, glutes, quads, hamstrings and calves (RUN_REGIONS, the one list): those areas count the period's runs, and the latest run is their last day", async () => {
-    expect([...RUN_REGIONS]).toEqual(["hips", "glutes", "quads", "hamstrings", "calves"]);
+  it("runs work the hips, glutes, quads, hamstrings, calves, ankles and feet (RUN_REGIONS, the one list): those areas count the period's runs, and the latest run is their last day", async () => {
+    expect([...RUN_REGIONS]).toEqual(["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"]);
     await run(2);
     await run(9);
     await run(40);
