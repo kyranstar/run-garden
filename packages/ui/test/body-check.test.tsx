@@ -40,6 +40,10 @@ describe("the words", () => {
     expect(bodyLine(view({ answer: heavy, change: { kind: "eased", to: { minutes: 87 } } }), "km")).toBe("Eased to 1 h 27 min for heavy legs");
     expect(bodyLine(view({ answer: heavy, change: { kind: "eased", to: { minutes: 120 } } }), "km")).toBe("Eased to 2 h for heavy legs");
     expect(bodyLine(view({ answer: heavy, change: { kind: "eased", to: { mode: "recovery" } } }), "km")).toBe("Eased to a recovery session for heavy legs");
+    // Legs only when the session works them.
+    expect(bodyLine(view({ answer: heavy, change: { kind: "eased", to: { mode: "recovery" }, legs: false } }), "km")).toBe(
+      "Eased to a recovery session for a heavy body",
+    );
     const sore = (areas: string[]) => ({ feel: "sore" as const, areas });
     expect(bodyLine(view({ answer: sore(["calves"]), change: { kind: "eased", to: { mode: "consistent" } } }), "km")).toBe(
       "Eased to a consistent session for sore calves",
@@ -84,6 +88,8 @@ describe("the panel", () => {
     expect(html.match(/aria-pressed="true"/g)).toHaveLength(1);
     expect(html).toMatch(/aria-pressed="true"[^>]*>(<svg[\s\S]*?<\/svg>)A bit heavy/);
     expect(text(html)).toContain("Eased to 14 km for heavy legs Undo");
+    // The line is a status: what the check did is announced, and Undo's focus has somewhere to go.
+    expect(html).toMatch(/<p class="body-check-line" role="status" tabindex="-1">Eased to 14 km/);
   });
 
   it("offers Undo only after an ease: never when nothing changed", () => {

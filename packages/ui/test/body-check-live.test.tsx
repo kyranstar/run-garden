@@ -98,6 +98,20 @@ describe("tapping the body check", () => {
     await tap("Undo");
     await until(() => text().includes("Kept as planned."), "the undo's line");
     expect(sent.at(-1)).toEqual({ method: "POST", path: "/api/today/body/undo", body: { workoutId: "w1" } });
+    // Undo is gone with the ease: the focus moves to the line that says what happened.
+    expect(document.activeElement?.textContent).toBe("Kept as planned.");
+    expect(document.activeElement?.getAttribute("role")).toBe("status");
+  });
+
+  it("Undo while the watch is still taking the eased session says so, and keeps Undo", async () => {
+    const eased = view({ answer: { feel: "heavy", areas: [] }, change: { kind: "eased", to: { minutes: 35 } } });
+    serve((method) => (method === "GET" ? json(eased) : json({ error: "watch_updating" }, 409)));
+    mount(createElement(BodyCheck, { workout }));
+    await until(() => !!button("Undo"), "the eased line");
+    await tap("Undo");
+    await until(() => text().includes("Your watch is updating — try Undo in a moment."), "the refusal");
+    expect(text()).toContain("Eased to 35 min for heavy legs");
+    expect(button("Undo")).toBeDefined();
   });
 
   it("Sore somewhere opens the picker; Done keeps the areas picked, in one request", async () => {

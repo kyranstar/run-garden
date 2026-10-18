@@ -68,6 +68,18 @@ describe("an engine session, A bit heavy", () => {
     expect((await readBodyCheck(db, userId, id, ctx())).change).toEqual({ kind: "eased", to: { mode: "consistent" } });
   });
 
+  it("says heavy LEGS only of a session that works the legs: an upper-body session is eased for a heavy body", async () => {
+    const id = await seedSlot(db, userId, programId, DAY);
+    const before = await buildSession(db, userId, id, { overrides: { mode: "build", theme: "upperBackNeck", minutes: 10 } }, ctx());
+    // The engine's upper back and neck in ten minutes works no leg.
+    expect(["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"].filter((r) => worked(before).has(r))).toEqual([]);
+    const out = await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    expect(out.view.change).toEqual({ kind: "eased", to: { mode: "consistent" }, legs: false });
+    // Sore shoulders, which it works: the reason is the shoulders, and the legs are no part of it.
+    const sore = await answerBodyCheck(db, userId, id, { feel: "sore", areas: ["shoulders"] }, ctx());
+    expect(sore.view.change).toEqual({ kind: "eased", to: { mode: "consistent" } });
+  });
+
   it("not built yet: the day's session is built, and eased one mode below what the engine proposed by the next request (the client's, at once)", async () => {
     const id = await seedSlot(db, userId, programId, DAY);
     const first = await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());

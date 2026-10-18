@@ -48,7 +48,7 @@
  *
  * Statements: the view reads three; an answer and an Undo are pinned in body-check*.test.ts.
  */
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import {
   athleteAnswers,
   auditEvents,
@@ -107,7 +107,8 @@ export interface BodyArea {
 
 /** What the answer did to the day's session (the card says it in words; `bodyLine` in the UI). */
 export type BodyChange =
-  | { kind: "eased"; to: { mode: SessionMode } | { meters: number } | { minutes: number } }
+  /** `legs: false`: eased for A bit heavy, of a session that works no leg ("a heavy body", not "heavy legs"). */
+  | { kind: "eased"; to: { mode: SessionMode } | { meters: number } | { minutes: number }; legs?: false }
   | { kind: "kept"; why: "undone" | "quiet" | "gentlest" | "race" }
   | { kind: "ask" };
 
@@ -160,6 +161,17 @@ export class BodyCheckClosedError extends Error {
 export class BodyCheckInvalidError extends Error {
   constructor(readonly why: string) {
     super("invalid");
+  }
+}
+
+/**
+ * The watch is taking a rewrite of the run right now (claimed, in progress, verifying): putting the run back now would
+ * race the executor, which finishes and stamps the row anyway — the app and the watch would drift for good. Undo, or
+ * an answer that changes the eased run, waits for it (the integrated review, I1).
+ */
+export class BodyCheckBusyError extends Error {
+  constructor() {
+    super("watch_updating");
   }
 }
 
@@ -486,28 +498,35 @@ async function easeEngine(db: Db, userId: string, s: Subject, answer: Answer, re
   const id = s.row.id;
   const prior = record?.ease?.kind === "engine" ? record.ease : null;
   const day = await dayBuild(db, userId, id, ctx);
-  if (answer.feel === "sore" && !worksSore(answer, workedRegions(day.build.exerciseIds))) {
+  const works = workedRegions(day.build.exerciseIds);
+  if (answer.feel === "sore" && !worksSore(answer, works)) {
     // Not an area today works: noted, and an ease of the day no longer asked for goes back (or, recorded and not yet
     // applied, is never applied).
     const back = await putBack(db, userId, s, record?.ease ?? null, ctx);
     return { record: { change: { kind: "kept", why: "quiet" }, ease: back.ease }, coachDrain: back.coachDrain };
   }
+  // A bit heavy says heavy LEGS only of a session that works them (the integrated review): else "a heavy body".
+  const easedTo = (mode: SessionMode): BodyChange => ({
+    kind: "eased",
+    to: { mode },
+    ...(answer.feel === "heavy" && ![...LEG_REGIONS].some((r) => works.has(r)) ? { legs: false as const } : {}),
+  });
   // An ease recorded and not yet applied (the day's session had to be built first, or a request was cut off): finish it
   // from what was recorded.
   if (prior?.state === "easing") {
     await build(db, userId, id, { overrides: { ...prior.overrides, mode: prior.to } }, ctx);
-    const rec: BodyRecord = { change: { kind: "eased", to: { mode: prior.to } }, ease: { ...prior, state: "eased" } };
+    const rec: BodyRecord = { change: easedTo(prior.to), ease: { ...prior, state: "eased" } };
     await writeRecord(db, userId, id, rec, ctx);
     return { record: rec, coachDrain: false, persisted: true };
   }
   // The day's ease still in place stands (A bit heavy → Sore in a worked area: the same ease, the card's reason changes).
   if (prior?.state === "eased" && day.build.overrides.mode === prior.to) {
-    return { record: { change: { kind: "eased", to: { mode: prior.to } }, ease: prior }, coachDrain: false };
+    return { record: { change: easedTo(prior.to), ease: prior }, coachDrain: false };
   }
   const to = modeBelow(day.build.mode, s.modes);
   if (!to) return { record: { change: { kind: "kept", why: "gentlest" }, ease: record?.ease ?? null }, coachDrain: false };
   const ease: EngineEase = { kind: "engine", state: "easing", from: day.build.mode, to, overrides: day.build.overrides, swaps: day.build.swaps };
-  const eased: BodyChange = { kind: "eased", to: { mode: to } };
+  const eased = easedTo(to);
   // TWO BUILDS DON'T FIT ONE REQUEST (≈ 21 + 16 statements beside the check's own): a session built just now, to learn
   // the mode the engine proposes, is eased by the next request — the client asks again at once (`pending`), and the
   // recorded ease is finished above, from what was recorded here.
@@ -517,7 +536,7 @@ async function easeEngine(db: Db, userId: string, s: Subject, answer: Answer, re
   }
   await writeRecord(db, userId, id, { change: record?.change ?? null, ease }, ctx);
   await build(db, userId, id, { overrides: { ...day.build.overrides, mode: to } }, ctx);
-  const rec: BodyRecord = { change: { kind: "eased", to: { mode: to } }, ease: { ...ease, state: "eased" } };
+  const rec: BodyRecord = { change: eased, ease: { ...ease, state: "eased" } };
   await writeRecord(db, userId, id, rec, ctx);
   return { record: rec, coachDrain: false, persisted: true };
 }
@@ -539,6 +558,8 @@ export const RUN_EASE_FACTOR = 0.7;
 
 /** The regions a run works (the growth body map's own reading: a run loads the hips and the legs). */
 const RUN_REGIONS: ReadonlySet<string> = new Set(["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"]);
+/** The legs, as "heavy legs" means them: what a run works. */
+const LEG_REGIONS = RUN_REGIONS;
 
 /** The run kinds an ease keeps (a long run eased is still the long run); any other run becomes an easy one. */
 const KEPT_RUN_KINDS = ["easy", "long", "recovery"] as const;
@@ -653,7 +674,31 @@ async function thresholdPace(db: Db, userId: string): Promise<number | undefined
   return r?.v ?? undefined;
 }
 
-const OPEN_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
+/** A watch write the executor holds: past `queued`, not yet settled. Never superseded under it (the review, I1). */
+const IN_FLIGHT_JOB_STATUSES = ["claimed", "in_progress", "verifying"] as const;
+
+/**
+ * Is the watch taking a write of this session right now — a coach rewrite or unpush the executor holds? One statement.
+ * Asked before anything changes a run the check eased: Undo, or an answer that changes the eased run.
+ */
+async function watchBusy(db: Db, userId: string, workoutId: string): Promise<boolean> {
+  const [job] = await db
+    .select({ id: corosWriteJobs.id })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, workoutId),
+        inArray(corosWriteJobs.kind, ["coach_update_workout", "coach_delete_workout"]),
+        inArray(corosWriteJobs.status, [...IN_FLIGHT_JOB_STATUSES]),
+      ),
+    )
+    .limit(1);
+  return job !== undefined;
+}
+
+/** A run's ease that is (or may be) in place: what Undo, or a changed answer, would put back. */
+const liveRunEase = (record: BodyRecord | null): boolean => record?.ease?.kind === "run" && record.ease.state !== "undone";
 
 /**
  * Apply a run's ease through the thread coach's own applier — the `ease` op: the row, its stages, its document's next
@@ -724,12 +769,27 @@ async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx
   if (!run || !holdsRun(run.row, ease.session)) return { ease: undone, coachDrain: false };
   const { row } = run;
   const pw = plannedWorkouts;
+  // The run's coach watch writes: any the executor holds now (whenever queued), and the ease's rewrites (since it).
+  const inFlight = inArray(corosWriteJobs.status, [...IN_FLIGHT_JOB_STATUSES]);
   const jobs = await db
     .select({ id: corosWriteJobs.id, status: corosWriteJobs.status })
     .from(corosWriteJobs)
-    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.workoutId, row.id), eq(corosWriteJobs.kind, "coach_update_workout"), gte(corosWriteJobs.requestedAt, ease.at)));
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, row.id),
+        or(
+          and(inArray(corosWriteJobs.kind, ["coach_update_workout", "coach_delete_workout"]), inFlight),
+          and(eq(corosWriteJobs.kind, "coach_update_workout"), gte(corosWriteJobs.requestedAt, ease.at)),
+        ),
+      ),
+    );
+  // THE LAST LOOK BEFORE ANY WRITE (the integrated review, I1): a watch write the executor holds finishes and stamps
+  // the row whatever is superseded under it, so the app and the watch would drift for good — Undo waits for it.
+  if (jobs.some((j) => (IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status))) throw new BodyCheckBusyError();
   const reached = jobs.some((j) => j.status === "verified");
-  const open = jobs.filter((j) => (OPEN_JOB_STATUSES as readonly string[]).includes(j.status)).map((j) => j.id);
+  // The ease's rewrites still to run, or failed and waiting on a Retry that would put the eased run on the watch: dropped.
+  const open = jobs.filter((j) => j.status === "queued" || j.status === "failed").map((j) => j.id);
   const b = ease.before;
   // The watch's copy is the eased run until the rewrite back lands: like any ease, the app's copy isn't the watch's yet.
   const columns: RunColumns = reached ? { ...b.columns, corosSyncState: "calendar_only" } : b.columns;
@@ -822,8 +882,9 @@ const sameRecord = (x: BodyRecord | null, y: BodyRecord): boolean => JSON.string
 
 /**
  * `POST /api/today/body` `{workoutId, feel, areas?}`: keep the answer, and adapt the day as it asks. Idempotent: the
- * same answer again writes nothing — except to finish an ease recorded and not yet applied (`pending`). Throws
- * `BodyCheckNotFoundError`, `BodyCheckInvalidError`, `BodyCheckClosedError`.
+ * same answer again writes nothing — except to finish an ease recorded and not yet applied (`pending`). A changed answer
+ * waits while the watch is taking the eased run (`BodyCheckBusyError`, before anything is written). Throws
+ * `BodyCheckNotFoundError`, `BodyCheckInvalidError`, `BodyCheckClosedError`, `BodyCheckBusyError`.
  */
 export async function answerBodyCheck(db: Db, userId: string, workoutId: string, input: BodyAnswer, ctx: BodyCheckCtx): Promise<BodyCheckOutcome> {
   const s = await loadSubject(db, userId, workoutId, ctx.today);
@@ -833,6 +894,7 @@ export async function answerBodyCheck(db: Db, userId: string, workoutId: string,
   const { record } = s;
   const same = sameAnswer(s.answer, answer);
   if (same && record?.ease?.state !== "easing") return { view: viewOf(s, answer, record, ctx.today), coachDrain: false };
+  if (!same && liveRunEase(record) && (await watchBusy(db, userId, workoutId))) throw new BodyCheckBusyError();
   if (!same) await writeAnswer(db, userId, workoutId, answer, ctx);
   const done = await adapt(db, userId, s, answer, record, ctx);
   if (!done.persisted && !sameRecord(record, done.record)) await writeRecord(db, userId, workoutId, done.record, ctx);
@@ -841,7 +903,9 @@ export async function answerBodyCheck(db: Db, userId: string, workoutId: string,
 
 /**
  * `POST /api/today/body/undo` `{workoutId}`: put the session back as the day had it before the check eased it; the
- * answer stays. Nothing eased: the check as it is, nothing written. Throws `BodyCheckNotFoundError`, `BodyCheckClosedError`.
+ * answer stays. Nothing eased: the check as it is, nothing written. While the watch is taking the eased run — its rewrite
+ * claimed, in progress or verifying — refused (`BodyCheckBusyError`: "Your watch is updating — try Undo in a moment."),
+ * nothing written. Throws `BodyCheckNotFoundError`, `BodyCheckClosedError`, `BodyCheckBusyError`.
  */
 export async function undoBodyCheck(db: Db, userId: string, workoutId: string, ctx: BodyCheckCtx): Promise<BodyCheckOutcome> {
   const s = await loadSubject(db, userId, workoutId, ctx.today);

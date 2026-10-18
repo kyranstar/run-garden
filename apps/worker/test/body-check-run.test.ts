@@ -14,7 +14,7 @@ import { schema } from "@rg/database";
 import { newId, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { answerBodyCheck, readBodyCheck, undoBodyCheck } from "../src/services/body-check.js";
+import { answerBodyCheck, BodyCheckBusyError, readBodyCheck, undoBodyCheck } from "../src/services/body-check.js";
 import { todayBodyRoutes } from "../src/routes/today-body.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { DAY, makeEnv, NOON, rowOf } from "./watch-push-fixture.js";
@@ -294,6 +294,57 @@ describe("the watch", () => {
     expect(again.coachDrain).toBe(true);
     expect(await rewrites(id)).toEqual([expect.objectContaining({ status: "queued" })]);
     expect(await openContentIntents(id)).toHaveLength(1);
+  });
+
+  it("while the watch is taking the eased run (its rewrite claimed, in progress, verifying) Undo — and an answer that would put it back — is refused in words; once it has landed, Undo rewrites back", async () => {
+    const id = await seedRun(DAY, { shape: "intervals", watch: true });
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const [job] = await rewrites(id);
+    const eased = facts(await rowOf(db, id));
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
+    const post = (path: string, body: unknown) =>
+      mountRoutes(db, "/api/today", todayBodyRoutes).request(
+        path,
+        { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(body) },
+        makeEnv(),
+      );
+    for (const status of ["claimed", "in_progress", "verifying"]) {
+      await db.update(corosWriteJobs).set({ status }).where(eq(corosWriteJobs.id, job!.id));
+      await expect(undoBodyCheck(db, userId, id, ctx())).rejects.toBeInstanceOf(BodyCheckBusyError);
+      await expect(answerBodyCheck(db, userId, id, { feel: "fresh" }, ctx())).rejects.toBeInstanceOf(BodyCheckBusyError);
+      const refused = await post("/api/today/body/undo", { workoutId: id });
+      expect([refused.status, await refused.json()]).toEqual([409, { error: "watch_updating" }]);
+      // Nothing moved: the run is still the eased one, the rewrite still the executor's, the answer still A bit heavy.
+      expect(facts(await rowOf(db, id))).toEqual(eased);
+      expect((await rewrites(id)).map((j) => j.status)).toEqual([status]);
+      expect(await readBodyCheck(db, userId, id, ctx())).toMatchObject({ answer: { feel: "heavy" }, change: { kind: "eased" } });
+    }
+    // The rewrite landed: Undo now puts the run back and rewrites the watch back.
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, job!.id));
+    const undo = await undoBodyCheck(db, userId, id, ctx());
+    expect(undo.view.change).toEqual({ kind: "kept", why: "undone" });
+    expect(undo.coachDrain).toBe(true);
+  });
+
+  it("a watch write of the run the executor took before the ease (still claimed) holds Undo too", async () => {
+    const id = await seedRun(DAY, { shape: "intervals" });
+    await db.insert(corosWriteJobs).values({
+      id: `older-${id}`, userId, workoutId: id, kind: "coach_update_workout", status: "claimed", payload: {}, expectedContentFingerprint: "0123456789abcdef",
+      originalDate: DAY, destinationDate: DAY, requestedAt: "2026-10-09T08:00:00.000Z", updatedAt: "2026-10-09T08:00:00.000Z",
+    });
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const eased = facts(await rowOf(db, id));
+    await expect(undoBodyCheck(db, userId, id, ctx())).rejects.toBeInstanceOf(BodyCheckBusyError);
+    expect(facts(await rowOf(db, id))).toEqual(eased);
+  });
+
+  it("Undo drops the ease's rewrite that failed — a Retry would otherwise put the eased run on the watch", async () => {
+    const id = await seedRun(DAY, { shape: "intervals", watch: true });
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const [job] = await rewrites(id);
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, job!.id));
+    await undoBodyCheck(db, userId, id, ctx());
+    expect((await rewrites(id)).map((j) => j.status)).toEqual(["superseded"]);
   });
 
   it("a distance run on the watch eases by time (the wire carries no distance), the rewrite queued; Undo restores its distance stages", async () => {

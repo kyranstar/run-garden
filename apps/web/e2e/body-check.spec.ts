@@ -23,6 +23,34 @@ import { test, expect } from "./fixtures.js";
  */
 
 type Kind = "engine" | "run";
+
+const MODES = ["recovery", "consistent", "build"];
+
+/** What the check reads of a session: its build's mode, the engine's proposal, its choices and its moves. */
+interface SessionRead {
+  build: {
+    mode: string;
+    params: { overrides: { mode?: string } };
+    items: Array<{ exerciseId: string }>;
+    exercises: Record<string, { regions: string[]; muscles: { primary: string[] } }>;
+  };
+  view: { proposedMode: string };
+}
+
+/** The library's muscles under each region these journeys ask about (the library's MUSCLE_REGION, for these). */
+const HIP_MUSCLES = ["deep-hip-rotators", "hip-flexors", "adductors", "glute-min-tfl"];
+const LEG_REGIONS = ["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"];
+const LEG_MUSCLES = [...HIP_MUSCLES, "glute-max", "glute-med", "hamstrings", "quads", "gastrocnemius", "soleus", "tibialis", "peroneals", "feet-intrinsics"];
+
+/** Does the build work any of these regions — a move's region, or a primary muscle under one? */
+function works(s: SessionRead, regions: readonly string[], muscles: readonly string[]): boolean {
+  return s.build.items.some((i) => {
+    const ex = s.build.exercises[i.exerciseId];
+    return !!ex && (ex.regions.some((r) => regions.includes(r)) || ex.muscles.primary.some((m) => muscles.includes(m)));
+  });
+}
+const worksHips = (s: SessionRead): boolean => works(s, ["hips"], HIP_MUSCLES);
+const worksLegs = (s: SessionRead): boolean => works(s, LEG_REGIONS, LEG_MUSCLES);
 const accountOf = (kind: Kind, project: string): string => `?account=body-${kind}-${project}`;
 const SHOTS = process.env.RG_E2E_SHOTS ?? "";
 
@@ -130,28 +158,43 @@ test.describe("an engine session", () => {
     await shoot(page, "engine-asked", testInfo.project.name);
 
     await answer(page, "Fresh");
-    await expect(card.locator(".body-check-line")).toHaveCount(0);
+    await expect(card.locator(".body-check-line")).toBeEmpty();
 
     await answer(page, "A bit heavy");
-    await expect(card.locator(".body-check-line")).toHaveText(/^Eased to a (consistent|recovery) session for heavy legs\s*Undo$/, { timeout: 30_000 });
-    const eased = (await (await req.get(`/api/sessions/${session.id}`)).json()) as { build: { mode: string; params: { overrides: { mode?: string } } } };
+    await expect(card.locator(".body-check-line")).toHaveText(/^Eased to a (consistent|recovery) session for (heavy legs|a heavy body)\s*Undo$/, { timeout: 30_000 });
+    // One mode down from what the engine proposed for the day, chosen as the day's mode — and the card says that mode.
+    const eased = (await (await req.get(`/api/sessions/${session.id}`)).json()) as SessionRead;
+    expect(MODES.indexOf(eased.build.mode)).toBe(MODES.indexOf(eased.view.proposedMode) - 1);
     expect(eased.build.params.overrides.mode).toBe(eased.build.mode);
+    await expect(card.locator(".body-check-line")).toContainText(`Eased to a ${eased.build.mode} session`);
+    const easedLine = (await card.locator(".body-check-line").textContent()) ?? "";
     await shoot(page, "engine-eased", testInfo.project.name);
 
     await page.getByRole("button", { name: "Undo" }).click();
     await expect(card.locator(".body-check-line")).toHaveText("Kept as planned.");
-    const back = (await (await req.get(`/api/sessions/${session.id}`)).json()) as { build: { params: { overrides: { mode?: string } } } };
+    // The focus moved to the line that says so.
+    await expect(card.locator(".body-check-line")).toBeFocused();
+    const back = (await (await req.get(`/api/sessions/${session.id}`)).json()) as SessionRead;
     expect(back.build.params.overrides.mode).toBeUndefined();
+    expect(back.build.mode).toBe(back.view.proposedMode);
+    // The day's own session again — the one A bit heavy was said of: heavy legs only if it works them.
+    expect(easedLine).toContain(worksLegs(back) ? "for heavy legs" : "for a heavy body");
 
     await page.getByRole("button", { name: "Sore somewhere" }).click();
     await expect(page.getByRole("group", { name: "Where?" })).toBeVisible();
     await shoot(page, "engine-picker", testInfo.project.name);
     await page.getByRole("button", { name: "Hips", exact: true }).click();
     await page.getByRole("button", { name: "Done" }).click();
-    await expect(card.locator(".body-check-line")).toHaveText(
-      /^(Eased to a (consistent|recovery) session for sore hips\s*Undo|Noted — today leaves your hips alone\.)$/,
-      { timeout: 30_000 },
-    );
+    // Eased when the day's session works the hips (a move's region, or a primary muscle under them), else noted.
+    if (worksHips(back)) {
+      await expect(card.locator(".body-check-line")).toHaveText(/^Eased to a (consistent|recovery) session for sore hips\s*Undo$/, { timeout: 30_000 });
+      const sore = (await (await req.get(`/api/sessions/${session.id}`)).json()) as SessionRead;
+      expect(MODES.indexOf(sore.build.mode)).toBe(MODES.indexOf(back.build.mode) - 1);
+    } else {
+      await expect(card.locator(".body-check-line")).toHaveText("Noted — today leaves your hips alone.", { timeout: 30_000 });
+      const sore = (await (await req.get(`/api/sessions/${session.id}`)).json()) as SessionRead;
+      expect(sore.build.mode).toBe(back.build.mode);
+    }
     await expect(page.getByRole("button", { name: "Sore somewhere" })).toHaveAttribute("aria-pressed", "true");
   });
 });
@@ -165,20 +208,27 @@ test.describe("a run of the plan", () => {
     const req = context.request;
     const run = await headed(req, "run");
     expect(run.origin).toBeNull();
-    const before = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { title: string; stageSummary: string | null; calendarSeconds: number } }).workout;
+    const before = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { title: string; stageSummary: string | null; calendarSeconds: number; workoutSeconds: number | null } }).workout;
     const { card } = await openCheck(page);
 
     await answer(page, "Fresh");
-    await expect(card.locator(".body-check-line")).toHaveCount(0);
+    await expect(card.locator(".body-check-line")).toBeEmpty();
 
     await answer(page, "A bit heavy");
     await expect(card.locator(".body-check-line")).toHaveText(/^Eased to (\d+ h( \d+ min)?|\d+ min) for heavy legs\s*Undo$/, { timeout: 30_000 });
-    const eased = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { calendarSeconds: number } }).workout;
-    expect(eased.calendarSeconds).toBeLessThan(before.calendarSeconds);
+    // By time — the run is on the watch — 0.7 of the plan's, held easy; and the card names that time.
+    const eased = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { calendarSeconds: number; stageSummary: string | null } }).workout;
+    const minutes = eased.calendarSeconds / 60;
+    expect(Math.abs(minutes - (before.workoutSeconds ?? before.calendarSeconds) / 60 * 0.7)).toBeLessThanOrEqual(1);
+    expect(eased.stageSummary).toMatch(/easy/i);
+    const h = Math.floor(minutes / 60);
+    const words = h === 0 ? `${minutes} min` : minutes % 60 === 0 ? `${h} h` : `${h} h ${minutes % 60} min`;
+    await expect(card.locator(".body-check-line")).toContainText(`Eased to ${words} for heavy legs`);
     await shoot(page, "run-eased", testInfo.project.name);
 
     await page.getByRole("button", { name: "Undo" }).click();
     await expect(card.locator(".body-check-line")).toHaveText("Kept as planned.");
+    await expect(card.locator(".body-check-line")).toBeFocused();
     const back = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { title: string; stageSummary: string | null; calendarSeconds: number } }).workout;
     expect([back.title, back.stageSummary, back.calendarSeconds]).toEqual([before.title, before.stageSummary, before.calendarSeconds]);
 

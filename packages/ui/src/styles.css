@@ -12469,12 +12469,12 @@ a.stu-tpl-open:focus-visible::before {
 .body-check {
   min-width: 0;
 }
-/* Spaced by margins, not a gap: the line's live region is always there (so a screen reader hears it change) and costs
-   no space while it says nothing. */
+/* Spaced by margins, not a gap: the line's status is always there (so a screen reader hears it change) and costs no
+   space while it says nothing — the result's pieces take their own space only when they hold something. */
 .body-check > * + * {
   margin-top: var(--space-3);
 }
-.body-check > .body-check-result:empty {
+.body-check > .body-check-result {
   margin-top: 0;
 }
 .body-check-q,
@@ -12527,21 +12527,20 @@ a.stu-tpl-open:focus-visible::before {
   align-items: center;
   gap: var(--space-4);
 }
-.body-check-result {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+.body-check-result > :not(:empty) {
+  margin-top: var(--space-3);
 }
 .body-check-line {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--ink);
 }
+/* Undo's focus lands on the line (a status, focused by script): no ring for a line nobody tabbed to. */
+.body-check-line:focus:not(:focus-visible) {
+  outline: none;
+}
 .body-check-undo {
   font-size: var(--text-sm);
-}
-.body-check-ask {
-  align-self: flex-start;
 }
 .body-check-error {
   margin: 0;

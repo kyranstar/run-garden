@@ -3019,7 +3019,8 @@ export interface BodyAreaDto {
  *  - `ask`: a workout the coach or the Studio designed is never changed by itself — the card offers the coach instead.
  */
 export type BodyChangeDto =
-  | { kind: "eased"; to: { mode: "recovery" | "consistent" | "build" } | { meters: number } | { minutes: number } }
+  /** `legs: false`: eased for A bit heavy, of a session that works no leg ("for a heavy body", not "heavy legs"). */
+  | { kind: "eased"; to: { mode: "recovery" | "consistent" | "build" } | { meters: number } | { minutes: number }; legs?: false }
   | { kind: "kept"; why: "undone" | "quiet" | "gentlest" | "race" }
   | { kind: "ask" };
 

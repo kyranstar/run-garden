@@ -9,7 +9,8 @@
  * Each answers the check (`BodyCheckView`): `pending: true` when an ease is recorded and not yet applied (the client
  * asks again, at once), `coachDrain: true` when a watch write is queued for the client to drain (as after an approve).
  * 404 `not_found` for a session that isn't the athlete's; 409 `closed` once it has started, is done, or isn't today's;
- * 422 `invalid` for an answer the check doesn't take. A restore in progress is refused (423) by `requireUser` before
+ * 422 `invalid` for an answer the check doesn't take; 409 `watch_updating` while the watch is taking the eased run (Undo,
+ * or a changed answer, waits for it). A restore in progress is refused (423) by `requireUser` before
  * any write.
  *
  * NO CALENDAR SYNC IN THE REQUEST. An eased session's block changes length; the half-hourly reconcile books it, as it
@@ -25,6 +26,7 @@ import { loadPreferences } from "../services/calendar-sync.js";
 import {
   answerBodyCheck,
   BODY_FEELS,
+  BodyCheckBusyError,
   BodyCheckClosedError,
   BodyCheckInvalidError,
   BodyCheckNotFoundError,
@@ -47,6 +49,7 @@ function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof BodyCheckNotFoundError) return c.json({ error: "not_found" }, 404);
   if (e instanceof BodyCheckClosedError) return c.json({ error: "closed" }, 409);
   if (e instanceof BodyCheckInvalidError) return c.json({ error: "invalid", why: e.why }, 422);
+  if (e instanceof BodyCheckBusyError) return c.json({ error: "watch_updating" }, 409);
   throw e;
 }
 

@@ -13,7 +13,7 @@
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { bodyCheckApi, type BodyAreaDto, type BodyCheckDto, type BodyFeel, type WorkoutDto } from "@rg/api-client";
+import { ApiError, bodyCheckApi, type BodyAreaDto, type BodyCheckDto, type BodyFeel, type WorkoutDto } from "@rg/api-client";
 import { formatDistance, type Units } from "../../components.js";
 import { IconCheck } from "../../icons.js";
 import { useUnits } from "../../use-units.js";
@@ -32,9 +32,9 @@ function areaWords(ids: readonly string[], areas: readonly BodyAreaDto[]): strin
   return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
 }
 
-/** Why the day changed: "heavy legs", "sore calves". */
-function cause(answer: NonNullable<BodyCheckDto["answer"]>, areas: readonly BodyAreaDto[]): string {
-  return answer.feel === "sore" ? `sore ${areaWords(answer.areas, areas)}` : "heavy legs";
+/** Why the day changed: "heavy legs" (only of a session that works them; else "a heavy body"), "sore calves". */
+function cause(answer: NonNullable<BodyCheckDto["answer"]>, areas: readonly BodyAreaDto[], legs: boolean): string {
+  return answer.feel === "sore" ? `sore ${areaWords(answer.areas, areas)}` : legs ? "heavy legs" : "a heavy body";
 }
 
 /** What the session was eased to: "14 km", "35 min", "a recovery session". */
@@ -55,7 +55,7 @@ export function bodyLine(view: BodyCheckDto, units: Units): string | null {
   if (!answer || !change) return null;
   switch (change.kind) {
     case "eased":
-      return `Eased to ${easedTo(change.to, units)} for ${cause(answer, view.areas)}`;
+      return `Eased to ${easedTo(change.to, units)} for ${cause(answer, view.areas, change.legs !== false)}`;
     case "kept":
       if (change.why === "quiet") return `Noted — today leaves your ${areaWords(answer.areas, view.areas)} alone.`;
       if (change.why === "gentlest") return "Today is already as gentle as it goes.";
@@ -81,12 +81,18 @@ export interface BodyCheckPanelProps {
   onUndo: () => void;
   /** Opens the coach with these words; null without the coach in the app. */
   onAsk: ((request: string) => void) | null;
+  /** Bumped when Undo has landed: the focus moves to the line that says so. */
+  focusLine?: number;
 }
 
 /** The check, drawn from its view. */
-export function BodyCheckPanel({ view, units, busy, error, onAnswer, onUndo, onAsk }: BodyCheckPanelProps) {
+export function BodyCheckPanel({ view, units, busy, error, onAnswer, onUndo, onAsk, focusLine = 0 }: BodyCheckPanelProps) {
   const questionId = useId();
   const pickerId = useId();
+  const lineRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (focusLine > 0) lineRef.current?.focus();
+  }, [focusLine]);
   const [picking, setPicking] = useState<string[] | null>(null);
   const chosen = view.answer?.feel ?? null;
   const locked = !view.open || busy;
@@ -171,32 +177,43 @@ export function BodyCheckPanel({ view, units, busy, error, onAnswer, onUndo, onA
           </div>
         </fieldset>
       ) : null}
-      <div className="body-check-result" aria-live="polite">
-        {line ? (
-          <p className="body-check-line">
-            {line}
-            {change?.kind === "eased" && view.open ? (
-              <>
-                {" "}
-                <button type="button" className="linklike tap-pad body-check-undo" disabled={busy} onClick={onUndo}>
-                  Undo
-                </button>
-              </>
-            ) : null}
-          </p>
-        ) : null}
+      <div className="body-check-result">
+        {/* The line is a status, always there (so a screen reader hears it change), empty while there is nothing to
+            say; Undo's focus moves to it once the line says what happened (the integrated review). */}
+        <p className="body-check-line" role="status" tabIndex={-1} ref={lineRef}>
+          {line}
+          {line && change?.kind === "eased" && view.open ? (
+            <>
+              {" "}
+              <button type="button" className="linklike tap-pad body-check-undo" disabled={busy} onClick={onUndo}>
+                Undo
+              </button>
+            </>
+          ) : null}
+        </p>
         {change?.kind === "ask" && view.answer && onAsk ? (
           <button type="button" className="btn btn-small body-check-ask" onClick={() => onAsk(askRequest(view.answer!, view.areas))}>
             Ask the coach to adapt it
           </button>
         ) : null}
-        {error ? <p className="body-check-error">{error}</p> : null}
+        {error ? (
+          <p className="body-check-error" role="alert">
+            {error}
+          </p>
+        ) : null}
       </div>
     </div>
   );
 }
 
 const SAVE_FAILED = "Couldn't save — try again.";
+
+/** The server's refusal while the watch is taking the eased run (409 `watch_updating`), in words for what was tapped. */
+function refusalText(err: unknown, action: "answer" | "undo"): string {
+  const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+  if (code !== "watch_updating") return SAVE_FAILED;
+  return action === "undo" ? "Your watch is updating — try Undo in a moment." : "Your watch is updating — try again in a moment.";
+}
 
 /** The body check of one of today's sessions, as the Today card places it. */
 export function BodyCheck({ workout }: { workout: Pick<WorkoutDto, "id"> }) {
@@ -218,12 +235,17 @@ export function BodyCheck({ workout }: { workout: Pick<WorkoutDto, "id"> }) {
   const answer = useMutation({
     mutationFn: (a: { feel: BodyFeel; areas?: string[] }) => bodyCheckApi.answer(workout.id, a.feel, a.areas),
     onSuccess: (next) => settled(next, read.data),
-    onError: () => setError(SAVE_FAILED),
+    onError: (err) => setError(refusalText(err, "answer")),
   });
+  // Undo's button goes with the ease: once it has landed, the focus moves to the line that says so.
+  const [focusLine, setFocusLine] = useState(0);
   const undo = useMutation({
     mutationFn: () => bodyCheckApi.undo(workout.id),
-    onSuccess: (next) => settled(next, read.data),
-    onError: () => setError(SAVE_FAILED),
+    onSuccess: (next) => {
+      settled(next, read.data);
+      setFocusLine((n) => n + 1);
+    },
+    onError: (err) => setError(refusalText(err, "undo")),
   });
 
   // An ease left pending (a request cut off between its two halves) is finished by the card, once.
@@ -248,6 +270,7 @@ export function BodyCheck({ workout }: { workout: Pick<WorkoutDto, "id"> }) {
       onAnswer={(feel, areas) => answer.mutate({ feel, ...(areas ? { areas } : {}) })}
       onUndo={() => undo.mutate()}
       onAsk={coach ? (request) => coach.open({ request }) : null}
+      focusLine={focusLine}
     />
   );
 }
