@@ -36,7 +36,7 @@ import { useUnits } from "../use-units.js";
 import { YourPlans } from "./plan-cards.js";
 import { PlanSheet } from "./plan-sheet.js";
 import { ThreadCoachCards } from "./thread-coach-cards.js";
-import { askable, displayCompletionState, WeekView, weekPlanName, weekRangeLabel } from "./week-view.js";
+import { askable, displayCompletionState, WeekView, weekPlan, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { SessionSheet } from "../components/session-sheet.js";
@@ -941,7 +941,8 @@ export function PlanScreen() {
             onOpenWorkout={openWorkout}
             onGhostTap={onGhostTap}
             onBrief={() => setBriefOpen(true)}
-            planName={weekPlanName(activePlans, week.data.weekStart)}
+            planName={weekPlan(activePlans, week.data.weekStart).name}
+            planWeek={weekPlan(activePlans, week.data.weekStart).ownWeek}
             race={race}
           />
         )}

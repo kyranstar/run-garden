@@ -24,7 +24,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachConversationCardDto, type DesignApproveRequest, type DesignApproveResponse, type DesignPlanLineDto } from "@rg/api-client";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
-import { designProposalQuery } from "./proposal-card.js";
+import { decisionError, designProposalQuery } from "./proposal-card.js";
 import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { useOneTap } from "./use-one-tap.js";
 
@@ -34,6 +34,10 @@ export const PLAN_ADDED = "Added to your plan";
 export const PLAN_ADDING = "Adding to your plan…";
 export const PLAN_PART_ADDED = "Part of it is on your plan already.";
 export const PLAN_COULDNT = "Couldn't reach the coach — try again.";
+/** A plan another request is adding: Finish adding goes on from where it got to. */
+export const PLAN_IN_FLIGHT = "It's being added right now — Finish adding takes it on from there.";
+/** A plan's note (the plan checks' words, stored as they wrote them) with its first letter a capital. */
+export const noteWords = (message: string): string => message.charAt(0).toUpperCase() + message.slice(1);
 /** A plan change's op id (the worker's `PLAN_STRUCTURE_ID`): the card's own when its read hasn't said yet. */
 export const PLAN_OP_ID = "plan";
 
@@ -110,7 +114,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const approve = useMutation({
     networkMode: "always",
     mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread, own),
-    onSuccess: (answers) => setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? "It's being added right now — look again in a moment." : null),
+    onSuccess: (answers) => setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? PLAN_IN_FLIGHT : null),
     onSettled: after,
   });
   const decline = useMutation({
@@ -122,8 +126,10 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const outcomeRef = useRef<HTMLParagraphElement>(null);
   const [toOutcome, setToOutcome] = useState(false);
   useEffect(() => {
-    if (!toOutcome || !outcomeRef.current) return;
-    outcomeRef.current.focus();
+    if (!toOutcome) return;
+    // Disarmed after every request that settles (review-3): with no outcome to show (met in flight), nothing takes the
+    // focus later, when one does.
+    outcomeRef.current?.focus();
     setToOutcome(false);
   });
   const [open, setOpen] = useState(false);
@@ -168,7 +174,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       {plan && plan.issues.length > 0 && decidable ? (
         <ul className="coach-plan-notes">
           {plan.issues.map((i, k) => (
-            <li key={k}>{i.message}</li>
+            <li key={k}>{noteWords(i.message)}</li>
           ))}
         </ul>
       ) : null}
@@ -198,9 +204,10 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
           {busyLine}
         </p>
       ) : null}
-      {approve.isError || decline.isError ? (
+      {/* What went wrong, in the cards' shared words — none beside what came of it (a suggestion gone says its outcome). */}
+      {(approve.isError || decline.isError) && outcome === null ? (
         <p className="coach-pc-error" role="status">
-          {approve.error instanceof Error && approve.error.message === "approve_unfinished" ? "Not all of it was added yet — tap again to finish." : PLAN_COULDNT}
+          {decisionError(approve.error ?? decline.error, { inFlight: PLAN_IN_FLIGHT, unfinished: "Not all of it was added yet — tap again to finish." })}
         </p>
       ) : null}
       {decidable ? (

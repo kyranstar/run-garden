@@ -187,16 +187,23 @@ function inFlightOf(e: unknown): DesignApproveResponse | null {
   return { ok: true, status, applied: [], changed: [], refused: [], settled: [], remaining: [], inFlight };
 }
 
-/** What went wrong with an approve or a decline, in plain words. */
-function decisionError(e: unknown): string {
+/**
+ * What went wrong with an approve or a decline, in plain words — every card's (the plan card's too: review-3), a card
+ * giving its own words for what is its own (`words`): a suggestion gone, its day passed, out of credits, one being
+ * changed, one that changed meanwhile, not all of it done yet; else no connection.
+ */
+export function decisionError(e: unknown, words: { inFlight?: string; unfinished?: string } = {}): string {
   if (e instanceof ApiError) {
-    const error = (e.body as { error?: unknown } | null)?.error;
+    const body = e.body as { error?: unknown; status?: unknown } | null;
+    const error = body?.error;
+    if (e.status === 402) return "The AI account is out of credits.";
+    if (error === "not_pending" && body?.status === "expired") return "Its day passed — ask the coach for it again.";
     if (error === "not_pending" || error === "not_yet") return "This suggestion isn't open any more.";
     // Read as an answer wherever it names its ops (`inFlightOf`); this is one that named none.
-    if (error === "in_flight") return "One of these is being changed right now — look again in a moment.";
+    if (error === "in_flight") return words.inFlight ?? "One of these is being changed right now — look again in a moment.";
     if (error === "proposal_changed") return "This suggestion changed meanwhile — look again and try once more.";
   }
-  if (e instanceof Error && e.message === "approve_unfinished") return "Not everything was added yet — try again.";
+  if (e instanceof Error && e.message === "approve_unfinished") return words.unfinished ?? "Not everything was added yet — try again.";
   return "Couldn't reach the coach — try again.";
 }
 

@@ -13,7 +13,8 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationCardDto, DesignApproveResponse, DesignPlanLineDto } from "@rg/api-client";
 import { toConversation, toProposal } from "../src/screens/studio/coach-tolerance.js";
-import { approvePlanUntilDone, PLAN_ADDED, PLAN_ADDING, PlanCard, planOutcomeLine } from "../src/screens/studio/plan-card.js";
+import { approvePlanUntilDone, PLAN_ADDED, PLAN_ADDING, PLAN_IN_FLIGHT, PlanCard, planOutcomeLine } from "../src/screens/studio/plan-card.js";
+import type { QueryClient } from "@tanstack/react-query";
 import { ProposalCard } from "../src/screens/studio/proposal-card.js";
 import { button, click, json, serve, text, until, type Call } from "./coach-live-harness.js";
 import { primedClient } from "./studio-fixtures.js";
@@ -72,11 +73,13 @@ function serveAsync(routes: Record<string, (body: any) => unknown>): Call[] {
   return calls;
 }
 
+let client: QueryClient | null = null;
+
 async function mount(c: CoachConversationCardDto, closed = false) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  const client = primedClient();
+  client = primedClient();
   await act(async () => {
     root!.render(createElement(MemoryRouter, null, createElement(QueryClientProvider, { client }, createElement(PlanCard, { card: c, closed }))));
   });
@@ -159,6 +162,90 @@ describe("the plan card", () => {
     await click(button("Show"), "Show");
     expect(list.hidden).toBe(false);
     expect(button("Hide")?.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+describe("the plan card's own words for what went wrong (review-3), and its focus", () => {
+  const failing = async (route: "approve" | "decline", fail: Response, after: ReturnType<typeof read> = read("pending")) => {
+    let state = read("pending");
+    serveAsync({
+      "GET /api/coach/proposals/dp-run-1": () => state,
+      [`POST /api/coach/proposals/dp-run-1/${route}`]: () => {
+        state = after;
+        return fail;
+      },
+    });
+    await mount(card());
+    const name = route === "approve" ? "Approve plan" : "Not now";
+    await until(() => !!button(name) && !button(name)!.disabled, name);
+    await click(button(name), name);
+  };
+
+  it("a suggestion gone (409 not_pending, its day passed): what came of it, never 'Couldn't reach the coach'", async () => {
+    await failing("approve", json({ error: "not_pending", status: "expired" }, 409), read("expired"));
+    await until(() => text().includes("Its day passed"), "its day passed");
+    // What came of it says it: no error line beside it.
+    expect(document.querySelector(".coach-pc-error")).toBeNull();
+    expect(text()).not.toContain("Couldn't reach the coach");
+  });
+
+  it("the cards' shared words for what went wrong, case by case (one function, every card's)", async () => {
+    const { decisionError } = await import("../src/screens/studio/proposal-card.js");
+    const { ApiError } = await import("@rg/api-client");
+    expect(decisionError(new ApiError(409, { error: "not_pending", status: "expired" }))).toBe("Its day passed — ask the coach for it again.");
+    expect(decisionError(new ApiError(409, { error: "not_pending", status: "declined" }))).toBe("This suggestion isn't open any more.");
+    expect(decisionError(new ApiError(402, { error: "out_of_credits" }))).toBe("The AI account is out of credits.");
+    expect(decisionError(new ApiError(409, { error: "in_flight" }))).toBe("One of these is being changed right now — look again in a moment.");
+    expect(decisionError(new ApiError(409, { error: "in_flight" }), { inFlight: PLAN_IN_FLIGHT })).toBe(PLAN_IN_FLIGHT);
+    expect(decisionError(new Error("approve_unfinished"), { unfinished: "Not all of it was added yet — tap again to finish." })).toBe("Not all of it was added yet — tap again to finish.");
+    expect(decisionError(new TypeError("Failed to fetch"))).toBe("Couldn't reach the coach — try again.");
+  });
+
+  it("offline: couldn't reach the coach", async () => {
+    await failing("approve", json({ error: "offline" }, 503));
+    await until(() => text().includes("Couldn't reach the coach — try again."), "offline");
+  });
+
+  it("out of credits: said so", async () => {
+    await failing("approve", json({ error: "out_of_credits" }, 402));
+    await until(() => text().includes("The AI account is out of credits."), "credits");
+    expect(text()).not.toContain("Couldn't reach the coach");
+  });
+
+  it("Not now on a plan being added (409 in_flight): it is being added, and Finish adding takes it on", async () => {
+    await failing("decline", json({ error: "in_flight", opIds: ["plan"], status: "pending" }, 409));
+    await until(() => text().includes(PLAN_IN_FLIGHT), "in flight");
+    expect(text()).not.toContain("Couldn't reach the coach");
+  });
+
+  it("an approve met in flight leaves the focus where it is — when the plan is added later, the focus doesn't jump to it", async () => {
+    let state = read("pending");
+    serveAsync({
+      "GET /api/coach/proposals/dp-run-1": () => state,
+      "POST /api/coach/proposals/dp-run-1/approve": () => json({ error: "in_flight", opIds: ["plan"], status: "pending" }, 409),
+    });
+    await mount(card());
+    await until(() => !!button("Approve plan") && !button("Approve plan")!.disabled, "Approve plan");
+    await click(button("Approve plan"), "Approve plan");
+    await until(() => text().includes(PLAN_IN_FLIGHT), "in flight");
+    const before = document.activeElement;
+    // Another request finishes it; the card reads it again.
+    state = read("approved", { status: "applied", at: "x", summary: "Added" });
+    await act(async () => {
+      await client!.invalidateQueries();
+    });
+    await until(() => text().includes(`✓ ${PLAN_ADDED}`), "added");
+    const outcome = [...document.querySelectorAll(".coach-changes-outcome")].find((p) => p.textContent?.includes(PLAN_ADDED));
+    expect(document.activeElement).not.toBe(outcome);
+    expect(document.activeElement).toBe(before);
+  });
+
+  it("the plan checks' notes begin with a capital, their stored words left as they are", async () => {
+    const lower = { ...planLine(), issues: [{ code: "no_rest_day", message: "the week of Mon 19 Oct ends up with work on all seven days" }] };
+    serveAsync({ "GET /api/coach/proposals/dp-run-1": () => ({ ...read("pending"), plans: [lower] }) });
+    await mount(card());
+    await until(() => !!document.querySelector(".coach-plan-notes li"), "the notes");
+    expect([...document.querySelectorAll(".coach-plan-notes li")].map((l) => l.textContent)).toEqual(["The week of Mon 19 Oct ends up with work on all seven days"]);
   });
 });
 

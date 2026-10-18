@@ -109,13 +109,27 @@ export function weekTitle(weekStart: string, today: string): string {
 }
 
 /**
- * The plan a week's line names: the longest of the active blocks that holds the week (one starting mid-week holds it;
- * one that ended the Sunday before does not), or none.
+ * The plan a week's line names, and whether the week count beside it is that plan's own (review-3). A plan holds a week
+ * when it runs into it (one starting mid-week holds it; one that ended the Sunday before does not).
+ *  - One plan: its name. The count the server gives is its coach block's, so it is this plan's own only when this plan is
+ *    a coach block (a watch plan's or the Studio's never has one).
+ *  - Two or more: how many — "2 plans" — and no count: the calm option, never one plan named beside another's number
+ *    (the coach's blocks beside a watch plan made that common: "Fall Half Marathon Build, week 1 of 4", the 10K build's).
+ *  - None: no name; the count as the server gives it.
  */
-export function weekPlanName(blocks: ReadonlyArray<Pick<CoachPlanDto, "name" | "startDate" | "endDate">>, weekStart: string): string | null {
-  const span = (p: Pick<CoachPlanDto, "startDate" | "endDate">) => Date.parse(p.endDate) - Date.parse(p.startDate);
+export function weekPlan(
+  blocks: ReadonlyArray<Pick<CoachPlanDto, "name" | "startDate" | "endDate" | "source">>,
+  weekStart: string,
+): { name: string | null; ownWeek: boolean } {
   const holding = blocks.filter((p) => startOfIsoWeek(p.startDate) <= weekStart && weekStart <= p.endDate);
-  return holding.sort((a, b) => span(b) - span(a))[0]?.name ?? null;
+  if (holding.length === 0) return { name: null, ownWeek: true };
+  if (holding.length > 1) return { name: `${holding.length} plans`, ownWeek: false };
+  return { name: holding[0]!.name, ownWeek: (holding[0]!.source ?? "coach") === "coach" };
+}
+
+/** The plan a week's line names (`weekPlan`'s name). */
+export function weekPlanName(blocks: ReadonlyArray<Pick<CoachPlanDto, "name" | "startDate" | "endDate" | "source">>, weekStart: string): string | null {
+  return weekPlan(blocks, weekStart).name;
 }
 
 /** What the week's line knows of the race: its countdown and its phase (the race hub's). */
@@ -126,8 +140,19 @@ export type WeekRace = Pick<NonNullable<RaceHubResponse["race"]>, "daysToRace" |
  * week, how many of its sessions are done, the race's countdown. A part it does not know is left out, never guessed;
  * a race gone by says nothing here (its debrief is one tap down, in the brief).
  */
-export function weekLine({ week, planName, race }: { week: PlanWeekResponse; planName: string | null; race: WeekRace | null }): string {
-  const weekOf = week.weekIndex !== null && week.weekTotal !== null ? `week ${week.weekIndex} of ${week.weekTotal}` : null;
+export function weekLine({
+  week,
+  planName,
+  race,
+  planWeek = true,
+}: {
+  week: PlanWeekResponse;
+  planName: string | null;
+  race: WeekRace | null;
+  /** The week count is the named plan's own (`weekPlan`): false leaves it out. */
+  planWeek?: boolean;
+}): string {
+  const weekOf = planWeek && week.weekIndex !== null && week.weekTotal !== null ? `week ${week.weekIndex} of ${week.weekTotal}` : null;
   const plan = planName ? (weekOf ? `${planName}, ${weekOf}` : planName) : weekOf;
   const done = week.sessionCount > 0 ? `${week.doneCount} of ${week.sessionCount} done` : null;
   const raceWords =
@@ -185,6 +210,7 @@ export function WeekView({
   onGhostTap,
   onBrief,
   planName = null,
+  planWeek = true,
   race = null,
   /** Steps the week by ±7 days from the last REQUESTED week. Clicks fired
    * inside one render tick must accumulate, so the caller owns the cursor
@@ -207,6 +233,8 @@ export function WeekView({
   onBrief: () => void;
   /** The plan the week belongs to, named on its line. */
   planName?: string | null;
+  /** The week count is that plan's own (`weekPlan`): false leaves it off the line. */
+  planWeek?: boolean;
   /** The race's countdown, on the line. */
   race?: WeekRace | null;
   loading?: boolean;
@@ -300,7 +328,7 @@ export function WeekView({
       </div>
       {/* The race strip and the weekly brief, folded into one line: the brief is one tap down. */}
       <button type="button" className="plan-week-line" aria-haspopup="dialog" onClick={onBrief}>
-        {weekLine({ week, planName, race })}
+        {weekLine({ week, planName, planWeek, race })}
       </button>
       <div className="plan-week-grid">
         {week.days.map((day, i) => {
