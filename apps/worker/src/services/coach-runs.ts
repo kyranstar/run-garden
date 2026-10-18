@@ -376,6 +376,9 @@ export interface RunSettings {
   setCeilingMicros?: number;
   /** An auto run's only: when plan_set raised its ceiling to `setCeilingMicros` (once), with a set's window from then. */
   raisedAt?: string;
+  /** An auto run's only (§8 §5): when propose_plan raised its ceiling to `setCeilingMicros` (once), with a set's window
+   * from then — a run that proposes a whole plan, never a set's (`raisedAt` says that). */
+  planRaisedAt?: string;
 }
 
 export interface PendingCall {
@@ -1430,14 +1433,14 @@ export interface OpenProposalDto {
  * the athlete decides in. Never errs on ops that aren't JSON. */
 const OPEN_OP = sql.raw(
   `(p.status IN ('pending', 'partially_approved') AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))))`,
 );
 const LIVE_ROOT = sql.raw(`r.status IN (${LIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`);
 /** The days of the joined proposal's ops still open (`OPEN_OP`'s), as a JSON array: the pick keeps those from today on. */
 const OPEN_DAYS = sql.raw(
   `(SELECT json_group_array(json_extract(o.value, '$.date')) FROM json_each(CASE WHEN p.status IN ('pending', 'partially_approved') AND json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying')))`,
 );
 
@@ -1453,7 +1456,7 @@ const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially
 
 /** An op of the joined proposal `p` still the athlete's to decide (`OPEN_OP`'s rule for one op `o`). */
 const OPEN_ONE = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust') ` +
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 
@@ -1973,15 +1976,15 @@ export const REVIEW_NUDGE =
   "Your review wasn't submitted. Return it by calling submit_review: a whole score from 1 to 5 and a one-line note for every dimension, the must-fix items and the improvements.";
 
 /** The plain line for a run that outlived its window. */
-export function expiredLine(settings: Pick<RunSettings, "window" | "setCeilingMicros" | "raisedAt"> | undefined): string {
+export function expiredLine(settings: Pick<RunSettings, "window" | "setCeilingMicros" | "raisedAt" | "planRaisedAt"> | undefined): string {
   return windowIsADay(settings) ? LINES.expiredDay : LINES.expiredSet;
 }
 
 /** Whether a run's window is its day's: a day's, or an auto run's while it is one workout's — open to the athlete's
  * next midnight at least (`runWindow`), so once it closes, the day it was for has passed. An auto run that planned a set
  * (`raisedAt`) has a set's. */
-function windowIsADay(settings: Pick<RunSettings, "window" | "setCeilingMicros" | "raisedAt"> | undefined): boolean {
-  return settings?.window?.kind === "day" || (settings?.setCeilingMicros !== undefined && !settings.raisedAt);
+function windowIsADay(settings: Pick<RunSettings, "window" | "setCeilingMicros" | "raisedAt" | "planRaisedAt"> | undefined): boolean {
+  return settings?.window?.kind === "day" || (settings?.setCeilingMicros !== undefined && !settings.raisedAt && !settings.planRaisedAt);
 }
 
 /** A stop's own line, by its reason (`CoachRunDto.error`): what the loop wrote when it stopped. */
@@ -2006,7 +2009,7 @@ const STOP_LINES: Readonly<Record<string, string>> = {
 export function endedLine(
   status: string,
   error: string | null,
-  settings: Pick<RunSettings, "window" | "ceilingMicros" | "setCeilingMicros" | "raisedAt"> | undefined,
+  settings: Pick<RunSettings, "window" | "ceilingMicros" | "setCeilingMicros" | "raisedAt" | "planRaisedAt"> | undefined,
 ): string | null {
   if (status === "cancelled") return "Cancelled.";
   if (status === "expired") return expiredLine(settings);
@@ -3194,6 +3197,15 @@ function setHooks(s: StepCtx): SetHooks {
       if (s.run.scope.kind !== "auto" || settings.raisedAt) return;
       settings.ceilingMicros = settings.setCeilingMicros ?? RUN_CEILING_MICROS.week;
       settings.raisedAt = s.now.toISOString();
+      settings.window = { kind: "until", at: new Date(s.now.getTime() + COACH_RUN_SET_WINDOW_HOURS * 3_600_000).toISOString() };
+    },
+    // An auto run that proposes a whole plan (§8 §5): its ceiling raised to a set's, once, with a set's window from now —
+    // never a set's run (`raisedAt` stays plan_set's).
+    raisePlan() {
+      const settings = s.state.settings;
+      if (s.run.scope.kind !== "auto" || settings.raisedAt || settings.planRaisedAt) return;
+      settings.ceilingMicros = settings.setCeilingMicros ?? RUN_CEILING_MICROS.week;
+      settings.planRaisedAt = s.now.toISOString();
       settings.window = { kind: "until", at: new Date(s.now.getTime() + COACH_RUN_SET_WINDOW_HOURS * 3_600_000).toISOString() };
     },
     budget: () => {

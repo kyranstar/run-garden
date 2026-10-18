@@ -86,6 +86,17 @@
  * garden's replay); not made, declined (the decline) or released (the sweep: open again, as its proposal's other ops,
  * which its expiry covers). A claim whose change is made is recorded applied, fresh or stale: nothing runs for it.
  *
+ * A WHOLE PLAN CHANGE (§8 §5). A `plan_structure` op — propose_plan's new block, extension, week firmed up or
+ * reworked, wind-down or retirement — is applied after the changes and before the workouts, as its own class: through
+ * the thread coach's own appliers a chunk at a time (coach-apply.ts `applyStructuralChunk`), within what the request's
+ * other ops left (PLAN_STRUCTURE_FIXED for its claim, its release and the watch's drain read, then at least
+ * STRUCTURAL_MIN_BUDGET for the chunk — else it waits in `remaining`). It is claimed first (`applying`, with its
+ * `progress`) under the same guard as every write; a chunk that leaves more keeps its progress on a claim released at
+ * once (the next approve takes it straight over) and answers `remaining` until it is done; done, it is applied with the
+ * applier's one line (`planned`); refused by the applier (its plan gone), refused with its words. A plan change that has
+ * started is never declined (a half plan isn't the athlete's choice: it is finished by Approve) and never expired under
+ * the athlete: its claim is answered in flight, its proposal left for the next approve.
+ *
  * THE THREAD. Approving writes one plain receipt in the thread once nothing of the request remains — the workouts
  * approved, each as written (design-manifest.ts), how many were declined, and any not approved with why — and a decline
  * that declines the whole proposal says "Left as planned", as the thread's own does. A receipt that fails never fails
@@ -98,7 +109,7 @@ import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
-import { applyOps, NOT_ACTIONABLE, whyNotActionable } from "./coach-apply.js";
+import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
 import { recordReplayFrom } from "./garden-sync.js";
 import {
@@ -121,13 +132,37 @@ import { approvalKey } from "./design-placement.js";
 import { approveTimeOf, clockIn, PastTimeError, pastTime, todayLeadRefusal } from "./design-time.js";
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
 import { RestoreInProgressError } from "./programs.js";
-import { changeVerb, describeChange, isDesignedOp, isDocWorkoutOp, isPlanAdjustOp, opIdOf, type ChangeVerb, type PlanAdjustOp, type PlanChange } from "./proposal-kinds.js";
+import {
+  changeVerb,
+  describeChange,
+  isDesignedOp,
+  isDocWorkoutOp,
+  isPlanAdjustOp,
+  isPlanStructureOp,
+  opIdOf,
+  type ChangeVerb,
+  type PlanAdjustOp,
+  type PlanChange,
+  type PlanStructureOp,
+} from "./proposal-kinds.js";
 import { FROZEN_STATES } from "./workout-doc-store.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Why the server refused an op today: the Studio's own error names. */
-export type RefusalCode = "past_date" | "past_time" | "no_time_today" | "stale_revision" | "not_editable" | "not_found" | "invalid_doc" | "run_unsupported" | "restore_in_progress" | "race";
+export type RefusalCode =
+  | "past_date"
+  | "past_time"
+  | "no_time_today"
+  | "stale_revision"
+  | "not_editable"
+  | "not_found"
+  | "invalid_doc"
+  | "run_unsupported"
+  | "restore_in_progress"
+  | "race"
+  /** A whole plan change the thread coach's applier refused (§8 §5): its plan isn't there any more. */
+  | "plan_refused";
 
 /** Why a planned workout can't change (`not_editable`), as the Studio's own rules say it — and, for a change's length,
  * that a Studio workout's is its document's (`studio`). */
@@ -179,8 +214,20 @@ export type PlanOpOutcome =
 /** A change to a session already on the plan, as a proposal holds it once the athlete has seen it. */
 export type DesignedPlanOp = PlanAdjustOp & { outcome?: PlanOpOutcome };
 
-/** Either kind of a designed proposal's ops. */
-export type AnyDesignedOp = DesignedOp | DesignedPlanOp;
+/**
+ * How a whole plan change ended (§8 §5): applied, with the applier's one line; while approves apply it, `applying` —
+ * claimed, with where its chunks got to (`progress`: null before the first) — open, as a change's claim is.
+ */
+export type PlanStructureOutcome =
+  | { status: "applied"; at: string; summary: string }
+  | { status: "applying"; at: string; progress: StructuralProgress | null }
+  | Exclude<OpOutcome, { status: "applied" }>;
+
+/** A whole plan change, as a proposal holds it once the athlete has seen it. */
+export type DesignedStructureOp = PlanStructureOp & { outcome?: PlanStructureOutcome };
+
+/** Any kind of a designed proposal's ops. */
+export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp;
 
 export type DesignProposalStatus = "pending" | "partially_approved" | "approved" | "declined" | "superseded";
 
@@ -226,7 +273,16 @@ export function planOpsOf(ops: unknown): DesignedPlanOp[] {
   return Array.isArray(ops) ? (ops.filter(isPlanAdjustOp) as DesignedPlanOp[]) : [];
 }
 
-/** Every op of a designed proposal the athlete decides: its workouts and its changes, in the proposal's order. */
+/** A designed proposal's whole plan changes (§8 §5). */
+export function structureOpsOf(ops: unknown): DesignedStructureOp[] {
+  return Array.isArray(ops) ? (ops.filter(isPlanStructureOp) as DesignedStructureOp[]) : [];
+}
+
+/** A whole plan change that has started (a chunk applied, or claimed): never declined, never expired under the athlete. */
+export const planStarted = (op: unknown): boolean => isPlanStructureOp(op) && (op as DesignedStructureOp).outcome?.status === "applying";
+
+/** Every op of a designed proposal the athlete decides: its workouts, its changes and its plan changes, in the proposal's
+ * order. */
 export function allDesignedOps(ops: unknown): AnyDesignedOp[] {
   return Array.isArray(ops) ? (ops.filter(isDesignedOp) as AnyDesignedOp[]) : [];
 }
@@ -325,6 +381,12 @@ export const MOVE_COST = 1 + 6 + 9;
 export const EASE_COST = 1 + 2 + 2 + 2 + 4;
 export const REMOVE_COST = 1 + 2 + 2 + 2 + 2 + 3;
 export const RESTORE_COST = 1 + 3;
+/**
+ * A whole plan change's own part of a request (§8 §5), beside its chunk: its claim's write, its release should the applier
+ * throw (reserved), and whether a watch job waits for the client (the sessions' creates). The chunk itself spends what it
+ * is given (at least STRUCTURAL_MIN_BUDGET) and says what it spent.
+ */
+export const PLAN_STRUCTURE_FIXED = 1 + 1 + 1;
 
 /**
  * THE CALENDAR'S STEP AFTER AN APPROVE (Task 9). A Studio save and the thread coach's approve hand the calendar one
@@ -602,6 +664,12 @@ export interface Settled {
   workoutId?: string;
 }
 
+/** A whole plan change this request finished (§8 §5), with the applier's one line ("Added “10K build” with 8 sessions"). */
+export interface Planned {
+  opId: string;
+  summary: string;
+}
+
 /** A change applied by this request (Task 8b): the session, and how it stood before. */
 export interface Changed {
   opId: string;
@@ -622,6 +690,8 @@ export interface ApproveAnswer {
   remaining: string[];
   /** A watch job a change queued waits for the client to drain it (`POST /api/coach/drain`), as the thread's approve says. */
   coachDrain?: true;
+  /** The whole plan changes this request finished (§8 §5). Present only when there are some. */
+  planned?: Planned[];
   /** Changes another approve is applying (its claim within APPLYING_STALE_MS): never applied twice — the route answers 409
    * `in_flight` when nothing else was named. Present only when there are some. */
   inFlight?: string[];
@@ -655,7 +725,7 @@ function decidable(p: DesignProposalRow, ids: readonly string[] | undefined, o: 
   // Edit before approve names a designed workout: a change has no draft.
   for (const op of chosen(o.workoutsOnly ? ops.filter(isDocWorkoutOp) : ops, ids)) {
     const o = op.outcome;
-    if (o?.status === "applied") settled.push({ opId: opIdOf(op), outcome: "applied", workoutId: o.workoutId });
+    if (o?.status === "applied") settled.push({ opId: opIdOf(op), outcome: "applied", ...("workoutId" in o ? { workoutId: o.workoutId } : {}) });
     else if (o?.status === "declined" || o?.status === "superseded") declined.push(op);
     else if (open) todo.push(op);
   }
@@ -801,7 +871,7 @@ export async function approveDesignOps(
   const applied: Applied[] = [];
   const changed: Changed[] = [];
   const refused: Refused[] = [];
-  const outcomes = new Map<string, OpOutcome | PlanOpOutcome>();
+  const outcomes = new Map<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome>();
   if (inPlan.length === 0 && declined.length === 0) {
     if (p.status === "superseded") throw new NotOpenError(p.status);
     return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow };
@@ -825,6 +895,12 @@ export async function approveDesignOps(
   const todo: AnyDesignedOp[] = [];
   for (const op of inHand) {
     const was = op.outcome?.status;
+    // A whole plan change (§8 §5): its chunks are the applier's own to find done (each retried does nothing twice).
+    if (isPlanStructureOp(op)) {
+      if (was === "declined" || was === "superseded") settled.push({ opId: op.id, outcome: was });
+      else todo.push(op);
+      continue;
+    }
     if (isPlanAdjustOp(op)) {
       if (was === "declined" || was === "superseded") settled.push({ opId: op.id, outcome: was });
       else todo.push(op);
@@ -942,6 +1018,65 @@ export async function approveDesignOps(
   }
   if (replayFrom !== null) await recordReplayFrom(db, userId, replayFrom).catch(() => undefined);
 
+  // THE PLAN CHANGES (§8 §5), after the changes and before the workouts: each a chunk at a time through the thread
+  // coach's appliers, its progress kept on its claim.
+  const structures = todo.filter(isPlanStructureOp) as DesignedStructureOp[];
+  const planned: Planned[] = [];
+  for (const [i, s] of (full ? [] : structures).entries()) {
+    const claim = s.outcome?.status === "applying" ? s.outcome : null;
+    // Another approve is applying a chunk of it (its claim fresh): never twice at once.
+    if (claim && claimFresh(claim, ctx.now)) {
+      inFlight.push(s.id);
+      continue;
+    }
+    // Not started, and its first day gone: its sessions would start in the past (its expiry usually comes first).
+    if (!claim && s.date < ctx.today) {
+      const refusal: Omit<Refused, "opId"> = { error: "past_date", why: `${dayLabel(s.date)} has passed: ask the coach for the plan again.` };
+      refused.push({ opId: s.id, ...refusal });
+      outcomes.set(s.id, { status: "refused", at: ctx.now, ...refusal });
+      continue;
+    }
+    if (!first && left < PLAN_STRUCTURE_FIXED + STRUCTURAL_MIN_BUDGET) {
+      remaining.push(...structures.slice(i).map((x) => x.id));
+      full = true;
+      break;
+    }
+    first = false;
+    const progress = claim ? claim.progress : null;
+    // THE CLAIM, under the same guard as every write, before the applier runs.
+    const claimOps = withOutcomes(current.ops, new Map([[s.id, { status: "applying" as const, at: ctx.now, progress }]]));
+    const claimStatus = statusOfOps(allDesignedOps(claimOps));
+    const claimedAt = await writeOps(db, userId, current, claimOps, claimStatus, ctx.now);
+    current = { ...current, ops: claimOps, status: claimStatus, resolvedAt: claimedAt };
+    const opIndex = (Array.isArray(p.ops) ? (p.ops as unknown[]) : []).findIndex((o) => isPlanStructureOp(o) && o.id === s.id);
+    let res: Awaited<ReturnType<typeof applyStructuralChunk>>;
+    try {
+      res = await applyStructuralChunk(db, { userId, proposalId: p.id, opIndex, op: s.op, progress, budget: Math.max(0, left - PLAN_STRUCTURE_FIXED), now: new Date(ctx.now), prefs: ctx.prefs });
+    } catch (e) {
+      // THE RELEASE: stale at once, its progress kept, for the next approve to take over.
+      const released = withOutcomes(current.ops, new Map([[s.id, { status: "applying" as const, at: staleAt(ctx.now), progress }]]));
+      await writeOps(db, userId, current, released, current.status as DesignProposalStatus, ctx.now).catch(() => undefined);
+      throw e;
+    }
+    left -= PLAN_STRUCTURE_FIXED + res.spent;
+    if (res.status === "more") {
+      // Released at once: the next approve — the client's, straight after — takes it over where it got to.
+      outcomes.set(s.id, { status: "applying", at: staleAt(ctx.now), progress: res.progress });
+      remaining.push(...structures.slice(i).map((x) => x.id));
+      full = true;
+    } else if (res.status === "done") {
+      outcomes.set(s.id, { status: "applied", at: ctx.now, summary: res.summary });
+      planned.push({ opId: s.id, summary: res.summary });
+    } else {
+      const refusal: Omit<Refused, "opId"> = { error: "plan_refused", why: res.reason };
+      refused.push({ opId: s.id, ...refusal });
+      outcomes.set(s.id, { status: "refused", at: ctx.now, ...refusal });
+    }
+    // Its sessions' watch creates wait for the client to drain them, as the thread's approve says.
+    if (res.status !== "refused" && ctx.prefs.corosWritesEnabled) coachDrain = (await coachDrainQueued(db, userId).catch(() => false)) || coachDrain;
+    if (full) break;
+  }
+
   for (const [i, op] of (full ? [] : workouts).entries()) {
     const opId = opIdOf(op);
     const day = dayOf(op, input.edit) ?? (op.target.kind === "revise" ? plan.rows.get(op.target.workoutId)?.dto.date : undefined);
@@ -977,7 +1112,11 @@ export async function approveDesignOps(
   remaining.push(...overflow);
   // The first op always goes, so `left` can fall below nothing: no room then.
   if (meter) meter.left = Math.max(0, left);
-  const drain = { ...(coachDrain ? { coachDrain: true as const } : {}), ...(inFlight.length > 0 ? { inFlight } : {}) };
+  const drain = {
+    ...(coachDrain ? { coachDrain: true as const } : {}),
+    ...(planned.length > 0 ? { planned } : {}),
+    ...(inFlight.length > 0 ? { inFlight } : {}),
+  };
   if (outcomes.size === 0) {
     // A superseded proposal with nothing to repair is no longer the athlete's.
     if (p.status === "superseded") throw new NotOpenError(p.status);
@@ -990,7 +1129,7 @@ export async function approveDesignOps(
 
   // One receipt once nothing of the request remains — nor of another applying it (a change in flight: the approve that
   // finishes it writes it) — when it changed something the thread has not been told.
-  const news = applied.length > 0 || changed.length > 0 || refused.some((r) => {
+  const news = applied.length > 0 || changed.length > 0 || planned.length > 0 || refused.some((r) => {
     const before = ops.find((o) => opIdOf(o) === r.opId)?.outcome;
     return before?.status !== "refused" || before.error !== r.error;
   });
@@ -1126,8 +1265,11 @@ function newestSupersededBy(ops: readonly AnyDesignedOp[]): string | null {
   return best?.by ?? null;
 }
 
+/** A claim's `at` set back by APPLYING_STALE_MS: stale at once (the recovery rule's release). */
+const staleAt = (now: string): string => new Date(Date.parse(now) - APPLYING_STALE_MS).toISOString();
+
 /** The proposal's ops with these outcomes on the designed ones they name; every other op as it was. */
-function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome | PlanOpOutcome>): unknown[] {
+function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome>): unknown[] {
   return (Array.isArray(ops) ? ops : []).map((o) => {
     if (!isDesignedOp(o)) return o;
     const outcome = outcomes.get(opIdOf(o as AnyDesignedOp));
@@ -1195,6 +1337,15 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[]): string {
   let superseded = 0;
   for (const any of ops) {
     if (any.outcome?.status === "superseded") superseded += 1;
+    // A whole plan change (§8 §5): its title and the applier's own line.
+    if (isPlanStructureOp(any)) {
+      const s = (any as DesignedStructureOp).outcome;
+      // Named once: a plan whose title is the proposal's says only what was added.
+      if (s?.status === "applied") done.push(any.title === title ? s.summary : `${any.title}: ${s.summary}`);
+      else if (s?.status === "refused") not.push(`${any.title} (${s.why})`);
+      else if (s?.status === "declined") declined += 1;
+      continue;
+    }
     if (isPlanAdjustOp(any)) {
       const c = any.outcome;
       if (c?.status === "applied") done.push(changeLine(any));
@@ -1256,9 +1407,10 @@ export async function declineDesignOps(
     const claim = claimOf(o);
     return claim !== null && claimFresh(claim, now);
   };
-  const inFlight = chosenOpen.filter(applying).map(opIdOf);
+  // A whole plan change that has started is finished by Approve, never declined half-made (§8 §5): in flight.
+  const inFlight = chosenOpen.filter((o) => applying(o) || planStarted(o)).map(opIdOf);
   const flight = inFlight.length > 0 ? { inFlight } : {};
-  const todo = chosenOpen.filter((o) => !applying(o));
+  const todo = chosenOpen.filter((o) => !applying(o) && !planStarted(o));
   if (todo.length === 0) return { status: p.status as DesignProposalStatus, declined, settled, ...flight };
   // The plan is read for the designed workouts (whose workout may be there already) and the changes claimed past the
   // window (whose change may be made); any other change is declined as it is.
@@ -1316,6 +1468,8 @@ export async function expiryOfClaims(
   now: string,
   room: { rejudges: number },
 ): Promise<{ ops?: unknown[]; replayFrom: string | null } | null> {
+  // A whole plan change that has started waits for the athlete's next approve, never expired half-made (§8 §5).
+  if (structureOpsOf(p.ops).some(planStarted)) return null;
   const claimed = planOpsOf(p.ops).filter((o) => claimOf(o) !== null);
   if (claimed.length === 0) return { replayFrom: null };
   if (claimed.some((o) => claimFresh(claimOf(o)!, now))) return null;

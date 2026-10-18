@@ -3,7 +3,9 @@
  * plan powers added text the model reads on every call — the shared prompt, the main coach's block, the tools — so:
  *  - every word of it stays generic (a public repository: no condition the library's profiles know, nothing personal);
  *  - the cached prefix a main run sends (the tools, the shared prompt, the main coach's block) grew by about 1.5k tokens
- *    at most against the wave's start (2c3d019), measured at the loop's own 3.5 bytes a token;
+ *    at most against the wave's start (2c3d019), measured at the loop's own 3.5 bytes a token — REBASED 2026-10-18 for
+ *    §8's two prompt streams (R's designed runs, W's whole plans): against §8's start (5908769), about 1.5k tokens each,
+ *    3k together;
  *  - the opening message's per-run parts (the conversation so far, the auto scope's line) stay what their own tests pin
  *    (coach-conversation.test.ts, coach-auto.test.ts).
  */
@@ -13,11 +15,11 @@ import { PROMPT_BYTES_PER_TOKEN, RUN_LIMITS } from "../src/services/coach-runs.j
 import { roleBlock, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
 
-/** The cached prefix of a main run at the wave's start (2c3d019), in characters: the tools as sent, the shared prompt,
- * the main coach's block with its turns. */
-const BEFORE = { tools: 33_512, shared: 20_323, main: 3_864 };
-/** About 1.5k tokens, at the loop's bytes a token. */
-const GROWTH_MAX_CHARS = Math.round(1_500 * PROMPT_BYTES_PER_TOKEN);
+/** The cached prefix of a main run at §8's start (5908769; the new shape's own start, 2c3d019, was 33,512 + 20,323 +
+ * 3,864), in characters: the tools as sent, the shared prompt, the main coach's block with its turns. */
+const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
+/** §8's two prompt streams (R's designed runs, W's whole plans): about 1.5k tokens each, at the loop's bytes a token. */
+const GROWTH_MAX_CHARS = 2 * Math.round(1_500 * PROMPT_BYTES_PER_TOKEN);
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
@@ -36,7 +38,7 @@ function profileWords(): string[] {
 }
 
 describe("the coach's cached prefix after the new shape", () => {
-  it(`grew by about 1.5k tokens at most (${GROWTH_MAX_CHARS} characters)`, () => {
+  it(`grew by about 1.5k tokens a stream at most (${GROWTH_MAX_CHARS} characters for §8's two)`, () => {
     const now = { tools: toolsSent().length, shared: SHARED_PROMPT.length, main: roleBlock("main", RUN_LIMITS.main.maxCalls).length };
     const grown = now.tools + now.shared + now.main - (BEFORE.tools + BEFORE.shared + BEFORE.main);
     expect(grown).toBeGreaterThan(0);

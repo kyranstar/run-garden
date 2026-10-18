@@ -26,13 +26,13 @@ import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exerci
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
-import type { DesignedOp, DesignedPlanOp, OpOutcome, PlanOpOutcome, Written } from "./design-approve.js";
+import type { DesignedOp, DesignedPlanOp, DesignedStructureOp, OpOutcome, PlanOpOutcome, PlanStructureOutcome, Written } from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
 import { REVIEW_DIMENSIONS, RUN_REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
-import { changeVerb, describeChange, isDocWorkoutOp, isPlanAdjustOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
+import { changeVerb, describeChange, isDocWorkoutOp, isPlanAdjustOp, isPlanStructureOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
 export interface DocWorkoutLine {
@@ -296,6 +296,34 @@ export interface PlanChangeLine {
   issues: Array<{ code: string; message: string }>;
   /** How it ended; null while it is the athlete's to decide. */
   outcome: PlanOpOutcome | null;
+}
+
+/** A whole plan change as the manifest gives it (§8 §5): its change, its card's words, the thread coach's lines, the
+ * coach's why, the guardrails' advisories, and how it stands — `applying` with how far its chunks got while approves
+ * apply it, `applied` with the applier's line. */
+export interface PlanStructureLine {
+  opId: string;
+  kind: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  issues: Array<{ code: string; message: string }>;
+  outcome: PlanStructureOutcome | null;
+}
+
+/** Each whole plan change's line, in the proposal's order (§8 §5). */
+export function planStructureLines(ops: readonly unknown[]): PlanStructureLine[] {
+  return (ops.filter(isPlanStructureOp) as DesignedStructureOp[]).map((s) => ({
+    opId: s.id,
+    kind: s.op.kind,
+    title: s.title,
+    summary: s.summary,
+    lines: s.lines,
+    why: s.why,
+    issues: (s.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
+    outcome: s.outcome ?? null,
+  }));
 }
 
 /** Each change's line, in the proposal's order. */

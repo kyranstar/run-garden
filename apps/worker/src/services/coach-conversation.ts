@@ -9,7 +9,8 @@
  * READ BACK (`readConversation`; `GET /api/coach/conversation`, `?id=` for a given one): `{ id, startedAt, turns }`, at
  * most CONVERSATION_TURNS_MAX turns, the newest of them, oldest first — each the athlete's words as they wrote them, the
  * run's status, the coach's line (its finish's words or its answer; a stop's own line; null while live), its cards —
- * a workout, the plan changes, a set: one line each, by the proposal — and the question it waits on. None current, or
+ * a workout, the plan changes, a set, a whole plan (§8 §5: its lines too): one line each, by the proposal — and the
+ * question it waits on. None current, or
  * none of the athlete's by that id: `{ id: null, startedAt: null, turns: [] }`. A rehearsal's is never read. ONE
  * statement (`turnsSql`): the runs with, per run, its last line, its question and its proposal's ops in brief, read in
  * SQL — never a whole state, a whole trail or a whole document.
@@ -27,6 +28,7 @@ import { markUntrusted } from "./design-prompt.js";
 import { clipProse } from "./design-prose.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
 import { designProposalId } from "./design-tools/propose.js";
+import { PLAN_LINES_MAX } from "./proposal-kinds.js";
 
 /** A conversation goes quiet after this long with no new ask: the next ask (naming none) starts a new one. */
 export const CONVERSATION_QUIET_HOURS = 18;
@@ -42,13 +44,16 @@ export const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,100}$/;
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export interface ConversationCard {
-  kind: "workout" | "plan_changes" | "set";
+  kind: "workout" | "plan_changes" | "set" | "plan";
   proposalId: string;
   title: string;
-  /** One line: "Today · Now · 24 min · Maintain", "3 changes to your week", "3 workouts · Wed 13 – Fri 15 May". */
+  /** One line: "Today · Now · 24 min · Maintain", "3 changes to your week", "3 workouts · Wed 13 – Fri 15 May",
+   * "4 weeks · 4 sessions to start · race Sun 14 Jun". */
   summary: string;
   /** Its proposal's status: pending, partially_approved, approved, declined, superseded, expired. */
   status: string;
+  /** A whole plan's (§8 §5): the thread coach's own manifest lines, at most 8, then "and N more". */
+  lines?: string[];
 }
 
 export interface ConversationQuestion {
@@ -84,7 +89,7 @@ export interface ConversationDto {
 
 /** A proposal's op in brief, as `turnsSql` reads it. */
 interface OpBrief {
-  kind: "doc_workout" | "plan_adjust";
+  kind: "doc_workout" | "plan_adjust" | "plan_structure";
   date: string | null;
   time: string | null;
   atNow: number | null;
@@ -98,6 +103,10 @@ interface OpBrief {
   row: string | null;
   outcome: string | null;
   reason: string | null;
+  /** A whole plan change's (§8 §5): its card's title and line, and its manifest lines. */
+  planTitle?: string | null;
+  planSummary?: string | null;
+  lines?: unknown;
 }
 
 interface ProposalBrief {
@@ -178,8 +187,9 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'kind', ${op("$.kind")}, 'date', ${op("$.date")}, 'time', ${op("$.time")}, 'atNow', ${op("$.target.atNow")},
           'title', ${op("$.doc.title")}, 'minutes', ${op("$.derived.minutes")}, 'effort', ${op("$.doc.intent.effort")},
           'by', ${op("$.by.role")}, 'change', ${op("$.op.kind")}, 'row', ${op("$.row.title")},
-          'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")}))
-        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust'))))
+          'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")},
+          'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} = 'plan_structure' THEN ${op("$.lines")} END)))
+        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
     FROM c, s, coach_runs r
@@ -256,15 +266,25 @@ function isSet(scopeText: string | null, p: ProposalBrief): boolean {
   return kind === "week" || kind === "next_n" || p.ops.some((o) => o.kind === "doc_workout" && o.by === "designer");
 }
 
+/** A whole plan change's lines, as the statement read them: strings only, at most PLAN_LINES_MAX and its "and N more". */
+function planLinesOf(raw: unknown): string[] {
+  const list = typeof raw === "string" ? parsed(raw) : raw;
+  return (Array.isArray(list) ? list : []).filter((l): l is string => typeof l === "string").slice(0, PLAN_LINES_MAX + 1);
+}
+
 /**
  * A turn's cards (see the module comment): none for a proposal the athlete never saw. A set's proposal is one card;
- * otherwise each designed workout is one, and the changes to the plan one between them.
+ * otherwise each designed workout is one, and the changes to the plan one between them; a whole plan change (§8 §5) is
+ * one card of its own, last, with its lines.
  */
 export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today: string): ConversationCard[] {
   if (!p || UNSEEN.has(p.status)) return [];
   const workouts = p.ops.filter((o) => o.kind === "doc_workout");
   const changes = p.ops.filter((o) => o.kind === "plan_adjust");
   const base = { proposalId: p.id, status: p.status };
+  const plans = p.ops
+    .filter((o) => o.kind === "plan_structure")
+    .map((o): ConversationCard => ({ kind: "plan", ...base, title: str(o.planTitle) ?? "A plan", summary: str(o.planSummary) ?? "", lines: planLinesOf(o.lines) }));
   const changesCard = (): ConversationCard[] => {
     if (changes.length === 0) return [];
     const inWeek = changes.every((c) => !c.date || c.date <= addDays(today, 6));
@@ -273,11 +293,12 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
   if (workouts.length > 0 && isSet(scopeText, p)) {
     const days = workouts.flatMap((w) => (w.date ? [w.date] : [])).sort();
     const what = `${plural(workouts.length, "workout")}${changes.length > 0 ? ` and ${plural(changes.length, "change")}` : ""}`;
-    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }];
+    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans];
   }
   return [
     ...workouts.map((w): ConversationCard => ({ kind: "workout", ...base, title: str(w.title) ?? "A workout", summary: workoutSummary(w, today) })),
     ...changesCard(),
+    ...plans,
   ];
 }
 
@@ -303,7 +324,9 @@ const shownStatus = (status: string): string => (status === "waiting_review" || 
 export type EndedLine = (
   status: string,
   error: string | null,
-  settings: { window?: { kind: "day"; date: string } | { kind: "until"; at: string }; ceilingMicros: number; setCeilingMicros?: number; raisedAt?: string } | undefined,
+  settings:
+    | { window?: { kind: "day"; date: string } | { kind: "until"; at: string }; ceilingMicros: number; setCeilingMicros?: number; raisedAt?: string; planRaisedAt?: string }
+    | undefined,
 ) => string | null;
 
 /** One run as a turn. */
@@ -400,6 +423,11 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
       out.push(`  Suggested a workout (id ${card.proposalId}): ${title} · ${card.summary} — ${standing(card.status, op?.outcome, op?.reason)}`);
     } else if (card.kind === "set") {
       out.push(`  Suggested a set (id ${card.proposalId}): ${title} · ${card.summary} — ${standing(card.status)}`);
+    } else if (card.kind === "plan") {
+      // A whole plan (§8 §5): its title and line are the coach's words; how it stands is its op's.
+      const plan = p!.ops.find((o) => o.kind === "plan_structure");
+      const how = plan?.outcome === "applying" ? "being added, part of it already on the plan" : standing(card.status, plan?.outcome, plan?.reason);
+      out.push(`  Suggested a plan (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${how}`);
     } else {
       const what = p!.ops
         .filter((o) => o.kind === "plan_adjust")

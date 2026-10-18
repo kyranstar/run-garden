@@ -24,7 +24,7 @@ import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -88,6 +88,7 @@ describe("the registry", () => {
       remember: ["main", "designer"],
       propose_workout: ["main", "designer"],
       adjust_plan: ["main"],
+      propose_plan: ["main"],
       plan_set: ["main"],
       read_set: ["main", "designer", "reviewer"],
       drop_workout: ["main"],

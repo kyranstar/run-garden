@@ -11,8 +11,10 @@
  * whose time overlaps — either has no start (its time, else a now design's floor), or the two start within
  * SAME_SESSION_MINUTES of each other. (A newer
  * revision of a different workout, already planned, is its own session: it never supersedes a new one near it; nor
- * does a change ever supersede a new workout, or a new workout a change.) Only an op still OPEN is covered: a designed
- * workout or a change with no outcome yet, or refused (a refused op stays open: design-approve.ts).
+ * does a change ever supersede a new workout, or a new workout a change.) A whole plan change (§8 §5) is covered by a newer
+ * one for the same plan (`planKey`: the block, or a new one of the same discipline), never by anything else. Only an op
+ * still OPEN is covered: a designed workout, a change or a plan change with no outcome yet, or refused (a refused op
+ * stays open: design-approve.ts).
  */
 import { sql, type SQL } from "drizzle-orm";
 
@@ -29,8 +31,9 @@ const workoutOf = (value: SQL) => sql`(CASE json_extract(${value}, '$.kind')
     WHEN 'plan_adjust' THEN json_extract(${value}, '$.op.workoutId')
     WHEN 'doc_workout' THEN CASE WHEN json_extract(${value}, '$.target.kind') = 'revise' THEN json_extract(${value}, '$.target.workoutId') END END)`;
 
-/** `value` (an op's JSON) is a designed workout or a change still open: no outcome yet, or refused. */
-export const openOp = (value: SQL): SQL => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust')
+/** `value` (an op's JSON) is a designed workout, a change or a whole plan change still open: no outcome yet, or refused
+ * (a plan change being applied — `applying` — is never covered). */
+export const openOp = (value: SQL): SQL => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure')
     AND coalesce(json_extract(${value}, '$.outcome.status'), 'open') IN ('open', 'refused'))`;
 
 /**
@@ -43,6 +46,8 @@ const startOf = (value: SQL) => sql`coalesce(json_extract(${value}, '$.time'), j
 
 /** The op `newer` covers the op `older` (both an op's JSON; see the module comment). */
 export const covers = (newer: SQL, older: SQL): SQL => sql`((${workoutOf(older)} IS NOT NULL AND ${workoutOf(older)} = ${workoutOf(newer)})
+    OR (json_extract(${older}, '$.kind') = 'plan_structure' AND json_extract(${newer}, '$.kind') = 'plan_structure'
+        AND json_extract(${older}, '$.planKey') = json_extract(${newer}, '$.planKey'))
     OR (json_extract(${older}, '$.kind') = 'doc_workout' AND json_extract(${newer}, '$.kind') = 'doc_workout'
         AND json_extract(${older}, '$.target.kind') = 'new' AND json_extract(${newer}, '$.target.kind') = 'new'
         AND json_extract(${newer}, '$.date') = json_extract(${older}, '$.date')

@@ -48,11 +48,12 @@ import {
   designDraft,
   designedOps,
   NotOpenError,
+  planStarted,
   ProposalChangedError,
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, manifestReads, planChangeLines, setContextSql } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, planChangeLines, planStructureLines, setContextSql } from "../services/design-manifest.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
@@ -112,7 +113,8 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
-  if (p.status === "pending" && p.expiresAt < today) {
+  // A whole plan change that has started is never expired under the athlete: the approve finishes it (§8 §5).
+  if (p.status === "pending" && p.expiresAt < today && !(Array.isArray(p.ops) && p.ops.some(planStarted))) {
     await expire(today);
     return c.json({ error: "not_pending", status: "expired" }, 409);
   }
@@ -121,13 +123,13 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
     const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs }, undefined, meter);
     // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
     const { inFlight, ...rest } = answer;
-    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining].every((xs) => xs.length === 0);
+    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? []].every((xs) => xs.length === 0);
     if (inFlight && nothingElse) return c.json({ error: "in_flight", opIds: inFlight, ...rest }, 409);
     // The calendar follows the plan, as after a Studio save (Task 9): once the approve is over and this request wrote
     // something, one bounded step in the room its declared costs left — none when the chunk was full (the half-hourly
     // reconcile books what this leaves).
     const maxOps = calendarOpsFitting(meter.left);
-    if (answer.remaining.length === 0 && (answer.applied.length > 0 || answer.changed.length > 0) && maxOps > 0) {
+    if (answer.remaining.length === 0 && (answer.applied.length > 0 || answer.changed.length > 0 || (answer.planned?.length ?? 0) > 0) && maxOps > 0) {
       waitUntilSafe(c, syncCalendar(db, c.env, userId, { maxOps }).catch(() => undefined));
     }
     return c.json({ ok: true, ...answer });
@@ -186,7 +188,10 @@ export async function designedLines(c: C, ops: unknown, proposalId: string) {
 export async function designedManifest(db: Db, userId: string, proposalId: string, ops: unknown, now: Date) {
   const all = Array.isArray(ops) ? (ops as unknown[]) : [];
   const workouts = designedOps(ops);
-  if (workouts.length === 0) return { lines: [], changes: planChangeLines(all) };
+  // A whole plan change's lines are its own (§8 §5): computed when it was proposed, no read.
+  const plans = planStructureLines(all);
+  const withPlans = plans.length > 0 ? { plans } : {};
+  if (workouts.length === 0) return { lines: [], changes: planChangeLines(all), ...withPlans };
   const prefix = designProposalId("");
   const runId = proposalId.startsWith(prefix) ? proposalId.slice(prefix.length) : null;
   const reads = await manifestReads(db, userId, dayRowsSql(userId, all), setContextSql(userId, runId, all));
@@ -195,6 +200,7 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   return {
     lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }),
     changes: planChangeLines(all),
+    ...withPlans,
     ...(reads.context ? { context: reads.context } : {}),
   };
 }

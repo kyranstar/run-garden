@@ -796,6 +796,23 @@ beforeAll(async () => {
     for (const [name, input] of reads) await measureTool(name, images.get("read12")!, ctx, input);
     await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });
     await measureTool("propose_workout", images.get("read12")!, ctx, { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) });
+    // propose_plan at its heaviest (§8 §5): forty lift sessions over two weeks, four moves each, and four shape weeks —
+    // the guardrails over the whole plan, the catalog's names, the manifest's lines.
+    {
+      const monday = "2026-05-18";
+      const session = (n: number) => ({
+        category: "strength",
+        title: `Strength ${n}`,
+        durationMinutes: 45,
+        lift: { exercises: ["Goblet squat", "Romanian deadlift", "Split squat", "Plank"].map((name) => ({ name, sets: 3, reps: 8, note: words(n, 60) })) },
+      });
+      const firmSessions = Array.from({ length: 40 }, (_, n) => ({ date: addDays(monday, Math.floor(n / 20) * 7 + (n % 7)), session: session(n) }));
+      const shapeWeeks = [2, 3, 4, 5].map((w) => ({ weekStart: addDays(monday, 7 * w), volumeTarget: words(w, 40), keySessions: [words(w, 60), words(w + 1, 60)] }));
+      await measureTool("propose_plan", images.get("read12")!, ctx, {
+        change: { kind: "createPlan", discipline: "lift", name: "Strength block", startDate: monday, endDate: addDays(monday, 41), firmSessions, shapeWeeks },
+        why: words(7, 280),
+      });
+    }
     await measureTool("ask_athlete", images.get("read12")!, ctx, {
       questions: [{ text: "How tight are the calves today?", chips: [{ label: "a little", value: 2 }, { label: "a lot", value: 7 }], why: "It sets the range.", checkin: { question: "tightness", area: "calves" } }],
     });

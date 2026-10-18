@@ -52,7 +52,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
-import { dayLabel, isRunDoc, type WorkoutDoc } from "@rg/domain";
+import { addDays, dayLabel, isRunDoc, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
@@ -65,11 +65,11 @@ import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolO
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
 import { willReplaceOf, willReplaceSql } from "./design-cover.js";
 import { athleteText, clipProse } from "./design-prose.js";
-import { describeChange, isDocWorkoutOp, isPlanAdjustOp, type PlanAdjustOp } from "./proposal-kinds.js";
+import { describeChange, isDocWorkoutOp, isPlanAdjustOp, isPlanStructureOp, type PlanAdjustOp, type PlanStructureOp } from "./proposal-kinds.js";
 import { utf8Bytes } from "./utf8.js";
 
 /** An op of a design's proposal: a designed workout, or a change to a session already on the plan (Task 8b). */
-type DesignOp = DocWorkoutOp | PlanAdjustOp;
+type DesignOp = DocWorkoutOp | PlanAdjustOp | PlanStructureOp;
 
 /** The designed workout run `runId` holds in `ops` (a change belongs to no run: never one). */
 const ofRun = (ops: readonly DesignOp[], runId: string): DocWorkoutOp | undefined =>
@@ -554,22 +554,31 @@ export function markedReview(r: ReviewWithAccepted): Record<string, unknown> {
   };
 }
 
+/** How long a whole plan change waits for the athlete at most (§8 §5), from the day it was proposed: as the thread
+ * coach's own proposals do. */
+export const PLAN_EXPIRY_DAYS = 3;
+
 /**
  * The proposal row's title, rationale and expiry, computed from its ops (propose_workout writes them; so does a
- * verdict that changes which version an op holds, and adjust_plan). The workouts name it, then its changes are counted
- * ("Calm hips · 1 plan change"); a proposal of one change alone is named by it ("Strength — skipped"). It expires on its
- * last day — a move's destination among them.
+ * verdict that changes which version an op holds, adjust_plan and propose_plan). The workouts name it, then its changes
+ * are counted ("Calm hips · 1 plan change"); a proposal of one change alone is named by it ("Strength — skipped"); a
+ * whole plan change by its own title, after the workouts and changes ("10K build"). It expires on its last day — a
+ * move's destination among them — and a plan change on its first new day or PLAN_EXPIRY_DAYS after it was proposed,
+ * whichever comes first (its sessions start then: approved later, they would start in the past).
  */
 export function proposalFields(all: readonly unknown[]): { title: string; rationale: string; expiresAt: string } {
   const ops = all.filter(isDocWorkoutOp) as DocWorkoutOp[];
   const changes = all.filter(isPlanAdjustOp);
+  const plans = all.filter(isPlanStructureOp);
   const counted = `${changes.length} plan change${changes.length === 1 ? "" : "s"}`;
   const workouts = ops.length === 0 ? null : ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`;
-  const title = workouts === null ? (changes.length === 1 ? describeChange(changes[0]!).title : counted) : changes.length > 0 ? `${workouts} · ${counted}` : workouts;
+  const changed = workouts === null ? (changes.length === 0 ? null : changes.length === 1 ? describeChange(changes[0]!).title : counted) : changes.length > 0 ? `${workouts} · ${counted}` : workouts;
+  const title = [changed, ...plans.map((p) => p.title)].filter((t): t is string => !!t).join(" · ");
+  const planDays = plans.map((p) => [p.date, addDays(p.at.slice(0, 10), PLAN_EXPIRY_DAYS)].sort()[0]!);
   return {
     title,
-    rationale: [...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why)].join(" · ").slice(0, 500),
-    expiresAt: [...ops.map((o) => o.date), ...changes.flatMap((c) => (c.op.kind === "move" ? [c.date, c.op.toDate] : [c.date]))].sort().at(-1)!,
+    rationale: [...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why), ...plans.map((p) => p.why)].join(" · ").slice(0, 500),
+    expiresAt: [...ops.map((o) => o.date), ...changes.flatMap((c) => (c.op.kind === "move" ? [c.date, c.op.toDate] : [c.date])), ...planDays].sort().at(-1)!,
   };
 }
 
@@ -1037,7 +1046,7 @@ const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in
 /** The proposal's line for reviewed workouts — and changes (Task 8b) — whose day passed before the run's stop (an
  * expiry): left out. In the athlete's words (fix wave 3B, B-I3): the day as the app names it, nothing "proposed". */
 export function pastDayLine(ops: readonly DesignOp[]): string {
-  const named = (op: DesignOp) => (isPlanAdjustOp(op) ? describeChange(op).title : op.doc.title);
+  const named = (op: DesignOp) => (isPlanStructureOp(op) ? op.title : isPlanAdjustOp(op) ? describeChange(op).title : (op as DocWorkoutOp).doc.title);
   return `Its day passed before it could be suggested, so left out: ${ops.map((op) => `“${named(op)}” (${dayLabel(op.date)})`).join(", ")}.`;
 }
 

@@ -58,6 +58,54 @@ export interface PlanAdjustOp {
   at: string;
 }
 
+/**
+ * The thread coach's structural ops a designed proposal may carry as a whole plan change (§8 §5): a new block, its
+ * extension, a week firmed up or reworked, its wind-down, its retirement — never `resolveRaceConflict`, which the athlete
+ * settles from the race strip.
+ */
+export const PLAN_STRUCTURE_KINDS = ["createPlan", "extendPlan", "windDown", "retirePlan", "firmUp", "reshapeWeek"] as const;
+export type PlanStructureChange = Extract<CoachOp, { kind: (typeof PLAN_STRUCTURE_KINDS)[number] }>;
+
+/** A plan change's op id: a proposal holds one (a whole plan is one intention: a second propose_plan replaces it). */
+export const PLAN_STRUCTURE_ID = "plan";
+
+/**
+ * A whole plan change inside a designed proposal (§8 §5; design-tools/propose-plan.ts): ONE thread-coach structural op,
+ * judged by the thread coach's own guardrails when proposed and applied at approval in resumable chunks through
+ * coach-apply's `applyStructuralChunk` (design-approve.ts). Never reviewed: its sessions are the thread coach's session
+ * specs, not documents. What the card and the conversation show is computed when it is proposed (`title`, `summary`,
+ * `lines`: the thread coach's own `describeOps` lines) so a read needs no plan. `why`, the title and the lines carry the
+ * model's words: data, marked wherever they are shown back to a model.
+ */
+export interface PlanStructureOp {
+  kind: "plan_structure";
+  /** `PLAN_STRUCTURE_ID`. */
+  id: string;
+  op: PlanStructureChange;
+  why: string;
+  /** The guardrails' advisories, kept as a workout's validator warnings are. */
+  issues: Array<{ code: string; message: string }>;
+  /** "10K build", "Extend 10K build". */
+  title: string;
+  /** One line: "4 weeks · 6 sessions to start · race Sat 13 Jun". */
+  summary: string;
+  /** The manifest's lines, at most PLAN_LINES_MAX and then "and N more". */
+  lines: string[];
+  /** Which plan it shapes: `plan:<id>` for a block, `new:<discipline>` for a new one — a newer plan change for the same
+   * plan covers this one (design-cover.ts). */
+  planKey: string;
+  /** The first day it puts work on, or (no session) the day it takes effect from. */
+  date: string;
+  /** The model's call that proposed it: a replay finds it. */
+  toolUseId: string;
+  /** The calls whose plan changes this one replaced. */
+  replaces?: string[];
+  at: string;
+}
+
+/** A plan change's manifest lines shown, at most; the rest are counted. */
+export const PLAN_LINES_MAX = 8;
+
 /** A change's op id: one per session per proposal. */
 export const planAdjustId = (workoutId: string): string => `adj-${workoutId}`;
 
@@ -113,22 +161,27 @@ export const isDocWorkoutOp = (op: unknown): boolean => kindOf(op) === "doc_work
 /** Whether an op is a change to a session already on the plan (Task 8b). */
 export const isPlanAdjustOp = (op: unknown): op is PlanAdjustOp => kindOf(op) === "plan_adjust";
 
-/** Whether an op is the coach designer's — a designed workout or a change — never one of the thread coach's. */
-export const isDesignedOp = (op: unknown): boolean => isDocWorkoutOp(op) || isPlanAdjustOp(op);
+/** Whether an op is a whole plan change (§8 §5). */
+export const isPlanStructureOp = (op: unknown): op is PlanStructureOp => kindOf(op) === "plan_structure";
+
+/** Whether an op is the coach designer's — a designed workout, a change or a plan change — never one of the thread
+ * coach's. */
+export const isDesignedOp = (op: unknown): boolean => isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op);
 
 /**
  * An op's id: a designed workout's is the run that designed it — each run holds ONE op of its main run's proposal,
  * whatever its target (design-tools/propose.ts), so the run names the op through every revision round; a change's is
  * its own (`planAdjustId`). Approve and decline (Task 8) and a main run's lever over its set (Task 7) name an op by it.
  */
-export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp): string {
-  return isPlanAdjustOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
+export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp): string {
+  return isPlanAdjustOp(op) || isPlanStructureOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
 }
 
 /** Whether a proposal's ops hold a designed workout. */
 export const hasDocWorkout = (ops: unknown): boolean => Array.isArray(ops) && ops.some(isDocWorkoutOp);
 
-/** Whether a proposal is the coach designer's: it holds a designed workout or a change — one of changes alone too. */
+/** Whether a proposal is the coach designer's: it holds a designed workout, a change or a plan change — one of changes
+ * alone too. */
 export const isDesignedProposal = (ops: unknown): boolean => Array.isArray(ops) && ops.some(isDesignedOp);
 
 /** A proposal's thread-coach ops: the designer's are left out. */

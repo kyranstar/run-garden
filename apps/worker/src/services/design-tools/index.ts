@@ -19,6 +19,7 @@ import { askAthlete } from "./ask.js";
 import { dropWorkout } from "./drop-workout.js";
 import { finish } from "./finish.js";
 import { planSet } from "./plan-set.js";
+import { proposePlan } from "./propose-plan.js";
 import { proposeWorkout } from "./propose.js";
 import { readAnswers } from "./read-answers.js";
 import { readBalance } from "./read-balance.js";
@@ -68,6 +69,7 @@ export const ACT_TOOLS: DesignTool[] = [
   remember,
   proposeWorkout,
   adjustPlan,
+  proposePlan,
   planSet,
   readSet,
   dropWorkout,

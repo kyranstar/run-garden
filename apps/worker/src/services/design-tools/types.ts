@@ -174,6 +174,12 @@ export interface SetHooks {
    */
   raise?(): void;
   /**
+   * An auto run that proposes a whole plan (propose_plan, §8 §5): its ceiling raised to the set's, once — recorded in the
+   * run (`planRaisedAt`) with a set's window — without making it a set's run. No statement (the step writes the run's
+   * state); nothing for a run of another scope, or one raised already.
+   */
+  raisePlan?(): void;
+  /**
    * Start the designers, in brief order: one insert, each keyed on its id — answers the ids inserted (none for a
    * designer that already exists: a replay starts nothing twice).
    */

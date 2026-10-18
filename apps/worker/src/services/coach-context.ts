@@ -51,7 +51,7 @@ import { findRaceConflict } from "./race-conflict.js";
 import { buildRaceHub } from "./race-hub.js";
 import { buildReadiness } from "./readiness.js";
 import { plannedRowColumns } from "./planned-columns.js";
-import { docWorkoutDates, hasDocWorkout, isDesignedProposal, openPlanChanges } from "./proposal-kinds.js";
+import { docWorkoutDates, hasDocWorkout, isDesignedProposal, isPlanStructureOp, openPlanChanges, type PlanStructureOp } from "./proposal-kinds.js";
 import { liveMemoryWhere } from "./memory-core.js";
 
 /**
@@ -239,6 +239,9 @@ const appBuiltMark = (w: { origin: string | null }): string => (appAuthoredRow(w
 /** A designed proposal in the context's words (Stage 3): its workouts' days still to decide, and its changes to
  * sessions already planned (Task 8b), counted. */
 function designedWords(ops: unknown): string {
+  // A whole plan change (§8 §5): its title, the conversation coach's to apply.
+  const plan = Array.isArray(ops) ? (ops.find(isPlanStructureOp) as PlanStructureOp | undefined) : undefined;
+  if (plan) return `a plan change: ${plan.title}`;
   const n = openPlanChanges(ops);
   const changes = `${n} change${n === 1 ? " to a session" : "s to sessions"} already planned`;
   if (!hasDocWorkout(ops)) return `a designed proposal: ${changes}`;

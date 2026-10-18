@@ -750,8 +750,32 @@ export interface DesignProposalReadDto {
   resolvedAt: string | null;
   lines?: DesignLineDto[];
   changes?: DesignChangeLineDto[];
+  /** Its whole plan changes (§8 §5); absent when it holds none, or from an older server. */
+  plans?: DesignPlanLineDto[];
   /** A set's: the plan's other rows in its date span; absent otherwise. */
   context?: DesignContextRowDto[];
+}
+
+/**
+ * A whole plan change in a suggestion (§8 §5): its change (`createPlan`, `extendPlan`, …), the card's title and line, the
+ * plan's lines (at most 8, then "and N more"), the coach's why and the plan checks' notes, and how it stands — `applying`
+ * while approves add it a part at a time (`progress` says how far), `applied` with what was added.
+ */
+export interface DesignPlanLineDto {
+  opId: string;
+  kind: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  issues: Array<{ code: string; message: string }>;
+  outcome:
+    | { status: "applied"; at: string; summary: string }
+    | { status: "applying"; at: string; progress: { step: string; done: number } | null }
+    | { status: "refused"; at: string; error: string; why: string }
+    | { status: "declined"; at: string; reason?: string }
+    | { status: "superseded"; at: string; reason: string; by: string }
+    | null;
 }
 
 /** A designed workout's review, as the athlete reads it: each dimension by the rubric's label, in its order; what changed
@@ -851,6 +875,8 @@ export interface DesignApproveResponse {
   remaining: string[];
   /** A watch job a change queued waits: the client drains it, as after the thread's approve. */
   coachDrain?: true;
+  /** The whole plan changes this request finished (§8 §5), each with what was added. */
+  planned?: Array<{ opId: string; summary: string }>;
   /**
    * Changes another approve is applying (its claim inside the server's window, Task 8b): never applied twice, never a
    * failure — they are being changed. Only when nothing else was answered is it a 409 `in_flight` naming them (`opIds`).
@@ -1282,11 +1308,14 @@ export type CoachRunCreateResult = (
  * the suggestion's status. Its own read (`coachProposal`) holds the rest.
  */
 export interface CoachConversationCardDto {
-  kind: "workout" | "plan_changes" | "set";
+  /** `plan` (§8 §5): a whole plan — a new block, its extension, a week, a wind-down — approved with one tap. */
+  kind: "workout" | "plan_changes" | "set" | "plan";
   proposalId: string;
   title: string;
   summary: string;
   status: CoachProposalDto["status"] | (string & {});
+  /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more". */
+  lines?: string[];
 }
 
 /** One turn of the conversation: what the athlete wrote, and the run it started — its status, its line, its cards. */

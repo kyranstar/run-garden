@@ -134,7 +134,9 @@ describe("the reviewer's block (13a A4, 13b I5, I8, 13c R5, R15)", () => {
 
 describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", () => {
   it("the shared prefix stays near 5k tokens and each role block well under its limit", () => {
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(5200);
+    // §8 (2026-10-18): 5,200 until §8's prompt streams — R's run lines, W's two plan-tool lines — measured 5,656; the whole
+    // prefix's growth is coach-shape-pins.test.ts's to hold.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(5660);
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(1300);
   });
 });
