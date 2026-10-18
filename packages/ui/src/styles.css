@@ -24,7 +24,7 @@
   --warn-ink: #8a5414;
   --danger: #a44434;
   --danger-soft: #f7e4df;
-  /* Deeper than --danger so a 1.5px glyph stroke (the heatmap's missed ✕)
+  /* Deeper than --danger so a 1.5px glyph stroke (a missed mark's ✕)
      still clears contrast at hairline weight; --danger is tuned for fills
      and pill text, which carry far more pixels. */
   --danger-ink: #8f3527;
@@ -3257,6 +3257,10 @@ button.session-chip {
     height: calc(100dvh - var(--space-above, 0px));
     overflow: hidden;
     background: var(--stage-bg);
+    /* The stage's side gutter and the card's column (bottom-right): what the
+       moment and the voice keep clear of. */
+    --stage-gutter: clamp(1.6rem, 3.2vw, 3.2rem);
+    --dock-width: min(26rem, 38vw);
   }
   /* The hero wrapper dissolves into an inset-0 layer: the scene fills the
      stage, and every positioned box inside it (the scene, the top-left
@@ -3309,7 +3313,8 @@ button.session-chip {
     left: clamp(1.6rem, 3.2vw, 3.2rem);
     right: auto;
     bottom: auto;
-    max-width: min(36rem, 44vw);
+    /* Never under the card's column, however tall the card grows. */
+    max-width: min(36rem, 44vw, calc(100% - var(--dock-width) - 3 * var(--stage-gutter)));
     margin: 0;
     text-align: left;
     color: var(--on-scene);
@@ -3373,17 +3378,20 @@ button.session-chip {
      it grows upward and reflows nothing; the drawer's handle at its foot. It
      shows its rows and its actions whole (no inner scroll: the integrated
      review), and on the right a tall card never covers the voice at the top
-     left. */
+     left. Its only cap is the stage, under the scene's tool (the chip at the
+     top-right): a card taller than the whole stage — a short laptop, banners,
+     the body check open — scrolls rather than lose its title off the top. */
   .hud-dock {
     position: absolute;
     left: auto;
-    right: clamp(1.6rem, 3.2vw, 3.2rem);
+    right: var(--stage-gutter);
     bottom: clamp(1.3rem, 3vh, 2.2rem);
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: var(--tap-clear);
-    width: min(26rem, 38vw);
+    width: var(--dock-width);
+    max-height: calc(100% - clamp(1.3rem, 3vh, 2.2rem) - clamp(1.5rem, 3.4vh, 2.5rem) - var(--space-10));
   }
   .stage-hero + .hud-dock {
     margin-top: 0;
@@ -3399,6 +3407,10 @@ button.session-chip {
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
     padding: var(--space-6);
+    /* Only past the whole stage's height (see .hud-dock). */
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   /* Hierarchy 6: the ledger corner, bottom-right — the beat line, printed on
      the scene. The corner scrim below carries their
@@ -3630,12 +3642,15 @@ button.session-chip {
   color: var(--ink);
 }
 @media (min-width: 1024px) {
-  /* Its own stage moment: centered in the empty sky band, clear of both the
-     condition header (top-left) and the instrument bars (top-right). */
+  /* Its own stage moment: in the empty sky band under the voice, centred in
+     the stage LEFT of the card's column — the card, bottom-right, may rise most
+     of the stage, and the moment never sits over it (it held a tall card's
+     chips under it at 54%). */
   .hud-ceremony {
     position: absolute;
     top: clamp(7rem, 17vh, 10rem);
-    left: 54%;
+    left: calc((100% - var(--dock-width) - var(--stage-gutter)) / 2);
+    max-width: calc(100% - var(--dock-width) - 3 * var(--stage-gutter));
     transform: translateX(-50%);
     z-index: 2;
   }
@@ -4267,8 +4282,7 @@ button.session-chip {
 }
 
 /* Legend: a color chip, or a bespoke swatch drawn from the same code as the
-   mark it stands for (see HeatSwatch in charts.tsx) so the key can never
-   drift from the chart. */
+   mark it stands for, so the key can never drift from the chart. */
 .chart-legend {
   display: flex;
   flex-wrap: wrap;

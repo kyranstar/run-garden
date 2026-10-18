@@ -173,8 +173,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
  * rendering `<HatchDefs />` more than once on a screen produced duplicate DOM
  * ids — and the Insights screen draws three hatch patterns already:
  * `WeeklyDurationChart` (one, for partial weeks) and `OutcomeBar` (two, one
- * per direction, for moved and skipped). `ConsistencyHeatmap` does NOT hatch;
- * its skipped cells carry a drawn slash glyph, not a pattern fill.
+ * per direction, for moved and skipped).
  *
  * `useHatchId()` is built on React's `useId`, with the colons stripped: a
  * React id is unique per component instance and stable across renders, but

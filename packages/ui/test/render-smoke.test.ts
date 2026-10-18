@@ -4,7 +4,6 @@ import { renderToStaticMarkup as render } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   BaselineBandChart,
-  ConsistencyHeatmap,
   DivergingPaceBars,
   LapHrBars,
   OutcomeBar,
@@ -87,10 +86,6 @@ function chartElements(): Array<[string, ReactElement]> {
         avgSeconds: 16_200,
         avgLabel: "4-wk avg",
       }),
-    ],
-    [
-      "ConsistencyHeatmap",
-      createElement(ConsistencyHeatmap, { days: days as never, onDayClick: () => undefined }),
     ],
     [
       "OutcomeBar",

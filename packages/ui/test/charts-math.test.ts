@@ -4,11 +4,8 @@ import {
   reviewUnseen,
   divergingDomain,
   formatHours,
-  heatmapColumns,
   horizontalBarPath,
-  inProgressColumnIndex,
   monthStartDates,
-  newMonthColumns,
   outcomeSegments,
   roundedTopBarPath,
   stackedBarSegments,
@@ -31,82 +28,6 @@ describe("formatHours", () => {
     expect(formatHours(1080)).toBe("0.3h"); // 18 min
   });
 });
-
-describe("heatmapColumns", () => {
-  const day = (date: string, status = "completed") => ({ date, status });
-
-  it("returns nothing for an empty series", () => {
-    expect(heatmapColumns([])).toEqual([]);
-  });
-
-  it("buckets days into ISO week columns, oldest first, Monday at row 0", () => {
-    // 2026-08-03 is a Monday; 2026-08-09 the Sunday that closes that week.
-    const cols = heatmapColumns([day("2026-08-09"), day("2026-08-03"), day("2026-07-27")]);
-    expect(cols.map((c) => c.weekStart)).toEqual(["2026-07-27", "2026-08-03"]);
-    expect(cols[1]!.days[0]).toEqual(day("2026-08-03"));
-    expect(cols[1]!.days[6]).toEqual(day("2026-08-09"));
-  });
-
-  it("leaves rows with no day as null rather than shifting later days up", () => {
-    const cols = heatmapColumns([day("2026-08-05")]); // a Wednesday
-    expect(cols).toHaveLength(1);
-    expect(cols[0]!.days).toHaveLength(7);
-    expect(cols[0]!.days[2]).toEqual(day("2026-08-05"));
-    expect(cols[0]!.days.filter(Boolean)).toHaveLength(1);
-  });
-
-  it("keeps only the most recent maxColumns weeks", () => {
-    const cols = heatmapColumns(
-      [day("2026-06-01"), day("2026-06-08"), day("2026-06-15"), day("2026-06-22")],
-      2,
-    );
-    expect(cols.map((c) => c.weekStart)).toEqual(["2026-06-15", "2026-06-22"]);
-  });
-});
-
-describe("newMonthColumns", () => {
-  it("marks the first column and every column that opens a new month", () => {
-    const cols = [
-      { weekStart: "2026-07-20" },
-      { weekStart: "2026-07-27" },
-      { weekStart: "2026-08-03" },
-      { weekStart: "2026-08-10" },
-      { weekStart: "2026-08-31" },
-      { weekStart: "2026-09-07" },
-    ];
-    expect(newMonthColumns(cols)).toEqual([0, 2, 5]);
-  });
-
-  it("returns nothing for no columns", () => {
-    expect(newMonthColumns([])).toEqual([]);
-  });
-});
-
-describe("inProgressColumnIndex", () => {
-  const col = (weekStart: string, statuses: Array<string | null>) => ({
-    weekStart,
-    days: statuses.map((s) => (s === null ? null : { date: weekStart, status: s })),
-  });
-
-  it("finds the last week that mixes resolved days with still-future ones", () => {
-    const cols = [
-      col("2026-07-27", ["completed", "rest", "completed", "rest", "completed", "rest", "completed"]),
-      col("2026-08-03", ["completed", "rest", "pending", "future", "future", "future", "future"]),
-    ];
-    expect(inProgressColumnIndex(cols)).toBe(1);
-  });
-
-  it("returns -1 when every week is fully resolved", () => {
-    const cols = [col("2026-07-27", ["completed", null, null, null, null, null, null])];
-    expect(inProgressColumnIndex(cols)).toBe(-1);
-  });
-
-  it("returns -1 for a wholly future week (nothing is in progress yet)", () => {
-    const cols = [col("2026-08-10", ["future", "future", "future", null, null, null, null])];
-    expect(inProgressColumnIndex(cols)).toBe(-1);
-  });
-});
-
 
 describe("outcomeSegments", () => {
   const base = { completed: 0, moved: 0, pending: 0, skipped: 0, missed: 0, planned: 0 };

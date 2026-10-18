@@ -24,7 +24,6 @@ import {
   chartWidth,
   labelStride,
 } from "../src/chart-kit.js";
-import { heatCellStep } from "../src/charts.js";
 import { GARDEN_PART_KEYS, GardenBody, type GardenParts } from "../src/screens/garden.js";
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
@@ -226,22 +225,6 @@ describe("chart labels are a CSS size, not a viewBox size", () => {
     expect(CHART_MIN_WIDTH).toBeLessThan(326);
   });
 
-  it("the heatmap fills its box by resizing its CELLS, so its labels are pixels too", () => {
-    // Its width is intrinsic (a week is a column), so it takes the layer from
-    // the other end. Cells GROW on a phone rather than shrinking.
-    const columns = 14;
-    for (const c of [326, 418, 560, 880]) {
-      const step = heatCellStep(c, columns);
-      const width = 26 + columns * step + 2;
-      expect(width, `${c}`).toBeLessThanOrEqual(c);
-      expect(labelCssPx(width, width)).toBeCloseTo(CHART_LABEL_PX, 6);
-    }
-    // Clamped at both ends: never smaller than a target, never a wall of tiles.
-    expect(heatCellStep(200, 52)).toBe(14);
-    expect(heatCellStep(2000, 4)).toBe(26);
-    expect(heatCellStep(null, 14)).toBe(18);
-  });
-
   it("x labels stride by the room they have, not by a constant tuned for 560", () => {
     // 12 weeks of "May 12" at 10px: comfortable in a 510px plot, every other
     // one in half of it.
@@ -285,7 +268,8 @@ describe("nothing in either chart layer can re-introduce a fixed size", () => {
     // two ever differ, the scale factor is back and so is the whole defect.
     const pattern = /viewBox=\{`0 0 \$\{(\w+)\} [^`]*`\}\s*\n\s*style=\{svgStyle\(([^)]*)\)\}/g;
     const svgs = [...chartsSrc.matchAll(pattern), ...planSrc.matchAll(pattern)];
-    expect(svgs.length).toBe(11);
+    // Ten: the plan heatmap went with Growth (it had no caller left).
+    expect(svgs.length).toBe(10);
     for (const m of svgs) expect(m[2]!.trim(), m[0]).toBe(m[1]!.trim());
   });
 
@@ -299,12 +283,12 @@ describe("nothing in either chart layer can re-introduce a fixed size", () => {
       .join("\n")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
-    // Fifteen in the Insights layer plus three in the plan layer (its week
+    // Thirteen in the Insights layer (the heatmap's two went with it) plus three in the plan layer (its week
     // labels, its unit, its point callouts — the y axis is `GridLines`, which
     // both layers now import from chart-kit rather than keeping a copy of),
     // plus six in the sleep/recovery pair (0020): StrainAnswerChart's two
     // lane labels and two date labels, SleepStagesChart's two date labels.
-    expect([...code.matchAll(/fontSize=\{CHART_LABEL_PX\}/g)].length).toBe(24);
+    expect([...code.matchAll(/fontSize=\{CHART_LABEL_PX\}/g)].length).toBe(22);
     expect([...code.matchAll(/fontSize=\{[\d.]+\}/g)].map((m) => m[0])).toEqual([]);
     expect([...code.matchAll(/fontSize="[^"]*"/g)].map((m) => m[0])).toEqual([]);
   });

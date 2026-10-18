@@ -201,4 +201,84 @@ describe("Growth, live", () => {
     expect(sheet?.querySelector(".obj-title")?.classList.contains("visually-hidden")).toBe(true);
     expect(registry.current).toMatchObject({ kind: "objective", id: "o1" });
   });
+
+  it("a quest's sheet has its own small Ask, seeing the objective (a modal sheet covers the nav's coach)", async () => {
+    features.coach = true;
+    features.studio = true;
+    serve({ "GET /api/coros/read-now": { busy: false } });
+    const open = vi.fn();
+    await mount(createElement(GrowthScreen), { opener: { open } });
+    await until(() => text().includes("Hold a strong wall sit"), "the quest");
+    await click(host!.querySelector(".quest-open"), "the quest's title");
+    const ask = dialog()?.querySelector<HTMLButtonElement>('button[aria-label="Ask the coach about Hold a strong wall sit"]');
+    await click(ask, "the sheet's Ask");
+    expect(open).toHaveBeenCalledWith({ seeing: expect.objectContaining({ kind: "objective", id: "o1" }), request: null });
+  });
+
+  describe("the board's actions, from Growth: a quest's sheet → ⋯", () => {
+    /** A server that keeps the objective's status: a write changes what the board answers next. */
+    function board() {
+      let status = "active";
+      const objectiveNow = () => ({ ...BOARD.objectives[0]!.objective, status });
+      const calls = serve({
+        "GET /api/coros/read-now": { busy: false },
+        "GET /api/objectives/board": () => ({ ...BOARD, objectives: [{ ...BOARD.objectives[0]!, objective: objectiveNow() }] }),
+        "PUT /api/objectives/o1": (body: { status?: string }) => {
+          if (body?.status) status = body.status;
+          return { objective: objectiveNow() };
+        },
+      });
+      return calls;
+    }
+    async function more() {
+      await until(() => !!host!.querySelector(".quest-open"), "the quest");
+      await click(host!.querySelector(".quest-open"), "the quest's title");
+      await click(dialog()?.querySelector('button[aria-label="Hold a strong wall sit: more"]'), "⋯");
+      return dialog()!;
+    }
+
+    it("⋯ offers Edit…, Pause and Mark complete…, in place of the card", async () => {
+      features.coach = true;
+      features.studio = true;
+      board();
+      await mount(createElement(GrowthScreen), { opener: { open: () => undefined } });
+      const menu = await more();
+      expect([...menu.querySelectorAll("button")].map((b) => b.textContent?.trim())).toEqual(expect.arrayContaining(["Edit…", "Pause", "Mark complete…"]));
+      expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    });
+
+    it("Pause writes it, says so, and the quest reads Paused", async () => {
+      features.coach = true;
+      features.studio = true;
+      const calls = board();
+      await mount(createElement(GrowthScreen), { opener: { open: () => undefined } });
+      await click(button("Pause", await more()), "Pause");
+      await until(() => text().includes("Paused “Hold a strong wall sit”."), "the status line");
+      expect(calls.filter((c) => c.method === "PUT")).toEqual([expect.objectContaining({ path: "/api/objectives/o1", body: { status: "paused" } })]);
+      await until(() => host!.querySelector(".quest")?.textContent?.includes("Paused") === true, "the quest's line");
+    });
+
+    it("Mark complete… asks once, then writes it", async () => {
+      features.coach = true;
+      features.studio = true;
+      const calls = board();
+      await mount(createElement(GrowthScreen), { opener: { open: () => undefined } });
+      await click(button("Mark complete…", await more()), "Mark complete…");
+      const confirm = dialog()!;
+      expect(confirm.textContent).toContain("Mark it complete?");
+      await click(button("Mark complete", confirm), "Mark complete");
+      await until(() => calls.some((c) => c.method === "PUT"), "the write");
+      expect(calls.filter((c) => c.method === "PUT")).toEqual([expect.objectContaining({ path: "/api/objectives/o1", body: { status: "done" } })]);
+      await until(() => text().includes("Completed “Hold a strong wall sit”."), "the status line");
+    });
+
+    it("Edit… opens the objective's edit sheet", async () => {
+      features.coach = true;
+      features.studio = true;
+      board();
+      await mount(createElement(GrowthScreen), { opener: { open: () => undefined } });
+      await click(button("Edit…", await more()), "Edit…");
+      await until(() => !!document.querySelector('[role="dialog"]')?.textContent?.includes("Edit objective"), "the edit sheet");
+    });
+  });
 });

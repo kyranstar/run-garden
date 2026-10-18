@@ -147,9 +147,8 @@ test("Growth in the dark: the same page, the dark tokens", async ({ browser, bas
   await context.close();
 });
 
-test("Growth's quests: a quest's bar and line, and its card in a sheet (shots)", async ({ page, context, baseURL }, info) => {
-  test.skip(!SHOTS, "screenshots only (RG_GROWTH_SHOTS)");
-  if (info.project.name === "desktop") await page.setViewportSize({ width: 1440, height: 900 });
+test("Growth's quests: a quest's bar and line, its card in a sheet, and the sheet's own Ask seeing the objective", async ({ page, context, baseURL }, info) => {
+  if (SHOTS && info.project.name === "desktop") await page.setViewportSize({ width: 1440, height: 900 });
   await signIn(context.request, baseURL);
   const made = await context.request.post(`${baseURL}/api/objectives`, {
     data: {
@@ -166,8 +165,15 @@ test("Growth's quests: a quest's bar and line, and its card in a sheet (shots)",
     await quests.scrollIntoViewIfNeeded();
     await shot(page, "growth-quests", info.project.name);
     await quests.getByRole("button", { name: "Easy running feels easy" }).click();
-    await expect(page.getByRole("dialog", { name: "Easy running feels easy" })).toBeVisible();
+    const sheet = page.getByRole("dialog", { name: "Easy running feels easy" });
+    await expect(sheet).toBeVisible();
     await shot(page, "growth-quest-card", info.project.name);
+    // A modal sheet covers the nav's coach: the sheet's own small Ask opens it seeing the objective.
+    await sheet.getByRole("button", { name: "Ask the coach about Easy running feels easy" }).click();
+    const coach = coachSheet(page);
+    await expect(coach).toBeVisible();
+    await expect(coach.getByText("Seeing: Easy running feels easy")).toBeVisible();
+    await shot(page, "growth-quest-ask", info.project.name);
   } finally {
     await context.request.put(`${baseURL}/api/objectives/${objective.id}`, { data: { status: "dropped" } });
   }

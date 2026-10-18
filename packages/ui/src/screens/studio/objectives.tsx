@@ -65,7 +65,7 @@ import {
   type BoardUnits,
   type ObjectiveDraft,
 } from "./objectives-model.js";
-import { AskCoach, useCoachSeeing } from "./coach-ask.js";
+import { AskCoach, useCoach, useCoachSeeing } from "./coach-ask.js";
 import { objectiveFocus } from "./coach-focus.js";
 import { ObjectiveSheet } from "./objectives-sheet.js";
 import { planDayHref } from "./run-model.js";
@@ -393,9 +393,12 @@ export function ObjectivesScreen({ variant = "board" }: { variant?: "board" | "q
 
 /** A quest's full card, in a sheet; while it is open the app's coach sees the objective. */
 function QuestSheet({ card, today, units, onMore, onClose }: { card: ObjectiveBoardCard; today: string; units: BoardUnits; onMore: () => void; onClose: () => void }) {
-  useCoachSeeing(objectiveFocus(card.objective));
+  const focus = objectiveFocus(card.objective);
+  useCoachSeeing(focus);
+  // A modal sheet covers the nav's coach: its own small Ask, seeing the objective (the integrated review, I3).
+  const coach = useCoach();
   return (
-    <Sheet open onClose={onClose} title={card.objective.title}>
+    <Sheet open onClose={onClose} title={card.objective.title} footer={coach ? <AskCoach focus={focus} /> : undefined}>
       {/* The sheet's title names it: the card's own stays for a screen reader's outline, not drawn twice. */}
       <ObjectiveCard card={card} today={today} units={units} onMore={onMore} titleShown={false} />
     </Sheet>

@@ -1,4 +1,3 @@
-import { isoWeekday, startOfIsoWeek } from "@rg/domain";
 
 /**
  * Chart math — the pure, render-free half of the chart layer.
@@ -27,79 +26,6 @@ import { isoWeekday, startOfIsoWeek } from "@rg/domain";
  */
 export function formatHours(seconds: number): string {
   return `${(seconds / 3600).toFixed(1)}h`;
-}
-
-// ── Heatmap bucketing ───────────────────────────────────────────────────────
-
-export interface HeatmapDayLike {
-  date: string;
-  status: string;
-}
-
-export interface HeatmapColumn<D extends HeatmapDayLike> {
-  /** Monday of this ISO week. */
-  weekStart: string;
-  /** Exactly 7 entries, index 0 = Monday … 6 = Sunday; `null` where the input had no such day. */
-  days: Array<D | null>;
-}
-
-/**
- * Days bucketed into ISO-week columns (oldest first), each column a fixed
- * 7-row Mon→Sun array. A missing day stays `null` rather than shifting later
- * days up a row — a heatmap whose rows don't mean weekdays is worse than a
- * gappy one. Input order doesn't matter; later duplicates of the same date
- * win (the caller's own precedence has already run by then).
- */
-export function heatmapColumns<D extends HeatmapDayLike>(
-  days: readonly D[],
-  maxColumns?: number,
-): Array<HeatmapColumn<D>> {
-  const byWeek = new Map<string, Array<D | null>>();
-  for (const d of days) {
-    const weekStart = startOfIsoWeek(d.date);
-    let row = byWeek.get(weekStart);
-    if (!row) {
-      row = [null, null, null, null, null, null, null];
-      byWeek.set(weekStart, row);
-    }
-    row[isoWeekday(d.date) - 1] = d;
-  }
-  const columns = [...byWeek.entries()]
-    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-    .map(([weekStart, rows]) => ({ weekStart, days: rows }));
-  return maxColumns != null && columns.length > maxColumns ? columns.slice(-maxColumns) : columns;
-}
-
-/** Indices of the columns that open a new calendar month (index 0 always does). */
-export function newMonthColumns(columns: ReadonlyArray<{ weekStart: string }>): number[] {
-  const out: number[] = [];
-  let previous = "";
-  columns.forEach((c, i) => {
-    const month = c.weekStart.slice(0, 7);
-    if (i === 0 || month !== previous) out.push(i);
-    previous = month;
-  });
-  return out;
-}
-
-const RESOLVED_STATUSES = new Set(["completed", "moved", "pending", "skipped", "missed", "rest"]);
-
-/**
- * The column that is mid-week right now: the last one holding BOTH a resolved
- * day and a still-future one. Derived rather than passed in, so the chart
- * never has to be told what "today" is (and can't disagree with the data it
- * was handed). `-1` when no column is mid-week.
- */
-export function inProgressColumnIndex<D extends HeatmapDayLike>(
-  columns: ReadonlyArray<HeatmapColumn<D>>,
-): number {
-  for (let i = columns.length - 1; i >= 0; i--) {
-    const days = columns[i]!.days;
-    const hasResolved = days.some((d) => d && RESOLVED_STATUSES.has(d.status));
-    const hasFuture = days.some((d) => d?.status === "future");
-    if (hasResolved && hasFuture) return i;
-  }
-  return -1;
 }
 
 // ── Streak ──────────────────────────────────────────────────────────────────

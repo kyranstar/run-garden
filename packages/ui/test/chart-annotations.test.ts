@@ -37,7 +37,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   BaselineBandChart,
-  ConsistencyHeatmap,
   DivergingPaceBars,
   LapHrBars,
   OutcomeBar,
@@ -86,11 +85,10 @@ function textBox(t: { x: number; y: number; anchor: string; text: string }, asce
  * ~0.72em), and counting it as ink would fail a label that is comfortably
  * inside its canvas. 0.8em is still above every ascender this layer prints.
  *
- * The live case that proves the distinction is worth keeping: `ConsistencyHeatmap`
- * prints May/Jun/Jul/Aug on a baseline of 9 in a 10px font, and Chrome reports
- * `getBBox().y === -1.00` for all four at every container width — a 1-unit
- * EM-BOX overhang above the viewBox. No glyph ink is cut (cap top lands at
- * ~1.8), so measuring the em box here would report a clip that does not exist.
+ * The case that proved the distinction worth keeping was the plan heatmap (gone
+ * since Growth): month labels on a baseline of 9 in a 10px font, which Chrome
+ * reported at `getBBox().y === -1.00` — a 1-unit EM-BOX overhang above the
+ * viewBox with no glyph ink cut, a clip that does not exist.
  */
 const CLIP_ASCENT = 0.8 * CHART_LABEL_PX;
 
@@ -328,15 +326,6 @@ const CHARTS: Array<[string, ReactElement]> = [
   [
     "OutcomeBar",
     createElement(OutcomeBar, { completed: 48, moved: 6, pending: 2, skipped: 4, missed: 1, planned: 63 }),
-  ],
-  [
-    "ConsistencyHeatmap",
-    createElement(ConsistencyHeatmap, {
-      days: Array.from({ length: 84 }, (_, i) => ({
-        date: iso(Date.UTC(2026, 4, 11), i),
-        status: (["completed", "rest", "moved", "skipped", "missed", "pending", "none"] as const)[i % 7]!,
-      })) as never,
-    }),
   ],
   // ── The plan layer ────────────────────────────────────────────────────────
   // Second chart layer, same invariant. Its fixtures are chosen the same way
