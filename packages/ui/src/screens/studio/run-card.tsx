@@ -64,16 +64,21 @@ export function runTotalsWords(run: Pick<DesignRunDto, "totalSeconds" | "totalMe
   return out.length > 0 ? out.join(" · ") : null;
 }
 
+/** Whether a run's card has anything to expand: a why on any step (the title expands nothing else on a run). */
+export function runHasWhys(run: DesignRunDto): boolean {
+  return run.segments.some((s) => s.steps.some((step) => !!step.why));
+}
+
 /** The label beside a part's first step: its rounds ("3 ×"), else what the part is for (warm-up, cool-down), else none. */
 function partLabel(segment: DesignRunDto["segments"][number]): string {
   if (segment.rounds > 1) return `${segment.rounds} ×`;
   return ROLE_WORDS[segment.steps[0]?.role ?? "work"];
 }
 
-export function RunSteps({ run, units, open, decided }: { run: DesignRunDto; units: Units; open: boolean; decided: boolean }) {
+export function RunSteps({ run, units, open, decided, id }: { run: DesignRunDto; units: Units; open: boolean; decided: boolean; id?: string }) {
   const totals = runTotalsWords(run, units);
   return (
-    <div className="coach-pc-run">
+    <div id={id} className="coach-pc-run">
       <ol className="coach-pc-run-steps">
         {run.segments.map((segment, i) => (
           <li key={i} className="coach-pc-run-part">

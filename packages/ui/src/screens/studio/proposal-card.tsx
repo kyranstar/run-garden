@@ -45,7 +45,7 @@ import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { appliedChangeLine, dayAndTime, planDayHref, refusedLine, reviewLabel } from "./run-model.js";
 import { useOneTap } from "./use-one-tap.js";
 import { useUnits } from "../../use-units.js";
-import { RunSteps } from "./run-card.js";
+import { runHasWhys, RunSteps } from "./run-card.js";
 
 /** What became of the suggestion once nothing in it is open (fix wave 3B, M3); while something is, what it is. */
 export function cardHeader(
@@ -536,14 +536,20 @@ function WorkoutItem({
     <li className="coach-pc-item" data-op={line.opId}>
       {picking ? <Pick label={`Include ${line.title}`} checked={checked} onToggle={onToggle} busy={busy} /> : null}
       <div className="coach-pc-main">
-        <button type="button" className="coach-pc-name" aria-expanded={open} aria-controls={detailId} onClick={() => setOpen((v) => !v)}>
-          {line.title}
-        </button>
+        {/* The title expands what it controls (review-3): a workout's moves, a run's whys — in its steps, which it
+            controls; a run with no why has nothing to expand, so its title is no control. */}
+        {line.run && !runHasWhys(line.run) ? (
+          <p className="coach-pc-name coach-pc-name--static">{line.title}</p>
+        ) : (
+          <button type="button" className="coach-pc-name" aria-expanded={open} aria-controls={line.run ? `${detailId}-run` : detailId} onClick={() => setOpen((v) => !v)}>
+            {line.title}
+          </button>
+        )}
         {/* What it is for, in one line under its title (D1). */}
         {line.intent ? <p className="coach-pc-intent">{line.intent}</p> : null}
         <p className="coach-pc-facts">{facts.join(" · ")}</p>
         {/* A designed run (§8 §3): its steps on the face, and what the watch does when it is approved. */}
-        {line.run ? <RunSteps run={line.run} units={units} open={open} decided={!isOpen(line.outcome)} /> : null}
+        {line.run ? <RunSteps id={`${detailId}-run`} run={line.run} units={units} open={open} decided={!isOpen(line.outcome)} /> : null}
         {timePassed ? <p className="coach-pc-outcome coach-pc-time-passed">{line.atNow ? NO_TIME_LEFT_LINE : TIME_PASSED_LINE}</p> : null}
         <OutcomeLine outcome={line.outcome} applied={applied} />
         {/* On the card, no tap: the day's costs (M1, M7). The reviewer's ideas are one tap down, in the review (R5, D2). */}

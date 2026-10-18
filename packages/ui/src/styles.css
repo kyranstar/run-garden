@@ -11712,6 +11712,14 @@ a.stu-tpl-open:focus-visible::before {
 .coach-pc-name:hover {
   text-decoration: underline;
 }
+/* A run's title with nothing to expand: a heading, not a control. */
+.coach-pc-name--static {
+  margin: 0;
+  cursor: default;
+}
+.coach-pc-name--static:hover {
+  text-decoration: none;
+}
 .coach-pc-facts,
 .coach-pc-change,
 .coach-pc-why,

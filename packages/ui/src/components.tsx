@@ -397,7 +397,9 @@ export function watchCoverageSentences(view: WatchCoverageView | undefined): str
       // A designed run (§8 §3): the wire carries time, so a distance goes as its time at its pace.
       case "distance_as_time":
         out.push(
-          `Your watch times the distance step${gap.count && gap.count > 1 ? "s" : ""} — each runs for the time it takes at its pace, and Run Garden keeps the distance.`,
+          gap.count && gap.count > 1
+            ? "Your watch times the distance steps — each runs for the time it takes at its pace, and Run Garden keeps the distances."
+            : "Your watch times the distance step — it runs for the time it takes at its pace, and Run Garden keeps the distance.",
         );
         break;
       case "distance_needs_threshold":

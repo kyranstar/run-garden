@@ -57,6 +57,28 @@ export function removeConfirmCopy(displayTitle: string, appPushed: boolean): str
 }
 
 /**
+ * The sheet's sentence about what COROS holds, when its date disagrees with the app's. `lastVerifiedCorosDate` is ""
+ * when COROS has never seen the row — every coach-created session, a designed run among them — and every dated branch
+ * formats that date, so the never-on-the-watch case is said first; but by its state (review-3): one on its way says
+ * so, not "COROS has never been given it" beside a "Syncing" pill, and one whose send failed says it failed. A COROS
+ * copy saved differently (`watch_copy_differs`) is a date that agrees: its action says it, with no sentence here.
+ */
+export function corosReasonSentence(v: { syncView: string; lastVerifiedCorosDate: string; effectiveDate: string }): string {
+  if (v.lastVerifiedCorosDate === "") {
+    if (v.syncView === "syncing") return "On its way to your COROS watch.";
+    if (v.syncView === "sync_issue") return "Sending this to your COROS watch failed. It's in Run Garden and your Google Calendar.";
+    return "This lives in Run Garden and your Google Calendar. COROS has never been given it.";
+  }
+  return v.syncView === "needs_attention"
+    ? `COROS has this on ${formatDayLong(v.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(v.effectiveDate)}.`
+    : v.syncView === "calendar_only"
+      ? `Your COROS watch still has this on ${formatDayLong(v.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
+      : v.syncView === "sync_issue"
+        ? `The last update to COROS failed — your watch still shows ${formatDayLong(v.lastVerifiedCorosDate)}.`
+        : `COROS still shows ${formatDayLong(v.lastVerifiedCorosDate)} — the update is on its way.`;
+}
+
+/**
  * The workout sheet. A program slot (or an on-demand session) opens the session sheet — its pre-check, what was
  * built and the moves (Phase 2a) — and every other workout the sheet it always had.
  */
@@ -315,17 +337,9 @@ export function RunWorkoutDetail({
             corosDisagrees
               ? /* `lastVerifiedCorosDate` is "" when COROS has never seen this
                    row at all — every coach-created session. Every dated branch
-                   below formats that date, so the app told you your watch "still
+                   formats that date, so the app told you your watch "still
                    has this on undefined, undefined NaN" (2026-08-16). */
-                neverOnWatch
-                ? "This lives in Run Garden and your Google Calendar. COROS has never been given it."
-                : syncView === "needs_attention"
-                  ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}.`
-                  : syncView === "calendar_only"
-                    ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
-                    : syncView === "sync_issue"
-                      ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}.`
-                      : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`
+                corosReasonSentence({ syncView, lastVerifiedCorosDate: w.lastVerifiedCorosDate, effectiveDate: w.effectiveDate })
               : undefined
           }
           /* The coverage note above is the reason for a wire limit, in full and

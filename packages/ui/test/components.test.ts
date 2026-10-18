@@ -15,6 +15,7 @@ import {
   isTopDialog,
   syncActionCopy,
   syncActionShort,
+  watchCoverageSentences,
 } from "../src/components.js";
 
 describe("formatMinutes (M5)", () => {
@@ -161,5 +162,13 @@ describe("the account's date, never the device's (CUJ J34)", () => {
     expect(accountTodayGuess(null, "America/Los_Angeles", at)).toBe("2026-10-15");
     expect(accountTodayGuess(undefined, "Pacific/Kiritimati", at)).toBe("2026-10-16");
     expect(accountTodayGuess(null, null, at)).toBe(device);
+  });
+});
+
+describe("a designed run's distance on the watch, said for one step or several (review-3)", () => {
+  it("one step is 'it'; several are 'each'", () => {
+    const view = (count: number) => ({ coverage: "partial" as const, discipline: "run" as const, gaps: [{ code: "distance_as_time" as const, count }] });
+    expect(watchCoverageSentences(view(1))).toEqual(["Your watch times the distance step — it runs for the time it takes at its pace, and Run Garden keeps the distance."]);
+    expect(watchCoverageSentences(view(2))).toEqual(["Your watch times the distance steps — each runs for the time it takes at its pace, and Run Garden keeps the distances."]);
   });
 });

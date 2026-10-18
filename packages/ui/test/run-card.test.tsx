@@ -117,3 +117,50 @@ it("the suggestion's card shows a run's steps on its face, in the athlete's unit
   expect(text).not.toContain("Run Run");
   expect(document.querySelector("a.coach-pc-edit")).toBeNull();
 });
+
+/** The suggestion's card of `l`, rendered and settled. */
+async function renderCard(l: DesignLineDto): Promise<void> {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string) => {
+      const path = String(input).split("?")[0]!;
+      if (path === "/api/coach/proposals/dp-1") return new Response(JSON.stringify({ id: "dp-1", status: "pending", resolvedAt: null, title: "Tempo blocks", flags: [], lines: [l], changes: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+    }),
+  );
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  const qc = primedClient();
+  qc.setQueryData(["settings"], { prefs: { units: "km", weightUnit: "kg" } });
+  act(() => {
+    root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(ProposalCard, { proposalId: "dp-1" }))));
+  });
+  for (let i = 0; i < 100 && !(document.body.textContent ?? "").includes("Tempo"); i++) {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+    });
+  }
+}
+
+describe("a run's title on its card controls what expands (review-3)", () => {
+  it("with whys: the title controls the run's steps, which show the whys once expanded", async () => {
+    await renderCard(line);
+    const title = [...document.querySelectorAll<HTMLButtonElement>("button.coach-pc-name")].find((b) => b.textContent === "Tempo blocks")!;
+    const region = document.getElementById(title.getAttribute("aria-controls")!)!;
+    expect(region.hidden).toBe(false);
+    expect(region.querySelector(".coach-pc-run-steps")).not.toBeNull();
+    expect(region.textContent).not.toContain("Comfortably hard.");
+    act(() => title.click());
+    expect(title.getAttribute("aria-expanded")).toBe("true");
+    expect(region.textContent).toContain("Comfortably hard.");
+  });
+
+  it("with no why anywhere: nothing expands, so the title is no control", async () => {
+    const bare: DesignLineDto = { ...line, run: { ...RUN, segments: RUN.segments.map((s) => ({ ...s, steps: s.steps.map((st) => ({ ...st, why: null })) })) } };
+    await renderCard(bare);
+    expect([...document.querySelectorAll("button.coach-pc-name")].map((b) => b.textContent)).not.toContain("Tempo blocks");
+    expect(document.querySelector(".coach-pc-name")?.textContent).toBe("Tempo blocks");
+    expect(document.querySelector("[aria-expanded][aria-controls]:not(.coach-pc-see)")).toBeNull();
+  });
+});
