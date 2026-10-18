@@ -10929,6 +10929,28 @@ a.stu-tpl-open:focus-visible::before {
 .coach-sheet-menu {
   position: relative;
 }
+/* The thread coach's cards on the Plan (thread-coach-cards.tsx): its suggestions, its question, and its two plain lines
+   — out of credits (with Retry) and the work a wake lost. */
+.thread-coach-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.thread-coach-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin: 0;
+}
+.thread-coach-lost {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
 /* "New conversation" with nothing to leave, or the coach at work: said as unavailable, in the faint ink. */
 .coach-sheet-menu-list .stu-save-item:disabled {
   background: none;

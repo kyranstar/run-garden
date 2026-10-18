@@ -12,6 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { CoachProposalDto, CoachQuestionDto } from "@rg/api-client";
+import { OUT_OF_CREDITS_LINE } from "../src/ai-credits.js";
 import { ThreadCoachCards } from "../src/screens/thread-coach-cards.js";
 
 const noop = () => undefined;
@@ -85,5 +86,24 @@ describe("the thread coach's cards on the Plan", () => {
 
   it("nothing pending and no question: nothing drawn", () => {
     expect(render(panelProps({ proposals: [], question: null }))).toBe("");
+  });
+
+  it("the thread coach's AI account out of credits: one plain line, with Retry — even with nothing pending", () => {
+    const html = render(panelProps({ proposals: [], question: null, outOfCredits: true, onRetry: noop }));
+    expect(words(html)).toContain(OUT_OF_CREDITS_LINE);
+    expect(html).toMatch(/<button type="button" class="btn btn-small"[^>]*>Retry<\/button>/);
+    expect(html).toMatch(/role="status"/);
+    // A wake actually running wins: no line while it may be finding the credits back.
+    expect(words(render(panelProps({ outOfCredits: true, busy: true, onRetry: noop })))).not.toContain(OUT_OF_CREDITS_LINE);
+    // No Retry offered with no way to retry.
+    expect(render(panelProps({ outOfCredits: true }))).not.toContain(">Retry<");
+  });
+
+  it("the last wake's lost work, said in its own words ('… Nothing was applied …'), even with nothing pending", () => {
+    const lost = "One plan change didn't make it: “Easier Tuesday” (1 ease) — a day gone by. Nothing was applied. Ask again — naming one day at a time helps — and it will come back as a proposal you can approve.";
+    const html = render(panelProps({ proposals: [], question: null, nothingApplied: lost }));
+    expect(words(html)).toContain("Nothing was applied.");
+    expect(html).toContain('role="status"');
+    expect(render(panelProps({ proposals: [], question: null, nothingApplied: "  " }))).toBe("");
   });
 });
