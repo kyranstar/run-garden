@@ -143,6 +143,41 @@ describe("coach triggers", () => {
     expect(await evaluateTriggers(db, userId, prefs, today)).toContain("plan_horizon");
   });
 
+  /** A plan with sessions on these days and shape weeks from `shapeFrom`, but no firm week rows — as a plan made
+   * before createPlan wrote them (§8 §4). */
+  async function planOfSessions(db: Db, userId: string, sessionDays: string[], shapeFrom: string) {
+    await db.insert(schema.coachPlans).values({
+      id: "cp2", userId, discipline: "run", name: "Spring 10K", status: "active", startDate: sessionDays[0]!, endDate: addDays(shapeFrom, 27),
+      stampPrefix: "Spring 10K", createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    for (const [i, date] of sessionDays.entries()) {
+      await db.insert(schema.plannedWorkouts).values({
+        id: `s${i}`, userId, planId: "cp2", sourceWorkoutId: `s${i}`, title: "Easy", category: "easy", sport: "run", originalPlanDate: date,
+        lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "07:00", completionState: "scheduled", sourceContentFingerprint: "fp",
+        calendarBlockDurationSeconds: 2400, createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    }
+    await db.insert(schema.coachPlanWeeks).values({ id: newId(), planId: "cp2", weekStart: shapeFrom, state: "shape", shape: { volumeTarget: "30k", keySessions: [] } });
+  }
+
+  it("plan_horizon counts a plan's sessions too: detail running out with no firm week row still fires", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await planOfSessions(db, userId, [addDays(today, 1), addDays(today, 5)], addDays(today, 9));
+    expect(await evaluateTriggers(db, userId, prefs, today)).toContain("plan_horizon");
+  });
+
+  it("…and stays quiet while the plan's sessions reach past the horizon; an archived one is not detail", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await planOfSessions(db, userId, [addDays(today, 1), addDays(today, 20)], addDays(today, 23));
+    expect(await evaluateTriggers(db, userId, prefs, today)).not.toContain("plan_horizon");
+    await db.update(schema.plannedWorkouts).set({ archivedAt: nowInstant() }).where(eq(schema.plannedWorkouts.id, "s1"));
+    expect(await evaluateTriggers(db, userId, prefs, today)).toContain("plan_horizon");
+  });
+
   it("comeback fires on the first completion after a 7+ day gap", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

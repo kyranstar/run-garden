@@ -183,15 +183,24 @@ export async function evaluateTriggers(
     .from(coachPlans)
     .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active")));
 
-  // plan_horizon — firm detail runs out inside 14 days while shape weeks wait.
+  // plan_horizon — firm detail runs out inside 14 days while shape weeks wait. The detail is the plan's firm weeks AND
+  // its sessions (§8 §4): a plan made before createPlan wrote firm week rows has none, and its sessions still run out.
   if (!blocked.has("plan_horizon")) {
     for (const plan of plans) {
       const weeks = await db
         .select()
         .from(coachPlanWeeks)
         .where(eq(coachPlanWeeks.planId, plan.id));
-      const firmEnds = weeks.filter((w) => w.state === "firm").map((w) => addDays(w.weekStart, 6));
       const hasShape = weeks.some((w) => w.state === "shape");
+      if (!hasShape) continue;
+      const [lastSession] = await db
+        .select({ date: sql<string | null>`max(${plannedWorkouts.effectiveDate})` })
+        .from(plannedWorkouts)
+        .where(and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.planId, plan.id), isNull(plannedWorkouts.archivedAt)));
+      const firmEnds = [
+        ...weeks.filter((w) => w.state === "firm").map((w) => addDays(w.weekStart, 6)),
+        ...(lastSession?.date ? [lastSession.date] : []),
+      ];
       const firmEnd = firmEnds.sort().at(-1);
       if (hasShape && firmEnd !== undefined && firmEnd < addDays(today, FIRM_HORIZON_DAYS)) {
         fired.push({
