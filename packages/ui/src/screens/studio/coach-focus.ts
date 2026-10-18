@@ -24,6 +24,8 @@ export interface CoachFocus extends CoachRunFocus {
   category?: string;
   /** A workout's sport ("run", "strength", …): the starter chips say a run's as a run. Never sent. */
   sport?: string;
+  /** A day that is a rest day: its chips are a rest day's (nothing to make lighter). Never sent. */
+  rest?: boolean;
 }
 
 /**
@@ -56,8 +58,14 @@ export function workoutFocus(
   };
 }
 
-/** A day of the plan. */
-export const dayFocus = (date: string): CoachFocus => ({ kind: "day", id: date, date, label: dayLabel(date) });
+/** A day of the plan; `rest`: a rest day (Today's, with nothing planned to train). */
+export const dayFocus = (date: string, o: { rest?: boolean } = {}): CoachFocus => ({
+  kind: "day",
+  id: date,
+  date,
+  label: dayLabel(date),
+  ...(o.rest ? { rest: true } : {}),
+});
 
 /** An activity — or, when it holds a logged session (an app save, a watch review, an import), that session. */
 export function activityFocus(a: Pick<ActivityDto, "id" | "date" | "title" | "sport" | "durationSeconds" | "performed">): CoachFocus {

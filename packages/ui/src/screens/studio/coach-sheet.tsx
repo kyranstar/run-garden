@@ -100,6 +100,20 @@ export function CoachSheet({
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useDialogFocus(ref, true, onClose);
+  // The focus never falls out of the sheet (the integrated review): a control that goes as it is pressed — a Keep it, a
+  // card's actions once decided, a run's view as it ends — leaves the focus on the page's body; it comes back to the
+  // dialog itself (never the box: a phone's keyboard would rise), and whatever moves it on (a coach's line) still can.
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog || typeof MutationObserver === "undefined") return;
+    const rescue = () => {
+      const active = document.activeElement;
+      if (dialog.isConnected && (active === null || active === document.body)) dialog.focus();
+    };
+    const watch = new MutationObserver(rescue);
+    watch.observe(dialog, { childList: true, subtree: true });
+    return () => watch.disconnect();
+  }, []);
   // Leaving the screen it was opened on closes it (a link inside it — a card's Edit — goes elsewhere).
   const location = useLocation();
   const openedAt = useRef(location.key);

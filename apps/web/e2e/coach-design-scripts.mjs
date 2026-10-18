@@ -181,14 +181,19 @@ function designReply(turn, ctx) {
 /** The words a plan change finishes with. */
 export const PLAN_CHANGE_LINE = "One session off, so the legs come back for the weekend.";
 
+/** What a plan change says when the run was asked from nothing it could change: the journey fails on it. */
+export const NO_FOCUS_LINE = "No session was seen: nothing to change.";
+
 /**
  * A change to the plan (the new shape §5, the coach's reach): it skips the session the athlete is looking at — the
- * opening's "The athlete asked from: a planned workout (id …)", else the first of a day's — then finishes; no workout.
+ * opening's "The athlete asked from: a planned workout (id …)" — then finishes; no workout. Asked from nothing (no focus
+ * posted), it changes nothing and says so, never falling back on another session: the journey that expects the change
+ * fails (the integrated review).
  */
 function planChange(turn, ctx) {
-  const opening = ctx.opening ?? "";
-  const id = /a planned workout \(id ([^)\s]+)\)/.exec(opening)?.[1] ?? /^- id ([^:\s]+):/m.exec(opening)?.[1];
-  if (turn === 0 && id) return uses(["adjust_plan", { workoutId: id, change: { kind: "skip", reason: "A lighter day." }, why: "The legs asked for a lighter day." }]);
+  const id = /a planned workout \(id ([^)\s]+)\)/.exec(ctx.opening ?? "")?.[1];
+  if (!id) return uses(["finish", { summary: NO_FOCUS_LINE }]);
+  if (turn === 0) return uses(["adjust_plan", { workoutId: id, change: { kind: "skip", reason: "A lighter day." }, why: "The legs asked for a lighter day." }]);
   return uses(["finish", { summary: PLAN_CHANGE_LINE }]);
 }
 

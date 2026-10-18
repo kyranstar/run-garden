@@ -170,7 +170,15 @@ test("2. a request → a workout card → 'make it shorter' → the new card in 
     await shot(page, "workout-card", testInfo);
     // The reply changes it: its words, then the new suggestion; the old one closed to one line.
     await box(page).fill("make it shorter");
-    await box(page).press("Enter");
+    if (testInfo.project.name === "iphone") {
+      // A touch screen's Return is a new line: the button sends.
+      await box(page).press("Enter");
+      await expect(box(page)).toHaveValue("make it shorter\n");
+      await sheet(page).getByRole("button", { name: "Send" }).click();
+    } else {
+      // With a keyboard, Return sends.
+      await box(page).press("Enter");
+    }
     await expect(sheet(page).locator(".coach-msg--athlete", { hasText: "make it shorter" })).toBeVisible();
     const second = sheet(page).locator("section.coach-pc").filter({ hasText: "Hips and back, shorter" });
     await expect(second).toBeVisible({ timeout: 60_000 });
@@ -224,7 +232,10 @@ test("4. a change to the plan, seeing today's session → how many → Approve a
     await noOverflow(page);
     await shot(page, "seeing", testInfo);
     await box(page).fill("my legs are heavy, take something off");
+    const created = page.waitForRequest((r) => r.method() === "POST" && new URL(r.url()).pathname === "/api/coach/runs");
     await sheet(page).getByRole("button", { name: "Send" }).click();
+    // What it sees goes with the words as the run's focus: a workout, by its id (the script changes nothing without it).
+    expect((await created).postDataJSON()).toMatchObject({ focus: { kind: "workout", id: expect.any(String) } });
     await expect(coachLine(page, PLAN_CHANGE_LINE)).toBeVisible({ timeout: 60_000 });
     const card = sheet(page).locator(".coach-changes");
     await expect(card).toContainText("1 change", { timeout: 20_000 });

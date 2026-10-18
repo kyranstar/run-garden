@@ -39,6 +39,14 @@ export function PlanChangesCard({ card, today = null }: { card: Pick<CoachConver
     if (closer && closerRef.current?.contains(document.activeElement) === false) closerRef.current.focus();
   }, [closer]);
   const read = useQuery({ queryKey: designProposalQuery(card.proposalId), queryFn: () => readProposal(card.proposalId), retry: false });
+  // After Approve all: the focus to what came of them, once the read again says it.
+  const outcomeRef = useRef<HTMLParagraphElement>(null);
+  const [toOutcome, setToOutcome] = useState(false);
+  useEffect(() => {
+    if (!toOutcome || !outcomeRef.current) return;
+    outcomeRef.current.focus();
+    setToOutcome(false);
+  });
   const changes = read.data?.changes ?? [];
   const openIds = changes.filter((c) => isOpen(c.outcome)).map((c) => c.opId);
   const status = read.data?.status;
@@ -48,8 +56,10 @@ export function PlanChangesCard({ card, today = null }: { card: Pick<CoachConver
     networkMode: "always",
     mutationFn: (ids: string[]) => approveUntilDone((body) => api.coachDesignApprove(card.proposalId, body), ids, reread),
     onSuccess: (answers) => {
-      // One the plan refused says why on its own line: the closer look.
+      // One the plan refused says why on its own line: the closer look. Else what came of them takes the focus (the
+      // button it was pressed on is gone).
       if (answers.some((a) => a.refused.length > 0)) setCloser(true);
+      else setToOutcome(true);
     },
     onSettled: async () => {
       await reread();
@@ -65,7 +75,11 @@ export function PlanChangesCard({ card, today = null }: { card: Pick<CoachConver
         {card.title}
       </h3>
       {card.summary ? <p className="coach-changes-summary">{card.summary}</p> : null}
-      {read.data && !decidable && changes.length > 0 ? <p className="coach-changes-outcome">{changesOutcome(made, changes.length)}</p> : null}
+      {read.data && !decidable && changes.length > 0 ? (
+        <p ref={outcomeRef} className="coach-changes-outcome" role="status" tabIndex={-1}>
+          {changesOutcome(made, changes.length)}
+        </p>
+      ) : null}
       {approve.isError ? (
         <p className="coach-pc-error" role="status">
           Couldn't reach the coach — try again.

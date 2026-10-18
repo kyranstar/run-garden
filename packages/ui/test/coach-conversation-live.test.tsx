@@ -314,6 +314,140 @@ describe("a turn", () => {
   });
 });
 
+describe("the box and the focus (the integrated review's fix round)", () => {
+  /** The device's primary pointer: a touch screen (coarse) or a mouse (fine). */
+  const pointer = (coarse: boolean) =>
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((q: string) => ({ matches: coarse && q.includes("pointer: coarse"), media: q, addEventListener: () => undefined, removeEventListener: () => undefined })),
+    );
+
+  it("the box grows with its words, up to about six lines, then scrolls", async () => {
+    server(NONE);
+    mount();
+    await openCoach();
+    const field = box()!;
+    let tall = 60;
+    Object.defineProperty(field, "scrollHeight", { configurable: true, get: () => tall });
+    await type(field, "a line\nanother\nand one more");
+    expect(field.style.height).toBe("60px");
+    tall = 1_000;
+    await type(field, "a line\nanother\nand one more\n4\n5\n6\n7\n8\n9");
+    const height = Number.parseFloat(field.style.height);
+    expect(height).toBeGreaterThan(60);
+    expect(height).toBeLessThan(1_000);
+  });
+
+  it("on a touch screen, Return is a new line — only the button sends", async () => {
+    pointer(true);
+    const calls = server(NONE, { "POST /api/coach/runs": (body: any) => json({ run: run({ id: "run-t1", request: body.request }), existing: false, conversationId: "run-t1" }) });
+    mount();
+    await openCoach();
+    await type(box()!, "first line");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => {
+      box()!.dispatchEvent(enter);
+    });
+    await settle(10);
+    expect(posts(calls)).toEqual([]);
+    expect(enter.defaultPrevented).toBe(false);
+    await click(sendButton(), "Send");
+    await until(() => posts(calls).length === 1, "the button's send");
+  });
+
+  it("with a keyboard, Return sends — but never words an action wrote, until the athlete changes them", async () => {
+    pointer(false);
+    const calls = server(NONE, { "POST /api/coach/runs": (body: any) => json({ run: run({ id: "run-t2", request: body.request }), existing: false, conversationId: "run-t2" }) });
+    function Asker() {
+      const coach = useCoach();
+      return createElement("button", { type: "button", id: "coach", onClick: () => coach?.open({ request: "Extend my plan by two weeks" }) }, "Extend");
+    }
+    mount({ children: createElement(Asker) });
+    await openCoach();
+    await press("Enter", box()!);
+    await settle(10);
+    expect(posts(calls)).toEqual([]);
+    await type(box()!, "Extend my plan by three weeks");
+    await press("Enter", box()!);
+    await until(() => posts(calls).length === 1, "Return's send, once the words are the athlete's");
+    expect(posts(calls)[0]).toMatchObject({ request: "Extend my plan by three weeks" });
+  });
+
+  it("the Seeing ✕: the focus goes to the box, and the next request carries no focus", async () => {
+    const calls = server(NONE, { "POST /api/coach/runs": (body: any) => json({ run: run({ id: "run-t3", request: body.request }), existing: false, conversationId: "run-t3" }) });
+    mount({ seeing: WORKOUT });
+    await openCoach();
+    // The open's own focus first (the box, as the sheet opens on nothing to show).
+    await until(() => document.activeElement === box(), "the box focused as the sheet opens");
+    await settle(10);
+    const drop = seeingLine()!.querySelector<HTMLButtonElement>("button")!;
+    // As a tap or a key does: the ✕ holds the focus as it goes.
+    act(() => drop.focus());
+    expect(document.activeElement).toBe(drop);
+    await click(drop, "the seeing ✕");
+    expect(document.activeElement).toBe(box());
+    await type(box()!, "Plan my week");
+    await click(sendButton(), "Send");
+    await until(() => posts(calls).length === 1, "the start");
+    expect(posts(calls)[0]).toEqual({ request: "Plan my week", conversationId: null });
+    expect("focus" in posts(calls)[0]).toBe(false);
+  });
+
+  it("kept, the request carries what it sees as its focus — its kind and id, never its label", async () => {
+    const calls = server(NONE, { "POST /api/coach/runs": (body: any) => json({ run: run({ id: "run-t4", request: body.request }), existing: false, conversationId: "run-t4" }) });
+    mount({ seeing: WORKOUT });
+    await openCoach();
+    await type(box()!, "Plan my week");
+    await click(sendButton(), "Send");
+    await until(() => posts(calls).length === 1, "the start");
+    expect(posts(calls)[0].focus).toEqual({ kind: "workout", id: "w1" });
+  });
+
+  it("after Approve all, the focus goes to what came of it — a status line", async () => {
+    let applied = false;
+    const done = (c: DesignChangeLineDto) => ({ ...c, outcome: { status: "applied", at: "x", workoutId: c.workoutId, before: { date: TODAY, time: "08:00", minutes: 30 } } });
+    const read = () => ({
+      id: "dp-run-5",
+      status: applied ? "approved" : "pending",
+      resolvedAt: null,
+      lines: [],
+      changes: applied ? [done(change("c1")), done(change("c2"))] : [change("c1"), change("c2")],
+    });
+    const cards = [{ kind: "plan_changes" as const, proposalId: "dp-run-5", title: "Changes to your plan", summary: "2 changes to your week", status: "pending" }];
+    server(conversation([turn({ runId: "run-5", line: "Two lighter days.", cards })]), {
+      "GET /api/coach/proposals/dp-run-5": () => json(read()),
+      "POST /api/coach/proposals/dp-run-5/approve": () => {
+        applied = true;
+        return json({ ok: true, status: "approved", applied: [], changed: [], refused: [], settled: [], remaining: [] });
+      },
+    });
+    mount();
+    await openCoach();
+    const card = () => dialog()!.querySelector<HTMLElement>(".coach-changes")!;
+    await until(() => !!card() && !!button("Approve all", card()) && !button("Approve all", card())!.disabled, "Approve all ready");
+    await click(button("Approve all", card()), "Approve all");
+    await until(() => document.activeElement?.classList.contains("coach-changes-outcome") === true, "the focus on what came of it");
+    expect(document.activeElement?.getAttribute("role")).toBe("status");
+    expect(document.activeElement?.textContent).toBe("✓ 2 changes made");
+  });
+
+  it("the focus never falls out of the sheet: a control that goes leaves it in the dialog", async () => {
+    server(conversation([turn({ cards: [{ kind: "workout", proposalId: "dp-run-1", title: "Hips", summary: "Today", status: "pending" }] })]), {
+      "GET /api/coach/proposals/dp-run-1": { id: "dp-run-1", status: "pending", resolvedAt: null, lines: [line("a", { title: "Hips" })], changes: [] },
+    });
+    mount();
+    await openCoach();
+    await until(() => !!button("Decline", dialog()!), "the card");
+    await click(button("Decline", dialog()!), "Decline");
+    const keep = button("Keep it", dialog()!)!;
+    act(() => keep.focus());
+    await click(keep, "Keep it");
+    await settle(10);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog()!.contains(document.activeElement)).toBe(true);
+  });
+});
+
 describe("an answer in words", () => {
   const answer = `${"Your wall sit is up fifteen seconds in two weeks, held clean each time. ".repeat(10)}Keep the same rhythm.\n\nNext week, add five seconds.`;
 

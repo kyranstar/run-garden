@@ -26,7 +26,7 @@
  *
  * The run goes on when the sheet closes: the app's run keeper steps it on any screen.
  */
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -397,7 +397,12 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
           canSend={canSend}
           onSend={() => send(draft)}
           seeing={seeing}
-          onDropSeeing={() => setSeeing(null)}
+          onDropSeeing={() => {
+            setSeeing(null);
+            // The ✕ goes with the line: the focus to the box, never to the page.
+            boxRef.current?.focus();
+          }}
+          held={request !== null && draft === request.slice(0, REQUEST_MAX_CHARS)}
         />
       </div>
     </>
@@ -471,9 +476,28 @@ function ClosedCard({ card, today, part }: { card: CoachConversationCardDto; tod
   );
 }
 
+/** The box's height at most (about six lines), when the stylesheet's own max-height can't be read. */
+export const BOX_MAX_HEIGHT_PX = 150;
+
+/** The device's primary pointer is a touch screen: its Return is a new line, and the button sends. */
+export const touchFirst = (): boolean =>
+  typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+
+/** The box as tall as its words, up to its max-height (then it scrolls): never a grip to drag. */
+function fit(el: HTMLTextAreaElement | null): void {
+  if (!el) return;
+  el.style.height = "auto";
+  const max = Number.parseFloat(getComputedStyle(el).maxHeight) || BOX_MAX_HEIGHT_PX;
+  // The border too: the field's box is its border's.
+  const border = el.offsetHeight - el.clientHeight;
+  el.style.height = `${Math.min(el.scrollHeight + (border > 0 ? border : 0), max)}px`;
+}
+
 /**
  * The box: "Ask anything" (or "Reply"), a round send button, and over it what the coach sees — muted, with ✕ to drop it.
- * Enter sends (Shift+Enter is a new line); an empty box sends nothing.
+ * It grows with its words up to about six lines. With a keyboard, Return sends and Shift+Return is a new line; on a
+ * touch screen Return is a new line and the button sends. Words an action wrote (`held`: `open({ request })`) are never
+ * sent by a stray Return — only by the button, or once the athlete has changed them. An empty box sends nothing.
  */
 export function CoachBox({
   boxRef,
@@ -484,6 +508,7 @@ export function CoachBox({
   onSend,
   seeing,
   onDropSeeing,
+  held = false,
 }: {
   boxRef: RefObject<HTMLTextAreaElement>;
   draft: string;
@@ -493,9 +518,12 @@ export function CoachBox({
   onSend: () => void;
   seeing: CoachFocus | null;
   onDropSeeing: () => void;
+  /** The words are an action's, as it wrote them: Return doesn't send them. */
+  held?: boolean;
 }) {
   const id = useId();
   const near = draft.length >= COUNTER_FROM;
+  useLayoutEffect(() => fit(boxRef.current), [draft, boxRef]);
   return (
     <form
       className="coach-box"
@@ -527,8 +555,10 @@ export function CoachBox({
           onChange={(e) => onDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+            // A touch screen's Return is a new line: the button sends.
+            if (touchFirst()) return;
             e.preventDefault();
-            if (canSend) onSend();
+            if (canSend && !held) onSend();
           }}
         />
         <button type="submit" className="coach-send" aria-label="Send" disabled={!canSend}>

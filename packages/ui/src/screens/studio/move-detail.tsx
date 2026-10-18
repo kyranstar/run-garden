@@ -35,7 +35,7 @@ import { useWeightUnit } from "../../use-units.js";
 import { FitBadge, Term, dotted, gearLine } from "./move-row.js";
 import { doseLine, fitOf, historyLine, type StudioCtx } from "./model.js";
 import { useLibraryItem, useMoveSay, type Say } from "./prefs.js";
-import { useCoachSeeing } from "./coach-ask.js";
+import { AskCoach, useCoachSeeing } from "./coach-ask.js";
 import { moveFocus } from "./coach-focus.js";
 
 /** Where a link to another move goes: its address, and the history state the screen keeps (`screen.tsx`). */
@@ -281,6 +281,9 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
         <button type="button" className="btn btn-primary stu-detail-add" onClick={() => onAdd(rec)}>
           Add
         </button>
+        {/* A phone's sheet is modal — the nav's Coach out of reach — so it asks itself, seeing the move (the integrated
+            review, I3). The pane beside the list (from md) leaves the nav in reach: the nav's Coach sees the move. */}
+        {wide ? null : <AskCoach focus={moveFocus(rec)} />}
       </div>
     </div>
   );

@@ -10,6 +10,8 @@
  *
  * Synthetic data only.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -123,6 +125,16 @@ describe("the box", () => {
 
   it("nothing seen: no line", () => {
     expect(box({})).not.toContain("coach-seeing");
+  });
+
+  it("no resize grip, and it beats the Studio's field rule (`textarea.stu-field` lets one resize): it grows on its own", () => {
+    const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+    const at = css.indexOf("\n.coach-box textarea.coach-box-field {");
+    expect(at, "the box's own rule, two classes and an element").toBeGreaterThan(-1);
+    const rule = css.slice(at, css.indexOf("}", at));
+    expect(rule).toContain("resize: none");
+    expect(rule).toMatch(/max-height: /);
+    expect(css).toContain("\ntextarea.stu-field {\n  resize: vertical;");
   });
 
   it("the field is named by its placeholder; the round send button is named Send, and waits for words", () => {

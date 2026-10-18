@@ -77,15 +77,17 @@ const workout = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
   }) as WorkoutDto;
 
 describe("a planned workout's sheet", () => {
-  it("an app session's sheet no longer asks: the nav's coach sees the open workout (the new shape)", () => {
+  // A modal sheet hides the nav, so its own small Ask is back (the integrated review, I3): it opens the coach seeing
+  // the workout.
+  it("an app session's sheet asks about the workout", () => {
     const html = render(createElement(SessionSheet, { w: workout(), today: "2026-10-21", onClose: () => undefined }));
-    expect(asks(html)).toEqual([]);
+    expect(asks(html)).toEqual([{ focus: "workout:w1", name: "Ask the coach about Fri 23 Oct · Strength · 40 min" }]);
   });
 
-  it("a watch-plan run's sheet no longer asks: the nav's coach sees it (the new shape)", () => {
+  it("a watch-plan run's sheet asks about it too", () => {
     const run = workout({ id: "r1", title: "Easy run", category: "easy", sport: "run", origin: null, contentState: null, programId: null, workoutSeconds: 2700 });
     const html = render(createElement(RunWorkoutDetail, { w: run, today: "2026-10-21", corosWritesEnabled: false, onClose: () => undefined }));
-    expect(asks(html)).toEqual([]);
+    expect(asks(html)).toEqual([{ focus: "workout:r1", name: "Ask the coach about Fri 23 Oct · Easy run · 45 min" }]);
   });
 
   it("no coach in the app: no Ask", () => {
@@ -147,7 +149,7 @@ describe("an objective's card", () => {
 
 describe("a move's page in the library", () => {
   const goblet = EXERCISES.find((e) => e.id === "gobletSquat")!;
-  const page = (opener?: CoachOpener | null) =>
+  const page = (opener?: CoachOpener | null, wide = true) =>
     renderToStaticMarkup(
       createElement(
         QueryClientProvider,
@@ -161,7 +163,7 @@ describe("a move's page in the library", () => {
               rec: goblet,
               ctx: emptyStudioCtx,
               today: "2026-10-21",
-              wide: true,
+              wide,
               onClose: () => undefined,
               onAdd: () => undefined,
               moveLink: (id: string) => ({ to: `/studio/move/${id}` }),
@@ -171,13 +173,21 @@ describe("a move's page in the library", () => {
       ),
     );
 
-  it("no longer asks: Add alone — the nav's coach sees the move (the new shape)", () => {
+  it("its pane (from md) doesn't ask: Add alone — the nav's coach sees the move (the new shape)", () => {
     const html = page();
     expect(asks(html)).toEqual([]);
     expect(html.slice(html.indexOf("stu-detail-actions"))).toContain("stu-detail-add");
   });
 
+  it("its sheet on a phone asks — the sheet is modal, the nav out of reach (the integrated review, I3) — beside Add", () => {
+    const html = page(undefined, false);
+    expect(asks(html)).toEqual([{ focus: "move:gobletSquat", name: "Ask the coach about Goblet squat" }]);
+    const foot = html.slice(html.indexOf("stu-detail-actions"));
+    expect(foot.indexOf("stu-detail-add")).toBeLessThan(foot.indexOf("ask-coach"));
+  });
+
   it("no coach in the app: no Ask", () => {
     expect(asks(page(null))).toEqual([]);
+    expect(asks(page(null, false))).toEqual([]);
   });
 });

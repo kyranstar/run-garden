@@ -155,6 +155,13 @@ describe("the starter chips", () => {
     ]);
   });
 
+  it("a rest day: its own — nothing to make lighter", () => {
+    const rest = dayFocus(TODAY, { rest: true });
+    expect(rest).toEqual({ kind: "day", id: TODAY, date: TODAY, label: dayFocus(TODAY).label, rest: true });
+    expect(starterChips(rest)).toEqual(["Something gentle for today", "Why a rest day?", "Plan my week"]);
+    expect(starterChips(rest)).not.toContain("Make it lighter");
+  });
+
   it("a day, a move, an objective: their own", () => {
     expect(starterChips(dayFocus(TODAY))).toEqual(["Plan this day", "Make it lighter", "I'm short on time"]);
     expect(starterChips(moveFocus({ id: "gobletSquat", name: "Goblet squat" }))).toEqual(["Build a workout around it", "How do I do it well?", "Something like it"]);
