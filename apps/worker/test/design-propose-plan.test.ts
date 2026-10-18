@@ -97,9 +97,9 @@ const createPlan = (o: { sessions?: Array<{ date: string; session: unknown }>; s
   ],
 });
 
-async function block(id: string, status = "active") {
+async function block(id: string, status = "active", discipline = "run") {
   await db.insert(schema.coachPlans).values({
-    id, userId: rich.userId, discipline: "run", name: "Spring 10K", status, startDate: day(14), endDate: day(-14), raceDate: null,
+    id, userId: rich.userId, discipline, name: "Spring 10K", status, startDate: day(14), endDate: day(-14), raceDate: null,
     stampPrefix: "Spring 10K", createdAt: at(day(14)), updatedAt: at(day(14)),
   });
 }
@@ -193,6 +193,24 @@ describe("propose_plan: a new block", () => {
     expect(r.data.why).toEqual({ untrusted: true, text: "Four weeks that build to your 10K, easy days kept easy." });
     expect(r.data.lines[0].untrusted).toBe(true);
     expect(r.summary).toBe("Plan: 10K build");
+  });
+
+  it("a new block over a running block of the same discipline: an advisory naming it and its span — never a refusal (review-1, duplicate blocks)", async () => {
+    await block("cp-spring");
+    // Not the same plan: another discipline, one retired, a loose bucket of one-offs.
+    await block("cp-lift", "active", "lift");
+    await block("cp-gone", "retired");
+    await block(`adhoc-run-${rich.userId.slice(0, 8)}`);
+    const run = await mainRun();
+    const { res, count } = await propose(run, { change: createPlan(), why: "A build." });
+    ok(res);
+    expect(count).toBe(1 + 4 + 1 + 1);
+    const op = (await opsOf(run.id))!.ops[0] as PlanStructureOp;
+    expect(op.issues.filter((i) => i.code === "plan_overlap")).toEqual([{ code: "plan_overlap", message: "Overlaps your Spring 10K (29 Apr – 27 May)" }]);
+    // One that ends before the new one starts: no overlap.
+    const later = await mainRun();
+    ok((await propose(later, { change: { ...createPlan({ startDate: "2026-06-01", sessions: [{ date: "2026-06-01", session: easy(30) }], shapeWeeks: [] }), endDate: "2026-06-21", raceDate: null }, why: "Later." })).res);
+    expect(((await opsOf(later.id))!.ops[0] as PlanStructureOp).issues.some((i) => i.code === "plan_overlap")).toBe(false);
   });
 
   it("more than eight lines: eight, then how many more", async () => {

@@ -1047,6 +1047,8 @@ export async function approveDesignOps(
   // coach's appliers, its progress kept on its claim.
   const structures = todo.filter(isPlanStructureOp) as DesignedStructureOp[];
   const planned: Planned[] = [];
+  // The changes filled the request: the plan changes wait in `remaining` with the workouts — never dropped (review-1 I1).
+  if (full) remaining.push(...structures.map((s) => s.id));
   for (const [i, s] of (full ? [] : structures).entries()) {
     const claim = s.outcome?.status === "applying" ? s.outcome : null;
     // Another approve is applying a chunk of it (its claim fresh): never twice at once.

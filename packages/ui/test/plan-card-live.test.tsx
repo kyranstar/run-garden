@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationCardDto, DesignApproveResponse, DesignPlanLineDto } from "@rg/api-client";
 import { toConversation, toProposal } from "../src/screens/studio/coach-tolerance.js";
 import { approvePlanUntilDone, PLAN_ADDED, PLAN_ADDING, PlanCard, planOutcomeLine } from "../src/screens/studio/plan-card.js";
+import { ProposalCard } from "../src/screens/studio/proposal-card.js";
 import { button, click, json, serve, text, until, type Call } from "./coach-live-harness.js";
 import { primedClient } from "./studio-fixtures.js";
 
@@ -113,7 +114,8 @@ describe("the plan card", () => {
     await act(async () => release!());
     await until(() => text().includes(`✓ ${PLAN_ADDED}`), "added");
     const approves = calls.filter((c) => c.method === "POST");
-    expect(approves.map((c) => c.body)).toEqual([{}, { opIds: ["plan"] }, { opIds: ["plan"] }]);
+    // Its own op only, every round: never the suggestion's other cards' workouts or changes (review-1 I1).
+    expect(approves.map((c) => c.body)).toEqual([{ opIds: ["plan"] }, { opIds: ["plan"] }, { opIds: ["plan"] }]);
     const link = [...document.querySelectorAll("a")].find((a) => a.textContent === "See it on Plan");
     expect(link?.getAttribute("href")).toBe("/plan");
     expect(button("Approve plan")).toBeNull();
@@ -135,7 +137,8 @@ describe("the plan card", () => {
     await until(() => !!button("Not now") && !button("Not now")!.disabled, "Not now");
     await click(button("Not now"), "Not now");
     await until(() => text().includes("Not added"), "not added");
-    expect(calls.filter((c) => c.method === "POST").map((c) => [c.path, c.body])).toEqual([["/api/coach/proposals/dp-run-1/decline", {}]]);
+    // Its own op only: a workout beside it in the suggestion stays the athlete's to decide (review-1 I1).
+    expect(calls.filter((c) => c.method === "POST").map((c) => [c.path, c.body])).toEqual([["/api/coach/proposals/dp-run-1/decline", { opIds: ["plan"] }]]);
   });
 
   it("a plan already part added says so and offers to finish — never Not now", async () => {
@@ -156,6 +159,30 @@ describe("the plan card", () => {
     await click(button("Show"), "Show");
     expect(list.hidden).toBe(false);
     expect(button("Hide")?.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+describe("a suggestion holding a plan and a workout", () => {
+  it("the workout's card approves its own workout, never `{}` — the plan beside it is its own card's to decide (review-1 I1)", async () => {
+    const workout = {
+      opId: "wk-1", kind: "new", date: "2026-10-15", time: "18:00", title: "Hips, gently", minutes: 24, summary: "Hips, gently · 24 min", effort: "Develop",
+      place: "Home", parts: ["Main"], detail: ["Glute bridge 2 × 12"], reviewMean: 4.5, review: null, issues: [], outcome: null, written: null,
+    };
+    const calls = serveAsync({
+      "GET /api/coach/proposals/dp-run-1": () => ({ id: "dp-run-1", status: "pending", resolvedAt: null, lines: [workout], changes: [], plans: [planLine()] }),
+      "POST /api/coach/proposals/dp-run-1/approve": () => answer({ status: "partially_approved" }),
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const client = primedClient();
+    await act(async () => {
+      root!.render(createElement(MemoryRouter, null, createElement(QueryClientProvider, { client }, createElement(ProposalCard, { proposalId: "dp-run-1", today: "2026-10-15" }))));
+    });
+    await until(() => !!button("Approve") && !button("Approve")!.disabled, "Approve");
+    await click(button("Approve"), "Approve");
+    await until(() => calls.some((c) => c.method === "POST"), "the approve");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ opIds: ["wk-1"] }]);
   });
 });
 
@@ -186,16 +213,16 @@ describe("approvePlanUntilDone", () => {
       return next as DesignApproveResponse;
     };
     const reread = vi.fn(async () => undefined);
-    const answers = await approvePlanUntilDone(approve as never, reread);
+    const answers = await approvePlanUntilDone(approve as never, reread, ["plan"]);
     expect(answers.map((a) => a.status)).toEqual(["pending", "approved"]);
-    expect(bodies).toEqual([{}, { opIds: ["plan"] }, { opIds: ["plan"] }]);
+    expect(bodies).toEqual([{ opIds: ["plan"] }, { opIds: ["plan"] }, { opIds: ["plan"] }]);
     expect(reread).toHaveBeenCalledTimes(1);
     const { ApiError } = await import("@rg/api-client");
     const flying = await approvePlanUntilDone(async () => {
       throw new ApiError(409, { error: "in_flight", opIds: ["plan"], status: "pending" });
-    }, reread);
+    }, reread, ["plan"]);
     expect(flying).toEqual([answer({ inFlight: ["plan"] })]);
-    await expect(approvePlanUntilDone(async () => answer({ remaining: ["plan"] }), reread, 3)).rejects.toThrow("approve_unfinished");
+    await expect(approvePlanUntilDone(async () => answer({ remaining: ["plan"] }), reread, ["plan"], 3)).rejects.toThrow("approve_unfinished");
   });
 
   it("what came of a plan, in one line", () => {

@@ -312,7 +312,9 @@ export function ProposalCard({
   const toggle = (opId: string) => setChosen(new Set(picked.includes(opId) ? picked.filter((x) => x !== opId) : [...picked, opId]));
   const busy = approve.isPending || decline.isPending;
   // None named is the whole suggestion: one part's are always named.
-  const some = picked.length < openIds.length || part !== undefined ? picked : undefined;
+  // Every op by its id — never `{}` — when the suggestion holds a whole plan: that is its own card's to decide (§8 §5;
+  // review-1 I1).
+  const some = picked.length < openIds.length || part !== undefined || (data.plans ?? []).length > 0 ? picked : undefined;
   // A decline that met every one in flight says so on their lines, not here.
   const error = approve.isError ? decisionError(approve.error) : decline.isError && met.size === 0 ? decisionError(decline.error) : null;
   const items = cardRows(changes, lines, part ? [] : (data.context ?? []));

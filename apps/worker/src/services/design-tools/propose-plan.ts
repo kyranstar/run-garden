@@ -24,6 +24,9 @@
  *    session that isn't there, a watch plan's structure;
  *  - a proposal already with the athlete (`proposal_pending`) or closed, a restore under way.
  *
+ * A NEW BLOCK OVER A RUNNING ONE of the same discipline is an advisory (`plan_overlap`, review-1: two approved blocks
+ * over one span stack): "Overlaps your 10K build (19 Oct – 15 Nov)", shown on the card as the guardrails' are.
+ *
  * THE CEILING. The first plan stored in an auto run raises the run's spending ceiling to a set's, once (the loop's
  * `SetHooks.raisePlan`; as plan_set does, without making the run a set's).
  *
@@ -52,7 +55,8 @@ import {
 } from "../proposal-kinds.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
-import { parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
+import { parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
+import { LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const WHY_MAX = 300;
@@ -141,6 +145,9 @@ export function firstDateOf(op: PlanStructureChange, today: string): string {
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** "19 Oct": a day by its date and month (`dayLabel` without its weekday). */
+const dayMonth = (date: string): string => dayLabel(date).replace(/^[A-Z][a-z]{2} /, "");
 
 /** The plan change's card: its title and one line, in plain words (`name`: the plan's, for a change to one). */
 export function planCardWords(op: PlanStructureChange, name: string | null): { title: string; summary: string } {
@@ -286,6 +293,14 @@ export const proposePlan: DesignTool = {
         ? sql`(select json_object('id', ${coachPlans.id}, 'name', ${coachPlans.name}, 'status', ${coachPlans.status}, 'discipline', ${coachPlans.discipline})
             from ${coachPlans} where ${coachPlans.id} = ${planId} and ${coachPlans.userId} = ${ctx.userId})`
         : sql`null`,
+      // A new block's running blocks of its discipline over its span (never a loose bucket of one-offs).
+      overlaps:
+        op.kind === "createPlan"
+          ? sql`(select json_group_array(json_object('name', ${coachPlans.name}, 'start', ${coachPlans.startDate}, 'end', ${coachPlans.endDate}))
+              from ${coachPlans} where ${coachPlans.userId} = ${ctx.userId} and ${coachPlans.status} = 'active' and ${coachPlans.discipline} = ${op.discipline}
+                and substr(${coachPlans.id}, 1, ${LOOSE_PLAN_ID_PREFIX.length}) <> ${LOOSE_PLAN_ID_PREFIX}
+                and ${coachPlans.startDate} <= ${op.endDate} and ${coachPlans.endDate} >= ${op.startDate})`
+          : sql`null`,
     });
     const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
     const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
@@ -327,6 +342,11 @@ export const proposePlan: DesignTool = {
     if (sessions.some((s) => "session" in s && ((s as { session: { lift?: unknown; mobility?: unknown } }).session.lift || (s as { session: { mobility?: unknown } }).session.mobility))) {
       resolveOpsExercises([op as CoachOp], await loadExerciseIndex(ctx.db));
     }
+    const overlaps = (parsedArray(extra.overlaps) as Array<{ name?: unknown; start?: unknown; end?: unknown }>).flatMap((b) =>
+      typeof b.name === "string" && typeof b.start === "string" && typeof b.end === "string"
+        ? [{ code: "plan_overlap", message: `Overlaps your ${b.name} (${dayMonth(b.start)} – ${dayMonth(b.end)})` }]
+        : [],
+    );
     const words = planCardWords(op, plan?.name ?? null);
     const at = ctx.now.toISOString();
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
@@ -335,7 +355,7 @@ export const proposePlan: DesignTool = {
       id: PLAN_STRUCTURE_ID,
       op,
       why,
-      issues: [...verdict.advisory, ...verdict.soft].map((v) => ({ code: v.rule, message: v.detail })),
+      issues: [...overlaps, ...[...verdict.advisory, ...verdict.soft].map((v) => ({ code: v.rule, message: v.detail }))],
       title: words.title,
       summary: words.summary,
       lines: planLines(op),

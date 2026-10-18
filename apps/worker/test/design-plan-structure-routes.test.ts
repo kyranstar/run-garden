@@ -292,6 +292,22 @@ describe("approving a whole plan", () => {
     expect((await sessionsOf(`cp-${id}-1`)).filter((r) => !r.archivedAt)).toHaveLength(7);
   });
 
+  it("changes that fill a request never drop the plan: it waits in `remaining` and is applied (review-1 I1's probe: 3 moves and a 14-session plan, approved with {})", async () => {
+    const move = (w: number, to: number) => ({ workoutId: `w-${w}`, change: { kind: "move", toDate: addDays(today, to), toTime: "12:00" }, why: "A freer day." });
+    const id = await planned(createPlan({ perWeek: 7, weeks: 2 }), [move(2, 5), move(3, 6), move(4, 7)]);
+    const { answers, costs } = await approveAll(id);
+    for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
+    // Every answer that left something names the plan until it is done.
+    const plan = answers.findIndex((a) => (a.planned ?? []).length > 0);
+    expect(plan).toBeGreaterThan(0);
+    for (const a of answers.slice(0, plan)) expect(a.remaining).toContain("plan");
+    expect(answers.at(-1)!.status).toBe("approved");
+    expect((await planOp(id)).outcome).toMatchObject({ status: "applied" });
+    expect((await sessionsOf(`cp-${id}-3`)).filter((r) => !r.archivedAt)).toHaveLength(14);
+    const receipts = await db.select().from(coachMessages).where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "receipt")));
+    expect(receipts.map((r) => r.body).at(-1)).not.toMatch(/of 4\)/);
+  });
+
   it("a plan not started whose first day has gone is refused (its sessions would start in the past), nothing applied", async () => {
     const id = await planned(createPlan({ perWeek: 3 }));
     const p = await proposalOf(id);

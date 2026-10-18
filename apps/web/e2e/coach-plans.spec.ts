@@ -15,7 +15,9 @@ import { test, expect } from "./fixtures.js";
  *   RG_E2E_DESIGN_MODEL=scripted:now bash apps/web/e2e/fixture-stack.sh
  *   RG_E2E_DESIGN_MODEL=scripted:now RG_BASE=http://localhost:5271 pnpm --filter @rg/web exec playwright test coach-plans --workers=1
  *
- * One project: it writes a plan into the shared fixture account. `RG_COACH_SHOTS=<dir>` writes the screenshots.
+ * It writes a plan into the shared fixture account: before and after the journey it retires every running "10K build"
+ * the script makes (the Plan's own Retire route, asked again while `remaining`), so repeated runs never pile blocks up.
+ * `RG_COACH_SHOTS=<dir>` writes the screenshots.
  */
 
 test.skip(process.env.RG_E2E_DESIGN_MODEL !== "scripted:now", "needs the fixture stack on the scripted model (RG_E2E_DESIGN_MODEL=scripted:now)");
@@ -58,6 +60,25 @@ async function clearTheCoach(request: APIRequestContext, baseURL: string | undef
       await request.post(`${baseURL}/api/coach/proposals/${current.proposal.id}/decline`, { data: {} });
     } else return;
   }
+}
+
+/** The script's block name (coach-design-scripts.mjs `whole_plan`). */
+const BLOCK = "10K build";
+
+/** Retire every running block the script made — this run's and any an earlier run left: the Plan's own Retire, a slice a
+ * request, asked again while `remaining` (bounded). Answers how many it retired. */
+async function retireTheBlocks(request: APIRequestContext, baseURL: string | undefined): Promise<number> {
+  const { plans } = (await (await request.get(`${baseURL}/api/coach/plans`)).json()) as { plans: Array<{ id: string; name: string; status: string }> };
+  const ours = plans.filter((p) => p.name === BLOCK && p.status === "active");
+  for (const p of ours) {
+    for (let i = 0; ; i++) {
+      if (i >= 20) throw new Error(`retiring ${p.id} never finished`);
+      const res = await request.post(`${baseURL}/api/coach/plans/${p.id}/retire`, { data: {} });
+      expect(res.ok()).toBeTruthy();
+      if (!((await res.json()) as { remaining?: boolean }).remaining) break;
+    }
+  }
+  return ours.length;
 }
 
 const sheet = (page: Page) => page.getByRole("dialog", { name: "Coach" });
@@ -105,6 +126,7 @@ test("a whole plan: asked for → one card → Approve plan → on Plan; then ex
   test.setTimeout(240_000);
   await signIn(context.request, baseURL);
   await clearTheCoach(context.request, baseURL);
+  await retireTheBlocks(context.request, baseURL);
   await model("/use/whole_plan");
   try {
     await page.goto("/plan");
@@ -147,13 +169,17 @@ test("a whole plan: asked for → one card → Approve plan → on Plan; then ex
     await expect(sheet(page).locator(".coach-card-closed").filter({ hasText: "10K build" })).toContainText("— Added to your plan");
     await noOverflow(page);
     await shot(page, "plan-extended", testInfo);
-    const plans = (await (await context.request.get(`${baseURL}/api/coach/plans`)).json()) as { plans: Array<{ name: string; endDate: string; startDate: string }> };
-    const block = plans.plans.find((p) => p.name === "10K build");
-    expect(block).toBeDefined();
+    const plans = (await (await context.request.get(`${baseURL}/api/coach/plans`)).json()) as { plans: Array<{ name: string; endDate: string; startDate: string; status: string }> };
+    const running = plans.plans.filter((p) => p.name === BLOCK && p.status === "active");
+    // One block: this run's (an earlier run's were retired before it began).
+    expect(running).toHaveLength(1);
+    const block = running[0];
     // Four weeks and two more: its end moved to the sixth week's Sunday.
     const days = (Date.parse(`${block!.endDate}T12:00:00Z`) - Date.parse(`${block!.startDate}T12:00:00Z`)) / 86_400_000;
     expect(days).toBe(41);
   } finally {
     await model("/use/");
+    // The block this run made goes, whatever happened: the shared account doesn't pile them up.
+    await retireTheBlocks(context.request, baseURL);
   }
 });

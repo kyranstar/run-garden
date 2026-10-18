@@ -7,11 +7,12 @@
  *   · Mon 18 May · New plan: 10K build · …     ← what it holds, the coach's own lines (at most 8, "and N more")
  *   [ Approve plan ]  [ Not now ]
  *
- *  - Approve plan approves it and keeps asking while the server says some remains (a plan goes on a part at a time);
- *    meanwhile the card says so ("Adding to your plan…"). Done: "Added to your plan" and a link to Plan.
+ *  - Approve plan approves it — its own op, never the suggestion's other cards' workouts or changes — and keeps asking
+ *    while the server says some remains (a plan goes on a part at a time); meanwhile the card says so ("Adding to your
+ *    plan…"). Done: "Added to your plan" and a link to Plan.
  *  - A plan already part added (the app closed half way) says so and offers to finish ("Finish adding"); it is never
  *    declined half made, so Not now goes.
- *  - Not now declines it. What came of it otherwise in one plain line: not added, replaced, its day passed.
+ *  - Not now declines it (its own op). What came of it otherwise in one plain line: not added, replaced, its day passed.
  *  - An older turn's card that is closed: one line of what came of it, its lines one tap down.
  *
  * Its state is the suggestion's own read (`GET /api/coach/proposals/:id`, the `plans` part), shared with the other
@@ -33,17 +34,21 @@ export const PLAN_ADDED = "Added to your plan";
 export const PLAN_ADDING = "Adding to your plan…";
 export const PLAN_PART_ADDED = "Part of it is on your plan already.";
 export const PLAN_COULDNT = "Couldn't reach the coach — try again.";
+/** A plan change's op id (the worker's `PLAN_STRUCTURE_ID`): the card's own when its read hasn't said yet. */
+export const PLAN_OP_ID = "plan";
 
-/** Approve the plan's suggestion until nothing remains: every answer, in order. A write that met another (409
- * `proposal_changed`) is read again and asked once more; one being applied elsewhere (409 `in_flight`) ends it, as an
- * answer that names it. Past PLAN_APPROVE_ROUNDS_MAX: "approve_unfinished". */
+/** Approve the plan's own ops (`opIds`, never `{}`: the suggestion may hold other cards' workouts and changes) until
+ * nothing remains: every answer, in order. A write that met another (409 `proposal_changed`) is read again and asked once
+ * more; one being applied elsewhere (409 `in_flight`) ends it, as an answer that names it. Past PLAN_APPROVE_ROUNDS_MAX:
+ * "approve_unfinished". */
 export async function approvePlanUntilDone(
   approve: (body: DesignApproveRequest) => Promise<DesignApproveResponse>,
   reread: () => Promise<unknown>,
+  opIds: readonly string[],
   rounds = PLAN_APPROVE_ROUNDS_MAX,
 ): Promise<DesignApproveResponse[]> {
   const answers: DesignApproveResponse[] = [];
-  let body: DesignApproveRequest = {};
+  let body: DesignApproveRequest = { opIds: [...opIds] };
   let retried = 0;
   for (let i = 0; i < rounds; i++) {
     let res: DesignApproveResponse;
@@ -91,6 +96,8 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const oneTap = useOneTap();
   const read = useQuery({ queryKey: designProposalQuery(card.proposalId), queryFn: () => readProposal(card.proposalId), retry: false });
   const plan = read.data?.plans?.[0] ?? null;
+  /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
+  const own = [plan?.opId ?? PLAN_OP_ID];
   const status = read.data?.status ?? card.status;
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {
@@ -102,13 +109,13 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const [busyLine, setBusyLine] = useState<string | null>(null);
   const approve = useMutation({
     networkMode: "always",
-    mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread),
+    mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread, own),
     onSuccess: (answers) => setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? "It's being added right now — look again in a moment." : null),
     onSettled: after,
   });
   const decline = useMutation({
     networkMode: "always",
-    mutationFn: () => api.coachDesignDecline(card.proposalId, {}),
+    mutationFn: () => api.coachDesignDecline(card.proposalId, { opIds: own }),
     onSettled: after,
   });
   // Once decided, the focus goes to what came of it (the buttons it was pressed on are gone).
