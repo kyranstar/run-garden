@@ -262,6 +262,17 @@ describe("saving as you go, done right (the integrated review, I5)", () => {
     expect(puts(calls)).toEqual([{ raceDate: "2027-10-12" }]);
   });
 
+  it("race day: what was typed is saved when the field is left, whole or not", async () => {
+    const { calls } = worker();
+    await mount();
+    const day = field<HTMLInputElement>("#s-race");
+    await type(day, "0202-10-12");
+    expect(puts(calls)).toEqual([]);
+    await leave(day);
+    await until(() => puts(calls).length === 1, "the save");
+    expect(puts(calls)).toEqual([{ raceDate: "0202-10-12" }]);
+  });
+
   it("saves go one at a time, and the last value wins", async () => {
     const { calls } = worker();
     await mount();
@@ -280,6 +291,39 @@ describe("saving as you go, done right (the integrated review, I5)", () => {
     expect(before.value).toBe("7");
   });
 
+  it("changes to two fields made while a save is out go together next — neither is lost", async () => {
+    const { calls } = worker();
+    await mount();
+    ctl.holdPuts = true;
+    const before = field<HTMLInputElement>("#s-before");
+    const after = field<HTMLInputElement>("#s-after");
+    await type(before, "5");
+    await leave(before);
+    await type(before, "6");
+    await leave(before);
+    await type(after, "9");
+    await leave(after);
+    await release();
+    await until(() => puts(calls).length === 2, "the second save");
+    expect(puts(calls)[1]).toEqual({ bufferBeforeMinutes: 6, bufferAfterMinutes: 9 });
+    await release();
+  });
+
+  it("a choice whose save is out keeps its value when the settings in hand change meanwhile", async () => {
+    worker({ aiEnabled: false });
+    await mount();
+    ctl.holdPuts = true;
+    const window = field<HTMLSelectElement>("#s-window");
+    await type(window, "evening");
+    // The AI switch changes the settings in hand at once (its tap), while the window's save is still out.
+    await act(async () => field<HTMLButtonElement>('[role="switch"][aria-label="Activity reads and the week\'s story"]').click());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(window.value).toBe("evening");
+    while (ctl.held.length) await release();
+  });
+
   it("a failed save says so and keeps what was typed", async () => {
     worker();
     await mount();
@@ -292,6 +336,20 @@ describe("saving as you go, done right (the integrated review, I5)", () => {
 });
 
 describe("switches hold their place (the integrated review, minors)", () => {
+  it("a switch moves on the tap, before its save comes back", async () => {
+    worker({ corosWritesEnabled: false });
+    await mount();
+    ctl.holdPuts = true;
+    const writes = field<HTMLButtonElement>('[role="switch"][aria-label="Write date changes back to COROS"]');
+    await act(async () => writes.click());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(writes.getAttribute("aria-checked")).toBe("true");
+    while (ctl.held.length) await release();
+    expect(writes.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("a switch stays where it was tapped while the settings are read again", async () => {
     worker({ corosWritesEnabled: false });
     await mount();

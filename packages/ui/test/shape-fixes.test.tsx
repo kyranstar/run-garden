@@ -343,6 +343,8 @@ describe("minors — the last wake's lost work reaches the Plan", () => {
     expect(nothingAppliedOf([m("1", "user", "Ease my week"), m("2", "receipt", lost)])).toBe(lost);
     expect(nothingAppliedOf([m("1", "receipt", lost), m("2", "user", "Try Wednesday")])).toBeNull();
     expect(nothingAppliedOf([m("1", "coach", "Done — two changes below.")])).toBeNull();
+    // Only a receipt is the app's account of a lost wake: the coach's own words quoting it are not.
+    expect(nothingAppliedOf([m("1", "coach", "Last time: Nothing was applied. This time it went through.")])).toBeNull();
     expect(nothingAppliedOf([])).toBeNull();
   });
 });
