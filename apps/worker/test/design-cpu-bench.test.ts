@@ -26,7 +26,10 @@
  *     declared `cpuWeight`, which the step loop spends its CPU room by;
  *  9. the step alarm (COACH_STEP_ALARM, coach-run-stepper.ts): the armed `POST /step` (the run read, its object armed),
  *     and the run's object's alarm running the tightest model step (2c) and the heaviest step of queued calls (2b.q) —
- *     an alarm invocation is a Worker invocation, under the same budgets, and its work is the step's.
+ *     an alarm invocation is a Worker invocation, under the same budgets, and its work is the step's;
+ * 10. the conversation (the new shape §5): an auto run's opening context as a later turn of a conversation — the
+ *     conversation so far read and written, six turns of the longest words and lines, each with a set's seven whole
+ *     workouts and three changes (10a) — and `GET /api/coach/conversation` over twenty such turns (10b).
  *
  * THE MODEL'S ANSWER is the Messages API's event stream, fed to the real client (llm-messages.ts `callMessages`) through
  * its fetch seam, one event to a read — how a streamed answer arrives while the model writes it. A tool's input comes in
@@ -68,6 +71,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import type { Env } from "../src/env.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
+import { makeCoachConversationRoutes } from "../src/routes/coach-conversation.js";
 import { objectiveBoardRoutes } from "../src/routes/objectives-board.js";
 import { ANSWER_MAX_BYTES, createRun, DOCUMENT_ANSWER_BYTES, noteOnTrail, STATE_MAX_BYTES, type RunDeps, type RunState } from "../src/services/coach-runs.js";
 import { CoachRunStepper } from "../src/services/coach-run-stepper.js";
@@ -204,6 +208,7 @@ interface World {
   runs: Hono<AppContext>;
   coach: Hono<AppContext>;
   board: Hono<AppContext>;
+  conversation: Hono<AppContext>;
   close(): void;
 }
 
@@ -220,6 +225,7 @@ function open(image: Buffer): World {
     runs: mountRoutes(db, "/api/coach/runs", runRoutes),
     coach: mountRoutes(db, "/api/coach", coachRoutes),
     board: mountRoutes(db, "/api/objectives/board", objectiveBoardRoutes),
+    conversation: mountRoutes(db, "/api/coach/conversation", makeCoachConversationRoutes({ now: () => NOW })),
     close: () => client.close(),
   };
 }
@@ -546,6 +552,42 @@ async function drain(id: string, label: (k: number, ran: number) => string, imag
 const mainCtx = (db: Db): ToolContext => ({ db, env, userId, run: { id: runId, role: "main", scope: { kind: "now" }, parentId: null, rehearsal: false }, now: NOW });
 
 /** Moves the rich athlete may do today, each alone (validate_workout finds no error): what a designer would pick from. */
+/**
+ * A conversation of `turns` finished auto runs (the new shape §5), oldest first, a minute apart, ending a minute before
+ * NOW: each asked in the longest words a request holds, finished on a long line (its finish's event, its whole text in
+ * the payload), and holding a set's proposal of seven whole designed workouts and three changes — the most a turn's card
+ * reads. Answers the conversation's id (its first run's).
+ */
+async function seedConversation(db: Db, userId: string, turns: number, moves: readonly string[]): Promise<string> {
+  let first = "";
+  for (let i = 0; i < turns; i++) {
+    const id = newId();
+    first ||= id;
+    const at = new Date(NOW.getTime() - (turns - i) * 60_000).toISOString();
+    await db.insert(schema.coachRuns).values({
+      id, userId, parentId: null, role: "main", scope: { kind: "auto" }, request: words(i, 1_990), status: "finished",
+      state: JSON.stringify({ v: 1, settings: { ceilingMicros: 6_000_000, maxCalls: 12, effort: "high", maxTokens: 16_000, rehearsal: false, conversationId: first, raisedAt: at }, system: null, messages: [] }),
+      steps: 9, costUsd: 0.9, createdAt: at, updatedAt: at, finishedAt: at,
+    });
+    await db.run(sql`INSERT INTO coach_run_events (id, user_id, run_id, seq, kind, summary, payload, at)
+      VALUES (${`${id}:1`}, ${userId}, ${id}, 1, 'note', ${words(i, 290)}, ${JSON.stringify({ text: words(i, 1_190), receipt: { final: true } })}, ${at})`);
+    const ops = [
+      ...Array.from({ length: 7 }, (_, k) => ({
+        kind: "doc_workout", target: { kind: "new", date: addDays(TODAY, k) }, date: addDays(TODAY, k), doc: designedDoc(moves, i * 7 + k, []),
+        review: null, issues: [], derived: { minutes: 45 }, by: { runId: `${id}-d${k}`, role: "designer" }, toolUseId: `t${k}`, at,
+      })),
+      ...Array.from({ length: 3 }, (_, k) => ({
+        kind: "plan_adjust", id: `adj-w${k}`, op: { kind: "skip", workoutId: `w${k}` }, why: words(k, 290), issues: [], date: addDays(TODAY, k),
+        row: { date: addDays(TODAY, k), time: "07:00", title: "Easy run", minutes: 40, category: "easy", origin: null, onWatch: false }, toolUseId: `a${k}`, at,
+      })),
+    ];
+    await db.insert(schema.coachProposals).values({
+      id: designProposalId(id), userId, planId: null, title: words(i, 80), evidence: "", rationale: "", flags: [], ops, status: "pending", createdAt: at, expiresAt: addDays(TODAY, 7),
+    });
+  }
+  return first;
+}
+
 async function movesForToday(db: Db): Promise<string[]> {
   const ok: string[] = [];
   for (const ex of EXERCISES) {
@@ -918,6 +960,27 @@ beforeAll(async () => {
   answer = streamOf([thinking(2_000), { type: "text", text: words(9, 200) }, use("read_day", { date: TODAY }), use("read_readiness", { days: 7 })]).chunks;
   (await measure("3", "3. model step at a ~190 KB state (2 reads)", images.get("near-cap")!, step, { budget: 5.5, check: expectStep("active", results(2)) })).close();
 
+  // ── 10: the conversation (the new shape §5) ──
+  {
+    const conv = makeTestDb();
+    const a = await seedRichAthlete(conv);
+    const cookie10 = `${SESSION_COOKIE}=${await createSession(conv, a.userId)}`;
+    const first = await seedConversation(conv, a.userId, 20, moves);
+    const auto = (await createRun(conv, a.userId, { request: REQUEST, conversationId: first }, NOW)).run;
+    if (auto.conversationId !== first || auto.scope.kind !== "auto") throw new Error("the bench's auto run is no later turn of its conversation");
+    images.set("conversation", imageOf(conv));
+    clientOf(conv).close();
+    const autoStep = (x: World) => x.runs.request(`/api/coach/runs/${auto.id}/step`, { method: "POST", headers: { Cookie: cookie10 } }, env);
+    const opened10 = await measure("10a", "10a. an auto run's context step, a later turn (6 of 20 turns)", images.get("conversation")!, autoStep, { budget: 3, check: expectStep("active") });
+    const header = (await stateOf(opened10.db, auto.id)).messages[0] as { content: Array<{ text: string }> };
+    sizes.push(`the conversation so far: ${header.content[0]!.text.slice(header.content[0]!.text.indexOf("The conversation so far")).length} B of the opening message`);
+    opened10.close();
+    (await measure("10b", "10b. GET /api/coach/conversation (20 turns, a set each)", images.get("conversation")!, (x) => x.conversation.request("/api/coach/conversation", { headers: { Cookie: cookie10 } }, env), {
+      budget: 2,
+      check: (b) => expect((b as { turns: unknown[] }).turns).toHaveLength(20),
+    })).close();
+  }
+
   // From here on, the real clock.
   vi.useRealTimers();
   const today = todayInZone(TZ);
@@ -1161,7 +1224,7 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "7", "5a", "6"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "10a", "10b", "7", "5a", "6"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
@@ -1182,7 +1245,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c", "10a", "10b"]) {
     const over = KNOWN_OVER[id];
     it(
       over
