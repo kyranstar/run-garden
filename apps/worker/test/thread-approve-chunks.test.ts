@@ -8,7 +8,7 @@
  *
  * Synthetic fixtures only.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, coachOpSchema, newId, nowInstant, startOfIsoWeek, todayInZone, type CoachOp, type CoachSession, type UserPreferences } from "@rg/domain";
@@ -18,6 +18,20 @@ import { coachRoutes, sweepExpiredProposals } from "../src/routes/coach.js";
 import { structuralStarted } from "../src/routes/thread-structural.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { STRUCTURAL_MIN_BUDGET } from "../src/services/coach-apply.js";
+
+/** The budget every chunk call was handed, in order. */
+const budgets: number[] = [];
+vi.mock("../src/services/coach-apply.js", async (original) => {
+  const m = await original<typeof import("../src/services/coach-apply.js")>();
+  return {
+    ...m,
+    applyStructuralChunk: (...args: Parameters<typeof m.applyStructuralChunk>) => {
+      budgets.push(args[1].budget);
+      return m.applyStructuralChunk(...args);
+    },
+  };
+});
 
 function makeEnv(): Env {
   return {
@@ -127,6 +141,27 @@ describe("a structural thread approve, a chunk a request", () => {
     // Each run's before-state kept: the second never overwrote the first's.
     expect(Object.keys((await proposalRow(id)).appliedRefs ?? {}).sort()).toEqual(["w1", "w2"]);
     expect(await receipts()).toEqual(["✓ approved — New block"]);
+  });
+
+  it("a second structural op starts in a request only with the room a chunk needs", async () => {
+    // A plan of ten sessions, every one on the watch: retiring it spends 36 of the request's 38 (its read, a slice
+    // with ten unpushes, the status), and the new block waits for the next request.
+    const seed = await proposal([createPlan(10)]);
+    for (let i = 0; i < 5 && (await approve(seed)).json.remaining; i++);
+    const planId = `cp-${seed}-0`;
+    for (const [n, row] of (await planRows(planId)).entries()) {
+      await db.update(schema.plannedWorkouts)
+        .set({ sourceWorkoutId: `9000:${n + 1}`, sourceIdInPlan: String(n + 1), sourceProgramId: `77${n}`, lastVerifiedCorosDate: row.effectiveDate })
+        .where(eq(schema.plannedWorkouts.id, row.id));
+      await db.update(schema.corosWriteJobs).set({ status: "verified", verifiedAt: nowInstant() }).where(eq(schema.corosWriteJobs.id, `${row.id}-push`));
+    }
+    budgets.length = 0;
+    const id = await proposal([{ kind: "retirePlan", planId }, createPlan(3)]);
+    let last = await approve(id);
+    for (let i = 0; i < 5 && last.json.remaining; i++) last = await approve(id);
+    expect(last.json).toMatchObject({ summaries: ["Retired “Base block” and took 10 sessions off your plan", "Added “Base block” with 3 sessions"] });
+    expect(budgets.length).toBeGreaterThan(1);
+    for (const b of budgets) expect(b).toBeGreaterThanOrEqual(STRUCTURAL_MIN_BUDGET);
   });
 
   it("a plan that isn't there any more is said in the receipt, never a success for nothing", async () => {

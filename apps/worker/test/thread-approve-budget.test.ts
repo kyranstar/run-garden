@@ -230,6 +230,18 @@ describe("a structural thread approve answers within 45 a request, `remaining` u
     expect(extended.totals).toHaveLength(1);
   });
 
+  it("retire one block and build the next, in one proposal: each op in the room the other left", { timeout: 60_000 }, async () => {
+    const planId = await settledPlan(12);
+    const id = await proposal([
+      { kind: "retirePlan", planId },
+      { kind: "createPlan", discipline: "run", name: "Next block", startDate: addDays(monday, 14), endDate: addDays(monday, 41), firmSessions: days(addDays(monday, 14), 14, "Next"), shapeWeeks: [] },
+    ]);
+    const { totals, last } = await untilDone(`/api/coach/proposals/${id}/approve`);
+    measured.retireThenCreate = { requests: totals.length, max: Math.max(...totals) };
+    expect(Math.max(...totals), totals.join(" ")).toBeLessThanOrEqual(BUDGET);
+    expect(last).toMatchObject({ summaries: ["Retired “Base block” and took 12 sessions off your plan", "Added “Next block” with 14 sessions"] });
+  });
+
   it("windDown of 10 over two weeks of sessions on the watch and the calendar", { timeout: 60_000 }, async () => {
     const planId = await settledPlan(21);
     const synced = await db.select().from(schema.plannedWorkouts).where(and(eq(schema.plannedWorkouts.planId, planId), eq(schema.plannedWorkouts.corosSyncState, "synced")));

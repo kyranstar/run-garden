@@ -409,6 +409,23 @@ describe("applyStructuralChunk: what it writes", () => {
     }
   });
 
+  it("a session landing on a day another plan's session holds is placed apart from it, chunk by chunk", async () => {
+    const w = await world();
+    await seedPlan(w, sessionsFrom(w.monday, 6, "Other"), 0);
+    const op: CoachOp = {
+      kind: "createPlan", discipline: "run", name: "Doubles block", startDate: w.monday, endDate: addDays(w.monday, 13),
+      firmSessions: sessionsFrom(w.monday, 6, "Second"), shapeWeeks: [],
+    };
+    // The same kinds of session on the same days: each lands at the other's hour unless the collision pass moves it.
+    await applyAll(w, "p1", op, 10);
+    const live = (await planState(w)).workouts.filter((x) => !x.archived);
+    expect(live).toHaveLength(12);
+    for (const day of new Set(live.map((x) => x.date))) {
+      const times = live.filter((x) => x.date === day).map((x) => x.time);
+      expect(new Set(times).size, `${day}: ${times.join(", ")}`).toBe(times.length);
+    }
+  });
+
   it("two sessions of one title on one day take two stamps", async () => {
     const w = await world();
     const op: CoachOp = {
