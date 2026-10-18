@@ -125,6 +125,7 @@ import {
   type CreateResult,
   type Located,
   type PlacementPredicate,
+  type PlanView,
 } from "./create-executor.js";
 
 /** The three numbers that address a workout, plus the day it sits on. Every one
@@ -561,6 +562,25 @@ export async function updateWorkoutContent(
     const before = planView(await readFullSpan(client, today), target.planId);
     /** What the proof is called in a refusal the operator has to act on. */
     const proofName = imported ? "recorded content" : "recorded stamp";
+    /**
+     * EXACTLY ONE COPY UNDER THE NEW STAMP, AND NONE LEFT UNDER THE OLD ON A RENAME (review-2, after N1) — required
+     * before a stamp-proven rewrite is accepted, however it is accepted. Were COROS ever to take a `status: 2` update
+     * as an insert, the copy it replaced would survive beside the new one, and the collateral check (programs in both
+     * reads) would not see it. Never seen live; failing verification is the honest answer. Null when it holds (and for
+     * an imported rewrite, which carries no stamp); else the refusal's words.
+     */
+    const copiesWrong = (view: PlanView): string | null => {
+      if (imported) return null;
+      const renamed = newName !== target.name;
+      const underNew = stampedPlacements(view, (name) => name === newName).length;
+      const underOld = renamed ? stampedPlacements(view, (name) => name === target.name).length : 0;
+      if (underNew === 1 && underOld === 0) return null;
+      return (
+        `plan ${target.planId} holds ${underNew} workout(s) under the new stamp` +
+        (renamed ? ` and ${underOld} under the old` : "") +
+        " — an update that left a copy behind (an insert), not a rewrite; not verified"
+      );
+    };
 
     if (ownershipAmbiguities(before, isOurs).some((a) => a.date === date)) {
       return {
@@ -641,6 +661,52 @@ export async function updateWorkoutContent(
               ...owed,
             };
           }
+        }
+        // ITS OWN NEW STAMP AT THE RECORDED ADDRESS (review-2, after N1): a renaming rewrite that landed, whose
+        // read-back failed, retried. The retry proves ownership by the OLD stamp, which the rewrite replaced, so it
+        // found its own copy here and refused it as foreign — stranding it as N1 did, for the thread coach's and the
+        // body check's eases too. The name this job meant to write, on its day, at its address, is ours: verified by
+        // the fresh verification's own rules (a designed run by `storedContentDelta`, anything else by fingerprint or
+        // by value, COROS's own estimates set aside) and the one-copy rule — never rewritten blind.
+        if (!imported && newName !== target.name && occupant.program?.name === newName && occupant.date === date) {
+          const there = occupant.program;
+          const landedPlanId = String(atAddress.planId ?? target.planId);
+          let again = rewriteProgramContent(there, built, landedPlanId);
+          try {
+            again = applyCalculated(again, await client.calculateProgramMetrics(again));
+          } catch (e) {
+            log(`  program/calculate failed (${errText(e)}) — comparing without estimates`);
+          }
+          const thereFingerprint = corosProgramFingerprint(there);
+          const asSent = { ...there, duration: again.duration, estimatedTime: again.estimatedTime };
+          const designed = isRunWatchSession(spec.session);
+          const holds = designed || corosProgramFingerprint(again) === thereFingerprint || sameProgramContent(again, asSent);
+          const wrong = copiesWrong(before);
+          if (holds && !wrong) {
+            const contentDelta = designed ? storedContentDelta(again, there) : undefined;
+            log(`  its own new stamp is at the recorded address (an earlier attempt landed) — verified, no write`);
+            return {
+              ok: true,
+              reason: "already_current",
+              pathUsed: "in_place_update",
+              ...addressOf(occupant, landedPlanId),
+              wireFingerprint: thereFingerprint,
+              observedFingerprint: thereFingerprint,
+              ...(contentDelta ? { contentDelta } : {}),
+              ...owed,
+            };
+          }
+          return {
+            ok: false,
+            reason: "verification_failed",
+            serverHappenDay: occupant.date,
+            observedFingerprint: thereFingerprint,
+            error:
+              wrong ??
+              `the rewrite's own new stamp is at idInPlan ${target.idInPlan} on ${date}, but the program there is not` +
+                ` what it sends — ${describeProgramDelta(again, asSent)}`,
+            ...owed,
+          };
         }
         log(`  address occupied by ${describeForLog(occupant, verbose)} — NOT rewritten`);
         return {
@@ -864,7 +930,9 @@ export async function updateWorkoutContent(
     const stored = now?.program
       ? { ...now.program, duration: rewritten.duration, estimatedTime: rewritten.estimatedTime }
       : undefined;
-    if (observedFingerprint === wireFingerprint || (stored && sameProgramContent(rewritten, stored))) {
+    // One copy under the new stamp, none under the old (`copiesWrong`): required however the rewrite is accepted.
+    const copies = copiesWrong(after);
+    if (!copies && (observedFingerprint === wireFingerprint || (stored && sameProgramContent(rewritten, stored)))) {
       return {
         ok: true,
         code,
@@ -934,6 +1002,9 @@ export async function updateWorkoutContent(
         error: `the rewrite returned 0000 but nothing carrying the stamp is on ${date} any more`,
         ...owed,
       };
+    }
+    if (copies) {
+      return { ok: false, code, reason: "verification_failed", error: copies, ...observedIds, wireFingerprint, ...(observedFingerprint !== undefined ? { observedFingerprint } : {}), ...owed };
     }
     // A DESIGNED RUN'S REWRITE IS READ BACK AS ITS CREATE IS (review-2 N1). Accepted, nothing else in the plan touched,
     // and the NEW stamp on its day: only the values COROS stored differ (`storedContentDelta`, the create's own

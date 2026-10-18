@@ -316,3 +316,104 @@ describe("a designed run's REWRITE read back as its create is (review-2 N1)", ()
     expect(result.contentDelta).toBeUndefined();
   });
 });
+
+describe("a renaming rewrite whose read-back throws is verified on its retry; an update COROS made an insert is not verified (review-2, after N1)", () => {
+  type Wrap = { throwReadAfterUpdate?: boolean; insertOnUpdate?: boolean; change?: (p: RawCorosProgram) => void };
+  /** A logged-in client on a renormalizing COROS, wrapped: a read that fails once right after an update, an update that
+   * leaves the program it replaced behind (an insert), a change to every program written. */
+  async function on(wrap: Wrap) {
+    const server = renormalizingCoros({ baseMonday: nextMonday() });
+    const inner = server.fetchImpl;
+    let failNextRead = false;
+    server.fetchImpl = async function (input: string | URL | Request, init?: RequestInit): Promise<Response> {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname === "/training/schedule/query" && failNextRead) {
+        failNextRead = false;
+        throw new TypeError("fetch failed");
+      }
+      if (url.pathname === "/training/schedule/update" && typeof init?.body === "string") {
+        const body = JSON.parse(init.body) as { programs?: RawCorosProgram[]; versionObjects?: Array<{ status?: number; id?: unknown }> };
+        for (const p of body.programs ?? []) wrap.change?.(p);
+        const vo = body.versionObjects?.[0];
+        const schedule = server.state.schedule;
+        const kept =
+          vo?.status === 2 && wrap.insertOnUpdate
+            ? {
+                entity: structuredClone((schedule.entities ?? []).find((e) => String(e.idInPlan) === String(vo.id))!),
+                program: structuredClone((schedule.programs ?? []).find((p) => String(p.idInPlan) === String(vo.id))!),
+              }
+            : null;
+        const res = await inner(input, { ...init, body: JSON.stringify(body) });
+        if (vo?.status === 2) {
+          if (wrap.throwReadAfterUpdate) failNextRead = true;
+          if (kept) {
+            // The update replaced the program at its address, and the one it replaced is still there, at another.
+            const idInPlan = String(Math.max(...(schedule.entities ?? []).map((e) => Number(e.idInPlan))) + 50);
+            schedule.entities!.push({ ...kept.entity, id: `kept-${idInPlan}`, idInPlan, planProgramId: idInPlan });
+            schedule.programs!.push({ ...kept.program, id: `kept-${idInPlan}`, idInPlan });
+          }
+        }
+        return res;
+      }
+      return inner(input, init);
+    } as typeof fetch;
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    const today = new Date().toISOString().slice(0, 10);
+    const day = new Date(`${today}T00:00:00Z`);
+    day.setUTCDate(day.getUTCDate() + 10);
+    return { client, today, happenDay: day.toISOString().slice(0, 10).replaceAll("-", "") };
+  }
+  const easy = (minutes: number): CoachSession => ({ category: "easy", title: "Easy", durationMinutes: minutes, run: { blocks: [{ kind: "duration", value: minutes, intensity: "easy" }] } });
+  const four: RunWatchSession = { ...TEMPO, segments: [TEMPO.segments[0]!, { ...TEMPO.segments[1]!, rounds: 4 }, TEMPO.segments[2]!] };
+  /** Create `from` under one stamp, then rewrite it to `to` under another, retrying once as the lane does. */
+  async function renamed(wrap: Wrap, from: RunWatchSession | CoachSession, to: RunWatchSession | CoachSession) {
+    const { client, today, happenDay } = await on(wrap);
+    const name = "Session — created";
+    const made = await createWorkout(client, { ...spec(), happenDay, name, session: from } as CreateWorkoutSpec, { today, catalog: new Map(), log: noop });
+    expect(made.ok, made.error).toBe(true);
+    const rewrite = () =>
+      updateWorkoutContent(
+        client,
+        { target: { happenDay, name, idInPlan: made.serverIdInPlan!, programId: made.serverProgramId!, planId: made.serverPlanId! }, session: to, name: "Session — renamed", thresholdPaceSecPerKm: THRESHOLD },
+        { catalog: new Map(), today, log: noop },
+      );
+    return { rewrite, client, happenDay };
+  }
+
+  it("a designed run's rewrite lands, its read-back throws; the retry finds its own new stamp at the address and verifies it", async () => {
+    const { rewrite } = await renamed({ throwReadAfterUpdate: true }, TEMPO, four);
+    expect(await rewrite()).toMatchObject({ ok: false, reason: "error" });
+    const retried = await rewrite();
+    expect(retried.ok, retried.error).toBe(true);
+    expect(retried.contentDelta).toBeUndefined();
+  });
+
+  it("a thread-coach ease the same: the retry verifies its own new stamp, its content compared strictly", async () => {
+    const { rewrite } = await renamed({ throwReadAfterUpdate: true }, easy(30), easy(20));
+    expect(await rewrite()).toMatchObject({ ok: false, reason: "error" });
+    const retried = await rewrite();
+    expect(retried.ok, retried.error).toBe(true);
+    // …and a thread-coach copy that COROS changed is not taken as landed: it stays a verification failure.
+    const changed = await renamed({ throwReadAfterUpdate: true, change: (p) => void ((p.exercises ?? [])[0]!.exerciseType = 3) }, easy(30), easy(20));
+    expect(await changed.rewrite()).toMatchObject({ ok: false, reason: "error" });
+    expect(await changed.rewrite()).toMatchObject({ ok: false, reason: "verification_failed" });
+  });
+
+  it("an update COROS made an insert — the old stamped copy beside the new — is never verified, renamed or not", async () => {
+    // A designed run renamed: the old stamp survives beside the new.
+    const run = await renamed({ insertOnUpdate: true }, TEMPO, four);
+    expect(await run.rewrite()).toMatchObject({ ok: false, reason: "verification_failed" });
+    // A thread-coach rewrite under the same stamp: two copies under it.
+    const { client, today, happenDay } = await on({ insertOnUpdate: true });
+    const name = "Easy — kept";
+    const made = await createWorkout(client, { ...spec(), happenDay, name, session: easy(30) } as CreateWorkoutSpec, { today, catalog: new Map(), log: noop });
+    const same = await updateWorkoutContent(
+      client,
+      { target: { happenDay, name, idInPlan: made.serverIdInPlan!, programId: made.serverProgramId!, planId: made.serverPlanId! }, session: easy(20), thresholdPaceSecPerKm: THRESHOLD },
+      { catalog: new Map(), today, log: noop },
+    );
+    expect(same).toMatchObject({ ok: false, reason: "verification_failed" });
+    expect(same.error).toMatch(/2 .*stamp/);
+  });
+});
