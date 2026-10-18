@@ -85,6 +85,8 @@ describe("read_plans", () => {
       ],
     });
     await session(rich.userId, "cp-10k", day(1), { title: "Yesterday's run", state: "completed" });
+    // Still only scheduled, but its day has gone (the read reaches a day back, for any zone): not "next".
+    await session(rich.userId, "cp-10k", day(1), { title: "Yesterday, not logged" });
     await session(rich.userId, "cp-10k", day(-1), { title: "Gone", archived: true });
     await session(rich.userId, "cp-10k", day(-1), { title: "Tempo 20", category: "quality", minutes: 50 });
     await session(rich.userId, "cp-10k", day(-3), { title: "Easy 40" });
@@ -165,6 +167,30 @@ describe("read_plans", () => {
     const { res } = await read(rich.userId, { zzz: 1 });
     expect(isToolErr(res)).toBe(true);
     expect((res as ToolErr).why).toContain('"zzz"');
+  });
+
+  it("past what shortening can fit: the last plans are counted (morePlans), never a list cut mid-way", async () => {
+    const long = (s: string) => `${s} ${"with a very long name the watch gave it ".repeat(4)}`.trim();
+    for (let n = 0; n < 10; n++) {
+      await block(rich.userId, { id: `cp-many-${n}`, name: long(`Block ${n}`), start: day(2), end: "2026-12-31" });
+      await db.insert(schema.trainingPlans).values({
+        id: `tp-many-${n}`, userId: rich.userId, sourcePlanId: `src-${n}`, name: long(`Watch plan ${n}`), startDate: day(30), endDate: "2026-12-31",
+        status: "active", createdAt: at(day(30)), updatedAt: at(day(30)),
+      });
+      for (let d = 1; d <= 3; d++) {
+        await session(rich.userId, `cp-many-${n}`, day(-d), { title: long(`Session ${d}`) });
+        await session(rich.userId, `tp-many-${n}`, day(-d), { title: long(`Watch session ${d}`) });
+      }
+    }
+    const { res, count } = await read();
+    const r = ok(res) as ToolOk & { data: { plans: Array<Record<string, any>>; morePlans?: number } };
+    expect(count).toBe(1);
+    expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    expect(r.data.morePlans).toBeGreaterThan(0);
+    // 10 blocks, 10 watch plans, the fixture's programme: every one shown or counted.
+    expect(r.data.plans.length + r.data.morePlans!).toBe(21);
+    // The coach's own running blocks come first: the ones left out are the others.
+    expect(r.data.plans[0]!.kind).toBe("coach block");
   });
 
   it("many blocks with many weeks still fit the result budget: every block named, its shape weeks shortened and counted", async () => {

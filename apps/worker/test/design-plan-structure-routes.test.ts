@@ -14,7 +14,8 @@ import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes, sweepExpiredProposals } from "../src/routes/coach.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
-import { APPLYING_STALE_MS, REQUEST_BUDGET, type DesignedStructureOp } from "../src/services/design-approve.js";
+import { APPLYING_STALE_MS, approveDesignOps, REQUEST_BUDGET, type DesignedStructureOp } from "../src/services/design-approve.js";
+import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { mondayOf, proposePlan } from "../src/services/design-tools/propose-plan.js";
@@ -106,14 +107,19 @@ function createPlan(o: { perWeek: number; weeks?: number; discipline?: "run" | "
   };
 }
 
-/** A main run's plan proposal, made pending as its finish makes it. */
-async function planned(change: unknown): Promise<string> {
+/** A main run's plan proposal, made pending as its finish makes it — with these changes to sessions on the plan first
+ * (adjust_plan's, in the same proposal). */
+async function planned(change: unknown, changes: unknown[] = []): Promise<string> {
   const id = `run-${newId()}`;
   await db.insert(schema.coachRuns).values({
     id, userId, parentId: null, role: "main", scope: { kind: "auto" }, request: "Plan my next weeks", status: "active", state: null, steps: 0, costUsd: 0,
     createdAt: nowInstant(), updatedAt: nowInstant(),
   });
   const ctx: ToolContext = { db, env: makeEnv(), userId, run: { id, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: new Date(), toolUseId: `toolu_${newId()}` };
+  for (const c of changes) {
+    const made = await adjustPlan.run({ ...ctx, toolUseId: `toolu_${newId()}` }, c);
+    if (isToolErr(made)) throw new Error(`adjust_plan refused: ${made.error} — ${made.why}`);
+  }
   const res = await proposePlan.run(ctx, { change, why: "A steady build." });
   if (isToolErr(res)) throw new Error(`propose_plan refused: ${res.error} — ${res.why}`);
   await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, designProposalId(id)));
@@ -268,6 +274,31 @@ describe("approving a whole plan", () => {
     const id = await planned(createPlan({ perWeek: 3 }));
     const { answers } = await approveAll(id);
     expect(answers.some((a) => a.coachDrain === true)).toBe(true);
+  });
+
+  it("beside changes to the plan: the changes first, the plan only when the request has room for a chunk — every request within 45", async () => {
+    const id = await planned(createPlan({ perWeek: 7 }), [{ workoutId: "w-2", change: { kind: "move", toDate: addDays(today, 3), toTime: "12:00" }, why: "A freer day." }]);
+    // The move takes most of the first request: the plan waits for the next, untouched (no claim, no chunk).
+    const first = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(first.total).toBeLessThanOrEqual(REQUEST_BUDGET);
+    expect(first.json.changed.map((c: { opId: string }) => c.opId)).toEqual(["adj-w-2"]);
+    expect(first.json.remaining).toEqual(["plan"]);
+    expect(first.json.planned).toBeUndefined();
+    expect((await planOp(id)).outcome).toBeUndefined();
+    const { answers, costs } = await approveAll(id);
+    for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
+    expect(answers.at(-1)!.status).toBe("approved");
+    // Its ids are the applier's, by the op's place in the proposal: the change first, the plan second.
+    expect((await sessionsOf(`cp-${id}-1`)).filter((r) => !r.archivedAt)).toHaveLength(7);
+  });
+
+  it("a plan not started whose first day has gone is refused (its sessions would start in the past), nothing applied", async () => {
+    const id = await planned(createPlan({ perWeek: 3 }));
+    const p = await proposalOf(id);
+    const later = addDays(monday, 1);
+    const answer = await approveDesignOps(db, userId, { id: p.id, title: p.title, status: p.status, ops: p.ops, resolvedAt: p.resolvedAt }, {}, { today: later, now: nowInstant(), prefs });
+    expect(answer.refused).toEqual([{ opId: "plan", error: "past_date", why: expect.stringMatching(/has passed/) }]);
+    expect(await db.select().from(coachPlans).where(eq(coachPlans.id, `cp-${id}-0`))).toEqual([]);
   });
 
   it("the manifest gives the plan's own lines and how it stands", async () => {
