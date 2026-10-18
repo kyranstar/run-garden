@@ -679,29 +679,6 @@ async function thresholdPace(db: Db, userId: string): Promise<number | undefined
 const IN_FLIGHT_JOB_STATUSES = ["claimed", "in_progress", "verifying"] as const;
 
 /**
- * Is the watch taking a write of this session right now — a coach rewrite or unpush the executor holds? One statement.
- * Asked before anything changes a run the check eased: Undo, or an answer that changes the eased run.
- */
-async function watchBusy(db: Db, userId: string, workoutId: string): Promise<boolean> {
-  const [job] = await db
-    .select({ id: corosWriteJobs.id })
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, userId),
-        eq(corosWriteJobs.workoutId, workoutId),
-        inArray(corosWriteJobs.kind, ["coach_update_workout", "coach_delete_workout"]),
-        inArray(corosWriteJobs.status, [...IN_FLIGHT_JOB_STATUSES]),
-      ),
-    )
-    .limit(1);
-  return job !== undefined;
-}
-
-/** A run's ease that is (or may be) in place: what Undo, or a changed answer, would put back. */
-const liveRunEase = (record: BodyRecord | null): boolean => record?.ease?.kind === "run" && record.ease.state !== "undone";
-
-/**
  * Apply a run's ease through the thread coach's own applier — the `ease` op: the row, its stages, its document's next
  * revision, the app's claim on its content and the rewrite of the watch's copy (`enqueueContentConvergence`). A rewrite
  * of this very content that an Undo superseded (the same session, from the same watch copy) is queued again: its id is
@@ -883,8 +860,11 @@ const sameRecord = (x: BodyRecord | null, y: BodyRecord): boolean => JSON.string
 
 /**
  * `POST /api/today/body` `{workoutId, feel, areas?}`: keep the answer, and adapt the day as it asks. Idempotent: the
- * same answer again writes nothing — except to finish an ease recorded and not yet applied (`pending`). A changed answer
- * waits while the watch is taking the eased run (`BodyCheckBusyError`, before anything is written). Throws
+ * same answer again writes nothing — except to finish an ease recorded and not yet applied (`pending`). An answer that
+ * would put back a run the watch is taking right now is refused (`BodyCheckBusyError`) with NOTHING written (the
+ * re-review): while a run's ease is live the day is adapted first and the answer kept after, so the refusal —
+ * restoreRun's last look, before its own writes — never leaves a new answer beside the old ease. Any other answer is
+ * kept first, so a request cut off mid-ease leaves the answer the next request finishes the ease from. Throws
  * `BodyCheckNotFoundError`, `BodyCheckInvalidError`, `BodyCheckClosedError`, `BodyCheckBusyError`.
  */
 export async function answerBodyCheck(db: Db, userId: string, workoutId: string, input: BodyAnswer, ctx: BodyCheckCtx): Promise<BodyCheckOutcome> {
@@ -895,9 +875,10 @@ export async function answerBodyCheck(db: Db, userId: string, workoutId: string,
   const { record } = s;
   const same = sameAnswer(s.answer, answer);
   if (same && record?.ease?.state !== "easing") return { view: viewOf(s, answer, record, ctx.today), coachDrain: false };
-  if (!same && liveRunEase(record) && (await watchBusy(db, userId, workoutId))) throw new BodyCheckBusyError();
-  if (!same) await writeAnswer(db, userId, workoutId, answer, ctx);
+  const mayWaitOnWatch = record?.ease?.kind === "run" && record.ease.state !== "undone";
+  if (!same && !mayWaitOnWatch) await writeAnswer(db, userId, workoutId, answer, ctx);
   const done = await adapt(db, userId, s, answer, record, ctx);
+  if (!same && mayWaitOnWatch) await writeAnswer(db, userId, workoutId, answer, ctx);
   if (!done.persisted && !sameRecord(record, done.record)) await writeRecord(db, userId, workoutId, done.record, ctx);
   return { view: viewOf(s, answer, done.record, ctx.today), coachDrain: done.coachDrain };
 }

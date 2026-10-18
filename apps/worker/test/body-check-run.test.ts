@@ -335,6 +335,33 @@ describe("the watch", () => {
     expect(undo.coachDrain).toBe(true);
   });
 
+  it("an answer refused because the drain took the rewrite mid-request saves nothing: the answer stays, and asked again once it has landed, it puts the run back", async () => {
+    const id = await seedRun(DAY, { shape: "intervals", watch: true });
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const [job] = await rewrites(id);
+    const eased = facts(await rowOf(db, id));
+    // The drain claims the rewrite while the request is under way — as the run is read to be put back.
+    const sqlite = (db as unknown as { $client: { prepare: (s: string) => unknown } }).$client;
+    const prepare = sqlite.prepare.bind(sqlite);
+    sqlite.prepare = (s: string) => {
+      if (/"sync_intents"/.test(s) && /^select/i.test(s) && /from "planned_workouts"/.test(s)) {
+        sqlite.prepare = prepare;
+        (prepare(`update "coros_write_jobs" set "status" = 'claimed' where "id" = ?`) as { run: (...a: unknown[]) => unknown }).run(job!.id);
+      }
+      return prepare(s);
+    };
+    await expect(answerBodyCheck(db, userId, id, { feel: "fresh" }, ctx())).rejects.toBeInstanceOf(BodyCheckBusyError);
+    sqlite.prepare = prepare;
+    // Nothing saved: the answer is still A bit heavy beside the eased run — the card never says Fresh beside "Eased to …".
+    expect(await readBodyCheck(db, userId, id, ctx())).toMatchObject({ answer: { feel: "heavy" }, change: { kind: "eased" } });
+    expect(facts(await rowOf(db, id))).toEqual(eased);
+    // The rewrite landed: Fresh, asked again, puts the run back.
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, job!.id));
+    const fresh = await answerBodyCheck(db, userId, id, { feel: "fresh" }, ctx());
+    expect(fresh.view).toMatchObject({ answer: { feel: "fresh" }, change: null });
+    expect(facts(await rowOf(db, id))).not.toEqual(eased);
+  });
+
   it("a watch write of the run the executor took before the ease (still claimed) holds Undo too", async () => {
     const id = await seedRun(DAY, { shape: "intervals" });
     await db.insert(corosWriteJobs).values({
