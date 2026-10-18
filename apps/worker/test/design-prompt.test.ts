@@ -13,7 +13,8 @@ import { submitReview } from "../src/services/design-review.js";
 import { proposeWorkout } from "../src/services/design-tools/propose.js";
 
 const ROLES = ["main", "designer", "reviewer"] as const;
-const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map(roleBlock)].join("\n");
+// With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
+const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
 /** Every word a condition profile owns: its id and label, its check, flag and care words, its rating attributes. */
 function profileWords(): string[] {
