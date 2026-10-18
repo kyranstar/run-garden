@@ -14,9 +14,11 @@
  *    planned in the run's week (Monday to Sunday) and the last four weeks' weekly average before it (the watch's runs).
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
-import { activities, dailyHealth, plannedWorkouts, plannedWorkoutStages, programs, scheduleOverrides } from "@rg/database";
+import { activities, corosWriteJobs, dailyHealth, plannedWorkouts, plannedWorkoutStages, programs, scheduleOverrides } from "@rg/database";
+import { buildProgramFor } from "@rg/coros";
 import {
   addDays,
+  coachCreateWorkoutJobSchema,
   isoWeekday,
   newId,
   paceBandFor,
@@ -420,5 +422,46 @@ export async function createDesignedRun(
     workout: { id, date, time, title: doc.title, intentSummary: doc.intent.summary, category: derived.category, sport: "run", origin: "coach", contentState: "outline", completionState: "scheduled", docRev: 1, minutes: Math.round(seconds / 60) },
     warnings,
     queued,
+  };
+}
+
+// ── Fixture mode only: the e2e's levers (index.ts `/api/dev/threshold`, `/api/dev/coach-job`) ────────────────────────
+
+/** The athlete's threshold pace for `date` — what the COROS read writes in production; the fixture account has none. */
+export async function fixtureThreshold(db: Db, userId: string, date: string, secPerKm: number, now: string): Promise<void> {
+  await db
+    .insert(dailyHealth)
+    .values({ id: `${userId}:${date}`, userId, date, thresholdPaceSecPerKm: secPerKm, contentFingerprint: "fixture-threshold", updatedAt: now })
+    .onConflictDoUpdate({ target: dailyHealth.id, set: { thresholdPaceSecPerKm: secPerKm, updatedAt: now } });
+}
+
+/**
+ * A workout's watch create job, and the program the write lane would put on the watch from it now (`buildProgramFor`,
+ * the freshest threshold): each step's role, time and pace bytes — computed, never sent (the fixture's COROS connection
+ * holds no credentials). Null when the workout has no such job.
+ */
+export async function fixtureWatchJob(db: Db, userId: string, workoutId: string): Promise<{
+  kind: string;
+  status: string;
+  sessionKind: string | null;
+  steps: Array<Record<string, unknown>>;
+} | null> {
+  const [job] = await db
+    .select({ kind: corosWriteJobs.kind, status: corosWriteJobs.status, payload: corosWriteJobs.payload })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.workoutId, workoutId), eq(corosWriteJobs.kind, "coach_create_workout")))
+    .limit(1);
+  if (!job) return null;
+  const parsed = coachCreateWorkoutJobSchema.safeParse(job.payload);
+  if (!parsed.success) return { kind: job.kind, status: job.status, sessionKind: null, steps: [] };
+  const [t] = (await db.all(sql`select ${thresholdSql(userId)} as t`)) as Array<{ t: unknown }>;
+  const threshold = runningFactsOf(t?.t ?? null, null).threshold?.secPerKm ?? parsed.data.thresholdPaceSecPerKm;
+  const program = buildProgramFor({ happenDay: parsed.data.happenDay.replaceAll("-", ""), name: parsed.data.name, session: parsed.data.session, ...(threshold ? { thresholdPaceSecPerKm: threshold } : {}) }, new Map());
+  const pick = ["exerciseType", "name", "targetType", "targetValue", "intensityType", "intensityValue", "intensityValueExtend", "intensityMultiplier", "intensityDisplayUnit"];
+  return {
+    kind: job.kind,
+    status: job.status,
+    sessionKind: (parsed.data.session as { kind?: string }).kind ?? null,
+    steps: (program.exercises ?? []).map((e) => Object.fromEntries(pick.map((k) => [k, (e as unknown as Record<string, unknown>)[k]]))),
   };
 }

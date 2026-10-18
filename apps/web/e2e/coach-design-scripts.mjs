@@ -28,6 +28,8 @@
  *   whole_plan   whole plans (§8 §5): reads the plans, then a new four-week 10K block from next Monday (its first week
  *                filled in, three shape weeks); asked to extend it — the request says "extend" and the conversation so far
  *                holds the plan it suggested — two more shape weeks for that block; then the finish
+ *   designed_run a designed run (§8 §3): proposes a tempo run for tomorrow (efforts named, no pace written), reviewed on
+ *                the run rubric, then the finish
  *
  * `ctx.opening` is the run's opening message (its first user message's text): a script may read what the run was
  * asked from in it.
@@ -254,7 +256,46 @@ function wholePlan(turn, ctx) {
   return uses(["finish", { summary: extend ? EXTEND_LINE : PLAN_LINE }]);
 }
 
+/**
+ * A designed run (§8 §3): 10 min easy, 3 × (8 min tempo, 2 min jog), 2 km easy — each segment its effort and a why,
+ * no pace written (the app computes the bands from the athlete's threshold).
+ */
+export function tempoRunDoc() {
+  return {
+    version: 1,
+    title: "Tempo blocks",
+    intent: { summary: "Three tempo blocks to lift your threshold, easy either side.", goals: ["speed"], focus: [], effort: "develop" },
+    parts: [
+      { purpose: "warmup", format: "steady", why: "Ease in.", items: [{ kind: "run", effort: "easy", target: { durationSec: 600 }, why: "Loosen up before the work." }] },
+      {
+        purpose: "run",
+        format: "intervals",
+        rounds: 3,
+        why: "Time at a comfortably hard effort.",
+        items: [
+          { kind: "run", effort: "tempo", target: { durationSec: 480 }, why: "Comfortably hard: a few words, not a chat." },
+          { kind: "run", effort: "recovery", target: { durationSec: 120 }, why: "Jog it back down." },
+        ],
+      },
+      { purpose: "cooldown", format: "steady", why: "Settle.", items: [{ kind: "run", effort: "easy", target: { distanceM: 2000 }, why: "Bring it home easy." }] },
+    ],
+    source: { kind: "coach" },
+  };
+}
+
+/** The finish's words for the designed run. */
+export const RUN_LINE = "Three tempo blocks tomorrow, easy either side.";
+
+/** A designed run (§8 §3): proposes the tempo run for tomorrow (no time: the athlete's window), is reviewed on the run
+ * rubric (the reviewer's schema is its own), finishes. */
+function designedRun(turn, ctx) {
+  if (turn === 0) return uses(["propose_workout", { doc: tempoRunDoc(), target: { kind: "new", date: dayAfter(ctx.today, 1) } }]);
+  return uses(["finish", { summary: RUN_LINE }]);
+}
+
 export const SCRIPTS = {
+  // §8 §3: a designed run.
+  designed_run: { main: designedRun, reviewer },
   // §8 §5: whole plans in the conversation.
   whole_plan: { main: wholePlan, reviewer },
   now: { main: designAfter(0), reviewer },

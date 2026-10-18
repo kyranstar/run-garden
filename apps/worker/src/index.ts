@@ -43,6 +43,7 @@ import { musicRoutes } from "./routes/music.js";
 import { todayBodyRoutes } from "./routes/today-body.js";
 import { growthRoutes } from "./routes/growth.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
+import { fixtureThreshold, fixtureWatchJob } from "./services/designed-runs.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
 import { COACH_RUN_SWEEP_MAX, CRON_DOC_BACKFILL_MAX, CRON_GARDEN_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./services/cron-limits.js";
@@ -172,6 +173,36 @@ app.post(
     const result = await seedWatchSession(db, userId, await loadPreferences(db, userId));
     if (result.status !== "ok") return c.json({ error: result.status }, 409);
     return c.json(result);
+  },
+);
+
+/**
+ * Fixture mode only (§8 §3, the designed-run journey): the athlete's threshold pace today (`{ secPerKm }` — the COROS
+ * read writes it in production), and a workout's queued watch create with the program the lane would write from it
+ * (the bytes, never sent). 404 outside fixture mode.
+ */
+app.post(
+  "/api/dev/threshold",
+  async (c, next) => (fixtureModeEnabled(c.env) ? next() : c.json({ error: "not_found" }, 404)),
+  requireUser,
+  async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { secPerKm?: unknown };
+    const secPerKm = typeof body.secPerKm === "number" && body.secPerKm >= 120 && body.secPerKm <= 720 ? body.secPerKm : null;
+    if (secPerKm === null) return c.json({ error: "bad_threshold" }, 400);
+    const db = c.get("db");
+    const userId = c.get("userId");
+    const prefs = await loadPreferences(db, userId);
+    await fixtureThreshold(db, userId, todayInZone(prefs.timezone), secPerKm, new Date().toISOString());
+    return c.json({ ok: true });
+  },
+);
+app.get(
+  "/api/dev/coach-job",
+  async (c, next) => (fixtureModeEnabled(c.env) ? next() : c.json({ error: "not_found" }, 404)),
+  requireUser,
+  async (c) => {
+    const job = await fixtureWatchJob(c.get("db"), c.get("userId"), c.req.query("workoutId") ?? "");
+    return job ? c.json(job) : c.json({ error: "not_found" }, 404);
   },
 );
 
