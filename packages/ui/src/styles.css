@@ -414,8 +414,6 @@ button {
   min-height: 100dvh;
 }
 .shell-main {
-  /* The athlete's mark (Settings, on a phone) sits at its top right. */
-  position: relative;
   flex: 1;
   min-width: 0;
   padding: var(--space-6);
@@ -525,13 +523,15 @@ button {
   outline-offset: 2px;
 }
 
-/* Settings, on a phone: the athlete's mark at the top right of each place (a round 44 px target). From lg the rail's
-   foot holds Settings, and the mark leaves. */
+/* Settings, on a phone: the athlete's mark at the top right of each place (a round 44 px target), on a row of its own
+   above the page — never over a banner or a place's own title row. From lg the rail's foot holds Settings, and the
+   row leaves. */
+.athlete-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: calc(-1 * var(--space-4)) 0 var(--space-2);
+}
 .athlete-mark {
-  position: absolute;
-  top: var(--space-4);
-  right: var(--space-4);
-  z-index: 5;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -690,7 +690,7 @@ button {
     padding: 0 var(--space-4);
   }
   /* Settings lives at the rail's foot here: the athlete's mark is the phone's way in. */
-  .athlete-mark {
+  .athlete-row {
     display: none;
   }
   .shell-main {

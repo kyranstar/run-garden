@@ -927,8 +927,8 @@ function BackfillRow() {
           : s?.status === "done"
             ? `History loaded: ${s.activitiesIngested} sessions${s.earliestDateReached ? ` back to ${s.earliestDateReached}` : ""}.`
             : cloud
-          ? "Pull your full run, lift, and yoga history from COROS. Runs once, in the cloud."
-          : "Pull your full run, lift, and yoga history from COROS. Connect COROS above first — it runs in the cloud.";
+          ? "Your whole run, lift and yoga history from COROS, once."
+          : "Your whole run, lift and yoga history — connect COROS above first.";
 
   return (
     <div className="switch-row">
@@ -980,7 +980,7 @@ function CorosSleepRow({
             ? "Sleep sync stopped — COROS expired the connection. Reconnect to resume."
             : connected
               ? `Connected · nightly duration and depth${conn?.lastSyncAt ? ` · synced ${relativeTime(conn.lastSyncAt)}` : ""}`
-              : "Adds nightly duration and deep/REM. Opens COROS sign-in — your watch and phone app are untouched."}
+              : "Adds each night's length and depth. Your watch and its app are untouched."}
         </p>
       </div>
       {connected ? (
@@ -1023,7 +1023,7 @@ function ConnectionsSection() {
     <Card title="Google Calendar">
       <div className="switch-row">
         <div>
-          <strong>Google Calendar</strong>
+          <strong>Your calendar</strong>
           <p className="faint">
             {google?.status === "error"
               ? "Mirroring stopped — Google expired the connection. Reconnect to resume."

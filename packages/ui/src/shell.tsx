@@ -76,14 +76,18 @@ function PlaceLink({ item }: { item: (typeof NAV)[number] }) {
 
 /**
  * Settings, on a phone: the athlete's mark at the top right of each place — their address's first letter in a round
- * 44 px target, or the settings glyph while no address is known. From lg the rail's foot holds Settings instead.
+ * 44 px target, or the settings glyph while no address is known — on a row of its own above the page, so it never sits
+ * over a banner or a place's own title row (Plan's COROS check, Growth's Month / Season). From lg the rail's foot holds
+ * Settings instead.
  */
 function AthleteMark({ who }: { who: string | null | undefined }) {
   const initial = who?.trim().charAt(0).toUpperCase() ?? "";
   return (
-    <Link className="athlete-mark" to="/settings" aria-label="Settings">
-      {initial ? <span aria-hidden="true">{initial}</span> : <IconSettings />}
-    </Link>
+    <div className="athlete-row">
+      <Link className="athlete-mark" to="/settings" aria-label="Settings">
+        {initial ? <span aria-hidden="true">{initial}</span> : <IconSettings />}
+      </Link>
+    </div>
   );
 }
 

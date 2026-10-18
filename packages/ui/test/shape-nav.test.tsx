@@ -156,7 +156,16 @@ describe("Settings is the athlete's mark (phones)", () => {
 
   it("the mark leaves at lg, where the rail's foot holds Settings", () => {
     const lg = [...css.matchAll(/@media \(min-width: 1024px\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]!).join("\n");
-    expect(lg).toMatch(/\.athlete-mark \{\s*display: none;/);
+    expect(lg).toMatch(/\.athlete-row \{\s*display: none;/);
+  });
+
+  it("on a row of its own above the page: never over a banner or a place's title row", () => {
+    const html = shellAt("/plan");
+    expect(html).toMatch(/<div class="athlete-row"><a [^>]*class="athlete-mark"/);
+    const rule = /\.athlete-mark \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).not.toContain("position: absolute");
+    // First in the page's column: before the banners (staging, fixture, an unfinished restore).
+    expect(html.indexOf('class="athlete-row"')).toBeLessThan(html.indexOf("A restore") === -1 ? html.length : html.indexOf("A restore"));
   });
 
   it("a 44 px target", () => {

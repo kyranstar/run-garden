@@ -27,7 +27,10 @@ import {
   provenanceWords,
 } from "../src/screens/settings/coach-memory-model.js";
 import { MemoryItem, MemoryList } from "../src/screens/settings/coach-memory.js";
-import { CoachLimits, readLimit, spendLine, spendOf, TrainingTimes, TrainingTimesView } from "../src/screens/settings/coach-settings.js";
+import { CoachAiSection, CoachLimits, readLimit, spendLine, spendOf, TrainingTimes, TrainingTimesView } from "../src/screens/settings/coach-settings.js";
+import { DEFAULT_USER_PREFERENCES } from "@rg/domain";
+
+const coachPrefsFixture = DEFAULT_USER_PREFERENCES;
 
 const noop = () => undefined;
 const item = (over: Partial<CoachMemoryItem> = {}): CoachMemoryItem => ({
@@ -214,6 +217,15 @@ describe("Settings → Coach & AI (the new shape: no time frame up front, one sp
     expect(readLimit("day", "")).toEqual({ why: "A dollar amount, like 1.25." });
     expect(readLimit("day", "1.25")).toEqual({ usd: 1.25 });
     expect(readLimit("set", "$4.5")).toEqual({ usd: 4.5 });
+  });
+
+  it("without the coach designer the card keeps its AI switch and spend, and reads none of the coach's settings", () => {
+    features.coach = false;
+    const qc = new QueryClient({ defaultOptions: { queries: { enabled: false } } });
+    const markup = html(createElement(QueryClientProvider, { client: qc }, createElement(CoachAiSection, { prefs: coachPrefsFixture })));
+    expect(markup).toContain('role="switch"');
+    expect(text(markup)).not.toContain("Spending limit");
+    expect(qc.getQueryCache().getAll().map((q) => q.queryKey[0])).not.toContain("coach-preferences");
   });
 
   it("the training times are hidden without the coach designer: nothing rendered, nothing read", () => {

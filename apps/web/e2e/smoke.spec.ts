@@ -23,30 +23,19 @@ test.beforeEach(async ({ page, context, baseURL }) => {
   await pinAccountMorning(page, context, baseURL);
 });
 
-/**
- * The Today card is always open on a phone; on a wide screen it can start
- * collapsed behind the "Next: …" pill, which toggles it.
- */
+/** The Today card: one card, open at every width since the new shape (no pill, no Minimize). */
 async function openTodayCard(page: Page) {
-  // Below the wide tier the pill is hidden and the card is simply there.
-  const pill = page.locator("button.dock-pill:visible");
-  await pill.or(page.locator(".dock-panel:visible")).first().waitFor();
-  if ((await pill.count()) > 0 && (await pill.getAttribute("aria-expanded")) === "false") {
-    await pill.click();
-  }
-  await expect(page.locator(".dock-panel")).toBeVisible();
+  await expect(page.locator("#dock-panel")).toBeVisible({ timeout: 15_000 });
 }
 
-test("Garden home leads with the Today card and its workout", async ({ page }) => {
+test("Today leads with the one card and its workout", async ({ page }) => {
   await page.goto("/");
   await openTodayCard(page);
   await expect(page.locator(".dock-panel").getByRole("heading").first()).toBeVisible();
-  // The day's lead and its action: a run's Move or View workout, or — on a day the fixture holds only its program
-  // session (the fixture places one on today; on a weekday with no fixture run it leads the card) — Start or Open.
+  // The day's lead and its action: a run's View workout, or — on a day the fixture holds only its program session (the
+  // fixture places one on today; on a weekday with no fixture run it leads the card) — Start or Open.
   await expect(
-    page.locator(".dock-panel").getByRole("button", { name: /^(Move|View workout)$/ })
-      .or(page.locator(".dock-panel").getByRole("link", { name: /^(Start|Open|Continue)$/ }))
-      .first(),
+    page.locator(".dock-panel").getByRole("link", { name: /^(View workout|Start|Open|Continue)$/ }).first(),
   ).toBeVisible();
 });
 
@@ -67,26 +56,27 @@ test("Plan renders the week calendar with no COROS warning", async ({ page }) =>
   await expect(page.getByText(/COROS (not connected|rejected|unreachable)|Still syncing/)).toHaveCount(0);
 });
 
-test("Garden renders a scene and opens the species collection", async ({ page }) => {
-  await page.goto("/garden");
+test("Today renders a scene, and the garden drawer opens the species collection", async ({ page }) => {
+  await page.goto("/");
   // The scene is drawn after the garden's reads land; a cold start on a shared CI runner has taken longer than the
   // default 5 s (a green re-run of the same commit confirmed the flake).
   await expect(page.locator("svg[role=img]").first()).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("button", { name: /Collection — \d+ of \d+ species/ }).click();
+  await page.getByRole("button", { name: "Your garden" }).click();
+  await page.getByRole("dialog", { name: "Your garden" }).getByRole("button", { name: /^Collection · \d+ of \d+$/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByText(/Growing next/i).first()).toBeVisible();
 });
 
-test("Activity renders consistency and signals (/insights redirects)", async ({ page }) => {
+test("the old addresses land on Growth (/insights, /runs) and /garden on Today", async ({ page }) => {
   await page.goto("/insights");
-  await expect(page).toHaveURL(/\/runs/);
-  await expect(page.getByText("Consistency").first()).toBeVisible();
-  await expect(page.getByText("Signals").first()).toBeVisible();
+  await expect(page).toHaveURL(/\/growth$/);
+  await page.goto("/garden");
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("Settings exposes the COROS connection and data controls", async ({ page }) => {
   await page.goto("/settings");
-  await expect(page.getByText("COROS connection", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "COROS", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Export everything/ })).toBeVisible();
   await expect(page.getByText(/Restore from file/)).toBeVisible();
 });
@@ -95,6 +85,10 @@ test("Moving a workout opens the move sheet", async ({ page }) => {
   // A run still ahead in the fixture plan, opened by its own link — the Today card leads with the program session on
   // a weekday with no fixture run, so it is not always a run's card.
   await page.goto("/plan");
+  // The page settles first: WebKit reports a read the next navigation cuts off as a page error ("… due to access
+  // control checks"), which says nothing about the app — and the read below would race it.
+  await expect(page.getByRole("heading", { name: "Plan", exact: true })).toBeVisible({ timeout: 30_000 });
+  await page.waitForLoadState("networkidle");
   const runId = await page.evaluate(async () => {
     const res = await fetch("/api/plan/workouts", { credentials: "include" });
     const body = (await res.json()) as { workouts?: Array<{ id: string; sport: string; origin?: string | null; completionState: string; effectiveDate: string }> } | Array<{ id: string; sport: string; origin?: string | null; completionState: string; effectiveDate: string }>;

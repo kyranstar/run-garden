@@ -178,7 +178,8 @@ test.describe("on the fixture stack", () => {
       await expect(naming).toHaveCount(0);
 
       // Reused: from the Studio's home to the templates, where it is listed, and its Start plays it.
-      await page.getByRole("link", { name: "Studio", exact: true }).first().click();
+      // The Studio is no tab since the new shape: its home is its own address.
+      await page.goto("/studio");
       await page.getByRole("link", { name: /^Templates/ }).click();
       await expect(page).toHaveURL(/\/studio\/templates$/);
       const row = page.getByRole("listitem").filter({ has: page.getByRole("heading", { name }) });
