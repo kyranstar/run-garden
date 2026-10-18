@@ -152,7 +152,6 @@ async function seedPlan(w: World, sessions: { date: string; session: CoachSessio
     name: "Base block",
     startDate: w.monday,
     endDate: addDays(w.monday, 7 * 6 - 1),
-    raceDate: null,
     firmSessions: sessions,
     shapeWeeks: Array.from({ length: shapeWeeks }, (_, i) => ({ weekStart: addDays(w.monday, 7 * (4 + i)), volumeTarget: "30 km", keySessions: ["long run"] })),
   };
@@ -202,7 +201,7 @@ const CASES: Case[] = [
         name: "Strength block",
         startDate: w.monday,
         endDate: addDays(w.monday, 13),
-        raceDate: null,
+       
         firmSessions: sessionsFrom(w.monday, 8, "Strength").map((s) => ({ ...s, session: liftSession(s.session.title, true) })),
         shapeWeeks: [],
       };
@@ -278,4 +277,207 @@ describe("applyStructuralChunk: a budget of 10 a call ends where one unbounded c
       expect(await planState(sliced)).toEqual(await planState(whole));
     });
   }
+});
+
+/** One call of `op` from `progress` with `budget`. */
+const chunk = (w: World, op: CoachOp, progress: StructuralProgress | null, budget: number, proposalId = "p1") =>
+  applyStructuralChunk(w.db, { userId: w.userId, proposalId, opIndex: 0, op, progress, budget, now: NOW, prefs: w.prefs });
+
+describe("applyStructuralChunk: a call re-run with the same progress does nothing twice", () => {
+  it("a chunk of sessions met again skips every session whose row is there — an athlete's change since included", async () => {
+    const w = await world();
+    const op: CoachOp = {
+      kind: "createPlan", discipline: "run", name: "10K block", startDate: w.monday, endDate: addDays(w.monday, 27),
+      firmSessions: sessionsFrom(w.monday, 12), shapeWeeks: [],
+    };
+    const first = await chunk(w, op, null, 12);
+    expect(first.status).toBe("more");
+    const p1 = (first as { progress: StructuralProgress }).progress;
+    const second = await chunk(w, op, p1, 14);
+    expect(second.status).toBe("more");
+    const p2 = (second as { progress: StructuralProgress }).progress;
+    expect(p2.done).toBeGreaterThan(p1.done);
+    // The athlete changes one of the second chunk's sessions meanwhile.
+    const changed = `cw-p1-0-${p1.done}`;
+    await w.db.update(schema.plannedWorkouts).set({ title: "Changed by hand" }).where(eq(schema.plannedWorkouts.id, changed));
+    await w.db.delete(schema.plannedWorkoutStages).where(eq(schema.plannedWorkoutStages.workoutId, changed));
+    const before = await planState(w);
+    // The second chunk's progress was never stored: it is met again. What it finds there costs it nothing, so it goes
+    // on past them — and touches none of them.
+    const again = await chunk(w, op, p1, 14);
+    expect(again.status).toBe("more");
+    expect((again as { progress: StructuralProgress }).progress.done).toBeGreaterThan(p2.done);
+    const after = await planState(w);
+    const had = new Set(before.workouts.map((x) => x.id));
+    const keep = <T extends { id: string }>(xs: T[], idOf: (x: T) => string = (x) => x.id) => xs.filter((x) => had.has(idOf(x)));
+    expect(keep(after.workouts)).toEqual(before.workouts);
+    expect(keep(after.stages, (s) => s.id.split(":")[0]!)).toEqual(before.stages);
+    expect(keep(after.revisions, (r) => r.id.split(":")[0]!)).toEqual(before.revisions);
+    expect(keep(after.jobs, (j) => j.id.replace(/-push$/, ""))).toEqual(before.jobs);
+    expect(after.workouts.find((x) => x.id === changed)!.title).toBe("Changed by hand");
+  });
+
+  it("an archive slice met again finds the rows it finished gone: no second suppression, no second unpush", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 30));
+    await pushed(w, ["cw-seed-0-0", "cw-seed-0-1"]);
+    const op: CoachOp = { kind: "retirePlan", planId };
+    const first = await chunk(w, op, null, 8);
+    expect(first.status).toBe("more");
+    const p1 = (first as { progress: StructuralProgress }).progress;
+    const second = await chunk(w, op, p1, 8);
+    expect(second.status).toBe("more");
+    const before = await planState(w);
+    expect(before.workouts.filter((x) => x.archived).length).toBeGreaterThan(0);
+    const again = await chunk(w, op, p1, 8);
+    expect(again.status).toBe("more");
+    const after = await planState(w);
+    // The re-run took the NEXT rows still scheduled; nothing it had finished was written again.
+    for (const s of before.suppressions) expect(after.suppressions.filter((x) => x.workoutId === s.workoutId)).toHaveLength(1);
+    expect(after.jobs.filter((j) => j.kind === "coach_delete_workout")).toHaveLength(2);
+  });
+
+  it("a wind-down met again at its archive step never archives the sessions it has already added", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 14));
+    const op: CoachOp = { kind: "windDown", planId, sessions: sessionsFrom(addDays(w.monday, 7), 5, "Taper") };
+    let progress: StructuralProgress | null = null;
+    let atArchive: StructuralProgress | null = null;
+    for (let i = 0; i < 50 && progress?.step !== "sessions"; i++) {
+      const r = await chunk(w, op, progress, 10);
+      expect(r.status).toBe("more");
+      progress = (r as { progress: StructuralProgress }).progress;
+      if (progress.step === "archive" && atArchive === null) atArchive = progress;
+    }
+    expect(atArchive).not.toBeNull();
+    const added = await chunk(w, op, progress, 10);
+    expect(added.status).toBe("more");
+    expect((await planState(w)).workouts.some((x) => x.id.startsWith("cw-p1-0-"))).toBe(true);
+    // A stored progress from before: the archive step again, after some taper sessions are on the plan.
+    let p: StructuralProgress | null = atArchive;
+    let finished = false;
+    for (let i = 0; i < 50 && !finished; i++) {
+      const r = await chunk(w, op, p, 10);
+      finished = r.status === "done";
+      if (r.status === "more") p = r.progress;
+    }
+    expect(finished).toBe(true);
+    const taper = (await planState(w)).workouts.filter((x) => x.id.startsWith("cw-p1-0-"));
+    expect(taper).toHaveLength(5);
+    expect(taper.every((x) => !x.archived)).toBe(true);
+  });
+});
+
+describe("applyStructuralChunk: what it writes", () => {
+  it("a plan's sessions fill firm weeks; a shape week its sessions fill becomes firm; the rest stay shape", async () => {
+    const w = await world();
+    const op: CoachOp = {
+      kind: "createPlan", discipline: "run", name: "Half block", startDate: w.monday, endDate: addDays(w.monday, 41),
+      firmSessions: sessionsFrom(addDays(w.monday, 2), 7),
+      shapeWeeks: [0, 1, 2, 3].map((i) => ({ weekStart: addDays(w.monday, 7 * i), volumeTarget: "30 km", keySessions: ["long run"] })),
+    };
+    const calls = await applyAll(w, "p1", op, 45);
+    expect(calls.at(-1)!.result.status).toBe("done");
+    const { weeks } = await planState(w);
+    expect(weeks.map((x) => [x.weekStart, x.state, x.shape])).toEqual([
+      [w.monday, "firm", null],
+      [addDays(w.monday, 7), "firm", null],
+      [addDays(w.monday, 14), "shape", { volumeTarget: "30 km", keySessions: ["long run"] }],
+      [addDays(w.monday, 21), "shape", { volumeTarget: "30 km", keySessions: ["long run"] }],
+    ]);
+  });
+
+  it("between two calls the plan reads sensibly: the plan, and each session there whole — its document, stages and watch create", async () => {
+    const w = await world();
+    const op = {
+      kind: "createPlan", discipline: "run", name: "10K block", startDate: w.monday, endDate: addDays(w.monday, 27),
+      firmSessions: sessionsFrom(w.monday, 9), shapeWeeks: [],
+    } satisfies CoachOp;
+    const r = await chunk(w, op, null, 15);
+    expect(r.status).toBe("more");
+    const state = await planState(w);
+    expect(state.plans.map((x) => x.status)).toEqual(["active"]);
+    expect(state.workouts.length).toBeGreaterThan(0);
+    expect(state.workouts.length).toBeLessThan(9);
+    for (const row of state.workouts) {
+      const n = Number(row.id.split("-").at(-1));
+      const { session } = op.firmSessions[n]!;
+      expect(row.doc, row.id).toBeTruthy();
+      expect(state.revisions.some((x) => x.id === `${row.id}:1`), row.id).toBe(true);
+      expect(state.stages.filter((s) => s.id.startsWith(`${row.id}:`)).length).toBe(session.run?.blocks.length ?? 0);
+      expect(state.jobs.some((j) => j.id === `${row.id}-push`)).toBe(!!session.run || (session.lift?.exercises.every((e) => e.originId) ?? false));
+    }
+  });
+
+  it("two sessions of one title on one day take two stamps", async () => {
+    const w = await world();
+    const op: CoachOp = {
+      kind: "createPlan", discipline: "run", name: "Doubles", startDate: w.monday, endDate: addDays(w.monday, 6),
+      firmSessions: [
+        { date: w.monday, session: runSession("Easy", 30) },
+        { date: w.monday, session: runSession("Easy", 30) },
+      ],
+      shapeWeeks: [],
+    };
+    await applyAll(w, "p1", op, 45);
+    const names = (await planState(w)).jobs.map((j) => j.name);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+  });
+
+  it("with watch writes off, nothing is queued for the watch", async () => {
+    const w = await world({ writes: false });
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 6));
+    await applyAll(w, "p1", { kind: "retirePlan", planId }, 10);
+    const state = await planState(w);
+    expect(state.jobs).toEqual([]);
+    expect(state.workouts.every((x) => x.archived)).toBe(true);
+    expect(state.plans[0]!.status).toBe("retired");
+  });
+
+  it("retiring keeps what is done and what is past: only future, still-scheduled sessions go", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 4));
+    await w.db.update(schema.plannedWorkouts).set({ completionState: "completed" }).where(eq(schema.plannedWorkouts.id, "cw-seed-0-1"));
+    await w.db.update(schema.plannedWorkouts).set({ effectiveDate: addDays(w.today, -1) }).where(eq(schema.plannedWorkouts.id, "cw-seed-0-2"));
+    const calls = await applyAll(w, "p1", { kind: "retirePlan", planId }, 10);
+    expect(calls.at(-1)!.result).toMatchObject({ status: "done", summary: "Retired “Base block” and took 2 sessions off your plan" });
+    const archived = (await planState(w)).workouts.filter((x) => x.archived).map((x) => x.id);
+    expect(archived).toEqual(["cw-seed-0-0", "cw-seed-0-3"]);
+  });
+
+  for (const [kind, reason] of [
+    ["retirePlan", "That plan isn't there any more, so nothing was retired."],
+    ["extendPlan", "That plan isn't there any more, so it wasn't extended."],
+    ["windDown", "That plan isn't there any more, so nothing was eased down."],
+    ["firmUp", "That plan isn't there any more, so no sessions were added."],
+    ["reshapeWeek", "That plan isn't there any more, so the week was left as it was."],
+  ] as const) {
+    it(`${kind} on a plan that isn't the athlete's is refused in words, and writes nothing`, async () => {
+      const other = await world();
+      const planId = await seedPlan(other, sessionsFrom(other.monday, 3));
+      // The same database, another athlete: the plan id names a plan, but not theirs.
+      const { userId, prefs } = await makeTestUser(other.db, { corosWritesEnabled: true });
+      const w: World = { ...other, userId, prefs };
+      const sessions = sessionsFrom(w.monday, 2);
+      const op = {
+        retirePlan: { kind: "retirePlan", planId },
+        extendPlan: { kind: "extendPlan", planId, shapeWeeks: [{ weekStart: addDays(w.monday, 70), volumeTarget: "x", keySessions: [] }] },
+        windDown: { kind: "windDown", planId, sessions },
+        firmUp: { kind: "firmUp", planId, weekStart: w.monday, sessions },
+        reshapeWeek: { kind: "reshapeWeek", planId, weekStart: w.monday, sessions },
+      }[kind] as CoachOp;
+      const before = await planState(other);
+      const r = await chunk(w, op, null, 45);
+      expect(r).toEqual({ status: "refused", reason, spent: 1 });
+      expect(await planState(w)).toMatchObject({ workouts: [], plans: [] });
+      expect(await planState(other)).toEqual(before);
+    });
+  }
+
+  it("an op that is not structural is refused", async () => {
+    const w = await world();
+    const r = await chunk(w, { kind: "skip", workoutId: "x" } as CoachOp, null, 45);
+    expect(r.status).toBe("refused");
+  });
 });
