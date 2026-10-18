@@ -10,7 +10,15 @@ import { describe, expect, it } from "vitest";
 import { runWatchSteps, type CoachSession, type RunWatchSession } from "@rg/domain";
 import { normalizeCorosSchedule, type RawCorosExercise, type RawCorosProgram } from "@rg/providers";
 import { CorosClient } from "../src/client.js";
-import { buildProgramFor, buildRunProgram, buildRunWatchProgram, createWorkout, missingPaceTargets, type CreateWorkoutSpec } from "../src/create-executor.js";
+import {
+  buildProgramFor,
+  buildRunProgram,
+  buildRunWatchProgram,
+  createWorkout,
+  missingPaceTargets,
+  storedContentDelta,
+  type CreateWorkoutSpec,
+} from "../src/create-executor.js";
 import { nextMonday } from "./mock-coros-server.js";
 import { renormalizingCoros } from "./renormalizing-coros.js";
 
@@ -230,5 +238,15 @@ describe("the create's read-back of a designed run: what COROS changed on save, 
     const result = await on(changing((p) => void ((p.exercises ?? [])[0]!.exerciseType = 3)), blocks);
     expect(result.ok, result.error).toBe(true);
     expect(result.contentDelta).toBeUndefined();
+  });
+});
+
+describe("storedContentDelta — COROS's own estimates are never a difference (review-2 I2)", () => {
+  it("a stored duration, time estimate and distance of the server's own say nothing; a step that differs is named", () => {
+    const sent = { ...buildRunWatchProgram(spec()), duration: 3158, estimatedTime: 3158, distance: "957900.00", estimatedDistance: 957900 };
+    expect(storedContentDelta(sent, { ...sent, duration: 3175, estimatedTime: 3175, distance: 961234, estimatedDistance: 961234 })).toBeUndefined();
+    const moved = structuredClone(sent);
+    (moved.exercises![2] as unknown as Record<string, unknown>).targetValue = 150;
+    expect(storedContentDelta(sent, moved)).toBe("ex[2].targetValue 120→150");
   });
 });
