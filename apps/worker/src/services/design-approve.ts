@@ -16,7 +16,8 @@
  * FATAL ONLY WHEN WRONG, OP BY OP. An op the server refuses today is refused with its reason, and the others still
  * apply: a day gone (`past_date`), a base changed since the coach read it (`stale_revision`), a resolved row or a
  * programme's session (`not_editable`, with its `cause`), a workout removed since (`not_found`), a hard rule the day now
- * refuses or a move the library no longer has (`invalid_doc`, with the validator's errors), a run (`run_unsupported`),
+ * refuses or a move the library no longer has (`invalid_doc`, with the validator's errors), a run as a revision of a Studio
+ * workout (`run_unsupported`; a new designed run is written to the coach lane and queued to the watch: §8 §3, below),
  * a restore under way (`restore_in_progress`), and the coach's time for today gone by — or no time left today for an
  * untimed one (`past_time`; fix wave 3B, B-I1). Each `why` is plain words; the codes are for the UI to word. A refused op
  * stays open: the day can change, and the athlete can edit it.
@@ -62,6 +63,12 @@
  * DECLINE (`declineDesignOps`). The proposal, or the chosen ops, declined; the athlete's reason — their own words, data
  * only — kept on each op for read_proposals. An op whose workout is there is recorded applied instead.
  *
+ * A DESIGNED RUN (§8 §3). A new workout whose document is a run is no Studio workout: it is written to the COACH LANE
+ * (designed-runs.ts `createDesignedRun`: origin null, as the thread coach's runs — so the body check, adjust_plan and Undo
+ * work on it unchanged), judged with the athlete's running, its stage rows with their bands, and — COROS writes on — its
+ * watch create queued (a `run_watch` session), which the answer says the client drains (`coachDrain`): approving a run is
+ * the athlete's consent to put it on the watch. Its cost is `runCreateCost`.
+ *
  * CHANGES TO SESSIONS ALREADY ON THE PLAN (Task 8b; ruling I6). A `plan_adjust` op — the main coach's skip, move or
  * length of a session, adjust_plan's, and since the new shape §5 its ease (a swap is one), remove and restore — goes through the THREAD COACH'S OWN APPLIER (coach-apply.ts `applyOps`, once
  * per request for that request's changes, ahead of the workouts so a day is as the coach meant it before a new workout
@@ -104,7 +111,7 @@
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { coachMessages, coachProposals, plannedWorkouts, scheduleOverrides, workoutDocRevisions } from "@rg/database";
-import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, isRunDoc, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
@@ -128,6 +135,7 @@ import {
   type DocWriteSource,
 } from "./doc-workouts.js";
 import { receiptLine } from "./design-manifest.js";
+import { createDesignedRun, stageInsertCount } from "./designed-runs.js";
 import { approvalKey } from "./design-placement.js";
 import { approveTimeOf, clockIn, PastTimeError, pastTime, todayLeadRefusal } from "./design-time.js";
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
@@ -345,6 +353,17 @@ export const CREATE_PLACED_BASE = 1 + DAY_READS + 1 + 3 + 2;
 /** A revision, before the rows its day's collision pass moves: the row, its day, the restore check, the update and its
  * revision, the read after, the pass's two reads, and whether the watch holds an older copy (two). */
 export const REVISE_BASE = 1 + DAY_READS + 1 + 2 + 1 + 2 + 2;
+/**
+ * A DESIGNED RUN (§8 §3, `createDesignedRun`): its key's read, its day, the athlete's running (one read), the restore
+ * check, the batch's programme, row and revision — and its stage rows' inserts (`stageInsertCount`), a pinned time's
+ * override, or the collision pass's two reads and the rows it moves, itself among them — then its watch create (the day's
+ * stamps, the insert), counted whether or not writes are on: an upper bound.
+ */
+export const RUN_CREATE_BASE = 1 + DAY_READS + 1 + 1 + 3 + 2;
+export function runCreateCost(doc: WorkoutDoc, time: string | null, dayRows: number): number {
+  return RUN_CREATE_BASE + stageInsertCount(doc) + (time ? 1 : 2 + dayRows + 1);
+}
+
 /** The ops one plan read covers (its bound values stay well under D1's 100). A set holds at most seven workouts, and
  * its main coach's changes beside them. */
 const PLAN_MAX = 10;
@@ -432,10 +451,16 @@ export function planOpCostOf(op: Pick<PlanAdjustOp, "op">, dayRows: number): num
 
 /** What an op costs, by the sessions its day already holds (`dayRows`, this request's own included) — a change's too
  * (`planOpCostOf`; the request's changes add PLAN_BATCH_FIXED once). */
-export function opCostOf(op: Pick<DocWorkoutOp, "target"> | Pick<PlanAdjustOp, "op">, dayRows: number, edit?: ApproveInput["edit"]): number {
+export function opCostOf(
+  op: (Pick<DocWorkoutOp, "target"> & { doc?: WorkoutDoc }) | Pick<PlanAdjustOp, "op">,
+  dayRows: number,
+  edit?: ApproveInput["edit"],
+): number {
   if ("op" in op) return planOpCostOf(op, dayRows);
   if (op.target.kind === "revise") return REVISE_BASE + dayRows;
   const time = edit && edit.time !== undefined ? edit.time : op.target.time;
+  // A designed run (§8 §3): the coach lane's row, its stages and its watch create.
+  if (op.doc && isRunDoc(op.doc)) return runCreateCost(op.doc, time ?? null, dayRows);
   // The collision pass may move every unpinned session of the day, the new one with them. An untimed one the approve
   // places at a time (B-I1) costs the less of the two: the declared cost stays an upper bound.
   return time ? CREATE_AT_TIME_COST : CREATE_PLACED_BASE + dayRows + 1;
@@ -1096,6 +1121,8 @@ export async function approveDesignOps(
       outcomes.set(opId, { status: "refused", at: ctx.now, ...result.refusal });
     } else {
       applied.push({ opId, ...result.applied });
+      // A designed run's watch create waits for the client to drain it, as a change's watch job does.
+      if (result.queued) coachDrain = true;
       if (op.target.kind === "new") added.set(result.applied.workout.date, (added.get(result.applied.workout.date) ?? 0) + 1);
       outcomes.set(opId, {
         status: "applied",
@@ -1153,7 +1180,7 @@ const emptyDto = (id: string): DocWorkoutDto => ({
 });
 
 type OpResult =
-  | { applied: Omit<Applied, "opId"> }
+  | { applied: Omit<Applied, "opId">; /** A designed run's watch create was queued: the client drains it. */ queued?: boolean }
   | { refusal: Omit<Refused, "opId">; /** The Studio's own error, for edit before approve to answer with. */ error: Error };
 
 /** One op through the Studio's service: applied, or refused with its reason. */
@@ -1192,6 +1219,11 @@ async function applyOp(
         // The athlete's version runs the same check (the polish round, 6): its time, or the coach's when it left it.
         const gone = pastTime(date, asked, clockIn(ctx.prefs.timezone, new Date(ctx.now)));
         if (gone) return { refusal: { error: "past_time", why: gone }, error: new PastTimeError("past_time", gone) };
+      }
+      // A designed run (§8 §3) lands in the coach lane, and goes to the watch: designed-runs.ts.
+      if (isRunDoc(doc as WorkoutDoc)) {
+        const run = await createDesignedRun(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
+        return { applied: { workout: run.workout, warnings: run.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) }, queued: run.queued };
       }
       const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
       return { applied: { workout: made.workout, warnings: made.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) } };
@@ -1233,7 +1265,7 @@ function refusalOf(e: unknown, date: string, row: RowState | undefined): { refus
       const errors = e.issues.filter((i) => i.severity === "error");
       return { error: "invalid_doc", why: `The day now refuses it: ${errors[0]?.message ?? "it no longer passes the day's rules"}`, issues: errors.slice(0, 10).map(issueOut) };
     }
-    if (e instanceof RunUnsupportedError) return { error: "run_unsupported", why: "A run can't be planned from the Studio yet." };
+    if (e instanceof RunUnsupportedError) return { error: "run_unsupported", why: "A run is suggested as a new workout, not as a change to a Studio one." };
     if (e instanceof RestoreInProgressError) return { error: "restore_in_progress", why: "The account is being restored." };
     return null;
   })();

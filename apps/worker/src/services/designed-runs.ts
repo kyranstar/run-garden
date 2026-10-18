@@ -13,12 +13,44 @@
  *    effort working the legs — RUN_REGIONS, at least HARD_LEGS_SETS working sets — read from its document); the running
  *    planned in the run's week (Monday to Sunday) and the last four weeks' weekly average before it (the watch's runs).
  */
-import { sql, type SQL } from "drizzle-orm";
-import { activities, dailyHealth, plannedWorkouts } from "@rg/database";
-import { addDays, isoWeekday, paceBandFor, parseStoredWorkoutDoc, type RunEffort } from "@rg/domain";
+import { and, eq, sql, type SQL } from "drizzle-orm";
+import { activities, dailyHealth, plannedWorkouts, plannedWorkoutStages, programs, scheduleOverrides } from "@rg/database";
+import {
+  addDays,
+  isoWeekday,
+  newId,
+  paceBandFor,
+  parseStoredWorkoutDoc,
+  RUN_EFFORT_LABELS,
+  runWatchSessionOf,
+  runWatchSteps,
+  type RunEffort,
+  type WorkoutDoc,
+} from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
-import { deriveDoc, type RunCtx } from "@rg/workout";
+import { summarizeStageRows } from "@rg/scheduling";
+import { deriveDoc, stagesFromDoc, type DocIssue, type RunCtx } from "@rg/workout";
+import { restoreInProgress } from "./account-state.js";
 import { RUN_REGIONS } from "./body-exposure.js";
+import { enqueueWatchCreate } from "./coach-apply.js";
+import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
+import { insertBatches, runAtomically, type Db } from "./db.js";
+import { judgeDoc } from "./doc-build.js";
+import {
+  accepted,
+  DocInvalidError,
+  docDayContext,
+  keyedRowId,
+  parsedDoc,
+  PastDateError,
+  studioProgramId,
+  type DocWorkoutCtx,
+  type DocWorkoutDto,
+  type DocWriteSource,
+} from "./doc-workouts.js";
+import { RestoreInProgressError } from "./programs.js";
+import { bookedSeconds } from "./session-build.js";
+import { newRowDocColumns, revisionInsert } from "./workout-doc-store.js";
 
 const METERS_PER_MILE = 1609.344;
 
@@ -189,5 +221,200 @@ export function runCtxOf(raw: unknown): RunCtx {
     nearby,
     weekMinutes: Math.round((Number(o.week) || 0) / 60),
     fourWeekAvgMinutes: n > 0 ? Math.round((Number(avg?.s) || 0) / 60 / 4) : null,
+  };
+}
+
+// ── The approved run's row (`createDesignedRun`) ────────────────────────────────────────────────────────────────────
+
+/** A stage row as `planned_workout_stages` takes it. */
+type StageRow = typeof plannedWorkoutStages.$inferInsert;
+
+/** The quality subtype a hard run's efforts name (the hardest first), as the app files planned runs. */
+const SUBTYPE_OF: ReadonlyArray<[RunEffort, string]> = [["interval", "intervals"], ["threshold", "threshold"], ["tempo", "tempo"], ["hills", "hills"]];
+
+/**
+ * A designed run's stage rows (the plan's own structure: Today, Plan and the session sheet read them, the body check
+ * eases from them): the document's stages (`stagesFromDoc` — a part with rounds a repeat holding its items), each run
+ * segment with the pace band the watch gets (the one asked for, else its effort's from the threshold) and its effort in
+ * words as its label ("tempo", as a coach run's stage says its intensity). The stored document keeps only what was
+ * authored; the bands are computed, so they live here.
+ */
+export function designedRunStages(workoutId: string, doc: WorkoutDoc, thresholdSecPerKm: number | null): StageRow[] {
+  const labels: Array<string | null> = [];
+  const paced: WorkoutDoc = {
+    ...doc,
+    parts: doc.parts.map((part) => {
+      if (part.rounds !== undefined) labels.push(null);
+      return {
+        ...part,
+        items: part.items.map((item) => {
+          if (item.kind !== "run") {
+            labels.push(null);
+            return item;
+          }
+          labels.push(RUN_EFFORT_LABELS[item.effort].toLowerCase());
+          const t = item.target;
+          const band = t.pace ? null : paceBandFor(item.effort, thresholdSecPerKm, t.distanceM !== undefined ? { distanceM: t.distanceM } : {});
+          return band ? { ...item, target: { ...t, pace: band } } : item;
+        }),
+      };
+    }),
+  };
+  const stages = stagesFromDoc(paced, EXERCISES);
+  return stages.map((s, i) => ({
+    id: `${workoutId}:${s.id}`,
+    workoutId,
+    parentStageId: s.parentStageId ? `${workoutId}:${s.parentStageId}` : null,
+    ord: s.order,
+    kind: s.kind,
+    repeatCount: s.repeatCount ?? null,
+    durationType: s.durationType,
+    durationSeconds: s.durationSeconds ?? null,
+    distanceMeters: s.distanceMeters ?? null,
+    targetType: s.targetType ?? null,
+    targetLow: s.targetLow ?? null,
+    targetHigh: s.targetHigh ?? null,
+    paceZone: s.paceZone ?? null,
+    hrZone: s.hrZone ?? null,
+    label: labels.length === stages.length ? labels[i]! : null,
+    note: s.note ?? null,
+  }));
+}
+
+/** The statements a designed run's stage rows take to insert (D1's bound-variable cap: `insertBatches`). */
+export function stageInsertCount(doc: WorkoutDoc): number {
+  return insertBatches(designedRunStages("x", doc, null)).length;
+}
+
+/** What `createDesignedRun` answers: the workout as a Studio save answers it, and whether a watch job waits. */
+export interface DesignedRunMade {
+  workout: DocWorkoutDto;
+  warnings: DocIssue[];
+  /** A watch create was queued (COROS writes on, and every step has its time): the client drains it. */
+  queued: boolean;
+  repeated?: true;
+}
+
+/**
+ * THE APPROVED RUN'S ROW (§8 §3; design-approve.ts's run branch). A designed run lands in the COACH LANE — origin null,
+ * as the thread coach's runs do — so the body check's ease, adjust_plan and Undo work on it unchanged, and it goes to
+ * the watch when it is approved (the athlete's approval is the consent; COROS writes on): a `coach_create_workout` job
+ * whose session is its `run_watch`, built at the write from the freshest threshold.
+ *
+ * Made once per key (`clientId`, the approve's op key: a repeat answers the row it made, writing nothing). Judged as a
+ * save judges a document — the day's rules (`docDayContext`) with the athlete's running (`runCtxSql`: one read) — an
+ * error refuses it (`DocInvalidError`), a warning comes back with it. Its columns: the document's title; its derived
+ * category and the quality subtype its hardest effort names; sport run; its length the steps' on the watch
+ * (`runWatchSteps`, a distance at its band's middle; else derived), booked to five minutes; its expected distance the
+ * steps' (a time at its band's middle) when every one can be read. Its stage rows (`designedRunStages`) and the
+ * document at revision 1 with its revision row, in one batch; a time asked for is pinned, else the athlete's window and
+ * the day's collision pass. It hangs from the account's Studio programme, as the coach's other designed workouts do.
+ *
+ * Statements: the key's read, the day (DAY_READS), the running read, the restore check, the batch (the programme, the
+ * row, the revision, the stage inserts, a pinned time), the collision pass (two reads and the rows it moves) when
+ * placed, and the watch job (the day's stamps, the insert) — design-approve.ts `runCreateCost`.
+ */
+export async function createDesignedRun(
+  db: Db,
+  userId: string,
+  input: { date: string; time: string | null; doc: unknown; clientId: string },
+  ctx: DocWorkoutCtx,
+  source: DocWriteSource,
+): Promise<DesignedRunMade> {
+  const id = await keyedRowId(userId, input.clientId);
+  const pw = plannedWorkouts;
+  const [had] = await db
+    .select({ id: pw.id, effectiveDate: pw.effectiveDate, effectiveTime: pw.effectiveTime, title: pw.title, category: pw.category, sport: pw.sport, contentState: pw.contentState, completionState: pw.completionState, workoutDocRev: pw.workoutDocRev, seconds: pw.fallbackEstimatedDurationSeconds, summary: sql<string | null>`case when json_valid(${pw.workoutDoc}) then json_extract(${pw.workoutDoc}, '$.intent.summary') end` })
+    .from(pw)
+    .where(and(eq(pw.id, id), eq(pw.userId, userId)))
+    .limit(1);
+  if (had) {
+    return {
+      workout: { id: had.id, date: had.effectiveDate, time: had.effectiveTime, title: had.title, intentSummary: had.summary ?? "", category: had.category, sport: had.sport, origin: "coach", contentState: had.contentState ?? "outline", completionState: had.completionState, docRev: had.workoutDocRev ?? null, minutes: Math.round((had.seconds ?? 0) / 60) },
+      warnings: [],
+      queued: false,
+      repeated: true,
+    };
+  }
+  if (input.date < ctx.today) throw new PastDateError();
+  const doc = parsedDoc(input.doc);
+  const [day, ran] = await Promise.all([
+    docDayContext(db, userId, { date: input.date, today: ctx.today, workoutId: id, placeId: doc.setting?.placeId }),
+    db.all(sql`select ${runCtxSql(userId, input.date)} as r`) as Promise<Array<{ r: unknown }>>,
+  ]);
+  const running = runCtxOf(ran[0]?.r ?? null);
+  const warnings = accepted(judgeDoc(doc, { ...day, run: running }));
+  const made = runWatchSessionOf(doc);
+  // The validator refuses what the wire can't hold first (run_mixed, run_open, run_too_long): never reached.
+  if (!("session" in made)) throw new DocInvalidError(warnings);
+  if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
+
+  const threshold = running.thresholdSecPerKm;
+  const resolved = runWatchSteps(made.session, threshold);
+  const derived = deriveDoc(doc, EXERCISES);
+  const seconds = resolved.totalSeconds ?? derived.estimatedMinutes * 60;
+  const efforts = new Set(doc.parts.flatMap((p) => p.items.flatMap((i) => (i.kind === "run" ? [i.effort] : []))));
+  const subtype = derived.category === "quality" ? (SUBTYPE_OF.find(([e]) => efforts.has(e))?.[1] ?? null) : null;
+  const stages = designedRunStages(id, doc, threshold);
+  const date = input.date;
+  const row = {
+    id,
+    userId,
+    planId: studioProgramId(userId),
+    sourceWorkoutId: id,
+    sourceProgramId: null,
+    sourceIdInPlan: null,
+    title: doc.title,
+    category: derived.category,
+    qualitySubtype: subtype,
+    sport: "run",
+    originalPlanDate: date,
+    // "" = COROS has never verified this row: the create's verify stamps the real date.
+    lastVerifiedCorosDate: "",
+    effectiveDate: date,
+    effectiveTime: input.time ?? windowTimeFor({ category: derived.category, date }, ctx.prefs),
+    // A seed no COROS read could be mistaken for (`isUpstreamFingerprint`): the create's verify writes the wire's own.
+    sourceContentFingerprint: "designed-run",
+    sourceVersion: null,
+    sourceEstimatedDurationSeconds: null,
+    fallbackEstimatedDurationSeconds: seconds,
+    calendarBlockDurationSeconds: bookedSeconds(seconds),
+    durationEstimate: null,
+    expectedDistanceMeters: resolved.totalMeters,
+    stageSummary: summarizeStageRows(stages.map((s) => ({ ...s, ord: s.ord }))),
+    structuredJson: null,
+    calendarSyncState: "not_created",
+    corosSyncState: "calendar_only",
+    completionState: "scheduled",
+    missingReads: 0,
+    origin: null,
+    ...newRowDocColumns(doc),
+    createdAt: ctx.now,
+    updatedAt: ctx.now,
+  } satisfies typeof plannedWorkouts.$inferInsert;
+  await runAtomically(db, [
+    db
+      .insert(programs)
+      .values({ id: studioProgramId(userId), userId, kind: "studio", name: "Studio", status: "active", disciplines: [], startDate: null, endDate: null, raceDate: null, source: null, config: {}, createdAt: ctx.now, updatedAt: ctx.now, archivedAt: null })
+      .onConflictDoNothing(),
+    db.insert(plannedWorkouts).values(row),
+    revisionInsert(db, { userId, workoutId: id, sourceKind: source.sourceKind ?? "coach", sourceRef: source.sourceRef ?? null, now: ctx.now }),
+    ...insertBatches(stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
+    // A time asked for is pinned, as a time the athlete picks is: no collision pass moves it.
+    ...(input.time != null
+      ? [db.insert(scheduleOverrides).values({ id: newId(), workoutId: id, kind: "time_change", fromDate: date, toDate: date, toTime: input.time, source: "app", createdAt: ctx.now })]
+      : []),
+  ]);
+  let time = row.effectiveTime;
+  if (input.time == null) {
+    const moved = await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
+    time = moved.find((m) => m.workoutId === id)?.to ?? time;
+  }
+  // To the watch when approved (decision 1): the athlete's approval is the consent; the job runs as the client drains.
+  const queued = ctx.prefs.corosWritesEnabled === true && (await enqueueWatchCreate(db, userId, id, date, made.session, ctx.now, threshold ?? undefined)) !== null;
+  return {
+    workout: { id, date, time, title: doc.title, intentSummary: doc.intent.summary, category: derived.category, sport: "run", origin: "coach", contentState: "outline", completionState: "scheduled", docRev: 1, minutes: Math.round(seconds / 60) },
+    warnings,
+    queued,
   };
 }
