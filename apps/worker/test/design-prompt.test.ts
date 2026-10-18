@@ -51,6 +51,8 @@ describe("the prompt text", () => {
       "read_set", "drop_workout",
       // Task 8b: a change to a session already on the plan, inside the proposal.
       "adjust_plan",
+      // §8 (stream W): the plans themselves.
+      "read_plans",
     ];
     expect([...PROMPT_TOOL_NAMES].sort()).toEqual([...spec].sort());
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);

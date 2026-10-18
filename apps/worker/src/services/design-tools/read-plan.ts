@@ -157,7 +157,7 @@ const input = z.object({ from: dateField, to: dateField, limit: limitField(MAX_L
 export const readPlan: DesignTool = {
   name: "read_plan",
   description:
-    "Planned workouts between two dates in date and time order — what each is, minutes, origin, whether done, a document workout's intent and revision — and each programme's current block.",
+    "Planned workouts between two dates in date and time order — what each is, minutes, origin, whether done, a document workout's intent and revision — and each programme's current block. The plans themselves: read_plans.",
   inputSchema: {
     type: "object",
     properties: { from: DATE_SCHEMA, to: DATE_SCHEMA, limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },

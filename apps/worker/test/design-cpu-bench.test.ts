@@ -778,6 +778,7 @@ beforeAll(async () => {
       ["read_profile", {}],
       ["read_day", { date: TODAY }],
       ["read_plan", { from: day(30), to: day(-60), limit: 50 }],
+      ["read_plans", {}],
       ["list_workouts", { from: day(45), to: day(-45), limit: 50 }],
       ["get_workout", { id: rich.pastDocId }],
       ["read_history", { from: day(91), to: TODAY, limit: 30 }],

@@ -21,7 +21,7 @@ import { everyPage, isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
 const READ_NAMES = [
-  "read_profile", "read_day", "read_plan", "list_workouts", "get_workout", "read_history", "read_balance", "read_readiness",
+  "read_profile", "read_day", "read_plan", "read_plans", "list_workouts", "get_workout", "read_history", "read_balance", "read_readiness",
   "read_answers", "read_objectives", "search_library", "get_exercise", "list_templates", "read_proposals", "recall_memory",
 ];
 /** "Well under" the loop's cut: room for the loop's own framing and a richer account than the fixture's. */
@@ -69,6 +69,7 @@ function scenarios(): Record<string, unknown[]> {
       { from: TODAY, to: day(200) },
       { from: TODAY, to: day(-6), cursor: "bad" },
     ],
+    read_plans: [{}],
     list_workouts: [
       { from: day(30), to: day(-30) },
       { from: day(60), to: day(-30), q: "studio hips rows", limit: 50 },

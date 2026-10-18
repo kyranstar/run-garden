@@ -28,6 +28,7 @@ import { getExercise, searchLibraryTool } from "./read-library.js";
 import { recallMemory } from "./read-memory.js";
 import { readObjectives } from "./read-objectives.js";
 import { readPlan } from "./read-plan.js";
+import { readPlans } from "./read-plans.js";
 import { readProfile } from "./read-profile.js";
 import { readProposals } from "./read-proposals.js";
 import { readReadiness } from "./read-readiness.js";
@@ -44,6 +45,7 @@ export const READ_TOOLS: DesignTool[] = [
   readProfile,
   readDay,
   readPlan,
+  readPlans,
   listWorkouts,
   getWorkout,
   readHistory,
