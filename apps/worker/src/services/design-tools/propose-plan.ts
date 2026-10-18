@@ -169,8 +169,12 @@ export function planCardWords(op: PlanStructureChange, name: string | null): { t
   }
 }
 
-/** One manifest line in words: "Mon 18 May · Easy run · 40 min", "Week of Mon 25 May — about 35 km — sketched: …". */
-const lineWords = (l: OpLine): string => `${l.date ? `${dayLabel(l.date)} · ` : ""}${l.summary}${l.change ? ` — ${l.change}` : ""}`;
+/** One manifest line in words: "Mon 18 May · Easy run · 40 min", "Week of Mon 25 May — about 35 km — sketched: …" — its
+ * day said once (a line that names it already goes without the prefix). */
+export function lineWords(l: OpLine): string {
+  const day = l.date ? dayLabel(l.date) : null;
+  return `${day && !l.summary.includes(day) ? `${day} · ` : ""}${l.summary}${l.change ? ` — ${l.change}` : ""}`;
+}
 
 /** The manifest's lines for a change (the thread coach's own `describeOps`), at most PLAN_LINES_MAX, then "and N more". */
 export function planLines(op: PlanStructureChange): string[] {

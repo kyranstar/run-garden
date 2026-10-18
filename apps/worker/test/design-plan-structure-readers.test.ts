@@ -175,7 +175,7 @@ describe("the conversation", () => {
         lines: ((await proposalOf(id)).ops as PlanStructureOp[])[0]!.lines,
       },
     ]);
-    expect(card[0]!.lines![0]).toMatch(/^Mon 18 May · New plan: 10K build/);
+    expect(card[0]!.lines![0]).toMatch(/^New plan: 10K build · Mon 18 May to Sun 14 Jun/);
     const rows = await conversationRows(db, userId, namedConversationSql(userId, id), { limit: 6 });
     const block = conversationBlock(rows, new Date(NOW.getTime() + 120_000))!;
     expect(block).toContain(`Suggested a plan (id ${designProposalId(id)}): ${markUntrusted("main coach", "10K build")} · ${markUntrusted("main coach", "4 weeks · 3 sessions to start · race Sun 14 Jun")} — still open`);

@@ -176,9 +176,10 @@ describe("propose_plan: a new block", () => {
     expect((op.op as { firmSessions: unknown[] }).firmSessions).toHaveLength(4);
     // The thread coach's own manifest lines: the plan, its four sessions, three shape weeks — eight, all shown.
     expect(op.lines).toHaveLength(8);
-    expect(op.lines[0]).toBe("Mon 18 May · New plan: 10K build · Mon 18 May to Sun 14 Jun — race day Sun 14 Jun");
+    // Each line's day said once: a line that names its day goes without the prefix.
+    expect(op.lines[0]).toBe("New plan: 10K build · Mon 18 May to Sun 14 Jun — race day Sun 14 Jun");
     expect(op.lines[1]).toBe("Mon 18 May · Easy run · 40 min");
-    expect(op.lines[5]).toMatch(/^Mon 25 May · Week of Mon 25 May — about 32 km — sketched: tempo 25 min · long 13 km$/);
+    expect(op.lines[5]).toBe("Week of Mon 25 May — about 32 km — sketched: tempo 25 min · long 13 km");
     // The proposal's row: named by the plan, expiring on its first day.
     expect(p.title).toBe("10K build");
     expect(p.expiresAt).toBe("2026-05-16");

@@ -25,6 +25,9 @@
  *   plan_change  the conversation: skips the session the athlete is looking at (adjust_plan), then finishes
  *   auto_set     an auto run that plans a set: plan_set with two briefs (tomorrow, three days on), each designed and
  *                reviewed, then the finish
+ *   whole_plan   whole plans (§8 §5): reads the plans, then a new four-week 10K block from next Monday (its first week
+ *                filled in, three shape weeks); asked to extend it — the request says "extend" and the conversation so far
+ *                holds the plan it suggested — two more shape weeks for that block; then the finish
  *
  * `ctx.opening` is the run's opening message (its first user message's text): a script may read what the run was
  * asked from in it.
@@ -197,7 +200,63 @@ function planChange(turn, ctx) {
   return uses(["finish", { summary: PLAN_CHANGE_LINE }]);
 }
 
+/** The Monday after `today` (never today): a plan's first day. */
+function nextMonday(today) {
+  const dow = new Date(`${today}T12:00:00Z`).getUTCDay();
+  return dayAfter(today, ((8 - dow) % 7) || 7);
+}
+
+/** The finish's words for a new block, and for its extension. */
+export const PLAN_LINE = "Four weeks that build to your 10K, easy days kept easy.";
+export const EXTEND_LINE = "Two more weeks on the end of your 10K build.";
+
+const run = (title, category, minutes, intensity = "easy") => ({ category, title, durationMinutes: minutes, run: { blocks: [{ kind: "duration", value: minutes, intensity }] } });
+
+/**
+ * Whole plans (§8 §5): read the plans, then propose one change to their shape and finish. Asked to extend (the request
+ * says "extend", and the conversation so far names the plan this script suggested), the block made from it — its id is
+ * the applier's, `cp-<proposal>-0` — gets two more shape weeks; otherwise a new block.
+ */
+function wholePlan(turn, ctx) {
+  const opening = ctx.opening ?? "";
+  const request = opening.slice(opening.lastIndexOf("The athlete's request"));
+  const suggested = [...opening.matchAll(/Suggested a plan \(id ([^)\s]+)\)/g)].at(-1)?.[1];
+  const extend = /extend/i.test(request) && suggested;
+  const monday = nextMonday(ctx.today);
+  if (turn === 0) return uses(["read_plans", {}]);
+  if (turn === 1 && extend) {
+    const weeks = [4, 5].map((w) => ({ weekStart: dayAfter(monday, 7 * w), volumeTarget: "about 30 km", keySessions: ["long run", "strides"] }));
+    return uses(["propose_plan", { change: { kind: "extendPlan", planId: `cp-${suggested}-0`, shapeWeeks: weeks }, why: "Two easier weeks to hold what you built." }]);
+  }
+  if (turn === 1) {
+    return uses([
+      "propose_plan",
+      {
+        change: {
+          kind: "createPlan",
+          discipline: "run",
+          name: "10K build",
+          startDate: monday,
+          endDate: dayAfter(monday, 27),
+          raceDate: dayAfter(monday, 27),
+          firmSessions: [
+            { date: monday, session: run("Easy run", "easy", 40) },
+            { date: dayAfter(monday, 2), session: run("Tempo run", "quality", 45, "threshold") },
+            { date: dayAfter(monday, 4), session: run("Easy run", "easy", 35) },
+            { date: dayAfter(monday, 6), session: run("Long run", "long", 70) },
+          ],
+          shapeWeeks: [1, 2, 3].map((w) => ({ weekStart: dayAfter(monday, 7 * w), volumeTarget: w === 3 ? "taper, about 20 km" : "about 32 km", keySessions: w === 3 ? ["openers", "race Sunday"] : ["tempo", "long run"] })),
+        },
+        why: "A steady build: one quality day, one long run, the rest easy.",
+      },
+    ]);
+  }
+  return uses(["finish", { summary: extend ? EXTEND_LINE : PLAN_LINE }]);
+}
+
 export const SCRIPTS = {
+  // §8 §5: whole plans in the conversation.
+  whole_plan: { main: wholePlan, reviewer },
   now: { main: designAfter(0), reviewer },
   // The conversation (the new shape §5): a reply that changes the suggestion before it; a change to the plan.
   reply: { main: designReply, reviewer },
