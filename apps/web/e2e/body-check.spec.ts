@@ -39,6 +39,7 @@ interface SessionRead {
 
 /** The library's muscles under each region these journeys ask about (the library's MUSCLE_REGION, for these). */
 const HIP_MUSCLES = ["deep-hip-rotators", "hip-flexors", "adductors", "glute-min-tfl"];
+// What a run works (the worker's `RUN_REGIONS`, body-exposure.ts — the e2e cannot import the worker; kept equal by hand).
 const LEG_REGIONS = ["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"];
 const LEG_MUSCLES = [...HIP_MUSCLES, "glute-max", "glute-med", "hamstrings", "quads", "gastrocnemius", "soleus", "tibialis", "peroneals", "feet-intrinsics"];
 

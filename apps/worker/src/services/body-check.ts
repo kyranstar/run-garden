@@ -74,6 +74,7 @@ import {
 } from "@rg/domain";
 import { EXERCISES, isProfileId, label as vocab, MUSCLE_REGION, profileById, type MuscleId } from "@rg/exercise-library";
 import type { Swaps } from "@rg/session-engine";
+import { RUN_REGIONS } from "./body-exposure.js";
 import { applyOps, enqueueContentConvergence, sessionColumns } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
 import { insertBatches, runAtomically, type Db } from "./db.js";
@@ -556,10 +557,10 @@ async function restoreEngine(db: Db, userId: string, s: Subject, ease: EngineEas
 /** How much of a run an ease keeps: its distance, or its time, × 0.7 (design §4). */
 export const RUN_EASE_FACTOR = 0.7;
 
-/** The regions a run works (the growth body map's own reading: a run loads the hips and the legs). */
-const RUN_REGIONS: ReadonlySet<string> = new Set(["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"]);
+/** The regions a run works — the one list (`RUN_REGIONS`, body-exposure.ts: read_balance's and Growth's), imported. */
+const RUN_WORKS: ReadonlySet<string> = new Set(RUN_REGIONS);
 /** The legs, as "heavy legs" means them: what a run works. */
-const LEG_REGIONS = RUN_REGIONS;
+const LEG_REGIONS = RUN_WORKS;
 
 /** The run kinds an ease keeps (a long run eased is still the long run); any other run becomes an easy one. */
 const KEPT_RUN_KINDS = ["easy", "long", "recovery"] as const;
@@ -727,7 +728,7 @@ async function applyRunEase(db: Db, userId: string, row: typeof plannedWorkouts.
 async function easeRun(db: Db, userId: string, s: Subject, answer: Answer, record: BodyRecord | null, ctx: BodyCheckCtx): Promise<Adapted> {
   const id = s.row.id;
   const prior = record?.ease?.kind === "run" ? record.ease : null;
-  if (answer.feel === "sore" && !worksSore(answer, RUN_REGIONS)) {
+  if (answer.feel === "sore" && !worksSore(answer, RUN_WORKS)) {
     const back = await putBack(db, userId, s, record?.ease ?? null, ctx);
     return { record: { change: { kind: "kept", why: "quiet" }, ease: back.ease }, coachDrain: back.coachDrain };
   }

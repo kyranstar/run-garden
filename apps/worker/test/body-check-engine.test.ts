@@ -15,6 +15,7 @@ import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { todayBodyRoutes } from "../src/routes/today-body.js";
 import { answerBodyCheck, BODY_REGIONS, BodyCheckClosedError, readBodyCheck, undoBodyCheck } from "../src/services/body-check.js";
+import { RUN_REGIONS } from "../src/services/body-exposure.js";
 import { buildSession, loadSession, type SessionResponse } from "../src/services/session-build.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { DAY, makeEnv, NOON, seedProgram, seedSlot, seedTmj } from "./watch-push-fixture.js";
@@ -72,7 +73,7 @@ describe("an engine session, A bit heavy", () => {
     const id = await seedSlot(db, userId, programId, DAY);
     const before = await buildSession(db, userId, id, { overrides: { mode: "build", theme: "upperBackNeck", minutes: 10 } }, ctx());
     // The engine's upper back and neck in ten minutes works no leg.
-    expect(["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"].filter((r) => worked(before).has(r))).toEqual([]);
+    expect(RUN_REGIONS.filter((r) => worked(before).has(r))).toEqual([]);
     const out = await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
     expect(out.view.change).toEqual({ kind: "eased", to: { mode: "consistent" }, legs: false });
     // Sore shoulders, which it works: the reason is the shoulders, and the legs are no part of it.

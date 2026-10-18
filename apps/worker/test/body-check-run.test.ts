@@ -14,7 +14,8 @@ import { schema } from "@rg/database";
 import { newId, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { answerBodyCheck, BodyCheckBusyError, readBodyCheck, undoBodyCheck } from "../src/services/body-check.js";
+import { answerBodyCheck, BODY_REGIONS, BodyCheckBusyError, readBodyCheck, undoBodyCheck } from "../src/services/body-check.js";
+import { RUN_REGIONS } from "../src/services/body-exposure.js";
 import { todayBodyRoutes } from "../src/routes/today-body.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { DAY, makeEnv, NOON, rowOf } from "./watch-push-fixture.js";
@@ -184,6 +185,14 @@ describe("a watch-plan run, Sore somewhere", () => {
     // Back to sore shoulders only: the ease is put back.
     await answerBodyCheck(db, userId, id, { feel: "sore", areas: ["shoulders"] }, ctx());
     expect(facts(await rowOf(db, id))).toEqual(before);
+  });
+
+  it("a run works what the growth body map says a run works (`RUN_REGIONS`, one list): a sore area there eases it, any other is noted", async () => {
+    for (const area of BODY_REGIONS) {
+      const id = await seedRun(DAY);
+      const out = await answerBodyCheck(db, userId, id, { feel: "sore", areas: [area] }, ctx());
+      expect([area, out.view.change?.kind]).toEqual([area, (RUN_REGIONS as readonly string[]).includes(area) ? "eased" : "kept"]);
+    }
   });
 
   it("A bit heavy, then sore calves: the same ease stands — 14 km, never eased twice", async () => {
