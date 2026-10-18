@@ -68,7 +68,7 @@ import {
   openMoveIntents,
 } from "../services/sync-intents.js";
 import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
-import { buildRaceHub } from "../services/race-hub.js";
+import { buildRaceHub, withPhaseLine } from "../services/race-hub.js";
 import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { buildReadiness } from "../services/readiness.js";
@@ -1379,7 +1379,8 @@ planRoutes.get("/race", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  return c.json({ race: await buildRaceHub(db, userId, prefs, todayInZone(prefs.timezone)) });
+  // The strip's line: the coach's recent one, else where the race stands in plain words (§8 §6).
+  return c.json({ race: withPhaseLine(await buildRaceHub(db, userId, prefs, todayInZone(prefs.timezone))) });
 });
 
 const raceChecklistSchema = z.object({

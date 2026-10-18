@@ -76,6 +76,37 @@ export const DEFAULT_RACE_CHECKLIST: Array<{ id: string; label: string }> = [
 ];
 
 /**
+ * Where the race stands, in plain words (§8 §6): the race line the strip shows when the coach has written none lately.
+ * The thread coach has stepped back, so its line ages out within a week; this needs no model, only the countdown. By
+ * weeks while there are two or more, then by days; null after the race (the debrief speaks).
+ */
+export function racePhaseLine(phase: RaceHub["phase"], daysToRace: number): string | null {
+  const weeks = Math.floor(daysToRace / 7);
+  switch (phase) {
+    case "post":
+      return null;
+    case "race_week":
+      if (daysToRace <= 0) return "Race day — enjoy it.";
+      if (daysToRace === 1) return "Tomorrow — rest, and trust the work you've done.";
+      return "Race week — easy running and plenty of rest. The work is done.";
+    case "taper":
+      return `${weeks >= 2 ? `${weeks} weeks` : `${daysToRace} days`} to go — the taper: a little less running, more rest.`;
+    case "build":
+      return weeks >= 6 ? `${weeks} weeks to go — building, a steady week at a time.` : `${weeks} weeks to go — sharpening, then the taper.`;
+  }
+}
+
+/**
+ * The hub as the race strip reads it (`GET /api/plan/race`): the coach's recent race line, else the phase sentence.
+ * Only the screen's read: the wake's dossier reads `buildRaceHub` itself, and is still asked to write a line of its own.
+ */
+export function withPhaseLine(hub: RaceHub | null, now: Date = new Date()): RaceHub | null {
+  if (!hub || hub.raceLine) return hub;
+  const text = racePhaseLine(hub.phase, hub.daysToRace);
+  return text ? { ...hub, raceLine: { text, at: now.toISOString() } } : hub;
+}
+
+/**
  * `today` is the caller's, not this function's — it is read INSIDE the coach's
  * wake (see ONE CLOCK PER WAKE in coach-wake.ts), and "12 days out · phase
  * taper" printed in a dossier headed with a different date is the whole class of

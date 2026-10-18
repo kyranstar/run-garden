@@ -7,8 +7,12 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { buildRaceHub } from "../src/services/race-hub.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import type { Env } from "../src/env.js";
+import { buildRaceHub, racePhaseLine, withPhaseLine } from "../src/services/race-hub.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
+import { planRoutes } from "../src/routes/plan.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 async function seedHealth(
   db: Db,
@@ -377,5 +381,66 @@ describe("terrain awareness (2026-08-14)", () => {
     }, todayInZone(prefs.timezone));
     expect(hub!.terrain.recent).toBeNull();
     expect(hub!.terrain.comparison).toBeNull();
+  });
+});
+
+/**
+ * THE RACE LINE WITHOUT THE THREAD COACH (§8 §6, stream T): the thread coach has stepped back, so its race line ages
+ * out within a week. The race strip then says where the race stands in plain words — a phase sentence from the hub's
+ * own countdown, no model call — and a recent line of the coach's still wins. The wake's dossier reads the hub itself,
+ * so it still sees "no raceLine yet" and is asked to write one.
+ */
+describe("the race line's phase sentence (§8 §6)", () => {
+  it("says the phase in plain words, by weeks while there are weeks, then by days", () => {
+    expect(racePhaseLine("build", 60)).toBe("8 weeks to go — building, a steady week at a time.");
+    expect(racePhaseLine("build", 42)).toBe("6 weeks to go — building, a steady week at a time.");
+    expect(racePhaseLine("build", 41)).toBe("5 weeks to go — sharpening, then the taper.");
+    expect(racePhaseLine("build", 22)).toBe("3 weeks to go — sharpening, then the taper.");
+    expect(racePhaseLine("taper", 21)).toBe("3 weeks to go — the taper: a little less running, more rest.");
+    expect(racePhaseLine("taper", 14)).toBe("2 weeks to go — the taper: a little less running, more rest.");
+    expect(racePhaseLine("taper", 13)).toBe("13 days to go — the taper: a little less running, more rest.");
+    expect(racePhaseLine("taper", 7)).toBe("7 days to go — the taper: a little less running, more rest.");
+    expect(racePhaseLine("race_week", 6)).toBe("Race week — easy running and plenty of rest. The work is done.");
+    expect(racePhaseLine("race_week", 2)).toBe("Race week — easy running and plenty of rest. The work is done.");
+    expect(racePhaseLine("race_week", 1)).toBe("Tomorrow — rest, and trust the work you've done.");
+    expect(racePhaseLine("race_week", 0)).toBe("Race day — enjoy it.");
+    expect(racePhaseLine("post", -1)).toBeNull();
+  });
+
+  it("GET /api/plan/race: the coach's recent line first, else the phase sentence — and the hub itself keeps only the coach's", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, {});
+    const today = todayInZone(prefs.timezone);
+    await savePreferences(db, userId, { ...prefs, raceDate: addDays(today, 23) });
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const app = mountRoutes(db, "/api/plan", planRoutes);
+    const read = async () =>
+      ((await (await app.request("/api/plan/race", { headers: { Cookie: cookie } }, {} as Env)).json()) as {
+        race: { raceLine: { text: string; at: string } | null };
+      }).race.raceLine;
+
+    expect((await read())?.text).toBe("3 weeks to go — sharpening, then the taper.");
+    // The dossier's read: no line of the coach's, so the wake is still asked to write one.
+    expect((await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 23) }, today))!.raceLine).toBeNull();
+
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "",
+      refs: { raceLine: "Two quality sessions left before the taper." },
+      at: nowInstant(),
+    });
+    expect((await read())?.text).toBe("Two quality sessions left before the taper.");
+  });
+
+  it("after the race, no sentence (the debrief speaks); with no race, no hub", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const post = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, -1) }, today);
+    expect(post!.phase).toBe("post");
+    expect(withPhaseLine(post)!.raceLine).toBeNull();
+    expect(withPhaseLine(null)).toBeNull();
   });
 });
