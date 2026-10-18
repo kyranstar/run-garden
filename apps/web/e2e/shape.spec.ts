@@ -79,7 +79,15 @@ test("Today: the one card's action, the garden drawer, and Ask opening the coach
   const action = card.locator(".today-actions").getByRole("link", { name: /^(Start|View workout|Open)$/ }).first();
   await action.click();
   await expect(page).toHaveURL(/\/plan\?workout=/);
-  await expect(page.getByRole("dialog").first()).toBeVisible();
+  const workoutSheet = page.getByRole("dialog").first();
+  await expect(workoutSheet).toBeVisible();
+  // Modal, the nav out of reach: the sheet keeps its own Ask, seeing its workout (the integrated review, I3).
+  await workoutSheet.getByRole("button", { name: /^Ask the coach about/ }).click();
+  await expect(coachSheet(page)).toBeVisible();
+  await expect(coachSheet(page).locator(".coach-seeing")).toContainText("Seeing: ");
+  await page.keyboard.press("Escape");
+  await expect(coachSheet(page)).toHaveCount(0);
+  await expect(workoutSheet).toBeVisible();
 });
 
 test("Plan: the week first, then a plan's sheet whose action opens the coach with its words written", async ({ page }) => {
@@ -103,6 +111,12 @@ test("Plan: the week first, then a plan's sheet whose action opens the coach wit
   await sheet.getByRole("button", { name: "Ask about this plan" }).click();
   await expect(coachSheet(page)).toBeVisible();
   await expect(coachSheet(page).locator("textarea")).toHaveValue(/^How is my .+ going\?$/);
+
+  // Escape over another sheet: the coach's sheet goes, and the plan's sheet it was opened over is still there.
+  await page.keyboard.press("Escape");
+  await expect(coachSheet(page)).toHaveCount(0);
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Ask about this plan" })).toBeVisible();
 });
 
 test("Settings: five groups", async ({ page }) => {

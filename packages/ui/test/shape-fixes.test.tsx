@@ -172,6 +172,27 @@ describe("minors — the desktop card and Today's heading", () => {
     expect(lgRule(".dock-panel")).not.toContain("max-height");
   });
 
+  it("on the stage the card's column may rise the whole stage — under the scene's tool — and is never cut at its top", () => {
+    // Its only cap is the stage itself (a fixed 32rem cap scrolled every card with Also today rows); a card taller
+    // than the whole stage (a short laptop, three banners, the body check open) scrolls rather than lose its title.
+    const dock = lgRule(".hud-dock");
+    expect(dock).toMatch(/max-height: calc\(100% - clamp\([^)]*\) - clamp\([^)]*\) - var\(--space-\d+\)\)/);
+    expect(dock).toContain("width: var(--dock-width)");
+    expect(dock).toContain("right: var(--stage-gutter)");
+    expect(lgRule(".dock-panel")).toMatch(/min-height: 0;[\s\S]*overflow-y: auto/);
+  });
+
+  it("the stage's moment and its voice keep left of the card's column, never under or over it", () => {
+    const stage = lgRule(".garden-stage");
+    expect(stage).toContain("--stage-gutter: clamp(1.6rem, 3.2vw, 3.2rem)");
+    expect(stage).toContain("--dock-width: min(26rem, 38vw)");
+    const ceremony = lgRule(".hud-ceremony");
+    expect(ceremony).toContain("left: calc((100% - var(--dock-width) - var(--stage-gutter)) / 2)");
+    expect(ceremony).toContain("max-width: calc(100% - var(--dock-width) - 3 * var(--stage-gutter))");
+    expect(ceremony).toContain("transform: translateX(-50%)");
+    expect(lgRule(".hud-topleft")).toContain("max-width: min(36rem, 44vw, calc(100% - var(--dock-width) - 3 * var(--stage-gutter)))");
+  });
+
   it("Today's heading says Today", () => {
     expect(read("screens/garden.tsx")).toContain('<h1 className="visually-hidden">Today</h1>');
   });
