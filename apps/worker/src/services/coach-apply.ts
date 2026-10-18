@@ -41,6 +41,7 @@ import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
 import {
   enqueueUnpushIfOurs,
+  unpushInsertIfOurs,
   removeFromPlan,
   settleWatchJobsOnArchive,
   settleWatchJobsOnArchiveStatements,
@@ -1718,9 +1719,12 @@ async function latestThreshold(db: Db, userId: string): Promise<number | null> {
  *  · a chunk of sessions is ONE batch — the rows, their documents' revisions, their stage rows and their watch
  *    creates — so a row that is there is a whole session, and a chunk re-run skips the sessions it finds (one read
  *    for the rows and their days at once). Nothing is half a row;
- *  · an archive slice RE-READS what is still scheduled, and settles each row (the watch's unpush, then its
- *    suppression, its queued writes and its archive in one batch) before it counts as archived; its suppression's
- *    id is the op's, so a slice re-run writes none twice. The op's own new sessions are never in its slice.
+ *  · an archive slice RE-READS what is still scheduled, and settles each row in one batch — its suppression, its
+ *    queued writes, its watch unpush and its archive — before it counts as archived; its suppression's id is the
+ *    op's, so a slice re-run writes none twice. The op's own new sessions are never in its slice.
+ *
+ * A DAY ALREADY GONE GETS NO SESSION (review-1 I2): a plan finished days after it began leaves out the sessions whose
+ * days have passed — no row to turn "missed", no watch create for a day gone — and its summary says how many days.
  *
  * BETWEEN TWO CALLS the plan reads sensibly: the plan row and some of its sessions, each whole; a week half
  * archived; the status last.
@@ -2077,7 +2081,10 @@ async function sessionsStep(
   for (const r of seen) {
     if (days.includes(r.effectiveDate) && placeable(r, k.today)) live.set(r.effectiveDate, (live.get(r.effectiveDate) ?? 0) + 1);
   }
-  const pushDays = [...new Set(window.filter((w) => !there.has(w.id) && k.writesOn && watchPushable(w.session)).map((w) => w.date))];
+  // A day already gone (a plan finished days after it began — review-1 I2) gets no session: a row there would only
+  // turn "missed", and its watch create would put a day that has passed on the watch.
+  const gone = (w: { id: string; date: string }) => !there.has(w.id) && w.date < k.today;
+  const pushDays = [...new Set(window.filter((w) => !there.has(w.id) && !gone(w) && k.writesOn && watchPushable(w.session)).map((w) => w.date))];
   let taken = new Map<string, Set<string>>();
   if (pushDays.length > 0) {
     taken = await takenStampsOnDays(k.db, k.userId, pushDays);
@@ -2086,9 +2093,15 @@ async function sessionsStep(
 
   const picked: typeof window = [];
   const touched = new Set<string>();
+  const passed: string[] = [];
   let units = 0;
   let done = p.done;
   for (const w of window) {
+    if (gone(w)) {
+      passed.push(w.date);
+      done += 1;
+      continue;
+    }
     const isNew = !there.has(w.id);
     const liveAfter = new Map(live);
     if (isNew && placeable({ archivedAt: null, completionState: "scheduled", category: w.session.category, effectiveDate: w.date }, k.today)) {
@@ -2097,7 +2110,8 @@ async function sessionsStep(
     const unit = isNew ? sessionUnitCost(k, w.session, threshold) : 0;
     const revision = isNew && picked.length === 0 ? 1 : 0;
     const cost = units + unit + revision + (picked.length > 0 ? 1 : 0) + placementCost(liveAfter, new Set([...touched, w.date]));
-    if (!(first && done === p.done) && k.spent + cost > k.budget) break;
+    // The call's first unit always runs (a day gone is no unit: it costs nothing).
+    if (!(first && touched.size === 0) && k.spent + cost > k.budget) break;
     if (isNew) {
       picked.push(w);
       units += unit;
@@ -2107,6 +2121,7 @@ async function sessionsStep(
     done += 1;
   }
   if (done === p.done) return { p, stalled: true };
+  if (passed.length > 0) p = { ...p, passedDays: [...new Set([...daysPassed(p), ...passed])].sort(), passed: sessionsPassed(p) + passed.length };
 
   const threshold_ = threshold ?? undefined;
   const rows = picked.map((w) => sessionRowInsert(k.db, k.userId, { id: w.id, planId, date: w.date, session: w.session }, k.now, { prefs: k.prefs, thresholdPaceSecPerKm: threshold_ }));
@@ -2165,9 +2180,9 @@ async function archiveStep(
 }
 
 /**
- * Archive the plan's still-scheduled sessions in scope, as many as the budget holds: re-read each slice. Each row's
- * watch unpush first (idempotent: its job id is the row's), then ONE batch — its suppression (id the op's own), its
- * queued watch writes settled, the archive — so a slice re-run finds the rows it finished gone and redoes nothing.
+ * Archive the plan's still-scheduled sessions in scope, as many as the budget holds: re-read each slice. ONE batch —
+ * each row's suppression (id the op's own), its queued watch writes settled, its watch unpush (id the row's), the
+ * archive — so a slice that dies leaves nothing half-done, and a slice re-run finds the rows it finished gone.
  */
 async function archiveSlice(
   k: Chunk,
@@ -2215,8 +2230,18 @@ async function archiveSlice(
   }
   if (picked.length === 0) return "stalled";
 
+  // Each row's watch unpush is a statement IN the archive's batch (review-1): a request that dies before the batch
+  // leaves no delete queued for a session still on the plan, and one that dies after leaves none owed. A sent
+  // programme slot's own way off (never a coach plan's row) runs its own writes, so it goes first, as before.
+  const unpushes = [];
   for (const w of picked) {
-    if (unpushCost(w) > 0) await enqueueUnpushIfOurs(k.db, k.userId, w, k.now, k.prefs);
+    if (unpushCost(w) === 0) continue;
+    if (appAuthoredRow(w)) {
+      await enqueueUnpushIfOurs(k.db, k.userId, w, k.now, k.prefs);
+      continue;
+    }
+    const unpush = await unpushInsertIfOurs(k.db, k.userId, w, k.now, k.prefs);
+    if (unpush) unpushes.push(unpush.insert);
   }
   const ids = picked.map((w) => w.id);
   const suppressions = picked.map((w) => ({
@@ -2229,6 +2254,7 @@ async function archiveSlice(
   const stmts = [
     ...insertBatches(suppressions).map((batch) => k.db.insert(calendarEventSuppressions).values(batch).onConflictDoNothing()),
     ...settleWatchJobsOnArchiveStatements(k.db, k.userId, ids, k.now),
+    ...unpushes,
     ...chunkIds(ids).map((chunk) =>
       k.db
         .update(plannedWorkouts)
@@ -2237,30 +2263,48 @@ async function archiveSlice(
     ),
   ];
   await runAtomically(k.db, stmts);
-  k.spent += stmts.length + unpushing;
+  // The batch as run, and the unpushes' reads at their most (their inserts are in the batch).
+  k.spent += stmts.length + unpushing - unpushes.length;
   return { archived: picked.length, more: rows.length > picked.length };
 }
 
 const countOf = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** The days a plan's sessions were left out on because they had passed (review-1 I2), and how many sessions. */
+const daysPassed = (p: StructuralProgress): string[] => (Array.isArray(p.passedDays) ? (p.passedDays as string[]) : []);
+const sessionsPassed = (p: StructuralProgress): number => (typeof p.passed === "number" ? p.passed : 0);
+/** What the summary adds for them: " — 3 days had passed and were left out", or nothing. */
+function passedNote(p: StructuralProgress): string {
+  const days = daysPassed(p).length;
+  if (days === 0) return "";
+  return ` — ${countOf(days, "day")} had passed and ${days === 1 ? "was" : "were"} left out`;
+}
+
 /** What a finished structural op did, in one plain line. */
 function structuralSummary(op: StructuralOp, p: StructuralProgress): string {
   const name = `“${typeof p.name === "string" ? p.name : "your plan"}”`;
   const archived = typeof p.archived === "number" ? p.archived : 0;
+  /** The sessions it put on the plan: those whose days had passed are not among them. */
+  const added = (all: number) => all - sessionsPassed(p);
   switch (op.kind) {
     case "createPlan": {
+      const n = added(op.firmSessions.length);
       const parts = [
-        op.firmSessions.length > 0 ? countOf(op.firmSessions.length, "session") : null,
+        n > 0 ? countOf(n, "session") : null,
         op.shapeWeeks.length > 0 ? `${countOf(op.shapeWeeks.length, "week")} sketched out` : null,
       ].filter((x): x is string => x !== null);
-      return parts.length > 0 ? `Added “${op.name}” with ${parts.join(" and ")}` : `Added “${op.name}”`;
+      return (parts.length > 0 ? `Added “${op.name}” with ${parts.join(" and ")}` : `Added “${op.name}”`) + passedNote(p);
     }
     case "firmUp":
-      return `Added ${countOf(op.sessions.length, "session")} to ${name}`;
-    case "reshapeWeek":
-      return op.sessions.length > 0 ? `Reworked a week of ${name} with ${countOf(op.sessions.length, "session")}` : `Cleared a week of ${name}`;
-    case "windDown":
-      return op.sessions.length > 0 ? `Eased ${name} down with ${countOf(op.sessions.length, "gentler session")}` : `Eased ${name} down`;
+      return `Added ${countOf(added(op.sessions.length), "session")} to ${name}${passedNote(p)}`;
+    case "reshapeWeek": {
+      const n = added(op.sessions.length);
+      return (n > 0 ? `Reworked a week of ${name} with ${countOf(n, "session")}` : `Cleared a week of ${name}`) + passedNote(p);
+    }
+    case "windDown": {
+      const n = added(op.sessions.length);
+      return (n > 0 ? `Eased ${name} down with ${countOf(n, "gentler session")}` : `Eased ${name} down`) + passedNote(p);
+    }
     case "retirePlan":
       return archived > 0 ? `Retired ${name} and took ${countOf(archived, "session")} off your plan` : `Retired ${name}`;
     case "extendPlan":

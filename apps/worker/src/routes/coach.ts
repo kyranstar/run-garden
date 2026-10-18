@@ -603,10 +603,20 @@ coachRoutes.post("/proposals/:id/decline", async (c) => {
   // Declined op by op too (Stage 3 Task 8), with the athlete's reason kept for the coach.
   if (isDesignedProposal(p.ops)) return declineDesigned(c, p);
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
-  await db
+  // A plan being added (§8 §4; review-1) is never declined half-made: it is the athlete's already, and their next
+  // approve finishes it — as a designed plan being applied is never declined (`in_flight`).
+  if (structuralStarted(p.ops)) return c.json({ error: "in_flight", status: p.status }, 409);
+  // …nor one an approve began since this read: the decline lands only on the proposal as it was read.
+  const declined = await db
     .update(coachProposals)
     .set({ status: "declined", resolvedAt: nowInstant() })
-    .where(eq(coachProposals.id, id));
+    .where(and(eq(coachProposals.id, id), eq(coachProposals.status, "pending"), sql`${coachProposals.ops} = ${JSON.stringify(p.ops)}`))
+    .returning({ id: coachProposals.id });
+  if (declined.length === 0) {
+    const [now] = await db.select().from(coachProposals).where(eq(coachProposals.id, id)).limit(1);
+    if (now?.status === "pending" && structuralStarted(now.ops)) return c.json({ error: "in_flight", status: now.status }, 409);
+    return c.json({ error: "not_pending", status: now?.status ?? "not_found" }, 409);
+  }
   await receipt(db, userId, `Left as planned — ${p.title}`, p.id);
   return c.json({ ok: true });
 });

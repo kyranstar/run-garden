@@ -3,9 +3,9 @@
  * `remaining` until done, and the client asks again — bounded — draining the coach's watch writes once, at the end.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, STRUCTURAL_ROUNDS_MAX } from "@rg/api-client";
+import { api, ApiError, STRUCTURAL_ROUNDS_MAX } from "@rg/api-client";
 import { approveProposal } from "../src/coach-approve.js";
-import { retirePlan } from "../src/screens/plan.js";
+import { proposalActionErrorMessage, retirePlan } from "../src/screens/plan.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -57,6 +57,13 @@ describe("a structural approve asks again while the answer says `remaining`", ()
     const calls = stubWorker({ [APPROVE]: [json({ ok: true, remaining: true })] });
     await expect(api.coachApprove("p1")).rejects.toThrow("approve_unfinished");
     expect(calls).toHaveLength(STRUCTURAL_ROUNDS_MAX);
+  });
+});
+
+describe("a thread card's decline of a plan being added", () => {
+  it("says it is being added and Approve finishes it — never that the coach couldn't be reached (review-1)", () => {
+    const err = new ApiError(409, { error: "in_flight", status: "pending" });
+    expect(proposalActionErrorMessage(err)).toBe("This plan is already being added — Approve finishes it.");
   });
 });
 

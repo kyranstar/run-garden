@@ -140,10 +140,21 @@ export async function approveStructural(
     return c.json({ ok: true, remaining: true });
   }
 
-  await db
+  // Approved only while still pending (review-1): a decline that landed during this request stands — no approved
+  // over it, and no ✓ receipt beside its own.
+  const approved = await db
     .update(coachProposals)
     .set({ ops, status: "approved", resolvedAt: nowInstant() })
-    .where(and(eq(coachProposals.id, p.id), eq(coachProposals.userId, userId)));
+    .where(and(eq(coachProposals.id, p.id), eq(coachProposals.userId, userId), eq(coachProposals.status, "pending")))
+    .returning({ id: coachProposals.id });
+  if (approved.length === 0) {
+    const [now] = await db
+      .select({ status: coachProposals.status })
+      .from(coachProposals)
+      .where(and(eq(coachProposals.id, p.id), eq(coachProposals.userId, userId)))
+      .limit(1);
+    return c.json({ error: "not_pending", status: now?.status ?? "not_found" }, 409);
+  }
   // COMMITTED (as the whole approve's rule, 2026-10-10): nothing below turns an applied proposal into an error.
   const missed = ops.flatMap((o) => {
     const pr = o.progress!;

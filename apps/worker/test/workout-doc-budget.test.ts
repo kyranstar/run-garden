@@ -158,6 +158,14 @@ const measured: Record<string, Cost> = {};
  */
 const PRE_TASK = { createPlan7: 68, reshapeWeek4: 67, readNowFirst: 158, readNow7: 140 };
 
+/**
+ * The two plan ops since they apply a chunk a request (§8 §4, a9286e6 and ab8ee02): each now fits ONE request of this
+ * size, within the 45 — their pins are today's counts, so a statement more is a regression this file sees (review-1:
+ * the 68 and 67 above could hide one of 30). Each is still one revision statement.
+ */
+const CHUNKED = { createPlan7: 34, reshapeWeek4: 28 };
+const REQUEST_BUDGET = 45;
+
 describe("one revision statement per op or read, not per session", () => {
   it("a createPlan of 7 sessions, then a reshapeWeek of 4, through the approve route", { timeout: 60_000 }, async () => {
     const app = mountRoutes(db, "/api/coach", coachRoutes);
@@ -194,8 +202,9 @@ describe("one revision statement per op or read, not per session", () => {
       .where(and(eq(schema.workoutDocRevisions.userId, userId), eq(schema.workoutDocRevisions.sourceRef, reshape)));
     expect(revs).toHaveLength(4);
     // One statement more than before the documents, not one per session.
-    expect(created.total, JSON.stringify(created)).toBeLessThanOrEqual(PRE_TASK.createPlan7 + 1);
-    expect(reshaped.total, JSON.stringify(reshaped)).toBeLessThanOrEqual(PRE_TASK.reshapeWeek4 + 1);
+    expect(created.total, JSON.stringify(created)).toBeLessThanOrEqual(CHUNKED.createPlan7);
+    expect(reshaped.total, JSON.stringify(reshaped)).toBeLessThanOrEqual(CHUNKED.reshapeWeek4);
+    expect(Math.max(created.total, reshaped.total)).toBeLessThanOrEqual(REQUEST_BUDGET);
   });
 
   it("a read-now that finds 7 workouts changed in COROS", { timeout: 60_000 }, async () => {

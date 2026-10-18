@@ -22,13 +22,17 @@ import { STRUCTURAL_MIN_BUDGET } from "../src/services/coach-apply.js";
 
 /** The budget every chunk call was handed, in order. */
 const budgets: number[] = [];
+/** Run after a chunk returns, inside the request — what lands between the chunk and the request's last write. */
+const hooks: { afterChunk: (() => Promise<void>) | null } = { afterChunk: null };
 vi.mock("../src/services/coach-apply.js", async (original) => {
   const m = await original<typeof import("../src/services/coach-apply.js")>();
   return {
     ...m,
-    applyStructuralChunk: (...args: Parameters<typeof m.applyStructuralChunk>) => {
+    applyStructuralChunk: async (...args: Parameters<typeof m.applyStructuralChunk>) => {
       budgets.push(args[1].budget);
-      return m.applyStructuralChunk(...args);
+      const out = await m.applyStructuralChunk(...args);
+      if (hooks.afterChunk) await hooks.afterChunk();
+      return out;
     },
   };
 });
@@ -66,6 +70,12 @@ beforeEach(async () => {
 const approve = async (id: string) => {
   const app = mountRoutes(db, "/api/coach", coachRoutes);
   const res = await app.request(`/api/coach/proposals/${id}/approve`, { method: "POST", headers: { Cookie: cookie } }, makeEnv());
+  return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+};
+
+const decline = async (id: string) => {
+  const app = mountRoutes(db, "/api/coach", coachRoutes);
+  const res = await app.request(`/api/coach/proposals/${id}/decline`, { method: "POST", headers: { Cookie: cookie } }, makeEnv());
   return { status: res.status, json: (await res.json()) as Record<string, unknown> };
 };
 
@@ -194,18 +204,65 @@ describe("a structural thread approve, a chunk a request", () => {
     expect(structuralStarted(null)).toBe(false);
   });
 
+  it("finished days later, it leaves out the sessions whose days have passed — no row, no watch create (review-1 I2)", async () => {
+    const id = await proposal([createPlan(40)]);
+    expect((await approve(id)).json).toEqual({ ok: true, remaining: true });
+    const added = ((await proposalRow(id)).ops as { progress: { done: number } }[])[0]!.progress.done;
+    expect(added).toBeLessThan(13);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(`${addDays(monday, 13)}T20:00:00Z`));
+      let last = await approve(id);
+      for (let i = 0; i < 20 && last.json.remaining; i++) last = await approve(id);
+      const passed = 13 - added;
+      expect(last.json).toMatchObject({ summaries: [`Added “Base block” with ${40 - passed} sessions — ${passed} days had passed and were left out`] });
+    } finally {
+      vi.useRealTimers();
+    }
+    const rows = await planRows(`cp-${id}-0`);
+    expect(rows.filter((r) => r.effectiveDate < addDays(monday, 13)).map((r) => r.id).sort()).toEqual(Array.from({ length: added }, (_, n) => `cw-${id}-0-${n}`).sort());
+    const jobs = await db.select({ day: schema.corosWriteJobs.originalDate }).from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, userId));
+    expect(jobs.filter((j) => j.day < addDays(monday, 13))).toHaveLength(added);
+  });
+
   it("one not begun is expired as before", async () => {
     const id = await proposal([createPlan(3)], addDays(today, -1));
     expect(await approve(id)).toEqual({ status: 409, json: { error: "not_pending", status: "expired" } });
     expect(await planRows(`cp-${id}-0`)).toHaveLength(0);
   });
 
-  it("a decline between two chunks stands: the next approve is refused, and what was added stays whole", async () => {
+  it("a decline between two chunks is refused: the plan is being added, and the next approve finishes it (review-1)", async () => {
     const id = await proposal([createPlan(40)]);
     await approve(id);
     const added = (await planRows(`cp-${id}-0`)).length;
-    await db.update(schema.coachProposals).set({ status: "declined" }).where(eq(schema.coachProposals.id, id));
-    expect(await approve(id)).toEqual({ status: 409, json: { error: "not_pending", status: "declined" } });
+    expect(await decline(id)).toEqual({ status: 409, json: { error: "in_flight", status: "pending" } });
+    expect((await proposalRow(id)).status).toBe("pending");
+    expect(await receipts()).toEqual([]);
     expect(await planRows(`cp-${id}-0`)).toHaveLength(added);
+    let last = await approve(id);
+    for (let i = 0; i < 20 && last.json.remaining; i++) last = await approve(id);
+    expect((await proposalRow(id)).status).toBe("approved");
+    expect(await planRows(`cp-${id}-0`)).toHaveLength(40);
+  });
+
+  it("a decline that lands while the approve's request runs wins: no approved over it, no ✓ receipt (review-1)", async () => {
+    const id = await proposal([createPlan(5)]);
+    hooks.afterChunk = async () => {
+      await db.update(schema.coachProposals).set({ status: "declined", resolvedAt: nowInstant() }).where(eq(schema.coachProposals.id, id));
+    };
+    try {
+      const r = await approve(id);
+      expect(r).toEqual({ status: 409, json: { error: "not_pending", status: "declined" } });
+    } finally {
+      hooks.afterChunk = null;
+    }
+    expect((await proposalRow(id)).status).toBe("declined");
+    expect(await receipts()).toEqual([]);
+  });
+
+  it("a decline of a thread proposal not begun still declines it", async () => {
+    const id = await proposal([createPlan(5)]);
+    expect(await decline(id)).toEqual({ status: 200, json: { ok: true } });
+    expect((await proposalRow(id)).status).toBe("declined");
   });
 });

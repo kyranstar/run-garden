@@ -188,7 +188,25 @@ export async function enqueueUnpushIfOurs(
     return;
   }
   // (A coach row has no build to owe it on; that gap is older than this and stays as it was.)
-  if (!prefs.corosWritesEnabled) return;
+  const unpush = await unpushInsertIfOurs(db, userId, w, now, prefs);
+  if (unpush) await unpush.insert;
+}
+
+/**
+ * `enqueueUnpushIfOurs`' own path for a row the app pushed (not a sent programme slot): its reads now, its job's insert
+ * as a statement for the caller's batch (`{ insert }` — a bare query builder would run as the promise resolved) — or
+ * null when there is nothing to take off (writes off, no address, no stamp).
+ * A plan's archive slice (§8 §4; review-1) puts it in the batch that archives the row, so a request that dies between
+ * the two never leaves a delete queued for a session still on the plan.
+ */
+export async function unpushInsertIfOurs(
+  db: Db,
+  userId: string,
+  w: typeof plannedWorkouts.$inferSelect,
+  now: string,
+  prefs: UserPreferences,
+) {
+  if (!prefs.corosWritesEnabled) return null;
   // ADDRESS, NOT SYNC STATE. This gate used to read `corosSyncState !==
   // "synced"`, and that column is not a statement about whether COROS holds
   // the row — it is a statement about whether the two agree. An eased session
@@ -198,18 +216,18 @@ export async function enqueueUnpushIfOurs(
   // code path that exists to stop exactly that (audit#3 D2). `content_stale`
   // and `sync_issue` had the same hole. The address is the durable fact.
   const address = watchAddressOf(w);
-  if (!address) return;
+  if (!address) return null;
   // The delete triple's stamp is the exact program name we last wrote, which
   // is never persisted on the row — read it back off this account's own
   // settled write jobs (a rewrite renames, so the newest one wins).
   const stamp = await recordedStampFor(db, userId, w.id);
-  if (!stamp) return;
+  if (!stamp) return null;
   const [createJob] = await db
     .select({ expectedContentFingerprint: corosWriteJobs.expectedContentFingerprint })
     .from(corosWriteJobs)
     .where(eq(corosWriteJobs.id, `${w.id}-push`))
     .limit(1);
-  await db
+  const insert = db
     .insert(corosWriteJobs)
     .values({
       id: `${w.id}-unpush`,
@@ -232,6 +250,7 @@ export async function enqueueUnpushIfOurs(
       updatedAt: now,
     })
     .onConflictDoNothing();
+  return { insert };
 }
 
 export interface UnskipResult {

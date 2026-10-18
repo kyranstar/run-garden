@@ -426,6 +426,75 @@ describe("applyStructuralChunk: what it writes", () => {
     }
   });
 
+  it("a plan finished on a later day leaves out the sessions whose days have passed — no row, no watch create — and says so (review-1 I2)", async () => {
+    const w = await world();
+    const op = {
+      kind: "createPlan", discipline: "run", name: "10K block", startDate: w.monday, endDate: addDays(w.monday, 27),
+      firmSessions: Array.from({ length: 14 }, (_, i) => ({ date: addDays(w.monday, i), session: runSession(`Run ${i}`, 30 + i) })), shapeWeeks: [],
+    } satisfies CoachOp;
+    // Part of it today…
+    let progress: StructuralProgress | null = null;
+    for (let i = 0; i < 20 && !(progress?.step === "sessions" && progress.done >= 6); i++) {
+      const r = await chunk(w, op, progress, 10);
+      expect(r.status).toBe("more");
+      progress = (r as { progress: StructuralProgress }).progress;
+    }
+    const added = progress!.done;
+    expect(added).toBeLessThan(13);
+    // …and the rest on Monday+13, in the athlete's zone (13:00 in Los Angeles).
+    const later = new Date(`${addDays(w.monday, 13)}T20:00:00Z`);
+    let last: StructuralChunkResult | null = null;
+    for (let i = 0; i < 20 && last?.status !== "done"; i++) {
+      last = await applyStructuralChunk(w.db, { userId: w.userId, proposalId: "p1", opIndex: 0, op, progress, budget: 10, now: later, prefs: w.prefs });
+      if (last.status === "more") progress = last.progress;
+    }
+    const passed = 13 - added;
+    expect(last).toMatchObject({ status: "done", summary: `Added “10K block” with ${14 - passed} sessions — ${passed} days had passed and were left out` });
+    const state = await planState(w);
+    const ids = state.workouts.map((x) => x.id);
+    const expected = [...Array.from({ length: added }, (_, n) => `cw-p1-0-${n}`), "cw-p1-0-13"];
+    expect(ids.sort()).toEqual(expected.sort());
+    expect(state.jobs.map((j) => j.id).sort()).toEqual(expected.map((id) => `${id}-push`).sort());
+  });
+
+  it("one day passed reads as one", async () => {
+    const w = await world();
+    const op = {
+      kind: "firmUp", planId: await seedPlan(w, sessionsFrom(w.monday, 1)), weekStart: addDays(w.monday, 7),
+      sessions: [addDays(w.monday, 8), addDays(w.monday, 9)].map((date, i) => ({ date, session: runSession(`Firm ${i}`, 40) })),
+    } satisfies CoachOp;
+    const later = new Date(`${addDays(w.monday, 9)}T20:00:00Z`);
+    let progress: StructuralProgress | null = null;
+    let last: StructuralChunkResult | null = null;
+    for (let i = 0; i < 20 && last?.status !== "done"; i++) {
+      last = await applyStructuralChunk(w.db, { userId: w.userId, proposalId: "p1", opIndex: 0, op, progress, budget: 45, now: later, prefs: w.prefs });
+      if (last.status === "more") progress = last.progress;
+    }
+    expect(last).toMatchObject({ status: "done", summary: "Added 1 session to “Base block” — 1 day had passed and was left out" });
+  });
+
+  it("an archive slice that dies leaves nothing queued for a row still on the plan: the unpush is in the archive's batch (review-1)", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 4));
+    await pushed(w, ["cw-seed-0-0", "cw-seed-0-1"]);
+    const client = (w.db as unknown as { $client: { exec: (sql: string) => void } }).$client;
+    // The request dies at the archive: D1 runs a batch whole or not at all.
+    client.exec(
+      "CREATE TRIGGER die BEFORE UPDATE OF archived_at ON planned_workouts WHEN NEW.archived_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'the request died'); END;",
+    );
+    await expect(applyAll(w, "p1", { kind: "retirePlan", planId }, 45)).rejects.toThrow(/the request died/);
+    const died = await planState(w);
+    expect(died.workouts.every((x) => !x.archived)).toBe(true);
+    expect(died.jobs.filter((j) => j.kind === "coach_delete_workout")).toEqual([]);
+    expect(died.suppressions).toEqual([]);
+    // Abandoned there, the watch is told nothing about sessions still on the plan; asked again, it all goes together.
+    client.exec("DROP TRIGGER die");
+    expect((await applyAll(w, "p1", { kind: "retirePlan", planId }, 45)).at(-1)!.result.status).toBe("done");
+    const done = await planState(w);
+    expect(done.workouts.every((x) => x.archived)).toBe(true);
+    expect(done.jobs.filter((j) => j.kind === "coach_delete_workout").map((j) => j.id).sort()).toEqual(["cw-seed-0-0-unpush", "cw-seed-0-1-unpush"]);
+  });
+
   it("two sessions of one title on one day take two stamps", async () => {
     const w = await world();
     const op: CoachOp = {

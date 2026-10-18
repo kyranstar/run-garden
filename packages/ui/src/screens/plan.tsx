@@ -447,10 +447,12 @@ export function RunWorkoutDetail({
  * happened (audit C17) — a 409 not_pending means the proposal already
  * resolved (expired, or acted on from another tab), NOT that this tap did
  * anything. */
-function proposalActionErrorMessage(err: unknown): string {
+export function proposalActionErrorMessage(err: unknown): string {
   const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
   if (code === "not_pending") return "This already resolved elsewhere — nothing changed here.";
   if (code === "not_found") return "This proposal is gone — nothing changed.";
+  // A plan part-added (§8 §4): it can't be declined half-made, and its next approve finishes it.
+  if (code === "in_flight") return "This plan is already being added — Approve finishes it.";
   return "Couldn't reach the coach — try again.";
 }
 
