@@ -802,7 +802,6 @@ h1,
 .plan-brief-headline,
 .plan-week-title,
 .side-nav .brand,
-.coach-panel-head h2,
 .today-title,
 .streak-n {
   font-family: var(--font-display);
@@ -5548,48 +5547,6 @@ button.session-chip {
    chip, which now takes the accent-edge treatment instead of a second tinted
    field. `.pill-warn` remains for a genuine warn LABEL.) */
 
-/* The panel sizes to the box it is GIVEN — the coach window's fixed height or
-   the sheet's fill body — never to the window. It used to carry
-   `max-height: 84vh` inside an 85dvh sheet, and the 1vh difference plus two
-   stacked headers is how its tray came to paint 39px above the sheet's own
-   top edge, out over the backdrop, unreachable. */
-.coach-panel {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: 100%;
-}
-.coach-panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--space-5) var(--space-6);
-  border-bottom: 1px solid var(--border);
-  flex: none;
-}
-/* The panel's ONE scroll owner: the whole conversation — messages, receipts
-   and proposal cards alike — lives in it, so the head above and the composer
-   below are the only pinned things and there is exactly one place to be.
-   The wrapper is NOT the scroller: it exists so the jump chip can float over
-   the region without scrolling with it and without taking a pixel of flow. */
-.coach-scroll-wrap {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 6rem;
-  display: flex;
-  flex-direction: column;
-}
-.coach-scroll {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-}
-.coach-panel-head h2 { margin: 0; }
-
 /* ── A proposal, in the conversation ────────────────────────────────────
    It used to live in a pinned tray above the thread. Now it is a message
    like any other, at the moment it happened, and it stays there when it
@@ -5609,20 +5566,7 @@ button.session-chip {
   background: var(--coach-tray-bg);
   border-left: 3px solid var(--warn);
 }
-/* Settled: still here, visibly done. Quieter ground, no accent edge, no
-   controls that ask for a decision — only the way back into what it did. */
-.coach-prop--settled {
-  background: var(--bg-sunken);
-  border-color: var(--border);
-  color: var(--ink-soft);
-}
-.coach-prop-settled-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2) var(--space-4);
-}
-.coach-prop--settled .coach-prop-title { font-weight: var(--weight-medium); }
+
 .coach-prop-title { font-size: var(--text-sm); }
 .coach-prop-evidence { margin: var(--space-2) 0 0; }
 
@@ -5761,72 +5705,6 @@ button.session-chip {
    like success — the card just vanished). */
 .coach-prop-error { margin: var(--space-3) 0 0; font-size: var(--text-xs); color: var(--danger); }
 
-/* The way back to a pending proposal that has scrolled out of sight — the
-   one job the pinned tray did that a chronological thread cannot do by
-   itself. Absolute, over the scroll region: it appears and disappears as you
-   scroll, and a control that did that IN FLOW would shove the conversation
-   around under the reader. */
-/* `.chipbtn` carries the shape, the type and the touch floor (which is
-   `--tap-fine` under a mouse and `--tap` on a coarse pointer, like every
-   other chip). This adds only where it floats and that it is the warn voice.
-
-   `.coach-jump.chipbtn`, because `.chipbtn` is declared LATER in this sheet
-   and its `border:` shorthand and `background:` would otherwise win the tie
-   and take the amber back — measured once already on this chip. A variant of
-   a base class outranks the base by naming both, which is also what it is. */
-.coach-jump.chipbtn {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 2;
-  border-color: var(--warn);
-  background: var(--coach-tray-bg);
-  color: var(--warn);
-  box-shadow: var(--shadow-md);
-  white-space: nowrap;
-}
-.coach-jump--up { top: var(--space-4); }
-.coach-jump--down { bottom: var(--space-4); }
-
-/* Not a scroller any more — `.coach-scroll` above owns that. It still grows
-   to fill the region so a short thread keeps the composer at the bottom. */
-.coach-thread {
-  flex: 1 0 auto;
-  padding: var(--space-5) var(--space-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-height: 120px;
-}
-.coach-msg {
-  max-width: 92%;
-  border-radius: var(--radius);
-  padding: var(--space-4) var(--space-5);
-  font-size: var(--text-sm);
-}
-.coach-msg-coach { background: var(--bg-sunken); align-self: flex-start; }
-.coach-msg-user { background: var(--green-soft); color: var(--green-ink); align-self: flex-end; }
-/* Audit C16: a network-failed send used to just clear the draft and vanish
-   once the settle-time refetch landed — no error, no way to recover the
-   words. The optimistic echo now stays, marked failed, with a retry. */
-.coach-msg-failed { background: var(--danger-soft); color: var(--ink); outline: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); }
-.coach-msg-retry {
-  display: block;
-  margin-top: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--danger);
-}
-.coach-receipt { align-self: stretch; text-align: center; font-size: var(--text-xs); padding: var(--space-1) 0; }
-.coach-memchips { display: inline-flex; gap: var(--space-2); margin-left: var(--space-3); }
-.tagchip {
-  font-size: var(--text-2xs);
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-3);
-  text-decoration: none;
-}
-
 /* The coach's read of one effort (effort-analysis spec §6) — an inline card
    under activity rows and inside the workout sheet. */
 .coach-read {
@@ -5877,49 +5755,7 @@ button.session-chip {
 .coach-read .ai-credits-note {
   margin: 0 0 var(--space-4);
 }
-/* In the chat it sits where "Coach is thinking…" would, pinned above the
-   composer like it, never in the scroll; its Retry wraps under the words at
-   phone width instead of squeezing them. */
-.coach-credits {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  border-top: 1px solid var(--border);
-  padding: var(--space-4) var(--space-5);
-}
 
-/* Pinned footer of the panel — never part of the scroll region. */
-.coach-composer { border-top: 1px solid var(--border); padding: var(--space-4) var(--space-5); flex: none; }
-.coach-input {
-  display: flex;
-  gap: var(--space-4);
-  /* The FIELD owns the box, not the form. `.coach-input` is a <form>: putting
-     the floor on IT produced a control that LOOKED 44px while the focusable
-     <input> inside was still 26px, vertically centred, with 12px dead bands —
-     a click 3px inside the top edge focused `div.sheet`, not the field. The
-     vertical padding is gone and the children stretch, so every pixel of the
-     visible box belongs to the field or to Send. */
-  align-items: stretch;
-  border: 1.5px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  padding: 0 var(--space-4);
-  background: var(--bg-raised);
-}
-.coach-input input {
-  flex: 1;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  font: inherit;
-  color: var(--ink);
-  padding: 0;
-  /* An <input> cannot carry a pseudo-element, so this is one of the controls
-     whose real height is the hit area. Floor in "Touch floor". */
-  min-height: var(--tap-fine);
-}
 .coach-question {
   display: flex;
   gap: var(--space-4);
@@ -5981,40 +5817,6 @@ button.session-chip {
 @media (prefers-reduced-motion: no-preference) {
   @keyframes coach-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--green-soft); } }
 }
-
-/* Mobile: the Coach pill + sheet */
-.coach-pill {
-  position: fixed;
-  right: var(--space-6);
-  /* Audit C25: no env() term meant the bottom-nav's safe-area padding (which
-     grows with the home-indicator inset) pushed its top edge over most of
-     this pill on Face-ID iPhones, leaving a ~10px sliver to tap. */
-  bottom: calc(var(--nav-height) + var(--space-5) + env(safe-area-inset-bottom, 0px));
-  z-index: 30;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* Audit M18: was ~35px tall. */
-  min-height: var(--tap);
-  background: var(--green);
-  color: var(--on-accent);
-  border: 0;
-  border-radius: var(--radius-pill);
-  padding: var(--space-4) var(--space-6);
-  font: var(--weight-medium) var(--text-sm) var(--font);
-  box-shadow: var(--shadow-sm);
-  cursor: pointer;
-}
-/* The mobile coach sheet: the sheet is `fill`, so this wrapper is just the
-   column that hands the panel the body's height. No vh of its own (was
-   76vh inside an 85dvh sheet) — that arithmetic is the sheet's now. */
-.coach-sheet-panel {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.coach-sheet-panel .coach-panel { border: 0; border-radius: 0; }
 
 /* Settings memory section */
 .memory-row {
@@ -6213,11 +6015,6 @@ button.session-chip {
 }
 @media (min-width: 1024px) {
   .scene-full-toggle { display: none; }
-}
-/* The coach mark (icons.tsx IconCoach) replaced the text caret 2026-08-20. */
-.coach-pill svg {
-  flex: none;
-  margin-right: var(--space-3);
 }
 
 /* ── The Activity dashboard (System 2): overview sections + week feed ──── */
@@ -7040,16 +6837,8 @@ button.session-chip {
   }
 }
 
-/* One width contract for the page and the coach overlay (System 1 §6).
-   `--coach-w` is the single declaration of how wide the coach window is; the
-   window reads it for its width and the page reads it for the gutter it must
-   yield while the window is open. They cannot drift, so the window can no
-   longer sit on top of 106px of every card (Sunday 89% hidden, the jump
-   control entirely) — and when it is minimized the class comes off and the
-   column reclaims the space instead of leaving a 310px empty gutter. */
 .plan-page {
   position: relative;
-  --coach-w: min(400px, 34vw);
 }
 .plan-page-col {
   display: flex;
@@ -7057,11 +6846,6 @@ button.session-chip {
   gap: var(--space-6);
   max-width: 880px;
   min-width: 0;
-}
-@media (min-width: 1024px) {
-  .plan-page--coach-open {
-    padding-right: calc(var(--coach-w) + var(--space-7));
-  }
 }
 
 /* Weekly brief */
@@ -7795,62 +7579,6 @@ button.session-chip {
   }
 }
 
-/* The floating coach window (desktop) + its minimized pill twin */
-/* scale-exempt (stage geometry): `top` clears the plan page's title row and
-   sits above the scale's top step. */
-.coach-window {
-  position: fixed;
-  top: 4.5rem;
-  right: var(--space-6);
-  bottom: var(--space-6);
-  /* The page reserves exactly this much (see `.plan-page--coach-open`). */
-  width: var(--coach-w, min(400px, 34vw));
-  z-index: 45; /* above page content, below sheets (z 60) */
-  background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.coach-window .coach-panel {
-  border: 0;
-  border-radius: 0;
-  flex: 1;
-  min-height: 0;
-}
-/* The absolutely-positioned minimize control sits in the head's top-right —
-   without this inset the "what I know →" link runs underneath it. The inset
-   is the control's own box (38.7px measured at 1440) plus the gutter it sits
-   in plus a gap, not a round number: at `--space-10` alone the arrow of
-   "what I know →" was under the button. */
-.coach-window .coach-panel-head {
-  padding-right: calc(var(--space-10) + var(--space-5));
-}
-/* Absolute, and it stays absolute: the touch-floor list defaults
-   `position: relative` at zero specificity (`:where(...)` — see "Touch
-   floor"), so this one class wins. It used to lose, and the control fell into
-   flow as a 398px-wide bar hanging off the panel's left edge. Its 44px pad
-   still lands correctly — `absolute` is a positioned ancestor too, so the
-   `::after` measures against the button. */
-.coach-window-min {
-  position: absolute;
-  top: var(--space-4);
-  right: var(--space-5);
-  z-index: 2;
-}
-/* The minimized coach window's pill. It shares `.coach-pill` with the mobile
-   pill, which sits above the BOTTOM NAV — `bottom: calc(var(--nav-height) +
-   … + env(safe-area-inset-bottom))`. There is no bottom nav at lg (it is
-   `display: none` from 1024), so that inherited 58px+ reservation floated
-   this pill in empty space over the page's own foot. It gets the same gutter
-   the coach window it replaces sits in. */
-.coach-pill--desktop {
-  position: fixed;
-  bottom: var(--space-7);
-}
-
 /* Studio modal */
 .studio-modal-meta {
   flex-wrap: wrap;
@@ -8162,11 +7890,9 @@ button.session-chip {
   .week-pull,
   .wildlife-chip,
   .race-strip-toggle,
-  .coach-msg-retry,
   .btn-row > .linklike,
   .memory-row .linklike,
   .coach-ops-all,
-  .coach-panel-head .linklike,
   .proposal-actions > .linklike,
   .howworks .linklike,
   .hud-beat-dismiss,
@@ -8199,11 +7925,9 @@ button.session-chip {
 .week-pull::after,
 .wildlife-chip::after,
 .race-strip-toggle::after,
-.coach-msg-retry::after,
 .btn-row > .linklike::after,
 .memory-row .linklike::after,
 .coach-ops-all::after,
-.coach-panel-head .linklike::after,
 .proposal-actions > .linklike::after,
 .howworks .linklike::after,
 .hud-beat-dismiss::after,
@@ -8245,9 +7969,6 @@ button.session-chip::after {
    nested inside one must name its own — which is why the 6px rows below are
    listed even though nothing in them currently reaches that far. */
 .card,
-.coach-credits,
-.coach-input,
-.coach-window,
 .row,
 .row-between { --tap-clear: var(--space-4); }
 /* The drawer's "last trained" rows are 12px apart and its meters are short
@@ -8360,11 +8081,9 @@ button.session-chip::after {
   .week-pull,
   .wildlife-chip,
   .race-strip-toggle,
-  .coach-msg-retry,
   .btn-row > .linklike,
   .memory-row .linklike,
   .coach-ops-all,
-  .coach-panel-head .linklike,
   .proposal-actions > .linklike,
   .howworks .linklike,
   .hud-beat-dismiss,
@@ -8405,8 +8124,7 @@ button.session-chip::after {
    pointer in use, and the pads still apply. */
 .chip,
 .chipbtn,
-.cal-ghost,
-.coach-input input { min-height: var(--tap-fine); }
+.cal-ghost { min-height: var(--tap-fine); }
 .chip { min-width: var(--tap-fine); }
 .act-actions > *,
 .act-status-slot > *,
@@ -8416,7 +8134,6 @@ button.session-chip::after {
   .chip,
   .chipbtn,
   .cal-ghost,
-  .coach-input input,
   .act-actions > *,
   .act-status-slot > *,
   .act-status-slot { min-height: var(--tap); }
@@ -9170,10 +8887,7 @@ button.session-chip::after {
   flex-direction: column;
   gap: var(--space-7);
 }
-/* Stage 3's coach composer lands here; until then it takes no room. */
-.stu-composer-slot:empty {
-  display: none;
-}
+
 .stu-section {
   display: flex;
   flex-direction: column;
@@ -11150,12 +10864,6 @@ a.stu-tpl-open:focus-visible::before {
 
 /* ── The coach in the Studio (Stage 3 Task 9): the composer, the run view, a suggestion's card ─────────────────── */
 
-.coach-area {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  min-width: 0;
-}
 /* The coach's routes are off on this server: one quiet line. */
 .coach-off {
   margin: 0;
@@ -11163,83 +10871,28 @@ a.stu-tpl-open:focus-visible::before {
   color: var(--ink-soft);
 }
 
-/* The composer: the field over its three ways to start. */
-.coach-composer-box {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
-}
-.coach-composer-field {
-  resize: vertical;
-  font-size: var(--text-md);
-}
 .coach-composer-count {
   align-self: flex-end;
   font-size: var(--text-xs);
   color: var(--ink-soft);
-}
-.coach-composer-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
 }
 .coach-composer-error {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--danger-ink);
 }
-.coach-scope {
-  position: relative;
-}
-.coach-scope > .btn {
-  gap: var(--space-2);
-}
-/* A set as the default (fix wave 3B, M10): Plan ahead starts it, the ▾ beside it opens the menu. */
-.coach-scope--split {
-  display: inline-flex;
-  gap: var(--space-2);
-}
-.coach-scope-more {
-  min-width: var(--tap);
-  padding-left: var(--space-3);
-  padding-right: var(--space-3);
-}
-/* What a set usually costs, before the tap (M4): quiet, beside the actions. */
-.coach-composer-cost {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--ink-soft);
-}
+
 /* Past the week's cutoff (Task 13, R11): the line where the ways to start were. */
 .coach-composer-used {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--ink);
 }
-.coach-scope-chev {
-  display: inline-flex;
-  transform: rotate(90deg);
-}
-.coach-scope-menu {
-  right: auto;
-  left: 0;
-}
-/* The athlete's default scope among Plan ahead's items (Settings → Coach). */
-.coach-scope-default {
-  color: var(--ink-soft);
-  font-weight: var(--weight-regular);
-}
-/* Near the viewport's right edge (composer.tsx measures): it opens leftward from the button's right edge. */
-.coach-scope-menu--end {
-  right: 0;
-  left: auto;
-}
 
 /* ── The coach, anywhere (coach everywhere, phase A3) ────────────────────────────────────────────────────────────
-   The app's one coach sheet (coach-sheet.tsx). On a phone a bottom sheet with a definite frame: the run grows inside
-   its body, never lifting its head off the finger. From lg a panel at the right edge, full height, the page dimmed
-   beside it — above the Plan's floating coach window, never beside it. */
+   The app's one coach sheet (coach-sheet.tsx). On a phone a bottom sheet with a definite frame: the conversation
+   grows inside its body, never lifting its head off the finger. From lg a panel at the right edge, full height, the
+   page dimmed beside it. */
 .sheet.coach-sheet {
   height: 85dvh;
 }
@@ -11256,40 +10909,7 @@ a.stu-tpl-open:focus-visible::before {
     max-width: none;
   }
 }
-/* What the athlete asked from, over the field: a chip, its ✕ takes it off. */
-.coach-about {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  gap: var(--space-2);
-  max-width: 100%;
-  margin: 0;
-  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-sunken);
-  color: var(--ink);
-  font-size: var(--text-sm);
-}
-.coach-about-label {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.coach-about-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  padding: var(--space-2);
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-}
-.coach-about-clear:hover {
-  color: var(--ink);
-}
+
 /* "Ask" with the coach mark: the one small affordance every screen that asks wears. */
 .ask-coach {
   gap: var(--space-2);
@@ -11556,8 +11176,7 @@ a.stu-tpl-open:focus-visible::before {
   }
 }
 /* The Today card, a session's sheet, an activity, an objective, a move: the Ask sits with the actions it is one of. */
-.today-ask,
-.session-ask-row {
+.today-ask {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-4);
@@ -11901,12 +11520,6 @@ a.stu-tpl-open:focus-visible::before {
   display: none;
 }
 
-/* The words a tap carried that the coach didn't start, offered back under the field. */
-.coach-composer-back {
-  margin: 0;
-  font-size: var(--text-sm);
-}
-
 /* A designed suggestion. */
 .coach-pc {
   display: flex;
@@ -12087,12 +11700,6 @@ a.stu-tpl-open:focus-visible::before {
 .coach-pc-label {
   font-size: var(--text-sm);
   color: var(--ink-soft);
-}
-
-/* The Plan coach sheet's way to the coach designer. */
-.coach-design-link {
-  padding: var(--space-3) var(--space-5);
-  font-size: var(--text-sm);
 }
 
 /* The 44 px touch floor (fix round, M5): a trail line that opens to its detail and a suggestion's workout are list rows,

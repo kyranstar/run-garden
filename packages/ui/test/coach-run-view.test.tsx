@@ -53,6 +53,18 @@ function view(r: CoachRunDto, events: CoachRunEventDto[] = trail, o: { inFlight?
   return { html, words: text(html) };
 }
 
+describe("the run view in the conversation (quiet)", () => {
+  it("an answer that lands while the run is still at work is no trail line: it is the coach's words, the turn's own", () => {
+    const answer = "Up fifteen seconds in two weeks, held clean each time.";
+    const events = [...trail, ev(6, "tool_call", "Finishing", { tool: "finish" }), ev(7, "tool_result", answer, { tool: "finish", ok: true, receipt: { final: true, answer: true } })];
+    const quiet = text(renderAt("/studio", createElement(RunView, { run: run({ status: "stepping" }), status: "stepping", events, quiet: true }), { today: todayDto(null) }));
+    expect(quiet).toContain("Read today");
+    expect(quiet).not.toContain(answer);
+    // …and the athlete's words aren't said again under them.
+    expect(quiet).not.toContain("a 30-minute lower-body session at home");
+  });
+});
+
 describe("the run view, by status", () => {
   it("active, a step in flight: designing, the spend, the request as text, the lines and the step in flight", () => {
     const { html, words } = view(run(), trail, { inFlight: true });

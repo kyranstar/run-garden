@@ -163,18 +163,6 @@ describe("the tablet tier is a real tier", () => {
     expect(owner[0]!.condition).toBe("(min-width: 1024px)");
     expect(owner[0]!.body).toContain("max-width: 1440px");
   });
-
-  it("the minimized coach pill does not reserve room for a nav that isn't there", () => {
-    // It inherits `.coach-pill`, which clears the MOBILE bottom nav. There is
-    // no bottom nav at lg — it is `display: none` from 1024 — and this pill
-    // only ever renders there.
-    const mobile = css.slice(css.indexOf("\n.coach-pill {"));
-    expect(mobile.slice(0, mobile.indexOf("}"))).toContain("var(--nav-height)");
-    const desktop = css.slice(css.indexOf("\n.coach-pill--desktop {"));
-    const body = desktop.slice(0, desktop.indexOf("}"));
-    expect(body).toContain("bottom:");
-    expect(body).not.toContain("--nav-height");
-  });
 });
 
 // ── 3. A chart label is the same size in every box ─────────────────────────

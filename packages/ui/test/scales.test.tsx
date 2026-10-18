@@ -354,10 +354,11 @@ describe("one touch floor, enforced", () => {
   it("`--tap` is 44px and every control height is expressed in it", () => {
     expect(rootBlock).toContain("--tap: 44px");
     // Every raw `min-height` left in the sheet is either a CONTAINER (a
-    // textarea, a thread, a calendar cell, the new-plan slab) or a control
-    // that keeps a small box and wears `.tap-pad`. Nothing else.
+    // textarea, a calendar cell, the new-plan slab) or a control that keeps a
+    // small box and wears `.tap-pad`. Nothing else. (The thread coach's 120px
+    // thread went with its window: the new shape §5.)
     const heights = [...rules.matchAll(/min-height:\s*(\d+)px;/g)].map((m) => Number(m[1]));
-    expect(heights.sort((a, b) => a - b)).toEqual([64, 72, 120, 128]);
+    expect(heights.sort((a, b) => a - b)).toEqual([64, 72, 128]);
     // The three controls that keep a small box now state that box as
     // `--tap-own` — a raw `min-height` there is silently replaced by the touch
     // floor's makeup rule, which is how the first cut of that rule shrank
@@ -380,14 +381,12 @@ describe("one touch floor, enforced", () => {
     // one; the same selectors carry `--tap-fine` outside the media query.
     const coarse = css.slice(css.indexOf("@media (pointer: coarse) {"));
     const coarseBody = coarse.slice(0, coarse.lastIndexOf("}"));
-    for (const sel of [".chip", ".chipbtn", ".cal-ghost",
-      ".coach-input input", ".act-actions > *", ".act-status-slot"]) {
+    for (const sel of [".chip", ".chipbtn", ".cal-ghost", ".act-actions > *", ".act-status-slot"]) {
       expect(coarseBody, sel).toContain(`${sel},`.replace(/,$/, ""));
     }
     expect(coarseBody).toContain("min-height: var(--tap)");
     // A control a mouse cannot miss is never gated.
     expect(ruleBody(".btn")).toContain("min-height: var(--tap)");
-    expect(ruleBody(".coach-pill")).toContain("min-height: var(--tap)");
     // Adjacent list rows can never be padded — their pads would steal from
     // each other — so the row itself grows, unconditionally.
     expect(ruleBody(".plan-week-jumplist button")).toContain("min-height: var(--tap)");
@@ -402,7 +401,7 @@ describe("one touch floor, enforced", () => {
     expect(rootBlock).toContain("--tap-fine-row: 32px");
     // The fine-pointer branch is each control's PRE-floor size, so a mouse
     // sees exactly what it saw before System 2.
-    for (const sel of [".chip", ".chipbtn", ".cal-ghost", ".coach-input input"])
+    for (const sel of [".chip", ".chipbtn", ".cal-ghost"])
       expect(rules, sel).toMatch(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^{]*\\{[^}]*var\\(--tap-fine\\)`));
     expect(rules).toContain(".act-status-slot { min-height: var(--tap-fine-row); }");
     // …and a pad is never gated: it costs no layout, so there is nothing to
@@ -533,9 +532,9 @@ describe("one touch floor, enforced", () => {
     const rule = css.slice(at, css.indexOf("}", at));
     expect(rule).toContain(") {");
     expect(rule).toContain("position: relative;");
-    // The two that pay for it, kept honest: they say `absolute` at one plain
-    // class and that is now all they have to say.
-    for (const sel of [".coach-window-min", ".ceremony-close"]) {
+    // The one that pays for it (the coach window's minimize went with the window), kept honest: it says
+    // `absolute` at one plain class and that is now all it has to say.
+    for (const sel of [".ceremony-close"]) {
       const own = new RegExp(`\\n\\${sel} \\{[^}]*position: absolute`).exec(css);
       expect(own, `${sel} should position itself at one plain class`).not.toBeNull();
     }

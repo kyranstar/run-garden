@@ -272,6 +272,8 @@ describe("the server's new words (stream A: plan powers, answers, the auto scope
     // A finish that proposed is no answer; nor a line with nothing in it.
     expect(answerOf([ev(1, "tool_result", "Here's your session.", { tool: "finish", ok: true, receipt: { final: true } })])).toBeNull();
     expect(answerOf([ev(1, "note", "  ", { answer: true })])).toBeNull();
+    // The newest answer, whatever order the events came in.
+    expect(answerOf([ev(1, "note", "An older word.", { answer: true }), ev(2, "note", "The newest word.", { answer: true })])).toBe("The newest word.");
     expect(isAnswerEvent(finish[1]!)).toBe(true);
     expect(isAnswerEvent(finish[0]!)).toBe(false);
   });

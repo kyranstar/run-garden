@@ -210,7 +210,7 @@ describe("a disclosure's detail is written after its trigger", () => {
   it("the coach proposal's rationale and error follow the actions row", () => {
     const card = src.coachPanel.slice(
       at(src.coachPanel, "export function ProposalCard("),
-      at(src.coachPanel, "export type ThreadItem ="),
+      at(src.coachPanel, "THE BOTTOM IS THE RESTING PLACE."),
     );
     const actions = at(card, "proposal-actions");
     expect(at(card, "coach-prop-why")).toBeGreaterThan(actions);

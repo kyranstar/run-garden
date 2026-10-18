@@ -3,8 +3,9 @@
  * THE COACH'S AI ACCOUNT IS OUT OF CREDITS (owner report, 2026-10-09).
  *
  * The worker now answers a gateway 402 with `out_of_credits` and keeps a record of it (services/ai-credits.ts). Every
- * place that waits on the coach must stop waiting on it and say so in one plain line: the chat (instead of "Coach is
- * thinking…", with a Retry), an effort's read card, and Settings → Coach & AI. The athlete's message stays in the thread.
+ * place that waits on the coach must stop waiting on it and say so in one plain line: an effort's read card, and
+ * Settings → Coach & AI. (The Plan's chat with the thread coach went with the new shape: the coach is one conversation,
+ * whose stops say so in its own words — coach-conversation-model.test.ts.)
  */
 import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -13,9 +14,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_USER_PREFERENCES } from "@rg/domain";
 import { OUT_OF_CREDITS_LINE } from "../src/ai-credits.js";
-import { CoachPanel } from "../src/screens/coach-panel.js";
 import { CoachRead } from "../src/screens/coach-read.js";
-import { coachPanelProps, usePlanCoach } from "../src/screens/plan.js";
 import { CoachAiSection } from "../src/screens/settings/coach-settings.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -101,101 +100,6 @@ async function until(check: () => boolean, what: string, ms = 2_000) {
   }
   throw new Error(`timed out waiting for ${what}\n${text()}`);
 }
-
-/** The plan page's wiring, minus the page: the same hook, the same props, the same panel. */
-function PlanCoach() {
-  const coach = usePlanCoach();
-  const props = coachPanelProps(coach, new Map());
-  return props ? createElement(CoachPanel, props) : null;
-}
-
-describe("the chat", () => {
-  it("a send that meets an empty AI account stops 'thinking' at once and says why — the words stay", async () => {
-    emptyAccountWorker();
-    mount(createElement(PlanCoach));
-    await until(() => !!document.querySelector("input[aria-label='Message your coach']"), "the composer");
-    const input = document.querySelector<HTMLInputElement>("input[aria-label='Message your coach']")!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "how is my week?");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => {
-      button("Send")!.click();
-    });
-    // Well inside the 15 s the client bridges a send for: the answer is already known.
-    await until(() => text().includes(OUT_OF_CREDITS_LINE), "the out-of-credits line");
-    const field = document.querySelector<HTMLInputElement>("input[aria-label='Message your coach']")!;
-    expect(field.placeholder).not.toBe("Coach is thinking…");
-    expect(field.disabled).toBe(false);
-    expect(text()).toContain("how is my week?");
-  });
-
-  it("Retry asks the coach again", async () => {
-    const { state, calls } = emptyAccountWorker();
-    state.outOfCredits = { since: "2026-10-08T09:00:00.000Z", lastSeenAt: "2026-10-09T07:00:00.000Z" };
-    state.messages.push({ id: "m0", role: "user", body: "still there?", refs: {}, at: "2026-10-09T07:00:00.000Z" });
-    mount(createElement(PlanCoach));
-    await until(() => !!button("Retry"), "Retry");
-    await act(async () => {
-      button("Retry")!.click();
-    });
-    await until(() => calls.some((c) => c.path === "/api/coach/wake"), "the wake");
-    expect(calls.find((c) => c.path === "/api/coach/wake")!.body).toEqual({ force: true });
-    // Still empty: the line is back at once, not after the 15 s bridge.
-    await until(() => text().includes(OUT_OF_CREDITS_LINE), "the line again");
-  });
-
-  it("answering the coach's question: the same — the line, at once", async () => {
-    const { calls } = emptyAccountWorker();
-    const stateAnswer = vi.mocked(fetch).getMockImplementation()!;
-    vi.mocked(fetch).mockImplementation(async (url, req) => {
-      const path = String(url).replace(/\?.*$/, "");
-      if (path === "/api/coach/state") {
-        const res = (await (await stateAnswer(url, req)).json()) as Record<string, unknown>;
-        const answered = calls.some((c) => c.path === "/api/coach/questions/q1/answer");
-        return json({ ...res, openQuestion: answered ? null : { id: "q1", body: "Long run Saturday or Sunday?", chips: ["Saturday", "Sunday"], askedAt: "2026-10-09T07:00:00.000Z" } });
-      }
-      if (path === "/api/coach/questions/q1/answer") {
-        calls.push({ method: "POST", path, body: null });
-        await stateAnswer("/api/coach/wake", { method: "POST", body: "{}" });
-        return json({ ok: true, memoryId: "mem1", wake: { status: "out_of_credits" } });
-      }
-      return stateAnswer(url, req);
-    });
-    mount(createElement(PlanCoach));
-    await until(() => !!button("Sunday"), "the question's chips");
-    await act(async () => {
-      button("Sunday")!.click();
-    });
-    await until(() => text().includes(OUT_OF_CREDITS_LINE), "the out-of-credits line");
-  });
-});
-
-describe("the panel itself", () => {
-  const base = {
-    messages: [],
-    proposals: [],
-    question: null,
-    onSend: () => undefined,
-    onApprove: () => undefined,
-    onDecline: () => undefined,
-    onAnswer: () => undefined,
-    onDismiss: () => undefined,
-    onRetry: () => undefined,
-  };
-
-  it("a wake actually running wins: 'thinking', not the credits line", () => {
-    mount(createElement(CoachPanel, { ...base, outOfCredits: true, busy: true }));
-    expect(text()).not.toContain(OUT_OF_CREDITS_LINE);
-    expect(button("Retry")).toBeUndefined();
-    expect(document.querySelector<HTMLInputElement>("input")!.placeholder).toBe("Coach is thinking…");
-  });
-
-  it("no record, no line", () => {
-    mount(createElement(CoachPanel, { ...base, outOfCredits: false }));
-    expect(text()).not.toContain(OUT_OF_CREDITS_LINE);
-  });
-});
 
 describe("an effort's read card", () => {
   it("says the same line, with Try again — never the generic failure", async () => {

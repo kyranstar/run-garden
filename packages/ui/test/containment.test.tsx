@@ -22,7 +22,11 @@ import type { CoachProposalDto, PlanWeekResponse } from "@rg/api-client";
 import type { ReadinessVerdict, WorkoutDto } from "@rg/domain";
 import { Sheet, useSpaceAbove } from "../src/components.js";
 import { Drawer } from "../src/drawer.js";
-import { CoachPanel, ProposalCard } from "../src/screens/coach-panel.js";
+import { ProposalCard } from "../src/screens/coach-panel.js";
+import { ThreadCoachCards } from "../src/screens/thread-coach-cards.js";
+import { CoachConversation } from "../src/screens/studio/coach-conversation.js";
+import { CONVERSATION_QUERY } from "../src/screens/studio/coach-conversation-model.js";
+import { COACH_CURRENT_QUERY } from "../src/screens/studio/run-keeper.js";
 import { CorosCheck } from "../src/screens/coros-check.js";
 import { WeeklyBrief } from "../src/screens/plan-brief.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
@@ -189,35 +193,32 @@ describe("one scroll owner per dialog", () => {
   it("no dialog child sizes itself against the viewport", () => {
     // The 84vh panel inside an 85dvh sheet is exactly how the coach tray came
     // to paint 39px above the sheet's own top edge, out over the backdrop.
-    for (const selector of [".coach-panel", ".coach-sheet-panel", ".coach-thread", ".coach-scroll", ".coach-scroll-wrap"]) {
+    for (const selector of [".coach-convo", ".coach-turns", ".coach-convo-foot", ".coach-box"]) {
       expect(ruleBody(selector), selector).not.toMatch(/\d+(vh|dvh)/);
     }
     expect(ruleBody(".sheet")).toContain("overflow: hidden");
   });
 
-  it("the coach panel scrolls the whole conversation as one, head and composer pinned", () => {
-    const html = render(
-      createElement(CoachPanel, {
-        messages: [
-          { id: "m1", role: "coach", body: "Morning.", refs: {}, at: "2026-08-14T07:00:00Z" },
-        ] as never,
-        proposals: [],
-        question: null,
-        onSend: noop,
-        onApprove: noop,
-        onDecline: noop,
-        onAnswer: noop,
-        onDismiss: noop,
-      }),
+  it("the coach's conversation scrolls as one, the box pinned under it", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(CONVERSATION_QUERY, {
+      id: "r1",
+      startedAt: "2026-08-14T07:00:00Z",
+      turns: [{ runId: "r1", at: "2026-08-14T07:00:00Z", words: "Something for my hips", status: "finished", line: "Morning.", cards: [], question: null }],
+    });
+    qc.setQueryData(COACH_CURRENT_QUERY, { run: null });
+    const html = renderToStaticMarkup(
+      createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(CoachConversation, { ctx: emptyStudioCtx }))),
     );
     expect((html.match(/scroller/g) ?? []).length).toBe(1);
-    expect(html).toContain("coach-scroll scroller");
-    // head → scroll region → composer, in that order.
-    expect(html.indexOf("coach-panel-head")).toBeLessThan(html.indexOf("coach-scroll"));
-    expect(html.indexOf("coach-scroll")).toBeLessThan(html.indexOf("coach-composer"));
-    // The thread sits INSIDE the scroll region, and no longer scrolls itself.
-    expect(html.indexOf("coach-scroll")).toBeLessThan(html.indexOf("coach-thread"));
-    expect(ruleBody(".coach-thread")).not.toContain("overflow");
+    // The turns inside the one scroll region; the box after it, never in it.
+    const scroll = html.indexOf("coach-convo-scroll");
+    expect(scroll).toBeGreaterThan(-1);
+    expect(scroll).toBeLessThan(html.indexOf("coach-turns"));
+    expect(html.indexOf("coach-turns")).toBeLessThan(html.indexOf("coach-convo-foot"));
+    expect(html.indexOf("coach-convo-foot")).toBeLessThan(html.indexOf("coach-box"));
+    expect(ruleBody(".coach-convo-foot")).toContain("flex: none");
+    expect(ruleBody(".coach-convo")).not.toContain("overflow");
   });
 });
 
@@ -314,18 +315,9 @@ describe("late-mounting boxes still get measured", () => {
     expect(typeof handed).toBe("function");
   });
 
-  it("nothing needing action starts hidden: a proposal IS a message in the one scroller", () => {
-    // There is no second region any more. The tray used to sit above the
-    // thread INSIDE the same scroller, which is why opening the panel had to
-    // choose between "show the newest message" and "show what needs you" —
-    // and chose the top, 1,143px above the newest message at 390. A proposal
-    // is now an item in the thread at its own moment in time, so the bottom
-    // is both answers at once.
+  it("nothing needing action starts hidden: the thread coach's cards sit in the Plan's page, in no scroller of their own", () => {
     const html = render(
-      createElement(CoachPanel, {
-        messages: [
-          { id: "m1", role: "coach", body: "Morning.", refs: {}, at: "2026-08-14T07:00:00Z" },
-        ] as never,
+      createElement(ThreadCoachCards, {
         proposals: [
           {
             id: "p1",
@@ -340,32 +332,14 @@ describe("late-mounting boxes still get measured", () => {
           } as CoachProposalDto,
         ],
         question: null,
-        onSend: noop,
         onApprove: noop,
         onDecline: noop,
         onAnswer: noop,
         onDismiss: noop,
       }),
     );
-    expect(html).not.toContain("coach-tray");
-    const scroll = html.indexOf("coach-scroll scroller");
-    expect(scroll).toBeLessThan(html.indexOf("coach-thread"));
-    expect(html.indexOf("coach-thread")).toBeLessThan(html.indexOf("coach-prop"));
-    // The wrapper that lets the jump chip float is NOT the scroll owner.
-    expect(html.indexOf("coach-scroll-wrap")).toBeLessThan(scroll);
-    expect((html.match(/scroller/g) ?? []).length).toBe(1);
-  });
-});
-
-// ── 6. The overlay and the column share one width ──────────────────────────
-
-describe("the coach overlay reserves its own room", () => {
-  it("one custom property drives both the window and the gutter the page yields", () => {
-    expect(ruleBody(".plan-page")).toContain("--coach-w:");
-    expect(ruleBody(".coach-window")).toContain("width: var(--coach-w");
-    expect(ruleBody("  .plan-page--coach-open")).toContain(
-      "padding-right: calc(var(--coach-w) + var(--space-7))",
-    );
+    expect(html).toContain('id="proposal-p1"');
+    expect(html).not.toContain("scroller");
   });
 });
 
