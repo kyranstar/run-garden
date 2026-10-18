@@ -545,7 +545,7 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
     case "watch_copy_differs":
       return {
         says:
-          "COROS saved this run a little differently from what Run Garden sent, so your watch" +
+          "COROS saved this run differently from what Run Garden sent, so your watch" +
           " may not match the steps here. Follow the steps here.",
         todo: null,
       };

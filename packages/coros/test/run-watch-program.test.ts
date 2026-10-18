@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { runWatchSteps, type CoachSession, type RunWatchSession } from "@rg/domain";
 import { normalizeCorosSchedule, type RawCorosExercise, type RawCorosProgram } from "@rg/providers";
 import { CorosClient } from "../src/client.js";
+import { updateWorkoutContent } from "../src/content-executor.js";
 import {
   buildProgramFor,
   buildRunProgram,
@@ -248,5 +249,70 @@ describe("storedContentDelta — COROS's own estimates are never a difference (r
     const moved = structuredClone(sent);
     (moved.exercises![2] as unknown as Record<string, unknown>).targetValue = 150;
     expect(storedContentDelta(sent, moved)).toBe("ex[2].targetValue 120→150");
+  });
+});
+
+describe("a designed run's REWRITE read back as its create is (review-2 N1)", () => {
+  /** A logged-in client on a renormalizing COROS that also applies `change` to every program written. */
+  async function on(change: (p: RawCorosProgram) => void) {
+    const server = renormalizingCoros({ baseMonday: nextMonday() });
+    const inner = server.fetchImpl;
+    server.fetchImpl = async function (input: string | URL | Request, init?: RequestInit): Promise<Response> {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname === "/training/schedule/update" && typeof init?.body === "string") {
+        const body = JSON.parse(init.body) as { programs?: RawCorosProgram[] };
+        for (const p of body.programs ?? []) change(p);
+        return inner(input, { ...init, body: JSON.stringify(body) });
+      }
+      return inner(input, init);
+    } as typeof fetch;
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    const today = new Date().toISOString().slice(0, 10);
+    const day = new Date(`${today}T00:00:00Z`);
+    day.setUTCDate(day.getUTCDate() + 10);
+    const happenDay = day.toISOString().slice(0, 10).replaceAll("-", "");
+    return { client, today, happenDay };
+  }
+  /** A COROS that files the first recovery of a program as work. */
+  const recoveryAsWork = (p: RawCorosProgram) => {
+    const steps = (p.exercises ?? []) as Array<RawCorosExercise & Record<string, unknown>>;
+    if (steps[2]?.exerciseType === 4) steps[2].exerciseType = 2;
+  };
+
+  it("the new stamp on its day with only its values changed: it landed, ours — ok, with the differences", async () => {
+    const { client, today, happenDay } = await on(recoveryAsWork);
+    const name = "Tempo blocks — created";
+    const made = await createWorkout(client, { ...spec(), happenDay, name } as CreateWorkoutSpec, { today, catalog: new Map(), log: noop });
+    expect(made.ok, made.error).toBe(true);
+    const four: RunWatchSession = { ...TEMPO, segments: [TEMPO.segments[0]!, { ...TEMPO.segments[1]!, rounds: 4 }, TEMPO.segments[2]!] };
+    const result = await updateWorkoutContent(
+      client,
+      {
+        target: { happenDay, name, idInPlan: made.serverIdInPlan!, programId: made.serverProgramId!, planId: made.serverPlanId! },
+        session: four,
+        name: "Tempo blocks — undone",
+        thresholdPaceSecPerKm: THRESHOLD,
+      },
+      { catalog: new Map(), today, log: noop },
+    );
+    expect(result.ok, result.error).toBe(true);
+    expect(result.pathUsed).toBe("in_place_update");
+    expect(result.contentDelta).toContain("ex[2].exerciseType 4→2");
+  });
+
+  it("a thread-coach run's rewrite is judged as it always was: a changed read-back is verification_failed", async () => {
+    const { client, today, happenDay } = await on((p) => void ((p.exercises ?? [])[0]!.exerciseType = 3));
+    const easy = (minutes: number): CoachSession => ({ category: "easy", title: "Easy", durationMinutes: minutes, run: { blocks: [{ kind: "duration", value: minutes, intensity: "easy" }] } });
+    const name = "Easy — created";
+    const made = await createWorkout(client, { ...spec(), happenDay, name, session: easy(30) } as CreateWorkoutSpec, { today, catalog: new Map(), log: noop });
+    expect(made.ok, made.error).toBe(true);
+    const result = await updateWorkoutContent(
+      client,
+      { target: { happenDay, name, idInPlan: made.serverIdInPlan!, programId: made.serverProgramId!, planId: made.serverPlanId! }, session: easy(40), thresholdPaceSecPerKm: THRESHOLD },
+      { catalog: new Map(), today, log: noop },
+    );
+    expect(result).toMatchObject({ ok: false, reason: "verification_failed" });
+    expect(result.contentDelta).toBeUndefined();
   });
 });

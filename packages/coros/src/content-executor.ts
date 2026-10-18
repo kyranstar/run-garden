@@ -120,6 +120,7 @@ import {
   programsFor,
   readFullSpan,
   stampedPlacements,
+  storedContentDelta,
   writeAddressClash,
   type CreateResult,
   type Located,
@@ -290,6 +291,11 @@ export interface UpdateContentResult {
   observedFingerprint?: string;
   /** Run sessions: blocks that went to the watch as bare timers (no pace band). */
   paceTargetsOwed?: number;
+  /**
+   * A DESIGNED RUN's rewrite only (review-2 N1), as its create (`CreateResult.contentDelta`): the new stamp is on its
+   * day and only the values COROS stored differ — it landed and it is ours, so `ok`, with what differs field by field.
+   */
+  contentDelta?: string;
   error?: string;
 }
 
@@ -929,6 +935,27 @@ export async function updateWorkoutContent(
         ...owed,
       };
     }
+    // A DESIGNED RUN'S REWRITE IS READ BACK AS ITS CREATE IS (review-2 N1). Accepted, nothing else in the plan touched,
+    // and the NEW stamp on its day: only the values COROS stored differ (`storedContentDelta`, the create's own
+    // comparison and set-asides). It landed and it is ours — the caller verifies it, so ownership follows the new
+    // stamp, and records what differs. Refused as `verification_failed`, the old stamp stayed the proof: a later
+    // delete looked for it, found nothing, called that done, and left this copy on the watch. A thread-coach or
+    // Studio rewrite is judged exactly as before.
+    const landed = !imported && isRunWatchSession(spec.session) ? ownedPlacements(after, isOursAfter).find((f) => f.date === date) : undefined;
+    if (landed?.program) {
+      const contentDelta = storedContentDelta(rewritten, landed.program);
+      const landedFingerprint = corosProgramFingerprint(landed.program);
+      return {
+        ok: true,
+        code,
+        pathUsed: "in_place_update",
+        ...addressOf(landed, planId),
+        wireFingerprint: landedFingerprint,
+        observedFingerprint: landedFingerprint,
+        ...(contentDelta ? { contentDelta } : {}),
+        ...owed,
+      };
+    }
     return {
       ok: false,
       code,
@@ -1046,7 +1073,8 @@ function fromCreateResult(created: CreateResult, newName: string): UpdateContent
     ...ids,
   };
   if (created.ok) {
-    return { ok: true, pathUsed: "delete_and_create", ...shared };
+    // A designed run re-created: what its create read back differently, carried (review-2 N1).
+    return { ok: true, pathUsed: "delete_and_create", ...shared, ...(created.contentDelta ? { contentDelta: created.contentDelta } : {}) };
   }
   const reason: UpdateContentReason =
     created.reason === "already_present"

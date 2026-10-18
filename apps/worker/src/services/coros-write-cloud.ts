@@ -877,6 +877,11 @@ export async function executeCloudJobs(
           // session passes through instead of one it lives in.
           const intent = await openIntentFor(db, userId, spec.workoutId, "content");
           if (intent) await resolveIntent(db, intent.id, done);
+          // A DESIGNED RUN'S REWRITE COROS STORED DIFFERENTLY (review-2 N1): verified like its create — the new stamp
+          // is ours, and every later move, ease and removal proves ownership by it — and it says what differs.
+          if (result.contentDelta) {
+            console.error(`coach rewrite stored differently (${spec.name}): ${result.contentDelta}`);
+          }
           await db
             .update(corosWriteJobs)
             .set({
@@ -884,9 +889,11 @@ export async function executeCloudJobs(
               verifiedAt: done,
               completedAt: done,
               updatedAt: done,
-              ...(result.paceTargetsOwed
-                ? { lastErrorCategory: "pace_targets_owed" }
-                : { lastErrorCategory: null }),
+              ...(result.contentDelta
+                ? { lastErrorCategory: "watch_copy_differs", lastErrorDetail: detailOf(result.contentDelta) }
+                : result.paceTargetsOwed
+                  ? { lastErrorCategory: "pace_targets_owed" }
+                  : { lastErrorCategory: null }),
               ...paceWireStamp(job.payload, spec.session),
             })
             .where(eq(corosWriteJobs.id, job.id));

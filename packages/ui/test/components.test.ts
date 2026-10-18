@@ -172,3 +172,12 @@ describe("a designed run's distance on the watch, said for one step or several (
     expect(watchCoverageSentences(view(2))).toEqual(["Your watch times the distance steps — each runs for the time it takes at its pace, and Run Garden keeps the distances."]);
   });
 });
+
+describe("COROS saved a run differently, in the athlete's words (review-2 I2, N1)", () => {
+  it("says it plainly — a changed role or a dropped band is not small — and asks nothing", () => {
+    expect(syncActionCopy({ agent: "nobody", code: "watch_copy_differs" })).toEqual({
+      says: "COROS saved this run differently from what Run Garden sent, so your watch may not match the steps here. Follow the steps here.",
+      todo: null,
+    });
+  });
+});
