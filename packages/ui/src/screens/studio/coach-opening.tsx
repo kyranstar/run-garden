@@ -12,23 +12,38 @@
  * A chip is the athlete's words: one tap sends it. The box under it all is the conversation's own (coach-conversation).
  * A "needs you" chip says its `label` and sends its `request` (`GET /api/coach/nudges`: the thread coach's old signals —
  * a missed session, a return after a gap, a plan's outline week, a race or a plan's end close — read, never spent on).
+ *
+ * IT HOLDS STILL WHILE IT IS READ (UX System 4: a read landing moves nothing under a tap; the Studio home's f030c6a).
+ * What it draws is its reads' to decide — the line and the objective's chip (today, the objectives), the "needs you"
+ * chips, "Also waiting" (the current run's read), the quick starts (the Studio's reads, the templates) — and any of them
+ * landing late would push what is under it down, under a tap aimed at it. So nothing is drawn until they have answered
+ * or failed (`settling`) — the chips' read and the current run's, a read made for this opening: never one kept from an
+ * earlier one, which could show a chip asked since (review-3 I1). (Offline there is no opening: the conversation's own
+ * read hasn't answered.)
+ * Then it is drawn once: a read landing afterwards changes neither the line nor the chips (a tapped chip still goes at
+ * once, and a session's quick review once it is saved — the athlete's own doing).
  */
-import { useId, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api, type CoachAlsoOpenDto, type CoachNudgeDto } from "@rg/api-client";
-import { LogYourSession } from "../../components/today-program.js";
+import { settling, Spinner } from "../../components.js";
+import { LogYourSession, type WatchReviewOffer } from "../../components/today-program.js";
 import { IconCoachSmall } from "../../icons.js";
+import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { AlsoWaiting } from "./also-waiting.js";
 import { BUILD_NEW_HREF } from "./build-entry.js";
 import { NUDGES_QUERY, openingLine, starterChips } from "./coach-conversation-model.js";
 import type { CoachFocus } from "./coach-focus.js";
 import type { StudioCtx } from "./model.js";
 import { QuickStarts } from "./quick-starts.js";
+import { useStudioReads } from "./screen.js";
 import { TEMPLATES_HREF } from "./templates-model.js";
 
 /** The heading over the ways to start without the coach. */
 export const START_YOURSELF = "Or start something yourself";
+/** What the opening says while its reads answer. */
+export const OPENING_LOADING = "Loading";
 
 export { NUDGES_QUERY };
 /** At most this many "needs you" chips, before the starters (the server's own cap, held here too). */
@@ -47,10 +62,19 @@ export function CoachSays({ children, turn, focusable = false }: { children: Rea
   );
 }
 
+/** What the opening drew from its reads, kept as it was drawn. */
+interface Drawn {
+  line: string;
+  nudges: CoachNudgeDto[];
+  objective: string | null;
+  offer: WatchReviewOffer | null;
+}
+
 export function CoachOpening({
   ctx,
   seeing,
   alsoOpen,
+  alsoKnown = true,
   busy,
   onAsk,
 }: {
@@ -59,35 +83,56 @@ export function CoachOpening({
   seeing: CoachFocus | null;
   /** Suggestions still open from before. */
   alsoOpen: readonly CoachAlsoOpenDto[];
+  /** The read that says which (the current run's) has answered since the sheet opened. */
+  alsoKnown?: boolean;
   busy: boolean;
   /** A chip tapped: its words, sent. */
   onAsk: (words: string) => void;
 }) {
   const startId = useId();
+  const studio = useStudioReads();
+  const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000 });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const objectives = useQuery({ queryKey: ["objectives"], queryFn: api.listObjectives, staleTime: 60_000, retry: false });
-  const objective = (objectives.data?.objectives ?? []).find((o) => o.status === "active")?.title ?? null;
-  const chips = starterChips(seeing, { objective });
   // A failed read is no chips, never a line: the starters stand alone.
-  const qc = useQueryClient();
-  const nudgeRead = useQuery({ queryKey: NUDGES_QUERY, queryFn: api.coachNudges, retry: false, staleTime: 0 });
-  const nudges: CoachNudgeDto[] = (nudgeRead.data?.nudges ?? []).slice(0, NUDGES_SHOWN);
-  /** A chip tapped goes at once, before any read comes back — and a read already on its way is cancelled, so its late
-   * answer can't bring it back. */
-  const dropNudge = (id: string) => {
-    void qc.cancelQueries({ queryKey: NUDGES_QUERY });
-    qc.setQueryData<{ nudges: CoachNudgeDto[] }>(NUDGES_QUERY, (cur) => (cur ? { nudges: cur.nudges.filter((x) => x.id !== id) } : cur));
-  };
-  const offer = today.data?.watchReviews?.[0] ?? null;
+  const nudgeRead = useQuery({ queryKey: NUDGES_QUERY, queryFn: api.coachNudges, retry: false, staleTime: 0, refetchOnWindowFocus: false });
+  const holding = studio.loading || settling(today, objectives, templates) || !nudgeRead.isFetchedAfterMount || !alsoKnown;
+
+  // Drawn once, from the reads as they answered.
+  const drawn = useRef<Drawn | null>(null);
+  if (!holding && drawn.current === null) {
+    drawn.current = {
+      line: openingLine(today.data),
+      nudges: (nudgeRead.data?.nudges ?? []).slice(0, NUDGES_SHOWN),
+      objective: (objectives.data?.objectives ?? []).find((o) => o.status === "active")?.title ?? null,
+      offer: today.data?.watchReviews?.[0] ?? null,
+    };
+  }
+  /** Chips tapped here: gone at once, before any read comes back (one landing later changes nothing drawn, and the next
+   * opening draws from a read of its own). */
+  const [tapped, setTapped] = useState<readonly string[]>([]);
+
+  const d = drawn.current;
+  if (holding || d === null) {
+    return (
+      <div className="coach-opening coach-opening--holding">
+        <Spinner label={OPENING_LOADING} />
+      </div>
+    );
+  }
+  const chips = starterChips(seeing, { objective: d.objective });
+  const nudges = d.nudges.filter((n) => !tapped.includes(n.id));
+  // The quick review goes once it is saved; one that arrives after the opening is drawn waits for the next.
+  const offer = d.offer && (today.data?.watchReviews ?? []).some((o) => o.workoutId === d.offer!.workoutId) ? d.offer : null;
   return (
     <div className="coach-opening">
       <CoachSays>
-        <p>{openingLine(today.data)}</p>
+        <p>{d.line}</p>
       </CoachSays>
       <div className="coach-chips" role="group" aria-label="Ways to start">
         {nudges.map((n) => (
           <button key={n.id} type="button" className="chip coach-chip coach-chip--needs" disabled={busy} onClick={() => {
-              dropNudge(n.id);
+              setTapped((t) => [...t, n.id]);
               onAsk(n.request);
             }}
           >

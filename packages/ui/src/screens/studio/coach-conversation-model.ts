@@ -20,9 +20,10 @@ import { failureOf, isLive } from "./run-model.js";
 export const CONVERSATION_QUERY = ["coach-conversation"] as const;
 
 /**
- * The "needs you" chips' read (the opening screen's). Read afresh at every opening (never kept): a chip asked — tapped,
- * typed in the box, or from another device — must not come back, since each tap is a paid run (review-3 I1). Every turn
- * sent marks it stale (a run started, an answer typed or tapped); a tapped chip leaves it at once.
+ * The "needs you" chips' read (the opening screen's). Read afresh at every opening, and drawn only from that read (never
+ * one kept): a chip asked — tapped, typed in the box, or from another device — must not come back, since each tap is a
+ * paid run (review-3 I1). Every turn sent marks it stale (a run started, an answer typed or tapped); a tapped chip leaves
+ * the opening at once.
  */
 export const NUDGES_QUERY = ["coach-nudges"] as const;
 

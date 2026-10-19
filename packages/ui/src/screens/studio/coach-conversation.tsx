@@ -317,6 +317,9 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
 
   const opening = settled && turns.length === 0;
   const alsoOpen = current.isFetchedAfterMount ? (current.data?.alsoOpen ?? []) : [];
+  // The opening draws once this read has answered since the sheet opened, or failed (after its retries): "Also waiting"
+  // never arrives late. (Offline the conversation's own read hasn't answered either, and no opening is drawn.)
+  const alsoKnown = current.isFetchedAfterMount;
   const existingLive = existing !== null && existing.runId === liveId && working;
   const placeholder = working && answering ? BOX_PLACEHOLDER_ANSWER : boxPlaceholder(turns.length);
   const lastIndex = turns.length - 1;
@@ -326,7 +329,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
         <div className="coach-convo">
           {opening ? (
             <CoachBoundary>
-              <CoachOpening ctx={ctx} seeing={seeing} alsoOpen={alsoOpen} busy={busy || usedUp} onAsk={send} />
+              <CoachOpening ctx={ctx} seeing={seeing} alsoOpen={alsoOpen} alsoKnown={alsoKnown} busy={busy || usedUp} onAsk={send} />
             </CoachBoundary>
           ) : null}
           {turns.length > 0 ? (

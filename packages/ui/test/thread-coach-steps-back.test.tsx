@@ -108,9 +108,13 @@ const chips = () => chipButtons().map((b) => b.textContent?.trim());
 const nudgeReads = (calls: Call[]) => calls.filter((c) => c.path === "/api/coach/nudges").length;
 const posts = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.path === "/api/coach/runs").map((c) => c.body as { request: string });
 
+/** The opening, drawn: its reads answered (it holds still until they have). */
+const drawn = () => !!dialog()?.querySelector(".coach-turns, .coach-opening:not(.coach-opening--holding)");
+
 async function openCoach() {
   await click(document.getElementById("coach"), "the Coach button");
   await until(() => !!box(), "the box in the sheet");
+  await until(drawn, "the conversation or its opening, drawn");
 }
 
 describe("the opening screen's \"needs you\" chips", () => {
@@ -180,12 +184,13 @@ describe("the opening screen's \"needs you\" chips", () => {
     return { calls, asked: () => asked };
   }
   const finished = () => quietLoop(() => run({ id: "run-n", status: "finished", finishedAt: `${TODAY}T08:01:00.000Z` }));
-  async function newConversation() {
+  async function newConversation({ drawnToo = true } = {}) {
     await until(() => !!dialog()!.querySelector(".coach-msg--athlete"), "the turn");
     await until(() => !(dialog()!.querySelector<HTMLButtonElement>('[role="menuitem"]')?.disabled ?? false), "the turn over");
     await click(dialog()!.querySelector('button[aria-label="More"]'), "the menu");
     await click(dialog()!.querySelector('[role="menuitem"]'), "New conversation");
     await until(() => !!dialog()!.querySelector(".coach-opening"), "the opening screen");
+    if (drawnToo) await until(drawn, "the opening drawn");
     await settle(20);
   }
 
@@ -215,11 +220,12 @@ describe("the opening screen's \"needs you\" chips", () => {
     expect(chips()).toEqual([...GENERAL_CHIPS]);
   });
 
-  it("a chip tapped can't be tapped again before the read comes back: it goes at once", async () => {
+  it("a chip tapped goes at once — and the next opening draws no chip until a read made for it answers", async () => {
     let reads = 0;
     const { calls } = askingServer();
     const served = globalThis.fetch;
-    // Every read after the first never answers: only the tap itself can have taken the chip away.
+    // Every read after the first never answers: only the tap itself can have taken the chip away, and the read the next
+    // opening makes is still out.
     vi.stubGlobal("fetch", (input: string, init?: RequestInit) =>
       String(input).split("?")[0] === "/api/coach/nudges" && ++reads > 1 ? new Promise(() => undefined) : served(input, init),
     );
@@ -227,19 +233,22 @@ describe("the opening screen's \"needs you\" chips", () => {
     await openCoach();
     await until(() => chips()[0] === MISSED.label, "the nudge");
     await click(button(MISSED.label, dialog()!), "the nudge chip");
+    expect(chips()).not.toContain(MISSED.label);
     await until(() => posts(calls).length === 1, "the start");
-    await newConversation();
-    expect(chips()).toEqual([...GENERAL_CHIPS]);
+    await newConversation({ drawnToo: false });
+    // Never the chip kept from the first opening's read: nothing is drawn until this opening's own read answers.
+    expect(chips()).toEqual([]);
+    expect(dialog()!.querySelector(".coach-opening--holding [role=status]")?.textContent).toBe("Loading");
   });
 
-  it("a read already on its way when the chip is tapped can't bring it back", async () => {
+  it("a read landing after the opening is drawn — one still offering the chip tapped — can't bring it back", async () => {
     let reads = 0;
     let late: ((r: Response) => void) | null = null;
     let release: (() => void) | null = null;
     const { calls } = askingServer();
     const served = globalThis.fetch;
-    // The first read answers; the second is still on its way when the chip is tapped, and answers with it while the run
-    // is still being asked for (so nothing else has read since); every read after that never answers.
+    // The first read answers; the second is on its way when the chip is tapped, and answers with it while the run is
+    // still being asked for; every read after that answers as the server now does (none).
     vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
       const path = String(input).split("?")[0];
       if (path === "/api/coach/runs" && init?.method === "POST") {
@@ -247,16 +256,16 @@ describe("the opening screen's \"needs you\" chips", () => {
       }
       if (path !== "/api/coach/nudges") return served(input, init);
       reads += 1;
-      if (reads === 1) return served(input, init);
       if (reads === 2) return new Promise<Response>((resolve) => (late = resolve));
-      return new Promise(() => undefined);
+      return served(input, init);
     });
-    mountSheet(null, { loop: finished });
+    const client = mountSheet(null, { loop: finished });
     await openCoach();
     await until(() => chips()[0] === MISSED.label, "the nudge");
-    await click(dialog()!.querySelector('button[aria-label="Close"]'), "✕");
-    await openCoach();
-    await until(() => reads === 2 && chips()[0] === MISSED.label, "the second read on its way, the chip kept meanwhile");
+    // A read again while the opening is drawn (a turn sent elsewhere marks it stale).
+    act(() => void client.invalidateQueries({ queryKey: NUDGES_QUERY }));
+    await until(() => reads === 2, "the second read on its way");
+    expect(chips()[0]).toBe(MISSED.label);
     await click(button(MISSED.label, dialog()!), "the nudge chip");
     await until(() => release !== null, "the run asked for");
     await act(async () => late!(json({ nudges: [MISSED] })));

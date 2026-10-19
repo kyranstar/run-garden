@@ -168,9 +168,13 @@ const chips = () => [...(dialog()?.querySelectorAll<HTMLButtonElement>(".coach-c
 const posts = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.path === "/api/coach/runs").map((c) => c.body);
 const seeingLine = () => dialog()?.querySelector(".coach-seeing") ?? null;
 
+/** The conversation, or its opening drawn: its reads answered (it holds still until they have). */
+const drawn = () => !!dialog()?.querySelector(".coach-turns, .coach-opening:not(.coach-opening--holding), .coach-off");
+
 async function openCoach() {
   await click(document.getElementById("coach"), "the Coach button");
   await until(() => !!box(), "the box in the sheet");
+  await until(drawn, "the conversation or its opening, drawn");
 }
 
 describe("the opening screen", () => {
@@ -549,7 +553,7 @@ describe("the conversation, kept", () => {
     expect(localStorage.getItem(LEFT_CONVERSATION_KEY)).toBe("run-1");
     await click(dialog()!.querySelector('button[aria-label="Close"]'), "✕");
     await openCoach();
-    await until(() => !!dialog()!.querySelector(".coach-opening"), "the opening screen again");
+    await until(() => !!dialog()!.querySelector(".coach-opening:not(.coach-opening--holding)"), "the opening screen again");
     expect(dialog()!.querySelector(".coach-msg--athlete")).toBeNull();
     await click(button("Plan my week", dialog()!), "a chip");
     await until(() => posts(calls).length === 1, "the start");
