@@ -64,6 +64,7 @@ import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessi
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, fixtureAccountEmail, seedFixtures } from "./services/fixtures.js";
 import { seedWatchSession } from "./services/fixture-watch-session.js";
+import { parseCoachNoticesSeed, seedCoachNotices } from "./services/fixture-coach-notices.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
 
@@ -197,6 +198,25 @@ app.post(
     const prefs = await loadPreferences(db, userId);
     await fixtureThreshold(db, userId, todayInZone(prefs.timezone), secPerKm, new Date().toISOString());
     return c.json({ ok: true });
+  },
+);
+/**
+ * Fixture mode only (stream H, the coach-notices journey): last week's review (`{ review }`, its narrative) and a run
+ * finished this morning (`{ run: { meters, seconds, zones? } }`), as the cron and a watch import would leave them —
+ * what the coach's opening line notices. 404 outside fixture mode; 400 with nothing to seed.
+ */
+app.post(
+  "/api/dev/coach-notices",
+  async (c, next) => (fixtureModeEnabled(c.env) ? next() : c.json({ error: "not_found" }, 404)),
+  requireUser,
+  async (c) => {
+    const seed = parseCoachNoticesSeed(await c.req.json().catch(() => ({})));
+    if (!seed) return c.json({ error: "nothing_to_seed" }, 400);
+    const db = c.get("db");
+    const userId = c.get("userId");
+    const prefs = await loadPreferences(db, userId);
+    const now = new Date();
+    return c.json(await seedCoachNotices(db, userId, todayInZone(prefs.timezone, now), now, seed));
   },
 );
 app.get(

@@ -116,6 +116,16 @@ test("a race close: a needs-you chip first on the coach's opening screen, and th
     expect(race).toEqual({ id: `race:${raceDate}`, label: "Get me ready for race day", request: "My race is in 10 days. Get me ready for race day." });
 
     await page.goto("/");
+    // What the coach noticed (stream H: a session the fixture finished today or yesterday) would come first among the
+    // chips, two at most: marked as already shown on this device, so the chips are the needs-you ones alone.
+    const seen: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const query = seen.length ? `?seen=${encodeURIComponent(seen.join(","))}` : "";
+      const read = (await (await context.request.get(`${baseURL}/api/coach/nudges${query}`)).json()) as { opening?: { id: string } };
+      if (!read.opening) break;
+      seen.push(read.opening.id);
+    }
+    await page.evaluate((ids) => localStorage.setItem("rg.coach.openingSeen", JSON.stringify(ids)), seen);
     await (await mainNav(page)).getByRole("button", { name: "Coach" }).click();
     const sheet = coachSheet(page);
     await expect(sheet.locator(".coach-box textarea")).toBeVisible({ timeout: 20_000 });
