@@ -7,11 +7,14 @@
  * the owner signed in (`ALLOWED_GOOGLE_EMAIL`, compared as sign-in compares it): otherwise a plain 404 (401 with no
  * session). Mounted ahead of `/api/coach` in index.ts.
  *
- *   POST /       { confirm: "replay a coach run", runId, at?: "finish" | "ask" | "prose",
+ *   POST /       { confirm: "replay a coach run", runId, at?: "finish" | "ask" | "prose", prompt?: "as_run" | "current",
  *                  variants: [{ id, length?, tone?, include?, person? }] (1–8; each variable an enum, coach-voice.ts) }
  *                → { runId, at, request, model, baseline, variants: [{ id, settings, line?, chars?, question?, choices?,
  *                  prose?, said?, called?, costUsd, usage?, stopReason?, error?, skipped? }], costUsd, capNote }
  *                At most 3 variants for `at: "prose"` (each answer a whole document, parsed in this request's CPU).
+ *                `prompt`: "as_run" (default) sends the prompt the run ran under; "current" today's shared prefix and
+ *                main block on the run's own profile, memory and history (409 `not_replayable` for a run laid out
+ *                otherwise). The answer says which (`prompt`).
  *                SPEND: the $1 per-request cap is SOFT — checked on an estimate (twice the longest answer seen), so a
  *                replay can spend up to about three times it (`capNote` says so). The weekly cap is the hard bound:
  *                each call's worst case must fit under it, and a request cut off partway holds its calls' worst case

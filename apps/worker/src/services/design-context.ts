@@ -68,7 +68,7 @@ import { memoryCore } from "./memory-core.js";
 import { focusMove, focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
-import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
+import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { planTerm } from "./design-tools/read-plan.js";
 import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
@@ -1123,6 +1123,21 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
 }
 
 /**
+ * The system's static prompt text, as a run started now sends it: the shared prefix (its breakpoint) and the role's
+ * block — `system`'s first PROMPT_BLOCKS blocks; the rest (the profile, the memory) the builder makes from the athlete's
+ * data. The voice workshop's replay (`prompt: "current"`, coach-replay.ts) sends these in place of a stored run's own.
+ */
+export function promptBlocks(role: Role, rubric: ReviewRubric = "workout"): SystemBlock[] {
+  return [
+    { type: "text", text: SHARED_PROMPT, cache_control: EPHEMERAL },
+    { type: "text", text: roleBlock(role, RUN_LIMITS[role].maxCalls, rubric) },
+  ];
+}
+/** The static blocks `system` opens with; `SYSTEM_BLOCKS` in all (the profile and the memory after them). */
+export const PROMPT_BLOCKS = 2;
+export const SYSTEM_BLOCKS = 4;
+
+/**
  * The opening context for a run (see the module comment): `system` for the system blocks, `header` for the first user
  * message. Reads only the signed-in athlete's rows (`userId` scopes every statement) and only `now` for the clock.
  */
@@ -1137,8 +1152,7 @@ export async function buildDesignContext(db: Db, env: Env, userId: string, run: 
   const r = await read(db, userId, now, (today) => addDays(today, horizonDays(scope.kind, scope.n) - 1), run, focus, conversation);
   return {
     system: [
-      { type: "text", text: SHARED_PROMPT, cache_control: EPHEMERAL },
-      { type: "text", text: roleBlock(role, RUN_LIMITS[role].maxCalls, role === "reviewer" && run.rubric === "run" ? "run" : "workout") },
+      ...promptBlocks(role, role === "reviewer" && run.rubric === "run" ? "run" : "workout"),
       { type: "text", text: profileBlock(r), cache_control: EPHEMERAL },
       { type: "text", text: memoryBlock(r) },
     ],

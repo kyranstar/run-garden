@@ -21,6 +21,13 @@
  *    answer is its title, intent, first whys and cues — and its exercises may differ. Baseline: the document shipped.
  * Sub-runs (designers, reviewers) and the trail's narration beside tool calls are not replayed.
  *
+ * THE PROMPT (`prompt`): `as_run` (the default) sends the run's stored system blocks — the prompt it ran under. `current`
+ * tests a prompt change on it: the system's static prompt text — the shared prefix and the main role's block, the first
+ * PROMPT_BLOCKS of the four the context builder lays out (design-context.ts `promptBlocks`) — as a run started now sends
+ * it, and the run's own after it exactly as stored (its profile and memory blocks, made from its data then; its header,
+ * clock lines and history are messages, untouched). A run laid out otherwise replays only as it ran. Its first variant
+ * misses the cache from the system on (the prefix differs from what the run wrote).
+ *
  * WHERE THE VOICE GOES: one text block after the newest message's cache breakpoint — so the cached prefix (tools,
  * system, history) is the production request's own and every variant after the first reads it from the cache. A
  * variant that sets no variable adds nothing: its request is the production request byte for byte (pinned). The block
@@ -54,6 +61,7 @@ import { newId } from "@rg/domain";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { capSystemBreakpoints, PROMPT_BYTES_PER_TOKEN, readRunState, toolSpecs, withMessageBreakpoint, type RunState } from "./coach-runs.js";
+import { PROMPT_BLOCKS, promptBlocks, SYSTEM_BLOCKS } from "./design-context.js";
 import { voiceBlock, voiceSettingsOf, voiceSettingsSchema, type VoiceSettings } from "./coach-voice.js";
 import { PROSE_CEILING } from "./design-tools/act-common.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
@@ -71,6 +79,7 @@ import {
   type MessageParam,
   type MessagesResult,
   type RequestBlock,
+  type SystemBlock,
   type ToolUseBlock,
 } from "./llm-messages.js";
 import { utf8Bytes } from "./utf8.js";
@@ -87,6 +96,9 @@ export const REPLAY_REQUEST_CAP_MICROS = 1_000_000;
 /** Its calls' kind in `llm_usage` (llm.ts, where the week counts it). */
 export { REPLAY_USAGE_KIND };
 export const REPLAY_STEPS = ["finish", "ask", "prose"] as const;
+/** The prompt a replay sends: the run's own, as it ran (the default), or today's static prompt text on its own context. */
+export const REPLAY_PROMPTS = ["as_run", "current"] as const;
+export type ReplayPrompt = (typeof REPLAY_PROMPTS)[number];
 export type ReplayStep = (typeof REPLAY_STEPS)[number];
 export const REPLAY_LIST_DEFAULT = 20;
 export const REPLAY_LIST_MAX = 50;
@@ -115,6 +127,7 @@ export const REPLAY_WORDS = {
     prose: "This run designed no workout of its own (a set's workouts are its designers').",
   } satisfies Record<ReplayStep, string>,
   unreadable: "This run's stored context can't be read.",
+  notCurrent: "This run's prompt was laid out otherwise: it can only be replayed as it ran.",
 };
 
 const VARIANT_ID = /^[A-Za-z0-9_-]{1,40}$/;
@@ -129,6 +142,7 @@ export const replayBodySchema = z
     confirm: z.literal(REPLAY_CONFIRM),
     runId: z.string().regex(RUN_ID, "a run's id"),
     at: z.enum(REPLAY_STEPS).optional(),
+    prompt: z.enum(REPLAY_PROMPTS).optional(),
     variants: z
       .array(replayVariantSchema)
       .min(1)
@@ -191,6 +205,8 @@ export interface ReplayVariantDto extends ReplayWords {
 export interface ReplayDto {
   runId: string;
   at: ReplayStep;
+  /** The prompt it sent: the run's own (`as_run`) or today's static text on the run's own context (`current`). */
+  prompt: ReplayPrompt;
   /** The athlete's own words. */
   request: string | null;
   model: string;
@@ -367,14 +383,14 @@ export interface ReplayRequest {
   headBytes: number;
 }
 
-export function replayRequest(state: RunState, cut: number, tools: DesignTool[], model: string): ReplayRequest {
+export function replayRequest(state: RunState, cut: number, tools: DesignTool[], model: string, system: SystemBlock[] = state.system ?? []): ReplayRequest {
   const sent = withMessageBreakpoint(state.messages.slice(0, cut));
   const settings = state.settings;
   const specs = toolSpecs(tools, state);
   const open = JSON.stringify({
     model,
     max_tokens: settings.maxTokens,
-    system: capSystemBreakpoints(state.system ?? []),
+    system: capSystemBreakpoints(system),
     ...(specs.length > 0 ? { tools: specs } : {}),
     messages: sent.slice(0, -1),
   });
@@ -420,6 +436,14 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
   const designed = parsed(row.designed) as { toolUseId?: unknown; doc?: unknown } | null;
   const cut = stepIndex(state, at, designed);
   if (cut === null) return { kind: "not_replayable", why: REPLAY_WORDS.notReplayable[at] };
+  // Today's prompt (`current`): the static blocks as a run started now sends them, the run's own after them as stored —
+  // only when it was laid out as the context builder lays a run out (design-context.ts), else only as it ran.
+  const prompt: ReplayPrompt = input.prompt ?? "as_run";
+  let system = state.system;
+  if (prompt === "current") {
+    if (system.length !== SYSTEM_BLOCKS || !system.every((b) => b.type === "text")) return { kind: "not_replayable", why: REPLAY_WORDS.notCurrent };
+    system = [...promptBlocks("main"), ...system.slice(PROMPT_BLOCKS)];
+  }
 
   const answer = !row.ops;
   const original = state.messages[cut]!.content;
@@ -434,7 +458,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
         : { prose: proseOf(designed?.doc) ?? undefined };
 
   const model = designModel(env);
-  const request = replayRequest(state, cut, deps.tools, model);
+  const request = replayRequest(state, cut, deps.tools, model, system);
   const variants: ReplayVariantDto[] = input.variants.map((v) => ({ id: v.id, settings: voiceSettingsOf(v), costUsd: 0 }));
   const plan = (index: number): Planned => {
     const body = replayBody(request, voiceBlock(input.variants[index]!));
@@ -561,6 +585,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
     body: {
       runId: input.runId,
       at,
+      prompt,
       request: row.request,
       model,
       baseline,

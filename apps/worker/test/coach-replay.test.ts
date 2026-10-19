@@ -31,7 +31,7 @@ import {
   type ReplayDeps,
 } from "../src/services/coach-replay.js";
 import { VOICE_HEAD, VOICE_INCLUDES, VOICE_LENGTHS, VOICE_LINES, VOICE_PERSONS, VOICE_TONES, voiceBlock } from "../src/services/coach-voice.js";
-import { designContextBuilder } from "../src/services/design-context.js";
+import { buildDesignContext, designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
@@ -236,6 +236,8 @@ async function storedRun(
     proposalStatus?: string;
     asked?: boolean;
     messages?: unknown[];
+    /** Its stored system blocks (default: one block). */
+    system?: unknown[];
     costUsd?: number;
   } = {},
 ): Promise<string> {
@@ -250,7 +252,7 @@ async function storedRun(
   const state = {
     v: 1,
     settings: { ceilingMicros: 1_500_000, maxCalls: 12, effort: "high", maxTokens: 16_000, rehearsal: o.rehearsal === true, timezone: "UTC" },
-    system: [{ type: "text", text: "SYSTEM: the shared prompt.", cache_control: { type: "ephemeral" } }],
+    system: o.system ?? [{ type: "text", text: "SYSTEM: the shared prompt.", cache_control: { type: "ephemeral" } }],
     messages,
     pending: [],
     results: [],
@@ -921,5 +923,56 @@ describe("statements and fetches", () => {
     // (1), and the other seven (their rows in one insert, seven calls, seven settlings: 15).
     expect(res.cost).toBe(23);
     expect(res.cost).toBeLessThanOrEqual(BUDGET);
+  });
+});
+
+// ── Today's prompt on the run's own context (the owner's voice, 2026-10-19) ────────────────────────────────────────
+
+describe("prompt: current", () => {
+  /** A run stored under an older prompt: its shared prefix and its role block as they were then, its profile and memory
+   * as the context builder made them from its data. */
+  const OLD = [
+    { type: "text", text: "OLD SHARED PROMPT: the principles as they were.", cache_control: { type: "ephemeral" } },
+    { type: "text", text: "OLD MAIN BLOCK: one plain line, an apology when owed." },
+    { type: "text", text: "# The athlete\nGoals: posture.", cache_control: { type: "ephemeral" } },
+    { type: "text", text: "# Pinned memory\n- prefers mornings." },
+  ];
+  type Sent = { system: Array<Record<string, unknown>>; tools: unknown; messages: unknown; max_tokens: number };
+
+  it("rebuilds only the static prompt text — the shared prefix and the role block, as a run started now sends them — and keeps every per-run block as stored", async () => {
+    const runId = await storedRun({ system: OLD });
+    const res = await call("POST", "", replay(runId, [{ id: "a" }], { prompt: "current" }));
+    expect(res.status).toBe(200);
+    expect(res.body.prompt).toBe("current");
+    const asRun = await call("POST", "", replay(runId, [{ id: "a" }]));
+    expect(asRun.body.prompt).toBe("as_run");
+    const [current, stored] = calls.map((c) => JSON.parse(c.body) as Sent);
+    // What a main run started now sends as its static blocks.
+    const now = await buildDesignContext(db, env, userId, { id: "fresh", role: "main", scope: { kind: "auto" }, request: "x", parentId: null }, NOW);
+    expect(current!.system.slice(0, 2)).toEqual(now.system.slice(0, 2));
+    expect(current!.system[1]!.text).not.toBe(OLD[1]!.text);
+    // The run's own: its profile and memory as stored, and its history, tools and limits as the as-run replay sends them.
+    expect(current!.system.slice(2)).toEqual(OLD.slice(2));
+    expect(stored!.system).toEqual(OLD);
+    expect([current!.messages, current!.tools, current!.max_tokens]).toEqual([stored!.messages, stored!.tools, stored!.max_tokens]);
+  });
+
+  it("on a run made with today's prompt, current and as-run send the same request, byte for byte", async () => {
+    const { runId, bodies } = await drivenRun(db, userId, env);
+    const wired = wire([said(use("finish", { summary: "A." })), said(use("finish", { summary: "B." }))]);
+    const real = (): ReplayDeps => ({ send: (e, c) => sendMessagesBody(e, c.model, c.body, c.maxTokens, wired.fetchImpl), tools: allTools() });
+    expect((await call("POST", "", replay(runId, [{ id: "a" }], { prompt: "current" }), { deps: real })).status).toBe(200);
+    expect((await call("POST", "", replay(runId, [{ id: "a" }], { prompt: "as_run" }), { deps: real })).status).toBe(200);
+    expect(wired.bodies).toEqual([bodies[3], bodies[3]]);
+  });
+
+  it("a run whose prompt was laid out otherwise can only replay as it ran: current is a 409 in words, as-run goes on", async () => {
+    const runId = await storedRun(); // one system block: not the context builder's four
+    const res = await call("POST", "", replay(runId, [{ id: "a" }], { prompt: "current" }));
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: "not_replayable", why: REPLAY_WORDS.notCurrent });
+    expect(calls).toHaveLength(0);
+    expect((await call("POST", "", replay(runId, [{ id: "a" }], { prompt: "as_run" }))).status).toBe(200);
+    expect((await call("POST", "", replay(runId, [{ id: "a" }], { prompt: "today" }))).status).toBe(400);
   });
 });
