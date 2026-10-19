@@ -260,8 +260,10 @@ export const proposePlan: DesignTool = {
   },
   statementCost: 1 + GUARDRAIL_READS + GUARDRAIL_MATCH_CHUNKS + 1 + 1,
   // 3 until the condition rules' check (2026-10-18, decision guidance). Its fix round's bench shape — 24 varied lift and
-  // mobility sessions, the profile on, the check running — measured 2.78–2.98 scaled at load ~3.9.
-  cpuWeight: 3.5,
+  // mobility sessions, the profile on, the check running, a real account's ~390-row COROS catalog — measured 3.01–3.43
+  // scaled at load ~3.9 with the catalog's keys kept and each name resolved once a call (4.46–4.76 before); declared at
+  // the most a tool may (MAX_TOOL_CPU_WEIGHT) for the margin.
+  cpuWeight: 4,
   roles: ["main"],
   async run(ctx, raw) {
     const parsed = parseAct(input, raw, `change ({ kind: ${KINDS_WORDS}, … }) and why`);

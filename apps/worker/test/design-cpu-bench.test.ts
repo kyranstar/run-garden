@@ -67,6 +67,7 @@ import { performance } from "node:perf_hooks";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it, vi, type TestContext } from "vitest";
 import { schema } from "@rg/database";
+import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { addDays, newId, todayInZone, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { Rng } from "@rg/session-engine";
@@ -810,9 +811,24 @@ beforeAll(async () => {
     // categories (three efforts: maintain, develop, recover), the recovery ones raising the active condition profile's
     // softer findings, and four shape weeks: the guardrails over the whole plan, the condition rules' check (one
     // document a day class and effort), the catalog's names, the manifest's lines. The rich athlete's profile is on:
-    // the probe first proves the check runs here (a later day's jump is refused).
+    // the probe first proves the check runs here (a later day's jump is refused). Its world holds a realistic synced
+    // COROS catalog — every strength T-code COROS names, ~390 rows — whose name index the call builds (the fix round's
+    // second ruling: the declared weight must hold for a real account).
     {
       const tool = allTools().find((t) => t.name === "propose_plan")!;
+      const withCatalog = open(images.get("read12")!);
+      const codes = Object.keys(COROS_EXERCISE_NAMES).filter((k) => /^T1\d{3}$/.test(k));
+      for (let at = 0; at < codes.length; at += 20) {
+        await withCatalog.db.insert(schema.corosExercises).values(
+          codes.slice(at, at + 20).map((name, i) => {
+            const id = `46964646340${String(at + i).padStart(8, "0")}`;
+            return { id, name, raw: { id, name }, updatedAt: NOW.toISOString() };
+          }),
+        );
+      }
+      if (codes.length < 350) throw new Error(`8. propose_plan: a catalog of ${codes.length} rows is not a real account's`);
+      images.set("plan-catalog", imageOf(withCatalog.db));
+      withCatalog.close();
       const moves = [
         ["Goblet squat", "Romanian deadlift", "Split squat", "Farmer carry"],
         ["Prone Y-T-W raises", "Push-up pull-through", "Short Copenhagen side plank", "Dead bug"],
@@ -832,11 +848,11 @@ beforeAll(async () => {
         change: { kind: "createPlan", discipline: "lift", name: "Strength block", startDate: TODAY, endDate: addDays(monday, 34), firmSessions: sessions, shapeWeeks },
         why: words(7, 280),
       });
-      const probe = open(images.get("read12")!);
+      const probe = open(images.get("plan-catalog")!);
       const refused = await tool.run(ctx(probe), plan([...firmSessions.slice(1), { date: addDays(TODAY, 6), session: session(1, ["Pogo hops"]) }]));
       probe.close();
       if (!isToolErr(refused) || refused.error !== "plan_refused") throw new Error("8. propose_plan: the condition rules' check didn't run in the bench's world");
-      await measureTool("propose_plan", images.get("read12")!, ctx, plan(firmSessions));
+      await measureTool("propose_plan", images.get("plan-catalog")!, ctx, plan(firmSessions));
     }
     await measureTool("ask_athlete", images.get("read12")!, ctx, {
       questions: [{ text: "How tight are the calves today?", chips: [{ label: "a little", value: 2 }, { label: "a lot", value: 7 }], why: "It sets the range.", checkin: { question: "tightness", area: "calves" } }],

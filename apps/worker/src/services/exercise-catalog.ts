@@ -301,11 +301,37 @@ function matchTokens(key: string): Set<string> {
 export interface ExerciseIndex {
   /** normalized human name → catalog originId. */
   byKey: Map<string, string>;
-  /** normalized name → its token set, for the near-match pass. */
-  tokens: Array<{ id: string; key: string; set: Set<string> }>;
+  /** normalized name → its token set, for the near-match pass (shared between builds: read, never changed). */
+  tokens: Array<{ id: string; key: string; set: ReadonlySet<string> }>;
   /** Every id in the athlete's synced catalog — for checking a
    * model-supplied originId is real rather than invented. */
   ids: Set<string>;
+}
+
+/** The most catalog names whose keys are kept; past it the kept keys start again (a real catalog is ~390 names). */
+export const CATALOG_KEY_CACHE_MAX = 4096;
+
+/**
+ * Each catalog name's matching key and near-match tokens, kept the first time the name is folded (2026-10-18, the
+ * decision guidance's fix round): an account's catalog is the same few hundred names on every build, and folding them
+ * all was ~0.7 ms of every lift plan propose_plan judges. Keyed by the name exactly as it reads; null for a name that
+ * folds to nothing. Pure functions of the name, so a kept key is the key a fresh fold gives (pinned).
+ */
+const catalogKeys = new Map<string, { key: string; set: ReadonlySet<string> } | null>();
+
+function catalogKeyOf(human: string): { key: string; set: ReadonlySet<string> } | null {
+  const kept = catalogKeys.get(human);
+  if (kept !== undefined) return kept;
+  const key = normalizeExerciseKey(human);
+  const made = key ? { key, set: matchTokens(key) } : null;
+  if (catalogKeys.size >= CATALOG_KEY_CACHE_MAX) catalogKeys.clear();
+  catalogKeys.set(human, made);
+  return made;
+}
+
+/** How many catalog names' keys are kept (a test reads it). */
+export function catalogKeyCacheSize(): number {
+  return catalogKeys.size;
 }
 
 /**
@@ -319,10 +345,10 @@ export function buildExerciseIndex(catalog: Map<string, string>): ExerciseIndex 
   for (const [id, stored] of catalog) {
     const human = COROS_EXERCISE_NAMES[stored.trim()] ?? stored;
     if (!human || isCodeName(human)) continue;
-    const key = normalizeExerciseKey(human);
-    if (!key) continue;
-    if (!byKey.has(key)) byKey.set(key, id);
-    tokens.push({ id, key, set: matchTokens(key) });
+    const made = catalogKeyOf(human);
+    if (!made) continue;
+    if (!byKey.has(made.key)) byKey.set(made.key, id);
+    tokens.push({ id, key: made.key, set: made.set });
   }
   return { byKey, tokens, ids: new Set(catalog.keys()) };
 }
@@ -424,11 +450,18 @@ function opSessions(op: CoachOp): CoachSession[] {
  */
 export function resolveOpsExercises(ops: CoachOp[], index: ExerciseIndex): ExerciseResolution[] {
   const report: ExerciseResolution[] = [];
+  // A name resolves once a call (2026-10-18, the decision guidance's fix round): a plan names the same few moves in
+  // every session, and each unmatched one is a pass over the whole catalog — the same answer every time.
+  const byName = new Map<string, string | null>();
+  const resolved = (name: string): string | null => {
+    if (!byName.has(name)) byName.set(name, resolveExerciseOriginId(name, index));
+    return byName.get(name)!;
+  };
   for (const op of ops) {
     for (const session of opSessions(op)) {
       for (const ex of sessionExercises(session)) {
         const claimed = ex.originId && index.ids.has(ex.originId) ? ex.originId : null;
-        const originId = claimed ?? resolveExerciseOriginId(ex.name, index);
+        const originId = claimed ?? resolved(ex.name);
         if (originId) ex.originId = originId;
         else delete (ex as { originId?: string }).originId;
         report.push({ name: ex.name, originId, via: originId ? (claimed ? "model" : "name") : null });
