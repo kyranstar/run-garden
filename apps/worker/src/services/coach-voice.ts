@@ -6,8 +6,9 @@
  * DATA, NEVER FREE TEXT. Each variable is an enum (`voiceSettingsSchema`, strict): the block's every word is this module's
  * own, picked by the values, so nothing a client sends reaches the prompt as text.
  *
- * NONE SET, NO BLOCK. Today's production voice is the prompt's own (design-prompt.ts: plain, calm, one line at the
- * finish): a variant with no variable set adds nothing (`voiceBlock` answers null), and its request is the production
+ * NONE SET, NO BLOCK. Today's production voice is the prompt's own (design-prompt.ts, the main block's last words:
+ * brisk, one next step the card doesn't show, no apologies — the owner's pick from these replays, 2026-10-19): a
+ * variant with no variable set adds nothing (`voiceBlock` answers null), and its request is the production
  * request byte for byte (pinned in coach-replay.test.ts). `plain` set explicitly is a variable like any other: it adds
  * its line.
  *
