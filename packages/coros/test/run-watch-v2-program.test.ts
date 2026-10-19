@@ -14,6 +14,7 @@ import { CorosClient } from "../src/client.js";
 import { updateWorkoutContent } from "../src/content-executor.js";
 import { buildProgramFor, buildRunWatchProgram, createWorkout, type CreateWorkoutSpec } from "../src/create-executor.js";
 import { mockCorosServer, nextMonday } from "./mock-coros-server.js";
+import { reencodeProgram } from "./renormalizing-coros.js";
 
 const THRESHOLD = 289;
 const spec = (session: RunWatchSession, wire?: "v1" | "v2", threshold: number | null = THRESHOLD) => ({
@@ -145,5 +146,31 @@ describe("the create and the rewrite write the wire they are given", () => {
     );
     expect(rewritten.ok, rewritten.error).toBe(true);
     expect(stored().map((e) => [e.isGroup, e.sets])).toEqual([[false, 1], [true, 4], [false, 1], [false, 1], [false, 1]]);
+  });
+});
+
+describe("the renormalizing mock learns distance and groups (§8 phase 2)", () => {
+  const HALVES: RunWatchSession = {
+    kind: "run_watch",
+    title: "Half miles",
+    segments: [{ rounds: 6, steps: [{ role: "work", effort: "threshold", target: { kind: "distance", meters: 804.67 } }, { role: "recovery", effort: "recovery", target: { kind: "time", seconds: 90 } }] }],
+  };
+  it("a run with a distance step: the server's own duration and distance; a group's own target, its links kept under new ids", () => {
+    const sent = { ...buildRunWatchProgram(spec(HALVES, "v2")), duration: 1, estimatedTime: 1, distance: "123.00", estimatedDistance: 123 };
+    const stored = reencodeProgram(sent);
+    const [container, work, rest] = stored.exercises!;
+    // Ids reissued; the children still under their container.
+    expect(String(container!.id)).not.toBe(String(sent.exercises![0]!.id));
+    expect([String(work!.groupId), String(rest!.groupId)]).toEqual([String(container!.id), String(container!.id)]);
+    // A distance at its band's middle (4:49–5:13: 301 s/km): ½ mi is 242 s; a bare step at 6:00 /km.
+    expect(work).toMatchObject({ targetType: 5, targetValue: 80467 });
+    expect(container).toMatchObject({ targetType: 2, targetValue: 242 + 90 + 7 });
+    expect(stored.duration).toBe(6 * (242 + 90) + 17);
+    expect(stored.distance).toBe(Math.round(6 * (804.67 + 250) * 100));
+    expect(stored.estimatedDistance).toBe(stored.distance);
+  });
+  it("a run of time steps keeps the distance it was sent, as live rewrites of the thread coach's runs verified it", () => {
+    const sent = { ...buildRunWatchProgram(spec(GROUPED, "v2")), distance: 777700, estimatedDistance: 777700 };
+    expect(reencodeProgram(sent)).toMatchObject({ distance: 777700, estimatedDistance: 777700 });
   });
 });

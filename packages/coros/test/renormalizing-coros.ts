@@ -44,6 +44,16 @@
  *     sent at 60 seconds a set, came back 78, 62 and 196; the capture's run
  *     containers hold the sum of their children (540 = 360 + 180). Here: the
  *     children's work plus rest, plus an odd constant no client would send.
+ *     A RUN container's target type is the server's too (the captures hold both
+ *     0 and 2): here, always time (2).
+ *  7. A RUN'S DISTANCE STEPS (§8 phase 2) — a distance step (`targetType 5`,
+ *     metres × 100) keeps its integer target; its time in rules 4 and 6 is its
+ *     metres at its pace's middle (6:00 /km with none). A run program holding a
+ *     distance step is stored with the server's OWN distance — every step's
+ *     metres, a timed one at its pace — never the calculate endpoint's. (An
+ *     assumption, never seen live: a run of time steps keeps the distance it
+ *     was sent, as the live rewrites of the thread coach's runs verified it by
+ *     value, distance compared.)
  */
 import type { RawCorosExercise, RawCorosProgram } from "@rg/providers";
 import { mockCorosServer, type MockCorosServer } from "./mock-coros-server.js";
@@ -73,6 +83,35 @@ function renumber(o: Record<string, unknown>): void {
   }
 }
 
+/** Rule 7: a step's pace middle in s/km — its band's, else 6:00 /km. */
+function paceMidOf(e: RawCorosExercise): number {
+  const fast = Number(e.intensityValue ?? 0);
+  const slow = Number(e.intensityValueExtend ?? 0);
+  return Number(e.intensityType) === 3 && fast > 0 && slow > 0 ? (fast + slow) / 2 / 1000 : 360;
+}
+
+/** A step's seconds as the server works them out: its time, reps at 4 s, a distance at its pace (rule 7), else 45. */
+function workSeconds(e: RawCorosExercise): number {
+  const tt = Number(e.targetType);
+  const tv = Number(e.targetValue ?? 0);
+  return tt === 2 ? tv : tt === 3 ? tv * 4 : tt === 5 ? Math.round((tv / 100 / 1000) * paceMidOf(e)) : 45;
+}
+
+/** Rule 7: a run's own distance in metres — a distance step's own, a timed step's at its pace — rounds counted. */
+function recalculatedMeters(exercises: RawCorosExercise[]): number {
+  const setsOf = new Map<string, number>();
+  for (const e of exercises) if (e.isGroup === true) setsOf.set(String(e.id), Number(e.sets ?? 1));
+  let meters = 0;
+  for (const e of exercises) {
+    if (e.isGroup === true || Number(e.exerciseType) === 0) continue;
+    const tt = Number(e.targetType);
+    const tv = Number(e.targetValue ?? 0);
+    const m = tt === 5 ? tv / 100 : tt === 2 ? (tv / paceMidOf(e)) * 1000 : 0;
+    meters += (setsOf.get(String(e.groupId)) ?? 1) * m;
+  }
+  return meters;
+}
+
 /** Rule 4: the server's own estimate, deterministic and never the calculate endpoint's figure. */
 function recalculatedDuration(exercises: RawCorosExercise[]): number {
   const setsOf = new Map<string, number>();
@@ -80,9 +119,7 @@ function recalculatedDuration(exercises: RawCorosExercise[]): number {
   let seconds = 0;
   for (const e of exercises) {
     if (e.isGroup === true || Number(e.exerciseType) === 0) continue;
-    const tt = Number(e.targetType);
-    const tv = Number(e.targetValue ?? 0);
-    const work = tt === 2 ? tv : tt === 3 ? tv * 4 : 45;
+    const work = workSeconds(e);
     const rest = Number(e.restType) === 1 ? Number(e.restValue ?? 0) : 0;
     seconds += (setsOf.get(String(e.groupId)) ?? 1) * (work + rest);
   }
@@ -94,9 +131,7 @@ function containerTarget(container: RawCorosExercise, exercises: RawCorosExercis
   let seconds = 0;
   for (const e of exercises) {
     if (e.isGroup === true || String(e.groupId) !== String(container.id)) continue;
-    const tt = Number(e.targetType);
-    const tv = Number(e.targetValue ?? 0);
-    seconds += (tt === 2 ? tv : tt === 3 ? tv * 4 : 45) + (Number(e.restType) === 1 ? Number(e.restValue ?? 0) : 0);
+    seconds += workSeconds(e) + (Number(e.restType) === 1 ? Number(e.restValue ?? 0) : 0);
   }
   return seconds + 7;
 }
@@ -133,6 +168,15 @@ export function reencodeProgram(sent: RawCorosProgram): RawCorosProgram {
   const duration = recalculatedDuration(exercises);
   program.duration = duration;
   program.estimatedTime = duration;
+  if (Number(program.sportType) === 1) {
+    // Rule 6, a run's: the container's target type is the server's — time.
+    for (const e of exercises) if (e.isGroup === true) e.targetType = 2;
+    // Rule 7: a run holding a distance step gets the server's own distance (metres × 100).
+    if (exercises.some((e) => Number(e.targetType) === 5)) {
+      program.distance = Math.round(recalculatedMeters(exercises) * 100);
+      program.estimatedDistance = program.distance;
+    }
+  }
   return program;
 }
 

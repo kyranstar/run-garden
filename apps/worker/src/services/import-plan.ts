@@ -1585,7 +1585,13 @@ function writeFailureCode(e: unknown): string {
 function stageStatements(db: Db, workoutId: string, src: SourcePlannedWorkout): AtomicStatement[] {
   const remove = db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, workoutId));
   if (src.stages.length === 0) return [remove];
-  const stageRows = src.stages.map((s) => ({
+  const stageRows = importedStageRows(workoutId, src.stages);
+  return [remove, ...insertBatches(stageRows).map((batch) => db.insert(plannedWorkoutStages).values(batch))];
+}
+
+/** COROS's stages as the import stores them: one row each, a child under its container (pure; §8 phase 2's round trip reads it too). */
+export function importedStageRows(workoutId: string, stages: SourcePlannedWorkout["stages"]) {
+  return stages.map((s) => ({
     id: `${workoutId}:${s.id}`,
     workoutId,
     parentStageId: s.parentStageId ? `${workoutId}:${s.parentStageId}` : null,
@@ -1627,5 +1633,4 @@ function stageStatements(db: Db, workoutId: string, src: SourcePlannedWorkout): 
     restSeconds: s.restSeconds ?? null,
     note: s.note ?? null,
   }));
-  return [remove, ...insertBatches(stageRows).map((batch) => db.insert(plannedWorkoutStages).values(batch))];
 }
