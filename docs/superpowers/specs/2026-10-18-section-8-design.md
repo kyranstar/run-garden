@@ -154,8 +154,12 @@ The conversation coach becomes the only coach.
     the athlete asked for a plan or a stretch of weeks.
 - **`programme_change`** (last, if the wave has room): one op mapped onto `updateProgram` + `placeSlots` (weekly goal,
   preferred days, length, modes, care) for an adaptive programme. Approved the same way.
-  **Not built in this wave:** `placeSlots` has no statement pin yet, and the approve request already spends most of its
-  45. A programme is changed in its settings until that is measured.
+  **Built 2026-10-19 (after the wave) as `change_programme`, a sibling tool.** A programme is the athlete's, and it is
+  judged by the settings sheet's own rules, not by the thread coach's guardrails.
+  - **Measuring showed the settings save itself was over budget.** A days change cost 55–139 statements in one
+    request. So `placeSlotsWithin(budget)` places slots a chunk per request, for the sheet (which loops while
+    `placing`) and for the coach's approve (`remaining`) alike.
+  - **The hourly pass is unchanged** and converges anything a cut-off request left.
 - **Overlap (after review):** a createPlan that overlaps a running coach block of the same discipline carries an advisory
   ("Overlaps your 10K build (19 Oct – 15 Nov)"). It never refuses.
 - **Approve:** `design-approve` applies `plan_structure` after plan changes and before workouts, as its own cost
