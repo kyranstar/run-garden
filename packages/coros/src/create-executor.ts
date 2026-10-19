@@ -1840,7 +1840,21 @@ export function storedContentDelta(sent: RawCorosProgram, stored: RawCorosProgra
         }
       : {}),
   };
-  return sameProgramContent(sent, asSent) ? undefined : describeProgramDelta(sent, asSent, 20);
+  // What `describeProgramDelta` does not read, and COROS is likeliest to change of a group (review-2 F1): a container's
+  // rest (its captured shape A holds 0/30 — perhaps a rest after every round on the watch) and every step's display unit
+  // (a 0 COROS leaves out is a 0). Sort numbers are COROS's renumbering, and the children's links are compared already.
+  const extra: string[] = [];
+  const value = (v: unknown): number => (v === undefined || v === null || v === "" ? 0 : Number(v));
+  sentSteps.forEach((x, i) => {
+    const y = stored.exercises?.[i];
+    if (!y) return;
+    const a = x as unknown as Record<string, unknown>;
+    const b = y as unknown as Record<string, unknown>;
+    const fields = x.isGroup === true && y.isGroup === true ? ["targetDisplayUnit", "restType", "restValue"] : ["targetDisplayUnit"];
+    for (const f of fields) if (value(a[f]) !== value(b[f])) extra.push(`ex[${i}].${f} ${value(a[f])}→${value(b[f])}`);
+  });
+  const diffs = [...(sameProgramContent(sent, asSent) ? [] : [describeProgramDelta(sent, asSent, 20)]), ...extra];
+  return diffs.length > 0 ? diffs.join("; ") : undefined;
 }
 
 function isoOf(happenDay: string): string {

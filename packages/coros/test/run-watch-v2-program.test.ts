@@ -217,3 +217,60 @@ describe("a v2 create read back by value (§8 phase 2): groups and distances com
     expect(changed((e) => { e[1]!.targetType = 0; e[1]!.targetValue = 0; })).toBeUndefined();
   });
 });
+
+describe("the read-back compares what COROS is most likely to change of a group (review-2 F1)", () => {
+  const HALVES: RunWatchSession = {
+    kind: "run_watch",
+    title: "Half miles",
+    segments: [
+      { rounds: 1, steps: [{ role: "warmup", effort: "easy", target: { kind: "time", seconds: 600 } }] },
+      { rounds: 6, steps: [{ role: "work", effort: "threshold", target: { kind: "distance", meters: 804.67 } }, { role: "recovery", effort: "recovery", target: { kind: "time", seconds: 90 } }] },
+    ],
+  };
+  /** COROS's other captured container (shape A): no name, sport 0, a 0/30 rest — perhaps 30 s after each round — and no target. */
+  const shapeA = (e: Record<string, unknown>) => Object.assign(e, { name: "", sportType: 0, restType: 0, restValue: 30, targetType: 0, targetValue: 0 });
+
+  it("our container turned into shape A is named: its rest type and rest value; its own target and sort numbers stay set aside", () => {
+    const sent = buildRunWatchProgram(spec(HALVES, "v2"));
+    const stored = structuredClone(sent);
+    const steps = stored.exercises as unknown as Array<Record<string, unknown>>;
+    shapeA(steps[1]!);
+    for (const e of steps) e.sortNo = Number(e.sortNo) + 1;
+    const delta = storedContentDelta(sent, stored);
+    expect(delta).toContain("ex[1].restType 3→0");
+    expect(delta).toContain("ex[1].restValue 0→30");
+    expect(delta).not.toMatch(/sortNo|ex\[1\]\.target/);
+  });
+
+  it("a distance step's display unit is compared; a 0 COROS leaves out is no change", () => {
+    const sent = buildRunWatchProgram(spec(HALVES, "v2"));
+    const changed = structuredClone(sent);
+    (changed.exercises![2] as unknown as Record<string, unknown>).targetDisplayUnit = 1;
+    expect(storedContentDelta(sent, changed)).toBe("ex[2].targetDisplayUnit 3→1");
+    const dropped = structuredClone(sent);
+    delete (dropped.exercises![0] as unknown as Record<string, unknown>).targetDisplayUnit;
+    expect(storedContentDelta(sent, dropped)).toBeUndefined();
+  });
+
+  it("a create against a COROS that stores shape A says so", async () => {
+    const server = renormalizingCoros({ baseMonday: nextMonday() });
+    const inner = server.fetchImpl;
+    server.fetchImpl = async function (input: string | URL | Request, init?: RequestInit): Promise<Response> {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname === "/training/schedule/update" && typeof init?.body === "string") {
+        const body = JSON.parse(init.body) as { programs?: Array<{ exercises?: Array<Record<string, unknown>> }> };
+        for (const p of body.programs ?? []) for (const e of p.exercises ?? []) if (e.isGroup === true) shapeA(e);
+        return inner(input, { ...init, body: JSON.stringify(body) });
+      }
+      return inner(input, init);
+    } as typeof fetch;
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    const today = new Date().toISOString().slice(0, 10);
+    const day = new Date(`${today}T00:00:00Z`);
+    day.setUTCDate(day.getUTCDate() + 10);
+    const made = await createWorkout(client, { ...spec(HALVES, "v2"), happenDay: day.toISOString().slice(0, 10).replaceAll("-", "") } as CreateWorkoutSpec, { today, catalog: new Map(), log: () => undefined });
+    expect(made.ok, made.error).toBe(true);
+    expect(made.contentDelta).toBe("ex[1].restType 3→0; ex[1].restValue 0→30");
+  });
+});

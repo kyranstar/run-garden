@@ -51,6 +51,7 @@ const STEP_FIELDS = [
   "originId",
   "targetType",
   "targetValue",
+  "targetDisplayUnit",
   "intensityType",
   "intensityValue",
   "intensityValueExtend",
@@ -59,6 +60,10 @@ const STEP_FIELDS = [
   "isGroup",
   "sets",
   "group",
+  // What COROS is likeliest to change of a group (review-2 F1): a container's rest (its shape A's 0/30) and the sort.
+  "restType",
+  "restValue",
+  "sortNo",
 ] as const;
 const TOTAL_FIELDS = ["duration", "estimatedTime", "distance", "estimatedDistance", "exerciseNum", "totalSets"] as const;
 

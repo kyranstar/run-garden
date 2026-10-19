@@ -37,7 +37,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 type Server = ReturnType<typeof mockCorosServer>;
 
-async function setup(opts: { writesEnabled?: boolean; renormalizing?: boolean; threshold?: number } = {}) {
+async function setup(opts: { writesEnabled?: boolean; renormalizing?: boolean; threshold?: number; shapeA?: boolean } = {}) {
   const db = makeTestDb();
   const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: opts.writesEnabled ?? true });
   const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
@@ -45,7 +45,15 @@ async function setup(opts: { writesEnabled?: boolean; renormalizing?: boolean; t
   const writes: Array<{ programs?: RawCorosProgram[]; versionObjects: Array<{ status: number }> }> = [];
   const recording = ((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    if (url.pathname === "/training/schedule/update" && typeof init?.body === "string") writes.push(JSON.parse(init.body));
+    if (url.pathname === "/training/schedule/update" && typeof init?.body === "string") {
+      writes.push(JSON.parse(init.body));
+      if (opts.shapeA) {
+        // COROS's other captured container: no name, sport 0, a 0/30 rest, no target (review-2 F1).
+        const body = JSON.parse(init.body) as { programs?: Array<{ exercises?: Array<Record<string, unknown>> }> };
+        for (const p of body.programs ?? []) for (const e of p.exercises ?? []) if (e.isGroup === true) Object.assign(e, { name: "", sportType: 0, restType: 0, restValue: 30, targetType: 0, targetValue: 0 });
+        return server.fetchImpl(input, { ...init, body: JSON.stringify(body) });
+      }
+    }
     return server.fetchImpl(input, init);
   }) as typeof fetch;
   vi.stubGlobal("fetch", recording);
@@ -145,7 +153,10 @@ describe("POST /api/coros/spike/run-wire — the run", () => {
     ]);
     // The report: every field asked for, sent and stored, per step; nothing changed on an echoing COROS.
     expect(body.steps).toHaveLength(5);
-    const FIELDS = ["exerciseType", "name", "originId", "targetType", "targetValue", "intensityType", "intensityValue", "intensityValueExtend", "intensityMultiplier", "intensityDisplayUnit", "isGroup", "sets", "group"];
+    const FIELDS = [
+      "exerciseType", "name", "originId", "targetType", "targetValue", "targetDisplayUnit", "intensityType", "intensityValue", "intensityValueExtend",
+      "intensityMultiplier", "intensityDisplayUnit", "isGroup", "sets", "group", "restType", "restValue", "sortNo",
+    ];
     for (const s of body.steps) {
       expect(Object.keys(s.sent).sort()).toEqual([...FIELDS].sort());
       expect(Object.keys(s.stored!).sort()).toEqual([...FIELDS].sort());
@@ -193,5 +204,14 @@ describe("POST /api/coros/spike/run-wire — the run", () => {
     expect(body.totals.stored!.duration).not.toBe(body.totals.sent.duration);
     // The create's own read-back sets those aside: nothing to say.
     expect(body.contentDelta).toBeNull();
+  });
+
+  it("against a COROS that stores its own container shape (shape A), the report names it: rest type and value, its name and target — and the create's read-back records the rest", async () => {
+    const { post } = await setup({ shapeA: true, threshold: 289 });
+    const body = (await (await post(RUN("v2"))).json()) as Body;
+    expect(body.deleted).toBe(true);
+    expect(body.steps[1]!.changed).toEqual(["name", "targetType", "targetValue", "restType", "restValue"]);
+    expect(body.steps[1]!.stored).toMatchObject({ restType: 0, restValue: 30, name: "" });
+    expect(body.contentDelta).toBe("ex[1].restType 3→0; ex[1].restValue 0→30");
   });
 });
