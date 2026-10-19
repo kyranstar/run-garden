@@ -19,6 +19,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeCoachReplayRoutes } from "../src/routes/coach-replay.js";
+import { coachRoutes } from "../src/routes/coach.js";
 import { answerRun, createRun, endedLine, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { readConversation } from "../src/services/coach-conversation.js";
 import {
@@ -191,11 +192,11 @@ beforeEach(async () => {
   env = makeEnv(email);
 });
 
-const app = (deps: () => ReplayDeps = stub) => mountRoutes(db, "/api/coach/replay", makeCoachReplayRoutes(deps));
+const app = (deps: () => ReplayDeps = stub, now?: () => Date) => mountRoutes(db, "/api/coach/replay", makeCoachReplayRoutes(deps, now ? { now } : {}));
 
-async function call(method: string, path: string, body?: unknown, o: { env?: Env; cookie?: string | null; deps?: () => ReplayDeps } = {}) {
+async function call(method: string, path: string, body?: unknown, o: { env?: Env; cookie?: string | null; deps?: () => ReplayDeps; now?: () => Date } = {}) {
   const c = o.cookie === undefined ? cookie : o.cookie;
-  const res = await app(o.deps).request(
+  const res = await app(o.deps, o.now).request(
     `/api/coach/replay${path}`,
     {
       method,
@@ -781,6 +782,56 @@ describe("a replay's reservations", () => {
     // Orphaned past the window: they count at their estimate, and the coach goes on.
     await db.update(schema.llmUsage).set({ createdAt: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }).where(eq(schema.llmUsage.kind, REPLAY_USAGE_KIND));
     expect(await modelStep(await asked("Again."))).toBe("finished");
+  });
+
+  it("each batch's rows are dated when they are written — not when the request began — so a batch still running is held at its worst", async () => {
+    // The first call takes eleven minutes to answer (its deadline is ten, and the stream may run that long); the batch
+    // starts then, and is still running nine minutes later: twenty minutes after the request began.
+    let clock = new Date(Date.now() - 20 * 60_000);
+    const runId = await storedRun();
+    const gates = [0, 1].map(() => {
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      return { held, release };
+    });
+    replies = gates.map((g, i) => async () => {
+      await g.held;
+      return finishing(`Line ${i + 1}.`, { costMicros: 21_000 });
+    });
+    const pending = call("POST", "", replay(runId, [{ id: "a" }, { id: "b", tone: "warm" }]), { now: () => clock });
+    const rowOf = async (id: string) => {
+      for (let i = 0; i < 50; i++) {
+        const row = (await usageRows()).find((r) => r.requestFingerprint?.startsWith(`replay:${runId}:finish:${id}`));
+        if (row) return row;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error(`no row for ${id} after 50 looks`);
+    };
+    const first = await rowOf("a");
+    expect(first.createdAt).toBe(clock.toISOString());
+    clock = new Date(Date.now() - 9 * 60_000);
+    gates[0]!.release();
+    const batch = await rowOf("b");
+    // Its own insert's time: its call can still run a whole deadline from there, inside the stale window.
+    expect(batch.createdAt).toBe(clock.toISOString());
+    expect(Date.parse(batch.createdAt) + DESIGN_MODEL_TIMEOUT_MS).toBeLessThan(Date.parse(batch.createdAt) + REPLAY_RESERVATION_STALE_MINUTES * 60_000);
+    // The week holds it at its worst while it runs (the first, settled, at its cost).
+    expect((await llmBudgetStatus(db, userId)).spentMicros).toBe(21_000 + batch.costMicros);
+    expect(batch.costMicros).toBeGreaterThan(320_000);
+    gates[1]!.release();
+    expect((await pending).status).toBe(200);
+  });
+
+  it("GET /api/coach/spend shows the week as the gate counts it: an orphaned reservation at its estimate", async () => {
+    await db.insert(schema.llmUsage).values([
+      reservation({ costMicros: 400_000, est: 20_000, at: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }),
+      reservation({ kind: "design_main", costMicros: 50_000, at: minutesAgo(60) }),
+    ]);
+    const res = await mountRoutes(db, "/api/coach", coachRoutes).request("/api/coach/spend", { headers: { Cookie: cookie } }, env);
+    const body = (await res.json()) as { spentMicros: number; byKind: Array<{ kind: string; costMicros: number }> };
+    expect(body.spentMicros).toBe((await llmBudgetStatus(db, userId)).spentMicros);
+    expect(body.spentMicros).toBe(70_000);
+    expect(body.byKind.find((k) => k.kind === REPLAY_USAGE_KIND)).toMatchObject({ costMicros: 20_000 });
   });
 });
 

@@ -74,7 +74,7 @@ export function makeCoachReplayRoutes(deps: () => ReplayDeps = defaultReplayDeps
       const issue = body.error.issues[0];
       return c.json({ error: "bad_request", why: issue ? `${issue.path.join(".") || "body"}: ${issue.message}` : "Not a replay." }, 400);
     }
-    const out = await replayRun(c.get("db"), c.env, c.get("userId"), body.data, deps(), now());
+    const out = await replayRun(c.get("db"), c.env, c.get("userId"), body.data, deps(), now);
     switch (out.kind) {
       case "not_found":
         return c.json({ error: "not_found" }, 404);

@@ -38,7 +38,7 @@ import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../serv
 import { recordReplayFrom, REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
-import { LLM_BUDGET } from "../services/llm.js";
+import { LLM_BUDGET, weekCostSql } from "../services/llm.js";
 import { COACH_DRAIN_KINDS, coachDrainQueued, executeCloudJobs } from "../services/coros-write-cloud.js";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
@@ -335,14 +335,16 @@ async function threadSignals(
 coachRoutes.get("/spend", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const now = new Date(Date.now());
+  const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
   const rows = await db
     .select({
       kind: llmUsage.kind,
       calls: sql<number>`count(*)`,
       inputTokens: sql<number>`sum(${llmUsage.inputTokens})`,
       outputTokens: sql<number>`sum(${llmUsage.outputTokens})`,
-      costMicros: sql<number>`sum(${llmUsage.costMicros})`,
+      // Each row as the gate counts it (llm.ts `weekCostSql`: an orphaned replay reservation at its estimate).
+      costMicros: sql<number>`sum(${weekCostSql(now)})`,
     })
     .from(llmUsage)
     .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since)))

@@ -409,7 +409,9 @@ interface Planned {
   usageId: string;
 }
 
-export async function replayRun(db: Db, env: Env, userId: string, input: ReplayBody, deps: ReplayDeps, now: Date): Promise<ReplayOutcome> {
+/** `clock`: the time each batch's rows are written at — read at their insert, never the request's start (a batch begins
+ * only once the first call has answered, up to its whole deadline later, and its rows' stale window runs from there). */
+export async function replayRun(db: Db, env: Env, userId: string, input: ReplayBody, deps: ReplayDeps, clock: () => Date): Promise<ReplayOutcome> {
   const at: ReplayStep = input.at ?? "finish";
   const row = await readRun(db, userId, input.runId);
   if (!row) return { kind: "not_found" };
@@ -441,7 +443,6 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
     return { index, body, promptTokens, worstMicros, estimateMicros: 0, usageId: newId() };
   };
   const fingerprint = (p: Planned) => `replay:${input.runId}:${at}:${variants[p.index]!.id}`;
-  const at0 = now.toISOString();
   /** The outputs seen so far (tokens), and what the calls cost (micros). */
   const outputs: number[] = [];
   let spent = 0;
@@ -452,6 +453,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
    * its mark gone.
    */
   const call = async (batch: Planned[]): Promise<void> => {
+    const writtenAt = clock().toISOString();
     await db.insert(llmUsage).values(
       batch.map((p) => ({
         id: p.usageId,
@@ -463,7 +465,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
         costMicros: p.worstMicros,
         cacheHit: false,
         requestFingerprint: `${fingerprint(p)}${RESERVATION_MARK}${p.estimateMicros}`,
-        createdAt: at0,
+        createdAt: writtenAt,
       })),
     );
     await Promise.all(
