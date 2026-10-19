@@ -106,7 +106,8 @@ export const REPLAY_WORDS = {
 const VARIANT_ID = /^[A-Za-z0-9_-]{1,40}$/;
 const RUN_ID = /^[A-Za-z0-9_-]{1,100}$/;
 
-export const replayVariantSchema = voiceSettingsSchema.extend({ id: z.string().regex(VARIANT_ID, "an id of letters, digits, - or _") }).strict();
+/** A variant: an id and the voice's variables (strict, as `voiceSettingsSchema` is: nothing else). */
+export const replayVariantSchema = voiceSettingsSchema.extend({ id: z.string().regex(VARIANT_ID, "an id of letters, digits, - or _") });
 
 /** The body, the confirm included (the route answers 404 before this for a body without it). Variables are enums. */
 export const replayBodySchema = z
@@ -193,9 +194,10 @@ export type ReplayOutcome =
 
 const DESIGNED_PREFIX = designProposalId("");
 
-/** A run the replay may read: the athlete's own finished main run, never a rehearsal's. */
+/** A run the replay may read: the athlete's own finished main run (no parent, as the conversation reads its turns), never
+ * a rehearsal's. */
 const replayable = (userId: string) =>
-  sql`r.user_id = ${userId} AND r.parent_id IS NULL AND r.role = 'main' AND r.status = 'finished'
+  sql`r.user_id = ${userId} AND r.parent_id IS NULL AND r.status = 'finished'
     AND coalesce(CASE WHEN json_valid(r.state) THEN json_extract(r.state, '$.settings.rehearsal') END, 0) = 0`;
 
 /** The run's last line, as the conversation reads it (coach-conversation.ts `conversationRows`). */
@@ -247,13 +249,13 @@ const asksWords = (u: ToolUseBlock): boolean => u.name === "ask_athlete" && Arra
 
 /** The history's index of the step's answer (an assistant message); null when the run never took that step. */
 function stepIndex(state: RunState, at: ReplayStep, designed: { toolUseId?: unknown } | null): number | null {
-  if (at === "prose" && !designed) return null;
   for (let i = state.messages.length - 1; i >= 1; i--) {
     const m = state.messages[i]!;
     if (m.role !== "assistant") continue;
     if (at === "finish") return i;
     const uses = usesOf(m.content);
     if (at === "ask" && uses.some(asksWords)) return i;
+    // The call that proposed the version its proposal holds (none designed: no call matches).
     if (at === "prose" && uses.some((u) => u.name === "propose_workout" && u.id === designed?.toolUseId)) return i;
   }
   return null;
@@ -563,7 +565,6 @@ interface ListRow {
   at: string;
   words: string | null;
   costUsd: number | null;
-  scopeKind: string | null;
   line: string | null;
   ops: string | null;
   asked: number;
@@ -575,7 +576,6 @@ export async function listReplayable(db: Db, userId: string, limit: number): Pro
   const k = "json_extract(o.value, '$.kind')";
   const rows = (await db.all(sql`
     SELECT r.id AS id, r.created_at AS at, r.request AS words, r.cost_usd AS costUsd,
-      CASE WHEN json_valid(r.scope) THEN json_extract(r.scope, '$.kind') END AS scopeKind,
       ${FINAL_LINE} AS line,
       (SELECT json_object(
           'workouts', ${sql.raw(count(`${k} = 'doc_workout'`))},
@@ -592,9 +592,17 @@ export async function listReplayable(db: Db, userId: string, limit: number): Pro
   return {
     runs: rows.map((r) => {
       const ops = (parsed(r.ops) ?? {}) as { workouts?: number; mine?: number; designers?: number; changes?: number; plans?: number };
-      const set = (ops.designers ?? 0) > 0 || ((ops.workouts ?? 0) > 0 && (r.scopeKind === "week" || r.scopeKind === "next_n"));
+      // A set's workouts are its designers' (whatever the scope: an auto run plans one too).
       const outcome: ReplayOutcomeKind =
-        (ops.plans ?? 0) > 0 ? "plan" : set ? "set" : (ops.workouts ?? 0) > 0 ? "workout" : (ops.changes ?? 0) > 0 ? "plan_change" : "answer";
+        (ops.plans ?? 0) > 0
+          ? "plan"
+          : (ops.designers ?? 0) > 0
+            ? "set"
+            : (ops.workouts ?? 0) > 0
+              ? "workout"
+              : (ops.changes ?? 0) > 0
+                ? "plan_change"
+                : "answer";
       return {
         id: r.id,
         at: r.at,

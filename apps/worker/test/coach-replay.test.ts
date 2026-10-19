@@ -227,7 +227,10 @@ async function storedRun(
     createdAt?: string;
     scope?: Record<string, unknown>;
     line?: string;
-    ops?: unknown[];
+    /** The last line as the trail kept it, when it differs from the finish's own words. */
+    shown?: string;
+    /** Its proposal's ops (given the run's own id when a function). */
+    ops?: unknown[] | ((runId: string) => unknown[]);
     proposalStatus?: string;
     asked?: boolean;
     messages?: unknown[];
@@ -278,7 +281,7 @@ async function storedRun(
     runId: id,
     seq: 1,
     kind: "note",
-    summary: o.line ?? "A shipped line.",
+    summary: o.shown ?? o.line ?? "A shipped line.",
     payload: { final: true },
     at,
   });
@@ -293,7 +296,7 @@ async function storedRun(
       evidence: "",
       rationale: "",
       flags: [],
-      ops: o.ops,
+      ops: typeof o.ops === "function" ? o.ops(id) : o.ops,
       status: o.proposalStatus ?? "pending",
       createdAt: at,
       expiresAt: TODAY,
@@ -430,6 +433,13 @@ describe("a replay sends the run's own context", () => {
     ]);
   });
 
+  it("the finish's baseline is the line as the athlete read it — the trail's — not the model's words before the app clipped them", async () => {
+    const runId = await storedRun({ line: "The model's own words, longer than what was shown.", shown: "As the athlete read it." });
+    const res = await call("POST", "", replay(runId, [{ id: "a" }]));
+    expect(res.status).toBe(200);
+    expect(res.body.baseline).toEqual({ line: "As the athlete read it.", chars: 23 });
+  });
+
   it("the question and the workout's words: the step's own baseline, and each variant's question, choices or prose", async () => {
     const { runId } = await drivenRun(db, userId, env);
     replies = [ok([use("ask_athlete", { questions: [{ text: "How much time today?", chips: ["15", "30", "45"], why: "To fit it in." }] })])];
@@ -549,6 +559,29 @@ describe("ownership", () => {
     expect((await call("POST", "", replay(main, [{ id: "a" }]))).status).toBe(200);
   });
 
+  it("the workout's words replay the call that proposed the version its proposal holds — never a later draft, never a draft it doesn't hold", async () => {
+    const draft = (id: string, title: string) => ({ role: "assistant", content: [{ type: "thinking", thinking: "", signature: `sig-${id}` }, { type: "tool_use", id, name: "propose_workout", input: { doc: calmDoc({ title }), target: { kind: "new", date: TODAY } } }] });
+    const result = (id: string) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "{\"data\":{}}" }] });
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "HEADER: the opening context." }] },
+      draft("toolu_d1", "First draft"),
+      result("toolu_d1"),
+      draft("toolu_d2", "Second draft"),
+      result("toolu_d2"),
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_f", name: "finish", input: { summary: "Done." } }] },
+    ];
+    // The review kept the first version: the op holds it, by its call.
+    const held = await storedRun({ messages, ops: (id) => [{ kind: "doc_workout", by: { runId: id, role: "main" }, toolUseId: "toolu_d1", doc: calmDoc({ title: "First draft" }) }] });
+    const res = await call("POST", "", replay(held, [{ id: "a" }], { at: "prose" }));
+    expect(res.status).toBe(200);
+    expect((JSON.parse(calls[0]!.body) as { messages: unknown[] }).messages).toHaveLength(1);
+    expect(res.body.baseline.prose.title).toBe("First draft");
+    // A run whose proposal holds no workout of its own has no words of its own to replay, drafts or not.
+    const none = await storedRun({ messages, ops: [{ kind: "plan_adjust", op: { kind: "skip" } }] });
+    expect((await call("POST", "", replay(none, [{ id: "a" }], { at: "prose" }))).status).toBe(409);
+    expect(calls).toHaveLength(1);
+  });
+
   it("a step the run never took is a 409 in words: no question asked, no workout of its own designed", async () => {
     const runId = await storedRun();
     for (const at of ["ask", "prose"]) {
@@ -615,6 +648,18 @@ describe("spend", () => {
     expect(res.body.costUsd).toBeLessThanOrEqual(REPLAY_REQUEST_CAP_MICROS / 1_000_000);
   });
 
+  it("a first call that fails calls nothing more: the rest are skipped in words (the prefix was never cached)", async () => {
+    const runId = await storedRun();
+    replies = [{ ok: false, kind: "rejected", reason: "gateway_400", status: 400 }];
+    const res = await call("POST", "", replay(runId, [{ id: "a" }, { id: "b", tone: "warm" }]));
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(res.body.variants).toMatchObject([
+      { id: "a", error: "rejected", costUsd: 0 },
+      { id: "b", skipped: { reason: "first_failed", why: REPLAY_WORDS.firstFailed }, costUsd: 0 },
+    ]);
+  });
+
   it("records every call in llm_usage as coach_replay, at what it cost — and writes nothing else", async () => {
     const { runId } = await drivenRun(db, userId, env);
     const before = await everythingButUsage();
@@ -658,7 +703,8 @@ describe("GET /runs", () => {
       expiresAt: TODAY,
     });
     const change = await storedRun({ createdAt: at(4), ops: [{ kind: "plan_adjust", op: { kind: "skip" } }] });
-    const set = await storedRun({ createdAt: at(5), scope: { kind: "week" }, ops: [doc({ runId: "designer-1", role: "designer" })] });
+    // An auto run that planned a set: its workouts are its designers'.
+    const set = await storedRun({ createdAt: at(5), scope: { kind: "auto" }, ops: [doc({ runId: "designer-1", role: "designer" })] });
     const plan = await storedRun({ createdAt: at(6), ops: [{ kind: "plan_structure", title: "10K", summary: "4 weeks" }] });
     // Never listed: another athlete's, a sub-run, a live run, a rehearsal.
     await storedRun({ user: (await makeTestUser(db)).userId, createdAt: at(7) });
