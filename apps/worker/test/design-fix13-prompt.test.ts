@@ -140,8 +140,9 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // run's time or distance, heart rate, race pace and what reaches the watch, and when to remember) — measured 5,907.
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(5960);
     // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
-    // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488; the others hold at 1,300.
-    const caps = { main: 1540, designer: 1300, reviewer: 1300 } as const;
+    // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
+    // voice (the coach's last words) — measured 1,634; the others hold at 1,300.
+    const caps = { main: 1660, designer: 1300, reviewer: 1300 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);

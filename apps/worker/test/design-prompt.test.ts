@@ -15,8 +15,9 @@ import { proposeWorkout } from "../src/services/design-tools/propose.js";
 const ROLES = ["main", "designer", "reviewer"] as const;
 /** Each role block's cap, in tokens at 4 characters. The main block's REBASED 2026-10-18 for the decision guidance (a run's
  * length on the watch, plan_set or propose_plan, a plan's timed sessions, a programme's settings) to match
- * design-fix13-prompt.test.ts's 1,540 — measured 1,488; the others hold at 1,500. */
-const ROLE_CAP = { main: 1540, designer: 1500, reviewer: 1500 } as const;
+ * design-fix13-prompt.test.ts's 1,540 — measured 1,488 — and again 2026-10-19 for the owner's voice (the coach's last
+ * words: brisk, one next step, no apologies, not the card) — measured 1,634 with its turns; the others hold at 1,500. */
+const ROLE_CAP = { main: 1660, designer: 1500, reviewer: 1500 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
@@ -42,7 +43,7 @@ describe("the prompt text", () => {
 
   it("keeps the shared prefix under about 6k tokens (characters ÷ 4)", () => {
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
-    for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(1500);
+    for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
   it("describes every tool of spec §4 by name", () => {
@@ -297,7 +298,8 @@ describe("3A-B — the prompt agrees with the code", () => {
     expect(line("plan_set")).toContain("on a day that already holds a programme session, a session already over or another brief, why a second");
     expect(roleBlock("main")).toContain("set it as the target's time; the card shows it, so the finish line needn't");
     expect(roleBlock("main")).not.toContain("and say which");
-    expect(line("finish")).toContain("(minutes, dates, times)");
+    // 2026-10-19, the owner's voice: what the card shows moved from the shared finish line to the main block's last words.
+    expect(roleBlock("main")).toContain("Don't repeat the card (its moves, minutes, dates or what it replaces) unless that is the point.");
     expect(SHARED_PROMPT).not.toContain("After a gap or a flare");
     expect(SHARED_PROMPT).toContain("- After a long gap, when nothing logged says how it went:");
   });
