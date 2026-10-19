@@ -324,8 +324,10 @@ function mount(
   return { calls };
 }
 
+// Passes, not the clock (Date is faked here): about 5 s of 5 ms passes — 1 s timed out on a slow runner (the deploy of
+// 58db75a, 2026-10-19: "focus on the next card", which landed on a re-run).
 async function until(check: () => boolean, what: string): Promise<void> {
-  for (let i = 0; i < 200; i += 1) {
+  for (let i = 0; i < 1000; i += 1) {
     if (check()) return;
     await act(async () => {
       await new Promise((r) => setTimeout(r, 5));
