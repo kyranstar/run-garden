@@ -105,8 +105,9 @@ export function distanceUnitName(units: Units): string {
  * The facts as the MODEL sees them. Models are unreliable at arithmetic, so
  * it never gets a figure it would have to convert: the metric raw values
  * (`totalDistanceMeters`, `totalDurationSeconds`) are replaced by numbers
- * already in the athlete's own units, alongside the unit's name. Everything
- * else passes through untouched.
+ * already in the athlete's own units, alongside the unit's name. The
+ * adherence percentage is left out (the review says what got done, never a
+ * rate). Everything else passes through untouched.
  *
  * The METRIC facts are still what gets persisted — this shape exists only
  * for the prompt, so a stored review stays canonical and re-narratable.
@@ -115,7 +116,8 @@ export function narrationFacts(
   facts: Record<string, unknown>,
   units: Units,
 ): Record<string, unknown> {
-  const { totalDistanceMeters, totalDurationSeconds, ...rest } = facts;
+  // No percentage to quote (the review says what got done, never a rate): `adherencePct` stays in the stored facts.
+  const { totalDistanceMeters, totalDurationSeconds, adherencePct: _rate, ...rest } = facts;
   const meters = num(totalDistanceMeters);
   const seconds = num(totalDurationSeconds);
   return {
@@ -128,16 +130,29 @@ export function narrationFacts(
   };
 }
 
-/** Pure so the units instruction is testable without a gateway call. */
+/**
+ * Pure so the units instruction is testable without a gateway call.
+ *
+ * The voice is the coach's (the owner, 2026-10-19: brisk, plain, one next step, no fluff, no apologies), and its first
+ * sentence is the coach's opening line on Monday — the opening shows only that sentence (coach-opening-line.ts) — so it
+ * must say what last week was, whole on its own. The review used to open "This week you completed 5 of 11 planned
+ * workouts … for an adherence rate of 50%": clinical, and "this week" meaning last week. Reviews already written stay
+ * as they were (the cache keys on the week's facts, not on these words).
+ */
 export function buildWeeklyReviewSystemPrompt(units: Units): string {
   return [
-    "You turn a runner's weekly training facts into a short, calm review.",
-    "Structure: 1) What happened. 2) What went well. 3) What changed.",
-    "4) One useful thing to notice. 5) What changed in the garden.",
-    "Hard rules: maximum 200 words total. Use ONLY numbers and facts present",
-    "in the provided JSON — never invent metrics, diagnoses, causal",
-    "explanations, training-plan changes, or injury advice. Neutral,",
-    "encouraging tone without hype. Moving a workout is not a failure.",
+    "You are the athlete's coach, writing their short review of a training week from its facts.",
+    'The review is about LAST week: call it "last week", never "this week".',
+    "Its first sentence says what last week was in the athlete's own terms — what got done and what carried the week",
+    '(the long run, a quality session, a record) — and reads complete on its own: it starts with "Last week" and never',
+    "points to a later sentence.",
+    "Then, briefly: what went well; what moved or was missed, said plainly and without blame (Moving a workout is not",
+    "a failure); what the garden did. End with one thing to carry forward, drawn from the facts.",
+    "Use numbers sparingly — a count or a distance where it helps — and never a percentage or a rate, nor jargon such",
+    'as "adherence", "compliance", "volume" or "load".',
+    "Brisk and plain: at most 120 words, no fluff, no hype, no apologies.",
+    "Hard rules: use ONLY facts present in the provided JSON — never invent metrics, diagnoses, causal explanations,",
+    "training-plan changes, or injury advice.",
     // The athlete reads one unit system, everywhere. Every figure below is
     // ALREADY in it — the model must never convert, because a converted
     // number is an invented one.

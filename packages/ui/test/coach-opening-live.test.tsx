@@ -23,7 +23,7 @@ import {
   OPENING_SEEN_MAX,
   readOpeningSeen,
 } from "../src/screens/studio/coach-conversation-model.js";
-import { NUDGES_QUERY, READ_THE_REVIEW } from "../src/screens/studio/coach-opening.js";
+import { NUDGES_QUERY, READ_THE_REVIEW, REVIEW_SHEET_TITLE } from "../src/screens/studio/coach-opening.js";
 import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
 import { button, click, dialog, json, quietLoop, run, serve, settle, until, type Call, type Routes as Served } from "./coach-live-harness.js";
 import { libraryDto, placesDto, primedClient, profileDto, TODAY, todayDto } from "./studio-fixtures.js";
@@ -116,6 +116,7 @@ const REVIEW = {
   line: "From last week's review: You ran 4 times for 32.1 kilometres.",
   source: "review" as const,
   chips: [{ id: "review:2026-10-05", label: "Plan this week", request: "Plan my week around how last week went." }],
+  review: { weekStart: "2026-10-05", narrative: "You ran 4 times for 32.1 kilometres. Two of them long.\n\nThe long run held steady all week." },
 };
 const OFFER = { workoutId: "w7", title: "Leg day", date: TODAY, seconds: 2520, category: "strength" };
 
@@ -173,28 +174,70 @@ describe("the coach's opening holds still while it is read (2026-10-19)", () => 
     expect(dialog()!.querySelector(".coach-also")?.textContent).toContain("Hips, gently");
   });
 
-  it("the templates read out (a pinned template's tile would wrap the quick starts): nothing drawn until it answers", async () => {
+  /** The line and its chips drawn while the ways to start yourself wait, last on the screen, in a quiet status. */
+  function expectStartHolding() {
+    expect(drawn()).toBe(true);
+    expect(line()).toBe("A middling morning — steady suits today.");
+    expect(chips()).toEqual([MISSED.label, ...GENERAL_CHIPS]);
+    expect(tiles()).toBe(0);
+    expect(templatesLink()).toBeNull();
+    const start = dialog()!.querySelector(".coach-start--holding");
+    expect(start?.querySelector("[role=status]")?.textContent).toBe("Loading");
+    // Nothing of the opening's after it: its waiting moves nothing under a tap.
+    expect(start?.nextElementSibling ?? null).toBeNull();
+  }
+
+  it("the templates read out (a pinned template's tile would wrap the quick starts): the line and the chips at once — the quick starts and their links after, under them", async () => {
     server();
     const release = hold("/api/templates");
     mountSheet();
     await openCoach();
+    await until(drawn, "the line and the chips");
     await settle(50);
-    expectHolding();
+    expectStartHolding();
+    const chipNodes = [...dialog()!.querySelectorAll(".coach-chips button")];
     await release();
-    await until(drawn, "the opening drawn");
-    expect(chips()[0]).toBe(MISSED.label);
+    await until(() => tiles() > 0, "the quick starts");
+    expect(templatesLink()).not.toBeNull();
+    // The line and the chips as they were: the same elements, drawn once.
+    expect([...dialog()!.querySelectorAll(".coach-chips button")]).toEqual(chipNodes);
+    expect(dialog()!.querySelector(".coach-start--holding")).toBeNull();
   });
 
-  it("the Studio's reads out (a switched-on profile's care tile is theirs to decide): nothing drawn until they answer", async () => {
+  it("the Studio's reads out — a library read held 5 s kept the whole opening blank: the line and the chips at once, the care tile when it answers", async () => {
     server();
     const release = hold("/api/library");
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the line and the chips");
+    await settle(50);
+    expectStartHolding();
+    await release();
+    await until(() => tiles() > 0, "the quick starts");
+    expect(dialog()!.querySelector(".coach-start .stu-qs .stu-qs-name")?.textContent).toBe("Jaw care");
+  });
+
+  it("the objectives read out (an objective's question joins the chips, wrapping them): the line and the chips wait for it", async () => {
+    server({ "GET /api/objectives": { objectives: [{ id: "o1", title: "Wall sit", status: "active", keyResults: [] }] } });
+    const release = hold("/api/objectives");
     mountSheet();
     await openCoach();
     await settle(50);
     expectHolding();
     await release();
     await until(drawn, "the opening drawn");
-    expect(dialog()!.querySelector(".coach-start .stu-qs .stu-qs-name")?.textContent).toBe("Jaw care");
+    expect(chips()).toEqual([MISSED.label, "Something for right now", "Plan my week", "How is “Wall sit” going?", "I'm sore"]);
+  });
+
+  it("a library read that fails: the line and the chips at once, the quick starts drawn from what there is — and drawn, they stay", async () => {
+    const calls = server({ "GET /api/library": () => new Response(JSON.stringify({ error: "unavailable" }), { status: 503 }) });
+    mountSheet();
+    await openCoach();
+    await until(() => drawn() && tiles() > 0, "the opening and its quick starts");
+    expect(line()).toBe("A middling morning — steady suits today.");
+    await settle(200);
+    expect(dialog()!.querySelector(".coach-start--holding")).toBeNull();
+    expect(reads(calls, "/api/library")).toBeLessThanOrEqual(3);
   });
 
   it("drawn, it stays as drawn: a read landing later — another line, another chip — moves nothing", async () => {
@@ -313,12 +356,33 @@ describe("the coach notices: its own line, and its chips first", () => {
     await openCoach();
     await until(drawn, "the opening drawn");
     expect(line()).toBe(REVIEW.line);
-    const more = [...dialog()!.querySelectorAll<HTMLAnchorElement>(".coach-opening .coach-msg--coach a")];
-    expect(more.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([[READ_THE_REVIEW, "/growth"]]);
     expect(chips()).toEqual(["Plan this week", "Something for right now", "I'm sore"]);
     await click(button("Plan this week", dialog()!), "Plan this week");
     await until(() => posts(calls).length === 1, "the start");
     expect(posts(calls)).toEqual(["Plan my week around how last week went."]);
+  });
+
+  it("Read it all: the whole review in a sheet of its own, over the coach — from the opening's read, whatever the activity feed holds of that week", async () => {
+    const calls = server({ "GET /api/coach/nudges": { nudges: [], opening: REVIEW } });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    const link = button(READ_THE_REVIEW, dialog()!);
+    expect(link?.closest(".coach-msg--coach")).not.toBeNull();
+    // No link away: the review is a tap down from the line, not at the foot of Growth's feed behind "Full review".
+    expect(dialog()!.querySelector('.coach-msg--coach a[href="/growth"]')).toBeNull();
+    await click(link, READ_THE_REVIEW);
+    const sheet = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.querySelector("h2")?.textContent === REVIEW_SHEET_TITLE);
+    expect(sheet).toBeDefined();
+    expect(sheet!.querySelector(".review-week")?.textContent).toBe("Week of Monday, October 5");
+    expect([...sheet!.querySelectorAll(".coach-review > p:not(.review-week)")].map((p) => p.textContent)).toEqual([
+      "You ran 4 times for 32.1 kilometres. Two of them long.",
+      "The long run held steady all week.",
+    ]);
+    // Nothing read for it: no feed, no insights.
+    expect(calls.some((c) => c.path.startsWith("/api/insights") || c.path.startsWith("/api/activities"))).toBe(false);
+    await click(sheet!.querySelector('button[aria-label="Close"]'), "the review's ✕");
+    expect([...document.querySelectorAll('[role="dialog"] h2')].map((h) => h.textContent)).toEqual(["Coach"]);
   });
 
   it("a line drawn is kept as shown here: the next opening asks for what comes after it", async () => {

@@ -92,12 +92,13 @@ describe("narrationFacts", () => {
     expect(out.distanceUnit).toBe("kilometres");
   });
 
-  it("passes every non-distance fact through untouched", () => {
+  it("passes every other fact through untouched — but no percentage: the review says what got done, never a rate", () => {
     const out = narrationFacts(METRIC_FACTS, "mi");
     expect(out.planned).toBe(5);
     expect(out.completed).toBe(2);
-    expect(out.adherencePct).toBe(40);
     expect(out.gardenSummary).toBe("A quiet week in the garden");
+    // The owner's coach opened with "…for an adherence rate of 50%" (2026-10-19): the model never sees one to quote.
+    expect(out).not.toHaveProperty("adherencePct");
   });
 
   it("omits the derived keys rather than emitting NaN when a raw is missing", () => {
@@ -115,6 +116,29 @@ describe("buildWeeklyReviewSystemPrompt", () => {
     expect(mi).not.toContain("kilometres");
     expect(mi).toContain("never convert");
     expect(buildWeeklyReviewSystemPrompt("km")).toContain("kilometres");
+  });
+
+  /**
+   * The owner's voice (2026-10-19): brisk, plain, one next step, no fluff, no apologies. The first sentence is the
+   * coach's opening line on Monday (the opening shows only it), so it must say what last week was, on its own.
+   */
+  it("speaks in the owner's voice: last week first, in the athlete's terms, the first sentence whole on its own", () => {
+    const p = buildWeeklyReviewSystemPrompt("km");
+    expect(p).toContain('The review is about LAST week: call it "last week", never "this week".');
+    expect(p).toContain(
+      'Its first sentence says what last week was in the athlete\'s own terms — what got done and what carried the week (the long run, a quality session, a record) — and reads complete on its own: it starts with "Last week" and never points to a later sentence.',
+    );
+    expect(p).toContain("End with one thing to carry forward, drawn from the facts.");
+    expect(p).toContain(
+      'Use numbers sparingly — a count or a distance where it helps — and never a percentage or a rate, nor jargon such as "adherence", "compliance", "volume" or "load".',
+    );
+    expect(p).toContain("Brisk and plain: at most 120 words, no fluff, no hype, no apologies.");
+    expect(p).toContain("Moving a workout is not a failure");
+    // The old, clinical shape is gone.
+    expect(p).not.toContain("What happened");
+    expect(p).not.toContain("200 words");
+    // Generic: nothing of any one athlete in it.
+    expect(buildWeeklyReviewSystemPrompt("mi").replace(/miles/g, "kilometres")).toBe(p);
   });
 });
 
@@ -138,6 +162,22 @@ describe("generateWeeklyReview", () => {
     expect(payload.totalDistance).toBe(10.5);
     expect(payload.distanceUnit).toBe("miles");
     expect(payload).not.toHaveProperty("totalDistanceMeters");
+  });
+
+  it("a review already written stays as it was: a week whose facts are unchanged is never narrated again", async () => {
+    const old = "This week you completed 2 of 5 planned workouts, for an adherence rate of 40%.";
+    await db.insert(schema.weeklyReviews).values({
+      id: "wr-old",
+      userId,
+      weekStart: "2026-08-03",
+      facts: { ...METRIC_FACTS, units: "km" },
+      narrative: old,
+      createdAt: "2026-08-10T20:00:00.000Z",
+    });
+    const fresh = scriptedFetch("Last week you ran twice.");
+    const res = await generateWeeklyReview(db, makeEnv(), userId, { weekStart: "2026-08-03", facts: METRIC_FACTS, units: "km" }, true, fresh.impl);
+    expect(res).toEqual({ narrative: old, cached: true });
+    expect(fresh.sent).toHaveLength(0);
   });
 
   it("stores the METRIC facts, plus the units the prose was written in", async () => {

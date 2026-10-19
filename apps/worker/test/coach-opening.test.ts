@@ -60,13 +60,20 @@ describe("the words, in the athlete's units", () => {
     expect(distanceIn(10_000, "mi")).toBe("6.2 mi");
   });
 
-  it("how hard, by the watch's own time in zone: easy, hard, steady — or nothing clear", () => {
-    expect(effortWords([{ seconds: 30 }, { seconds: 50 }, { seconds: 10 }, { seconds: 10 }, { seconds: 0 }])).toBe("mostly easy");
-    expect(effortWords([{ seconds: 10 }, { seconds: 10 }, { seconds: 20 }, { seconds: 40 }, { seconds: 20 }])).toBe("mostly hard");
-    expect(effortWords([{ seconds: 10 }, { seconds: 20 }, { seconds: 45 }, { seconds: 25 }, { seconds: 0 }])).toBe("mostly steady");
-    expect(effortWords([{ seconds: 30 }, { seconds: 20 }, { seconds: 20 }, { seconds: 30 }, { seconds: 0 }])).toBeNull();
+  it("how hard, by the watch's own time in zone: 'mostly' only for a majority — easy (1–2), steady (3), hard (4–5) — else a mix", () => {
+    const z = (...s: number[]) => s.map((seconds) => ({ seconds }));
+    // A majority, just: more than half of the time.
+    expect(effortWords(z(30, 21, 20, 29, 0))).toBe("mostly easy");
+    expect(effortWords(z(10, 10, 51, 29, 0))).toBe("mostly steady");
+    expect(effortWords(z(10, 10, 29, 31, 20))).toBe("mostly hard");
+    // Half is no majority: a mix.
+    expect(effortWords(z(30, 20, 20, 30, 0))).toBe("a mix of easy and harder running");
+    expect(effortWords(z(0, 0, 50, 50, 0))).toBe("a mix of easy and harder running");
+    expect(effortWords(z(10, 20, 45, 25, 0))).toBe("a mix of easy and harder running");
+    // No time in zone: nothing said.
     expect(effortWords(null)).toBeNull();
     expect(effortWords([])).toBeNull();
+    expect(effortWords(z(0, 0, 0, 0, 0))).toBeNull();
   });
 
   it("a run: its distance at its pace, and how hard — per mile for an athlete in miles", () => {
@@ -113,12 +120,15 @@ describe("the words, in the athlete's units", () => {
   });
 
   it("on Monday: the review's first sentence — a decimal is no sentence's end — and Plan this week", () => {
-    const r = reviewOpening({ weekStart: "2026-10-12", narrative: "You ran 4 times for 32.1 kilometres. Two strength sessions too.\n\nMore." });
+    const narrative = "You ran 4 times for 32.1 kilometres. Two strength sessions too.\n\nMore.";
+    const r = reviewOpening({ weekStart: "2026-10-12", narrative });
     expect(r).toEqual({
       id: "review:2026-10-12",
       line: "From last week's review: You ran 4 times for 32.1 kilometres.",
       source: "review",
       chips: [{ id: "review:2026-10-12", label: "Plan this week", request: REVIEW_REQUEST }],
+      // The whole of it, for "Read it all" — whatever the activity feed holds of that week.
+      review: { weekStart: "2026-10-12", narrative },
     });
     expect(REVIEW_REQUEST).toBe("Plan my week around how last week went.");
     expect(reviewOpening({ weekStart: "2026-10-12", narrative: null })).toBeNull();
@@ -126,6 +136,24 @@ describe("the words, in the athlete's units", () => {
     const long = firstSentence(`${"word ".repeat(80)}end.`);
     expect(long.length).toBeLessThanOrEqual(220);
     expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("a review in the coach's voice (its first sentence starts 'Last week'): the coach says it as it is, no 'From last week's review:'", () => {
+    // The shape the weekly prompt asks for now (llm.ts): the first sentence whole on its own, a decimal inside it.
+    const narrative =
+      "Last week you ran four times for 32.1 kilometres, and Saturday's long run carried it. Both quality sessions landed. Carry the easy pace into this week.";
+    expect(reviewOpening({ weekStart: "2026-10-12", narrative })?.line).toBe(
+      "Last week you ran four times for 32.1 kilometres, and Saturday's long run carried it.",
+    );
+    expect(reviewOpening({ weekStart: "2026-10-12", narrative: "last week, two runs and a rest. Fine." })?.line).toBe("last week, two runs and a rest.");
+    // One written before keeps its frame: it may say "This week" and mean last week.
+    expect(reviewOpening({ weekStart: "2026-10-12", narrative: "This week you completed 5 of 11 planned workouts. More." })?.line).toBe(
+      "From last week's review: This week you completed 5 of 11 planned workouts.",
+    );
+    // A sentence that only begins with the words is not one about last week.
+    expect(reviewOpening({ weekStart: "2026-10-12", narrative: "Last weekend's hike was long. More." })?.line).toBe(
+      "From last week's review: Last weekend's hike was long.",
+    );
   });
 
   it("the seen list takes only openings' ids, at most eight", () => {
@@ -372,13 +400,15 @@ describe("after a session", () => {
 });
 
 describe("on Monday: last week's review", () => {
-  it("its first sentence, with Plan this week", async () => {
+  it("its first sentence, with Plan this week — and the whole of it, though no activity of that week is in the app", async () => {
     await seedReview();
+    expect((await db.select().from(schema.activities)).length).toBe(0);
     expect((await read()).opening).toEqual({
       id: `review:${lastWeek()}`,
       line: "From last week's review: You ran 4 times for 32.1 kilometres.",
       source: "review",
       chips: [{ id: `review:${lastWeek()}`, label: "Plan this week", request: "Plan my week around how last week went." }],
+      review: { weekStart: lastWeek(), narrative: "You ran 4 times for 32.1 kilometres. Steady work." },
     });
   });
 

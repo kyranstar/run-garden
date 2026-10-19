@@ -10,6 +10,9 @@ import { test, expect } from "./fixtures.js";
  * athlete's words; after that the run is old news, and a new conversation opens on the day's own line. Nothing here
  * calls a model on its own: the line is read free, and the one run is the tap's (fixture mode's canned answer).
  *
+ * "Read it all" opens the whole review in a sheet of its own over the coach. A library held 5 s never keeps the line from
+ * the athlete: the line and the chips are drawn at once, the quick starts after them, nothing moving.
+ *
  * And the opening holds still while it is read (UX System 4): with the chips' and the templates' reads held back 1.5 s,
  * "Build your own" is drawn once, where it stays.
  *
@@ -20,8 +23,9 @@ import { test, expect } from "./fixtures.js";
  */
 
 const SHOTS = process.env.RG_COACH_SHOTS ?? null;
-const REVIEW = "You ran 4 times for 32.1 kilometres, two of them long. The long run held steady all week.";
-const REVIEW_LINE = "From last week's review: You ran 4 times for 32.1 kilometres, two of them long.";
+/** In the voice the weekly prompt asks for now (llm.ts): its first sentence, about last week, whole on its own. */
+const REVIEW = "Last week you ran 4 times for 32.1 kilometres, and the two long runs carried it. The long run held steady all week.";
+const REVIEW_LINE = "Last week you ran 4 times for 32.1 kilometres, and the two long runs carried it.";
 const RUN_LINE = "Today's run is in — 16 km at 5:40 /km, mostly easy.";
 const RUN_REQUEST = "Plan tomorrow around today's run — 16 km at 5:40 /km, mostly easy.";
 
@@ -82,7 +86,15 @@ test("the coach notices: last week's review, then this morning's run, each said 
   await expect(coachLine(page)).toHaveText(REVIEW_LINE);
   // Read from its first line down: on a phone too, the coach's line is in sight, above its chips.
   await expect(coachLine(page)).toBeInViewport();
-  await expect(drawnOpening(page).getByRole("link", { name: "Read it all" })).toHaveAttribute("href", "/growth");
+  // The whole review one tap down, in a sheet of its own over the coach — not the foot of Growth's feed.
+  await drawnOpening(page).getByRole("button", { name: "Read it all" }).click();
+  const reviewSheet = page.getByRole("dialog", { name: "Last week's review" });
+  await expect(reviewSheet).toContainText(REVIEW);
+  await expect(reviewSheet.locator(".review-week")).toHaveText(/^Week of /);
+  await shot(page, "review-sheet", project);
+  await reviewSheet.getByRole("button", { name: "Close" }).click();
+  await expect(reviewSheet).toHaveCount(0);
+  await expect(coachSheet(page)).toBeVisible();
   const reviewChips = await chipLabels(page);
   expect(reviewChips[0]).toBe("Plan this week");
   expect(reviewChips).not.toContain("Plan my week");
@@ -124,6 +136,36 @@ test("the coach notices: last week's review, then this morning's run, each said 
   await expect(coachLine(page)).not.toHaveText(RUN_LINE);
   await expect(coachLine(page)).not.toHaveText(REVIEW_LINE);
   expect(await chipLabels(page)).not.toContain("Plan tomorrow around it");
+});
+
+test("a slow library never keeps the coach's line from the athlete: held 5 s, the line and the chips are drawn at once, the quick starts after them — nothing moves", async ({ page, context, baseURL }, testInfo) => {
+  test.setTimeout(120_000);
+  await signIn(context.request, baseURL, `${testInfo.project.name}-l`);
+  await context.request.post(`${baseURL}/api/dev/coach-notices`, { data: { review: REVIEW } });
+  await page.goto("/");
+  let released = false;
+  await page.route("**/api/library*", async (route) => {
+    await new Promise((r) => setTimeout(r, 5_000));
+    released = true;
+    await route.continue();
+  });
+  const opened = Date.now();
+  await page.locator("button.nav-coach:visible").first().click();
+  await expect(coachLine(page)).toHaveText(REVIEW_LINE, { timeout: 4_000 });
+  expect(released).toBe(false);
+  expect(Date.now() - opened).toBeLessThan(4_500);
+  const first = coachSheet(page).locator(".coach-chips button").first();
+  const chipY = (await first.boundingBox())!.y;
+  // The ways to start yourself wait, last on the screen.
+  await expect(coachSheet(page).locator(".coach-start--holding")).toBeVisible();
+  await expect(coachSheet(page).getByRole("link", { name: "Build your own" })).toHaveCount(0);
+  const build = coachSheet(page).getByRole("link", { name: "Build your own" });
+  await expect(build).toBeVisible({ timeout: 15_000 });
+  expect(released).toBe(true);
+  const buildY = (await build.boundingBox())!.y;
+  await page.waitForTimeout(1_500);
+  expect((await first.boundingBox())!.y).toBe(chipY);
+  expect((await build.boundingBox())!.y).toBe(buildY);
 });
 
 test("the coach's opening holds still while it is read: with its reads held back, Build your own is drawn once, where it stays", async ({ page, context, baseURL }, testInfo) => {

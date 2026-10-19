@@ -1442,6 +1442,8 @@ export interface CoachOpeningDto {
   source: "review" | "session" | "read";
   chips: CoachNudgeDto[];
   workoutId?: string;
+  /** A review's whole text and its week: "Read it all" opens it from the opening (absent from an older server). */
+  review?: { weekStart: string; narrative: string };
 }
 
 /** `GET /api/coach/nudges`: the chips, and the opening's own line when there is one (an older server sends none). */

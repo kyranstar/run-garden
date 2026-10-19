@@ -21,20 +21,24 @@
  * after it. With none, the day's own line, as before.
  *
  * IT HOLDS STILL WHILE IT IS READ (UX System 4: a read landing moves nothing under a tap; the Studio home's f030c6a).
- * What it draws is its reads' to decide — the line and the objective's chip (today, the objectives), the "needs you"
- * chips, "Also waiting" (the current run's read), the quick starts (the Studio's reads, the templates) — and any of them
- * landing late would push what is under it down, under a tap aimed at it. So nothing is drawn until they have answered
- * or failed (`settling`) — the chips' read and the current run's, a read made for this opening: never one kept from an
- * earlier one, which could show a chip asked since (review-3 I1). (Offline there is no opening: the conversation's own
- * read hasn't answered.) Then it is drawn once: a read landing afterwards changes neither the line nor the chips (a
- * tapped chip still goes at once, and a session's quick review once it is saved — the athlete's own doing).
+ * What it draws is its reads' to decide, and any of them landing late would push what is under it down, under a tap
+ * aimed at it. So it is drawn in two parts, top first, each once its own reads have answered or failed (`settling`):
+ *  - the line and the chips, and "Also waiting" under them: today, the objectives (the objective's chip), the chips' read
+ *    and the current run's — those two a read made for this opening: never one kept from an earlier one, which could
+ *    show a chip asked since (review-3 I1). Nothing is drawn before them.
+ *  - "Or start something yourself" — the quick starts and the links — last on the screen: the Studio's reads and the
+ *    templates (a switched-on profile's care tile, a pinned template, each wrapping the row). Until then a quiet status
+ *    in its place, under everything else: a slow or failing library never keeps the coach's line from the athlete.
+ * (Offline there is no opening: the conversation's own read hasn't answered.) Each is drawn once: a read landing
+ * afterwards changes neither the line nor the chips (a tapped chip still goes at once, and a session's quick review once
+ * it is saved — the athlete's own doing).
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachAlsoOpenDto, type CoachNudgeDto, type CoachOpeningDto } from "@rg/api-client";
-import { settling, Spinner } from "../../components.js";
+import { formatDayLong, settling, Sheet, Spinner } from "../../components.js";
 import { LogYourSession, type WatchReviewOffer } from "../../components/today-program.js";
 import { WatchReviewSheet } from "../../components/watch-review-sheet.js";
 import { IconCoachSmall } from "../../icons.js";
@@ -130,7 +134,9 @@ export function CoachOpening({
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
-  const holding = studio.loading || settling(today, objectives, templates) || !nudgeRead.isFetchedAfterMount || !alsoKnown;
+  // The line and the chips wait for their own reads only; the ways to start yourself, under them, for the Studio's.
+  const holding = settling(today, objectives) || !nudgeRead.isFetchedAfterMount || !alsoKnown;
+  const startHolding = studio.loading || settling(templates);
 
   // Drawn once, from the reads as they answered.
   const drawn = useRef<Drawn | null>(null);
@@ -172,11 +178,7 @@ export function CoachOpening({
     <div className="coach-opening">
       <CoachSays>
         <p>{d.line}</p>
-        {d.opening?.source === "review" ? (
-          <Link className="linklike tap-pad coach-opening-more" to="/growth">
-            {READ_THE_REVIEW}
-          </Link>
-        ) : null}
+        {d.opening?.source === "review" && d.opening.review ? <ReadTheReview review={d.opening.review} /> : null}
       </CoachSays>
       <div className="coach-chips" role="group" aria-label="Ways to start">
         {first.map((c) => {
@@ -206,24 +208,74 @@ export function CoachOpening({
         ))}
       </div>
       {alsoOpen.length > 0 ? <AlsoWaiting items={alsoOpen} today={ctx.today} /> : null}
-      <section className="coach-start" aria-labelledby={startId}>
-        <h3 id={startId} className="eyebrow">
-          {START_YOURSELF}
-        </h3>
-        <QuickStarts ctx={ctx} />
-        <div className="coach-start-links">
-          <Link className="linklike tap-pad" to={BUILD_NEW_HREF}>
-            Build your own
-          </Link>
-          <Link className="linklike tap-pad" to={TEMPLATES_HREF}>
-            Templates
-          </Link>
-          <Link className="linklike tap-pad" to="/studio">
-            Browse moves
-          </Link>
-          {offer ? <LogYourSession offer={offer} small /> : null}
-        </div>
-      </section>
+      {startHolding ? (
+        // Last on the screen, so its waiting moves nothing under a tap: the line and the chips are above it. (Answered
+        // once, `settling` never puts it back: a read again keeps what it had, a failed one counts as answered.)
+        <section className="coach-start coach-start--holding" aria-label={START_YOURSELF}>
+          <Spinner label={OPENING_LOADING} />
+        </section>
+      ) : (
+        <StartYourself ctx={ctx} headingId={startId} offer={offer} />
+      )}
     </div>
+  );
+}
+
+/** "Or start something yourself": the quick starts and the links — drawn once the Studio's reads have answered. */
+function StartYourself({ ctx, headingId, offer }: { ctx: StudioCtx; headingId: string; offer: WatchReviewOffer | null }) {
+  return (
+    <section className="coach-start" aria-labelledby={headingId}>
+      <h3 id={headingId} className="eyebrow">
+        {START_YOURSELF}
+      </h3>
+      <QuickStarts ctx={ctx} />
+      <div className="coach-start-links">
+        <Link className="linklike tap-pad" to={BUILD_NEW_HREF}>
+          Build your own
+        </Link>
+        <Link className="linklike tap-pad" to={TEMPLATES_HREF}>
+          Templates
+        </Link>
+        <Link className="linklike tap-pad" to="/studio">
+          Browse moves
+        </Link>
+        {offer ? <LogYourSession offer={offer} small /> : null}
+      </div>
+    </section>
+  );
+}
+
+/** The sheet's name, and the week it reviews. */
+export const REVIEW_SHEET_TITLE = "Last week's review";
+
+/**
+ * "Read it all": last week's whole review, in a sheet of its own over the coach — from the opening read itself, never
+ * the activity feed (whose latest 40 activities may hold none of that week, and where it sits behind "Full review").
+ */
+function ReadTheReview({ review }: { review: { weekStart: string; narrative: string } }) {
+  const [open, setOpen] = useState(false);
+  const paragraphs = review.narrative
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return (
+    <>
+      <button type="button" className="linklike tap-pad coach-opening-more" onClick={() => setOpen(true)}>
+        {READ_THE_REVIEW}
+      </button>
+      {open
+        ? createPortal(
+            <Sheet open onClose={() => setOpen(false)} title={REVIEW_SHEET_TITLE}>
+              <div className="coach-review">
+                <p className="review-week">Week of {formatDayLong(review.weekStart)}</p>
+                {paragraphs.map((p, i) => (
+                  <p key={i}>{p}</p>
+                ))}
+              </div>
+            </Sheet>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }

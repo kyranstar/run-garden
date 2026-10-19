@@ -37,6 +37,9 @@ export interface CoachOpeningLine {
   chips: OpeningChip[];
   /** The planned session the finished one completed: the screen finds its quick review by it. */
   workoutId?: string;
+  /** The review's whole text, its week (a review's): "Read it all" opens it from the opening — never the activity feed,
+   * which may hold none of that week. */
+  review?: { weekStart: LocalDate; narrative: string };
 }
 
 /** A session the athlete finished, as the opening reads it (an activity row, its plan session, what was logged). */
@@ -64,12 +67,8 @@ export const REVIEW_LINE_MAX = 220;
 /** A believable running pace, s/km (a broken record says nothing). */
 const PACE_MIN = 120;
 const PACE_MAX = 1200;
-/** Easy (zones 1–2) this share of the time or more: "mostly easy". */
-const EASY_SHARE = 0.7;
-/** Hard (zones 4–5) this share or more: "mostly hard". */
-const HARD_SHARE = 0.5;
-/** Steady (zone 3) this share or more: "mostly steady". */
-const STEADY_SHARE = 0.4;
+/** No band with more than half of the time in zone. */
+export const MIXED_EFFORT = "a mix of easy and harder running";
 
 const METERS_PER_MILE = 1609.344;
 
@@ -87,16 +86,20 @@ export function distanceIn(meters: number, units: "km" | "mi"): string {
   return `${v} ${units}`;
 }
 
-/** How hard it was, by the watch's own time in zone (zones 1–2 easy, 4–5 hard): null when it says nothing clear. */
+/**
+ * How hard it was, by the watch's own time in zone: "mostly" only for a band with more than half of the time — easy
+ * (zones 1–2), steady (zone 3), hard (zones 4–5) — else a mix. Null with no time in zone (nothing to say).
+ */
 export function effortWords(zones: ReadonlyArray<{ seconds: number }> | null | undefined): string | null {
   const z = zones ?? [];
-  const total = z.reduce((s, b) => s + (b.seconds > 0 ? b.seconds : 0), 0);
-  if (total <= 0) return null;
   const at = (i: number) => Math.max(0, z[i]?.seconds ?? 0);
-  if ((at(0) + at(1)) / total >= EASY_SHARE) return "mostly easy";
-  if ((at(3) + at(4)) / total >= HARD_SHARE) return "mostly hard";
-  if (at(2) / total >= STEADY_SHARE) return "mostly steady";
-  return null;
+  const total = z.reduce((s, _, i) => s + at(i), 0);
+  if (total <= 0) return null;
+  const most = (seconds: number) => seconds * 2 > total;
+  if (most(at(0) + at(1))) return "mostly easy";
+  if (most(at(2))) return "mostly steady";
+  if (most(at(3) + at(4))) return "mostly hard";
+  return MIXED_EFFORT;
 }
 
 /** What it was, in figures: "16 km at 5:40 /km, mostly easy" for a run; "42 min, all 18 sets in" for a session. */
@@ -155,12 +158,15 @@ export const REVIEW_REQUEST = "Plan my week around how last week went.";
 /** The opening on Monday (and until the athlete has opened the coach that week): the review's first sentence. */
 export function reviewOpening(r: { weekStart: LocalDate; narrative: string | null }): CoachOpeningLine | null {
   const sentence = r.narrative ? firstSentence(r.narrative) : "";
-  if (!sentence) return null;
+  if (!r.narrative || !sentence) return null;
   return {
     id: `review:${r.weekStart}`,
-    line: `From last week's review: ${sentence}`,
+    // In the coach's voice (the weekly prompt asks a first sentence that starts "Last week", whole on its own: llm.ts),
+    // the coach says it as it is; one written before keeps its frame — it may say "This week" and mean last week.
+    line: /^last week\b/i.test(sentence) ? sentence : `From last week's review: ${sentence}`,
     source: "review",
     chips: [{ id: `review:${r.weekStart}`, label: "Plan this week", request: REVIEW_REQUEST }],
+    review: { weekStart: r.weekStart, narrative: r.narrative },
   };
 }
 
