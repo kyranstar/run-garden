@@ -1430,6 +1430,26 @@ export interface CoachNudgeDto {
   request: string;
 }
 
+/**
+ * The coach's own line on its opening screen, when it noticed something (stream H): last week's review (`review`), a
+ * session just finished in the app's own words (`session`) or the coach's read of it (`read`). `chips` come first among
+ * the chips, each sent as the athlete's words; `workoutId` is the planned session the finished one completed (its quick
+ * review, when the app offers one). `id` is stable while it holds: the screen keeps the ones it has shown.
+ */
+export interface CoachOpeningDto {
+  id: string;
+  line: string;
+  source: "review" | "session" | "read";
+  chips: CoachNudgeDto[];
+  workoutId?: string;
+}
+
+/** `GET /api/coach/nudges`: the chips, and the opening's own line when there is one (an older server sends none). */
+export interface CoachNudgesDto {
+  nudges: CoachNudgeDto[];
+  opening?: CoachOpeningDto;
+}
+
 export interface CoachRunStepResult {
   status: CoachRunStatus;
   /** Step again at `at`; null: nothing to step (finished, stopped, or waiting on the athlete). */
@@ -2455,8 +2475,13 @@ export const api = {
     focus?: CoachRunFocus;
     conversationId?: string | null;
   }) => post<CoachRunCreateResult>("/api/coach/runs", body),
-  /** The coach's "needs you" chips: at most two, computed on read, nothing written (404 unless the coach designer is on). */
-  coachNudges: () => get<{ nudges: CoachNudgeDto[] }>("/api/coach/nudges"),
+  /**
+   * The coach's opening read: its "needs you" chips (at most two) and, when the coach noticed something, its own line —
+   * computed on read, nothing written (404 unless the coach designer is on). `seen`: the openings this device has
+   * already shown, which give way to the next (anything but a list — a query's context — is none).
+   */
+  coachNudges: (seen?: readonly string[] | unknown) =>
+    get<CoachNudgesDto>(`/api/coach/nudges${Array.isArray(seen) && seen.length > 0 ? `?seen=${encodeURIComponent(seen.join(","))}` : ""}`),
   /** The coach's conversation: the current one, or the one `id` names (404 unless the coach designer is on). */
   coachConversation: (id?: string) =>
     get<CoachConversationDto>(`/api/coach/conversation${id ? `?id=${encodeURIComponent(id)}` : ""}`),

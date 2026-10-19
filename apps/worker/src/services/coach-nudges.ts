@@ -1,8 +1,9 @@
-import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
-import { activities, coachPlans, coachPlanWeeks, coachRuns, plannedWorkouts } from "@rg/database";
-import { addDays, QUALITY_SUBTYPE_LABELS, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
+import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, weeklyReviews, workoutCompletionMatches } from "@rg/database";
+import { addDays, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan } from "./coach-plans.js";
+import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, PLAN_ENDING_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
 
 /**
@@ -28,9 +29,17 @@ import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, PLAN_ENDING_DAYS, REFIRE_WINDOW_M
  * the chip's own request sent counts, one sent yesterday with its count a day off counts, and so does the athlete typing
  * the chip's words themselves.
  *
- * Cost: at most five statements, three on a quiet account (the missed sessions, the activities, the plans; their outline
- * weeks only with a running plan; the athlete's recent asks only with a chip to offer). Every text here is the app's,
- * or a plan's name — data, which the screen renders as text.
+ * THE OPENING'S OWN LINE (stream H; coach-opening-line.ts words it) comes from the same reads: last week's review (the
+ * Monday cron's, already paid for) while the athlete hasn't asked the coach anything since it was written; else the
+ * newest session finished today or yesterday (5 minutes or more: a run, a strength or mobility session, or anything that
+ * completed a planned session) while they haven't asked anything since it reached the app. A review or a session the
+ * athlete has asked the coach about since — any turn of theirs, a chip or their own words — doesn't come back; one this
+ * device has already shown (`seen`, the screen's own list) gives way to the next.
+ *
+ * Cost: at most six statements, four on a quiet account (the missed sessions; the activities — with what each one
+ * completed, its logged sets and the coach's read of it, in the same statement; the plans; last week's review; then
+ * their outline weeks only with a running plan, and the athlete's recent asks only with a chip or a line to offer).
+ * Every text here is the app's, or a plan's name — data, which the screen renders as text.
  */
 export interface CoachNudge {
   /** Stable while its condition holds: `<kind>:<subject>`. */
@@ -69,7 +78,7 @@ function weekdayOf(date: LocalDate): string {
 const lowerFirst = (s: string): string => (/^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s);
 
 /** A session's kind in plain words, as a sentence names it: "tempo", "long run", "strength session". */
-function sessionNoun(w: { category: string; qualitySubtype: string | null; sport: string }): string {
+export function sessionNoun(w: { category: string; qualitySubtype: string | null; sport: string }): string {
   if (w.category === "quality") {
     const sub = w.qualitySubtype;
     return sub && sub !== "other" && sub in QUALITY_SUBTYPE_LABELS ? lowerFirst(QUALITY_SUBTYPE_LABELS[sub as QualitySubtype]) : "quality session";
@@ -111,8 +120,33 @@ export function asWords(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
+/** What the opening screen reads: its own line, when the coach noticed something, and the "needs you" chips. */
+export interface CoachOpeningRead {
+  opening: CoachOpeningLine | null;
+  nudges: CoachNudge[];
+}
+
+/** An activity this short is a fragment (a walk to the trailhead), never news. */
+export const SESSION_MIN_SECONDS = 300;
+/** The sports a session is news for on its own; any other only when it completed a planned session. */
+const NEWS_SPORTS = new Set(["run", "strength", "yoga"]);
+
+/** The "needs you" chips alone. */
 export async function readNudges(db: Db, userId: string, prefs: UserPreferences, today: LocalDate, now: Date): Promise<CoachNudge[]> {
-  const [missedRows, recent, plans] = await Promise.all([
+  return (await readCoachOpening(db, userId, prefs, today, now)).nudges;
+}
+
+/** The opening screen's read: its own line (none already shown here, `seen`) and the "needs you" chips. */
+export async function readCoachOpening(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+  today: LocalDate,
+  now: Date,
+  seen: ReadonlySet<string> = new Set(),
+): Promise<CoachOpeningRead> {
+  const lastWeek = addDays(startOfIsoWeek(today), -7);
+  const [missedRows, recent, plans, reviews] = await Promise.all([
     db
       .select({
         id: plannedWorkouts.id,
@@ -133,10 +167,35 @@ export async function readNudges(db: Db, userId: string, prefs: UserPreferences,
         ),
       )
       .orderBy(desc(plannedWorkouts.effectiveDate), plannedWorkouts.effectiveTime),
-    // The old comeback rule's own read: the two latest activities up to today.
+    // The old comeback rule's own read: the two latest activities up to today — with, for the opening, what each one
+    // completed, the sets logged against it and the coach's read of it, in the same statement.
     db
-      .select({ startTimeLocal: activities.startTimeLocal, startTime: activities.startTime })
+      .select({
+        id: activities.id,
+        startTimeLocal: activities.startTimeLocal,
+        startTime: activities.startTime,
+        arrivedAt: activities.createdAt,
+        sport: activities.sport,
+        seconds: activities.durationSeconds,
+        meters: activities.distanceMeters,
+        pace: activities.avgPaceSecPerKm,
+        telemetry: activities.telemetry,
+        workoutId: plannedWorkouts.id,
+        category: plannedWorkouts.category,
+        qualitySubtype: plannedWorkouts.qualitySubtype,
+        plannedSport: plannedWorkouts.sport,
+        glance: coachReads.glance,
+        sets: sql<string | null>`(select json_object(
+            'done', (select count(*) from performed_sets x where x.performed_session_id = ps.id and x.done = 1),
+            'total', (select count(*) from performed_sets x where x.performed_session_id = ps.id),
+            'completed', ps.completed)
+          from performed_sessions ps where ps.user_id = ${userId} and ps.activity_id = ${activities.id}
+          order by case ps.source when 'app' then 0 when 'watch_review' then 1 else 2 end limit 1)`,
+      })
       .from(activities)
+      .leftJoin(workoutCompletionMatches, and(eq(workoutCompletionMatches.id, activities.completionMatchId), isNull(workoutCompletionMatches.undoneAt)))
+      .leftJoin(plannedWorkouts, and(eq(plannedWorkouts.id, workoutCompletionMatches.workoutId), eq(plannedWorkouts.userId, userId)))
+      .leftJoin(coachReads, and(eq(coachReads.userId, userId), eq(coachReads.activityId, activities.id), eq(coachReads.status, "done")))
       .where(and(eq(activities.userId, userId), lte(activities.startTime, `${addDays(today, 1)}T00:00:00Z`)))
       .orderBy(desc(activities.startTime))
       .limit(2),
@@ -144,6 +203,12 @@ export async function readNudges(db: Db, userId: string, prefs: UserPreferences,
       .select({ id: coachPlans.id, name: coachPlans.name, endDate: coachPlans.endDate, raceDate: coachPlans.raceDate })
       .from(coachPlans)
       .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
+    // Last week's review, written by Monday's cron (its narrative already paid for).
+    db
+      .select({ weekStart: weeklyReviews.weekStart, narrative: weeklyReviews.narrative, createdAt: weeklyReviews.createdAt })
+      .from(weeklyReviews)
+      .where(and(eq(weeklyReviews.userId, userId), eq(weeklyReviews.weekStart, lastWeek)))
+      .limit(1),
   ]);
   // A bucket of one-offs is no plan: it has no weeks, and is forever "ending" on its last one-off.
   const blocks = plans.filter((p) => !isLoosePlan(p)).sort((a, b) => (a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1 : 0));
@@ -226,21 +291,69 @@ export async function readNudges(db: Db, userId: string, prefs: UserPreferences,
     found.push({ id: `ending:${ending.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.endDate))}.` });
   }
 
-  if (found.length === 0) return [];
-  // Already asked: the athlete's own runs (never a sub-run's brief) of the last three days, read once.
+  // The opening's own line: the review first, then the newest session still news — each with the moment after which an
+  // ask of the athlete's makes it old news. One this device has shown gives way to the next.
+  const candidates: Array<{ opening: CoachOpeningLine; since: string }> = [];
+  const review = reviews[0] ? reviewOpening(reviews[0]) : null;
+  if (review) candidates.push({ opening: review, since: reviews[0]!.createdAt });
+  const days = sessionDays(today);
+  const done = recent.find(
+    (a) =>
+      a.seconds >= SESSION_MIN_SECONDS &&
+      days.includes((a.startTimeLocal ?? a.startTime).slice(0, 10)) &&
+      (NEWS_SPORTS.has(a.sport) || a.workoutId !== null),
+  );
+  if (done) {
+    const session: FinishedSession = {
+      activityId: done.id,
+      date: (done.startTimeLocal ?? done.startTime).slice(0, 10),
+      sport: done.sport,
+      seconds: done.seconds,
+      meters: done.meters,
+      paceSecPerKm: done.pace,
+      hrZones: done.telemetry?.hrZones ?? null,
+      noun: done.category ? sessionNoun({ category: done.category, qualitySubtype: done.qualitySubtype, sport: done.plannedSport ?? done.sport }) : sportNoun(done.sport),
+      workoutId: done.workoutId,
+      sets: parseSets(done.sets),
+      glance: done.glance,
+    };
+    candidates.push({ opening: sessionOpening(session, today, prefs.units === "mi" ? "mi" : "km"), since: done.arrivedAt });
+  }
+  const unseen = candidates.filter((c) => !seen.has(c.opening.id));
+
+  if (found.length === 0 && unseen.length === 0) return { opening: null, nudges: [] };
+  // Already asked: the athlete's own runs (never a sub-run's brief) of the last three days — or since the review was
+  // written, when that is longer ago — read once, the newest first.
+  const window = new Date(now.getTime() - REFIRE_WINDOW_MS).toISOString();
+  const since = unseen.reduce((s, c) => (c.since < s ? c.since : s), window);
   const asked = await db
-    .select({ request: coachRuns.request })
+    .select({ request: coachRuns.request, createdAt: coachRuns.createdAt })
     .from(coachRuns)
-    .where(
-      and(
-        eq(coachRuns.userId, userId),
-        isNull(coachRuns.parentId),
-        gte(coachRuns.createdAt, new Date(now.getTime() - REFIRE_WINDOW_MS).toISOString()),
-      ),
-    )
+    .where(and(eq(coachRuns.userId, userId), isNull(coachRuns.parentId), gte(coachRuns.createdAt, since)))
     .orderBy(desc(coachRuns.createdAt))
     .limit(RECENT_ASKS_MAX);
-  const words = asked.map((r) => asWords(r.request ?? ""));
+  const words = asked.filter((r) => r.createdAt >= window).map((r) => asWords(r.request ?? ""));
   const sent = (n: CoachNudge) => words.some((w) => w.includes(asWords(n.label)));
-  return found.filter((n) => !sent(n)).slice(0, NUDGES_MAX);
+  // Old news: the athlete has asked the coach something since it reached the app.
+  const latest = asked[0]?.createdAt ?? null;
+  const opening = unseen.find((c) => latest === null || latest < c.since)?.opening ?? null;
+  return { opening, nudges: found.filter((n) => !sent(n)).slice(0, NUDGES_MAX) };
+}
+
+/** A session's logged sets, as the activities read gives them (one JSON object, or null): none logged, null. */
+function parseSets(raw: string | null): FinishedSession["sets"] {
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw) as { done?: unknown; total?: unknown; completed?: unknown };
+    const total = typeof o.total === "number" ? o.total : 0;
+    if (total <= 0) return null;
+    return { done: typeof o.done === "number" ? o.done : 0, total, completed: o.completed === 1 || o.completed === true };
+  } catch {
+    return null;
+  }
+}
+
+/** A session no planned one stands behind, named by its sport. */
+function sportNoun(sport: string): string {
+  return sport === "run" ? "run" : sport === "strength" ? "strength session" : sport === "yoga" ? "mobility session" : "session";
 }
