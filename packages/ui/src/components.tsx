@@ -1017,6 +1017,19 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
 }
 
 /**
+ * A read that failed, read again, with nothing yet to show: what its failure said is no longer so while the new read
+ * is out. The screen says it is trying again, in the failure's own place, so nothing moves between the two (2026-10-19).
+ * Never a gate: a failed read is answered (`settling`), and only the failure's words wait on this — nothing drawn from
+ * other reads goes away while it is out, so nothing that would read it again is unmounted and drawn again.
+ */
+export function retrying(q: { isFetching: boolean; errorUpdateCount: number; data?: unknown }): boolean {
+  return q.isFetching && q.errorUpdateCount > 0 && q.data === undefined;
+}
+
+/** What a failed read's place says while it is read again (`retrying`). */
+export const TRYING_AGAIN = "Trying again…";
+
+/**
  * UX System 4 — "a state change moves nothing at or above the thing you
  * touched". This is the half of that invariant a query can break with nobody
  * touching anything: render a conditional derived from an answer that has not

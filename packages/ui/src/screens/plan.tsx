@@ -36,7 +36,7 @@ import { useUnits } from "../use-units.js";
 import { YourPlans } from "./plan-cards.js";
 import { PlanSheet } from "./plan-sheet.js";
 import { ThreadCoachCards } from "./thread-coach-cards.js";
-import { askable, displayCompletionState, WeekView, weekPlan, weekRangeLabel } from "./week-view.js";
+import { askable, displayCompletionState, focusAfterRemove, WeekView, weekPlan, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { SessionSheet } from "../components/session-sheet.js";
@@ -164,8 +164,12 @@ export function RunWorkoutDetail({
   const remove = useMutation({
     mutationFn: () => api.removeWorkout(w.id),
     onSuccess: () => {
+      setConfirmRemove(false);
       invalidate();
       onClose();
+      // As the session sheet's Remove (re-review N3): focus moves on to the next card of its day, else the day's
+      // heading, never to the page — now, not after the plan's reads; the dialogs closing after this leave it there.
+      setTimeout(() => focusAfterRemove(w.effectiveDate, w.id), 0);
     },
   });
 

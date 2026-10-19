@@ -1813,6 +1813,31 @@ describe("a document workout in the sheet, CUJ wave", () => {
     }
   });
 
+  it("a run removed from the plan: focus goes to the next card of its day as well, never to the page (2026-10-19)", async () => {
+    const week = document.createElement("div");
+    week.className = "plan-week-grid";
+    week.innerHTML = `<div data-date="${TODAY}"><div class="plan-week-date" tabindex="-1">MON 5</div><div class="plan-week-items"><button class="cal-card" data-workout="${SLOT}">Tempo run</button><button class="cal-card" data-workout="w-other">Easy run</button></div></div>`;
+    document.body.appendChild(week);
+    try {
+      const run = slot({ origin: null, programId: null, sport: "run", category: "easy", title: "Tempo run", contentState: undefined });
+      const { calls } = mount(session(), { w: run, detail: true });
+      await until(() => !!button("Remove from plan"), "Remove from plan");
+      await click("Remove from plan");
+      // The confirm's own button (the sheet's foot has one of the same name).
+      const asked = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.querySelector("h2")?.textContent === "Remove this from the plan?")!;
+      const confirm = [...asked.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Remove from plan")!;
+      // The confirm's close held back as on the deploy runner: the focus moves on inside it, and stays.
+      await act(async () => {
+        confirm.click();
+        for (let i = 0; i < 200 && !onNextCard(); i += 1) await new Promise((r) => setTimeout(r, 5));
+      });
+      expect(calls.some((c) => c.method === "POST" && c.path === `/api/plan/workouts/${SLOT}/remove`)).toBe(true);
+      expect(document.activeElement?.textContent).toBe("Easy run");
+    } finally {
+      week.remove();
+    }
+  });
+
 
   it("a Studio workout whose day passed undone can be done again too (B2)", async () => {
     mount(docSession(), { w: docRow({ effectiveDate: "2026-10-04", originalPlanDate: "2026-10-04" }) });

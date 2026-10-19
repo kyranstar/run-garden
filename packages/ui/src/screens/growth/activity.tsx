@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type ActivityDto, type InsightsResponse } from "@rg/api-client";
 import { isAdventureSport, sportLabel, type GrowthPeriod } from "@rg/domain";
 import type { Discipline } from "@rg/analytics";
-import { Banner, countNoun, EmptyState, formatShortDate, localTodayGuess, settling, Spinner, type Units } from "../../components.js";
+import { Banner, countNoun, EmptyState, formatShortDate, localTodayGuess, retrying, settling, Spinner, TRYING_AGAIN, type Units } from "../../components.js";
 import { ChartFrame, WeeklyDurationChart } from "../../charts.js";
 import { formatHours } from "../../charts-math.js";
 import { firstSentence, SignalTile } from "../../signal-tiles.js";
@@ -65,11 +65,25 @@ export function GrowthActivity({ period }: { period: GrowthPeriod }) {
   // the layout shift the gate exists to prevent.
   if (settling(runs, insights)) body = <Spinner label="Loading activity" />;
   else if (runs.isError || !runs.data) {
-    // A failed load must never masquerade as "you have no activity".
+    // A failed load must never masquerade as "you have no activity". Read again (Try again, or come back to): trying
+    // again, in the banner's place, the button waiting — not the failure, no longer so (`retrying`).
+    const again = retrying(runs);
+    // Both sayings share one cell, the unsaid one keeping its room: the banner is as tall saying either, so the button
+    // under it never moves.
+    const said = (on: boolean, words: string) => (
+      <span style={{ gridArea: "1 / 1", visibility: on ? "visible" : "hidden" }} aria-hidden={!on}>
+        {words}
+      </span>
+    );
     body = (
       <div className="stack">
-        <Banner kind="warn">Couldn't load your activity — check your connection.</Banner>
-        <button className="btn" onClick={() => void runs.refetch()}>
+        <Banner kind={again ? "info" : "warn"}>
+          <span style={{ display: "grid" }}>
+            {said(!again, "Couldn't load your activity — check your connection.")}
+            {said(again, TRYING_AGAIN)}
+          </span>
+        </Banner>
+        <button className="btn" disabled={again} onClick={() => void runs.refetch()}>
           Try again
         </button>
       </div>

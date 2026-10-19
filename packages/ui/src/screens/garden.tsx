@@ -26,7 +26,7 @@ import {
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClose, IconCoach } from "../icons.js";
-import { Banner, CategoryDot, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, syncActionShort, useSpaceAbove, watchCoverageShort, workoutKindLabel } from "../components.js";
+import { Banner, CategoryDot, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, retrying, settling, Sheet, Spinner, syncActionShort, TRYING_AGAIN, useSpaceAbove, watchCoverageShort, workoutKindLabel } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
@@ -1379,11 +1379,12 @@ export function GardenScreen() {
         <Spinner label="Loading the garden" />
       </>
     );
+  // Read again after it failed: trying again, in the failure's place — not the failure, no longer so (`retrying`).
   if (!garden.data)
     return (
       <>
         {markRow}
-        <EmptyState title="Couldn't load the garden" />
+        <EmptyState title={retrying(garden) ? TRYING_AGAIN : "Couldn't load the garden"} />
       </>
     );
 
