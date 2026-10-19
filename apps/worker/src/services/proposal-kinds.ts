@@ -147,6 +147,18 @@ export interface ProgrammeChangeOp {
 /** A programme change's op id. */
 export const programmeChangeId = (programId: string): string => `prog-${programId}`;
 
+/**
+ * Whether a programme setting holds the same value (review-1): care is a set — the settings sheet saves it back as the
+ * profiles it doesn't show, then the switched-on ones in the order they were toggled, so the same care can come back
+ * re-ordered; every other setting is compared as it is stored (days in week order, modes in the engine's).
+ */
+export function sameSetting(key: keyof ProgrammeSettings, a: unknown, b: unknown): boolean {
+  if (key === "careProfiles" && Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((x) => b.includes(x)) && b.every((x) => a.includes(x));
+  }
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** A change's op id: one per session per proposal. */
 export const planAdjustId = (workoutId: string): string => `adj-${workoutId}`;
 

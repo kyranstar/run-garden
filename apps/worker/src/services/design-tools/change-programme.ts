@@ -37,6 +37,7 @@ import {
   isProgrammeChangeOp,
   programmeChangeId,
   PROGRAMME_SETTINGS,
+  sameSetting,
   type ProgrammeChangeOp,
   type ProgrammeSettings,
 } from "../proposal-kinds.js";
@@ -252,7 +253,7 @@ export const changeProgramme: DesignTool = {
       careProfiles,
     };
     const from = settingsOf(current);
-    const changed = PROGRAMME_SETTINGS.filter((k) => !same(from[k], wanted[k]));
+    const changed = PROGRAMME_SETTINGS.filter((k) => !sameSetting(k, from[k], wanted[k]));
     if (changed.length === 0) {
       return refuse("no_change", `${programme.name} already has ${programmeSummary(from)}${parsed.blockWeeks !== undefined ? `, ${from.blockWeeks}-week blocks` : ""}.`, "Change something it doesn't have — or, for one session, adjust_plan.");
     }

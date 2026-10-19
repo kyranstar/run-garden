@@ -163,6 +163,7 @@ import {
   opIdOf,
   type ChangeVerb,
   isProgrammeChangeOp,
+  sameSetting,
   type PlanAdjustOp,
   type PlanChange,
   type PlanStructureOp,
@@ -1282,14 +1283,13 @@ export function programmeDoneLine(g: Pick<ProgrammeChangeOp, "summary">, p: Pick
   return moved > 0 ? `${g.summary} — ${moved} session${moved === 1 ? "" : "s"} placed again` : g.summary;
 }
 
-const sameSetting = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-
 /**
  * One request's part of a programme change (§8 §5): the first time, its settings checked against what they were when it
- * was proposed — any moved since (to neither that nor the change: the athlete's own save) refuses it, as does its
- * programme gone or retired — and written (`updateProgram`, as the sheet's save); then a pass of its placing within
- * `budget` (`placeSlotsWithin`: the first step always runs). A write found made (its request died before its outcome
- * was) is written again, the same. What it spent is declared, an upper bound.
+ * was proposed — any moved since (to neither that nor the change: the athlete's own save; care as a set) refuses it, as
+ * does its programme gone or retired — and written (`updateProgram`, as the sheet's save); then a pass of its placing
+ * within `budget` (`placeSlotsWithin`: the first step always runs). A write found made (its request died before its
+ * outcome was) is written again, the same. The check and the write are the caller's to count (PROGRAMME_WRITE_COST, in
+ * its fixed part: review-1 found them counted twice); `spent` is the pass's declared statements, an upper bound.
  */
 async function applyProgrammeChunk(
   db: Db,
@@ -1299,26 +1299,23 @@ async function applyProgrammeChunk(
   budget: number,
   ctx: DocWorkoutCtx,
 ): Promise<{ status: "more"; progress: ProgrammeProgress; spent: number } | { status: "done"; progress: ProgrammeProgress; spent: number } | { status: "refused"; reason: string; spent: number }> {
-  let spent = 0;
   if (!progress.written) {
-    spent += PROGRAMME_WRITE_COST;
     const [row] = await db
       .select({ kind: programs.kind, status: programs.status, config: programs.config, name: programs.name })
       .from(programs)
       .where(and(eq(programs.id, g.programId), eq(programs.userId, userId)))
       .limit(1);
-    if (!row || row.kind !== "adaptive") return { status: "refused", reason: "That programme isn't there any more.", spent };
-    if (row.status !== "active") return { status: "refused", reason: `${row.name} is retired.`, spent };
+    if (!row || row.kind !== "adaptive") return { status: "refused", reason: "That programme isn't there any more.", spent: 0 };
+    if (row.status !== "active") return { status: "refused", reason: `${row.name} is retired.`, spent: 0 };
     const now = adaptiveConfigSchema.parse(row.config);
     const keys = Object.keys(g.change) as (keyof ProgrammeSettings)[];
-    const moved = keys.filter((k) => !sameSetting(now[k], g.base[k]) && !sameSetting(now[k], g.change[k]));
-    if (moved.length > 0) return { status: "refused", reason: "Its settings changed since this was suggested: ask the coach again.", spent };
+    const moved = keys.filter((k) => !sameSetting(k, now[k], g.base[k]) && !sameSetting(k, now[k], g.change[k]));
+    if (moved.length > 0) return { status: "refused", reason: "Its settings changed since this was suggested: ask the coach again.", spent: 0 };
     await updateProgram(db, userId, g.programId, { config: g.change }, ctx.now);
   }
-  const placed = await placeSlotsWithin(db, userId, g.programId, ctx.today, ctx.prefs, ctx.now, Math.max(0, budget - spent));
-  spent += placed.spent;
+  const placed = await placeSlotsWithin(db, userId, g.programId, ctx.today, ctx.prefs, ctx.now, budget);
   const next: ProgrammeProgress = { written: true, placed: progress.placed + placed.placed.length, archived: progress.archived + placed.archived.length };
-  return placed.more ? { status: "more", progress: next, spent } : { status: "done", progress: next, spent };
+  return placed.more ? { status: "more", progress: next, spent: placed.spent } : { status: "done", progress: next, spent: placed.spent };
 }
 
 /** An op found applied (made already) as the answer says it. */

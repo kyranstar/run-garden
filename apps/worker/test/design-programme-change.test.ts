@@ -20,7 +20,15 @@ import { loadPreferences, savePreferences } from "../src/services/calendar-sync.
 import { conversationBlock, conversationRows, namedConversationSql, readConversation } from "../src/services/coach-conversation.js";
 import { endedLine } from "../src/services/coach-runs.js";
 import { markUntrusted } from "../src/services/design-prompt.js";
-import { APPLYING_STALE_MS, PROGRAMME_CHANGE_FIXED, PROGRAMME_MIN_BUDGET, PROGRAMME_WRITE_COST, REQUEST_BUDGET, type DesignedProgrammeOp } from "../src/services/design-approve.js";
+import {
+  APPLYING_STALE_MS,
+  approveDesignOps,
+  PROGRAMME_CHANGE_FIXED,
+  PROGRAMME_MIN_BUDGET,
+  PROGRAMME_WRITE_COST,
+  REQUEST_BUDGET,
+  type DesignedProgrammeOp,
+} from "../src/services/design-approve.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { proposalFields } from "../src/services/design-review.js";
 import { changeProgramme, dayIndex, nextLine, programmeTitle, settingLines } from "../src/services/design-tools/change-programme.js";
@@ -30,9 +38,10 @@ import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { currentRun } from "../src/services/coach-runs.js";
 import { readProposals } from "../src/services/design-tools/read-proposals.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
-import { placeSlots } from "../src/services/program-slots.js";
+import { placeSlots, placeSlotsWithin } from "../src/services/program-slots.js";
+import { updateProgram } from "../src/services/programs.js";
 import { programmeChangeId } from "../src/services/proposal-kinds.js";
-import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { cloneTestDb, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
 
 const { coachProposals, coachMessages, coachRuns, plannedWorkouts, programs, userConditions } = schema;
 /** A Wednesday morning in UTC: this week's Monday has gone, today's session stands. */
@@ -404,6 +413,58 @@ describe("approving a programme change", () => {
     const done = await approveAll(id2);
     expect(done.answers.at(-1)!.status).toBe("approved");
     expect(await live(q)).toContain("2026-10-20:scheduled");
+  });
+
+  it("care compared as a set (review-1): a sheet save that re-orders the same care list leaves the change approvable", async () => {
+    const caring = Object.values(PROFILES).find((x) => x.care)!;
+    await db.insert(userConditions).values({ id: `${userId}:${caring.id}`, userId, profileId: caring.id, active: true, since: "2026-09-01", settings: {} });
+    // Two profiles the sheet doesn't show (switched off in the account): kept as they are, listed first by the sheet.
+    const [x, y] = ["switched-off-one", "switched-off-two"];
+    const p = await programme({ goal: 2, days: [0, 2] });
+    const cfg = (careProfiles: string[]) => adaptiveConfigSchema.parse({ weeklyGoal: 2, preferredDays: [0, 2], careProfiles, placementWeeksAhead: 2 });
+    await db.update(programs).set({ config: cfg([caring.id, x, y]) }).where(eq(programs.id, p));
+    const { id } = await proposed(p, { care: { [caring.id]: false } });
+    expect((await opOf(id, p)).base).toEqual({ careProfiles: [caring.id, x, y] });
+    expect((await opOf(id, p)).change).toEqual({ careProfiles: [x, y] });
+    // The sheet saves the care list back in its own order — the ones it doesn't show first: the same care, re-ordered.
+    await db.update(programs).set({ config: cfg([y, x, caring.id]) }).where(eq(programs.id, p));
+    const { answers } = await approveAll(id);
+    expect(answers.at(-1)!.refused).toEqual([]);
+    expect(answers.at(-1)!.status).toBe("approved");
+    expect((await configOf(p)).careProfiles).toEqual([x, y]);
+    // The change already written (its request died), in another order: not stale either.
+    const q = await programme({ goal: 2, days: [0, 2], name: "Strength" });
+    await db.update(programs).set({ config: cfg([caring.id, x, y]) }).where(eq(programs.id, q));
+    const { id: id2 } = await proposed(q, { care: { [caring.id]: false } });
+    await db.update(programs).set({ config: cfg([y, x]) }).where(eq(programs.id, q));
+    const done = await approveAll(id2);
+    expect(done.answers.at(-1)!.refused).toEqual([]);
+    expect(done.answers.at(-1)!.status).toBe("approved");
+    // A set, not a part of one: the athlete dropped one of them since — a real change, so stale.
+    const r = await programme({ goal: 2, days: [0, 2], name: "Core" });
+    await db.update(programs).set({ config: cfg([caring.id, x, y]) }).where(eq(programs.id, r));
+    const { id: id3 } = await proposed(r, { care: { [caring.id]: false } });
+    await db.update(programs).set({ config: cfg([caring.id, x]) }).where(eq(programs.id, r));
+    expect((await approveAll(id3)).answers.at(-1)!.refused).toMatchObject([{ error: "stale" }]);
+    expect((await configOf(r)).careProfiles).toEqual([caring.id, x]);
+  });
+
+  it("the write counted once (review-1): a request's pass gets the room the claim and the write leave, and what it declares is the claim, the write and the pass", async () => {
+    const p = await programme({ goal: 6, days: [0, 1, 2, 3, 4, 5], ahead: 4 });
+    const { id } = await proposed(p, { days: ["Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], weeklyGoal: 5 });
+    const budget = 41;
+    const room = budget - PROGRAMME_CHANGE_FIXED - PROGRAMME_WRITE_COST;
+    // What one pass with exactly that room declares, on a copy with the settings written.
+    const copy = cloneTestDb(db);
+    await updateProgram(copy, userId, p, { config: (await opOf(id, p)).change }, NOW.toISOString());
+    const pass = await placeSlotsWithin(copy, userId, p, TODAY, await loadPreferences(copy, userId), NOW.toISOString(), room);
+    expect(pass.more).toBe(true);
+    const row = (await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!;
+    const meter = { left: 0 };
+    const res = await approveDesignOps(db, userId, { id: row.id, title: row.title, status: row.status, ops: row.ops, resolvedAt: row.resolvedAt }, {}, { today: TODAY, now: NOW.toISOString(), prefs: await loadPreferences(db, userId) }, budget, meter);
+    expect(res.remaining).toEqual([programmeChangeId(p)]);
+    expect((await opOf(id, p)).outcome).toMatchObject({ status: "applying", progress: { written: true, archived: pass.archived.length } });
+    expect(meter.left).toBe(budget - PROGRAMME_CHANGE_FIXED - PROGRAMME_WRITE_COST - pass.spent);
   });
 
   it("a retired programme or one gone: refused, in words", async () => {
