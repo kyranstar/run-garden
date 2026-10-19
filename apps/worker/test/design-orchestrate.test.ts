@@ -1383,7 +1383,9 @@ describe("the prompt says how a set works", () => {
     }
     expect(roleBlock("main")).toMatch(/once more/);
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
-    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1500);
+    // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
+    // turns — the same cap as design-prompt.test.ts's and design-fix13's.
+    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1660);
   });
 });
 
