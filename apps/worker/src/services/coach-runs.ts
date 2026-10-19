@@ -3367,7 +3367,7 @@ function capResult(text: string): string {
 
 /** The system blocks as sent: exactly as the context built them (it marks its own breakpoint on its last stable
  * block), except that at most MAX_BREAKPOINTS − 1 survive — the latest ones — leaving one for the newest message. */
-function capSystemBreakpoints(system: SystemBlock[]): SystemBlock[] {
+export function capSystemBreakpoints(system: SystemBlock[]): SystemBlock[] {
   let extra = system.filter((b) => b.cache_control).length - (MAX_BREAKPOINTS - 1);
   if (extra <= 0) return system;
   return system.map((b) => {
@@ -3380,7 +3380,7 @@ function capSystemBreakpoints(system: SystemBlock[]): SystemBlock[] {
 
 /** The history as sent: no breakpoint anywhere but on the newest message's last block (they move; they never pile
  * up). The stored history carries none. */
-function withMessageBreakpoint(messages: MessageParam[]): MessageParam[] {
+export function withMessageBreakpoint(messages: MessageParam[]): MessageParam[] {
   return messages.map((m, i) => {
     const blocks = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
     const copy = blocks.map((b) => {

@@ -25,6 +25,7 @@ import { coachRunRoutes } from "./routes/coach-runs.js";
 import { coachConversationRoutes } from "./routes/coach-conversation.js";
 import { coachNudgesRoutes } from "./routes/coach-nudges.js";
 import { coachPreferenceRoutes } from "./routes/coach-preferences.js";
+import { coachReplayRoutes } from "./routes/coach-replay.js";
 import { corosRoutes } from "./routes/coros.js";
 import { syncRoutes } from "./routes/sync.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -102,6 +103,8 @@ app.route("/api/coach/conversation", coachConversationRoutes);
 app.route("/api/coach/nudges", coachNudgesRoutes);
 // Settings → Coach: the same switch and sign-in as the runs, ahead of /api/coach for the same reason.
 app.route("/api/coach/preferences", coachPreferenceRoutes);
+// The voice workshop's owner-gated replay: the same switch and sign-in, then the owner — ahead of /api/coach too.
+app.route("/api/coach/replay", coachReplayRoutes);
 app.route("/api/coach", coachRoutes);
 app.route("/api/coros", corosRoutes);
 app.route("/api/calendar", calendarRoutes);

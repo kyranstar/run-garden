@@ -262,13 +262,8 @@ const CANNED_TEXT = "Fixture mode: a canned answer from the designer's model cli
 
 // ── The call ────────────────────────────────────────────────────────────
 
-export async function callMessages(
-  env: Env,
-  req: MessagesRequest,
-  fetchImpl: typeof fetch = fetch,
-): Promise<MessagesResult> {
-  const model = honoured(env, req.model) || designModel(env);
-  const gateway = wakeGateway(env);
+/** Fixture mode's answer (no network), or no key's (nothing sent); null when the call goes to the model. */
+function unsent(gateway: ReturnType<typeof wakeGateway>, model: string): MessagesResult | null {
   if (gateway.kind === "no_key") return { ok: false, kind: "no_key", reason: "no_key" };
   if (gateway.kind === "canned") {
     return {
@@ -280,6 +275,17 @@ export async function callMessages(
       costMicros: 0,
     };
   }
+  return null;
+}
+
+export async function callMessages(
+  env: Env,
+  req: MessagesRequest,
+  fetchImpl: typeof fetch = fetch,
+): Promise<MessagesResult> {
+  const model = honoured(env, req.model) || designModel(env);
+  const gateway = wakeGateway(env);
+  if (gateway.kind !== "model") return unsent(gateway, model)!;
 
   const body = JSON.stringify({
     model,
@@ -290,7 +296,36 @@ export async function callMessages(
     ...(req.effort ? { output_config: { effort: req.effort } } : {}),
     stream: true,
   });
+  return post(gateway.env, env, model, body, req.maxTokens, fetchImpl);
+}
 
+/**
+ * A call whose body is already written — exactly as `callMessages` writes one (its keys in its order, `stream: true`)
+ * — for `model`, already resolved (`designModel(env)`). The voice workshop's replay (coach-replay.ts) writes a run's
+ * shared prefix once and only each variant's newest message after it, rather than serialising the whole history once a
+ * variant. Routed, answered and priced exactly as `callMessages` is.
+ */
+export async function sendMessagesBody(
+  env: Env,
+  model: string,
+  body: string,
+  maxTokens: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<MessagesResult> {
+  const gateway = wakeGateway(env);
+  if (gateway.kind !== "model") return unsent(gateway, model)!;
+  return post(gateway.env, env, model, body, maxTokens, fetchImpl);
+}
+
+/** The one POST, its answer read and priced (`callMessages`, `sendMessagesBody`). `gatewayEnv` is where it goes. */
+async function post(
+  gatewayEnv: Env,
+  env: Env,
+  model: string,
+  body: string,
+  maxTokens: number,
+  fetchImpl: typeof fetch,
+): Promise<MessagesResult> {
   const startedAt = Date.now();
   const timeoutMs = designModelTimeoutMs(env);
   const controller = new AbortController();
@@ -298,11 +333,11 @@ export async function callMessages(
   try {
     let response: Response;
     try {
-      response = await fetchImpl(`${gateway.env.AI_GATEWAY_BASE_URL || DEFAULT_GATEWAY}/messages`, {
+      response = await fetchImpl(`${gatewayEnv.AI_GATEWAY_BASE_URL || DEFAULT_GATEWAY}/messages`, {
         method: "POST",
         signal: controller.signal,
         headers: {
-          Authorization: `Bearer ${gateway.env.AI_GATEWAY_API_KEY ?? ""}`,
+          Authorization: `Bearer ${gatewayEnv.AI_GATEWAY_API_KEY ?? ""}`,
           "Content-Type": "application/json",
           "anthropic-version": ANTHROPIC_VERSION,
         },
@@ -335,7 +370,7 @@ export async function callMessages(
     if (!answer.ok) {
       if (!("cut" in answer)) return answer;
       // The answer began, so the call was billed: as far as the stream reported, or at an estimate of the input.
-      const usage = cutUsage(answer, body, Date.now() - startedAt, req.maxTokens);
+      const usage = cutUsage(answer, body, Date.now() - startedAt, maxTokens);
       return { ok: false, kind: "retryable", reason: answer.reason, usage, costMicros: messagesCostMicros(model, usage) };
     }
 
