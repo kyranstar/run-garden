@@ -324,10 +324,10 @@ function mount(
   return { calls };
 }
 
-// Passes, not the clock (Date is faked here): about 5 s of 5 ms passes — 1 s timed out on a slow runner (the deploy of
-// 58db75a, 2026-10-19: "focus on the next card", which landed on a re-run).
-async function until(check: () => boolean, what: string): Promise<void> {
-  for (let i = 0; i < 1000; i += 1) {
+// Passes, not the clock (Date is faked here): 5 ms each, about 1 s by default. A wait that may be slow on a loaded runner
+// passes its own count and its test its own timeout, so it never runs on into the next test.
+async function until(check: () => boolean, what: string, passes = 200): Promise<void> {
+  for (let i = 0; i < passes; i += 1) {
     if (check()) return;
     await act(async () => {
       await new Promise((r) => setTimeout(r, 5));
@@ -1752,11 +1752,13 @@ describe("a document workout in the sheet, CUJ wave", () => {
       await click("Remove");
       const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter((b) => b.textContent === "Remove").pop()!;
       await act(async () => confirm.click());
-      await until(() => document.activeElement?.textContent === "Easy run", "focus on the next card");
+      // The focus waits for the plan to be read again (four queries): on a loaded deploy runner that took over 1 s, then
+      // over 4 s (2026-10-19) — about 10 s here, inside the test's own 20 s.
+      await until(() => document.activeElement?.textContent === "Easy run", "focus on the next card", 2000);
     } finally {
       week.remove();
     }
-  });
+  }, 20_000);
 
 
   it("a Studio workout whose day passed undone can be done again too (B2)", async () => {
