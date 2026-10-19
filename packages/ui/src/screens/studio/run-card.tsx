@@ -24,6 +24,7 @@ export const RUN_WATCH_LINES: Record<NonNullable<DesignRunDto["watch"]>, string>
   goes: "Goes to your watch when you approve",
   time_only: "Your watch will show time only",
   needs_threshold: "Stays off your watch until your threshold pace is known",
+  no_pace: "Goes to your watch when you approve, with no pace targets until your threshold pace is known",
 };
 
 const ROLE_WORDS: Record<DesignRunStepDto["role"], string> = { warmup: "Warm-up", work: "", recovery: "", cooldown: "Cool-down" };
@@ -51,7 +52,8 @@ export function runStepWords(step: DesignRunStepDto, units: Units): string {
     amount,
     effort,
     step.pace ? paceBandWords(step.pace, units) : null,
-    step.meters !== null && step.seconds !== null ? `on your watch as ${formatDurationShort(step.seconds)}` : null,
+    // v2 (§8 phase 2) runs a distance as a distance: it is never "on your watch as" a time.
+    step.meters !== null && step.seconds !== null && !step.asDistance ? `on your watch as ${formatDurationShort(step.seconds)}` : null,
   ]
     .filter((x): x is string => !!x)
     .join(" · ");

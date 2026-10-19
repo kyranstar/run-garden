@@ -43,6 +43,7 @@ import {
   type LocalDate,
   type PlannedWorkout,
   type RunEffort,
+  type RunWire,
   type SessionLead,
   type SyncAction,
   type UserPreferences,
@@ -57,7 +58,7 @@ import {
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
-import { watchPushEnabled, type Env } from "../env.js";
+import { runWireOf, watchPushEnabled, type Env } from "../env.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -195,7 +196,7 @@ interface CoverageStage {
  * threshold would pace (its label) with no band, owed one; and with no threshold-paced step anywhere, a distance with no
  * pace can't be timed — the wire's own rules (`runWatchSteps`), read off the rows.
  */
-function designedRunShape(stages: ReadonlyArray<CoverageStage>): WatchSessionShape {
+function designedRunShape(stages: ReadonlyArray<CoverageStage>, wire: RunWire): WatchSessionShape {
   const children = (id: string | undefined) => stages.filter((c) => id !== undefined && c.parentStageId === id);
   const leaves = stages
     .filter((s) => !s.parentStageId)
@@ -208,7 +209,10 @@ function designedRunShape(stages: ReadonlyArray<CoverageStage>): WatchSessionSha
     runBlocks: leaves.map((s) => (s.durationType === "distance" ? "distance" : "duration")),
     paceTargetsOwed: leaves.filter((s) => banded(s) && s.targetType !== "pace").length,
     exercises: [],
-    distanceAsTime: { untimed: thresholdKnown ? 0 : leaves.filter((s) => s.durationType === "distance" && s.targetType !== "pace").length },
+    // v2 (§8 phase 2) runs a distance as a distance: no gap, timed or not.
+    ...(wire === "v2"
+      ? { distanceOnWatch: true as const }
+      : { distanceAsTime: { untimed: thresholdKnown ? 0 : leaves.filter((s) => s.durationType === "distance" && s.targetType !== "pace").length } }),
   };
 }
 /** The efforts a threshold paces, as a designed run's stage labels say them (`RUN_EFFORT_LABELS`, lower case). */
@@ -219,6 +223,7 @@ function watchShapeOfRow(
   contentRewritten: boolean,
   /** This row's stage rows, when loaded (see `needsRunStages`). */
   stages: ReadonlyArray<CoverageStage>,
+  runWire: RunWire = "v1",
 ): WatchSessionShape | null {
   if (!authoredHere(w, contentRewritten) || w.category === "rest") return null;
   const discipline = w.sport === "strength" ? "lift" : w.sport === "yoga" ? "mobility" : "run";
@@ -250,7 +255,7 @@ function watchShapeOfRow(
       }),
     };
   }
-  if (w.sourceContentFingerprint === DESIGNED_RUN_SEED) return designedRunShape(stages);
+  if (w.sourceContentFingerprint === DESIGNED_RUN_SEED) return designedRunShape(stages, runWire);
   return {
     discipline,
     runBlocks: stages.map((s) => (s.durationType === "distance" ? "distance" : "duration")),
@@ -272,8 +277,9 @@ function watchCoverageOfRow(
   w: PlannedRow,
   contentRewritten: boolean,
   stages: ReadonlyArray<CoverageStage>,
+  runWire: RunWire = "v1",
 ): WatchCoverageView | undefined {
-  const shape = watchShapeOfRow(w, contentRewritten, stages);
+  const shape = watchShapeOfRow(w, contentRewritten, stages, runWire);
   if (!shape) return undefined;
   const view = watchCoverage(shape);
   return view.coverage === "full" ? undefined : view;
@@ -300,6 +306,8 @@ async function loadWorkoutViews(
    * nothing of anyone (`SyncSituation.settled`). Omitted → derived from prefs,
    * which is the same answer one string comparison later. */
   todayLocal?: string,
+  /** The run wire in force (§8 phase 2): what the watch will show of a designed run. v1 when absent. */
+  runWire: RunWire = "v1",
 ): Promise<Map<string, WorkoutView>> {
   const map = new Map<string, WorkoutView>();
   if (workouts.length === 0) return map;
@@ -405,7 +413,7 @@ async function loadWorkoutViews(
   const today = todayLocal ?? todayInZone(prefs.timezone);
   for (const w of workouts) {
     const contentRewritten = contentStale.has(w.id);
-    const coverage = watchCoverageOfRow(w, contentRewritten, stagesByWorkout.get(w.id) ?? []);
+    const coverage = watchCoverageOfRow(w, contentRewritten, stagesByWorkout.get(w.id) ?? [], runWire);
     const corosSyncView = deriveWorkoutSync({
       effectiveDate: w.effectiveDate,
       lastVerifiedCorosDate: w.lastVerifiedCorosDate,
@@ -853,7 +861,7 @@ planRoutes.get("/today", async (c) => {
   // Presence was already fetched above — threaded through, not re-queried.
   const syncViewSource = new Map<string, PlannedRow>();
   for (const w of [...upcoming, ...unresolved, ...attention, ...todaySessionRows.map((t) => t.row)]) syncViewSource.set(w.id, w);
-  const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence, today);
+  const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence, today, runWireOf(c.env));
 
   return c.json({
     today,
@@ -940,7 +948,7 @@ planRoutes.get("/workouts", async (c) => {
   const primary = [...plans].sort(
     (a, b) => (countByPlanId.get(b.id) ?? 0) - (countByPlanId.get(a.id) ?? 0),
   )[0];
-  const syncViews = await loadWorkoutViews(db, c.get("userId"), rows, prefs, undefined, today);
+  const syncViews = await loadWorkoutViews(db, c.get("userId"), rows, prefs, undefined, today, runWireOf(c.env));
   return c.json({
     today,
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
@@ -1144,7 +1152,7 @@ planRoutes.get("/week", async (c) => {
   // sync views (need `rows`; presence threaded, not re-queried) and this
   // week's coach shape (needs `covering`).
   const [syncViews, coveringWeekShapeRows] = await Promise.all([
-    loadWorkoutViews(db, userId, rows, prefs, presence, today),
+    loadWorkoutViews(db, userId, rows, prefs, presence, today, runWireOf(c.env)),
     covering
       ? db
           .select()
@@ -1284,6 +1292,7 @@ planRoutes.get("/workouts/:id", async (c) => {
     prefs,
     undefined,
     todayInZone(prefs.timezone),
+    runWireOf(c.env),
   );
   const catalog = await exerciseNameMap(db);
   const stages = (

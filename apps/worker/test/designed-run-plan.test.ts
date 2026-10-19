@@ -105,3 +105,19 @@ describe("a designed run COROS stored differently from what was sent (review-2 I
     expect((await workout(id)).syncAction).toBeUndefined();
   });
 });
+
+describe("a designed run read on the plan, on the v2 wire (§8 phase 2)", () => {
+  const v2 = { ...(env as unknown as Record<string, unknown>), RUN_WIRE_V2: "1" } as unknown as Env;
+  async function workoutOn(id: string) {
+    const res = await mountRoutes(db, "/api/plan", planRoutes).request(`/api/plan/workouts/${id}`, { headers: { Cookie: cookie } }, v2);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { workout: Record<string, any> }).workout;
+  }
+  it("a distance with a threshold crosses whole; with none, on the watch without pace targets — never off it", async () => {
+    await threshold();
+    expect((await workoutOn(await made(run({ distanceM: 2000 }), "v2a"))).watchCoverage).toBeUndefined();
+    await db.delete(schema.dailyHealth);
+    const w = await workoutOn(await made(run({ distanceM: 2000 }), "v2b"));
+    expect(w.watchCoverage).toEqual({ coverage: "partial", discipline: "run", gaps: [{ code: "pace_targets_owed", count: 5 }] });
+  });
+});

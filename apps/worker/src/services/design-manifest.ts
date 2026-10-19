@@ -19,6 +19,7 @@
  * A change to a session already on the plan (Task 8b) has its own line (`planChangeLines`): the thread coach's manifest
  * line for its skip, move or length, word for word (@rg/domain `describeOps`), and the coach's why.
  */
+import type { RunWire } from "@rg/domain";
 import { sql, type SQL } from "drizzle-orm";
 import { locations, userPreferences } from "@rg/database";
 import {
@@ -255,6 +256,8 @@ function lineTime(op: DesignedOp, category: string, at: LineClock): { time: stri
 export interface RunLineCtx {
   thresholdSecPerKm: number | null;
   corosWritesEnabled: boolean;
+  /** The run wire in force (§8 phase 2): the card shows the run as it writes it. v1 when absent. */
+  runWire?: RunWire;
 }
 
 /** One step of a designed run, as the card shows it (and the watch gets it). */
@@ -266,6 +269,8 @@ export interface RunLineStep {
   seconds: number | null;
   /** The distance asked, when it was one. */
   meters: number | null;
+  /** v2: the distance goes to the watch as a distance (`seconds` is only its estimate). */
+  asDistance?: true;
   /** The pace band it carries, or none. */
   pace: { fastSecPerKm: number; slowSecPerKm: number } | null;
   /** The band is one the athlete asked for (the coach wrote it), not the threshold's. */
@@ -283,18 +288,20 @@ export interface RunLine {
   segments: Array<{ rounds: number; restBetweenRoundsSec?: number; steps: RunLineStep[] }>;
   totalSeconds: number | null;
   totalMeters: number | null;
-  watch: "goes" | "time_only" | "needs_threshold" | null;
+  /** v2's `no_pace`: on the watch, every step but its pace targets (no threshold known). */
+  watch: "goes" | "time_only" | "needs_threshold" | "no_pace" | null;
 }
 
 /** A designed run's line (see `RunLine`), or null for any other workout. */
 export function runLine(doc: WorkoutDoc, ctx: RunLineCtx): RunLine | null {
   if (!isRunDoc(doc)) return null;
-  const made = runWatchSessionOf(doc);
+  const wire = ctx.runWire ?? "v1";
+  const made = runWatchSessionOf(doc, wire);
   if (!("session" in made)) return null;
-  const whole = runWatchSteps(made.session, ctx.thresholdSecPerKm);
+  const whole = runWatchSteps(made.session, ctx.thresholdSecPerKm, wire);
   const segments = made.session.segments.map((seg, p) => {
     // Each part's steps once: its rounds are the card's "3 ×", its own steps resolved by the wire's function.
-    const once = runWatchSteps({ segments: [{ rounds: 1, steps: seg.steps }] }, ctx.thresholdSecPerKm).steps;
+    const once = runWatchSteps({ segments: [{ rounds: 1, steps: seg.steps }] }, ctx.thresholdSecPerKm, wire).steps;
     const items = doc.parts[p]?.items ?? [];
     return {
       rounds: seg.rounds,
@@ -304,13 +311,24 @@ export function runLine(doc: WorkoutDoc, ctx: RunLineCtx): RunLine | null {
         effort: st.effort ?? null,
         seconds: st.seconds,
         meters: st.meters ?? null,
+        ...(st.asDistance ? { asDistance: true as const } : {}),
         pace: st.pace,
         asked: st.paceFrom === "asked",
         why: itemWhy(items[i] ?? { kind: "rest", seconds: 1 }),
       })),
     };
   });
-  const watch = !ctx.corosWritesEnabled ? null : whole.unresolved > 0 ? "needs_threshold" : whole.paceOwed > 0 ? "time_only" : "goes";
+  const watch = !ctx.corosWritesEnabled
+    ? null
+    : wire === "v2"
+      ? whole.paceOwed > 0
+        ? "no_pace"
+        : "goes"
+      : whole.unresolved > 0
+        ? "needs_threshold"
+        : whole.paceOwed > 0
+          ? "time_only"
+          : "goes";
   return { segments, totalSeconds: whole.totalSeconds, totalMeters: whole.totalMeters, watch };
 }
 

@@ -112,3 +112,34 @@ describe("a recovery, bare on the card, in the stage rows and on the wire (revie
     expect(steps.filter((e) => e.exerciseType === 4).every((e) => e.intensityType === 5)).toBe(true);
   });
 });
+
+describe("a designed run's line on the v2 wire (§8 phase 2)", () => {
+  const V2_DOC: WorkoutDoc = {
+    ...DOC,
+    parts: [
+      DOC.parts[0]!,
+      { purpose: "run", format: "intervals", rounds: 3, items: [{ kind: "run", effort: "tempo", target: { distanceM: 800 } }, { kind: "run", effort: "recovery", target: { durationSec: 90 } }] },
+      DOC.parts[2]!,
+    ],
+  };
+  const line = (threshold: number | null) =>
+    docWorkoutLines([op(V2_DOC)], place, { now: NOW, prefs }, { thresholdSecPerKm: threshold, corosWritesEnabled: true, runWire: "v2" })[0]!.run!;
+
+  it("a distance goes as a distance (the card says so), and the watch goes — with no pace targets when no threshold is known", () => {
+    expect(line(289).segments[1]!.steps[0]).toMatchObject({ meters: 800, asDistance: true, seconds: Math.round(0.8 * 306.5) });
+    expect(line(289).watch).toBe("goes");
+    expect(line(null).watch).toBe("no_pace");
+    // v1, as it was: the same run with no threshold can't be timed.
+    expect(docWorkoutLines([op(V2_DOC)], place, { now: NOW, prefs }, { thresholdSecPerKm: null, corosWritesEnabled: true })[0]!.run!.watch).toBe("needs_threshold");
+  });
+
+  it("the preview is the wire: the card's repeat is the group's children, metres and bands byte for byte", () => {
+    const card = line(289).segments[1]!.steps;
+    const session = (runWatchSessionOf(V2_DOC, "v2") as { session: never }).session;
+    const steps = buildProgramFor({ happenDay: "20260312", name: "Tempo", session, thresholdPaceSecPerKm: 289, runWire: "v2" }, new Map()).exercises!;
+    const children = steps.filter((e) => String(e.groupId) !== "0");
+    expect(children.map((e) => [e.targetType === 5 ? Number(e.targetValue) / 100 : e.targetValue, e.intensityType === 3 ? [Number(e.intensityValue) / 1000, Number(e.intensityValueExtend) / 1000] : null])).toEqual(
+      card.map((s) => [s.asDistance ? s.meters : s.seconds, s.pace ? [s.pace.fastSecPerKm, s.pace.slowSecPerKm] : null]),
+    );
+  });
+});

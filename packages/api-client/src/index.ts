@@ -736,6 +736,8 @@ export interface DesignRunStepDto {
   seconds: number | null;
   /** The distance asked, when it was one. */
   meters: number | null;
+  /** v2 (§8 phase 2): the distance goes to the watch as a distance — `seconds` is only its estimate. */
+  asDistance?: boolean;
   pace: { fastSecPerKm: number; slowSecPerKm: number } | null;
   /** The pace is one the athlete asked for. */
   asked: boolean;
@@ -751,7 +753,7 @@ export interface DesignRunDto {
   segments: Array<{ rounds: number; restBetweenRoundsSec?: number; steps: DesignRunStepDto[] }>;
   totalSeconds: number | null;
   totalMeters: number | null;
-  watch: "goes" | "time_only" | "needs_threshold" | null;
+  watch: "goes" | "time_only" | "needs_threshold" | "no_pace" | null;
 }
 
 /** A move the coach weighed instead of one in the workout, and why it was the other choice. */

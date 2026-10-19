@@ -32,6 +32,7 @@
  * shown), and `proposal_changed` (another request wrote it first: nothing lost, call again). services/design-approve.ts
  * has the rules.
  */
+import type { RunWire } from "@rg/domain";
 import type { Context } from "hono";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
@@ -174,7 +175,7 @@ export async function designedDraft(c: C): Promise<Response> {
  * alone) and the changes' (none). */
 export async function designedLines(c: C, ops: unknown, proposalId: string) {
   if (!coachDesignerEnabled(c.env)) return undefined;
-  return designedManifest(c.get("db"), c.get("userId"), proposalId, ops, new Date());
+  return designedManifest(c.get("db"), c.get("userId"), proposalId, ops, new Date(), runWireOf(c.env));
 }
 
 /**
@@ -185,7 +186,7 @@ export async function designedLines(c: C, ops: unknown, proposalId: string) {
  * the places' names, the athlete's settings, the plan's rows the times are placed among and a set's context (none for a
  * proposal of changes alone).
  */
-export async function designedManifest(db: Db, userId: string, proposalId: string, ops: unknown, now: Date) {
+export async function designedManifest(db: Db, userId: string, proposalId: string, ops: unknown, now: Date, runWire: RunWire = "v1") {
   const all = Array.isArray(ops) ? (ops as unknown[]) : [];
   const workouts = designedOps(ops);
   // A whole plan change's lines are its own (§8 §5): computed when it was proposed, no read.
@@ -199,7 +200,7 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   const placed = await placedTimes(userId, proposalId, all, reads.dayRows, { now, today, prefs: reads.prefs });
   return {
     // A designed run's card (§8 §3): its steps with the athlete's threshold, and whether an approve sends it to the watch.
-    lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }, { thresholdSecPerKm: reads.thresholdSecPerKm, corosWritesEnabled: reads.prefs.corosWritesEnabled === true }),
+    lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }, { thresholdSecPerKm: reads.thresholdSecPerKm, corosWritesEnabled: reads.prefs.corosWritesEnabled === true, runWire }),
     changes: planChangeLines(all),
     ...withPlans,
     ...(reads.context ? { context: reads.context } : {}),

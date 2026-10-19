@@ -164,3 +164,11 @@ describe("a run's title on its card controls what expands (review-3)", () => {
     expect(document.querySelector("[aria-expanded][aria-controls]:not(.coach-pc-see)")).toBeNull();
   });
 });
+
+describe("a run step on the v2 wire, in words (§8 phase 2)", () => {
+  it("a distance that goes as a distance is said as one — never 'on your watch as' a time", () => {
+    const step = { role: "cooldown" as const, effort: "easy", seconds: 758, meters: 2000, pace: { fastSecPerKm: 349, slowSecPerKm: 409 }, asked: false, why: null, asDistance: true };
+    expect(runStepWords(step, "km")).toBe("2 km · Easy · 5:49–6:49 /km");
+    expect(RUN_WATCH_LINES.no_pace).toBe("Goes to your watch when you approve, with no pace targets until your threshold pace is known");
+  });
+});
