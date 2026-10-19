@@ -39,7 +39,9 @@ import {
   daysBetween,
   isProgramWatchSession,
   isRunWatchSession,
+  RUN_WATCH_MAX_STEPS,
   runWatchSessionSchema,
+  runWatchStepCount,
   runWatchSteps,
   studioSessionSchema,
   type CoachSession,
@@ -651,6 +653,11 @@ export function buildRunWatchProgram(spec: {
   if (!parsed.success) {
     const detail = parsed.error.issues.map((issue) => `${issue.path.join(".") || "session"}: ${issue.message}`).join("; ");
     throw new Error(`cannot build "${spec.name}": invalid session — ${detail}`);
+  }
+  // The job's schema takes a session either wire can hold (§8 phase 2); v1 writes every round out and holds 60.
+  const written = runWatchStepCount(parsed.data.segments, "v1");
+  if (written > RUN_WATCH_MAX_STEPS) {
+    throw new Error(`cannot build "${spec.name}": ${written} steps once its repeats are written out, and the v1 wire holds ${RUN_WATCH_MAX_STEPS}`);
   }
   const resolved = runWatchSteps(parsed.data, spec.thresholdPaceSecPerKm);
   if (resolved.unresolved > 0) {

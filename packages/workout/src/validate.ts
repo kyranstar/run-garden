@@ -84,7 +84,9 @@
  * - run_mixed (error): run segments and moves in one document — at each segment when the moves are more, else at each
  *   move. Nothing else of a run is judged in such a document.
  * - run_open (error, at the segment's target): an open segment, which the watch can't hold.
- * - run_too_long (error, at "parts"): more than RUN_WATCH_MAX_STEPS steps once the repeats are written out.
+ * - run_too_long (error, at "parts"): more than RUN_WATCH_MAX_STEPS steps as the wire in use writes them (`ctx.runWire`,
+ *   §8 phase 2: v1 writes the repeats out, v2 writes a part of rounds as its children and a group); at a part's rounds:
+ *   more than RUN_WATCH_MAX_ROUNDS rounds, on either wire.
  * - run_step_short (error, at a segment's target, a rest, or a part's restBetweenRoundsSec): a step under
  *   RUN_STEP_MIN_SEC on the watch (`runStepSeconds`: a distance at its pace's middle; one that can't be timed is not
  *   judged) — COROS's own minimum is unknown (review-2 (e)).
@@ -115,6 +117,7 @@ import {
   paceBandFor,
   RUN_EFFORT_LABELS,
   RUN_STEP_MIN_SEC,
+  RUN_WATCH_MAX_ROUNDS,
   RUN_WATCH_MAX_STEPS,
   runDocStepCount,
   runStepSeconds,
@@ -126,6 +129,7 @@ import {
   type WorkoutDose,
   type WorkoutItem,
   type WorkoutPart,
+  type RunWire,
 } from "@rg/domain";
 import {
   EQUIPMENT,
@@ -231,6 +235,8 @@ export interface RunCtx {
 }
 
 export interface ValidateCtx {
+  /** The run wire in use (§8 phase 2, `RUN_WIRE_V2`): how a run's steps are counted against the watch's. v1 when absent. */
+  runWire?: RunWire;
   library: readonly ExerciseRecord[];
   activeProfiles: readonly ConditionProfile[];
   /** null only for templates and library contexts. */
@@ -632,9 +638,22 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
       });
       if (p.restBetweenRoundsSec !== undefined && (p.rounds ?? 1) > 1) shortStep(Math.max(1, Math.round(p.restBetweenRoundsSec)), `parts[${pi}].restBetweenRoundsSec`);
     });
-    const steps = runDocStepCount(doc);
+    const wire = ctx.runWire ?? "v1";
+    doc.parts.forEach((p, pi) => {
+      const rounds = p.rounds ?? 1;
+      if (rounds > RUN_WATCH_MAX_ROUNDS) {
+        add({ path: `parts[${pi}].rounds`, code: "run_too_long", message: `This part has ${rounds} rounds, and the watch takes ${RUN_WATCH_MAX_ROUNDS}: fewer rounds, or longer ones.`, severity: "error" });
+      }
+    });
+    const steps = runDocStepCount(doc, wire);
     if (steps > RUN_WATCH_MAX_STEPS) {
-      add({ path: "parts", code: "run_too_long", message: `This run has ${steps} steps once its repeats are written out, and the watch takes ${RUN_WATCH_MAX_STEPS}: fewer repeats, or longer ones.`, severity: "error" });
+      add({
+        path: "parts", code: "run_too_long", severity: "error",
+        message:
+          wire === "v1"
+            ? `This run has ${steps} steps once its repeats are written out, and the watch takes ${RUN_WATCH_MAX_STEPS}: fewer repeats, or longer ones.`
+            : `This run has ${steps} steps on the watch, and the watch takes ${RUN_WATCH_MAX_STEPS}: fewer steps, or longer ones.`,
+      });
     }
     const run = ctx.run;
     const threshold = run?.thresholdSecPerKm ?? null;
@@ -652,14 +671,16 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
       });
     }
     if (!run) return;
-    const made = runWatchSessionOf(doc);
-    const resolved = "session" in made ? runWatchSteps(made.session, threshold) : null;
+    const made = runWatchSessionOf(doc, wire);
+    const resolved = "session" in made ? runWatchSteps(made.session, threshold, wire) : null;
     if (resolved && threshold === null && (resolved.unresolved > 0 || resolved.paceOwed > 0)) {
       add({
         path: "parts", code: "run_pace_owed", severity: "warning",
         message: resolved.unresolved > 0
           ? "No threshold pace is known yet, so the watch can't time this run's distances: it stays off the watch until one is."
-          : "No threshold pace is known yet, so the watch shows this run's time with no pace targets.",
+          : wire === "v2"
+            ? "No threshold pace is known yet, so the watch shows this run's steps with no pace targets."
+            : "No threshold pace is known yet, so the watch shows this run's time with no pace targets.",
       });
     }
     const derived = deriveDoc(doc, ctx.library);

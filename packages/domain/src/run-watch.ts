@@ -28,8 +28,17 @@ import { z } from "zod";
 import { conversionPaceFor, paceBandFor, type PaceBand, type RunEffort } from "./pace.js";
 import { RUN_EFFORTS, type WorkoutDoc, type WorkoutItem } from "./workout-doc.js";
 
-/** The most steps a designed run puts on the watch, its repeats written out (phase 1). */
+/** The most steps a designed run puts on the watch, as its wire writes them (`runWatchStepCount`). */
 export const RUN_WATCH_MAX_STEPS = 60;
+/** The most rounds a part of a designed run takes (§8 phase 2: a sane cap, on either wire). */
+export const RUN_WATCH_MAX_ROUNDS = 30;
+/**
+ * Which encoding a designed run goes to the watch in (§8 phase 2, the `RUN_WIRE_V2` switch): `v1` writes every step
+ * out as a time (a distance as its time at its band's middle, the repeats written out round by round); `v2` writes a
+ * distance as a distance (`targetType 5`) and a part's rounds as one repeat group (`runSegmentGroups`). The session is
+ * the same on either: only how it is written, counted and shown differs. v1 is the default wherever none is given.
+ */
+export type RunWire = "v1" | "v2";
 /**
  * The shortest step the app puts on the watch, in seconds (review-2 (e)): COROS's own minimum is unknown, a step of a
  * second or two is a shape no capture holds, and strides of 10–20 s stay fine. The validator refuses a shorter one.
@@ -65,7 +74,7 @@ export type RunWatchStep = z.infer<typeof runWatchStepSchema>;
 export const runWatchSegmentSchema = z
   .object({
     /** How many times its steps run: a part's rounds, 1 for a part without. */
-    rounds: z.number().int().min(1).max(50),
+    rounds: z.number().int().min(1).max(RUN_WATCH_MAX_ROUNDS),
     steps: z.array(runWatchStepSchema).min(1).max(RUN_WATCH_MAX_STEPS),
     /** A standing rest after each round but the last, in seconds. */
     restBetweenRoundsSec: z.number().int().min(1).max(900).optional(),
@@ -73,9 +82,24 @@ export const runWatchSegmentSchema = z
   .strict();
 export type RunWatchSegment = z.infer<typeof runWatchSegmentSchema>;
 
-/** The steps a session's segments write out to: its repeats, and the rests between rounds. */
-export function runWatchStepCount(segments: readonly RunWatchSegment[]): number {
-  return segments.reduce((n, s) => n + s.rounds * s.steps.length + (s.restBetweenRoundsSec ? s.rounds - 1 : 0), 0);
+/**
+ * Whether a segment goes to the watch as one repeat group: on v2, a part of more than one round with no rest between
+ * its rounds. That rest has no place in a group — it would follow the last round too — so such a part is written out,
+ * round by round, as v1 writes it.
+ */
+export function runSegmentGroups(segment: Pick<RunWatchSegment, "rounds" | "restBetweenRoundsSec">, wire: RunWire): boolean {
+  return wire === "v2" && segment.rounds > 1 && !segment.restBetweenRoundsSec;
+}
+
+/**
+ * The steps a session's segments put on the watch, as `wire` writes them: v1 writes its repeats out (and the rests
+ * between rounds); v2 writes a grouped part as its children and the group (`runSegmentGroups`), anything else as v1.
+ */
+export function runWatchStepCount(segments: readonly RunWatchSegment[], wire: RunWire = "v1"): number {
+  return segments.reduce(
+    (n, s) => n + (runSegmentGroups(s, wire) ? s.steps.length + 1 : s.rounds * s.steps.length + (s.restBetweenRoundsSec ? s.rounds - 1 : 0)),
+    0,
+  );
 }
 
 /** A part's rest between rounds as the watch takes it: whole seconds, none for a part of one round. */
@@ -84,9 +108,13 @@ const restBetweenOf = (part: WorkoutDoc["parts"][number]): number => {
   return part.restBetweenRoundsSec !== undefined && rounds > 1 ? Math.round(part.restBetweenRoundsSec) : 0;
 };
 
-/** The steps a run document writes out to on the watch (its repeats, the rests between rounds): the validator's count. */
-export function runDocStepCount(doc: Pick<WorkoutDoc, "parts">): number {
-  return doc.parts.reduce((n, p) => n + (p.rounds ?? 1) * p.items.length + (restBetweenOf(p) > 0 ? (p.rounds ?? 1) - 1 : 0), 0);
+/** The steps a run document puts on the watch as `wire` writes them (`runWatchStepCount`'s rule): the validator's count. */
+export function runDocStepCount(doc: Pick<WorkoutDoc, "parts">, wire: RunWire = "v1"): number {
+  return doc.parts.reduce((n, p) => {
+    const rounds = p.rounds ?? 1;
+    const rest = restBetweenOf(p);
+    return n + (runSegmentGroups({ rounds, ...(rest > 0 ? { restBetweenRoundsSec: rest } : {}) }, wire) ? p.items.length + 1 : rounds * p.items.length + (rest > 0 ? rounds - 1 : 0));
+  }, 0);
 }
 
 export const runWatchSessionSchema = z
@@ -97,7 +125,9 @@ export const runWatchSessionSchema = z
     segments: z.array(runWatchSegmentSchema).min(1).max(20),
   })
   .strict()
-  .refine((s) => runWatchStepCount(s.segments) <= RUN_WATCH_MAX_STEPS, `more than ${RUN_WATCH_MAX_STEPS} steps once the repeats are written out`);
+  // A session either wire can hold parses (v2's count is never more than v1's); the builder of the wire in use refuses
+  // what it can't write (`buildRunWatchProgram`), and pushability asks first (`watchPushable`).
+  .refine((s) => runWatchStepCount(s.segments, "v2") <= RUN_WATCH_MAX_STEPS, `more than ${RUN_WATCH_MAX_STEPS} steps on the watch`);
 export type RunWatchSession = z.infer<typeof runWatchSessionSchema>;
 
 /** The discriminator only: `runWatchSessionSchema` is what validates one. */
@@ -111,7 +141,7 @@ export function isRunDoc(doc: Pick<WorkoutDoc, "parts">): boolean {
   return items.some((i) => i.kind === "run") && items.every((i) => i.kind === "run" || i.kind === "rest");
 }
 
-export type RunWatchRefusal = "mixed" | "open" | "too_many_steps";
+export type RunWatchRefusal = "mixed" | "open" | "too_many_rounds" | "too_many_steps";
 
 /**
  * One document item as the watch takes it (the session's step, and the stage rows' — `designedRunStages`): its role,
@@ -147,8 +177,9 @@ export function designedRunSession(doc: WorkoutDoc | null): RunWatchSession | nu
 }
 
 /** A designed run's session for the watch job (see the module comment), or why the wire can't hold it. */
-export function runWatchSessionOf(doc: WorkoutDoc): { session: RunWatchSession } | { refused: RunWatchRefusal } {
+export function runWatchSessionOf(doc: WorkoutDoc, wire: RunWire = "v1"): { session: RunWatchSession } | { refused: RunWatchRefusal } {
   const segments: RunWatchSegment[] = [];
+  if (doc.parts.some((p) => (p.rounds ?? 1) > RUN_WATCH_MAX_ROUNDS)) return { refused: "too_many_rounds" };
   for (const part of doc.parts) {
     const steps: RunWatchStep[] = [];
     for (const item of part.items) {
@@ -159,7 +190,7 @@ export function runWatchSessionOf(doc: WorkoutDoc): { session: RunWatchSession }
     const rest = restBetweenOf(part);
     segments.push({ rounds: part.rounds ?? 1, steps, ...(rest > 0 ? { restBetweenRoundsSec: rest } : {}) });
   }
-  if (runWatchStepCount(segments) > RUN_WATCH_MAX_STEPS) return { refused: "too_many_steps" };
+  if (runWatchStepCount(segments, wire) > RUN_WATCH_MAX_STEPS) return { refused: "too_many_steps" };
   return { session: { kind: "run_watch", title: doc.title, segments } };
 }
 
@@ -172,6 +203,8 @@ export interface RunWatchStepResolved {
   seconds: number | null;
   /** The distance asked, when it was one. */
   meters?: number;
+  /** v2: the distance goes to the watch as a distance (`targetType 5`) — `seconds` is then only its estimate. */
+  asDistance?: true;
   /** The pace band the step carries, or null. */
   pace: PaceBand | null;
   /** Where the band came from: the coach wrote it (the athlete asked), or the threshold; null with none. */
@@ -222,7 +255,11 @@ export function runStepBand(s: RunWatchStep, thresholdSecPerKm: number | null | 
 }
 
 /** The run's steps on the watch with the athlete's threshold (see the module comment). Pure. */
-export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresholdSecPerKm: number | null | undefined): RunWatchResolved {
+export function runWatchSteps(
+  session: Pick<RunWatchSession, "segments">,
+  thresholdSecPerKm: number | null | undefined,
+  wire: RunWire = "v1",
+): RunWatchResolved {
   const steps: RunWatchStepResolved[] = [];
   let distanceAsTime = 0;
   let paceOwed = 0;
@@ -234,7 +271,8 @@ export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresh
     const { band, from } = runStepBand(s, thresholdSecPerKm);
     if (from === null && s.role !== "recovery" && s.effort && paceBandFor(s.effort, SOME_THRESHOLD, distanceM !== undefined ? { distanceM } : {})) paceOwed += 1;
     const secs = runStepSeconds(s, thresholdSecPerKm);
-    if (s.target.kind === "distance") {
+    // v2 runs a distance as a distance: no pace is needed to time it, and it is never "as its time".
+    if (s.target.kind === "distance" && wire === "v1") {
       distanceAsTime += 1;
       if (secs === null) unresolved += 1;
     }
@@ -243,6 +281,7 @@ export function runWatchSteps(session: Pick<RunWatchSession, "segments">, thresh
       ...(s.effort ? { effort: s.effort } : {}),
       seconds: secs,
       ...(distanceM !== undefined ? { meters: distanceM } : {}),
+      ...(distanceM !== undefined && wire === "v2" ? { asDistance: true as const } : {}),
       pace: band,
       paceFrom: from,
     };

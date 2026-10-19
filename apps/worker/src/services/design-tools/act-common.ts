@@ -52,6 +52,7 @@ import { deriveDoc, validateWorkoutDoc, type DocDerived, type DocIssue, type Val
 import { defaultFromRow, defaultPlaceSql, namedFromRow, ownPlaceSql, type PlaceGear } from "../default-place.js";
 import { recentOf } from "../doc-workouts.js";
 import { runCtxOf, runCtxSql } from "../designed-runs.js";
+import { runWireOf } from "../../env.js";
 import { loadSessionsById } from "../engine-inputs.js";
 import { doneCleanlyOf, doneStats } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
@@ -492,6 +493,8 @@ export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: stri
       ? Object.fromEntries(Object.entries(a.athlete.readings).map(([id, r]) => [id, { pre: r.pre, post: null, feelingOff: r.feelingOff }]))
       : {};
   return {
+    // The run wire in use (§8 phase 2): a run's steps are counted as it writes them.
+    runWire: runWireOf(ctx.env),
     library: EXERCISES,
     activeProfiles: a.athlete.profiles,
     day: { date, today, readings, done, recent: recentOf(sessions, today) },

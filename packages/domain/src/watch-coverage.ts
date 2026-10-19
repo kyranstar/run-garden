@@ -43,7 +43,7 @@
  * both adapters reach the same verdict.
  */
 import type { CoachExercise, CoachSession } from "./coach.js";
-import { isRunWatchSession, runWatchSteps, type RunWatchSession } from "./run-watch.js";
+import { isRunWatchSession, runWatchSteps, type RunWatchSession, type RunWire } from "./run-watch.js";
 
 /**
  * How much of what Run Garden holds reaches the watch.
@@ -145,6 +145,8 @@ export interface WatchSessionShape {
   /** A designed run (§8 §3): its distance blocks go as their time (`distance_as_time`), unless `untimed` of them have
    * no pace to time them by. */
   distanceAsTime?: { untimed: number };
+  /** A designed run on the v2 wire (§8 phase 2): its distance blocks go to the watch as distances — no gap at all. */
+  distanceOnWatch?: true;
   /** Blocks that name an intensity the wire will carry no pace band for.
    * A caller that cannot know (the manifest has no threshold pace) passes 0,
    * which is the honest answer: it declines to claim rather than guess. */
@@ -170,7 +172,7 @@ export function watchCoverage(shape: WatchSessionShape): WatchCoverageView {
     if (shape.runBlocks.length === 0) {
       return { ...base, coverage: "none", gaps: [{ code: "empty_body" }] };
     }
-    const distances = shape.runBlocks.filter((b) => b === "distance").length;
+    const distances = shape.distanceOnWatch ? 0 : shape.runBlocks.filter((b) => b === "distance").length;
     if (distances > 0 && !shape.distanceAsTime) {
       return { ...base, coverage: "none", gaps: [{ code: "distance_target" }] };
     }
@@ -239,18 +241,19 @@ export function watchSessionShape(s: CoachSession): WatchSessionShape {
  * each step a block; its distances go as their time, and the steps owed a band are counted — the caller holds the
  * threshold, so the count is a claim it can make (null: none known).
  */
-export function runWatchShape(s: RunWatchSession, thresholdSecPerKm: number | null): WatchSessionShape {
-  const r = runWatchSteps(s, thresholdSecPerKm);
+export function runWatchShape(s: RunWatchSession, thresholdSecPerKm: number | null, wire: RunWire = "v1"): WatchSessionShape {
+  const r = runWatchSteps(s, thresholdSecPerKm, wire);
   return {
     discipline: "run",
     runBlocks: r.steps.map((step) => (step.meters !== undefined ? "distance" : "duration")),
     paceTargetsOwed: r.paceOwed,
     exercises: [],
-    distanceAsTime: { untimed: r.unresolved },
+    // v2 (§8 phase 2) runs a distance as a distance: nothing about it is a gap.
+    ...(wire === "v2" ? { distanceOnWatch: true as const } : { distanceAsTime: { untimed: r.unresolved } }),
   };
 }
 
 /** The coverage of a proposed session — the manifest's one call; a designed run's with the athlete's threshold. */
-export function sessionWatchCoverage(s: CoachSession | RunWatchSession, thresholdSecPerKm: number | null = null): WatchCoverageView {
-  return watchCoverage(isRunWatchSession(s) ? runWatchShape(s, thresholdSecPerKm) : watchSessionShape(s));
+export function sessionWatchCoverage(s: CoachSession | RunWatchSession, thresholdSecPerKm: number | null = null, wire: RunWire = "v1"): WatchCoverageView {
+  return watchCoverage(isRunWatchSession(s) ? runWatchShape(s, thresholdSecPerKm, wire) : watchSessionShape(s));
 }

@@ -432,3 +432,10 @@ describe("a renaming rewrite whose read-back throws is verified on its retry; an
     expect(same.error).toMatch(/2 .*stamp/);
   });
 });
+
+describe("the v1 builder refuses what only v2 can hold (§8 phase 2)", () => {
+  it("30 rounds of two parse as a job's session, and v1 — 62 steps written out — refuses to build it before any wire call", () => {
+    const long: RunWatchSession = { ...TEMPO, segments: [TEMPO.segments[0]!, { ...TEMPO.segments[1]!, rounds: 30 }, TEMPO.segments[2]!] };
+    expect(() => buildRunWatchProgram(spec(long))).toThrow(/62 steps.*60/);
+  });
+});

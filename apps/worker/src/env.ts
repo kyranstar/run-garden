@@ -1,3 +1,5 @@
+import type { RunWire } from "@rg/domain";
+
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
@@ -33,6 +35,10 @@ export interface Env {
    * approvable, and its free signals are the coach's "needs you" chips (coach-nudges.ts). The escape hatch: set it as a
    * Worker var or secret, no deploy. Var. */
   THREAD_COACH?: string;
+  /** "1" puts designed runs on the v2 run wire (§8 phase 2): a distance as a distance (`targetType 5`) and a part's
+   * rounds as one repeat group. Anything else (absent everywhere, pinned): v1, phase 1's wire — every step a time, the
+   * repeats written out. The owner's live check reads both through `POST /api/coros/spike/run-wire` first. Var. */
+  RUN_WIRE_V2?: string;
   /** Fixture mode only (the fixture stack, local dev): a design call's deadline in ms, shorter than the 10 minutes
    * (llm-messages.ts `designModelTimeoutMs`), so the e2e's takeover of a step that died waits seconds, not 11 minutes.
    * Ignored outside fixture mode; never set in wrangler.toml (pinned). Var. */
@@ -83,6 +89,9 @@ export const watchPushEnabled = (env: Env | undefined): boolean => env?.WATCH_PU
 /** The coach designer's switch: staging, or COACH_DESIGNER = "1". A missing env (a test host with none) is off. */
 export const coachDesignerEnabled = (env: Env | undefined): boolean =>
   !!env && (stagingEnabled(env) || env.COACH_DESIGNER === "1");
+
+/** The run wire (§8 phase 2): only "1" is v2. A missing env (a test host with none) is v1. */
+export const runWireOf = (env: Env | undefined): RunWire => (env?.RUN_WIRE_V2 === "1" ? "v2" : "v1");
 
 /** The thread coach's switch (§8 §6): only "1" is on. A missing env (a test host with none) is off. */
 export const threadCoachEnabled = (env: Env | undefined): boolean => env?.THREAD_COACH === "1";

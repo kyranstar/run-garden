@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { runWireOf, type Env } from "../src/env.js";
 
 const toml = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
 const staging = toml.includes("[env.staging]") ? toml.slice(toml.indexOf("[env.staging]")) : "";
@@ -83,5 +84,22 @@ describe("the coach's step alarm: a Durable Object per run (the robustness pass,
     expect(dev).toMatch(binding(""));
     expect(dev).toMatch(/^\[\[migrations\]\]\s*\ntag = "v1"\s*\nnew_sqlite_classes = \["CoachRunStepper"\]\s*$/m);
     expect(readFileSync(new URL("../../web/e2e/fixture-stack.sh", import.meta.url), "utf8")).toContain("--var COACH_STEP_ALARM:1");
+  });
+});
+
+describe("the run wire's switch (§8 phase 2): RUN_WIRE_V2, off everywhere it is not asked for", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("is absent from production, staging, local dev and the fixture stack — so v1, phase 1's wire", () => {
+    expect(toml).not.toMatch(/RUN_WIRE/);
+    expect(read("../wrangler.dev.toml")).not.toMatch(/RUN_WIRE/);
+    expect(read("../../web/e2e/fixture-stack.sh")).not.toMatch(/RUN_WIRE/);
+  });
+
+  it("only \"1\" is v2; anything else — absent, \"0\", \"true\", no env at all — is v1", () => {
+    const env = (v?: string) => ({ ...(v !== undefined ? { RUN_WIRE_V2: v } : {}) }) as unknown as Env;
+    expect(runWireOf(env("1"))).toBe("v2");
+    for (const v of [undefined, "0", "true", ""]) expect(runWireOf(env(v))).toBe("v1");
+    expect(runWireOf(undefined)).toBe("v1");
   });
 });

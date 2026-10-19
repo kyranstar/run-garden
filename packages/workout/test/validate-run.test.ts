@@ -96,11 +96,13 @@ describe("the watch's own limits on a run", () => {
   });
 
   it("run_too_long: more than 60 steps once the repeats are written out", () => {
-    const reps = (rounds: number) => docOf([part("run", "intervals", [run("interval", { durationSec: 60 }), run("recovery", { durationSec: 60 })], { rounds })]);
-    expect(check(reps(30))).toEqual([]);
-    const issues = check(reps(31));
+    // Three steps a round (rounds within the 30 a part takes, §8 phase 2): 20 rounds are 60 steps, 21 are 63.
+    const reps = (rounds: number) =>
+      docOf([part("run", "intervals", [run("interval", { durationSec: 60 }), run("recovery", { durationSec: 60 }), run("easy", { durationSec: 30 })], { rounds })]);
+    expect(check(reps(20))).toEqual([]);
+    const issues = check(reps(21));
     expect(codes(issues)).toEqual(["error:run_too_long@parts"]);
-    expect(issues[0]!.message).toBe("This run has 62 steps once its repeats are written out, and the watch takes 60: fewer repeats, or longer ones.");
+    expect(issues[0]!.message).toBe("This run has 63 steps once its repeats are written out, and the watch takes 60: fewer repeats, or longer ones.");
   });
 });
 
@@ -192,5 +194,37 @@ describe("run_volume_jump", () => {
     expect(codes(check(TEMPO, { weekMinutes: 171, fourWeekAvgMinutes: 200 }))).toEqual(["warning:run_volume_jump@parts"]);
     expect(check(TEMPO, { weekMinutes: 500, fourWeekAvgMinutes: null })).toEqual([]);
     expect(check(TEMPO, { weekMinutes: 500, fourWeekAvgMinutes: 0 })).toEqual([]);
+  });
+});
+
+describe("the watch's own limits, on the wire in use (§8 phase 2)", () => {
+  const withWire = (doc: WorkoutDoc, runWire?: "v1" | "v2") =>
+    validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: [], day: { date: DAY, today: DAY, readings: {} }, run: { ...RUN }, ...(runWire ? { runWire } : {}) });
+  const reps = (rounds: number) =>
+    docOf([part("run", "intervals", [run("interval", { durationSec: 60 }), run("recovery", { durationSec: 60 }), run("easy", { durationSec: 30 })], { rounds })]);
+
+  it("run_too_long counts the steps as the wire in use writes them: v2's group is its children and one", () => {
+    // 25 rounds of three: 75 steps written out (v1, the default), 4 on v2.
+    expect(codes(withWire(reps(25)).filter((i) => i.code === "run_too_long"))).toEqual(["error:run_too_long@parts"]);
+    expect(withWire(reps(25), "v2").filter((i) => i.code === "run_too_long")).toEqual([]);
+  });
+
+  it("more than 30 rounds is too long on either wire", () => {
+    const one = (rounds: number) => docOf([part("run", "intervals", [run("strides", { durationSec: 20 })], { rounds })]);
+    for (const wire of ["v1", "v2"] as const) {
+      expect(withWire(one(30), wire).filter((i) => i.code === "run_too_long")).toEqual([]);
+      const issues = withWire(one(31), wire).filter((i) => i.code === "run_too_long");
+      expect(codes(issues)).toEqual(["error:run_too_long@parts[0].rounds"]);
+      expect(issues[0]!.message).toBe("This part has 31 rounds, and the watch takes 30: fewer rounds, or longer ones.");
+    }
+  });
+
+  it("with no threshold on v2, a distance is not owed a pace to be timed: the watch shows the steps without pace targets", () => {
+    const issues = withWire(docOf([part("run", "steady", [run("easy", { distanceM: 5000 })])], "maintain"), "v2").map((i) => i);
+    const owed = validateWorkoutDoc(docOf([part("run", "steady", [run("easy", { distanceM: 5000 })])], "maintain"), {
+      library: EXERCISES, activeProfiles: [], day: { date: DAY, today: DAY, readings: {} }, run: { ...RUN, thresholdSecPerKm: null }, runWire: "v2",
+    });
+    expect(issues.filter((i) => i.code === "run_pace_owed")).toEqual([]);
+    expect(owed.map((i) => i.message)).toEqual(["No threshold pace is known yet, so the watch shows this run's steps with no pace targets."]);
   });
 });
