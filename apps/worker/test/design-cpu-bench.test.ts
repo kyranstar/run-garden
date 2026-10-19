@@ -86,6 +86,7 @@ import { reviewPacket, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/servic
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
+import { MAX_PLAN_SESSIONS } from "../src/services/design-tools/propose-plan.js";
 import { isToolErr, type DraftForReview, type OpReview, type SetHooks, type SetRound, type ToolContext } from "../src/services/design-tools/types.js";
 import { utf8Bytes } from "../src/services/utf8.js";
 import { validateWorkout } from "../src/services/design-tools/validate.js";
@@ -804,22 +805,38 @@ beforeAll(async () => {
     for (const [name, input] of reads) await measureTool(name, images.get("read12")!, ctx, input);
     await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });
     await measureTool("propose_workout", images.get("read12")!, ctx, { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) });
-    // propose_plan at its heaviest (§8 §5): forty lift sessions over two weeks, four moves each, and four shape weeks —
-    // the guardrails over the whole plan, the catalog's names, the manifest's lines.
+    // propose_plan at its heaviest (§8 §5; the decision guidance's fix round, I1): MAX_PLAN_SESSIONS (24) lift and
+    // mobility sessions over its two firm weeks — today's and the next — four moves each from three sets, at four
+    // categories (three efforts: maintain, develop, recover), the recovery ones raising the active condition profile's
+    // softer findings, and four shape weeks: the guardrails over the whole plan, the condition rules' check (one
+    // document a day class and effort), the catalog's names, the manifest's lines. The rich athlete's profile is on:
+    // the probe first proves the check runs here (a later day's jump is refused).
     {
-      const monday = "2026-05-18";
-      const session = (n: number) => ({
-        category: "strength",
-        title: `Strength ${n}`,
-        durationMinutes: 45,
-        lift: { exercises: ["Goblet squat", "Romanian deadlift", "Split squat", "Plank"].map((name) => ({ name, sets: 3, reps: 8, note: words(n, 60) })) },
-      });
-      const firmSessions = Array.from({ length: 40 }, (_, n) => ({ date: addDays(monday, Math.floor(n / 20) * 7 + (n % 7)), session: session(n) }));
-      const shapeWeeks = [2, 3, 4, 5].map((w) => ({ weekStart: addDays(monday, 7 * w), volumeTarget: words(w, 40), keySessions: [words(w, 60), words(w + 1, 60)] }));
-      await measureTool("propose_plan", images.get("read12")!, ctx, {
-        change: { kind: "createPlan", discipline: "lift", name: "Strength block", startDate: monday, endDate: addDays(monday, 41), firmSessions, shapeWeeks },
+      const tool = allTools().find((t) => t.name === "propose_plan")!;
+      const moves = [
+        ["Goblet squat", "Romanian deadlift", "Split squat", "Farmer carry"],
+        ["Prone Y-T-W raises", "Push-up pull-through", "Short Copenhagen side plank", "Dead bug"],
+        ["Cat-cow", "World's greatest stretch", "90/90 hip switch", "Glute bridge"],
+      ];
+      const categories = ["strength", "quality", "recovery", "yoga"] as const;
+      const session = (n: number, names = moves[n % 3]!) => {
+        const category = categories[n % 4]!;
+        const body = { exercises: names.map((name) => ({ name, sets: 3, reps: 8, note: words(n, 60) })) };
+        return { category, title: `Session ${n}`, durationMinutes: 40, ...(category === "yoga" ? { mobility: body } : { lift: body }) };
+      };
+      // Twelve a week: today's week from today (Wed 13 May: five days), the next whole.
+      const firmSessions = Array.from({ length: MAX_PLAN_SESSIONS }, (_, n) => ({ date: n < 12 ? addDays(TODAY, n % 5) : addDays(TODAY, 5 + (n % 7)), session: session(n) }));
+      const monday = addDays(TODAY, 5);
+      const shapeWeeks = [1, 2, 3, 4].map((w) => ({ weekStart: addDays(monday, 7 * w), volumeTarget: words(w, 40), keySessions: [words(w, 60), words(w + 1, 60)] }));
+      const plan = (sessions: typeof firmSessions) => ({
+        change: { kind: "createPlan", discipline: "lift", name: "Strength block", startDate: TODAY, endDate: addDays(monday, 34), firmSessions: sessions, shapeWeeks },
         why: words(7, 280),
       });
+      const probe = open(images.get("read12")!);
+      const refused = await tool.run(ctx(probe), plan([...firmSessions.slice(1), { date: addDays(TODAY, 6), session: session(1, ["Pogo hops"]) }]));
+      probe.close();
+      if (!isToolErr(refused) || refused.error !== "plan_refused") throw new Error("8. propose_plan: the condition rules' check didn't run in the bench's world");
+      await measureTool("propose_plan", images.get("read12")!, ctx, plan(firmSessions));
     }
     await measureTool("ask_athlete", images.get("read12")!, ctx, {
       questions: [{ text: "How tight are the calves today?", chips: [{ label: "a little", value: 2 }, { label: "a lot", value: 7 }], why: "It sets the range.", checkin: { question: "tightness", area: "calves" } }],

@@ -47,7 +47,7 @@ import { z } from "zod";
 import { accountState, coachPlans, coachProposals } from "@rg/database";
 import { addDays, coachOpSchema, dayLabel, daysBetween, describeOps, isoWeekday, validateOps, type CoachOp, type OpLine } from "@rg/domain";
 import { guardrailCtx } from "../coach-wake.js";
-import { loadExerciseIndex, resolveOpsExercises } from "../exercise-catalog.js";
+import { buildExerciseIndex, exerciseNameMap, resolveOpsExercises } from "../exercise-catalog.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
 import {
@@ -66,8 +66,9 @@ import { LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const WHY_MAX = 300;
-/** The most sessions one plan change writes (§8 §5). */
-export const MAX_PLAN_SESSIONS = 40;
+/** The most sessions one plan change writes (§8 §5): two weeks of up to twelve — 40 until the decision guidance's fix
+ * round (2026-10-18, I1), which cut what the condition check and the apply may have to judge and write. */
+export const MAX_PLAN_SESSIONS = 24;
 /** The most weeks one plan change fills in: the rest are shape weeks, firmed up as they come (§8 §2.4). */
 export const MAX_FIRM_WEEKS = 2;
 /** The condition findings a refusal names before "and N more". */
@@ -348,12 +349,18 @@ export const proposePlan: DesignTool = {
         "Fix what they name — a date still to come, a session on the plan, a block of yours — and call it again.",
       );
     }
+    // The athlete's COROS catalog, read once when a session names exercises: the watch identity the wake gives them, and
+    // (fix round M3) a second way to the library for the condition check.
+    const namesMoves = sessions.some((s) => "session" in s && ((s as { session: { lift?: unknown; mobility?: unknown } }).session.lift || (s as { session: { mobility?: unknown } }).session.mobility));
+    const catalogNames = namesMoves ? await exerciseNameMap(ctx.db) : null;
+    const catalog = catalogNames ? { index: buildExerciseIndex(catalogNames), names: catalogNames } : null;
     // A condition's rules hold at every write path (§2.7; 2026-10-18, decision guidance): a lift or mobility session's
-    // moves are judged as a document's are, and a hit is fatal.
+    // moves are judged as a document's are, and a hit — or a move that can't be checked — is fatal.
     const conditions = planConditionFindings(sessions as PlanSession[], {
       profiles: athlete.profiles,
       readings: Object.fromEntries(Object.entries(athlete.readings).map(([id, r]) => [id, { pre: r.pre, post: null, feelingOff: r.feelingOff }])),
       today: athlete.today,
+      catalog,
     });
     if (conditions.length > 0) {
       const shown = conditions.slice(0, CONDITION_FINDINGS_SHOWN).join("; ");
@@ -363,10 +370,8 @@ export const proposePlan: DesignTool = {
         "Use moves the athlete's conditions allow on any day — or design that strength or mobility as reviewed workouts with plan_set, where a move can carry an alternate.",
       );
     }
-    // A lift's exercises get their watch identity, as the wake gives them (one read, only when a session names one).
-    if (sessions.some((s) => "session" in s && ((s as { session: { lift?: unknown; mobility?: unknown } }).session.lift || (s as { session: { mobility?: unknown } }).session.mobility))) {
-      resolveOpsExercises([op as CoachOp], await loadExerciseIndex(ctx.db));
-    }
+    // A lift's exercises get their watch identity, as the wake gives them (the catalog read above).
+    if (catalog) resolveOpsExercises([op as CoachOp], catalog.index);
     const overlaps = (parsedArray(extra.overlaps) as Array<{ name?: unknown; start?: unknown; end?: unknown }>).flatMap((b) =>
       typeof b.name === "string" && typeof b.start === "string" && typeof b.end === "string"
         ? [{ code: "plan_overlap", message: `Overlaps your ${b.name} (${dayMonth(b.start)} – ${dayMonth(b.end)})` }]

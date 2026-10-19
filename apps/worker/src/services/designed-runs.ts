@@ -172,7 +172,8 @@ export function runningLine(f: RunningFacts, units: "km" | "mi"): string {
  */
 export function watchLine(o: { writesOn: boolean; wire: RunWire; thresholdKnown: boolean }): string {
   if (!o.writesOn) return "On the watch: nothing for now — the athlete's COROS writes are off, so what they approve stays in the app.";
-  if (o.wire === "v2") return "On the watch: a distance step goes as a distance, and a part's rounds as one repeat group.";
+  // A part with a rest between its rounds is written out round by round (`runSegmentGroups`).
+  if (o.wire === "v2") return "On the watch: a distance step goes as a distance, and a part's rounds as one repeat group (a rest between rounds writes them out).";
   const untimed = o.thresholdKnown ? "" : " — with no threshold known it can't be timed, and keeps its run off the watch";
   return `On the watch: a run's repeats go written out, and a distance step as its time at its band's middle${untimed}.`;
 }

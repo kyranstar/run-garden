@@ -22,11 +22,11 @@ import { roleBlock, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { watchLine } from "../src/services/designed-runs.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
-import { proposePlan } from "../src/services/design-tools/propose-plan.js";
+import { MAX_PLAN_SESSIONS, proposePlan } from "../src/services/design-tools/propose-plan.js";
 import { isToolErr, type SetHooks, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import type { PlanStructureOp } from "../src/services/proposal-kinds.js";
 import { at, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
-import { isWrite, makeTestDb } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 // ── The prompt: criteria for each decision, where the role that makes it reads them ─────────────────────────────────
 
@@ -40,8 +40,11 @@ describe("the prompt's criteria, each in its role's block", () => {
   it("1. time or distance: the criteria in the shared Runs paragraph (a designer writes runs too), wire-neutral; a plan's sessions timed in the main block", () => {
     expect(runs).toContain("with durationSec or distanceM, one of them, and a why.");
     expect(runs).toContain(
-      "Time or distance is yours to choose: a distance when the athlete names one, for track or race-specific reps, and for a long run built to a distance goal; time for easy and recovery running, warm-ups and cool-downs, hills, strides, heat or trails, and whenever no threshold is known.",
+      "Time or distance is yours to choose: a distance when the athlete names one, for track or race-specific reps, and for a long run built to a distance goal; time for easy and recovery running, warm-ups and cool-downs, hills, strides, heat or trails.",
     );
+    // What no threshold means for a distance depends on the wire in force: the opening message's watch line says it
+    // (fix round M1), never the cached prefix.
+    expect(SHARED_PROMPT).not.toContain("whenever no threshold is known");
     // The wire is the opening message's (`watchLine`), never the cached prefix's.
     expect(runs).not.toContain("a distance runs as its time");
     expect(runs).not.toContain("repeats are written out");
@@ -50,8 +53,11 @@ describe("the prompt's criteria, each in its role's block", () => {
     expect(others).not.toContain("Give plan sessions timed blocks");
   });
 
-  it("2. heart rate: the watch holds pace — an HR cap or a zone is an easy or recovery effort, the cap in the cue", () => {
-    expect(runs).toContain('The watch holds pace, not heart rate: an HR cap or "zone 2" is an easy or recovery effort, the cap said in the cue.');
+  it("2. heart rate: the watch holds pace — an HR cap or a zone is an easy or recovery effort, the cap said where it is seen and in the cue", () => {
+    // The cue reaches only the stage notes (fix round M4): the intent summary or the segment's why is what the card shows.
+    expect(runs).toContain(
+      'The watch holds pace, not heart rate: an HR cap or "zone 2" is an easy or recovery effort, the cap said in the intent summary or the segment\'s why, and in its cue.',
+    );
   });
 
   it("3. race pace: a goal race's pace on reps is a named pace with the nearest effort; effort race is a segment over its own distance", () => {
@@ -84,9 +90,9 @@ describe("the prompt's criteria, each in its role's block", () => {
     expect(session).toContain("Only a session of duration blocks goes to the watch.");
   });
 
-  it("7. no threshold: time steps, and a stated race result can set the pace", () => {
-    expect(runs).toContain("whenever no threshold is known");
+  it("7. no threshold: a stated race result can set the pace; what it means for a distance is the opening message's", () => {
     expect(runs).toContain("With no threshold known, a recent race result the athlete states can set target.pace.");
+    expect(watchLine({ writesOn: true, wire: "v1", thresholdKnown: false })).toContain("with no threshold known it can't be timed");
   });
 
   it("9. watch or app: a run goes only while COROS writes are on, strength stays until sent — never promise a watch copy beyond that", () => {
@@ -134,7 +140,9 @@ describe("the opening message's watch line", () => {
     expect(watchLine({ writesOn: true, wire: "v1", thresholdKnown: false })).toBe(
       "On the watch: a run's repeats go written out, and a distance step as its time at its band's middle — with no threshold known it can't be timed, and keeps its run off the watch.",
     );
-    expect(watchLine({ writesOn: true, wire: "v2", thresholdKnown: false })).toBe("On the watch: a distance step goes as a distance, and a part's rounds as one repeat group.");
+    expect(watchLine({ writesOn: true, wire: "v2", thresholdKnown: false })).toBe(
+      "On the watch: a distance step goes as a distance, and a part's rounds as one repeat group (a rest between rounds writes them out).",
+    );
     expect(watchLine({ writesOn: false, wire: "v2", thresholdKnown: true })).toBe(
       "On the watch: nothing for now — the athlete's COROS writes are off, so what they approve stays in the app.",
     );
@@ -156,7 +164,9 @@ describe("the opening message's watch line", () => {
         const i = lines.findIndex((l) => l.startsWith("Running:"));
         expect(lines[i + 1], role).toMatch(/^On the watch: a run's repeats go written out, and a distance step as its time at its band's middle/);
       }
-      expect(await header({ RUN_WIRE_V2: "1" }, true)).toContain("On the watch: a distance step goes as a distance, and a part's rounds as one repeat group.");
+      expect(await header({ RUN_WIRE_V2: "1" }, true)).toContain(
+        "On the watch: a distance step goes as a distance, and a part's rounds as one repeat group (a rest between rounds writes them out).",
+      );
       expect(await header({ RUN_WIRE_V2: "1" }, false)).toContain("On the watch: nothing for now — the athlete's COROS writes are off, so what they approve stays in the app.");
       // The cached prefix carries neither wire's words.
       expect(SHARED_PROMPT).not.toContain("On the watch:");
@@ -259,9 +269,41 @@ describe("propose_plan: what the card says of the watch, and what the condition 
     expect(recovery.why).toMatch(/^The condition rules refuse it: Wed 13 May · Easy legs: Pogo hops isn't allowed on a .+ day with .+\.$/);
   });
 
-  it("a mobility session is judged too, and a name the library doesn't know stays the coach's, unjudged", async () => {
+  it("a mobility session is judged too", async () => {
     const mobility = { category: "yoga", title: "Loosen up", durationMinutes: 20, mobility: { exercises: [{ name: "Pogo hops", sets: 1, holdSeconds: 30 }] } };
     expect(refused((await propose(block("lift", [{ date: "2026-05-19", session: mobility }]))).res).why).toContain("Tue 19 May · Loosen up: Pogo hops");
-    ok((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", ["A move no library holds"]) }]))).res);
+  });
+
+  it("while a condition profile is on, a move no library or COROS name resolves can't be checked: refused, each name in words (fix round M3)", async () => {
+    const names = ["Pogo Jumps", "Jump squat", "Burpees", "Jumping jacks"];
+    const e = refused((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", names) }]))).res);
+    expect(e.error).toBe("plan_refused");
+    expect(e.why).toBe(
+      `The condition rules refuse it: ${names.map((n) => `Tue 19 May · Legs: I can't check '${n}' against your conditions — pick a move from the library`).join("; ")}.`,
+    );
+    expect(e.fix).toContain("plan_set");
+  });
+
+  it("a name the athlete's COROS catalog resolves to a library move is judged as that move — and unresolved without it", async () => {
+    // COROS's "Straight-Leg Hops" (T1260) is the library's pogo hops; the coach's words match it only through the catalog.
+    const words = "Hops straight leg";
+    expect(refused((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", [words]) }]))).res).why).toContain(`I can't check '${words}'`);
+    await db.insert(schema.corosExercises).values({ id: "catalog-1", name: "T1260", raw: { id: "catalog-1", name: "T1260" }, updatedAt: NOW.toISOString() });
+    const judged = refused((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", [words]) }]))).res);
+    expect(judged.why).toMatch(/^The condition rules refuse it: Tue 19 May · Legs: Pogo hops depends on that day's .+ check, and a plan session can't carry an alternate\.$/);
+  });
+
+  it("with no condition profile on, an unknown name stays the coach's, unjudged, as before", async () => {
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    ok((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", ["Jump squat", "Pogo hops"]) }]), userId)).res);
+  });
+
+  it(`a plan change writes ${MAX_PLAN_SESSIONS} sessions at most — two weeks of up to twelve (fix round I1)`, async () => {
+    expect(MAX_PLAN_SESSIONS).toBe(24);
+    const days = (n: number) => Array.from({ length: n }, (_, i) => ({ date: i < 12 ? "2026-05-18" : "2026-05-25", session: easyRun(20) }));
+    ok((await propose(block("run", days(24)))).res);
+    const over = refused((await propose(block("run", days(25)))).res);
+    expect(over.error).toBe("too_many_sessions");
+    expect(over.why).toBe("It writes 25 sessions; one plan change writes at most 24.");
   });
 });

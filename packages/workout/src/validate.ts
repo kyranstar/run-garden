@@ -433,7 +433,10 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   const equipment = ctx.equipment;
   const done = day?.done ? new Set([...day.done].map(canonical)) : null;
   const isDone = (id: string): boolean => done !== null && done.has(canonical(id));
-  const guessExercise = guesser(ctx.library.flatMap((e) => [[e.id, e.id], [e.name, e.id]] as const));
+  // Built only when a move is unknown and needs a fix (2026-10-18, the decision guidance's fix round): built on every
+  // call, it was three quarters of a small document's check — propose_plan's condition check runs one a day and effort.
+  let guessIndex: ((s: string) => string | undefined) | null = null;
+  const guessExercise = (s: string): string | undefined => (guessIndex ??= guesser(ctx.library.flatMap((e) => [[e.id, e.id], [e.name, e.id]] as const)))(s);
   const issues: DocIssue[] = [];
   /** Records an issue; a fix that came out undefined is left off. */
   const add = (issue: DocIssue): void => {

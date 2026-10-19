@@ -18,7 +18,7 @@ import { APPLYING_STALE_MS, approveDesignOps, REQUEST_BUDGET, type DesignedStruc
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
-import { mondayOf, proposePlan } from "../src/services/design-tools/propose-plan.js";
+import { MAX_PLAN_SESSIONS, mondayOf, proposePlan } from "../src/services/design-tools/propose-plan.js";
 import { isToolErr, type ToolContext } from "../src/services/design-tools/types.js";
 import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
 
@@ -193,13 +193,14 @@ describe("approving a whole plan", () => {
     expect((await sessionsOf(planId)).length).toBe(7);
   });
 
-  it("forty sessions over two weeks of lifts: every request within 45, until all forty are on the plan", async () => {
-    const id = await planned(createPlan({ perWeek: 20, weeks: 2, discipline: "lift" }));
+  // The most one plan change writes: MAX_PLAN_SESSIONS, 24 since the decision guidance's fix round (2026-10-18, I1).
+  it(`${MAX_PLAN_SESSIONS} sessions over two weeks of lifts: every request within 45, until all of them are on the plan`, async () => {
+    const id = await planned(createPlan({ perWeek: MAX_PLAN_SESSIONS / 2, weeks: 2, discipline: "lift" }));
     const { answers, costs } = await approveAll(id);
     for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
-    console.log(`[plan approve] 40 lift sessions: ${costs.length} requests, statements ${costs.join(", ")}`);
+    console.log(`[plan approve] ${MAX_PLAN_SESSIONS} lift sessions: ${costs.length} requests, statements ${costs.join(", ")}`);
     expect(answers.at(-1)!.status).toBe("approved");
-    expect((await sessionsOf(`cp-${id}-0`)).filter((r) => !r.archivedAt)).toHaveLength(40);
+    expect((await sessionsOf(`cp-${id}-0`)).filter((r) => !r.archivedAt)).toHaveLength(MAX_PLAN_SESSIONS);
     // Between requests the plan read sensibly: the claim released at once (the next request took it straight over).
     expect(answers.filter((a) => (a.inFlight ?? []).length > 0)).toEqual([]);
   });

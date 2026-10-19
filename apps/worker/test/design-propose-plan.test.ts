@@ -273,7 +273,8 @@ describe("propose_plan: refused in words, nothing written", () => {
     const weeks = refused((await propose(run, { change: createPlan({ sessions: three }), why: "x" })).res);
     expect(weeks.error).toBe("too_many_weeks");
     expect(weeks.fix).toMatch(/shape weeks/);
-    const many = Array.from({ length: 41 }, (_, i) => ({ date: i < 21 ? "2026-05-18" : "2026-05-25", session: easy(20) }));
+    // One past the cap (24 since the decision guidance's fix round, I1: two weeks of up to twelve).
+    const many = Array.from({ length: MAX_PLAN_SESSIONS + 1 }, (_, i) => ({ date: i < MAX_PLAN_SESSIONS / 2 ? "2026-05-18" : "2026-05-25", session: easy(20) }));
     expect(refused((await propose(run, { change: createPlan({ sessions: many }), why: "x" })).res).error).toBe("too_many_sessions");
     expect(await opsOf(run.id)).toBeUndefined();
   });

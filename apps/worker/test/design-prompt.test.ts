@@ -13,6 +13,10 @@ import { submitReview } from "../src/services/design-review.js";
 import { proposeWorkout } from "../src/services/design-tools/propose.js";
 
 const ROLES = ["main", "designer", "reviewer"] as const;
+/** Each role block's cap, in tokens at 4 characters. The main block's REBASED 2026-10-18 for the decision guidance (a run's
+ * length on the watch, plan_set or propose_plan, a plan's timed sessions, a programme's settings) to match
+ * design-fix13-prompt.test.ts's 1,540 — measured 1,488; the others hold at 1,500. */
+const ROLE_CAP = { main: 1540, designer: 1500, reviewer: 1500 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
@@ -275,7 +279,7 @@ describe("3A-B — the prompt agrees with the code", () => {
       const n = RUN_LIMITS[role].maxCalls;
       expect(roleBlock(role, n), role).toContain(`You have about ${n} turns; ${role === "reviewer" ? "submit your review" : "finish"} well before the last.`);
       expect(roleBlock(role), role).not.toMatch(/You have about/);
-      expect(roleBlock(role, n).length / 4, role).toBeLessThanOrEqual(1500);
+      expect(roleBlock(role, n).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
     }
   });
 
@@ -300,7 +304,7 @@ describe("3A-B — the prompt agrees with the code", () => {
 
   it("stays within its size: the shared prefix and each role block with its budget", () => {
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
-    for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(1500);
+    for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });
 
