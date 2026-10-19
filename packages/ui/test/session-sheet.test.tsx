@@ -20,6 +20,7 @@ import { ApiError, type ReviewBasisDto, type SessionDto, type SessionExerciseDto
 import { features } from "../src/features.js";
 import { SessionSheet, blockLabel, blocksInPlayOrder, reasonLine, removeRefusal, sendingPollClock } from "../src/components/session-sheet.js";
 import { focusAfterRemove } from "../src/screens/week-view.js";
+import { Sheet } from "../src/components.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
@@ -1737,28 +1738,80 @@ describe("a document workout in the sheet, CUJ wave", () => {
     expect(body()).toContain("It comes off your plan, your calendar and your watch.");
   });
 
-  it("removed: focus goes to the next card of its day, never to the page (re-review N3)", async () => {
-    // The Plan's week, as the sheet leaves it: the day's cell, this workout's card and another.
+  /**
+   * The Plan's week, as the sheet leaves it — the day's cell, this workout's card and another — and the sheet open on
+   * the workout with its Remove confirm up. `programs` answers the plan's reads after the DELETE (by default, as before it).
+   */
+  async function removing(opts: { queries?: Record<string, unknown>; programs?: () => Response | undefined } = {}) {
     const week = document.createElement("div");
     week.className = "plan-week-grid";
     week.innerHTML = `<div data-date="${TODAY}"><div class="plan-week-date" tabindex="-1">MON 5</div><div class="plan-week-items"><button class="cal-card" data-workout="${SLOT}">Leg day</button><button class="cal-card" data-workout="w-other">Easy run</button></div></div>`;
     document.body.appendChild(week);
+    let deleted = false;
+    const { calls } = mount(docSession(), {
+      w: docRow(),
+      queries: opts.queries,
+      route: (call) => {
+        if (call.method === "DELETE") {
+          deleted = true;
+          return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return deleted && call.path === "/api/programs" ? opts.programs?.() : undefined;
+      },
+    });
+    await until(() => !!button("Remove") && body().includes("Goblet squat"), "the session read");
+    await click("Remove");
+    const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter((b) => b.textContent === "Remove").pop()!;
+    const reads = () => calls.filter((c) => c.path === "/api/programs").length;
+    const before = reads();
+    return { week, confirm, readsAfterDelete: () => reads() - before };
+  }
+  const onNextCard = () => document.activeElement?.textContent === "Easy run";
+
+  it("removed: focus goes to the next card of its day, never to the page (re-review N3)", async () => {
+    const { week, confirm } = await removing();
     try {
-      mount(docSession(), {
-        w: docRow(),
-        route: (call) => (call.method === "DELETE" ? new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }) : undefined),
-      });
-      await until(() => !!button("Remove"), "Remove");
-      await click("Remove");
-      const confirm = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter((b) => b.textContent === "Remove").pop()!;
       await act(async () => confirm.click());
-      // The focus waits for the plan to be read again (four queries): on a loaded deploy runner that took over 1 s, then
-      // over 4 s (2026-10-19) — about 10 s here, inside the test's own 20 s.
-      await until(() => document.activeElement?.textContent === "Easy run", "focus on the next card", 2000);
+      await until(onNextCard, "focus on the next card");
     } finally {
       week.remove();
     }
-  }, 20_000);
+  });
+
+  it("…and stays there when the confirm closes after it moved — the deploy runner's order (2026-10-19)", async () => {
+    const { week, confirm } = await removing();
+    try {
+      // React commits the confirm's close when this act ends; the focus moves on inside it. That order failed the deploy
+      // twice (the closing confirm gave the focus back to the sheet, for good): here it is every time.
+      let confirmUpAsItMoved = false;
+      await act(async () => {
+        confirm.click();
+        for (let i = 0; i < 200 && !onNextCard(); i += 1) await new Promise((r) => setTimeout(r, 5));
+        confirmUpAsItMoved = onNextCard() && body().includes("Remove this workout?");
+      });
+      expect(confirmUpAsItMoved).toBe(true);
+      expect(body()).not.toContain("Remove this workout?");
+      expect(document.activeElement?.textContent).toBe("Easy run");
+    } finally {
+      week.remove();
+    }
+  });
+
+  it("…and waits on no read of the plan: one that fails, retried as the app retries, holds nothing (2026-10-19)", async () => {
+    const failed = () => new Response(JSON.stringify({ error: "internal" }), { status: 500, headers: { "Content-Type": "application/json" } });
+    const { week, confirm, readsAfterDelete } = await removing({
+      queries: { retry: (count: number) => count < 2 },
+      programs: failed,
+    });
+    try {
+      await act(async () => confirm.click());
+      await until(onNextCard, "focus on the next card");
+      // The read went out once; its retries (1 s, then 2 s) are still to come.
+      expect(readsAfterDelete()).toBe(1);
+    } finally {
+      week.remove();
+    }
+  });
 
 
   it("a Studio workout whose day passed undone can be done again too (B2)", async () => {
@@ -1819,5 +1872,38 @@ describe("focus after a workout is removed from the week (re-review N3)", () => 
     focusAfterRemove("2026-10-20", "gone");
     expect(document.activeElement?.textContent).toBe("Oct 12–18");
     el.remove();
+  });
+});
+
+describe("a dialog closing gives the focus back only while it is still the dialog's (2026-10-19)", () => {
+  const sheet = (open: boolean) =>
+    createElement(Sheet, { open, onClose: () => undefined, title: "A sheet", children: createElement("button", { type: "button" }, "Inside") });
+
+  it("from inside it, or dropped to the page, the focus goes back to what opened it; moved elsewhere, it stays there", () => {
+    const outside = document.createElement("div");
+    outside.innerHTML = `<button id="opener">Open</button><button id="elsewhere">Elsewhere</button>`;
+    document.body.appendChild(outside);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const opener = document.getElementById("opener")!;
+    try {
+      for (const [where, after] of [
+        ["inside", "opener"],
+        ["page", "opener"],
+        ["elsewhere", "elsewhere"],
+      ] as const) {
+        opener.focus();
+        act(() => root!.render(sheet(true)));
+        expect(document.activeElement?.getAttribute("role")).toBe("dialog");
+        if (where === "inside") document.querySelector<HTMLElement>('[role="dialog"] button:not([aria-label])')!.focus();
+        if (where === "page") (document.activeElement as HTMLElement).blur();
+        if (where === "elsewhere") document.getElementById("elsewhere")!.focus();
+        act(() => root!.render(sheet(false)));
+        expect(document.activeElement?.id, where).toBe(after);
+      }
+    } finally {
+      outside.remove();
+    }
   });
 });

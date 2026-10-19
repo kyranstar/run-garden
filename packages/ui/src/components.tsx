@@ -1272,7 +1272,12 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean
       document.removeEventListener("keydown", onKey);
       modalDepth -= 1;
       if (modalDepth === 0) document.body.style.overflow = "";
-      opener?.focus();
+      // Given back only while the focus is still the dialog's — inside it, or dropped to the page as it left. Put
+      // somewhere else, something moved it on purpose (a removed workout's next card, `focusAfterRemove`), and a
+      // dialog that closes after that never takes it back: the order of the two is the renderer's, not ours
+      // (2026-10-19, a deploy runner's tests).
+      const active = document.activeElement;
+      if (!active || active === document.body || dialog?.contains(active)) opener?.focus();
     };
   }, [ref, open]);
 }

@@ -261,12 +261,14 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const [removing, setRemoving] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteWorkout(w.id),
-    onSuccess: async () => {
+    onSuccess: () => {
       setRemoving(false);
       onClose();
-      // Its card goes once the plan is read again: focus moves on to the next card of its day, else the day's heading,
-      // never to the page (re-review N3).
-      await Promise.all(PLAN_QUERIES.map((k) => qc.invalidateQueries({ queryKey: [k] }))).catch(() => undefined);
+      // Focus moves on to the next card of its day, else the day's heading, never to the page (re-review N3) — now,
+      // not once the plan is read again: that card is there before the read and after it, and a read that fails is
+      // retried for seconds (twice, 1 s then 2 s; offline, until the connection is back), which the focus never waits
+      // on. Its card goes when the read answers. The dialogs closing after this leave the focus where it is.
+      for (const k of PLAN_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
       setTimeout(() => focusAfterRemove(w.effectiveDate, w.id), 0);
     },
   });
