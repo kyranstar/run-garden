@@ -38,7 +38,7 @@ import { Navigate, useLocation, useMatch, useNavigate, useNavigationType, useSea
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { accountTodayGuess, unanswered } from "../../components.js";
+import { accountTodayGuess, settling } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { IconFilters } from "../../icons.js";
@@ -104,8 +104,8 @@ export function useStudioCtx(): StudioCtx {
  * them once and kept (a quick start) waits for that, rather than being built twice, the first time knowing less.
  * `profilesKnown`: the library read (the switched-on profiles' one full list) has answered at some point — false while
  * it is paused or failed with nothing kept, when "no profile is on" would be a guess. `loading`: one of them has not
- * answered yet, nor failed (`unanswered`) — what a page draws from them, and whatever sits under that, waits (the
- * Studio home).
+ * answered yet, nor failed (`settling`) — what a page draws from them, and whatever sits under that, waits (the Studio
+ * home).
  */
 export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKnown: boolean; loading: boolean } {
   const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: 200 }), staleTime: 60_000 });
@@ -115,7 +115,7 @@ export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKn
   const profile = useQuery({ queryKey: ["profile"], queryFn: api.getProfile, staleTime: 60_000 });
   const ctx = useMemo(() => studioCtxFrom(library.data, today.data, places.data, profile.data), [library.data, today.data, places.data, profile.data]);
   const settled = [library, today, places, profile].every((q) => !q.isPending || q.fetchStatus === "paused");
-  return { ctx, settled, profilesKnown: library.data !== undefined, loading: unanswered(library, today, places, profile) };
+  return { ctx, settled, profilesKnown: library.data !== undefined, loading: settling(library, today, places, profile) };
 }
 
 /** What a history entry under the Studio carries: whether it came from the home, and how deep into moves it is. */

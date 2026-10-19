@@ -1037,6 +1037,15 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
  * `placeholderData: keepPreviousData` stops settling after its first answer
  * and never blanks the screen again when its key changes.
  *
+ * A read that has FAILED is answered too: it has said all it will for now
+ * (`errorUpdateCount`). TanStack puts a failed read with no data back to
+ * pending when it is read again — as it is whenever something that needs it
+ * mounts — and to `isLoading` alone that was a first load once more: the
+ * screen went back to its spinner, unmounting what had asked; the read failed;
+ * the screen drew it again, it asked again, round and round (the Studio's
+ * home; the Plan opened on a programme session with the programmes read
+ * failing: 119 reads in 0.4 s, 2026-10-19).
+ *
  * Pass the queries that decide whether a BLOCK EXISTS — is there a plan, is
  * there a race, is COROS connected. Not the ones that only fill in a number:
  * holding a whole screen hostage for a footnote is its own bad trade, and for
@@ -1044,21 +1053,9 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
  * `.act-status-slot` in styles.css).
  */
 export function settling(
-  ...queries: ReadonlyArray<{ isLoading: boolean } | null | undefined>
+  ...queries: ReadonlyArray<{ isLoading: boolean; errorUpdateCount?: number } | null | undefined>
 ): boolean {
-  return queries.some((q) => q?.isLoading === true);
-}
-
-/**
- * `settling`, but a read that has failed before counts as answered: it has said all it will for now. TanStack puts a
- * failed read with no data back to pending when it is read again — as it is whenever something that needs it mounts —
- * so to `settling` it is on its first load once more, and a screen that waits on it would go back to its spinner,
- * unmount what reads it, draw it again and read again, round and round.
- */
-export function unanswered(
-  ...queries: ReadonlyArray<{ isLoading: boolean; errorUpdateCount: number } | null | undefined>
-): boolean {
-  return queries.some((q) => q?.isLoading === true && q.errorUpdateCount === 0);
+  return queries.some((q) => q?.isLoading === true && !q.errorUpdateCount);
 }
 
 /**

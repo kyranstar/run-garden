@@ -90,6 +90,12 @@ describe("`settling` is a first-paint gate, not a spinner on every refetch", () 
     expect(settling(undefined, null)).toBe(false);
     expect(settling()).toBe(false);
   });
+
+  it("a read that has failed is answered, even while it is read again (2026-10-19)", () => {
+    // TanStack puts a failed read with no data back to pending when it is read again: still no first load.
+    expect(settling({ isLoading: true, errorUpdateCount: 1 })).toBe(false);
+    expect(settling({ isLoading: true, errorUpdateCount: 0 })).toBe(true);
+  });
 });
 
 /**

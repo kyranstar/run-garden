@@ -21,7 +21,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, label } from "@rg/exercise-library";
-import { Spinner, unanswered } from "../../components.js";
+import { settling, Spinner } from "../../components.js";
 import { IconChevron } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { BuildEntry } from "./build-entry.js";
@@ -61,8 +61,8 @@ export function StudioHome({
   // Which quick starts there are is the reads' to say — a switched-on profile's care tile, a pinned template — and a
   // tile that came late would wrap the row and push all of this down under a tap aimed at it (CI's WebKit tapped
   // "Templates" where it had been, 2026-10-19; UX System 4). So nothing is drawn until they have answered — or failed:
-  // then it is drawn from what there is, and a read of them again never takes it back (`unanswered`).
-  if (loading || unanswered(templates)) {
+  // then it is drawn from what there is, and a read of them again never takes it back (`settling`).
+  if (loading || settling(templates)) {
     return (
       <div className="stu-home">
         <Spinner label="Loading the Studio" />
