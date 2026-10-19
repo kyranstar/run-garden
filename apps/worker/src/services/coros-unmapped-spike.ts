@@ -173,8 +173,8 @@ function targetOf(found: Located, planId: string) {
   };
 }
 
-/** One placement per (stamp, day): one delete removes every copy of a stamp on a day. */
-function distinctStamped(span: RawCorosSchedule, planId: string, isTarget: StampPredicate): Located[] {
+/** One placement per (stamp, day): one delete removes every copy of a stamp on a day. (The run-wire spike's too.) */
+export function distinctStamped(span: RawCorosSchedule, planId: string, isTarget: StampPredicate): Located[] {
   const seen = new Set<string>();
   return stampedPlacements(planView(span, planId), isTarget).filter((p) => {
     const key = `${stampOf(p)}|${p.date}`;
@@ -191,7 +191,7 @@ function distinctStamped(span: RawCorosSchedule, planId: string, isTarget: Stamp
  * `found` is how many distinct (stamp, day) placements the read held;
  * `removed`, how many of those are gone now.
  */
-async function removeStamped(
+export async function removeStamped(
   client: CorosClient,
   today: string,
   planId: string,

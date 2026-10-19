@@ -23,6 +23,7 @@ import {
   SPIKE_CLEANUP_CONFIRM,
   SPIKE_CONFIRM,
 } from "../services/coros-unmapped-spike.js";
+import { RUN_WIRE_SPIKE_CONFIRM, runRunWireSpike } from "../services/coros-run-wire-spike.js";
 import { fixtureModeEnabled } from "../env.js";
 import { backfillWatchSets, parseWatchCursor } from "../services/watch-sets.js";
 import { NoPushError, programReadback, ReadbackNotConnectedError } from "../services/watch-readback.js";
@@ -239,6 +240,46 @@ const spikeConfirmSchema = z
  * few per call, and writes nothing. The run itself refuses (409
  * `leftovers`) while any are on COROS.
  */
+const runWireSpikeSchema = z.union([
+  z.object({ confirm: z.literal(RUN_WIRE_SPIKE_CONFIRM), variant: z.enum(["v1", "v2"]) }).strict(),
+  z.object({ confirm: z.literal(SPIKE_CLEANUP_CONFIRM) }).strict(),
+]);
+
+/**
+ * The owner-gated run-wire live check (§8 phase 2): writes ONE stamped run program 14 days out — `variant` "v1" (phase
+ * 1's flat intervals and a 20 s strides step) or "v2" (a repeat group with distance steps) — through the production
+ * create executor, reads it back, deletes it, and reports what COROS stored per step (coros-run-wire-spike.ts). Absent
+ * (404) unless the body is exactly `{ "confirm": "write a test run", "variant": "v1" | "v2" }` AND COROS writes are
+ * enabled for the account, and never in fixture mode. The variant picks the builder, whatever `RUN_WIRE_V2` says.
+ * `{ "confirm": "remove test workouts" }` (same gate) is the unmapped spike's cleanup-only call, which removes either
+ * spike's leftovers; the run refuses (409 `leftovers`) while any are on COROS.
+ */
+corosRoutes.post("/spike/run-wire", async (c) => {
+  const notFound = () => c.json({ error: "not_found" }, 404);
+  const confirmed = runWireSpikeSchema.safeParse(await c.req.json().catch(() => null));
+  if (!confirmed.success || fixtureModeEnabled(c.env)) return notFound();
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  if (prefs.corosWritesEnabled !== true) return notFound();
+  if (!("variant" in confirmed.data)) {
+    const cleanup = await runSpikeCleanup(db, c.env, userId, prefs);
+    if (cleanup.status !== "done") return c.json({ error: cleanup.status }, 409);
+    return c.json(cleanup.body);
+  }
+  const result = await runRunWireSpike(db, c.env, userId, prefs, confirmed.data.variant);
+  switch (result.status) {
+    case "not_connected":
+      return c.json({ error: "not_connected" }, 409);
+    case "busy":
+      return c.json({ error: "busy" }, 409);
+    case "leftovers":
+      return c.json({ error: "leftovers", count: result.count, cleanup: { confirm: SPIKE_CLEANUP_CONFIRM } }, 409);
+    case "done":
+      return c.json(result.body);
+  }
+});
+
 corosRoutes.post("/spike/unmapped-moves", async (c) => {
   const notFound = () => c.json({ error: "not_found" }, 404);
   const confirmed = spikeConfirmSchema.safeParse(await c.req.json().catch(() => null));
