@@ -282,6 +282,14 @@ describe("propose_plan: what the card says of the watch, and what the condition 
       `The condition rules refuse it: ${names.map((n) => `Tue 19 May · Legs: I can't check '${n}' against your conditions — pick a move from the library`).join("; ")}.`,
     );
     expect(e.fix).toContain("plan_set");
+    // A name is said once, at the first session holding it.
+    const twice = refused(
+      (await propose(block("lift", [
+        { date: "2026-05-19", session: lift("Legs", ["Jump squat"]) },
+        { date: "2026-05-21", session: lift("Legs again", ["Goblet squat", "Jump squat"]) },
+      ]))).res,
+    );
+    expect(twice.why).toBe("The condition rules refuse it: Tue 19 May · Legs: I can't check 'Jump squat' against your conditions — pick a move from the library.");
   });
 
   it("a name the athlete's COROS catalog resolves to a library move is judged as that move — and unresolved without it", async () => {
@@ -291,6 +299,16 @@ describe("propose_plan: what the card says of the watch, and what the condition 
     await db.insert(schema.corosExercises).values({ id: "catalog-1", name: "T1260", raw: { id: "catalog-1", name: "T1260" }, updatedAt: NOW.toISOString() });
     const judged = refused((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", [words]) }]))).res);
     expect(judged.why).toMatch(/^The condition rules refuse it: Tue 19 May · Legs: Pogo hops depends on that day's .+ check, and a plan session can't carry an alternate\.$/);
+  });
+
+  it("the catalog read once serves both: the check's names and each lift's watch identity", async () => {
+    // COROS's "Goblet Squat" (T1301), as the athlete's synced catalog holds it under its own id.
+    await db.insert(schema.corosExercises).values({ id: "catalog-goblet", name: "T1301", raw: { id: "catalog-goblet", name: "T1301" }, updatedAt: NOW.toISOString() });
+    const r = await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", ["Goblet squat"]) }]));
+    ok(r.res);
+    const stored = r.op!.op as unknown as { firmSessions: Array<{ session: { lift: { exercises: Array<{ name: string; originId?: string }> } } }> };
+    expect(stored.firmSessions[0]!.session.lift.exercises).toEqual([expect.objectContaining({ name: "Goblet squat", originId: "catalog-goblet" })]);
+    expect(r.count).toBeLessThanOrEqual(proposePlan.statementCost);
   });
 
   it("with no condition profile on, an unknown name stays the coach's, unjudged, as before", async () => {
